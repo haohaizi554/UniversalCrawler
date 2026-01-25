@@ -3,6 +3,9 @@
 import sys
 import os
 import time
+import ctypes
+
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
 from PyQt6.QtCore import QUrl, Qt, QTimer
 # 引入项目模块
@@ -13,13 +16,18 @@ from app.models import VideoItem
 from app.utils import cfg, sanitize_filename
 
 class ApplicationController:
-    """
-    主控制器 (Controller)
-    负责协调 UI、爬虫逻辑、下载管理和文件系统操作
-    """
     def __init__(self):
+        if os.name == 'nt':
+            try:
+                myappid = 'mygeekapp.universalcrawler.pro.v1'
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except:
+                pass
+
         # 1. 初始化 Qt 应用
         self.app = QApplication(sys.argv)
+        if os.path.exists("favicon.ico"):
+            self.app.setWindowIcon(QIcon("favicon.ico"))
         # 2. 初始化主窗口
         self.window = MainWindow()
         # 3. 内部状态
@@ -45,6 +53,10 @@ class ApplicationController:
         self.window.show()
         # 延迟执行本地扫描，防止启动时 UI 尚未就绪导致崩溃 (0xC0000409)
         QTimer.singleShot(200, self.scan_local_dir)
+
+
+
+
     # ---------------- 本地文件管理 ----------------
     def scan_local_dir(self):
         """扫描本地文件 (限制数量防止崩溃)"""

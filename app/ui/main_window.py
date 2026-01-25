@@ -1,35 +1,24 @@
 # app/ui/main_window.py
 
 import os
-
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QProgressBar,
                              QTableWidget, QTableWidgetItem, QHeaderView,
                              QFrame, QSplitter, QPlainTextEdit, QComboBox,
                              QFileDialog, QStyle, QSlider, QSizePolicy, QDialog, QMessageBox)
-from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QSize, QByteArray
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QSettings, QSize, QByteArray
+from PyQt6.QtGui import QIcon
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-
 from app.ui.styles import DARK_STYLESHEET
 from app.utils import cfg
 from app.core.registry import registry
 from app.ui.dialogs import SelectionDialog
-
-
-class ClickableVideoWidget(QVideoWidget):
-    sig_double_click = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet("background-color: #000; border-top-left-radius: 4px; border-top-right-radius: 4px;")
-
-    def mouseDoubleClickEvent(self, event):
-        self.sig_double_click.emit()
-
+from app.ui.widgets import ClickableVideoWidget
 
 class MainWindow(QMainWindow):
+    # 信号定义
     sig_start_crawl = pyqtSignal(str, str, dict)
     sig_stop_crawl = pyqtSignal()
     sig_change_dir = pyqtSignal()
@@ -42,13 +31,14 @@ class MainWindow(QMainWindow):
         self.resize(1300, 850)
         self.setStyleSheet(DARK_STYLESHEET)
 
+        if os.path.exists("favicon.ico"):
+            self.setWindowIcon(QIcon("favicon.ico"))
+
         self.current_save_dir = cfg.get("common", "save_directory") or os.getcwd()
         self.current_plugin = None
         self.plugin_widget = None
         self.is_fullscreen_mode = False
-
         self.init_ui()
-        # 延迟加载状态
         self.load_initial_state()
 
     def init_ui(self):
@@ -162,13 +152,11 @@ class MainWindow(QMainWindow):
         self.main_split.addWidget(self.left_panel)
 
         # --- Right Panel ---
-        # 这是一个容器，里面放 right_split
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # [核心] 右侧分割线 (上下)
         self.right_split = QSplitter(Qt.Orientation.Vertical)
         self.right_split.setHandleWidth(4)
 
@@ -179,6 +167,7 @@ class MainWindow(QMainWindow):
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(0)
 
+        # [使用导入的控件]
         self.vid_w = ClickableVideoWidget()
         self.vid_w.sig_double_click.connect(self.toggle_fullscreen_mode)
 
@@ -230,14 +219,10 @@ class MainWindow(QMainWindow):
         self.log_txt.setStyleSheet("border-top: 1px solid #333; background-color: #111; color: #eee;")
         self.log_txt.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
-        # 添加到右侧分割线
         self.right_split.addWidget(video_container)
         self.right_split.addWidget(self.log_txt)
 
-        # 添加到右侧容器
         right_layout.addWidget(self.right_split)
-
-        # 添加到主分割线
         self.main_split.addWidget(right_container)
         main_layout.addWidget(self.main_split)
 
@@ -261,7 +246,6 @@ class MainWindow(QMainWindow):
             self.is_fullscreen_mode = False
             self.btn_fullscreen.setText("[ 全屏 ]")
 
-            # 恢复最大化
             state_hex = cfg.get("ui", "window_state")
             if state_hex: self.restoreState(QByteArray.fromHex(state_hex.encode()))
 
@@ -273,7 +257,6 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def load_initial_state(self):
-        # 1. 模式
         last_source_id = cfg.get("common", "last_source", "kuaishou")
         idx = self.combo_source.findData(last_source_id)
         if idx != -1:
@@ -285,30 +268,25 @@ class MainWindow(QMainWindow):
         self.lbl_full_path.setText(self.current_save_dir)
         self.lbl_full_path.setToolTip(self.current_save_dir)
 
-        # 2. 窗口位置
         geo_hex = cfg.get("ui", "geometry")
         if geo_hex: self.restoreGeometry(QByteArray.fromHex(geo_hex.encode()))
 
-        # 3. 窗口状态
         state_hex = cfg.get("ui", "window_state")
         if state_hex: self.restoreState(QByteArray.fromHex(state_hex.encode()))
 
-        # 4. 主分割线 (左右)
         main_split_hex = cfg.get("ui", "main_splitter_state")
         if main_split_hex:
             self.main_split.restoreState(QByteArray.fromHex(main_split_hex.encode()))
         else:
             self.main_split.setSizes([400, 900])
 
-        # 5. [核心修复] 右侧分割线 (上下)
         right_split_hex = cfg.get("ui", "right_splitter_state")
         if right_split_hex:
             self.right_split.restoreState(QByteArray.fromHex(right_split_hex.encode()))
         else:
-            self.right_split.setSizes([600, 200])  # 默认 3:1
+            self.right_split.setSizes([600, 200])
 
     def closeEvent(self, e):
-        # [核心修复] 保存两个分割线
         cfg.save_ui_state(
             geometry=self.saveGeometry(),
             state=self.saveState(),
@@ -344,7 +322,6 @@ class MainWindow(QMainWindow):
         self.combo_source.setEnabled(False)
         if self.plugin_widget: self.plugin_widget.setEnabled(False)
 
-    # --- 业务逻辑 ---
     def on_source_changed(self, index):
         plugin_id = self.combo_source.currentData()
         if not plugin_id: return
