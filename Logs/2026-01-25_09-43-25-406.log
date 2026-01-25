@@ -1,0 +1,27 @@
+﻿LOG 2026/01/25
+Save Path: D:\desktop\UniversalCrawler\Logs
+Task Start: 2026/01/25 09:43:25
+Task CommandLine: N_m3u8DL-RE.exe https://surrit.com/c750ed64-87a4-44a6-8f84-6fc3354a027e/playlist.m3u8 --save-dir D:/desktop --save-name "苍井空 All 97 Productions S1 12 小时完整 BEST" --thread-count 16 --download-retry-count 10 --auto-select true --header "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --header "Referer: https://missav.ai/dm58/cn/onsd-783" --mux-after-done format=mp4
+
+09:43:25.409 INFO : N_m3u8DL-RE (Beta version) 20251029
+09:43:25.411 EXTRA: ffmpeg => D:\desktop\UniversalCrawler\ffmpeg.exe
+09:43:25.411 EXTRA: User-Defined Header => user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+09:43:25.412 EXTRA: User-Defined Header => referer: https://missav.ai/dm58/cn/onsd-783
+09:43:25.412 INFO : 加载URL: https://surrit.com/c750ed64-87a4-44a6-8f84-6fc3354a027e/playlist.m3u8
+09:43:25.889 INFO : 内容匹配: HTTP Live Streaming
+09:43:25.891 INFO : 正在解析媒体信息...
+09:43:25.892 WARN : 检测到Master列表，开始解析全部流信息
+09:43:25.896 WARN : 写出meta json
+09:43:25.899 INFO : 已解析, 共计 2 条媒体流, 基本流 2 条, 可选音频流 0 条, 可选字幕流 0 条
+09:43:25.901 INFO : Vid 842x480 | 1400 Kbps
+09:43:25.902 INFO : Vid 640x360 | 800 Kbps
+09:43:25.904 INFO : 正在解析媒体信息...
+09:43:26.039 INFO : 已选择的流:
+09:43:26.040 INFO : Vid 842x480 | 1400 Kbps | 1625 Segments | ~01h48m19s
+09:43:26.041 WARN : 写出meta json
+09:43:26.045 INFO : 保存文件名: 苍井空 All 97 Productions S1 12 小时完整 BEST
+09:43:26.046 WARN : 你已开启下载完成后混流，自动开启二进制合并
+09:43:26.048 INFO : 开始下载...Vid 842x480 | 1400 Kbps
+09:43:26.440 WARN : 读取媒体信息...
+09:43:26.524 INFO : [0x100]: Video, h264 (Main) ([27][0][0][0]), 842x662, 29.97 fps
+09:43:26.526 INFO : [0x101]: Audio, aac (LC) ([15][0][0][0]), 191 kb/s

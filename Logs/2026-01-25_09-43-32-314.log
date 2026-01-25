@@ -1,0 +1,27 @@
+﻿LOG 2026/01/25
+Save Path: D:\desktop\UniversalCrawler\Logs
+Task Start: 2026/01/25 09:43:32
+Task CommandLine: N_m3u8DL-RE.exe https://surrit.com/f1ca36f6-5386-40a8-9140-0b094d37718c/playlist.m3u8 --save-dir D:/desktop --save-name "苍井空 High Definition S1 8 Hours Special (Blu-ray Disc)" --thread-count 16 --download-retry-count 10 --auto-select true --header "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" --header "Referer: https://missav.ai/dm54/cn/onsd-654" --mux-after-done format=mp4
+
+09:43:32.319 INFO : N_m3u8DL-RE (Beta version) 20251029
+09:43:32.326 EXTRA: ffmpeg => D:\desktop\UniversalCrawler\ffmpeg.exe
+09:43:32.326 EXTRA: User-Defined Header => user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+09:43:32.327 EXTRA: User-Defined Header => referer: https://missav.ai/dm54/cn/onsd-654
+09:43:32.327 INFO : 加载URL: https://surrit.com/f1ca36f6-5386-40a8-9140-0b094d37718c/playlist.m3u8
+09:43:32.959 INFO : 内容匹配: HTTP Live Streaming
+09:43:32.961 INFO : 正在解析媒体信息...
+09:43:32.963 WARN : 检测到Master列表，开始解析全部流信息
+09:43:32.966 WARN : 写出meta json
+09:43:32.973 INFO : 已解析, 共计 2 条媒体流, 基本流 2 条, 可选音频流 0 条, 可选字幕流 0 条
+09:43:32.974 INFO : Vid 842x480 | 1400 Kbps
+09:43:32.975 INFO : Vid 640x360 | 800 Kbps
+09:43:32.976 INFO : 正在解析媒体信息...
+09:43:33.265 INFO : 已选择的流:
+09:43:33.267 INFO : Vid 842x480 | 1400 Kbps | 3587 Segments | ~03h59m04s
+09:43:33.269 WARN : 写出meta json
+09:43:33.278 INFO : 保存文件名: 苍井空 High Definition S1 8 Hours Special (Blu-ray Disc)
+09:43:33.279 WARN : 你已开启下载完成后混流，自动开启二进制合并
+09:43:33.282 INFO : 开始下载...Vid 842x480 | 1400 Kbps
+09:43:33.807 WARN : 读取媒体信息...
+09:43:33.896 INFO : [0x100]: Video, h264 (Main) ([27][0][0][0]), 842x472, 30 fps
+09:43:33.898 INFO : [0x101]: Audio, aac (LC) ([15][0][0][0]), 207 kb/s
