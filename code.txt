@@ -1,0 +1,3164 @@
+# app/core/download_manager.py
+
+import os
+import threading
+import queue
+from PyQt6.QtCore import QThread, pyqtSignal, QObject, QSemaphore
+from app.models import VideoItem
+from app.core.downloaders import KuaishouDownloader, MissAVDownloader, BilibiliDownloader
+
+class DownloadWorker(QThread):
+    sig_start = pyqtSignal(str)
+    sig_progress = pyqtSignal(str, int)
+    sig_finished = pyqtSignal(str)
+    sig_error = pyqtSignal(str, str)
+
+    def __init__(self, video: VideoItem, save_dir: str, semaphore: QSemaphore):
+        super().__init__()
+        self.video = video
+        self.save_dir = save_dir
+        self.semaphore = semaphore
+        self.is_running = True
+
+    def run(self):
+        self.semaphore.acquire()
+        try:
+            if not self.is_running: return
+            self.sig_start.emit(self.video.id)
+            if not os.path.exists(self.save_dir):
+                os.makedirs(self.save_dir, exist_ok=True)
+            # 获取文件名
+            filename = self.video.get_safe_filename("mp4")
+            filepath = os.path.join(self.save_dir, filename)
+            self.video.local_path = filepath
+            # 策略选择
+            downloader = None
+            if self.video.source == "kuaishou":
+                downloader = KuaishouDownloader()
+            elif self.video.source == "missav":
+                downloader = MissAVDownloader()
+            elif self.video.source == "bilibili":
+                downloader = BilibiliDownloader()
+            else:
+                raise ValueError(f"Unknown source: {self.video.source}")
+            # 执行下载 (传入回调和停止检查)
+            downloader.download(
+                video_item=self.video,
+                save_path=filepath,
+                progress_callback=lambda p: self.sig_progress.emit(self.video.id, p),
+                check_stop_func=lambda: not self.is_running
+            )
+            if self.is_running:
+                self.sig_finished.emit(self.video.id)
+        except InterruptedError:
+            self.sig_error.emit(self.video.id, "用户已停止")
+        except Exception as e:
+            self.sig_error.emit(self.video.id, str(e))
+        finally:
+            self.semaphore.release()
+    def stop(self):
+        self.is_running = False
+
+class DownloadManager(QObject):
+    task_started = pyqtSignal(str)
+    task_progress = pyqtSignal(str, int)
+    task_finished = pyqtSignal(str)
+    task_error = pyqtSignal(str, str)
+    def __init__(self, max_concurrent=3):
+        super().__init__()
+        self.queue = queue.Queue()
+        self.workers = []
+        self.max_concurrent = max_concurrent
+        self.semaphore = QSemaphore(max_concurrent)
+        self.is_running = True
+        self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
+        self.dispatcher_thread.start()
+    def add_task(self, video: VideoItem, save_dir: str):
+        self.queue.put((video, save_dir))
+    def _dispatch_loop(self):
+        while self.is_running:
+            try:
+                video, save_dir = self.queue.get(timeout=1)
+                self.workers = [w for w in self.workers if w.isRunning()]
+                worker = DownloadWorker(video, save_dir, self.semaphore)
+                worker.sig_start.connect(self.task_started)
+                worker.sig_progress.connect(self.task_progress)
+                worker.sig_finished.connect(self.task_finished)
+                worker.sig_error.connect(self.task_error)
+                self.workers.append(worker)
+                worker.start()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Dispatcher Error: {e}")
+    def stop_all(self):
+        self.is_running = False
+        # 清空队列
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except:
+                pass
+        # 停止所有正在运行的工兵
+        for w in self.workers:
+            w.stop()
+            w.wait()
+
+
+# app/core/downloaders.py
+
+import os
+import time
+import requests
+import subprocess
+import signal
+
+class BaseDownloader:
+    def download(self, video_item, save_path, progress_callback, check_stop_func):
+        raise NotImplementedError
+
+class KuaishouDownloader(BaseDownloader):
+    def download(self, video_item, save_path, progress_callback, check_stop_func):
+        # 保持快手下载逻辑不变，因为它用的是 requests，且需要 cookie
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": video_item.meta.get("referer", "https://www.kuaishou.com/")
+        }
+        if "cookies" in video_item.meta:
+            cookie_dict = video_item.meta["cookies"]
+            if isinstance(cookie_dict, dict):
+                headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
+        temp_path = save_path + ".downloading"
+        max_retries = 3
+        success = False
+        for attempt in range(max_retries):
+            if check_stop_func(): break
+            try:
+                with requests.get(video_item.url, headers=headers, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    total_size = int(r.headers.get('content-length', 0))
+                    downloaded = 0
+                    with open(temp_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if check_stop_func(): raise InterruptedError("用户停止下载")
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_size > 0:
+                                    percent = int((downloaded / total_size) * 100)
+                                    if downloaded % (8192 * 100) == 0 or percent == 100:
+                                        progress_callback(percent)
+                success = True
+                break
+            except InterruptedError:
+                break
+            except Exception as e:
+                print(f"⚠️ [Kuaishou] 下载中断: {e}")
+                time.sleep(3)
+        if success:
+            if os.path.exists(save_path):
+                try:
+                    os.remove(save_path)
+                except:
+                    pass
+            os.rename(temp_path, save_path)
+            progress_callback(100)
+        else:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            if not check_stop_func():
+                raise Exception("下载失败")
+
+class MissAVDownloader(BaseDownloader):
+    def download(self, video_item, save_path, progress_callback, check_stop_func):
+        exe_path = "N_m3u8DL-RE.exe"
+        if not os.path.exists(exe_path):
+            raise FileNotFoundError("未找到 N_m3u8DL-RE.exe")
+
+        m3u8_url = video_item.url
+        ua = video_item.meta.get("ua", "Mozilla/5.0")
+        referer = video_item.meta.get("referer", "https://missav.ai/")
+
+        save_dir = os.path.dirname(save_path)
+        save_name_no_ext = os.path.splitext(os.path.basename(save_path))[0]
+
+        cmd = [
+            exe_path,
+            m3u8_url,
+            "--save-dir", save_dir,
+            "--save-name", save_name_no_ext,
+            "--thread-count", "16",
+            "--download-retry-count", "10",
+            "--auto-select", "true",
+            "--header", f"User-Agent: {ua}",
+            "--header", f"Referer: {referer}",
+            "--mux-after-done", "format=mp4"
+        ]
+
+        creation_flags = 0
+        if os.name == 'nt':
+            creation_flags = subprocess.CREATE_NEW_CONSOLE
+        progress_callback(10)
+        try:
+            # 启动外部进程
+            process = subprocess.Popen(cmd, creationflags=creation_flags)
+            # 循环检查进程状态
+            while process.poll() is None:
+                if check_stop_func():
+                    process.kill()
+                    raise InterruptedError("用户停止下载")
+                time.sleep(1)
+                # 保持在50%直到完成，用户看弹窗进度
+                progress_callback(50)
+            if process.returncode != 0:
+                raise Exception(f"外部下载器异常退出 (Code: {process.returncode})")
+            progress_callback(100)
+        except Exception as e:
+            raise e
+
+
+class BilibiliDownloader(BaseDownloader):
+    def download(self, video_item, save_path, progress_callback, check_stop_func):
+        # 1. 检查 ffmpeg
+        ffmpeg_path = "ffmpeg.exe"
+        if not os.path.exists(ffmpeg_path):
+            # 尝试系统路径
+            try:
+                subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ffmpeg_path = "ffmpeg"
+            except:
+                raise FileNotFoundError("未找到 ffmpeg.exe，无法合并音视频")
+        video_url = video_item.url
+        audio_url = video_item.meta.get("audio_url")
+        headers = {
+            "User-Agent": video_item.meta.get("ua", "Mozilla/5.0"),
+            "Referer": video_item.meta.get("referer", "https://www.bilibili.com")
+        }
+        save_dir = os.path.dirname(save_path)
+        base_name = os.path.splitext(os.path.basename(save_path))[0]
+        # 临时文件路径
+        temp_v = os.path.join(save_dir, f"{base_name}_video.m4s")
+        temp_a = os.path.join(save_dir, f"{base_name}_audio.m4s")
+        # 2. 下载函数
+        def download_stream(url, path):
+            if not url: return False
+            try:
+                with requests.get(url, headers=headers, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    total = int(r.headers.get('content-length', 0))
+                    downloaded = 0
+                    with open(path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if check_stop_func(): raise InterruptedError
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                # 简单估算进度 (只汇报视频流的)
+                                if ".m4s" in path and total > 0:
+                                    progress_callback(int((downloaded / total) * 80))  # 预留20%给合并
+                return True
+            except Exception as e:
+                if os.path.exists(path): os.remove(path)
+                raise e
+        # 3. 执行下载
+        progress_callback(10)
+        try:
+            # 下载视频
+            download_stream(video_url, temp_v)
+            # 下载音频 (如果有)
+            has_audio = False
+            if audio_url:
+                progress_callback(85)
+                download_stream(audio_url, temp_a)
+                has_audio = True
+            # 4. 合并 (Merge)
+            progress_callback(90)
+            cmd_merge = [ffmpeg_path, "-y", "-i", temp_v]
+            if has_audio:
+                cmd_merge.extend(["-i", temp_a])
+            # copy流，无需转码，速度极快
+            cmd_merge.extend(["-c", "copy", save_path])
+            # 隐藏黑框执行
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            subprocess.run(
+                cmd_merge,
+                check=True,
+                startupinfo=startupinfo,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            # 清理临时文件
+            try:
+                if os.path.exists(temp_v): os.remove(temp_v)
+                if os.path.exists(temp_a): os.remove(temp_a)
+            except:
+                pass
+            progress_callback(100)
+        except InterruptedError:
+            # 清理垃圾
+            if os.path.exists(temp_v): os.remove(temp_v)
+            if os.path.exists(temp_a): os.remove(temp_a)
+            raise InterruptedError("用户停止下载")
+        except Exception as e:
+            # 清理垃圾
+            if os.path.exists(temp_v): os.remove(temp_v)
+            if os.path.exists(temp_a): os.remove(temp_a)
+            raise Exception(f"B站下载失败: {e}")
+
+
+# app/core/registry.py
+
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QComboBox, QLabel, QSpinBox
+from app.utils import cfg
+# 延迟导入或直接导入爬虫类
+from app.spiders.kuaishou_spider import KuaishouSpider
+from app.spiders.missav_spider import MissAVSpider
+from app.spiders.bilibili_spider import BilibiliSpider
+
+class BasePlugin:
+    id = "base"
+    name = "Base Plugin"
+    def get_search_placeholder(self) -> str:
+        return "请输入关键词..."
+    def get_settings_widget(self, parent=None) -> QWidget:
+        return None
+    def get_spider_class(self):
+        raise NotImplementedError
+    def get_run_options(self, settings_widget: QWidget) -> dict:
+        return {}
+
+class KuaishouPlugin(BasePlugin):
+    id = "kuaishou"
+    name = "快手"
+    def get_search_placeholder(self) -> str:
+        return "输入快手号或关键词..."
+    def get_settings_widget(self, parent=None) -> QWidget:
+        return None
+    def get_spider_class(self):
+        return KuaishouSpider
+    def get_run_options(self, settings_widget: QWidget) -> dict:
+        return {}
+
+class MissAVPlugin(BasePlugin):
+    id = "missav"
+    name = "MissAV"
+    def get_search_placeholder(self) -> str:
+        return "输入番号 (如 IPX-906) 或女优名..."
+    def get_settings_widget(self, parent=None) -> QWidget:
+        container = QWidget(parent)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        # 1. 仅单体
+        self.chk_individual = QCheckBox("仅单体")
+        self.chk_individual.setChecked(cfg.get("missav", "individual_only", False))
+        layout.addWidget(self.chk_individual)
+        # 2. 排序 (精简选项)
+        self.combo_priority = QComboBox()
+        # 只保留两个有效选项
+        self.combo_priority.addItems(["中文字幕优先", "无码流出优先"])
+        # 获取配置，如果配置是旧的"默认排序"，则强制转为"中文字幕优先"
+        saved_priority = cfg.get("missav", "priority", "中文字幕优先")
+        if saved_priority == "默认排序":
+            saved_priority = "中文字幕优先"
+        self.combo_priority.setCurrentText(saved_priority)
+        layout.addWidget(self.combo_priority)
+        # 3. 代理
+        layout.addWidget(QLabel("代理:"))
+        self.combo_proxy = QComboBox()
+        self.combo_proxy.addItems(["Clash (7890)", "v2rayN (10809)", "自定义"])
+        self.combo_proxy.setEditable(True)
+        self.combo_proxy.setCurrentText(cfg.get("missav", "proxy_app", "Clash (7890)"))
+        self.combo_proxy.setMinimumWidth(110)
+        layout.addWidget(self.combo_proxy)
+        return container
+    def get_spider_class(self):
+        return MissAVSpider
+    def get_run_options(self, widget: QWidget) -> dict:
+        if not widget:
+            return {
+                "individual_only": False,
+                "priority": "中文字幕优先",
+                "proxy": "http://127.0.0.1:7890"
+            }
+        # 提取数据
+        is_individual = self.chk_individual.isChecked()
+        priority = self.combo_priority.currentText()
+        proxy_str = self.combo_proxy.currentText()
+        proxy_url = "http://127.0.0.1:7890"
+        if "7890" in proxy_str:
+            proxy_url = "http://127.0.0.1:7890"
+        elif "10809" in proxy_str:
+            proxy_url = "http://127.0.0.1:10809"
+        elif ":" in proxy_str:
+            proxy_url = proxy_str if proxy_str.startswith("http") else f"http://{proxy_str}"
+        # 保存回 config.json
+        cfg.set("missav", "individual_only", is_individual)
+        cfg.set("missav", "priority", priority)
+        cfg.update_missav_proxy(proxy_str, proxy_url)
+        return {
+            "individual_only": is_individual,
+            "priority": priority,
+            "proxy": proxy_url
+        }
+
+class BilibiliPlugin(BasePlugin):
+    id = "bilibili"
+    name = "Bilibili"
+    def get_search_placeholder(self) -> str:
+        return "BV号（兼容合集） / UP主名 / 关键词..."
+    def get_settings_widget(self, parent=None) -> QWidget:
+        container = QWidget(parent)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("爬取页数:"))
+        self.spin_pages = QSpinBox()
+        self.spin_pages.setRange(1, 500)
+        self.spin_pages.setValue(1)
+        self.spin_pages.setToolTip("搜索或列表扫描的最大页数")
+        layout.addWidget(self.spin_pages)
+        info = QLabel("🔒 自动登录 | 📺 最优画质")
+        info.setStyleSheet("color: #00AEEC; font-weight: bold;")
+        layout.addWidget(info)
+        return container
+    def get_spider_class(self):
+        from app.spiders.bilibili_spider import BilibiliSpider
+        return BilibiliSpider
+    def get_run_options(self, widget: QWidget) -> dict:
+        # 确保获取到的是当前 UI 上的值
+        pages = 1
+        try:
+            if hasattr(self, 'spin_pages'):
+                pages = self.spin_pages.value()
+        except:
+            pass
+        return {"max_pages": pages}
+
+class PluginRegistry:
+    def __init__(self):
+        self._plugins = {}
+        self.register(KuaishouPlugin())
+        self.register(MissAVPlugin())
+        self.register(BilibiliPlugin())
+    def register(self, plugin: BasePlugin):
+        self._plugins[plugin.id] = plugin
+    def get_all_plugins(self):
+        return list(self._plugins.values())
+    def get_plugin(self, plugin_id) -> BasePlugin:
+        return self._plugins.get(plugin_id)
+registry = PluginRegistry()
+
+
+# app/spiders/base_spider.py
+import threading
+from PyQt6.QtCore import QThread, pyqtSignal
+from app.models import VideoItem, AppConfig
+
+class BaseSpider(QThread):
+    # 基础信号
+    sig_log = pyqtSignal(str)
+    sig_item_found = pyqtSignal(VideoItem)
+    sig_finished = pyqtSignal()
+    # 参数: (list) 包含标题的字典列表
+    sig_select_tasks = pyqtSignal(list)
+    def __init__(self, keyword: str, config: dict):
+        super().__init__()
+        self.keyword = keyword
+        self.config = config
+        self.is_running = True
+        # 同步锁，用于暂停爬虫等待UI响应
+        self._resume_event = threading.Event()
+        self._selection_result = None  # 存储用户返回的索引列表
+    def stop(self):
+        self.is_running = False
+        self._resume_event.set()  # 防止卡死在等待中
+        self.sig_log.emit("🛑 正在停止任务...")
+    def run(self):
+        raise NotImplementedError("子类必须实现 run 方法")
+    # ================= 辅助方法 =================
+    def log(self, msg: str):
+        self.sig_log.emit(msg)
+    def emit_video(self, url: str, title: str, source: str, meta: dict = None):
+        item = VideoItem(url=url, title=title, source=source)
+        if meta: item.meta = meta
+        self.sig_item_found.emit(item)
+    def ask_user_selection(self, items: list) -> list:
+        # [核心升级] 阻塞当前爬虫线程，等待主线程(UI)的用户选择结果
+        # :param items: [{'title': 'xxx'}, ...]
+        # :return: 用户选中的索引列表 [0, 2, 5...]，如果取消则返回 None
+        self._resume_event.clear()  # 重置信号灯
+        self._selection_result = None
+        # 1. 发送信号给 UI，让 UI 弹窗
+        self.sig_select_tasks.emit(items)
+        # 2. 阻塞等待，直到 UI 设置 _resume_event
+        # 每秒醒来一次检查 is_running，防止无法停止
+        while self.is_running:
+            if self._resume_event.wait(timeout=1.0):
+                break
+        if not self.is_running:
+            return None
+        return self._selection_result
+    def resume_from_ui(self, selected_indices):
+        """由 UI 线程调用，唤醒爬虫"""
+        self._selection_result = selected_indices
+        self._resume_event.set()  # 绿灯，爬虫继续跑
+
+
+# app/spiders/bilibili_spider.py
+
+import os
+import re
+import time
+import json
+import requests
+import urllib.parse
+from playwright.sync_api import sync_playwright
+from app.spiders.base_spider import BaseSpider
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://www.bilibili.com'
+}
+
+
+class BiliAPI:
+    def __init__(self, cookie_path):
+        self.sess = requests.Session()
+        self.sess.headers.update(HEADERS)
+        self.cookie_path = cookie_path
+        self.load_cookies()
+
+    def load_cookies(self):
+        if os.path.exists(self.cookie_path):
+            try:
+                with open(self.cookie_path, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                    if isinstance(cookies, list):
+                        for c in cookies:
+                            self.sess.cookies.set(c['name'], c['value'], domain=c['domain'])
+                    elif isinstance(cookies, dict):
+                        for k, v in cookies.items():
+                            self.sess.cookies.set(k, v, domain=".bilibili.com")
+            except:
+                pass
+
+    def check_login(self):
+        try:
+            url = "https://api.bilibili.com/x/web-interface/nav"
+            resp = self.sess.get(url, timeout=10).json()
+            return resp['code'] == 0 and resp['data']['isLogin']
+        except:
+            return False
+
+    def get_video_info(self, bvid):
+        """获取视频详情"""
+        try:
+            url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+            resp = self.sess.get(url, timeout=10).json()
+            if resp['code'] != 0: return None
+            data = resp['data']
+
+            info = {
+                'bvid': data['bvid'],
+                'title': data['title'],
+                'owner': data['owner']['name'],
+                'is_season': False,
+                'season_id': None,
+                'season_title': "",
+                'episodes': []
+            }
+
+            # 合集判断
+            if 'ugc_season' in data and data['ugc_season']:
+                info['is_season'] = True
+                info['season_id'] = data['ugc_season']['id']
+                info['season_title'] = data['ugc_season']['title']
+                ep_counter = 1
+                for section in data['ugc_season']['sections']:
+                    for ep in section['episodes']:
+                        info['episodes'].append({
+                            'title': ep['title'],
+                            'bvid': ep['bvid'],
+                            'cid': ep['cid'],
+                            'page_num': ep_counter
+                        })
+                        ep_counter += 1
+            else:
+                info['season_title'] = data['title']
+                for page in data['pages']:
+                    info['episodes'].append({
+                        'title': page['part'],
+                        'bvid': data['bvid'],
+                        'cid': page['cid'],
+                        'page_num': page['page']
+                    })
+            return info
+        except Exception as e:
+            print(f"API Error: {e}")
+            return None
+
+    def get_play_url(self, bvid, cid):
+        def _request(fnval):
+            url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
+            return self.sess.get(url, timeout=10).json()
+
+        resp = _request(4048)
+        if resp['code'] != 0 or 'data' not in resp or 'dash' not in resp['data']:
+            resp = _request(80)
+
+        if resp['code'] == 0 and 'data' in resp and 'dash' in resp['data']:
+            dash = resp['data']['dash']
+            video_url = dash['video'][0]['baseUrl']
+            audio_url = dash['audio'][0]['baseUrl'] if dash.get('audio') else None
+            quality_id = dash['video'][0]['id']
+            return video_url, audio_url, quality_id
+        return None, None, 0
+
+
+# app/spiders/bilibili_spider.py
+
+import os
+import re
+import time
+import json
+import requests
+import urllib.parse
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from playwright.sync_api import sync_playwright
+from app.spiders.base_spider import BaseSpider
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://www.bilibili.com'
+}
+
+class BiliAPI:
+    def __init__(self, cookie_path):
+        self.sess = requests.Session()
+        self.sess.headers.update(HEADERS)
+        self.cookie_path = cookie_path
+        self.load_cookies()
+
+    def load_cookies(self):
+        if os.path.exists(self.cookie_path):
+            try:
+                with open(self.cookie_path, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                    if isinstance(cookies, list):
+                        for c in cookies:
+                            self.sess.cookies.set(c['name'], c['value'], domain=c['domain'])
+                    elif isinstance(cookies, dict):
+                        for k, v in cookies.items():
+                            self.sess.cookies.set(k, v, domain=".bilibili.com")
+            except:
+                pass
+
+    def check_login(self):
+        try:
+            url = "https://api.bilibili.com/x/web-interface/nav"
+            resp = self.sess.get(url, timeout=10).json()
+            return resp['code'] == 0 and resp['data']['isLogin']
+        except:
+            return False
+
+    def get_video_info(self, bvid):
+        """获取视频详情，返回结构化数据"""
+        try:
+            url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+            resp = self.sess.get(url, timeout=10).json()
+            if resp['code'] != 0: return None
+            data = resp['data']
+
+            info = {
+                'bvid': data['bvid'],
+                'title': data['title'],
+                'owner': data['owner']['name'],
+                'is_season': False,
+                'season_id': None,
+                'season_title': "",
+                'episodes': []
+            }
+            # 合集判断
+            if 'ugc_season' in data and data['ugc_season']:
+                info['is_season'] = True
+                info['season_id'] = data['ugc_season']['id']
+                info['season_title'] = data['ugc_season']['title']
+                ep_counter = 1
+                for section in data['ugc_season']['sections']:
+                    for ep in section['episodes']:
+                        info['episodes'].append({
+                            'title': ep['title'],
+                            'bvid': ep['bvid'],
+                            'cid': ep['cid'],
+                            'page_num': ep_counter
+                        })
+                        ep_counter += 1
+            else:
+                info['season_title'] = data['title']
+                for page in data['pages']:
+                    info['episodes'].append({
+                        'title': page['part'],
+                        'bvid': data['bvid'],
+                        'cid': page['cid'],
+                        'page_num': page['page']
+                    })
+            return info
+        except Exception as e:
+            return None
+
+    def get_play_url(self, bvid, cid):
+        def _request(fnval):
+            url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
+            return self.sess.get(url, timeout=10).json()
+        resp = _request(4048)
+        if resp['code'] != 0 or 'data' not in resp or 'dash' not in resp['data']:
+            resp = _request(80)
+        if resp['code'] == 0 and 'data' in resp and 'dash' in resp['data']:
+            dash = resp['data']['dash']
+            video_url = dash['video'][0]['baseUrl']
+            audio_url = dash['audio'][0]['baseUrl'] if dash.get('audio') else None
+            quality_id = dash['video'][0]['id']
+            return video_url, audio_url, quality_id
+        return None, None, 0
+
+class BilibiliSpider(BaseSpider):
+    def run(self):
+        try:
+            cookie_file = "bili_auth.json"
+            self.api = BiliAPI(cookie_file)
+            if not self.api.check_login():
+                self.log("🔒 未检测到登录，启动浏览器扫码...")
+                if not self._perform_login_scan(cookie_file):
+                    self.log("⚠️ 登录失败，以游客身份爬取")
+            else:
+                self.log("👤 已登录，Cookie 有效")
+            self.log(f"🚀 启动 Bilibili 任务 | 目标: {self.keyword}")
+            # --- 流水线队列 ---
+            self.raw_bv_queue = queue.Queue()
+            self.parsed_info_queue = queue.Queue()
+            # --- 线程同步标志 ---
+            self.browser_finished = threading.Event()
+            self.api_pool_finished = threading.Event()
+            # 1. 启动【生产者线程】(浏览器扫描)
+            browser_thread = threading.Thread(target=self._producer_browser_task)
+            browser_thread.start()
+            # 2. 启动【加工者线程池】(API 解析)
+            api_pool_thread = threading.Thread(target=self._worker_api_pool)
+            api_pool_thread.start()
+            # 3. 【主控循环】(装配者)
+            display_items = []
+            cached_data = {}
+            seen_season_ids = set()
+            seen_bvid_singles = set()
+            valid_idx = 0
+            self.log("⚡ 流水线已建立: 扫描 -> 解析 -> 聚合 同时进行中...")
+            while True:
+                # 退出条件：API 线程池完成且队列为空
+                if self.api_pool_finished.is_set() and self.parsed_info_queue.empty():
+                    break
+                if not self.is_running: break
+                try:
+                    info = self.parsed_info_queue.get(timeout=0.5)
+                    # --- 实时聚合逻辑 ---
+                    if info['is_season']:
+                        sid = info['season_id']
+                        if sid not in seen_season_ids:
+                            seen_season_ids.add(sid)
+                            count = len(info['episodes'])
+                            title_str = f"【合集】{info['season_title']} (共 {count} 集) - {info['owner']}"
+                            display_items.append({'title': title_str, 'index': valid_idx})
+                            cached_data[valid_idx] = {'type': 'season', 'info': info}
+                            valid_idx += 1
+                    else:
+                        if info['bvid'] not in seen_bvid_singles:
+                            seen_bvid_singles.add(info['bvid'])
+                            count = len(info['episodes'])
+                            if count > 1:
+                                title_str = f"【多P】{info['title']} (共 {count} P) - {info['owner']}"
+                                item_type = 'multi_p'
+                            else:
+                                title_str = f"【视频】{info['title']} - {info['owner']}"
+                                item_type = 'single'
+                            display_items.append({'title': title_str, 'index': valid_idx})
+                            cached_data[valid_idx] = {'type': item_type, 'info': info}
+                            valid_idx += 1
+                    if valid_idx % 5 == 0:
+                        self.log(f"   📊 已聚合 {valid_idx} 个有效资源...")
+                except queue.Empty:
+                    continue
+            browser_thread.join()
+            api_pool_thread.join()
+            if not display_items:
+                self.log("❌ 未找到任何有效视频")
+                return
+            # ================= 4. 第一层交互 =================
+            self.log(f"🔔 扫描结束，共 {len(display_items)} 个项目，请选择...")
+            stage1_indices = self.ask_user_selection(display_items)
+            if not stage1_indices:
+                self.log("❌ 用户取消下载")
+                return
+            # ================= 5. 第二层交互 & 下载 =================
+            final_download_queue = []
+            for idx in stage1_indices:
+                if not self.is_running: break
+                item = cached_data[idx]
+                info = item['info']
+                episodes = info['episodes']
+                item_type = item['type']
+                if item_type == 'single':
+                    ep = episodes[0]
+                    final_download_queue.append({
+                        'bvid': ep['bvid'],
+                        'cid': ep['cid'],
+                        'file_name': self._clean_name(ep['title']) + ".mp4",
+                        'folder_name': None,
+                        'referer': f"https://www.bilibili.com/video/{ep['bvid']}"
+                    })
+                    continue
+                sub_dialog_items = []
+                for i, ep in enumerate(episodes):
+                    num_str = str(ep.get('page_num', i + 1)).zfill(2)
+                    sub_dialog_items.append({
+                        'title': f"[{num_str}] {ep['title']}",
+                        'index': i
+                    })
+                self.log(f"🔔 正在展开: {info.get('season_title') or info['title']}")
+                sub_indices = self.ask_user_selection(sub_dialog_items)
+                if not sub_indices:
+                    continue
+                for sub_idx in sub_indices:
+                    ep = episodes[sub_idx]
+                    folder_name = self._clean_name(info.get('season_title') or info['title'])
+                    num_str = str(ep.get('page_num', sub_idx + 1)).zfill(2)
+                    safe_title = self._clean_name(ep['title'])
+                    file_name = f"P{num_str}_{safe_title}.mp4"
+                    final_download_queue.append({
+                        'bvid': ep['bvid'],
+                        'cid': ep['cid'],
+                        'file_name': file_name,
+                        'folder_name': folder_name,
+                        'referer': f"https://www.bilibili.com/video/{ep['bvid']}"
+                    })
+            self.log(f"✅ 最终确认 {len(final_download_queue)} 个任务，开始下载...")
+            success_count = 0
+            for task in final_download_queue:
+                if not self.is_running: break
+                self.log(f"🎬 解析流: {task['file_name'][:15]}...")
+                v_url, a_url, q_id = self.api.get_play_url(task['bvid'], task['cid'])
+                if v_url:
+                    q_map = {127: "8K", 120: "4K", 116: "1080P60", 80: "1080P", 64: "720P"}
+                    q_text = q_map.get(q_id, "高清")
+                    self.log(f"   ✨ 获取成功 [{q_text}]")
+                    meta = {
+                        "audio_url": a_url,
+                        "ua": HEADERS['User-Agent'],
+                        "referer": task['referer']
+                    }
+                    if task['folder_name']:
+                        meta["folder_name"] = task['folder_name']
+                    self.emit_video(
+                        url=v_url,
+                        title=task['file_name'],
+                        source="bilibili",
+                        meta=meta
+                    )
+                    success_count += 1
+                else:
+                    self.log(f"   ❌ 获取流失败")
+                time.sleep(0.5)
+            self.log(f"🎉 全部完成: {success_count}/{len(final_download_queue)}")
+        finally:
+            self.sig_finished.emit()
+    # --- 线程任务：浏览器生产者 ---
+    def _producer_browser_task(self):
+        """只负责翻页和提取 BV，扔进队列"""
+        try:
+            max_pages = self.config.get('max_pages', 1)
+            target_url = self.keyword
+            is_search = False
+            is_space = False
+            # 模式 A: 纯数字 -> UP主 ID
+            if re.match(r'^\d+$', self.keyword):
+                self.log(f"🔍 [识别结果] UP主 UID (纯数字) -> 准备爬取主页视频")
+                target_url = f"https://space.bilibili.com/{self.keyword}/video"
+                # UP主模式强制全量
+                self._scan_with_browser_queue(target_url, max_pages=9999, is_search=False, is_space=True)
+            # 模式 B: 纯 BV 号
+            elif re.match(r'(?i)^BV\w+$', self.keyword):
+                self.log("🔗 [识别结果] 单个视频 (BV号)")
+                self.raw_bv_queue.put(self.keyword)
+            # 模式 C: URL
+            elif "http" in self.keyword:
+                single_bv = re.search(r'(BV\w+)', self.keyword)
+                # 情况 C-1: 视频详情页
+                if "/video/BV" in self.keyword and single_bv and "list" not in self.keyword and "space" not in self.keyword:
+                    self.log("🔗 [识别结果] 单个视频 (URL)")
+                    self.raw_bv_queue.put(single_bv.group(1))
+                else:
+                    # 情况 C-2: 空间页/合集/列表
+                    is_space = "space.bilibili.com" in self.keyword
+                    if is_space:
+                        # 主页链接修正逻辑
+                        # 检查是否包含 /video，如果没有，尝试提取 UID 并构造
+                        if "/video" not in self.keyword:
+                            # 提取 UID: space.bilibili.com/1513751793?spm... -> 1513751793
+                            uid_match = re.search(r'space\.bilibili\.com/(\d+)', self.keyword)
+                            if uid_match:
+                                uid = uid_match.group(1)
+                                target_url = f"https://space.bilibili.com/{uid}/video"
+                                self.log(f"🔧 [自动修正] 空间主页 -> 视频投稿页: {target_url}")
+                            else:
+                                self.log(f"🔍 [识别结果] 空间页 (未匹配到UID，保持原样)")
+                        else:
+                            self.log(f"🔍 [识别结果] UP主视频投稿页 URL")
+                        # 空间页强制全量，忽略 max_pages
+                        self._scan_with_browser_queue(target_url, max_pages=9999, is_search=False, is_space=True)
+                    else:
+                        # 搜索页 URL (直接粘贴的)
+                        is_search_url = "search.bilibili.com" in self.keyword
+                        self.log(f"🔍 [识别结果] 列表/搜索页 URL")
+                        # 如果是搜索页 URL，必须开启 is_search=True 以便正确翻页
+                        self._scan_with_browser_queue(self.keyword, max_pages, is_search=is_search_url, is_space=False)
+            # 模式 D: 搜索关键词
+            else:
+                self.log(f"🔍 [识别结果] 关键词搜索")
+                search_url = f"https://search.bilibili.com/all?keyword={urllib.parse.quote(self.keyword)}"
+                self._scan_with_browser_queue(search_url, max_pages, is_search=True, is_space=False)
+        except Exception as e:
+            self.log(f"❌ 浏览器线程异常: {e}")
+        finally:
+            self.browser_finished.set()
+            # --- 线程任务：API 加工者 ---
+
+    def _worker_api_pool(self):
+        def process_one(bvid):
+            if not self.is_running: return None
+            return self.api.get_video_info(bvid)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            while True:
+                if self.browser_finished.is_set() and self.raw_bv_queue.empty():
+                    break
+                if not self.is_running: break
+                try:
+                    bvid = self.raw_bv_queue.get(timeout=0.5)
+                    future = executor.submit(process_one, bvid)
+                    def callback(f):
+                        try:
+                            res = f.result()
+                            if res: self.parsed_info_queue.put(res)
+                        except:
+                            pass
+                    future.add_done_callback(callback)
+                except queue.Empty:
+                    continue
+            pass
+        self.api_pool_finished.set()
+
+    # --- 浏览器扫描逻辑 ---
+    def _scan_with_browser_queue(self, url, max_pages=1, is_search=False, is_space=False):
+        bv_set = set()
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=False)
+                page = browser.new_page()
+                current_url = url
+                page.goto(url, timeout=60000)
+                page.wait_for_load_state("domcontentloaded")
+                # UP 主拦截 (仅针对关键词搜索模式)
+                if is_search and "search.bilibili.com" in url:
+                    try:
+                        up_link = page.locator(".user-list .b-user-video-card .user-name").first
+                        if up_link.is_visible():
+                            up_name = up_link.inner_text()
+                            up_href = up_link.get_attribute("href")
+                            if up_href:
+                                uid_match = re.search(r'space\.bilibili\.com/(\d+)', up_href)
+                                if uid_match:
+                                    uid = uid_match.group(1)
+                                    self.log(f"✨ 检测到 UP 主: {up_name}...")
+                                    target_video_url = f"https://space.bilibili.com/{uid}/video"
+                                    page.goto(target_video_url)
+                                    page.wait_for_load_state("domcontentloaded")
+                                    current_url = page.url
+                                    is_search = False
+                                    is_space = True
+                                    max_pages = 9999
+                    except Exception:
+                        pass
+                page_count = 0
+                while self.is_running and page_count < max_pages:
+                    page_count += 1
+                    for _ in range(3):
+                        page.evaluate("window.scrollBy(0, 1000)")
+                        time.sleep(0.3)
+                    hrefs = page.evaluate('''() => {
+                        const anchors = document.querySelectorAll('a[href*="/video/BV"]');
+                        return Array.from(anchors).map(a => a.href);
+                    }''')
+                    new_count = 0
+                    for href in hrefs:
+                        match = re.search(r'video/(BV\w+)', href)
+                        if match:
+                            bvid = match.group(1)
+                            if bvid not in bv_set:
+                                bv_set.add(bvid)
+                                self.raw_bv_queue.put(bvid)
+                                new_count += 1
+                    self.log(f"   📄 第 {page_count} 页: 发现 {new_count} 个")
+                    if new_count == 0:
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        time.sleep(1)
+                        if new_count == 0: break
+                    if page_count < max_pages:
+                        next_url = None
+                        if is_search:
+                            base_search = re.sub(r'&page=\d+', '', current_url)
+                            base_search = re.sub(r'&o=\d+', '', base_search)
+                            next_page = page_count + 1
+                            offset = (next_page - 1) * 30
+                            next_url = f"{base_search}&page={next_page}&o={offset}"
+                        elif is_space:
+                            try:
+                                next_btn = page.locator("button:has-text('下一页')").first
+                                if next_btn.is_visible() and next_btn.is_enabled():
+                                    next_btn.click()
+                                    page.wait_for_timeout(2000)
+                                    continue
+                                else:
+                                    break
+                            except:
+                                break
+                        else:
+                            try:
+                                next_btn = page.locator("button.next-page, li.next").first
+                                if next_btn.is_visible():
+                                    next_btn.click()
+                                    page.wait_for_timeout(2000)
+                                    continue
+                                else:
+                                    break
+                            except:
+                                break
+                        if next_url:
+                            page.goto(next_url)
+                            page.wait_for_timeout(2000)
+                        else:
+                            break
+                browser.close()
+        except Exception as e:
+            self.log(f"⚠️ 扫描异常: {e}")
+
+    def _clean_name(self, name):
+        return re.sub(r'[\\/:*?"<>|]', '_', str(name)).strip()
+
+    def _perform_login_scan(self, save_path):
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=False)
+                context = browser.new_context()
+                page = context.new_page()
+                page.goto("https://passport.bilibili.com/login", timeout=60000)
+                self.log("⏳ 请在弹出的窗口中扫码登录...")
+                for _ in range(60):
+                    if not self.is_running:
+                        browser.close()
+                        return False
+                    cookies = context.cookies()
+                    if any(c['name'] == 'SESSDATA' for c in cookies):
+                        with open(save_path, 'w') as f:
+                            json.dump(cookies, f, indent=4, ensure_ascii=False)
+                        self.log("✅ 扫码成功，Cookie 已保存")
+                        browser.close()
+                        self.api.load_cookies()
+                        return True
+                    time.sleep(1)
+                browser.close()
+                return False
+        except Exception:
+            return False
+
+# app/spiders/kuaishou_spider.py
+
+import os
+import time
+import random
+import json
+import re
+import urllib.parse
+import base64
+import threading
+from playwright.sync_api import sync_playwright
+from app.spiders.base_spider import BaseSpider
+
+class KuaishouSpider(BaseSpider):
+
+    def run(self):
+        auth_file = "ks_auth.json"
+        # 线程同步锁
+        self._lock = threading.Lock()
+        # 代理配置
+        proxy_cfg = None
+        if self.config.get('proxy'):
+            proxy_cfg = {"server": self.config['proxy']}
+            self.log(f"🌍 使用代理: {self.config['proxy']}")
+        self.log(f"🚀 启动快手任务 | 目标: {self.keyword}")
+        try:
+            with sync_playwright() as p:
+                # 1. 启动浏览器
+                browser = p.chromium.launch(
+                    headless=False,
+                    proxy=proxy_cfg,
+                    args=['--disable-blink-features=AutomationControlled']
+                )
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport={"width": 1280, "height": 800}
+                )
+                if os.path.exists(auth_file):
+                    try:
+                        with open(auth_file, 'r', encoding='utf-8') as f:
+                            cookies = json.load(f)
+                        if isinstance(cookies, dict) and 'cookies' in cookies:
+                            # 兼容 playwright storage_state 格式
+                            context.add_cookies(cookies['cookies'])
+                        elif isinstance(cookies, list):
+                            context.add_cookies(cookies)
+                        self.log("📂 加载本地 Cookie 成功")
+                    except:
+                        pass
+                page = context.new_page()
+                # ================= 阶段一：登录与导航 =================
+                self.log("🔗 访问快手首页...")
+                page.goto("https://www.kuaishou.com/", timeout=60000)
+                try:
+                    page.wait_for_selector(".header-user-avatar, .user-avatar", timeout=5000)
+                    self.log("✅ 检测到登录状态")
+                except:
+                    self.log("🔑 未登录，尝试自动触发登录弹窗...")
+                    try:
+                        page.locator(".login-btn, text=登录").first.click()
+                    except:
+                        pass
+
+                    for _ in range(120):
+                        if not self.is_running: return
+                        cookies = context.cookies()
+                        if any(c['name'] == 'userId' for c in cookies):
+                            # 保存为易读格式
+                            storage = context.storage_state()
+                            with open(auth_file, 'w', encoding='utf-8') as f:
+                                json.dump(storage, f, indent=4, ensure_ascii=False)
+                            self.log("✅ 登录成功，Cookie 已保存")
+                            break
+                        page.wait_for_timeout(1000)
+                if not self.is_running: return
+                if "kuaishou.com" in self.keyword:
+                    page.goto(self.keyword)
+                else:
+                    search_url = f"https://www.kuaishou.com/search/author?source=NewReco&searchKey={self.keyword}"
+                    page.goto(search_url)
+                    page.wait_for_timeout(2000)
+                    try:
+                        user_card = page.locator(".card-item .detail-user-name").first
+                        if user_card.is_visible():
+                            name = user_card.inner_text()
+                            self.log(f"👉 进入主播主页: {name}")
+                            user_card.click()
+                            page.wait_for_timeout(3000)
+                            if len(context.pages) > 1:
+                                page = context.pages[-1]
+                                page.bring_to_front()
+                        else:
+                            self.log("❌ 未找到主播")
+                            return
+                    except:
+                        return
+                try:
+                    page.wait_for_selector(".photo-card, .video-card", timeout=15000)
+                except:
+                    self.log("❌ 无法加载视频列表")
+                    return
+                # ================= 阶段二：滚动扫描 =================
+                self.log("\n📜 开始滚动加载列表... (点击【停止】生成清单)")
+                scroll_count = 0
+                last_card_count = 0
+                no_new_content_count = 0
+                while self.is_running:
+                    scroll_count += 1
+                    # 1. 模拟人类鼠标移动 (防风控)
+                    try:
+                        vp = page.viewport_size
+                        if vp:
+                            page.mouse.move(vp['width'] / 2, vp['height'] / 2)
+                    except:
+                        pass
+                    # 2. 混合滚动策略
+                    page.evaluate("window.scrollBy(0, 800)")
+                    page.wait_for_timeout(500)
+                    page.mouse.wheel(0, 500)  # 模拟滚轮，这很重要
+                    page.wait_for_timeout(1000)
+                    # 3. 检查数量
+                    cards = page.locator(".photo-card, .video-card")
+                    current_card_count = cards.count()
+                    # 4. 检查"没有更多"
+                    no_more = False
+                    try:
+                        no_more_el = page.locator("text='没有更多了'")
+                        if no_more_el.count() > 0 and no_more_el.first.is_visible(): no_more = True
+                    except:
+                        pass
+                    if no_more:
+                        self.log("✅ 已加载全部视频")
+                        break
+                    # 5. 死锁检测与激活
+                    if current_card_count == last_card_count:
+                        no_new_content_count += 1
+                        if no_new_content_count >= 5:
+                            self.log("🔄 似乎卡住了，尝试回滚刷新...")
+                            # 回滚策略：往上滑一点，再狠滑到底
+                            page.evaluate("window.scrollBy(0, -1000)")
+                            page.wait_for_timeout(1000)
+                            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            no_new_content_count = 0
+                    else:
+                        no_new_content_count = 0
+                        last_card_count = current_card_count
+                    if scroll_count % 3 == 0:
+                        self.log(f"⬇️ 加载中... (已扫描 {current_card_count} 个)")
+                if not self.is_running:
+                    if last_card_count > 0:
+                        self.log("⏸️ 扫描被中断，准备生成清单...")
+                        self.is_running = True  # 复活线程
+                    else:
+                        self.log("🛑 任务已终止")
+                        browser.close()
+                        return
+                    # ================= 阶段三：提取特征 & 弹窗 =================
+                self.log("🧠 解析视频信息...")
+                # 1. 提取标题
+                video_titles = page.evaluate("""() => {
+                    const cards = document.querySelectorAll('.photo-card, .video-card');
+                    return Array.from(cards).map(c => {
+                        const titleEl = c.querySelector('[class*="caption"]');
+                        return titleEl ? titleEl.innerText : '';
+                    });
+                }""")
+                # 2. 提取封面图 URL
+                video_imgs = page.evaluate("""() => {
+                    const cards = document.querySelectorAll('.photo-card, .video-card');
+                    return Array.from(cards).map(c => {
+                        const imgEl = c.querySelector('img.cover-img');
+                        return imgEl ? imgEl.src : '';
+                    });
+                }""")
+                items_for_dialog = []
+                target_fingerprints_map = {}
+                for idx, raw_title in enumerate(video_titles):
+                    clean_title = raw_title.replace('\n', ' ').strip()
+                    if not clean_title: clean_title = f"未命名视频_{idx + 1}"
+                    items_for_dialog.append({'title': clean_title, 'index': idx})
+                    if idx < len(video_imgs):
+                        img_url = video_imgs[idx]
+                        ids = self._extract_all_possible_ids(img_url)
+                        target_fingerprints_map[idx] = ids
+                if not items_for_dialog:
+                    self.log("❌ 未扫描到有效视频")
+                    return
+                self.log(f"🔔 扫描完成，共 {len(items_for_dialog)} 个，请选择下载...")
+                selected_indices = self.ask_user_selection(items_for_dialog)
+                if not selected_indices:
+                    self.log("❌ 用户取消了下载任务")
+                    browser.close()
+                    return
+                self.is_running = True
+                target_indices_set = set(selected_indices)
+                submitted_indices = set()
+                encrypted_queue = []
+                max_target_idx = max(selected_indices)
+                self.log(f"✅ 选中 {len(target_indices_set)} 个任务，流水线启动...")
+                # ================= 阶段四：实时流水线 =================
+                current_focus_index = 0
+                # 1. 消费者：网络监听器
+                def handle_response(response):
+                    ctype = response.headers.get("content-type", "")
+                    if response.request.resource_type == "media" or \
+                            "video/mp4" in ctype or \
+                            "mpegurl" in ctype.lower() or \
+                            ".m3u8" in response.url:
+                        try:
+                            if ".mp4" in response.url:
+                                try:
+                                    if int(response.headers.get("content-length", 0)) < 5000: return
+                                except:
+                                    pass
+                            url = response.url
+                            vid_ids = self._extract_all_possible_ids(url)
+                            matched_idx = -1
+                            with self._lock:
+                                # A. 精确 ID 匹配
+                                if vid_ids:
+                                    for idx in target_indices_set:
+                                        if idx in submitted_indices: continue
+                                        cover_ids = target_fingerprints_map.get(idx, set())
+                                        if not cover_ids.isdisjoint(vid_ids):
+                                            matched_idx = idx
+                                            break
+                                # B. 时序焦点匹配 (兜底)
+                                if matched_idx == -1 and "pkey" in url:
+                                    if current_focus_index in target_indices_set and current_focus_index not in submitted_indices:
+                                        matched_idx = current_focus_index
+                                        self.log(
+                                            f"   🔒 [加密流] 匹配焦点: {items_for_dialog[matched_idx]['title'][:10]}...")
+                                # 提交下载
+                                if matched_idx != -1:
+                                    submitted_indices.add(matched_idx)
+                                    title = items_for_dialog[matched_idx]['title']
+                                    source_type = "kuaishou"
+                                    if ".m3u8" in url: source_type = "missav"
+                                    self.log(f"   ✨ [捕获] {title[:15]}... -> 加入下载队列")
+                                    self.emit_video(
+                                        url=url,
+                                        title=title,
+                                        source=source_type,
+                                        meta={"referer": page.url}
+                                    )
+                        except Exception as e:
+                            pass
+                page.on("response", handle_response)
+                # 2. 生产者：刷屏
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(1000)
+                cards = page.locator(".photo-card, .video-card")
+                try:
+                    first_card = cards.first
+                    if not first_card.is_visible(): first_card.scroll_into_view_if_needed()
+                    first_card.click()
+                    page.wait_for_timeout(3000)
+                    try:
+                        page.mouse.click(200, 200)
+                    except:
+                        pass
+                except:
+                    self.log("❌ 无法进入详情页")
+                    return
+                current_focus_index = 0
+                total_scrolls = len(items_for_dialog)
+                self.log(f"🔄 生产者工作开始 (0 - {total_scrolls})...")
+                while current_focus_index < total_scrolls and self.is_running:
+                    # 提前结束检查
+                    with self._lock:
+                        if len(submitted_indices) >= len(target_indices_set):
+                            self.log("🎉 所有任务已实时捕获，提前结束！")
+                            break
+                    if (current_focus_index + 1) % 5 == 0:
+                        self.log(f"🔄 刷屏进度: {current_focus_index + 1}/{total_scrolls}")
+                    page.keyboard.press("ArrowDown")
+                    with self._lock:
+                        current_focus_index += 1
+                    is_target = current_focus_index in target_indices_set
+                    if is_target:
+                        wait_ms = random.randint(1500, 2500)
+                    else:
+                        wait_ms = random.randint(600, 1000)
+                    page.wait_for_timeout(wait_ms)
+                    try:
+                        if page.locator(".close-icon").is_visible():
+                            page.locator(".close-icon").click()
+                    except:
+                        pass
+                # 结束汇报
+                self.log(f"\n📊 流程结束。")
+                not_found = target_indices_set - submitted_indices
+                if not_found:
+                    self.log(f"⚠️ {len(not_found)} 个视频未捕获:")
+                    for idx in sorted(list(not_found)):
+                        self.log(f"   - [{idx + 1}] {items_for_dialog[idx]['title'][:20]}...")
+                else:
+                    self.log("✅ 全部任务完成！")
+                browser.close()
+        except Exception as e:
+            self.log(f"💥 爬虫错误: {e}")
+        self.sig_finished.emit()
+    def _extract_all_possible_ids(self, url):
+        # 保持之前的多模态算法不变，因为它很强
+        if not url: return set()
+        ids = set()
+        try:
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(urllib.parse.unquote(parsed.query))
+            path = parsed.path
+            filename = path.split('/')[-1]
+            # 1. clientCacheKey
+            if 'clientCacheKey' in qs:
+                key = qs['clientCacheKey'][0]
+                key_no_ext = key.rsplit('.', 1)[0]
+                match = re.match(r'^([a-zA-Z0-9]+)', key_no_ext)
+                if match: ids.add(match.group(1))
+            # 2. x-ks-ptid
+            if 'x-ks-ptid' in qs:
+                ids.add(qs['x-ks-ptid'][0])
+            # 3. Base64
+            b64_match = re.search(r'(BMj[a-zA-Z0-9+/]+)', path)
+            if not b64_match: b64_match = re.search(r'(BMj[a-zA-Z0-9+/]+)', urllib.parse.unquote(parsed.query))
+            if b64_match:
+                b64_str = b64_match.group(1)
+                try:
+                    missing_padding = len(b64_str) % 4
+                    if missing_padding: b64_str += '=' * (4 - missing_padding)
+                    decoded_bytes = base64.b64decode(b64_str)
+                    decoded_str = decoded_bytes.decode('utf-8', errors='ignore')
+                    parts = decoded_str.split('_')
+                    if len(parts) >= 3 and parts[2].isdigit() and len(parts[2]) >= 10:
+                        ids.add(parts[2])
+                    nums = re.findall(r'\d{10,}', decoded_str)
+                    ids.update(nums)
+                except:
+                    pass
+            # 4. 路径回退
+            name_no_ext = filename.rsplit('.', 1)[0]
+            ids.add(name_no_ext)
+            if '_b_B' in name_no_ext: ids.add(name_no_ext.split('_b_B')[0])
+        except:
+            pass
+        return ids
+
+
+# app/spiders/missav_spider.py
+
+import re
+import time
+import urllib.parse
+from collections import defaultdict
+from playwright.sync_api import sync_playwright
+from app.spiders.base_spider import BaseSpider
+
+class MissAVSpider(BaseSpider):
+
+    def run(self):
+        try:
+            # 配置解析 (保持不变)
+            proxy_server = None
+            if self.config.get('proxy'):
+                proxy_server = self.config['proxy']
+                self.log(f"🌍 使用代理: {proxy_server}")
+            enable_individual = self.config.get('individual_only', False)
+            priority_text = self.config.get('priority', "中文字幕优先")
+            priority_map = {
+                "中文字幕优先": ["中文字幕", "无码流出", "英文字幕", "普通版"],
+                "无码流出优先": ["无码流出", "中文字幕", "英文字幕", "普通版"]
+            }
+            self.priority_list = priority_map.get(priority_text, priority_map["中文字幕优先"])
+            self.log(f"⚙️ 偏好设置: 单体={enable_individual}, 优先级={self.priority_list}")
+            my_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            # 路由解析 (保持不变)
+            target_url = ""
+            is_single_video_mode = False
+            is_search_mode = False
+            raw_input = self.keyword.strip()
+            if "http" in raw_input:
+                parsed = urllib.parse.urlparse(raw_input)
+                path_parts = parsed.path.strip('/').split('/')
+                keywords_list = ['search', 'actresses', 'tags', 'series', 'makers', 'directors', 'labels']
+                if not any(k in parsed.path for k in keywords_list) and re.search(r'\w+-\d+', path_parts[-1]):
+                    is_single_video_mode = True
+                    target_url = raw_input
+                    self.log("🔗 识别为单体视频链接")
+                else:
+                    target_url = raw_input
+                    self.log("🔗 识别为列表/分类链接")
+            else:
+                is_search_mode = True
+                encoded_kw = urllib.parse.quote(raw_input)
+                target_url = f"https://missav.ai/cn/search/{encoded_kw}"
+                self.log(f"🔍 构造搜索链接: {target_url}")
+            if not is_single_video_mode:
+                target_url = self._inject_url_params(target_url, enable_individual)
+                self.log(f"🔧 修正后 URL: {target_url}")
+            if not self.is_running: return
+            # 启动浏览器
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=False,
+                    proxy={"server": proxy_server} if proxy_server else None,
+                    args=['--disable-blink-features=AutomationControlled']
+                )
+                context = browser.new_context(user_agent=my_ua)
+                page = context.new_page()
+                self.log("🚀 正在访问页面...")
+                page.goto(target_url, timeout=60000)
+                if "Just a moment" in page.title():
+                    self.log("🛡️ 检测到 Cloudflare，等待通过...")
+                    page.wait_for_timeout(5000)
+                    page.wait_for_load_state("domcontentloaded")
+                # 头像跳转
+                if is_search_mode and self.is_running:
+                    try:
+                        time.sleep(2)
+                        links = page.query_selector_all('a[href*="/actresses/"]')
+                        valid_actress_link = None
+                        for link in links:
+                            href = link.get_attribute("href")
+                            if href and "ranking" not in href and "search" not in href:
+                                if link.is_visible():
+                                    valid_actress_link = link
+                                    break
+                        if valid_actress_link:
+                            href = valid_actress_link.get_attribute("href")
+                            self.log(f"✨ 发现演员主页，自动跳转: {href}")
+                            valid_actress_link.click()
+                            page.wait_for_load_state('domcontentloaded')
+                            current_url = page.url
+                            new_url = self._inject_url_params(current_url, enable_individual)
+                            if new_url != current_url:
+                                page.goto(new_url)
+                    except:
+                        pass
+                if not self.is_running:
+                    browser.close()
+                    return
+                # 数据采集
+                final_tasks = []
+                if is_single_video_mode:
+                    title = page.title().replace('| MissAV', '').strip()
+                    final_tasks.append({'title': title, 'url': page.url})
+                else:
+                    scraped_data = {}
+                    verified_chinese = set()
+                    base_url = page.url
+                    # --- Pass 1: 主遍历 ---
+                    self.log("📜 开始第一遍扫描 (获取所有视频)...")
+                    self._scan_pages(page, scraped_data, is_chinese_pass=False)
+
+                    if not self.is_running:
+                        self.log("⏸️ 扫描被中断，跳过中文校验，准备生成清单...")
+                    if not scraped_data:
+                        self.log("❌ 未找到任何视频")
+                        browser.close()
+                        return
+                    # --- Pass 2: 中文校验 (仅当未停止时执行) ---
+                    # 只有当还在运行时，才去扫第二遍
+                    if self.is_running:
+                        self.log("🇨🇳 开始第二遍扫描 (校验中文字幕)...")
+                        chinese_url = self._add_chinese_filter(base_url)
+
+                        if chinese_url != base_url:
+                            self.log(f"   跳转校验: {chinese_url}")
+                            try:
+                                chinese_url_no_page = re.sub(r'[?&]page=\d+', '', chinese_url)
+                                page.goto(chinese_url_no_page, timeout=60000)
+
+                                chinese_data = {}
+                                self._scan_pages(page, chinese_data, is_chinese_pass=True)
+                                verified_chinese = set(chinese_data.keys())
+                                scraped_data.update(chinese_data)
+                            except Exception as e:
+                                self.log(f"   ⚠️ 中文校验异常: {e}")
+
+                    if not self.is_running and scraped_data:
+                        self.is_running = True
+                    # --- 智能分组打分 ---
+                    self.log(f"🧠 智能筛选中 (共 {len(scraped_data)} 个候选)...")
+                    grouped = defaultdict(list)
+                    code_pattern = re.compile(r'/cn/.*?([a-zA-Z]+-\d+)')
+
+                    for url, title in scraped_data.items():
+                        code = None
+                        match = code_pattern.search(url)
+                        if match: code = match.group(1).upper()
+
+                        if code:
+                            grouped[code].append((url, title))
+                        else:
+                            grouped[url].append((url, title))
+
+                    for code, items in grouped.items():
+                        sorted_items = sorted(
+                            items,
+                            key=lambda x: self._calculate_score(x[0], x[1], verified_chinese),
+                            reverse=True
+                        )
+                        best_url, best_title = sorted_items[0]
+                        final_title = self._generate_display_title(best_url, best_title, verified_chinese)
+                        final_tasks.append({'title': final_title, 'url': best_url})
+
+                # ================= 4. 用户交互 =================
+                if not final_tasks:
+                    self.log("❌ 筛选后无有效结果")
+                    browser.close()
+                    return
+                self.log(f"🔔 扫描完成，共 {len(final_tasks)} 个最佳版本")
+
+                # 确保复活，否则弹窗逻辑会立即退出
+                self.is_running = True
+                # 弹窗选择
+                selected_indices = self.ask_user_selection(final_tasks)
+                # 如果此时返回 None，说明用户在弹窗里点了“取消”
+                if not selected_indices:
+                    self.log("❌ 用户取消下载")
+                    browser.close()
+                    return
+                self.log(f"✅ 选中 {len(selected_indices)} 个，开始嗅探 m3u8...")
+
+                # ================= 5. 详情页嗅探 (playlist.m3u8) =================
+                success_count = 0
+                for i, idx in enumerate(selected_indices):
+                    if not self.is_running: break
+                    task = final_tasks[idx]
+                    target_page_url = task['url']
+                    title = task['title']
+                    self.log(f"🕵️ [{i + 1}/{len(selected_indices)}] 嗅探: {title[:15]}...")
+                    m3u8_url = None
+                    def handle_request(req):
+                        nonlocal m3u8_url
+                        if "playlist.m3u8" in req.url:
+                            m3u8_url = req.url
+                    def on_popup(popup):
+                        if popup != page:
+                            try:
+                                popup.close()
+                            except:
+                                pass
+                    context.on("page", on_popup)
+                    page.on("request", handle_request)
+                    try:
+                        page.goto(target_page_url, timeout=60000)
+                        if "Just a moment" in page.title():
+                            time.sleep(10)
+                        try:
+                            page.wait_for_selector(".plyr", timeout=5000)
+                            page.mouse.click(400, 300)
+                            time.sleep(2)
+                            if not m3u8_url: page.mouse.click(400, 300)
+                        except:
+                            pass
+                        for _ in range(15):
+                            if m3u8_url or not self.is_running: break
+                            time.sleep(1)
+                        if not self.is_running: break
+                        if m3u8_url:
+                            self.log("   ✨ 嗅探成功")
+                            self.emit_video(
+                                url=m3u8_url,
+                                title=title,
+                                source="missav",
+                                meta={
+                                    "referer": target_page_url,
+                                    "ua": my_ua,
+                                    "proxy": proxy_server
+                                }
+                            )
+                            success_count += 1
+                        else:
+                            self.log("   ⚠️ 嗅探超时 (未找到 playlist.m3u8)")
+                    except Exception as e:
+                        self.log(f"   ❌ 页面加载错误: {e}")
+                    page.remove_listener("request", handle_request)
+                    context.remove_listener("page", on_popup)
+                    time.sleep(1)
+                if self.is_running:
+                    self.log(f"🎉 任务结束，成功提交: {success_count}")
+                else:
+                    self.log("🛑 任务强制中止")
+                browser.close()
+        except Exception as e:
+            self.log(f"💥 爬虫错误: {e}")
+        finally:
+            self.sig_finished.emit()
+
+    def _inject_url_params(self, url, individual_only):
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if individual_only:
+            filters = qs.get('filters', [''])[0]
+            parts = filters.split(',') if filters else []
+            if 'individual' not in parts:
+                parts.append('individual')
+                new_filters = ",".join([p for p in parts if p])
+                qs['filters'] = [new_filters]
+        new_query = urllib.parse.urlencode(qs, doseq=True)
+        return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+    def _add_chinese_filter(self, url):
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        filters = qs.get('filters', [''])[0]
+        parts = filters.split(',') if filters else []
+        if 'chinese-subtitle' not in parts:
+            parts.append('chinese-subtitle')
+            qs['filters'] = [",".join([p for p in parts if p])]
+        new_query = urllib.parse.urlencode(qs, doseq=True)
+        return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+    def _scan_pages(self, page, data_dict, is_chinese_pass=False):
+        current_page = 1
+        max_pages = 100
+        base_url = page.url
+        while self.is_running and current_page <= max_pages:
+            self.log(f"   📄 扫描第 {current_page} 页...")
+            try:
+                page.wait_for_selector("div.grid", timeout=10000)
+                items = page.evaluate('''() => {
+                    return Array.from(document.querySelectorAll('div.grid a')).map(a => {
+                        const img = a.querySelector('img');
+                        const title = img ? img.getAttribute('alt') : a.textContent.trim();
+                        return {
+                            url: a.href,
+                            title: title || ""
+                        };
+                    });
+                }''')
+
+                code_pattern = re.compile(r'/cn/.*[a-zA-Z]+-\d+')
+                new_count = 0
+                for item in items:
+                    url = item['url']
+                    title = item['title']
+                    if "/cn/" in url and code_pattern.search(url):
+                        if not any(x in url for x in ['contact', 'dmca']):
+                            if url not in data_dict:
+                                data_dict[url] = title
+                                new_count += 1
+
+                if not page.query_selector("a[rel='next']"):
+                    break
+                current_page += 1
+                if "page=" in base_url:
+                    next_url = re.sub(r'page=\d+', f'page={current_page}', base_url)
+                else:
+                    sep = "&" if "?" in base_url else "?"
+                    next_url = f"{base_url}{sep}page={current_page}"
+                try:
+                    page.goto(next_url, timeout=60000)
+                except:
+                    break
+            except Exception as e:
+                self.log(f"   ⚠️ 页面扫描异常: {e}")
+                break
+
+    def _calculate_score(self, url, title, verified_chinese):
+        url_lower = url.lower()
+        title_lower = title.lower()
+        is_uncensored = "uncensored" in url_lower or "leak" in url_lower or "无码" in title_lower
+        is_english = "english" in url_lower or "英文字幕" in title_lower
+        is_chinese = (url in verified_chinese) or ("chinese" in url_lower) or ("中文字幕" in title_lower)
+        if is_uncensored: is_chinese = False
+        feature_map = {
+            "中文字幕": is_chinese,
+            "英文字幕": is_english,
+            "无码流出": is_uncensored,
+            "普通": (not is_chinese and not is_english and not is_uncensored)
+        }
+        total = len(self.priority_list)
+        for idx, name in enumerate(self.priority_list):
+            score = (total - idx) * 20
+            for key, satisfies in feature_map.items():
+                if key in name and satisfies: return score
+        return 0
+
+    def _generate_display_title(self, url, title, verified_chinese):
+        tags = []
+        url_lower = url.lower()
+        is_uncensored = "uncensored" in url_lower or "leak" in url_lower or "无码" in title.lower()
+        is_chinese = (url in verified_chinese) or ("chinese" in url_lower) or ("中文字幕" in title.lower())
+        if is_uncensored:
+            tags.append("[无码]")
+            is_chinese = False
+        if is_chinese: tags.append("[中字]")
+        if "english" in url_lower: tags.append("[英字]")
+        tag_str = "".join(tags)
+        return f"{tag_str} {title}" if tag_str else title
+
+
+# app/ui/dialogs.py
+
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
+                             QTableWidget, QTableWidgetItem, QHeaderView,
+                             QLabel, QCheckBox, QFrame)
+from PyQt6.QtCore import Qt
+from app.ui.styles import DARK_STYLESHEET
+
+class SelectionDialog(QDialog):
+    # 通用任务选择弹窗
+    # 用于在爬取到链接列表后，让用户勾选需要下载的项目
+    def __init__(self, parent, title="任务清单确认", items=None):
+        # :param items: list of dict, e.g. [{"title": "视频A", "status": "待下载"}, ...]
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(800, 600)
+        self.selected_indices = []
+        self.items = items or []
+        # 应用暗黑主题
+        self.setStyleSheet(DARK_STYLESHEET)
+        self.init_ui()
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        # 1. 顶部提示
+        header = QLabel(f"📋 共扫描到 {len(self.items)} 个资源，请勾选需要下载的项目：")
+        header.setStyleSheet("font-size: 14px; font-weight: bold; color: #e0e0e0;")
+        layout.addWidget(header)
+        # 2. 列表区域
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["选择", "视频标题 / 描述"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 60)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet("border: 1px solid #333; background-color: #1e1e1e;")
+        self.populate_table()
+        layout.addWidget(self.table)
+        # 3. 底部按钮区
+        btn_box = QFrame()
+        btn_layout = QHBoxLayout(btn_box)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        # 左侧操作
+        self.btn_all = QPushButton("全选")
+        self.btn_invert = QPushButton("反选")
+        self.btn_all.setFixedSize(80, 30)
+        self.btn_invert.setFixedSize(80, 30)
+        self.btn_all.clicked.connect(self.select_all)
+        self.btn_invert.clicked.connect(self.select_invert)
+        btn_layout.addWidget(self.btn_all)
+        btn_layout.addWidget(self.btn_invert)
+        btn_layout.addStretch()
+        # 右侧确认
+        self.btn_cancel = QPushButton("取消任务")
+        self.btn_cancel.setObjectName("DangerBtn")
+        self.btn_cancel.setFixedSize(100, 35)
+        self.btn_cancel.clicked.connect(self.reject) # 关闭并返回 Rejected
+        self.btn_confirm = QPushButton("⬇️ 开始下载")
+        self.btn_confirm.setObjectName("PrimaryBtn")
+        self.btn_confirm.setFixedSize(120, 35)
+        self.btn_confirm.clicked.connect(self.confirm_selection)
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_confirm)
+        layout.addWidget(btn_box)
+    def populate_table(self):
+        self.table.setRowCount(len(self.items))
+        for i, item_data in enumerate(self.items):
+            # 复选框列 (居中)
+            chk_widget = QFrame()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_layout.setContentsMargins(0,0,0,0)
+            chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chk = QCheckBox()
+            chk.setChecked(True) # 默认全选
+            chk_layout.addWidget(chk)
+            self.table.setCellWidget(i, 0, chk_widget)
+            # 标题列
+            title_item = QTableWidgetItem(item_data.get('title', '未知标题'))
+            title_item.setFlags(title_item.flags() ^ Qt.ItemFlag.ItemIsEditable) # 只读
+            self.table.setItem(i, 1, title_item)
+    def select_all(self):
+        for i in range(self.table.rowCount()):
+            widget = self.table.cellWidget(i, 0)
+            chk = widget.findChild(QCheckBox)
+            chk.setChecked(True)
+    def select_invert(self):
+        for i in range(self.table.rowCount()):
+            widget = self.table.cellWidget(i, 0)
+            chk = widget.findChild(QCheckBox)
+            chk.setChecked(not chk.isChecked())
+    def confirm_selection(self):
+        self.selected_indices = []
+        for i in range(self.table.rowCount()):
+            widget = self.table.cellWidget(i, 0)
+            chk = widget.findChild(QCheckBox)
+            if chk.isChecked():
+                self.selected_indices.append(i)
+        self.accept() # 关闭并返回 Accepted
+
+
+# app/ui/main_window.py
+
+import os
+
+from PyQt6.QtGui import QTextCursor
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QLineEdit, QPushButton, QProgressBar,
+                             QTableWidget, QTableWidgetItem, QHeaderView,
+                             QFrame, QSplitter, QPlainTextEdit, QComboBox,
+                             QFileDialog, QStyle, QSlider, QSizePolicy, QDialog, QMessageBox)
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QSize, QByteArray
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
+
+from app.ui.styles import DARK_STYLESHEET
+from app.utils import cfg
+from app.core.registry import registry
+from app.ui.dialogs import SelectionDialog
+
+
+class ClickableVideoWidget(QVideoWidget):
+    sig_double_click = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background-color: #000; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+
+    def mouseDoubleClickEvent(self, event):
+        self.sig_double_click.emit()
+
+
+class MainWindow(QMainWindow):
+    sig_start_crawl = pyqtSignal(str, str, dict)
+    sig_stop_crawl = pyqtSignal()
+    sig_change_dir = pyqtSignal()
+    sig_play_video = pyqtSignal(str)
+    sig_delete_video = pyqtSignal(int, str)
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Universal Crawler Pro")
+        self.resize(1300, 850)
+        self.setStyleSheet(DARK_STYLESHEET)
+
+        self.current_save_dir = cfg.get("common", "save_directory") or os.getcwd()
+        self.current_plugin = None
+        self.plugin_widget = None
+        self.is_fullscreen_mode = False
+
+        self.init_ui()
+        # 延迟加载状态
+        self.load_initial_state()
+
+    def init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        # === [A] TopBar ===
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("TopBar")
+        self.top_bar.setFixedHeight(50)
+
+        top_layout = QHBoxLayout(self.top_bar)
+        top_layout.setContentsMargins(10, 5, 10, 5)
+        top_layout.setSpacing(10)
+        top_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self.combo_source = QComboBox()
+        self.plugins_list = registry.get_all_plugins()
+        for p in self.plugins_list:
+            self.combo_source.addItem(p.name, p.id)
+        self.combo_source.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.combo_source.setMinimumWidth(120)
+        self.combo_source.setFixedHeight(30)
+        self.combo_source.currentIndexChanged.connect(self.on_source_changed)
+        top_layout.addWidget(self.combo_source)
+
+        self.inp_search = QLineEdit()
+        self.inp_search.setMinimumWidth(200)
+        self.inp_search.setFixedHeight(30)
+        self.inp_search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        top_layout.addWidget(self.inp_search)
+
+        self.container_dynamic = QWidget()
+        self.layout_dynamic = QHBoxLayout(self.container_dynamic)
+        self.layout_dynamic.setContentsMargins(0, 0, 0, 0)
+        self.layout_dynamic.setSpacing(10)
+        top_layout.addWidget(self.container_dynamic)
+
+        self.btn_start = QPushButton("🚀 启动任务")
+        self.btn_start.setObjectName("PrimaryBtn")
+        self.btn_start.setFixedHeight(30)
+        self.btn_start.setMinimumWidth(100)
+        self.btn_start.clicked.connect(self.on_btn_start_clicked)
+        top_layout.addWidget(self.btn_start)
+
+        self.btn_stop = QPushButton("🛑 停止")
+        self.btn_stop.setObjectName("DangerBtn")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setFixedHeight(30)
+        self.btn_stop.setMinimumWidth(80)
+        self.btn_stop.clicked.connect(lambda: self.sig_stop_crawl.emit())
+        top_layout.addWidget(self.btn_stop)
+
+        self.btn_dir = QPushButton("📂 更改目录")
+        self.btn_dir.setObjectName("DirBtn")
+        self.btn_dir.setFixedHeight(30)
+        self.btn_dir.setMinimumWidth(100)
+        self.btn_dir.clicked.connect(self.on_btn_dir_clicked)
+        top_layout.addWidget(self.btn_dir)
+
+        main_layout.addWidget(self.top_bar)
+
+        # === [B] Splitter (主分割线: 左右) ===
+        self.main_split = QSplitter(Qt.Orientation.Horizontal)
+        self.main_split.setHandleWidth(4)
+
+        # --- Left Panel ---
+        self.left_panel = QFrame()
+        self.left_panel.setObjectName("ContentPanel")
+        ll = QVBoxLayout(self.left_panel)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
+
+        header_bar = QFrame()
+        header_bar.setObjectName("HeaderBar")
+        header_bar.setFixedHeight(35)
+        hl = QHBoxLayout(header_bar)
+        hl.setContentsMargins(10, 0, 10, 0)
+        hl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        hl.addWidget(QLabel("📋 下载队列"))
+        hl.addWidget(QLabel(" | 保存至: ", styleSheet="color: #888;"))
+        self.lbl_full_path = QLabel(self.current_save_dir)
+        self.lbl_full_path.setObjectName("PathLabel")
+        self.lbl_full_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        hl.addWidget(self.lbl_full_path)
+        ll.addWidget(header_bar)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["视频标题", "状态", "进度", "操作"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setFrameShape(QFrame.Shape.NoFrame)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(1, 80)
+        self.table.setColumnWidth(2, 100)
+        self.table.setColumnWidth(3, 80)
+        ll.addWidget(self.table)
+
+        self.main_split.addWidget(self.left_panel)
+
+        # --- Right Panel ---
+        # 这是一个容器，里面放 right_split
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # [核心] 右侧分割线 (上下)
+        self.right_split = QSplitter(Qt.Orientation.Vertical)
+        self.right_split.setHandleWidth(4)
+
+        # 1. 上半部分：视频 + 控制条
+        video_container = QFrame()
+        video_container.setObjectName("ContentPanel")
+        vl = QVBoxLayout(video_container)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(0)
+
+        self.vid_w = ClickableVideoWidget()
+        self.vid_w.sig_double_click.connect(self.toggle_fullscreen_mode)
+
+        self.player = QMediaPlayer()
+        self.audio = QAudioOutput()
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.vid_w)
+
+        self.ctrls = QFrame()
+        self.ctrls.setFixedHeight(50)
+        self.ctrls.setStyleSheet("background:#252526; border-top: 1px solid #333;")
+        cl = QHBoxLayout(self.ctrls)
+        cl.setContentsMargins(15, 0, 15, 0)
+        cl.setSpacing(15)
+
+        self.btn_play = QPushButton()
+        self.btn_play.setFixedSize(32, 32)
+        self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_play.setStyleSheet("border-radius: 16px; background-color: #333; border: 1px solid #444;")
+        self.btn_play.clicked.connect(self.toggle_play)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.sliderPressed.connect(lambda: setattr(self, 'is_slider_pressed', True))
+        self.slider.sliderReleased.connect(self.on_slider_released)
+        self.player.positionChanged.connect(self.on_player_position_changed)
+        self.player.durationChanged.connect(lambda d: self.slider.setRange(0, d))
+
+        self.lbl_time = QLabel("00:00")
+        self.lbl_time.setStyleSheet("color: #aaa; font-family: Consolas;")
+
+        self.btn_fullscreen = QPushButton("[ 全屏 ]")
+        self.btn_fullscreen.setFixedSize(60, 32)
+        self.btn_fullscreen.setStyleSheet(
+            "border-radius: 4px; background-color: #333; border: 1px solid #444; color: #eee; font-size: 12px;")
+        self.btn_fullscreen.setToolTip("沉浸模式 (双击画面)")
+        self.btn_fullscreen.clicked.connect(self.toggle_fullscreen_mode)
+
+        cl.addWidget(self.btn_play)
+        cl.addWidget(self.slider)
+        cl.addWidget(self.lbl_time)
+        cl.addWidget(self.btn_fullscreen)
+
+        vl.addWidget(self.vid_w)
+        vl.addWidget(self.ctrls)
+
+        # 2. 下半部分：日志
+        self.log_txt = QPlainTextEdit()
+        self.log_txt.setReadOnly(True)
+        self.log_txt.setStyleSheet("border-top: 1px solid #333; background-color: #111; color: #eee;")
+        self.log_txt.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+
+        # 添加到右侧分割线
+        self.right_split.addWidget(video_container)
+        self.right_split.addWidget(self.log_txt)
+
+        # 添加到右侧容器
+        right_layout.addWidget(self.right_split)
+
+        # 添加到主分割线
+        self.main_split.addWidget(right_container)
+        main_layout.addWidget(self.main_split)
+
+    # --- Logic ---
+
+    def toggle_fullscreen_mode(self):
+        if not self.is_fullscreen_mode:
+            self.top_bar.hide()
+            self.left_panel.hide()
+            self.log_txt.hide()
+            self.showFullScreen()
+            self.layout().setContentsMargins(0, 0, 0, 0)
+            self.is_fullscreen_mode = True
+            self.btn_fullscreen.setText("[ 退出 ]")
+        else:
+            self.top_bar.show()
+            self.left_panel.show()
+            self.log_txt.show()
+            self.showNormal()
+            self.layout().setContentsMargins(10, 10, 10, 10)
+            self.is_fullscreen_mode = False
+            self.btn_fullscreen.setText("[ 全屏 ]")
+
+            # 恢复最大化
+            state_hex = cfg.get("ui", "window_state")
+            if state_hex: self.restoreState(QByteArray.fromHex(state_hex.encode()))
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.is_fullscreen_mode:
+            self.toggle_fullscreen_mode()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def load_initial_state(self):
+        # 1. 模式
+        last_source_id = cfg.get("common", "last_source", "kuaishou")
+        idx = self.combo_source.findData(last_source_id)
+        if idx != -1:
+            self.combo_source.setCurrentIndex(idx)
+        else:
+            self.combo_source.setCurrentIndex(0)
+        self.on_source_changed(self.combo_source.currentIndex())
+
+        self.lbl_full_path.setText(self.current_save_dir)
+        self.lbl_full_path.setToolTip(self.current_save_dir)
+
+        # 2. 窗口位置
+        geo_hex = cfg.get("ui", "geometry")
+        if geo_hex: self.restoreGeometry(QByteArray.fromHex(geo_hex.encode()))
+
+        # 3. 窗口状态
+        state_hex = cfg.get("ui", "window_state")
+        if state_hex: self.restoreState(QByteArray.fromHex(state_hex.encode()))
+
+        # 4. 主分割线 (左右)
+        main_split_hex = cfg.get("ui", "main_splitter_state")
+        if main_split_hex:
+            self.main_split.restoreState(QByteArray.fromHex(main_split_hex.encode()))
+        else:
+            self.main_split.setSizes([400, 900])
+
+        # 5. [核心修复] 右侧分割线 (上下)
+        right_split_hex = cfg.get("ui", "right_splitter_state")
+        if right_split_hex:
+            self.right_split.restoreState(QByteArray.fromHex(right_split_hex.encode()))
+        else:
+            self.right_split.setSizes([600, 200])  # 默认 3:1
+
+    def closeEvent(self, e):
+        # [核心修复] 保存两个分割线
+        cfg.save_ui_state(
+            geometry=self.saveGeometry(),
+            state=self.saveState(),
+            main_splitter=self.main_split.saveState(),
+            right_splitter=self.right_split.saveState(),
+            is_fs=self.is_fullscreen_mode
+        )
+        e.accept()
+
+    def on_btn_start_clicked(self):
+        if not self.current_plugin:
+            self.append_log("❌ 未选择有效模式")
+            return
+
+        keyword = self.inp_search.text().strip()
+        if not keyword:
+            self.append_log("⚠️ 请输入搜索内容！")
+            return
+
+        run_options = {}
+        if self.plugin_widget:
+            try:
+                run_options = self.current_plugin.get_run_options(self.plugin_widget)
+            except Exception as e:
+                self.append_log(f"❌ 配置读取错误: {e}")
+                return
+
+        self.sig_start_crawl.emit(keyword, self.current_plugin.id, run_options)
+
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.inp_search.setEnabled(False)
+        self.combo_source.setEnabled(False)
+        if self.plugin_widget: self.plugin_widget.setEnabled(False)
+
+    # --- 业务逻辑 ---
+    def on_source_changed(self, index):
+        plugin_id = self.combo_source.currentData()
+        if not plugin_id: return
+
+        self.current_plugin = registry.get_plugin(plugin_id)
+        if not self.current_plugin: return
+
+        self.inp_search.setPlaceholderText(self.current_plugin.get_search_placeholder())
+
+        while self.layout_dynamic.count():
+            item = self.layout_dynamic.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        self.plugin_widget = self.current_plugin.get_settings_widget(self.container_dynamic)
+        if self.plugin_widget:
+            self.layout_dynamic.addWidget(self.plugin_widget)
+            self.plugin_widget.show()
+
+        cfg.set("common", "last_source", plugin_id)
+
+    def on_btn_dir_clicked(self):
+        d = QFileDialog.getExistingDirectory(self, "选择保存目录", self.current_save_dir)
+        if d:
+            self.current_save_dir = d
+            self.lbl_full_path.setText(d)
+            self.lbl_full_path.setToolTip(d)
+            cfg.set("common", "save_directory", d)
+            self.sig_change_dir.emit()
+
+    def add_video_row(self, video_item):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        t_item = QTableWidgetItem(video_item.title)
+        t_item.setData(Qt.ItemDataRole.UserRole, video_item.id)
+        t_item.setToolTip(video_item.title)
+        self.table.setItem(row, 0, t_item)
+        s_item = QTableWidgetItem(video_item.status)
+        s_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table.setItem(row, 1, s_item)
+        pb = QProgressBar()
+        pb.setValue(video_item.progress)
+        self.table.setCellWidget(row, 2, pb)
+        op_widget = QWidget()
+        op_layout = QHBoxLayout(op_widget)
+        op_layout.setContentsMargins(0, 0, 0, 0)
+        op_layout.setSpacing(5)
+        op_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_p = QPushButton()
+        btn_p.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        btn_p.setFixedSize(26, 24)
+        btn_p.clicked.connect(lambda: self.sig_play_video.emit(video_item.id))
+        btn_d = QPushButton()
+        btn_d.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        btn_d.setFixedSize(26, 24)
+        btn_d.clicked.connect(lambda: self.sig_delete_video.emit(row, video_item.id))
+        op_layout.addWidget(btn_p)
+        op_layout.addWidget(btn_d)
+        self.table.setCellWidget(row, 3, op_widget)
+
+    def update_video_status(self, video_id, status, progress=None):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == video_id:
+                self.table.item(r, 1).setText(status)
+                if progress is not None: self.table.cellWidget(r, 2).setValue(progress)
+                break
+
+    def refresh_table_bindings(self):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if not item: continue
+            vid = item.data(Qt.ItemDataRole.UserRole)
+            widget = self.table.cellWidget(r, 3)
+            if widget:
+                layout = widget.layout()
+                for i in range(layout.count()):
+                    widget_item = layout.itemAt(i).widget()
+                    if isinstance(widget_item, QPushButton):
+                        if i == 1:
+                            try:
+                                widget_item.clicked.disconnect()
+                            except:
+                                pass
+                            widget_item.clicked.connect(
+                                lambda checked, row=r, v=vid: self.sig_delete_video.emit(row, v))
+
+    def show_selection_dialog(self, items):
+        dlg = SelectionDialog(self, items=items)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.append_log(f"✅ 用户确认了 {len(dlg.selected_indices)} 个任务")
+            return dlg.selected_indices
+        else:
+            self.append_log("❌ 用户取消了任务")
+            return None
+
+    def append_log(self, msg):
+        self.log_txt.appendHtml(f'<span style="color:#aaa;">{msg}</span>')
+        self.log_txt.moveCursor(QTextCursor.MoveOperation.End)
+
+    def toggle_play(self):
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.player.pause()
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        else:
+            self.player.play()
+            self.btn_play.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+
+    def on_slider_released(self):
+        self.is_slider_pressed = False
+        self.player.setPosition(self.slider.value())
+
+    def on_player_position_changed(self, pos):
+        if not getattr(self, 'is_slider_pressed', False):
+            self.slider.setValue(pos)
+        self.lbl_time.setText(f"{self.format_time(pos)} / {self.format_time(self.player.duration())}")
+
+    def format_time(self, ms):
+        seconds = (ms // 1000) % 60
+        minutes = (ms // 60000)
+        return f"{minutes:02}:{seconds:02}"
+
+
+
+# app/ui/styles.py
+
+COLOR_BG = "#181818"
+COLOR_PANEL = "#1e1e1e"
+COLOR_INPUT = "#252526"
+COLOR_ACCENT = "#007acc"
+COLOR_DANGER = "#C92C2C"
+COLOR_TEXT = "#e0e0e0"
+COLOR_BORDER = "#333333"
+
+DARK_STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background-color: {COLOR_BG};
+    color: {COLOR_TEXT};
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    font-size: 13px;
+}}
+/* ================= 顶部工具栏 ================= */
+QFrame#TopBar {{
+    background-color: {COLOR_PANEL};
+    border: none;
+    border-bottom: 1px solid {COLOR_BORDER};
+    margin: 0px;
+    padding: 0px;
+}}
+/* ================= 左侧/右侧 面板容器 ================= */
+QFrame#ContentPanel {{
+    background-color: {COLOR_PANEL};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 4px;
+}}
+/* ================= 列表标题栏 (存放路径) ================= */
+QFrame#HeaderBar {{
+    background-color: #252526;
+    border-bottom: 1px solid {COLOR_BORDER};
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}}
+/* 路径文字高亮 */
+QLabel#PathLabel {{
+    color: {COLOR_ACCENT};
+    font-family: 'Consolas', monospace;
+    font-weight: bold;
+    padding-left: 5px;
+}}
+/* ================= 输入组件 ================= */
+QLineEdit {{
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 4px;
+    background-color: {COLOR_INPUT};
+    color: #fff;
+    padding: 4px;
+}}
+QLineEdit:focus {{ border: 1px solid {COLOR_ACCENT}; }}
+QComboBox {{
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 4px;
+    background-color: {COLOR_INPUT};
+    padding: 4px;
+}}
+/* ================= 按钮 ================= */
+QPushButton {{
+    background-color: #2d2d2d;
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 4px;
+    color: #eee;
+    padding: 5px 15px; /* 增加左右内边距，防止文字截断 */
+}}
+QPushButton:hover {{ background-color: #3e3e3e; }}
+QPushButton:pressed {{ background-color: #222; }}
+QPushButton#PrimaryBtn {{
+    background-color: {COLOR_ACCENT};
+    border: none;
+    font-weight: bold;
+}}
+QPushButton#PrimaryBtn:hover {{ background-color: #0062a3; }}
+QPushButton#DangerBtn {{
+    background-color: {COLOR_DANGER};
+    border: none;
+    font-weight: bold;
+}}
+QPushButton#DangerBtn:hover {{ background-color: #992222; }}
+QPushButton#DangerBtn:disabled {{
+    background-color: #2d2d2d;
+    color: #555;
+    border: 1px solid {COLOR_BORDER};
+}}
+
+QPushButton#DirBtn {{
+    background-color: {COLOR_INPUT};
+    border: 1px dashed #555;
+    color: #aaa;
+    text-align: left;
+}}
+QPushButton#DirBtn:hover {{
+    border: 1px dashed {COLOR_ACCENT};
+    color: #fff;
+    background-color: #2d2d2d;
+}}
+
+/* ================= 其他 ================= */
+QProgressBar {{
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 3px;
+    background-color: {COLOR_INPUT};
+    text-align: center;
+    font-size: 11px;
+}}
+QProgressBar::chunk {{ background-color: {COLOR_ACCENT}; }}
+QSplitter::handle {{ background-color: {COLOR_BG}; }}
+QSplitter::handle:hover {{ background-color: {COLOR_ACCENT}; }}
+
+/* 滚动条 (亮色滑块) */
+QScrollBar:vertical {{ background: #111; width: 12px; margin: 0px; }}
+QScrollBar::handle:vertical {{ background: #888; min-height: 20px; border-radius: 4px; }}
+QScrollBar::handle:vertical:hover {{ background: #fff; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+QScrollBar:horizontal {{ background: #111; height: 12px; margin: 0px; }}
+QScrollBar::handle:horizontal {{ background: #888; min-width: 20px; border-radius: 4px; }}
+QScrollBar::handle:horizontal:hover {{ background: #fff; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ height: 0px; }}
+"""
+
+
+# app/models.py
+
+import time
+import random
+import re
+from dataclasses import dataclass, field
+from typing import Dict, Optional
+
+@dataclass
+class VideoItem:
+    """
+    统一视频数据模型
+    用于在爬虫线程、UI主线程和下载线程之间传递数据
+    """
+    # 核心字段
+    url: str
+    title: str
+    source: str         # 'missav' 或 'kuaishou'
+    # 状态字段
+    id: str = field(init=False)      # 唯一标识符
+    status: str = "waiting"          # waiting, downloading, finished, error
+    progress: int = 0
+    local_path: str = ""             # 下载后的本地绝对路径
+    # 元数据 (用于存储特定来源的特殊信息)
+    # MissAV: 存储 header, proxy, 标签(tags), 分数(score)
+    # 快手: 存储 author, 原始 headers
+    meta: Dict = field(default_factory=dict)
+    def __post_init__(self):
+        """初始化后自动生成唯一ID"""
+        # 生成规则：毫秒级时间戳 + 3位随机数，确保同一毫秒内的并发也不会重复
+        self.id = f"{int(time.time() * 1000)}_{random.randint(100, 999)}"
+        # 去除标题首尾空格
+        if self.title:
+            self.title = self.title.strip()
+    def get_safe_filename(self, extension: str = ".mp4") -> str:
+        # 核心修复：生成安全且唯一的文件名
+        # 解决原项目中标题为空时文件覆盖的问题
+        # 1. 获取基础标题
+        raw_name = self.title
+        # 2. 如果是 MissAV，尝试追加标签后缀 (完全复刻虾片.py的命名逻辑)
+        # 例如: "ABP-123 [中文字幕]"
+        if self.source == "missav":
+            tags = self.meta.get("tags", [])
+            suffix = ""
+            if "中文字幕" in tags: suffix = " [中文字幕]"
+            elif "英文字幕" in tags: suffix = " [英文字幕]"
+            elif "无码流出" in tags: suffix = " [无码]"
+            raw_name += suffix
+        # 3. 清理非法字符 (Windows/Linux 文件名限制)
+        # 替换 \ / : * ? " < > | 为下划线
+        safe_name = re.sub(r'[\\/:*?"<>|]', '_', raw_name).strip()
+        # 4. 【关键修复】如果清理后标题为空，或者原始标题就是空的
+        # 强制使用 "来源_ID" 作为文件名，保证绝对唯一
+        if not safe_name:
+            safe_name = f"{self.source}_UNKNOWN_{self.id}"
+        # 5. 限制文件名长度 (防止操作系统报错)
+        if len(safe_name) > 220:
+            safe_name = safe_name[:220]
+        # 6. 确保后缀名正确
+        if not extension.startswith("."):
+            extension = f".{extension}"
+        return f"{safe_name}{extension}"
+    def update_from_dict(self, data: dict):
+        """从字典更新属性 (便于从配置或临时对象恢复)"""
+        for k, v in data.items():
+            if hasattr(self, k):
+                setattr(self, k, v)
+# ================= 辅助类 =================
+class AppConfig:
+    """简单的配置持有类，用于在各模块间传递用户设置"""
+    def __init__(self):
+        # 通用路径
+        self.save_dir = ""
+        # MissAV 专属配置
+        self.missav_proxy = "http://127.0.0.1:7890"  # 默认代理
+        self.missav_individual_only = False          # 仅单体
+        self.missav_sort_priority = ["中文字幕", "英文字幕", "无码流出", "普通版"] # 排序偏好
+
+
+# app/utils.py
+
+import os
+import json
+import re
+import shutil
+from datetime import time
+from PyQt6.QtCore import QByteArray
+
+class ConfigManager:
+    def __init__(self, filename="config.json"):
+        self.filename = filename
+        self.data = self._load_defaults()
+        self._load_from_disk()
+    def _load_defaults(self):
+        return {
+            "common": {
+                "save_directory": os.path.join(os.getcwd(), "Downloads"),
+                "last_source": "kuaishou",
+                "theme": "dark"
+            },
+            "missav": {
+                "proxy_app": "Clash (7890)",
+                "proxy_url": "http://127.0.0.1:7890",
+                "priority": "中文字幕优先",
+                "individual_only": False
+            },
+            "bilibili": {
+                "auth_file": "bili_auth.json",  # 自动保存的 Cookie 文件
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            "ui": {
+                "geometry": "",
+                "window_state": "",
+                "splitter_state": "",
+                "main_splitter_state": "",
+                "right_splitter_state": "",
+                "is_fullscreen_mode": False
+            }
+        }
+    def _load_from_disk(self):
+        if not os.path.exists(self.filename):
+            self.save()
+            return
+        try:
+            with open(self.filename, 'r', encoding='utf-8') as f:
+                saved_data = json.load(f)
+                self._recursive_update(self.data, saved_data)
+        except Exception as e:
+            print(f"⚠️ 配置文件损坏或不兼容: {e}")
+            self._reset_config()
+    def _reset_config(self):
+        """备份坏文件并重置"""
+        if os.path.exists(self.filename):
+            backup_name = f"{self.filename}.bak.{int(time.time())}"
+            try:
+                shutil.move(self.filename, backup_name)
+                print(f"✅ 已将损坏的配置备份为: {backup_name}")
+            except: pass
+        self.data = self._load_defaults()
+        self.save()
+    def _recursive_update(self, target, source):
+        for k, v in source.items():
+            if k in target and isinstance(target[k], dict) and isinstance(v, dict):
+                self._recursive_update(target[k], v)
+            else:
+                # 类型检查：如果保存的类型和默认类型不一致（除了None），则忽略，防止注入坏数据
+                default_type = type(target.get(k))
+                if target.get(k) is not None and v is not None and not isinstance(v, default_type):
+                    continue
+                target[k] = v
+    def save(self):
+        try:
+            with open(self.filename, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"❌ 保存配置失败: {e}")
+    # --- 通用 Get/Set ---
+    def get(self, section, key, default=None):
+        try:
+            val = self.data.get(section, {}).get(key)
+            return val if val is not None else default
+        except:
+            return default
+    def set(self, section, key, value):
+        if section not in self.data: self.data[section] = {}
+        self.data[section][key] = value
+        self.save()
+    # --- UI 状态专用 ---
+    def save_ui_state(self, geometry: QByteArray, state: QByteArray,
+                      main_splitter: QByteArray, right_splitter: QByteArray,
+                      is_fs: bool):
+        self.data["ui"]["geometry"] = geometry.toHex().data().decode()
+        self.data["ui"]["window_state"] = state.toHex().data().decode()
+        self.data["ui"]["main_splitter_state"] = main_splitter.toHex().data().decode()
+        self.data["ui"]["right_splitter_state"] = right_splitter.toHex().data().decode()
+        self.data["ui"]["is_fullscreen_mode"] = is_fs
+        self.save()
+    def update_missav_proxy(self, app_name, url):
+        self.data["missav"]["proxy_app"] = app_name
+        self.data["missav"]["proxy_url"] = url
+        self.save()
+def format_size(size_bytes):
+    if size_bytes == 0: return "0 B"
+    import math
+    if size_bytes < 0: return "Unknown"
+    i = int(math.log(size_bytes, 1024))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {('B','KB','MB','GB')[i]}"
+def sanitize_filename(name):
+    return re.sub(r'[\\/:*?"<>|]', '_', str(name)).strip()[:200]
+cfg = ConfigManager()
+
+
+
+[{"name": "buvid3", "value": "11BEA90E-1458-2603-DB1C-5CDB99F7F1BF60497infoc", "domain": ".bilibili.com", "path": "/", "expires": 1803734560.624923, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "b_nut", "value": "1769174560", "domain": ".bilibili.com", "path": "/", "expires": 1800710560.625058, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "bili_ticket", "value": "eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk0MzM3NjIsImlhdCI6MTc2OTE3NDUwMiwicGx0IjotMX0.iG7dcfY7ScGw-9oFmuPmy2gmjJADA97ZyzcWouPL_Y4", "domain": ".bilibili.com", "path": "/", "expires": 1769433762, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "bili_ticket_expires", "value": "1769433702", "domain": ".bilibili.com", "path": "/", "expires": 1769433762, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "buvid4", "value": "B9DF668E-EFCE-EA94-4E02-2DF6F357A32562577-026012321-AFS0PYOHxynvyINItwRQ6g%3D%3D", "domain": ".bilibili.com", "path": "/", "expires": 1803734562.716236, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "buvid_fp", "value": "457acca5ed5c6cd3d61bec72816fe688", "domain": ".bilibili.com", "path": "/", "expires": 1800710563, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "SESSDATA", "value": "4dbe149d%2C1784726589%2Cd6992%2A11CjAgZipDEIbBGJpsJo16ewldh8e8TEZULXFujI0xvhnbftHVWzQDGbnT3fCHaMFPIBISVkp5Q3RZNFlBMWZMZUplck9Kb2plSUNIbFN4ZDNDSHFXb2pvN0JjUGZtUFFwVzJ6a1lKYnZYUUtYSlk0cHZsakRTdXV0SXNZbnJOdVBTNFVlRVhDMFVBIIEC", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296104, "httpOnly": true, "secure": true, "sameSite": "Lax"}, {"name": "bili_jct", "value": "a3b9fa2d72da2b0a6aa94a295b2ddec6", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296359, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "DedeUserID", "value": "511776633", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296488, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "DedeUserID__ckMd5", "value": "c1b424837ebbc59d", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296576, "httpOnly": false, "secure": true, "sameSite": "None"}, {"name": "sid", "value": "pwp02c4n", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296605, "httpOnly": false, "secure": true, "sameSite": "None"}]
+
+
+{
+    "common": {
+        "save_directory": "D:/desktop",
+        "last_source": "bilibili",
+        "theme": "dark"
+    },
+    "missav": {
+        "proxy_app": "Clash (7890)",
+        "proxy_url": "http://127.0.0.1:7890",
+        "priority": "中文字幕优先",
+        "individual_only": true
+    },
+    "bilibili": {
+        "auth_file": "bili_auth.json",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "ui": {
+        "geometry": "01d9d0cb0003000000000007000000000000051a0000036f000000070000001e0000051a0000036f000000000000000005a0000000070000001e0000051a0000036f",
+        "window_state": "000000ff00000000fd00000000000005140000035200000004000000040000000800000008fc00000000",
+        "splitter_state": "",
+        "main_splitter_state": "000000ff0000000100000002000001bd0000033f0100000004010000000100",
+        "right_splitter_state": "000000ff00000001000000020000020f000000ef0100000004010000000200",
+        "is_fullscreen_mode": false
+    }
+}
+
+
+{
+    "cookies": [
+        {
+            "name": "kpf",
+            "value": "PC_WEB",
+            "domain": ".www.kuaishou.com",
+            "path": "/",
+            "expires": 1800628178.412888,
+            "httpOnly": true,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "clientid",
+            "value": "3",
+            "domain": ".www.kuaishou.com",
+            "path": "/",
+            "expires": 1800628178.413125,
+            "httpOnly": true,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "did",
+            "value": "web_42039990ecdfe822f3f11d93658e8f93",
+            "domain": ".kuaishou.com",
+            "path": "/",
+            "expires": 1800628178.413207,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "kwpsecproductname",
+            "value": "kuaishou-vision",
+            "domain": ".kuaishou.com",
+            "path": "/",
+            "expires": 1771684179,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "userId",
+            "value": "3838429755",
+            "domain": ".kuaishou.com",
+            "path": "/",
+            "expires": 1769669565.695116,
+            "httpOnly": false,
+            "secure": true,
+            "sameSite": "None"
+        },
+        {
+            "name": "userId",
+            "value": "3838429755",
+            "domain": "id.kuaishou.com",
+            "path": "/",
+            "expires": 1770879165.544671,
+            "httpOnly": false,
+            "secure": true,
+            "sameSite": "None"
+        },
+        {
+            "name": "passToken",
+            "value": "ChNwYXNzcG9ydC5wYXNzLXRva2VuEqABSodMLSDe_pzTfWllYDjhSmIBZtOSlZEFvNvn1Qff32VMDVDXnMLYSuL7PcgvA1TeleNi3y1MECmJYuVlzqMDn2VSwc6Rw1krNh1bHWGgwW6NIYHu-XS7yRp2NkcVVYIjeYmuildF-8vo8zx_V6G-ncdcr8ELLJpkoD-yuMkQbZr-iGO_zL2Ih2JMi4JDKKUPK0MYYhbjLVZQ-0Yy7FehmxoSzTHAimK3SJuusJkUOgOfwIyyIiBLVK4vsxAEuaBFS3zOSlfYGvfPo_7o2MavX8Ru66VRnygFMAE",
+            "domain": "id.kuaishou.com",
+            "path": "/",
+            "expires": 1770879165.544726,
+            "httpOnly": true,
+            "secure": true,
+            "sameSite": "None"
+        },
+        {
+            "name": "kuaishou.server.webday7_st",
+            "value": "ChprdWFpc2hvdS5zZXJ2ZXIud2ViZGF5Ny5zdBKwAd182YC9XPOKAbwXfiOVIdOjtjAWnObmeudmoq30DrjK8cadFex2M2FnC5tae9TGURogtv0MspvDIkilcyTe1_u8bvEyh9ZfMgo0rW_OcOZQeso5M_zBh3uzvei74HT-FwsKsdAJG0MYkVSLI2x8dskOwqFIGgzNTvyUcDgyIgCj4j8rdmYy4MJfdlPN-K4nB3iCNKj-YrIji2l0cRqz5daTVnrPqBVC6caZXJ7cACcUGhJMg8a21uCwhwxScQ4lMeUhFTYiIAO-LcFMYBgxR5VFIrMHsdYLyfvVNH7GUc8zPZMOxjcpKAUwAQ",
+            "domain": "www.kuaishou.com",
+            "path": "/",
+            "expires": 1769669565.695325,
+            "httpOnly": true,
+            "secure": true,
+            "sameSite": "None"
+        },
+        {
+            "name": "kuaishou.server.webday7_ph",
+            "value": "7aa3c69d3dd26418f90f819fd6322d24e467",
+            "domain": "www.kuaishou.com",
+            "path": "/",
+            "expires": 1769669565.695399,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "ktrace-context",
+            "value": "1|MS44Nzg0NzI0NTc4Nzk2ODY5LjY2Mzg4MTYxLjE3NjkwOTIxNzg5MDUuMjA5ODM4NzM=|MS44Nzg0NzI0NTc4Nzk2ODY5Ljk2OTU0NDM4LjE3NjkwOTIxNzg5MDUuMjA5ODM4NzQ=|0|webservice-user-growth-node|webservice|true|src-Js",
+            "domain": "www.kuaishou.com",
+            "path": "/",
+            "expires": -1,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "kpn",
+            "value": "KUAISHOU_VISION",
+            "domain": ".www.kuaishou.com",
+            "path": "/",
+            "expires": 1800628178.41308,
+            "httpOnly": true,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "kwfv1",
+            "value": "PnGU+9+Y8008S+nH0U+0mjPf8fP08f+98f+nLlwnrIP9+Sw/ZFGfzY+eGlGf+f+e4SGfbYP0QfGnLFwBLU80mYGASDG/WlP/bj+BHl+/PMP/zS+ezjGArl80cAPeHAP0zYGfc9+0bfPB8DPnQYP0+SP/Dh+frFP0GFwBGE+nLI+/Z=",
+            "domain": ".kuaishou.com",
+            "path": "/",
+            "expires": 1771684180,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "kwssectoken",
+            "value": "G9t6HPvj96wsavbD8RoQbpPPtK8kReiqHpzkbIX9B8l0VwQqwpEsN3OPelYH1qyzEMsH1Xj4U1c54eOU3540wg==",
+            "domain": ".kuaishou.com",
+            "path": "/",
+            "expires": 1769092540,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "kwscode",
+            "value": "10051eaba4b351a85f5e7cd1a7a8d2e4d12be582296db3cd133b7afa2c78e711",
+            "domain": ".kuaishou.com",
+            "path": "/",
+            "expires": 1769092540,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        }
+    ],
+    "origins": [
+        {
+            "origin": "https://www.kuaishou.com",
+            "localStorage": [
+                {
+                    "name": "WEBLOGGER_CHANNEL_SEQ_ID_NORMAL",
+                    "value": "22"
+                },
+                {
+                    "name": "OTHER_DEVICE_INCREASE_ID",
+                    "value": "59"
+                },
+                {
+                    "name": "kwfv1",
+                    "value": "PnGU+9+Y8008S+nH0U+0mjPf8fP08f+98f+nLlwnrIP9+Sw/ZFGfzY+eGlGf+f+e4SGfbYP0QfGnLFwBLU80mYGASDG/WlP/bj+BHl+/PMP/zS+ezjGArl80cAPeHAP0zYGfc9+0bfPB8DPnQYP0+SP/Dh+frFP0GFwBGE+nLI+/Z="
+                },
+                {
+                    "name": "kwai-kernel-id",
+                    "value": "{\"value\":2,\"time\":1769092181742}"
+                },
+                {
+                    "name": "WEBLOGGER_V2_SEQ_ID_showEvent",
+                    "value": "22"
+                },
+                {
+                    "name": "LOAD_DEVICE_INCREASE_ID",
+                    "value": "3"
+                },
+                {
+                    "name": "kwfcv1",
+                    "value": "1"
+                },
+                {
+                    "name": "WEBLOGGER_CUSTOM_INCREAMENT_ID_KEY",
+                    "value": "7"
+                },
+                {
+                    "name": "WEBLOGGER_INCREAMENT_ID_KEY",
+                    "value": "22"
+                },
+                {
+                    "name": "alg",
+                    "value": "test"
+                }
+            ]
+        }
+    ]
+}
+
+
+# main.py
+
+import sys
+import os
+import time
+from PyQt6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
+from PyQt6.QtCore import QUrl, Qt, QTimer
+# 引入项目模块
+from app.ui.main_window import MainWindow
+from app.core.download_manager import DownloadManager
+from app.core.registry import registry
+from app.models import VideoItem
+from app.utils import cfg, sanitize_filename
+
+class ApplicationController:
+    """
+    主控制器 (Controller)
+    负责协调 UI、爬虫逻辑、下载管理和文件系统操作
+    """
+    def __init__(self):
+        # 1. 初始化 Qt 应用
+        self.app = QApplication(sys.argv)
+        # 2. 初始化主窗口
+        self.window = MainWindow()
+        # 3. 内部状态
+        self.videos = {}  # {id: VideoItem} 内存中持有视频对象
+        self.current_spider = None
+        self.current_playing_id = None  # 记录当前正在播放的视频ID
+        # 4. 初始化下载管理器 (默认3并发)
+        self.dl_manager = DownloadManager(max_concurrent=3)
+        # ================= 信号连接：UI -> Controller =================
+        self.window.sig_start_crawl.connect(self.start_crawl)
+        self.window.sig_stop_crawl.connect(self.stop_crawl)
+        self.window.sig_change_dir.connect(self.on_dir_changed)
+        self.window.sig_play_video.connect(self.play_video)
+        self.window.sig_delete_video.connect(self.delete_video)
+        # 连接表格重命名信号
+        self.window.table.itemChanged.connect(self.on_rename_video)
+        # ================= 信号连接：DownloadManager -> Controller =================
+        self.dl_manager.task_started.connect(self.on_dl_start)
+        self.dl_manager.task_progress.connect(self.on_dl_progress)
+        self.dl_manager.task_finished.connect(self.on_dl_finish)
+        self.dl_manager.task_error.connect(self.on_dl_error)
+        # 5. 显示窗口
+        self.window.show()
+        # 延迟执行本地扫描，防止启动时 UI 尚未就绪导致崩溃 (0xC0000409)
+        QTimer.singleShot(200, self.scan_local_dir)
+    # ---------------- 本地文件管理 ----------------
+    def scan_local_dir(self):
+        """扫描本地文件 (限制数量防止崩溃)"""
+        directory = self.window.current_save_dir
+        self.window.append_log(f"📂 正在扫描目录: {directory}")
+        if not os.path.exists(directory):
+            try:
+                os.makedirs(directory)
+            except:
+                pass
+            return
+        self.window.table.setRowCount(0)
+        self.videos.clear()
+        try:
+            # 1. 获取所有mp4文件
+            all_files = [f for f in os.listdir(directory) if f.lower().endswith('.mp4')]
+            # 2. 按修改时间倒序排列 (最新的在前)
+            all_files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
+            # 3. [防崩溃] 限制最大加载数量
+            MAX_SCAN_COUNT = 1000
+            if len(all_files) > MAX_SCAN_COUNT:
+                self.window.append_log(f"⚠️ 视频过多 ({len(all_files)}个)，仅加载最新的 {MAX_SCAN_COUNT} 个以防卡顿。")
+                all_files = all_files[:MAX_SCAN_COUNT]
+            count = 0
+            for f in all_files:
+                title = os.path.splitext(f)[0]
+                item = VideoItem(url="", title=title, source="local")
+                item.status = "✅ 本地"
+                item.progress = 100
+                item.local_path = os.path.join(directory, f)
+                self.videos[item.id] = item
+                self.window.add_video_row(item)
+                count += 1
+            if count > 0:
+                self.window.append_log(f"✅ 已加载 {count} 个本地视频")
+            else:
+                self.window.append_log("ℹ️ 该目录下没有找到 MP4 视频")
+        except Exception as e:
+            self.window.append_log(f"❌ 扫描目录出错: {e}")
+
+    def on_dir_changed(self):
+        self.window.append_log(f"📂 目录已变更: {self.window.current_save_dir}")
+        self.dl_manager.save_dir = self.window.current_save_dir
+        self.window.table.setRowCount(0)
+        self.videos.clear()
+        self.scan_local_dir()
+    def on_rename_video(self, item):
+        """处理表格重命名"""
+        # 只有第一列(标题)变化才处理
+        if item.column() != 0: return
+        vid = item.data(Qt.ItemDataRole.UserRole)
+        if not vid or vid not in self.videos: return
+        video = self.videos[vid]
+        new_title = item.text().strip()
+        # 如果标题没变，或者文件不存在，忽略
+        if new_title == video.title: return
+        if not os.path.exists(video.local_path):
+            # 回滚 UI
+            self.window.table.blockSignals(True)
+            item.setText(video.title)
+            self.window.table.blockSignals(False)
+            return
+        # 执行文件重命名
+        try:
+            old_path = video.local_path
+            dir_name = os.path.dirname(old_path)
+            # 确保新文件名合法
+            safe_name = sanitize_filename(new_title) + ".mp4"
+            new_path = os.path.join(dir_name, safe_name)
+            if new_path != old_path:
+                # [关键] 如果正在播放该视频，先释放句柄
+                if self.current_playing_id == vid:
+                    self.window.player.setSource(QUrl())
+                os.rename(old_path, new_path)
+                # 更新内存对象
+                video.title = new_title
+                video.local_path = new_path
+                self.window.append_log(f"📝 重命名成功: {safe_name}")
+                # 如果刚才被迫停止了播放，重新加载新路径
+                if self.current_playing_id == vid:
+                    self.play_video(vid)
+        except OSError as e:
+            # 失败回滚
+            self.window.table.blockSignals(True)
+            item.setText(video.title)
+            self.window.table.blockSignals(False)
+            self.window.append_log(f"❌ 重命名失败: {e}")
+            QMessageBox.warning(self.window, "错误", f"重命名文件失败:\n{e}")
+    def delete_video(self, row, vid):
+        """删除视频 (UI -> Controller -> FileSystem)"""
+        video = self.videos.get(vid)
+        if not video: return
+        reply = QMessageBox.question(
+            self.window, '确认删除',
+            f"确定要删除 '{video.title}' 吗？\n本地文件将被永久移除。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.No: return
+        # 1. 释放文件占用
+        # 如果当前正在播放这个视频，必须先让播放器停止并加载空源
+        if self.current_playing_id == vid:
+            self.window.player.stop()
+            self.window.player.setSource(QUrl())  # 释放文件锁
+            self.current_playing_id = None
+            self.window.vid_w.update()  # 刷新黑屏
+            time.sleep(0.1)  # 给系统一点时间释放句柄
+        # 2. 尝试物理删除
+        if video.local_path and os.path.exists(video.local_path):
+            try:
+                os.remove(video.local_path)
+                self.window.append_log(f"🗑️ 已删除文件: {os.path.basename(video.local_path)}")
+            except OSError as e:
+                self.window.append_log(f"❌ 删除文件失败: {e}")
+                QMessageBox.critical(self.window, "删除失败", f"无法删除文件 (可能被占用):\n{e}")
+                return  # 删除失败则不更新 UI
+        # 3. 只有文件删除了，才更新 UI 和内存
+        self.window.table.removeRow(row)
+        if vid in self.videos:
+            del self.videos[vid]
+        # 4. 按钮错位问题
+        self.window.refresh_table_bindings()
+    # ---------------- 爬虫控制 ----------------
+    def start_crawl(self, keyword, plugin_id, options):
+        plugin = registry.get_plugin(plugin_id)
+        if not plugin: return
+        self.window.append_log(f"🟢 启动任务 | 模式: {plugin.name}")
+        # MissAV 依赖检查
+        if plugin_id == "missav" and not os.path.exists("N_m3u8DL-RE.exe"):
+            QMessageBox.critical(self.window, "缺失依赖", "未找到 N_m3u8DL-RE.exe")
+            self.reset_ui_state()
+            return
+        # 停止旧任务
+        if self.current_spider and self.current_spider.isRunning():
+            self.current_spider.stop()
+            self.current_spider.wait()
+        # 创建新爬虫
+        SpiderClass = plugin.get_spider_class()
+        self.current_spider = SpiderClass(keyword, options)
+        # 连接信号
+        self.current_spider.sig_log.connect(self.window.append_log)
+        self.current_spider.sig_item_found.connect(self.on_video_found)
+        self.current_spider.sig_finished.connect(self.on_spider_finished)
+        # [核心] 连接弹窗请求信号
+        self.current_spider.sig_select_tasks.connect(self.on_spider_select_tasks)
+        self.current_spider.start()
+    def on_spider_select_tasks(self, items):
+        # 响应爬虫发来的“请让用户选择”请求
+        # 弹出 UI 对话框 (阻塞主线程，直到用户关闭弹窗)
+        selected_indices = self.window.show_selection_dialog(items)
+        # 将结果传回给爬虫线程 (解除爬虫的阻塞)
+        if self.current_spider:
+            self.current_spider.resume_from_ui(selected_indices)
+    def stop_crawl(self):
+        if self.current_spider:
+            self.current_spider.stop()
+            self.window.append_log("🛑 正在停止爬虫...")
+    def on_spider_finished(self):
+        self.window.append_log("🏁 爬虫任务结束")
+        self.reset_ui_state()
+        self.current_spider = None
+    def reset_ui_state(self):
+        self.window.btn_start.setEnabled(True)
+        self.window.btn_stop.setEnabled(False)
+        self.window.inp_search.setEnabled(True)
+        self.window.combo_source.setEnabled(True)
+        if self.window.plugin_widget: self.window.plugin_widget.setEnabled(True)
+
+    def on_video_found(self, video_item):
+        save_path = self.window.current_save_dir
+        if "folder_name" in video_item.meta:
+            folder_name = video_item.meta["folder_name"]
+            # 确保 folder_name 有效
+            if folder_name and folder_name.strip():
+                sub_dir = os.path.join(save_path, folder_name)
+                if not os.path.exists(sub_dir):
+                    try:
+                        os.makedirs(sub_dir)
+                    except:
+                        pass
+                save_path = sub_dir
+                # 更新 UI 提示
+                self.window.lbl_full_path.setText(save_path)
+                self.window.lbl_full_path.setToolTip(save_path)
+        self.videos[video_item.id] = video_item
+        self.window.add_video_row(video_item)
+        self.dl_manager.add_task(video_item, save_path)
+    # ---------------- 下载回调 ----------------
+    def on_dl_start(self, vid):
+        if vid in self.videos:
+            self.videos[vid].status = "downloading"
+            self.window.update_video_status(vid, "⬇️ 下载中")
+    def on_dl_progress(self, vid, percent):
+        if vid in self.videos:
+            self.videos[vid].progress = percent
+            self.window.update_video_status(vid, "⬇️ 下载中", percent)
+    def on_dl_finish(self, vid):
+        if vid in self.videos:
+            self.videos[vid].status = "finished"
+            self.videos[vid].progress = 100
+            self.window.update_video_status(vid, "✅ 完成", 100)
+            self.window.append_log(f"🎉 下载完成: {self.videos[vid].title}")
+    def on_dl_error(self, vid, msg):
+        if vid in self.videos:
+            self.videos[vid].status = "error"
+            self.window.update_video_status(vid, "❌ 失败")
+            self.window.append_log(f"❌ 下载出错 [{self.videos[vid].title}]: {msg}")
+    def play_video(self, vid):
+        video = self.videos.get(vid)
+        if not video or not os.path.exists(video.local_path):
+            self.window.append_log("❌ 文件不存在或已被删除")
+            return
+        self.current_playing_id = vid
+        self.window.append_log(f"▶️ 播放: {video.title}")
+        self.window.player.setSource(QUrl.fromLocalFile(video.local_path))
+        self.window.player.play()
+        # 切换图标
+        self.window.btn_play.setIcon(self.window.style().standardIcon(self.window.style().StandardPixmap.SP_MediaPause))
+    def run(self):
+        sys.exit(self.app.exec())
+
+if __name__ == "__main__":
+    controller = ApplicationController()
+    controller.run()
