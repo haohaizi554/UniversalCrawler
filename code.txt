@@ -104,7 +104,6 @@ class DownloadManager(QObject):
             w.stop()
             w.wait()
 
-
 # app/core/downloaders.py
 
 import os
@@ -412,7 +411,7 @@ class BilibiliPlugin(BasePlugin):
     id = "bilibili"
     name = "Bilibili"
     def get_search_placeholder(self) -> str:
-        return "BV号（兼容合集） / UP主名 / 关键词..."
+        return "BV号（兼容合集） / UP主名或ID(默认全爬） / 关键词  / URL…… "
     def get_settings_widget(self, parent=None) -> QWidget:
         container = QWidget(parent)
         layout = QHBoxLayout(container)
@@ -509,117 +508,6 @@ class BaseSpider(QThread):
         """由 UI 线程调用，唤醒爬虫"""
         self._selection_result = selected_indices
         self._resume_event.set()  # 绿灯，爬虫继续跑
-
-
-# app/spiders/bilibili_spider.py
-
-import os
-import re
-import time
-import json
-import requests
-import urllib.parse
-from playwright.sync_api import sync_playwright
-from app.spiders.base_spider import BaseSpider
-
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': 'https://www.bilibili.com'
-}
-
-
-class BiliAPI:
-    def __init__(self, cookie_path):
-        self.sess = requests.Session()
-        self.sess.headers.update(HEADERS)
-        self.cookie_path = cookie_path
-        self.load_cookies()
-
-    def load_cookies(self):
-        if os.path.exists(self.cookie_path):
-            try:
-                with open(self.cookie_path, 'r', encoding='utf-8') as f:
-                    cookies = json.load(f)
-                    if isinstance(cookies, list):
-                        for c in cookies:
-                            self.sess.cookies.set(c['name'], c['value'], domain=c['domain'])
-                    elif isinstance(cookies, dict):
-                        for k, v in cookies.items():
-                            self.sess.cookies.set(k, v, domain=".bilibili.com")
-            except:
-                pass
-
-    def check_login(self):
-        try:
-            url = "https://api.bilibili.com/x/web-interface/nav"
-            resp = self.sess.get(url, timeout=10).json()
-            return resp['code'] == 0 and resp['data']['isLogin']
-        except:
-            return False
-
-    def get_video_info(self, bvid):
-        """获取视频详情"""
-        try:
-            url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
-            resp = self.sess.get(url, timeout=10).json()
-            if resp['code'] != 0: return None
-            data = resp['data']
-
-            info = {
-                'bvid': data['bvid'],
-                'title': data['title'],
-                'owner': data['owner']['name'],
-                'is_season': False,
-                'season_id': None,
-                'season_title': "",
-                'episodes': []
-            }
-
-            # 合集判断
-            if 'ugc_season' in data and data['ugc_season']:
-                info['is_season'] = True
-                info['season_id'] = data['ugc_season']['id']
-                info['season_title'] = data['ugc_season']['title']
-                ep_counter = 1
-                for section in data['ugc_season']['sections']:
-                    for ep in section['episodes']:
-                        info['episodes'].append({
-                            'title': ep['title'],
-                            'bvid': ep['bvid'],
-                            'cid': ep['cid'],
-                            'page_num': ep_counter
-                        })
-                        ep_counter += 1
-            else:
-                info['season_title'] = data['title']
-                for page in data['pages']:
-                    info['episodes'].append({
-                        'title': page['part'],
-                        'bvid': data['bvid'],
-                        'cid': page['cid'],
-                        'page_num': page['page']
-                    })
-            return info
-        except Exception as e:
-            print(f"API Error: {e}")
-            return None
-
-    def get_play_url(self, bvid, cid):
-        def _request(fnval):
-            url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
-            return self.sess.get(url, timeout=10).json()
-
-        resp = _request(4048)
-        if resp['code'] != 0 or 'data' not in resp or 'dash' not in resp['data']:
-            resp = _request(80)
-
-        if resp['code'] == 0 and 'data' in resp and 'dash' in resp['data']:
-            dash = resp['data']['dash']
-            video_url = dash['video'][0]['baseUrl']
-            audio_url = dash['audio'][0]['baseUrl'] if dash.get('audio') else None
-            quality_id = dash['video'][0]['id']
-            return video_url, audio_url, quality_id
-        return None, None, 0
 
 
 # app/spiders/bilibili_spider.py
@@ -1085,6 +973,7 @@ class BilibiliSpider(BaseSpider):
                 return False
         except Exception:
             return False
+
 
 # app/spiders/kuaishou_spider.py
 
@@ -1778,6 +1667,7 @@ class MissAVSpider(BaseSpider):
         return f"{tag_str} {title}" if tag_str else title
 
 
+
 # app/ui/dialogs.py
 
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -1883,35 +1773,24 @@ class SelectionDialog(QDialog):
 # app/ui/main_window.py
 
 import os
-
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QProgressBar,
                              QTableWidget, QTableWidgetItem, QHeaderView,
                              QFrame, QSplitter, QPlainTextEdit, QComboBox,
                              QFileDialog, QStyle, QSlider, QSizePolicy, QDialog, QMessageBox)
-from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QSize, QByteArray
+from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QSettings, QSize, QByteArray
+from PyQt6.QtGui import QIcon
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-
 from app.ui.styles import DARK_STYLESHEET
 from app.utils import cfg
 from app.core.registry import registry
 from app.ui.dialogs import SelectionDialog
-
-
-class ClickableVideoWidget(QVideoWidget):
-    sig_double_click = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet("background-color: #000; border-top-left-radius: 4px; border-top-right-radius: 4px;")
-
-    def mouseDoubleClickEvent(self, event):
-        self.sig_double_click.emit()
-
+from app.ui.widgets import ClickableVideoWidget
 
 class MainWindow(QMainWindow):
+    # 信号定义
     sig_start_crawl = pyqtSignal(str, str, dict)
     sig_stop_crawl = pyqtSignal()
     sig_change_dir = pyqtSignal()
@@ -1924,13 +1803,14 @@ class MainWindow(QMainWindow):
         self.resize(1300, 850)
         self.setStyleSheet(DARK_STYLESHEET)
 
+        if os.path.exists("favicon.ico"):
+            self.setWindowIcon(QIcon("favicon.ico"))
+
         self.current_save_dir = cfg.get("common", "save_directory") or os.getcwd()
         self.current_plugin = None
         self.plugin_widget = None
         self.is_fullscreen_mode = False
-
         self.init_ui()
-        # 延迟加载状态
         self.load_initial_state()
 
     def init_ui(self):
@@ -2044,13 +1924,11 @@ class MainWindow(QMainWindow):
         self.main_split.addWidget(self.left_panel)
 
         # --- Right Panel ---
-        # 这是一个容器，里面放 right_split
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # [核心] 右侧分割线 (上下)
         self.right_split = QSplitter(Qt.Orientation.Vertical)
         self.right_split.setHandleWidth(4)
 
@@ -2061,6 +1939,7 @@ class MainWindow(QMainWindow):
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(0)
 
+        # [使用导入的控件]
         self.vid_w = ClickableVideoWidget()
         self.vid_w.sig_double_click.connect(self.toggle_fullscreen_mode)
 
@@ -2112,14 +1991,10 @@ class MainWindow(QMainWindow):
         self.log_txt.setStyleSheet("border-top: 1px solid #333; background-color: #111; color: #eee;")
         self.log_txt.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
-        # 添加到右侧分割线
         self.right_split.addWidget(video_container)
         self.right_split.addWidget(self.log_txt)
 
-        # 添加到右侧容器
         right_layout.addWidget(self.right_split)
-
-        # 添加到主分割线
         self.main_split.addWidget(right_container)
         main_layout.addWidget(self.main_split)
 
@@ -2143,7 +2018,6 @@ class MainWindow(QMainWindow):
             self.is_fullscreen_mode = False
             self.btn_fullscreen.setText("[ 全屏 ]")
 
-            # 恢复最大化
             state_hex = cfg.get("ui", "window_state")
             if state_hex: self.restoreState(QByteArray.fromHex(state_hex.encode()))
 
@@ -2155,7 +2029,6 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def load_initial_state(self):
-        # 1. 模式
         last_source_id = cfg.get("common", "last_source", "kuaishou")
         idx = self.combo_source.findData(last_source_id)
         if idx != -1:
@@ -2167,30 +2040,25 @@ class MainWindow(QMainWindow):
         self.lbl_full_path.setText(self.current_save_dir)
         self.lbl_full_path.setToolTip(self.current_save_dir)
 
-        # 2. 窗口位置
         geo_hex = cfg.get("ui", "geometry")
         if geo_hex: self.restoreGeometry(QByteArray.fromHex(geo_hex.encode()))
 
-        # 3. 窗口状态
         state_hex = cfg.get("ui", "window_state")
         if state_hex: self.restoreState(QByteArray.fromHex(state_hex.encode()))
 
-        # 4. 主分割线 (左右)
         main_split_hex = cfg.get("ui", "main_splitter_state")
         if main_split_hex:
             self.main_split.restoreState(QByteArray.fromHex(main_split_hex.encode()))
         else:
             self.main_split.setSizes([400, 900])
 
-        # 5. [核心修复] 右侧分割线 (上下)
         right_split_hex = cfg.get("ui", "right_splitter_state")
         if right_split_hex:
             self.right_split.restoreState(QByteArray.fromHex(right_split_hex.encode()))
         else:
-            self.right_split.setSizes([600, 200])  # 默认 3:1
+            self.right_split.setSizes([600, 200])
 
     def closeEvent(self, e):
-        # [核心修复] 保存两个分割线
         cfg.save_ui_state(
             geometry=self.saveGeometry(),
             state=self.saveState(),
@@ -2226,7 +2094,6 @@ class MainWindow(QMainWindow):
         self.combo_source.setEnabled(False)
         if self.plugin_widget: self.plugin_widget.setEnabled(False)
 
-    # --- 业务逻辑 ---
     def on_source_changed(self, index):
         plugin_id = self.combo_source.currentData()
         if not plugin_id: return
@@ -2347,7 +2214,6 @@ class MainWindow(QMainWindow):
         seconds = (ms // 1000) % 60
         minutes = (ms // 60000)
         return f"{minutes:02}:{seconds:02}"
-
 
 
 # app/ui/styles.py
@@ -2474,6 +2340,22 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ height: 0px;
 """
 
 
+
+# app/ui/widgets.py
+
+from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtCore import pyqtSignal
+
+class ClickableVideoWidget(QVideoWidget):
+    sig_double_click = pyqtSignal()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 设置黑色背景和圆角，防止视频未加载时显示灰色
+        self.setStyleSheet("background-color: #000; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+    def mouseDoubleClickEvent(self, event):
+        self.sig_double_click.emit()
+
+
 # app/models.py
 
 import time
@@ -2551,6 +2433,7 @@ class AppConfig:
         self.missav_proxy = "http://127.0.0.1:7890"  # 默认代理
         self.missav_individual_only = False          # 仅单体
         self.missav_sort_priority = ["中文字幕", "英文字幕", "无码流出", "普通版"] # 排序偏好
+
 
 
 # app/utils.py
@@ -2668,13 +2551,193 @@ def sanitize_filename(name):
 cfg = ConfigManager()
 
 
-
-[{"name": "buvid3", "value": "11BEA90E-1458-2603-DB1C-5CDB99F7F1BF60497infoc", "domain": ".bilibili.com", "path": "/", "expires": 1803734560.624923, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "b_nut", "value": "1769174560", "domain": ".bilibili.com", "path": "/", "expires": 1800710560.625058, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "bili_ticket", "value": "eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk0MzM3NjIsImlhdCI6MTc2OTE3NDUwMiwicGx0IjotMX0.iG7dcfY7ScGw-9oFmuPmy2gmjJADA97ZyzcWouPL_Y4", "domain": ".bilibili.com", "path": "/", "expires": 1769433762, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "bili_ticket_expires", "value": "1769433702", "domain": ".bilibili.com", "path": "/", "expires": 1769433762, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "buvid4", "value": "B9DF668E-EFCE-EA94-4E02-2DF6F357A32562577-026012321-AFS0PYOHxynvyINItwRQ6g%3D%3D", "domain": ".bilibili.com", "path": "/", "expires": 1803734562.716236, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "buvid_fp", "value": "457acca5ed5c6cd3d61bec72816fe688", "domain": ".bilibili.com", "path": "/", "expires": 1800710563, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "SESSDATA", "value": "4dbe149d%2C1784726589%2Cd6992%2A11CjAgZipDEIbBGJpsJo16ewldh8e8TEZULXFujI0xvhnbftHVWzQDGbnT3fCHaMFPIBISVkp5Q3RZNFlBMWZMZUplck9Kb2plSUNIbFN4ZDNDSHFXb2pvN0JjUGZtUFFwVzJ6a1lKYnZYUUtYSlk0cHZsakRTdXV0SXNZbnJOdVBTNFVlRVhDMFVBIIEC", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296104, "httpOnly": true, "secure": true, "sameSite": "Lax"}, {"name": "bili_jct", "value": "a3b9fa2d72da2b0a6aa94a295b2ddec6", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296359, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "DedeUserID", "value": "511776633", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296488, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "DedeUserID__ckMd5", "value": "c1b424837ebbc59d", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296576, "httpOnly": false, "secure": true, "sameSite": "None"}, {"name": "sid", "value": "pwp02c4n", "domain": ".bilibili.com", "path": "/", "expires": 1784726589.296605, "httpOnly": false, "secure": true, "sameSite": "None"}]
+[
+    {
+        "name": "buvid3",
+        "value": "F83859AC-A983-918A-E61B-1904920B665D82398infoc",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1803822383.744455,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "b_nut",
+        "value": "1769262382",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1800798383.744585,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "bili_ticket",
+        "value": "eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk1MjE1ODIsImlhdCI6MTc2OTI2MjMyMiwicGx0IjotMX0.JHkGWPmdEOxbD6IglkJzkBOZU7aTALkvaZIHna-prdU",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1769521584,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "bili_ticket_expires",
+        "value": "1769521522",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1769521584,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "buvid4",
+        "value": "11509CF7-C6C4-C2E8-6643-B6BF1D1E6FAD83050-026012421-3KB7%2FIzLfXoAiZC0Lyh9gg%3D%3D",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1803822384.479041,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "buvid_fp",
+        "value": "457acca5ed5c6cd3d61bec72816fe688",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1800798385,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "SESSDATA",
+        "value": "9430e2cc%2C1784814409%2C572da%2A12CjC3k1XMtgvfS80IFLWrakvm8Th8_zmzVnWdZJ4ws2dig2smy0GMrfZzeuTISsd462ASVkhsbWU4ZVdiRkFMMTlXQ2VNaFVfY0NjcHBFZkx6eGVNa0J5a3hrSDVacUVjdzNXTEVIX1VIVjZNd21sSlAtQW4yQXNGZmRMeDJDTzdRVVhpaW94YWdBIIEC",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1784814410.975445,
+        "httpOnly": true,
+        "secure": true,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "bili_jct",
+        "value": "46bc7964ba90169449b63bba7c2c5c56",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1784814410.975808,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "DedeUserID",
+        "value": "511776633",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1784814410.97591,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "DedeUserID__ckMd5",
+        "value": "c1b424837ebbc59d",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1784814410.975997,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "sid",
+        "value": "gwlhaji4",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1784814410.976063,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "_uuid",
+        "value": "445710244-C2810-E842-6F1E-5DE1A5786E1E11325infoc",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": 1800798411,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "b_lsid",
+        "value": "D85FA714_19BF041EE8F",
+        "domain": ".bilibili.com",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": false,
+        "secure": false,
+        "sameSite": "Lax"
+    },
+    {
+        "name": "SESSDATA",
+        "value": "9430e2cc%2C1784814409%2C572da%2A12CjC3k1XMtgvfS80IFLWrakvm8Th8_zmzVnWdZJ4ws2dig2smy0GMrfZzeuTISsd462ASVkhsbWU4ZVdiRkFMMTlXQ2VNaFVfY0NjcHBFZkx6eGVNa0J5a3hrSDVacUVjdzNXTEVIX1VIVjZNd21sSlAtQW4yQXNGZmRMeDJDTzdRVVhpaW94YWdBIIEC",
+        "domain": ".biligame.com",
+        "path": "/",
+        "expires": 1784814410.559979,
+        "httpOnly": true,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "bili_jct",
+        "value": "46bc7964ba90169449b63bba7c2c5c56",
+        "domain": ".biligame.com",
+        "path": "/",
+        "expires": 1784814410.560142,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "DedeUserID",
+        "value": "511776633",
+        "domain": ".biligame.com",
+        "path": "/",
+        "expires": 1784814410.560226,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "DedeUserID__ckMd5",
+        "value": "c1b424837ebbc59d",
+        "domain": ".biligame.com",
+        "path": "/",
+        "expires": 1784814410.56032,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    },
+    {
+        "name": "sid",
+        "value": "g0yhmo5y",
+        "domain": ".biligame.com",
+        "path": "/",
+        "expires": 1784814410.560403,
+        "httpOnly": false,
+        "secure": true,
+        "sameSite": "None"
+    }
+]
 
 
 {
     "common": {
-        "save_directory": "D:/desktop",
+        "save_directory": "D:/desktop/picture/天音唯合集",
         "last_source": "bilibili",
         "theme": "dark"
     },
@@ -2689,10 +2752,10 @@ cfg = ConfigManager()
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     "ui": {
-        "geometry": "01d9d0cb0003000000000007000000000000051a0000036f000000070000001e0000051a0000036f000000000000000005a0000000070000001e0000051a0000036f",
+        "geometry": "01d9d0cb00030000000000820000002f000005950000039e000000820000004d000005950000039e000000000000000005a0000000820000004d000005950000039e",
         "window_state": "000000ff00000000fd00000000000005140000035200000004000000040000000800000008fc00000000",
         "splitter_state": "",
-        "main_splitter_state": "000000ff0000000100000002000001bd0000033f0100000004010000000100",
+        "main_splitter_state": "000000ff0000000100000002000001e40000033f0100000004010000000100",
         "right_splitter_state": "000000ff00000001000000020000020f000000ef0100000004010000000200",
         "is_fullscreen_mode": false
     }
@@ -2892,11 +2955,15 @@ cfg = ConfigManager()
 }
 
 
+
 # main.py
 
 import sys
 import os
 import time
+import ctypes
+
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
 from PyQt6.QtCore import QUrl, Qt, QTimer
 # 引入项目模块
@@ -2907,13 +2974,18 @@ from app.models import VideoItem
 from app.utils import cfg, sanitize_filename
 
 class ApplicationController:
-    """
-    主控制器 (Controller)
-    负责协调 UI、爬虫逻辑、下载管理和文件系统操作
-    """
     def __init__(self):
+        if os.name == 'nt':
+            try:
+                myappid = 'mygeekapp.universalcrawler.pro.v1'
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except:
+                pass
+
         # 1. 初始化 Qt 应用
         self.app = QApplication(sys.argv)
+        if os.path.exists("favicon.ico"):
+            self.app.setWindowIcon(QIcon("favicon.ico"))
         # 2. 初始化主窗口
         self.window = MainWindow()
         # 3. 内部状态
@@ -2939,6 +3011,10 @@ class ApplicationController:
         self.window.show()
         # 延迟执行本地扫描，防止启动时 UI 尚未就绪导致崩溃 (0xC0000409)
         QTimer.singleShot(200, self.scan_local_dir)
+
+
+
+
     # ---------------- 本地文件管理 ----------------
     def scan_local_dir(self):
         """扫描本地文件 (限制数量防止崩溃)"""
@@ -3162,3 +3238,8 @@ class ApplicationController:
 if __name__ == "__main__":
     controller = ApplicationController()
     controller.run()
+
+
+PyQt6~=6.10.2
+requests~=2.32.5
+playwright~=1.57.0
