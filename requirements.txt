@@ -1,3 +1,7 @@
 PyQt6~=6.10.2
+httpx~=0.28.1
+emoji~=2.14.1
+rich~=14.1.0
+gmssl~=3.2.2
 requests~=2.32.5
 playwright~=1.57.0

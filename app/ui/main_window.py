@@ -227,7 +227,6 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.main_split)
 
     # --- Logic ---
-
     def toggle_fullscreen_mode(self):
         if not self.is_fullscreen_mode:
             self.top_bar.hide()
