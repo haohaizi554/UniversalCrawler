@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from .template import API
+from app.config import DEFAULT_USER_AGENT
 
 try:
     from ..translation import _
@@ -94,7 +95,7 @@ class Detail(API):
 async def test():
     # 模拟 Params 类
     class MockParams:
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": DEFAULT_USER_AGENT}
         max_retry = 3
         timeout = 10
         logger = None

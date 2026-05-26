@@ -1,11 +1,26 @@
-# app/core/download_manager.py
+"""Central download queue and worker dispatch logic."""
+
 import os
-import re
-import threading
 import queue
-from PyQt6.QtCore import QThread, pyqtSignal, QObject, QSemaphore
+import threading
+
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
+
+from app.config import cfg
+from app.core.downloaders import BaseDownloader, BilibiliDownloader, DouyinDownloader, KuaishouDownloader, MissAVDownloader
+from app.exceptions import AppError, DownloaderStoppedError
 from app.models import VideoItem
-from app.core.downloaders import KuaishouDownloader, MissAVDownloader, BilibiliDownloader, DouyinDownloader
+from app.utils import sanitize_filename
+from app.debug_logger import debug_logger
+
+
+DOWNLOADER_REGISTRY: tuple[type[BaseDownloader], ...] = (
+    DouyinDownloader,
+    KuaishouDownloader,
+    MissAVDownloader,
+    BilibiliDownloader,
+)
+
 
 class DownloadWorker(QThread):
     sig_start = pyqtSignal(str)
@@ -32,205 +47,364 @@ class DownloadWorker(QThread):
         b'RIFF....AVI': '.avi',
     }
 
-    def __init__(self, video: VideoItem, save_dir: str, semaphore: QSemaphore):
+    def __init__(self, video: VideoItem, save_dir: str):
         super().__init__()
         self.video = video
         self.save_dir = save_dir
-        self.semaphore = semaphore
         self.is_running = True
         self._final_ext = ".mp4"
 
+    def _trace_id(self) -> str | None:
+        return self.video.meta.get("trace_id")
+
+    def _log_context(self, save_dir: str | None = None) -> dict:
+        return debug_logger.pick_used(
+            {
+                "trace_id": self._trace_id(),
+                "video_id": self.video.id,
+                "source": self.video.source,
+                "save_dir": save_dir,
+            },
+            "trace_id", "video_id", "source", "save_dir",
+        )
+
+    def _log_details(self, filepath: str | None = None, strategy: str | None = None) -> dict:
+        return debug_logger.pick_used(
+            {
+                "title": self.video.title,
+                "url": self.video.url,
+                "target_path": filepath,
+                "strategy": strategy,
+                "content_type": self.video.meta.get("content_type"),
+                "folder_name": self.video.meta.get("folder_name"),
+                "audio_url": self.video.meta.get("audio_url"),
+                "aweme_id": self.video.meta.get("aweme_id"),
+                "bvid": self.video.meta.get("bvid"),
+                "cid": self.video.meta.get("cid"),
+            },
+            "title", "url", "target_path", "strategy", "content_type", "folder_name", "audio_url", "aweme_id", "bvid", "cid",
+        )
+
     def run(self):
-        self.semaphore.acquire()
         try:
-            if not self.is_running: return
+            if not self.is_running:
+                return
             self.sig_start.emit(self.video.id)
 
-            # 构建保存路径：基础目录 + 文件夹（合集/图集时创建）
-            save_dir = self.save_dir
-            content_type = self.video.meta.get("content_type", "")
-            is_gallery = self.video.meta.get("is_gallery", False)
-            is_mix = self.video.meta.get("is_mix", False)
-            # 合集或图集（多文件）才创建子文件夹，单个视频/图片直接保存到根目录
-            if is_gallery or content_type == "gallery" or is_mix:
-                folder_name = self.video.meta.get("folder_name", "")
-                if folder_name:
-                    save_dir = os.path.join(save_dir, folder_name)
+            save_dir = self._resolve_save_dir()
 
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir, exist_ok=True)
 
-            # 获取文件名 - 根据内容类型智能判断扩展名
-            ext = ".mp4"  # 默认视频
-
-            # 1. 优先根据 meta 中的内容类型判断
-            content_type = self.video.meta.get("content_type", "")
-            if content_type == "gallery":
-                # 图集/实况 - 由下载器内部生成文件名，这里只生成占位路径
-                ext = ".jpeg"
-            elif content_type == "video":
-                ext = ".mp4"
-            else:
-                # 2. 根据 URL 特征判断
-                url_lower = self.video.url.lower()
-                if ".gif" in url_lower:
-                    ext = ".gif"
-                elif ".webp" in url_lower:
-                    ext = ".webp"
-                elif ".png" in url_lower:
-                    ext = ".png"
-                elif ".jpeg" in url_lower or ".jpg" in url_lower:
-                    ext = ".jpg"
-
-            # 生成文件名（使用统一的命名格式）
+            ext = self._infer_extension()
             filename = self._generate_filename(ext)
-            filepath = os.path.join(save_dir, filename)
+            filepath = self._ensure_unique_path(os.path.join(save_dir, filename))
             self.video.local_path = filepath
-            self._final_ext = ext  # 保存扩展名供后续使用
-            # 策略选择
-            downloader = None
-            if self.video.source == "kuaishou":
-                downloader = KuaishouDownloader()
-            elif self.video.source == "missav":
-                downloader = MissAVDownloader()
-            elif self.video.source == "bilibili":
-                downloader = BilibiliDownloader()
-            elif self.video.source == "douyin":
-                downloader = DouyinDownloader()
-            else:
-                raise ValueError(f"Unknown source: {self.video.source}")
-            # 执行下载 (传入回调和停止检查)
+            self._final_ext = ext
+            downloader = self._select_downloader()
+            download_strategy = self.video.meta.get("download_strategy")
+            debug_logger.log(
+                component="DownloadWorker",
+                action="start_download",
+                message="下载任务开始执行",
+                status_code="DL_START",
+                context=self._log_context(save_dir),
+                details=self._log_details(filepath, download_strategy or self.video.source),
+                trace_id=self._trace_id(),
+            )
             downloader.download(
                 video_item=self.video,
                 save_path=filepath,
                 progress_callback=lambda p: self.sig_progress.emit(self.video.id, p),
                 check_stop_func=lambda: not self.is_running
             )
-            
-            # 下载完成后，根据实际文件内容修正扩展名
             if self.is_running and os.path.exists(filepath):
                 actual_ext = self._detect_actual_file_type(filepath)
                 if actual_ext and actual_ext != self._final_ext:
-                    # 需要重命名文件
-                    new_filepath = filepath.rsplit('.', 1)[0] + actual_ext
+                    new_filepath = self._ensure_unique_path(filepath.rsplit('.', 1)[0] + actual_ext)
                     try:
                         os.rename(filepath, new_filepath)
                         self.video.local_path = new_filepath
-                        print(f"[DownloadManager] 修正文件扩展名: {os.path.basename(filepath)} -> {os.path.basename(new_filepath)}")
-                    except Exception as e:
-                        print(f"[DownloadManager] 修正扩展名失败: {e}")
-            
+                        debug_logger.log(
+                            component="DownloadWorker",
+                            action="normalize_extension",
+                            message="下载完成后已按文件签名修正扩展名",
+                            status_code="DL_EXT_NORMALIZED",
+                            context=self._log_context(),
+                            details={
+                                "old_name": os.path.basename(filepath),
+                                "new_name": os.path.basename(new_filepath),
+                            },
+                            trace_id=self._trace_id(),
+                        )
+                    except OSError as e:
+                        debug_logger.log_exception(
+                            "DownloadWorker",
+                            "normalize_extension",
+                            e,
+                            context=self._log_context(),
+                            details={"old_path": filepath, "new_path": new_filepath},
+                            trace_id=self._trace_id(),
+                        )
+
             if self.is_running:
+                debug_logger.log(
+                    component="DownloadWorker",
+                    action="download_finished",
+                    message="下载任务完成",
+                    status_code="DL_FINISH",
+                    context=self._log_context(),
+                    details=debug_logger.pick_used(
+                        {"title": self.video.title, "local_path": self.video.local_path},
+                        "title", "local_path",
+                    ),
+                    trace_id=self._trace_id(),
+                )
                 self.sig_finished.emit(self.video.id)
-        except InterruptedError:
+        except DownloaderStoppedError:
+            debug_logger.log(
+                component="DownloadWorker",
+                action="download_stopped",
+                level="WARN",
+                message="下载任务被用户停止",
+                status_code="DL_STOPPED",
+                context=self._log_context(),
+                details=debug_logger.pick_used({"title": self.video.title}, "title"),
+                trace_id=self._trace_id(),
+            )
             self.sig_error.emit(self.video.id, "用户已停止")
-        except Exception as e:
+        except (AppError, OSError, RuntimeError, ValueError) as e:
+            debug_logger.log_exception(
+                "DownloadWorker",
+                "download_error",
+                e,
+                context=self._log_context(),
+                details=self._log_details(filepath if 'filepath' in locals() else None, download_strategy if 'download_strategy' in locals() else None),
+                trace_id=self._trace_id(),
+            )
             self.sig_error.emit(self.video.id, str(e))
-        finally:
-            self.semaphore.release()
+
+    def _select_downloader(self) -> BaseDownloader:
+        """统一从注册表中选择平台下载器，避免在 run() 中继续堆 if/elif。"""
+        for downloader_cls in DOWNLOADER_REGISTRY:
+            if downloader_cls.can_handle(self.video):
+                return downloader_cls()
+        raise ValueError(f"Unknown source: {self.video.source}")
 
     def stop(self):
         self.is_running = False
 
+    def _resolve_save_dir(self) -> str:
+        """图集/合集类任务单独落到子目录，避免主目录被大量切碎文件污染。"""
+        save_dir = self.save_dir
+        content_type = self.video.meta.get("content_type", "")
+        is_gallery = self.video.meta.get("is_gallery", False)
+        is_mix = self.video.meta.get("is_mix", False)
+        use_subdir = self.video.meta.get("use_subdir", False)
+        folder_name = sanitize_filename(self.video.meta.get("folder_name", ""))
+
+        if folder_name and (is_gallery or content_type == "gallery" or is_mix or use_subdir):
+            return os.path.join(save_dir, folder_name)
+        return save_dir
+
+    def _infer_extension(self) -> str:
+        content_type = self.video.meta.get("content_type", "")
+        if content_type == "gallery":
+            return ".jpeg"
+        if content_type == "video":
+            return ".mp4"
+
+        url_lower = self.video.url.lower()
+        if ".gif" in url_lower:
+            return ".gif"
+        if ".webp" in url_lower:
+            return ".webp"
+        if ".png" in url_lower:
+            return ".png"
+        if ".jpeg" in url_lower or ".jpg" in url_lower:
+            return ".jpg"
+        return ".mp4"
+
     def _generate_filename(self, ext):
-        """生成文件名: 只保留描述"""
-        desc = self.video.title
-
-        # 清理非法字符
-        safe_name = re.sub(r'[\\/:*?"<>|]', '_', desc).strip()
-        if len(safe_name) > 200:
-            safe_name = safe_name[:200]
-
+        """生成文件名，避免重复扩展名和空文件名。"""
+        desc = sanitize_filename(self.video.title)
+        base_name, current_ext = os.path.splitext(desc)
+        safe_name = base_name if current_ext.lower() == ext.lower() else desc
+        safe_name = safe_name[:200] or f"{self.video.source}_{self.video.id}"
         return f"{safe_name}{ext}"
 
+    def _ensure_unique_path(self, filepath: str) -> str:
+        if not os.path.exists(filepath):
+            return filepath
+
+        base, ext = os.path.splitext(filepath)
+        index = 1
+        while True:
+            candidate = f"{base}_{index}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            index += 1
+
     def _detect_actual_file_type(self, filepath: str) -> str:
-        """根据文件头检测实际文件类型"""
+        """根据文件头检测实际文件类型，避免错误扩展名影响播放。"""
         try:
-            with open(filepath, 'rb') as f:
-                header = f.read(32)  # 读取前32字节
+            with open(filepath, "rb") as f:
+                header = f.read(32)
 
-            # 检查各种文件签名
-            if header.startswith(b'\x89PNG'):
-                return '.png'
-            elif header.startswith(b'\xff\xd8\xff'):
-                return '.jpg'
-            elif header.startswith(b'GIF89a') or header.startswith(b'GIF87a'):
-                return '.gif'
-            elif header.startswith(b'RIFF'):
-                # RIFF 可能是 WEBP 或 AVI
-                if b'WEBP' in header[:12]:
-                    return '.webp'
-                elif b'AVI ' in header[:12]:
-                    return '.avi'
-            elif header.startswith(b'ID3') or header.startswith(b'\xff\xfb') or header.startswith(b'\xff\xf3') or header.startswith(b'\xff\xf2'):
-                return '.mp3'
-            elif b'ftyp' in header[:12]:
-                # MP4/MOV 文件
-                if b'mp4' in header[:12] or b'M4V' in header[:12] or b'M4A' in header[:12]:
-                    return '.mp4'
-                elif b'moov' in header[:12] or b'mdat' in header[:12]:
-                    return '.mp4'
-                else:
-                    return '.mp4'  # 默认 mp4
-            elif header.startswith(b'OggS'):
-                return '.ogg'
-            elif header.startswith(b'fLaC'):
-                return '.flac'
-            elif header.startswith(b'Matroska') or header.startswith(b'\x1aE\xdf\xa3'):
-                return '.mkv'
-            elif b'FLV' in header[:5]:
-                return '.flv'
+            for signature, ext in self.FILE_SIGNATURES.items():
+                if signature == b"RIFF....AVI":
+                    if header.startswith(b"RIFF") and b"AVI " in header[:12]:
+                        return ext
+                    continue
+                if signature in (b"\x00\x00\x00 ftyp", b"\x00\x00\x00\x1cftyp", b"\x00\x00\x00\x20ftyp"):
+                    if b"ftyp" in header[:12]:
+                        return ext
+                    continue
+                if header.startswith(signature):
+                    if signature == b"RIFF" and b"WEBP" not in header[:12]:
+                        continue
+                    return ext
 
-            # 如果无法识别，返回 None
+            if header.startswith(b"\x1aE\xdf\xa3"):
+                return ".mkv"
+            if b"FLV" in header[:5]:
+                return ".flv"
             return None
-        except Exception as e:
-            print(f"[DownloadManager] 检测文件类型失败: {e}")
+        except OSError as e:
+            debug_logger.log_exception(
+                "DownloadWorker",
+                "detect_actual_file_type",
+                e,
+                context=self._log_context(),
+                details={"file_path": filepath},
+                trace_id=self._trace_id(),
+            )
             return None
 
 class DownloadManager(QObject):
+    WORKER_STOP_TIMEOUT_MS = 2000
+
     task_started = pyqtSignal(str)
     task_progress = pyqtSignal(str, int)
     task_finished = pyqtSignal(str)
     task_error = pyqtSignal(str, str)
 
-    def __init__(self, max_concurrent=3):
+    def __init__(self, max_concurrent: int | None = None):
         super().__init__()
         self.queue = queue.Queue()
         self.workers = []
-        self.max_concurrent = max_concurrent
-        self.semaphore = QSemaphore(max_concurrent)
+        self.max_concurrent = max_concurrent or cfg.get("download", "max_concurrent", 3)
+        # 槽位在派发线程里预占，避免过早创建大量阻塞中的 QThread。
+        self.slot_semaphore = threading.Semaphore(self.max_concurrent)
+        self._workers_lock = threading.Lock()
         self.is_running = True
         self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
         self.dispatcher_thread.start()
+
     def add_task(self, video: VideoItem, save_dir: str):
+        if not self.is_running:
+            raise RuntimeError("DownloadManager 已停止，无法继续添加任务")
+        trace_id = video.meta.get("trace_id")
+        debug_logger.log(
+            component="DownloadManager",
+            action="queue_task",
+            message="下载任务已进入队列",
+            status_code="DL_QUEUE",
+            context=debug_logger.pick_used(
+                {"trace_id": trace_id, "video_id": video.id, "source": video.source},
+                "trace_id", "video_id", "source",
+            ),
+            details=debug_logger.pick_used(
+                {"title": video.title, "save_dir": save_dir, "url": video.url, "content_type": video.meta.get("content_type")},
+                "title", "save_dir", "url", "content_type",
+            ),
+            trace_id=trace_id,
+        )
         self.queue.put((video, save_dir))
 
     def _dispatch_loop(self):
+        """派发线程先占用并发槽位，再启动真实下载线程，避免堆积阻塞线程。"""
         while self.is_running:
             try:
                 video, save_dir = self.queue.get(timeout=1)
-                self.workers = [w for w in self.workers if w.isRunning()]
-                worker = DownloadWorker(video, save_dir, self.semaphore)
+                while self.is_running and not self.slot_semaphore.acquire(timeout=0.2):
+                    pass
+                if not self.is_running:
+                    break
+
+                worker = DownloadWorker(video, save_dir)
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="dispatch_task",
+                    message="任务已从队列分发到下载线程",
+                    status_code="DL_DISPATCH",
+                    context=debug_logger.pick_used(
+                        {"trace_id": video.meta.get("trace_id"), "video_id": video.id, "source": video.source},
+                        "trace_id", "video_id", "source",
+                    ),
+                    details=debug_logger.pick_used(
+                        {"title": video.title, "max_concurrent": self.max_concurrent},
+                        "title", "max_concurrent",
+                    ),
+                    trace_id=video.meta.get("trace_id"),
+                )
                 worker.sig_start.connect(self.task_started)
                 worker.sig_progress.connect(self.task_progress)
                 worker.sig_finished.connect(self.task_finished)
                 worker.sig_error.connect(self.task_error)
-                self.workers.append(worker)
+                worker.finished.connect(lambda w=worker: self._on_worker_thread_finished(w))
+                with self._workers_lock:
+                    self.workers.append(worker)
                 worker.start()
             except queue.Empty:
                 continue
-            except Exception as e:
-                print(f"Dispatcher Error: {e}")
+            except (AppError, OSError, RuntimeError, ValueError) as e:
+                failed_video = locals().get("video")
+                debug_logger.log_exception(
+                    "DownloadManager",
+                    "dispatch_loop",
+                    e,
+                    details={"queued_tasks": self.queue.qsize(), "active_workers": len(self.workers)},
+                )
+                if failed_video is not None:
+                    self.task_error.emit(failed_video.id, f"调度失败: {e}")
+
+    def _on_worker_thread_finished(self, worker: DownloadWorker):
+        with self._workers_lock:
+            if worker in self.workers:
+                self.workers.remove(worker)
+        self.slot_semaphore.release()
+        worker.deleteLater()
 
     def stop_all(self):
         self.is_running = False
+        debug_logger.log(
+            component="DownloadManager",
+            action="stop_all",
+            level="WARN",
+            message="开始停止所有下载任务",
+            status_code="DL_STOP_ALL",
+            details={"active_workers": len(self.workers)},
+        )
         # 清空队列
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
-            except:
+            except queue.Empty:
                 pass
-        # 停止所有正在运行的工兵
-        for w in self.workers:
+        # 停止所有正在运行的工作线程
+        with self._workers_lock:
+            workers_snapshot = list(self.workers)
+        for w in workers_snapshot:
             w.stop()
-            w.wait()
+            if not w.wait(self.WORKER_STOP_TIMEOUT_MS):
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="stop_all_worker_timeout",
+                    level="WARN",
+                    message="等待下载线程停止超时，继续执行退出流程",
+                    status_code="DL_STOP_TIMEOUT",
+                    details={"video_id": w.video.id, "timeout_ms": self.WORKER_STOP_TIMEOUT_MS},
+                    trace_id=w.video.meta.get("trace_id"),
+                )
+        self.dispatcher_thread.join(timeout=2)
