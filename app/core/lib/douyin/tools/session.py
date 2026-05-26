@@ -6,8 +6,10 @@ from httpx import AsyncClient, AsyncHTTPTransport, Client, HTTPTransport
 try:
     from . import TIMEOUT, USERAGENT
 except ImportError:
+    from app.config import DEFAULT_USER_AGENT
+
     TIMEOUT = 10
-    USERAGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+    USERAGENT = DEFAULT_USER_AGENT
 
 from .error import DownloaderError
 from .capture import capture_error_params
@@ -30,6 +32,7 @@ def create_client(
     *args,
     **kwargs,
 ) -> AsyncClient:
+    verify = kwargs.pop("verify", True)
     return AsyncClient(
         headers=headers
         or {
@@ -37,7 +40,7 @@ def create_client(
         },
         timeout=timeout,
         follow_redirects=True,
-        verify=False,
+        verify=verify,
         mounts={
             "http://": AsyncHTTPTransport(proxy=proxy),
             "https://": AsyncHTTPTransport(proxy=proxy),
@@ -64,6 +67,7 @@ async def request_params(
     proxy: str = None,
     **kwargs,
 ):
+    verify = kwargs.pop("verify", True)
     with Client(
         headers=headers
         or {
@@ -73,7 +77,7 @@ async def request_params(
         },
         follow_redirects=True,
         timeout=timeout,
-        verify=False,
+        verify=verify,
         mounts={
             "http://": HTTPTransport(proxy=proxy),
             "https://": HTTPTransport(proxy=proxy),

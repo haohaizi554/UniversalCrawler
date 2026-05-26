@@ -1,9 +1,10 @@
 import json
+import re
 from time import time as time_func
 from typing import TYPE_CHECKING, Callable, Coroutine, Type, Union
 from urllib.parse import quote, urlencode
 
-from httpx import AsyncClient, get, post
+from httpx import AsyncClient, HTTPStatusError, get, post
 from rich.progress import (
     BarColumn,
     Progress,
@@ -71,6 +72,15 @@ __all__ = [
 ]
 
 
+def _extract_chrome_version(user_agent: str) -> str:
+    """从 UA 中提取 Chrome 主版本串，避免把整段 Mozilla 标识误传给接口。"""
+    match = re.search(r"Chrome/([\d.]+)", user_agent or "")
+    return match.group(1) if match else "139.0.0.0"
+
+
+CHROME_VERSION = _extract_chrome_version(USERAGENT)
+
+
 class API:
     domain = "https://www.douyin.com/"
     short_domain = "https://www.iesdouyin.com/"
@@ -92,10 +102,10 @@ class API:
         "browser_language": "zh-CN",
         "browser_platform": "Win32",
         "browser_name": "Chrome",
-        "browser_version": "139.0.0.0",
+        "browser_version": CHROME_VERSION,
         "browser_online": "true",
         "engine_name": "Blink",
-        "engine_version": "139.0.0.0",
+        "engine_version": CHROME_VERSION,
         "os_name": "Windows",
         "os_version": "10",
         "cpu_core_num": "16",
@@ -391,7 +401,7 @@ class API:
             headers=headers,
             proxy=self.proxy,
             follow_redirects=True,
-            verify=False,
+            verify=verify,
             timeout=self.timeout,
             **kwargs,
         )
@@ -422,8 +432,10 @@ class API:
     async def request_data_post_proxy(
             self, url: str, params: str, data: dict, headers: dict, finished=False, **kwargs
     ):
+        verify = kwargs.pop("verify", True)
         self.__record_request_messages(
             url,
+            params,
             params,
             data,
             headers,
@@ -435,7 +447,7 @@ class API:
             headers=headers,
             proxy=self.proxy,
             follow_redirects=True,
-            verify=False,
+            verify=verify,
             timeout=self.timeout,
             **kwargs,
         )
@@ -452,7 +464,7 @@ class API:
 
         try:
             response.raise_for_status()
-        except Exception as e:
+        except HTTPStatusError as e:
             self.log.error(f"HTTP 请求异常: {e}")
             return None
 
@@ -577,7 +589,7 @@ class APITikTok(API):
         "browser_name": "Mozilla",
         "browser_online": "true",
         "browser_platform": "Win32",
-        "browser_version": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+        "browser_version": CHROME_VERSION,
         "channel": "tiktok_web",
         "cookie_enabled": "true",
         "data_collection_enabled": "true",

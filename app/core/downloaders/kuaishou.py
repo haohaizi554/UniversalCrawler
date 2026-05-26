@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import requests
+
+from app.config import DEFAULT_USER_AGENT, cfg
+from app.debug_logger import debug_logger
+from app.models import VideoItem
+
+from .base import BaseDownloader, ProgressCallback, StopCheck
+
+
+class KuaishouDownloader(BaseDownloader):
+    source_id = "kuaishou"
+
+    def download(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        trace_id = video_item.meta.get("trace_id")
+        download_cfg = cfg.settings.download
+        headers = {
+            "User-Agent": video_item.meta.get("ua", cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT)),
+            "Referer": video_item.meta.get("referer", "https://www.kuaishou.com/"),
+        }
+        cookie_dict = video_item.meta.get("cookies")
+        if isinstance(cookie_dict, dict):
+            headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
+
+        debug_logger.log(
+            component="KuaishouDownloader",
+            action="prepare_download",
+            message="准备下载快手视频流",
+            status_code="KUAISHOU_DL_PREPARE",
+            details=debug_logger.pick_used(
+                {
+                    "title": video_item.title,
+                    "source_url": video_item.url,
+                    "save_path": save_path,
+                    "download_strategy": video_item.meta.get("download_strategy"),
+                    "referer": headers.get("Referer"),
+                },
+                "title",
+                "source_url",
+                "save_path",
+                "download_strategy",
+                "referer",
+            ),
+            trace_id=trace_id,
+        )
+
+        temp_path = save_path + ".downloading"
+        try:
+            with requests.get(video_item.url, headers=headers, stream=True, timeout=60) as response:
+                response.raise_for_status()
+                debug_logger.log_api(
+                    component="KuaishouDownloader",
+                    api_name="stream_download",
+                    request=debug_logger.pick_used(
+                        {"url": video_item.url, "save_path": temp_path, "referer": headers.get("Referer")},
+                        "url",
+                        "save_path",
+                        "referer",
+                    ),
+                    response_summary=debug_logger.pick_used(
+                        {
+                            "content_length": response.headers.get("content-length"),
+                            "content_type": response.headers.get("content-type"),
+                        },
+                        "content_length",
+                        "content_type",
+                    ),
+                    message="快手视频流下载连接建立成功",
+                    status_code=response.status_code,
+                    trace_id=trace_id,
+                )
+        except requests.RequestException as exc:
+            debug_logger.log_exception(
+                "KuaishouDownloader",
+                "stream_download_probe",
+                exc,
+                context={"url": video_item.url, "save_path": save_path},
+                trace_id=trace_id,
+            )
+
+        self._download_with_strategy_fallback(
+            video_item=video_item,
+            save_path=save_path,
+            headers=headers,
+            progress_callback=progress_callback,
+            check_stop_func=check_stop_func,
+            max_retries=download_cfg.max_retries,
+            timeout=download_cfg.request_timeout,
+            chunk_size=download_cfg.chunk_size,
+            error_message="下载失败",
+        )
+        debug_logger.log(
+            component="KuaishouDownloader",
+            action="download_finished",
+            message="快手视频下载完成",
+            status_code="KUAISHOU_DL_OK",
+            details=debug_logger.pick_used({"title": video_item.title, "save_path": save_path}, "title", "save_path"),
+            trace_id=trace_id,
+        )

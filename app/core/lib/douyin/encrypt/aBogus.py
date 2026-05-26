@@ -10,7 +10,9 @@ from gmssl import func, sm3
 try:
     from ..tools import USERAGENT
 except ImportError:
-    USERAGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+    from app.config import DEFAULT_USER_AGENT
+
+    USERAGENT = DEFAULT_USER_AGENT
 
 __all__ = [
     "ABogus",

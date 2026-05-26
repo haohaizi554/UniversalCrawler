@@ -1,6 +1,6 @@
 # app/core/lib/douyin/interface/live.py
 from typing import TYPE_CHECKING, Union
-from .template import API
+from .template import API, CHROME_VERSION
 
 try:
     from ..tools import DownloaderError
@@ -46,7 +46,8 @@ class Live(API):
 
     async def with_web_rid(self) -> dict:
         self.set_referer("https://live.douyin.com/")
-        params = {  # TODO: 参数固定
+        # 直播页请求参数基本固定，只有房间标识会随入口变化。
+        params = {
             "aid": "6383",
             "app_name": "douyin_web",
             "live_id": "1",
@@ -59,7 +60,7 @@ class Live(API):
             "browser_language": "zh-CN",
             "browser_platform": "Win32",
             "browser_name": "Edge",
-            "browser_version": "139.0.0.0",
+            "browser_version": CHROME_VERSION,
             "web_rid": self.web_rid,
             # "room_id_str": "",
             "enter_source": "",

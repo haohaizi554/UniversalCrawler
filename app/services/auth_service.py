@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+from typing import Any
+
+from app.exceptions import CookieLoadError, CookieSaveError
+
+
+class AuthService:
+    """认证文件读写服务，统一把底层 IO/JSON 异常转成领域异常。"""
+
+    def load_json_file(self, file_path: str) -> Any:
+        if not os.path.exists(file_path):
+            return None
+        try:
+            with open(file_path, "r", encoding="utf-8") as fp:
+                return json.load(fp)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise CookieLoadError(str(exc)) from exc
+
+    def save_json_file(self, file_path: str, payload: Any) -> None:
+        try:
+            with open(file_path, "w", encoding="utf-8") as fp:
+                json.dump(payload, fp, indent=4, ensure_ascii=False)
+        except (OSError, TypeError, ValueError) as exc:
+            raise CookieSaveError(str(exc)) from exc
+
+    @staticmethod
+    def extract_cookie_list(payload: list[dict] | dict | None) -> list[dict]:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict) and isinstance(payload.get("cookies"), list):
+            return payload["cookies"]
+        return []
+
+    @classmethod
+    def extract_cookie_dict(cls, payload: list[dict] | dict | None) -> dict[str, str]:
+        if isinstance(payload, dict) and "cookies" not in payload:
+            return {str(key): str(value) for key, value in payload.items()}
+        cookies = cls.extract_cookie_list(payload)
+        result: dict[str, str] = {}
+        for cookie in cookies:
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if name and value is not None:
+                result[str(name)] = str(value)
+        return result
+
+    @classmethod
+    def build_cookie_string(cls, payload: list[dict] | dict | None, required_cookie: str | None = None) -> str:
+        cookie_dict = cls.extract_cookie_dict(payload)
+        if required_cookie and required_cookie not in cookie_dict:
+            return ""
+        return "; ".join(f"{name}={value}" for name, value in cookie_dict.items())
+
+    def restore_playwright_cookies(self, context, file_path: str) -> bool:
+        payload = self.load_json_file(file_path)
+        cookies = self.extract_cookie_list(payload)
+        if not cookies:
+            return False
+        context.add_cookies(cookies)
+        return True
+
+    def wait_for_cookie_and_persist(
+        self,
+        *,
+        context,
+        cookie_name: str,
+        save_path: str,
+        save_mode: str = "cookies",
+        max_attempts: int = 120,
+        interval_seconds: float = 1.0,
+        stop_check=None,
+        wait_callback=None,
+    ) -> bool:
+        for _ in range(max_attempts):
+            if stop_check and stop_check():
+                return False
+            cookies = context.cookies()
+            if self.has_cookie(cookies, cookie_name):
+                payload = context.storage_state() if save_mode == "storage_state" else cookies
+                self.save_json_file(save_path, payload)
+                return True
+            if wait_callback:
+                wait_callback()
+            else:
+                time.sleep(interval_seconds)
+        return False
+
+    @staticmethod
+    def has_cookie(cookies: list[dict] | dict | None, cookie_name: str) -> bool:
+        if isinstance(cookies, list):
+            return any(cookie.get("name") == cookie_name for cookie in cookies)
+        if isinstance(cookies, dict):
+            return cookie_name in cookies
+        return False
