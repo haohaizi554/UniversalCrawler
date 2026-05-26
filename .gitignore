@@ -1,0 +1,53 @@
+# Python 编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.spec
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE 配置文件
+.idea/
+.vscode/
+
+# Node
+node_modules/
+
+# 日志
+*.log
+
+# 构建输出
+build/
+dist/
+.cache/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Git
+.git/
+
+# 媒体与压缩包
+*.mp4
+*.zip
+*.rar
+*.7z
+
+# 测试工具
+ms-playwright/
+chromium/
+
+# 数据文件
+data/
+dataset/
+*.json
+
+# 临时文件
+temp/
+tmp/
