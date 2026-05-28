@@ -1,3 +1,5 @@
+"""包初始化模块，为 `app/core/lib/douyin/encrypt` 提供统一导出或包级说明。"""
+
 #app/core/lib/douyin/encrypt/__init__.py
 from .aBogus import ABogus
 from .device_id import DeviceId

@@ -1,3 +1,5 @@
+"""服务模块，负责 `app/services/file_service.py` 对应的业务支撑能力。"""
+
 import os
 from dataclasses import dataclass
 
@@ -8,6 +10,7 @@ from app.utils import sanitize_filename
 
 @dataclass
 class ScanResult:
+    """封装 `ScanResult` 在 `app/services/file_service.py` 中承担的核心逻辑。"""
     items: list[VideoItem]
     total_count: int
     video_count: int
@@ -20,6 +23,7 @@ class MediaLibraryService:
     """本地媒体库服务，负责扫描、重命名、删除。"""
 
     def __init__(self, video_extensions: tuple[str, ...], image_extensions: tuple[str, ...]):
+        """初始化当前实例并准备运行所需的状态，供 `MediaLibraryService` 使用。"""
         self.video_extensions = tuple(ext.lower() for ext in video_extensions)
         self.image_extensions = tuple(ext.lower() for ext in image_extensions)
         self.all_media_extensions = self.video_extensions + self.image_extensions
@@ -75,6 +79,7 @@ class MediaLibraryService:
             raise MediaScanError(str(exc)) from exc
 
     def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:
+        """执行 `rename_media` 对应的业务逻辑，供 `MediaLibraryService` 使用。"""
         if not os.path.exists(video.local_path):
             raise FileOperationError("文件不存在，无法重命名")
 
@@ -94,6 +99,7 @@ class MediaLibraryService:
             raise FileOperationError(str(exc)) from exc
 
     def delete_media(self, video: VideoItem) -> bool:
+        """删除 `media` 对应的对象、文件或记录，供 `MediaLibraryService` 使用。"""
         file_path = video.local_path
         if not file_path or not os.path.exists(file_path):
             return False

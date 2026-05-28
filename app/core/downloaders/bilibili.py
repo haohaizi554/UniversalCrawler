@@ -1,3 +1,5 @@
+"""下载器模块，负责 `app/core/downloaders/bilibili.py` 对应资源的落盘或外部工具调用流程。"""
+
 from __future__ import annotations
 
 import os
@@ -22,6 +24,7 @@ from .external import FFmpegExternalTool, build_hidden_startupinfo
 
 
 class BilibiliDownloader(BaseDownloader):
+    """实现 `BilibiliDownloader` 对应的资源下载与落盘流程。"""
     source_id = "bilibili"
 
     def download(
@@ -31,6 +34,7 @@ class BilibiliDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        """执行 `download` 对应的业务逻辑，供 `BilibiliDownloader` 使用。"""
         trace_id = video_item.meta.get("trace_id")
         ffmpeg_path = FFmpegExternalTool.resolve_executable()
         if not ffmpeg_path:
@@ -74,6 +78,7 @@ class BilibiliDownloader(BaseDownloader):
         )
 
         def cleanup_temp_files() -> None:
+            """执行 `cleanup_temp_files` 对应的业务逻辑。"""
             for temp_path in (temp_v, temp_a):
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -88,6 +93,7 @@ class BilibiliDownloader(BaseDownloader):
         error_holder: list[Exception] = []
 
         def emit_combined_progress() -> None:
+            """执行 `emit_combined_progress` 对应的业务逻辑。"""
             total = sum(item["total"] for item in stream_stats.values() if item["total"] > 0)
             downloaded = sum(item["downloaded"] for item in stream_stats.values())
             if total <= 0:
@@ -99,6 +105,7 @@ class BilibiliDownloader(BaseDownloader):
                 progress_callback(percent)
 
         def download_stream(name: str, url: str | None, path: str) -> None:
+            """执行 `download_stream` 对应的业务逻辑。"""
             if not url:
                 return
             try:

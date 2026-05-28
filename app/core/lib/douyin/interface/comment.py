@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/comment.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/comment.py
 from typing import TYPE_CHECKING, Callable, Coroutine, Type, Union
 # 调整引用路径
@@ -7,7 +9,11 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -16,6 +22,7 @@ if TYPE_CHECKING:
 
 
 class Comment(API):
+    """封装 `Comment` 在 `app/core/lib/douyin/interface/comment.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -28,6 +35,7 @@ class Comment(API):
         count_reply: int = 3,
         reply: bool = False,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Comment` 使用。"""
         super().__init__(params, cookie, proxy)
         self.params_object = params
         self.cookie = cookie
@@ -47,6 +55,7 @@ class Comment(API):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `Comment` 使用。"""
         return self.params | {
             "aweme_id": self.item_id,
             "cursor": self.cursor,
@@ -75,6 +84,7 @@ class Comment(API):
         *args,
         **kwargs,
     ) -> list[dict]:
+        """执行当前对象或脚本的主流程，供 `Comment` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -106,6 +116,7 @@ class Comment(API):
         *args,
         **kwargs,
     ):
+        """执行 `run_batch` 对应的业务逻辑，供 `Comment` 使用。"""
         with self.progress_object() as self.progress:
             self.task_id = self.progress.add_task(
                 _("正在获取{text}数据").format(text=self.text),
@@ -139,6 +150,7 @@ class Comment(API):
         *args,
         **kwargs,
     ):
+        """更新 `progress` 对应的状态或数据内容，供 `Comment` 使用。"""
         while not self.finished and self.pages > 0:
             self.progress.update(self.task_id)
             await self.run_single(
@@ -160,6 +172,7 @@ class Comment(API):
     async def run_reply(
         self,
     ):
+        """执行 `run_reply` 对应的业务逻辑，供 `Comment` 使用。"""
         if not self.reply:
             return
         reply_ids = Extractor.extract_reply_ids(self.current_page)
@@ -192,6 +205,7 @@ class Comment(API):
         *args,
         **kwargs,
     ):
+        """执行 `check_response` 对应的业务逻辑，供 `Comment` 使用。"""
         try:
             if not (d := data_dict[data_key]):
                 self.log.info(error_text)
@@ -209,6 +223,7 @@ class Comment(API):
 
 
 class Reply(Comment):
+    """封装 `Reply` 在 `app/core/lib/douyin/interface/comment.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -222,6 +237,7 @@ class Reply(Comment):
         progress=None,
         task_id=None,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Reply` 使用。"""
         super().__init__(
             params,
             cookie,
@@ -240,6 +256,7 @@ class Reply(Comment):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `Reply` 使用。"""
         return self.params | {
             "item_id": self.item_id,
             "comment_id": self.comment_id,
@@ -268,6 +285,7 @@ class Reply(Comment):
         *args,
         **kwargs,
     ):
+        """执行当前对象或脚本的主流程，供 `Reply` 使用。"""
         return await super(Comment, self).run(
             referer,
             single_page=single_page,
@@ -298,6 +316,7 @@ class Reply(Comment):
         *args,
         **kwargs,
     ):
+        """执行 `run_batch` 对应的业务逻辑，供 `Reply` 使用。"""
         if not self.progress:
             return await super(Comment, self).run_batch(
                 data_key,
@@ -336,6 +355,7 @@ class Reply(Comment):
         *args,
         **kwargs,
     ):
+        """执行 `check_response` 对应的业务逻辑，供 `Reply` 使用。"""
         return super(Comment, self).check_response(
             data_dict,
             data_key,
@@ -348,6 +368,7 @@ class Reply(Comment):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/account_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/account_tiktok.py
 from typing import TYPE_CHECKING, Callable, Coroutine, Type, Union
 from .account import Account
@@ -13,6 +15,7 @@ class AccountTikTok(
     Account,
     APITikTok,
 ):
+    """封装 `AccountTikTok` 在 `app/core/lib/douyin/interface/account_tiktok.py` 中承担的核心逻辑。"""
     post_api = f"{APITikTok.domain}api/post/item_list/"
     favorite_api = f"{APITikTok.domain}api/favorite/item_list/"
 
@@ -31,6 +34,7 @@ class AccountTikTok(
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `AccountTikTok` 使用。"""
         super().__init__(
             params,
             cookie,
@@ -61,6 +65,7 @@ class AccountTikTok(
         *args,
         **kwargs,
     ):
+        """执行当前对象或脚本的主流程，供 `AccountTikTok` 使用。"""
         self.set_referer(referer)
         match single_page:
             case True:
@@ -107,6 +112,7 @@ class AccountTikTok(
         *args,
         **kwargs,
     ):
+        """执行 `run_batch` 对应的业务逻辑，供 `AccountTikTok` 使用。"""
         await super().run_batch(
             data_key=data_key,
             error_text=error_text,
@@ -122,9 +128,11 @@ class AccountTikTok(
         )
 
     def generate_favorite_params(self) -> dict:
+        """执行 `generate_favorite_params` 对应的业务逻辑，供 `AccountTikTok` 使用。"""
         return self.generate_post_params()
 
     def generate_post_params(self) -> dict:
+        """执行 `generate_post_params` 对应的业务逻辑，供 `AccountTikTok` 使用。"""
         return self.params | {
             "secUid": self.sec_user_id,
             "count": self.count,
@@ -137,6 +145,7 @@ class AccountTikTok(
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/aBogus.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/encrypt/aBogus.py
 
 from random import choice, randint, random
@@ -19,6 +21,7 @@ __all__ = [
 ]
 
 class ABogus:
+    """封装 `ABogus` 在 `app/core/lib/douyin/encrypt/aBogus.py` 中承担的核心逻辑。"""
     __filter = compile(r"%([0-9A-F]{2})")
     __arguments = [0, 1, 14]
     __ua_key = "\u0000\u0001\u000e"
@@ -48,6 +51,7 @@ class ABogus:
         user_agent: str = USERAGENT,
         platform: str = None,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `ABogus` 使用。"""
         self.chunk = []
         self.size = 0
         self.reg = self.__reg[:]
@@ -66,6 +70,7 @@ class ABogus:
         b=85,
         c=45,
     ) -> list:
+        """执行 `list_1` 对应的业务逻辑，供 `ABogus` 使用。"""
         return cls.random_list(
             random_num,
             a,
@@ -83,6 +88,7 @@ class ABogus:
         a=170,
         b=85,
     ) -> list:
+        """执行 `list_2` 对应的业务逻辑，供 `ABogus` 使用。"""
         return cls.random_list(
             random_num,
             a,
@@ -100,6 +106,7 @@ class ABogus:
         a=170,
         b=85,
     ) -> list:
+        """执行 `list_3` 对应的业务逻辑，供 `ABogus` 使用。"""
         return cls.random_list(
             random_num,
             a,
@@ -120,6 +127,7 @@ class ABogus:
         f=0,
         g=0,
     ) -> list:
+        """执行 `random_list` 对应的业务逻辑，供 `ABogus` 使用。"""
         r = a or (random() * 10000)
         v = [
             r,
@@ -138,6 +146,7 @@ class ABogus:
 
     @staticmethod
     def from_char_code(*args):
+        """执行 `from_char_code` 对应的业务逻辑，供 `ABogus` 使用。"""
         return "".join(chr(code) for code in args)
 
     @classmethod
@@ -147,6 +156,7 @@ class ABogus:
         random_num_2=None,
         random_num_3=None,
     ):
+        """执行 `generate_string_1` 对应的业务逻辑，供 `ABogus` 使用。"""
         return (
             cls.from_char_code(*cls.list_1(random_num_1))
             + cls.from_char_code(*cls.list_2(random_num_2))
@@ -160,6 +170,7 @@ class ABogus:
         start_time=0,
         end_time=0,
     ) -> str:
+        """执行 `generate_string_2` 对应的业务逻辑，供 `ABogus` 使用。"""
         a = self.generate_string_2_list(
             url_params,
             method,
@@ -172,6 +183,7 @@ class ABogus:
         return self.rc4_encrypt(self.from_char_code(*a), "y")
 
     def generate_ua_code(self, user_agent: str) -> list[int]:
+        """执行 `generate_ua_code` 对应的业务逻辑，供 `ABogus` 使用。"""
         u = self.rc4_encrypt(user_agent, self.__ua_key)
         u = self.generate_result(u, "s3")
         return self.sum(u)
@@ -183,6 +195,7 @@ class ABogus:
         start_time=0,
         end_time=0,
     ) -> list:
+        """执行 `generate_string_2_list` 对应的业务逻辑，供 `ABogus` 使用。"""
         start_time = start_time or int(time() * 1000)
         end_time = end_time or (start_time + randint(4, 8))
         params_array = self.generate_params_code(url_params)
@@ -209,6 +222,7 @@ class ABogus:
 
     @staticmethod
     def reg_to_array(a):
+        """执行 `reg_to_array` 对应的业务逻辑，供 `ABogus` 使用。"""
         o = [0] * 32
         for i in range(8):
             c = a[i]
@@ -223,6 +237,7 @@ class ABogus:
         return o
 
     def compress(self, a):
+        """执行 `compress` 对应的业务逻辑，供 `ABogus` 使用。"""
         f = self.generate_f(a)
         i = self.reg[:]
         for o in range(64):
@@ -252,6 +267,7 @@ class ABogus:
 
     @classmethod
     def generate_f(cls, e):
+        """执行 `generate_f` 对应的业务逻辑，供 `ABogus` 使用。"""
         r = [0] * 132
 
         for t in range(16):
@@ -275,11 +291,13 @@ class ABogus:
 
     @staticmethod
     def pad_array(arr, length=60):
+        """执行 `pad_array` 对应的业务逻辑，供 `ABogus` 使用。"""
         while len(arr) < length:
             arr.append(0)
         return arr
 
     def fill(self, length=60):
+        """执行 `fill` 对应的业务逻辑，供 `ABogus` 使用。"""
         size = 8 * self.size
         self.chunk.append(128)
         self.chunk = self.pad_array(self.chunk, length)
@@ -306,6 +324,7 @@ class ABogus:
         q: int,
         r: int,
     ) -> list:
+        """执行 `list_4` 对应的业务逻辑，供 `ABogus` 使用。"""
         return [
             44,
             a,
@@ -355,6 +374,7 @@ class ABogus:
 
     @staticmethod
     def end_check_num(a: list):
+        """执行 `end_check_num` 对应的业务逻辑，供 `ABogus` 使用。"""
         r = 0
         for i in a:
             r ^= i
@@ -365,24 +385,29 @@ class ABogus:
         cls,
         url_string,
     ):
+        """执行 `decode_string` 对应的业务逻辑，供 `ABogus` 使用。"""
         decoded = cls.__filter.sub(cls.replace_func, url_string)
         return decoded
 
     @staticmethod
     def replace_func(match):
+        """执行 `replace_func` 对应的业务逻辑，供 `ABogus` 使用。"""
         return chr(int(match.group(1), 16))
 
     @staticmethod
     def de(e, r):
+        """执行 `de` 对应的业务逻辑，供 `ABogus` 使用。"""
         r %= 32
         return ((e << r) & 0xFFFFFFFF) | (e >> (32 - r))
 
     @staticmethod
     def pe(e):
+        """执行 `pe` 对应的业务逻辑，供 `ABogus` 使用。"""
         return 2043430169 if 0 <= e < 16 else 2055708042
 
     @staticmethod
     def he(e, r, t, n):
+        """执行 `he` 对应的业务逻辑，供 `ABogus` 使用。"""
         if 0 <= e < 16:
             return (r ^ t ^ n) & 0xFFFFFFFF
         elif 16 <= e < 64:
@@ -391,6 +416,7 @@ class ABogus:
 
     @staticmethod
     def ve(e, r, t, n):
+        """执行 `ve` 对应的业务逻辑，供 `ABogus` 使用。"""
         if 0 <= e < 16:
             return (r ^ t ^ n) & 0xFFFFFFFF
         elif 16 <= e < 64:
@@ -399,6 +425,7 @@ class ABogus:
 
     @staticmethod
     def convert_to_char_code(a):
+        """执行 `convert_to_char_code` 对应的业务逻辑，供 `ABogus` 使用。"""
         d = []
         for i in a:
             d.append(ord(i))
@@ -406,6 +433,7 @@ class ABogus:
 
     @staticmethod
     def split_array(arr, chunk_size=64):
+        """执行 `split_array` 对应的业务逻辑，供 `ABogus` 使用。"""
         result = []
         for i in range(0, len(arr), chunk_size):
             result.append(arr[i : i + chunk_size])
@@ -413,12 +441,14 @@ class ABogus:
 
     @staticmethod
     def char_code_at(s):
+        """执行 `char_code_at` 对应的业务逻辑，供 `ABogus` 使用。"""
         return [ord(char) for char in s]
 
     def write(
         self,
         e,
     ):
+        """执行 `write` 对应的业务逻辑，供 `ABogus` 使用。"""
         self.size = len(e)
         if isinstance(e, str):
             e = self.decode_string(e)
@@ -434,11 +464,13 @@ class ABogus:
     def reset(
         self,
     ):
+        """执行 `reset` 对应的业务逻辑，供 `ABogus` 使用。"""
         self.chunk = []
         self.size = 0
         self.reg = self.__reg[:]
 
     def sum(self, e, length=60):
+        """执行 `sum` 对应的业务逻辑，供 `ABogus` 使用。"""
         self.reset()
         self.write(e)
         self.fill(length)
@@ -447,6 +479,7 @@ class ABogus:
 
     @classmethod
     def generate_result_unit(cls, n, s):
+        """执行 `generate_result_unit` 对应的业务逻辑，供 `ABogus` 使用。"""
         r = ""
         for i, j in zip(range(18, -1, -6), (16515072, 258048, 4032, 63)):
             r += cls.__str[s][(n & j) >> i]
@@ -454,6 +487,7 @@ class ABogus:
 
     @classmethod
     def generate_result_end(cls, s, e="s4"):
+        """执行 `generate_result_end` 对应的业务逻辑，供 `ABogus` 使用。"""
         r = ""
         b = ord(s[120]) << 16
         r += cls.__str[e][(b & 16515072) >> 18]
@@ -470,6 +504,7 @@ class ABogus:
         #     r += cls.generate_result_unit(b, e)
         # return r
 
+        """执行 `generate_result` 对应的业务逻辑，供 `ABogus` 使用。"""
         r = []
 
         for i in range(0, len(s), 3):
@@ -492,6 +527,7 @@ class ABogus:
 
     @classmethod
     def generate_args_code(cls):
+        """执行 `generate_args_code` 对应的业务逻辑，供 `ABogus` 使用。"""
         a = []
         for j in range(24, -1, -8):
             a.append(cls.__arguments[0] >> j)
@@ -504,10 +540,12 @@ class ABogus:
         return [int(i) & 255 for i in a]
 
     def generate_method_code(self, method: str = "GET") -> list[int]:
+        """执行 `generate_method_code` 对应的业务逻辑，供 `ABogus` 使用。"""
         return self.sm3_to_array(self.sm3_to_array(method + self.__end_string))
         # return self.sum(self.sum(method + self.__end_string))
 
     def generate_params_code(self, params: str) -> list[int]:
+        """执行 `generate_params_code` 对应的业务逻辑，供 `ABogus` 使用。"""
         return self.sm3_to_array(self.sm3_to_array(params + self.__end_string))
         # return self.sum(self.sum(params + self.__end_string))
 
@@ -539,6 +577,7 @@ class ABogus:
 
     @classmethod
     def generate_browser_info(cls, platform: str = "Win32") -> str:
+        """执行 `generate_browser_info` 对应的业务逻辑，供 `ABogus` 使用。"""
         inner_width = randint(1280, 1920)
         inner_height = randint(720, 1080)
         outer_width = randint(inner_width, 1920)
@@ -568,6 +607,7 @@ class ABogus:
 
     @staticmethod
     def rc4_encrypt(plaintext, key):
+        """执行 `rc4_encrypt` 对应的业务逻辑，供 `ABogus` 使用。"""
         s = list(range(256))
         j = 0
 
@@ -598,6 +638,7 @@ class ABogus:
         random_num_2=None,
         random_num_3=None,
     ) -> str:
+        """获取 `value` 对应的数据或状态，供 `ABogus` 使用。"""
         string_1 = self.generate_string_1(
             random_num_1,
             random_num_2,

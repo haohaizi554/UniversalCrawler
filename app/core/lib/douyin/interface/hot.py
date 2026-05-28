@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/hot.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/hot.py
 from datetime import datetime
 from types import SimpleNamespace
@@ -10,7 +12,11 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -19,6 +25,7 @@ if TYPE_CHECKING:
 
 
 class Hot(API):
+    """封装 `Hot` 在 `app/core/lib/douyin/interface/hot.py` 中承担的核心逻辑。"""
     board_params = (
         SimpleNamespace(
             name=_("抖音热榜"),
@@ -50,6 +57,7 @@ class Hot(API):
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Hot` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.headers = self.headers | {
             "Cookie": "",
@@ -62,6 +70,7 @@ class Hot(API):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `Hot` 使用。"""
         return self.params | {
             "detail_list": "1",
             "source": "6",
@@ -86,6 +95,7 @@ class Hot(API):
         *args,
         **kwargs,
     ):
+        """执行当前对象或脚本的主流程，供 `Hot` 使用。"""
         self.time = f"{datetime.now():%Y_%m_%d_%H_%M_%S}"
         self.set_referer(referer)
         for index, space in enumerate(self.board_params):
@@ -117,6 +127,7 @@ class Hot(API):
         *args,
         **kwargs,
     ):
+        """执行 `check_response` 对应的业务逻辑，供 `Hot` 使用。"""
         try:
             if not (d := data_dict["data"]["word_list"]):
                 self.log.info(error_text)
@@ -129,6 +140,7 @@ class Hot(API):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

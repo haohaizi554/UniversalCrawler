@@ -1,3 +1,5 @@
+"""包初始化模块，为 `app/core/lib/douyin/interface` 提供统一导出或包级说明。"""
+
 # app/core/lib/douyin/interface/__init__.py
 from .account import Account
 from .account_tiktok import AccountTikTok

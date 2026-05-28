@@ -14,11 +14,13 @@ class MissAVSpider(BaseSpider):
     """MissAV 爬虫，先扫列表再进入详情页嗅探 m3u8。"""
 
     def __init__(self, keyword: str, config: dict):
+        """初始化当前实例并准备运行所需的状态，供 `MissAVSpider` 使用。"""
         super().__init__(keyword, config)
         self.parser = MissAVParser()
         self.task_builder = MissAVTaskBuilder()
 
     def run(self):
+        """执行当前对象或脚本的主流程，供 `MissAVSpider` 使用。"""
         try:
             # 配置解析 (保持不变)
             proxy_server = None
@@ -182,10 +184,12 @@ class MissAVSpider(BaseSpider):
                     self.log(f"🕵️ [{i + 1}/{len(selected_indices)}] 嗅探: {title[:15]}...")
                     m3u8_url = None
                     def handle_request(req):
+                        """执行 `handle_request` 对应的业务逻辑。"""
                         nonlocal m3u8_url
                         if "playlist.m3u8" in req.url:
                             m3u8_url = req.url
                     def on_popup(popup):
+                        """执行 `on_popup` 对应的业务逻辑。"""
                         if popup != page:
                             try:
                                 popup.close()

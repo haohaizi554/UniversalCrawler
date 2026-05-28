@@ -1,3 +1,5 @@
+"""测试模块，覆盖 `tests/test_debug_logger.py` 对应功能的行为与回归场景。"""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,12 +9,12 @@ from app.debug_logger import debug_logger
 
 
 class DebugLoggerTests(unittest.TestCase):
+    """封装 `DebugLoggerTests` 在 `tests/test_debug_logger.py` 中承担的核心逻辑。"""
     def test_debug_logger_proxy_is_lazy_until_first_attribute_access(self):
+        """验证 `test_debug_logger_proxy_is_lazy_until_first_attribute_access` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         import app.debug_logger as debug_logger_module
 
-        original_singleton = debug_logger_module._debug_logger_singleton
-        debug_logger_module._debug_logger_singleton = None
-        try:
+        with patch.object(debug_logger_module, "_debug_logger_singleton", None):
             self.assertIsNone(debug_logger_module._debug_logger_singleton)
 
             with patch.object(debug_logger_module, "DebugLogger") as mocked_logger_cls:
@@ -24,10 +26,9 @@ class DebugLoggerTests(unittest.TestCase):
             self.assertEqual(result, {"title": "demo"})
             mocked_logger_cls.assert_called_once()
             self.assertIs(debug_logger_module._debug_logger_singleton, mocked_logger)
-        finally:
-            debug_logger_module._debug_logger_singleton = original_singleton
 
     def test_pick_used_filters_empty_values(self):
+        """验证 `test_pick_used_filters_empty_values` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         result = debug_logger.pick_used(
             {
                 "title": "demo",
@@ -49,6 +50,7 @@ class DebugLoggerTests(unittest.TestCase):
         )
 
     def test_infer_error_severity_for_ffmpeg_failure(self):
+        """验证 `test_infer_error_severity_for_ffmpeg_failure` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         severity = debug_logger._infer_error_severity(
             component="FFmpegDownloader",
             action="download_error",
@@ -58,6 +60,7 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertEqual(severity, "P2-高")
 
     def test_infer_error_severity_for_user_stop(self):
+        """验证 `test_infer_error_severity_for_user_stop` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         severity = debug_logger._infer_error_severity(
             component="DownloadWorker",
             action="stop_task",
@@ -67,6 +70,7 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertEqual(severity, "P4-用户操作")
 
     def test_pick_used_masks_sensitive_values(self):
+        """验证 `test_pick_used_masks_sensitive_values` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         result = debug_logger.pick_used(
             {
                 "cookie": "sessionid_ss=abc123",
@@ -85,7 +89,22 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertEqual(result["cookie_path"], "dy_auth.json")
         self.assertIn("***:***@", result["proxy"])
 
+    def test_pick_used_masks_bearer_token_inline(self):
+        """验证 `test_pick_used_masks_bearer_token_inline` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
+        result = debug_logger.pick_used(
+            {
+                "authorization": "Bearer abc.def.ghi",
+                "headers": "Authorization: Bearer abc.def.ghi",
+            },
+            "authorization",
+            "headers",
+        )
+
+        self.assertEqual(result["authorization"], "Bearer ***")
+        self.assertIn("Authorization: [已脱敏]", result["headers"])
+
     def test_log_error_writes_latest_error_summary(self):
+        """验证 `test_log_error_writes_latest_error_summary` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         original_latest = debug_logger.latest_error_summary_file
         original_session = debug_logger.session_file
         original_latest_log = debug_logger.latest_file
@@ -113,6 +132,7 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertIn("trace-1", content)
 
     def test_log_command_writes_arguments_to_log_file(self):
+        """验证 `test_log_command_writes_arguments_to_log_file` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         original_session = debug_logger.session_file
         original_latest_log = debug_logger.latest_file
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -134,6 +154,7 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertIn("input.mp4", content)
 
     def test_log_command_masks_sensitive_arguments(self):
+        """验证 `test_log_command_masks_sensitive_arguments` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         original_session = debug_logger.session_file
         original_latest_log = debug_logger.latest_file
         with tempfile.TemporaryDirectory() as temp_dir:

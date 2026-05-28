@@ -1,3 +1,5 @@
+"""爬虫实现模块，负责 `app/spiders/kuaishou/parser.py` 对应平台的采集、解析或任务装配逻辑。"""
+
 from __future__ import annotations
 
 import base64
@@ -6,7 +8,9 @@ import urllib.parse
 
 
 class KuaishouParser:
+    """负责 `KuaishouParser` 对应的数据清洗与结构化解析。"""
     def extract_all_possible_ids(self, url: str) -> set[str]:
+        """提取 `all_possible_ids` 对应的关键信息，供 `KuaishouParser` 使用。"""
         if not url:
             return set()
         ids: set[str] = set()

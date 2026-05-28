@@ -10,10 +10,12 @@ class ClickableVideoWidget(QVideoWidget):
     sig_double_click = pyqtSignal()
 
     def __init__(self, parent=None):
+        """初始化当前实例并准备运行所需的状态，供 `ClickableVideoWidget` 使用。"""
         super().__init__(parent)
         # 交给全局主题样式控制明暗色，避免浅色主题下被强制覆盖成纯黑。
         self.setObjectName("VideoSurface")
 
     def mouseDoubleClickEvent(self, event):
+        """执行 `mouseDoubleClickEvent` 对应的业务逻辑，供 `ClickableVideoWidget` 使用。"""
         self.sig_double_click.emit()
         super().mouseDoubleClickEvent(event)

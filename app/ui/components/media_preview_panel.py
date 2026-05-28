@@ -16,6 +16,7 @@ class MediaPreviewPanel(QFrame):
     sig_toggle_fullscreen = pyqtSignal()
 
     def __init__(self, style_provider):
+        """初始化当前实例并准备运行所需的状态，供 `MediaPreviewPanel` 使用。"""
         super().__init__()
         self._style_provider = style_provider
         self.current_image_path: str | None = None
@@ -78,10 +79,12 @@ class MediaPreviewPanel(QFrame):
         layout.addWidget(self.ctrls)
 
     def _on_slider_pressed(self) -> None:
+        """处理 `slider_pressed` 触发后的回调逻辑，供 `MediaPreviewPanel` 使用。"""
         self.is_slider_pressed = True
 
     def show_image(self, image_path: str) -> None:
         # Stop the player first so image mode stays isolated from video state.
+        """执行 `show_image` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         self.vid_w.hide()
         self.img_lbl.show()
         self.player.stop()
@@ -89,6 +92,7 @@ class MediaPreviewPanel(QFrame):
         self.scale_image_to_fit()
 
     def play_video(self, video_path: str) -> None:
+        """执行 `play_video` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         self.img_lbl.hide()
         self.vid_w.show()
         self.player.setSource(QUrl.fromLocalFile(video_path))
@@ -96,10 +100,19 @@ class MediaPreviewPanel(QFrame):
         self._set_play_button_paused()
 
     def stop_playback(self) -> None:
+        """执行 `stop_playback` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         self.player.stop()
         self._set_play_button_stopped()
 
+    def cleanup(self) -> None:
+        """退出前显式停止播放器，降低 QtMultimedia/FFmpeg 原生崩溃风险。"""
+        self.current_image_path = None
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self._set_play_button_stopped()
+
     def scale_image_to_fit(self) -> None:
+        """执行 `scale_image_to_fit` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         if not self.current_image_path or not self.img_lbl.isVisible():
             return
         pixmap = QPixmap(self.current_image_path)
@@ -113,9 +126,11 @@ class MediaPreviewPanel(QFrame):
         self.img_lbl.setPixmap(scaled_pixmap)
 
     def resize_media(self) -> None:
+        """执行 `resize_media` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         QTimer.singleShot(10, self.scale_image_to_fit)
 
     def toggle_play(self) -> None:
+        """执行 `toggle_play` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
             self._set_play_button_stopped()
@@ -124,23 +139,28 @@ class MediaPreviewPanel(QFrame):
             self._set_play_button_paused()
 
     def on_slider_released(self) -> None:
+        """执行 `on_slider_released` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         self.is_slider_pressed = False
         self.player.setPosition(self.slider.value())
 
     def on_player_position_changed(self, pos: int) -> None:
         # Avoid slider jitter while the user is actively dragging it.
+        """执行 `on_player_position_changed` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         if not self.is_slider_pressed:
             self.slider.setValue(pos)
         self.lbl_time.setText(f"{self.format_time(pos)} / {self.format_time(self.player.duration())}")
 
     def _set_play_button_stopped(self) -> None:
+        """提供 `_set_play_button_stopped` 对应的内部辅助逻辑，供 `MediaPreviewPanel` 使用。"""
         self.btn_play.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
 
     def _set_play_button_paused(self) -> None:
+        """提供 `_set_play_button_paused` 对应的内部辅助逻辑，供 `MediaPreviewPanel` 使用。"""
         self.btn_play.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
 
     @staticmethod
     def format_time(ms: int) -> str:
+        """执行 `format_time` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         seconds = (ms // 1000) % 60
         minutes = ms // 60000
         return f"{minutes:02}:{seconds:02}"

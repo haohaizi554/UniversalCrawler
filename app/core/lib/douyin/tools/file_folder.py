@@ -1,9 +1,12 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/file_folder.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/tools/file_folder.py
 from contextlib import suppress
 from pathlib import Path
 
 
 def file_switch(path: Path) -> None:
+    """执行 `file_switch` 对应的业务逻辑。"""
     if path.exists():
         path.unlink()
     else:
@@ -11,6 +14,7 @@ def file_switch(path: Path) -> None:
 
 
 def remove_empty_directories(path: Path) -> None:
+    """执行 `remove_empty_directories` 对应的业务逻辑。"""
     exclude = {
         "\\.",
         "\\_",

@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/info.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/info.py
 from typing import TYPE_CHECKING
 from typing import Union
@@ -6,7 +8,11 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -15,6 +21,7 @@ if TYPE_CHECKING:
 
 
 class Info(API):
+    """封装 `Info` 在 `app/core/lib/douyin/interface/info.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -24,6 +31,7 @@ class Info(API):
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Info` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.api = f"{self.domain}aweme/v1/web/im/user/info/"
         self.sec_user_id = sec_user_id
@@ -39,6 +47,7 @@ class Info(API):
         *args,
         **kwargs,
     ) -> dict | list[dict]:
+        """执行当前对象或脚本的主流程，供 `Info` 使用。"""
         self.set_referer()
         await self.run_single()
         if first:
@@ -50,6 +59,7 @@ class Info(API):
         *args,
         **kwargs,
     ):
+        """执行 `run_single` 对应的业务逻辑，供 `Info` 使用。"""
         await super().run_single(
             "",
             params=lambda: self.static_params,
@@ -63,6 +73,7 @@ class Info(API):
         *args,
         **kwargs,
     ):
+        """执行 `check_response` 对应的业务逻辑，供 `Info` 使用。"""
         if d := data_dict.get("data"):
             self.append_response(d)
         else:
@@ -71,6 +82,7 @@ class Info(API):
     def __generate_data(
         self,
     ) -> dict:
+        """提供 `__generate_data` 对应的内部辅助逻辑，供 `Info` 使用。"""
         if isinstance(self.sec_user_id, str):
             self.sec_user_id = [self.sec_user_id]
         value = f"[{','.join(f'"{i}"' for i in self.sec_user_id)}]"
@@ -80,6 +92,7 @@ class Info(API):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

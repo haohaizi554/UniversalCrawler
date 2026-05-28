@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/link/extractor.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/link/extractor.py
 from re import compile
 from typing import TYPE_CHECKING, Union
@@ -13,6 +15,7 @@ __all__ = ["Extractor", "ExtractorTikTok"]
 
 
 class Extractor:
+    """封装 `Extractor` 在 `app/core/lib/douyin/link/extractor.py` 中承担的核心逻辑。"""
     WEB_RID = compile(r"\\\"webRid\\\":\\\"(\d+?)\\\"")
 
     account_link = compile(
@@ -58,6 +61,7 @@ class Extractor:
         params: "Parameter",
         tiktok=False,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Extractor` 使用。"""
         self.requester = Requester(
             params,
             params.client_tiktok if tiktok else params.client,
@@ -71,6 +75,7 @@ class Extractor:
         proxy: str = None,
     ) -> Union[list[str], tuple[bool, list[str]], str]:
         # 调用 Requester 解析短链
+        """执行当前对象或脚本的主流程，供 `Extractor` 使用。"""
         text = await self.requester.run(
             text,
             proxy,
@@ -94,6 +99,7 @@ class Extractor:
         pattern,
         index=1,
     ) -> str:
+        """获取 `html_data` 对应的数据或状态，供 `Extractor` 使用。"""
         html = await self.requester.request_url(
             url,
             "text",
@@ -105,12 +111,14 @@ class Extractor:
         self,
         urls: str,
     ) -> list[str]:
+        """执行 `detail` 对应的业务逻辑，供 `Extractor` 使用。"""
         return self.__extract_detail(urls)
 
     def user(
         self,
         urls: str,
     ) -> list[str]:
+        """执行 `user` 对应的业务逻辑，供 `Extractor` 使用。"""
         link = self.extract_info(self.account_link, urls, 1)
         share = self.extract_info(self.account_share, urls, 1)
         return link + share
@@ -119,6 +127,7 @@ class Extractor:
         self,
         urls: str,
     ) -> tuple[bool, list[str]]:
+        """执行 `mix` 对应的业务逻辑，供 `Extractor` 使用。"""
         if detail := self.__extract_detail(urls):
             return False, detail
         link = self.extract_info(self.mix_link, urls, 1)
@@ -129,6 +138,7 @@ class Extractor:
         self,
         urls: str,
     ) -> list[str]:
+        """执行 `live` 对应的业务逻辑，供 `Extractor` 使用。"""
         live_link = self.extract_info(self.live_link, urls, 1)
         live_link_self = self.extract_info(self.live_link_self, urls, 1)
         live_link_share = self.extract_info(self.live_link_share, urls, 0)
@@ -141,6 +151,7 @@ class Extractor:
         self,
         urls: str,
     ) -> list[str]:
+        """提供 `__extract_detail` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
         link = self.extract_info(self.detail_link, urls, 1)
         share = self.extract_info(self.detail_share, urls, 1)
         account = self.extract_info(self.account_link, urls, 2)
@@ -151,6 +162,7 @@ class Extractor:
 
     @staticmethod
     def extract_sec_user_id(urls: list[str]) -> list[list]:
+        """提取 `sec_user_id` 对应的关键信息，供 `Extractor` 使用。"""
         data = []
         for url in urls:
             url = urlparse(url)
@@ -162,11 +174,13 @@ class Extractor:
 
     @staticmethod
     def extract_info(pattern, urls: str, index=1) -> list[str]:
+        """提取 `info` 对应的关键信息，供 `Extractor` 使用。"""
         result = pattern.finditer(urls)
         return [i for i in (i.group(index) for i in result) if i] if result else []
 
 
 class ExtractorTikTok(Extractor):
+    """封装 `ExtractorTikTok` 在 `app/core/lib/douyin/link/extractor.py` 中承担的核心逻辑。"""
     SEC_UID = compile(r'"verified":(?:false|true),"secUid":"([a-zA-Z0-9_-]+)"')
     ROOD_ID = compile(r'"roomId":"(\d+)"')
     MIX_ID = compile(r'"canonical":"\S+?(\d{19})"')
@@ -184,6 +198,7 @@ class ExtractorTikTok(Extractor):
     live_link = compile(r"\S*?https://www\.tiktok\.com/@[^\s/]+/live\S*?")  # 直播链接
 
     def __init__(self, params: "Parameter"):
+        """初始化当前实例并准备运行所需的状态，供 `ExtractorTikTok` 使用。"""
         super().__init__(
             params,
             True,
@@ -199,6 +214,7 @@ class ExtractorTikTok(Extractor):
         tuple[bool, list[str], list[str | None]],
         str,
     ]:
+        """执行当前对象或脚本的主流程，供 `ExtractorTikTok` 使用。"""
         text = await self.requester.run(
             text,
             proxy,
@@ -220,12 +236,14 @@ class ExtractorTikTok(Extractor):
         self,
         urls: str,
     ) -> list[str]:
+        """执行 `detail` 对应的业务逻辑，供 `ExtractorTikTok` 使用。"""
         return self.__extract_detail(urls)
 
     async def user(
         self,
         urls: str,
     ) -> list[str]:
+        """执行 `user` 对应的业务逻辑，供 `ExtractorTikTok` 使用。"""
         link = self.extract_info(self.account_link, urls, 1)
         link = [await self.get_html_data(i, self.SEC_UID) for i in link]
         return [i for i in link if i]
@@ -235,6 +253,7 @@ class ExtractorTikTok(Extractor):
         urls: str,
         index=1,
     ) -> list[str]:
+        """提供 `__extract_detail` 对应的内部辅助逻辑，供 `ExtractorTikTok` 使用。"""
         link = self.extract_info(self.detail_link, urls, index)
         return link
 
@@ -242,6 +261,7 @@ class ExtractorTikTok(Extractor):
         self,
         urls: str,
     ) -> tuple[bool, list[str], list[str | None]]:
+        """执行 `mix` 对应的业务逻辑，供 `ExtractorTikTok` 使用。"""
         detail = self.__extract_detail(urls, index=0)
         detail = [await self.get_html_data(i, self.MIX_ID) for i in detail]
         detail = [i for i in detail if i]
@@ -253,6 +273,7 @@ class ExtractorTikTok(Extractor):
         self,
         urls: str,
     ) -> list[str]:
+        """执行 `live` 对应的业务逻辑，供 `ExtractorTikTok` 使用。"""
         link = self.extract_info(self.live_link, urls, 0)
         link = [await self.get_html_data(i, self.ROOD_ID) for i in link]
         return [i for i in link if i]

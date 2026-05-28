@@ -1,3 +1,5 @@
+"""异常定义模块，集中声明 `app/exceptions/downloader.py` 使用的异常类型。"""
+
 from .base import AppError
 
 

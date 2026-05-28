@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/live.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/live.py
 from typing import TYPE_CHECKING, Union
 from .template import API, CHROME_VERSION
@@ -5,7 +7,11 @@ from .template import API, CHROME_VERSION
 try:
     from ..tools import DownloaderError
 except ImportError:
-    class DownloaderError(Exception): pass
+    """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
+    class DownloaderError(Exception):
+        """Fallback error type used when the real downloader exception cannot be imported."""
+
+        pass
 
 if TYPE_CHECKING:
     from typing import Any
@@ -14,6 +20,7 @@ if TYPE_CHECKING:
 
 
 class Live(API):
+    """封装 `Live` 在 `app/core/lib/douyin/interface/live.py` 中承担的核心逻辑。"""
     live_api = "https://live.douyin.com/webcast/room/web/enter/"
     live_api_share = "https://webcast.amemv.com/webcast/room/reflow/info/"
 
@@ -26,6 +33,7 @@ class Live(API):
         room_id: str = ...,
         sec_user_id: str = "",
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Live` 使用。"""
         super().__init__(params, cookie, proxy)
         self.black_headers = params.headers_download
         self.web_rid = web_rid
@@ -37,6 +45,7 @@ class Live(API):
         *args,
         **kwargs,
     ) -> dict:
+        """执行当前对象或脚本的主流程，供 `Live` 使用。"""
         if isinstance(self.web_rid, str):
             return await self.with_web_rid()
         elif self.room_id:
@@ -45,6 +54,7 @@ class Live(API):
             raise DownloaderError
 
     async def with_web_rid(self) -> dict:
+        """执行 `with_web_rid` 对应的业务逻辑，供 `Live` 使用。"""
         self.set_referer("https://live.douyin.com/")
         # 直播页请求参数基本固定，只有房间标识会随入口变化。
         params = {
@@ -74,6 +84,7 @@ class Live(API):
         )
 
     async def with_room_id(self) -> dict:
+        """执行 `with_room_id` 对应的业务逻辑，供 `Live` 使用。"""
         params = {
             "type_id": "0",
             "live_id": "1",
@@ -89,6 +100,7 @@ class Live(API):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

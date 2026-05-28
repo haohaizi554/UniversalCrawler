@@ -1,3 +1,5 @@
+"""界面模块，封装 `app/ui/components/top_bar.py` 对应的窗口、对话框或界面组件逻辑。"""
+
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
@@ -10,6 +12,7 @@ class TopBarWidget(QFrame):
     """主界面顶栏，保持单行布局以减少视觉分裂。"""
 
     def __init__(self, is_dark_theme: bool):
+        """初始化当前实例并准备运行所需的状态，供 `TopBarWidget` 使用。"""
         super().__init__()
         self.setObjectName("TopBar")
         self.setFixedHeight(50)
@@ -74,9 +77,11 @@ class TopBarWidget(QFrame):
         self.layout.addWidget(self.btn_theme)
 
     def set_theme_icon(self, is_dark_theme: bool) -> None:
+        """设置 `theme_icon` 对应的值或运行状态，供 `TopBarWidget` 使用。"""
         self.btn_theme.setText("🌙" if is_dark_theme else "☀️")
 
     def set_crawl_running_state(self, is_running: bool, plugin_widget: QWidget | None) -> None:
+        """设置 `crawl_running_state` 对应的值或运行状态，供 `TopBarWidget` 使用。"""
         self.btn_start.setEnabled(not is_running)
         self.btn_stop.setEnabled(is_running)
         self.inp_search.setEnabled(not is_running)

@@ -1,3 +1,5 @@
+"""爬虫实现模块，负责 `app/spiders/base_task_builder.py` 对应平台的采集、解析或任务装配逻辑。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -20,6 +22,7 @@ class BaseTaskBuilder:
         download_strategy: str | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
+        """构建 `download_meta` 对应的结果、参数或对象，供 `BaseTaskBuilder` 使用。"""
         payload = {
             "trace_id": trace_id,
             "referer": referer,

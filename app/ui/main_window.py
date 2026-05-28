@@ -1,7 +1,5 @@
 """Main window assembly layer."""
 
-import os
-
 from PyQt6.QtCore import QByteArray, Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QSplitter, QVBoxLayout, QWidget
@@ -14,6 +12,7 @@ from app.ui.components.media_preview_panel import MediaPreviewPanel
 from app.ui.components.top_bar import TopBarWidget
 from app.ui.dialogs import SelectionDialog
 from app.ui.styles import generate_stylesheet
+from app.utils.runtime_paths import resolve_resource_file, user_data_root
 
 
 class MainWindow(QMainWindow):
@@ -30,16 +29,18 @@ class MainWindow(QMainWindow):
     sig_copy_trace_id = pyqtSignal(str)
 
     def __init__(self):
+        """初始化当前实例并准备运行所需的状态，供 `MainWindow` 使用。"""
         super().__init__()
         self.setWindowTitle("Universal Crawler Pro")
         self.resize(1300, 850)
         self.is_dark_theme = cfg.get("common", "dark_theme", True)
         self.setStyleSheet(generate_stylesheet(self.is_dark_theme))
 
-        if os.path.exists("favicon.ico"):
-            self.setWindowIcon(QIcon("favicon.ico"))
+        icon_path = resolve_resource_file("favicon.ico")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
-        self.current_save_dir = cfg.get("common", "save_directory") or os.getcwd()
+        self.current_save_dir = cfg.get("common", "save_directory") or str(user_data_root())
         self.current_plugin = None
         self.plugin_widget = None
         self.is_fullscreen_mode = False
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         # 主窗口只负责拼装 UI，不在这里写下载/爬虫业务。
+        """提供 `_build_ui` 对应的内部辅助逻辑，供 `MainWindow` 使用。"""
         central = QWidget()
         self.setCentralWidget(central)
         self.main_layout = QVBoxLayout(central)
@@ -88,6 +90,7 @@ class MainWindow(QMainWindow):
 
     def _expose_component_refs(self) -> None:
         # 仅暴露主窗口自身仍直接使用的少量控件引用，避免继续把子组件内部实现泄漏出去。
+        """提供 `_expose_component_refs` 对应的内部辅助逻辑，供 `MainWindow` 使用。"""
         self.combo_source = self.top_bar.combo_source
         self.inp_search = self.top_bar.inp_search
         self.container_dynamic = self.top_bar.container_dynamic
@@ -114,9 +117,11 @@ class MainWindow(QMainWindow):
         self.media_panel.sig_toggle_fullscreen.connect(self.toggle_fullscreen_mode)
 
     def bind_video_rename(self, on_rename) -> None:
+        """执行 `bind_video_rename` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.left_panel.bind_title_rename(on_rename)
 
     def toggle_theme(self) -> None:
+        """执行 `toggle_theme` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.is_dark_theme = not self.is_dark_theme
         self.setStyleSheet(generate_stylesheet(self.is_dark_theme))
         self.top_bar.set_theme_icon(self.is_dark_theme)
@@ -126,6 +131,7 @@ class MainWindow(QMainWindow):
         self.sig_theme_changed.emit(self.is_dark_theme)
 
     def toggle_fullscreen_mode(self) -> None:
+        """执行 `toggle_fullscreen_mode` 对应的业务逻辑，供 `MainWindow` 使用。"""
         if not self.is_fullscreen_mode:
             self.top_bar.hide()
             self.left_panel.hide()
@@ -148,6 +154,7 @@ class MainWindow(QMainWindow):
             self.restoreState(QByteArray.fromHex(state_hex.encode()))
 
     def keyPressEvent(self, event) -> None:
+        """执行 `keyPressEvent` 对应的业务逻辑，供 `MainWindow` 使用。"""
         if event.key() == Qt.Key.Key_Escape and self.is_fullscreen_mode:
             self.toggle_fullscreen_mode()
             event.accept()
@@ -183,6 +190,7 @@ class MainWindow(QMainWindow):
             self.right_split.setSizes([600, 200])
 
     def closeEvent(self, event) -> None:
+        """执行 `closeEvent` 对应的业务逻辑，供 `MainWindow` 使用。"""
         cfg.save_ui_state(
             geometry=self.saveGeometry(),
             state=self.saveState(),
@@ -193,6 +201,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def on_btn_start_clicked(self) -> None:
+        """执行 `on_btn_start_clicked` 对应的业务逻辑，供 `MainWindow` 使用。"""
         if not self.current_plugin:
             self.append_log("❌ 未选择有效模式")
             return
@@ -212,6 +221,7 @@ class MainWindow(QMainWindow):
 
     def on_source_changed(self, _index: int) -> None:
         # 切换平台时重建动态配置区域，避免把各平台差异写死在主窗口里。
+        """执行 `on_source_changed` 对应的业务逻辑，供 `MainWindow` 使用。"""
         plugin_id = self.combo_source.currentData()
         if not plugin_id:
             return
@@ -233,9 +243,11 @@ class MainWindow(QMainWindow):
         cfg.set("common", "last_source", plugin_id)
 
     def set_crawl_running_state(self, is_running: bool) -> None:
+        """设置 `crawl_running_state` 对应的值或运行状态，供 `MainWindow` 使用。"""
         self.top_bar.set_crawl_running_state(is_running, self.plugin_widget)
 
     def on_btn_dir_clicked(self) -> None:
+        """执行 `on_btn_dir_clicked` 对应的业务逻辑，供 `MainWindow` 使用。"""
         selected_dir = QFileDialog.getExistingDirectory(self, "选择保存目录", self.current_save_dir)
         if selected_dir:
             self.current_save_dir = selected_dir
@@ -244,6 +256,7 @@ class MainWindow(QMainWindow):
             self.sig_change_dir.emit()
 
     def add_video_row(self, video_item) -> None:
+        """执行 `add_video_row` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.left_panel.add_video_row(
             video_item,
             on_play=lambda video_id: self.sig_play_video.emit(video_id),
@@ -251,19 +264,24 @@ class MainWindow(QMainWindow):
         )
 
     def update_video_status(self, video_id, status, progress=None) -> None:
+        """更新 `video_status` 对应的状态或数据内容，供 `MainWindow` 使用。"""
         self.left_panel.update_video_status(video_id, status, progress)
 
     def refresh_table_bindings(self) -> None:
+        """执行 `refresh_table_bindings` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.left_panel.refresh_delete_bindings(self._emit_delete_for_video)
 
     def clear_video_rows(self) -> None:
+        """执行 `clear_video_rows` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.left_panel.clear_rows()
 
     def remove_video_row(self, row: int) -> None:
+        """执行 `remove_video_row` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.left_panel.remove_row(row)
 
     def show_selection_dialog(self, items):
         # 选择弹窗必须由 UI 线程创建和持有，爬虫线程只等待结果。
+        """执行 `show_selection_dialog` 对应的业务逻辑，供 `MainWindow` 使用。"""
         dialog = SelectionDialog(self, items=items)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.append_log(f"✅ 用户确认了 {len(dialog.selected_indices)} 个任务")
@@ -272,20 +290,25 @@ class MainWindow(QMainWindow):
         return None
 
     def append_log(self, msg) -> None:
+        """执行 `append_log` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.log_txt.append_log(str(msg))
 
     def _set_main_margins(self, margin: int) -> None:
+        """提供 `_set_main_margins` 对应的内部辅助逻辑，供 `MainWindow` 使用。"""
         self.main_layout.setContentsMargins(margin, margin, margin, margin)
 
     def _emit_delete_for_video(self, video_id: str) -> None:
+        """提供 `_emit_delete_for_video` 对应的内部辅助逻辑，供 `MainWindow` 使用。"""
         row = self.left_panel.find_row_by_video_id(video_id)
         if row != -1:
             self.sig_delete_video.emit(row, video_id)
 
     def get_selected_video_id(self) -> str | None:
+        """获取 `selected_video_id` 对应的数据或状态，供 `MainWindow` 使用。"""
         return self.left_panel.get_selected_video_id()
 
     def _on_copy_trace_clicked(self) -> None:
+        """处理 `copy_trace_clicked` 触发后的回调逻辑，供 `MainWindow` 使用。"""
         video_id = self.get_selected_video_id()
         if not video_id:
             self.append_log("⚠️ 请先在下载队列表中选中一个任务")
@@ -293,14 +316,22 @@ class MainWindow(QMainWindow):
         self.sig_copy_trace_id.emit(video_id)
 
     def show_image(self, image_path: str) -> None:
+        """执行 `show_image` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.media_panel.show_image(image_path)
 
     def resizeEvent(self, event) -> None:
+        """执行 `resizeEvent` 对应的业务逻辑，供 `MainWindow` 使用。"""
         super().resizeEvent(event)
         self.media_panel.resize_media()
 
     def play_video(self, video_path: str) -> None:
+        """执行 `play_video` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.media_panel.play_video(video_path)
 
     def stop_media_playback(self) -> None:
+        """执行 `stop_media_playback` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.media_panel.stop_playback()
+
+    def cleanup_media(self) -> None:
+        """执行 `cleanup_media` 对应的业务逻辑，供 `MainWindow` 使用。"""
+        self.media_panel.cleanup()

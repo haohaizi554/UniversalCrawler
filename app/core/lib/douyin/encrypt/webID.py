@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/webID.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/encrypt/webID.py
 from asyncio import run
 from typing import TYPE_CHECKING, Union
@@ -10,12 +12,14 @@ except ImportError:
 
 
     async def request_params(*args, **kwargs):
+        """执行 `request_params` 对应的业务逻辑。"""
         pass
 
 try:
     from ..translation import _
 except ImportError:
     def _(x):
+        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 if TYPE_CHECKING:
@@ -30,6 +34,7 @@ __all__ = ["WebId"]
 
 
 class WebId:
+    """封装 `WebId` 在 `app/core/lib/douyin/encrypt/webID.py` 中承担的核心逻辑。"""
     NAME = "webid"
     API = "https://mcs.zijieapi.com/webid"
     PARAMS = {"aid": "6383", "sdk_version": "5.1.18_zip", "device_platform": "web"}
@@ -42,6 +47,7 @@ class WebId:
             proxy: str = None,
             **kwargs,
     ) -> str | None:
+        """获取 `web_id` 对应的数据或状态，供 `WebId` 使用。"""
         user_agent = headers.get("User-Agent")
         data = (
             f'{{"app_id":6383,"url":"https://www.douyin.com/","user_agent":"{user_agent}","referer":"https://www'
@@ -63,10 +69,20 @@ class WebId:
 
 async def test():
     # 模拟 Logger
+    """执行 `test` 对应的业务逻辑。"""
     class Logger:
-        def error(self, msg): print(msg)
+        """执行 `error` 对应的业务逻辑，供 `Logger` 使用。"""
+        """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
+        def error(self, msg):
+            """Print an error message to the console."""
 
-        def info(self, msg, *args): print(msg)
+            print(msg)
+
+        """执行 `info` 对应的业务逻辑，供 `Logger` 使用。"""
+        def info(self, msg, *args):
+            """Print an informational message to the console."""
+
+            print(msg)
 
     print(await WebId.get_web_id(Logger(), PARAMS_HEADERS, proxy=None))
 

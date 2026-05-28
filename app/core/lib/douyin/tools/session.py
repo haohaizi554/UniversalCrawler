@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/session.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/tools/session.py
 from typing import TYPE_CHECKING, Union, Any
 from httpx import AsyncClient, AsyncHTTPTransport, Client, HTTPTransport
@@ -32,6 +34,7 @@ def create_client(
     *args,
     **kwargs,
 ) -> AsyncClient:
+    """创建 `client` 对应的对象、资源或结构。"""
     verify = kwargs.pop("verify", True)
     return AsyncClient(
         headers=headers
@@ -67,6 +70,7 @@ async def request_params(
     proxy: str = None,
     **kwargs,
 ):
+    """执行 `request_params` 对应的业务逻辑。"""
     verify = kwargs.pop("verify", True)
     with Client(
         headers=headers
@@ -109,6 +113,7 @@ async def request(
     resp="json",
     **kwargs,
 ):
+    """执行 `request` 对应的业务逻辑。"""
     response = client.request(method, url, **kwargs)
     response.raise_for_status()
     match resp:

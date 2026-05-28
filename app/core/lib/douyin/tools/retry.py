@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/retry.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/tools/retry.py
 from asyncio import sleep
 from random import randint
@@ -9,11 +11,13 @@ except ImportError:
     RETRY = 5
 
     async def wait() -> None:
+        """执行 `wait` 对应的业务逻辑。"""
         await sleep(randint(5, 20) * 0.1)
 try:
     from ..translation import _
 except ImportError:
     def _(x):
+        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 __all__ = ["Retry"]
@@ -24,6 +28,7 @@ class Retry:
     def retry(function):
         """发生错误时尝试重新执行，装饰的函数需要返回布尔值"""
         async def inner(self, *args, **kwargs):
+            """执行 `inner` 对应的业务逻辑。"""
             finished = kwargs.pop("finished", False)
             for i in range(self.max_retry):
                 if result := await function(self, *args, **kwargs):
@@ -36,7 +41,9 @@ class Retry:
         return inner
     @staticmethod
     def retry_lite(function):
+        """执行 `retry_lite` 对应的业务逻辑，供 `Retry` 使用。"""
         async def inner(*args, **kwargs):
+            """执行 `inner` 对应的业务逻辑。"""
             if r := await function(*args, **kwargs):
                 return r
             for _ in range(RETRY):
@@ -47,7 +54,9 @@ class Retry:
         return inner
     @staticmethod
     def retry_limited(function):
+        """执行 `retry_limited` 对应的业务逻辑，供 `Retry` 使用。"""
         def inner(self, *args, **kwargs):
+            """执行 `inner` 对应的业务逻辑。"""
             while True:
                 if function(self, *args, **kwargs):
                     return
@@ -61,7 +70,9 @@ class Retry:
         return inner
     @staticmethod
     def retry_infinite(function):
+        """执行 `retry_infinite` 对应的业务逻辑，供 `Retry` 使用。"""
         def inner(self, *args, **kwargs):
+            """执行 `inner` 对应的业务逻辑。"""
             while True:
                 if function(self, *args, **kwargs):
                     return

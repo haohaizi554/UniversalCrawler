@@ -1,3 +1,5 @@
+"""下载器模块，负责 `app/core/downloaders/missav.py` 对应资源的落盘或外部工具调用流程。"""
+
 from __future__ import annotations
 
 from app.debug_logger import debug_logger
@@ -8,6 +10,7 @@ from .m3u8 import N_m3u8DL_RE_Downloader
 
 
 class MissAVDownloader(BaseDownloader):
+    """实现 `MissAVDownloader` 对应的资源下载与落盘流程。"""
     source_id = "missav"
 
     def download(
@@ -17,6 +20,7 @@ class MissAVDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        """执行 `download` 对应的业务逻辑，供 `MissAVDownloader` 使用。"""
         trace_id = video_item.meta.get("trace_id")
         video_item.meta.setdefault("referer", video_item.meta.get("referer", "https://missav.ai/"))
         debug_logger.log(

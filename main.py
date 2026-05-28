@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """应用启动入口。"""
-
 import os
 import sys
 import traceback
+import multiprocessing
 
 
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -14,9 +14,23 @@ from app.controllers.application_controller import ApplicationController
 from app.debug_logger import debug_logger
 
 
+def _set_windows_app_user_model_id() -> None:
+    """尽早设置 Windows AppUserModelID，避免任务栏图标分组取错。"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ucp.crawler.v1")
+    except (ImportError, AttributeError, OSError):
+        pass
+
+
 def main():
     """创建应用控制器并进入 Qt 事件循环。"""
     try:
+        multiprocessing.freeze_support()
+        _set_windows_app_user_model_id()
         controller = ApplicationController()
         controller.run()
     except Exception as exc:

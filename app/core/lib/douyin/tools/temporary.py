@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/temporary.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/tools/temporary.py
 from random import choice
 from string import (
@@ -11,10 +13,12 @@ CHARACTER = ascii_lowercase + ascii_uppercase + digits
 
 
 def timestamp() -> str:
+    """执行 `timestamp` 对应的业务逻辑。"""
     return str(time())[:10]
 
 
 def random_string(length: int = 10) -> str:
+    """执行 `random_string` 对应的业务逻辑。"""
     return "".join(choice(CHARACTER) for _ in range(length))
 
 

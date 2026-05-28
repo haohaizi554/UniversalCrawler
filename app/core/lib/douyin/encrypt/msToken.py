@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/msToken.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/encrypt/msToken.py
 
 from asyncio import run
@@ -15,7 +17,11 @@ except ImportError:
     PARAMS_HEADERS = {}
     PARAMS_HEADERS_TIKTOK = {}
     USERAGENT = ""
-    async def request_params(*args, **kwargs): pass
+    """执行 `request_params` 对应的业务逻辑。"""
+    async def request_params(*args, **kwargs):
+        """Fallback async request stub used when the real helper is unavailable."""
+
+        pass
 
 from .ttWid import TtWid
 from .xBogus import XBogusTikTok
@@ -23,7 +29,11 @@ from .xBogus import XBogusTikTok
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -35,6 +45,7 @@ __all__ = ["MsToken", "MsTokenTikTok"]
 
 
 class MsToken:
+    """封装 `MsToken` 在 `app/core/lib/douyin/encrypt/msToken.py` 中承担的核心逻辑。"""
     NAME = "msToken"
     # API = "https://mssdk.bytedance.com/web/report"
     API = "https://mssdk.bytedance.com/web/common"
@@ -110,6 +121,7 @@ class MsToken:
         proxy: str,
         **kwargs,
     ) -> dict | None:
+        """提供 `_get_ms_token` 对应的内部辅助逻辑，供 `MsToken` 使用。"""
         if response := await request_params(
             logger,
             cls.API,
@@ -131,6 +143,7 @@ class MsToken:
         proxy: str = None,
         **kwargs,
     ) -> dict | None:
+        """获取 `real_ms_token` 对应的数据或状态，供 `MsToken` 使用。"""
         params = {cls.NAME: token}
         return await cls._get_ms_token(
             logger,
@@ -149,6 +162,7 @@ class MsToken:
         proxy: str = None,
         **kwargs,
     ) -> dict | None:
+        """获取 `long_ms_token` 对应的数据或状态，供 `MsToken` 使用。"""
         return await cls.get_real_ms_token(
             logger,
             headers,
@@ -159,6 +173,7 @@ class MsToken:
 
 
 class MsTokenTikTok(MsToken):
+    """封装 `MsTokenTikTok` 在 `app/core/lib/douyin/encrypt/msToken.py` 中承担的核心逻辑。"""
     REFERER = "https://www.tiktok.com/"
     API = "https://mssdk-ttp2.tiktokw.us/web/report"
     DATA = {
@@ -230,6 +245,7 @@ class MsTokenTikTok(MsToken):
         proxy: str = None,
         **kwargs,
     ) -> dict | None:
+        """获取 `real_ms_token` 对应的数据或状态，供 `MsTokenTikTok` 使用。"""
         params = {cls.NAME: token}
         if token:
             headers |= {"Cookie": f"{cls.NAME}={token}"}
@@ -249,9 +265,19 @@ class MsTokenTikTok(MsToken):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     class Logger:
-        def error(self, msg): print(msg)
-        def info(self, msg, *args): print(msg)
+        """执行 `error` 对应的业务逻辑，供 `Logger` 使用。"""
+        """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
+        def error(self, msg):
+            """Print an error message to the console."""
+
+            print(msg)
+        """执行 `info` 对应的业务逻辑，供 `Logger` 使用。"""
+        def info(self, msg, *args):
+            """Print an informational message to the console."""
+
+            print(msg)
 
     print("抖音", await MsToken.get_real_ms_token(Logger(), PARAMS_HEADERS, proxy=None))
     print(

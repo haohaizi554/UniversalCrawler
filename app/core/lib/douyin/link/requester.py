@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/link/requester.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/link/requester.py
 from re import compile
 from typing import TYPE_CHECKING
@@ -16,16 +18,23 @@ except ImportError:
     TIMEOUT = 10
 
     class DownloaderError(Exception):
+        """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
         pass
 
     class Retry:
+        """提供最小化的重试装饰器兼容层。"""
+
         @staticmethod
-        def retry(func): return func
+        def retry(func):
+            """在兜底模式下直接返回原函数，避免兼容层再引入副作用。"""
+            return func
 
     def capture_error_request(func):
+        """执行 `capture_error_request` 对应的业务逻辑。"""
         return func
 
     async def wait():
+        """执行 `wait` 对应的业务逻辑。"""
         pass
 
 if TYPE_CHECKING:
@@ -37,6 +46,7 @@ __all__ = ["Requester"]
 
 
 class Requester:
+    """封装 `Requester` 在 `app/core/lib/douyin/link/requester.py` 中承担的核心逻辑。"""
     URL = compile(r"(https?://[^\s\"<>\\^`{|}，。；！？、【】《》]+)")
 
     def __init__(
@@ -45,6 +55,7 @@ class Requester:
             client: "AsyncClient",
             headers: dict[str, str],
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Requester` 使用。"""
         self.client = client
         self.headers = headers
         self.log = params.logger
@@ -56,6 +67,7 @@ class Requester:
             text: str,
             proxy: str = None,
     ) -> str:
+        """执行当前对象或脚本的主流程，供 `Requester` 使用。"""
         urls = self.URL.finditer(text)
         if not urls:
             return ""
@@ -79,6 +91,7 @@ class Requester:
             content="url",
             proxy: str = None,
     ):
+        """执行 `request_url` 对应的业务逻辑，供 `Requester` 使用。"""
         self.log.info(f"URL: {url}", False)
         # 简单判断是否需要处理（抖音短链通常是 v.douyin.com）
         if "douyin.com" not in url and "tiktok.com" not in url:

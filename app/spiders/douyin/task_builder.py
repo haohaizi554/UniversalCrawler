@@ -1,3 +1,5 @@
+"""爬虫实现模块，负责 `app/spiders/douyin/task_builder.py` 对应平台的采集、解析或任务装配逻辑。"""
+
 from __future__ import annotations
 
 from app.models import VideoItem
@@ -5,7 +7,9 @@ from app.spiders.base_task_builder import BaseTaskBuilder
 
 
 class DouyinTaskBuilder(BaseTaskBuilder):
+    """负责将解析结果转换为 `DouyinTaskBuilder` 对应的任务或数据对象。"""
     def build_items(self, item: VideoItem, trace_id_factory) -> list[VideoItem]:
+        """构建 `items` 对应的结果、参数或对象，供 `DouyinTaskBuilder` 使用。"""
         if not item.meta.get("is_gallery"):
             return [item]
 

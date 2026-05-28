@@ -1,6 +1,9 @@
+"""爬虫实现模块，负责 `app/spiders/douyin/spider.py` 对应平台的采集、解析或任务装配逻辑。"""
+
 import os
 import json
 import asyncio
+import math
 import re
 import time
 import httpx
@@ -54,7 +57,7 @@ def _run_login_process(auth_file, user_agent, result_queue):
             except PlaywrightError:
                 pass
 
-            # 轮询检测
+            # 轮询检查登录态，一旦拿到核心 Cookie 就立即持久化并返回主进程。
             for _ in range(120):
                 cookies = context.cookies()
                 if auth_service.has_cookie(cookies, "sessionid_ss"):
@@ -74,6 +77,7 @@ class MockSettings:
     """模拟 DouK 的 Settings 类，用于欺骗 Parameter 初始化"""
 
     def __init__(self):
+        """提供最小化的设置对象占位符，满足底层参数对象初始化。"""
         pass
 
 
@@ -81,9 +85,11 @@ class MockCookie:
     """模拟 DouK 的 Cookie 类，实际 cookie 通过参数注入"""
 
     def __init__(self):
+        """声明 DouK 侧登录态检查依赖的关键 Cookie 名称。"""
         self.STATE_KEY = "sessionid_ss"
 
     def extract(self, *args, **kwargs):
+        """返回空结果，真实 Cookie 由外部参数直接注入。"""
         return {}
 
 
@@ -91,27 +97,33 @@ class MockLogger:
     """将 DouK 的日志重定向到 UCP 的信号系统"""
 
     def __init__(self, root, console):
+        """保存控制台适配器，供底层库把日志转发到 UI。"""
         self.root = root
         self.console = console
 
     def run(self):
+        """兼容底层库的调用约定，这里无需额外启动动作。"""
         pass
 
     def info(self, msg, output=True, **kwargs):
         # 只有当 output=True 时才发送到 UI，避免刷屏
+        """把普通日志按需转发到界面，避免高频无效输出刷屏。"""
         if output and self.console:
             self.console.print(str(msg))
 
     def warning(self, msg, output=True, **kwargs):
+        """把警告日志转发到界面。"""
         if output and self.console:
             self.console.warning(str(msg))
 
     def error(self, msg, output=True, **kwargs):
+        """把错误日志转发到界面。"""
         if output and self.console:
             self.console.error(str(msg))
 
     def debug(self, msg, **kwargs):
         # 调试信息默认不发送到 UI，防止卡死
+        """保留调试方法签名，但默认不把细碎日志推给界面。"""
         pass
 
 
@@ -124,30 +136,37 @@ class SignalConsole:
     """
 
     def __init__(self, signal_func):
+        """保存一个可直接写入 UI 的信号函数。"""
         self.signal_func = signal_func
 
     def print(self, *args, **kwargs):
         # 过滤掉 rich 的样式参数，只保留内容
+        """把控制台普通输出转换成纯文本并发送给界面。"""
         msg = " ".join(str(a) for a in args)
         self.signal_func(msg)
 
     def info(self, *args, **kwargs):
+        """输出带信息前缀的日志。"""
         msg = " ".join(str(a) for a in args)
         self.signal_func(f"[INFO] {msg}")
 
     def warning(self, *args, **kwargs):
+        """输出带警告前缀的日志。"""
         msg = " ".join(str(a) for a in args)
         self.signal_func(f"⚠️ {msg}")
 
     def error(self, *args, **kwargs):
+        """输出带错误前缀的日志。"""
         msg = " ".join(str(a) for a in args)
         self.signal_func(f"❌ {msg}")
 
     def debug(self, *args, **kwargs):
+        """保留调试输出接口，但默认不额外向界面发送内容。"""
         pass
 
     def input(self, prompt="", **kwargs):
         # 爬虫模式下不支持控制台输入，直接返回空
+        """兼容底层交互接口，爬虫线程中始终返回空输入。"""
         return ""
 
 
@@ -155,11 +174,28 @@ class DouyinSpider(BaseSpider):
     """抖音爬虫，负责扫码登录、路由解析和任务装配。"""
 
     def __init__(self, keyword: str, config: dict):
+        """初始化抖音爬虫依赖的解析器、任务装配器与认证服务。"""
         super().__init__(keyword, config)
         self.parser = DouyinItemParser()
         self.task_builder = DouyinTaskBuilder()
         self.auth_service = AuthService()
         self.auth_file = cfg.get("auth", "douyin_cookie_file", "dy_auth.json")
+
+    def _max_items_limit(self) -> int:
+        """读取最大资源数限制，并对非法配置做兜底。"""
+        limit = self.config.get("max_items", cfg.get("douyin", "max_items", 20))
+        try:
+            return max(1, int(limit))
+        except (TypeError, ValueError):
+            return 20
+
+    def _trim_items(self, items: list[VideoItem], title_hint: str) -> list[VideoItem]:
+        """按配置裁剪候选资源数量，避免一次性把过多条目丢给 UI。"""
+        limit = self._max_items_limit()
+        if limit >= 9999 or len(items) <= limit:
+            return items
+        self.log(f"ℹ️ {title_hint} 共 {len(items)} 个，仅保留前 {limit} 个供选择")
+        return items[:limit]
 
     def run(self):
         # [修改] 确保 multiprocessing 支持打包环境
@@ -168,6 +204,7 @@ class DouyinSpider(BaseSpider):
         #     freeze_support()
         # except: pass
 
+        """完成登录态准备后启动异步主流程，并在结束时统一发出完成信号。"""
         self.log(f"🚀 启动抖音任务 | 目标: {self.keyword}")
         self.debug_state(
             action="run_start",
@@ -183,6 +220,7 @@ class DouyinSpider(BaseSpider):
             self.log(f"❌ 登录失败: {exc}")
             self.sig_finished.emit()
             return
+        # 登录过程中可能已经被用户取消，这里需要在真正发请求前再次检查运行状态。
         if not self.is_running: return
         if not cookie_str:
             self.log("❌ 无法获取 Cookie，任务终止")
@@ -210,6 +248,7 @@ class DouyinSpider(BaseSpider):
             self.sig_finished.emit()
 
     def _load_or_login(self) -> str:
+        """优先复用本地 Cookie，失效后再回退到扫码登录。"""
         if os.path.exists(self.auth_file):
             try:
                 cookies = self.auth_service.load_json_file(self.auth_file)
@@ -226,6 +265,7 @@ class DouyinSpider(BaseSpider):
 
     def _perform_scan_login(self) -> str:
         # 登录页单独放到子进程里跑，避免 Playwright 和 Qt 线程模型互相干扰。
+        """在独立进程中执行扫码登录，并把结果回传给当前线程。"""
         self.log("🔗 正在启动独立登录进程...")
 
         result_queue = Queue()
@@ -261,6 +301,7 @@ class DouyinSpider(BaseSpider):
             raise SpiderAuthError("登录进程异常退出")
 
     def _cookies_to_str(self, cookies_list: list) -> str:
+        """把 Cookie 列表拼接成请求头可直接使用的字符串。"""
         return "; ".join([f"{c['name']}={c['value']}" for c in cookies_list])
 
     def _build_runtime_params(self, cookie_str: str):
@@ -333,6 +374,7 @@ class DouyinSpider(BaseSpider):
         await self._process_search(params, raw_text)
 
     async def _handle_modal_link(self, params, raw_text: str, link_extractor) -> None:
+        """优先按作品详情解析，失败后再把 `modal_id` 当作合集 ID 处理。"""
         res = await self._resolve_detail_link(link_extractor, raw_text)
         if res:
             await self._process_detail(params, res)
@@ -346,6 +388,7 @@ class DouyinSpider(BaseSpider):
         self.log("⚠️ 无法识别的链接格式")
 
     async def _handle_detail_link(self, params, raw_text: str, link_extractor) -> None:
+        """解析普通作品详情链接，并把结果交给详情处理流程。"""
         res = await self._resolve_detail_link(link_extractor, raw_text)
         if res:
             await self._process_detail(params, res)
@@ -357,6 +400,7 @@ class DouyinSpider(BaseSpider):
         return await link_extractor.run(raw_text, type_="detail")
 
     def _log_unsupported_numeric_uid(self) -> None:
+        """提示用户当前不支持直接按纯数字 UID 抓取抖音账号。"""
         self.log("⚠️ 纯数字 UID 暂不支持直接搜索")
         self.log("💡 请使用以下格式：")
         self.log("   • 用户主页链接: https://www.douyin.com/user/MS4w...")
@@ -388,10 +432,12 @@ class DouyinSpider(BaseSpider):
         await self._route_input(params, raw_text, link_extractor)
 
     async def _process_detail(self, params, ids: list):
+        """逐个拉取作品详情，并按数量决定直接入队还是弹出选择框。"""
         self.log(f"🎬 识别到 {len(ids)} 个作品 ID，开始获取详情...")
         api = Detail(params, detail_id=ids[0])
 
         all_items = []
+        # 详情接口一次只接一个 aweme_id，这里串行拉取并逐条转换为统一的 VideoItem。
         for vid in ids:
             if not self.is_running: break
             api.detail_id = vid
@@ -413,19 +459,22 @@ class DouyinSpider(BaseSpider):
             self.log("❌ 获取作品详情失败")
             return
 
-        # 单个作品直接下载，多个作品让用户选择
-        if len(all_items) == 1:
-            self._submit_tasks(all_items)
+        # 单个作品直接下载，多作品则交给选择对话框，避免误下整批内容。
+        limited_items = self._trim_items(all_items, "分享链接作品")
+        if len(limited_items) == 1:
+            self._submit_tasks(limited_items)
         else:
-            self._handle_selection(all_items, "分享链接作品")
+            self._handle_selection(limited_items, "分享链接作品")
 
     async def _process_user(self, params, sec_uid: str):
+        """分页抓取指定用户主页的公开作品，并在达到上限后停止继续翻页。"""
         self.log(f"👤 识别到用户 SecUID: {sec_uid}，开始爬取主页...")
         account_api = Account(params, sec_user_id=sec_uid)
 
         all_data = []
         page = 0
         # [修复] 使用 finished 属性判断循环，而不是 has_more
+        # 账号主页是分页接口，需要持续拉取直到接口声明 finished 或达到条目上限。
         while self.is_running and not account_api.finished:
             page += 1
             self.log(f"📄 正在获取第 {page} 页...")
@@ -456,6 +505,9 @@ class DouyinSpider(BaseSpider):
                     batch_items.append(item)
 
             all_data.extend(batch_items)
+            if self._max_items_limit() < 9999 and len(all_data) >= self._max_items_limit():
+                self.log(f"ℹ️ 已达到视频数上限 {self._max_items_limit()}，停止继续抓取")
+                break
             await asyncio.sleep(1)
 
         if not all_data:
@@ -465,6 +517,7 @@ class DouyinSpider(BaseSpider):
         self._handle_selection(all_data, f"用户 {sec_uid} 的作品")
 
     async def _process_mix(self, params, mix_id: str):
+        """分页抓取合集内容，并把合集标题写入每个条目的元数据。"""
         self.log(f"📀 识别到合集 ID: {mix_id}")
         mix_api = Mix(params, mix_id=mix_id)
 
@@ -502,7 +555,7 @@ class DouyinSpider(BaseSpider):
             #     except Exception as e:
             #         self.log(f"⚠️ [DEBUG] 保存失败: {e}")
 
-            # 提取合集名称
+            # 只要拿到第一页数据就尽量抽取合集名，后续下载器可据此创建子目录。
             if mix_title is None and raw_list and isinstance(raw_list, list) and len(raw_list) > 0:
                 first_item = raw_list[0]
                 mix_info = first_item.get('mix_info') or first_item.get('aweme_mix_info', {})
@@ -519,6 +572,12 @@ class DouyinSpider(BaseSpider):
                     item.meta['mix_title'] = mix_title or f"合集_{mix_id}"
                     item.meta['folder_name'] = mix_title or f"合集_{mix_id}"
                     all_data.append(item)
+                    if self._max_items_limit() < 9999 and len(all_data) >= self._max_items_limit():
+                        break
+
+            if self._max_items_limit() < 9999 and len(all_data) >= self._max_items_limit():
+                self.log(f"ℹ️ 已达到视频数上限 {self._max_items_limit()}，停止继续抓取")
+                break
 
             await asyncio.sleep(0.5)
 
@@ -529,8 +588,10 @@ class DouyinSpider(BaseSpider):
         self._handle_selection(all_data, f"合集 {mix_title or mix_id}")
 
     async def _process_search(self, params, keyword: str):
-        max_pages = self.config.get("search_max_pages", 1)
-        self.log(f"🔍 搜索关键词: {keyword} (最大 {max_pages} 页)")
+        """提供 `_process_search` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""
+        max_items = self._max_items_limit()
+        max_pages = 9999 if max_items >= 9999 else max(1, min(100, math.ceil(max_items / 10)))
+        self.log(f"🔍 搜索关键词: {keyword} (最多 {max_items if max_items < 9999 else 'max'} 个视频)")
 
         search_api = Search(params, keyword=keyword, type=0)  # 0=综合
 
@@ -560,18 +621,33 @@ class DouyinSpider(BaseSpider):
             for item in raw_list:
                 if 'aweme_info' in item:
                     vid = self.parser.parse_aweme(item['aweme_info'])
-                    if vid: all_data.append(vid)
+                    if vid:
+                        all_data.append(vid)
+                        if max_items < 9999 and len(all_data) >= max_items:
+                            break
 
             # [修复] 使用 finished 属性判断
-            if search_api.finished: break
+            if search_api.finished or (max_items < 9999 and len(all_data) >= max_items):
+                break
             await asyncio.sleep(1)
 
         self._handle_selection(all_data, f"搜索: {keyword}")
 
+    def _normalize_user_search_items(self, raw_list) -> list[dict]:
+        """抖音用户搜索返回存在嵌套列表，需要在进入解析前拍平。"""
+        normalized: list[dict] = []
+        if not isinstance(raw_list, list):
+            return normalized
+        for item in raw_list:
+            if isinstance(item, dict):
+                normalized.append(item)
+            elif isinstance(item, list):
+                normalized.extend(entry for entry in item if isinstance(entry, dict))
+        return normalized
+
     async def _process_user_search(self, params, user_id: str):
         """通过用户ID/抖音号搜索用户，然后获取用户主页作品"""
         from app.core.lib.douyin.interface.search import Search
-        from app.core.lib.douyin.link.extractor import Extractor as LinkExtractor
         
         self.log(f"🔍 正在搜索用户: {user_id}")
         
@@ -590,18 +666,31 @@ class DouyinSpider(BaseSpider):
             return
         
         raw_list = search_api.response
+        normalized_items = self._normalize_user_search_items(raw_list)
+        self.debug_state(
+            action="user_search_response_shape",
+            message="记录抖音用户搜索返回结构",
+            status_code="DOUYIN_USER_SEARCH_SHAPE",
+            details={
+                "keyword": user_id,
+                "response_type": type(raw_list).__name__,
+                "top_level_count": len(raw_list) if isinstance(raw_list, list) else None,
+                "first_item_type": type(raw_list[0]).__name__ if isinstance(raw_list, list) and raw_list else None,
+                "normalized_count": len(normalized_items),
+            },
+        )
         self.debug_api(
             api_name="user_search",
             request={"keyword": user_id, "channel": 2},
             response_summary={
-                "result_count": len(raw_list or []),
+                "result_count": len(normalized_items),
                 "users": [
                     {
                         "nickname": item.get("user_info", {}).get("nickname"),
                         "sec_uid": item.get("user_info", {}).get("sec_uid"),
                         "aweme_count": item.get("user_info", {}).get("aweme_count"),
                     }
-                    for item in (raw_list or [])[:5]
+                    for item in normalized_items[:5]
                     if item.get("user_info")
                 ],
             },
@@ -625,12 +714,12 @@ class DouyinSpider(BaseSpider):
         #     self.log(f"⚠️ [DEBUG] 保存失败: {e}")
         
         # 检查是否有搜索结果
-        if raw_list and len(raw_list) > 0 and raw_list[0]:
+        if normalized_items:
             # 有搜索结果，解析用户信息
-            self.log(f"✅ 找到 {len(raw_list)} 个匹配用户")
+            self.log(f"✅ 找到 {len(normalized_items)} 个匹配用户")
             
             users = []
-            for item in raw_list:
+            for item in normalized_items:
                 if 'user_info' in item:
                     user_info = item['user_info']
                     users.append({
@@ -716,6 +805,8 @@ class DouyinSpider(BaseSpider):
 
 
     def _handle_selection(self, items: list[VideoItem], title_hint: str):
+        """提供 `_handle_selection` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""
+        items = self._trim_items(items, title_hint)
         if not items:
             self.log("❌ 未找到有效视频")
             return
@@ -741,6 +832,13 @@ class DouyinSpider(BaseSpider):
         self._submit_tasks(final_items)
 
     def _submit_tasks(self, items: list[VideoItem]):
+        """提供 `_submit_tasks` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""
+        self.debug_state(
+            action="submit_tasks_enter",
+            message="进入抖音任务提交阶段",
+            status_code="DOUYIN_SUBMIT_ENTER",
+            details={"item_count": len(items)},
+        )
         for item in items:
             built_items = self.task_builder.build_items(item, self.new_trace_id)
             for built_item in built_items:

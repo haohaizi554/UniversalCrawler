@@ -1,3 +1,5 @@
+"""下载器模块，负责 `app/core/downloaders/base.py` 对应资源的落盘或外部工具调用流程。"""
+
 from __future__ import annotations
 
 import os
@@ -15,10 +17,14 @@ StopCheck = Callable[[], bool]
 
 
 class BaseDownloader:
+    """实现 `BaseDownloader` 对应的资源下载与落盘流程。"""
+
+
     source_id: str | None = None
 
     @classmethod
     def can_handle(cls, video_item: VideoItem) -> bool:
+        """判断当前对象是否满足 `can_handle` 所需的处理条件，供 `BaseDownloader` 使用。"""
         return bool(cls.source_id and video_item.source == cls.source_id)
 
     def _apply_runtime_headers(self, video_item: VideoItem, headers: dict[str, str]) -> None:
@@ -28,6 +34,7 @@ class BaseDownloader:
         if headers.get("Referer"):
             video_item.meta["referer"] = headers["Referer"]
 
+    #智能下载调度器
     def _download_with_strategy_fallback(
         self,
         *,
@@ -87,15 +94,18 @@ class BaseDownloader:
         )
 
     def _should_resume_download(self, temp_path: str) -> bool:
+        """提供 `_should_resume_download` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         return os.path.exists(temp_path)
 
     def _get_existing_size(self, temp_path: str) -> int:
+        """提供 `_get_existing_size` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         try:
             return os.path.getsize(temp_path)
         except OSError:
             return 0
 
     def _cleanup_temp_file(self, temp_path: str) -> None:
+        """提供 `_cleanup_temp_file` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -103,6 +113,7 @@ class BaseDownloader:
                 pass
 
     def _finalize_download(self, temp_path: str, save_path: str) -> None:
+        """提供 `_finalize_download` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         if os.path.exists(save_path):
             try:
                 os.remove(save_path)
@@ -110,6 +121,7 @@ class BaseDownloader:
                 pass
         os.rename(temp_path, save_path)
 
+    #单线程 HTTP 下载实现
     def _download_http_file(
         self,
         *,
@@ -124,6 +136,7 @@ class BaseDownloader:
         support_resume: bool = False,
         error_message: str = "下载失败",
     ) -> None:
+        """提供 `_download_http_file` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         temp_path = save_path + ".downloading"
         success = False
 
@@ -187,4 +200,5 @@ class BaseDownloader:
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        """执行 `download` 对应的业务逻辑，供 `BaseDownloader` 使用。"""
         raise NotImplementedError

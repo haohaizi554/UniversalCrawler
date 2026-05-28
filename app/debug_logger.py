@@ -1,3 +1,5 @@
+"""实现 `app/debug_logger.py` 对应功能的 Python 模块。"""
+
 import json
 import os
 import re
@@ -5,8 +7,9 @@ import threading
 import multiprocessing
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+from app.utils.runtime_paths import user_logs_root
 
 
 class DebugLogger:
@@ -36,9 +39,8 @@ class DebugLogger:
     }
 
     def __init__(self):
-        project_root = Path(__file__).resolve().parent.parent
-        self.logs_dir = project_root / "logs"
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        """初始化当前实例并准备运行所需的状态，供 `DebugLogger` 使用。"""
+        self.logs_dir = user_logs_root()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         process_name = multiprocessing.current_process().name
@@ -54,6 +56,7 @@ class DebugLogger:
         self._write_header()
 
     def _write_header(self):
+        """提供 `_write_header` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         header = [
             "=" * 88,
             f"Universal Crawler Pro Debug Session",
@@ -65,9 +68,11 @@ class DebugLogger:
         self._append_lines(header)
 
     def _now(self) -> str:
+        """提供 `_now` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _is_sensitive_key(self, key: str) -> bool:
+        """提供 `_is_sensitive_key` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         lower_key = key.lower()
         if lower_key.endswith(("_path", "_file", "_dir")):
             return False
@@ -79,6 +84,7 @@ class DebugLogger:
         )
 
     def _mask_inline_secret(self, value: str) -> str:
+        """提供 `_mask_inline_secret` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         masked = re.sub(
             r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@:\s]+)(?::([^@/\s]*))?@",
             r"\1***:***@",
@@ -100,6 +106,7 @@ class DebugLogger:
         return masked
 
     def _redact_sensitive_value(self, value: Any) -> Any:
+        """提供 `_redact_sensitive_value` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if isinstance(value, str):
             masked = self._mask_inline_secret(value)
             return masked if masked != value else "[已脱敏]"
@@ -108,6 +115,7 @@ class DebugLogger:
         return "***"
 
     def _append_lines(self, lines: list[str]):
+        """提供 `_append_lines` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         content = "\n".join(lines) + "\n"
         with self._lock:
             with open(self.session_file, "a", encoding="utf-8") as fp:
@@ -116,6 +124,7 @@ class DebugLogger:
                 fp.write(content)
 
     def _clean_mapping(self, data: dict[str, Any] | None) -> dict[str, Any]:
+        """提供 `_clean_mapping` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if not data:
             return {}
         cleaned = {}
@@ -136,6 +145,7 @@ class DebugLogger:
         return cleaned
 
     def _format_mapping(self, title: str, data: dict[str, Any] | None) -> list[str]:
+        """提供 `_format_mapping` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         data = self._clean_mapping(data)
         if not data:
             return []
@@ -153,6 +163,7 @@ class DebugLogger:
         return lines
 
     def _normalize_value(self, value: Any) -> Any:
+        """提供 `_normalize_value` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if isinstance(value, dict):
             result = {}
             for key, item in list(value.items())[:20]:
@@ -179,11 +190,13 @@ class DebugLogger:
         return value
 
     def new_trace_id(self, prefix: str = "trace") -> str:
+        """执行 `new_trace_id` 对应的业务逻辑，供 `DebugLogger` 使用。"""
         stamp = datetime.now().strftime("%H%M%S")
         short = uuid.uuid4().hex[:8]
         return f"{prefix}-{stamp}-{short}"
 
     def pick_used(self, source: dict[str, Any] | None, *keys: str) -> dict[str, Any]:
+        """执行 `pick_used` 对应的业务逻辑，供 `DebugLogger` 使用。"""
         if not source:
             return {}
         return self._clean_mapping({key: source.get(key) for key in keys if key in source})
@@ -199,6 +212,7 @@ class DebugLogger:
         details: dict[str, Any] | None,
     ):
         # 错误摘要始终覆盖为“最近一次错误”，这样用户从 UI 打开时能直接看到最新诊断结论。
+        """提供 `_write_error_summary` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         severity = self._infer_error_severity(component, action, status_code, details)
         conclusion = self._build_error_conclusion(component, action, status_code, details)
         suggestions = self._build_error_suggestions(component, action, status_code, details)
@@ -242,6 +256,7 @@ class DebugLogger:
         details: dict[str, Any] | None,
     ) -> str:
         # 这里做的是“面向排障”的粗粒度优先级分类，不追求精确异常学术定义。
+        """提供 `_infer_error_severity` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         text = f"{component} {action} {status_code or ''} {json.dumps(self._normalize_value(details or {}), ensure_ascii=False)}".lower()
         if "stop" in text or "用户停止" in text:
             return "P4-用户操作"
@@ -262,6 +277,7 @@ class DebugLogger:
         status_code: int | str | None,
         details: dict[str, Any] | None,
     ) -> str:
+        """提供 `_build_error_conclusion` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         text = f"{component} {action} {status_code or ''} {json.dumps(self._normalize_value(details or {}), ensure_ascii=False)}".lower()
         if "ffmpeg" in text:
             return "问题大概率出在 ffmpeg 执行或合并阶段，优先核对输入 URL、Referer、输出路径和 ffmpeg 是否可用。"
@@ -286,6 +302,7 @@ class DebugLogger:
         status_code: int | str | None,
         details: dict[str, Any] | None,
     ) -> list[str]:
+        """提供 `_build_error_suggestions` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         detail_text = json.dumps(self._normalize_value(details or {}), ensure_ascii=False)
         suggestions = [
             "先用追踪ID在 latest_debug.log 中全文搜索，查看同一任务前后的 API、入队、下载和合并记录。",
@@ -317,6 +334,7 @@ class DebugLogger:
         details: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ):
+        """执行 `log` 对应的业务逻辑，供 `DebugLogger` 使用。"""
         context = self._clean_mapping(context)
         details = self._clean_mapping(details)
         lines = [
@@ -347,6 +365,7 @@ class DebugLogger:
         status_code: int | str | None = None,
         trace_id: str | None = None,
     ):
+        """执行 `log_api` 对应的业务逻辑，供 `DebugLogger` 使用。"""
         request = self._clean_mapping(request)
         response_summary = self._clean_mapping(response_summary)
         lines = [
@@ -375,6 +394,7 @@ class DebugLogger:
         context: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ):
+        """执行 `log_command` 对应的业务逻辑，供 `DebugLogger` 使用。"""
         details = {}
         if command_args:
             details["args"] = list(command_args)
@@ -401,6 +421,7 @@ class DebugLogger:
         trace_id: str | None = None,
         details: dict[str, Any] | None = None,
     ):
+        """执行 `log_exception` 对应的业务逻辑，供 `DebugLogger` 使用。"""
         self.log(
             component=component,
             action=action,
@@ -416,6 +437,7 @@ _debug_logger_singleton: DebugLogger | None = None
 
 
 def get_debug_logger() -> DebugLogger:
+    """获取 `debug_logger` 对应的数据或状态。"""
     global _debug_logger_singleton
     if _debug_logger_singleton is None:
         _debug_logger_singleton = DebugLogger()
@@ -426,9 +448,11 @@ class DebugLoggerProxy:
     """惰性代理，避免模块导入时立刻创建日志目录和文件。"""
 
     def __getattr__(self, name: str):
+        """提供 `__getattr__` 对应的内部辅助逻辑，供 `DebugLoggerProxy` 使用。"""
         return getattr(get_debug_logger(), name)
 
     def __setattr__(self, name: str, value):
+        """提供 `__setattr__` 对应的内部辅助逻辑，供 `DebugLoggerProxy` 使用。"""
         setattr(get_debug_logger(), name, value)
 
 

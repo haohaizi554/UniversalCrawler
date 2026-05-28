@@ -1,3 +1,5 @@
+"""界面模块，封装 `app/ui/components/download_queue_panel.py` 对应的窗口、对话框或界面组件逻辑。"""
+
 from __future__ import annotations
 
 from typing import Callable
@@ -25,6 +27,7 @@ class DownloadQueuePanel(QFrame):
     """下载队列表面板，封装表格的增删改查和交互绑定。"""
 
     def __init__(self, current_save_dir: str, style_provider: QWidget):
+        """初始化当前实例并准备运行所需的状态，供 `DownloadQueuePanel` 使用。"""
         super().__init__()
         self.setObjectName("ContentPanel")
         self._style_provider = style_provider
@@ -67,6 +70,7 @@ class DownloadQueuePanel(QFrame):
         layout.addWidget(self.table)
 
     def set_current_save_dir(self, save_dir: str) -> None:
+        """设置 `current_save_dir` 对应的值或运行状态，供 `DownloadQueuePanel` 使用。"""
         self.lbl_full_path.setText(save_dir)
         self.lbl_full_path.setToolTip(save_dir)
 
@@ -76,6 +80,7 @@ class DownloadQueuePanel(QFrame):
         on_play: Callable[[str], None],
         on_delete: Callable[[str], None],
     ) -> None:
+        """执行 `add_video_row` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
         row = self.table.rowCount()
         self.table.insertRow(row)
 
@@ -113,15 +118,21 @@ class DownloadQueuePanel(QFrame):
         self.table.setCellWidget(row, 3, operation_widget)
 
     def update_video_status(self, video_id: str, status: str, progress: int | None = None) -> None:
+        """更新 `video_status` 对应的状态或数据内容，供 `DownloadQueuePanel` 使用。"""
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item and item.data(Qt.ItemDataRole.UserRole) == video_id:
-                self.table.item(row, 1).setText(status)
+                status_item = self.table.item(row, 1)
+                if status_item is not None:
+                    status_item.setText(status)
                 if progress is not None:
-                    self.table.cellWidget(row, 2).setValue(progress)
+                    progress_bar = self.table.cellWidget(row, 2)
+                    if progress_bar is not None:
+                        progress_bar.setValue(progress)
                 break
 
     def refresh_delete_bindings(self, on_delete: Callable[[str], None]) -> None:
+        """执行 `refresh_delete_bindings` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if not item:
@@ -141,16 +152,20 @@ class DownloadQueuePanel(QFrame):
                 button.clicked.connect(lambda checked=False, value=video_id: on_delete(value))
 
     def clear_rows(self) -> None:
+        """执行 `clear_rows` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
         self.table.setRowCount(0)
 
     def remove_row(self, row: int) -> None:
+        """执行 `remove_row` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
         if row >= 0:
             self.table.removeRow(row)
 
     def bind_title_rename(self, on_rename: Callable) -> None:
+        """执行 `bind_title_rename` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
         self.table.itemChanged.connect(on_rename)
 
     def find_row_by_video_id(self, video_id: str) -> int:
+        """执行 `find_row_by_video_id` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item and item.data(Qt.ItemDataRole.UserRole) == video_id:
@@ -158,6 +173,7 @@ class DownloadQueuePanel(QFrame):
         return -1
 
     def get_selected_video_id(self) -> str | None:
+        """获取 `selected_video_id` 对应的数据或状态，供 `DownloadQueuePanel` 使用。"""
         row = self.table.currentRow()
         if row < 0:
             return None

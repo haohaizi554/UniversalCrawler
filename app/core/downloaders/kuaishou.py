@@ -1,6 +1,6 @@
-from __future__ import annotations
+"""下载器模块，负责 `app/core/downloaders/kuaishou.py` 对应资源的落盘或外部工具调用流程。"""
 
-import requests
+from __future__ import annotations
 
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
@@ -10,6 +10,7 @@ from .base import BaseDownloader, ProgressCallback, StopCheck
 
 
 class KuaishouDownloader(BaseDownloader):
+    """实现 `KuaishouDownloader` 对应的资源下载与落盘流程。"""
     source_id = "kuaishou"
 
     def download(
@@ -19,6 +20,7 @@ class KuaishouDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        """执行 `download` 对应的业务逻辑，供 `KuaishouDownloader` 使用。"""
         trace_id = video_item.meta.get("trace_id")
         download_cfg = cfg.settings.download
         headers = {
@@ -50,40 +52,6 @@ class KuaishouDownloader(BaseDownloader):
             ),
             trace_id=trace_id,
         )
-
-        temp_path = save_path + ".downloading"
-        try:
-            with requests.get(video_item.url, headers=headers, stream=True, timeout=60) as response:
-                response.raise_for_status()
-                debug_logger.log_api(
-                    component="KuaishouDownloader",
-                    api_name="stream_download",
-                    request=debug_logger.pick_used(
-                        {"url": video_item.url, "save_path": temp_path, "referer": headers.get("Referer")},
-                        "url",
-                        "save_path",
-                        "referer",
-                    ),
-                    response_summary=debug_logger.pick_used(
-                        {
-                            "content_length": response.headers.get("content-length"),
-                            "content_type": response.headers.get("content-type"),
-                        },
-                        "content_length",
-                        "content_type",
-                    ),
-                    message="快手视频流下载连接建立成功",
-                    status_code=response.status_code,
-                    trace_id=trace_id,
-                )
-        except requests.RequestException as exc:
-            debug_logger.log_exception(
-                "KuaishouDownloader",
-                "stream_download_probe",
-                exc,
-                context={"url": video_item.url, "save_path": save_path},
-                trace_id=trace_id,
-            )
 
         self._download_with_strategy_fallback(
             video_item=video_item,

@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/verifyFp.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/encrypt/verifyFp.py
 from random import random
 from string import ascii_lowercase
@@ -30,6 +32,7 @@ class VerifyFp:
     """
     @staticmethod
     def get_verify_fp(timestamp: int = None):
+        """获取 `verify_fp` 对应的数据或状态，供 `VerifyFp` 使用。"""
         base_str = digits + ascii_uppercase + ascii_lowercase
         t = len(base_str)
         milliseconds = timestamp or int(round(time() * 1000))

@@ -1,3 +1,5 @@
+"""包初始化模块，为 `app/core/lib/douyin/tools` 提供统一导出或包级说明。"""
+
 # app/core/lib/douyin/tools/__init__.py
 import asyncio
 from random import randint
@@ -92,6 +94,7 @@ BLANK_PREVIEW = "static/images/blank.png"
 
 # --- Functions ---
 async def wait() -> None:
+    """执行 `wait` 对应的业务逻辑。"""
     await asyncio.sleep(randint(5, 20) * 0.1)
 
 from .cleaner import Cleaner

@@ -1,10 +1,16 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/collection.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/collection.py
 from typing import TYPE_CHECKING, Callable, Union
 from .template import API
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -13,6 +19,7 @@ if TYPE_CHECKING:
 
 
 class Collection(API):
+    """封装 `Collection` 在 `app/core/lib/douyin/interface/collection.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -25,6 +32,7 @@ class Collection(API):
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Collection` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.api = f"{self.domain}aweme/v1/web/aweme/listcollection/"
         self.text = _("账号收藏作品")
@@ -48,6 +56,7 @@ class Collection(API):
         *args,
         **kwargs,
     ):
+        """执行当前对象或脚本的主流程，供 `Collection` 使用。"""
         await super().run(
             referer or f"{self.domain}user/self?showTab=favorite_collection",
             single_page,
@@ -68,6 +77,7 @@ class Collection(API):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `Collection` 使用。"""
         return self.params | {
             "publish_video_strategy_type": "2",
             "version_code": "170400",
@@ -77,6 +87,7 @@ class Collection(API):
     def generate_data(
         self,
     ) -> dict:
+        """执行 `generate_data` 对应的业务逻辑，供 `Collection` 使用。"""
         return {
             "count": self.count,
             "cursor": self.cursor,
@@ -94,6 +105,7 @@ class Collection(API):
         *args,
         **kwargs,
     ):
+        """执行 `request_data` 对应的业务逻辑，供 `Collection` 使用。"""
         return await super().request_data(
             url,
             params,
@@ -108,6 +120,7 @@ class Collection(API):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

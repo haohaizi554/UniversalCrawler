@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/xGnarly.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/encrypt/xGnarly.py
 from hashlib import md5
 from random import randint
@@ -11,6 +13,7 @@ except ImportError:
     USERAGENT = DEFAULT_USER_AGENT
 
 class XGnarly:
+    """封装 `XGnarly` 在 `app/core/lib/douyin/encrypt/xGnarly.py` 中承担的核心逻辑。"""
     _AA = [
         0xFFFFFFFF,
         138,
@@ -147,15 +150,18 @@ class XGnarly:
     # ── BIT HELPERS ────────────────────────────────────────
     @classmethod
     def _u32(cls, x: int) -> int:
+        """提供 `_u32` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         return x & cls._MASK32
 
     @classmethod
     def _rotl(cls, x: int, n: int) -> int:
+        """提供 `_rotl` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         return cls._u32(((x << n) & cls._MASK32) | (x >> (32 - n)))
 
     # ── CHACHA CORE ────────────────────────────────────────
     @classmethod
     def _quarter(cls, st: list[int], a: int, b: int, c: int, d: int):
+        """提供 `_quarter` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         st[a] = cls._u32(st[a] + st[b])
         st[d] = cls._rotl(st[d] ^ st[a], 16)
         st[c] = cls._u32(st[c] + st[d])
@@ -167,6 +173,7 @@ class XGnarly:
 
     @classmethod
     def _chacha_block(cls, state: list[int], rounds: int) -> list[int]:
+        """提供 `_chacha_block` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         w = state.copy()
         r = 0
         while r < rounds:
@@ -187,10 +194,12 @@ class XGnarly:
         return w
 
     def _bump_counter(self):
+        """提供 `_bump_counter` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         self.kt[12] = self._u32(self.kt[12] + 1)
 
     # ── JS-faithful PRNG (rand) ────────────────────────────
     def rand(self) -> float:
+        """执行 `rand` 对应的业务逻辑，供 `XGnarly` 使用。"""
         e = self._chacha_block(self.kt, 8)
         t = e[self.St]
         r = (e[self.St + 8] & 0xFFFFFFF0) >> 11
@@ -204,12 +213,14 @@ class XGnarly:
     # ── UTILITIES ──────────────────────────────────────────
     @staticmethod
     def _num_to_bytes(val: int) -> list[int]:
+        """提供 `_num_to_bytes` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         if val < 65535:
             return [(val >> 8) & 0xFF, val & 0xFF]
         return [(val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF]
 
     @staticmethod
     def _be_int_from_str(s: str) -> int:
+        """提供 `_be_int_from_str` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         b = s.encode("utf-8")[:4]
         acc = 0
         for x in b:
@@ -218,6 +229,7 @@ class XGnarly:
 
     # ── MESSAGE ENCRYPTION ──────────────────────────────
     def _encrypt_chacha(self, key_words: list[int], rounds: int, data: list[int]):
+        """提供 `_encrypt_chacha` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         n_full = len(data) // 4
         leftover = len(data) % 4
         words = [0] * ((len(data) + 3) // 4)
@@ -264,6 +276,7 @@ class XGnarly:
                 data[base + c] = (w >> (8 * c)) & 0xFF
 
     def _ab22(self, key12_words: list[int], rounds: int, s: str) -> str:
+        """提供 `_ab22` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
         state = self._OT + key12_words
         data = [ord(ch) for ch in s]
         self._encrypt_chacha(state, rounds, data)
@@ -278,6 +291,7 @@ class XGnarly:
         envcode: int = 0,
         version: str = "5.1.1",
     ) -> str:
+        """执行 `generate` 对应的业务逻辑，供 `XGnarly` 使用。"""
         timestamp_ms = int(time() * 1000)
 
         obj = {

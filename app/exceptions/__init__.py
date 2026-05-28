@@ -1,3 +1,5 @@
+"""包初始化模块，为 `app/exceptions` 提供统一导出或包级说明。"""
+
 from .base import AppError
 from .config import ConfigError, ConfigReadError, ConfigValidationError, ConfigWriteError
 from .downloader import (

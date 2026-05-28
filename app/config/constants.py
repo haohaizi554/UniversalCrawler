@@ -1,6 +1,8 @@
-from __future__ import annotations
+"""配置模块，负责 `app/config/constants.py` 对应的配置常量、读取或校验逻辑。"""
 
+from __future__ import annotations
 import os
+from app.utils.runtime_paths import default_download_root, resolve_user_file
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -8,7 +10,7 @@ DEFAULT_USER_AGENT = (
     "Chrome/139.0.0.0 Safari/537.36"
 )
 
-DEFAULT_DOWNLOAD_DIR = os.path.join(os.getcwd(), "Downloads")
-DEFAULT_CONFIG_FILE = "config.json"
+DEFAULT_DOWNLOAD_DIR = str(default_download_root())
+DEFAULT_CONFIG_FILE = str(resolve_user_file("config.json"))
 DEFAULT_MISSAV_PROXY_URL = "http://127.0.0.1:7890"
 SUPPORTED_THEMES = {"dark", "light"}

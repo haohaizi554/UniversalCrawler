@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/device_id.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/encrypt/device_id.py
 from asyncio import run
 from re import compile
@@ -8,7 +10,11 @@ try:
     from ..tools import PARAMS_HEADERS_TIKTOK, request_params
 except ImportError:
     PARAMS_HEADERS_TIKTOK = {}
-    async def request_params(*args, **kwargs): pass
+    """执行 `request_params` 对应的业务逻辑。"""
+    async def request_params(*args, **kwargs):
+        """Fallback async request stub used when the real helper is unavailable."""
+
+        pass
 
 if TYPE_CHECKING:
     from typing import Any
@@ -20,6 +26,7 @@ __all__ = ["DeviceId"]
 
 
 class DeviceId:
+    """封装 `DeviceId` 在 `app/core/lib/douyin/encrypt/device_id.py` 中承担的核心逻辑。"""
     NAME = "device_id"
     URL = "https://www.tiktok.com/explore"
     DEVICE_ID = compile(r'"wid":"(\d{19})"')
@@ -31,6 +38,7 @@ class DeviceId:
         headers: dict,
         **kwargs,
     ) -> [str, str]:
+        """获取 `device_id` 对应的数据或状态，供 `DeviceId` 使用。"""
         response = await request_params(
             logger,
             cls.URL,
@@ -54,6 +62,7 @@ class DeviceId:
         number: int,
         **kwargs,
     ) -> [[str, str]]:
+        """获取 `device_ids` 对应的数据或状态，供 `DeviceId` 使用。"""
         return [
             await cls.get_device_id(
                 logger,
@@ -65,9 +74,19 @@ class DeviceId:
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     class Logger:
-        def error(self, msg): print(msg)
-        def info(self, msg, *args): print(msg)
+        """执行 `error` 对应的业务逻辑，供 `Logger` 使用。"""
+        """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
+        def error(self, msg):
+            """Print an error message to the console."""
+
+            print(msg)
+        """执行 `info` 对应的业务逻辑，供 `Logger` 使用。"""
+        def info(self, msg, *args):
+            """Print an informational message to the console."""
+
+            print(msg)
 
     print(
         await DeviceId.get_device_id(

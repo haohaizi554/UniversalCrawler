@@ -1,3 +1,5 @@
+"""爬虫实现模块，负责 `app/spiders/douyin/parser.py` 对应平台的采集、解析或任务装配逻辑。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,6 +11,7 @@ class DouyinItemParser:
     """抖音数据解析器。"""
 
     def parse_aweme(self, data: dict[str, Any]) -> VideoItem | None:
+        """解析 `aweme` 对应的输入数据并返回结构化结果，供 `DouyinItemParser` 使用。"""
         try:
             aweme_id = data.get("aweme_id", "unknown")
             desc = data.get("desc", aweme_id)
@@ -89,6 +92,7 @@ class DouyinItemParser:
         return None
 
     def summarize_aweme(self, data: dict[str, Any]) -> dict[str, Any]:
+        """执行 `summarize_aweme` 对应的业务逻辑，供 `DouyinItemParser` 使用。"""
         video = data.get("video", {}) or {}
         author = data.get("author", {}) or {}
         images = data.get("images") or []

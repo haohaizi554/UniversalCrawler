@@ -17,6 +17,7 @@ class BaseSpider(QThread):
     sig_select_tasks = pyqtSignal(list)
 
     def __init__(self, keyword: str, config: dict):
+        """初始化当前实例并准备运行所需的状态，供 `BaseSpider` 使用。"""
         super().__init__()
         self.keyword = keyword
         self.config = config
@@ -27,20 +28,23 @@ class BaseSpider(QThread):
         self._selection_result = None
 
     def stop(self):
+        """执行 `stop` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         self.is_running = False
         self._resume_event.set()
         self.sig_log.emit("🛑 正在停止任务...")
 
     def run(self):
+        """执行当前对象或脚本的主流程，供 `BaseSpider` 使用。"""
         raise NotImplementedError("Subclasses must implement run().")
 
     def log(self, msg: str):
+        """执行 `log` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         self.sig_log.emit(msg)
 
-    def debug_state(self, action: str, message: str = "", status_code=None, context=None, details=None):
-        trace_id = None
+    def debug_state(self, action: str, message: str = "", status_code=None, context=None, details=None, trace_id=None):
+        """执行 `debug_state` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         if isinstance(context, dict):
-            trace_id = context.get("trace_id")
+            trace_id = trace_id or context.get("trace_id")
         if not trace_id and isinstance(details, dict):
             trace_id = details.get("trace_id")
         debug_logger.log(
@@ -54,6 +58,7 @@ class BaseSpider(QThread):
         )
 
     def debug_api(self, api_name: str, request=None, response_summary=None, message: str = "", status_code=None):
+        """执行 `debug_api` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         trace_id = None
         if isinstance(request, dict):
             trace_id = request.get("trace_id")
@@ -70,9 +75,11 @@ class BaseSpider(QThread):
         )
 
     def new_trace_id(self, suffix: str = "task") -> str:
+        """执行 `new_trace_id` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         return debug_logger.new_trace_id(f"{self.trace_prefix}-{suffix}")
 
     def ensure_trace_id(self, meta: dict | None = None, suffix: str = "task") -> str:
+        """执行 `ensure_trace_id` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         if meta is None:
             return self.new_trace_id(suffix)
         trace_id = meta.get("trace_id")
@@ -82,6 +89,7 @@ class BaseSpider(QThread):
         return trace_id
 
     def emit_video(self, url: str, title: str, source: str, meta: dict | None = None):
+        """执行 `emit_video` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         item = VideoItem(url=url, title=title, source=source)
         if meta:
             item.meta = meta
@@ -90,6 +98,7 @@ class BaseSpider(QThread):
 
     def ask_user_selection(self, items: list) -> list | None:
         # The spider thread blocks here until the UI resumes it.
+        """执行 `ask_user_selection` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         self._resume_event.clear()
         self._selection_result = None
         self.sig_select_tasks.emit(items)

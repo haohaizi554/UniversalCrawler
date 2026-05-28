@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/search.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/search.py
 from json import dumps
 from types import SimpleNamespace
@@ -10,12 +12,14 @@ try:
     from ..tools import DownloaderError
 except ImportError:
     class DownloaderError(Exception):
+        """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
         pass
 
 try:
     from ..translation import _
 except ImportError:
     def _(x):
+        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 if TYPE_CHECKING:
@@ -26,6 +30,7 @@ if TYPE_CHECKING:
 
 
 class Search(API):
+    """封装 `Search` 在 `app/core/lib/douyin/interface/search.py` 中承担的核心逻辑。"""
     search_params = (
         SimpleNamespace(
             note=_("综合搜索"),
@@ -164,6 +169,7 @@ class Search(API):
             *args,
             **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Search` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.keyword = keyword
         self.channel = self.channel_map.get(channel, self.search_params[-1])
@@ -194,6 +200,7 @@ class Search(API):
         }.get(channel)
 
     async def run(self, single_page=False, *args, **kwargs):
+        """执行当前对象或脚本的主流程，供 `Search` 使用。"""
         if not self.api:
             raise DownloaderError
         self.set_referer(
@@ -221,6 +228,7 @@ class Search(API):
     def generate_filter_selected(
             self,
     ) -> str | None:
+        """执行 `generate_filter_selected` 对应的业务逻辑，供 `Search` 使用。"""
         if any(
                 (
                         self.sort_type,
@@ -245,6 +253,7 @@ class Search(API):
     def generate_search_filter_value(
             self,
     ) -> str | None:
+        """执行 `generate_search_filter_value` 对应的业务逻辑，供 `Search` 使用。"""
         if any(
                 (
                         self.douyin_user_fans,
@@ -263,6 +272,7 @@ class Search(API):
     def _generate_params_general(
             self,
     ) -> dict:
+        """提供 `_generate_params_general` 对应的内部辅助逻辑，供 `Search` 使用。"""
         params = self.params | {
             "pc_search_top_1_params": '{"enable_ai_search_top_1":1}',
             "search_channel": self.channel.channel,
@@ -292,6 +302,7 @@ class Search(API):
     def _generate_params_video(
             self,
     ) -> dict:
+        """提供 `_generate_params_video` 对应的内部辅助逻辑，供 `Search` 使用。"""
         params = self.params | {
             "pc_search_top_1_params": '{"enable_ai_search_top_1":1}',
             "search_channel": self.channel.channel,
@@ -336,6 +347,7 @@ class Search(API):
     def _generate_params_user(
             self,
     ) -> dict:
+        """提供 `_generate_params_user` 对应的内部辅助逻辑，供 `Search` 使用。"""
         params = self._generate_params_live()
         if self.search_filter_value:
             params |= {
@@ -347,6 +359,7 @@ class Search(API):
     def _generate_params_live(
             self,
     ) -> dict:
+        """提供 `_generate_params_live` 对应的内部辅助逻辑，供 `Search` 使用。"""
         params = self.params | {
             "pc_search_top_1_params": '{"enable_ai_search_top_1":1}',
             "search_channel": self.channel.channel,
@@ -377,6 +390,7 @@ class Search(API):
             *args,
             **kwargs,
     ):
+        """执行 `check_response` 对应的业务逻辑，供 `Search` 使用。"""
         try:
             if not isinstance(d := data_dict[data_key], list):
                 self.log.warning(error_text)
@@ -413,10 +427,12 @@ class Search(API):
             data: list[dict],
             key: str,
     ) -> None:
+        """执行 `append_response_video` 对应的业务逻辑，供 `Search` 使用。"""
         self.append_response([i[key] for i in data])
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ class SelectionDialog(QDialog):
     """Lets the user choose which scanned items should enter the queue."""
 
     def __init__(self, parent, title="\u4efb\u52a1\u6e05\u5355\u786e\u8ba4", items=None):
+        """初始化当前实例并准备运行所需的状态，供 `SelectionDialog` 使用。"""
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(800, 600)
@@ -20,6 +21,7 @@ class SelectionDialog(QDialog):
         self.init_ui()
 
     def init_ui(self):
+        """执行 `init_ui` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
@@ -70,6 +72,7 @@ class SelectionDialog(QDialog):
         layout.addWidget(btn_box)
 
     def populate_table(self):
+        """执行 `populate_table` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
         self.table.setRowCount(len(self.items))
         for index, item_data in enumerate(self.items):
             # Keep the checkbox centered by wrapping it in a tiny frame.
@@ -89,18 +92,21 @@ class SelectionDialog(QDialog):
             self.table.setItem(index, 1, title_item)
 
     def select_all(self):
+        """执行 `select_all` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
         for index in range(self.table.rowCount()):
             widget = self.table.cellWidget(index, 0)
             chk = widget.findChild(QCheckBox)
             chk.setChecked(True)
 
     def select_invert(self):
+        """执行 `select_invert` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
         for index in range(self.table.rowCount()):
             widget = self.table.cellWidget(index, 0)
             chk = widget.findChild(QCheckBox)
             chk.setChecked(not chk.isChecked())
 
     def confirm_selection(self):
+        """执行 `confirm_selection` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
         self.selected_indices = []
         for index in range(self.table.rowCount()):
             widget = self.table.cellWidget(index, 0)

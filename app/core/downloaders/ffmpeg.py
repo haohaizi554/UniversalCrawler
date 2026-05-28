@@ -1,3 +1,5 @@
+"""下载器模块，负责 `app/core/downloaders/ffmpeg.py` 对应资源的落盘或外部工具调用流程。"""
+
 from __future__ import annotations
 
 import os
@@ -15,17 +17,20 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
 
-
+#基于external.py实现
 class FFmpegDownloader(BaseDownloader):
+    """实现 `FFmpegDownloader` 对应的资源下载与落盘流程。"""
     SIZE_THRESHOLD_MB = 200
     DURATION_THRESHOLD_SEC = 600
 
     @classmethod
     def is_available(cls) -> bool:
+        """执行 `is_available` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
         return FFmpegExternalTool.is_available()
 
     @classmethod
     def should_use(cls, video_item: VideoItem) -> bool:
+        """执行 `should_use` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
         duration_sec = video_item.meta.get("duration", 0)
         size_mb = video_item.meta.get("size_mb", 0)
         return bool(size_mb > cls.SIZE_THRESHOLD_MB or duration_sec > cls.DURATION_THRESHOLD_SEC)
@@ -37,6 +42,7 @@ class FFmpegDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        """执行 `download` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
         url = video_item.url
         headers = {
             "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),

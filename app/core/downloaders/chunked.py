@@ -1,3 +1,5 @@
+"""下载器模块，负责 `app/core/downloaders/chunked.py` 对应资源的落盘或外部工具调用流程。"""
+
 from __future__ import annotations
 
 import os
@@ -23,6 +25,7 @@ class ChunkedDownloader(BaseDownloader):
 
     @classmethod
     def should_use(cls, video_item: VideoItem) -> bool:
+        """执行 `should_use` 对应的业务逻辑，供 `ChunkedDownloader` 使用。"""
         duration_sec = video_item.meta.get("duration", 0)
         size_mb = video_item.meta.get("size_mb", 0)
         return bool(size_mb > cls.SIZE_THRESHOLD_MB or duration_sec > cls.DURATION_THRESHOLD_SEC)
@@ -34,6 +37,7 @@ class ChunkedDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        """执行 `download` 对应的业务逻辑，供 `ChunkedDownloader` 使用。"""
         url = video_item.url
         headers = {
             "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
@@ -78,6 +82,7 @@ class ChunkedDownloader(BaseDownloader):
         error_holder: list[Exception] = []
 
         def cleanup_temp_files() -> None:
+            """执行 `cleanup_temp_files` 对应的业务逻辑。"""
             for temp_file in temp_files:
                 try:
                     os.remove(temp_file)
@@ -85,6 +90,7 @@ class ChunkedDownloader(BaseDownloader):
                     pass
 
         def download_chunk(idx: int, start_byte: int, end_byte: int, temp_file: str) -> bool | None:
+            """执行 `download_chunk` 对应的业务逻辑。"""
             try:
                 request_headers = headers.copy()
                 request_headers["Range"] = f"bytes={start_byte}-{end_byte}"

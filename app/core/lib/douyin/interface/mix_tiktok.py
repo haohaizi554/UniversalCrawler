@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/mix_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/mix_tiktok.py
 from typing import TYPE_CHECKING, Callable, Union
 from .template import APITikTok
@@ -5,7 +7,11 @@ from .template import APITikTok
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -14,6 +20,7 @@ if TYPE_CHECKING:
 
 
 class MixTikTok(APITikTok):
+    """封装 `MixTikTok` 在 `app/core/lib/douyin/interface/mix_tiktok.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -27,6 +34,7 @@ class MixTikTok(APITikTok):
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `MixTikTok` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.mix_title = mix_title
         self.mix_id = mix_id
@@ -39,6 +47,7 @@ class MixTikTok(APITikTok):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `MixTikTok` 使用。"""
         return self.params | {
             "count": self.count,
             "cursor": self.cursor,
@@ -61,6 +70,7 @@ class MixTikTok(APITikTok):
         *args,
         **kwargs,
     ):
+        """执行当前对象或脚本的主流程，供 `MixTikTok` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -78,6 +88,7 @@ class MixTikTok(APITikTok):
 
 
 class MixListTikTok(APITikTok):
+    """封装 `MixListTikTok` 在 `app/core/lib/douyin/interface/mix_tiktok.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -89,6 +100,7 @@ class MixListTikTok(APITikTok):
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `MixListTikTok` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.sec_user_id = sec_user_id
         self.cursor = cursor
@@ -99,6 +111,7 @@ class MixListTikTok(APITikTok):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `MixListTikTok` 使用。"""
         return self.params | {
             "count": self.count,
             "cursor": self.cursor,
@@ -120,6 +133,7 @@ class MixListTikTok(APITikTok):
         *args,
         **kwargs,
     ):
+        """执行当前对象或脚本的主流程，供 `MixListTikTok` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -137,6 +151,7 @@ class MixListTikTok(APITikTok):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

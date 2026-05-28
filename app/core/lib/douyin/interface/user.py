@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/user.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/interface/user.py
 from typing import TYPE_CHECKING, Callable, Type, Coroutine
 from typing import Union
@@ -7,7 +9,11 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -16,6 +22,7 @@ if TYPE_CHECKING:
 
 
 class User(API):
+    """封装 `User` 在 `app/core/lib/douyin/interface/user.py` 中承担的核心逻辑。"""
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -25,12 +32,14 @@ class User(API):
         *args,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `User` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.sec_user_id = sec_user_id
         self.api = f"{self.domain}aweme/v1/web/user/profile/other/"
         self.text = _("账号")
 
     async def run(self, *args, **kwargs):
+        """执行当前对象或脚本的主流程，供 `User` 使用。"""
         return await super().run(
             single_page=True,
             data_key="user",
@@ -50,6 +59,7 @@ class User(API):
         *args,
         **kwargs,
     ):
+        """执行 `run_batch` 对应的业务逻辑，供 `User` 使用。"""
         pass
 
     def check_response(
@@ -60,6 +70,7 @@ class User(API):
         *args,
         **kwargs,
     ):
+        """执行 `check_response` 对应的业务逻辑，供 `User` 使用。"""
         try:
             if not (d := data_dict[data_key]):
                 self.log.warning(error_text)
@@ -74,6 +85,7 @@ class User(API):
     def generate_params(
         self,
     ) -> dict:
+        """执行 `generate_params` 对应的业务逻辑，供 `User` 使用。"""
         return self.params | {
             "publish_video_strategy_type": "2",
             "sec_user_id": self.sec_user_id,
@@ -86,6 +98,7 @@ class User(API):
 
 
 async def test():
+    """执行 `test` 对应的业务逻辑。"""
     pass
 
 if __name__ == "__main__":

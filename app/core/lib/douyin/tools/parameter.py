@@ -1,3 +1,5 @@
+"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/parameter.py` 对应的接口、加密、提取或工具逻辑。"""
+
 # app/core/lib/douyin/tools/parameter.py
 from pathlib import Path
 from shutil import move
@@ -6,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Type
 
 from httpx import HTTPStatusError, RequestError, TimeoutException, get
+from app.utils.runtime_paths import install_root, user_cache_root
 
 # 调整引用路径
 try:
@@ -29,9 +32,9 @@ except ImportError:
     # 防止导入错误导致的中断
     pass
 
-# 定义项目根目录 (适配当前结构)
-# 假设 app/core/lib/douyin/tools/parameter.py -> app/
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+# 抖音底层库里部分缓存仍会写入 ROOT/Cache。
+# 安装版场景下 ROOT 不能再指向源码目录或 Program Files，统一收敛到运行目录与用户缓存目录。
+PROJECT_ROOT = install_root()
 
 from ..encrypt import (
     ABogus,
@@ -60,7 +63,11 @@ def _get_api_classes():
 try:
     from ..translation import _
 except ImportError:
-    def _(x): return x
+    """提供 `_` 对应的内部辅助逻辑。"""
+    def _(x):
+        """Fallback translator that returns the original text unchanged."""
+
+        return x
 
 if TYPE_CHECKING:
     from typing import Any
@@ -81,6 +88,7 @@ __all__ = ["Parameter"]
 
 
 class Parameter:
+    """封装 `Parameter` 在 `app/core/lib/douyin/tools/parameter.py` 中承担的核心逻辑。"""
     NAME_KEYS = (
         "id",
         "desc",
@@ -143,10 +151,11 @@ class Parameter:
         tiktok_platform=True,
         **kwargs,
     ):
+        """初始化当前实例并准备运行所需的状态，供 `Parameter` 使用。"""
         self.settings = settings
         self.cookie_object = cookie_object
         self.ROOT = PROJECT_ROOT  # 项目根路径
-        self.cache = PROJECT_ROOT.joinpath("Cache")  # 缓存路径
+        self.cache = user_cache_root()  # 缓存路径
         self.logger = logger(PROJECT_ROOT, console)
         # self.logger.run() # 暂时注释，因为 LoggerManager 未实现
         self.ab = ABogus()
@@ -280,21 +289,25 @@ class Parameter:
     def check_bool_false(
         value: bool,
     ) -> bool:
+        """执行 `check_bool_false` 对应的业务逻辑，供 `Parameter` 使用。"""
         return value if isinstance(value, bool) else False
 
     @staticmethod
     def check_bool_true(
         value: bool,
     ) -> bool:
+        """执行 `check_bool_true` 对应的业务逻辑，供 `Parameter` 使用。"""
         return value if isinstance(value, bool) else True
 
     def __check_cookie_tiktok(
         self,
         cookie: dict | str,
     ) -> tuple[dict, str]:
+        """提供 `__check_cookie_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_cookie(cookie, name="cookie_tiktok")
 
     def __check_cookie(self, cookie: dict | str, name="cookie") -> tuple[dict, str]:
+        """提供 `__check_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if isinstance(cookie, dict):
             return cookie, ""
         elif isinstance(cookie, str):
@@ -307,24 +320,28 @@ class Parameter:
         self,
         cookie: dict,
     ) -> dict:
+        """提供 `__get_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_cookie(cookie)[0]
 
     def __get_cookie_cache(
         self,
         cookie: str,
     ) -> str:
+        """提供 `__get_cookie_cache` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_cookie(cookie)[1]
 
     def __get_cookie_tiktok(
         self,
         cookie: dict,
     ) -> dict:
+        """提供 `__get_cookie_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_cookie_tiktok(cookie)[0]
 
     def __get_cookie_tiktok_cache(
         self,
         cookie: str,
     ) -> str:
+        """提供 `__get_cookie_tiktok_cache` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_cookie_tiktok(cookie)[1]
 
     def __add_cookie(
@@ -332,6 +349,7 @@ class Parameter:
         parameters: tuple[dict, ...],
         cookie: dict | str,
     ) -> None | str:
+        """提供 `__add_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if isinstance(cookie, dict):
             for i in parameters:
                 if i:
@@ -353,6 +371,7 @@ class Parameter:
         raise DownloaderError
 
     async def __get_tt_wid_params(self) -> dict:
+        """提供 `__get_tt_wid_params` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if tt_wid := await TtWid.get_tt_wid(
             self.logger,
             self.headers_params,
@@ -363,6 +382,7 @@ class Parameter:
         return {}
 
     async def __get_tt_wid_params_tiktok(self) -> dict:
+        """提供 `__get_tt_wid_params_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if tt_wid := await TtWidTikTok.get_tt_wid(
             self.logger,
             self.headers_params_tiktok,
@@ -383,6 +403,7 @@ class Parameter:
         return {}
 
     def __check_root(self, root: str) -> Path:
+        """提供 `__check_root` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if not root:
             return self.ROOT
         if (r := Path(root)).is_dir():
@@ -400,12 +421,14 @@ class Parameter:
 
     @staticmethod
     def __check_root_again(root: Path) -> bool | Path:
+        """提供 `__check_root_again` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if root.resolve().parent.is_dir():
             root.mkdir()
             return root
         return False
 
     def __check_folder_name(self, folder_name: str) -> str:
+        """提供 `__check_folder_name` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if folder_name := self.CLEANER.filter_name(
             folder_name,
         ):
@@ -419,6 +442,7 @@ class Parameter:
         return "Download"
 
     def __check_name_format(self, name_format: str) -> list[str]:
+        """提供 `__check_name_format` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         name_keys = name_format.strip().split(" ")
         if all(i in self.NAME_KEYS for i in name_keys):
             self.logger.info(f"name_format 参数已设置为 {name_format}", False)
@@ -432,6 +456,7 @@ class Parameter:
             return ["create_time", "type", "nickname", "desc"]
 
     def __check_date_format(self, date_format: str) -> str:
+        """提供 `__check_date_format` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         try:
             strftime(date_format, localtime())
             self.logger.info(f"date_format 参数已设置为 {date_format}", False)
@@ -445,6 +470,7 @@ class Parameter:
             return "%Y-%m-%d %H:%M:%S"
 
     def __check_split(self, split: str) -> str:
+        """提供 `__check_split` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         for i in split:
             if i in self.CLEANER.rule.keys():
                 self.logger.warning(
@@ -460,6 +486,7 @@ class Parameter:
         self,
         proxy: str | None | dict,
     ) -> str | None:
+        """提供 `__check_proxy_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_proxy(
             proxy,
             "https://www.tiktok.com/explore",
@@ -474,6 +501,7 @@ class Parameter:
         remark=_("抖音"),
         enable=True,
     ) -> str | None:
+        """提供 `__check_proxy` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if enable and proxy:
             # 暂时兼容旧版配置；未来将会移除
             if isinstance(proxy, dict):
@@ -519,11 +547,13 @@ class Parameter:
         return None
 
     def __check_max_size(self, max_size: int) -> int:
+        """提供 `__check_max_size` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         max_size = max(max_size, 0)
         self.logger.info(f"max_size 参数已设置为 {max_size}", False)
         return max_size
 
     def __check_chunk(self, chunk: int) -> int:
+        """提供 `__check_chunk` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_number_value(
             chunk,
             "chunk",
@@ -532,6 +562,7 @@ class Parameter:
         )
 
     def __check_max_retry(self, max_retry: int) -> int:
+        """提供 `__check_max_retry` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_number_value(
             max_retry,
             "max_retry",
@@ -540,6 +571,7 @@ class Parameter:
         )
 
     def __check_max_pages(self, max_pages: int) -> int:
+        """提供 `__check_max_pages` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if isinstance(max_pages, int) and max_pages > 0:
             self.logger.info(f"max_pages 参数已设置为 {max_pages}", False)
             return max_pages
@@ -552,6 +584,7 @@ class Parameter:
         return 99999
 
     def __check_timeout(self, timeout: int | float) -> int | float:
+        """提供 `__check_timeout` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_number_value(
             timeout,
             "timeout",
@@ -562,6 +595,7 @@ class Parameter:
     def __check_storage_format(self, storage_format: str) -> str:
         # 依赖 RecordManager，暂时简化逻辑
         # if storage_format in RecordManager.DataLogger.keys():
+        """提供 `__check_storage_format` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if storage_format in ["csv", "xlsx", "sql"]:
             self.logger.info(f"storage_format 参数已设置为 {storage_format}", False)
             return storage_format
@@ -579,6 +613,7 @@ class Parameter:
 
     @staticmethod
     def __check_run_command(run_command: str) -> list:
+        """提供 `__check_run_command` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return run_command.split()[::-1] if run_command else []
 
     async def update_params(self) -> None:
@@ -658,6 +693,7 @@ class Parameter:
 
     async def update_params_offline(self) -> None:
         # 需要 API 模块，暂时注释
+        """更新 `params_offline` 对应的状态或数据内容，供 `Parameter` 使用。"""
         pass
         # if self.douyin_platform:
         #     if any(
@@ -716,6 +752,7 @@ class Parameter:
         cookie_dict: dict,
         cookie_str: str,
     ) -> None:
+        """提供 `__update_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         cookie = self.__add_cookie(
             parameters,
             cookie_dict or cookie_str,
@@ -728,6 +765,7 @@ class Parameter:
     def set_headers_cookie(
         self,
     ) -> None:
+        """设置 `headers_cookie` 对应的值或运行状态，供 `Parameter` 使用。"""
         if self.cookie_dict:
             cookie = cookie_dict_to_str(self.cookie_dict)
             self.headers["Cookie"] = cookie
@@ -744,13 +782,16 @@ class Parameter:
             self.headers_download_tiktok["Cookie"] = self.cookie_str_tiktok
 
     def set_download_headers(self) -> None:
+        """设置 `download_headers` 对应的值或运行状态，供 `Parameter` 使用。"""
         self.__update_download_headers()
         self.__update_download_headers_tiktok()
 
     def __update_download_headers(self) -> None:
+        """提供 `__update_download_headers` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         self.headers_download["Cookie"] = "dy_swidth=1536; dy_sheight=864"
 
     def __update_download_headers_tiktok(self) -> None:
+        """提供 `__update_download_headers_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         key = "tt_chain_token"
         if tk := self.cookie_dict_tiktok.get(
             key,
@@ -777,6 +818,7 @@ class Parameter:
         #         )
         #     )
         #     return {}
+        """提供 `__get_token_params` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if d := await MsToken.get_real_ms_token(
             self.logger,
             self.headers_params,
@@ -800,6 +842,7 @@ class Parameter:
             return {MsToken.NAME: ms_token}
 
     async def __get_token_params_tiktok(self) -> dict:
+        """提供 `__get_token_params_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if not (
             m := (
                 self.cookie_dict_tiktok.get(MsTokenTikTok.NAME)
@@ -838,6 +881,7 @@ class Parameter:
         self,
     ) -> None:
         # 需要 API 模块，暂时注释
+        """设置 `uif_id` 对应的值或运行状态，供 `Parameter` 使用。"""
         pass
         # if self.cookie_dict:
         #     API.params["uifid"] = self.cookie_dict.get("UIFID", "")
@@ -851,9 +895,11 @@ class Parameter:
     # def __generate_ffmpeg_object(ffmpeg_path: str) -> FFMPEG:
     def __generate_ffmpeg_object(ffmpeg_path: str) -> Any:
         # return FFMPEG(ffmpeg_path)
+        """提供 `__generate_ffmpeg_object` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return None
 
     def get_settings_data(self) -> dict:
+        """获取 `settings_data` 对应的数据或状态，供 `Parameter` 使用。"""
         return {
             "accounts_urls": [vars(i) for i in self.accounts_urls],
             "accounts_urls_tiktok": [vars(i) for i in self.accounts_urls_tiktok],
@@ -893,6 +939,7 @@ class Parameter:
         self,
         data: dict,
     ) -> None:
+        """设置 `settings_data` 对应的值或运行状态，供 `Parameter` 使用。"""
         self.set_urls_params(
             data.pop("accounts_urls"),
             data.pop("mix_urls"),
@@ -928,6 +975,7 @@ class Parameter:
         self.set_general_params(data)
 
     async def __update_cookie_data(self, data: dict) -> None:
+        """提供 `__update_cookie_data` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         for i, j in zip(("cookie", "cookie_tiktok"), (_("抖音"), "TikTok")):
             if c := data.get(i):
                 setattr(
@@ -947,11 +995,13 @@ class Parameter:
         #         item["mark"] = ""
         #     items.append(item)
         # return Extractor.generate_data_object(items)
+        """执行 `check_urls_params` 对应的业务逻辑，供 `Parameter` 使用。"""
         return []
 
     @staticmethod
     # def check_url_params(data: dict) -> SimpleNamespace:
     def check_url_params(data: dict) -> Any:
+        """执行 `check_url_params` 对应的业务逻辑，供 `Parameter` 使用。"""
         if not data.get("url"):
             return SimpleNamespace(
                 mark="",
@@ -971,6 +1021,7 @@ class Parameter:
         mix_urls_tiktok: list[dict],
         owner_url_tiktok: dict,
     ):
+        """设置 `urls_params` 对应的值或运行状态，供 `Parameter` 使用。"""
         if accounts_urls:
             self.accounts_urls = self.check_urls_params(accounts_urls)
         if accounts_urls_tiktok:
@@ -987,6 +1038,7 @@ class Parameter:
     def set_cookie(
         self, cookie: str | dict[str, str], cookie_tiktok: str | dict[str, str]
     ):
+        """设置 `cookie` 对应的值或运行状态，供 `Parameter` 使用。"""
         if cookie:
             self.cookie_dict, self.cookie_str = self.__check_cookie(cookie)
             self.cookie_state: bool = self.__check_cookie_state()
@@ -1001,11 +1053,13 @@ class Parameter:
             self.__update_download_headers_tiktok()
 
     def set_general_params(self, data: dict[str, Any]) -> None:
+        """设置 `general_params` 对应的值或运行状态，供 `Parameter` 使用。"""
         for i, j in data.items():
             if j is not None:
                 self.__CHECK[i](j)
 
     async def set_proxy(self, proxy: str | None, proxy_tiktok: str | None):
+        """设置 `proxy` 对应的值或运行状态，供 `Parameter` 使用。"""
         if isinstance(proxy, str):
             self.proxy: str | None = self.__check_proxy(
                 proxy,
@@ -1029,9 +1083,11 @@ class Parameter:
         browser_info: dict,
         new_info: dict,
     ) -> dict:
+        """执行 `merge_browser_info` 对应的业务逻辑，供 `Parameter` 使用。"""
         return browser_info | new_info
 
     def set_browser_info(self, browser_info: dict, browser_info_tiktok: dict):
+        """设置 `browser_info` 对应的值或运行状态，供 `Parameter` 使用。"""
         self.browser_info = self.merge_browser_info(
             self.browser_info,
             browser_info or {},
@@ -1046,13 +1102,16 @@ class Parameter:
 
     @staticmethod
     def check_str(value: str) -> str:
+        """执行 `check_str` 对应的业务逻辑，供 `Parameter` 使用。"""
         return value if isinstance(value, str) else ""
 
     async def close_client(self) -> None:
+        """执行 `close_client` 对应的业务逻辑，供 `Parameter` 使用。"""
         await self.client.aclose()
         await self.client_tiktok.aclose()
 
     def __generate_folders(self):
+        """提供 `__generate_folders` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         self.compatible()
         self.cache.mkdir(exist_ok=True)
 
@@ -1060,6 +1119,7 @@ class Parameter:
         self,
         info: dict[str, str],
     ) -> None:
+        """提供 `__set_browser_info` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         self.logger.info(f"抖音浏览器信息: {info}", False)
         if ua := info.get(
             "User-Agent",
@@ -1101,6 +1161,7 @@ class Parameter:
         self,
         info: dict,
     ):
+        """提供 `__set_browser_info_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         self.logger.info(f"TikTok 浏览器信息: {info}", False)
         if ua := info.get(
             "User-Agent",
@@ -1132,6 +1193,7 @@ class Parameter:
         #         APITikTok.params[i] = v
 
     def __check_truncate(self, truncate: int) -> int:
+        """提供 `__check_truncate` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_number_value(
             truncate,
             "truncate",
@@ -1140,6 +1202,7 @@ class Parameter:
         )
 
     def __check_name_length(self, name_length: int) -> int:
+        """提供 `__check_name_length` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_number_value(
             name_length,
             "name_length",
@@ -1148,6 +1211,7 @@ class Parameter:
         )
 
     def __check_desc_length(self, desc_length: int) -> int:
+        """提供 `__check_desc_length` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         return self.__check_number_value(
             desc_length,
             "desc_length",
@@ -1158,6 +1222,7 @@ class Parameter:
     def __check_number_value(
         self, value: int, name: str, minimum: int, default: int
     ) -> int:
+        """提供 `__check_number_value` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if isinstance(value, int):
             if value >= minimum:
                 self.logger.info(f"{name} 参数已设置为 {value}", False)
@@ -1180,6 +1245,7 @@ class Parameter:
         return default
 
     def __check_live_qualities(self, live_qualities: str) -> str:
+        """提供 `__check_live_qualities` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if isinstance(live_qualities, str):
             self.logger.info(f"live_qualities 参数已设置为 {live_qualities}", False)
             return live_qualities
@@ -1191,6 +1257,7 @@ class Parameter:
         return ""
 
     def __check_cookie_state(self, tiktok=False) -> bool:
+        """提供 `__check_cookie_state` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
         if tiktok:
             return (self.cookie_object.STATE_KEY in self.cookie_dict_tiktok) or (
                 self.cookie_object.STATE_KEY in self.cookie_str_tiktok
@@ -1228,6 +1295,7 @@ class Parameter:
         return f"{key}={value}" if return_key else value
 
     def compatible(self):
+        """执行 `compatible` 对应的业务逻辑，供 `Parameter` 使用。"""
         if (
             old := self.ROOT.parent.joinpath("Cache")
         ).exists() and not self.cache.exists():
