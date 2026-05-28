@@ -6,6 +6,7 @@ import time
 
 from app.config import DEFAULT_USER_AGENT
 from app.exceptions import DownloaderStoppedError
+from app.utils.runtime_paths import resolve_tool_file
 
 from .base import ProgressCallback, StopCheck
 
@@ -27,8 +28,9 @@ def build_new_console_flags() -> int:
 class ExternalToolRunner:
     @staticmethod
     def resolve_executable(preferred_name: str, fallback_name: str | None = None, version_args: list[str] | None = None) -> str | None:
-        if os.path.exists(preferred_name):
-            return preferred_name
+        preferred_path = resolve_tool_file(preferred_name)
+        if preferred_path.exists():
+            return str(preferred_path)
         if not fallback_name:
             return None
         try:
@@ -121,7 +123,8 @@ class NM3U8DLREExternalTool:
 
     @classmethod
     def resolve_executable(cls) -> str | None:
-        return cls.EXE_PATH if os.path.exists(cls.EXE_PATH) else None
+        path = resolve_tool_file(cls.EXE_PATH)
+        return str(path) if path.exists() else None
 
     @classmethod
     def is_available(cls) -> bool:

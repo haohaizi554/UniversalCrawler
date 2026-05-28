@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import math
 import re
 import time
 import httpx
@@ -160,6 +161,20 @@ class DouyinSpider(BaseSpider):
         self.task_builder = DouyinTaskBuilder()
         self.auth_service = AuthService()
         self.auth_file = cfg.get("auth", "douyin_cookie_file", "dy_auth.json")
+
+    def _max_items_limit(self) -> int:
+        limit = self.config.get("max_items", cfg.get("douyin", "max_items", 20))
+        try:
+            return max(1, int(limit))
+        except (TypeError, ValueError):
+            return 20
+
+    def _trim_items(self, items: list[VideoItem], title_hint: str) -> list[VideoItem]:
+        limit = self._max_items_limit()
+        if limit >= 9999 or len(items) <= limit:
+            return items
+        self.log(f"ℹ️ {title_hint} 共 {len(items)} 个，仅保留前 {limit} 个供选择")
+        return items[:limit]
 
     def run(self):
         # [修改] 确保 multiprocessing 支持打包环境
@@ -414,10 +429,11 @@ class DouyinSpider(BaseSpider):
             return
 
         # 单个作品直接下载，多个作品让用户选择
-        if len(all_items) == 1:
-            self._submit_tasks(all_items)
+        limited_items = self._trim_items(all_items, "分享链接作品")
+        if len(limited_items) == 1:
+            self._submit_tasks(limited_items)
         else:
-            self._handle_selection(all_items, "分享链接作品")
+            self._handle_selection(limited_items, "分享链接作品")
 
     async def _process_user(self, params, sec_uid: str):
         self.log(f"👤 识别到用户 SecUID: {sec_uid}，开始爬取主页...")
@@ -456,6 +472,9 @@ class DouyinSpider(BaseSpider):
                     batch_items.append(item)
 
             all_data.extend(batch_items)
+            if self._max_items_limit() < 9999 and len(all_data) >= self._max_items_limit():
+                self.log(f"ℹ️ 已达到视频数上限 {self._max_items_limit()}，停止继续抓取")
+                break
             await asyncio.sleep(1)
 
         if not all_data:
@@ -519,6 +538,12 @@ class DouyinSpider(BaseSpider):
                     item.meta['mix_title'] = mix_title or f"合集_{mix_id}"
                     item.meta['folder_name'] = mix_title or f"合集_{mix_id}"
                     all_data.append(item)
+                    if self._max_items_limit() < 9999 and len(all_data) >= self._max_items_limit():
+                        break
+
+            if self._max_items_limit() < 9999 and len(all_data) >= self._max_items_limit():
+                self.log(f"ℹ️ 已达到视频数上限 {self._max_items_limit()}，停止继续抓取")
+                break
 
             await asyncio.sleep(0.5)
 
@@ -529,8 +554,9 @@ class DouyinSpider(BaseSpider):
         self._handle_selection(all_data, f"合集 {mix_title or mix_id}")
 
     async def _process_search(self, params, keyword: str):
-        max_pages = self.config.get("search_max_pages", 1)
-        self.log(f"🔍 搜索关键词: {keyword} (最大 {max_pages} 页)")
+        max_items = self._max_items_limit()
+        max_pages = 9999 if max_items >= 9999 else max(1, min(100, math.ceil(max_items / 10)))
+        self.log(f"🔍 搜索关键词: {keyword} (最多 {max_items if max_items < 9999 else 'max'} 个视频)")
 
         search_api = Search(params, keyword=keyword, type=0)  # 0=综合
 
@@ -560,18 +586,33 @@ class DouyinSpider(BaseSpider):
             for item in raw_list:
                 if 'aweme_info' in item:
                     vid = self.parser.parse_aweme(item['aweme_info'])
-                    if vid: all_data.append(vid)
+                    if vid:
+                        all_data.append(vid)
+                        if max_items < 9999 and len(all_data) >= max_items:
+                            break
 
             # [修复] 使用 finished 属性判断
-            if search_api.finished: break
+            if search_api.finished or (max_items < 9999 and len(all_data) >= max_items):
+                break
             await asyncio.sleep(1)
 
         self._handle_selection(all_data, f"搜索: {keyword}")
 
+    def _normalize_user_search_items(self, raw_list) -> list[dict]:
+        """抖音用户搜索返回存在嵌套列表，需要在进入解析前拍平。"""
+        normalized: list[dict] = []
+        if not isinstance(raw_list, list):
+            return normalized
+        for item in raw_list:
+            if isinstance(item, dict):
+                normalized.append(item)
+            elif isinstance(item, list):
+                normalized.extend(entry for entry in item if isinstance(entry, dict))
+        return normalized
+
     async def _process_user_search(self, params, user_id: str):
         """通过用户ID/抖音号搜索用户，然后获取用户主页作品"""
         from app.core.lib.douyin.interface.search import Search
-        from app.core.lib.douyin.link.extractor import Extractor as LinkExtractor
         
         self.log(f"🔍 正在搜索用户: {user_id}")
         
@@ -590,18 +631,31 @@ class DouyinSpider(BaseSpider):
             return
         
         raw_list = search_api.response
+        normalized_items = self._normalize_user_search_items(raw_list)
+        self.debug_state(
+            action="user_search_response_shape",
+            message="记录抖音用户搜索返回结构",
+            status_code="DOUYIN_USER_SEARCH_SHAPE",
+            details={
+                "keyword": user_id,
+                "response_type": type(raw_list).__name__,
+                "top_level_count": len(raw_list) if isinstance(raw_list, list) else None,
+                "first_item_type": type(raw_list[0]).__name__ if isinstance(raw_list, list) and raw_list else None,
+                "normalized_count": len(normalized_items),
+            },
+        )
         self.debug_api(
             api_name="user_search",
             request={"keyword": user_id, "channel": 2},
             response_summary={
-                "result_count": len(raw_list or []),
+                "result_count": len(normalized_items),
                 "users": [
                     {
                         "nickname": item.get("user_info", {}).get("nickname"),
                         "sec_uid": item.get("user_info", {}).get("sec_uid"),
                         "aweme_count": item.get("user_info", {}).get("aweme_count"),
                     }
-                    for item in (raw_list or [])[:5]
+                    for item in normalized_items[:5]
                     if item.get("user_info")
                 ],
             },
@@ -625,12 +679,12 @@ class DouyinSpider(BaseSpider):
         #     self.log(f"⚠️ [DEBUG] 保存失败: {e}")
         
         # 检查是否有搜索结果
-        if raw_list and len(raw_list) > 0 and raw_list[0]:
+        if normalized_items:
             # 有搜索结果，解析用户信息
-            self.log(f"✅ 找到 {len(raw_list)} 个匹配用户")
+            self.log(f"✅ 找到 {len(normalized_items)} 个匹配用户")
             
             users = []
-            for item in raw_list:
+            for item in normalized_items:
                 if 'user_info' in item:
                     user_info = item['user_info']
                     users.append({
@@ -716,6 +770,7 @@ class DouyinSpider(BaseSpider):
 
 
     def _handle_selection(self, items: list[VideoItem], title_hint: str):
+        items = self._trim_items(items, title_hint)
         if not items:
             self.log("❌ 未找到有效视频")
             return
@@ -741,6 +796,12 @@ class DouyinSpider(BaseSpider):
         self._submit_tasks(final_items)
 
     def _submit_tasks(self, items: list[VideoItem]):
+        self.debug_state(
+            action="submit_tasks_enter",
+            message="进入抖音任务提交阶段",
+            status_code="DOUYIN_SUBMIT_ENTER",
+            details={"item_count": len(items)},
+        )
         for item in items:
             built_items = self.task_builder.build_items(item, self.new_trace_id)
             for built_item in built_items:

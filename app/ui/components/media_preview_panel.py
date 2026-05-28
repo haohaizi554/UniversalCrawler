@@ -99,6 +99,13 @@ class MediaPreviewPanel(QFrame):
         self.player.stop()
         self._set_play_button_stopped()
 
+    def cleanup(self) -> None:
+        """退出前显式停止播放器，降低 QtMultimedia/FFmpeg 原生崩溃风险。"""
+        self.current_image_path = None
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self._set_play_button_stopped()
+
     def scale_image_to_fit(self) -> None:
         if not self.current_image_path or not self.img_lbl.isVisible():
             return

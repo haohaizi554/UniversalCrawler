@@ -1,0 +1,46 @@
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+from app.exceptions import DebugActionError
+from app.services.debug_service import DebugArtifactsService
+
+
+class DebugArtifactsServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.service = DebugArtifactsService()
+
+    def test_open_path_raises_when_file_is_missing(self):
+        with self.assertRaises(DebugActionError):
+            self.service.open_path("missing.log")
+
+    @patch("app.services.debug_service.os.name", "nt")
+    @patch("app.services.debug_service.os.startfile")
+    def test_open_path_uses_startfile_on_windows(self, mocked_startfile):
+        with tempfile.NamedTemporaryFile(suffix=".log") as fp:
+            self.service.open_path(fp.name)
+
+        mocked_startfile.assert_called_once()
+
+    @patch("app.services.debug_service.os.name", "posix")
+    @patch("app.services.debug_service.subprocess.Popen")
+    def test_open_path_uses_xdg_open_on_non_windows(self, mocked_popen):
+        with tempfile.NamedTemporaryFile(suffix=".log") as fp:
+            self.service.open_path(fp.name)
+
+        mocked_popen.assert_called_once()
+
+    def test_copy_trace_id_raises_for_missing_value(self):
+        with self.assertRaises(DebugActionError):
+            self.service.copy_trace_id(Mock(), None)
+
+    def test_copy_trace_id_writes_to_clipboard(self):
+        clipboard = Mock()
+
+        self.service.copy_trace_id(clipboard, "trace-123")
+
+        clipboard.setText.assert_called_once_with("trace-123")
+
+
+if __name__ == "__main__":
+    unittest.main()

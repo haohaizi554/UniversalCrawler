@@ -5,6 +5,7 @@ import os
 import shutil
 import time as time_module
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import QByteArray
@@ -17,6 +18,7 @@ from app.config.constants import (
     SUPPORTED_THEMES,
 )
 from app.exceptions import ConfigReadError, ConfigValidationError, ConfigWriteError
+from app.utils.runtime_paths import resolve_user_file
 
 
 @dataclass
@@ -52,6 +54,7 @@ class BilibiliSettings:
     api_workers: int = 8
 
     def normalize(self) -> None:
+        self.auth_file = str(resolve_user_file(self.auth_file))
         self.max_pages = max(1, min(self.max_pages, 500))
         self.api_workers = max(1, min(self.api_workers, 16))
 
@@ -60,17 +63,20 @@ class BilibiliSettings:
 class DouyinSettings:
     user_agent: str = DEFAULT_USER_AGENT
     search_max_pages: int = 1
+    max_items: int = 20
 
     def normalize(self) -> None:
         self.search_max_pages = max(1, min(self.search_max_pages, 100))
+        self.max_items = max(1, min(self.max_items, 9999))
 
 
 @dataclass
 class KuaishouSettings:
     user_agent: str = DEFAULT_USER_AGENT
+    max_items: int = 20
 
     def normalize(self) -> None:
-        return None
+        self.max_items = max(1, min(self.max_items, 9999))
 
 
 @dataclass
@@ -78,6 +84,11 @@ class AuthSettings:
     bilibili_cookie_file: str = "bili_auth.json"
     kuaishou_cookie_file: str = "ks_auth.json"
     douyin_cookie_file: str = "dy_auth.json"
+
+    def normalize(self) -> None:
+        self.bilibili_cookie_file = str(resolve_user_file(self.bilibili_cookie_file))
+        self.kuaishou_cookie_file = str(resolve_user_file(self.kuaishou_cookie_file))
+        self.douyin_cookie_file = str(resolve_user_file(self.douyin_cookie_file))
 
 
 @dataclass
@@ -123,6 +134,7 @@ class AppSettings:
         self.bilibili.normalize()
         self.douyin.normalize()
         self.kuaishou.normalize()
+        self.auth.normalize()
         self.download.normalize()
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,7 +153,7 @@ class ConfigManager:
     }
 
     def __init__(self, filename: str = DEFAULT_CONFIG_FILE):
-        self.filename = filename
+        self.filename = str(resolve_user_file(filename))
         self.settings = AppSettings()
         self.last_load_error: ConfigReadError | None = None
         self._load_from_disk()
@@ -225,6 +237,7 @@ class ConfigManager:
 
     def save(self) -> None:
         try:
+            Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
             with open(self.filename, "w", encoding="utf-8") as fp:
                 json.dump(self.settings.to_dict(), fp, indent=4, ensure_ascii=False)
         except (OSError, TypeError, ValueError) as exc:

@@ -5,8 +5,9 @@ import threading
 import multiprocessing
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+from app.utils.runtime_paths import user_logs_root
 
 
 class DebugLogger:
@@ -36,9 +37,7 @@ class DebugLogger:
     }
 
     def __init__(self):
-        project_root = Path(__file__).resolve().parent.parent
-        self.logs_dir = project_root / "logs"
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir = user_logs_root()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         process_name = multiprocessing.current_process().name

@@ -116,9 +116,13 @@ class DownloadQueuePanel(QFrame):
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item and item.data(Qt.ItemDataRole.UserRole) == video_id:
-                self.table.item(row, 1).setText(status)
+                status_item = self.table.item(row, 1)
+                if status_item is not None:
+                    status_item.setText(status)
                 if progress is not None:
-                    self.table.cellWidget(row, 2).setValue(progress)
+                    progress_bar = self.table.cellWidget(row, 2)
+                    if progress_bar is not None:
+                        progress_bar.setValue(progress)
                 break
 
     def refresh_delete_bindings(self, on_delete: Callable[[str], None]) -> None:

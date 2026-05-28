@@ -1,5 +1,8 @@
 import asyncio
+import os
 import queue
+import subprocess
+import tempfile
 import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -13,14 +16,28 @@ from app.core.downloaders import (
     ChunkedDownloader,
     DouyinDownloader,
     FFmpegDownloader,
+    FFmpegExternalTool,
     KuaishouDownloader,
     MissAVDownloader,
+    NM3U8DLREExternalTool,
     N_m3u8DL_RE_Downloader,
 )
+from app.core.downloaders.external import ExternalToolRunner
+from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError, MergeError, StreamDownloadError
 from app.models import VideoItem
 
 
 class DownloaderStrategyTests(unittest.TestCase):
+    def _make_stream_response(self, chunks, headers=None, status_code=200):
+        response = Mock()
+        response.headers = headers or {}
+        response.status_code = status_code
+        response.iter_content.return_value = iter(chunks)
+        response.raise_for_status.return_value = None
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        return response
+
     def test_source_downloaders_can_handle_matching_items(self):
         self.assertTrue(DouyinDownloader.can_handle(VideoItem(url="https://example.com/1", title="a", source="douyin")))
         self.assertTrue(KuaishouDownloader.can_handle(VideoItem(url="https://example.com/2", title="b", source="kuaishou")))
@@ -40,6 +57,91 @@ class DownloaderStrategyTests(unittest.TestCase):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         item.meta["duration"] = 601
         self.assertTrue(FFmpegDownloader.should_use(item))
+
+    @patch("app.core.downloaders.external.resolve_tool_file")
+    def test_external_tool_runner_resolve_executable_prefers_local_tool_file(self, mocked_resolve_tool_file):
+        local_path = Mock()
+        local_path.exists.return_value = True
+        mocked_resolve_tool_file.return_value = local_path
+
+        result = ExternalToolRunner.resolve_executable("ffmpeg.exe", "ffmpeg")
+
+        self.assertEqual(result, str(local_path))
+
+    @patch("app.core.downloaders.external.subprocess.run")
+    @patch("app.core.downloaders.external.resolve_tool_file")
+    def test_external_tool_runner_resolve_executable_falls_back_to_cli(self, mocked_resolve_tool_file, mocked_run):
+        local_path = Mock()
+        local_path.exists.return_value = False
+        mocked_resolve_tool_file.return_value = local_path
+
+        result = ExternalToolRunner.resolve_executable("ffmpeg.exe", "ffmpeg", ["-version"])
+
+        self.assertEqual(result, "ffmpeg")
+        mocked_run.assert_called_once()
+
+    @patch("app.core.downloaders.external.subprocess.run", side_effect=OSError("missing"))
+    @patch("app.core.downloaders.external.resolve_tool_file")
+    def test_external_tool_runner_resolve_executable_returns_none_when_all_missing(self, mocked_resolve_tool_file, _mocked_run):
+        local_path = Mock()
+        local_path.exists.return_value = False
+        mocked_resolve_tool_file.return_value = local_path
+
+        self.assertIsNone(ExternalToolRunner.resolve_executable("ffmpeg.exe", "ffmpeg"))
+
+    @patch("app.core.downloaders.external.time.sleep", return_value=None)
+    def test_external_tool_runner_wait_process_reports_progress_until_exit(self, _mocked_sleep):
+        process = Mock()
+        process.poll.side_effect = [None, None, 0]
+        progress = []
+
+        ExternalToolRunner.wait_process(process, lambda: False, progress.append, 50, poll_interval=0)
+
+        self.assertEqual(progress, [50, 50])
+        self.assertEqual(process.poll.call_count, 3)
+        process.kill.assert_not_called()
+
+    @patch("app.core.downloaders.external.time.sleep", return_value=None)
+    def test_external_tool_runner_wait_process_kills_process_when_stopped(self, _mocked_sleep):
+        process = Mock()
+        process.poll.return_value = None
+
+        with self.assertRaises(DownloaderStoppedError):
+            ExternalToolRunner.wait_process(process, lambda: True, poll_interval=0)
+
+        process.kill.assert_called_once()
+
+    def test_ffmpeg_external_tool_build_merge_command_skips_audio_when_none(self):
+        command = FFmpegExternalTool.build_merge_command("ffmpeg.exe", "video.m4s", None, "output.mp4")
+
+        self.assertEqual(command, ["ffmpeg.exe", "-y", "-i", "video.m4s", "-c", "copy", "output.mp4"])
+
+    def test_ffmpeg_external_tool_build_download_command_contains_headers_and_target(self):
+        command = FFmpegExternalTool.build_download_command(
+            "ffmpeg.exe",
+            "https://cdn.example.com/master.m3u8",
+            "video.mp4",
+            {"User-Agent": "ua-demo", "Referer": "https://www.douyin.com/"},
+        )
+
+        self.assertIn("-user_agent", command)
+        self.assertIn("ua-demo", command)
+        self.assertIn("Referer: https://www.douyin.com/\r\n", command)
+        self.assertEqual(command[-1], "video.mp4")
+
+    def test_nm3u8_external_tool_build_download_command_uses_headers_and_save_name(self):
+        command = NM3U8DLREExternalTool.build_download_command(
+            "N_m3u8DL-RE.exe",
+            "https://cdn.example.com/live/index.m3u8",
+            os.path.join("downloads", "demo.mp4"),
+            "ua-demo",
+            "https://www.douyin.com/",
+        )
+
+        self.assertIn("--save-dir", command)
+        self.assertIn("--save-name", command)
+        self.assertIn("User-Agent: ua-demo", command)
+        self.assertIn("Referer: https://www.douyin.com/", command)
 
     def test_download_worker_uses_registered_downloader(self):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
@@ -66,6 +168,37 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         mocked_download.assert_called_once()
 
+    @patch.object(DouyinDownloader, "_download_with_strategy_fallback")
+    @patch("app.core.downloaders.douyin.requests.head", side_effect=requests.RequestException("skip head"))
+    def test_douyin_downloader_prefers_task_runtime_headers(self, _mocked_head, mocked_download):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        item.meta.update({"ua": "task-ua", "referer": "https://www.douyin.com/user/demo"})
+
+        DouyinDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "task-ua")
+        self.assertEqual(mocked_download.call_args.kwargs["headers"]["Referer"], "https://www.douyin.com/user/demo")
+
+    @patch.object(DouyinDownloader, "_download_file")
+    def test_douyin_gallery_download_uses_live_and_image_extensions(self, mocked_download_file):
+        item = VideoItem(url="https://example.com/cover.jpg", title="图集", source="douyin")
+        downloader = DouyinDownloader()
+
+        downloader._download_gallery(
+            item,
+            [
+                {"live_video_url": "https://cdn.example.com/live.mp4", "image_url": ""},
+                {"live_video_url": "", "image_url": "https://cdn.example.com/cover.webp"},
+            ],
+            os.path.join("downloads", "demo.mp4"),
+            lambda _value: None,
+            lambda: False,
+            {"User-Agent": "ua", "Referer": "https://www.douyin.com/"},
+        )
+
+        self.assertEqual(mocked_download_file.call_args_list[0].args[1], os.path.join("downloads", "图集_1.mp4"))
+        self.assertEqual(mocked_download_file.call_args_list[1].args[1], os.path.join("downloads", "图集_2.webp"))
+
     @patch("app.core.lib.douyin.tools.session.AsyncClient")
     def test_create_client_enables_ssl_verification_by_default(self, mocked_async_client):
         create_client()
@@ -82,6 +215,106 @@ class DownloaderStrategyTests(unittest.TestCase):
         asyncio.run(request_params(Mock(), "https://example.com/api", method="GET"))
 
         self.assertTrue(mocked_client.call_args.kwargs["verify"])
+
+    @patch("app.core.downloaders.chunked.requests.head", side_effect=requests.RequestException("boom"))
+    def test_chunked_downloader_raises_when_head_request_fails(self, _mocked_head):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with self.assertRaises(StreamDownloadError):
+            ChunkedDownloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+    @patch("app.core.downloaders.chunked.requests.head")
+    def test_chunked_downloader_rejects_missing_content_length(self, mocked_head):
+        head_response = Mock()
+        head_response.headers = {"content-length": "0", "accept-ranges": "bytes"}
+        head_response.raise_for_status.return_value = None
+        mocked_head.return_value = head_response
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with self.assertRaises(StreamDownloadError):
+            ChunkedDownloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+    @patch("app.core.downloaders.chunked.requests.head")
+    def test_chunked_downloader_rejects_servers_without_range_support(self, mocked_head):
+        head_response = Mock()
+        head_response.headers = {"content-length": str(ChunkedDownloader.CHUNK_SIZE * 2), "accept-ranges": "none"}
+        head_response.raise_for_status.return_value = None
+        mocked_head.return_value = head_response
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with self.assertRaises(StreamDownloadError):
+            ChunkedDownloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+    @patch("app.core.downloaders.bilibili.subprocess.run")
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    @patch("app.core.downloaders.bilibili.requests.get")
+    def test_bilibili_downloader_downloads_video_only_streams_when_audio_missing(
+        self,
+        mocked_get,
+        _mocked_resolve,
+        mocked_build_merge,
+        mocked_subprocess_run,
+    ):
+        mocked_get.return_value = self._make_stream_response(
+            [b"video-bytes"],
+            headers={"content-length": "11", "content-type": "video/mp4"},
+        )
+        progress = []
+        item = VideoItem(url="https://cdn.example.com/video.m4s", title="B站视频", source="bilibili")
+        item.meta["audio_url"] = None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            BilibiliDownloader().download(item, save_path, progress.append, lambda: False)
+
+        self.assertEqual(progress, [10, 10, 90, 90, 100])
+        self.assertEqual(mocked_get.call_count, 1)
+        mocked_build_merge.assert_called_once()
+        self.assertIsNone(mocked_build_merge.call_args.args[2])
+        mocked_subprocess_run.assert_called_once()
+
+    @patch("app.core.downloaders.bilibili.subprocess.run", side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]))
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    @patch("app.core.downloaders.bilibili.requests.get")
+    def test_bilibili_downloader_raises_merge_error_when_ffmpeg_fails(
+        self,
+        mocked_get,
+        _mocked_resolve,
+        _mocked_build_merge,
+        _mocked_subprocess_run,
+    ):
+        mocked_get.return_value = self._make_stream_response(
+            [b"video-bytes"],
+            headers={"content-length": "11", "content-type": "video/mp4"},
+        )
+        item = VideoItem(url="https://cdn.example.com/video.m4s", title="B站视频", source="bilibili")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            with self.assertRaises(MergeError):
+                BilibiliDownloader().download(item, save_path, lambda _value: None, lambda: False)
+
+    @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_m3u8_downloader_reports_external_tool_exit_failure(self, _mocked_resolve, mocked_popen, mocked_wait_process):
+        process = Mock()
+        process.returncode = 3
+        mocked_popen.return_value = process
+        mocked_wait_process.return_value = None
+        item = VideoItem(url="https://cdn.example.com/live/index.m3u8", title="直播", source="douyin")
+
+        with self.assertRaises(ExternalToolError):
+            N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value=None)
+    def test_m3u8_downloader_raises_when_executable_missing(self, _mocked_resolve):
+        item = VideoItem(url="https://cdn.example.com/live/index.m3u8", title="直播", source="douyin")
+
+        with self.assertRaises(ExternalToolNotFoundError):
+            N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
 
     def test_download_manager_stop_all_waits_with_timeout(self):
         manager = DownloadManager.__new__(DownloadManager)
@@ -100,6 +333,142 @@ class DownloaderStrategyTests(unittest.TestCase):
         worker.wait.assert_called_once_with(DownloadManager.WORKER_STOP_TIMEOUT_MS)
         manager.dispatcher_thread.join.assert_called_once_with(timeout=2)
 
+    def test_download_manager_release_slot_is_idempotent(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        manager.slot_semaphore = Mock()
+        manager._workers_lock = threading.Lock()
+        worker = Mock()
+        worker.video = VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin")
+        worker.video.meta["trace_id"] = "trace-1"
+        worker._slot_released = False
+        manager.workers = [worker]
+
+        manager._release_worker_slot(worker, "task_finished")
+        manager._release_worker_slot(worker, "thread_finished")
+
+        manager.slot_semaphore.release.assert_called_once()
+        self.assertTrue(worker._slot_released)
+
+    def test_download_manager_handle_worker_completion_removes_worker_and_releases_slot(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        manager.slot_semaphore = Mock()
+        manager._workers_lock = threading.Lock()
+        worker = Mock()
+        worker.video = VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin")
+        worker.video.meta["trace_id"] = "trace-2"
+        worker._slot_released = False
+        manager.workers = [worker]
+
+        manager._handle_worker_completion(worker, "task_finished")
+
+        self.assertEqual(manager.workers, [])
+        manager.slot_semaphore.release.assert_called_once()
+
+    def test_download_manager_cancel_task_removes_queued_item_without_touching_slots(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        manager.queue = queue.Queue()
+        manager._workers_lock = threading.Lock()
+        manager.workers = []
+        manager.slot_semaphore = Mock()
+        keep_item = VideoItem(url="https://example.com/1.mp4", title="keep", source="douyin")
+        cancel_item = VideoItem(url="https://example.com/2.mp4", title="cancel", source="douyin")
+        manager.queue.put((keep_item, "downloads"))
+        manager.queue.put((cancel_item, "downloads"))
+
+        result = manager.cancel_task(cancel_item.id)
+
+        self.assertEqual(result, "queued")
+        remaining_video, remaining_dir = manager.queue.get_nowait()
+        self.assertEqual(remaining_video.id, keep_item.id)
+        self.assertEqual(remaining_dir, "downloads")
+        manager.slot_semaphore.release.assert_not_called()
+
+    def test_download_manager_cancel_task_stops_running_worker(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        manager.queue = queue.Queue()
+        manager._workers_lock = threading.Lock()
+        manager.slot_semaphore = Mock()
+        worker = Mock()
+        worker.video = VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin")
+        manager.workers = [worker]
+
+        result = manager.cancel_task(worker.video.id)
+
+        self.assertEqual(result, "running")
+        worker.stop.assert_called_once()
+
+    def test_download_manager_cancel_task_returns_none_when_missing(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        manager.queue = queue.Queue()
+        manager._workers_lock = threading.Lock()
+        manager.slot_semaphore = Mock()
+        manager.workers = []
+
+        self.assertIsNone(manager.cancel_task("missing"))
+
+    def test_download_worker_generate_filename_prefers_meta_filename(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="显示标题", source="bilibili")
+        item.meta["preferred_filename"] = "P01_真实文件名.mp4"
+        worker = DownloadWorker(item, "downloads")
+
+        filename = worker._generate_filename(".mp4")
+
+        self.assertEqual(filename, "P01_真实文件名.mp4")
+
+    def test_download_worker_resolve_save_dir_uses_subfolder_for_gallery_like_tasks(self):
+        item = VideoItem(url="https://example.com/cover.jpg", title="图集", source="douyin")
+        item.meta.update(
+            {
+                "content_type": "gallery",
+                "folder_name": "合集目录",
+                "is_gallery": True,
+            }
+        )
+        worker = DownloadWorker(item, "downloads")
+
+        self.assertEqual(worker._resolve_save_dir(), os.path.join("downloads", "合集目录"))
+
+    def test_download_worker_infer_extension_uses_content_type_and_url_hint(self):
+        gallery_item = VideoItem(url="https://example.com/cover.bin", title="图集", source="douyin")
+        gallery_item.meta["content_type"] = "gallery"
+        gallery_worker = DownloadWorker(gallery_item, "downloads")
+
+        image_item = VideoItem(url="https://example.com/cover.webp?size=1080", title="封面", source="douyin")
+        image_worker = DownloadWorker(image_item, "downloads")
+
+        self.assertEqual(gallery_worker._infer_extension(), ".jpeg")
+        self.assertEqual(image_worker._infer_extension(), ".webp")
+
+    def test_download_worker_ensure_unique_path_appends_incrementing_suffix(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = os.path.join(temp_dir, "demo.mp4")
+            open(base_path, "wb").close()
+            open(os.path.join(temp_dir, "demo_1.mp4"), "wb").close()
+
+            unique_path = worker._ensure_unique_path(base_path)
+
+        self.assertTrue(unique_path.endswith("demo_2.mp4"))
+
+    def test_download_worker_detect_actual_file_type_recognizes_mp4_signature(self):
+        item = VideoItem(url="https://example.com/video.bin", title="demo", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = os.path.join(temp_dir, "video.bin")
+            with open(file_path, "wb") as fp:
+                fp.write(b"\x00\x00\x00\x20ftypisom" + b"\x00" * 16)
+
+            detected_ext = worker._detect_actual_file_type(file_path)
+
+        self.assertEqual(detected_ext, ".mp4")
+
+    def test_download_worker_detect_actual_file_type_returns_none_for_missing_file(self):
+        item = VideoItem(url="https://example.com/video.bin", title="demo", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+
+        self.assertIsNone(worker._detect_actual_file_type("missing-file.bin"))
+
     def test_video_item_update_from_dict_uses_field_whitelist(self):
         item = VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin")
 
@@ -117,14 +486,12 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertTrue(callable(item.get_safe_filename))
         self.assertFalse(hasattr(item, "unknown_field"))
 
-    @patch("app.core.downloaders.kuaishou.requests.get", side_effect=requests.RequestException("skip probe"))
     @patch.object(KuaishouDownloader, "_download_with_strategy_fallback")
     @patch("app.core.downloaders.kuaishou.cfg.get")
     def test_kuaishou_downloader_prefers_kuaishou_user_agent_config(
         self,
         mocked_cfg_get,
         mocked_download,
-        _mocked_requests_get,
     ):
         def fake_get(section, key, default=None):
             if (section, key) == ("kuaishou", "user_agent"):
@@ -138,14 +505,12 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "kuaishou-ua")
 
-    @patch("app.core.downloaders.kuaishou.requests.get", side_effect=requests.RequestException("skip probe"))
     @patch.object(KuaishouDownloader, "_download_with_strategy_fallback")
     @patch("app.core.downloaders.kuaishou.cfg.get", return_value="config-ua")
     def test_kuaishou_downloader_allows_task_level_user_agent_override(
         self,
         _mocked_cfg_get,
         mocked_download,
-        _mocked_requests_get,
     ):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="kuaishou")
         item.meta["ua"] = "meta-ua"

@@ -10,9 +10,7 @@ class DebugLoggerTests(unittest.TestCase):
     def test_debug_logger_proxy_is_lazy_until_first_attribute_access(self):
         import app.debug_logger as debug_logger_module
 
-        original_singleton = debug_logger_module._debug_logger_singleton
-        debug_logger_module._debug_logger_singleton = None
-        try:
+        with patch.object(debug_logger_module, "_debug_logger_singleton", None):
             self.assertIsNone(debug_logger_module._debug_logger_singleton)
 
             with patch.object(debug_logger_module, "DebugLogger") as mocked_logger_cls:
@@ -24,8 +22,6 @@ class DebugLoggerTests(unittest.TestCase):
             self.assertEqual(result, {"title": "demo"})
             mocked_logger_cls.assert_called_once()
             self.assertIs(debug_logger_module._debug_logger_singleton, mocked_logger)
-        finally:
-            debug_logger_module._debug_logger_singleton = original_singleton
 
     def test_pick_used_filters_empty_values(self):
         result = debug_logger.pick_used(
@@ -84,6 +80,19 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertEqual(result["token"], "[已脱敏]")
         self.assertEqual(result["cookie_path"], "dy_auth.json")
         self.assertIn("***:***@", result["proxy"])
+
+    def test_pick_used_masks_bearer_token_inline(self):
+        result = debug_logger.pick_used(
+            {
+                "authorization": "Bearer abc.def.ghi",
+                "headers": "Authorization: Bearer abc.def.ghi",
+            },
+            "authorization",
+            "headers",
+        )
+
+        self.assertEqual(result["authorization"], "Bearer ***")
+        self.assertIn("Authorization: [已脱敏]", result["headers"])
 
     def test_log_error_writes_latest_error_summary(self):
         original_latest = debug_logger.latest_error_summary_file

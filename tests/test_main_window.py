@@ -115,6 +115,53 @@ class MainWindowTests(unittest.TestCase):
 
         window.inp_search.setPlaceholderText.assert_not_called()
 
+    def test_cleanup_media_delegates_to_media_panel(self):
+        window = self._make_window()
+        window.media_panel = Mock()
+
+        window.cleanup_media()
+
+        window.media_panel.cleanup.assert_called_once()
+
+    @patch("app.ui.main_window.generate_stylesheet", return_value="style")
+    @patch("app.ui.main_window.cfg.set")
+    def test_toggle_theme_persists_state_and_emits_signal(self, mock_cfg_set, _mock_stylesheet):
+        window = self._make_window()
+        window.is_dark_theme = True
+        window.top_bar = Mock()
+        window.setStyleSheet = Mock()
+        window.sig_theme_changed = Mock()
+
+        window.toggle_theme()
+
+        self.assertFalse(window.is_dark_theme)
+        window.top_bar.set_theme_icon.assert_called_once_with(False)
+        window.sig_theme_changed.emit.assert_called_once_with(False)
+        mock_cfg_set.assert_any_call("common", "dark_theme", False)
+        mock_cfg_set.assert_any_call("common", "theme", "light")
+
+    @patch("app.ui.main_window.QByteArray")
+    @patch("app.ui.main_window.cfg.get", return_value="aa55")
+    def test_toggle_fullscreen_mode_restores_state_when_exiting(self, mock_cfg_get, mock_qbytearray):
+        window = self._make_window()
+        window.is_fullscreen_mode = True
+        window.top_bar = Mock()
+        window.left_panel = Mock()
+        window.log_txt = Mock()
+        window.btn_fullscreen = Mock()
+        window._set_main_margins = Mock()
+        window.showNormal = Mock()
+        window.restoreState = Mock()
+        mock_qbytearray.fromHex.return_value = "restored-state"
+
+        window.toggle_fullscreen_mode()
+
+        self.assertFalse(window.is_fullscreen_mode)
+        window.showNormal.assert_called_once()
+        window.btn_fullscreen.setText.assert_called_once_with("[ 全屏 ]")
+        window.restoreState.assert_called_once_with("restored-state")
+        mock_cfg_get.assert_called_once_with("ui", "window_state")
+
 
 if __name__ == "__main__":
     unittest.main()

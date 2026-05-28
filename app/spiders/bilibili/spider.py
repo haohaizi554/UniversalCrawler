@@ -286,20 +286,22 @@ class BilibiliSpider(BaseSpider):
                     q_map = {127: "8K", 120: "4K", 116: "1080P60", 80: "1080P", 64: "720P"}
                     q_text = q_map.get(q_id, "高清")
                     self.log(f"   ✨ 获取成功 [{q_text}]")
+                    folder_name = task.get("folder_name")
                     meta = {
                         "trace_id": task["trace_id"],
                         "audio_url": a_url,
                         "ua": HEADERS['User-Agent'],
                         "referer": task['referer'],
-                        "use_subdir": bool(task['folder_name']),
+                        "use_subdir": bool(folder_name),
                         "bvid": task["bvid"],
                         "cid": task["cid"],
+                        "preferred_filename": task["file_name"],
                     }
-                    if task['folder_name']:
-                        meta["folder_name"] = task['folder_name']
+                    if folder_name:
+                        meta["folder_name"] = folder_name
                     self.emit_video(
                         url=v_url,
-                        title=task['file_name'],
+                        title=os.path.splitext(task["file_name"])[0],
                         source="bilibili",
                         meta=meta
                     )
@@ -310,7 +312,7 @@ class BilibiliSpider(BaseSpider):
                         context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
                         details={
                             "file_name": task["file_name"],
-                            "folder_name": task["folder_name"],
+                            "folder_name": folder_name,
                             "quality_id": q_id,
                             "video_url": v_url,
                             "audio_url": a_url,
@@ -334,35 +336,34 @@ class BilibiliSpider(BaseSpider):
         """只负责翻页和提取 BV，扔进队列"""
         try:
             max_pages = self.config.get('max_pages', 1)
-            target_url = self.keyword
+            target_url = self._normalize_keyword(self.keyword)
             is_search = False
             is_space = False
             # 模式 A: 纯数字 -> UP主 ID
             if re.match(r'^\d+$', self.keyword):
                 self.log(f"🔍 [识别结果] UP主 UID (纯数字) -> 准备爬取主页视频")
                 target_url = f"https://space.bilibili.com/{self.keyword}/video"
-                # UP主模式强制全量
-                self._scan_with_browser_queue(target_url, max_pages=9999, is_search=False, is_space=True)
+                self._scan_with_browser_queue(target_url, max_pages=max_pages, is_search=False, is_space=True)
             # 模式 B: 纯 BV 号
             elif re.match(r'(?i)^BV\w+$', self.keyword):
                 self.log("🔗 [识别结果] 单个视频 (BV号)")
                 self.raw_bv_queue.put(self.keyword)
             # 模式 C: URL
-            elif "http" in self.keyword:
-                single_bv = re.search(r'(BV\w+)', self.keyword)
+            elif "http" in target_url:
+                single_bv = re.search(r'(BV\w+)', target_url)
                 # 情况 C-1: 视频详情页
-                if "/video/BV" in self.keyword and single_bv and "list" not in self.keyword and "space" not in self.keyword:
+                if "/video/BV" in target_url and single_bv and "list" not in target_url and "space" not in target_url:
                     self.log("🔗 [识别结果] 单个视频 (URL)")
                     self.raw_bv_queue.put(single_bv.group(1))
                 else:
                     # 情况 C-2: 空间页/合集/列表
-                    is_space = "space.bilibili.com" in self.keyword
+                    is_space = "space.bilibili.com" in target_url
                     if is_space:
                         # 主页链接修正逻辑
                         # 检查是否包含 /video，如果没有，尝试提取 UID 并构造
-                        if "/video" not in self.keyword:
+                        if "/video" not in target_url:
                             # 提取 UID: space.bilibili.com/1513751793?spm... -> 1513751793
-                            uid_match = re.search(r'space\.bilibili\.com/(\d+)', self.keyword)
+                            uid_match = re.search(r'space\.bilibili\.com/(\d+)', target_url)
                             if uid_match:
                                 uid = uid_match.group(1)
                                 target_url = f"https://space.bilibili.com/{uid}/video"
@@ -371,14 +372,13 @@ class BilibiliSpider(BaseSpider):
                                 self.log(f"🔍 [识别结果] 空间页 (未匹配到UID，保持原样)")
                         else:
                             self.log(f"🔍 [识别结果] UP主视频投稿页 URL")
-                        # 空间页强制全量，忽略 max_pages
-                        self._scan_with_browser_queue(target_url, max_pages=9999, is_search=False, is_space=True)
+                        self._scan_with_browser_queue(target_url, max_pages=max_pages, is_search=False, is_space=True)
                     else:
                         # 搜索页 URL (直接粘贴的)
-                        is_search_url = "search.bilibili.com" in self.keyword
+                        is_search_url = "search.bilibili.com" in target_url
                         self.log(f"🔍 [识别结果] 列表/搜索页 URL")
                         # 如果是搜索页 URL，必须开启 is_search=True 以便正确翻页
-                        self._scan_with_browser_queue(self.keyword, max_pages, is_search=is_search_url, is_space=False)
+                        self._scan_with_browser_queue(target_url, max_pages, is_search=is_search_url, is_space=False)
             # 模式 D: 搜索关键词
             else:
                 self.log(f"🔍 [识别结果] 关键词搜索")
@@ -388,6 +388,26 @@ class BilibiliSpider(BaseSpider):
             self.log(f"❌ 浏览器线程异常: {e}")
         finally:
             self.browser_finished.set()
+
+    def _extract_first_url(self, raw_text: str) -> str:
+        match = re.search(r"https?://[^\s`]+", raw_text)
+        return match.group(0) if match else raw_text.strip()
+
+    def _resolve_short_share_url(self, url: str) -> str:
+        if "b23.tv" not in url:
+            return url
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
+            resolved = response.url or url
+            self.log(f"🔗 [短链解析] {url} -> {resolved}")
+            return resolved
+        except requests.RequestException as exc:
+            self.log(f"⚠️ [短链解析失败] {exc}")
+            return url
+
+    def _normalize_keyword(self, raw_text: str) -> str:
+        extracted = self._extract_first_url(raw_text)
+        return self._resolve_short_share_url(extracted)
 
     # --- 线程任务：API 加工者 ---
     def _worker_api_pool(self):
@@ -447,7 +467,6 @@ class BilibiliSpider(BaseSpider):
                                     current_url = page.url
                                     is_search = False
                                     is_space = True
-                                    max_pages = 9999
                     except (PlaywrightError, ValueError):
                         pass
                 page_count = 0

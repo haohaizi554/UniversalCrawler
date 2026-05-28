@@ -26,8 +26,8 @@ class DouyinDownloader(BaseDownloader):
         trace_id = video_item.meta.get("trace_id")
         download_cfg = cfg.settings.download
         headers = {
-            "User-Agent": cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT),
-            "Referer": "https://www.douyin.com/",
+            "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
+            "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
         }
         debug_logger.log(
             component="DouyinDownloader",
@@ -58,30 +58,6 @@ class DouyinDownloader(BaseDownloader):
         if is_gallery and images_data:
             return self._download_gallery(video_item, images_data, save_path, progress_callback, check_stop_func, headers)
 
-        try:
-            url = video_item.url
-            head_resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True)
-            content_length = int(head_resp.headers.get("content-length", 0))
-            size_mb = content_length / (1024 * 1024)
-            video_item.meta["size_mb"] = size_mb
-            debug_logger.log_api(
-                component="DouyinDownloader",
-                api_name="head_size",
-                request={"url": url},
-                response_summary={"content_length": content_length, "size_mb": round(size_mb, 2)},
-                message="抖音资源大小预检查",
-                status_code=head_resp.status_code,
-                trace_id=trace_id,
-            )
-        except requests.RequestException as exc:
-            debug_logger.log_exception(
-                "DouyinDownloader",
-                "head_size",
-                exc,
-                context={"url": url},
-                trace_id=trace_id,
-            )
-
         self._download_single(
             video_item,
             save_path,
@@ -104,39 +80,6 @@ class DouyinDownloader(BaseDownloader):
         request_timeout: int,
         chunk_size: int,
     ) -> None:
-        trace_id = video_item.meta.get("trace_id")
-        temp_path = save_path + ".downloading"
-        request_headers = headers.copy()
-        existing_size = 0
-        if self._should_resume_download(temp_path):
-            existing_size = self._get_existing_size(temp_path)
-            if existing_size > 0:
-                request_headers["Range"] = f"bytes={existing_size}-"
-        try:
-            with requests.get(video_item.url, headers=request_headers, stream=True, timeout=request_timeout) as response:
-                response.raise_for_status()
-                debug_logger.log_api(
-                    component="DouyinDownloader",
-                    api_name="single_download",
-                    request={"url": video_item.url, "range": request_headers.get("Range"), "save_path": temp_path},
-                    response_summary={
-                        "status": response.status_code,
-                        "content_length": response.headers.get("content-length"),
-                        "content_type": response.headers.get("content-type"),
-                    },
-                    message="抖音资源下载连接建立成功",
-                    status_code=response.status_code,
-                    trace_id=trace_id,
-                )
-        except requests.RequestException as exc:
-            debug_logger.log_exception(
-                "DouyinDownloader",
-                "single_download_probe",
-                exc,
-                context={"url": video_item.url, "save_path": save_path},
-                trace_id=trace_id,
-            )
-
         self._download_with_strategy_fallback(
             video_item=video_item,
             save_path=save_path,

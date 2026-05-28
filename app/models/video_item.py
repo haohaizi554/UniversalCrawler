@@ -1,8 +1,7 @@
 """Shared media item model for spiders, UI and downloaders."""
 
-import random
-import time
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from app.utils.filenames import build_media_filename
 
@@ -23,8 +22,8 @@ class VideoItem:
     meta: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        # Use timestamp plus randomness to keep IDs unique under concurrency.
-        self.id = f"{int(time.time() * 1000)}_{random.randint(100, 999)}"
+        # uuid4 避免高并发下时间戳+随机数方案的碰撞风险。
+        self.id = uuid4().hex
         if self.title:
             self.title = self.title.strip()
 

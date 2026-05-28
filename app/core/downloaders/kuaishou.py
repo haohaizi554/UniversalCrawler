@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import requests
-
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
 from app.models import VideoItem
@@ -50,40 +48,6 @@ class KuaishouDownloader(BaseDownloader):
             ),
             trace_id=trace_id,
         )
-
-        temp_path = save_path + ".downloading"
-        try:
-            with requests.get(video_item.url, headers=headers, stream=True, timeout=60) as response:
-                response.raise_for_status()
-                debug_logger.log_api(
-                    component="KuaishouDownloader",
-                    api_name="stream_download",
-                    request=debug_logger.pick_used(
-                        {"url": video_item.url, "save_path": temp_path, "referer": headers.get("Referer")},
-                        "url",
-                        "save_path",
-                        "referer",
-                    ),
-                    response_summary=debug_logger.pick_used(
-                        {
-                            "content_length": response.headers.get("content-length"),
-                            "content_type": response.headers.get("content-type"),
-                        },
-                        "content_length",
-                        "content_type",
-                    ),
-                    message="快手视频流下载连接建立成功",
-                    status_code=response.status_code,
-                    trace_id=trace_id,
-                )
-        except requests.RequestException as exc:
-            debug_logger.log_exception(
-                "KuaishouDownloader",
-                "stream_download_probe",
-                exc,
-                context={"url": video_item.url, "save_path": save_path},
-                trace_id=trace_id,
-            )
 
         self._download_with_strategy_fallback(
             video_item=video_item,

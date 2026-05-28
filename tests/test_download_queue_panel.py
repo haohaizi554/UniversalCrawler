@@ -51,6 +51,15 @@ class DownloadQueuePanelTests(unittest.TestCase):
         self.assertEqual(self.panel.table.item(0, 1).text(), "✅ 完成")
         self.assertEqual(self.panel.table.cellWidget(0, 2).value(), 100)
 
+    def test_update_video_status_tolerates_missing_status_cell(self):
+        item = VideoItem(url="https://example.com/demo.mp4", title="demo", source="douyin")
+        self.panel.add_video_row(item, on_play=lambda _video_id: None, on_delete=lambda _video_id: None)
+        self.panel.table.takeItem(0, 1)
+
+        self.panel.update_video_status(item.id, "✅ 完成", 80)
+
+        self.assertEqual(self.panel.table.cellWidget(0, 2).value(), 80)
+
     def test_get_selected_video_id_returns_current_row_video(self):
         item = VideoItem(url="https://example.com/demo.mp4", title="demo", source="douyin")
         self.panel.add_video_row(item, on_play=lambda _video_id: None, on_delete=lambda _video_id: None)

@@ -1,7 +1,5 @@
 """Main window assembly layer."""
 
-import os
-
 from PyQt6.QtCore import QByteArray, Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QSplitter, QVBoxLayout, QWidget
@@ -14,6 +12,7 @@ from app.ui.components.media_preview_panel import MediaPreviewPanel
 from app.ui.components.top_bar import TopBarWidget
 from app.ui.dialogs import SelectionDialog
 from app.ui.styles import generate_stylesheet
+from app.utils.runtime_paths import resolve_resource_file, user_data_root
 
 
 class MainWindow(QMainWindow):
@@ -36,10 +35,11 @@ class MainWindow(QMainWindow):
         self.is_dark_theme = cfg.get("common", "dark_theme", True)
         self.setStyleSheet(generate_stylesheet(self.is_dark_theme))
 
-        if os.path.exists("favicon.ico"):
-            self.setWindowIcon(QIcon("favicon.ico"))
+        icon_path = resolve_resource_file("favicon.ico")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
-        self.current_save_dir = cfg.get("common", "save_directory") or os.getcwd()
+        self.current_save_dir = cfg.get("common", "save_directory") or str(user_data_root())
         self.current_plugin = None
         self.plugin_widget = None
         self.is_fullscreen_mode = False
@@ -304,3 +304,6 @@ class MainWindow(QMainWindow):
 
     def stop_media_playback(self) -> None:
         self.media_panel.stop_playback()
+
+    def cleanup_media(self) -> None:
+        self.media_panel.cleanup()

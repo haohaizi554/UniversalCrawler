@@ -1,53 +1,67 @@
-# Python 编译文件
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
-*.spec
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
-# 虚拟环境
+# Virtual Envs
 venv/
 .venv/
 env/
 
-# IDE 配置文件
+# IDE / Editor
 .idea/
 .vscode/
+*.code-workspace
 
-# Node
-node_modules/
-
-# 日志
-*.log
-
-# 构建输出
+# Build Outputs
 build/
 dist/
 .cache/
+pip-wheel-metadata/
 
-# 系统文件
-.DS_Store
-Thumbs.db
-Desktop.ini
+# Node / Browser Runtime
+node_modules/
+ms-playwright/
+chromium/
 
-# Git
-.git/
+# Runtime Data
+downloads/
+temp/
+tmp/
+data/
+dataset/
 
-# 媒体与压缩包
-*.mp4
+# Local Config / Auth
+config.json
+*_auth.json
+dy_auth.json
+bili_auth.json
+ks_auth.json
+missav_auth.json
+
+# Logs / Reports
+*.log
+Logs/*.log
+
+# Archives
 *.zip
 *.rar
 *.7z
 
-# 测试工具
-ms-playwright/
-chromium/
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
 
-# 数据文件
-data/
-dataset/
-*.json
-
-# 临时文件
-temp/
-tmp/
+# Temp / Backup
+*.bak
+*.tmp
+*.orig

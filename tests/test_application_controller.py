@@ -4,7 +4,9 @@ import unittest
 from unittest.mock import Mock
 
 from app.controllers.application_controller import ApplicationController
+from app.exceptions import FileOperationError
 from app.models import VideoItem
+from app.services.file_service import ScanResult
 
 
 class ApplicationControllerTests(unittest.TestCase):
@@ -12,6 +14,7 @@ class ApplicationControllerTests(unittest.TestCase):
         controller = ApplicationController.__new__(ApplicationController)
         controller.window = Mock()
         controller.file_service = Mock()
+        controller.dl_manager = Mock()
         controller.videos = {}
         controller.current_playing_id = None
         return controller
@@ -32,14 +35,35 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.videos[item.id] = item
         controller.current_playing_id = item.id
         controller.file_service.delete_media.return_value = True
+        controller.dl_manager.cancel_task.return_value = "running"
 
         controller.on_delete_video(2, item.id)
 
+        controller.dl_manager.cancel_task.assert_called_once_with(item.id)
         controller.window.stop_media_playback.assert_called_once()
         controller.window.remove_video_row.assert_called_once_with(2)
         controller.window.refresh_table_bindings.assert_called_once()
         self.assertNotIn(item.id, controller.videos)
         self.assertIsNone(controller.current_playing_id)
+
+    def test_on_delete_video_keeps_row_when_file_delete_fails(self):
+        controller = self._make_controller()
+        item = VideoItem(url="https://example.com/demo.mp4", title="demo", source="local")
+        item.local_path = r"C:\temp\demo.mp4"
+        controller.videos[item.id] = item
+        controller.current_playing_id = item.id
+        controller.file_service.delete_media.side_effect = FileOperationError("权限不足")
+        controller.dl_manager.cancel_task.return_value = "queued"
+
+        controller.on_delete_video(2, item.id)
+
+        controller.window.stop_media_playback.assert_called_once()
+        controller.window.remove_video_row.assert_not_called()
+        controller.window.refresh_table_bindings.assert_not_called()
+        self.assertIn(item.id, controller.videos)
+        self.assertIsNone(controller.current_playing_id)
+        log_messages = [call.args[0] for call in controller.window.append_log.call_args_list]
+        self.assertTrue(any("删除文件失败" in msg for msg in log_messages))
 
     def test_play_video_routes_images_to_image_preview(self):
         controller = self._make_controller()
@@ -81,6 +105,81 @@ class ApplicationControllerTests(unittest.TestCase):
 
         controller.window.append_log.assert_called_once()
         controller._create_spider.assert_not_called()
+
+    def test_scan_local_dir_populates_rows_and_reports_truncation(self):
+        controller = self._make_controller()
+        controller.window.current_save_dir = "downloads"
+        video = VideoItem(url="", title="video", source="local")
+        image = VideoItem(url="", title="image", source="local")
+        controller.file_service.scan_directory.return_value = ScanResult(
+            items=[video, image],
+            total_count=2,
+            video_count=1,
+            image_count=1,
+            truncated=True,
+            original_count=5,
+        )
+
+        controller.scan_local_dir()
+
+        controller.window.clear_video_rows.assert_called_once()
+        self.assertEqual(controller.window.add_video_row.call_count, 2)
+        self.assertIn(video.id, controller.videos)
+        self.assertIn(image.id, controller.videos)
+        log_messages = [call.args[0] for call in controller.window.append_log.call_args_list]
+        self.assertTrue(any("仅加载最新的 2 个" in msg for msg in log_messages))
+        self.assertTrue(any("已加载 2 个本地文件" in msg for msg in log_messages))
+
+    def test_scan_local_dir_reports_empty_directory(self):
+        controller = self._make_controller()
+        controller.window.current_save_dir = "downloads"
+        controller.file_service.scan_directory.return_value = ScanResult(
+            items=[],
+            total_count=0,
+            video_count=0,
+            image_count=0,
+        )
+
+        controller.scan_local_dir()
+
+        controller.window.add_video_row.assert_not_called()
+        log_messages = [call.args[0] for call in controller.window.append_log.call_args_list]
+        self.assertTrue(any("没有找到视频或图片" in msg for msg in log_messages))
+
+    def test_on_spider_item_found_enqueues_download_and_updates_ui_state(self):
+        controller = self._make_controller()
+        controller.window.current_save_dir = "downloads"
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        controller._on_spider_item_found(item)
+
+        self.assertEqual(item.status, "⏳ 等待中")
+        self.assertEqual(item.progress, 0)
+        self.assertIs(controller.videos[item.id], item)
+        controller.window.add_video_row.assert_called_once_with(item)
+        controller.dl_manager.add_task.assert_called_once_with(item, "downloads")
+
+    def test_on_spider_select_tasks_resumes_spider_with_dialog_selection(self):
+        controller = self._make_controller()
+        controller.current_spider = Mock()
+        controller.window.show_selection_dialog.return_value = [0, 2]
+
+        controller._on_spider_select_tasks([{"title": "A"}, {"title": "B"}])
+
+        controller.window.show_selection_dialog.assert_called_once()
+        controller.current_spider.resume_from_ui.assert_called_once_with([0, 2])
+
+    def test_shutdown_stops_active_spider_and_download_manager(self):
+        controller = self._make_controller()
+        controller.current_spider = Mock()
+        controller.current_spider.isRunning.return_value = True
+
+        controller.shutdown()
+
+        controller.window.cleanup_media.assert_called_once()
+        controller.current_spider.stop.assert_called_once()
+        controller.current_spider.wait.assert_called_once_with(2000)
+        controller.dl_manager.stop_all.assert_called_once()
 
 
 if __name__ == "__main__":

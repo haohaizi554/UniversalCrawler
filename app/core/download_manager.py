@@ -53,6 +53,7 @@ class DownloadWorker(QThread):
         self.save_dir = save_dir
         self.is_running = True
         self._final_ext = ".mp4"
+        self._completion_callback = None
 
     def _trace_id(self) -> str | None:
         return self.video.meta.get("trace_id")
@@ -86,6 +87,7 @@ class DownloadWorker(QThread):
         )
 
     def run(self):
+        completion_reason = "thread_finished"
         try:
             if not self.is_running:
                 return
@@ -160,8 +162,10 @@ class DownloadWorker(QThread):
                     ),
                     trace_id=self._trace_id(),
                 )
+                completion_reason = "task_finished"
                 self.sig_finished.emit(self.video.id)
         except DownloaderStoppedError:
+            completion_reason = "task_error"
             debug_logger.log(
                 component="DownloadWorker",
                 action="download_stopped",
@@ -174,6 +178,7 @@ class DownloadWorker(QThread):
             )
             self.sig_error.emit(self.video.id, "用户已停止")
         except (AppError, OSError, RuntimeError, ValueError) as e:
+            completion_reason = "task_error"
             debug_logger.log_exception(
                 "DownloadWorker",
                 "download_error",
@@ -183,6 +188,9 @@ class DownloadWorker(QThread):
                 trace_id=self._trace_id(),
             )
             self.sig_error.emit(self.video.id, str(e))
+        finally:
+            if callable(self._completion_callback):
+                self._completion_callback(self, completion_reason)
 
     def _select_downloader(self) -> BaseDownloader:
         """统一从注册表中选择平台下载器，避免在 run() 中继续堆 if/elif。"""
@@ -227,7 +235,8 @@ class DownloadWorker(QThread):
 
     def _generate_filename(self, ext):
         """生成文件名，避免重复扩展名和空文件名。"""
-        desc = sanitize_filename(self.video.title)
+        preferred_name = self.video.meta.get("preferred_filename")
+        desc = sanitize_filename(preferred_name or self.video.title)
         base_name, current_ext = os.path.splitext(desc)
         safe_name = base_name if current_ext.lower() == ext.lower() else desc
         safe_name = safe_name[:200] or f"{self.video.source}_{self.video.id}"
@@ -322,14 +331,30 @@ class DownloadManager(QObject):
         )
         self.queue.put((video, save_dir))
 
+    def cancel_task(self, video_id: str) -> str | None:
+        """取消排队中或下载中的任务。
+
+        返回值:
+        - ``queued``: 任务仍在队列中，已直接移除
+        - ``running``: 任务正在下载，已请求工作线程停止
+        - ``None``: 未找到对应任务
+        """
+        if self._remove_queued_task(video_id):
+            return "queued"
+
+        worker = self._find_worker(video_id)
+        if worker is None:
+            return None
+
+        worker.stop()
+        return "running"
+
     def _dispatch_loop(self):
         """派发线程先占用并发槽位，再启动真实下载线程，避免堆积阻塞线程。"""
         while self.is_running:
             try:
                 video, save_dir = self.queue.get(timeout=1)
-                while self.is_running and not self.slot_semaphore.acquire(timeout=0.2):
-                    pass
-                if not self.is_running:
+                if not self._wait_for_dispatch_slot():
                     break
 
                 worker = DownloadWorker(video, save_dir)
@@ -352,6 +377,8 @@ class DownloadManager(QObject):
                 worker.sig_progress.connect(self.task_progress)
                 worker.sig_finished.connect(self.task_finished)
                 worker.sig_error.connect(self.task_error)
+                worker._slot_released = False
+                worker._completion_callback = self._handle_worker_completion
                 worker.finished.connect(lambda w=worker: self._on_worker_thread_finished(w))
                 with self._workers_lock:
                     self.workers.append(worker)
@@ -369,11 +396,66 @@ class DownloadManager(QObject):
                 if failed_video is not None:
                     self.task_error.emit(failed_video.id, f"调度失败: {e}")
 
-    def _on_worker_thread_finished(self, worker: DownloadWorker):
+    def _find_worker(self, video_id: str) -> DownloadWorker | None:
+        with self._workers_lock:
+            for worker in self.workers:
+                if worker.video.id == video_id:
+                    return worker
+        return None
+
+    def _remove_queued_task(self, video_id: str) -> bool:
+        removed = False
+        with self.queue.mutex:
+            retained_tasks = []
+            removed_count = 0
+            for queued_video, save_dir in self.queue.queue:
+                if queued_video.id == video_id and not removed:
+                    removed = True
+                    removed_count += 1
+                    continue
+                retained_tasks.append((queued_video, save_dir))
+            if removed:
+                self.queue.queue.clear()
+                self.queue.queue.extend(retained_tasks)
+                if self.queue.unfinished_tasks >= removed_count:
+                    self.queue.unfinished_tasks -= removed_count
+                if self.queue.unfinished_tasks == 0:
+                    self.queue.all_tasks_done.notify_all()
+                self.queue.not_full.notify_all()
+        return removed
+
+    def _wait_for_dispatch_slot(self) -> bool:
+        """等待可用并发槽位，保持阻塞等待而不是空循环。"""
+        while self.is_running:
+            if self.slot_semaphore.acquire(timeout=0.5):
+                return True
+        return False
+
+    def _release_worker_slot(self, worker: DownloadWorker, reason: str) -> None:
+        if getattr(worker, "_slot_released", False):
+            return
+        worker._slot_released = True
+        self.slot_semaphore.release()
+        debug_logger.log(
+            component="DownloadManager",
+            action="release_slot",
+            message="下载并发槽位已释放",
+            status_code="DL_SLOT_RELEASE",
+            context=debug_logger.pick_used(
+                {"trace_id": worker.video.meta.get("trace_id"), "video_id": worker.video.id},
+                "trace_id", "video_id",
+            ),
+            details={"reason": reason},
+            trace_id=worker.video.meta.get("trace_id"),
+        )
+
+    def _handle_worker_completion(self, worker: DownloadWorker, reason: str) -> None:
         with self._workers_lock:
             if worker in self.workers:
                 self.workers.remove(worker)
-        self.slot_semaphore.release()
+        self._release_worker_slot(worker, reason)
+
+    def _on_worker_thread_finished(self, worker: DownloadWorker):
         worker.deleteLater()
 
     def stop_all(self):

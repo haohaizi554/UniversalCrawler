@@ -7,7 +7,7 @@ from app.config import cfg
 
 
 class PageLimitSettingsWidget(QWidget):
-    """统一的页数下拉控件，固定为少量常用档位。"""
+    """统一的数量下拉控件，固定为少量常用档位。"""
 
     def __init__(
         self,
@@ -26,13 +26,13 @@ class PageLimitSettingsWidget(QWidget):
         label = QLabel(label_text)
         layout.addWidget(label)
 
-        # 固定选项避免用户在不同平台输入过大页数后带来误解。
+        # 固定选项避免用户在不同平台输入过大数量后带来误解。
         self.combo_pages = QComboBox()
         self.combo_pages.setToolTip(tooltip)
         self.combo_pages.setMinimumWidth(84)
         self.combo_pages.setMaximumWidth(84)
         self.combo_pages.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self._page_values = [1, 2, 5, 10, max_pages]
+        self._page_values = [1, 2, 5, 10, 20, max_pages]
         seen_values: set[int] = set()
         for value in self._page_values:
             if value in seen_values:
@@ -91,7 +91,7 @@ def build_bilibili_settings_widget(parent=None) -> PageLimitSettingsWidget:
         label_text="页数:",
         max_pages=500,
         default_pages=cfg.get("bilibili", "max_pages", 1),
-        tooltip="搜索或列表扫描页数，可选 1/2/5/10/max；空间主页仍按全量扫描。",
+        tooltip="搜索或列表扫描页数，可选 1/2/5/10/20/max。",
     )
 
 
@@ -106,19 +106,37 @@ def read_bilibili_run_options(widget: QWidget | None) -> dict[str, int]:
 def build_douyin_settings_widget(parent=None) -> PageLimitSettingsWidget:
     return PageLimitSettingsWidget(
         parent,
-        label_text="页数:",
-        max_pages=100,
-        default_pages=cfg.get("douyin", "search_max_pages", 1),
-        tooltip="仅对关键词搜索生效，可选 1/2/5/10/max；链接和主页模式仍按实际流程处理。",
+        label_text="视频数:",
+        max_pages=9999,
+        default_pages=cfg.get("douyin", "max_items", 20),
+        tooltip="抖音单次最多处理的视频数量，可选 1/2/5/10/20/max。",
     )
 
 
 def read_douyin_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
-        return {"search_max_pages": 1, "timeout": 10}
-    pages = widget.current_value()
-    cfg.set("douyin", "search_max_pages", pages)
-    return {"search_max_pages": pages, "timeout": 10}
+        return {"max_items": 20, "timeout": 10}
+    max_items = widget.current_value()
+    cfg.set("douyin", "max_items", max_items)
+    return {"max_items": max_items, "timeout": 10}
+
+
+def build_kuaishou_settings_widget(parent=None) -> PageLimitSettingsWidget:
+    return PageLimitSettingsWidget(
+        parent,
+        label_text="视频数:",
+        max_pages=9999,
+        default_pages=cfg.get("kuaishou", "max_items", 20),
+        tooltip="快手单次最多扫描的视频数量，可选 1/2/5/10/20/max。",
+    )
+
+
+def read_kuaishou_run_options(widget: QWidget | None) -> dict[str, int]:
+    if not isinstance(widget, PageLimitSettingsWidget):
+        return {"max_items": 20}
+    max_items = widget.current_value()
+    cfg.set("kuaishou", "max_items", max_items)
+    return {"max_items": max_items}
 
 
 def build_missav_proxy_url(proxy_str: str) -> str:

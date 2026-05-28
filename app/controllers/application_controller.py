@@ -5,7 +5,6 @@
 """
 import os
 import sys
-from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -20,6 +19,7 @@ from app.models import VideoItem
 from app.services.debug_service import DebugArtifactsService
 from app.services.file_service import MediaLibraryService
 from app.ui.main_window import MainWindow
+from app.utils.runtime_paths import install_root, resolve_resource_file
 
 
 class ApplicationController:
@@ -29,7 +29,7 @@ class ApplicationController:
     IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
     def __init__(self):
-        self.project_root = Path(__file__).resolve().parent.parent.parent
+        self.project_root = install_root()
         self.app = QApplication(sys.argv)
         self.file_service = MediaLibraryService(self.VIDEO_EXTENSIONS, self.IMAGE_EXTENSIONS)
         self.debug_service = DebugArtifactsService()
@@ -51,7 +51,7 @@ class ApplicationController:
         except (ImportError, AttributeError, OSError) as exc:
             debug_logger.log_exception("ApplicationController", "set_app_user_model_id", exc)
 
-        icon_path = self.project_root / "favicon.ico"
+        icon_path = resolve_resource_file("favicon.ico")
         if icon_path.exists():
             self.app.setWindowIcon(QIcon(str(icon_path)))
 
@@ -90,10 +90,22 @@ class ApplicationController:
 
     def _connect_download_signals(self):
         """下载管理器回调只在这里接入一次，避免散落在构造流程里。"""
-        self.dl_manager.task_started.connect(lambda vid: self._update_video_status(vid, "⏳ 下载中...", 0))
-        self.dl_manager.task_progress.connect(lambda vid, p: self._update_video_progress(vid, p))
-        self.dl_manager.task_finished.connect(lambda vid: self._on_download_finished(vid))
-        self.dl_manager.task_error.connect(lambda vid, e: self._on_download_error(vid, e))
+        self.dl_manager.task_started.connect(self._on_task_started)
+        self.dl_manager.task_progress.connect(self._on_task_progress)
+        self.dl_manager.task_finished.connect(self._on_task_finished)
+        self.dl_manager.task_error.connect(self._on_task_error)
+
+    def _on_task_started(self, video_id: str) -> None:
+        self._update_video_status(video_id, "⏳ 下载中...", 0)
+
+    def _on_task_progress(self, video_id: str, progress: int) -> None:
+        self._update_video_progress(video_id, progress)
+
+    def _on_task_finished(self, video_id: str) -> None:
+        self._on_download_finished(video_id)
+
+    def _on_task_error(self, video_id: str, error: str) -> None:
+        self._on_download_error(video_id, error)
 
     def _has_active_spider(self) -> bool:
         return bool(self.current_spider and self.current_spider.isRunning())
@@ -325,6 +337,7 @@ class ApplicationController:
             return
 
         video = self.videos[vid]
+        cancel_result = self.dl_manager.cancel_task(vid)
         if self.current_playing_id == vid:
             self.window.stop_media_playback()
             self.current_playing_id = None
@@ -337,6 +350,11 @@ class ApplicationController:
         except FileOperationError as exc:
             self.window.append_log(f"❌ 删除文件失败: {exc}")
             return
+
+        if cancel_result == "queued":
+            self.window.append_log(f"🛑 已取消队列任务: {video.title}")
+        elif cancel_result == "running":
+            self.window.append_log(f"🛑 已请求停止下载: {video.title}")
 
         del self.videos[vid]
         self.window.remove_video_row(row_idx)
@@ -425,6 +443,7 @@ class ApplicationController:
             message="应用开始退出清理",
             status_code="APP_SHUTDOWN",
         )
+        self.window.cleanup_media()
         if self.current_spider and self.current_spider.isRunning():
             self.current_spider.stop()
             self.current_spider.wait(2000)

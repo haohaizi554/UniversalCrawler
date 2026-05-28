@@ -11,6 +11,13 @@ from app.exceptions import CookieLoadError, CookieSaveError
 class AuthService:
     """认证文件读写服务，统一把底层 IO/JSON 异常转成领域异常。"""
 
+    @staticmethod
+    def _safe_to_string(value: Any) -> str | None:
+        try:
+            return str(value)
+        except (TypeError, ValueError):
+            return None
+
     def load_json_file(self, file_path: str) -> Any:
         if not os.path.exists(file_path):
             return None
@@ -22,6 +29,9 @@ class AuthService:
 
     def save_json_file(self, file_path: str, payload: Any) -> None:
         try:
+            directory = os.path.dirname(file_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as fp:
                 json.dump(payload, fp, indent=4, ensure_ascii=False)
         except (OSError, TypeError, ValueError) as exc:
@@ -38,14 +48,23 @@ class AuthService:
     @classmethod
     def extract_cookie_dict(cls, payload: list[dict] | dict | None) -> dict[str, str]:
         if isinstance(payload, dict) and "cookies" not in payload:
-            return {str(key): str(value) for key, value in payload.items()}
+            result: dict[str, str] = {}
+            for key, value in payload.items():
+                safe_key = cls._safe_to_string(key)
+                safe_value = cls._safe_to_string(value)
+                if safe_key is not None and safe_value is not None:
+                    result[safe_key] = safe_value
+            return result
         cookies = cls.extract_cookie_list(payload)
         result: dict[str, str] = {}
         for cookie in cookies:
             name = cookie.get("name")
             value = cookie.get("value")
             if name and value is not None:
-                result[str(name)] = str(value)
+                safe_name = cls._safe_to_string(name)
+                safe_value = cls._safe_to_string(value)
+                if safe_name is not None and safe_value is not None:
+                    result[safe_name] = safe_value
         return result
 
     @classmethod

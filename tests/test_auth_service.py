@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from app.exceptions import CookieLoadError
 from app.services.auth_service import AuthService
 
 
@@ -30,6 +31,15 @@ class AuthServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(cookie_str, "")
+
+    def test_extract_cookie_dict_skips_values_that_fail_string_conversion(self):
+        class BrokenValue:
+            def __str__(self):
+                raise TypeError("broken")
+
+        cookie_dict = self.service.extract_cookie_dict({"userId": BrokenValue(), "sessionid": "ok"})
+
+        self.assertEqual(cookie_dict, {"sessionid": "ok"})
 
     def test_restore_playwright_cookies_loads_saved_cookie_list(self):
         context = Mock()
@@ -75,6 +85,33 @@ class AuthServiceTests(unittest.TestCase):
 
         self.assertFalse(success)
         context.cookies.assert_not_called()
+
+    def test_has_cookie_supports_list_dict_and_none_payloads(self):
+        self.assertTrue(self.service.has_cookie([{"name": "sid_guard", "value": "1"}], "sid_guard"))
+        self.assertTrue(self.service.has_cookie({"sid_guard": "1"}, "sid_guard"))
+        self.assertFalse(self.service.has_cookie(None, "sid_guard"))
+
+    def test_load_json_file_returns_none_when_file_does_not_exist(self):
+        self.assertIsNone(self.service.load_json_file("missing-auth.json"))
+
+    def test_load_json_file_raises_cookie_load_error_for_invalid_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = f"{temp_dir}/auth.json"
+            with open(file_path, "w", encoding="utf-8") as fp:
+                fp.write("{bad json")
+
+            with self.assertRaises(CookieLoadError):
+                self.service.load_json_file(file_path)
+
+    def test_save_and_load_json_file_round_trip_keeps_payload(self):
+        payload = {"cookies": [{"name": "SESSDATA", "value": "demo"}]}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = f"{temp_dir}/auth.json"
+            self.service.save_json_file(file_path, payload)
+            restored = self.service.load_json_file(file_path)
+
+        self.assertEqual(restored, payload)
 
 
 if __name__ == "__main__":

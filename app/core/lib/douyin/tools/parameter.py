@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Type
 
 from httpx import HTTPStatusError, RequestError, TimeoutException, get
+from app.utils.runtime_paths import install_root, user_cache_root
 
 # 调整引用路径
 try:
@@ -29,9 +30,9 @@ except ImportError:
     # 防止导入错误导致的中断
     pass
 
-# 定义项目根目录 (适配当前结构)
-# 假设 app/core/lib/douyin/tools/parameter.py -> app/
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+# 抖音底层库里部分缓存仍会写入 ROOT/Cache。
+# 安装版场景下 ROOT 不能再指向源码目录或 Program Files，统一收敛到运行目录与用户缓存目录。
+PROJECT_ROOT = install_root()
 
 from ..encrypt import (
     ABogus,
@@ -146,7 +147,7 @@ class Parameter:
         self.settings = settings
         self.cookie_object = cookie_object
         self.ROOT = PROJECT_ROOT  # 项目根路径
-        self.cache = PROJECT_ROOT.joinpath("Cache")  # 缓存路径
+        self.cache = user_cache_root()  # 缓存路径
         self.logger = logger(PROJECT_ROOT, console)
         # self.logger.run() # 暂时注释，因为 LoggerManager 未实现
         self.ab = ABogus()

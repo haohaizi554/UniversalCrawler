@@ -37,10 +37,9 @@ class BaseSpider(QThread):
     def log(self, msg: str):
         self.sig_log.emit(msg)
 
-    def debug_state(self, action: str, message: str = "", status_code=None, context=None, details=None):
-        trace_id = None
+    def debug_state(self, action: str, message: str = "", status_code=None, context=None, details=None, trace_id=None):
         if isinstance(context, dict):
-            trace_id = context.get("trace_id")
+            trace_id = trace_id or context.get("trace_id")
         if not trace_id and isinstance(details, dict):
             trace_id = details.get("trace_id")
         debug_logger.log(

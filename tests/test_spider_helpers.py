@@ -1,6 +1,8 @@
 import asyncio
+import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import requests
@@ -8,6 +10,7 @@ from playwright.sync_api import Error as PlaywrightError
 
 from app.models import VideoItem
 from app.exceptions import InvalidCookieStateError, LoginCancelledError, LoginCheckError, SpiderParseError
+from app.exceptions import StreamResolveError
 from app.core.lib.douyin.interface.live import Live
 from app.core.lib.douyin.interface.template import API, APITikTok, CHROME_VERSION
 from app.services.auth_service import AuthService
@@ -15,11 +18,13 @@ from app.spiders.bilibili.spider import BiliAPI
 from app.spiders.bilibili.spider import BilibiliSpider
 from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
+from app.spiders.douyin.parser import DouyinItemParser
 from app.spiders.douyin.spider import DouyinSpider
 from app.spiders.douyin.task_builder import DouyinTaskBuilder
 from app.spiders.kuaishou.spider import KuaishouSpider
 from app.spiders.kuaishou.parser import KuaishouParser
 from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
+from app.spiders.missav.spider import MissAVSpider
 from app.spiders.missav.task_builder import MissAVTaskBuilder
 from app.spiders.missav.parser import MissAVParser
 
@@ -38,6 +43,88 @@ class SpiderHelperTests(unittest.TestCase):
         spider._process_mix = AsyncMock()
         spider._process_detail = AsyncMock()
         return spider
+
+    def _make_bili_api(self) -> BiliAPI:
+        api = BiliAPI.__new__(BiliAPI)
+        api.sess = Mock()
+        api.cookie_path = "bili_auth.json"
+        api.parser = BilibiliParser()
+        api.auth_service = Mock(spec=AuthService)
+        return api
+
+    def _make_kuaishou_capture_spider(self) -> KuaishouSpider:
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.is_running = True
+        spider._selected_indices = [0]
+        spider._lock = threading.Lock()
+        spider.parser = Mock()
+        spider.parser.extract_all_possible_ids.return_value = {"cache-1"}
+        spider.task_builder = Mock()
+        spider.task_builder.build_download_meta.return_value = {"trace_id": "ks-trace-1"}
+        spider.new_trace_id = Mock(return_value="ks-trace-1")
+        spider.emit_video = Mock()
+        spider.log = Mock()
+        spider.debug_state = Mock()
+        return spider
+
+    def _make_kuaishou_capture_page(self):
+        class FakeLocator:
+            def __init__(self, visible=True):
+                self._visible = visible
+                self.first = self
+
+            def is_visible(self):
+                return self._visible
+
+            def scroll_into_view_if_needed(self):
+                return None
+
+            def click(self):
+                return None
+
+        class FakeKeyboard:
+            def __init__(self, trigger_response):
+                self._trigger_response = trigger_response
+
+            def press(self, _key):
+                self._trigger_response()
+
+        class FakePage:
+            def __init__(self):
+                self.url = "https://www.kuaishou.com/profile/demo"
+                self.response_handler = None
+                self.context = SimpleNamespace(pages=[self])
+                self.mouse = SimpleNamespace(click=lambda *_args, **_kwargs: None)
+                self.keyboard = FakeKeyboard(self._trigger_response)
+
+            def on(self, event, handler):
+                if event == "response":
+                    self.response_handler = handler
+
+            def evaluate(self, _script):
+                return None
+
+            def wait_for_timeout(self, _ms):
+                return None
+
+            def locator(self, selector):
+                if selector == ".photo-card, .video-card":
+                    return FakeLocator(True)
+                if selector == ".close-icon":
+                    return FakeLocator(False)
+                raise AssertionError(f"unexpected selector: {selector}")
+
+            def _trigger_response(self):
+                if not self.response_handler:
+                    return
+                response = SimpleNamespace(
+                    url="https://video.example.com/live.mp4?clientCacheKey=cache-1",
+                    headers={"content-type": "video/mp4", "content-length": "6000"},
+                    request=SimpleNamespace(resource_type="media"),
+                )
+                self.response_handler(response)
+
+        return FakePage()
 
     def test_bilibili_parser_parses_video_info_response(self):
         parser = BilibiliParser()
@@ -58,6 +145,176 @@ class SpiderHelperTests(unittest.TestCase):
         with self.assertRaises(SpiderParseError):
             parser.parse_video_info_response({"title": "demo"})
 
+    def test_bilibili_parser_parses_ugc_season_sections(self):
+        parser = BilibiliParser()
+
+        result = parser.parse_video_info_response(
+            {
+                "bvid": "BV1base",
+                "title": "合集标题",
+                "owner": {"name": "up"},
+                "ugc_season": {
+                    "id": 2024,
+                    "title": "合集",
+                    "sections": [
+                        {
+                            "episodes": [
+                                {"title": "P1", "bvid": "BV1ep1", "cid": 101},
+                                {"title": "P2", "bvid": "BV1ep2", "cid": 102},
+                            ]
+                        },
+                        {"episodes": [{"title": "P3", "bvid": "BV1ep3", "cid": 103}]},
+                    ],
+                },
+            }
+        )
+
+        self.assertTrue(result["is_season"])
+        self.assertEqual(result["season_id"], 2024)
+        self.assertEqual([episode["page_num"] for episode in result["episodes"]], [1, 2, 3])
+        self.assertEqual(result["episodes"][2]["bvid"], "BV1ep3")
+
+    def test_bilibili_parser_parse_play_url_response_handles_audio_and_quality(self):
+        parser = BilibiliParser()
+
+        result = parser.parse_play_url_response(
+            {
+                "code": 0,
+                "data": {
+                    "dash": {
+                        "video": [{"baseUrl": "https://cdn.example.com/video.m4s", "id": 80}],
+                        "audio": [{"baseUrl": "https://cdn.example.com/audio.m4s"}],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(
+            result,
+            ("https://cdn.example.com/video.m4s", "https://cdn.example.com/audio.m4s", 80),
+        )
+
+    def test_bilibili_parser_parse_play_url_response_allows_missing_audio(self):
+        parser = BilibiliParser()
+
+        result = parser.parse_play_url_response(
+            {
+                "code": 0,
+                "data": {
+                    "dash": {
+                        "video": [{"baseUrl": "https://cdn.example.com/video.m4s", "id": 64}],
+                        "audio": [],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(result, ("https://cdn.example.com/video.m4s", None, 64))
+
+    def test_bilibili_parser_parse_play_url_response_raises_on_incomplete_payload(self):
+        parser = BilibiliParser()
+
+        with self.assertRaises(SpiderParseError):
+            parser.parse_play_url_response({"code": 0, "data": {"dash": {"video": [{}]}}})
+
+    def test_bilibili_parser_clean_name_replaces_invalid_characters(self):
+        self.assertEqual(BilibiliParser.clean_name('bad:/name?*"<>|'), "bad__name______")
+
+    def test_douyin_parser_returns_video_item_for_standard_aweme(self):
+        parser = DouyinItemParser()
+
+        item = parser.parse_aweme(
+            {
+                "aweme_id": "1001",
+                "desc": "测试视频",
+                "create_time": 1700000000,
+                "author": {"nickname": "作者A"},
+                "video": {
+                    "duration": 12345,
+                    "play_addr": {"url_list": ["https://cdn.example.com/low.mp4", "https://cdn.example.com/high.mp4"]},
+                },
+            }
+        )
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item.url, "https://cdn.example.com/high.mp4")
+        self.assertEqual(item.meta["content_type"], "video")
+        self.assertEqual(item.meta["duration"], 12)
+        self.assertEqual(item.meta["folder_name"], "作者A")
+
+    def test_douyin_parser_returns_gallery_item_for_live_photo_aweme(self):
+        parser = DouyinItemParser()
+
+        item = parser.parse_aweme(
+            {
+                "aweme_id": "1002",
+                "desc": "实况图集",
+                "author": {"nickname": "作者B"},
+                "images": [
+                    {
+                        "clip_type": 2,
+                        "url_list": ["https://cdn.example.com/cover.jpg", "https://cdn.example.com/cover~noop.jpg"],
+                    },
+                    {
+                        "clip_type": 3,
+                        "url_list": ["https://cdn.example.com/photo.webp"],
+                        "video": {
+                            "play_addr_h264": {
+                                "url_list": ["https://cdn.example.com/live-low.mp4", "https://cdn.example.com/live-high.mp4"]
+                            }
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item.meta["content_type"], "gallery")
+        self.assertTrue(item.meta["has_live_photo"])
+        self.assertEqual(item.meta["media_label"], "实况")
+        self.assertEqual(item.url, "https://cdn.example.com/cover~noop.jpg")
+        self.assertEqual(item.meta["images_data"][1]["live_video_url"], "https://cdn.example.com/live-high.mp4")
+
+    def test_douyin_parser_filters_mp3_and_returns_none_without_gallery(self):
+        parser = DouyinItemParser()
+
+        item = parser.parse_aweme(
+            {
+                "aweme_id": "1003",
+                "desc": "音频资源",
+                "video": {"play_addr": {"url_list": ["https://cdn.example.com/demo.mp3"]}},
+            }
+        )
+
+        self.assertIsNone(item)
+
+    @patch("traceback.print_exc")
+    def test_douyin_parser_returns_none_for_invalid_payload_shape(self, _mocked_print_exc):
+        parser = DouyinItemParser()
+
+        self.assertIsNone(parser.parse_aweme({"video": None}))
+
+    def test_douyin_parser_summarize_aweme_extracts_core_fields(self):
+        parser = DouyinItemParser()
+
+        summary = parser.summarize_aweme(
+            {
+                "aweme_id": "1004",
+                "desc": "摘要测试",
+                "aweme_type": 68,
+                "author": {"nickname": "作者C"},
+                "video": {"play_addr": {"url_list": ["https://cdn.example.com/demo.mp4"]}, "duration": 9876},
+                "images": [{"clip_type": 3}, {"clip_type": 2}],
+            }
+        )
+
+        self.assertEqual(summary["aweme_id"], "1004")
+        self.assertEqual(summary["author"], "作者C")
+        self.assertTrue(summary["has_video"])
+        self.assertEqual(summary["duration_ms"], 9876)
+        self.assertEqual(summary["image_count"], 2)
+        self.assertTrue(summary["has_live_photo"])
+
     def test_douyin_task_builder_splits_gallery(self):
         item = VideoItem(url="https://example.com/1.jpg", title="demo", source="douyin")
         item.meta = {
@@ -73,6 +330,21 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0].meta["content_type"], "image")
         self.assertEqual(result[1].meta["content_type"], "video")
+
+    def test_douyin_normalize_user_search_items_flattens_nested_lists(self):
+        spider = DouyinSpider.__new__(DouyinSpider)
+
+        result = spider._normalize_user_search_items(
+            [
+                [{"user_info": {"nickname": "A"}}],
+                {"user_info": {"nickname": "B"}},
+                "ignored",
+            ]
+        )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["user_info"]["nickname"], "A")
+        self.assertEqual(result[1]["user_info"]["nickname"], "B")
 
     def test_kuaishou_parser_extracts_cache_key(self):
         parser = KuaishouParser()
@@ -134,6 +406,41 @@ class SpiderHelperTests(unittest.TestCase):
         with self.assertRaises(LoginCheckError):
             api.check_login()
 
+    def test_bili_api_get_play_url_falls_back_to_legacy_fnval_mode(self):
+        api = self._make_bili_api()
+        first_response = Mock(status_code=200)
+        first_response.json.return_value = {"code": 0, "data": {}}
+        second_response = Mock(status_code=200)
+        second_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "dash": {
+                    "video": [{"baseUrl": "https://video.example.com/v.mp4", "id": 80}],
+                    "audio": [{"baseUrl": "https://video.example.com/a.m4a"}],
+                }
+            },
+        }
+        api.sess.get.side_effect = [first_response, second_response]
+
+        video_url, audio_url, quality_id = api.get_play_url("BV1demo", 123)
+
+        self.assertEqual(video_url, "https://video.example.com/v.mp4")
+        self.assertEqual(audio_url, "https://video.example.com/a.m4a")
+        self.assertEqual(quality_id, 80)
+        self.assertIn("fnval=4048", api.sess.get.call_args_list[0].args[0])
+        self.assertIn("fnval=80", api.sess.get.call_args_list[1].args[0])
+
+    def test_bili_api_get_play_url_raises_when_both_modes_fail(self):
+        api = self._make_bili_api()
+        first_response = Mock(status_code=200)
+        first_response.json.return_value = {"code": -404, "message": "not found"}
+        second_response = Mock(status_code=200)
+        second_response.json.return_value = {"code": -500, "message": "failed"}
+        api.sess.get.side_effect = [first_response, second_response]
+
+        with self.assertRaises(StreamResolveError):
+            api.get_play_url("BV1demo", 123)
+
     @patch("app.spiders.douyin.spider.os.path.exists", return_value=True)
     def test_douyin_load_or_login_falls_back_to_scan_when_local_cookie_invalid(self, _mock_exists):
         spider = DouyinSpider.__new__(DouyinSpider)
@@ -171,34 +478,246 @@ class SpiderHelperTests(unittest.TestCase):
         spider = KuaishouSpider.__new__(KuaishouSpider)
         spider.is_running = False
         spider.auth_service = Mock(spec=AuthService)
-        spider.auth_service.wait_for_cookie_and_persist.return_value = False
+        spider._wait_for_manual_login = Mock(return_value=False)
+        spider._goto_with_retry = Mock(return_value=False)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value=set())
         spider.log = Mock()
         page = Mock()
-        page.wait_for_selector.side_effect = PlaywrightError("not logged in")
-        page.locator.return_value.first.click.side_effect = PlaywrightError("no login button")
+        spider._is_logged_in = Mock(return_value=False)
         context = Mock()
 
         result = spider._ensure_login(page, context, "ks_auth.json")
 
         self.assertFalse(result)
-        spider.auth_service.wait_for_cookie_and_persist.assert_called_once()
+        spider._wait_for_manual_login.assert_called_once_with(page, context, "ks_auth.json")
+
+    @patch("app.spiders.kuaishou.spider.os.path.exists", return_value=True)
+    def test_kuaishou_invalid_cookie_keeps_page_for_manual_login(self, _mock_exists):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.is_running = False
+        spider.auth_service = Mock(spec=AuthService)
+        spider._wait_for_manual_login = Mock(return_value=False)
+        spider._open_login_entry = Mock()
+        spider._is_logged_in = Mock(return_value=False)
+        spider._goto_with_retry = Mock(return_value=False)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value=set())
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+
+        spider._ensure_login(page, context, "ks_auth.json")
+
+        spider._open_login_entry.assert_called_once_with(page)
+        spider.log.assert_any_call("⚠️ 本地 Cookie 已加载，但当前页面未识别为已登录，可能已失效")
+
+    def test_kuaishou_open_login_entry_stays_on_current_site_when_button_missing(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.log = Mock()
+        page = Mock()
+        locator = page.locator.return_value.first
+        locator.is_visible.side_effect = PlaywrightError("missing")
+
+        spider._open_login_entry(page)
+
+        page.goto.assert_not_called()
+        spider.log.assert_any_call("📱 未能自动弹出登录框，请直接在当前快手页面手动登录")
 
     def test_kuaishou_navigate_to_target_page_url_encodes_keyword(self):
         spider = KuaishouSpider.__new__(KuaishouSpider)
         spider.keyword = "测试 主播&1"
         spider.log = Mock()
+        spider._search_keyword_via_site = Mock(return_value=None)
         page = Mock()
-        user_card = page.locator.return_value.first
-        user_card.is_visible.return_value = False
         context = Mock()
         context.pages = [page]
 
         result = spider._navigate_to_target_page(page, context)
 
         self.assertIsNone(result)
-        page.goto.assert_called_once_with(
-            "https://www.kuaishou.com/search/author?source=NewReco&searchKey=%E6%B5%8B%E8%AF%95%20%E4%B8%BB%E6%92%AD%261"
+        spider._search_keyword_via_site.assert_called_once_with(page, "测试 主播&1")
+
+    def test_kuaishou_navigate_searches_site_for_plain_id(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.keyword = "4753241670"
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+        expected_page = Mock()
+        spider._search_user_via_site = Mock(return_value=expected_page)
+
+        result = spider._navigate_to_target_page(page, context)
+
+        self.assertIs(result, expected_page)
+        spider._search_user_via_site.assert_called_once_with(page, context, "4753241670")
+
+    def test_kuaishou_open_profile_from_search_results_prefers_name_click(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.log = Mock()
+        spider._switch_search_to_user_tab = Mock()
+        spider._has_video_list = Mock(return_value=True)
+        page = Mock()
+        name_link = Mock()
+        name_link.is_visible.return_value = True
+        page.locator.return_value.first = name_link
+        context = Mock()
+        context.pages = [page]
+
+        result = spider._open_profile_from_search_results(page, context, "4753241670")
+
+        self.assertIs(result, page)
+        spider._switch_search_to_user_tab.assert_called_once_with(page)
+        name_link.click.assert_called_once()
+
+    def test_kuaishou_ensure_login_uses_direct_entry_url_when_keyword_is_profile_link(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider._goto_with_retry = Mock(return_value=True)
+        spider._is_logged_in = Mock(return_value=True)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value={"uid"})
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+
+        result = spider._ensure_login(page, context, "ks_auth.json", entry_url="https://www.kuaishou.com/profile/3xmu5?source=SEARCH")
+
+        self.assertTrue(result)
+        spider._goto_with_retry.assert_called_once_with(
+            page,
+            "https://www.kuaishou.com/profile/3xmu5?source=SEARCH",
+            description="页面访问",
         )
+
+    def test_kuaishou_loaded_cookie_refreshes_before_manual_login(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider._goto_with_retry = Mock(return_value=True)
+        spider._is_logged_in = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value={"uid"})
+        spider._refresh_logged_in_state = Mock(return_value=True)
+        spider._wait_for_manual_login = Mock()
+        spider._open_login_entry = Mock()
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+
+        result = spider._ensure_login(page, context, "ks_auth.json")
+
+        self.assertTrue(result)
+        spider._refresh_logged_in_state.assert_called_once_with(page, "https://www.kuaishou.com/")
+        spider._open_login_entry.assert_not_called()
+        spider._wait_for_manual_login.assert_not_called()
+
+    def test_kuaishou_max_items_limit_uses_config_value(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.config = {"max_items": 10}
+
+        self.assertEqual(spider._max_items_limit(), 10)
+
+    def test_kuaishou_capture_scroll_budget_uses_double_window(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+
+        self.assertEqual(spider._capture_scroll_budget([{"index": 0}] * 11), 22)
+
+    def test_kuaishou_wait_for_manual_login_requires_new_cookie_or_visible_login_state(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.is_running = True
+        spider.auth_service = Mock(spec=AuthService)
+        spider._user_cookie_values = Mock(side_effect=[{"old"}, {"old"}, {"old"}])
+        spider._is_logged_in = Mock(side_effect=[False, True])
+        page = Mock()
+        context = Mock()
+
+        result = spider._wait_for_manual_login(page, context, "ks_auth.json")
+
+        self.assertTrue(result)
+        spider.auth_service.save_json_file.assert_called_once()
+
+    def test_kuaishou_resolve_active_page_returns_last_open_page(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        page = Mock()
+        page.is_closed.return_value = True
+        open_page = Mock()
+        open_page.is_closed.return_value = False
+        context = Mock()
+        context.pages = [page, open_page]
+
+        result = spider._resolve_active_page(page, context)
+
+        self.assertIs(result, open_page)
+        open_page.bring_to_front.assert_called_once()
+
+    def test_kuaishou_capture_pipeline_emits_download_for_matched_stream(self):
+        spider = self._make_kuaishou_capture_spider()
+        page = self._make_kuaishou_capture_page()
+        spider._resolve_active_page = Mock(side_effect=lambda current, _context: current)
+
+        spider._run_capture_pipeline(
+            page,
+            items_for_dialog=[{"title": "示例视频", "index": 0}],
+            target_fingerprints_map={0: {"cache-1"}},
+        )
+
+        spider.emit_video.assert_called_once_with(
+            url="https://video.example.com/live.mp4?clientCacheKey=cache-1",
+            title="示例视频",
+            source="kuaishou",
+            meta={"trace_id": "ks-trace-1"},
+        )
+        spider.task_builder.build_download_meta.assert_called_once_with(
+            "ks-trace-1",
+            "https://www.kuaishou.com/profile/demo",
+            "https://video.example.com/live.mp4?clientCacheKey=cache-1",
+        )
+
+    def test_douyin_trim_items_applies_config_limit(self):
+        spider = DouyinSpider.__new__(DouyinSpider)
+        spider.config = {"max_items": 2}
+        spider.log = Mock()
+        items = [
+            VideoItem(url="https://example.com/1", title="1", source="douyin"),
+            VideoItem(url="https://example.com/2", title="2", source="douyin"),
+            VideoItem(url="https://example.com/3", title="3", source="douyin"),
+        ]
+
+        result = spider._trim_items(items, "测试")
+
+        self.assertEqual(len(result), 2)
+        spider.log.assert_called_once()
+
+    def test_missav_scan_pages_collects_valid_items_and_builds_next_page_url(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        spider.is_running = True
+        spider.log = Mock()
+        page = Mock()
+        page.url = "https://missav.ai/cn/search/ipx"
+        page.evaluate.side_effect = [
+            [
+                {"url": "https://missav.ai/cn/abc-123", "title": "A"},
+                {"url": "https://missav.ai/cn/contact", "title": "ignored"},
+                {"url": "https://missav.ai/en/abc-123", "title": "ignored"},
+            ],
+            [],
+        ]
+        page.query_selector.side_effect = [object(), None]
+        collected = {}
+
+        spider._scan_pages(page, collected)
+
+        self.assertEqual(collected, {"https://missav.ai/cn/abc-123": "A"})
+        page.goto.assert_called_once_with("https://missav.ai/cn/search/ipx?page=2", timeout=60000)
+
+    def test_missav_scan_pages_logs_page_errors(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        spider.is_running = True
+        spider.log = Mock()
+        page = Mock()
+        page.url = "https://missav.ai/cn/search/ipx"
+        page.wait_for_selector.side_effect = PlaywrightError("boom")
+
+        spider._scan_pages(page, {})
+
+        self.assertTrue(any("页面扫描异常" in str(call.args[0]) for call in spider.log.call_args_list))
 
     def test_douyin_api_browser_versions_share_extracted_chrome_version(self):
         self.assertEqual(API.params["browser_version"], CHROME_VERSION)
@@ -284,7 +803,7 @@ class SpiderHelperTests(unittest.TestCase):
 
         spider._scan_with_browser_queue.assert_called_once_with(
             "https://space.bilibili.com/1513751793/video",
-            max_pages=9999,
+            max_pages=5,
             is_search=False,
             is_space=True,
         )
@@ -323,6 +842,24 @@ class SpiderHelperTests(unittest.TestCase):
             is_space=False,
         )
         spider.browser_finished.set.assert_called_once()
+
+    @patch("app.spiders.bilibili.spider.requests.get")
+    def test_bilibili_normalize_keyword_resolves_b23_short_link(self, mocked_get):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.log = Mock()
+        mocked_get.return_value.url = "https://www.bilibili.com/video/BV1xx411c7mD"
+
+        result = spider._normalize_keyword("【测试】-哔哩哔哩 https://b23.tv/demo123")
+
+        self.assertEqual(result, "https://www.bilibili.com/video/BV1xx411c7mD")
+        mocked_get.assert_called_once()
+
+    def test_bilibili_normalize_keyword_extracts_first_url_from_share_text(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+
+        result = spider._extract_first_url("【迪士尼的童话，明码标价！-哔哩哔哩】 https://b23.tv/ehZzrqJ")
+
+        self.assertEqual(result, "https://b23.tv/ehZzrqJ")
 
     @patch("app.spiders.douyin.spider.LinkExtractor")
     @patch("app.spiders.douyin.spider.Parameter")

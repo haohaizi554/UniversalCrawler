@@ -1,88 +1,98 @@
-# 架构说明
+﻿# 架构说明
 
-## 当前目标
+## 目标
 
-本轮重构的目标不是彻底推翻现有项目，而是在保证现有功能可运行的前提下，把最容易继续膨胀的部分先拆开：
+当前代码基座强调两件事：
 
-- 配置统一收口
-- 下载器模块化
-- 四个平台爬虫逐步改造成 `采集 / 解析 / 任务装配`
-- 控制层持续瘦身
-- 错误分类更细，日志更准
+- 对 UI、采集、下载进行分层，避免单点文件继续膨胀。
+- 让复杂站点逻辑可以被测试，而不是只能依赖手工点点点。
 
-## 当前结构
+## 分层结构
 
-- `main.py`
-  - 只保留应用启动入口
+```text
+Main
+  -> ApplicationController
+  -> Spider
+  -> Parser / TaskBuilder
+  -> DownloadManager / DownloadWorker
+  -> Downloader / External Tools
+  -> Local Media Library
+```
 
-- `app/config`
-  - `settings.py` 提供统一配置模型和默认值
-  - `constants.py` 管理常量
+### `main.py`
 
-- `app/core`
-  - `download_manager.py` 负责下载队列和 worker 调度
-  - `plugin_registry.py` 作为插件注册统一入口
-  - `plugins/` 负责插件定义、设置组件构建和实际注册表实现
-  - `downloaders/` 负责各平台下载和外部工具封装
-  - `downloaders/external.py` 统一收口外部工具命令构建
+- 仅负责应用入口与控制器启动。
+- 不承载业务判断。
 
-- `app/services`
-  - `file_service.py` 管理本地文件扫描、重命名、删除
-  - `debug_service.py` 负责日志文件打开与 trace 复制
-  - `auth_service.py` 负责认证文件读写
+### `app/controllers`
 
-- `app/spiders`
-  - 平台主实现已下沉到 `spiders/<platform>/spider.py`
-  - 新代码优先往子包的 `parser / task_builder / spider` 放
+- `ApplicationController` 是桌面端业务编排中枢。
+- 负责连接 UI 信号、创建爬虫、维护当前媒体列表、承接下载回调。
+- 这里适合写控制流测试，不适合堆站点解析细节。
 
-- `app/models`
-  - `video_item.py` 负责下载任务与媒体条目模型
+### `app/spiders`
 
-- `app/utils`
-  - `filenames.py` 收口文件名清理
-  - `formatting.py` 收口格式化工具
+每个平台尽量遵循三段式：
 
-- `app/ui`
-  - `components/` 放主界面复用组件
-  - `dialogs/` 放弹窗
-  - `styles/` 放主题样式
-  - `widgets/` 放自定义控件
+- `spider.py`：页面访问、流程控制、登录、用户交互、信号发射。
+- `parser.py`：解析 HTML / JSON / 标题 / 指纹 / 业务分组。
+- `task_builder.py`：把解析结果转换成统一下载任务元数据。
 
-- `app/exceptions`
-  - 提供基础异常、配置异常、服务异常、爬虫异常、下载异常
+这层是最值得补测试的区域，尤其是：
 
-## 设计原则
+- B 站 API 回退与任务装配
+- 快手流捕获与焦点匹配
+- MissAV 两轮扫描与优先级选择
+- 抖音不同输入类型的分流
 
-- 新结构优先
-  - 新增逻辑优先写进 `config / services / spiders/<platform> / core/downloaders`
+### `app/core`
 
-- 旧接口兼容
-  - 只在确有运行时引用时保留兼容层，已无引用的 shim 直接删除
-  - 当前插件注册只保留 `app.core.plugin_registry` 这一层入口，不再继续维护重复壳文件
+- `download_manager.py` 负责队列、并发槽位与工作线程回收。
+- `downloaders/` 负责平台下载与外部工具封装。
+- `plugins/` 负责平台定义、配置 UI 构建与注册。
+- `lib/douyin/` 保留抖音底层协议能力，供现有流程复用。
 
-- 高耦合优先拆
-  - 优先拆长文件中的“解析”和“任务装配”，因为这两块最容易和 UI、下载、日志耦合
+### `app/services`
 
-- 外部依赖显式化
-  - `ffmpeg`、`N_m3u8DL-RE` 等外部工具单独封装，避免平台下载器直接散写命令
+- `auth_service.py`：认证文件读写与 Cookie 工具。
+- `file_service.py`：本地媒体扫描、重命名、删除。
+- `debug_service.py`：调试日志、错误摘要和 trace 复制。
 
-## 平台分层约定
+### `app/ui`
 
-每个平台逐步统一为三层：
+- 承载桌面窗口、面板、弹窗、主题和媒体预览。
+- 业务逻辑尽量经由 controller，不直接深入 spider 或 downloader。
 
-- `spider`
-  - 负责页面访问、流程控制、用户交互、信号发射
+## 数据流
 
-- `parser`
-  - 负责解析页面数据、接口返回、标题、分组、资源结构
+1. 用户从主界面输入关键词、链接和平台配置。
+2. 控制器通过插件注册表找到平台实现并创建 `Spider`。
+3. `Spider` 采集站点数据，必要时触发用户选择。
+4. `Spider` 发出标准化 `VideoItem`，控制器将其加入下载列表。
+5. `DownloadManager` 创建 `DownloadWorker` 并选择平台下载器。
+6. 文件写入本地后，由 UI 和 `MediaLibraryService` 负责展示与管理。
 
-- `task_builder`
-  - 负责把解析结果转换成统一下载任务或 `VideoItem`
+## 测试视角下的职责边界
 
-## 仍可继续优化
+推荐按照以下边界写测试：
 
-- 为 `config` 增加更多业务分组和字段验证
-- 为 `exceptions` 增加更具体的错误码映射
-- 为 `services` 补更多可测试的纯逻辑能力
-- 把 `models` 继续细分为更多业务模型，如任务项、用户信息、媒体索引
-- 把 `ui/dialogs / ui/styles / ui/widgets` 继续按主题或功能拆成更多子模块
+- `parser / task_builder`：纯单元测试。
+- `ApplicationController`：半集成测试，mock UI 和下载器即可。
+- `DownloadWorker`：路径、扩展名、签名识别优先写纯逻辑测试。
+- `Spider` 主流程：mock 浏览器 page/context，只验证流程分支、任务发射和日志行为。
+
+## 当前高风险点
+
+- 浏览器事件监听与页面状态切换。
+- 下载后扩展名修正与文件落盘目录选择。
+- 需要多阶段用户选择的平台流程。
+- 登录失效后的自动恢复与降级路径。
+
+## 文档联动
+
+结构调整后，请同步更新以下文档：
+
+- `docs/development.md`
+- `docs/api.md`
+- `docs/testing.md`
+- 对应目录下的 `README.md`
