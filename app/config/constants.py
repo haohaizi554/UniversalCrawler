@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from app.utils.runtime_paths import default_download_root, resolve_user_file
 
+from app.utils.runtime_paths import default_download_root, resolve_user_file
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
