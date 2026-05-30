@@ -1,0 +1,150 @@
+{
+  "info": {
+    "_postman_id": "a3f0d78d-59b0-4d5b-bc9b-coursework-api",
+    "name": "UniversalCrawlerPro Coursework API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "课程作业接口测试集合，覆盖查询型接口与提交型接口。"
+  },
+  "item": [
+    {
+      "name": "GET 文件名清洗 - 正常场景",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/files/sanitize?name=bad%3A%2Fname%3F*.mp4.%20%20",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "files", "sanitize"],
+          "query": [
+            {
+              "key": "name",
+              "value": "bad:/name?*.mp4.  "
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('状态码为200', function () { pm.response.to.have.status(200); });",
+              "pm.test('返回清洗结果', function () {",
+              "  var jsonData = pm.response.json();",
+              "  pm.expect(jsonData.data.sanitized).to.eql('bad__name__.mp4');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "POST 媒体文件名生成 - 正常场景",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"CAWD-377\",\n  \"source\": \"missav\",\n  \"extension\": \"mp4\",\n  \"meta\": {\"tags\": [\"中文字幕\"]}\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/media/build-filename",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "media", "build-filename"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('状态码为200', function () { pm.response.to.have.status(200); });",
+              "pm.test('文件名生成正确', function () {",
+              "  var jsonData = pm.response.json();",
+              "  pm.expect(jsonData.data.filename).to.eql('CAWD-377 [中文字幕].mp4');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "POST 媒体文件名生成 - 缺少source",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"demo\",\n  \"extension\": \"mp4\",\n  \"meta\": {}\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/media/build-filename",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "media", "build-filename"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('状态码为400', function () { pm.response.to.have.status(400); });",
+              "pm.test('缺少source时返回业务错误码', function () {",
+              "  var jsonData = pm.response.json();",
+              "  pm.expect(jsonData.code).to.eql(4002);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "PUT 文件名清洗 - 请求方式错误",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/files/sanitize?name=demo",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "files", "sanitize"],
+          "query": [
+            {
+              "key": "name",
+              "value": "demo"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('状态码为405', function () { pm.response.to.have.status(405); });"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8765"
+    }
+  ]
+}
