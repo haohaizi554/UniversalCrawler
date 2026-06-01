@@ -2,10 +2,9 @@
 
 from dataclasses import dataclass, field
 from uuid import uuid4
-
 from app.utils.filenames import build_media_filename
 
-
+#视频媒体项的数据模型定义，统一封装 “待下载 / 已下载的视频项” 的数据结构和基础操作
 @dataclass
 class VideoItem:
     """Represents one queued or downloaded media item."""

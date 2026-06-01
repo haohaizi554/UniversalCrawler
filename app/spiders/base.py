@@ -88,6 +88,7 @@ class BaseSpider(QThread):
             meta["trace_id"] = trace_id
         return trace_id
 
+    #视频发现与分发
     def emit_video(self, url: str, title: str, source: str, meta: dict | None = None):
         """执行 `emit_video` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         item = VideoItem(url=url, title=title, source=source)
@@ -96,10 +97,11 @@ class BaseSpider(QThread):
         self.ensure_trace_id(item.meta, suffix=source)
         self.sig_item_found.emit(item)
 
+    #暂停爬虫线程，向 UI 发送选择请求，等待用户选择结果
     def ask_user_selection(self, items: list) -> list | None:
         # The spider thread blocks here until the UI resumes it.
         """执行 `ask_user_selection` 对应的业务逻辑，供 `BaseSpider` 使用。"""
-        self._resume_event.clear()
+        self._resume_event.clear()#准备进入等待状态
         self._selection_result = None
         self.sig_select_tasks.emit(items)
         while self.is_running:

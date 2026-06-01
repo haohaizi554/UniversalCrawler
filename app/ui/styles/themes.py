@@ -1,5 +1,5 @@
 """Theme stylesheet helpers."""
-
+#黑白主题切换
 # app/ui/styles.py
 
 # ================= 深色主题配色 (VS Code Dark+) =================

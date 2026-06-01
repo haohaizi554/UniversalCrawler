@@ -17,6 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from coursework.ui_tests.selenium_common import create_driver
 
 
+SCREENSHOT_DIR = PROJECT_ROOT / "coursework" / "evidence" / "selenium"
+
 CASES = [
     {
         "title": "CAWD-377",
@@ -37,10 +39,11 @@ CASES = [
 
 def run() -> int:
     """执行当前对象或脚本的主流程。"""
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     driver = create_driver()
     wait = WebDriverWait(driver, 10)
     try:
-        for case in CASES:
+        for index, case in enumerate(CASES, start=1):
             driver.get("http://127.0.0.1:8765/")
             wait.until(EC.element_to_be_clickable((By.ID, "nav-build"))).click()
             wait.until(EC.visibility_of_element_located((By.ID, "build-scene-title")))
@@ -56,6 +59,8 @@ def run() -> int:
             driver.find_element(By.XPATH, "//button[@id='build-btn']").click()
             result = wait.until(EC.visibility_of_element_located((By.ID, "filename-result"))).text
             assert result == case["expected"], f"expected {case['expected']}, got {result}"
+            screenshot_path = SCREENSHOT_DIR / f"build-filename-flow-case-{index}.png"
+            driver.save_screenshot(str(screenshot_path))
         print("build filename selenium flow passed")
         return 0
     finally:

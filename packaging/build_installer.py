@@ -1,7 +1,6 @@
 """打包辅助脚本，负责 `packaging/build_installer.py` 相关的构建、发布或运行时处理。"""
 
 from __future__ import annotations
-
 import shutil
 import subprocess
 import sys

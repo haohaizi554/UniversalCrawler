@@ -13,6 +13,12 @@
 python coursework/api/mock_api_server.py
 ```
 
+Postman/Newman 批量执行命令：
+
+```bash
+newman run coursework/api/postman_collection.json -e coursework/api/postman_environment.json
+```
+
 默认地址：
 
 ```text
@@ -128,3 +134,11 @@ http://127.0.0.1:8765
 - 请求方式错误时返回 `405`
 - `source` 为空时返回 `4002`
 - `meta` 非对象时返回 `4003`
+
+## 执行证据
+
+- 本地脚本结果：`coursework/api/execution_results.md`
+- Postman Collection：`coursework/api/postman_collection.json`
+- Postman Environment：`coursework/api/postman_environment.json`
+- Newman JSON 报告：`coursework/api/newman_report.json`
+- Newman 原始输出：`coursework/command_outputs/newman_latest.txt`

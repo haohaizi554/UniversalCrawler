@@ -15,6 +15,7 @@ from app.ui.styles import generate_stylesheet
 from app.utils.runtime_paths import resolve_resource_file, user_data_root
 
 
+#所有 UI 组件的 “总容器” 和 “信号转发中枢”，只负责界面拼装、UI 交互和信号转发
 class MainWindow(QMainWindow):
     """主窗口只负责拼装组件、转发 UI 信号，不承载业务逻辑。"""
 

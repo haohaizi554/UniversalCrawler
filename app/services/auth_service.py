@@ -9,7 +9,7 @@ from typing import Any
 
 from app.exceptions import CookieLoadError, CookieSaveError
 
-
+#认证 / Cookie 管理服务
 class AuthService:
     """认证文件读写服务，统一把底层 IO/JSON 异常转成领域异常。"""
 

@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QPlainTextEdit
 
-
+#日志展示面板，负责应用运行日志的追加、展示与自动滚动
 class LogPanel(QPlainTextEdit):
     """定义 `LogPanel` 界面组件，负责对应区域的展示与交互。"""
     def __init__(self):

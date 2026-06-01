@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_DIR_NAME = "UniversalCrawlerPro"
-
+#运行时路径管理（核心工具）
 
 def is_frozen() -> bool:
     """执行 `is_frozen` 对应的业务逻辑。"""

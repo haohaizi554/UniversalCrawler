@@ -75,6 +75,9 @@ def main() -> int:
         },
     ]
 
+    summary_rows: list[str] = []
+    detail_lines: list[str] = []
+
     lines = [
         "# 接口执行结果",
         "",
@@ -89,19 +92,22 @@ def main() -> int:
         key1, key2, expected = case["expected_field"]
         actual = payload.get(key1) if key2 is None else payload.get(key1, {}).get(key2)
         passed = status == case["expected_status"] and actual == expected
-        lines.append(f"| {case['id']} | {case['name']} | {status} | {elapsed_ms:.2f} | {'通过' if passed else '失败'} |")
-        lines.append("")
-        lines.append(f"## {case['id']} - {case['name']}")
-        lines.append("")
-        lines.append(f"- 请求方法：`{case['method']}`")
-        lines.append(f"- 请求地址：`{case['url']}`")
+        summary_rows.append(f"| {case['id']} | {case['name']} | {status} | {elapsed_ms:.2f} | {'通过' if passed else '失败'} |")
+        detail_lines.append(f"## {case['id']} - {case['name']}")
+        detail_lines.append("")
+        detail_lines.append(f"- 请求方法：`{case['method']}`")
+        detail_lines.append(f"- 请求地址：`{case['url']}`")
         if case.get("payload") is not None:
-            lines.append(f"- 请求体：`{json.dumps(case['payload'], ensure_ascii=False)}`")
-        lines.append(f"- 实际状态码：`{status}`")
-        lines.append(f"- 响应时间：`{elapsed_ms:.2f} ms`")
-        lines.append(f"- 实际响应：`{json.dumps(payload, ensure_ascii=False)}`")
-        lines.append(f"- 校验结论：`{'通过' if passed else '失败'}`")
-        lines.append("")
+            detail_lines.append(f"- 请求体：`{json.dumps(case['payload'], ensure_ascii=False)}`")
+        detail_lines.append(f"- 实际状态码：`{status}`")
+        detail_lines.append(f"- 响应时间：`{elapsed_ms:.2f} ms`")
+        detail_lines.append(f"- 实际响应：`{json.dumps(payload, ensure_ascii=False)}`")
+        detail_lines.append(f"- 校验结论：`{'通过' if passed else '失败'}`")
+        detail_lines.append("")
+
+    lines.extend(summary_rows)
+    lines.extend(["", "## 明细记录", ""])
+    lines.extend(detail_lines)
 
     OUTPUT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     print(f"API execution results saved to {OUTPUT_PATH}")

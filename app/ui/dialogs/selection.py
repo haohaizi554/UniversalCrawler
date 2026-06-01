@@ -7,6 +7,7 @@ from app.config import cfg
 from app.ui.styles import generate_stylesheet
 
 
+#任务选择对话框
 class SelectionDialog(QDialog):
     """Lets the user choose which scanned items should enter the queue."""
 

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLineEdit, QPushButt
 from app.core.plugin_registry import registry
 
 
+#应用顶部操作栏，整合插件选择、任务启停、目录修改、日志查看等核心操作入口
 class TopBarWidget(QFrame):
     """主界面顶栏，保持单行布局以减少视觉分裂。"""
 

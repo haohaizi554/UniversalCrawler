@@ -36,11 +36,11 @@ class BiliAPI:
 
     def __init__(self, cookie_path, parser: BilibiliParser):
         """初始化当前实例并准备运行所需的状态，供 `BiliAPI` 使用。"""
-        self.sess = requests.Session()
+        self.sess = requests.Session()#创建一个持久化的 HTTP 会话对象
         self.sess.headers.update(HEADERS)
-        self.cookie_path = cookie_path
-        self.parser = parser
-        self.auth_service = AuthService()
+        self.cookie_path = cookie_path#保存 Cookie 文件的本地路径
+        self.parser = parser#注入页面解析器依赖
+        self.auth_service = AuthService()#初始化认证服务实例
         self.load_cookies()
 
     def load_cookies(self):
@@ -154,6 +154,7 @@ class BilibiliSpider(BaseSpider):
         self.task_builder = BilibiliTaskBuilder(self.parser)
         self.auth_service = AuthService()
 
+    #完整流程控制器
     def run(self):
         """执行当前对象或脚本的主流程，供 `BilibiliSpider` 使用。"""
         try:
@@ -401,6 +402,7 @@ class BilibiliSpider(BaseSpider):
         match = re.search(r"https?://[^\s`]+", raw_text)
         return match.group(0) if match else raw_text.strip()
 
+    #短链解析
     def _resolve_short_share_url(self, url: str) -> str:
         """提供 `_resolve_short_share_url` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
         if "b23.tv" not in url:

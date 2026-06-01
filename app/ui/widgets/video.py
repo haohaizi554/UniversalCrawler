@@ -4,6 +4,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 
+#轻量级增强型视频渲染控件，视频双击切换
 class ClickableVideoWidget(QVideoWidget):
     """Emits a signal on double click so the window can toggle fullscreen."""
 

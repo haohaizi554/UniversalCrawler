@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, Q
 from app.ui.widgets import ClickableVideoWidget
 
 
+#媒体预览面板，统一封装视频播放、图片预览及播放控件的交互逻辑
 class MediaPreviewPanel(QFrame):
     """媒体预览面板，统一封装视频/图片预览与播放控件状态。"""
 

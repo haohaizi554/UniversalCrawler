@@ -4,7 +4,7 @@
 
 - 既满足课程要求中的黑盒、白盒、接口、UI、验收与批量执行说明。
 - 又贴合 `UniversalCrawlerPro` 作为 PyQt6 桌面项目的真实测试结构。
-- 便于后续导出为 Word、Excel 和 PDF 版本。
+- 便于直接提交 Word 报告、Excel 用例表和自动化执行证据。
 
 ## 文件清单
 
@@ -25,6 +25,14 @@
 - `report_submission.md`
   - 更接近正式提交结构的版本。
   - 适合复制到 Word 后直接进一步排版。
+- `final/软件测试技术课程大作业报告.docx`
+  - 已生成的正式 Word 报告。
+  - 包含需求映射、用例摘要、关键代码、执行结果、接口测试、UI 自动化截图和总结。
+- `final_submission_manifest.md`
+  - 最终提交材料索引。
+  - 汇总报告、用例、Postman/Newman、Selenium 截图和命令输出位置。
+- `assignment_requirements.md`
+  - 从大作业要求文档中整理出的评分点与提交要求。
 - `requirements_audit.md`
   - 课程要求达标检查表。
   - 用于核对哪些技术已经使用、哪些截图仍需人工补齐。
@@ -36,13 +44,15 @@
   - 用来快速补齐最重要的一批截图。
 - `automation_results.md`
   - 自动化命令执行摘要。
-  - 记录了全量回归、核心套件和关键测试模块的实际运行结果。
+  - 记录了全量回归、核心套件、ddt、BeautifulReport、接口、Newman 和 Selenium 的实际运行结果。
 - `unit_tests/execution_results.md`
   - `ddt + TestSuite + BeautifulReport` 的执行结果说明。
 - `api/execution_results.md`
   - 课程接口测试的实际响应与响应时间记录。
 - `ui_tests/execution_results.md`
   - 两条 Selenium 场景脚本的执行结果说明。
+- `evidence/selenium/`
+  - Selenium 自动化运行时保存的浏览器截图证据。
 
 ## 推荐整理方式
 
@@ -51,8 +61,7 @@
 ```text
 学号+姓名+班级/
 ├── 报告/
-│   ├── 软件测试课程大作业报告.docx
-│   └── 软件测试课程大作业报告.pdf
+│   └── 软件测试技术课程大作业报告.docx
 ├── 测试用例/
 │   ├── test_cases.xlsx
 │   └── evidence_checklist.md
@@ -63,12 +72,6 @@
 │   └── main.py
 └── 说明/
     ├── README.md
-    └── 测试运行结果截图/
+    ├── 测试运行结果截图/
+    └── final_submission_manifest.md
 ```
-
-## 建议操作
-
-1. 优先使用 `test_cases.xlsx` 和 `test_cases_compact.xlsx` 作为提交版表格。
-2. 将 `report_submission.md` 复制到 Word 中排版，补齐封面、学号、姓名、班级和截图。
-3. 按 `evidence_checklist.md` 逐项补充截图。
-4. 若老师要求纸质版，建议把报告正文、关键测试用例表和结果截图放入纸质版。

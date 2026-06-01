@@ -404,10 +404,7 @@ class DouyinSpider(BaseSpider):
         self.log("⚠️ 纯数字 UID 暂不支持直接搜索")
         self.log("💡 请使用以下格式：")
         self.log("   • 用户主页链接: https://www.douyin.com/user/MS4w...")
-        self.log("   • 视频链接: https://www.douyin.com/video/1234567890")
-        self.log("   • 合集链接: https://www.douyin.com/collection/1234567890")
         self.log("   • 分享链接: https://v.douyin.com/xxxxx")
-        self.log("   • 用户昵称（中文/英文）")
 
     async def _async_main(self, cookie_str: str):
         """根据输入自动分流到作品、合集、用户主页或关键词搜索。"""

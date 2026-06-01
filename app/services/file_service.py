@@ -7,7 +7,7 @@ from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.utils import sanitize_filename
 
-
+#本地媒体文件管理服务
 @dataclass
 class ScanResult:
     """封装 `ScanResult` 在 `app/services/file_service.py` 中承担的核心逻辑。"""

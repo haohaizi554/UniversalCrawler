@@ -7,7 +7,7 @@ from pathlib import Path
 from app.debug_logger import debug_logger
 from app.exceptions import DebugActionError
 
-
+#调试产物管理服务
 class DebugArtifactsService:
     """负责打开调试产物和复制 trace_id。"""
 
