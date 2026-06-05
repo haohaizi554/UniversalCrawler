@@ -42,8 +42,15 @@ def local_appdata_root() -> Path:
 
 
 def user_data_root() -> Path:
-    """执行 `user_data_root` 对应的业务逻辑。"""
-    path = local_appdata_root() / APP_DIR_NAME
+    """返回用户数据根目录。
+
+    - 打包后 (frozen): AppData/Local/UniversalCrawlerPro
+    - 本地开发: 项目根目录/user_data
+    """
+    if is_frozen():
+        path = local_appdata_root() / APP_DIR_NAME
+    else:
+        path = project_root() / "user_data"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

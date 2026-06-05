@@ -7,6 +7,30 @@ import sys
 from pathlib import Path
 
 
+# PyInstaller console=False 时 sys.stdout / sys.stderr 为 None，
+# 会导致 uvicorn 等库调用 .isatty() 时崩溃，这里提供兜底。
+class _NullStream:
+    """模拟 sys.stdout/stderr 的最小接口，写入内容直接丢弃。"""
+
+    def write(self, *args, **kwargs):
+        pass
+
+    def flush(self, *args, **kwargs):
+        pass
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        raise OSError("fileno not available on NullStream")
+
+
+if sys.stdout is None:
+    sys.stdout = _NullStream()  # type: ignore[assignment]
+if sys.stderr is None:
+    sys.stderr = _NullStream()  # type: ignore[assignment]
+
+
 def _resolve_bundle_root() -> Path:
     """提供 `_resolve_bundle_root` 对应的内部辅助逻辑。"""
     if hasattr(sys, "_MEIPASS"):

@@ -39,3 +39,23 @@ class VideoItem:
             if key == "meta" and not isinstance(value, dict):
                 continue
             setattr(self, key, value)
+
+    def to_dict(self) -> dict:
+        """统一序列化方法：CLI/SDK/Web/Skill 四层共用，确保字段完全一致。
+
+        与 GUI ApplicationController 的最终状态对齐：
+        - status: ⏳ 等待中 / ⏳ 下载中... / ✅ 完成 / ❌ 失败
+        - progress: 0-100
+        - local_path: 最终本地文件路径
+        """
+        return {
+            "id": self.id,
+            "url": self.url,
+            "title": self.title,
+            "source": self.source,
+            "status": self.status,
+            "progress": self.progress,
+            "local_path": self.local_path,
+            "content_type": self.meta.get("content_type", "") if self.meta else "",
+            "meta": dict(self.meta) if self.meta else {},
+        }

@@ -10,6 +10,9 @@ from pathlib import Path
 
 
 APP_NAME = "UniversalCrawlerPro"
+WEBUI_NAME = "CrawlerWebPortal"
+APP_DISPLAY_NAME = "Universal CrawlerPro"
+WEBUI_DISPLAY_NAME = "Crawler WebPortal"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC_FILE = PROJECT_ROOT / "packaging" / "portable.spec"
 DIST_DIR = PROJECT_ROOT / "dist" / APP_NAME
@@ -18,7 +21,9 @@ LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Lo
 BROWSER_DIR = LOCALAPPDATA / "ms-playwright"
 REQUIRED_FILES = [
     PROJECT_ROOT / "main.py",
+    PROJECT_ROOT / "web_main.py",
     PROJECT_ROOT / "favicon.ico",
+    PROJECT_ROOT / "Web.ico",
     PROJECT_ROOT / "ffmpeg.exe",
     PROJECT_ROOT / "N_m3u8DL-RE.exe",
     SPEC_FILE,
@@ -68,6 +73,10 @@ def verify_output() -> None:
     if not exe_path.exists():
         raise SystemExit(f"未找到绿色版主程序: {exe_path}")
 
+    webui_path = DIST_DIR / f"{WEBUI_NAME}.exe"
+    if not webui_path.exists():
+        raise SystemExit(f"未找到 WebUI 入口程序: {webui_path}")
+
     for required_name in ("ffmpeg.exe", "N_m3u8DL-RE.exe"):
         matches = list(DIST_DIR.glob(f"**/{required_name}"))
         if not matches:
@@ -86,8 +95,9 @@ def write_manifest() -> None:
     """执行 `write_manifest` 对应的业务逻辑。"""
     manifest = DIST_DIR / "BUILD_INFO.txt"
     lines = [
-        "UniversalCrawlerPro Portable Build",
+        f"{APP_DISPLAY_NAME} Portable Build",
         f"Executable: {APP_NAME}.exe",
+        f"WebUI: {WEBUI_NAME}.exe",
         "Bundled tools:",
         "- ffmpeg.exe",
         "- N_m3u8DL-RE.exe",
@@ -100,7 +110,7 @@ def write_manifest() -> None:
         "- dy_auth.json",
         "",
         "Runtime user data directory:",
-        r"- %LOCALAPPDATA%\UniversalCrawlerPro",
+        rf"- %LOCALAPPDATA%\{APP_NAME}",
     ]
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

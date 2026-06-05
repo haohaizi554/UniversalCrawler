@@ -97,7 +97,6 @@ class DownloadWorker(QThread):
         try:
             if not self.is_running:
                 return
-            self.sig_start.emit(self.video.id)
 
             # 先把保存目录和目标文件名计算清楚，下载器只负责真正的传输逻辑。
             save_dir = self._resolve_save_dir()
@@ -108,8 +107,11 @@ class DownloadWorker(QThread):
             ext = self._infer_extension()
             filename = self._generate_filename(ext)
             filepath = self._ensure_unique_path(os.path.join(save_dir, filename))
+            # 先设置 local_path，再 emit sig_start
+            # 这样 sig_start 信号携带的 local_path 是有效的（Web 端依赖此路径播放视频）
             self.video.local_path = filepath
             self._final_ext = ext
+            self.sig_start.emit(self.video.id)
             downloader = self._select_downloader()
             download_strategy = self.video.meta.get("download_strategy")
             debug_logger.log(

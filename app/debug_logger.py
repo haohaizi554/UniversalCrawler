@@ -44,16 +44,40 @@ class DebugLogger:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         process_name = multiprocessing.current_process().name
-        self.session_file = self.logs_dir / f"debug_{timestamp}.log"
+        # 修复 BUG-169: web 子进程和主进程区分开，避免 latest_debug.log 写冲突
+        self._is_main_process = (process_name == "MainProcess")
+        self.session_file = self.logs_dir / f"debug_{timestamp}_{process_name}.log"
         self.latest_file = self.logs_dir / "latest_debug.log"
         self.latest_error_summary_file = self.logs_dir / "latest_error_summary.md"
         self._lock = threading.Lock()
 
-        # 仅主进程覆盖 latest_debug.log，避免 Windows 多进程扫码登录时冲掉主日志。
-        if process_name == "MainProcess":
-            self.latest_file.write_text("", encoding="utf-8")
-            self.latest_error_summary_file.write_text("# 最近错误摘要\n\n当前会话暂无错误。\n", encoding="utf-8")
+        # 仅主进程覆盖 latest_debug.log，避免 Windows 多进程扫码登录时冲掉主日志
+        # 修复 BUG-169: 加 try/except 防止 web 进程并发清空文件时 PermissionError
+        if self._is_main_process:
+            self._safe_write_text(self.latest_file, "")
+            self._safe_write_text(
+                self.latest_error_summary_file,
+                "# 最近错误摘要\n\n当前会话暂无错误。\n",
+            )
         self._write_header()
+
+    def _safe_write_text(self, path, content, encoding="utf-8"):
+        """修复 BUG-169: write_text 加 try/except，避免 Windows 文件锁 PermissionError"""
+        import time as _time
+        for attempt in range(3):
+            try:
+                path.write_text(content, encoding=encoding)
+                return True
+            except (OSError, PermissionError) as exc:
+                if attempt == 2:
+                    # 3 次都失败，静默放弃（不影响爬虫主流程）
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        f"[debug_logger] 无法写入 {path.name}: {exc}"
+                    )
+                    return False
+                _time.sleep(0.05 * (attempt + 1))  # 50ms / 100ms / 150ms 重试
+        return False
 
     def _write_header(self):
         """提供 `_write_header` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
@@ -117,11 +141,30 @@ class DebugLogger:
     def _append_lines(self, lines: list[str]):
         """提供 `_append_lines` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         content = "\n".join(lines) + "\n"
+        import time as _time
         with self._lock:
-            with open(self.session_file, "a", encoding="utf-8") as fp:
-                fp.write(content)
-            with open(self.latest_file, "a", encoding="utf-8") as fp:
-                fp.write(content)
+            # 修复 BUG-169: session_file 每个进程独立，但仍加 try/except + 重试
+            for attempt in range(3):
+                try:
+                    with open(self.session_file, "a", encoding="utf-8") as fp:
+                        fp.write(content)
+                    break
+                except (OSError, PermissionError):
+                    if attempt == 2:
+                        # session_file 也写不进去时只放弃这一行，不抛异常
+                        return
+                    _time.sleep(0.05 * (attempt + 1))
+            # 修复 BUG-169: latest_debug.log 只在主进程写，避免和 web 进程冲突
+            if self._is_main_process:
+                for attempt in range(3):
+                    try:
+                        with open(self.latest_file, "a", encoding="utf-8") as fp:
+                            fp.write(content)
+                        break
+                    except (OSError, PermissionError):
+                        if attempt == 2:
+                            return
+                        _time.sleep(0.05 * (attempt + 1))
 
     def _clean_mapping(self, data: dict[str, Any] | None) -> dict[str, Any]:
         """提供 `_clean_mapping` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
@@ -246,7 +289,8 @@ class DebugLogger:
             lines.append(f"- {item}")
         lines.append("")
         with self._lock:
-            self.latest_error_summary_file.write_text("\n".join(lines), encoding="utf-8")
+            # 修复 BUG-169: error_summary 也加 try/except + 重试
+            self._safe_write_text(self.latest_error_summary_file, "\n".join(lines))
 
     def _infer_error_severity(
         self,

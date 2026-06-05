@@ -3,6 +3,7 @@
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img alt="PyQt6" src="https://img.shields.io/badge/Framework-PyQt6-41CD52?logo=qt&logoColor=white" />
+  <img alt="FastAPI" src="https://img.shields.io/badge/Web_UI-FastAPI-009688?logo=fastapi&logoColor=white" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
   <img alt="Tests" src="https://img.shields.io/badge/Test-unittest-informational" />
@@ -10,7 +11,7 @@
   <img alt="License" src="https://img.shields.io/badge/License-Disclaimer-red" />
 </p>
 
-**Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流。
+**Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
 
 它不是一个套壳网页，也不是一堆零散脚本的堆叠，而是一个围绕 **可维护性、可扩展性、可调试性、可打包分发** 设计出来的桌面端采集工作站。
 
@@ -26,6 +27,7 @@
 
 - [✨ 核心特性](#features)
 - [🌐 支持平台与能力矩阵](#platforms)
+- [🖥️ 双模式交互：桌面 GUI + Web UI](#dual-mode)
 - [🎯 适合谁使用](#audience)
 - [📦 安装与快速启动](#quickstart)
 - [⚙️ 配置体系说明](#config)
@@ -49,28 +51,35 @@
 - **下载后即管理**：支持本地媒体扫描、重命名、删除、图片预览与视频播放，不需要再切回文件夹手工整理。
 - **对小白友好**：平台选择、参数输入、结果勾选、进度观察都在统一界面中完成。
 
-### ⚡ 2. 统一下载引擎，不是平台脚本拼盘
+### 🌐 2. Web UI 远程操控
+
+- **浏览器即控制台**：内置 FastAPI + uvicorn 服务，启动 `CrawlerWebPortal.exe` 后自动打开浏览器，即可远程操控下载。
+- **系统托盘驻留**：Web UI 模式下最小化到系统托盘，右键菜单可打开浏览器或退出，不会在后台无影无踪。
+- **端口冲突检测**：默认端口被占用时自动弹窗提示，支持自定义端口。
+- **脚本注入**：支持启动时注入自定义 Python 脚本，方便自动化批量任务。
+
+### ⚡ 3. 统一下载引擎，不是平台脚本拼盘
 
 - **统一队列调度**：所有任务统一进入 `DownloadManager`，由 `DownloadWorker` 管理生命周期、并发槽位与回调。
 - **策略自动分发**：根据资源特征自动选择不同下载器与外部工具，包括普通 HTTP、分块下载、`ffmpeg`、`N_m3u8DL-RE` 等路径。
 - **文件落盘更稳健**：自动推断扩展名、避免重名覆盖、按文件签名修正后缀，减少下载成功但打不开的尴尬。
 - **适配多种资源形态**：支持普通视频、DASH 音视频分离、图集、实况图、m3u8/HLS 流媒体等多类资源。
 
-### 🧩 3. 插件化架构，新增平台不需要硬改主界面
+### 🧩 4. 插件化架构，新增平台不需要硬改主界面
 
 - **平台定义集中注册**：平台能力通过 `app/core/plugins/` 注入，而不是在控制器和 UI 到处写分支。
 - **Spider 三段式设计**：每个平台都尽量拆成 `spider.py`、`parser.py`、`task_builder.py`，让流程控制、数据解析、任务装配职责清晰。
-- **配置面板按插件生成**：平台专属参数可由 settings builder 统一构建与读取，降低新增平台 = 改一堆 UI的成本。
-- **便于二次开发**：开发者可以只聚焦一个平台目录完成接入，而不用把整个工程读成一团。 
+- **配置面板按插件生成**：平台专属参数可由 settings builder 统一构建与读取，降低新增平台 = 改一堆 UI 的成本。
+- **便于二次开发**：开发者可以只聚焦一个平台目录完成接入，而不用把整个工程读成一团。
 
-### 🔍 4. 工业化的调试与排障能力
+### 🔍 5. 工业化的调试与排障能力
 
 - **Trace ID 全链路追踪**：同一任务从爬虫、解析、入队、下载到外部工具执行，都能用 `trace_id` 串起来。
 - **自动错误摘要**：错误发生后自动生成 `latest_error_summary.md`，给出分级、结论和排查建议。
 - **敏感信息自动脱敏**：日志会自动掩码 Cookie、Token、Authorization、代理认证等信息，方便分享日志又降低泄露风险。
 - **UI 内建调试入口**：可直接打开最新日志、最新错误摘要，或复制当前任务的 `trace_id`。
 
-### 🧪 5. 不只是能跑，还强调测试与工程质量
+### 🧪 6. 不只是能跑，还强调测试与工程质量
 
 - **统一测试框架**：项目使用 `unittest`，本地与 GitHub Actions 保持一致。
 - **覆盖真实高风险路径**：当前测试已覆盖模型、配置、控制器、下载器、解析器、日志脱敏、半集成链路等多个层面。
@@ -100,6 +109,50 @@
 
 ---
 
+<a id="dual-mode"></a>
+## 🖥️ 双模式交互：桌面 GUI + Web UI
+
+项目提供两种交互模式，覆盖不同使用场景：
+
+### 桌面 GUI 模式
+
+```bash
+python main.py
+```
+
+- 完整的 PyQt6 桌面体验，适合日常本地使用。
+- 支持主题切换、媒体预览、全屏播放等。
+
+### Web UI 模式
+
+```bash
+python web_main.py                # 默认 http://localhost:8000
+python web_main.py --port 9000    # 自定义端口
+python web_main.py --no-qt        # 无 Qt 模式（仅 API，不支持爬虫）
+python web_main.py --script auto_download.py --script-arg keyword=舞蹈  # 启动时注入脚本
+```
+
+- 启动后自动打开浏览器，通过 Web 界面操控下载。
+- 系统托盘驻留，右键可打开浏览器或退出。
+- 支持脚本注入，可用于自动化批量下载。
+- RESTful API 完整暴露，方便二次集成。
+
+### Web API 速览
+
+| 端点 | 方法 | 说明 |
+| :-- | :--: | :-- |
+| `/api/platforms` | GET | 获取支持的平台列表 |
+| `/api/config` | GET/PUT | 读取/更新配置 |
+| `/api/crawl/start` | POST | 启动爬取任务 |
+| `/api/crawl/stop` | POST | 停止当前爬取 |
+| `/api/download/start` | POST | 开始下载选中项 |
+| `/api/download/stop` | POST | 停止下载 |
+| `/api/dir/list` | GET | 浏览目录内容 |
+| `/api/dir/change` | POST | 切换保存目录 |
+| `/api/dir/pick-native` | GET | 调用系统原生文件夹选择器 |
+
+---
+
 <a id="audience"></a>
 ## 🎯 适合谁使用
 
@@ -111,6 +164,7 @@
 - 希望多平台采集逻辑统一，不用每个平台都找一个独立脚本。
 - 下载后能直接在程序里管理、预览和播放。
 - 出问题时希望有明确日志和错误摘要，而不是只看到下载失败。
+- 想用浏览器远程操控下载，不用一直盯着桌面窗口。
 
 ### 如果你是开发者
 
@@ -119,6 +173,7 @@
 - 代码不是揉成一团，而是按 `controller / spider / parser / builder / downloader / service / ui` 分层。
 - 新平台接入路径明确，插件注册清晰。
 - 下载策略和外部工具封装是独立模块，便于替换和扩展。
+- Web UI 提供 RESTful API，方便与其他系统集成。
 - 测试和文档不是摆设，而是已经进入主线工作流。
 
 ---
@@ -143,7 +198,7 @@ cd UniversalCrawlerPro
 ### 3. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 playwright install chromium
 ```
 
@@ -158,20 +213,35 @@ playwright install chromium
 
 ```text
 UniversalCrawlerPro/
- app/
- docs/
- packaging/
- tests/
- ffmpeg.exe
- N_m3u8DL-RE.exe
- main.py
- requirements.txt
+├── app/                    # 应用核心代码
+│   ├── config/             # 配置管理
+│   ├── controllers/        # 控制器层
+│   ├── core/               # 核心引擎（下载器、插件、工具库）
+│   ├── spiders/            # 各平台爬虫
+│   ├── ui/                 # PyQt6 界面组件
+│   └── web/                # Web UI（FastAPI 服务端 + 静态页面）
+├── docs/                   # 项目文档
+├── packaging/              # 打包脚本与配置
+├── tests/                  # 测试用例
+├── ffmpeg.exe              # 外部工具
+├── N_m3u8DL-RE.exe         # 外部工具
+├── main.py                 # 桌面 GUI 入口
+├── web_main.py             # Web UI 入口
+└── pyproject.toml          # 项目配置与依赖
 ```
 
 ### 5. 启动应用
 
+**桌面 GUI 模式：**
+
 ```bash
 python main.py
+```
+
+**Web UI 模式：**
+
+```bash
+python web_main.py
 ```
 
 首次启动后，程序会自动完成必要的初始化，并准备默认运行环境。
@@ -247,7 +317,7 @@ python main.py
 
 ```mermaid
 graph TD
-    UI[PyQt6 UI] --> CTRL[ApplicationController]
+    UI[PyQt6 UI / Web UI] --> CTRL[ApplicationController]
     CTRL --> SPIDER[Spider]
     SPIDER --> PARSER[Parser]
     PARSER --> BUILDER[TaskBuilder]
@@ -283,15 +353,43 @@ graph TD
 
 #### `app/core/downloaders`
 
-- 封装普通下载、平台下载器、外部工具调用。
-- 根据资源类型自动选择最优下载路径。
-- 将 `ffmpeg` 和 `N_m3u8DL-RE` 的命令构建与执行收口到统一位置。
+封装了多种下载策略，根据资源类型自动选择最优路径：
+
+| 下载器 | 用途 |
+| :-- | :-- |
+| `base.py` | 下载器基类与通用 HTTP 下载 |
+| `chunked.py` | 大文件分块下载 |
+| `bilibili.py` | B 站 DASH 音视频分离下载 |
+| `douyin.py` | 抖音专属下载策略 |
+| `kuaishou.py` | 快手专属下载策略 |
+| `missav.py` | MissAV 专属下载策略 |
+| `ffmpeg.py` | ffmpeg 命令构建与执行（混流、转码等） |
+| `m3u8.py` | HLS/m3u8 流媒体下载（调用 N_m3u8DL-RE） |
+| `external.py` | 外部工具统一调用封装 |
 
 #### `app/core/plugins`
 
 - 提供平台注册表。
 - 将平台定义、配置面板和 spider 类暴露为统一能力。
 - 新增平台时，不需要在控制器和 UI 里到处加 if-else。
+
+#### `app/web`
+
+- 基于 FastAPI + uvicorn 的 Web UI 服务。
+- 提供完整的 RESTful API，覆盖爬取、下载、配置、目录管理等全部功能。
+- 静态前端页面位于 `app/web/static/`。
+- 支持脚本注入系统，可通过 `--script` 参数在启动时执行自定义 Python 脚本。
+
+#### `app/core/lib/douyin`
+
+抖音平台专属底层库，包含：
+
+- `encrypt/`：请求参数加密
+- `extract/`：数据提取
+- `interface/`：API 接口封装
+- `js/`：X-Bogus / A-Bogus 等 JS 签名
+- `link/`：链接解析
+- `tools/`：辅助工具
 
 ### 为什么这套架构值得一提？
 
@@ -307,6 +405,7 @@ graph TD
 - 平台接入路径清晰
 - 下载调度独立
 - UI 与业务解耦
+- Web UI 与桌面 GUI 共享同一套核心引擎
 - 测试与文档配套存在
 - 打包逻辑单独收口到 `packaging/`
 
@@ -335,7 +434,7 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 
 - `latest_debug.log`
 - `latest_error_summary.md`
-- UI 顶部的最新日志 / 错误摘要 / 复制 Trace入口
+- UI 顶部的最新日志 / 错误摘要 / 复制 Trace 入口
 
 ### 推荐排障顺序
 
@@ -412,13 +511,6 @@ python -m unittest discover -s tests
 - [配置说明](docs/config.md)
 - [日志说明](Logs/README.md)
 - [打包说明](packaging/README.md)
-- [课程交付物说明](coursework/README.md)
-- [课程测试报告草稿](coursework/report.md)
-- [课程正式提交稿模板](coursework/report_submission.md)
-- [课程测试用例总表](coursework/test_cases.xlsx)
-- [课程精简用例表](coursework/test_cases_compact.xlsx)
-- [课程截图执行清单](coursework/screenshot_plan.md)
-- [课程自动化结果摘要](coursework/automation_results.md)
 
 ### 关键目录 README
 
@@ -437,17 +529,35 @@ python -m unittest discover -s tests
 
 ### 当前已具备的分发方式
 
-- **便携版构建**：适合直接给用户解压使用。
-- **安装包构建**：基于 Inno Setup 生成安装器。
-- **一键发布脚本**：方便发布前统一构建。
+| 产物 | 说明 | 入口脚本 |
+| :-- | :-- | :-- |
+| **便携版** | 解压即用，内含 Playwright Chromium | `packaging/build_portable.py` |
+| **安装包** | Inno Setup 安装器，支持开始菜单与桌面快捷方式 | `packaging/build_installer.py` |
+| **一键发布** | 依次构建便携版 + 安装包 | `packaging/build_release.py` |
 
-### 打包相关目录
+### 便携版包含什么
 
-- [`packaging/build_portable.py`](packaging/build_portable.py)
-- [`packaging/build_installer.py`](packaging/build_installer.py)
-- [`packaging/build_release.py`](packaging/build_release.py)
-- [`packaging/portable.spec`](packaging/portable.spec)
-- [`packaging/installer.iss`](packaging/installer.iss)
+- `UniversalCrawlerPro.exe` — 桌面 GUI 主程序
+- `CrawlerWebPortal.exe` — Web UI 入口（系统托盘驻留）
+- `_internal/` — 运行时依赖与资源
+- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — 外部下载工具
+- `ms-playwright/` — 内置 Chromium 内核
+
+### 安装包特性
+
+- 安装到 `%LOCALAPPDATA%\Programs\UniversalCrawlerPro`
+- 创建开始菜单快捷方式（Universal CrawlerPro / Crawler WebPortal）
+- 可选创建桌面快捷方式
+- 支持标准卸载流程
+
+### 打包相关文件
+
+- [`packaging/build_portable.py`](packaging/build_portable.py) — 便携版构建
+- [`packaging/build_installer.py`](packaging/build_installer.py) — 安装包构建
+- [`packaging/build_release.py`](packaging/build_release.py) — 一键发布
+- [`packaging/portable.spec`](packaging/portable.spec) — PyInstaller 打包规格
+- [`packaging/installer.iss`](packaging/installer.iss) — Inno Setup 安装脚本
+- [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — 运行时初始化钩子
 
 ### 打包前建议检查
 
@@ -480,8 +590,17 @@ python -m unittest discover -s tests
 ### 推荐开发流程
 
 ```bash
+# 编译检查
 python -m compileall app tests main.py
+
+# 运行测试
 python -m unittest discover -s tests
+
+# 桌面 GUI 模式启动
+python main.py
+
+# Web UI 模式启动
+python web_main.py
 ```
 
 ### 一些对维护者很重要的约定

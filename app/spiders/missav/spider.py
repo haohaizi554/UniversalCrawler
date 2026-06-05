@@ -63,23 +63,25 @@ class MissAVSpider(BaseSpider):
             if not self.is_running: return
             # 启动浏览器
             with sync_playwright() as p:
+                self._playwright_pw = p  # 修复 BUG-168: 保存 playwright 实例引用
                 browser = p.chromium.launch(
                     headless=False,
                     proxy={"server": proxy_server} if proxy_server else None,
                     args=['--disable-blink-features=AutomationControlled']
                 )
+                self._playwright_browser = browser  # 修复 BUG-168: 保存 browser 引用，方便 stop() 强制关闭
                 context = browser.new_context(user_agent=my_ua)
                 page = context.new_page()
                 self.log("🚀 正在访问页面...")
                 page.goto(target_url, timeout=60000)
                 if "Just a moment" in page.title():
                     self.log("🛡️ 检测到 Cloudflare，等待通过...")
-                    page.wait_for_timeout(5000)
+                    self.interruptible_sleep(5)  # 修复 BUG-168: 可中断 sleep
                     page.wait_for_load_state("domcontentloaded")
                 # 头像跳转
                 if is_search_mode and self.is_running:
                     try:
-                        time.sleep(2)
+                        self.interruptible_sleep(2)  # 修复 BUG-168
                         links = page.query_selector_all('a[href*="/actresses/"]')
                         valid_actress_link = None
                         for link in links:
@@ -200,17 +202,17 @@ class MissAVSpider(BaseSpider):
                     try:
                         page.goto(target_page_url, timeout=60000)
                         if "Just a moment" in page.title():
-                            time.sleep(10)
+                            self.interruptible_sleep(10)  # 修复 BUG-168
                         try:
                             page.wait_for_selector(".plyr", timeout=5000)
                             page.mouse.click(400, 300)
-                            time.sleep(2)
+                            self.interruptible_sleep(2)  # 修复 BUG-168
                             if not m3u8_url: page.mouse.click(400, 300)
                         except PlaywrightError:
                             pass
                         for _ in range(15):
                             if m3u8_url or not self.is_running: break
-                            time.sleep(1)
+                            self.interruptible_sleep(1)  # 修复 BUG-168
                         if not self.is_running: break
                         if m3u8_url:
                             trace_id = self.new_trace_id("m3u8")
@@ -240,7 +242,7 @@ class MissAVSpider(BaseSpider):
                         self.log(f"   ❌ 页面加载错误: {e}")
                     page.remove_listener("request", handle_request)
                     context.remove_listener("page", on_popup)
-                    time.sleep(1)
+                    self.interruptible_sleep(1)  # 修复 BUG-168
                 if self.is_running:
                     self.log(f"🎉 任务结束，成功提交: {success_count}")
                 else:

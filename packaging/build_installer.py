@@ -95,9 +95,6 @@ def ensure_prerequisites() -> str:
         )
     if not ISS_FILE.exists():
         raise SystemExit(f"未找到安装脚本: {ISS_FILE}")
-    if not ASSET_SCRIPT.exists():
-        raise SystemExit(f"未找到安装资源生成脚本: {ASSET_SCRIPT}")
-
     iscc = resolve_iscc()
     if not iscc:
         raise SystemExit(
@@ -110,7 +107,6 @@ def ensure_prerequisites() -> str:
 def main() -> None:
     """作为脚本入口组织整体执行流程。"""
     iscc = ensure_prerequisites()
-    subprocess.run([sys.executable, str(ASSET_SCRIPT)], cwd=PROJECT_ROOT, check=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if SETUP_EXE.exists():
         SETUP_EXE.unlink()

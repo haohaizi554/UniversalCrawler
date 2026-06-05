@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ucrawl"
+version = "1.0.0"
+description = "UCrawl - 通用爬虫 (CLI / SDK / REST API / AI Skill)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "UCrawl Team"},
+]
+keywords = ["crawler", "spider", "douyin", "bilibili", "kuaishou", "missav"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# 完整依赖需要 PyQt6, FastAPI, etc. (与原项目一致)
+dependencies = [
+    "PyQt6>=6.4.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "requests>=2.28.0",
+    "yt-dlp>=2023.0.0",
+    "playwright>=1.30.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+ucrawl = "cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/ucrawl/UniversalCrawlerProplus"
+Documentation = "https://github.com/ucrawl/UniversalCrawlerProplus/blob/main/docs/"
+Repository = "https://github.com/ucrawl/UniversalCrawlerProplus"
+
+[tool.setuptools]
+packages = [
+    "ucrawl",
+    "cli",
+    "cli.commands",
+]
+
+[tool.setuptools.package-data]
+ucrawl = []
+cli = [
+    "skill/*.md",
+    "skill/examples/*.py",
+]

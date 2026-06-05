@@ -20,7 +20,7 @@ from app.config.constants import (
     SUPPORTED_THEMES,
 )
 from app.exceptions import ConfigReadError, ConfigValidationError, ConfigWriteError
-from app.utils.runtime_paths import resolve_user_file
+from app.utils.runtime_paths import resolve_user_file, project_root
 
 
 @dataclass
@@ -41,7 +41,8 @@ class CommonSettings:
 @dataclass
 class MissAVSettings:
     """封装 `MissAVSettings` 对应的配置数据与访问逻辑。"""
-    proxy_app: str = "Clash (7890)"
+    proxy_type: str = "clash"          # clash / v2ray / custom
+    proxy_port: int = 7890
     proxy_url: str = DEFAULT_MISSAV_PROXY_URL
     priority: str = "中文字幕优先"
     individual_only: bool = False
@@ -176,6 +177,8 @@ class ConfigManager:
     def __init__(self, filename: str = DEFAULT_CONFIG_FILE):
         """初始化当前实例并准备运行所需的状态，供 `ConfigManager` 使用。"""
         self.filename = str(resolve_user_file(filename))
+        # 确保用户数据目录存在（项目目录下的 user_data/）
+        Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
         self.settings = AppSettings()
         self.last_load_error: ConfigReadError | None = None
         self._load_from_disk()
@@ -264,10 +267,20 @@ class ConfigManager:
 
     def save(self) -> None:
         """执行 `save` 对应的业务逻辑，供 `ConfigManager` 使用。"""
+        import logging
+        logger = logging.getLogger(__name__)
         try:
-            Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
-            with open(self.filename, "w", encoding="utf-8") as fp:
+            parent = Path(self.filename).parent
+            parent.mkdir(parents=True, exist_ok=True)
+            # 处理 Permission denied: 尝试临时文件写入后重命名
+            temp_file = Path(self.filename + ".tmp")
+            with open(temp_file, "w", encoding="utf-8") as fp:
                 json.dump(self.settings.to_dict(), fp, indent=4, ensure_ascii=False)
+            # 原子替换
+            temp_file.replace(self.filename)
+        except PermissionError as exc:
+            logger.warning(f"[ConfigManager] 保存配置失败 (Permission denied): {exc}")
+            # 静默处理权限错误，不中断用户操作
         except (OSError, TypeError, ValueError) as exc:
             raise ConfigWriteError(str(exc)) from exc
 
@@ -313,10 +326,14 @@ class ConfigManager:
         self.settings.ui.is_fullscreen_mode = is_fs
         self.save()
 
-    def update_missav_proxy(self, app_name: str, url: str) -> None:
-        """更新 `missav_proxy` 对应的状态或数据内容，供 `ConfigManager` 使用。"""
-        self.settings.missav.proxy_app = app_name
-        self.settings.missav.proxy_url = url
+    def update_missav_proxy(self, proxy_type: str = "", port: int = 0, url: str = "") -> None:
+        """更新 missav 代理配置。"""
+        if proxy_type:
+            self.settings.missav.proxy_type = proxy_type
+        if port:
+            self.settings.missav.proxy_port = port
+        if url:
+            self.settings.missav.proxy_url = url
         self.save()
 
 

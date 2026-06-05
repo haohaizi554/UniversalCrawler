@@ -26,12 +26,44 @@ class BaseSpider(QThread):
         # The spider thread waits on this event while the UI shows a selection dialog.
         self._resume_event = threading.Event()
         self._selection_result = None
+        # 修复 BUG-168: 暴露 Playwright browser/context 引用，方便 controller 强制中断
+        self._playwright_browser = None
+        self._playwright_pw = None
 
     def stop(self):
         """执行 `stop` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         self.is_running = False
         self._resume_event.set()
         self.sig_log.emit("🛑 正在停止任务...")
+        # 修复 BUG-168: 强制关闭 Playwright browser 加速中断（同步 IO 无法被 is_running 立即中断）
+        self._force_close_playwright()
+
+    def _force_close_playwright(self):
+        """修复 BUG-168: 强制关闭 Playwright browser，spider 同步 IO 会被 ConnectionError 打断
+        与 GUI 端 on_stop_crawl → dl_manager.stop_all() 一致，强制终止下载/抓取操作。
+        """
+        browser = self._playwright_browser
+        if browser is None:
+            return
+        try:
+            # close() 会让正在阻塞的 page.goto/page.wait_for_selector 抛 ConnectionError
+            browser.close()
+        except Exception:
+            pass
+        self._playwright_browser = None
+
+    def interruptible_sleep(self, seconds: float, step: float = 0.5):
+        """修复 BUG-168: 可中断的 sleep，每 step 秒检查一次 is_running。
+        替代 time.sleep(seconds)，避免用户点停止后等几十秒才响应。
+        """
+        import time as _time
+        deadline = _time.time() + seconds
+        while _time.time() < deadline:
+            if not self.is_running:
+                return False
+            remaining = deadline - _time.time()
+            _time.sleep(min(step, remaining))
+        return self.is_running
 
     def run(self):
         """执行当前对象或脚本的主流程，供 `BaseSpider` 使用。"""

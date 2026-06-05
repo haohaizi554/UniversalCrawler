@@ -40,6 +40,9 @@ from multiprocessing import Process, Queue
 
 def _run_login_process(auth_file, user_agent, result_queue):
     """在独立进程中运行 Playwright，避免与 PyQt 线程冲突"""
+    import os
+    import traceback
+    browser = None
     try:
         auth_service = AuthService()
         from playwright.sync_api import sync_playwright
@@ -61,16 +64,34 @@ def _run_login_process(auth_file, user_agent, result_queue):
             for _ in range(120):
                 cookies = context.cookies()
                 if auth_service.has_cookie(cookies, "sessionid_ss"):
-                    auth_service.save_json_file(auth_file, cookies)
-                    result_queue.put("success")
-                    browser.close()
+                    try:
+                        # 确保目录存在
+                        directory = os.path.dirname(auth_file)
+                        if directory:
+                            os.makedirs(directory, exist_ok=True)
+                        auth_service.save_json_file(auth_file, cookies)
+                        result_queue.put("success")
+                    except Exception as save_err:
+                        err_msg = f"Cookie保存失败: {save_err} (路径: {auth_file})"
+                        result_queue.put(err_msg)
+                    finally:
+                        if browser:
+                            browser.close()
                     return
                 time.sleep(1)
 
             result_queue.put("timeout")
-            browser.close()
-    except (PlaywrightError, OSError, TypeError, ValueError) as e:
-        result_queue.put(str(e))
+            if browser:
+                browser.close()
+    except Exception as e:
+        err_msg = f"登录进程异常: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+        result_queue.put(err_msg)
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
 # ================= 适配器类 =================
 
 class MockSettings:
@@ -249,16 +270,25 @@ class DouyinSpider(BaseSpider):
 
     def _load_or_login(self) -> str:
         """优先复用本地 Cookie，失效后再回退到扫码登录。"""
+        self.log(f"🔍 检查本地 Cookie 文件: {self.auth_file}")
         if os.path.exists(self.auth_file):
             try:
                 cookies = self.auth_service.load_json_file(self.auth_file)
+                if not cookies:
+                    self.log("⚠️ Cookie 文件存在但内容为空")
+                    raise InvalidCookieStateError("Cookie 文件为空")
                 cookie_str = self.auth_service.build_cookie_string(cookies, required_cookie="sessionid_ss")
                 if cookie_str:
-                    self.log("👤 加载本地 Cookie 成功")
+                    self.log(f"👤 加载本地 Cookie 成功 (sessionid_ss 有效)")
                     return cookie_str
+                self.log("⚠️ 本地 Cookie 缺少 sessionid_ss，可能已过期")
                 raise InvalidCookieStateError("本地抖音 Cookie 缺少 sessionid_ss")
             except SpiderAuthError:
                 pass
+            except Exception as exc:
+                self.log(f"⚠️ 加载本地 Cookie 失败: {exc}")
+        else:
+            self.log(f"⚠️ Cookie 文件不存在: {self.auth_file}")
 
         self.log("🔒 未登录或 Cookie 失效，启动扫码...")
         return self._perform_scan_login()
@@ -267,6 +297,7 @@ class DouyinSpider(BaseSpider):
         # 登录页单独放到子进程里跑，避免 Playwright 和 Qt 线程模型互相干扰。
         """在独立进程中执行扫码登录，并把结果回传给当前线程。"""
         self.log("🔗 正在启动独立登录进程...")
+        self.log(f"📝 Cookie 将保存到: {self.auth_file}")
 
         result_queue = Queue()
         # 注意：这里不能传递 self.log 或 self，因为它们包含 PyQt 对象，无法被 pickle。
@@ -285,20 +316,30 @@ class DouyinSpider(BaseSpider):
         if not result_queue.empty():
             res = result_queue.get()
             if res == "success":
-                self.log("✅ 登录成功！")
+                self.log("✅ 扫码登录成功！")
                 # 重新读取文件
                 try:
                     cookies = self.auth_service.load_json_file(self.auth_file)
-                    return self.auth_service.build_cookie_string(cookies, required_cookie="sessionid_ss")
+                    if not cookies:
+                        self.log("⚠️ 登录成功但 Cookie 文件为空")
+                        return ""
+                    cookie_str = self.auth_service.build_cookie_string(cookies, required_cookie="sessionid_ss")
+                    if cookie_str:
+                        self.log("👤 Cookie 读取成功，可以开始下载")
+                        return cookie_str
+                    self.log("⚠️ 登录成功但 Cookie 缺少 sessionid_ss")
+                    return ""
                 except SpiderAuthError as exc:
                     self.log(f"❌ 登录态读取失败: {exc}")
                     return ""
             if res == "timeout":
-                raise LoginTimeoutError("等待抖音扫码登录超时")
+                raise LoginTimeoutError("等待抖音扫码登录超时 (120秒)")
             else:
+                # res 包含具体的错误信息
+                self.log(f"❌ 登录失败详情: {res}")
                 raise SpiderAuthError(f"抖音登录失败: {res}")
         else:
-            raise SpiderAuthError("登录进程异常退出")
+            raise SpiderAuthError("登录进程异常退出 (无返回结果)")
 
     def _cookies_to_str(self, cookies_list: list) -> str:
         """把 Cookie 列表拼接成请求头可直接使用的字符串。"""
