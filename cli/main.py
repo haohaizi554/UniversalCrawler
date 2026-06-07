@@ -9,11 +9,51 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
-# 设置 PYTHONPATH 包含项目根目录
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 设置 PYTHONPATH 包含项目根目录（去重，避免重复插入）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+
+def _ensure_search_defaults(args: argparse.Namespace, platform: str) -> None:
+    """为平台别名命令补全通用 search 参数的默认值。
+
+    平台别名命令 (platform_base.py) 只定义了部分参数，
+    但 handle_search_command 需要完整的参数集。
+    此函数为缺失的属性设置合理默认值。
+    """
+    # 设置 source（核心字段）
+    args.source = platform
+
+    # 通用 search 参数默认值
+    _defaults = {
+        "save_dir": None,
+        "max_items": None,
+        "max_pages": None,
+        "timeout": None,
+        "individual_only": False,
+        "priority": None,
+        "proxy": None,
+        "config": None,
+        "select": None,
+        "exclude": None,
+        "select_all": False,
+        "first": False,
+        "last": False,
+        "interactive": False,
+        "pipe": False,
+        "preload_choices": None,
+        "quiet": False,
+        "pretty": False,
+        "run_timeout": None,
+        "no_download": False,
+    }
+    for key, default in _defaults.items():
+        if not hasattr(args, key):
+            setattr(args, key, default)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -93,6 +133,12 @@ def main(argv: list[str] | None = None) -> int:
     add_platforms_arguments(platforms_parser)
     platforms_parser.set_defaults(_handler=handle_platforms_command)
 
+    # interactive
+    from cli.commands.interactive import add_interactive_arguments, handle_interactive_command
+    interactive_parser = subparsers.add_parser("interactive", help="交互式引导模式", aliases=["i"])
+    add_interactive_arguments(interactive_parser)
+    interactive_parser.set_defaults(_handler=handle_interactive_command)
+
     # 平台别名 (douyin, bilibili, kuaishou, missav)
     from cli.commands.platform_base import add_platform_subparsers
     add_platform_subparsers(subparsers)
@@ -109,14 +155,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    # 平台别名特殊处理
-    if args.main_command in ("douyin", "bilibili", "kuaishou", "missav"):
-        platform = args.main_command
+    # 平台别名特殊处理（使用 resolve_platform 支持别名如 dy/bili/bl/ks/miss）
+    from cli.commands.platform_base import resolve_platform
+    resolved_platform = resolve_platform(args.main_command)
+    if resolved_platform:
+        platform = resolved_platform
         platform_subcmd = getattr(args, f"{platform}_subcommand", None)
 
         if platform_subcmd == "search":
-            # 映射到通用 search
-            args.source = platform
+            # 补全通用 search 参数的默认值（平台别名命令可能缺少这些属性）
+            _ensure_search_defaults(args, platform)
             return handle_search_command(args)
         elif platform_subcmd == "download":
             return handle_download_command(args)

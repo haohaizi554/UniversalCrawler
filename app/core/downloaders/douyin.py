@@ -32,6 +32,12 @@ class DouyinDownloader(BaseDownloader):
             "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
             "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
         }
+        # 与快手下载器对齐：支持 CLI/SDK 传入的 cookie（字符串）和 GUI spider 传入的 cookies（字典）
+        cookie_dict = video_item.meta.get("cookies")
+        if isinstance(cookie_dict, dict):
+            headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
+        elif isinstance(video_item.meta.get("cookie"), str):
+            headers["Cookie"] = video_item.meta["cookie"]
         debug_logger.log(
             component="DouyinDownloader",
             action="prepare_download",

@@ -77,6 +77,8 @@ class TopBarWidget(QFrame):
         self.btn_theme.setToolTip("切换主题")
         self.layout.addWidget(self.btn_theme)
 
+
+
     def set_theme_icon(self, is_dark_theme: bool) -> None:
         """设置 `theme_icon` 对应的值或运行状态，供 `TopBarWidget` 使用。"""
         self.btn_theme.setText("🌙" if is_dark_theme else "☀️")

@@ -43,9 +43,11 @@ class ChunkedDownloader(BaseDownloader):
             "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
             "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
         }
+        proxy = video_item.meta.get("proxy")
+        proxies = {"http": proxy, "https": proxy} if proxy else None
         timeout = cfg.get("download", "request_timeout", 60)
         try:
-            resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True)
+            resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True, proxies=proxies)
             resp.raise_for_status()
         except requests.RequestException as exc:
             raise StreamDownloadError(f"分块下载预检查失败: {exc}") from exc
@@ -94,7 +96,7 @@ class ChunkedDownloader(BaseDownloader):
             try:
                 request_headers = headers.copy()
                 request_headers["Range"] = f"bytes={start_byte}-{end_byte}"
-                with requests.get(url, headers=request_headers, stream=True, timeout=timeout) as response:
+                with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
                     if response.status_code != 206:
                         raise StreamDownloadError(f"分块请求未返回 206: {response.status_code}")
                     response.raise_for_status()

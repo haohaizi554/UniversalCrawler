@@ -12,7 +12,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = PROJECT_ROOT / "dist" / "UniversalCrawlerPro"
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
-ASSET_SCRIPT = PROJECT_ROOT / "packaging" / "generate_installer_assets.py"
 SETUP_EXE = OUTPUT_DIR / "UniversalCrawlerPro_Setup.exe"
 
 

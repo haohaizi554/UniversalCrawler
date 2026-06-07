@@ -78,7 +78,8 @@ class CLIRunner:
         from cli.selection import AutoSelection
 
         self.source = source
-        self.keyword = keyword
+        # 与 GUI inp_search.text().strip() 对齐：去除前后空白
+        self.keyword = keyword.strip() if isinstance(keyword, str) else keyword
         self.save_dir = save_dir
         self.config = dict(config or {})
         self.selection_strategy = selection_strategy or AutoSelection()
@@ -95,12 +96,33 @@ class CLIRunner:
         self.finished: bool = False
         self._spider = None
         self._dl_manager = None
+        self._cancelled: bool = False       # 用户取消标志（与 SKILL.md "cancelled" 状态对齐）
 
     def _log(self, msg: str) -> None:
         """CLI 内部日志。"""
         if self.verbose:
             sys.stderr.write(f"[CLI] {msg}\n")
             sys.stderr.flush()
+
+    def _debug_log(self, action: str, message: str, status_code: str,
+                   level: str | None = None, details: dict | None = None) -> None:
+        """结构化日志（与 GUI ApplicationController 和 WebController 对齐）。
+
+        使用 debug_logger 记录关键事件，便于 CLI 问题排查。
+        不影响 GUI/Web 的日志行为。
+        """
+        try:
+            from app.debug_logger import debug_logger
+            debug_logger.log(
+                component="CLIRunner",
+                action=action,
+                message=message,
+                status_code=status_code,
+                level=level,
+                details=details or {},
+            )
+        except Exception:
+            pass  # debug_logger 不可用时不影响 CLI 功能
 
     # ---- 与 GUI ApplicationController._connect_window_signals 对称 ----
 
@@ -120,14 +142,24 @@ class CLIRunner:
         3. self.videos[item.id] = item
         4. window.add_video_row(item)
         5. dl_manager.add_task(item, save_dir)
+
+        CLI/SDK/API 差异：download=False 时状态为 "📋 已收集"（只搜索不下载），
+        与 GUI 的 "⏳ 等待中" 区分开，避免误导用户以为正在等待下载。
         """
-        item.status = "⏳ 等待中"
+        if self.download:
+            item.status = "⏳ 等待中"
+        else:
+            item.status = "📋 已收集"
         item.progress = 0
         self.videos[item.id] = item
 
         if self.download and self._dl_manager:
             # 与 GUI 完全一致：立即入队下载
             self._dl_manager.add_task(item, self.save_dir)
+
+        # 与 GUI/Web 对齐：记录 item 发现日志
+        self._debug_log("item_found", "CLI 发现可下载资源", "CLI_ITEM_FOUND",
+                         details={"video_id": item.id, "title": item.title, "source": item.source})
 
     def _on_select_tasks(self, items: list) -> None:
         """spider.sig_select_tasks 回调（与 GUI _on_spider_select_tasks 对称）。
@@ -163,7 +195,10 @@ class CLIRunner:
     def _on_finished(self) -> None:
         """spider.sig_finished 回调（与 GUI _on_spider_finished 对称）。"""
         self.finished = True
+        self._spider = None  # 与 GUI/Web 一致：清空 spider 引用
         self._log("✅ 爬虫任务结束")
+        # 与 GUI/Web 对齐：记录爬虫完成日志
+        self._debug_log("crawl_finished", "CLI 爬虫任务结束", "CLI_CRAWL_FINISH")
 
     # ---- 与 GUI ApplicationController._connect_download_signals 对称 ----
 
@@ -179,15 +214,34 @@ class CLIRunner:
         """下载完成（与 GUI _on_download_finished 对齐：status="✅ 完成", progress=100）。"""
         item = self._apply_video_state(video_id, status="✅ 完成", progress=100)
         if item and self.log_to_stderr:
-            sys.stderr.write(f"✅ 下载完成: {item.title}\n")
+            # 与 WebController 对齐：日志包含 local_path
+            local_path = item.local_path or ""
+            sys.stderr.write(f"✅ 下载完成: {item.title}" + (f" → {local_path}" if local_path else "") + "\n")
             sys.stderr.flush()
+        # 与 GUI/Web 对齐：记录下载完成日志
+        if item:
+            self._debug_log("download_finished", "CLI 下载任务完成", "CLI_DL_FINISH",
+                             details={"video_id": video_id, "title": item.title,
+                                      "local_path": item.local_path or ""})
 
     def _on_task_error(self, video_id: str, error: str) -> None:
-        """下载失败（与 GUI _on_download_error 对齐：status="❌ 失败"）。"""
-        item = self._apply_video_state(video_id, status="❌ 失败")
-        if item and self.log_to_stderr:
-            sys.stderr.write(f"❌ 下载失败 [{item.title}]: {error}\n")
-            sys.stderr.flush()
+        """下载失败（与 GUI _on_download_error 对齐：status="❌ 失败"）。
+
+        额外优化：将错误原因存入 item.meta["download_error"]，
+        便于 CLI/SDK/API 输出中展示失败原因（GUI 不读取此字段，不受影响）。
+        """
+        # 与 REST API /api/download 错误路径对齐：失败时 progress=0
+        item = self._apply_video_state(video_id, status="❌ 失败", progress=0)
+        if item:
+            # 存储错误原因到 meta（不影响 GUI，GUI 不读取此字段）
+            item.meta["download_error"] = error
+            if self.log_to_stderr:
+                sys.stderr.write(f"❌ 下载失败 [{item.title}]: {error}\n")
+                sys.stderr.flush()
+            # 与 GUI/Web 对齐：记录下载失败日志
+            self._debug_log("download_error", "CLI 下载任务失败", "CLI_DL_ERROR",
+                             level="ERROR",
+                             details={"video_id": video_id, "title": item.title, "error": error})
 
     def _apply_video_state(self, vid: str, *, status: str | None = None, progress: int | None = None):
         """更新内存中的视频状态（与 GUI _apply_video_state 对齐）。"""
@@ -217,6 +271,11 @@ class CLIRunner:
 
         def ask_user_selection_sync(spider_self, items):
             """同步版 ask_user_selection：直接调 selection_strategy，不走 Qt 信号。"""
+            # 如果已经取消，后续选择直接返回空列表并停止 spider
+            if runner._cancelled:
+                runner._log("用户已取消，跳过后续选择")
+                return []
+
             runner.selection_count += 1
             prompt = f"二次选择 #{runner.selection_count}: {len(items)} 个候选"
             runner._log(prompt)
@@ -226,6 +285,9 @@ class CLIRunner:
                 runner._log(f"选择策略异常: {e}，默认全选")
                 indices = list(range(len(items)))
             if indices is None:
+                # 用户取消（如交互式选择输入 q）：与 SKILL.md "cancelled" 状态对齐
+                runner._cancelled = True
+                runner._log("用户取消选择，正在停止爬虫...")
                 indices = []
             runner._log(f"  → 选中 {len(indices)} 项: {indices[:10]}{'...' if len(indices) > 10 else ''}")
             return indices
@@ -297,7 +359,15 @@ class CLIRunner:
             }
 
         spider_cls = plugin.get_spider_class()
-        spider = spider_cls(keyword=self.keyword, config=self.config)
+        try:
+            spider = spider_cls(keyword=self.keyword, config=self.config)
+        except Exception as exc:
+            # 与 WebController start_crawl 对齐：捕获 spider 创建异常，返回结构化错误
+            self._log(f"❌ 创建爬虫失败: {exc}")
+            return {
+                "status": "error",
+                "error": f"创建爬虫失败: {exc}",
+            }
         self._spider = spider
 
         # 步骤 2：创建下载管理器（与 GUI ApplicationController.__init__ 一致）
@@ -314,6 +384,14 @@ class CLIRunner:
 
         # 步骤 4：启动 spider（与 GUI on_start_crawl 一致）
         self._log(f"🟢 启动任务 | 模式: {plugin.name} | 关键词: {self.keyword}")
+        # 与 GUI/Web 对齐：记录爬虫启动日志
+        self._debug_log("start_crawl", "CLI 启动爬虫任务", "CLI_CRAWL_START",
+                         details={
+                             "keyword": self.keyword,
+                             "source_id": self.source,
+                             "plugin_name": plugin.name,
+                             "active_config": {k: v for k, v in self.config.items() if v not in (None, "", [], {})},
+                         })
         spider.start()
 
         # 步骤 5：等待 spider 完成（与 GUI 事件循环等待一致）
@@ -323,29 +401,60 @@ class CLIRunner:
                 self._log(f"spider 超过 {self.timeout}s 未完成，强制停止")
                 spider.stop()
                 spider.wait(5000)
-                # 等待下载完成
-                self._wait_downloads(timeout=30)
+                # 等待下载完成（给 30s 缓冲）
+                dl_timed_out = self._wait_downloads(timeout=30)
+                # 清理：停止仍在运行的下载线程（与 GUI shutdown 一致）
+                if self._dl_manager:
+                    self._dl_manager.stop_all()
+                # 超时检测：标记仍在下载中的项目
+                if dl_timed_out:
+                    for item in self.videos.values():
+                        if item.status in ("⏳ 下载中...", "⏳ 等待中"):
+                            item.status = "❌ 超时"
+                            item.meta["download_error"] = "下载超时 (30s)"
+                # 与 GUI _on_spider_finished 对齐：清空 spider 引用，避免悬空引用
+                self._spider = None
                 return self._build_result("timeout", start, f"timeout after {self.timeout}s")
         else:
             spider.wait()
 
         # 步骤 6：等待下载完成（GUI 中下载是异步的，CLI 需要等所有下载结束）
+        download_timed_out = False
         if self.download and self._dl_manager:
-            self._wait_downloads(timeout=300)
+            download_timed_out = self._wait_downloads(timeout=300)
+
+        # 清理 DownloadManager 资源（与 GUI shutdown 对齐）
+        if self._dl_manager:
+            self._dl_manager.stop_all()
+
+        # 超时检测：标记仍在下载中的项目（与 CLI download 命令和 SDK download_video 对齐）
+        if download_timed_out:
+            for item in self.videos.values():
+                if item.status in ("⏳ 下载中...", "⏳ 等待中"):
+                    item.status = "❌ 超时"
+                    item.meta["download_error"] = "下载超时 (300s)"
 
         elapsed = round(time.time() - start, 2)
         self._log(f"spider 已结束, 耗时 {elapsed}s, 收集到 {len(self.videos)} 个项目, 二次选择 {self.selection_count} 次")
 
+        # 用户取消：返回 "cancelled" 状态（与 SKILL.md 文档对齐）
+        if self._cancelled:
+            self._log("用户取消操作")
+            return self._build_result("cancelled", start, "用户取消")
+
         return self._build_result("ok" if not self.error else "error", start)
 
-    def _wait_downloads(self, timeout: float = 300) -> None:
+    def _wait_downloads(self, timeout: float = 300) -> bool:
         """等待所有下载任务完成。
 
         GUI 中下载是异步的（用户可以看到进度条实时更新），
         CLI 中需要等所有下载结束才能返回最终结果。
+
+        Returns:
+            bool: 是否超时 (True=超时, False=正常完成)
         """
         if not self._dl_manager:
-            return
+            return False
 
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -355,7 +464,7 @@ class CLIRunner:
             # 检查队列是否还有任务
             queued = self._dl_manager.queue.qsize()
             if active == 0 and queued == 0:
-                break
+                return False
             # 处理 Qt 事件（DownloadWorker 是 QThread，需要 processEvents）
             try:
                 from PyQt6.QtWidgets import QApplication
@@ -365,6 +474,7 @@ class CLIRunner:
             except Exception:
                 pass
             time.sleep(0.5)
+        return True
 
     def _build_result(self, status: str, start_time: float, error: str | None = None) -> dict:
         """构建返回结果（items 包含最终 status/progress/local_path，与 GUI 最终状态一致）。"""
@@ -392,6 +502,7 @@ class CLIRunner:
 
     def stop(self) -> None:
         """中途停止爬虫（与 GUI on_stop_crawl 对齐）。"""
+        self._cancelled = True
         if self._spider and self._spider.isRunning():
             self._spider.stop()
         if self._dl_manager:
@@ -404,12 +515,16 @@ def run_search(
     save_dir: str = "downloads",
     selection_strategy=None,
     download: bool = True,
+    timeout: float | None = None,
     **config,
 ) -> dict:
     """便捷函数：启动一次爬虫并返回结果。
 
+    与 UcrawlSDK.search() 参数对齐：支持 timeout（整体超时秒数）。
+
     Example:
         result = run_search("douyin", "测试关键词", max_items=20, save_dir="downloads")
+        result = run_search("douyin", "测试关键词", timeout=60)
     """
     runner = CLIRunner(
         source=source,
@@ -418,5 +533,6 @@ def run_search(
         selection_strategy=selection_strategy,
         config=config,
         download=download,
+        timeout=timeout,
     )
     return runner.run()

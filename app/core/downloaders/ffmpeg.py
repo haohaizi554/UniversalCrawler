@@ -52,8 +52,10 @@ class FFmpegDownloader(BaseDownloader):
         ffmpeg = FFmpegExternalTool.resolve_executable()
         if not ffmpeg:
             raise ExternalToolNotFoundError("未找到 ffmpeg.exe")
+        proxy = video_item.meta.get("proxy")
+        proxies = {"http": proxy, "https": proxy} if proxy else None
         try:
-            resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True)
+            resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True, proxies=proxies)
             real_url = resp.url
             debug_logger.log_api(
                 component="FFmpegDownloader",
@@ -75,7 +77,7 @@ class FFmpegDownloader(BaseDownloader):
                 trace_id=trace_id,
             )
 
-        cmd = FFmpegExternalTool.build_download_command(ffmpeg, url, save_path, headers)
+        cmd = FFmpegExternalTool.build_download_command(ffmpeg, url, save_path, headers, proxy=proxy)
         debug_logger.log_command(
             component="FFmpegDownloader",
             tool_name="ffmpeg",

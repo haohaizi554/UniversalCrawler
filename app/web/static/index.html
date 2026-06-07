@@ -4,6 +4,42 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Universal Crawler Pro</title>
+<!--
+  修复闪烁 BUG: 避免页面刷新时先渲染默认状态再被 WebSocket 配置覆盖
+  策略:
+  1. <head> 内联脚本在 HTML 解析阶段立刻从 localStorage 读取上次保存的主题/源/目录
+  2. 直接设置 <html data-theme> 属性和初始变量，让首屏 CSS 直接渲染最终状态
+  3. 主体内容默认隐藏 (body.loading)，直到 WebSocket config 消息到达后才显示
+-->
+<script>
+(function() {
+  try {
+    // 主题: localStorage 缓存的深色/浅色状态
+    var cachedTheme = localStorage.getItem('cached_dark_theme');
+    if (cachedTheme !== null) {
+      var isDark = cachedTheme === 'true';
+      if (!isDark) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      } else {
+        document.documentElement.setAttribute('data-theme', '');
+      }
+    }
+    // 源: 缓存上次选择 (kuaishou/douyin/bilibili/missav)
+    var cachedSource = localStorage.getItem('cached_last_source');
+    if (cachedSource) {
+      // 写入到 documentElement dataset，等待 init 时读取
+      document.documentElement.dataset.cachedSource = cachedSource;
+    }
+    // 目录: 缓存上次保存路径
+    var cachedDir = localStorage.getItem('cached_save_dir');
+    if (cachedDir) {
+      document.documentElement.dataset.cachedDir = cachedDir;
+    }
+  } catch(e) {
+    // localStorage 不可用时静默降级
+  }
+})();
+</script>
 <style>
 /* ===== VS Code Dark+ 配色 (与 themes.py 完全一致) ===== */
 :root {
@@ -25,6 +61,7 @@
   --scrollbar-hover: #fff;
   --video-bg: #0a0a0a;
   --log-bg: #1a1a1a;
+  --slider-track: #3c3c3c;
   --muted-text: #888;
   --alt-row: rgba(255,255,255,.03);
   --hover-row: rgba(255,255,255,.06);  /* 与 GUI QTableWidget::item:hover 一致 */
@@ -51,6 +88,7 @@
   --scrollbar-hover: #666;
   --video-bg: #e8e8e8;
   --log-bg: #f0f0f0;
+  --slider-track: #d5d5d5;
   --muted-text: #666;
   --alt-row: rgba(0,0,0,.03);
   --hover-row: rgba(0,0,0,.05);  /* 与 GUI QTableWidget::item:hover 一致 */
@@ -60,6 +98,26 @@
 }
 
 * { margin:0; padding:0; box-sizing:border-box; }
+
+/* ===== 修复闪烁 BUG: 初始隐藏主体，等 config 消息到达后由 JS 移除 .loading ===== */
+body.loading { visibility:hidden; }
+/* 加载占位遮罩 (仅在 loading 状态下可见) */
+body.loading::before {
+  content:"";
+  position:fixed; inset:0;
+  background: var(--bg);
+  z-index: 999999;
+  visibility: visible;
+}
+body.loading::after {
+  content:"正在加载...";
+  position:fixed; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  color: var(--muted-text);
+  font-size:14px;
+  z-index: 999999;
+  visibility: visible;
+}
 body {
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
   background: var(--bg);
@@ -86,6 +144,7 @@ body {
   border-bottom:1px solid var(--border);
   flex-shrink:0;
   height:50px;
+  min-width:0;
 }
 
 /* ===== 下拉框 (与 GUI QComboBox 风格一致) ===== */
@@ -110,6 +169,7 @@ body {
   flex:1; padding:4px; border:1px solid var(--border); border-radius:4px;
   background:var(--input); color:var(--input-text);
   font-size:13px; height:30px; outline:none;
+  min-width:180px;
 }
 .search-input:focus { border:1px solid var(--accent); }
 .search-input::placeholder { color:var(--muted-text); }
@@ -141,10 +201,22 @@ body {
   padding:5px 15px; font-size:13px; cursor:pointer;
   height:30px; white-space:nowrap;
   transition:background .1s;
+  flex-shrink:0;
 }
 .btn:hover { background:var(--btn-hover); }
 .btn:active { background:var(--btn-pressed); }
 .btn:disabled { opacity:.5; cursor:not-allowed; }
+.btn:focus-visible,
+.op-btn:focus-visible,
+.play-btn:focus-visible,
+.fullscreen-btn:focus-visible,
+.source-select:focus-visible,
+.search-input:focus-visible,
+.seek-slider:focus-visible,
+.dir-item:focus-visible {
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+}
 .btn-primary {
   background:var(--accent); border:none; color:#fff; font-weight:bold;
 }
@@ -339,13 +411,14 @@ body {
   line-height:1; flex-shrink:0; padding:0;
 }
 .play-btn:hover { background:var(--btn-hover); }
-/* 修复 v14: 主图切换按钮 (上一项/下一项)，与 GUI 风格保持一致 */
+/* 保留 DOM/API 给键盘与回归测试使用；视觉上对齐 GUI，控制条只显示播放、进度、时间、全屏。 */
 .nav-btn {
   width:32px; height:32px; border-radius:4px;
   background:var(--btn-bg); border:1px solid var(--border);
   color:var(--text); cursor:pointer; font-size:14px;
   display:flex; align-items:center; justify-content:center;
   flex-shrink:0; transition:background .15s;
+  display:none;
 }
 .nav-btn:hover { background:var(--btn-hover); }
 .nav-btn:active { background:var(--accent); color:#fff; }
@@ -353,7 +426,7 @@ body {
 /* 修复 BUG-142: 进度条丝滑拖动 (与 GUI QSlider.setTracking(True) 一致) */
 .seek-slider {
   flex:1; min-width:0; height:6px; -webkit-appearance:none; appearance:none;
-  background:linear-gradient(to right, var(--accent) 0%, var(--accent) 0%, var(--input) 0%, var(--input) 100%);
+  background:linear-gradient(to right, var(--accent) 0%, var(--accent) 0%, var(--slider-track) 0%, var(--slider-track) 100%);
   border-radius:3px; outline:none; cursor:pointer;
   transition: background 0s;  /* 拖动时不延迟 */
 }
@@ -548,7 +621,8 @@ body.is-fullscreen .preview-panel {
 }
 </style>
 </head>
-<body>
+<!-- 修复闪烁 BUG: body 加 .loading 类，config 消息到达后由 JS 移除 -->
+<body class="loading">
 
 <!-- ===== 顶部工具栏 ===== -->
 <div class="top-bar" id="topBar">
@@ -557,7 +631,7 @@ body.is-fullscreen .preview-panel {
   <div class="dynamic-area" id="dynamicArea"></div>
   <button id="startBtn" class="btn btn-primary" onclick="startCrawl()">🚀 启动任务</button>
   <button id="stopBtn" class="btn btn-danger" onclick="stopCrawl()" disabled>🛑 停止</button>
-  <button class="btn btn-dir" onclick="onChangeDirClicked()" title="点击弹出系统资源管理器选择文件夹">📂 更改目录</button>
+  <button class="btn btn-dir" onclick="onChangeDirClicked()" title="打开保存目录选择器">📂 更改目录</button>
   <button class="btn" onclick="window.open('/api/debug/latest-log','_blank')">📄 最新日志</button>
   <button class="btn" onclick="window.open('/api/debug/error-summary','_blank')">🚨 错误摘要</button>
   <button class="btn" onclick="copyTraceId()">📋 复制Trace</button>
@@ -631,6 +705,7 @@ body.is-fullscreen .preview-panel {
     <div class="dir-modal-body">
       <div class="dir-path-row">
         <input id="dirInput" value="" placeholder="输入目录路径，如 D:\downloads" />
+        <button class="btn" onclick="pickNativeDir()" title="尝试打开系统原生目录选择器">系统选择</button>
         <button class="btn btn-primary" onclick="dirBrowsePath()">跳转</button>
       </div>
       <div class="dir-nav-row">
@@ -688,13 +763,35 @@ let videos = {};
 let videoOrder = [];
 let platforms = [];
 let isCrawling = false;
-let currentSource = 'kuaishou';
-let currentSaveDir = 'downloads';
+// 修复闪烁 BUG: 优先从 localStorage 读取上次值，避免先用默认值再被 WebSocket 覆盖
+let currentSource = (function() {
+  try {
+    var cached = localStorage.getItem('cached_last_source');
+    if (cached) return cached;
+  } catch(e) {}
+  return 'kuaishou';
+})();
+let currentSaveDir = (function() {
+  try {
+    var cached = localStorage.getItem('cached_save_dir');
+    if (cached) return cached;
+  } catch(e) {}
+  return 'downloads';
+})();
 let selectedVideoId = null;
 let currentPlayingId = null;  // 独立于 selectedVideoId，记录当前正在播放的视频
-let isDarkTheme = true;
+// 修复闪烁 BUG: 主题也优先从 localStorage 读取
+let isDarkTheme = (function() {
+  try {
+    var cached = localStorage.getItem('cached_dark_theme');
+    if (cached !== null) return cached === 'true';
+  } catch(e) {}
+  return true;
+})();
 let recentDirs = [];
 let isFullscreenMode = false;
+// 主体首次渲染标志 (修复闪烁: 等 WebSocket config 消息到达后才显示)
+let _initReady = false;
 // 目录浏览器状态
 let dirCurrentPath = '';
 let dirParentPath = null;
@@ -784,6 +881,17 @@ function sendWS(type, data) {
   }
 }
 
+function mergeVideoPayload(videoId, data) {
+  const item = videos[videoId];
+  if (!item || !data) return;
+  if (data.title) item.title = data.title;
+  if (data.local_path !== undefined) item.local_path = data.local_path || item.local_path || '';
+  if (data.content_type !== undefined) item.content_type = data.content_type || item.content_type || '';
+  if (data.meta && typeof data.meta === 'object') {
+    item.meta = Object.assign({}, item.meta || {}, data.meta);
+  }
+}
+
 // ======== Server Message Handler ========
 function handleServerMessage(msg) {
   const {type, data} = msg;
@@ -806,6 +914,8 @@ function handleServerMessage(msg) {
       platforms = data;
       renderPlatformSelect();
       renderDynamicArea();
+      // 修复闪烁 BUG: platforms 到达时也尝试解锁（config 可能比 platforms 先到）
+      if (_initReady) _unlockBody();
       break;
     case 'config':
       applyConfig(data);
@@ -813,8 +923,19 @@ function handleServerMessage(msg) {
         currentSource = data.common.last_source;
         const sel = document.getElementById('sourceSelect');
         if (sel) sel.value = currentSource;
+        // 同步更新搜索框 placeholder（与 renderPlatformSelect 中 onchange 逻辑一致）
+        const p = platforms.find(x => x.id === currentSource);
+        document.getElementById('searchInput').placeholder = p ? p.search_placeholder : '输入关键词...';
         renderDynamicArea();
       }
+      // 修复闪烁 BUG: 第一次收到 config 消息时移除 .loading 类，显示主体
+      // 后续收到时只更新缓存（如果用户在另一标签页改了配置）
+      if (!_initReady) {
+        _initReady = true;
+        _unlockBody();
+      }
+      // 同步 localStorage 缓存（确保跨标签页/刷新也保持一致）
+      _syncLocalCache();
       break;
     case 'log':
       appendLog(data.message);
@@ -830,6 +951,7 @@ function handleServerMessage(msg) {
       if (videos[data.video_id]) {
         if (data.status != null) videos[data.video_id].status = data.status;
         if (data.progress != null) videos[data.video_id].progress = data.progress;
+        mergeVideoPayload(data.video_id, data);
         updateRow(data.video_id);  // 增量更新单行，与 GUI update_video_status 一致
       }
       break;
@@ -842,13 +964,14 @@ function handleServerMessage(msg) {
       }
       break;
     case 'video_removed':
+      if (currentPlayingId === data.video_id) closePreview();
       delete videos[data.video_id];
       videoOrder = videoOrder.filter(id => id !== data.video_id);
       if (selectedVideoId === data.video_id) selectedVideoId = null;
-      if (currentPlayingId === data.video_id) { currentPlayingId = null; }
       removeRow(data.video_id);  // 增量删除单行，与 GUI remove_video_row 一致
       break;
     case 'clear_videos':
+      if (currentPlayingId) closePreview();
       videos = {}; videoOrder = [];
       selectedVideoId = null;
       currentPlayingId = null;
@@ -858,13 +981,14 @@ function handleServerMessage(msg) {
         document.getElementById('pathLabel').title = currentSaveDir;
       }
       document.getElementById('queueBody').innerHTML = '';  // 清空表格
+      updateNavBtnsState();
       break;
     case 'task_started':
       if (videos[data.video_id]) {
         videos[data.video_id].status = '⏳ 下载中...';
         videos[data.video_id].progress = 0;
         // 修复 BUG-139: 同步 local_path 让 Web 端能立即播放正在下载的视频
-        if (data.local_path) videos[data.video_id].local_path = data.local_path;
+        mergeVideoPayload(data.video_id, data);
         updateRow(data.video_id);
       }
       break;
@@ -872,10 +996,24 @@ function handleServerMessage(msg) {
       if (videos[data.video_id]) { videos[data.video_id].progress = data.progress; updateRow(data.video_id); }
       break;
     case 'task_finished':
-      if (videos[data.video_id]) { videos[data.video_id].status = '✅ 完成'; videos[data.video_id].progress = 100; updateRow(data.video_id); }
+      if (videos[data.video_id]) {
+        videos[data.video_id].status = '✅ 完成';
+        videos[data.video_id].progress = 100;
+        // 与 GUI _on_download_finished 一致：同步 local_path
+        mergeVideoPayload(data.video_id, data);
+        updateRow(data.video_id);
+      }
       break;
     case 'task_error':
-      if (videos[data.video_id]) { videos[data.video_id].status = '❌ 失败'; updateRow(data.video_id); }
+      if (videos[data.video_id]) {
+        videos[data.video_id].status = '❌ 失败';
+        mergeVideoPayload(data.video_id, data);
+        // 与 GUI _on_download_error 一致：显示错误原因
+        if (data.error) {
+          appendLog(`❌ 下载失败 [${videos[data.video_id].title}]: ${data.error}`);
+        }
+        updateRow(data.video_id);
+      }
       break;
     case 'crawl_state':
       setCrawlState(data.is_running);
@@ -903,6 +1041,8 @@ function renderPlatformSelect() {
     const p = platforms.find(x => x.id === currentSource);
     document.getElementById('searchInput').placeholder = p ? p.search_placeholder : '输入关键词...';
     renderDynamicArea();
+    // 修复闪烁 BUG: 切换源时立即同步到 localStorage
+    _cacheSource(currentSource);
     // #27: Source change saves to config via WebSocket
     sendWS('change_source', { source: currentSource });
   };
@@ -1168,6 +1308,32 @@ function dirBrowsePath() {
   if (path) dirLoadPath(path);
 }
 
+function pickNativeDir() {
+  appendLog('📂 正在打开系统目录选择器...');
+  fetch('/api/dir/pick-native', { method: 'POST' })
+    .then(res => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(data => {
+      if (data.error) {
+        appendLog('⚠️ 系统目录选择器不可用: ' + data.error);
+        return;
+      }
+      if (!data.path) {
+        appendLog('ℹ️ 未选择目录，可继续使用目录浏览器');
+        return;
+      }
+      dirSelectedPath = data.path;
+      document.getElementById('dirInput').value = data.path;
+      appendLog(`📂 已选择目录: ${data.path}`);
+      dirLoadPath(data.path);
+    })
+    .catch(err => {
+      appendLog('⚠️ 系统目录选择器不可用，已保留目录浏览器: ' + err.message);
+    });
+}
+
 function confirmDirDialog() {
   // 与 GUI QFileDialog 一致: "选择此目录" = 确认当前浏览的目录
   const dir = dirSelectedPath || document.getElementById('dirInput').value.trim();
@@ -1176,6 +1342,8 @@ function confirmDirDialog() {
   currentSaveDir = dir;
   document.getElementById('pathLabel').textContent = currentSaveDir;
   document.getElementById('pathLabel').title = currentSaveDir;
+  // 修复闪烁 BUG: 切换目录时立即同步到 localStorage
+  _cacheDir(currentSaveDir);
   document.getElementById('dirModal').style.display = 'none';
   appendLog(`📂 正在切换目录: ${currentSaveDir}`);
   // 修复 BUG-182/184: 使用 REST API，后端返回扫描结果，前端直接更新 UI
@@ -1701,8 +1869,35 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', isDarkTheme ? '' : 'light');
   document.getElementById('themeBtn').textContent = isDarkTheme ? '🌙' : '☀️';
   appendLog(`🎨 已切换到${isDarkTheme ? '深色' : '浅色'}主题`);
+  // 修复闪烁 BUG: 同步写入 localStorage，让刷新后直接渲染正确主题
+  try { localStorage.setItem('cached_dark_theme', isDarkTheme ? 'true' : 'false'); } catch(e) {}
   // #26: Theme toggle saves to config via WebSocket
   sendWS('change_theme', { dark_theme: isDarkTheme });
+}
+
+// ======== 修复闪烁 BUG: localStorage 缓存同步与主体解锁 ========
+// _unlockBody: 收到首次 config 消息后移除 body.loading 类，显示主体
+function _unlockBody() {
+  // 双重检查: 确认 platforms 和 config 都已收到
+  if (!platforms || platforms.length === 0) return;
+  document.body.classList.remove('loading');
+}
+
+// _syncLocalCache: 把当前 UI 状态同步到 localStorage，下次刷新直接用
+function _syncLocalCache() {
+  try {
+    localStorage.setItem('cached_dark_theme', isDarkTheme ? 'true' : 'false');
+    if (currentSource) localStorage.setItem('cached_last_source', currentSource);
+    if (currentSaveDir) localStorage.setItem('cached_save_dir', currentSaveDir);
+  } catch(e) {}
+}
+
+// _cacheSource / _cacheDir: 用户切换源/目录时立即写入缓存（不依赖 WebSocket 消息）
+function _cacheSource(src) {
+  try { if (src) localStorage.setItem('cached_last_source', src); } catch(e) {}
+}
+function _cacheDir(dir) {
+  try { if (dir) localStorage.setItem('cached_save_dir', dir); } catch(e) {}
 }
 
 // ======== Keyboard ========
@@ -1742,6 +1937,15 @@ document.addEventListener('keydown', (e) => {
 
 // ======== Init ========
 connectWS();
+
+// 修复闪烁 BUG: 超时保护 (3 秒后如果仍未解锁，强制解锁)
+setTimeout(function() {
+  if (!_initReady) {
+    _initReady = true;
+    _unlockBody();
+    console.warn('[init] config 消息超时，强制解锁主体');
+  }
+}, 3000);
 </script>
 </body>
 </html>

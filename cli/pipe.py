@@ -50,6 +50,10 @@ class PipeSelection(SelectionStrategy):
         self._preloaded = preloaded_choices
         self._call_count = 0
 
+    @property
+    def strategy_name(self) -> str:
+        return "pipe"
+
     def select(self, items: list, prompt: str = "") -> list[int] | None:
         """从 stdin 或预加载中选择。"""
         n = len(items)

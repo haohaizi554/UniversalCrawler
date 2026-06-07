@@ -91,6 +91,7 @@ class BaseDownloader:
             chunk_size=chunk_size,
             support_resume=support_resume,
             error_message=error_message,
+            proxy=video_item.meta.get("proxy"),
         )
 
     def _should_resume_download(self, temp_path: str) -> bool:
@@ -135,10 +136,12 @@ class BaseDownloader:
         chunk_size: int = 8192,
         support_resume: bool = False,
         error_message: str = "下载失败",
+        proxy: str | None = None,
     ) -> None:
         """提供 `_download_http_file` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         temp_path = save_path + ".downloading"
         success = False
+        proxies = {"http": proxy, "https": proxy} if proxy else None
 
         for attempt in range(max_retries):
             if check_stop_func():
@@ -149,7 +152,7 @@ class BaseDownloader:
                 if support_resume and existing_size > 0:
                     request_headers["Range"] = f"bytes={existing_size}-"
 
-                with requests.get(url, headers=request_headers, stream=True, timeout=timeout) as response:
+                with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
                     response.raise_for_status()
                     total_size = int(response.headers.get("content-length", 0))
                     if support_resume and existing_size > 0 and response.status_code == 206:

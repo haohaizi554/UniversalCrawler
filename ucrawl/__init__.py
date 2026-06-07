@@ -14,11 +14,15 @@ from cli import (
     search,
     list_platforms,
     scan_directory,
+    download_video,
     RuleSelection,
-    InteractiveSelection,
+    InteractiveTTYSelection,
+    GUISelection,
     PipeSelection,
+    PipeOutput,
     AutoSelection,
     SelectionStrategy,
+    is_selection_strategy,
 )
 
 __version__ = "1.0.0"
@@ -29,9 +33,13 @@ __all__ = [
     "search",
     "list_platforms",
     "scan_directory",
+    "download_video",
     "RuleSelection",
-    "InteractiveSelection",
+    "InteractiveTTYSelection",
+    "GUISelection",
     "PipeSelection",
+    "PipeOutput",
     "AutoSelection",
     "SelectionStrategy",
+    "is_selection_strategy",
 ]

@@ -25,7 +25,7 @@ from app.utils.runtime_paths import install_root, resolve_resource_file
 class ApplicationController:
     """应用控制器，协调各组件。"""
 
-    VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm")
+    VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
     IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
     def __init__(self):
@@ -230,9 +230,12 @@ class ApplicationController:
 
     def _on_download_error(self, vid, error):
         """把资源标记为失败，并附带错误原因输出到界面与日志。"""
-        item = self._apply_video_state(vid, status="❌ 失败")
+        # 与 REST API /api/download 错误路径对齐：失败时 progress=0
+        item = self._apply_video_state(vid, status="❌ 失败", progress=0)
         if not item:
             return
+        # 与 CLI/Web 对齐：存储错误原因到 meta
+        item.meta["download_error"] = error
         self.window.append_log(f"❌ 下载失败 [{item.title}]: {error}")
         debug_logger.log(
             component="ApplicationController",
@@ -269,6 +272,9 @@ class ApplicationController:
     def _append_scanned_items(self, result) -> None:
         """把扫描得到的媒体结果批量写入缓存并显示到表格。"""
         for item in result.items:
+            # 与 SDK scan_directory 一致：本地文件标记为"✅ 本地"，进度 100%
+            item.status = "✅ 本地"
+            item.progress = 100
             self.videos[item.id] = item
             self.window.add_video_row(item)
 

@@ -33,6 +33,20 @@ class SelectionStrategy(Protocol):
         ...
 
 
+def is_selection_strategy(obj) -> bool:
+    """检查对象是否是有效的 SelectionStrategy 实例（duck-type check）。
+
+    由于 SelectionStrategy 是 Protocol 且未 @runtime_checkable，
+    isinstance() 会抛 TypeError。SDK/REST API 需要用 duck-type 判断。
+    """
+    return (
+        obj is not None
+        and hasattr(obj, "select")
+        and hasattr(obj, "strategy_name")
+        and callable(getattr(obj, "select", None))
+    )
+
+
 def _parse_index_list(s: str, max_count: int) -> list[int]:
     """解析逗号分隔的索引字符串，支持范围 (如 "0,2-5" 或 "0,2:5")。
 
@@ -91,7 +105,8 @@ class RuleSelection(SelectionStrategy):
         first: bool = False,
         last: bool = False,
     ):
-        self.select = select
+        # 关键：不能用 self.select 命名属性，会覆盖下面的 select() 方法
+        self._select_rule = select
         self.exclude = exclude
         self.all = all_items
         self.first = first
@@ -112,10 +127,10 @@ class RuleSelection(SelectionStrategy):
             base = [0]
         elif self.last:
             base = [n - 1]
-        elif self.all or self.select is None:
+        elif self.all or self._select_rule is None:
             base = list(range(n))
         else:
-            base = _parse_index_list(self.select, n)
+            base = _parse_index_list(self._select_rule, n)
             if not base:
                 # select 解析后为空 → 默认全选
                 base = list(range(n))

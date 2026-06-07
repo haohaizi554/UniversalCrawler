@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from cli.defaults import DEFAULT_CONFIG, build_missav_proxy_url, get_platform_defaults, get_default_save_dir, validate_config_types
 from cli.runner import CLIRunner
 from cli.selection import (
     AutoSelection,
@@ -13,30 +14,6 @@ from cli.selection import (
     InteractiveTTYSelection,
     PipeSelection,
 )
-
-# 与 GUI 对齐的默认值
-DEFAULT_CONFIG = {
-    "douyin": {"max_items": 20, "timeout": 10},
-    "bilibili": {"max_pages": 1},
-    "kuaishou": {"max_items": 20},
-    "missav": {
-        "individual_only": False,
-        "priority": "中文字幕优先",
-        "proxy": "http://127.0.0.1:7890"
-    }
-}
-
-
-def build_missav_proxy_url(proxy_str: str) -> str:
-    """与 GUI `build_missav_proxy_url` 完全一致的转换逻辑。"""
-    normalized = proxy_str.strip()
-    if normalized == "Clash (7890)":
-        return "http://127.0.0.1:7890"
-    if normalized == "v2rayN (10809)":
-        return "http://127.0.0.1:10809"
-    if ":" in normalized:
-        return normalized if normalized.startswith("http") else f"http://{normalized}"
-    return "http://127.0.0.1:7890"
 
 
 def add_search_arguments(parser: argparse.ArgumentParser) -> None:
@@ -53,8 +30,8 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--save-dir", "-d",
-        default="downloads",
-        help="保存目录 (默认: downloads)",
+        default=None,
+        help="保存目录 (默认: 从配置读取，通常为 downloads)",
     )
     parser.add_argument(
         "--max-items", type=int, default=None,
@@ -83,10 +60,28 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
         help="代理 URL (仅 missav, 默认: http://127.0.0.1:7890)",
     )
 
+    # 平台特定配置（与 CLI download --config 和 SDK config 对齐）
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="平台特定配置 (JSON 字符串，如 '{\"max_items\":50}')",
+    )
+    # 与 GUI spider build_download_meta 对齐：便捷参数，避免手写 JSON
+    parser.add_argument("--cookie", type=str, default=None, help="Cookie 字符串 (与 --config '{\"cookie\":\"...\"}' 等价)")
+    parser.add_argument("--download-strategy", type=str, default=None, help="下载策略 (m3u8/http，与 GUI spider build_download_meta 对齐)")
+    parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
+    parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
+    # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
+    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，B站合集场景)")
+    parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
+    # 与 GUI spider build_download_meta 对齐：文件名控制
+    parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
+    # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
+    parser.add_argument("--content-type", type=str, default=None, help="内容类型 (video/image/gallery，与 --config '{\"content_type\":\"gallery\"}' 等价，影响文件扩展名和保存路径)")
+
     # 二次选择参数
     sel_group = parser.add_argument_group("二次选择")
-    sel_group.add_argument("--select", help="指定选中的索引 (逗号分隔, 如 0,2,5 或 0,2-5)")
-    sel_group.add_argument("--exclude", help="指定排除的索引 (逗号分隔)")
+    sel_group.add_argument("--select", help="指定选中的索引 (逗号分隔, 如 0,2,5 或 0,2-5 或 0,2:5)")
+    sel_group.add_argument("--exclude", help="指定排除的索引 (逗号分隔, 如 1,3 或 1,3-5 或 1,3:5)")
     sel_group.add_argument("--all", dest="select_all", action="store_true", help="全选 (默认)")
     sel_group.add_argument("--first", action="store_true", help="只选第一个")
     sel_group.add_argument("--last", action="store_true", help="只选最后一个")
@@ -99,20 +94,19 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
 
     # 输出参数
     out_group = parser.add_argument_group("输出")
-    out_group.add_argument("--json", action="store_true", help="输出 JSON 格式 (默认)")
     out_group.add_argument("--quiet", "-q", action="store_true", help="不输出 spider 日志")
-    out_group.add_argument("--pretty", action="store_true", help="人类可读格式")
+    out_group.add_argument("--pretty", action="store_true", help="人类可读格式 (默认 JSON)")
     out_group.add_argument("--run-timeout", type=float, default=None, help="整体超时秒")
-    out_group.add_argument("--no-download", action="store_true", help="只搜索不下载 (与 GUI 不同，默认会自动下载)")
+    out_group.add_argument("--no-download", action="store_true", help="只搜索不下载 (默认会自动下载，与 GUI 一致)")
 
 
 def _build_selection_strategy(args: argparse.Namespace):
     """根据命令行参数构造选择策略。"""
-    if args.interactive:
+    if getattr(args, "interactive", False):
         return InteractiveTTYSelection()
-    if args.pipe:
+    if getattr(args, "pipe", False):
         return PipeSelection()
-    if args.preload_choices:
+    if getattr(args, "preload_choices", None):
         rounds = []
         for token in args.preload_choices.split("|"):
             indices = []
@@ -126,53 +120,132 @@ def _build_selection_strategy(args: argparse.Namespace):
             rounds.append(indices)
         return PipeSelection(preloaded_choices=rounds)
     return RuleSelection(
-        select=args.select,
-        exclude=args.exclude,
-        all_items=args.select_all or args.select is None,
-        first=args.first,
-        last=args.last,
+        select=getattr(args, "select", None),
+        exclude=getattr(args, "exclude", None),
+        all_items=getattr(args, "select_all", False) or getattr(args, "select", None) is None,
+        first=getattr(args, "first", False),
+        last=getattr(args, "last", False),
     )
 
 
 def _build_config(args: argparse.Namespace) -> dict:
-    """根据命令行参数构造 spider config，与 GUI 默认值完全一致。"""
-    config = dict(DEFAULT_CONFIG.get(args.source, {}))
-    if args.max_items is not None:
+    """根据命令行参数构造 spider config，与 GUI 默认值完全一致。
+
+    使用 getattr 安全访问属性，兼容平台别名命令（部分属性可能不存在）。
+    优先从 cfg 持久化配置读取默认值（与 GUI read_*_run_options 对齐），
+    命令行参数覆盖 cfg 默认值。
+
+    合并顺序（与 SDK search() 和 REST API /api/search 对齐）：
+    1. 平台默认值 (get_platform_defaults，从 cfg 读取)
+    2. --config JSON 参数（过滤 None 值，避免覆盖默认值）
+    3. 独立参数 (--max-items, --timeout 等，优先级最高)
+    """
+    source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
+    config = get_platform_defaults(source)
+
+    # 步骤 2：合并 --config JSON（与 SDK config 和 REST API config 对齐）
+    config_json = getattr(args, "config", None)
+    if config_json:
+        try:
+            user_config = json.loads(config_json)
+            if isinstance(user_config, dict):
+                # 与 SDK/REST API 对齐：过滤 None 值，避免覆盖默认值
+                filtered = {k: v for k, v in user_config.items() if v is not None}
+                config.update(filtered)
+        except json.JSONDecodeError:
+            pass  # 校验在 handle_search_command 中完成，这里静默跳过
+
+    # 步骤 3：独立参数覆盖（优先级最高，与 CLI 独立参数语义一致）
+    if getattr(args, "max_items", None) is not None:
         config["max_items"] = args.max_items
-    if args.max_pages is not None:
+    if getattr(args, "max_pages", None) is not None:
         config["max_pages"] = args.max_pages
-    if args.timeout is not None:
+    if getattr(args, "timeout", None) is not None:
         config["timeout"] = args.timeout
-    if args.individual_only:
+    if getattr(args, "individual_only", False):
         config["individual_only"] = True
-    if args.priority:
+    if getattr(args, "priority", None):
         config["priority"] = args.priority
-    if args.proxy:
-        config["proxy"] = build_missav_proxy_url(args.proxy)
+    if getattr(args, "proxy", None):
+        config["proxy"] = args.proxy
+    # 与 GUI spider build_download_meta 对齐：便捷参数合并到 config（优先级最高）
+    if getattr(args, "cookie", None):
+        config["cookie"] = args.cookie
+    if getattr(args, "download_strategy", None):
+        config["download_strategy"] = args.download_strategy
+    if getattr(args, "referer", None):
+        config["referer"] = args.referer
+    if getattr(args, "ua", None):
+        config["ua"] = args.ua
+    # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
+    if getattr(args, "folder_name", None):
+        config["folder_name"] = args.folder_name
+    if getattr(args, "use_subdir", None):
+        config["use_subdir"] = True
+    # 与 GUI spider build_download_meta 对齐：文件名控制
+    if getattr(args, "file_name", None):
+        config["file_name"] = args.file_name
+    # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
+    if getattr(args, "content_type", None):
+        config["content_type"] = args.content_type
+    # 与 REST API/SDK 对齐：统一转换 missav proxy（无论来自 cfg 默认值还是 --proxy 参数）
+    if source == "missav" and "proxy" in config and config["proxy"] is not None:
+        config["proxy"] = build_missav_proxy_url(config["proxy"])
     return config
 
 
 def handle_search_command(args: argparse.Namespace) -> int:
     """执行 search 命令。"""
+    # 与 CLI download --config 和 SDK config 对齐：校验 --config JSON 格式
+    config_json = getattr(args, "config", None)
+    if config_json:
+        try:
+            parsed = json.loads(config_json)
+            if not isinstance(parsed, dict):
+                sys.stderr.write("❌ --config 必须是 JSON 对象\n")
+                return 1
+        except json.JSONDecodeError as e:
+            sys.stderr.write(f"❌ --config JSON 解析失败: {e}\n")
+            return 1
+        # 与 SDK _validate_config 和 REST API _validate_config_types 对齐：校验已知参数类型
+        config_err = validate_config_types(parsed)
+        if config_err:
+            sys.stderr.write(f"❌ {config_err}\n")
+            return 1
+
     config = _build_config(args)
     strategy = _build_selection_strategy(args)
 
+    # 兼容平台别名命令：source 可能来自 _platform 或直接设置
+    source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
+
+    # 与 SDK search() 和 REST API /api/search 对齐：校验 run-timeout > 0
+    run_timeout = getattr(args, "run_timeout", None)
+    if run_timeout is not None and run_timeout <= 0:
+        sys.stderr.write("❌ --run-timeout 必须大于 0\n")
+        return 1
+    # 与 GUI QSpinBox 最小值对齐：校验 --timeout (spider HTTP 超时) > 0
+    spider_timeout = getattr(args, "timeout", None)
+    if spider_timeout is not None and spider_timeout <= 0:
+        sys.stderr.write("❌ --timeout 必须大于 0\n")
+        return 1
+
     runner = CLIRunner(
-        source=args.source,
+        source=source,
         keyword=args.keyword,
-        save_dir=args.save_dir,
+        save_dir=getattr(args, "save_dir", None) or get_default_save_dir(),
         selection_strategy=strategy,
         config=config,
-        verbose=not args.quiet,
-        log_to_stderr=not args.quiet,
-        timeout=args.run_timeout,
-        download=not args.no_download,
+        verbose=not getattr(args, "quiet", False),
+        log_to_stderr=not getattr(args, "quiet", False),
+        timeout=run_timeout,
+        download=not getattr(args, "no_download", False),
     )
 
     result = runner.run()
 
     # 输出
-    if args.pretty:
+    if getattr(args, "pretty", False):
         _print_pretty(result)
     else:
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
@@ -180,9 +253,9 @@ def handle_search_command(args: argparse.Namespace) -> int:
 
     if result.get("status") == "ok":
         return 0
-    if result.get("status") in ("error", "timeout"):
+    if result.get("status") in ("error", "timeout", "cancelled"):
         return 1
-    return 0
+    return 1
 
 
 def _print_pretty(result: dict) -> None:
@@ -202,8 +275,19 @@ def _print_pretty(result: dict) -> None:
 
     for i, item in enumerate(result["items"]):
         sys.stdout.write(f"  [{i}] {item.get('title', '?')}\n")
-        sys.stdout.write(f"      URL: {item.get('url', '?')}\n")
-        sys.stdout.write(f"      状态: {item.get('status', '?')}  进度: {item.get('progress', 0)}%\n")
+        sys.stdout.write(f"      平台: {item.get('source', '?')}  URL: {item.get('url', '?')}\n")
+        status = item.get('status', '?')
+        # 与 GUI 表格"类型"列对齐：显示 content_type（视频/图集/图片）
+        content_type = item.get('content_type', '')
+        type_label = ''
+        if content_type:
+            type_map = {'video': '视频', 'gallery': '图集', 'image': '图片'}
+            type_label = f'  类型: {type_map.get(content_type, content_type)}'
+        sys.stdout.write(f"      状态: {status}  进度: {item.get('progress', 0)}%{type_label}\n")
+        # 显示下载错误原因（与 GUI 日志 "❌ 下载失败 [title]: error" 对齐）
+        meta = item.get('meta', {})
+        if "❌" in status and meta.get("download_error"):
+            sys.stdout.write(f"      错误: {meta['download_error']}\n")
         if item.get("local_path"):
             sys.stdout.write(f"      本地: {item['local_path']}\n")
         sys.stdout.write("\n")

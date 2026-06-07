@@ -1,7 +1,7 @@
 # 示例 2：合集下载
 # 这个脚本演示如何下载 B 站合集
 
-from cli import UcrawlSDK, PipeSelection
+from ucrawl import UcrawlSDK, PipeSelection
 
 
 def main(controller, **kwargs):

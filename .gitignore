@@ -20,6 +20,7 @@ env/
 .idea/
 .vscode/
 *.code-workspace
+.trae
 
 # Build Outputs
 build/
@@ -38,6 +39,7 @@ temp/
 tmp/
 data/
 dataset/
+user_data/
 
 # Local Config / Auth
 config.json
@@ -68,5 +70,5 @@ Desktop.ini
 
 软件测试技术.docx
 大作业要求.docx
-测试案例.txt
+人工测试.txt
 coursework/

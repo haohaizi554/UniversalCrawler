@@ -42,3 +42,21 @@ bundle_root = _resolve_bundle_root()
 browser_root = bundle_root / "ms-playwright"
 if browser_root.exists():
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
+
+
+# Windows 任务栏图标 / 窗口分组：两个 EXE 都用主图标的 AppUserModelID
+# 这样 Windows 任务栏能正确显示 EXE 自带的 favicon.ico 图标资源，
+# 并让两个 EXE 在任务栏独立分组（用户切换窗口时不会合并）
+if os.name == "nt":
+    try:
+        import ctypes
+        exe_name = Path(sys.executable).name.lower() if getattr(sys, "frozen", False) else ""
+        if "crawlerwebportal" in exe_name:
+            app_id = "ucrawl.universalcrawlerpro.web"
+        elif "universalcrawlerpro" in exe_name:
+            app_id = "ucrawl.universalcrawlerpro.main"
+        else:
+            app_id = "ucrawl.universalcrawlerpro.app"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass  # 旧版 Windows 不支持，忽略

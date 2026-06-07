@@ -85,9 +85,9 @@ class FFmpegExternalTool:
         return cls.resolve_executable() is not None
 
     @classmethod
-    def build_download_command(cls, executable: str, url: str, save_path: str, headers: dict[str, str]) -> list[str]:
+    def build_download_command(cls, executable: str, url: str, save_path: str, headers: dict[str, str], proxy: str | None = None) -> list[str]:
         """构造 ffmpeg 直连下载媒体流的命令行参数。"""
-        return [
+        cmd = [
             executable,
             "-y",
             "-user_agent",
@@ -104,6 +104,10 @@ class FFmpegExternalTool:
             "5",
             "-timeout",
             "60000000",
+        ]
+        if proxy:
+            cmd.extend(["-http_proxy", proxy])
+        cmd.extend([
             "-i",
             url,
             "-c",
@@ -113,7 +117,8 @@ class FFmpegExternalTool:
             "-bufsize",
             "10M",
             save_path,
-        ]
+        ])
+        return cmd
 
     @classmethod
     def build_merge_command(
@@ -160,11 +165,12 @@ class NM3U8DLREExternalTool:
         save_path: str,
         user_agent: str,
         referer: str,
+        proxy: str | None = None,
     ) -> list[str]:
         """构造 `N_m3u8DL-RE` 的下载命令，并指定输出目录与文件名。"""
         save_dir = os.path.dirname(save_path)
         save_name_no_ext = os.path.splitext(os.path.basename(save_path))[0]
-        return [
+        cmd = [
             executable,
             source_url,
             "--save-dir",
@@ -176,7 +182,6 @@ class NM3U8DLREExternalTool:
             "--download-retry-count",
             "10",
             "--auto-select",
-            "true",
             "--header",
             f"User-Agent: {user_agent}",
             "--header",
@@ -184,3 +189,6 @@ class NM3U8DLREExternalTool:
             "--mux-after-done",
             "format=mp4",
         ]
+        if proxy:
+            cmd.extend(["--custom-proxy", proxy])
+        return cmd

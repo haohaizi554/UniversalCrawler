@@ -1,4 +1,5 @@
 PyQt6~=6.10.2
+fastapi~=0.120.3
 httpx~=0.28.1
 emoji~=2.14.1
 gmssl~=3.2.2
@@ -8,8 +9,6 @@ Pygments~=2.19.2
 m3u8~=3.6.0
 playwright~=1.57.0
 the-new-hotness~=1.3.0
-ipython~=9.8.0
-traitlets~=5.14.3
-selenium~=4.39.0
-ddt~=1.7.2
 BeautifulReport~=0.1.3
+setuptools~=81.0.0
+python-docx~=1.2.0

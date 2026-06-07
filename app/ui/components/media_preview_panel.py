@@ -28,8 +28,17 @@ class MediaPreviewPanel(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # 修复: 用 QFrame 包裹 QVideoWidget，让样式表能控制背景色
+        # QVideoWidget 是原生渲染控件，样式表无法直接覆盖其内部表面
+        self.vid_container = QFrame()
+        self.vid_container.setObjectName("VideoContainer")
+        vid_layout = QVBoxLayout(self.vid_container)
+        vid_layout.setContentsMargins(0, 0, 0, 0)
+        vid_layout.setSpacing(0)
+
         self.vid_w = ClickableVideoWidget()
         self.vid_w.sig_double_click.connect(self.sig_toggle_fullscreen.emit)
+        vid_layout.addWidget(self.vid_w)
 
         self.img_lbl = QLabel()
         self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -75,7 +84,7 @@ class MediaPreviewPanel(QFrame):
         controls_layout.addWidget(self.lbl_time)
         controls_layout.addWidget(self.btn_fullscreen)
 
-        layout.addWidget(self.vid_w)
+        layout.addWidget(self.vid_container)
         layout.addWidget(self.img_lbl)
         layout.addWidget(self.ctrls)
 
@@ -86,7 +95,7 @@ class MediaPreviewPanel(QFrame):
     def show_image(self, image_path: str) -> None:
         # Stop the player first so image mode stays isolated from video state.
         """执行 `show_image` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
-        self.vid_w.hide()
+        self.vid_container.hide()
         self.img_lbl.show()
         self.player.stop()
         self.current_image_path = image_path
@@ -95,7 +104,7 @@ class MediaPreviewPanel(QFrame):
     def play_video(self, video_path: str) -> None:
         """执行 `play_video` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         self.img_lbl.hide()
-        self.vid_w.show()
+        self.vid_container.show()
         self.player.setSource(QUrl.fromLocalFile(video_path))
         self.player.play()
         self._set_play_button_paused()

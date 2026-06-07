@@ -29,15 +29,18 @@ from cli.sdk import (
     search,
     list_platforms,
     scan_directory,
+    download_video,
 )
 from cli.runner import CLIRunner
 from cli.selection import (
     SelectionStrategy,
     RuleSelection,
     InteractiveTTYSelection,
+    GUISelection,
     PipeSelection,
     PipeOutput,
     AutoSelection,
+    is_selection_strategy,
 )
 
 __all__ = [
@@ -47,15 +50,18 @@ __all__ = [
     "search",
     "list_platforms",
     "scan_directory",
+    "download_video",
     # 核心执行器
     "CLIRunner",
     # 选择策略
     "SelectionStrategy",
     "RuleSelection",
     "InteractiveTTYSelection",
+    "GUISelection",
     "PipeSelection",
     "PipeOutput",
     "AutoSelection",
+    "is_selection_strategy",
 ]
 
 __version__ = "1.0.0"

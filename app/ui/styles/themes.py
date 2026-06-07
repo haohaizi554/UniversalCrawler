@@ -84,14 +84,17 @@ QFrame#ContentPanel {{
 }}
 
 /* ================= 视频播放器区域 ================= */
-QVideoWidget,
-QVideoWidget#VideoSurface {{
+/* 修复: QVideoWidget 是原生渲染控件，样式表无法直接覆盖其内部表面。
+   用 QFrame#VideoContainer 包裹 QVideoWidget，通过容器背景色控制显示效果。 */
+QFrame#VideoContainer {{
     background-color: {video_bg};
-}}
-
-QVideoWidget#VideoSurface {{
     border-top-left-radius: 4px;
     border-top-right-radius: 4px;
+}}
+
+QVideoWidget,
+QVideoWidget#VideoSurface {{
+    background-color: transparent;
 }}
 
 /* ================= 图片显示区域 ================= */

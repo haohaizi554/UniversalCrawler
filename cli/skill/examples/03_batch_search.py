@@ -1,7 +1,7 @@
 # 示例 3：批量搜索
 # 这个脚本演示如何批量搜索多个关键词
 
-from cli import UcrawlSDK, RuleSelection
+from ucrawl import UcrawlSDK, RuleSelection
 
 
 def main(controller, **kwargs):

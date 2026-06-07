@@ -30,6 +30,9 @@ class KuaishouDownloader(BaseDownloader):
         cookie_dict = video_item.meta.get("cookies")
         if isinstance(cookie_dict, dict):
             headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
+        elif isinstance(video_item.meta.get("cookie"), str):
+            # CLI/SDK 传入的 cookie 是字符串格式（GUI spider 传入的是 dict 格式的 cookies）
+            headers["Cookie"] = video_item.meta["cookie"]
 
         debug_logger.log(
             component="KuaishouDownloader",

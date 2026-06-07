@@ -1,4 +1,4 @@
-﻿# 打包说明
+# 打包说明
 
 ## 目标
 
@@ -16,8 +16,6 @@
   - 基于 Inno Setup 生成安装包。
 - `build_release.py`
   - 串联便携版与安装包流程。
-- `generate_installer_assets.py`
-  - 生成安装器资源图。
 
 ## 便携版构建
 

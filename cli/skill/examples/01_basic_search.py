@@ -1,7 +1,7 @@
 # 示例 1：基本搜索
 # 这个脚本演示如何使用 SDK 搜索视频
 
-from cli import UcrawlSDK
+from ucrawl import UcrawlSDK
 
 
 def main(controller, **kwargs):

@@ -13,7 +13,7 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import ExternalToolRunner, NM3U8DLREExternalTool, build_new_console_flags
 
-#基于external.py实现
+
 class N_m3u8DL_RE_Downloader(BaseDownloader):
     """调用 `N_m3u8DL-RE` 完成 HLS 资源下载与状态回传。"""
 
@@ -43,8 +43,9 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         trace_id = video_item.meta.get("trace_id")
         ua = video_item.meta.get("ua", DEFAULT_USER_AGENT)
         referer = video_item.meta.get("referer", "https://www.douyin.com/")
+        proxy = video_item.meta.get("proxy")
 
-        cmd = NM3U8DLREExternalTool.build_download_command(executable, url, save_path, ua, referer)
+        cmd = NM3U8DLREExternalTool.build_download_command(executable, url, save_path, ua, referer, proxy=proxy)
         debug_logger.log_command(
             component="N_m3u8DL_RE_Downloader",
             tool_name="N_m3u8DL-RE",
@@ -57,7 +58,14 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         creation_flags = build_new_console_flags()
         progress_callback(10)
         try:
-            process = subprocess.Popen(cmd, creationflags=creation_flags)
+            # 显式窗口：CREATE_NEW_CONSOLE 让 N_m3u8DL-RE 在独立控制台窗口运行，
+            # 用户可实时看到下载进度，也方便排查问题
+            # stdout/stderr 不重定向，全部输出到控制台窗口
+            process = subprocess.Popen(
+                cmd,
+                creationflags=creation_flags,
+            )
+
             ExternalToolRunner.wait_process(process, check_stop_func, progress_callback, 50)
 
             if process.returncode != 0:
