@@ -295,6 +295,9 @@ class BilibiliSpider(BaseSpider):
                     q_text = q_map.get(q_id, "高清")
                     self.log(f"   ✨ 获取成功 [{q_text}]")
                     folder_name = task.get("folder_name")
+                    proxy_str = self.config.get("proxy", "")
+                    # 传递 cookie 给下载器，用于重试时重新获取 play_url
+                    cookie_dict = {c.name: c.value for c in self.api.sess.cookies if c.name}
                     meta = {
                         "trace_id": task["trace_id"],
                         "audio_url": a_url,
@@ -304,7 +307,10 @@ class BilibiliSpider(BaseSpider):
                         "bvid": task["bvid"],
                         "cid": task["cid"],
                         "preferred_filename": task["file_name"],
+                        "cookies": cookie_dict,
                     }
+                    if proxy_str:
+                        meta["proxy"] = proxy_str
                     if folder_name:
                         meta["folder_name"] = folder_name
                     self.emit_video(
