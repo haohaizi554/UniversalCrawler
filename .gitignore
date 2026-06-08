@@ -28,6 +28,7 @@ env/
 .trae
 .env
 .env.*
+!.env.docker.example
 
 # Build Outputs
 build/

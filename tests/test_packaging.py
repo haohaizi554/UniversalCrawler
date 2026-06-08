@@ -26,8 +26,13 @@ PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
+REQUIREMENTS_WEB = PROJECT_ROOT / "requirements-web.txt"
 INSTALLER_FILE = PACKAGING_DIR / "installer.iss"
 PROJECT_META = PACKAGING_DIR / "project_meta.py"
+DOCKERFILE = PROJECT_ROOT / "Dockerfile"
+DOCKER_COMPOSE = PROJECT_ROOT / "docker-compose.yml"
+DOCKER_ENTRYPOINT = PROJECT_ROOT / "docker" / "entrypoint.sh"
+DOCKER_ENV_EXAMPLE = PROJECT_ROOT / ".env.docker.example"
 
 
 class SpecFileExistenceTests(unittest.TestCase):
@@ -445,6 +450,59 @@ class RequirementsBuildTests(unittest.TestCase):
         with open(REQUIREMENTS_BUILD, "r", encoding="utf-8") as f:
             content = f.read().lower()
         self.assertIn("pyinstaller", content)
+
+
+class ContainerizationAssetTests(unittest.TestCase):
+    """容器化交付资产测试。"""
+
+    def test_dockerfile_exists(self):
+        self.assertTrue(DOCKERFILE.exists())
+
+    def test_docker_compose_exists(self):
+        self.assertTrue(DOCKER_COMPOSE.exists())
+
+    def test_web_requirements_exist(self):
+        self.assertTrue(REQUIREMENTS_WEB.exists())
+
+    def test_entrypoint_exists(self):
+        self.assertTrue(DOCKER_ENTRYPOINT.exists())
+
+    def test_env_example_exists(self):
+        self.assertTrue(DOCKER_ENV_EXAMPLE.exists())
+
+    def test_dockerfile_uses_web_requirements_and_non_root_user(self):
+        source = DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("requirements-web.txt", source)
+        self.assertIn("USER ucrawl", source)
+        self.assertIn("ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/ucrawl-entrypoint\"]", source)
+        self.assertNotIn("COPY . .", source)
+
+    def test_web_requirements_excludes_desktop_and_test_only_dependencies(self):
+        content = REQUIREMENTS_WEB.read_text(encoding="utf-8")
+        requirement_lines = {
+            line.strip()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertFalse(any(line.startswith("PyQt6") for line in requirement_lines))
+        self.assertFalse(any(line.startswith("BeautifulReport") for line in requirement_lines))
+        self.assertFalse(any(line.startswith("python-docx") for line in requirement_lines))
+        self.assertTrue(any(line.startswith("fastapi") for line in requirement_lines))
+        self.assertTrue(any(line.startswith("uvicorn") for line in requirement_lines))
+
+    def test_docker_compose_exposes_healthcheck_and_build_arg(self):
+        source = DOCKER_COMPOSE.read_text(encoding="utf-8")
+        self.assertIn("INSTALL_PLAYWRIGHT", source)
+        self.assertIn("healthcheck:", source)
+        self.assertIn("UCRAWL_HOST_PORT", source)
+        self.assertIn("UCRAWL_EXTRA_ARGS", source)
+
+    def test_entrypoint_maps_environment_variables(self):
+        source = DOCKER_ENTRYPOINT.read_text(encoding="utf-8")
+        self.assertIn("UCRAWL_USER_DATA_ROOT", source)
+        self.assertIn("UCRAWL_DOWNLOAD_ROOT", source)
+        self.assertIn("UCRAWL_EXTRA_ARGS", source)
+        self.assertIn("entry.web_entry", source)
 
 
 class ProjectFileExistenceTests(unittest.TestCase):

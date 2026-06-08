@@ -3,13 +3,29 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: ${UCRAWL_INSTALL_PLAYWRIGHT:-0}
+    image: ucrawl-web:latest
     container_name: ucrawl-web
+    init: true
     ports:
-      - "8000:8000"
+      - "${UCRAWL_HOST_PORT:-8000}:8000"
     environment:
+      UCRAWL_HOST: 0.0.0.0
+      UCRAWL_PORT: 8000
+      UCRAWL_NO_QT: 1
+      UCRAWL_NO_BROWSER: 1
       UCRAWL_USER_DATA_ROOT: /data/user_data
       UCRAWL_DOWNLOAD_ROOT: /data/downloads
+      UCRAWL_EXTRA_ARGS: ${UCRAWL_EXTRA_ARGS:-}
     volumes:
       - ./user_data:/data/user_data
       - ./downloads:/data/downloads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 20s

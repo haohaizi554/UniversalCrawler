@@ -1,21 +1,55 @@
-MIT License
+UniversalCrawlerPro Personal Non-Commercial License v1.0
 
-Copyright (c) 2026 UCrawl Team
+Copyright (c) 2026 haohaizi554. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Ownership
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This repository, including but not limited to its source code, scripts, build
+assets, documentation, configuration, and bundled resources, is the personal
+copyrighted work of the individual author identified above.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+2. Permitted Personal Use
+
+You may, for personal and non-commercial purposes only:
+
+- view, copy, and study this repository;
+- run the software locally for personal learning, research, and evaluation;
+- modify the source code for your own private development, experimentation,
+  and technical verification.
+
+3. Prohibited Commercial Use
+
+Without prior written permission from the copyright owner, you may not:
+
+- use this repository or any derivative work for any commercial purpose;
+- sell, sublicense, rent, lease, publish as a paid product, or otherwise
+  monetize this repository or any modified version of it;
+- use this repository in commercial training, enterprise delivery, customer
+  projects, paid consulting, hosted services, SaaS offerings, or internal
+  production systems operated for business benefit;
+- redistribute this repository or derivative works in a way that directly or
+  indirectly supports commercial gain.
+
+4. Redistribution
+
+Redistribution of the original repository or modified versions is not permitted
+unless the copyright owner gives prior written permission.
+
+5. No Trademark or Branding Grant
+
+This license does not grant any right to use the author's name, project name,
+logos, icons, or branding for promotion, endorsement, or commercial packaging.
+
+6. Reservation of Rights
+
+All rights not expressly granted by this license are reserved by the copyright
+owner.
+
+7. Disclaimer
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT OWNER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

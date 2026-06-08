@@ -2,6 +2,8 @@
 .github
 .trae
 .venv
+.env
+.env.*
 .pytest_cache
 .mypy_cache
 .ruff_cache
@@ -14,6 +16,7 @@ __pycache__/
 build/
 dist/
 user_data/
+downloads/
 Logs/
 .sandbox_localappdata/
 coverage.xml

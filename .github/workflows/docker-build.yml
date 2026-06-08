@@ -1,0 +1,36 @@
+name: Docker Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "docker/**"
+      - "requirements-web.txt"
+      - ".dockerignore"
+      - ".github/workflows/docker-build.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "docker/**"
+      - "requirements-web.txt"
+      - ".dockerignore"
+      - ".github/workflows/docker-build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Compose Config
+        run: docker compose -f docker-compose.yml config
+
+      - name: Build Image
+        run: docker build --build-arg INSTALL_PLAYWRIGHT=0 -t ucrawl-web:test .

@@ -8,15 +8,15 @@ version = "1.0.0"
 description = "UCrawl - 通用爬虫 (CLI / SDK / REST API / AI Skill)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = {file = "LICENSE"}
 authors = [
-    {name = "UCrawl Team"},
+    {name = "haohaizi554"},
 ]
 keywords = ["crawler", "spider", "douyin", "bilibili", "kuaishou", "missav"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
