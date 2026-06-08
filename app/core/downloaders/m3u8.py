@@ -37,7 +37,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         """执行 `download` 对应的业务逻辑，供 `N_m3u8DL_RE_Downloader` 使用。"""
         executable = NM3U8DLREExternalTool.resolve_executable()
         if not executable:
-            raise ExternalToolNotFoundError(f"未找到 {NM3U8DLREExternalTool.EXE_PATH}")
+            raise ExternalToolNotFoundError("未找到 N_m3u8DL-RE 可执行文件（支持 Windows .exe、Linux 二进制和 PATH）")
 
         url = video_item.url
         trace_id = video_item.meta.get("trace_id")

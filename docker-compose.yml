@@ -4,6 +4,14 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        APT_MIRROR: ${UCRAWL_APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
+        APT_SECURITY_MIRROR: ${UCRAWL_APT_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
+        PIP_INDEX_URL: ${UCRAWL_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_TRUSTED_HOST: ${UCRAWL_PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}
+        PIP_EXTRA_INDEX_URL: ${UCRAWL_PIP_EXTRA_INDEX_URL:-}
+        HTTP_PROXY: ${UCRAWL_HTTP_PROXY:-}
+        HTTPS_PROXY: ${UCRAWL_HTTPS_PROXY:-}
+        NO_PROXY: ${UCRAWL_NO_PROXY:-127.0.0.1,localhost}
         INSTALL_PLAYWRIGHT: ${UCRAWL_INSTALL_PLAYWRIGHT:-0}
     image: ucrawl-web:latest
     container_name: ucrawl-web
@@ -17,10 +25,15 @@ services:
       UCRAWL_NO_BROWSER: 1
       UCRAWL_USER_DATA_ROOT: /data/user_data
       UCRAWL_DOWNLOAD_ROOT: /data/downloads
+      UCRAWL_TOOL_ROOT: /app/tools
+      HTTP_PROXY: ${UCRAWL_HTTP_PROXY:-}
+      HTTPS_PROXY: ${UCRAWL_HTTPS_PROXY:-}
+      NO_PROXY: ${UCRAWL_NO_PROXY:-127.0.0.1,localhost}
       UCRAWL_EXTRA_ARGS: ${UCRAWL_EXTRA_ARGS:-}
     volumes:
       - ./user_data:/data/user_data
       - ./downloads:/data/downloads
+      - ./tools:/app/tools
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/ping"]
       interval: 30s

@@ -144,6 +144,25 @@ class RuntimePathsTests(unittest.TestCase):
 
         self.assertEqual(result, resource_tool)
 
+    def test_resolve_tool_file_prefers_explicit_tool_root_override(self):
+        """容器场景应优先使用 `UCRAWL_TOOL_ROOT` 挂载的工具目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tool_root = Path(temp_dir) / "tools"
+            tool_root.mkdir()
+            tool_file = tool_root / "N_m3u8DL-RE"
+            tool_file.write_bytes(b"binary")
+            with patch.dict(
+                "app.utils.runtime_paths.os.environ",
+                {runtime_paths.TOOL_ROOT_ENV: str(tool_root)},
+                clear=False,
+            ), patch("app.utils.runtime_paths.install_root", return_value=Path(temp_dir) / "install"), patch(
+                "app.utils.runtime_paths.resource_root",
+                return_value=Path(temp_dir) / "resource",
+            ):
+                result = runtime_paths.resolve_tool_file("N_m3u8DL-RE")
+
+        self.assertEqual(result, tool_file)
+
     def test_resolve_tool_file_falls_back_to_executable_name_when_missing(self):
         """验证 `test_resolve_tool_file_falls_back_to_executable_name_when_missing` 对应场景是否符合预期，供 `RuntimePathsTests` 使用。"""
         with tempfile.TemporaryDirectory() as temp_dir:

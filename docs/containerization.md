@@ -28,14 +28,17 @@ python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser
 
 ### 2. 下载链存在跨平台差异
 
-- `ffmpeg` 已支持系统 `PATH` fallback，Linux 容器可用
-- `N_m3u8DL-RE` 当前仍以 `N_m3u8DL-RE.exe` 形式存在，属于 Windows 发布物
+- `ffmpeg` 已支持项目内文件与系统 `PATH` fallback，Linux 容器可用
+- `N_m3u8DL-RE` 现已支持按运行平台自动识别：
+  - Windows 优先查找 `N_m3u8DL-RE.exe`
+  - Linux 容器优先查找 `N_m3u8DL-RE` / `n-m3u8dl-re`
+  - 若项目内未提供文件，则回退到系统 `PATH`
 
 因此当前容器支持矩阵应明确为：
 
 - 支持：Web UI / REST API / WebSocket / 基于 `ffmpeg` 的下载链
 - 条件支持：依赖 Playwright 的平台抓取能力，需要在构建时显式安装浏览器
-- 暂不承诺：依赖 `N_m3u8DL-RE.exe` 的完整 HLS 下载能力
+- 条件支持：依赖 `N_m3u8DL-RE` 的完整 HLS 下载能力，需要在容器中提供 Linux 可执行文件或 PATH 命令
 - 不支持：桌面 GUI / 系统托盘 / Qt 交互
 
 ## 当前容器资产
@@ -54,7 +57,9 @@ python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser
 - 镜像使用 `requirements-web.txt`，明确排除 `PyQt6` 和测试类依赖
 - 镜像以非 root 用户 `ucrawl` 运行
 - 启动通过 `tini + docker/entrypoint.sh` 收口，统一解析容器环境变量
+- Docker 构建默认使用更适合中国大陆网络的 Debian / PyPI 镜像源，仍可通过环境变量覆盖
 - 数据目录通过卷挂载写入 `/data/user_data` 和 `/data/downloads`
+- 外部工具目录统一挂载到 `/app/tools`，通过 `UCRAWL_TOOL_ROOT` 收口
 - Compose 与镜像都内置 `/api/ping` 健康检查
 
 ## 运行时环境变量
@@ -69,7 +74,14 @@ python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser
 | `UCRAWL_NO_BROWSER` | `1` | 容器内默认不自动拉起浏览器 |
 | `UCRAWL_USER_DATA_ROOT` | `/data/user_data` | 用户数据目录 |
 | `UCRAWL_DOWNLOAD_ROOT` | `/data/downloads` | 下载目录 |
+| `UCRAWL_TOOL_ROOT` | `/app/tools` | 外部工具目录，可挂载 Linux 版 `N_m3u8DL-RE` |
 | `UCRAWL_EXTRA_ARGS` | 空 | 透传额外启动参数 |
+| `UCRAWL_APT_MIRROR` | 清华 Debian 源 | Docker build 使用的 Debian 镜像 |
+| `UCRAWL_APT_SECURITY_MIRROR` | 清华 Debian Security 源 | Docker build 使用的安全更新镜像 |
+| `UCRAWL_PIP_INDEX_URL` | 清华 PyPI 源 | Docker build 使用的 Python 包索引 |
+| `UCRAWL_PIP_TRUSTED_HOST` | `pypi.tuna.tsinghua.edu.cn` | 与 `UCRAWL_PIP_INDEX_URL` 配套 |
+| `UCRAWL_HTTP_PROXY` / `UCRAWL_HTTPS_PROXY` | 空 | 公司网络或代理环境下的构建 / 运行代理 |
+| `UCRAWL_NO_PROXY` | `127.0.0.1,localhost` | 直连白名单 |
 
 为了便于 Compose 本地化配置，仓库还提供：
 
@@ -91,10 +103,29 @@ Copy-Item .env.docker.example .env
 
 ### 构建基础镜像
 
+默认构建已经偏向中国大陆网络环境：
+
+- Debian 包默认走清华镜像
+- Python 包默认走清华 PyPI 镜像
+- 支持通过 `HTTP_PROXY` / `HTTPS_PROXY` 透传代理
+
 默认构建不会安装 Playwright 浏览器二进制，适合仅验证 Web/API 基础能力：
 
 ```bash
 docker build -t ucrawl-web:latest .
+```
+
+如果需要显式覆盖镜像源或代理：
+
+```bash
+docker build \
+  --build-arg APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian \
+  --build-arg APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  --build-arg PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn \
+  --build-arg HTTP_PROXY=http://127.0.0.1:7890 \
+  --build-arg HTTPS_PROXY=http://127.0.0.1:7890 \
+  -t ucrawl-web:latest .
 ```
 
 ### 构建带 Playwright 浏览器的镜像
@@ -111,10 +142,25 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
 docker run --rm -p 8000:8000 \
   -e UCRAWL_USER_DATA_ROOT=/data/user_data \
   -e UCRAWL_DOWNLOAD_ROOT=/data/downloads \
+  -e UCRAWL_TOOL_ROOT=/app/tools \
   -v ${PWD}/user_data:/data/user_data \
   -v ${PWD}/downloads:/data/downloads \
+  -v ${PWD}/tools:/app/tools \
   ucrawl-web:latest
 ```
+
+如果要启用 `N_m3u8DL-RE` 的 HLS 下载能力，请把 Linux 可执行文件放进 `./tools`，例如：
+
+```text
+tools/
+└── N_m3u8DL-RE
+```
+
+容器会按以下顺序自动发现：
+
+1. `UCRAWL_TOOL_ROOT` 指向的目录
+2. 项目安装目录 / 资源目录
+3. 系统 `PATH`
 
 启动后访问：
 
@@ -136,6 +182,16 @@ docker compose up --build
 UCRAWL_HOST_PORT=8010 UCRAWL_INSTALL_PLAYWRIGHT=1 docker compose up --build
 ```
 
+### 中国大陆推荐启动方式
+
+```bash
+cp .env.docker.example .env
+mkdir -p user_data downloads tools
+docker compose up --build -d
+```
+
+如果你已经准备好了 Linux 版 `N_m3u8DL-RE`，放到 `./tools/N_m3u8DL-RE` 即可；无需修改代码，容器会自动优先识别 Linux 二进制。
+
 Compose 默认映射：
 
 - `./user_data -> /data/user_data`
@@ -156,7 +212,7 @@ Compose 默认映射：
 
 ## 当前限制
 
-- Linux 容器中不承诺 `N_m3u8DL-RE.exe` 相关能力
+- 若未提供 Linux 版 `N_m3u8DL-RE`，则 HLS 下载能力仍取决于容器内是否已安装对应命令
 - Playwright 浏览器默认不内置，避免镜像无差别膨胀
 - 当前镜像仍是单阶段构建，重点优先在稳定与可维护，而不是极限瘦身
 

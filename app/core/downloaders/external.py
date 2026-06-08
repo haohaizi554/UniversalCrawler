@@ -142,12 +142,44 @@ class FFmpegExternalTool:
 class NM3U8DLREExternalTool:
     """封装 `N_m3u8DL-RE` 的定位、识别和命令构造逻辑。"""
     EXE_PATH = "N_m3u8DL-RE.exe"
+    DISPLAY_NAME = "N_m3u8DL-RE"
+    WINDOWS_CANDIDATES = ("N_m3u8DL-RE.exe", "N_m3u8DL-RE", "n-m3u8dl-re")
+    POSIX_CANDIDATES = ("N_m3u8DL-RE", "n-m3u8dl-re")
+
+    @classmethod
+    def executable_candidates(cls) -> tuple[str, ...]:
+        """返回当前平台优先级排序后的可执行文件候选名。"""
+        if os.name == "nt":
+            return cls.WINDOWS_CANDIDATES
+        return cls.POSIX_CANDIDATES
+
+    @classmethod
+    def cli_candidates(cls) -> tuple[str, ...]:
+        """返回适合直接走系统 PATH 探测的命令名。"""
+        if os.name == "nt":
+            return ("N_m3u8DL-RE.exe", "N_m3u8DL-RE")
+        return ("N_m3u8DL-RE", "n-m3u8dl-re")
 
     @classmethod
     def resolve_executable(cls) -> str | None:
-        """定位项目根目录中的 `N_m3u8DL-RE` 可执行文件。"""
-        path = resolve_tool_file(cls.EXE_PATH)
-        return str(path) if path.exists() else None
+        """定位当前平台可用的 `N_m3u8DL-RE` 可执行文件。"""
+        for executable_name in cls.executable_candidates():
+            path = resolve_tool_file(executable_name)
+            if path.exists():
+                return str(path)
+
+        for executable_name in cls.cli_candidates():
+            try:
+                subprocess.run(
+                    [executable_name, "--version"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                return executable_name
+            except (OSError, subprocess.CalledProcessError):
+                continue
+        return None
 
     @classmethod
     def is_available(cls) -> bool:

@@ -192,7 +192,7 @@ You will probably care more about these engineering points:
 - **Operating System**: Windows 10 / 11
 - **Python**: 3.10 or above
 - **Browser Runtime**: Playwright Chromium
-- **External Tools**: `ffmpeg.exe`, `N_m3u8DL-RE.exe`
+- **External Tools**: `ffmpeg`, `N_m3u8DL-RE` (use `.exe` on Windows and the extensionless binary on Linux/containers)
 
 ### 2. Get The Source Code
 
@@ -210,10 +210,10 @@ playwright install chromium
 
 ### 4. Place Core External Tools
 
-To guarantee full capabilities such as Bilibili stream merging and m3u8 downloading, ensure the following files are located in the **project root directory**, or are already available through the system environment:
+To guarantee full capabilities such as Bilibili stream merging and m3u8 downloading, ensure the following tools are available in the **project root directory**, under `UCRAWL_TOOL_ROOT`, or through the system environment:
 
-- `ffmpeg.exe`
-- `N_m3u8DL-RE.exe`
+- `ffmpeg` / `ffmpeg.exe`
+- `N_m3u8DL-RE` / `N_m3u8DL-RE.exe`
 
 The recommended root directory structure looks like this:
 
@@ -229,8 +229,8 @@ UniversalCrawlerPro/
 ├── docs/                   # project documentation
 ├── packaging/              # packaging scripts and configuration
 ├── tests/                  # test cases
-├── ffmpeg.exe              # external tool
-├── N_m3u8DL-RE.exe         # external tool
+├── ffmpeg.exe              # Windows external tool example
+├── N_m3u8DL-RE.exe         # Windows external tool example
 ├── main.py                 # unified adaptive entry (defaults to GUI)
 ├── entry/                  # thin entries for GUI / Web / CLI / Interactive / Test
 └── pyproject.toml          # project configuration and dependencies
@@ -276,13 +276,22 @@ The project already includes a first version of container assets, but the scope 
 - **Containers only support the Web/API form**
 - **The default entry is `entry.web_entry --no-qt --no-browser`**
 - **Desktop GUI, tray, and Qt interaction are intentionally excluded**
-- **The `ffmpeg` download chain is available, while the Windows-only `N_m3u8DL-RE.exe` path is not guaranteed**
+- **The image build is optimized for mainland China by default, while Debian / PyPI / proxy settings remain overridable**
+- **The `ffmpeg` download chain is available, and `N_m3u8DL-RE` is auto-detected across Windows and Linux**
 
 ### Quick Start
 
 ```bash
 docker build -t ucrawl-web:latest .
 docker compose up --build
+```
+
+The recommended setup for mainland China is:
+
+```bash
+cp .env.docker.example .env
+mkdir -p user_data downloads tools
+docker compose up --build -d
 ```
 
 If you need to customize the host port or pass extra runtime arguments, first copy the environment template:
@@ -302,7 +311,22 @@ By default, Compose will:
 - expose port `8000`
 - mount `./user_data -> /data/user_data`
 - mount `./downloads -> /data/downloads`
+- mount `./tools -> /app/tools`
 - use `/api/ping` as health check
+
+`.env.docker.example` already includes mainland-friendly defaults for:
+
+- `UCRAWL_APT_MIRROR` / `UCRAWL_APT_SECURITY_MIRROR`
+- `UCRAWL_PIP_INDEX_URL` / `UCRAWL_PIP_TRUSTED_HOST`
+- `UCRAWL_HTTP_PROXY` / `UCRAWL_HTTPS_PROXY` / `UCRAWL_NO_PROXY`
+
+If you want HLS downloading inside the container, place the Linux build of `N_m3u8DL-RE` at:
+
+```text
+tools/N_m3u8DL-RE
+```
+
+At runtime the project will first check `/app/tools`, then fall back to the project directory and finally the system `PATH`.
 
 If the container needs Playwright-dependent crawling capabilities, explicitly enable browser installation during build:
 
@@ -596,7 +620,7 @@ This project is not only meant for source execution; practical delivery and dist
 - `UniversalCrawlerPro.exe` — desktop GUI main program
 - `CrawlerWebPortal.exe` — Web UI entry with tray residency
 - `_internal/` — runtime dependencies and resources
-- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — external download tools
+- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — Windows portable-build external download tools
 - `ms-playwright/` — embedded Chromium runtime
 
 ### Installer Features
@@ -618,8 +642,8 @@ This project is not only meant for source execution; practical delivery and dist
 ### Suggested Checks Before Packaging
 
 - whether `playwright install chromium` has been installed and verified
-- whether `ffmpeg.exe` is available
-- whether `N_m3u8DL-RE.exe` is available
+- whether `ffmpeg` / `ffmpeg.exe` is available
+- whether `N_m3u8DL-RE` / `N_m3u8DL-RE.exe` is available
 - whether the full test suite has passed
 - whether user configuration and cookies are confirmed not to be bundled into outputs
 

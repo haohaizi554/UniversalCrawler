@@ -192,7 +192,7 @@ ucrawl-web --host 127.0.0.1 --port 8000
 - **操作系统**：Windows 10 / 11
 - **Python**：3.10 及以上
 - **浏览器内核**：Playwright Chromium
-- **外部工具**：`ffmpeg.exe`、`N_m3u8DL-RE.exe`
+- **外部工具**：`ffmpeg`、`N_m3u8DL-RE`（Windows 可用 `.exe`，Linux/容器可用无扩展名二进制）
 
 ### 2. 获取源码
 
@@ -210,10 +210,10 @@ playwright install chromium
 
 ### 4. 放置核心外部工具
 
-为了保证 B 站混流与 m3u8 下载等完整能力，请确保以下文件位于**项目根目录**，或者已经在系统环境中可被找到：
+为了保证 B 站混流与 m3u8 下载等完整能力，请确保以下工具位于**项目根目录**、`UCRAWL_TOOL_ROOT` 指向的目录，或者已经在系统环境中可被找到：
 
-- `ffmpeg.exe`
-- `N_m3u8DL-RE.exe`
+- `ffmpeg` / `ffmpeg.exe`
+- `N_m3u8DL-RE` / `N_m3u8DL-RE.exe`
 
 推荐的根目录结构大致如下：
 
@@ -229,8 +229,8 @@ UniversalCrawlerPro/
 ├── docs/                   # 项目文档
 ├── packaging/              # 打包脚本与配置
 ├── tests/                  # 测试用例
-├── ffmpeg.exe              # 外部工具
-├── N_m3u8DL-RE.exe         # 外部工具
+├── ffmpeg.exe              # Windows 外部工具示例
+├── N_m3u8DL-RE.exe         # Windows 外部工具示例
 ├── main.py                 # 统一自适应入口（默认进入 GUI）
 ├── entry/                  # GUI / Web / CLI / Interactive / Test 薄入口
 └── pyproject.toml          # 项目配置与依赖
@@ -276,13 +276,22 @@ python -m entry.web_entry --host 127.0.0.1 --port 8000
 - **容器只支持 Web/API 形态**
 - **默认入口是 `entry.web_entry --no-qt --no-browser`**
 - **不覆盖桌面 GUI、托盘、Qt 交互**
-- **`ffmpeg` 下载链可用，`N_m3u8DL-RE.exe` 的 Windows-only 路径不承诺**
+- **默认按中国大陆网络优化构建镜像，可覆盖 Debian / PyPI / 代理配置**
+- **`ffmpeg` 下载链可用，`N_m3u8DL-RE` 会按 Windows / Linux 自动识别**
 
 ### 快速开始
 
 ```bash
 docker build -t ucrawl-web:latest .
 docker compose up --build
+```
+
+更适合中国大陆网络环境的推荐做法：
+
+```bash
+cp .env.docker.example .env
+mkdir -p user_data downloads tools
+docker compose up --build -d
 ```
 
 如果你需要自定义主机端口或透传额外参数，先复制环境变量模板：
@@ -302,7 +311,22 @@ Compose 默认会：
 - 暴露 `8000` 端口
 - 挂载 `./user_data -> /data/user_data`
 - 挂载 `./downloads -> /data/downloads`
+- 挂载 `./tools -> /app/tools`
 - 通过 `/api/ping` 做健康检查
+
+`.env.docker.example` 已内置更适合中国大陆部署的默认项：
+
+- `UCRAWL_APT_MIRROR` / `UCRAWL_APT_SECURITY_MIRROR`
+- `UCRAWL_PIP_INDEX_URL` / `UCRAWL_PIP_TRUSTED_HOST`
+- `UCRAWL_HTTP_PROXY` / `UCRAWL_HTTPS_PROXY` / `UCRAWL_NO_PROXY`
+
+如果你需要容器内启用 HLS 下载链，可把 Linux 版 `N_m3u8DL-RE` 放到：
+
+```text
+tools/N_m3u8DL-RE
+```
+
+运行时会自动优先查找 `/app/tools`，其次回退到项目目录与系统 `PATH`。
 
 如果容器需要启用依赖 Playwright 的平台抓取能力，可在构建时显式开启浏览器安装：
 
@@ -596,7 +620,7 @@ python -m pytest tests
 - `UniversalCrawlerPro.exe` — 桌面 GUI 主程序
 - `CrawlerWebPortal.exe` — Web UI 入口（系统托盘驻留）
 - `_internal/` — 运行时依赖与资源
-- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — 外部下载工具
+- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — Windows 便携版外部下载工具
 - `ms-playwright/` — 内置 Chromium 内核
 
 ### 安装包特性
@@ -618,8 +642,8 @@ python -m pytest tests
 ### 打包前建议检查
 
 - 是否已安装并验证 `playwright install chromium`
-- `ffmpeg.exe` 是否可用
-- `N_m3u8DL-RE.exe` 是否可用
+- `ffmpeg` / `ffmpeg.exe` 是否可用
+- `N_m3u8DL-RE` / `N_m3u8DL-RE.exe` 是否可用
 - 是否已通过完整测试
 - 是否确认不把用户态配置和 Cookie 打入产物
 

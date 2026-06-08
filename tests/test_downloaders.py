@@ -268,6 +268,44 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIn("User-Agent: ua-demo", command)
         self.assertIn("Referer: https://www.douyin.com/", command)
 
+    @patch("app.core.downloaders.external.os.name", "nt")
+    @patch("app.core.downloaders.external.resolve_tool_file")
+    def test_nm3u8_external_tool_prefers_windows_executable_name(self, mocked_resolve_tool_file):
+        """Windows 应优先解析 `N_m3u8DL-RE.exe`。"""
+        exe_path = Mock()
+        exe_path.exists.return_value = True
+
+        def fake_resolve(name):
+            if name == "N_m3u8DL-RE.exe":
+                return exe_path
+            missing = Mock()
+            missing.exists.return_value = False
+            return missing
+
+        mocked_resolve_tool_file.side_effect = fake_resolve
+
+        self.assertEqual(NM3U8DLREExternalTool.resolve_executable(), str(exe_path))
+        self.assertEqual(mocked_resolve_tool_file.call_args_list[0].args[0], "N_m3u8DL-RE.exe")
+
+    @patch("app.core.downloaders.external.os.name", "posix")
+    @patch("app.core.downloaders.external.subprocess.run")
+    @patch("app.core.downloaders.external.resolve_tool_file")
+    def test_nm3u8_external_tool_falls_back_to_linux_cli_name(self, mocked_resolve_tool_file, mocked_run):
+        """Linux 容器应回退到无扩展名命令而不是只认 `.exe`。"""
+        missing = Mock()
+        missing.exists.return_value = False
+        mocked_resolve_tool_file.return_value = missing
+
+        def fake_run(cmd, stdout=None, stderr=None, check=None):
+            if cmd[0] == "N_m3u8DL-RE":
+                return Mock()
+            raise OSError("missing")
+
+        mocked_run.side_effect = fake_run
+
+        self.assertEqual(NM3U8DLREExternalTool.resolve_executable(), "N_m3u8DL-RE")
+        self.assertEqual(mocked_run.call_args_list[0].args[0][0], "N_m3u8DL-RE")
+
     def test_download_worker_uses_registered_downloader(self):
         """验证 `test_download_worker_uses_registered_downloader` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")

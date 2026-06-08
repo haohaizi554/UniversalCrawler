@@ -10,6 +10,7 @@ from pathlib import Path
 APP_DIR_NAME = "UniversalCrawlerPro"
 USER_DATA_ROOT_ENV = "UCRAWL_USER_DATA_ROOT"
 DOWNLOAD_ROOT_ENV = "UCRAWL_DOWNLOAD_ROOT"
+TOOL_ROOT_ENV = "UCRAWL_TOOL_ROOT"
 #运行时路径管理（核心工具）
 
 def is_frozen() -> bool:
@@ -147,7 +148,13 @@ def resolve_resource_file(relative_path: str | os.PathLike[str]) -> Path:
 
 def resolve_tool_file(executable_name: str) -> Path:
     """解析并确定 `tool_file` 对应的最终结果。"""
-    for base in (install_root(), resource_root()):
+    tool_root_override = os.environ.get(TOOL_ROOT_ENV, "").strip()
+    search_roots: list[Path] = []
+    if tool_root_override:
+        search_roots.append(Path(tool_root_override).expanduser())
+    search_roots.extend((install_root(), resource_root()))
+
+    for base in search_roots:
         candidate = base / executable_name
         if candidate.exists():
             return candidate

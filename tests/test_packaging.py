@@ -474,6 +474,9 @@ class ContainerizationAssetTests(unittest.TestCase):
         source = DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("requirements-web.txt", source)
         self.assertIn("USER ucrawl", source)
+        self.assertIn("APT_MIRROR", source)
+        self.assertIn("PIP_INDEX_URL", source)
+        self.assertIn("UCRAWL_TOOL_ROOT=/app/tools", source)
         self.assertIn("ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/ucrawl-entrypoint\"]", source)
         self.assertNotIn("COPY . .", source)
 
@@ -493,9 +496,22 @@ class ContainerizationAssetTests(unittest.TestCase):
     def test_docker_compose_exposes_healthcheck_and_build_arg(self):
         source = DOCKER_COMPOSE.read_text(encoding="utf-8")
         self.assertIn("INSTALL_PLAYWRIGHT", source)
+        self.assertIn("APT_MIRROR", source)
+        self.assertIn("PIP_INDEX_URL", source)
+        self.assertIn("UCRAWL_TOOL_ROOT", source)
+        self.assertIn("./tools:/app/tools", source)
         self.assertIn("healthcheck:", source)
         self.assertIn("UCRAWL_HOST_PORT", source)
         self.assertIn("UCRAWL_EXTRA_ARGS", source)
+
+    def test_env_example_contains_mainland_friendly_defaults(self):
+        source = DOCKER_ENV_EXAMPLE.read_text(encoding="utf-8")
+        self.assertIn("UCRAWL_APT_MIRROR=", source)
+        self.assertIn("UCRAWL_APT_SECURITY_MIRROR=", source)
+        self.assertIn("UCRAWL_PIP_INDEX_URL=", source)
+        self.assertIn("UCRAWL_PIP_TRUSTED_HOST=", source)
+        self.assertIn("UCRAWL_HTTP_PROXY=", source)
+        self.assertIn("UCRAWL_HTTPS_PROXY=", source)
 
     def test_entrypoint_maps_environment_variables(self):
         source = DOCKER_ENTRYPOINT.read_text(encoding="utf-8")

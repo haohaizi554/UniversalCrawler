@@ -17,6 +17,7 @@ build/
 dist/
 user_data/
 downloads/
+tools/
 Logs/
 .sandbox_localappdata/
 coverage.xml
