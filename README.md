@@ -1,5 +1,7 @@
 # 🚀 Universal Crawler Pro
 
+中文 | [English](README_EN.md)
+
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img alt="PyQt6" src="https://img.shields.io/badge/Framework-PyQt6-41CD52?logo=qt&logoColor=white" />
@@ -8,7 +10,7 @@
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
   <img alt="Tests" src="https://img.shields.io/badge/Test-unittest-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
-  <img alt="License" src="https://img.shields.io/badge/License-MIT-green" />
+  <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
 
 **Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
@@ -30,6 +32,7 @@
 - [🖥️ 双模式交互：桌面 GUI + Web UI](#dual-mode)
 - [🎯 适合谁使用](#audience)
 - [📦 安装与快速启动](#quickstart)
+- [🐳 Docker / 容器化部署](#docker)
 - [⚙️ 配置体系说明](#config)
 - [🏗️ 核心架构与工程化设计](#architecture)
 - [🛠️ 全链路日志与调试体系](#debugging)
@@ -262,6 +265,54 @@ python -m entry.web_entry --host 127.0.0.1 --port 8000
 - 仓库目录更干净。
 - 打包后的便携版与源码运行态更容易共存。
 - 升级程序时不容易把用户数据覆盖掉。
+
+---
+
+<a id="docker"></a>
+## 🐳 Docker / 容器化部署
+
+项目已经提供第一版容器化资产，但定位非常明确：
+
+- **容器只支持 Web/API 形态**
+- **默认入口是 `entry.web_entry --no-qt --no-browser`**
+- **不覆盖桌面 GUI、托盘、Qt 交互**
+- **`ffmpeg` 下载链可用，`N_m3u8DL-RE.exe` 的 Windows-only 路径不承诺**
+
+### 快速开始
+
+```bash
+docker build -t ucrawl-web:latest .
+docker compose up --build
+```
+
+如果你需要自定义主机端口或透传额外参数，先复制环境变量模板：
+
+```bash
+cp .env.docker.example .env
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.docker.example .env
+```
+
+Compose 默认会：
+
+- 暴露 `8000` 端口
+- 挂载 `./user_data -> /data/user_data`
+- 挂载 `./downloads -> /data/downloads`
+- 通过 `/api/ping` 做健康检查
+
+如果容器需要启用依赖 Playwright 的平台抓取能力，可在构建时显式开启浏览器安装：
+
+```bash
+docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
+```
+
+更完整的说明、限制和支持矩阵见：
+
+- [容器化部署说明](docs/containerization.md)
 
 ---
 
@@ -638,6 +689,8 @@ python -m entry.web_entry --host 127.0.0.1 --port 8000
 ### 免责声明
 
 > 本项目仅用于学习、研究与桌面端工程实践。
+>
+> 本项目版权归作者个人所有，仅授权个人学习、研究和非商业开发使用。未经作者书面许可，禁止将本项目或其衍生版本用于任何商业用途。
 >
 > 使用者应自行遵守相关法律法规、版权要求与目标平台服务条款。请勿将本工具用于商业侵权、批量搬运、隐私窃取或其他非法用途。
 >
