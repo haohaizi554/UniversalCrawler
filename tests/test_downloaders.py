@@ -141,8 +141,117 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertIn("-user_agent", command)
         self.assertIn("ua-demo", command)
+        self.assertIn("-progress", command)
+        self.assertIn("pipe:2", command)
+        self.assertIn("-nostats", command)
         self.assertIn("Referer: https://www.douyin.com/\r\n", command)
         self.assertEqual(command[-1], "video.mp4")
+
+    @patch("app.core.downloaders.ffmpeg.requests.head")
+    @patch("app.core.downloaders.ffmpeg.subprocess.Popen")
+    @patch("app.core.downloaders.ffmpeg.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    def test_ffmpeg_downloader_reports_structured_progress(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        mocked_head,
+    ):
+        """ffmpeg 结构化 progress 输出应能持续映射为百分比，而不是只显示起止状态。"""
+        head_response = Mock()
+        head_response.url = "https://cdn.example.com/video.mp4"
+        head_response.status_code = 200
+        head_response.headers = {"content-length": "4096"}
+        mocked_head.return_value = head_response
+
+        process = Mock()
+        process.stderr.readline.side_effect = [
+            b"out_time_ms=1000\n",
+            b"progress=continue\n",
+            b"out_time_ms=5000\n",
+            b"progress=end\n",
+            b"",
+        ]
+        process.poll.return_value = 0
+        process.returncode = 0
+        mocked_popen.return_value = process
+
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        item.meta["duration"] = 10
+        progress = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            with open(save_path, "wb") as fp:
+                fp.write(b"done")
+            FFmpegDownloader().download(item, save_path, progress.append, lambda: False)
+
+        self.assertEqual(progress, [10, 50, 100])
+
+    def test_ffmpeg_progress_parser_treats_large_out_time_ms_as_microseconds(self):
+        """较新的 FFmpeg 会把 out_time_ms 输出为微秒值，不能按毫秒直接换算。"""
+        next_duration, _, progress_value = FFmpegDownloader._parse_progress_line(
+            "out_time_ms=11066667",
+            expected_duration=820.0,
+            expected_size_bytes=None,
+        )
+
+        self.assertEqual(next_duration, 820.0)
+        self.assertEqual(progress_value, 1)
+
+    @patch("app.core.downloaders.ffmpeg.time.sleep", return_value=None)
+    @patch("app.core.downloaders.ffmpeg.requests.head")
+    @patch("app.core.downloaders.ffmpeg.subprocess.Popen")
+    @patch("app.core.downloaders.ffmpeg.os.path.getsize", return_value=1024)
+    @patch("app.core.downloaders.ffmpeg.os.path.exists", return_value=True)
+    @patch("app.core.downloaders.ffmpeg.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    def test_ffmpeg_downloader_refreshes_douyin_stream_url_between_retries(
+        self,
+        _mocked_resolve,
+        _mocked_exists,
+        _mocked_getsize,
+        mocked_popen,
+        mocked_head,
+        _mocked_sleep,
+    ):
+        """抖音 play_url 失败重试时应重新解析可用 CDN，而不是死用同一条失效地址。"""
+        head_first = Mock()
+        head_first.url = "https://cdn1.example.com/video.mp4"
+        head_first.status_code = 200
+        head_first.headers = {"content-length": "4096"}
+        head_second = Mock()
+        head_second.url = "https://cdn2.example.com/video.mp4"
+        head_second.status_code = 200
+        head_second.headers = {"content-length": "8192"}
+        mocked_head.side_effect = [head_first, head_second]
+
+        failed_process = Mock()
+        failed_process.stderr.readline.side_effect = [b"", b""]
+        failed_process.poll.side_effect = [1]
+        failed_process.returncode = 1
+
+        success_process = Mock()
+        success_process.stderr.readline.side_effect = [b"progress=end\n", b""]
+        success_process.poll.side_effect = [0]
+        success_process.returncode = 0
+
+        mocked_popen.side_effect = [failed_process, success_process]
+
+        item = VideoItem(
+            url="https://www.douyin.com/aweme/v1/play/?video_id=demo",
+            title="demo",
+            source="douyin",
+        )
+        item.meta["duration"] = 12
+
+        progress = []
+        FFmpegDownloader().download(item, "demo.mp4", progress.append, lambda: False)
+
+        self.assertEqual(mocked_head.call_count, 2)
+        first_cmd = mocked_popen.call_args_list[0].args[0]
+        second_cmd = mocked_popen.call_args_list[1].args[0]
+        self.assertEqual(first_cmd[first_cmd.index("-i") + 1], "https://cdn1.example.com/video.mp4")
+        self.assertEqual(second_cmd[second_cmd.index("-i") + 1], "https://cdn2.example.com/video.mp4")
+        self.assertEqual(progress, [100])
 
     def test_nm3u8_external_tool_build_download_command_uses_headers_and_save_name(self):
         """验证 `test_nm3u8_external_tool_build_download_command_uses_headers_and_save_name` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -226,6 +335,19 @@ class DownloaderStrategyTests(unittest.TestCase):
         create_client()
 
         self.assertTrue(mocked_async_client.call_args.kwargs["verify"])
+        self.assertFalse(mocked_async_client.call_args.kwargs["trust_env"])
+        self.assertNotIn("mounts", mocked_async_client.call_args.kwargs)
+
+    @patch("app.core.lib.douyin.tools.session.AsyncClient")
+    def test_create_client_only_builds_proxy_mounts_when_proxy_configured(self, mocked_async_client):
+        """验证 `create_client` 仅在配置代理时才创建 transport mounts。"""
+        create_client(proxy="http://127.0.0.1:7890")
+
+        self.assertIn("mounts", mocked_async_client.call_args.kwargs)
+        self.assertEqual(
+            sorted(mocked_async_client.call_args.kwargs["mounts"].keys()),
+            ["http://", "https://"],
+        )
 
     @patch("app.core.lib.douyin.tools.session.request", new_callable=AsyncMock, return_value={})
     @patch("app.core.lib.douyin.tools.session.Client")
@@ -238,6 +360,27 @@ class DownloaderStrategyTests(unittest.TestCase):
         asyncio.run(request_params(Mock(), "https://example.com/api", method="GET"))
 
         self.assertTrue(mocked_client.call_args.kwargs["verify"])
+        self.assertFalse(mocked_client.call_args.kwargs["trust_env"])
+        self.assertNotIn("mounts", mocked_client.call_args.kwargs)
+
+    @patch("app.core.lib.douyin.tools.session.request", new_callable=AsyncMock, return_value={})
+    @patch("app.core.lib.douyin.tools.session.Client")
+    def test_request_params_only_builds_proxy_mounts_when_proxy_configured(self, mocked_client, _mocked_request):
+        """验证 `request_params` 仅在配置代理时才创建 transport mounts。"""
+        client = Mock()
+        mocked_client.return_value.__enter__.return_value = client
+        mocked_client.return_value.__exit__.return_value = False
+
+        asyncio.run(
+            request_params(
+                Mock(),
+                "https://example.com/api",
+                method="GET",
+                proxy="http://127.0.0.1:7890",
+            )
+        )
+
+        self.assertIn("mounts", mocked_client.call_args.kwargs)
 
     @patch("app.core.downloaders.chunked.requests.head", side_effect=requests.RequestException("boom"))
     def test_chunked_downloader_raises_when_head_request_fails(self, _mocked_head):
@@ -300,6 +443,33 @@ class DownloaderStrategyTests(unittest.TestCase):
         mocked_build_merge.assert_called_once()
         self.assertIsNone(mocked_build_merge.call_args.args[2])
         mocked_subprocess_run.assert_called_once()
+
+    @patch("app.core.downloaders.bilibili.requests.get")
+    def test_bilibili_play_url_refresh_forwards_proxy_settings(self, mocked_get):
+        """B站刷新 play_url 时必须沿用代理配置，否则 Web/CLI 网络路径会出现分叉。"""
+        response = Mock()
+        response.json.return_value = {
+            "code": 0,
+            "data": {
+                "dash": {
+                    "video": [{"baseUrl": "https://cdn.example.com/video.m4s"}],
+                    "audio": [{"baseUrl": "https://cdn.example.com/audio.m4s"}],
+                }
+            },
+        }
+        mocked_get.return_value = response
+        proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+
+        video_url, audio_url = BilibiliDownloader._fetch_bilibili_play_url(
+            "BV1xx",
+            "123",
+            {"User-Agent": "ua"},
+            proxies=proxies,
+        )
+
+        self.assertEqual(video_url, "https://cdn.example.com/video.m4s")
+        self.assertEqual(audio_url, "https://cdn.example.com/audio.m4s")
+        self.assertEqual(mocked_get.call_args.kwargs["proxies"], proxies)
 
     @patch("app.core.downloaders.bilibili.subprocess.run", side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]))
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])

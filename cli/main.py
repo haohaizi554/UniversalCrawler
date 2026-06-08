@@ -50,6 +50,15 @@ def _ensure_search_defaults(args: argparse.Namespace, platform: str) -> None:
         "pretty": False,
         "run_timeout": None,
         "no_download": False,
+        # 与通用 search 命令便捷参数对齐（platform_base.py 已添加这些参数定义）
+        "cookie": None,
+        "download_strategy": None,
+        "referer": None,
+        "ua": None,
+        "folder_name": None,
+        "use_subdir": None,
+        "file_name": None,
+        "content_type": None,
     }
     for key, default in _defaults.items():
         if not hasattr(args, key):

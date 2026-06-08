@@ -11,6 +11,7 @@ from app.ui.components.log_panel import LogPanel
 from app.ui.components.media_preview_panel import MediaPreviewPanel
 from app.ui.components.top_bar import TopBarWidget
 from app.ui.dialogs import SelectionDialog
+from app.ui.plugin_settings import build_plugin_settings_widget, read_plugin_run_options
 from app.ui.styles import generate_stylesheet
 from app.utils.runtime_paths import resolve_resource_file, user_data_root
 
@@ -192,11 +193,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """执行 `closeEvent` 对应的业务逻辑，供 `MainWindow` 使用。"""
+        _geometry = self.saveGeometry()
+        _state = self.saveState()
+        _main_splitter = self.main_split.saveState()
+        _right_splitter = self.right_split.saveState()
         cfg.save_ui_state(
-            geometry=self.saveGeometry(),
-            state=self.saveState(),
-            main_splitter=self.main_split.saveState(),
-            right_splitter=self.right_split.saveState(),
+            geometry=_geometry,
+            state=_state,
+            main_splitter=_main_splitter,
+            right_splitter=_right_splitter,
             is_fs=self.is_fullscreen_mode,
         )
         event.accept()
@@ -213,7 +218,7 @@ class MainWindow(QMainWindow):
         run_options = {}
         if self.plugin_widget:
             try:
-                run_options = self.current_plugin.get_run_options(self.plugin_widget)
+                run_options = read_plugin_run_options(self.current_plugin.id, self.plugin_widget)
             except (AttributeError, TypeError, ValueError) as exc:
                 self.append_log(f"❌ 配置读取错误: {exc}")
                 return
@@ -237,7 +242,7 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
 
-        self.plugin_widget = self.current_plugin.get_settings_widget(self.container_dynamic)
+        self.plugin_widget = build_plugin_settings_widget(self.current_plugin.id, self.container_dynamic)
         if self.plugin_widget:
             self.layout_dynamic.addWidget(self.plugin_widget)
             self.plugin_widget.show()

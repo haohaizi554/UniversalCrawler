@@ -6,15 +6,17 @@
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from app.config import cfg
+from app.controllers.media_library_mixin import MediaLibraryMixin
+from app.controllers.session_mixin import ControllerSessionMixin
 from app.core.download_manager import DownloadManager
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
-from app.exceptions import DebugActionError, FileOperationError, MediaScanError
+from app.exceptions import DebugActionError, MediaScanError
 from app.models import VideoItem
 from app.services.debug_service import DebugArtifactsService
 from app.services.file_service import MediaLibraryService
@@ -22,11 +24,34 @@ from app.ui.main_window import MainWindow
 from app.utils.runtime_paths import install_root, resolve_resource_file
 
 
-class ApplicationController:
+class SpiderEventBridge(QObject):
+    """Marshal pure-Python spider callbacks back onto the Qt UI thread."""
+
+    sig_log = pyqtSignal(str)
+    sig_item_found = pyqtSignal(object)
+    sig_select_tasks = pyqtSignal(object)
+    sig_finished = pyqtSignal()
+
+
+class DownloadEventBridge(QObject):
+    """Marshal pure-Python download callbacks back onto the Qt UI thread."""
+
+    sig_task_started = pyqtSignal(str)
+    sig_task_progress = pyqtSignal(str, int)
+    sig_task_finished = pyqtSignal(str)
+    sig_task_error = pyqtSignal(str, str)
+
+
+class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
     """应用控制器，协调各组件。"""
 
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
     IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+    DOWNLOAD_LOG_COMPONENT = "ApplicationController"
+    DOWNLOAD_FINISHED_STATUS_CODE = "APP_DL_FINISH"
+    DOWNLOAD_ERROR_STATUS_CODE = "APP_DL_ERROR"
+    DOWNLOAD_FINISHED_MESSAGE = "下载任务完成"
+    DOWNLOAD_ERROR_MESSAGE = "下载任务失败"
 
     def __init__(self):
         """初始化桌面应用、窗口、服务对象与下载调度器。"""
@@ -59,6 +84,16 @@ class ApplicationController:
         self.window = MainWindow()
         self.window.show()
         self.app.aboutToQuit.connect(self.shutdown)
+        self._spider_bridge = SpiderEventBridge()
+        self._spider_bridge.sig_log.connect(self.window.append_log)
+        self._spider_bridge.sig_item_found.connect(self._on_spider_item_found)
+        self._spider_bridge.sig_select_tasks.connect(self._on_spider_select_tasks)
+        self._spider_bridge.sig_finished.connect(self._on_spider_finished)
+        self._download_bridge = DownloadEventBridge()
+        self._download_bridge.sig_task_started.connect(self._on_task_started)
+        self._download_bridge.sig_task_progress.connect(self._on_task_progress)
+        self._download_bridge.sig_task_finished.connect(self._on_task_finished)
+        self._download_bridge.sig_task_error.connect(self._on_task_error)
 
         self.videos: dict[str, VideoItem] = {}
         self.current_playing_id: str | None = None
@@ -92,44 +127,10 @@ class ApplicationController:
 
     def _connect_download_signals(self):
         """下载管理器回调只在这里接入一次，避免散落在构造流程里。"""
-        self.dl_manager.task_started.connect(self._on_task_started)
-        self.dl_manager.task_progress.connect(self._on_task_progress)
-        self.dl_manager.task_finished.connect(self._on_task_finished)
-        self.dl_manager.task_error.connect(self._on_task_error)
-
-    def _on_task_started(self, video_id: str) -> None:
-        """在下载线程真正启动后，把条目状态切换为“下载中”并重置进度。"""
-        self._update_video_status(video_id, "⏳ 下载中...", 0)
-
-    def _on_task_progress(self, video_id: str, progress: int) -> None:
-        """同步下载进度到内存模型和界面表格。"""
-        self._update_video_progress(video_id, progress)
-
-    def _on_task_finished(self, video_id: str) -> None:
-        """接收下载完成信号并进入统一收尾逻辑。"""
-        self._on_download_finished(video_id)
-
-    def _on_task_error(self, video_id: str, error: str) -> None:
-        """接收下载失败信号并记录失败原因。"""
-        self._on_download_error(video_id, error)
-
-    def _has_active_spider(self) -> bool:
-        """判断当前是否仍有爬虫线程在运行，防止重复启动任务。"""
-        return bool(self.current_spider and self.current_spider.isRunning())
-
-    def _item_trace_id(self, item: VideoItem | None) -> str | None:
-        """从条目元数据中提取 trace_id，便于全链路日志关联。"""
-        return item.meta.get("trace_id") if item else None
-
-    def _item_context(self, item: VideoItem | None) -> dict:
-        """构建日志上下文字段，统一补充资源 ID 与来源平台。"""
-        if not item:
-            return {}
-        return {
-            "trace_id": self._item_trace_id(item),
-            "video_id": item.id,
-            "source": item.source,
-        }
+        self.dl_manager.task_started.connect(self._download_bridge.sig_task_started.emit)
+        self.dl_manager.task_progress.connect(self._download_bridge.sig_task_progress.emit)
+        self.dl_manager.task_finished.connect(self._download_bridge.sig_task_finished.emit)
+        self.dl_manager.task_error.connect(self._download_bridge.sig_task_error.emit)
 
     def _item_details(self, item: VideoItem | None) -> dict:
         """提取资源详情中的关键字段，避免日志里塞入过多无关数据。"""
@@ -160,10 +161,6 @@ class ApplicationController:
             "referer",
         )
 
-    def _summarize_active_config(self, config: dict) -> dict:
-        """过滤掉空配置项，只保留当前任务真正启用的参数。"""
-        return {k: v for k, v in config.items() if v not in (None, "", [], {})}
-
     def _report_debug_action_error(self, action: str, exc: Exception):
         """统一处理调试入口失败时的界面提示和异常日志。"""
         self.window.append_log(f"❌ {action}失败: {exc}")
@@ -192,61 +189,21 @@ class ApplicationController:
             },
         )
 
-    def _apply_video_state(self, vid: str, *, status: str | None = None, progress: int | None = None) -> VideoItem | None:
-        """统一维护内存状态和表格状态，避免多个回调各写一遍。"""
-        item = self.videos.get(vid)
-        if not item:
-            return None
-        if status is not None:
-            item.status = status
-        if progress is not None:
-            item.progress = progress
-        self.window.update_video_status(vid, item.status, item.progress if progress is not None else progress)
-        return item
-
-    def _update_video_status(self, vid, status, progress=None):
-        """只更新状态文案，必要时顺带刷新进度值。"""
-        self._apply_video_state(vid, status=status, progress=progress)
-
-    def _update_video_progress(self, vid, progress):
-        """只更新进度百分比，不改动当前状态文案。"""
-        self._apply_video_state(vid, progress=progress)
-
-    def _on_download_finished(self, vid):
-        """把资源标记为完成，并写入界面日志与调试日志。"""
-        item = self._apply_video_state(vid, status="✅ 完成", progress=100)
-        if not item:
-            return
-        self.window.append_log(f"✅ 下载完成: {item.title}")
-        debug_logger.log(
-            component="ApplicationController",
-            action="download_finished",
-            message="下载任务完成",
-            status_code="APP_DL_FINISH",
-            context=self._item_context(item),
-            details=self._item_details(item),
-            trace_id=self._item_trace_id(item),
+    def _publish_video_state(self, vid: str, item: VideoItem, *, requested_progress: int | None) -> None:
+        self.window.update_video_status(
+            vid,
+            item.status,
+            item.progress if requested_progress is not None else requested_progress,
         )
 
-    def _on_download_error(self, vid, error):
-        """把资源标记为失败，并附带错误原因输出到界面与日志。"""
-        # 与 REST API /api/download 错误路径对齐：失败时 progress=0
-        item = self._apply_video_state(vid, status="❌ 失败", progress=0)
-        if not item:
-            return
-        # 与 CLI/Web 对齐：存储错误原因到 meta
-        item.meta["download_error"] = error
-        self.window.append_log(f"❌ 下载失败 [{item.title}]: {error}")
-        debug_logger.log(
-            component="ApplicationController",
-            action="download_error",
-            level="ERROR",
-            message="下载任务失败",
-            status_code="APP_DL_ERROR",
-            context=self._item_context(item),
-            details={**self._item_details(item), "error": error},
-            trace_id=self._item_trace_id(item),
-        )
+    def _emit_controller_log(self, message: str) -> None:
+        self.window.append_log(message)
+
+    def _build_download_finished_log_details(self, item: VideoItem) -> dict:
+        return self._item_details(item)
+
+    def _build_download_error_log_details(self, item: VideoItem, error: str) -> dict:
+        return {**self._item_details(item), "error": error}
 
     def _create_spider(self, source_id: str, keyword: str, config: dict):
         """根据插件定义创建 spider，控制器不感知各平台具体类。"""
@@ -259,10 +216,10 @@ class ApplicationController:
 
     def _bind_spider_signals(self, spider) -> None:
         """spider 生命周期信号统一在这里接入。"""
-        spider.sig_log.connect(self.window.append_log)
-        spider.sig_item_found.connect(self._on_spider_item_found)
-        spider.sig_select_tasks.connect(self._on_spider_select_tasks)
-        spider.sig_finished.connect(self._on_spider_finished)
+        spider.sig_log.connect(self._spider_bridge.sig_log.emit)
+        spider.sig_item_found.connect(self._spider_bridge.sig_item_found.emit)
+        spider.sig_select_tasks.connect(self._spider_bridge.sig_select_tasks.emit)
+        spider.sig_finished.connect(self._spider_bridge.sig_finished.emit)
 
     def _clear_local_items(self) -> None:
         """清空当前界面与内存中的本地媒体列表，为重新扫描做准备。"""
@@ -271,11 +228,7 @@ class ApplicationController:
 
     def _append_scanned_items(self, result) -> None:
         """把扫描得到的媒体结果批量写入缓存并显示到表格。"""
-        for item in result.items:
-            # 与 SDK scan_directory 一致：本地文件标记为"✅ 本地"，进度 100%
-            item.status = "✅ 本地"
-            item.progress = 100
-            self.videos[item.id] = item
+        for item in self._cache_scanned_items(result):
             self.window.add_video_row(item)
 
     def scan_local_dir(self):
@@ -293,20 +246,11 @@ class ApplicationController:
         # 先清空旧数据，避免目录切换或重复扫描后出现残留条目。
         self._clear_local_items()
         try:
-            result = self.file_service.scan_directory(
-                directory,
-                max_scan_count=cfg.get("download", "local_scan_limit", 1000),
-            )
-            if result.truncated:
-                self.window.append_log(
-                    f"⚠️ 文件过多 ({result.original_count}个)，仅加载最新的 {result.total_count} 个以防卡顿。"
-                )
+            result = self._scan_media_directory(directory)
             self._append_scanned_items(result)
-
+            for message in self._build_scan_messages(result):
+                self.window.append_log(message)
             if result.total_count > 0:
-                self.window.append_log(
-                    f"✅ 已加载 {result.total_count} 个本地文件 (视频: {result.video_count}, 图片: {result.image_count})"
-                )
                 debug_logger.log(
                     component="ApplicationController",
                     action="scan_local_dir_finished",
@@ -319,8 +263,6 @@ class ApplicationController:
                         "image_count": result.image_count,
                     },
                 )
-            else:
-                self.window.append_log("ℹ️ 该目录下没有找到视频或图片")
         except MediaScanError as exc:
             self.window.append_log(f"❌ 扫描目录出错: {exc}")
             debug_logger.log_exception("ApplicationController", "scan_local_dir", exc, context={"directory": directory})
@@ -352,14 +294,14 @@ class ApplicationController:
             item.setText(video.title)
             return
 
-        try:
-            old_path, new_path = self.file_service.rename_media(video, new_title, self.window.current_save_dir)
-            video.title = new_title
-            video.local_path = new_path
+        outcome = self._rename_video_sync(vid, new_title, self.window.current_save_dir)
+        if outcome.status == "ok":
             item.setToolTip(new_title)
-            self.window.append_log(f"📝 重命名: {os.path.basename(old_path)} -> {os.path.basename(new_path)}")
-        except FileOperationError as exc:
-            self.window.append_log(f"❌ 重命名失败: {exc}")
+            message = self._rename_outcome_message(outcome)
+            if message:
+                self.window.append_log(message)
+        else:
+            self.window.append_log(f"❌ 重命名失败: {outcome.error}")
             item.setText(video.title)
 
     def on_delete_video(self, row_idx, vid):
@@ -368,28 +310,15 @@ class ApplicationController:
             self.window.remove_video_row(row_idx)
             return
 
-        video = self.videos[vid]
-        # 先尝试取消下载，再删除文件，避免下载线程继续占用即将被移除的目标路径。
-        cancel_result = self.dl_manager.cancel_task(vid)
         if self.current_playing_id == vid:
             self.window.stop_media_playback()
             self.current_playing_id = None
-        try:
-            deleted = self.file_service.delete_media(video)
-            if deleted:
-                self.window.append_log(f"🗑️ 已删除: {os.path.basename(video.local_path)}")
-            else:
-                self.window.append_log(f"ℹ️ 文件不存在，仅从列表移除: {video.title}")
-        except FileOperationError as exc:
-            self.window.append_log(f"❌ 删除文件失败: {exc}")
+        outcome = self._delete_video_sync(vid)
+        if outcome.status == "error":
+            self.window.append_log(f"❌ 删除文件失败: {outcome.error}")
             return
-
-        if cancel_result == "queued":
-            self.window.append_log(f"🛑 已取消队列任务: {video.title}")
-        elif cancel_result == "running":
-            self.window.append_log(f"🛑 已请求停止下载: {video.title}")
-
-        del self.videos[vid]
+        for message in self._delete_outcome_messages(outcome):
+            self.window.append_log(message)
         self.window.remove_video_row(row_idx)
         self.window.refresh_table_bindings()
 
@@ -413,8 +342,7 @@ class ApplicationController:
 
     def _on_spider_item_found(self, item):
         """接收爬虫产出的资源条目，先入表，再交给下载器排队。"""
-        item.status = "⏳ 等待中"
-        item.progress = 0
+        self._prepare_pending_item(item)
         self.videos[item.id] = item
         self.window.add_video_row(item)
         debug_logger.log(

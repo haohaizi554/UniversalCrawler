@@ -132,6 +132,26 @@ class RuleSelectionTests(unittest.TestCase):
         self.assertEqual(RuleSelection().strategy_name, "rule")
 
 
+class SelectionSummaryHelpersTests(unittest.TestCase):
+    """统一选择提示与摘要 helper 测试。"""
+
+    def test_build_selection_prompt_uses_shared_format(self):
+        """选择轮次和候选数应采用统一提示格式。"""
+        from cli.selection_base import build_selection_prompt
+
+        self.assertEqual(build_selection_prompt(2, 5), "二次选择 #2: 5 个候选")
+
+    def test_format_selection_result_truncates_preview_when_needed(self):
+        """选择结果摘要应截断过长预览，避免日志噪声。"""
+        from cli.selection_base import format_selection_result
+
+        rendered = format_selection_result(list(range(12)))
+
+        self.assertIn("选中 12 项", rendered)
+        self.assertIn("[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]", rendered)
+        self.assertTrue(rendered.endswith("..."))
+
+
 class AutoSelectionTests(unittest.TestCase):
     """AutoSelection 自动检测策略。"""
 
@@ -167,6 +187,43 @@ class AutoSelectionTests(unittest.TestCase):
         from cli.pipe import PipeSelection
         auto._strategy = PipeSelection(preloaded_choices=[[0, 2]])
         self.assertEqual(auto.select([{"i": 0}, {"i": 1}, {"i": 2}]), [0, 2])
+
+
+class InteractiveTTYSelectionTests(unittest.TestCase):
+    """TTY 交互选择的输入兼容性测试。"""
+
+    def test_parse_one_based_indices(self):
+        """面板展示从 1 开始时，输入 1,3 应映射到内部 0,2。"""
+        from cli.interactive import InteractiveTTYSelection
+
+        selection = InteractiveTTYSelection()
+        self.assertEqual(selection._parse_index_list("1,3", 5), [0, 2])
+
+    def test_parse_zero_based_indices_for_backward_compatibility(self):
+        """历史 0 基输入仍然可用，避免破坏已有脚本。"""
+        from cli.interactive import InteractiveTTYSelection
+
+        selection = InteractiveTTYSelection()
+        self.assertEqual(selection._parse_index_list("0,2", 5), [0, 2])
+
+    def test_print_items_renders_group_title_once(self):
+        """共享 group_title 时，只在顶部显示一次，不在每行重复父级标题。"""
+        from cli.interactive import InteractiveTTYSelection
+
+        output = io.StringIO()
+        selection = InteractiveTTYSelection(input_stream=io.StringIO("q\n"), output_stream=output)
+        items = [
+            {"title": "我的空乘女友", "subtitle": "P01", "group_title": "sunny77小合集"},
+            {"title": "我的好利来女友 第二期", "subtitle": "P02", "group_title": "sunny77小合集"},
+        ]
+
+        selection._print_items(items, "二次选择 #1: 2 个候选")
+
+        rendered = output.getvalue()
+        self.assertIn("📦 当前分组: sunny77小合集", rendered)
+        self.assertEqual(rendered.count("sunny77小合集"), 1)
+        self.assertIn("[1] 我的空乘女友", rendered)
+        self.assertIn("P01", rendered)
 
 
 if __name__ == "__main__":

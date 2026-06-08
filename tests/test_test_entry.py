@@ -128,7 +128,19 @@ class TestEntryRunListTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         # 包含核心类别
-        for cat_id in ["all", "unit", "integration", "e2e", "ui", "pipeline", "packaging", "web_browser", "core"]:
+        for cat_id in [
+            "all",
+            "cli_sdk",
+            "web_api",
+            "app_flows",
+            "desktop_ui",
+            "browser_e2e",
+            "pipeline",
+            "packaging",
+            "core_services",
+            "suite_infra",
+            "misc",
+        ]:
             self.assertIn(cat_id, out, f"missing category: {cat_id}")
 
 
@@ -215,6 +227,58 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
         # 至少自动发现 1 个 test_*.py
         self.assertGreaterEqual(cat.file_count(), 1)
 
+    def test_register_category_rule_matches_new_files(self):
+        cat = self.registry.register_category_rule(
+            id="rule_suite",
+            name="规则套件",
+            description="按命名规则自动纳入",
+            include=["tests/test_cli_*.py"],
+        )
+        self.assertEqual(cat.id, "rule_suite")
+        self.assertIn("tests/test_cli_entry.py", self.registry.get_resolved_files("rule_suite"))
+
+    def test_register_test_files_appends_to_existing_category(self):
+        cat = self.registry.register_category(
+            id="manual_suite",
+            name="手工套件",
+            description="测试追加接口",
+            files=["tests/test_pipeline.py"],
+        )
+        self.registry.register_test_files("manual_suite", ["tests/test_contract.py"])
+        self.assertEqual(
+            self.registry.get_resolved_files("manual_suite"),
+            ["tests/test_pipeline.py", "tests/test_contract.py"],
+        )
+
+    def test_refresh_registry_returns_counts(self):
+        info = self.registry.refresh_registry()
+        self.assertIn("categories", info)
+        self.assertIn("runnable_files", info)
+        self.assertIn("unassigned_files", info)
+        self.assertGreater(info["categories"], 0)
+
+    def test_builtin_rules_cover_current_named_tests(self):
+        expected_categories = {
+            "tests/test_web_controller_selection.py": "web_api",
+            "tests/test_web_workflows.py": "web_api",
+            "tests/test_web_script_api.py": "web_api",
+            "tests/test_websocket_server.py": "web_api",
+            "tests/test_websocket_bridge.py": "web_api",
+            "tests/test_download_manager_core.py": "core_services",
+            "tests/test_douyin_parameter.py": "core_services",
+            "tests/test_plugin_discovery.py": "core_services",
+            "tests/test_spider_base.py": "core_services",
+            "tests/test_controller_session_mixin.py": "core_services",
+            "tests/test_media_library_mixin.py": "core_services",
+            "tests/test_test_launcher_ui.py": "suite_infra",
+        }
+
+        unassigned = set(self.registry.auto_discover_tests())
+        for file_path, category_id in expected_categories.items():
+            self.assertNotIn(file_path, unassigned)
+            self.assertIn(file_path, self.registry.get_resolved_files(category_id))
+        self.assertEqual(unassigned, set())
+
     def test_register_plugin_directory_duplicate_raises(self):
         self.registry.register_plugin_directory("dup", "D1", "tests")
         with self.assertRaises(ValueError):
@@ -298,6 +362,12 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
             cat2 = self.registry._rescan_plugin("tmpplug")
             self.assertIsNotNone(cat2)
             self.assertEqual(cat2.file_count(), 1)
+
+    def test_suite_support_files_not_in_all(self):
+        files = self.registry.get_resolved_files("all")
+        self.assertNotIn("tests/test_launcher.py", files)
+        self.assertNotIn("tests/test_registry.py", files)
+        self.assertNotIn("tests/test_runner.py", files)
 
 
 class TestDispatcherRoutingTests(unittest.TestCase):

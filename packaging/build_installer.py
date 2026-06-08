@@ -7,12 +7,35 @@ import sys
 import time
 from pathlib import Path
 
+if __package__ in (None, ""):
+    from project_meta import (
+        APP_DISPLAY_NAME,
+        APP_PUBLISHER,
+        APP_USER_MODEL_ID,
+        INSTALLER_BASENAME,
+        PACKAGE_VERSION,
+        WEBUI_USER_MODEL_ID,
+    )
+else:
+    from .project_meta import (
+        APP_DISPLAY_NAME,
+        APP_PUBLISHER,
+        APP_USER_MODEL_ID,
+        INSTALLER_BASENAME,
+        PACKAGE_VERSION,
+        WEBUI_USER_MODEL_ID,
+    )
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = PROJECT_ROOT / "dist" / "UniversalCrawlerPro"
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
-SETUP_EXE = OUTPUT_DIR / "UniversalCrawlerPro_Setup.exe"
+
+
+def get_setup_exe_path() -> Path:
+    """返回当前版本对应的安装包输出路径。"""
+    return OUTPUT_DIR / f"{INSTALLER_BASENAME}.exe"
 
 
 def _resolve_iscc_from_registry() -> str | None:
@@ -106,17 +129,27 @@ def ensure_prerequisites() -> str:
 def main() -> None:
     """作为脚本入口组织整体执行流程。"""
     iscc = ensure_prerequisites()
+    setup_exe = get_setup_exe_path()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if SETUP_EXE.exists():
-        SETUP_EXE.unlink()
+    if setup_exe.exists():
+        setup_exe.unlink()
     build_started_at = time.time()
-    command = [iscc, str(ISS_FILE)]
+    command = [
+        iscc,
+        f"/DAppVersion={PACKAGE_VERSION}",
+        f"/DAppPublisher={APP_PUBLISHER}",
+        f"/DAppComments={APP_DISPLAY_NAME} Windows 安装程序",
+        f"/DAppUserModelID={APP_USER_MODEL_ID}",
+        f"/DWebUIUserModelID={WEBUI_USER_MODEL_ID}",
+        f"/DOutputBaseFilename={INSTALLER_BASENAME}",
+        str(ISS_FILE),
+    ]
     subprocess.run(command, cwd=PROJECT_ROOT / "packaging", check=True)
-    if not SETUP_EXE.exists():
-        raise SystemExit(f"安装包构建失败，未找到输出文件: {SETUP_EXE}")
-    if SETUP_EXE.stat().st_mtime < build_started_at:
-        raise SystemExit(f"安装包未被重新生成，输出文件时间异常: {SETUP_EXE}")
-    print(f"安装包构建完成: {SETUP_EXE}")
+    if not setup_exe.exists():
+        raise SystemExit(f"安装包构建失败，未找到输出文件: {setup_exe}")
+    if setup_exe.stat().st_mtime < build_started_at:
+        raise SystemExit(f"安装包未被重新生成，输出文件时间异常: {setup_exe}")
+    print(f"安装包构建完成: {setup_exe}")
 
 
 if __name__ == "__main__":

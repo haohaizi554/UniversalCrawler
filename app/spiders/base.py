@@ -1,31 +1,34 @@
 """Base spider helpers used by all platforms."""
 
-import threading
+from __future__ import annotations
 
-from PyQt6.QtCore import QThread, pyqtSignal
+import threading
+import time
 
 from app.debug_logger import debug_logger
 from app.models import VideoItem
+from app.utils.callback_signal import CallbackSignal
 
 
-class BaseSpider(QThread):
-    """Common spider thread base with UI selection helpers."""
-
-    sig_log = pyqtSignal(str)
-    sig_item_found = pyqtSignal(VideoItem)
-    sig_finished = pyqtSignal()
-    sig_select_tasks = pyqtSignal(list)
+class BaseSpider(threading.Thread):
+    """Common pure-Python spider thread base with UI selection helpers."""
 
     def __init__(self, keyword: str, config: dict):
         """初始化当前实例并准备运行所需的状态，供 `BaseSpider` 使用。"""
-        super().__init__()
+        super().__init__(daemon=True, name=self.__class__.__name__)
         self.keyword = keyword
         self.config = config
         self.is_running = True
+        self.sig_log = CallbackSignal()
+        self.sig_item_found = CallbackSignal()
+        self.sig_finished = CallbackSignal()
+        self.sig_select_tasks = CallbackSignal()
         self.trace_prefix = self.__class__.__name__.replace("Spider", "").lower() or "spider"
         # The spider thread waits on this event while the UI shows a selection dialog.
         self._resume_event = threading.Event()
         self._selection_result = None
+        self._selection_emit_perf_ms = 0.0
+        self._selection_emit_wall_ms = 0
         # 修复 BUG-168: 暴露 Playwright browser/context 引用，方便 controller 强制中断
         self._playwright_browser = None
         self._playwright_pw = None
@@ -68,6 +71,16 @@ class BaseSpider(QThread):
     def run(self):
         """执行当前对象或脚本的主流程，供 `BaseSpider` 使用。"""
         raise NotImplementedError("Subclasses must implement run().")
+
+    def isRunning(self) -> bool:
+        """兼容旧的 QThread 风格运行态判断。"""
+        return self.is_alive()
+
+    def wait(self, timeout_ms: int | None = None) -> bool:
+        """兼容旧的 QThread 风格等待接口。"""
+        timeout = None if timeout_ms is None else max(timeout_ms, 0) / 1000
+        self.join(timeout=timeout)
+        return not self.is_alive()
 
     def log(self, msg: str):
         """执行 `log` 对应的业务逻辑，供 `BaseSpider` 使用。"""
@@ -135,6 +148,8 @@ class BaseSpider(QThread):
         """执行 `ask_user_selection` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         self._resume_event.clear()#准备进入等待状态
         self._selection_result = None
+        self._selection_emit_perf_ms = time.perf_counter() * 1000
+        self._selection_emit_wall_ms = int(time.time() * 1000)
         self.sig_select_tasks.emit(items)
         while self.is_running:
             if self._resume_event.wait(timeout=1.0):
@@ -147,3 +162,10 @@ class BaseSpider(QThread):
         """Resume a spider thread after the UI collected user choices."""
         self._selection_result = selected_indices
         self._resume_event.set()
+
+    def get_selection_emit_trace(self) -> dict[str, float | int]:
+        """Return the latest selection-dialog emission timing for observability."""
+        return {
+            "spider_emit_perf_ms": self._selection_emit_perf_ms,
+            "spider_emit_wall_ms": self._selection_emit_wall_ms,
+        }

@@ -1,631 +1,1415 @@
-"""统一测试启动器（GUI + TUI + CLI 三模自适应）。
-
-设计 v7 — Linear/Spotify 现代深色风格：
-- 更深的背景 + 更亮的卡片对比
-- 大号标题 + 精致间距
-- 选中态用亮色左边框 + 微妙背景变化
-- 进度条有实际百分比文字
-- 日志区用更深的背景形成层次
-- 整体追求「精致工具感」而非「科技炫酷感」
-
-关键修复：
-- 不设 QT_QPA_PLATFORM=offscreen
-- Qt 类模块级定义（class identity 稳定）
-- QSS 只作用在窗口自身
-"""
+"""统一测试启动器（GUI + TUI + CLI 三模自适应）。"""
 
 from __future__ import annotations
 
-import os, sys, threading
+import os
+import sys
+import threading
+from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 _TESTS_DIR = Path(__file__).resolve().parent
-if str(_TESTS_DIR) not in sys.path: sys.path.insert(0, str(_TESTS_DIR))
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
 _PROJECT_ROOT = _TESTS_DIR.parent
-if str(_PROJECT_ROOT) not in sys.path: sys.path.insert(0, str(_PROJECT_ROOT))
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-from test_registry import (TEST_REGISTRY, TEST_ICON_PATH, get_enabled_categories, get_resolved_files, get_category)
-from test_runner import (TestResult, run_category, run_categories, format_summary)
+from test_registry import (
+    RECOMMENDED_CATEGORY_IDS,
+    TEST_ICON_PATH,
+    get_category,
+    get_enabled_categories,
+    get_resolved_files,
+    summary,
+)
+from test_runner import TestResult, format_summary, run_categories, run_category
 
 try:
-    from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
-    from PyQt6.QtGui import QIcon, QFont, QColor, QShortcut, QKeySequence, QPixmap, QPainter
+    from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+    from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
     from PyQt6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QLabel, QPushButton, QFrame, QScrollArea, QTextEdit, QProgressBar,
-        QStatusBar, QCheckBox, QSizePolicy, QGraphicsDropShadowEffect
+        QApplication,
+        QCheckBox,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QProgressBar,
+        QPushButton,
+        QScrollArea,
+        QSizePolicy,
+        QStatusBar,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
     )
+
     _PYQT6_AVAILABLE = True
 except ImportError:
     _PYQT6_AVAILABLE = False
-    Qt = None; pyqtSignal = None; QObject = object; QMainWindow = object; QFrame = object; QApplication = None
+    QObject = object
+    QMainWindow = object
+    QFrame = object
+    QApplication = None
+    Qt = None
+    pyqtSignal = None
 
 
-# ============== 设计令牌 — Linear/Spotify 现代深色 ==============
-
-BG          = "#09090b"    # 极深背景
-SURFACE     = "#18181b"    # 卡片/面板
-SURFACE_HI  = "#27272a"    # 悬停/选中
-BORDER      = "#3f3f46"    # 边框
-BORDER_SEL  = "#a1a1aa"    # 选中边框
-
-ACCENT      = "#3b82f6"    # 蓝色强调（Tailwind blue-500）
-ACCENT_DIM  = "#1d4ed8"    # 深蓝
-GREEN       = "#22c55e"    # 成功（green-500）
-RED         = "#ef4444"    # 失败（red-500）
-AMBER       = "#f59e0b"    # 警告（amber-500）
-
-TEXT        = "#fafafa"    # 主文字
-TEXT_SEC    = "#a1a1aa"    # 次要文字
-TEXT_DIM    = "#71717a"    # 最暗文字
-
-FONT_UI   = "'Inter','Segoe UI Variable','Microsoft YaHei UI',system-ui,sans-serif"
-FONT_MONO = "'JetBrains Mono','Cascadia Code','Consolas',monospace"
-
-# 类别标记色
-_CAT_COLORS = {
-    "all": ACCENT, "unit": GREEN, "integration": "#8b5cf6",
-    "e2e": "#06b6d4", "ui": "#ec4899", "pipeline": "#14b8a6",
-    "packaging": TEXT_DIM, "web_browser": "#6366f1",
-    "core": TEXT_DIM, "test_entry": "#f97316",
-}
-
-# ============== QSS ==============
+BG = "#070B14"
+SURFACE = "#0F172A"
+SURFACE_2 = "#131D32"
+SURFACE_3 = "#1A2740"
+SURFACE_4 = "#1E2D4A"
+BORDER = "#22304D"
+HAIRLINE = "#1A2438"
+TEXT = "#E5EEF9"
+TEXT_MUTED = "#93A4BF"
+TEXT_DIM = "#667892"
+ACCENT = "#5B8CFF"
+ACCENT_SOFT = "#7C3AED"
+ACCENT_MINT = "#18C6B8"
+SUCCESS = "#22C55E"
+WARNING = "#F59E0B"
+DANGER = "#EF4444"
+MONO = "'JetBrains Mono','Cascadia Code','Consolas',monospace"
+UI_FONT = "'Inter','Segoe UI Variable','Microsoft YaHei UI',sans-serif"
 
 QSS = f"""
-QMainWindow {{ background: {BG}; }}
-
-QWidget {{ color: {TEXT}; font-family: {FONT_UI}; font-size: 13px; }}
-
-/* ---- 卡片 ---- */
-QFrame#tc {{
-    background: {SURFACE}; border: 1px solid transparent; border-radius: 8px;
+QMainWindow {{
+    background: {BG};
 }}
-QFrame#tc:hover {{
-    background: {SURFACE_HI}; border-color: {BORDER};
+QWidget {{
+    color: {TEXT};
+    font-family: {UI_FONT};
+    font-size: 13px;
 }}
-QFrame#tcSel {{
-    background: {SURFACE_HI}; border-left: 3px solid {ACCENT}; border-top: 1px solid transparent;
-    border-right: 1px solid transparent; border-bottom: 1px solid transparent; border-radius: 8px;
+QFrame#hero,
+QFrame#panel,
+QFrame#statsCard,
+QFrame#selectionSummary,
+QFrame#sectionHeader {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 18px;
 }}
-
-QLabel#tcName {{ color: {TEXT}; font-size: 13px; font-weight: 600; background: transparent; border: none; }}
-QLabel#tcDesc {{ color: {TEXT_DIM}; font-size: 11px; background: transparent; border: none; padding-top: 2px; }}
-QLabel#tcIdx  {{ color: {TEXT_DIM}; font-size: 13px; font-weight: 500; background: transparent; border: none; }}
-
-/* ---- 按钮 ---- */
-QPushButton#runBtn {{
-    background: {ACCENT}; border: none; border-radius: 6px;
-    padding: 8px 24px; font-size: 13px; font-weight: 600; color: white;
+QFrame#hero {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #0E1A33,
+        stop:0.48 #0C1730,
+        stop:1 #091121);
 }}
-QPushButton#runBtn:hover {{ background: #2563eb; }}
-QPushButton#runBtn:disabled {{ background: {SURFACE_HI}; color: {TEXT_DIM}; }}
-
-QPushButton#stopBtn {{
-    background: {RED}; border: none; border-radius: 6px;
-    padding: 8px 24px; font-size: 13px; font-weight: 600; color: white;
+QFrame#statsCard {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 {SURFACE},
+        stop:1 #0C1426);
 }}
-QPushButton#stopBtn:hover {{ background: #dc2626; }}
-
-QPushButton#ghost {{
-    background: transparent; color: {TEXT_SEC}; border: none;
-    border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 500;
+QFrame#selectionSummary {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #0E1B34,
+        stop:1 #0B1428);
+    border-radius: 16px;
 }}
-QPushButton#ghost:hover {{ color: {TEXT}; background: {SURFACE_HI}; }}
-
-/* ---- 日志 ---- */
-QTextEdit#log {{
-    background: #0c0c0e; color: {TEXT_SEC}; border: 1px solid {BORDER}; border-radius: 8px;
-    font-family: {FONT_MONO}; font-size: 11px; padding: 10px;
-    selection-background-color: {ACCENT};
+QFrame#categoryCard {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 {SURFACE},
+        stop:1 #0B1325);
+    border: 1px solid {BORDER};
+    border-radius: 18px;
 }}
-
-/* ---- 进度条 ---- */
-QProgressBar {{
-    background: {SURFACE}; border: none; border-radius: 6px;
-    text-align: center; font-size: 11px; color: {TEXT_SEC};
-    min-height: 24px; max-height: 24px;
+QFrame#categoryCard[state="hover"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #12203A,
+        stop:1 #0D182E);
+    border: 1px solid #36527F;
 }}
-QProgressBar::chunk {{
-    background: {ACCENT}; border-radius: 5px;
+QFrame#categoryCard[state="selected"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #1B2B47,
+        stop:1 #16243B);
+    border: 1px solid {ACCENT};
 }}
-
-/* ---- 状态栏 ---- */
-QStatusBar {{
-    background: {SURFACE}; color: {TEXT_DIM}; border-top: 1px solid {BORDER};
-    font-size: 11px; padding: 4px 12px;
+QFrame#categoryCard[state="selected-hover"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #22375A,
+        stop:1 #1A2943);
+    border: 1px solid #8FB2FF;
 }}
-
-/* ---- 复选框 ---- */
-QCheckBox {{ color: {TEXT_SEC}; font-size: 12px; spacing: 6px; background: transparent; border: none; }}
+QFrame#categoryStrip {{
+    background: #162846;
+    border-radius: 3px;
+}}
+QFrame#categoryStrip[state="hover"] {{
+    background: #3C5C90;
+}}
+QFrame#categoryStrip[state="selected"] {{
+    background: {ACCENT};
+}}
+QFrame#categoryStrip[state="selected-hover"] {{
+    background: #8FB2FF;
+}}
+QFrame#panelHeader {{
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid {HAIRLINE};
+}}
+QFrame#sectionHeader {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0F1930,
+        stop:1 #0A1223);
+    border-radius: 14px;
+}}
+QWidget#categoryViewport,
+QWidget#categoryList {{
+    background: transparent;
+}}
+QScrollArea > QWidget > QWidget {{
+    background: transparent;
+}}
+QLabel#heroTitle {{
+    font-size: 24px;
+    font-weight: 700;
+}}
+QLabel#heroSub,
+QLabel#sectionTitle,
+QLabel#metaText,
+QLabel#progressHint,
+QLabel#emptyText,
+QLabel#summaryText,
+QLabel#sectionMeta,
+QLabel#categoryMetaLine,
+QLabel#selectHint {{
+    color: {TEXT_MUTED};
+}}
+QLabel#sectionLabel {{
+    color: {TEXT};
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}}
+QLabel#summaryEyebrow {{
+    color: {ACCENT_MINT};
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}}
+QLabel#summaryValue {{
+    font-size: 28px;
+    font-weight: 800;
+}}
+QLabel#summaryText,
+QLabel#sectionMeta,
+QLabel#categoryMetaLine,
+QLabel#selectHint {{
+    font-size: 11px;
+}}
+QLabel#panelTitle {{
+    font-size: 15px;
+    font-weight: 700;
+}}
+QLabel#panelSub {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+}}
+QLabel#categoryTitle {{
+    font-size: 15px;
+    font-weight: 700;
+}}
+QLabel#categoryDesc {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+}}
+QLabel#avatar {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 {SURFACE_3},
+        stop:1 #20314F);
+    border: 1px solid #30466C;
+    border-radius: 18px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 8px 10px;
+}}
+QLabel#countPill,
+QLabel#badgePill,
+QLabel#sectionPill,
+QLabel#runStatus,
+QLabel#sectionCountPill {{
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+}}
+QLabel#countPill {{
+    color: {TEXT};
+    background: #13233E;
+    border: 1px solid #294168;
+}}
+QLabel#countPill[state="hover"] {{
+    background: #173055;
+    border: 1px solid #3B5D8F;
+}}
+QLabel#countPill[state="selected"] {{
+    background: #1C3D72;
+    border: 1px solid #6B98FF;
+}}
+QLabel#countPill[state="selected-hover"] {{
+    background: #244B89;
+    border: 1px solid #9EC0FF;
+}}
+QLabel#badgePill {{
+    color: {TEXT_MUTED};
+    background: #10192B;
+    border: 1px solid {BORDER};
+}}
+QLabel#sectionPill {{
+    color: {TEXT_MUTED};
+    background: #0E1627;
+    border: 1px solid {BORDER};
+}}
+QLabel#sectionCountPill {{
+    color: {TEXT};
+    background: #13233E;
+    border: 1px solid #294168;
+}}
+QLabel#runStatus {{
+    color: {TEXT_MUTED};
+    background: #0E1627;
+    border: 1px solid {BORDER};
+}}
+QLabel#statValue {{
+    font-size: 22px;
+    font-weight: 700;
+}}
+QLabel#statLabel {{
+    color: {TEXT_MUTED};
+    font-size: 12px;
+}}
+QLabel#statHint {{
+    color: {TEXT_DIM};
+    font-size: 11px;
+}}
+QPushButton#primaryBtn {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {ACCENT},
+        stop:1 #6D63FF);
+    border: none;
+    border-radius: 12px;
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
+}}
+QPushButton#primaryBtn:hover {{
+    background: #4A78E0;
+}}
+QPushButton#dangerBtn {{
+    background: {DANGER};
+    border: none;
+    border-radius: 12px;
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
+}}
+QPushButton#dangerBtn:hover {{
+    background: #DC2626;
+}}
+QPushButton#ghostBtn {{
+    background: transparent;
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    padding: 8px 14px;
+    color: {TEXT_MUTED};
+    font-size: 12px;
+    font-weight: 600;
+}}
+QPushButton#ghostBtn:hover {{
+    color: {TEXT};
+    background: {SURFACE_2};
+}}
+QCheckBox {{
+    color: {TEXT_MUTED};
+    spacing: 8px;
+}}
 QCheckBox::indicator {{
-    width: 16px; height: 16px; border-radius: 4px;
-    border: 1.5px solid {BORDER}; background: {SURFACE};
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid {BORDER};
+    background: {SURFACE_2};
 }}
 QCheckBox::indicator:checked {{
-    background: {ACCENT}; border-color: {ACCENT};
+    background: {ACCENT};
+    border-color: {ACCENT};
 }}
-
-/* ---- 滚动条 ---- */
-QScrollArea {{ background: transparent; border: none; }}
+QTextEdit#log {{
+    background: #08101E;
+    border: 1px solid {BORDER};
+    border-radius: 16px;
+    padding: 12px;
+    color: {TEXT};
+    font-size: 12px;
+    font-family: {MONO};
+    selection-background-color: {ACCENT};
+}}
+QProgressBar {{
+    background: #08101E;
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    min-height: 22px;
+    text-align: center;
+    color: {TEXT_MUTED};
+}}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {ACCENT},
+        stop:1 {ACCENT_MINT});
+    border-radius: 9px;
+}}
+QStatusBar {{
+    background: {SURFACE};
+    border-top: 1px solid {BORDER};
+    color: {TEXT_MUTED};
+}}
+QScrollArea {{
+    background: transparent;
+    border: none;
+}}
 QScrollBar:vertical {{
-    background: transparent; width: 8px; margin: 0;
+    background: transparent;
+    width: 10px;
 }}
 QScrollBar::handle:vertical {{
-    background: {BORDER}; border-radius: 4px; min-height: 30px;
+    background: {BORDER};
+    border-radius: 5px;
+    min-height: 30px;
 }}
-QScrollBar::handle:vertical:hover {{ background: {TEXT_DIM}; }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::handle:vertical:hover {{
+    background: {TEXT_DIM};
+}}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
 """
 
 
-# ============== 后台线程 ==============
+def _merge_results(current: TestResult | None, update: TestResult) -> TestResult:
+    if current is None:
+        return TestResult(
+            category_id=update.category_id,
+            category_name=update.category_name,
+            file_count=update.file_count,
+            passed=update.passed,
+            failed=update.failed,
+            skipped=update.skipped,
+            errors=update.errors,
+            duration=update.duration,
+            returncode=update.returncode,
+            output=update.output,
+            success=update.success,
+            started_at=update.started_at,
+            finished_at=update.finished_at,
+            failed_tests=list(update.failed_tests),
+        )
+    current.passed += update.passed
+    current.failed += update.failed
+    current.skipped += update.skipped
+    current.errors += update.errors
+    current.duration += update.duration
+    current.output += update.output
+    current.failed_tests.extend(update.failed_tests)
+    current.returncode = 0 if current.failed == 0 and current.errors == 0 else 1
+    current.success = current.returncode == 0
+    current.finished_at = update.finished_at
+    return current
+
 
 class TestRunnerWorker(threading.Thread):
-    def __init__(self, category_ids, callback, no_failfast=True):
+    def __init__(self, category_ids, callback, *, no_failfast=True, verbose=False):
         super().__init__(daemon=True)
-        self.category_ids = category_ids; self.callback = callback
-        self.no_failfast = no_failfast; self.results = []; self._stop = False
+        self.category_ids = list(category_ids)
+        self.callback = callback
+        self.no_failfast = no_failfast
+        self.verbose = verbose
+        self.results: list[TestResult] = []
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def _emit(self, event, category_id, name, payload):
+        try:
+            self.callback(event, category_id, name, payload)
+        except Exception:
+            pass
 
     def run(self):
-        for cid in self.category_ids:
-            if self._stop: break
-            cat = get_category(cid); files = get_resolved_files(cid)
-            try: self.callback("cs", cid, cat.name, len(files))
-            except Exception: pass
-            for idx, f in enumerate(files):
-                if self._stop: break
-                try: self.callback("fs", cid, f, idx)
-                except Exception: pass
-                from test_runner import run_category as _rc
-                res = _rc(category_id=cid, category_name=cat.name, files=[f], no_failfast=self.no_failfast)
-                if self.results and self.results[-1].category_id == cid:
-                    r = self.results[-1]; r.passed += res.passed; r.failed += res.failed
-                    r.skipped += res.skipped; r.errors += res.errors; r.duration += res.duration
-                    r.output += res.output; r.failed_tests.extend(res.failed_tests)
-                else: self.results.append(res)
-                try: self.callback("fd", cid, f, res)
-                except Exception: pass
-            try: self.callback("cd", cid, cat.name, None)
-            except Exception: pass
-        try: self.callback("ad", "", "", self.results)
-        except Exception: pass
+        for category_id in self.category_ids:
+            if self._stop:
+                break
 
-    def stop(self): self._stop = True
+            category = get_category(category_id)
+            files = get_resolved_files(category_id)
+            self._emit("category_start", category_id, category.name, len(files))
 
+            aggregated: TestResult | None = None
+            for index, file_path in enumerate(files, 1):
+                if self._stop:
+                    break
+                self._emit("file_start", category_id, file_path, {"index": index, "total": len(files)})
+                result = run_category(
+                    category_id=category_id,
+                    category_name=category.name,
+                    files=[file_path],
+                    verbose=self.verbose,
+                    no_failfast=self.no_failfast,
+                )
+                aggregated = _merge_results(aggregated, result)
+                self._emit("file_done", category_id, file_path, result)
+                if not self.no_failfast and not result.success:
+                    break
 
-# ============== Qt 类（模块级） ==============
+            if aggregated is None:
+                aggregated = TestResult(
+                    category_id=category_id,
+                    category_name=category.name,
+                    file_count=0,
+                    success=True,
+                )
+
+            self.results.append(aggregated)
+            self._emit("category_done", category_id, category.name, aggregated)
+            if self._stop or (not self.no_failfast and not aggregated.success):
+                break
+
+        self._emit("all_done", "", "", self.results)
+
 
 if _PYQT6_AVAILABLE:
 
     class _Signals(QObject):
         event = pyqtSignal(str, str, object, object)
 
-    class _CatCard(QFrame):
-        """类别卡片 — Linear 风格：左边框选中态 + 简洁排版。"""
-
-        def __init__(self, cat, idx, on_click):
+    class _SectionHeader(QFrame):
+        def __init__(self, section_name: str, count: int):
             super().__init__()
-            self.cat = cat; self.on_click = on_click; self.selected = False
-            self.setObjectName("tc")
+            self.setObjectName("sectionHeader")
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(14, 12, 14, 12)
+            layout.setSpacing(10)
+
+            title_col = QVBoxLayout()
+            title_col.setSpacing(2)
+
+            label = QLabel(section_name)
+            label.setObjectName("sectionLabel")
+            title_col.addWidget(label)
+
+            meta = QLabel("按职责组织，可独立选择或组合运行")
+            meta.setObjectName("sectionMeta")
+            title_col.addWidget(meta)
+            layout.addLayout(title_col, 1)
+
+            pill = QLabel(f"{count} 项")
+            pill.setObjectName("sectionCountPill")
+            layout.addWidget(pill)
+            layout.addStretch(1)
+
+    class _CategoryCard(QFrame):
+        def __init__(self, category, on_click):
+            super().__init__()
+            self.category = category
+            self.on_click = on_click
+            self._selected = False
+            self._hovered = False
+            self.setObjectName("categoryCard")
             self.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.setFixedHeight(56)
-            self._color = _CAT_COLORS.get(cat.id, ACCENT)
+            self.setProperty("selected", False)
+            self.setProperty("state", "default")
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            lay = QHBoxLayout(self)
-            lay.setContentsMargins(14, 0, 14, 0); lay.setSpacing(10)
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
 
-            # 序号
-            num = QLabel(str(idx)); num.setObjectName("tcIdx")
-            num.setFixedWidth(20); num.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lay.addWidget(num)
+            self.strip = QFrame()
+            self.strip.setObjectName("categoryStrip")
+            self.strip.setProperty("state", "default")
+            self.strip.setFixedWidth(6)
+            layout.addWidget(self.strip)
 
-            # 色点
-            dot = QLabel("●")
-            dot.setStyleSheet(
-                f"color: {self._color}; font-size: 8px; background: transparent; border: none;"
+            inner = QWidget()
+            body = QHBoxLayout(inner)
+            body.setContentsMargins(16, 16, 16, 16)
+            body.setSpacing(14)
+            layout.addWidget(inner, 1)
+
+            self.avatar = QLabel(category.icon_letter[:4])
+            self.avatar.setObjectName("avatar")
+            self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.avatar.setFixedSize(60, 60)
+            self._avatar_bg = category.icon_color
+            body.addWidget(self.avatar)
+
+            text_col = QVBoxLayout()
+            text_col.setSpacing(7)
+
+            title_row = QHBoxLayout()
+            title_row.setSpacing(8)
+            self.title = QLabel(category.name)
+            self.title.setObjectName("categoryTitle")
+            title_row.addWidget(self.title)
+
+            self.count_pill = QLabel(f"{category.file_count()} 脚本")
+            self.count_pill.setObjectName("countPill")
+            self.count_pill.setProperty("state", "default")
+            title_row.addWidget(self.count_pill)
+            title_row.addStretch(1)
+            text_col.addLayout(title_row)
+
+            self.desc = QLabel(category.description)
+            self.desc.setObjectName("categoryDesc")
+            self.desc.setWordWrap(True)
+            text_col.addWidget(self.desc)
+
+            source_map = {
+                "builtin": "内置",
+                "rule": "规则收录",
+                "manual": "手工收录",
+                "plugin": "插件扩展",
+            }
+            meta = QLabel(f"{category.section} · {source_map.get(category.source, category.source)}")
+            meta.setObjectName("categoryMetaLine")
+            text_col.addWidget(meta)
+
+            badges = list(category.badges)
+            if category.requires_gui:
+                badges.append("GUI")
+            if category.requires_network:
+                badges.append("网络")
+            badge_row = QHBoxLayout()
+            badge_row.setSpacing(6)
+            if not badges:
+                badges = [category.section]
+            for badge in badges[:3]:
+                pill = QLabel(f"#{badge}")
+                pill.setObjectName("badgePill")
+                badge_row.addWidget(pill)
+            badge_row.addStretch(1)
+            text_col.addLayout(badge_row)
+
+            body.addLayout(text_col, 1)
+            self._apply_visual_state()
+
+        def _visual_state(self) -> str:
+            if self._selected and self._hovered:
+                return "selected-hover"
+            if self._selected:
+                return "selected"
+            if self._hovered:
+                return "hover"
+            return "default"
+
+        def _repolish(self, widget):
+            style = widget.style()
+            if style is not None:
+                style.unpolish(widget)
+                style.polish(widget)
+            widget.update()
+
+        def _apply_visual_state(self):
+            state = self._visual_state()
+            self.setProperty("selected", self._selected)
+            self.setProperty("state", state)
+            self.strip.setProperty("state", state)
+            self.count_pill.setProperty("state", state)
+
+            border_map = {
+                "default": "none",
+                "hover": "1px solid #8FB2FF",
+                "selected": "2px solid #D5E4FF",
+                "selected-hover": "2px solid white",
+            }
+            self.avatar.setStyleSheet(
+                f"color: white; background: {self._avatar_bg}; "
+                f"border: {border_map[state]}; border-radius: 18px;"
             )
-            dot.setFixedWidth(10); dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lay.addWidget(dot)
+            for widget in (self, self.strip, self.count_pill):
+                self._repolish(widget)
 
-            # 文本
-            col = QVBoxLayout(); col.setContentsMargins(0, 8, 0, 8); col.setSpacing(0)
-            row = QHBoxLayout(); row.setSpacing(8)
-            name = QLabel(cat.name); name.setObjectName("tcName"); row.addWidget(name)
+        def _set_hovered(self, hovered: bool):
+            hovered = bool(hovered)
+            if self._hovered == hovered:
+                return
+            self._hovered = hovered
+            self._apply_visual_state()
 
-            count = QLabel(f"{cat.file_count()}")
-            count.setStyleSheet(
-                f"color: {TEXT_DIM}; font-size: 11px; background: transparent; border: none;"
-            )
-            row.addWidget(count)
+        def enterEvent(self, event):
+            self._set_hovered(True)
+            super().enterEvent(event)
 
-            row.addStretch(); col.addLayout(row)
+        def leaveEvent(self, event):
+            self._set_hovered(False)
+            super().leaveEvent(event)
 
-            desc = QLabel(cat.description[:48] + ("…" if len(cat.description) > 48 else ""))
-            desc.setObjectName("tcDesc"); col.addWidget(desc)
-            lay.addLayout(col, 1)
+        def mousePressEvent(self, event):
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.on_click(self.category)
+            super().mousePressEvent(event)
 
-            # 勾选指示
-            self.chk = QLabel(); self.chk.setFixedSize(18, 18)
-            self.chk.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._paint_chk(); lay.addWidget(self.chk)
-
-        def _paint_chk(self):
-            if self.selected:
-                self.chk.setText("✓")
-                self.chk.setStyleSheet(
-                    f"color: white; font-size: 10px; font-weight: bold; "
-                    f"background: {ACCENT}; border-radius: 4px; border: none;"
-                )
-            else:
-                self.chk.setText("")
-                self.chk.setStyleSheet(
-                    f"background: transparent; border: 1.5px solid {BORDER}; border-radius: 4px;"
-                )
-
-        def mousePressEvent(self, ev):
-            if ev.button() == Qt.MouseButton.LeftButton: self.on_click(self.cat)
-            super().mousePressEvent(ev)
-
-        def set_selected(self, on):
-            self.selected = on
-            self.setObjectName("tcSel" if on else "tc")
-            self.style().unpolish(self); self.style().polish(self)
-            self._paint_chk()
+        def set_selected(self, selected: bool):
+            selected = bool(selected)
+            if self._selected == selected:
+                return
+            self._selected = selected
+            self._apply_visual_state()
 
     class LauncherWindow(QMainWindow):
-        """测试启动器 — Linear/Spotify 现代深色风格。"""
-
         def __init__(self, parent=None):
             super().__init__(parent)
             self.setWindowTitle("UCrawl 测试套件")
-            self.resize(780, 560); self.setMinimumSize(600, 400)
+            self.resize(1220, 760)
+            self.setMinimumSize(980, 640)
             self.setStyleSheet(QSS)
 
             icon = _load_test_icon()
-            if icon: self.setWindowIcon(icon)
+            if icon:
+                self.setWindowIcon(icon)
             try:
                 import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ucrawl.test")
-            except Exception: pass
 
-            self.cards = {}; self.selected_ids = []; self.worker = None
-            self.signals = _Signals(); self.signals.event.connect(self._on_event)
-            self._total = 0; self._done = 0
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ucrawl.test.launcher")
+            except Exception:
+                pass
+
+            self.cards: dict[str, _CategoryCard] = {}
+            self.selected_ids: list[str] = []
+            self.worker: TestRunnerWorker | None = None
+            self._timer: QTimer | None = None
+            self._total_files = 0
+            self._done_files = 0
+
+            self.signals = _Signals()
+            self.signals.event.connect(self._on_event)
+
             self._build()
+            self._refresh_selection_state()
+            self._set_run_status("待命中", "default")
 
         def _build(self):
-            c = QWidget(); self.setCentralWidget(c)
-            root = QVBoxLayout(c)
-            root.setContentsMargins(20, 16, 20, 10); root.setSpacing(12)
+            root_widget = QWidget()
+            self.setCentralWidget(root_widget)
+            root = QVBoxLayout(root_widget)
+            root.setContentsMargins(18, 18, 18, 12)
+            root.setSpacing(14)
 
-            # ---- 头部 ----
-            hdr = QHBoxLayout(); hdr.setSpacing(10)
+            hero = QFrame()
+            hero.setObjectName("hero")
+            hero_layout = QHBoxLayout(hero)
+            hero_layout.setContentsMargins(20, 20, 20, 20)
+            hero_layout.setSpacing(18)
 
-            tcol = QVBoxLayout(); tcol.setSpacing(2)
-            title = QLabel("测试套件")
-            title.setStyleSheet(
-                f"color: {TEXT}; font-size: 20px; font-weight: 700; "
-                f"background: transparent; border: none; letter-spacing: -0.3px;"
+            title_col = QVBoxLayout()
+            title_col.setSpacing(6)
+            hero_title = QLabel("测试套件仪表盘")
+            hero_title.setObjectName("heroTitle")
+            total_info = summary()
+            recommended_count = len(RECOMMENDED_CATEGORY_IDS)
+            hero_sub = QLabel(
+                f"按职责浏览测试分类，选中后直接运行。当前已收录 {total_info['total_categories']} 个分类、"
+                f"{total_info['total_files']} 个测试脚本，推荐组合覆盖 {recommended_count} 条高频回归链路。"
             )
-            sub = QLabel("选择类别 · 运行测试 · 查看结果")
-            sub.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; background: transparent; border: none;")
-            tcol.addWidget(title); tcol.addWidget(sub)
-            hdr.addLayout(tcol, 1)
+            hero_sub.setObjectName("heroSub")
+            hero_sub.setWordWrap(True)
+            title_col.addWidget(hero_title)
+            title_col.addWidget(hero_sub)
+            hero_layout.addLayout(title_col, 1)
 
-            # 快捷按钮
-            for text, tip, fn in [
-                ("全选", None, lambda: self._sel_all(True)),
-                ("清除", None, lambda: self._sel_all(False)),
-                ("推荐", "unit + integration + e2e + pipeline", self._sel_rec),
+            action_row = QHBoxLayout()
+            action_row.setSpacing(8)
+            for text, tip, handler in [
+                ("全部", "运行当前目录下全部可执行测试", lambda: self._select_only("all")),
+                ("推荐", "选择核心高频回归组合", self._select_recommended),
+                ("清空", "清空当前选择", self._clear_selection),
             ]:
-                b = QPushButton(text); b.setObjectName("ghost")
-                if tip: b.setToolTip(tip)
-                b.setFixedHeight(28); b.clicked.connect(fn); hdr.addWidget(b)
-            root.addLayout(hdr)
+                button = QPushButton(text)
+                button.setObjectName("ghostBtn")
+                button.setToolTip(tip)
+                button.clicked.connect(handler)
+                action_row.addWidget(button)
+            hero_layout.addLayout(action_row)
+            root.addWidget(hero)
 
-            # ---- 分隔 ----
-            sep = QFrame(); sep.setFixedHeight(1)
-            sep.setStyleSheet(f"background: {BORDER}; border: none;")
-            root.addWidget(sep)
+            content_row = QHBoxLayout()
+            content_row.setSpacing(14)
+            root.addLayout(content_row, 1)
 
-            # ---- 卡片列表 ----
-            sa = QScrollArea(); sa.setWidgetResizable(True)
-            sa.setFrameShape(QFrame.Shape.NoFrame)
-            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            sw = QWidget(); sw.setStyleSheet("background: transparent;")
-            sl = QVBoxLayout(sw); sl.setContentsMargins(0, 2, 0, 2); sl.setSpacing(4)
-            for i, cat in enumerate(get_enabled_categories(), 1):
-                card = _CatCard(cat, i, self._on_click)
-                self.cards[cat.id] = card; sl.addWidget(card)
-            sl.addStretch(); sa.setWidget(sw)
-            root.addWidget(sa, 1)
+            left_panel = QFrame()
+            left_panel.setObjectName("panel")
+            left_panel.setMinimumWidth(360)
+            left_panel.setMaximumWidth(420)
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setContentsMargins(16, 16, 16, 16)
+            left_layout.setSpacing(12)
 
-            # ---- 底部 ----
-            bot = QVBoxLayout(); bot.setSpacing(8)
+            left_header = QFrame()
+            left_header.setObjectName("panelHeader")
+            left_header_layout = QVBoxLayout(left_header)
+            left_header_layout.setContentsMargins(0, 0, 0, 12)
+            left_header_layout.setSpacing(4)
+            left_title = QLabel("测试分类")
+            left_title.setObjectName("panelTitle")
+            left_sub = QLabel("按职责浏览并组合执行范围；卡片数量表示该分类直接包含的脚本数。")
+            left_sub.setObjectName("panelSub")
+            left_sub.setWordWrap(True)
+            left_header_layout.addWidget(left_title)
+            left_header_layout.addWidget(left_sub)
+            left_layout.addWidget(left_header)
 
-            # 选项行
-            opt_row = QHBoxLayout(); opt_row.setSpacing(16)
-            self.chk_ff = QCheckBox("遇失败停止")
-            self.chk_vb = QCheckBox("详细输出")
-            opt_row.addWidget(self.chk_ff); opt_row.addWidget(self.chk_vb)
-            opt_row.addStretch(); bot.addLayout(opt_row)
+            selection_summary = QFrame()
+            selection_summary.setObjectName("selectionSummary")
+            selection_layout = QVBoxLayout(selection_summary)
+            selection_layout.setContentsMargins(14, 14, 14, 14)
+            selection_layout.setSpacing(4)
+            summary_eyebrow = QLabel("执行范围")
+            summary_eyebrow.setObjectName("summaryEyebrow")
+            selection_layout.addWidget(summary_eyebrow)
 
-            # 日志
-            self.log = QTextEdit(); self.log.setObjectName("log")
-            self.log.setReadOnly(True); self.log.setFixedHeight(120)
-            self.log.setPlaceholderText("等待运行…")
-            bot.addWidget(self.log)
+            summary_row = QHBoxLayout()
+            summary_row.setSpacing(8)
+            self.left_selected_value = QLabel("0")
+            self.left_selected_value.setObjectName("summaryValue")
+            summary_row.addWidget(self.left_selected_value)
+            self.left_selected_pill = QLabel("未选择")
+            self.left_selected_pill.setObjectName("sectionPill")
+            summary_row.addWidget(self.left_selected_pill, 0, Qt.AlignmentFlag.AlignBottom)
+            summary_row.addStretch(1)
+            selection_layout.addLayout(summary_row)
 
-            # 进度 + 按钮
-            prow = QHBoxLayout(); prow.setSpacing(10)
-            self.pbar = QProgressBar(); self.pbar.setValue(0)
-            prow.addWidget(self.pbar, 1)
+            self.left_selected_text = QLabel("从左侧分类中确定本次执行范围。")
+            self.left_selected_text.setObjectName("summaryText")
+            self.left_selected_text.setWordWrap(True)
+            selection_layout.addWidget(self.left_selected_text)
+            left_layout.addWidget(selection_summary)
 
-            self.btn_run = QPushButton("运行测试"); self.btn_run.setObjectName("runBtn")
-            self.btn_run.setFixedSize(110, 32); self.btn_run.clicked.connect(self._run)
-            prow.addWidget(self.btn_run)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll_body = QWidget()
+            scroll_body.setObjectName("categoryViewport")
+            scroll_layout = QVBoxLayout(scroll_body)
+            scroll_layout.setContentsMargins(0, 0, 4, 0)
+            scroll_layout.setSpacing(10)
 
-            self.btn_stop = QPushButton("停止"); self.btn_stop.setObjectName("stopBtn")
-            self.btn_stop.setFixedSize(80, 32); self.btn_stop.clicked.connect(self._stop)
-            self.btn_stop.hide(); prow.addWidget(self.btn_stop)
+            list_container = QWidget()
+            list_container.setObjectName("categoryList")
+            list_layout = QVBoxLayout(list_container)
+            list_layout.setContentsMargins(0, 0, 0, 0)
+            list_layout.setSpacing(10)
 
-            bot.addLayout(prow)
-            root.addLayout(bot)
+            grouped = defaultdict(list)
+            for category in get_enabled_categories():
+                grouped[category.section].append(category)
 
-            # 状态栏
-            self.sbar = QStatusBar(); self.setStatusBar(self.sbar)
-            self.sbar.showMessage("就绪")
+            for section_name, categories in grouped.items():
+                list_layout.addWidget(_SectionHeader(section_name, len(categories)))
+                for category in categories:
+                    card = _CategoryCard(category, self._toggle_category)
+                    self.cards[category.id] = card
+                    list_layout.addWidget(card)
 
-            # 快捷键
+            list_layout.addStretch(1)
+            scroll_layout.addWidget(list_container)
+            scroll_layout.addStretch(1)
+            scroll.setWidget(scroll_body)
+            left_layout.addWidget(scroll, 1)
+            content_row.addWidget(left_panel)
+
+            right_col = QVBoxLayout()
+            right_col.setSpacing(14)
+            content_row.addLayout(right_col, 1)
+
+            self.detail_panel = QFrame()
+            self.detail_panel.setObjectName("panel")
+            detail_layout = QVBoxLayout(self.detail_panel)
+            detail_layout.setContentsMargins(18, 18, 18, 18)
+            detail_layout.setSpacing(10)
+
+            detail_header = QFrame()
+            detail_header.setObjectName("panelHeader")
+            detail_header_layout = QVBoxLayout(detail_header)
+            detail_header_layout.setContentsMargins(0, 0, 0, 12)
+            detail_header_layout.setSpacing(6)
+            self.detail_title = QLabel("执行范围")
+            self.detail_title.setObjectName("heroTitle")
+            self.detail_title.setStyleSheet("font-size: 20px; font-weight: 700;")
+            detail_header_layout.addWidget(self.detail_title)
+
+            self.detail_desc = QLabel("当前尚未选择测试分类，可使用全部、推荐或自定义组合。")
+            self.detail_desc.setObjectName("heroSub")
+            self.detail_desc.setWordWrap(True)
+            detail_header_layout.addWidget(self.detail_desc)
+            detail_layout.addWidget(detail_header)
+
+            self.detail_tags = QLabel("")
+            self.detail_tags.setObjectName("metaText")
+            detail_layout.addWidget(self.detail_tags)
+            right_col.addWidget(self.detail_panel)
+
+            stats_row = QHBoxLayout()
+            stats_row.setSpacing(12)
+            self.stat_scope = self._make_stats_card(stats_row, "未选", "执行模式", "随选择切换")
+            self.stat_files = self._make_stats_card(stats_row, "0", "去重脚本")
+            self.stat_total = self._make_stats_card(stats_row, str(total_info["total_categories"]), "总分类数")
+            self.stat_misc = self._make_stats_card(stats_row, str(len(get_resolved_files("misc"))), "未归类脚本")
+            right_col.addLayout(stats_row)
+
+            control_panel = QFrame()
+            control_panel.setObjectName("panel")
+            control_layout = QVBoxLayout(control_panel)
+            control_layout.setContentsMargins(18, 18, 18, 18)
+            control_layout.setSpacing(12)
+
+            control_header = QFrame()
+            control_header.setObjectName("panelHeader")
+            control_header_layout = QHBoxLayout(control_header)
+            control_header_layout.setContentsMargins(0, 0, 0, 12)
+            control_header_layout.setSpacing(10)
+            control_title_col = QVBoxLayout()
+            control_title_col.setSpacing(4)
+            control_title = QLabel("执行面板")
+            control_title.setObjectName("panelTitle")
+            control_sub = QLabel("运行中会按文件推进进度，并在日志区显示套件摘要。")
+            control_sub.setObjectName("panelSub")
+            control_title_col.addWidget(control_title)
+            control_title_col.addWidget(control_sub)
+            control_header_layout.addLayout(control_title_col, 1)
+            self.run_status = QLabel("待命中")
+            self.run_status.setObjectName("runStatus")
+            control_header_layout.addWidget(self.run_status)
+            control_layout.addWidget(control_header)
+
+            options_row = QHBoxLayout()
+            options_row.setSpacing(18)
+            self.chk_failfast = QCheckBox("失败即停")
+            self.chk_verbose = QCheckBox("详细输出")
+            options_row.addWidget(self.chk_failfast)
+            options_row.addWidget(self.chk_verbose)
+            options_row.addStretch(1)
+            self.current_hint = QLabel("待命中")
+            self.current_hint.setObjectName("progressHint")
+            options_row.addWidget(self.current_hint)
+            control_layout.addLayout(options_row)
+
+            self.progress = QProgressBar()
+            self.progress.setRange(0, 1)
+            self.progress.setValue(0)
+            control_layout.addWidget(self.progress)
+
+            progress_meta = QHBoxLayout()
+            progress_meta.setSpacing(10)
+            self.progress_detail = QLabel("尚未开始")
+            self.progress_detail.setObjectName("progressHint")
+            self.progress_percent = QLabel("0%")
+            self.progress_percent.setObjectName("progressHint")
+            progress_meta.addWidget(self.progress_detail)
+            progress_meta.addStretch(1)
+            progress_meta.addWidget(self.progress_percent)
+            control_layout.addLayout(progress_meta)
+
+            action_row_2 = QHBoxLayout()
+            action_row_2.setSpacing(10)
+            self.btn_run = QPushButton("运行测试")
+            self.btn_run.setObjectName("primaryBtn")
+            self.btn_run.clicked.connect(self._run)
+            action_row_2.addWidget(self.btn_run)
+
+            self.btn_stop = QPushButton("停止")
+            self.btn_stop.setObjectName("dangerBtn")
+            self.btn_stop.clicked.connect(self._stop)
+            self.btn_stop.hide()
+            action_row_2.addWidget(self.btn_stop)
+            action_row_2.addStretch(1)
+            control_layout.addLayout(action_row_2)
+            right_col.addWidget(control_panel)
+
+            self.log = QTextEdit()
+            self.log.setObjectName("log")
+            self.log.setReadOnly(True)
+            self.log.setPlaceholderText("运行日志会显示在这里。")
+            right_col.addWidget(self.log, 1)
+
+            self.sbar = QStatusBar()
+            self.setStatusBar(self.sbar)
+
             QShortcut(QKeySequence("F5"), self, activated=self._run)
-            QShortcut(QKeySequence("Ctrl+A"), self, activated=lambda: self._sel_all(True))
-            QShortcut(QKeySequence("Escape"), self, activated=lambda: self._sel_all(False))
+            QShortcut(QKeySequence("Ctrl+1"), self, activated=lambda: self._select_only("all"))
+            QShortcut(QKeySequence("Ctrl+R"), self, activated=self._select_recommended)
+            QShortcut(QKeySequence("Escape"), self, activated=self._clear_selection)
 
-        # ---- 交互 ----
+        def _make_stats_card(self, parent_layout, value, label, hint: str = "实时更新"):
+            card = QFrame()
+            card.setObjectName("statsCard")
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(16, 14, 16, 14)
+            layout.setSpacing(4)
 
-        def _on_click(self, cat):
-            if cat.id in self.selected_ids:
-                self.selected_ids.remove(cat.id); self.cards[cat.id].set_selected(False)
+            value_label = QLabel(value)
+            value_label.setObjectName("statValue")
+            text_label = QLabel(label)
+            text_label.setObjectName("statLabel")
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("statHint")
+            layout.addWidget(value_label)
+            layout.addWidget(text_label)
+            layout.addWidget(hint_label)
+            parent_layout.addWidget(card, 1)
+            return value_label
+
+        def _set_run_status(self, text: str, tone: str):
+            color_map = {
+                "default": (TEXT_MUTED, "#0E1627", BORDER),
+                "running": (TEXT, "#13233E", "#315896"),
+                "success": (SUCCESS, "#0E1E16", "#1F6D43"),
+                "danger": (DANGER, "#2A1115", "#7F1D1D"),
+                "warning": (WARNING, "#2B1B07", "#8A5A12"),
+            }
+            fg, bg, border = color_map.get(tone, color_map["default"])
+            self.run_status.setText(text)
+            self.run_status.setStyleSheet(
+                f"color:{fg}; background:{bg}; border:1px solid {border}; border-radius:10px; padding:4px 10px; font-size:11px; font-weight:700;"
+            )
+
+        def _update_progress_labels(self):
+            total = max(self._total_files, 1)
+            percent = int(min(self._done_files / total, 1) * 100)
+            self.progress_percent.setText(f"{percent}%")
+            self.progress_detail.setText(f"已完成 {self._done_files}/{self._total_files} 个脚本")
+
+        def _selected_files(self) -> list[str]:
+            files: list[str] = []
+            for category_id in self.selected_ids:
+                for file_path in get_resolved_files(category_id):
+                    if file_path not in files:
+                        files.append(file_path)
+            return files
+
+        def _build_selection_snapshot(self) -> dict:
+            selected_categories = [get_category(cid) for cid in self.selected_ids if cid in self.cards]
+            unique_files = self._selected_files()
+
+            if not selected_categories:
+                return {
+                    "categories": selected_categories,
+                    "unique_files": unique_files,
+                    "count": 0,
+                    "mode": "未选",
+                    "left_pill": "未选择",
+                    "left_text": "从左侧分类中确定本次执行范围。",
+                    "detail_desc": "当前尚未选择测试分类，可使用全部、推荐或自定义组合。",
+                    "detail_tags": "快捷键: F5 运行  ·  Ctrl+R 推荐  ·  Ctrl+1 全部  ·  Esc 清空",
+                    "status": "就绪",
+                }
+
+            if len(selected_categories) == 1:
+                category = selected_categories[0]
+                mode = "全量" if category.id == "all" else "单项"
+                tags = [category.name, category.section, f"{len(unique_files)} 个去重脚本"]
+                if category.badges:
+                    tags.extend(category.badges[:3])
+                if category.requires_gui:
+                    tags.append("需要 GUI")
+                if category.requires_network:
+                    tags.append("涉及网络")
+                return {
+                    "categories": selected_categories,
+                    "unique_files": unique_files,
+                    "count": 1,
+                    "mode": mode,
+                    "left_pill": mode,
+                    "left_text": f"已锁定 {category.name}，预计运行 {len(unique_files)} 个去重脚本。",
+                    "detail_desc": f"当前执行范围为 {category.name}。",
+                    "detail_tags": "  ·  ".join(tags),
+                    "status": f"执行范围：{mode} / {len(unique_files)} 个脚本",
+                }
+
+            names = " / ".join(category.name for category in selected_categories[:4])
+            if len(selected_categories) > 4:
+                names += " / ..."
+            return {
+                "categories": selected_categories,
+                "unique_files": unique_files,
+                "count": len(selected_categories),
+                "mode": "组合",
+                "left_pill": "组合",
+                "left_text": f"已组合 {len(selected_categories)} 个分类，预计运行 {len(unique_files)} 个去重脚本。",
+                "detail_desc": "当前执行范围为多分类组合，运行时按所选顺序依次执行。",
+                "detail_tags": f"{names}  ·  共 {len(unique_files)} 个去重脚本",
+                "status": f"执行范围：组合 / {len(selected_categories)} 个分类 / {len(unique_files)} 个脚本",
+            }
+
+        def _clear_selection(self):
+            self.selected_ids.clear()
+            self._refresh_selection_state()
+
+        def _select_only(self, category_id: str):
+            self.selected_ids = [category_id]
+            self._refresh_selection_state()
+
+        def _select_recommended(self):
+            self.selected_ids = [cid for cid in RECOMMENDED_CATEGORY_IDS if cid in self.cards]
+            self._refresh_selection_state()
+
+        def _toggle_category(self, category):
+            category_id = category.id
+            if category_id == "all":
+                self._select_only("all")
+                return
+            if "all" in self.selected_ids:
+                self.selected_ids.remove("all")
+            if category_id in self.selected_ids:
+                self.selected_ids.remove(category_id)
             else:
-                self.selected_ids.append(cat.id); self.cards[cat.id].set_selected(True)
-            self._upd()
+                self.selected_ids.append(category_id)
+            self._refresh_selection_state()
 
-        def _sel_all(self, on):
-            self.selected_ids.clear()
-            for cid, card in self.cards.items():
-                if cid == "all": continue
-                if on: self.selected_ids.append(cid)
-                card.set_selected(on and cid != "all")
-            self._upd()
+        def _refresh_selection_state(self):
+            for category_id, card in self.cards.items():
+                card.set_selected(category_id in self.selected_ids)
 
-        def _sel_rec(self):
-            self.selected_ids.clear()
-            for cid, card in self.cards.items(): card.set_selected(False)
-            for cid in ("unit", "integration", "e2e", "pipeline"):
-                if cid in self.cards:
-                    self.selected_ids.append(cid); self.cards[cid].set_selected(True)
-            self._upd()
+            snapshot = self._build_selection_snapshot()
+            selected_categories = snapshot["categories"]
+            unique_files = snapshot["unique_files"]
 
-        def _upd(self):
-            n = len(self.selected_ids)
-            if n == 0: self.sbar.showMessage("就绪"); return
-            nf = sum(get_category(c).file_count() for c in self.selected_ids)
-            names = ", ".join(self.cards[c].cat.name for c in self.selected_ids)
-            self.sbar.showMessage(f"{n} 类别 · {nf} 文件 — {names}")
+            self.stat_scope.setText(snapshot["mode"])
+            self.stat_files.setText(str(len(unique_files)))
+            self.stat_misc.setText(str(len(get_resolved_files("misc"))))
+            self.left_selected_value.setText(str(snapshot["count"]))
+            self.left_selected_pill.setText(snapshot["left_pill"])
+            self.left_selected_text.setText(snapshot["left_text"])
+            self.detail_desc.setText(snapshot["detail_desc"])
+            self.detail_tags.setText(snapshot["detail_tags"])
+
+            if not selected_categories:
+                self.detail_title.setText("执行范围")
+                self.current_hint.setText("待命中")
+                self._set_run_status("待命中", "default")
+                self.sbar.showMessage(snapshot["status"])
+                return
+
+            if len(selected_categories) == 1:
+                self.detail_title.setText("执行范围")
+            else:
+                self.detail_title.setText("执行范围")
+
+            self.sbar.showMessage(snapshot["status"])
+
+        def _append_log(self, html: str):
+            self.log.append(html)
 
         def _run(self):
-            if self.worker and self.worker.is_alive(): return
-            if not self.selected_ids: self.sbar.showMessage("请先选择测试类别"); return
+            if self.worker and self.worker.is_alive():
+                return
+            if not self.selected_ids:
+                self.sbar.showMessage("请先选择测试套件")
+                return
+
             self.log.clear()
-            self._total = sum(len(get_resolved_files(c)) for c in self.selected_ids)
-            self._done = 0
-            self.pbar.setMaximum(self._total or 1); self.pbar.setValue(0)
-            self.btn_run.hide(); self.btn_stop.show()
-            self.worker = TestRunnerWorker(self.selected_ids, self._emit, not self.chk_ff.isChecked())
+            self._done_files = 0
+            self._total_files = max(len(self._selected_files()), 1)
+            self.progress.setRange(0, self._total_files)
+            self.progress.setValue(0)
+            self._update_progress_labels()
+            self.current_hint.setText("准备运行...")
+            self._set_run_status("运行中", "running")
+            self.btn_run.hide()
+            self.btn_stop.show()
+
+            self.worker = TestRunnerWorker(
+                self.selected_ids,
+                self._emit,
+                no_failfast=not self.chk_failfast.isChecked(),
+                verbose=self.chk_verbose.isChecked(),
+            )
             self.worker.start()
-            self._timer = QTimer(self); self._timer.timeout.connect(self._poll); self._timer.start(150)
+
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._poll_worker)
+            self._timer.start(150)
 
         def _stop(self):
-            if self.worker and self.worker.is_alive(): self.worker.stop(); self.sbar.showMessage("正在停止…")
+            if self.worker and self.worker.is_alive():
+                self.worker.stop()
+                self.current_hint.setText("等待当前脚本收尾后停止...")
+                self._set_run_status("停止中", "warning")
+                self.sbar.showMessage("正在停止...")
 
-        def _emit(self, kind, cid, name, payload):
-            self.signals.event.emit(kind, cid, str(name), payload)
+        def _emit(self, kind, category_id, name, payload):
+            self.signals.event.emit(kind, category_id, str(name), payload)
 
-        def _on_event(self, kind, cid, name, payload):
-            if kind == "cs":
-                self.log.append(f"<span style='color:{ACCENT};font-weight:600'>▶ {name}</span>")
-                self.sbar.showMessage(f"运行: {name}")
-            elif kind == "fs":
-                short = Path(str(name)).name if ("/" in str(name) or "\\" in str(name)) else str(name)
-                self.log.append(f"  <span style='color:{TEXT_DIM}'>· {short}</span>")
-            elif kind == "fd":
+        def _on_event(self, kind, category_id, name, payload):
+            if kind == "category_start":
+                self._append_log(f"<span style='color:{ACCENT}; font-weight:700;'>▶ {name}</span>")
+                self.current_hint.setText(f"运行中: {name}")
+                self._set_run_status("运行中", "running")
+                self.sbar.showMessage(f"运行中: {name}")
+                return
+
+            if kind == "file_start":
+                path = Path(name).name
+                meta = payload or {}
+                self._append_log(
+                    f"<span style='color:{TEXT_MUTED};'>· {meta.get('index', 0)}/{meta.get('total', 0)} {path}</span>"
+                )
+                return
+
+            if kind == "file_done":
                 if isinstance(payload, TestResult):
-                    r = payload
-                    ic = "✓" if r.success else "✗"
-                    co = GREEN if r.success else RED
-                    self.log.append(
-                        f"    <span style='color:{co}'>{ic} P={r.passed} F={r.failed} S={r.skipped} ({r.duration:.1f}s)</span>"
+                    result = payload
+                    color = SUCCESS if result.success else DANGER
+                    icon = "PASS" if result.success else "FAIL"
+                    self._append_log(
+                        f"<span style='color:{color};'>{icon}</span> "
+                        f"<span style='color:{TEXT_MUTED};'>P={result.passed} F={result.failed} "
+                        f"S={result.skipped} E={result.errors} ({result.duration:.2f}s)</span>"
                     )
-                    if r.failed > 0 and r.failed_tests:
-                        for ft in r.failed_tests[:3]:
-                            self.log.append(f"      <span style='color:{RED}'>{ft}</span>")
-                self._done += 1
-                pct = int(self._done / max(self._total, 1) * 100)
-                self.pbar.setValue(self._done)
-            elif kind == "cd":
-                self.log.append(f"<span style='color:{TEXT_DIM}'>── {name} ──</span>")
-            elif kind == "ad":
-                results = payload
-                self.btn_run.show(); self.btn_stop.hide()
-                self.pbar.setValue(self.pbar.maximum())
-                p = sum(r.passed for r in results); f = sum(r.failed for r in results)
-                s = sum(r.skipped for r in results); d = sum(r.duration for r in results)
-                self.log.append("")
-                if f == 0:
-                    self.log.append(
-                        f"<span style='color:{GREEN};font-weight:700;font-size:14px'>全部通过 ✓</span>"
-                        f"  <span style='color:{TEXT_DIM}'>{p} passed · {s} skipped · {d:.1f}s</span>"
-                    )
-                    self.sbar.showMessage(f"全部通过 · {p} tests · {d:.1f}s")
-                else:
-                    self.log.append(
-                        f"<span style='color:{RED};font-weight:700;font-size:14px'>{f} 失败 ✗</span>"
-                        f"  <span style='color:{TEXT_DIM}'>{p} passed · {s} skipped · {d:.1f}s</span>"
-                    )
-                    self.sbar.showMessage(f"{f} 失败 · {p} 通过 · {d:.1f}s")
-                if hasattr(self, "_timer"): self._timer.stop()
+                    if result.failed_tests:
+                        for failed_name in result.failed_tests[:3]:
+                            self._append_log(f"<span style='color:{DANGER};'>  {failed_name}</span>")
+                self._done_files += 1
+                self.progress.setValue(min(self._done_files, self._total_files))
+                self._update_progress_labels()
+                return
 
-        def _poll(self):
-            if self.worker and not self.worker.is_alive(): self._timer.stop()
+            if kind == "category_done":
+                if isinstance(payload, TestResult):
+                    result = payload
+                    color = SUCCESS if result.success else DANGER
+                    status = "完成" if result.success else "失败"
+                    self._append_log(
+                        f"<span style='color:{color}; font-weight:700;'>■ {name} {status}</span>"
+                        f"<span style='color:{TEXT_MUTED};'>  {result.passed} 通过 / {result.failed} 失败 / "
+                        f"{result.errors} 错误 / {result.duration:.2f}s</span>"
+                    )
+                self._append_log("")
+                return
+
+            if kind == "all_done":
+                results = payload or []
+                self.btn_stop.hide()
+                self.btn_run.show()
+                self.progress.setValue(self.progress.maximum())
+                self.current_hint.setText("已完成")
+                self._done_files = self._total_files
+                self._update_progress_labels()
+                if self._timer is not None:
+                    self._timer.stop()
+
+                passed = sum(item.passed for item in results)
+                failed = sum(item.failed for item in results)
+                skipped = sum(item.skipped for item in results)
+                errors = sum(item.errors for item in results)
+                duration = sum(item.duration for item in results)
+
+                self._append_log("<hr style='border:0;border-top:1px solid #22304D;'>")
+                if failed == 0 and errors == 0:
+                    self._set_run_status("全部通过", "success")
+                    self._append_log(
+                        f"<span style='color:{SUCCESS}; font-weight:700; font-size:14px;'>全部通过</span>"
+                        f"<span style='color:{TEXT_MUTED};'>  {passed} 通过 / {skipped} 跳过 / {duration:.2f}s</span>"
+                    )
+                    self.sbar.showMessage(f"全部通过 · {passed} 通过 · {duration:.2f}s")
+                else:
+                    self._set_run_status("有失败", "danger")
+                    self._append_log(
+                        f"<span style='color:{DANGER}; font-weight:700; font-size:14px;'>运行结束，有失败</span>"
+                        f"<span style='color:{TEXT_MUTED};'>  {passed} 通过 / {failed} 失败 / {errors} 错误 / {duration:.2f}s</span>"
+                    )
+                    self.sbar.showMessage(f"运行结束 · {failed} 失败 / {errors} 错误 · {duration:.2f}s")
+                return
+
+        def _poll_worker(self):
+            if self.worker and not self.worker.is_alive() and self._timer is not None:
+                self._timer.stop()
 
 else:
-    class _Signals: pass  # type: ignore
-    class _CatCard: pass  # type: ignore
+
+    class _Signals:  # type: ignore
+        pass
+
+    class _CategoryCard:  # type: ignore
+        pass
+
     class LauncherWindow:  # type: ignore
-        def __init__(self, *a, **kw): raise RuntimeError("PyQt6 不可用")
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyQt6 不可用")
 
 
-# ============== 图标加载 ==============
+def _pyqt6_available():
+    return _PYQT6_AVAILABLE
 
-def _pyqt6_available(): return _PYQT6_AVAILABLE
 
 def _load_test_icon():
-    """加载并优化 test.ico 图标（窗口图标 + 任务栏图标）。"""
-    if not _PYQT6_AVAILABLE: return None
-
-    # 搜索图标文件
-    icon_paths = [
-        _PROJECT_ROOT / "test.ico",       # 项目根目录（用户放置的位置）
-        TEST_ICON_PATH,                     # tests/ 目录
-        _TESTS_DIR / "test.ico",           # tests/ 目录备选
-    ]
-
-    for p in icon_paths:
-        if p.exists():
-            try:
-                icon = QIcon(str(p))
-                if icon.isNull():
-                    continue
-
-                # 确保图标包含常用尺寸（Windows 任务栏需要 32x32+）
-                # QIcon 会自动从 ICO 文件中提取所有帧
-                # 但如果 ICO 只有小尺寸，需要手动缩放补充
-                sizes = icon.availableSizes()
-                has_large = any(s.width() >= 32 for s in sizes)
-
-                if not has_large and sizes:
-                    # 从最大的帧缩放出 32x32 和 48x48
-                    largest = max(sizes, key=lambda s: s.width() * s.height())
-                    pm32 = icon.pixmap(largest).scaled(
-                        32, 32, Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    pm48 = icon.pixmap(largest).scaled(
-                        48, 48, Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    icon.addPixmap(pm32)
-                    icon.addPixmap(pm48)
-
+    if not _PYQT6_AVAILABLE:
+        return None
+    for icon_path in (_PROJECT_ROOT / "test.ico", TEST_ICON_PATH, _TESTS_DIR / "test.ico"):
+        if not icon_path.exists():
+            continue
+        try:
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
                 return icon
-            except Exception:
-                continue
+        except Exception:
+            continue
     return None
 
 
-# ============== 工厂 ==============
+_APP_REF = []
+_LAST_WIN = []
 
-_APP_REF = []; _LAST_WIN = []
 
 def _ensure_qapp():
     app = QApplication.instance()
-    if app is None: app = QApplication(sys.argv); _APP_REF.append(app)
+    if app is None:
+        app = QApplication(sys.argv)
+        _APP_REF.append(app)
     return app
 
+
 def _build_gui():
-    if not _PYQT6_AVAILABLE: raise RuntimeError("PyQt6 不可用")
+    if not _PYQT6_AVAILABLE:
+        raise RuntimeError("PyQt6 不可用")
     _ensure_qapp()
-    w = LauncherWindow(); _LAST_WIN.append(w); return w
+    window = LauncherWindow()
+    _LAST_WIN.append(window)
+    return window
+
 
 def _embed_gui(parent=None):
-    w = _build_gui()
+    window = _build_gui()
     if parent is not None:
         try:
-            g = parent.frameGeometry()
-            w.move(max(0, g.x() + 50), max(0, g.y() + 50))
-        except Exception: pass
-    w.show(); w.raise_(); w.activateWindow()
-    _embed_gui._w = w  # type: ignore
+            geometry = parent.frameGeometry()
+            window.move(max(0, geometry.x() + 50), max(0, geometry.y() + 50))
+        except Exception:
+            pass
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    _embed_gui._window = window  # type: ignore[attr-defined]
     return 0
 
 
-# ============== TUI ==============
+def _list_categories():
+    print(f"{'ID':<16} {'名称':<14} {'文件':<6} {'分组':<10} 描述")
+    print("-" * 100)
+    for category in get_enabled_categories():
+        print(
+            f"{category.id:<16} {category.name:<14} {category.file_count():<6} "
+            f"{category.section:<10} {category.description}"
+        )
+
 
 def _run_tui():
     import shutil
-    B, R, C, G, Y, D = "\033[1m", "\033[0m", "\033[96m", "\033[92m", "\033[93m", "\033[2m"
-    cols = shutil.get_terminal_size((80, 20)).columns
-    def clear(): os.system("cls" if os.name == "nt" else "clear")
-    cats = get_enabled_categories()
+
+    bold, reset, cyan, green, yellow, dim = "\033[1m", "\033[0m", "\033[96m", "\033[92m", "\033[93m", "\033[2m"
+    width = shutil.get_terminal_size((100, 24)).columns
+    categories = get_enabled_categories()
+
+    def clear():
+        os.system("cls" if os.name == "nt" else "clear")
+
     while True:
         clear()
-        print("=" * min(cols, 70))
-        print(f"{B}UCrawl 测试套件 (TUI){R}")
-        print("=" * min(cols, 70))
-        for i, c in enumerate(cats, 1):
-            m = "★" if c.id == "all" else " "
-            print(f"  {Y}{i}{R}. {m} {B}{c.name}{R}  {D}({c.file_count()} 文件){R}")
-        print(f"  {Y}q{R}. 退出\n")
-        try: ch = input(f"{C}选择 (1-{len(cats)}, q): {R}").strip()
-        except (EOFError, KeyboardInterrupt): print("\n再见！"); return
-        if ch == "q": return
+        print("=" * min(width, 88))
+        print(f"{bold}UCrawl 测试套件 (TUI){reset}")
+        print("=" * min(width, 88))
+        for index, category in enumerate(categories, 1):
+            marker = "★" if category.id == "all" else " "
+            print(
+                f"  {yellow}{index:>2}{reset}. {marker} {bold}{category.name}{reset}  "
+                f"{dim}({category.file_count()} 脚本 · {category.section}){reset}"
+            )
+        print()
+        print(f"  {yellow}a{reset}. 全部测试")
+        print(f"  {yellow}r{reset}. 推荐组合")
+        print(f"  {yellow}l{reset}. 列表")
+        print(f"  {yellow}q{reset}. 退出")
+        print()
         try:
-            idx = int(ch) - 1
-            if 0 <= idx < len(cats):
-                sel = cats[idx]
-                ids = [c.id for c in cats if c.id != "all"] if sel.id == "all" else [sel.id]
-                print(f"\n{G}▶ {sel.name}{R}\n")
-                print(format_summary(run_categories(ids)))
-                input("\n回车继续…")
-        except ValueError: pass
+            raw = input(f"{cyan}选择 (1-{len(categories)} / a / r / l / q): {reset}").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见！")
+            return 0
 
+        if raw in {"q", "quit", "exit"}:
+            return 0
+        if raw == "l":
+            print()
+            _list_categories()
+            input("\n回车继续...")
+            continue
+        if raw == "a":
+            target_ids = ["all"]
+        elif raw == "r":
+            target_ids = list(RECOMMENDED_CATEGORY_IDS)
+        else:
+            try:
+                target_ids = [categories[int(raw) - 1].id]
+            except Exception:
+                continue
 
-# ============== CLI ==============
+        print(f"\n{green}▶ 运行: {', '.join(target_ids)}{reset}\n")
+        results = run_categories(target_ids)
+        print(format_summary(results))
+        input("\n回车继续...")
 
-def _list_cats():
-    cats = get_enabled_categories()
-    print(f"{'ID':<14} {'名称':<14} {'文件':<6} 描述")
-    print("-" * 80)
-    for c in cats: print(f"{c.id:<14} {c.name:<14} {c.file_count():<6} {c.description}")
 
 def _run_cli(args):
     import argparse
-    p = argparse.ArgumentParser(description="UCrawl 测试套件")
-    p.add_argument("--category","-c", choices=[c.id for c in get_enabled_categories()])
-    p.add_argument("--tui", action="store_true")
-    p.add_argument("--list","-l", action="store_true")
-    p.add_argument("--verbose","-v", action="store_true")
-    p.add_argument("--no-failfast", action="store_true")
-    p.add_argument("--gui", action="store_true")
-    a = p.parse_args(args)
-    if a.list: _list_cats(); return 0
-    if not a.category and not a.tui and not a.gui:
-        if _pyqt6_available() and (os.environ.get("DISPLAY") or os.name == "nt"):
-            try:
-                w = _build_gui(); w.show()
-                return (QApplication.instance() or QApplication(sys.argv)).exec()
-            except Exception as e: print(f"[GUI 失败: {e}]")
-        return _run_tui() or 0
-    if a.tui: return _run_tui() or 0
-    if a.gui:
-        w = _build_gui(); w.show()
-        return (QApplication.instance() or QApplication(sys.argv)).exec()
-    if a.category:
-        r = run_categories([a.category], verbose=a.verbose, no_failfast=a.no_failfast)
-        print(format_summary(r)); return 0 if all(x.success for x in r) else 1
-    return 0
 
-def main(): return _run_cli(sys.argv[1:])
-if __name__ == "__main__": sys.exit(main())
+    parser = argparse.ArgumentParser(description="UCrawl 测试套件")
+    parser.add_argument("--category", "-c", choices=[category.id for category in get_enabled_categories()])
+    parser.add_argument("--tui", action="store_true")
+    parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--list", "-l", action="store_true")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--no-failfast", action="store_true")
+    parsed = parser.parse_args(args)
+
+    if parsed.list:
+        _list_categories()
+        return 0
+    if parsed.tui:
+        return _run_tui()
+    if parsed.gui:
+        window = _build_gui()
+        window.show()
+        return (QApplication.instance() or QApplication(sys.argv)).exec()
+    if parsed.category:
+        results = run_categories(
+            [parsed.category],
+            verbose=parsed.verbose,
+            no_failfast=parsed.no_failfast,
+        )
+        print(format_summary(results))
+        return 0 if all(result.success for result in results) else 1
+
+    if _pyqt6_available() and (os.environ.get("DISPLAY") or os.name == "nt"):
+        try:
+            window = _build_gui()
+            window.show()
+            return (QApplication.instance() or QApplication(sys.argv)).exec()
+        except Exception as exc:
+            print(f"[GUI 失败: {exc}]")
+    return _run_tui()
+
+
+def main():
+    return _run_cli(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

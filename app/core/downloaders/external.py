@@ -90,6 +90,9 @@ class FFmpegExternalTool:
         cmd = [
             executable,
             "-y",
+            "-nostats",
+            "-progress",
+            "pipe:2",
             "-user_agent",
             headers.get("User-Agent", DEFAULT_USER_AGENT),
             "-headers",

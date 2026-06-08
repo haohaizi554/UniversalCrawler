@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import time
+from collections import deque
 
 import requests
 
@@ -22,6 +23,91 @@ class FFmpegDownloader(BaseDownloader):
     """实现 `FFmpegDownloader` 对应的资源下载与落盘流程。"""
     SIZE_THRESHOLD_MB = 200
     DURATION_THRESHOLD_SEC = 600
+
+    @staticmethod
+    def _parse_clock_to_seconds(raw: str) -> float | None:
+        match = re.match(r"(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})(?:\.(?P<ms>\d+))?", raw.strip())
+        if not match:
+            return None
+        seconds = int(match.group("h")) * 3600 + int(match.group("m")) * 60 + int(match.group("s"))
+        fraction = match.group("ms")
+        if fraction:
+            seconds += float(f"0.{fraction}")
+        return seconds
+
+    @classmethod
+    def _extract_expected_duration(cls, line_str: str, fallback_duration: float | None) -> float | None:
+        if fallback_duration and fallback_duration > 0:
+            return fallback_duration
+        duration_info = re.search(r"Duration:\s+(\d{2}:\d{2}:\d{2}(?:\.\d+)?)", line_str)
+        if not duration_info:
+            return fallback_duration
+        return cls._parse_clock_to_seconds(duration_info.group(1)) or fallback_duration
+
+    @classmethod
+    def _estimate_progress(
+        cls,
+        *,
+        out_time_seconds: float | None,
+        total_size_bytes: int | None,
+        expected_duration: float | None,
+        expected_size_bytes: int | None,
+    ) -> int | None:
+        if expected_duration and expected_duration > 0 and out_time_seconds is not None:
+            return min(99, max(1, int((out_time_seconds / expected_duration) * 100)))
+        if expected_size_bytes and expected_size_bytes > 0 and total_size_bytes is not None:
+            return min(99, max(1, int((total_size_bytes / expected_size_bytes) * 100)))
+        return None
+
+    @classmethod
+    def _parse_progress_line(
+        cls,
+        line_str: str,
+        *,
+        expected_duration: float | None,
+        expected_size_bytes: int | None,
+    ) -> tuple[float | None, int | None, int | None]:
+        next_duration = cls._extract_expected_duration(line_str, expected_duration)
+        total_size_bytes: int | None = None
+        out_time_seconds: float | None = None
+        progress_value: int | None = None
+
+        if "=" in line_str:
+            key, value = line_str.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key in {"out_time", "out_time_ms", "out_time_us"}:
+                if key == "out_time":
+                    out_time_seconds = cls._parse_clock_to_seconds(value)
+                else:
+                    try:
+                        raw_out_time = int(value)
+                        # Newer FFmpeg progress output may emit microseconds for both
+                        # out_time_us and out_time_ms keys. Prefer the microsecond scale,
+                        # and fall back to millisecond scale only for small legacy values.
+                        if key == "out_time_ms" and raw_out_time < 1_000_000:
+                            out_time_seconds = raw_out_time / 1000
+                        else:
+                            out_time_seconds = raw_out_time / 1_000_000
+                    except ValueError:
+                        out_time_seconds = None
+            elif key == "total_size":
+                try:
+                    total_size_bytes = int(value)
+                except ValueError:
+                    total_size_bytes = None
+        else:
+            current_time = re.search(r"time=(\d{2}:\d{2}:\d{2}(?:\.\d+)?)", line_str)
+            if current_time:
+                out_time_seconds = cls._parse_clock_to_seconds(current_time.group(1))
+
+        progress_value = cls._estimate_progress(
+            out_time_seconds=out_time_seconds,
+            total_size_bytes=total_size_bytes,
+            expected_duration=next_duration,
+            expected_size_bytes=expected_size_bytes,
+        )
+        return next_duration, total_size_bytes, progress_value
 
     @classmethod
     def is_available(cls) -> bool:
@@ -43,7 +129,8 @@ class FFmpegDownloader(BaseDownloader):
         check_stop_func: StopCheck,
     ) -> None:
         """执行 `download` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
-        url = video_item.url
+        original_url = video_item.url
+        url = original_url
         headers = {
             "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
             "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
@@ -54,44 +141,68 @@ class FFmpegDownloader(BaseDownloader):
             raise ExternalToolNotFoundError("未找到 ffmpeg.exe")
         proxy = video_item.meta.get("proxy")
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        try:
-            resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True, proxies=proxies)
-            real_url = resp.url
-            debug_logger.log_api(
-                component="FFmpegDownloader",
-                api_name="head_redirect",
-                request={"url": url},
-                response_summary={"real_url": real_url, "content_length": resp.headers.get("content-length")},
-                message="ffmpeg 下载前检查真实地址",
-                status_code=resp.status_code,
-                trace_id=trace_id,
-            )
-            if real_url != url:
-                url = real_url
-        except requests.RequestException as exc:
-            debug_logger.log_exception(
-                "FFmpegDownloader",
-                "head_redirect",
-                exc,
-                context={"url": url},
-                trace_id=trace_id,
-            )
-
-        cmd = FFmpegExternalTool.build_download_command(ffmpeg, url, save_path, headers, proxy=proxy)
-        debug_logger.log_command(
-            component="FFmpegDownloader",
-            tool_name="ffmpeg",
-            command_args=cmd,
-            message="准备调用 ffmpeg 执行下载",
-            context={"save_path": save_path, "source_url": url, "title": video_item.title},
-            trace_id=trace_id,
-        )
+        expected_duration = None
+        raw_duration = video_item.meta.get("duration")
+        if isinstance(raw_duration, (int, float)) and raw_duration > 0:
+            expected_duration = float(raw_duration)
+        expected_size_bytes = None
+        def _resolve_stream_url(source_url: str) -> tuple[str, int | None]:
+            resolved_url = source_url
+            resolved_size = expected_size_bytes
+            try:
+                resp = requests.head(
+                    source_url,
+                    headers=headers,
+                    timeout=15,
+                    allow_redirects=True,
+                    proxies=proxies,
+                )
+                real_url = resp.url
+                content_length = resp.headers.get("content-length")
+                if content_length:
+                    try:
+                        resolved_size = int(content_length)
+                    except ValueError:
+                        resolved_size = None
+                debug_logger.log_api(
+                    component="FFmpegDownloader",
+                    api_name="head_redirect",
+                    request={"url": source_url},
+                    response_summary={"real_url": real_url, "content_length": resp.headers.get("content-length")},
+                    message="ffmpeg 下载前检查真实地址",
+                    status_code=resp.status_code,
+                    trace_id=trace_id,
+                )
+                if real_url != source_url:
+                    resolved_url = real_url
+            except requests.RequestException as exc:
+                debug_logger.log_exception(
+                    "FFmpegDownloader",
+                    "head_redirect",
+                    exc,
+                    context={"url": source_url},
+                    trace_id=trace_id,
+                )
+            return resolved_url, resolved_size
 
         startupinfo = build_hidden_startupinfo()
 
-        progress_callback(5)
         max_retries = cfg.get("download", "max_retries", 3)
         for attempt in range(max_retries):
+            stderr_tail: deque[str] = deque(maxlen=12)
+            current_url, current_expected_size = _resolve_stream_url(original_url)
+            url = current_url
+            if current_expected_size:
+                expected_size_bytes = current_expected_size
+            cmd = FFmpegExternalTool.build_download_command(ffmpeg, url, save_path, headers, proxy=proxy)
+            debug_logger.log_command(
+                component="FFmpegDownloader",
+                tool_name="ffmpeg",
+                command_args=cmd,
+                message="准备调用 ffmpeg 执行下载",
+                context={"save_path": save_path, "source_url": url, "title": video_item.title, "attempt": attempt + 1},
+                trace_id=trace_id,
+            )
             try:
                 process = subprocess.Popen(
                     cmd,
@@ -100,11 +211,17 @@ class FFmpegDownloader(BaseDownloader):
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
                 )
-                duration_match: int | None = None
                 last_progress_time = time.time()
+                last_progress = 0
 
                 while True:
                     if check_stop_func():
+                        # #region debug-point C:ffmpeg-stop-requested
+                        try:
+                            import json, urllib.request; _p='.dbg/cli-platform-regressions.env'; _u='http://127.0.0.1:7777/event'; _s='cli-platform-regressions'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"C","location":"app/core/downloaders/ffmpeg.py:stop-check","msg":"[DEBUG] ffmpeg stop requested before kill","data":{"save_path":save_path,"title":video_item.title,"pid":getattr(process,'pid',None),"poll":process.poll()},"ts":int(time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+                        except Exception:
+                            pass
+                        # #endregion
                         process.kill()
                         raise DownloaderStoppedError("用户停止下载")
 
@@ -119,25 +236,31 @@ class FFmpegDownloader(BaseDownloader):
 
                     last_progress_time = time.time()
                     line_str = line.decode("utf-8", errors="ignore").strip()
-                    if duration_match is None:
-                        duration_info = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2})", line_str)
-                        if duration_info:
-                            duration_match = (
-                                int(duration_info.group(1)) * 3600
-                                + int(duration_info.group(2)) * 60
-                                + int(duration_info.group(3))
-                            )
-                    if duration_match and duration_match > 0:
-                        current_time = re.search(r"time=(\d{2}):(\d{2}):(\d{2})", line_str)
-                        if current_time:
-                            current = (
-                                int(current_time.group(1)) * 3600
-                                + int(current_time.group(2)) * 60
-                                + int(current_time.group(3))
-                            )
-                            progress_callback(min(99, int(current / duration_match * 100)))
+                    if line_str:
+                        stderr_tail.append(line_str)
+                    expected_duration, _observed_size_bytes, parsed_progress = self._parse_progress_line(
+                        line_str,
+                        expected_duration=expected_duration,
+                        expected_size_bytes=expected_size_bytes,
+                    )
+                    if parsed_progress is not None and parsed_progress > last_progress:
+                        last_progress = parsed_progress
+                        progress_callback(parsed_progress)
 
                 process.wait()
+                # #region debug-point C:ffmpeg-process-exit
+                try:
+                    import json, urllib.request; _p='.dbg/cli-platform-regressions.env'; _u='http://127.0.0.1:7777/event'; _s='cli-platform-regressions'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"C","location":"app/core/downloaders/ffmpeg.py:process-wait","msg":"[DEBUG] ffmpeg process exited","data":{"save_path":save_path,"title":video_item.title,"pid":getattr(process,'pid',None),"returncode":process.returncode,"exists":os.path.exists(save_path),"size":os.path.getsize(save_path) if os.path.exists(save_path) else 0},"ts":int(time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+                except Exception:
+                    pass
+                # #endregion
+                if process.returncode != 0:
+                    # #region debug-point J:ffmpeg-stderr-tail
+                    try:
+                        import json, urllib.request; _p='.dbg/ffmpeg-intermittent-failure.env'; _u='http://127.0.0.1:7777/event'; _s='ffmpeg-intermittent-failure'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"J","location":"app/core/downloaders/ffmpeg.py:process-wait","msg":"[DEBUG] ffmpeg failed with stderr tail","data":{"trace_id":trace_id,"save_path":save_path,"returncode":process.returncode,"stderr_tail":list(stderr_tail)},"ts":int(time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+                    except Exception:
+                        pass
+                    # #endregion
                 if process.returncode == 0 and os.path.exists(save_path) and os.path.getsize(save_path) > 0:
                     progress_callback(100)
                     debug_logger.log(
@@ -163,7 +286,7 @@ class FFmpegDownloader(BaseDownloader):
                         "FFmpegDownloader",
                         "download_error",
                         exc,
-                        context={"save_path": save_path, "source_url": url, "title": video_item.title},
+                        context={"save_path": save_path, "source_url": url, "title": video_item.title, "stderr_tail": list(stderr_tail)},
                         trace_id=trace_id,
                     )
                     raise ExternalToolError(f"ffmpeg 下载失败: {exc}") from exc

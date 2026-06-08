@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PyQt6.QtCore import QByteArray
+
 from app.config import DEFAULT_USER_AGENT
+from app.config.constants import DEFAULT_DOWNLOAD_DIR
 from app.config.settings import ConfigManager
 from app.utils.runtime_paths import resolve_user_file
 
@@ -87,6 +90,63 @@ class ConfigManagerTests(unittest.TestCase):
             reloaded = ConfigManager(config_path)
 
         self.assertEqual(reloaded.get("download", "max_concurrent"), 6)
+
+    def test_temp_save_directory_is_normalized_back_to_default_download_dir(self):
+        """被临时目录污染的保存路径在加载配置时应自动回落到规范目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            polluted_save_dir = Path(temp_dir) / "tmp-persisted-downloads"
+            config_path.write_text(
+                (
+                    "{"
+                    f"\"common\":{{\"save_directory\":\"{str(polluted_save_dir).replace('\\', '\\\\')}\"}}"
+                    "}"
+                ),
+                encoding="utf-8",
+            )
+
+            manager = ConfigManager(str(config_path))
+
+            self.assertEqual(manager.get("common", "save_directory"), DEFAULT_DOWNLOAD_DIR)
+
+    def test_save_ui_state_accepts_non_qt_buffers(self):
+        """验证配置层保存 UI 状态时不再依赖 Qt 类型。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+
+            manager.save_ui_state(
+                geometry=b"\xaa\x55",
+                state=bytearray(b"\x10\x20"),
+                main_splitter=memoryview(b"\x01\x02"),
+                right_splitter="beef",
+                is_fs=True,
+            )
+
+            self.assertEqual(manager.get("ui", "geometry"), "aa55")
+            self.assertEqual(manager.get("ui", "window_state"), "1020")
+            self.assertEqual(manager.get("ui", "main_splitter_state"), "0102")
+            self.assertEqual(manager.get("ui", "right_splitter_state"), "beef")
+            self.assertTrue(manager.get("ui", "is_fullscreen_mode"))
+
+    def test_save_ui_state_accepts_qbytearray_without_recursive_crash(self):
+        """验证 GUI 退出场景下，QByteArray 编码不会递归崩溃。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+
+            manager.save_ui_state(
+                geometry=QByteArray(b"\x01\x02"),
+                state=QByteArray(b"\x03\x04"),
+                main_splitter=QByteArray(b"\x05\x06"),
+                right_splitter=QByteArray(b"\x07\x08"),
+                is_fs=False,
+            )
+
+            self.assertEqual(manager.get("ui", "geometry"), "0102")
+            self.assertEqual(manager.get("ui", "window_state"), "0304")
+            self.assertEqual(manager.get("ui", "main_splitter_state"), "0506")
+            self.assertEqual(manager.get("ui", "right_splitter_state"), "0708")
 
 
 if __name__ == "__main__":

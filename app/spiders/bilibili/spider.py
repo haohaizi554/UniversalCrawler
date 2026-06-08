@@ -154,6 +154,14 @@ class BilibiliSpider(BaseSpider):
         self.task_builder = BilibiliTaskBuilder(self.parser)
         self.auth_service = AuthService()
 
+    @staticmethod
+    def _format_episode_choice(parent_title: str, episode: dict, fallback_index: int) -> str:
+        """格式化第二层候选，保留父级标题，避免只剩 `[01] xxx` 的裸信息。"""
+        parent = parent_title or "未命名项目"
+        num_str = str(episode.get("page_num", fallback_index + 1)).zfill(2)
+        episode_title = episode.get("title") or f"第 {fallback_index + 1} 集"
+        return f"{parent} · P{num_str} · {episode_title}"
+
     #完整流程控制器
     def run(self):
         """执行当前对象或脚本的主流程，供 `BilibiliSpider` 使用。"""
@@ -258,10 +266,12 @@ class BilibiliSpider(BaseSpider):
                     )
                     continue
                 sub_dialog_items = []
+                parent_label = info.get('season_title') or info.get('title') or "未命名项目"
                 for i, ep in enumerate(episodes):
-                    num_str = str(ep.get('page_num', i + 1)).zfill(2)
                     sub_dialog_items.append({
-                        'title': f"[{num_str}] {ep['title']}",
+                        'title': ep.get('title') or f"第 {i + 1} 集",
+                        'subtitle': f"P{str(ep.get('page_num', i + 1)).zfill(2)}",
+                        'group_title': parent_label,
                         'index': i
                     })
                 self.log(f"🔔 正在展开: {info.get('season_title') or info['title']}")
@@ -289,6 +299,15 @@ class BilibiliSpider(BaseSpider):
                     v_url, a_url, q_id = self.api.get_play_url(task['bvid'], task['cid'], trace_id=task['trace_id'])
                 except StreamResolveError as exc:
                     self.log(f"   ❌ 获取流失败: {exc}")
+                    self.debug_state(
+                        action="resolve_stream_failed",
+                        message="Bilibili 获取播放流失败",
+                        status_code="BILI_STREAM_FAIL",
+                        context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
+                        details={"file_name": task["file_name"], "error": str(exc)},
+                        level="ERROR",
+                        trace_id=task["trace_id"],
+                    )
                     continue
                 if v_url:
                     q_map = {127: "8K", 120: "4K", 116: "1080P60", 80: "1080P", 64: "720P"}
@@ -300,6 +319,8 @@ class BilibiliSpider(BaseSpider):
                     cookie_dict = {c.name: c.value for c in self.api.sess.cookies if c.name}
                     meta = {
                         "trace_id": task["trace_id"],
+                        "content_type": "video",  # 与 DouyinParser/KuaishouTaskBuilder/MissAVTaskBuilder 对齐
+                        "media_label": "视频",  # 与 DouyinParser 对齐：GUI 日志使用
                         "audio_url": a_url,
                         "ua": HEADERS['User-Agent'],
                         "referer": task['referer'],
@@ -335,7 +356,16 @@ class BilibiliSpider(BaseSpider):
                     )
                     success_count += 1
                 else:
-                    self.log(f"   ❌ 获取流失败")
+                    self.log("   ❌ 获取流失败")
+                    self.debug_state(
+                        action="resolve_stream_empty",
+                        message="Bilibili 播放流响应为空",
+                        status_code="BILI_STREAM_EMPTY",
+                        context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
+                        details={"file_name": task["file_name"], "audio_url": a_url, "quality_id": q_id},
+                        level="WARNING",
+                        trace_id=task["trace_id"],
+                    )
                 time.sleep(0.5)
             self.log(f"🎉 全部完成: {success_count}/{len(final_download_queue)}")
         finally:

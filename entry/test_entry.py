@@ -58,7 +58,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--category", "-c",
-        help="测试类别 ID（如 unit / integration / all / web_browser）",
+        help="测试类别 ID（如 cli_sdk / web_api / app_flows / all / browser_e2e）",
         default=None,
     )
     parser.add_argument(
@@ -281,8 +281,8 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
             f"{c.description[:50]}{marker}"
         )
     print()
-    print("  [a ]  全选（运行所有类别）")
-    print("  [r ]  推荐（unit + integration + e2e + pipeline）")
+    print("  [a ]  全量（运行全部测试）")
+    print("  [r ]  推荐（cli_sdk + web_api + app_flows + pipeline + core_services）")
     print("  [q ]  退出")
     print()
 
@@ -295,9 +295,9 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     if raw in ("q", "quit", "exit", "0"):
         return 0
     if raw == "a":
-        selected = [c.id for c in cats if c.id != "all"]
+        selected = ["all"]
     elif raw == "r":
-        selected = ["unit", "integration", "e2e", "pipeline"]
+        selected = ["cli_sdk", "web_api", "app_flows", "pipeline", "core_services"]
     else:
         try:
             idx = int(raw) - 1

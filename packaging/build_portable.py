@@ -8,10 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __package__ in (None, ""):
+    from project_meta import APP_DISPLAY_NAME, APP_NAME, PACKAGE_VERSION, WEBUI_NAME
+else:
+    from .project_meta import APP_DISPLAY_NAME, APP_NAME, PACKAGE_VERSION, WEBUI_NAME
 
-APP_NAME = "UniversalCrawlerPro"
-WEBUI_NAME = "CrawlerWebPortal"
-APP_DISPLAY_NAME = "Universal CrawlerPro"
+
 WEBUI_DISPLAY_NAME = "Crawler WebPortal"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC_FILE = PROJECT_ROOT / "packaging" / "portable.spec"
@@ -180,7 +182,8 @@ def write_manifest() -> None:
     """执行 `write_manifest` 对应的业务逻辑。"""
     manifest = DIST_DIR / "BUILD_INFO.txt"
     lines = [
-        f"{APP_DISPLAY_NAME} Portable Build",
+        f"{APP_DISPLAY_NAME} Portable Build v{PACKAGE_VERSION}",
+        f"Package Version: {PACKAGE_VERSION}",
         f"Executable: {APP_NAME}.exe",
         f"WebUI: {WEBUI_NAME}.exe",
         "",

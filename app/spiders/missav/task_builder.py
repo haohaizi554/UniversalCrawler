@@ -14,6 +14,9 @@ class MissAVTaskBuilder(BaseTaskBuilder):
             referer=referer,
             user_agent=user_agent,
             proxy=proxy,
+            download_strategy="m3u8",  # 与 KuaishouTaskBuilder 对齐：MissAV 视频始终使用 m3u8 下载策略
+            content_type="video",  # 与 DouyinParser/BilibiliSpider/KuaishouTaskBuilder 对齐：MissAV 视频始终为 video
+            media_label="视频",  # 与 DouyinParser 对齐：GUI 日志使用
         )
 
     def build_video_meta(self, trace_id: str, referer: str, user_agent: str, proxy: str | None) -> dict:

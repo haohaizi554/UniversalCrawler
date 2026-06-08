@@ -1,10 +1,12 @@
 """测试模块，覆盖 `tests/test_plugin_registry.py` 对应功能的行为与回归场景。"""
 
+import importlib
+import sys
 import unittest
 from unittest.mock import Mock
 
 from app.core.plugin_registry import PluginRegistry, registry
-from app.core.plugins.settings_builders import build_missav_proxy_url
+from app.core.plugins.run_options import build_missav_proxy_url
 
 
 class PluginRegistryTests(unittest.TestCase):
@@ -57,6 +59,28 @@ class PluginRegistryTests(unittest.TestCase):
     def test_build_missav_proxy_url_keeps_custom_endpoint_without_false_port_match(self):
         """验证 `test_build_missav_proxy_url_keeps_custom_endpoint_without_false_port_match` 对应场景是否符合预期，供 `PluginRegistryTests` 使用。"""
         self.assertEqual(build_missav_proxy_url("proxy7890.local:9000"), "http://proxy7890.local:9000")
+
+    def test_plugin_registry_import_does_not_eagerly_load_qt_settings_builders(self):
+        """验证核心插件注册链在 import 阶段不主动加载 Qt 设置构建器。"""
+        plugin_registry_mod = "app.core.plugin_registry"
+        plugins_pkg_mod = "app.core.plugins"
+        definitions_mod = "app.core.plugins.definitions"
+        settings_builders_mod = "app.core.plugins.settings_builders"
+        snapshots = {
+            name: sys.modules.get(name)
+            for name in (plugin_registry_mod, plugins_pkg_mod, definitions_mod, settings_builders_mod)
+        }
+        try:
+            for name in (settings_builders_mod, definitions_mod, plugins_pkg_mod, plugin_registry_mod):
+                sys.modules.pop(name, None)
+            importlib.import_module(plugin_registry_mod)
+            self.assertNotIn(settings_builders_mod, sys.modules)
+        finally:
+            for name in (plugin_registry_mod, plugins_pkg_mod, definitions_mod, settings_builders_mod):
+                sys.modules.pop(name, None)
+            for name, module in snapshots.items():
+                if module is not None:
+                    sys.modules[name] = module
 
 
 if __name__ == "__main__":

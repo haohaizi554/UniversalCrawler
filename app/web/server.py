@@ -41,23 +41,50 @@ def create_app(lifespan=None) -> FastAPI:
 
     class ConnectionManager:
         def __init__(self):
-            self.active_connections: list[WebSocket] = []
+            self.active_connections: list[dict] = []
 
-        async def connect(self, ws: WebSocket):
-            await ws.accept()
-            self.active_connections.append(ws)
-
-        def disconnect(self, ws: WebSocket):
-            if ws in self.active_connections:
-                self.active_connections.remove(ws)
-
-        async def broadcast(self, event_type: str, data=None):
-            msg = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
-            for ws in list(self.active_connections):
+        async def _sender(self, ws: WebSocket, queue: asyncio.Queue[str]):
+            while True:
+                try:
+                    msg = await queue.get()
+                except asyncio.CancelledError:
+                    break
+                if msg is None:
+                    break
                 try:
                     await ws.send_text(msg)
                 except Exception:
-                    self.active_connections.remove(ws)
+                    self.disconnect(ws)
+                    break
+
+        async def connect(self, ws: WebSocket):
+            await ws.accept()
+            queue: asyncio.Queue[str] = asyncio.Queue()
+            sender_task = asyncio.create_task(self._sender(ws, queue))
+            self.active_connections.append({"ws": ws, "queue": queue, "sender_task": sender_task})
+
+        def disconnect(self, ws: WebSocket):
+            for conn in list(self.active_connections):
+                if conn["ws"] is ws:
+                    self.active_connections.remove(conn)
+                    sender_task = conn.get("sender_task")
+                    if sender_task is not None:
+                        sender_task.cancel()
+                    break
+
+        async def broadcast(self, event_type: str, data=None):
+            msg = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
+            connections = list(self.active_connections)
+            if not connections:
+                return
+            dead_connections = []
+            for conn in connections:
+                try:
+                    conn["queue"].put_nowait(msg)
+                except Exception:
+                    dead_connections.append(conn["ws"])
+            for ws in dead_connections:
+                self.disconnect(ws)
 
     manager = ConnectionManager()
 
@@ -65,94 +92,18 @@ def create_app(lifespan=None) -> FastAPI:
 
     global controller
     from app.web.controller import WebController
+    from app.web.workflows import (
+        WebWorkflowService,
+        build_selection_strategy as _build_selection_strategy,
+        merge_default_config as _merge_default_config,
+        validate_config_types as _validate_config_types,
+    )
     # 不在 create_app 时获取事件循环，因为 uvicorn 可能使用不同的事件循环
     # 传入 None，在首次 emit 时延迟获取正确的事件循环
     controller = WebController(None, manager.broadcast)
+    workflow = WebWorkflowService(controller, manager.broadcast)
 
     # ---- REST API ----
-
-    def _build_selection_strategy(selection_dict: dict | None):
-        """从 REST API 的 selection 参数构建 SelectionStrategy 实例。"""
-        from cli.selection import RuleSelection, PipeSelection
-
-        if not selection_dict:
-            return RuleSelection(all_items=True)  # 默认全选
-
-        strategy = selection_dict.get("strategy", "all")
-
-        if strategy == "all":
-            return RuleSelection(all_items=True)
-        elif strategy == "first":
-            return RuleSelection(first=True)
-        elif strategy == "last":
-            return RuleSelection(last=True)
-        elif strategy == "rule":
-            select_val = selection_dict.get("select")
-            exclude_val = selection_dict.get("exclude")
-            # 与 SDK 对齐：select/exclude 必须是字符串或 null
-            if select_val is not None and not isinstance(select_val, str):
-                return None
-            if exclude_val is not None and not isinstance(exclude_val, str):
-                return None
-            return RuleSelection(
-                select=select_val,
-                exclude=exclude_val,
-                all_items=selection_dict.get("all_items", False),
-                first=selection_dict.get("first", False),
-                last=selection_dict.get("last", False),
-            )
-        elif strategy == "preload":
-            choices = selection_dict.get("choices", [])
-            # 与 SDK 对齐：choices 必须是二维数组
-            if not isinstance(choices, list):
-                return None
-            # 校验每个元素也是列表（二维数组）
-            for round_choices in choices:
-                if not isinstance(round_choices, list):
-                    return None
-            return PipeSelection(preloaded_choices=choices)
-        elif strategy == "interactive":
-            # 与 SDK _resolve_selection 对齐：支持 "interactive" 策略
-            from cli.selection import InteractiveTTYSelection
-            return InteractiveTTYSelection()
-        elif strategy == "pipe":
-            # 与 SDK _resolve_selection 对齐：支持 "pipe" 策略
-            return PipeSelection()
-        else:
-            # 与 CLI argparse choices 对齐：未知策略返回错误而非静默默认
-            return None
-
-    def _merge_default_config(source: str, user_config: dict) -> dict:
-        """合并平台默认配置 + 用户配置（与 GUI read_*_run_options 对齐）。
-
-        GUI 中 read_douyin_run_options 返回 {"max_items": 20, "timeout": 10}，
-        read_bilibili_run_options 返回 {"max_pages": 1}，
-        read_kuaishou_run_options 返回 {"max_items": 20}，
-        read_missav_run_options 返回 {"individual_only": False, "priority": "中文字幕优先", "proxy": "..."}。
-
-        优先从 cfg 持久化配置读取默认值（与 GUI 对齐），
-        用户 config 覆盖 cfg 默认值。
-        """
-        from cli.defaults import get_platform_defaults, build_missav_proxy_url
-
-        merged = get_platform_defaults(source)
-        # 与 CLI _build_config 对齐：过滤 None 值，避免覆盖默认值
-        # （CLI argparse 只在用户显式提供参数时才设置，不会用 None 覆盖默认）
-        filtered = {k: v for k, v in user_config.items() if v is not None}
-        merged.update(filtered)
-        # MissAV 代理转换（与 GUI build_missav_proxy_url 一致）
-        if source == "missav" and "proxy" in merged and merged["proxy"] is not None:
-            merged["proxy"] = build_missav_proxy_url(merged["proxy"])
-        return merged
-
-    def _validate_config_types(user_config: dict) -> str | None:
-        """校验已知 config 参数类型，与 CLI argparse type 和 SDK _validate_config 对齐。
-
-        委托给 cli.defaults.validate_config_types 统一实现，
-        确保 CLI/SDK/REST API 三层校验逻辑完全一致。
-        """
-        from cli.defaults import validate_config_types as _shared_validate
-        return _shared_validate(user_config)
 
     @app.get("/api/ping")
     async def ping():
@@ -340,6 +291,12 @@ def create_app(lifespan=None) -> FastAPI:
 
         # 合并平台默认配置 + 用户 config（与 GUI read_*_run_options 对齐）
         merged_config = _merge_default_config(source, user_config)
+        # 与 CLI search 命令便捷参数对齐：支持顶层便捷参数（优先级高于 config 字典）
+        from cli.defaults import merge_convenience_params
+        try:
+            merge_convenience_params(body, merged_config, source)
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
 
         def _run_search():
             from cli.runner import CLIRunner
@@ -366,87 +323,7 @@ def create_app(lifespan=None) -> FastAPI:
 
     @app.post("/api/crawl/start")
     async def start_crawl(body: dict):
-        source = body.get("source", "")
-        keyword = body.get("keyword", "")
-        # 与 GUI 对齐：此端点始终触发下载（与 GUI on_start_crawl 一致），不支持 download 参数
-        # 如需只搜索不下载，请使用 /api/search 并传 download: false
-        if "download" in body:
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "此端点始终触发下载，不支持 download 参数。如需只搜索不下载，请使用 POST /api/search 并传 download: false"}
-        # 与 GUI QLineEdit 对齐：source 和 keyword 必须是字符串
-        if not isinstance(source, str) or not isinstance(keyword, str):
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "source 和 keyword 必须是字符串"}
-        # 与 GUI inp_search.text().strip() 对齐：去除前后空白
-        keyword = keyword.strip()
-        if not source or not keyword:
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "source 和 keyword 为必填参数"}
-
-        # 与 GUI QComboBox 和 CLI choices 对齐：校验 source 是否为有效平台 ID
-        from app.core.plugin_registry import registry
-        if not registry.get_plugin(source):
-            valid_ids = [p.id for p in registry.get_all_plugins()]
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": f"无效平台: {source}。支持: {valid_ids}"}
-
-        # 与 GUI ApplicationController._has_active_spider 对齐：先检查是否有爬虫在运行
-        if controller.current_spider and controller.current_spider.isRunning():
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "当前已有任务在运行，请先停止或等待结束"}
-
-        user_config = body.get("config", {})
-        # 与 GUI 对齐：Qt 控件保证 config 是 dict，REST API 需显式校验
-        if not isinstance(user_config, dict):
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "config 必须是 JSON 对象"}
-        # 与 CLI argparse type 和 SDK _validate_config 对齐：校验已知 config 参数类型
-        config_err = _validate_config_types(user_config)
-        if config_err:
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": config_err}
-        selection_dict = body.get("selection")
-        # 与 GUI 对齐：selection 必须是 dict 或 null
-        if selection_dict is not None and not isinstance(selection_dict, dict):
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "selection 必须是 JSON 对象或 null"}
-        # 与 CLI argparse choices 对齐：未知策略返回错误而非静默默认
-        # 与 /api/search 对齐：selection: {} 等价于 selection: null，都走默认全选
-        if selection_dict is not None:
-            strategy = _build_selection_strategy(selection_dict)
-            if strategy is None:
-                valid_strategies = ["all", "first", "last", "rule", "preload", "interactive", "pipe"]
-                await manager.broadcast("crawl_state", {"is_running": False})
-                return {"status": "error", "error": f"无效选择策略。支持: {valid_strategies}"}
-            controller._pending_selection_strategy = strategy
-        else:
-            controller._pending_selection_strategy = None
-
-        # 合并平台默认配置（get_platform_defaults，与 GUI read_*_run_options 一致）
-        merged_config = _merge_default_config(source, user_config)
-
-        # 与 /api/search 对齐：支持 save_dir 参数
-        # 仅在确认爬虫成功启动后才保留 save_dir，失败时回滚，避免副作用泄漏
-        old_save_dir = controller.current_save_dir
-        save_dir = body.get("save_dir")
-        # 与 GUI QFileDialog 对齐：save_dir 必须是字符串或 null
-        if save_dir is not None and not isinstance(save_dir, str):
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": "save_dir 必须是字符串或 null"}
-        if save_dir:
-            controller.current_save_dir = save_dir
-
-        try:
-            controller.start_crawl(source, keyword, merged_config)
-        except Exception as exc:
-            # 异常时回滚 save_dir 和清理 _pending_selection_strategy，避免副作用泄漏
-            controller.current_save_dir = old_save_dir
-            controller._pending_selection_strategy = None
-            await manager.broadcast("crawl_state", {"is_running": False})
-            return {"status": "error", "error": f"启动爬虫异常: {exc}"}
-        # start_crawl() 内部已处理所有错误情况（异步调度到 Qt 主线程后，
-        # 成功/失败都会通过 bridge.emit 推送 crawl_state 事件）
-        return {"status": "ok"}
+        return await workflow.start_crawl(body, log_error=False)
 
     @app.post("/api/crawl/stop")
     async def stop_crawl():
@@ -455,22 +332,7 @@ def create_app(lifespan=None) -> FastAPI:
 
     @app.post("/api/crawl/select")
     async def select_tasks(body: dict):
-        # 与 GUI SelectionDialog 对齐：取消时 indices 可以是 None，确认时必须是整数列表。
-        # 同时与 GUI 对齐：必须有正在运行的爬虫才能进行二次选择
-        if not controller.current_spider or not controller.current_spider.isRunning():
-            return {"status": "error", "error": "当前没有正在运行的爬虫，无法进行二次选择"}
-        indices = body.get("indices", [])
-        if indices is None:
-            controller.resume_spider_selection(None)
-            return {"status": "ok"}
-        if not isinstance(indices, list):
-            return {"status": "error", "error": "indices 必须是整数数组"}
-        try:
-            indices = [int(i) for i in indices]
-        except (ValueError, TypeError):
-            return {"status": "error", "error": "indices 必须是整数数组"}
-        controller.resume_spider_selection(indices)
-        return {"status": "ok"}
+        return await workflow.select_tasks(body, log_error=False)
 
     # ---- 调试: 手动触发选择弹窗 ----
     @app.post("/api/debug/trigger-select")
@@ -513,264 +375,7 @@ def create_app(lifespan=None) -> FastAPI:
     @app.post("/api/download")
     async def download_video(body: dict):
         """直接下载指定 URL 的视频（与 CLI download 命令和 SDK download_video 对齐）。"""
-        import time as _time
-        _dl_start = _time.time()
-        url = body.get("url", "")
-        source = body.get("source", "")
-        # 与 CLI/SDK 对齐：title 默认使用 URL（而非空字符串）
-        # 修复：先校验 title 类型再应用默认值，避免非字符串 falsy 值（如 0）被静默替换为 URL
-        title = body.get("title")
-        if title is not None and not isinstance(title, str):
-            return {"status": "error", "error": "title 必须是字符串"}
-        title = title or url
-        save_dir = body.get("save_dir")
-        # 与 CLI --run-timeout 和 SDK timeout 对齐：支持自定义超时
-        timeout = body.get("timeout", 300)
-        # 与 SDK download_video(config=) 对齐：支持平台特定配置（如 missav proxy）
-        user_config = body.get("config", {})
-
-        # 与 CLI download 命令对齐：参数校验
-        if not isinstance(url, str) or not isinstance(source, str):
-            return {"status": "error", "error": "url 和 source 必须是字符串"}
-        if not url or not source:
-            return {"status": "error", "error": "url 和 source 为必填参数"}
-        if save_dir is not None and not isinstance(save_dir, str):
-            return {"status": "error", "error": "save_dir 必须是字符串或 null"}
-        # 与 GUI 对齐：Qt 控件保证 config 是 dict，REST API 需显式校验
-        if not isinstance(user_config, dict):
-            return {"status": "error", "error": "config 必须是 JSON 对象"}
-        # 与 CLI argparse type 和 SDK _validate_config 对齐：校验已知 config 参数类型
-        config_err = _validate_config_types(user_config)
-        if config_err:
-            return {"status": "error", "error": config_err}
-        # 与 REST API /api/search 对齐：timeout 必须是数字
-        try:
-            timeout = float(timeout)
-        except (ValueError, TypeError):
-            return {"status": "error", "error": "timeout 必须是数字"}
-        # 与 SDK 对齐：timeout 必须大于 0
-        if timeout <= 0:
-            return {"status": "error", "error": "timeout 必须大于 0"}
-        # 与 CLI argparse choices 对齐：校验 source 是否为有效平台 ID
-        from app.core.plugin_registry import registry
-        plugin = registry.get_plugin(source)
-        if not plugin:
-            valid_ids = [p.id for p in registry.get_all_plugins()]
-            return {"status": "error", "error": f"无效平台: {source}。支持: {valid_ids}"}
-
-        # 与 /api/search 对齐：save_dir 未提供时使用 controller.current_save_dir
-        effective_save_dir = save_dir or controller.current_save_dir
-        # 与 CLI download 命令对齐：直接传原始 user_config 给 SDK，由 SDK 内部合并平台默认配置
-        # （CLI 也是传原始 config 给 sdk.download_video()，不在外部预合并，避免冗余双重合并）
-        from cli.sdk import UcrawlSDK
-        sdk = UcrawlSDK(save_dir=effective_save_dir)
-
-        # 与 WebController _on_task_started 对齐：广播 task_started 让 WebUI 实时更新
-        # （REST API/WebSocket download 使用 sdk.download_video() 而非 controller.dl_manager，
-        #   所以需要手动广播 task_started/task_finished 事件，与爬虫下载流程对齐）
-        # 与 GUI _on_spider_item_found 对齐：先创建 pending_item 为 "⏳ 等待中" 状态，
-        # 广播 item_found，再切换到 "⏳ 下载中..." 并广播 task_started + video_state_changed。
-        # GUI 流程：item_found("⏳ 等待中") → task_started("⏳ 下载中...") → task_progress → task_finished
-        from app.models.video_item import VideoItem
-        pending_item = VideoItem(
-            url=url, title=title or url, source=source,
-            status="⏳ 等待中", progress=0,
-        )
-        # 与 GUI spider build_download_meta 对齐：设置 trace_id 和 content_type
-        # GUI spider 在 emit_video 时通过 build_download_meta 设置 trace_id，
-        # DownloadWorker._trace_id() 依赖此字段做日志关联。
-        # SDK download_video 也会设置 trace_id，但 pending_item 在 SDK 调用之前创建，
-        # 需要提前设置，确保 task_started 事件中就能包含正确的 trace_id 和 content_type。
-        import uuid as _uuid
-        _source_prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
-        pending_item.meta["trace_id"] = f"{_source_prefix}-dl-{_uuid.uuid4().hex[:8]}"
-        # 与 GUI spider 结果对齐：从 URL 推断 content_type（SDK 也会推断，但提前设置让 task_started 事件包含）
-        from cli.defaults import infer_content_type_from_url
-        _pre_ct = infer_content_type_from_url(url)
-        if _pre_ct:
-            pending_item.meta["content_type"] = _pre_ct
-        controller.videos[pending_item.id] = pending_item
-        await manager.broadcast("item_found", controller._video_item_to_dict(pending_item))
-        # 与 GUI _on_task_started 对齐：切换到 "⏳ 下载中..." 并广播 task_started + video_state_changed
-        # 与 WebController _on_task_started 对齐：task_started 包含 title/content_type
-        pending_item.status = "⏳ 下载中..."
-        await manager.broadcast("task_started", {
-            "video_id": pending_item.id, "local_path": "",
-            "title": pending_item.title,
-            "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-        })
-        await manager.broadcast("video_state_changed", {"video_id": pending_item.id, "status": "⏳ 下载中...", "progress": 0})
-
-        try:
-            # 与 GUI DownloadManager task_progress 信号对齐：通过 progress_callback 实时广播进度
-            # （GUI 通过 dl_manager.task_progress 信号实时更新进度条，REST API/WebSocket download
-            #   使用 sdk.download_video() 而非 controller.dl_manager，因此需要通过回调桥接进度事件）
-            def _on_download_progress(pct: int):
-                pending_item.progress = pct
-                # 与 WebController _on_task_progress 对齐：广播 task_progress 和 video_state_changed
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    return
-                # task_progress 与 WebController _on_task_progress 广播格式对齐
-                loop.create_task(manager.broadcast("task_progress", {"video_id": pending_item.id, "progress": pct}))
-                # video_state_changed 与 WebController _apply_video_state 广播格式对齐
-                loop.create_task(manager.broadcast("video_state_changed", {"video_id": pending_item.id, "status": pending_item.status, "progress": pct}))
-
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: sdk.download_video(url=url, source=source, title=title, save_dir=effective_save_dir, timeout=timeout, config=user_config, progress_callback=_on_download_progress),
-            )
-        except (TypeError, ValueError) as exc:
-            # 与 SDK 返回 error 结果路径对齐：保留 pending_item，设置 "❌ 失败" 状态和 download_error
-            # （不删除 pending_item，与 GUI _on_download_error 行为一致：失败条目保留在列表中可见）
-            pending_item.status = "❌ 失败"
-            pending_item.progress = 0
-            if pending_item.meta is None:
-                pending_item.meta = {}
-            pending_item.meta["download_error"] = str(exc)
-            # 与 WebController _on_task_error 对齐：task_error 包含 local_path/content_type/title
-            await manager.broadcast("task_error", {
-                "video_id": pending_item.id, "error": str(exc),
-                "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                "title": pending_item.title,
-            })
-            # 与 WebController _apply_video_state 对齐：失败时 video_state_changed 包含 local_path 和 content_type
-            await manager.broadcast("video_state_changed", {
-                "video_id": pending_item.id, "status": "❌ 失败", "progress": 0,
-                "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-            })
-            await manager.broadcast("log", {"message": f"❌ 下载参数错误: {exc}"})
-            # 与 SDK download_video 错误结果对齐：返回完整字段
-            # 与 video_state_changed 对齐：local_path 使用 pending_item.local_path or ""
-            return {
-                "status": "error", "error": str(exc), "video_id": pending_item.id,
-                "url": url, "source": source, "title": title or url,
-                "save_dir": effective_save_dir, "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                "meta": {"download_error": str(exc)},
-                "elapsed": round(_time.time() - _dl_start, 2),
-            }
-        except Exception as exc:
-            # 与 SDK 返回 error 结果路径对齐：保留 pending_item，设置 "❌ 失败" 状态和 download_error
-            # （不删除 pending_item，与 GUI _on_download_error 行为一致：失败条目保留在列表中可见）
-            pending_item.status = "❌ 失败"
-            pending_item.progress = 0
-            if pending_item.meta is None:
-                pending_item.meta = {}
-            pending_item.meta["download_error"] = f"下载失败: {exc}"
-            # 与 WebController _on_task_error 对齐：task_error 包含 local_path/content_type/title
-            await manager.broadcast("task_error", {
-                "video_id": pending_item.id, "error": f"下载失败: {exc}",
-                "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                "title": pending_item.title,
-            })
-            # 与 WebController _apply_video_state 对齐：失败时 video_state_changed 包含 local_path 和 content_type
-            await manager.broadcast("video_state_changed", {
-                "video_id": pending_item.id, "status": "❌ 失败", "progress": 0,
-                "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-            })
-            await manager.broadcast("log", {"message": f"❌ 下载失败: {exc}"})
-            # 与 SDK download_video 错误结果对齐：返回完整字段
-            # 与 video_state_changed 对齐：local_path 使用 pending_item.local_path or ""
-            return {
-                "status": "error", "error": f"下载失败: {exc}", "video_id": pending_item.id,
-                "url": url, "source": source, "title": title or url,
-                "save_dir": effective_save_dir, "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                "meta": {"download_error": f"下载失败: {exc}"},
-                "elapsed": round(_time.time() - _dl_start, 2),
-            }
-        finally:
-            # 防御性处理：确保 sdk 存在后再 close
-            try:
-                sdk.close()
-            except Exception:
-                pass
-
-        # 就地更新 pending_item 属性，保持 video_id 一致（避免前端收到两个不同的 video_id）
-        # 与 GUI _on_task_finished/_on_task_error 对齐：更新 item 状态
-        if result.get("status") == "ok":
-            pending_item.status = "✅ 完成"
-            pending_item.progress = 100
-            local_path = result.get("local_path", "")
-            if local_path:
-                pending_item.local_path = local_path
-            pending_item.title = result.get("title", pending_item.title)
-            if pending_item.meta is None:
-                pending_item.meta = {}
-            content_type = result.get("content_type", "")
-            # 与 GUI spider 结果对齐：SDK 已通过 infer_content_type 推断 content_type，
-            # 若仍为空则从 pending_item.local_path 二次推断（防御性兜底）
-            if not content_type and local_path:
-                from cli.defaults import infer_content_type
-                content_type = infer_content_type(local_path)
-                result["content_type"] = content_type
-            if content_type:
-                pending_item.meta["content_type"] = content_type
-            pending_item.meta.update(result.get("meta", {}))
-            # 同步 SDK 返回的 video_id 到 result，确保客户端可用
-            result["video_id"] = pending_item.id
-            # 与 WebController _on_task_finished 对齐：广播 task_finished 包含完整信息
-            # （WebController 的 task_finished 只有 video_id 和 local_path，REST API 增补
-            #   content_type 和 title，让 WebSocket 客户端无需额外请求即可获取完整下载结果）
-            await manager.broadcast("task_finished", {
-                "video_id": pending_item.id,
-                "local_path": local_path,
-                "content_type": content_type,
-                "title": pending_item.title,
-            })
-            # 与 WebController _apply_video_state 对齐：video_state_changed 包含 local_path 和 content_type
-            # （WebController 的 video_state_changed 只有 video_id/status/progress，REST API 增补
-            #   local_path 和 content_type，让 WebSocket 客户端可更新本地缓存的 item 信息）
-            await manager.broadcast("video_state_changed", {
-                "video_id": pending_item.id,
-                "status": "✅ 完成",
-                "progress": 100,
-                "local_path": local_path,
-                "content_type": content_type,
-            })
-            await manager.broadcast("log", {"message": f"✅ 下载完成: {pending_item.title}"})
-        else:
-            error_msg = result.get("error", "下载失败")
-            # 与 GUI/CLI 对齐：区分 "❌ 超时" 和 "❌ 失败"
-            if result.get("status") == "timeout" or "超时" in error_msg:
-                pending_item.status = "❌ 超时"
-            else:
-                pending_item.status = "❌ 失败"
-            pending_item.progress = 0
-            if pending_item.meta is None:
-                pending_item.meta = {}
-            pending_item.meta["download_error"] = error_msg
-            # 与成功路径对齐：从 SDK 结果更新 pending_item 属性
-            if result.get("local_path"):
-                pending_item.local_path = result["local_path"]
-            if result.get("title"):
-                pending_item.title = result["title"]
-            if result.get("meta") and isinstance(result["meta"], dict):
-                pending_item.meta.update(result["meta"])
-            # 同步 SDK 返回的 video_id 到 result
-            result["video_id"] = pending_item.id
-            # 与 WebController _on_task_error 对齐：task_error 包含 local_path/content_type/title
-            await manager.broadcast("task_error", {
-                "video_id": pending_item.id, "error": error_msg,
-                "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                "title": pending_item.title,
-            })
-            # 与 WebController _apply_video_state 对齐：失败/超时时 video_state_changed 包含 local_path 和 content_type
-            await manager.broadcast("video_state_changed", {
-                "video_id": pending_item.id, "status": pending_item.status, "progress": 0,
-                "local_path": pending_item.local_path or "",
-                "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-            })
-            await manager.broadcast("log", {"message": f"❌ 下载失败: {error_msg}"})
-
-        return result
+        return await workflow.direct_download(body, log_error=False)
 
     # ---- 媒体文件服务（支持 Range 请求，视频拖拽进度条必需） ----
 
@@ -1050,8 +655,8 @@ def create_app(lifespan=None) -> FastAPI:
         # 修复 BUG-180: 使用 async_scan_local_dir，文件 I/O 在线程池中执行，
         # bridge.emit 在事件循环中调用，避免跨线程调度静默失败
         try:
-            controller.bridge._loop = asyncio.get_running_loop()
-            await controller.async_scan_local_dir()
+            controller.bridge.set_loop(asyncio.get_running_loop())
+            asyncio.create_task(controller.async_scan_local_dir())
         except Exception:
             pass
 
@@ -1080,118 +685,11 @@ def create_app(lifespan=None) -> FastAPI:
 
         try:
             if msg_type == "start_crawl":
-                source = data.get("source", "")
-                keyword = data.get("keyword", "")
-                # 与 REST API /api/crawl/start 对齐：此端点始终触发下载，不支持 download 参数
-                if "download" in data:
-                    await manager.broadcast("log", {"message": "❌ 此端点始终触发下载，不支持 download 参数。如需只搜索不下载，请使用 POST /api/search 并传 download: false"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 与 GUI QLineEdit 对齐：source 和 keyword 必须是字符串
-                if not isinstance(source, str) or not isinstance(keyword, str):
-                    await manager.broadcast("log", {"message": "❌ source 和 keyword 必须是字符串"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 与 GUI inp_search.text().strip() 对齐：去除前后空白
-                keyword = keyword.strip()
-                if not source or not keyword:
-                    await manager.broadcast("log", {"message": "❌ source 和 keyword 为必填参数"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 与 GUI QComboBox 和 CLI choices 对齐：校验 source 是否为有效平台 ID
-                from app.core.plugin_registry import registry
-                if not registry.get_plugin(source):
-                    valid_ids = [p.id for p in registry.get_all_plugins()]
-                    await manager.broadcast("log", {"message": f"❌ 无效平台: {source}。支持: {valid_ids}"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 与 GUI ApplicationController._has_active_spider 对齐：先检查是否有爬虫在运行
-                if controller.current_spider and controller.current_spider.isRunning():
-                    await manager.broadcast("log", {"message": "⚠️ 当前已有任务在运行，请先停止或等待结束"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                user_config = data.get("config", {})
-                # 与 GUI 对齐：Qt 控件保证 config 是 dict，WebSocket 需显式校验
-                if not isinstance(user_config, dict):
-                    await manager.broadcast("log", {"message": "❌ config 必须是 JSON 对象"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 与 CLI argparse type 和 SDK _validate_config 对齐：校验已知 config 参数类型
-                config_err = _validate_config_types(user_config)
-                if config_err:
-                    await manager.broadcast("log", {"message": f"❌ {config_err}"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 合并平台默认配置（get_platform_defaults，与 GUI read_*_run_options 一致）
-                merged_config = _merge_default_config(source, user_config)
-                # 与 REST API /api/crawl/start 对齐：支持 selection 自动选择策略
-                selection_dict = data.get("selection")
-                # 与 GUI 对齐：selection 必须是 dict 或 null
-                if selection_dict is not None and not isinstance(selection_dict, dict):
-                    await manager.broadcast("log", {"message": "❌ selection 必须是 JSON 对象或 null"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # 与 CLI argparse choices 对齐：未知策略返回错误而非静默默认
-                # 与 /api/search 对齐：selection: {} 等价于 selection: null，都走默认全选
-                if selection_dict is not None:
-                    strategy = _build_selection_strategy(selection_dict)
-                    if strategy is None:
-                        valid_strategies = ["all", "first", "last", "rule", "preload", "interactive", "pipe"]
-                        await manager.broadcast("log", {"message": f"❌ 无效选择策略。支持: {valid_strategies}"})
-                        await manager.broadcast("crawl_state", {"is_running": False})
-                        return
-                    controller._pending_selection_strategy = strategy
-                else:
-                    controller._pending_selection_strategy = None
-                # 与 REST API /api/crawl/start 对齐：支持 save_dir
-                # 仅在确认爬虫成功启动后才保留 save_dir，失败时回滚，避免副作用泄漏
-                old_save_dir = controller.current_save_dir
-                save_dir = data.get("save_dir")
-                # 与 GUI QFileDialog 对齐：save_dir 必须是字符串或 null
-                if save_dir is not None and not isinstance(save_dir, str):
-                    await manager.broadcast("log", {"message": "❌ save_dir 必须是字符串或 null"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                if save_dir:
-                    controller.current_save_dir = save_dir
-                try:
-                    controller.start_crawl(
-                        source,
-                        keyword,
-                        merged_config,
-                    )
-                except Exception as exc:
-                    # 异常时回滚 save_dir 和清理 _pending_selection_strategy，避免副作用泄漏
-                    controller.current_save_dir = old_save_dir
-                    controller._pending_selection_strategy = None
-                    await manager.broadcast("log", {"message": f"❌ 启动爬虫异常: {exc}"})
-                    await manager.broadcast("crawl_state", {"is_running": False})
-                    return
-                # start_crawl() 内部已处理所有错误情况（异步调度到 Qt 主线程后，
-                # 成功/失败都会通过 bridge.emit 推送 crawl_state 事件）
-                # 不再在此处检查 current_spider，因为 spider 创建是异步的
+                await workflow.start_crawl(data, log_error=True)
             elif msg_type == "stop_crawl":
                 controller.stop_crawl()
             elif msg_type == "select_tasks":
-                # 与 REST API /api/crawl/select 对齐：取消时允许 None，确认时必须是整数列表。
-                # 与 GUI SelectionDialog 对齐：QDialog.reject() 会返回 None。
-                # 同时与 GUI 对齐：必须有正在运行的爬虫才能进行二次选择
-                if not controller.current_spider or not controller.current_spider.isRunning():
-                    await manager.broadcast("log", {"message": "❌ 当前没有正在运行的爬虫，无法进行二次选择"})
-                    return
-                indices = data.get("indices", [])
-                if indices is None:
-                    controller.resume_spider_selection(None)
-                    return
-                if not isinstance(indices, list):
-                    await manager.broadcast("log", {"message": "❌ indices 必须是整数数组"})
-                    return
-                try:
-                    indices = [int(i) for i in indices]
-                except (ValueError, TypeError):
-                    await manager.broadcast("log", {"message": "❌ indices 必须是整数数组"})
-                    return
-                controller.resume_spider_selection(indices)
+                await workflow.select_tasks(data, log_error=True)
             elif msg_type == "scan_dir":
                 # 与 REST API /api/scan 对齐：支持 scan_limit 参数
                 directory = data.get("directory")
@@ -1272,234 +770,7 @@ def create_app(lifespan=None) -> FastAPI:
                     return
                 await controller.async_rename_video(vid, title)
             elif msg_type == "download":
-                # 与 REST API /api/download 对齐：直接下载指定 URL 的视频
-                url = data.get("url", "")
-                source = data.get("source", "")
-                # 与 CLI/SDK 对齐：title 默认使用 URL（而非空字符串）
-                # 修复：先校验 title 类型再应用默认值，避免非字符串 falsy 值（如 0）被静默替换为 URL
-                dl_title = data.get("title")
-                if dl_title is not None and not isinstance(dl_title, str):
-                    await manager.broadcast("log", {"message": "❌ title 必须是字符串"})
-                    return
-                dl_title = dl_title or url
-                # 与 CLI --run-timeout 和 SDK timeout 对齐：支持自定义超时
-                dl_timeout = data.get("timeout", 300)
-                # 与 SDK download_video(config=) 对齐：支持平台特定配置（如 missav proxy）
-                user_config = data.get("config", {})
-                # 与 CLI download 命令对齐：参数校验
-                if not isinstance(url, str) or not isinstance(source, str):
-                    await manager.broadcast("log", {"message": "❌ url 和 source 必须是字符串"})
-                    return
-                if not url or not source:
-                    await manager.broadcast("log", {"message": "❌ url 和 source 为必填参数"})
-                    return
-                from app.core.plugin_registry import registry
-                if not registry.get_plugin(source):
-                    valid_ids = [p.id for p in registry.get_all_plugins()]
-                    await manager.broadcast("log", {"message": f"❌ 无效平台: {source}。支持: {valid_ids}"})
-                    return
-                save_dir = data.get("save_dir")
-                if save_dir is not None and not isinstance(save_dir, str):
-                    await manager.broadcast("log", {"message": "❌ save_dir 必须是字符串或 null"})
-                    return
-                # 与 GUI 对齐：Qt 控件保证 config 是 dict，WebSocket 需显式校验
-                if not isinstance(user_config, dict):
-                    await manager.broadcast("log", {"message": "❌ config 必须是 JSON 对象"})
-                    return
-                # 与 CLI argparse type 和 SDK _validate_config 对齐：校验已知 config 参数类型
-                config_err = _validate_config_types(user_config)
-                if config_err:
-                    await manager.broadcast("log", {"message": f"❌ {config_err}"})
-                    return
-                # 与 REST API /api/search 对齐：timeout 必须是数字
-                try:
-                    dl_timeout = float(dl_timeout)
-                except (ValueError, TypeError):
-                    await manager.broadcast("log", {"message": "❌ timeout 必须是数字"})
-                    return
-                # 与 SDK 对齐：timeout 必须大于 0
-                if dl_timeout <= 0:
-                    await manager.broadcast("log", {"message": "❌ timeout 必须大于 0"})
-                    return
-                # 与 /api/search 对齐：save_dir 未提供时使用 controller.current_save_dir
-                effective_save_dir = save_dir or controller.current_save_dir
-                # 与 CLI download 命令对齐：直接传原始 user_config 给 SDK，由 SDK 内部合并平台默认配置
-                # （CLI 也是传原始 config 给 sdk.download_video()，不在外部预合并，避免冗余双重合并）
-                from cli.sdk import UcrawlSDK
-                sdk = UcrawlSDK(save_dir=effective_save_dir)
-
-                # 与 WebController _on_task_started 对齐：广播 task_started 让 WebUI 实时更新
-                # （REST API/WebSocket download 使用 sdk.download_video() 而非 controller.dl_manager，
-                #   所以需要手动广播 task_started/task_finished 事件，与爬虫下载流程对齐）
-                # 与 GUI _on_spider_item_found 对齐：先创建 pending_item 为 "⏳ 等待中" 状态，
-                # 广播 item_found，再切换到 "⏳ 下载中..." 并广播 task_started + video_state_changed。
-                # GUI 流程：item_found("⏳ 等待中") → task_started("⏳ 下载中...") → task_progress → task_finished
-                from app.models.video_item import VideoItem as _VideoItem
-                pending_item = _VideoItem(
-                    url=url, title=dl_title or url, source=source,
-                    status="⏳ 等待中", progress=0,
-                )
-                # 与 GUI spider build_download_meta 对齐：设置 trace_id 和 content_type
-                # （与 REST API /api/download 对齐，确保 task_started 事件包含完整信息）
-                import uuid as _ws_uuid
-                _ws_prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
-                pending_item.meta["trace_id"] = f"{_ws_prefix}-dl-{_ws_uuid.uuid4().hex[:8]}"
-                from cli.defaults import infer_content_type_from_url as _ws_infer_ct
-                _ws_pre_ct = _ws_infer_ct(url)
-                if _ws_pre_ct:
-                    pending_item.meta["content_type"] = _ws_pre_ct
-                controller.videos[pending_item.id] = pending_item
-                await manager.broadcast("item_found", controller._video_item_to_dict(pending_item))
-                # 与 GUI _on_task_started 对齐：切换到 "⏳ 下载中..." 并广播 task_started + video_state_changed
-                # 与 WebController _on_task_started 对齐：task_started 包含 title/content_type
-                pending_item.status = "⏳ 下载中..."
-                await manager.broadcast("task_started", {
-                    "video_id": pending_item.id, "local_path": "",
-                    "title": pending_item.title,
-                    "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                })
-                await manager.broadcast("video_state_changed", {"video_id": pending_item.id, "status": "⏳ 下载中...", "progress": 0})
-
-                try:
-                    # 与 GUI DownloadManager task_progress 信号对齐：通过 progress_callback 实时广播进度
-                    # （GUI 通过 dl_manager.task_progress 信号实时更新进度条，WebSocket download
-                    #   使用 sdk.download_video() 而非 controller.dl_manager，因此需要通过回调桥接进度事件）
-                    def _on_ws_download_progress(pct: int):
-                        pending_item.progress = pct
-                        # 与 WebController _on_task_progress 对齐：广播 task_progress 和 video_state_changed
-                        try:
-                            loop = asyncio.get_running_loop()
-                        except RuntimeError:
-                            return
-                        loop.create_task(manager.broadcast("task_progress", {"video_id": pending_item.id, "progress": pct}))
-                        loop.create_task(manager.broadcast("video_state_changed", {"video_id": pending_item.id, "status": pending_item.status, "progress": pct}))
-
-                    result = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        lambda: sdk.download_video(url=url, source=source, title=dl_title, save_dir=effective_save_dir, timeout=dl_timeout, config=user_config, progress_callback=_on_ws_download_progress),
-                    )
-                except (TypeError, ValueError) as exc:
-                    # 与 SDK 返回 error 结果路径对齐：保留 pending_item，设置 "❌ 失败" 状态和 download_error
-                    # （不删除 pending_item，与 GUI _on_download_error 行为一致：失败条目保留在列表中可见）
-                    pending_item.status = "❌ 失败"
-                    pending_item.progress = 0
-                    if pending_item.meta is None:
-                        pending_item.meta = {}
-                    pending_item.meta["download_error"] = str(exc)
-                    # 与 WebController _on_task_error 对齐：task_error 包含 local_path/content_type/title
-                    await manager.broadcast("task_error", {
-                        "video_id": pending_item.id, "error": str(exc),
-                        "local_path": pending_item.local_path or "",
-                        "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                        "title": pending_item.title,
-                    })
-                    # 与 WebController _apply_video_state 对齐：失败时 video_state_changed 包含 local_path 和 content_type
-                    await manager.broadcast("video_state_changed", {
-                        "video_id": pending_item.id, "status": "❌ 失败", "progress": 0,
-                        "local_path": pending_item.local_path or "",
-                        "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                    })
-                    await manager.broadcast("log", {"message": f"❌ 下载参数错误: {exc}"})
-                    return
-                except Exception as exc:
-                    # 与 SDK 返回 error 结果路径对齐：保留 pending_item，设置 "❌ 失败" 状态和 download_error
-                    # （不删除 pending_item，与 GUI _on_download_error 行为一致：失败条目保留在列表中可见）
-                    pending_item.status = "❌ 失败"
-                    pending_item.progress = 0
-                    if pending_item.meta is None:
-                        pending_item.meta = {}
-                    pending_item.meta["download_error"] = f"下载失败: {exc}"
-                    # 与 WebController _on_task_error 对齐：task_error 包含 local_path/content_type/title
-                    await manager.broadcast("task_error", {
-                        "video_id": pending_item.id, "error": f"下载失败: {exc}",
-                        "local_path": pending_item.local_path or "",
-                        "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                        "title": pending_item.title,
-                    })
-                    # 与 WebController _apply_video_state 对齐：失败时 video_state_changed 包含 local_path 和 content_type
-                    await manager.broadcast("video_state_changed", {
-                        "video_id": pending_item.id, "status": "❌ 失败", "progress": 0,
-                        "local_path": pending_item.local_path or "",
-                        "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                    })
-                    await manager.broadcast("log", {"message": f"❌ 下载失败: {exc}"})
-                    return
-                finally:
-                    # 防御性处理：确保 sdk 存在后再 close
-                    try:
-                        sdk.close()
-                    except Exception:
-                        pass
-
-                # 就地更新 pending_item 属性，保持 video_id 一致（避免前端收到两个不同的 video_id）
-                # 与 GUI _on_task_finished/_on_task_error 对齐：更新 item 状态
-                if result.get("status") == "ok":
-                    pending_item.status = "✅ 完成"
-                    pending_item.progress = 100
-                    local_path = result.get("local_path", "")
-                    if local_path:
-                        pending_item.local_path = local_path
-                    pending_item.title = result.get("title", pending_item.title)
-                    if pending_item.meta is None:
-                        pending_item.meta = {}
-                    content_type = result.get("content_type", "")
-                    # 与 GUI spider 结果对齐：SDK 已通过 infer_content_type 推断 content_type，
-                    # 若仍为空则从 pending_item.local_path 二次推断（防御性兜底）
-                    if not content_type and local_path:
-                        from cli.defaults import infer_content_type
-                        content_type = infer_content_type(local_path)
-                        result["content_type"] = content_type
-                    if content_type:
-                        pending_item.meta["content_type"] = content_type
-                    pending_item.meta.update(result.get("meta", {}))
-                    # 与 REST API /api/download 对齐：task_finished 包含完整信息
-                    await manager.broadcast("task_finished", {
-                        "video_id": pending_item.id,
-                        "local_path": local_path,
-                        "content_type": content_type,
-                        "title": pending_item.title,
-                    })
-                    # 与 REST API /api/download 对齐：video_state_changed 包含 local_path 和 content_type
-                    await manager.broadcast("video_state_changed", {
-                        "video_id": pending_item.id,
-                        "status": "✅ 完成",
-                        "progress": 100,
-                        "local_path": local_path,
-                        "content_type": content_type,
-                    })
-                    await manager.broadcast("log", {"message": f"✅ 下载完成: {pending_item.title}"})
-                else:
-                    error_msg = result.get("error", "下载失败")
-                    # 与 GUI/CLI 对齐：区分 "❌ 超时" 和 "❌ 失败"
-                    if result.get("status") == "timeout" or "超时" in error_msg:
-                        pending_item.status = "❌ 超时"
-                    else:
-                        pending_item.status = "❌ 失败"
-                    pending_item.progress = 0
-                    if pending_item.meta is None:
-                        pending_item.meta = {}
-                    pending_item.meta["download_error"] = error_msg
-                    # 与成功路径对齐：从 SDK 结果更新 pending_item 属性
-                    if result.get("local_path"):
-                        pending_item.local_path = result["local_path"]
-                    if result.get("title"):
-                        pending_item.title = result["title"]
-                    if result.get("meta") and isinstance(result["meta"], dict):
-                        pending_item.meta.update(result["meta"])
-                    # 与 WebController _on_task_error 对齐：task_error 包含 local_path/content_type/title
-                    await manager.broadcast("task_error", {
-                        "video_id": pending_item.id, "error": error_msg,
-                        "local_path": pending_item.local_path or "",
-                        "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                        "title": pending_item.title,
-                    })
-                    # 与 WebController _apply_video_state 对齐：失败/超时时 video_state_changed 包含 local_path 和 content_type
-                    await manager.broadcast("video_state_changed", {
-                        "video_id": pending_item.id, "status": pending_item.status, "progress": 0,
-                        "local_path": pending_item.local_path or "",
-                        "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-                    })
-                    await manager.broadcast("log", {"message": f"❌ 下载失败: {error_msg}"})
+                await workflow.direct_download(data, log_error=True)
         except Exception as exc:
             logging.error(f"[WS] 处理消息 {msg_type} 失败: {exc}", exc_info=True)
             # 尝试通过 WebSocket 推送错误信息给前端

@@ -36,19 +36,25 @@ def create_client(
 ) -> AsyncClient:
     """创建 `client` 对应的对象、资源或结构。"""
     verify = kwargs.pop("verify", True)
-    return AsyncClient(
-        headers=headers
+    trust_env = kwargs.pop("trust_env", False)
+    client_kwargs = {
+        "headers": headers
         or {
             "User-Agent": user_agent,
         },
-        timeout=timeout,
-        follow_redirects=True,
-        verify=verify,
-        mounts={
+        "timeout": timeout,
+        "follow_redirects": True,
+        "verify": verify,
+        "trust_env": trust_env,
+    }
+    if proxy:
+        client_kwargs["mounts"] = {
             "http://": AsyncHTTPTransport(proxy=proxy),
             "https://": AsyncHTTPTransport(proxy=proxy),
-        },
+        }
+    return AsyncClient(
         *args,
+        **client_kwargs,
         **kwargs,
     )
 
@@ -72,20 +78,26 @@ async def request_params(
 ):
     """执行 `request_params` 对应的业务逻辑。"""
     verify = kwargs.pop("verify", True)
-    with Client(
-        headers=headers
+    trust_env = kwargs.pop("trust_env", False)
+    client_kwargs = {
+        "headers": headers
         or {
             "User-Agent": useragent,
             "Content-Type": "application/json; charset=utf-8",
             # "Referer": "https://www.douyin.com/"
         },
-        follow_redirects=True,
-        timeout=timeout,
-        verify=verify,
-        mounts={
+        "follow_redirects": True,
+        "timeout": timeout,
+        "verify": verify,
+        "trust_env": trust_env,
+    }
+    if proxy:
+        client_kwargs["mounts"] = {
             "http://": HTTPTransport(proxy=proxy),
             "https://": HTTPTransport(proxy=proxy),
-        },
+        }
+    with Client(
+        **client_kwargs,
     ) as client:
         return await request(
             logger,

@@ -1,6 +1,6 @@
 """download 子命令：下载指定的视频。
 
-ucrawl download <video_id> [--save-dir <dir>] [--url <url>] [--source <platform>] [--config <json>]
+ucrawl download <video_id> [--save-dir <dir>] [--url <url>] [--source <platform>] [--config <json>] [--individual-only] [--priority <str>]
 """
 
 from __future__ import annotations
@@ -37,12 +37,17 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
     parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
     # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
-    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，B站合集场景)")
+    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，传入时自动启用 --use-subdir，与 GUI 对齐)")
     parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
     # 与 GUI spider build_download_meta 对齐：文件名控制
     parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
     # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
     parser.add_argument("--content-type", type=str, default=None, help="内容类型 (video/image/gallery，与 --config '{\"content_type\":\"gallery\"}' 等价，影响文件扩展名和保存路径)")
+    # 与 CLI search --proxy 对齐：代理便捷参数
+    parser.add_argument("--proxy", type=str, default=None, help="代理 URL (与 --config '{\"proxy\":\"http://127.0.0.1:7890\"}' 等价，MissAV 平台会自动转换)")
+    # 与 CLI search --individual-only/--priority 对齐：MissAV 专属便捷参数
+    parser.add_argument("--individual-only", action="store_true", default=None, help="只看单体作品 (MissAV 专属，与 --config '{\"individual_only\":true}' 等价)")
+    parser.add_argument("--priority", type=str, default=None, help="优先级 (MissAV 专属，与 --config '{\"priority\":\"中文字幕优先\"}' 等价)")
 
     # 输出参数（与 search 命令的 --quiet/--pretty 对齐）
     out_group = parser.add_argument_group("输出")
@@ -52,10 +57,6 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
 
 def handle_download_command(args: argparse.Namespace) -> int:
     """执行 download 命令。"""
-    # DownloadManager 使用 QThread，必须先创建 QApplication
-    from cli.runner import _ensure_qt_app
-    _ensure_qt_app()
-
     # 从 cfg 读取默认保存目录（与 GUI 对齐）
     from cli.defaults import get_default_save_dir
     save_dir = getattr(args, "save_dir", None) or get_default_save_dir()
@@ -111,12 +112,37 @@ def handle_download_command(args: argparse.Namespace) -> int:
             user_config["folder_name"] = args.folder_name
         if getattr(args, "use_subdir", None):
             user_config["use_subdir"] = True
+        # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+        # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
+        # 即有 folder_name 就自动使用子目录。CLI 用户只传 --folder-name 不传 --use-subdir 时，
+        # 应与 GUI 行为一致，自动启用子目录
+        if user_config.get("folder_name") and not user_config.get("use_subdir"):
+            user_config["use_subdir"] = True
+        # 与 GUI DouyinParser 对齐：传入 author 但未传 folder_name 时，自动将 author 设为 folder_name
+        # GUI DouyinParser 在解析视频时设置 "folder_name": author（parser.py:68/85），
+        # CLI download 不经过 spider，需要手动设置以确保与 GUI 行为一致
+        if user_config.get("author") and not user_config.get("folder_name"):
+            user_config["folder_name"] = user_config["author"]
+            if not user_config.get("use_subdir"):
+                user_config["use_subdir"] = True
         # 与 GUI spider build_download_meta 对齐：--file-name 便捷参数合并到 config
         if getattr(args, "file_name", None):
             user_config["file_name"] = args.file_name
         # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：--content-type 便捷参数合并到 config
         if getattr(args, "content_type", None):
             user_config["content_type"] = args.content_type
+        # 与 CLI search --proxy 对齐：--proxy 便捷参数合并到 config
+        if getattr(args, "proxy", None):
+            user_config["proxy"] = args.proxy
+        # 与 CLI search --individual-only/--priority 对齐：MissAV 专属便捷参数合并到 config
+        if getattr(args, "individual_only", None):
+            user_config["individual_only"] = True
+        if getattr(args, "priority", None):
+            user_config["priority"] = args.priority
+        # 与 CLI search 和 REST API/SDK 对齐：统一转换 missav proxy
+        if source == "missav" and "proxy" in user_config and user_config["proxy"] is not None:
+            from cli.defaults import build_missav_proxy_url
+            user_config["proxy"] = build_missav_proxy_url(user_config["proxy"])
         # 与 CLI search/interactive 和 SDK _validate_config 对齐：校验已知参数类型
         if user_config:
             from cli.defaults import validate_config_types

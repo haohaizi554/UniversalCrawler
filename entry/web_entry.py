@@ -572,7 +572,7 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="监听端口 (默认: 8000)")
-    parser.add_argument("--no-qt", action="store_true", help="无 Qt 模式（仅 API，不支持爬虫）")
+    parser.add_argument("--no-qt", action="store_true", help="无 Qt 模式（适合服务器 / 容器部署）")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
 
     # 启动时脚本注入参数

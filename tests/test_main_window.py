@@ -27,12 +27,12 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         plugin = Mock()
         plugin.id = "douyin"
-        plugin.get_run_options.return_value = {"max_pages": 5}
         window.current_plugin = plugin
         window.plugin_widget = object()
         window.inp_search.text.return_value = "测试关键词"
 
-        window.on_btn_start_clicked()
+        with patch("app.ui.main_window.read_plugin_run_options", return_value={"max_pages": 5}):
+            window.on_btn_start_clicked()
 
         window.sig_start_crawl.emit.assert_called_once_with("测试关键词", "douyin", {"max_pages": 5})
         window.set_crawl_running_state.assert_called_once_with(True)
@@ -53,12 +53,12 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         plugin = Mock()
         plugin.id = "douyin"
-        plugin.get_run_options.side_effect = ValueError("bad config")
         window.current_plugin = plugin
         window.plugin_widget = object()
         window.inp_search.text.return_value = "测试关键词"
 
-        window.on_btn_start_clicked()
+        with patch("app.ui.main_window.read_plugin_run_options", side_effect=ValueError("bad config")):
+            window.on_btn_start_clicked()
 
         window.append_log.assert_called_once()
         window.sig_start_crawl.emit.assert_not_called()
@@ -85,13 +85,15 @@ class MainWindowTests(unittest.TestCase):
 
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.registry.get_plugin")
-    def test_source_changed_rebuilds_dynamic_widget(self, mock_get_plugin, mock_cfg_set):
+    @patch("app.ui.main_window.build_plugin_settings_widget")
+    def test_source_changed_rebuilds_dynamic_widget(self, mock_build_widget, mock_get_plugin, mock_cfg_set):
         """验证 `test_source_changed_rebuilds_dynamic_widget` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
         window = self._make_window()
         plugin = Mock()
+        plugin.id = "bilibili"
         plugin.get_search_placeholder.return_value = "输入 BV 号"
         plugin_widget = Mock()
-        plugin.get_settings_widget.return_value = plugin_widget
+        mock_build_widget.return_value = plugin_widget
         mock_get_plugin.return_value = plugin
 
         old_widget = Mock()
@@ -111,6 +113,7 @@ class MainWindowTests(unittest.TestCase):
         old_widget.deleteLater.assert_called_once()
         layout_dynamic.addWidget.assert_called_once_with(plugin_widget)
         plugin_widget.show.assert_called_once()
+        mock_build_widget.assert_called_once_with("bilibili", window.container_dynamic)
         mock_cfg_set.assert_called_once_with("common", "last_source", "bilibili")
 
     @patch("app.ui.main_window.registry.get_plugin", return_value=None)

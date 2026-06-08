@@ -16,6 +16,7 @@ keywords = ["crawler", "spider", "douyin", "bilibili", "kuaishou", "missav"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -50,11 +51,6 @@ ucrawl-test = "entry.test_entry:main"
 ucrawl-gui = "entry.gui_entry:main"
 # 测试启动器 GUI（Windows 上启动不弹黑窗）
 ucrawl-test-gui = "entry.test_entry:main"
-
-[project.urls]
-Homepage = "https://github.com/ucrawl/UniversalCrawlerProplus"
-Documentation = "https://github.com/ucrawl/UniversalCrawlerProplus/blob/main/docs/"
-Repository = "https://github.com/ucrawl/UniversalCrawlerProplus"
 
 [tool.setuptools]
 packages = [
@@ -91,3 +87,6 @@ cli = [
     "skill/*.md",
     "skill/examples/*.py",
 ]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

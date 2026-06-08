@@ -123,7 +123,7 @@ def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
             default=None,
             help="筛选优先级 (默认: 中文字幕优先)",
         )
-        parser.add_argument("--proxy", default=None, help="代理 URL")
+        # --proxy 由下方便捷参数统一提供（与通用 search 命令对齐），不再重复定义
 
     # 通用参数
     parser.add_argument("--timeout", type=int, default=None, help="HTTP 超时秒 (默认 10)")
@@ -134,6 +134,17 @@ def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
         "--config", type=str, default=None,
         help="平台特定配置 (JSON 字符串，如 '{\"max_items\":50}')",
     )
+    # 与通用 search 命令便捷参数对齐（与 GUI spider build_download_meta 对齐）
+    parser.add_argument("--cookie", type=str, default=None, help="Cookie 字符串 (与 --config '{\"cookie\":\"...\"}' 等价)")
+    parser.add_argument("--download-strategy", type=str, default=None, help="下载策略 (m3u8/http)")
+    parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
+    parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
+    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，传入时自动启用 --use-subdir，与 GUI 对齐)")
+    parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
+    parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
+    parser.add_argument("--content-type", type=str, default=None, help="内容类型 (video/image/gallery，与 --config '{\"content_type\":\"gallery\"}' 等价)")
+    # 与通用 search 命令 --proxy 对齐：代理便捷参数（MissAV 平台会自动转换）
+    parser.add_argument("--proxy", type=str, default=None, help="代理 URL (与 --config '{\"proxy\":\"http://127.0.0.1:7890\"}' 等价，MissAV 平台会自动转换)")
 
     # 二次选择
     sel_group = parser.add_argument_group("二次选择")
@@ -165,6 +176,19 @@ def _add_download_args(parser: argparse.ArgumentParser) -> None:
         "--config", type=str, default=None,
         help="平台特定配置 (JSON 字符串，如 '{\"proxy\":\"http://127.0.0.1:7890\"}')",
     )
+    # 与通用 download 命令便捷参数对齐（与 GUI spider build_download_meta 对齐）
+    parser.add_argument("--cookie", type=str, default=None, help="Cookie 字符串 (与 --config '{\"cookie\":\"...\"}' 等价)")
+    parser.add_argument("--download-strategy", type=str, default=None, help="下载策略 (m3u8/http)")
+    parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
+    parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
+    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，传入时自动启用 --use-subdir，与 GUI 对齐)")
+    parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
+    parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
+    parser.add_argument("--content-type", type=str, default=None, help="内容类型 (video/image/gallery，与 --config '{\"content_type\":\"gallery\"}' 等价)")
+    parser.add_argument("--proxy", type=str, default=None, help="代理 URL (与 --config '{\"proxy\":\"http://127.0.0.1:7890\"}' 等价，MissAV 平台会自动转换)")
+    # 与通用 download 命令 --individual-only/--priority 对齐：MissAV 专属便捷参数
+    parser.add_argument("--individual-only", action="store_true", default=None, help="只看单体作品 (MissAV 专属，与 --config '{\"individual_only\":true}' 等价)")
+    parser.add_argument("--priority", type=str, default=None, help="优先级 (MissAV 专属，与 --config '{\"priority\":\"中文字幕优先\"}' 等价)")
 
     # 输出参数（与通用 download 命令和 search 命令的 --quiet/--pretty 对齐）
     out_group = parser.add_argument_group("输出")

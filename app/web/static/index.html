@@ -952,14 +952,14 @@ function handleServerMessage(msg) {
         if (data.status != null) videos[data.video_id].status = data.status;
         if (data.progress != null) videos[data.video_id].progress = data.progress;
         mergeVideoPayload(data.video_id, data);
-        updateRow(data.video_id);  // 增量更新单行，与 GUI update_video_status 一致
+        scheduleRowUpdate(data.video_id);  // 批量合并高频更新，避免 Web 端列表掉帧
       }
       break;
     case 'video_renamed':
       if (videos[data.video_id]) {
         if (data.new_title) videos[data.video_id].title = data.new_title;
         if (data.new_path) videos[data.video_id].local_path = data.new_path;
-        updateRow(data.video_id);  // 增量更新单行
+        scheduleRowUpdate(data.video_id);  // 增量更新单行
         appendLog(`📝 重命名确认: ${data.new_title || data.video_id}`);
       }
       break;
@@ -989,11 +989,11 @@ function handleServerMessage(msg) {
         videos[data.video_id].progress = 0;
         // 修复 BUG-139: 同步 local_path 让 Web 端能立即播放正在下载的视频
         mergeVideoPayload(data.video_id, data);
-        updateRow(data.video_id);
+        scheduleRowUpdate(data.video_id);
       }
       break;
     case 'task_progress':
-      if (videos[data.video_id]) { videos[data.video_id].progress = data.progress; updateRow(data.video_id); }
+      if (videos[data.video_id]) { videos[data.video_id].progress = data.progress; scheduleRowUpdate(data.video_id); }
       break;
     case 'task_finished':
       if (videos[data.video_id]) {
@@ -1001,7 +1001,7 @@ function handleServerMessage(msg) {
         videos[data.video_id].progress = 100;
         // 与 GUI _on_download_finished 一致：同步 local_path
         mergeVideoPayload(data.video_id, data);
-        updateRow(data.video_id);
+        scheduleRowUpdate(data.video_id);
       }
       break;
     case 'task_error':
@@ -1012,13 +1012,28 @@ function handleServerMessage(msg) {
         if (data.error) {
           appendLog(`❌ 下载失败 [${videos[data.video_id].title}]: ${data.error}`);
         }
-        updateRow(data.video_id);
+        scheduleRowUpdate(data.video_id);
       }
       break;
     case 'crawl_state':
       setCrawlState(data.is_running);
       break;
     case 'select_tasks':
+      if (data.timing) {
+        const nowWall = Date.now();
+        const relayLag = data.timing.controller_relay_perf_ms && data.timing.spider_emit_perf_ms
+          ? (data.timing.controller_relay_perf_ms - data.timing.spider_emit_perf_ms).toFixed(1)
+          : null;
+        const browserLag = data.timing.controller_relay_wall_ms
+          ? (nowWall - data.timing.controller_relay_wall_ms).toFixed(1)
+          : null;
+        console.log('[WS] select_tasks timing', {
+          itemCount: Array.isArray(data.items) ? data.items.length : 0,
+          relayLagMs: relayLag,
+          browserLagMs: browserLag,
+          timing: data.timing,
+        });
+      }
       showSelectionModal(data.items);
       break;
     case 'scan_result':
@@ -1194,7 +1209,8 @@ function startCrawl() {
   // 与 GUI 一致：先发送信号，再设置 UI 状态
   // 如果服务端拒绝（如已有任务运行），会推送 crawl_state: {is_running: false} 恢复 UI
   try {
-    sendWS('start_crawl', { source: currentSource, keyword, config: getRunConfig() });
+    const config = getRunConfig();
+    sendWS('start_crawl', { source: currentSource, keyword, config });
     setCrawlState(true);
   } catch (e) {
     appendLog('❌ 启动任务失败: ' + e.message);
@@ -1202,7 +1218,9 @@ function startCrawl() {
   }
 }
 
-function stopCrawl() { sendWS('stop_crawl', {}); }
+function stopCrawl() {
+  sendWS('stop_crawl', {});
+}
 
 function setCrawlState(running) {
   isCrawling = running;
@@ -1489,6 +1507,22 @@ function updateRow(id) {
   if (fill) fill.style.width = progress + '%';
   const ptext = row.querySelector('.progress-text');
   if (ptext) ptext.textContent = progress + '%';
+}
+
+const pendingRowUpdates = new Set();
+let rowUpdateScheduled = false;
+
+function scheduleRowUpdate(id) {
+  if (!id) return;
+  pendingRowUpdates.add(id);
+  if (rowUpdateScheduled) return;
+  rowUpdateScheduled = true;
+  requestAnimationFrame(() => {
+    rowUpdateScheduled = false;
+    const ids = Array.from(pendingRowUpdates);
+    pendingRowUpdates.clear();
+    ids.forEach(updateRow);
+  });
 }
 
 // 增量追加一行（与 GUI add_video_row 逐条添加一致）
@@ -1815,14 +1849,30 @@ function fmtTime(s) {
 }
 
 // ======== Log (与 LogPanel 一致) ========
-function appendLog(msg) {
+const pendingLogs = [];
+let logFlushScheduled = false;
+
+function flushLogs() {
+  logFlushScheduled = false;
   const el = document.getElementById('logPanel');
-  const entry = document.createElement('div');
-  entry.className = 'log-entry';
-  entry.textContent = String(msg);
-  el.appendChild(entry);
+  if (!el || pendingLogs.length === 0) return;
+  const fragment = document.createDocumentFragment();
+  for (const msg of pendingLogs.splice(0)) {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.textContent = String(msg);
+    fragment.appendChild(entry);
+  }
+  el.appendChild(fragment);
   el.scrollTop = el.scrollHeight;
   while (el.children.length > 500) el.removeChild(el.firstChild);
+}
+
+function appendLog(msg) {
+  pendingLogs.push(msg);
+  if (logFlushScheduled) return;
+  logFlushScheduled = true;
+  requestAnimationFrame(flushLogs);
 }
 
 // ======== Selection Dialog (与 SelectionDialog 一致) ========

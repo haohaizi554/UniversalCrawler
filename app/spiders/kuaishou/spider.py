@@ -557,6 +557,12 @@ class KuaishouSpider(BaseSpider):
         submitted_indices: set[int] = set()
         current_focus_index = 0
         total_scrolls = self._capture_scroll_budget(items_for_dialog)
+        # #region debug-point H:kuaishou-capture-start
+        try:
+            import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"H","location":"app/spiders/kuaishou/spider.py:_run_capture_pipeline","msg":"[DEBUG] kuaishou capture pipeline starting","data":{"selected_indices":sorted(list(target_indices_set))[:20],"selected_count":len(target_indices_set),"dialog_item_count":len(items_for_dialog),"scroll_budget":total_scrolls},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+        except Exception:
+            pass
+        # #endregion
 
         def handle_response(response):
             """执行 `handle_response` 对应的业务逻辑。"""
@@ -732,6 +738,12 @@ class KuaishouSpider(BaseSpider):
                     return
                 self.is_running = True
                 self._selected_indices = selected_indices
+                # #region debug-point H:kuaishou-selection-confirmed
+                try:
+                    import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"H","location":"app/spiders/kuaishou/spider.py:run","msg":"[DEBUG] kuaishou selection confirmed before capture","data":{"selected_indices":selected_indices[:20],"selected_count":len(selected_indices),"dialog_item_count":len(items_for_dialog)},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+                except Exception:
+                    pass
+                # #endregion
                 self.log(f"✅ 选中 {len(selected_indices)} 个任务，流水线启动...")
                 self._run_capture_pipeline(page, items_for_dialog, target_fingerprints_map)
                 browser.close()

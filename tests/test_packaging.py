@@ -26,6 +26,8 @@ PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
+INSTALLER_FILE = PACKAGING_DIR / "installer.iss"
+PROJECT_META = PACKAGING_DIR / "project_meta.py"
 
 
 class SpecFileExistenceTests(unittest.TestCase):
@@ -353,6 +355,49 @@ class BuildScriptTests(unittest.TestCase):
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
         self.assertIn("--noconfirm", source)
         self.assertIn("--clean", source)
+
+
+class PackagingMetadataTests(unittest.TestCase):
+    """project_meta.py 与 pyproject.toml 的一致性。"""
+
+    def test_project_meta_exists(self):
+        self.assertTrue(PROJECT_META.exists())
+
+    def test_project_meta_reads_package_version(self):
+        source = PROJECT_META.read_text(encoding="utf-8")
+        self.assertIn('PACKAGE_VERSION = _project_field("version")', source)
+        self.assertIn('PACKAGE_NAME = _project_field("name")', source)
+
+    def test_installer_basename_uses_version(self):
+        source = PROJECT_META.read_text(encoding="utf-8")
+        self.assertIn("INSTALLER_BASENAME", source)
+        self.assertIn("PACKAGE_VERSION", source)
+
+
+class InstallerScriptTests(unittest.TestCase):
+    """安装器脚本与构建脚本的一致性。"""
+
+    def test_installer_script_exists(self):
+        self.assertTrue(INSTALLER_FILE.exists())
+
+    def test_installer_script_supports_define_override(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn("#ifndef AppVersion", source)
+        self.assertIn("#ifndef OutputBaseFilename", source)
+        self.assertIn("OutputBaseFilename={#OutputBaseFilename}", source)
+
+    def test_installer_script_appusermodelid_aligned(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn('ucrawl.universalcrawlerpro.main', source)
+        self.assertIn('ucrawl.universalcrawlerpro.web', source)
+
+    def test_build_installer_injects_version_and_ids(self):
+        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+        self.assertIn("/DAppVersion=", source)
+        self.assertIn("/DOutputBaseFilename=", source)
+        self.assertIn("/DAppUserModelID=", source)
+        self.assertIn("/DWebUIUserModelID=", source)
+        self.assertIn("get_setup_exe_path", source)
 
 
 class LauncherTemplateTests(unittest.TestCase):

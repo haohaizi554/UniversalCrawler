@@ -57,7 +57,7 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--proxy", default=None,
-        help="代理 URL (仅 missav, 默认: http://127.0.0.1:7890)",
+        help='代理 URL (与 --config \'{"proxy":"http://127.0.0.1:7890"}\' 等价，MissAV 平台会自动转换)',
     )
 
     # 平台特定配置（与 CLI download --config 和 SDK config 对齐）
@@ -71,7 +71,7 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
     parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
     # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
-    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，B站合集场景)")
+    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，传入时自动启用 --use-subdir，与 GUI 对齐)")
     parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
     # 与 GUI spider build_download_meta 对齐：文件名控制
     parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
@@ -182,6 +182,19 @@ def _build_config(args: argparse.Namespace) -> dict:
         config["folder_name"] = args.folder_name
     if getattr(args, "use_subdir", None):
         config["use_subdir"] = True
+    # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+    # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
+    # 即有 folder_name 就自动使用子目录。CLI 用户只传 --folder-name 不传 --use-subdir 时，
+    # 应与 GUI 行为一致，自动启用子目录
+    if config.get("folder_name") and not config.get("use_subdir"):
+        config["use_subdir"] = True
+    # 与 GUI DouyinParser 对齐：传入 author 但未传 folder_name 时，自动将 author 设为 folder_name
+    # GUI DouyinParser 在解析视频时设置 "folder_name": author（parser.py:68/85），
+    # CLI 用户通过 --config '{"author":"..."}' 传入 author 时，应与 GUI 行为一致
+    if config.get("author") and not config.get("folder_name"):
+        config["folder_name"] = config["author"]
+        if not config.get("use_subdir"):
+            config["use_subdir"] = True
     # 与 GUI spider build_download_meta 对齐：文件名控制
     if getattr(args, "file_name", None):
         config["file_name"] = args.file_name

@@ -238,8 +238,30 @@ class MissAVSpider(BaseSpider):
                             success_count += 1
                         else:
                             self.log("   ⚠️ 嗅探超时 (未找到 playlist.m3u8)")
+                            self.debug_state(
+                                action="sniff_m3u8_timeout",
+                                message="MissAV 详情页嗅探超时，未发现 playlist.m3u8",
+                                status_code="MISSAV_SNIFF_TIMEOUT",
+                                details={
+                                    "title": title,
+                                    "target_page_url": target_page_url,
+                                    "selected_index": idx,
+                                },
+                                level="WARNING",
+                            )
                     except PlaywrightError as e:
                         self.log(f"   ❌ 页面加载错误: {e}")
+                        self.debug_state(
+                            action="sniff_page_error",
+                            message="MissAV 详情页加载失败",
+                            status_code="MISSAV_PAGE_ERROR",
+                            details={
+                                "title": title,
+                                "target_page_url": target_page_url,
+                                "error": str(e),
+                            },
+                            level="ERROR",
+                        )
                     page.remove_listener("request", handle_request)
                     context.remove_listener("page", on_popup)
                     self.interruptible_sleep(1)  # 修复 BUG-168
@@ -299,4 +321,3 @@ class MissAVSpider(BaseSpider):
             except (PlaywrightError, ValueError, TypeError) as e:
                 self.log(f"   ⚠️ 页面扫描异常: {e}")
                 break
-

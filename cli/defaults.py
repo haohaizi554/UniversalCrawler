@@ -111,7 +111,9 @@ def validate_config_types(user_config: dict) -> str | None:
     type_rules = {
         "max_items": int,
         "max_pages": int,
-        "timeout": int,
+        # 与 CLI download --timeout (float) 和 SDK download_video(timeout=float) 对齐：
+        # timeout 既可以是 int 也可以是 float，统一用 (int, float) 接受
+        "timeout": (int, float),
         "individual_only": bool,
         "priority": str,
         "proxy": str,
@@ -169,10 +171,9 @@ def validate_config_types(user_config: dict) -> str | None:
 def build_missav_proxy_url(proxy_str: str) -> str:
     """构建 MissAV 代理 URL（与 GUI build_missav_proxy_url 完全一致）。
 
-    委托给 app.core.plugins.settings_builders.build_missav_proxy_url，
-    确保与 GUI 使用同一实现。
+    委托给纯 core 辅助函数，避免 CLI 为了一个字符串归一化引入 Qt UI 依赖。
     """
-    from app.core.plugins.settings_builders import build_missav_proxy_url as _build
+    from app.core.plugins.run_options import build_missav_proxy_url as _build
     return _build(proxy_str)
 
 
@@ -378,6 +379,149 @@ def _try_load_cookies_dict(source: str) -> dict | None:
             return result if result else None
     except (json.JSONDecodeError, OSError):
         pass
+
+    return None
+
+
+def merge_convenience_params(body: dict, config: dict, source: str = "") -> dict:
+    """将 REST API/WebSocket 请求体中的便捷参数合并到 config 字典。
+
+    与 CLI search/download 命令的便捷参数对齐：
+    CLI 有 --cookie/--download-strategy/--referer/--ua 等便捷参数，
+    REST API/WebSocket 也应支持这些参数作为顶层字段，避免用户手写 JSON config。
+
+    合并优先级（与 CLI 对齐）：
+    1. 平台默认值 (get_platform_defaults)
+    2. config 字典中的值
+    3. 便捷参数（优先级最高，与 CLI 独立参数语义一致）
+
+    合并后会对便捷参数进行类型校验（与 CLI argparse type 和 _validate_config_types 对齐），
+    防止 REST API/WebSocket 便捷参数绕过类型校验。
+
+    Args:
+        body: REST API/WebSocket 请求体
+        config: 已合并平台默认值的 config 字典（会被就地修改）
+        source: 平台 ID（用于校验平台特定参数）
+
+    Returns:
+        dict: 合并后的 config 字典
+    """
+    # 与 CLI search --max-items/--max-pages/--timeout 对齐
+    if body.get("max_items") is not None:
+        config["max_items"] = body["max_items"]
+    if body.get("max_pages") is not None:
+        config["max_pages"] = body["max_pages"]
+    if body.get("timeout") is not None and isinstance(body["timeout"], int):
+        # 注意：REST API 顶层 timeout 是整体超时（run_timeout），
+        # 这里的 timeout 是 spider HTTP 超时（与 CLI --timeout 对齐）
+        # 仅在明确为 int 类型时才视为 spider HTTP 超时（float 视为 run_timeout）
+        config["timeout"] = body["timeout"]
+
+    # 与 CLI search --individual-only/--priority/--proxy 对齐（MissAV 专属）
+    if body.get("individual_only") is not None:
+        config["individual_only"] = body["individual_only"]
+    if body.get("priority") is not None:
+        config["priority"] = body["priority"]
+    if body.get("proxy") is not None:
+        config["proxy"] = body["proxy"]
+        # MissAV 代理转换（与 CLI _build_config 对齐）
+        if source == "missav" and config["proxy"] is not None:
+            config["proxy"] = build_missav_proxy_url(config["proxy"])
+
+    # 与 CLI search/download --cookie/--download-strategy/--referer/--ua 对齐
+    if body.get("cookie") is not None:
+        config["cookie"] = body["cookie"]
+    if body.get("download_strategy") is not None:
+        config["download_strategy"] = body["download_strategy"]
+    if body.get("referer") is not None:
+        config["referer"] = body["referer"]
+    if body.get("ua") is not None:
+        config["ua"] = body["ua"]
+
+    # 与 CLI search/download --folder-name/--use-subdir 对齐
+    if body.get("folder_name") is not None:
+        config["folder_name"] = body["folder_name"]
+    if body.get("use_subdir") is not None:
+        config["use_subdir"] = body["use_subdir"]
+    # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+    # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
+    # 即有 folder_name 就自动使用子目录。REST API/WebSocket 用户只传 folder_name 不传 use_subdir 时，
+    # 应与 GUI 行为一致，自动启用子目录
+    if config.get("folder_name") and not config.get("use_subdir"):
+        config["use_subdir"] = True
+    # 与 GUI DouyinParser 对齐：传入 author 但未传 folder_name 时，自动将 author 设为 folder_name
+    # GUI DouyinParser 在解析视频时设置 "folder_name": author（parser.py:68/85），
+    # REST API/WebSocket download 不经过 spider，需要手动设置以确保与 GUI 行为一致
+    if config.get("author") and not config.get("folder_name"):
+        config["folder_name"] = config["author"]
+        # 与 GUI BilibiliSpider 对齐：folder_name 存在时自动启用 use_subdir
+        if not config.get("use_subdir"):
+            config["use_subdir"] = True
+
+    # 与 CLI search/download --file-name 对齐
+    if body.get("file_name") is not None:
+        config["file_name"] = body["file_name"]
+
+    # 与 CLI search/download --content-type 对齐
+    if body.get("content_type") is not None:
+        config["content_type"] = body["content_type"]
+
+    # 与 CLI argparse type 和 _validate_config_types 对齐：
+    # 合并后校验便捷参数类型，防止 REST API/WebSocket 便捷参数绕过类型校验。
+    # CLI 通过 argparse 自动校验参数类型（如 type=int, action="store_true"），
+    # REST API/WebSocket 的 _validate_config_types 只校验 config 字典，
+    # 便捷参数在 _validate_config_types 之后通过本函数合并，需要额外校验。
+    _conv_err = _validate_convenience_param_types(body)
+    if _conv_err:
+        raise ValueError(_conv_err)
+
+    return config
+
+
+def _validate_convenience_param_types(body: dict) -> str | None:
+    """校验 REST API/WebSocket 请求体中便捷参数的类型。
+
+    与 CLI argparse type 和 validate_config_types 对齐：
+    CLI 通过 argparse 自动校验参数类型，REST API/WebSocket 需要显式校验，
+    防止便捷参数绕过 _validate_config_types 的类型校验。
+
+    Args:
+        body: REST API/WebSocket 请求体
+
+    Returns:
+        str | None: 错误信息（None 表示校验通过）
+    """
+    # 便捷参数类型规则（与 validate_config_types 的 type_rules 对齐）
+    _CONV_TYPE_RULES = {
+        "max_items": int,
+        "max_pages": int,
+        "individual_only": bool,
+        "priority": str,
+        "proxy": str,
+        "cookie": str,
+        "download_strategy": str,
+        "referer": str,
+        "ua": str,
+        "folder_name": str,
+        "use_subdir": bool,
+        "file_name": str,
+        "content_type": str,
+    }
+    # 中文类型名称映射（与 validate_config_types 对齐）
+    _TYPE_NAMES = {int: "整数", bool: "布尔值", str: "字符串"}
+
+    for key, expected in _CONV_TYPE_RULES.items():
+        val = body.get(key)
+        if val is None:
+            continue
+        # bool 是 int 的子类，需要排除
+        if expected is int and isinstance(val, bool):
+            return f"{key} 必须是整数，收到 bool"
+        if expected is bool and isinstance(val, int) and not isinstance(val, bool):
+            return f"{key} 必须是布尔值，收到 int"
+        if not isinstance(val, expected):
+            type_name = _TYPE_NAMES.get(expected, expected.__name__)
+            return f"{key} 必须是{type_name}，收到 {type(val).__name__}"
 
     return None
 

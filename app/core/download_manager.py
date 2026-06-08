@@ -1,15 +1,17 @@
 """Central download queue and worker dispatch logic."""
+
+from __future__ import annotations
+
 import os
-import queue
 import threading
+from collections.abc import Callable
 
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
-
-from app.config import cfg
+from app.core.download_manager_core import DownloadManagerCore
 from app.core.downloaders import BaseDownloader, BilibiliDownloader, DouyinDownloader, KuaishouDownloader, MissAVDownloader
 from app.exceptions import AppError, DownloaderStoppedError
 from app.models import VideoItem
 from app.utils import sanitize_filename
+from app.utils.callback_signal import CallbackSignal
 from app.debug_logger import debug_logger
 
 #下载器注册表
@@ -21,13 +23,8 @@ DOWNLOADER_REGISTRY: tuple[type[BaseDownloader], ...] = (
 )
 
 
-class DownloadWorker(QThread):
+class DownloadWorker(threading.Thread):
     """执行单个下载任务，并把进度、完成、失败事件回传给管理器。"""
-    #4个标准状态信号
-    sig_start = pyqtSignal(str)
-    sig_progress = pyqtSignal(str, int)
-    sig_finished = pyqtSignal(str)
-    sig_error = pyqtSignal(str, str)
 
     # 文件类型签名映射
     FILE_SIGNATURES = {
@@ -50,12 +47,17 @@ class DownloadWorker(QThread):
 
     def __init__(self, video: VideoItem, save_dir: str):
         """保存任务对象与目标目录，并初始化线程控制状态。"""
-        super().__init__()
+        super().__init__(daemon=True, name=f"DownloadWorker-{video.id}")
         self.video = video
         self.save_dir = save_dir
         self.is_running = True
+        self.sig_start = CallbackSignal()
+        self.sig_progress = CallbackSignal()
+        self.sig_finished = CallbackSignal()
+        self.sig_error = CallbackSignal()
+        self.finished = CallbackSignal()
         self._final_ext = ".mp4"
-        self._completion_callback = None
+        self._completion_callback: Callable[[DownloadWorker, str], None] | None = None
 
     def _trace_id(self) -> str | None:
         """读取当前任务的 trace_id，便于串联调试日志。"""
@@ -199,8 +201,11 @@ class DownloadWorker(QThread):
             )
             self.sig_error.emit(self.video.id, str(e))
         finally:
-            if callable(self._completion_callback):
-                self._completion_callback(self, completion_reason)
+            try:
+                if callable(self._completion_callback):
+                    self._completion_callback(self, completion_reason)
+            finally:
+                self.finished.emit()
 
     def _select_downloader(self) -> BaseDownloader:
         """统一从注册表中选择平台下载器，避免在 run() 中继续堆 if/elif。"""
@@ -212,6 +217,20 @@ class DownloadWorker(QThread):
     def stop(self):
         """通知下载器在下一次检查时尽快停止当前任务。"""
         self.is_running = False
+
+    def isRunning(self) -> bool:
+        """兼容旧 QThread 调用方。"""
+        return self.is_alive()
+
+    def wait(self, timeout_ms: int | None = None) -> bool:
+        """兼容旧 QThread 调用方。"""
+        timeout = None if timeout_ms is None else max(timeout_ms, 0) / 1000
+        self.join(timeout=timeout)
+        return not self.is_alive()
+
+    def deleteLater(self) -> None:
+        """兼容旧 Qt 适配层清理调用，纯 Python worker 无需延迟销毁。"""
+        return None
 
     def _resolve_save_dir(self) -> str:
         """图集/合集类任务单独落到子目录，避免主目录被大量切碎文件污染。"""
@@ -303,213 +322,39 @@ class DownloadWorker(QThread):
             )
             return None
 
-class DownloadManager(QObject):
+class DownloadManager(DownloadManagerCore):
     """维护下载队列、并发槽位以及工作线程生命周期。"""
-    WORKER_STOP_TIMEOUT_MS = 2000
-
-    task_started = pyqtSignal(str)
-    task_progress = pyqtSignal(str, int)
-    task_finished = pyqtSignal(str)
-    task_error = pyqtSignal(str, str)
 
     def __init__(self, max_concurrent: int | None = None):
         """初始化任务队列，并启动后台派发线程。"""
-        super().__init__()
-        self.queue = queue.Queue()
-        self.workers = []
-        self.max_concurrent = max_concurrent or cfg.get("download", "max_concurrent", 3)
-        # 槽位在派发线程里预占，避免过早创建大量阻塞中的 QThread。
-        self.slot_semaphore = threading.Semaphore(self.max_concurrent)
-        self._workers_lock = threading.Lock()
-        self.is_running = True
-        self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
-        self.dispatcher_thread.start()
+        self.task_started = CallbackSignal()
+        self.task_progress = CallbackSignal()
+        self.task_finished = CallbackSignal()
+        self.task_error = CallbackSignal()
+        DownloadManagerCore.__init__(self, max_concurrent=max_concurrent)
 
-    def add_task(self, video: VideoItem, save_dir: str):
-        """把一个资源条目加入下载队列，等待派发线程调度。"""
-        if not self.is_running:
-            raise RuntimeError("DownloadManager 已停止，无法继续添加任务")
-        trace_id = video.meta.get("trace_id")
-        debug_logger.log(
-            component="DownloadManager",
-            action="queue_task",
-            message="下载任务已进入队列",
-            status_code="DL_QUEUE",
-            context=debug_logger.pick_used(
-                {"trace_id": trace_id, "video_id": video.id, "source": video.source},
-                "trace_id", "video_id", "source",
-            ),
-            details=debug_logger.pick_used(
-                {"title": video.title, "save_dir": save_dir, "url": video.url, "content_type": video.meta.get("content_type")},
-                "title", "save_dir", "url", "content_type",
-            ),
-            trace_id=trace_id,
-        )
-        self.queue.put((video, save_dir))
+    def _create_worker(self, video: VideoItem, save_dir: str):
+        return DownloadWorker(video, save_dir)
 
-    def cancel_task(self, video_id: str) -> str | None:
-        """取消排队中或下载中的任务。
+    def _connect_worker_callbacks(self, worker) -> None:
+        worker.sig_start.connect(self._emit_task_started)
+        worker.sig_progress.connect(self._emit_task_progress)
+        worker.sig_finished.connect(self._emit_task_finished)
+        worker.sig_error.connect(self._emit_task_error)
+        worker.finished.connect(lambda w=worker: self._on_worker_thread_finished(w))
 
-        返回值:
-        - ``queued``: 任务仍在队列中，已直接移除
-        - ``running``: 任务正在下载，已请求工作线程停止
-        - ``None``: 未找到对应任务
-        """
-        if self._remove_queued_task(video_id):
-            return "queued"
+    def _emit_task_started(self, video_id: str) -> None:
+        self.task_started.emit(video_id)
 
-        worker = self._find_worker(video_id)
-        if worker is None:
-            return None
+    def _emit_task_progress(self, video_id: str, progress: int) -> None:
+        self.task_progress.emit(video_id, progress)
 
-        worker.stop()
-        return "running"
+    def _emit_task_finished(self, video_id: str) -> None:
+        self.task_finished.emit(video_id)
 
-    def _dispatch_loop(self):
-        """派发线程先占用并发槽位，再启动真实下载线程，避免堆积阻塞线程。"""
-        while self.is_running:
-            try:
-                video, save_dir = self.queue.get(timeout=1)
-                if not self._wait_for_dispatch_slot():
-                    break
+    def _emit_task_error(self, video_id: str, error: str) -> None:
+        self.task_error.emit(video_id, error)
 
-                worker = DownloadWorker(video, save_dir)
-                debug_logger.log(
-                    component="DownloadManager",
-                    action="dispatch_task",
-                    message="任务已从队列分发到下载线程",
-                    status_code="DL_DISPATCH",
-                    context=debug_logger.pick_used(
-                        {"trace_id": video.meta.get("trace_id"), "video_id": video.id, "source": video.source},
-                        "trace_id", "video_id", "source",
-                    ),
-                    details=debug_logger.pick_used(
-                        {"title": video.title, "max_concurrent": self.max_concurrent},
-                        "title", "max_concurrent",
-                    ),
-                    trace_id=video.meta.get("trace_id"),
-                )
-                worker.sig_start.connect(self.task_started)
-                worker.sig_progress.connect(self.task_progress)
-                worker.sig_finished.connect(self.task_finished)
-                worker.sig_error.connect(self.task_error)
-                worker._slot_released = False
-                worker._completion_callback = self._handle_worker_completion
-                worker.finished.connect(lambda w=worker: self._on_worker_thread_finished(w))
-                with self._workers_lock:
-                    self.workers.append(worker)
-                worker.start()
-            except queue.Empty:
-                continue
-            except (AppError, OSError, RuntimeError, ValueError) as e:
-                failed_video = locals().get("video")
-                debug_logger.log_exception(
-                    "DownloadManager",
-                    "dispatch_loop",
-                    e,
-                    details={"queued_tasks": self.queue.qsize(), "active_workers": len(self.workers)},
-                )
-                if failed_video is not None:
-                    self.task_error.emit(failed_video.id, f"调度失败: {e}")
-
-    def _find_worker(self, video_id: str) -> DownloadWorker | None:
-        """按视频 ID 查找正在运行的工作线程。"""
-        with self._workers_lock:
-            for worker in self.workers:
-                if worker.video.id == video_id:
-                    return worker
-        return None
-
-    def _remove_queued_task(self, video_id: str) -> bool:
-        """从等待队列中移除指定任务，不影响已经启动的工作线程。"""
-        removed = False
-        with self.queue.mutex:
-            retained_tasks = []
-            removed_count = 0
-            # queue.Queue 没有按条件删除接口，这里直接重建内部队列内容。
-            for queued_video, save_dir in self.queue.queue:
-                if queued_video.id == video_id and not removed:
-                    removed = True
-                    removed_count += 1
-                    continue
-                retained_tasks.append((queued_video, save_dir))
-            if removed:
-                self.queue.queue.clear()
-                self.queue.queue.extend(retained_tasks)
-                if self.queue.unfinished_tasks >= removed_count:
-                    self.queue.unfinished_tasks -= removed_count
-                if self.queue.unfinished_tasks == 0:
-                    self.queue.all_tasks_done.notify_all()
-                self.queue.not_full.notify_all()
-        return removed
-
-    def _wait_for_dispatch_slot(self) -> bool:
-        """等待可用并发槽位，保持阻塞等待而不是空循环。"""
-        while self.is_running:
-            if self.slot_semaphore.acquire(timeout=0.5):
-                return True
-        return False
-
-    def _release_worker_slot(self, worker: DownloadWorker, reason: str) -> None:
-        """释放被当前 worker 占用的并发槽位，并写入调度日志。"""
-        if getattr(worker, "_slot_released", False):
-            return
-        worker._slot_released = True
-        self.slot_semaphore.release()
-        debug_logger.log(
-            component="DownloadManager",
-            action="release_slot",
-            message="下载并发槽位已释放",
-            status_code="DL_SLOT_RELEASE",
-            context=debug_logger.pick_used(
-                {"trace_id": worker.video.meta.get("trace_id"), "video_id": worker.video.id},
-                "trace_id", "video_id",
-            ),
-            details={"reason": reason},
-            trace_id=worker.video.meta.get("trace_id"),
-        )
-
-    def _handle_worker_completion(self, worker: DownloadWorker, reason: str) -> None:
-        """在线程完成回调里移除 worker，并归还并发槽位。"""
-        with self._workers_lock:
-            if worker in self.workers:
-                self.workers.remove(worker)
-        self._release_worker_slot(worker, reason)
-
-    def _on_worker_thread_finished(self, worker: DownloadWorker):
-        """在线程真正退出后延迟释放 Qt 对象，避免跨线程销毁。"""
+    def _on_worker_thread_finished(self, worker):
+        """线程真正退出后的兼容清理钩子。"""
         worker.deleteLater()
-
-    def stop_all(self):
-        """停止派发线程、清空待执行任务，并请求所有 worker 退出。"""
-        self.is_running = False
-        debug_logger.log(
-            component="DownloadManager",
-            action="stop_all",
-            level="WARN",
-            message="开始停止所有下载任务",
-            status_code="DL_STOP_ALL",
-            details={"active_workers": len(self.workers)},
-        )
-        # 清空队列
-        while not self.queue.empty():
-            try:
-                self.queue.get_nowait()
-            except queue.Empty:
-                pass
-        # 停止所有正在运行的工作线程
-        with self._workers_lock:
-            workers_snapshot = list(self.workers)
-        for w in workers_snapshot:
-            w.stop()
-            if not w.wait(self.WORKER_STOP_TIMEOUT_MS):
-                debug_logger.log(
-                    component="DownloadManager",
-                    action="stop_all_worker_timeout",
-                    level="WARN",
-                    message="等待下载线程停止超时，继续执行退出流程",
-                    status_code="DL_STOP_TIMEOUT",
-                    details={"video_id": w.video.id, "timeout_ms": self.WORKER_STOP_TIMEOUT_MS},
-                    trace_id=w.video.meta.get("trace_id"),
-                )
-        self.dispatcher_thread.join(timeout=2)

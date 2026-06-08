@@ -6,8 +6,6 @@ import unittest
 from unittest.mock import call
 from unittest.mock import Mock
 
-from PyQt6.QtCore import Qt
-
 from app.controllers.application_controller import ApplicationController
 from app.exceptions import FileOperationError
 from app.models import VideoItem

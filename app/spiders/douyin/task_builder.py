@@ -8,6 +8,12 @@ class DouyinTaskBuilder(BaseTaskBuilder):
     """负责将解析结果转换为 `DouyinTaskBuilder` 对应的任务或数据对象。"""
     def build_items(self, item: VideoItem, trace_id_factory) -> list[VideoItem]:
         """构建 `items` 对应的结果、参数或对象，供 `DouyinTaskBuilder` 使用。"""
+        # #region debug-point K:douyin-build-items-enter
+        try:
+            import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"K","location":"app/spiders/douyin/task_builder.py:build_items","msg":"[DEBUG] douyin task builder entered","data":{"title":item.title,"is_gallery":bool(item.meta.get('is_gallery')),"content_type":item.meta.get('content_type'),"images_data_count":len(item.meta.get('images_data', []) or []),"has_url":bool(item.url),"url_head":str(item.url)[:120]},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+        except Exception:
+            pass
+        # #endregion
         if not item.meta.get("is_gallery"):
             return [item]
 
@@ -44,4 +50,10 @@ class DouyinTaskBuilder(BaseTaskBuilder):
                     )
                 )
                 built_items.append(image_item)
+        # #region debug-point K:douyin-build-items-exit
+        try:
+            import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"K","location":"app/spiders/douyin/task_builder.py:build_items","msg":"[DEBUG] douyin task builder built items","data":{"title":item.title,"built_count":len(built_items),"image_candidates":len(images_data or []),"sample_titles":[built.title for built in built_items[:3]]},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+        except Exception:
+            pass
+        # #endregion
         return built_items

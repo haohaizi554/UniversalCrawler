@@ -26,25 +26,8 @@ import sys
 import time
 from typing import Any
 
-# 必须在导入 Qt 之前设置 (与 web_main.py 一致)
+# 保持 CLI 输出实时刷新，便于下载和选择流程即时反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
-
-
-def _ensure_qt_app():
-    """确保 QApplication 单例存在 (spider 派生自 QThread，必须有 QApplication)。"""
-    try:
-        from PyQt6.QtWidgets import QApplication
-    except ImportError as e:
-        raise RuntimeError(
-            "PyQt6 未安装。CLI 必须在 Qt 嵌入式进程中运行 spider。\n"
-            "请安装: pip install PyQt6"
-        ) from e
-
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-        app.setQuitOnLastWindowClosed(False)
-    return app
 
 
 class CLIRunner:
@@ -97,6 +80,8 @@ class CLIRunner:
         self._spider = None
         self._dl_manager = None
         self._cancelled: bool = False       # 用户取消标志（与 SKILL.md "cancelled" 状态对齐）
+        self._progress_logged_pct: dict[str, int] = {}
+        self._last_download_heartbeat_at: float = 0.0
 
     def _log(self, msg: str) -> None:
         """CLI 内部日志。"""
@@ -175,22 +160,32 @@ class CLIRunner:
 
     def _do_select_and_resume(self, items: list) -> None:
         """执行二次选择并恢复 spider 线程。"""
-        self.selection_count += 1
-        prompt = f"二次选择 #{self.selection_count}: {len(items)} 个候选"
-        self._log(prompt)
-        try:
-            indices = self.selection_strategy.select(items, prompt=prompt)
-        except Exception as e:
-            self._log(f"选择策略异常: {e}，默认全选")
-            indices = list(range(len(items)))
-        if indices is None:
-            self._log("用户取消，本次选择返回空")
-            indices = []
-        self._log(f"  → 选中 {len(indices)} 项: {indices[:10]}{'...' if len(indices) > 10 else ''}")
+        _prompt, indices = self._run_selection(items, strategy=self.selection_strategy)
 
         # 与 GUI _on_spider_select_tasks 完全一致：调 resume_from_ui
         if self._spider:
             self._spider.resume_from_ui(indices)
+
+    def _run_selection(self, items: list, *, strategy) -> tuple[str, list[int]]:
+        """统一执行一次二次选择并输出摘要。"""
+        from cli.selection_base import build_selection_prompt, format_selection_result
+
+        self.selection_count += 1
+        prompt = build_selection_prompt(self.selection_count, len(items))
+        self._log(prompt)
+        try:
+            indices = strategy.select(items, prompt=prompt)
+        except Exception as exc:
+            self._log(f"选择策略异常: {exc}，默认全选")
+            indices = list(range(len(items)))
+
+        if indices is None:
+            self._cancelled = True
+            self._log("用户取消选择，正在停止爬虫...")
+            indices = []
+
+        self._log(format_selection_result(indices))
+        return prompt, indices
 
     def _on_finished(self) -> None:
         """spider.sig_finished 回调（与 GUI _on_spider_finished 对称）。"""
@@ -204,15 +199,28 @@ class CLIRunner:
 
     def _on_task_started(self, video_id: str) -> None:
         """下载开始（与 GUI _on_task_started 对齐：status="⏳ 下载中...", progress=0）。"""
-        self._apply_video_state(video_id, status="⏳ 下载中...", progress=0)
+        item = self._apply_video_state(video_id, status="⏳ 下载中...", progress=0)
+        self._progress_logged_pct.pop(video_id, None)
+        if item and self.log_to_stderr:
+            prefix = "⏳ 大文件下载启动" if self._is_large_transfer(item) else "⏳ 开始下载"
+            sys.stderr.write(f"{prefix}: {item.title}\n")
+            sys.stderr.flush()
 
     def _on_task_progress(self, video_id: str, progress: int) -> None:
         """下载进度（与 GUI _on_task_progress 对齐：只更新 progress）。"""
-        self._apply_video_state(video_id, progress=progress)
+        item = self._apply_video_state(video_id, progress=progress)
+        if not item or not self.log_to_stderr:
+            return
+        if not self._should_log_progress(item, progress):
+            return
+        bar = self._render_progress_bar(progress)
+        sys.stderr.write(f"📥 {item.title[:28]} {bar} {progress}%\n")
+        sys.stderr.flush()
 
     def _on_task_finished(self, video_id: str) -> None:
         """下载完成（与 GUI _on_download_finished 对齐：status="✅ 完成", progress=100）。"""
         item = self._apply_video_state(video_id, status="✅ 完成", progress=100)
+        self._progress_logged_pct.pop(video_id, None)
         if item and self.log_to_stderr:
             # 与 WebController 对齐：日志包含 local_path
             local_path = item.local_path or ""
@@ -230,8 +238,9 @@ class CLIRunner:
         额外优化：将错误原因存入 item.meta["download_error"]，
         便于 CLI/SDK/API 输出中展示失败原因（GUI 不读取此字段，不受影响）。
         """
-        # 与 REST API /api/download 错误路径对齐：失败时 progress=0
-        item = self._apply_video_state(video_id, status="❌ 失败", progress=0)
+        # 与 GUI 一致：失败时保留当前进度，避免把已完成/进行中的条目重置为 0。
+        item = self._apply_video_state(video_id, status="❌ 失败")
+        self._progress_logged_pct.pop(video_id, None)
         if item:
             # 存储错误原因到 meta（不影响 GUI，GUI 不读取此字段）
             item.meta["download_error"] = error
@@ -254,6 +263,58 @@ class CLIRunner:
             item.progress = progress
         return item
 
+    @staticmethod
+    def _render_progress_bar(progress: int, width: int = 18) -> str:
+        """渲染简易文本进度条。"""
+        progress = max(0, min(100, int(progress)))
+        filled = round(progress / 100 * width)
+        return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+    @staticmethod
+    def _is_large_transfer(item) -> bool:
+        """判断是否属于用户感知上容易“像卡死”的大文件任务。"""
+        meta = getattr(item, "meta", {}) or {}
+        try:
+            size_mb = float(meta.get("size_mb", 0) or 0)
+        except (TypeError, ValueError):
+            size_mb = 0
+        try:
+            duration = float(meta.get("duration", 0) or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        content_type = str(meta.get("content_type", "") or "").lower()
+        return size_mb >= 100 or duration >= 300 or content_type in {"video", "movie"} and duration >= 180
+
+    def _should_log_progress(self, item, progress: int) -> bool:
+        """节流下载进度输出，避免终端刷屏。"""
+        last_logged = self._progress_logged_pct.get(item.id, -1)
+        if progress >= 100:
+            self._progress_logged_pct[item.id] = 100
+            return True
+        step = 5 if self._is_large_transfer(item) else 20
+        bucket = int(progress // step) * step
+        if bucket <= last_logged:
+            return False
+        self._progress_logged_pct[item.id] = bucket
+        return progress > 0
+
+    def _emit_download_heartbeat(self) -> None:
+        """长下载期间输出心跳，避免用户误判为卡死。"""
+        if not self.log_to_stderr:
+            return
+        now = time.time()
+        if now - self._last_download_heartbeat_at < 8:
+            return
+        active_items = []
+        for item in self.videos.values():
+            if item.status in ("⏳ 等待中", "⏳ 下载中..."):
+                active_items.append(f"{item.title[:20]} {self._render_progress_bar(item.progress)} {item.progress}%")
+        if not active_items:
+            return
+        self._last_download_heartbeat_at = now
+        sys.stderr.write("⏱️ 下载进行中: " + " | ".join(active_items[:3]) + "\n")
+        sys.stderr.flush()
+
     # ---- monkey-patch ask_user_selection ----
 
     def _make_ask_user_selection(self):
@@ -275,21 +336,7 @@ class CLIRunner:
             if runner._cancelled:
                 runner._log("用户已取消，跳过后续选择")
                 return []
-
-            runner.selection_count += 1
-            prompt = f"二次选择 #{runner.selection_count}: {len(items)} 个候选"
-            runner._log(prompt)
-            try:
-                indices = strategy.select(items, prompt=prompt)
-            except Exception as e:
-                runner._log(f"选择策略异常: {e}，默认全选")
-                indices = list(range(len(items)))
-            if indices is None:
-                # 用户取消（如交互式选择输入 q）：与 SKILL.md "cancelled" 状态对齐
-                runner._cancelled = True
-                runner._log("用户取消选择，正在停止爬虫...")
-                indices = []
-            runner._log(f"  → 选中 {len(indices)} 项: {indices[:10]}{'...' if len(indices) > 10 else ''}")
+            _prompt, indices = runner._run_selection(items, strategy=strategy)
             return indices
 
         return ask_user_selection_sync
@@ -299,23 +346,48 @@ class CLIRunner:
     def _patch_spider(self, spider) -> None:
         """monkey-patch spider 实例（与 GUI _bind_spider_signals 对称）。"""
         from types import MethodType
-
         # 替换 ask_user_selection 为同步版
         spider.ask_user_selection = MethodType(self._make_ask_user_selection(), spider)
 
-        # 绑定 Qt 信号（与 GUI _bind_spider_signals 一致）
+        # BaseSpider 已改为纯 Python 回调信号；CLI 直接绑定即可。
         spider.sig_log.connect(self._on_log)
         spider.sig_item_found.connect(self._on_item_found)
         spider.sig_select_tasks.connect(self._on_select_tasks)  # 安全兜底
         spider.sig_finished.connect(self._on_finished)
 
     def _connect_download_signals(self):
-        """绑定下载管理器信号（与 GUI _connect_download_signals 完全一致）。"""
+        """绑定下载管理器回调（与 GUI _connect_download_signals 语义一致）。"""
         if self._dl_manager:
             self._dl_manager.task_started.connect(self._on_task_started)
             self._dl_manager.task_progress.connect(self._on_task_progress)
             self._dl_manager.task_finished.connect(self._on_task_finished)
             self._dl_manager.task_error.connect(self._on_task_error)
+
+    def _wait_spider(self, spider, timeout: float | None = None) -> bool:
+        """等待 spider 结束。
+
+        Returns:
+            bool: True=正常结束，False=超时
+        """
+        deadline = time.time() + timeout if timeout is not None else None
+        while True:
+            try:
+                running = spider.isRunning()
+            except Exception:
+                # 兜底：如果 spider 不支持 isRunning，则退回原生 wait
+                if timeout is not None:
+                    return bool(spider.wait(int(timeout * 1000)))
+                spider.wait()
+                return True
+
+            if not running:
+                break
+
+            if deadline is not None and time.time() >= deadline:
+                return False
+
+            time.sleep(0.05)
+        return True
 
     # ---- 主执行流程 ----
 
@@ -346,7 +418,6 @@ class CLIRunner:
             }
         """
         start = time.time()
-        _ensure_qt_app()
 
         from app.core.plugin_registry import registry
 
@@ -396,7 +467,7 @@ class CLIRunner:
 
         # 步骤 5：等待 spider 完成（与 GUI 事件循环等待一致）
         if self.timeout is not None:
-            finished_in_time = spider.wait(int(self.timeout * 1000))
+            finished_in_time = self._wait_spider(spider, timeout=self.timeout)
             if not finished_in_time:
                 self._log(f"spider 超过 {self.timeout}s 未完成，强制停止")
                 spider.stop()
@@ -416,7 +487,7 @@ class CLIRunner:
                 self._spider = None
                 return self._build_result("timeout", start, f"timeout after {self.timeout}s")
         else:
-            spider.wait()
+            self._wait_spider(spider)
 
         # 步骤 6：等待下载完成（GUI 中下载是异步的，CLI 需要等所有下载结束）
         download_timed_out = False
@@ -433,6 +504,8 @@ class CLIRunner:
                 if item.status in ("⏳ 下载中...", "⏳ 等待中"):
                     item.status = "❌ 超时"
                     item.meta["download_error"] = "下载超时 (300s)"
+
+        self._reconcile_download_states()
 
         elapsed = round(time.time() - start, 2)
         self._log(f"spider 已结束, 耗时 {elapsed}s, 收集到 {len(self.videos)} 个项目, 二次选择 {self.selection_count} 次")
@@ -465,16 +538,23 @@ class CLIRunner:
             queued = self._dl_manager.queue.qsize()
             if active == 0 and queued == 0:
                 return False
-            # 处理 Qt 事件（DownloadWorker 是 QThread，需要 processEvents）
-            try:
-                from PyQt6.QtWidgets import QApplication
-                app = QApplication.instance()
-                if app:
-                    app.processEvents()
-            except Exception:
-                pass
+            self._emit_download_heartbeat()
             time.sleep(0.5)
         return True
+
+    def _reconcile_download_states(self) -> None:
+        """在 CLI 汇总前按真实文件落盘结果兜底校正状态。"""
+        for item in self.videos.values():
+            if item.status in ("✅ 完成", "❌ 失败", "❌ 超时"):
+                continue
+            local_path = getattr(item, "local_path", "") or ""
+            if local_path and os.path.exists(local_path):
+                try:
+                    if os.path.getsize(local_path) > 0:
+                        item.status = "✅ 完成"
+                        item.progress = 100
+                except OSError:
+                    pass
 
     def _build_result(self, status: str, start_time: float, error: str | None = None) -> dict:
         """构建返回结果（items 包含最终 status/progress/local_path，与 GUI 最终状态一致）。"""
@@ -488,7 +568,7 @@ class CLIRunner:
             except Exception as e:
                 self._log(f"item 转换失败: {e}")
 
-        return {
+        result = {
             "status": status,
             "source": self.source,
             "keyword": self.keyword,
@@ -499,6 +579,7 @@ class CLIRunner:
             "elapsed": elapsed,
             "error": error or self.error,
         }
+        return result
 
     def stop(self) -> None:
         """中途停止爬虫（与 GUI on_stop_crawl 对齐）。"""

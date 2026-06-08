@@ -83,6 +83,18 @@ def _parse_index_list(s: str, max_count: int) -> list[int]:
     return sorted(indices)
 
 
+def build_selection_prompt(selection_round: int, item_count: int) -> str:
+    """构建统一的二次选择提示文案。"""
+    return f"二次选择 #{selection_round}: {item_count} 个候选"
+
+
+def format_selection_result(indices: list[int], preview_limit: int = 10) -> str:
+    """格式化统一的二次选择结果摘要。"""
+    preview = indices[:preview_limit]
+    suffix = "..." if len(indices) > preview_limit else ""
+    return f"  → 选中 {len(indices)} 项: {preview}{suffix}"
+
+
 class RuleSelection(SelectionStrategy):
     """基于规则的策略：--select / --exclude / --all / --first / --last。
 

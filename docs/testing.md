@@ -30,11 +30,13 @@
 集中管理所有测试类别与文件，运行时可注册新类别：
 
 - `TestCategory` dataclass：id/name/description/files/icon_color/icon_letter/priority/requires_network/requires_gui/enabled
-- 预置 9 个类别（all/unit/integration/e2e/ui/pipeline/packaging/web_browser/core）
+- 预置 11 个类别（all/cli_sdk/web_api/app_flows/desktop_ui/browser_e2e/pipeline/packaging/core_services/suite_infra/misc）
 - `register_category()` 运行时注册新类别
+- `register_category_rule()` 用规则自动归类新脚本
+- `register_test_files()` 便于把后续测试脚本加入已有套件
 - `get_enabled_categories()` 按 priority 排序
 - `get_resolved_files(cat_id)` 解析 `all` 为所有其他类别
-- `auto_discover_tests()` 自动发现未注册文件
+- `auto_discover_tests()` 自动发现尚未命中规则的新测试脚本
 
 ### 测试运行引擎 [test_runner.py](../tests/test_runner.py)
 
@@ -55,9 +57,9 @@
 python tests/test_launcher.py
 
 # 2. 命令行直接跑某个类别
-python tests/test_launcher.py --category unit
+python tests/test_launcher.py --category cli_sdk
 python tests/test_launcher.py --category all
-python tests/test_launcher.py --category web_browser
+python tests/test_launcher.py --category browser_e2e
 
 # 3. TUI 菜单（无 GUI 环境）
 python tests/test_launcher.py --tui
@@ -70,14 +72,14 @@ python tests/test_launcher.py --gui
 ```
 
 特性：
-- 卡片选择（左侧 6px 边条 + 字母 + 名称 + 描述 + 元信息）
-- 实时运行面板（QTextEdit 滚动日志 + 进度条）
-- F5 运行 / Ctrl+A 全选 / Esc 全不选 / "推荐" 快捷按钮
+- 左侧分组套件列表 + 右侧详情/统计/日志的双栏仪表盘
+- 实时运行面板（统计卡片 + 进度条 + QTextEdit 滚动日志）
+- F5 运行 / Ctrl+1 全部 / Ctrl+R 推荐 / Esc 清空
 - failfast / verbose 复选框
-- **任务栏/窗口图标：tests/test.ico（多帧标准 ICO）**
+- **任务栏/窗口图标：优先使用根目录 `test.ico`，不存在时回退到 `tests/test.ico`**
 - Windows AppUserModelID：`ucrawl.universalcrawlerpro.test`
 
-### 测试图标 [test.ico](../tests/test.ico)
+### 测试图标 [test.ico](../test.ico)
 
 **多帧标准 ICO**（BMP 转换后用 Pillow 重存）：
 
@@ -103,7 +105,7 @@ python tests/test_launcher.py --gui
 
 ## 测试分层
 
-### 单元测试（unit）
+### CLI / SDK（cli_sdk）
 
 适合对象：
 
@@ -129,7 +131,7 @@ python tests/test_launcher.py --gui
 - `tests/test_cli_sdk.py`
 - `tests/test_cli_runner.py`
 
-### 集成测试（integration）
+### Web / API（web_api）
 
 适合对象：
 
@@ -150,7 +152,7 @@ python tests/test_launcher.py --gui
 - `tests/test_web_entry.py`
 - `tests/test_contract.py`（CLI/SDK/API 三层契约）
 
-### 端到端测试（e2e）
+### 应用流程（app_flows）
 
 适合对象：
 
@@ -187,7 +189,7 @@ python tests/test_launcher.py --gui
 
 - `tests/test_packaging.py`
 
-### UI 弹窗测试（ui）
+### 桌面界面（desktop_ui）
 
 适合对象：
 
@@ -198,7 +200,7 @@ python tests/test_launcher.py --gui
 
 特征：
 
-- PyQt6 是依赖项（不满足时 `@unittest.skipUnless` 优雅降级）
+- PyQt6 是依赖项（不满足时相关测试会优雅降级）
 - 使用 setUpClass 共享 QApplication 实例
 - 不实际 exec 弹窗（避免阻塞）
 - mock input() / sys.stdin 测试 TUI
@@ -240,7 +242,7 @@ python tests/test_launcher.py --gui
 - mock 下载器和 UI
 - 验证跨模块编排是否正确
 
-### Web 浏览器测试（web_browser）
+### 浏览器 E2E（browser_e2e）
 
 适合对象：
 
@@ -260,7 +262,7 @@ python tests/test_launcher.py --gui
 
 测试文件：
 
-- `tests/test_web_browser.py`（5 个测试类，30+ 用例）
+- `tests/test_web_browser.py`（浏览器交互、可访问性与设计规范回归）
 - `tests/web_test_app.py`（uvicorn shim）
 
 ### 人工验证
@@ -281,9 +283,9 @@ python tests/test_launcher.py --gui
 python tests/test_launcher.py
 
 # CLI 模式（指定类别）
-python tests/test_launcher.py --category unit
+python tests/test_launcher.py --category cli_sdk
 python tests/test_launcher.py --category all
-python tests/test_launcher.py --category web_browser
+python tests/test_launcher.py --category browser_e2e
 
 # TUI 模式（无 GUI 环境）
 python tests/test_launcher.py --tui
@@ -301,14 +303,15 @@ python tests/run_all_tests.py
 ### 按类别（CLI）
 
 ```bash
-python tests/run_all_tests.py --category unit       # 单元
-python tests/run_all_tests.py --category integration # 集成
-python tests/run_all_tests.py --category e2e         # 端到端
-python tests/run_all_tests.py --category packaging   # 打包
-python tests/run_all_tests.py --category ui          # UI
-python tests/run_all_tests.py --category pipeline    # 管道
-python tests/run_all_tests.py --category web_browser # Web 浏览器
-python tests/run_all_tests.py --category core        # 核心组件
+python tests/run_all_tests.py --category cli_sdk       # CLI / SDK
+python tests/run_all_tests.py --category web_api       # Web / API
+python tests/run_all_tests.py --category app_flows     # 应用流程
+python tests/run_all_tests.py --category desktop_ui    # 桌面界面
+python tests/run_all_tests.py --category packaging     # 打包发布
+python tests/run_all_tests.py --category pipeline      # 数据管道
+python tests/run_all_tests.py --category browser_e2e   # 浏览器 E2E
+python tests/run_all_tests.py --category core_services # 核心服务
+python tests/run_all_tests.py --category suite_infra   # 测试套件
 ```
 
 ### 单个文件
@@ -328,6 +331,12 @@ python -m pytest tests/ -v
 ```bash
 python -m pytest tests/ --no-failfast
 ```
+
+## 执行约定
+
+- 统一使用 `pytest` 作为运行入口
+- 历史测试主体仍可保持 `unittest.TestCase` 风格
+- 新测试优先按 `tests/NAMING.md` 命名，并接入 `tests/test_registry.py` 自动分类
 
 ## 推荐 mock 边界
 
@@ -375,6 +384,37 @@ python -m pytest tests/ --no-failfast
 - `tests/README.md`
 - 根目录 `README.md`
 - 本文档
+
+## 新增脚本接入方式
+
+优先使用 `tests/test_registry.py` 提供的接口，而不是继续维护静态文件长列表：
+
+```python
+from tests.test_registry import (
+    register_category,
+    register_category_rule,
+    register_test_files,
+)
+
+register_category(
+    id="perf",
+    name="性能测试",
+    description="手工定义一组测试脚本",
+    files=["tests/test_perf_bench.py"],
+)
+
+register_category_rule(
+    id="plugin_api",
+    name="插件接口",
+    description="自动纳入匹配规则的新脚本",
+    include=["tests/test_plugin_*.py"],
+)
+
+register_test_files(
+    "suite_infra",
+    ["tests/test_new_suite_case.py"],
+)
+```
 
 ## 修复的生产 Bug
 

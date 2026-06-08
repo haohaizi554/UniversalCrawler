@@ -375,7 +375,7 @@ class ConfigPersistenceTests(unittest.TestCase):
 # ============================================================
 
 class SDKResourceManagementTests(unittest.TestCase):
-    """SDK 资源管理（QApplication 单例、清理）。"""
+    """SDK 资源管理与兼容接口。"""
 
     def test_sdk_context_manager(self):
         """用 with 语句管理 SDK。"""
@@ -424,9 +424,7 @@ class SDKDownloadEndToEndTests(unittest.TestCase):
         # 模拟内部实现：补丁 DownloadManager 类
         with patch("app.core.download_manager.DownloadManager") as mock_dm:
             mock_dm.return_value.queue.qsize.return_value = 0
-            with patch("PyQt6.QtWidgets.QApplication") as mock_qapp:
-                mock_qapp.instance.return_value.processEvents = MagicMock()
-                result = sdk.download_video("http://x", "douyin", title="测试", timeout=2)
+            result = sdk.download_video("http://x", "douyin", title="测试", timeout=2)
         self.assertIsInstance(result, dict)
         self.assertIn("status", result)
 

@@ -1,0 +1,15 @@
+services:
+  ucrawl-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ucrawl-web
+    ports:
+      - "8000:8000"
+    environment:
+      UCRAWL_USER_DATA_ROOT: /data/user_data
+      UCRAWL_DOWNLOAD_ROOT: /data/downloads
+    volumes:
+      - ./user_data:/data/user_data
+      - ./downloads:/data/downloads
+    restart: unless-stopped

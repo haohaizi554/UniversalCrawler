@@ -7,26 +7,35 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.tox/
+.nox/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 
 # Virtual Envs
 venv/
 .venv/
 env/
+.python-version
 
 # IDE / Editor
 .idea/
 .vscode/
 *.code-workspace
 .trae
+.env
+.env.*
 
 # Build Outputs
 build/
 dist/
 .cache/
 pip-wheel-metadata/
+*.whl
+*.tar.gz
 
 # Node / Browser Runtime
 node_modules/
@@ -52,6 +61,7 @@ missav_auth.json
 # Logs / Reports
 *.log
 Logs/*.log
+.dbg/
 
 # Archives
 *.zip

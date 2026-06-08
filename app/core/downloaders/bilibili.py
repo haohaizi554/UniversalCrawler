@@ -31,7 +31,13 @@ class BilibiliDownloader(BaseDownloader):
     # ---- B站 play_url API 重刷新 ----
 
     @staticmethod
-    def _fetch_bilibili_play_url(bvid: str, cid: str, headers: dict, trace_id: str | None = None) -> tuple[str | None, str | None]:
+    def _fetch_bilibili_play_url(
+        bvid: str,
+        cid: str,
+        headers: dict,
+        trace_id: str | None = None,
+        proxies: dict[str, str] | None = None,
+    ) -> tuple[str | None, str | None]:
         """重新调用 B站 play_url API 获取新的 CDN 流地址。
 
         B站 CDN URL 签名有时效，重试时必须重新获取。
@@ -43,7 +49,7 @@ class BilibiliDownloader(BaseDownloader):
                 f"?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
             )
             try:
-                resp = requests.get(api_url, headers=headers, timeout=15)
+                resp = requests.get(api_url, headers=headers, timeout=15, proxies=proxies)
                 data = resp.json()
                 if data.get("code") == 0 and "data" in data:
                     dash = data["data"].get("dash", {})
@@ -154,7 +160,7 @@ class BilibiliDownloader(BaseDownloader):
             # API 请求仍走代理（如果配置了），但 CDN 下载不走代理
             api_proxies = {"http": proxy, "https": proxy} if proxy else None
             new_v, new_a = BilibiliDownloader._fetch_bilibili_play_url(
-                bvid, cid, headers, trace_id,
+                bvid, cid, headers, trace_id, proxies=api_proxies,
             )
             if new_v:
                 with _url_lock:

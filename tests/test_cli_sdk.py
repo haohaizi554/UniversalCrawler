@@ -1,7 +1,7 @@
 """cli.sdk UcrawlSDK 单测。
 
 测试维度：
-- 单元测试：参数校验、selection 解析、QApplication 管理
+- 单元测试：参数校验、selection 解析、资源接口幂等
 - 黑盒测试：不 mock CLIRunner，跑真实 SDK
 """
 
@@ -45,8 +45,7 @@ class UcrawlSDKInitTests(unittest.TestCase):
         from cli.sdk import UcrawlSDK
         with UcrawlSDK() as sdk:
             self.assertIsNotNone(sdk)
-        # exit 后 _owns_qt_app 必须清空
-        self.assertFalse(sdk._owns_qt_app)
+        sdk.close()
 
 
 class UcrawlSDKSelectionResolveTests(unittest.TestCase):
@@ -219,7 +218,7 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
         from cli.selection import RuleSelection
         sdk = UcrawlSDK()
         expected = {"status": "ok", "items": [], "logs": []}
-        with patch("cli.runner.CLIRunner") as MockRunner:
+        with patch("cli.sdk.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = expected
             result = sdk.search("douyin", "kw")
@@ -229,7 +228,7 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
         """SDK 的 default_config 必须合并到 CLIRunner 的 config。"""
         from cli.sdk import UcrawlSDK
         sdk = UcrawlSDK(config={"max_items": 99, "timeout": 5})
-        with patch("cli.runner.CLIRunner") as MockRunner:
+        with patch("cli.sdk.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok"}
             sdk.search("douyin", "kw", max_items=10)
@@ -242,7 +241,7 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
         """None 值的 config key 必须被过滤（不覆盖默认值）。"""
         from cli.sdk import UcrawlSDK
         sdk = UcrawlSDK()
-        with patch("cli.runner.CLIRunner") as MockRunner:
+        with patch("cli.sdk.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok"}
             sdk.search("douyin", "kw", max_items=None)
@@ -254,7 +253,7 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
         """missav 平台的 proxy 字段必须用 build_missav_proxy_url 转换。"""
         from cli.sdk import UcrawlSDK
         sdk = UcrawlSDK()
-        with patch("cli.runner.CLIRunner") as MockRunner:
+        with patch("cli.sdk.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok"}
             sdk.search("missav", "ABC", proxy="Clash (7890)")
@@ -272,17 +271,12 @@ class UcrawlSDKCloseTests(unittest.TestCase):
         sdk.close()
         sdk.close()  # 不应该抛异常
 
-    def test_close_does_not_kill_external_qt_app(self):
-        """close() 不得关闭外部已存在的 QApplication。"""
-        from PyQt6.QtWidgets import QApplication
-        import sys
-        # 创建外部 QApplication
-        external_app = QApplication.instance() or QApplication(sys.argv)
+    def test_close_keeps_compatibility_interface(self):
+        """close() 保留兼容接口且可重复调用。"""
         from cli.sdk import UcrawlSDK
         sdk = UcrawlSDK()
-        # SDK 创建后 _owns_qt_app=False（因为 QApplication 早就存在）
-        self.assertFalse(sdk._owns_qt_app)
-        sdk.close()  # 不应该 quit 外部 app
+        sdk.close()
+        sdk.close()
 
 
 if __name__ == "__main__":

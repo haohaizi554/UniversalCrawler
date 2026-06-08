@@ -1,5 +1,6 @@
 """服务模块，负责 `app/services/file_service.py` 对应的业务支撑能力。"""
 
+import heapq
 import os
 from dataclasses import dataclass
 
@@ -36,23 +37,32 @@ class MediaLibraryService:
                 os.makedirs(directory, exist_ok=True)
                 return ScanResult(items=[], total_count=0, video_count=0, image_count=0)
 
-            all_files = [
-                f for f in os.listdir(directory)
-                if f.lower().endswith(self.all_media_extensions)
-            ]
-            all_files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
+            media_entries: list[tuple[float, str]] = []
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    if not entry.name.lower().endswith(self.all_media_extensions):
+                        continue
+                    try:
+                        stat = entry.stat()
+                    except OSError:
+                        continue
+                    media_entries.append((stat.st_mtime, entry.name))
 
-            original_count = len(all_files)
+            original_count = len(media_entries)
             truncated = original_count > max_scan_count
             if truncated:
-                # UI 只展示最近一部分文件，避免首轮把超大目录全部塞进表格导致卡顿。
-                all_files = all_files[:max_scan_count]
+                # 大目录只保留最近更新的一部分文件，避免全量排序和前端渲染同时放大延迟。
+                selected_entries = heapq.nlargest(max_scan_count, media_entries, key=lambda item: item[0])
+            else:
+                selected_entries = sorted(media_entries, key=lambda item: item[0], reverse=True)
 
             items: list[VideoItem] = []
             video_count = 0
             image_count = 0
 
-            for filename in all_files:
+            for _mtime, filename in selected_entries:
                 title, ext = os.path.splitext(filename)
                 ext = ext.lower()
                 item = VideoItem(url="", title=title, source="local")

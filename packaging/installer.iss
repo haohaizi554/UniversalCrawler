@@ -1,13 +1,39 @@
-#define AppName "Universal CrawlerPro"
-#define AppVersion "2026.05.27"
-#define AppPublisher "UCP"
-#define AppExeName "UniversalCrawlerPro.exe"
-#define WebUIExeName "CrawlerWebPortal.exe"
-#define AppIconName "favicon.ico"
-#define WebUIIconName "Web.ico"
-#define AppUserModelID "ucp.crawler.v1"
-#define WebUIUserModelID "ucp.crawler.webui.v1"
-#define DistDir "..\dist\UniversalCrawlerPro"
+#ifndef AppName
+  #define AppName "Universal CrawlerPro"
+#endif
+#ifndef AppVersion
+  #define AppVersion "1.0.0"
+#endif
+#ifndef AppPublisher
+  #define AppPublisher "UCrawl Team"
+#endif
+#ifndef AppComments
+  #define AppComments "Universal CrawlerPro Windows 安装程序"
+#endif
+#ifndef AppExeName
+  #define AppExeName "UniversalCrawlerPro.exe"
+#endif
+#ifndef WebUIExeName
+  #define WebUIExeName "CrawlerWebPortal.exe"
+#endif
+#ifndef AppIconName
+  #define AppIconName "favicon.ico"
+#endif
+#ifndef WebUIIconName
+  #define WebUIIconName "Web.ico"
+#endif
+#ifndef AppUserModelID
+  #define AppUserModelID "ucrawl.universalcrawlerpro.main"
+#endif
+#ifndef WebUIUserModelID
+  #define WebUIUserModelID "ucrawl.universalcrawlerpro.web"
+#endif
+#ifndef DistDir
+  #define DistDir "..\dist\UniversalCrawlerPro"
+#endif
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "UniversalCrawlerPro_Setup"
+#endif
 
 [Setup]
 AppId={{5A1DA9B4-0842-45D5-A4FA-E0E55E8A8C48}
@@ -17,7 +43,7 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\UniversalCrawlerPro
 DefaultGroupName={#AppName}
-UsePreviousAppDir=no
+UsePreviousAppDir=yes
 DisableProgramGroupPage=no
 DisableWelcomePage=no
 DisableDirPage=no
@@ -26,7 +52,7 @@ AllowRootDirectory=no
 DirExistsWarning=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist\installer
-OutputBaseFilename=UniversalCrawlerPro_Setup
+OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma2/normal
 SolidCompression=no
 WizardStyle=modern
@@ -39,9 +65,9 @@ WizardSmallImageBackColor=clWhite
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-AppComments={#AppName} Windows 安装程序
+AppComments={#AppComments}
 VersionInfoProductName={#AppName} Setup
-VersionInfoDescription={#AppName} Windows 安装程序
+VersionInfoDescription={#AppComments}
 VersionInfoVersion={#AppVersion}
 
 [Languages]

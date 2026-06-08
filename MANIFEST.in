@@ -1,0 +1,23 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include favicon.ico
+include Web.ico
+
+recursive-include app/web/static *
+recursive-include app/core/lib/douyin *.js *.json *.md
+recursive-include packaging *.spec *.iss *.md
+
+global-exclude __pycache__/*
+global-exclude *.py[cod]
+global-exclude *.log
+global-exclude *_auth.json
+global-exclude config.json
+
+prune build
+prune dist
+prune user_data
+prune .dbg
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache

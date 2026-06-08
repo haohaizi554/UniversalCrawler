@@ -71,15 +71,19 @@ class WebEntryPortProbeTests(unittest.TestCase):
         import socket
         servers = []
         start = None
+        probe_count = (_find_available_port.__defaults__[0] if _find_available_port.__defaults__ else 10) + 1
         try:
-            # 占用 11 个连续端口
-            for _ in range(_find_available_port.__defaults__[0] + 1 if _find_available_port.__defaults__ else 11):
+            # 先拿一个空闲起点，再显式占用连续端口，避免依赖操作系统的随机分配行为。
+            seed = socket.socket()
+            seed.bind(("127.0.0.1", 0))
+            start = seed.getsockname()[1]
+            seed.close()
+
+            for offset in range(probe_count):
                 s = socket.socket()
-                s.bind(("127.0.0.1", 0))
-                if start is None:
-                    start = s.getsockname()[1]
+                s.bind(("127.0.0.1", start + offset))
                 servers.append(s)
-            # 最后一个占用 start + 10
+
             self.assertIsNone(_find_available_port("127.0.0.1", start))
         finally:
             for s in servers:

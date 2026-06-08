@@ -17,11 +17,13 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 from cli.defaults import get_platform_defaults, get_default_save_dir, build_missav_proxy_url
 from cli.sdk import UcrawlSDK
+from cli.runner import CLIRunner
+from app.config import cfg
+from app.utils.runtime_paths import is_temporary_path
 
 
 # ============== 颜色常量 ==============
@@ -34,6 +36,54 @@ YELLOW = "\033[93m"
 RED   = "\033[91m"
 DIM   = "\033[2m"
 BLUE  = "\033[94m"
+
+
+_PLATFORM_GUIDE = {
+    "douyin": {
+        "input_label": "主页链接、分享链接或合集链接",
+        "examples": [
+            "主页链接: https://www.douyin.com/user/xxx",
+            "分享链接: https://v.douyin.com/xxxxx/",
+            "合集链接: 带 collection / mix / modal_id 的链接",
+        ],
+        "limit_label": "视频数量",
+        "empty_tip": "优先尝试主页链接或分享链接；纯数字 UID 当前仍不支持。",
+        "result_tip": "抖音会优先按 GUI 同步流程拉起扫码、采集、选择并直接入队下载。",
+    },
+    "bilibili": {
+        "input_label": "BV 号、UP 主页、合集链接或关键词",
+        "examples": [
+            "BV 号: BV1xx411c7mD",
+            "UP 主页: https://space.bilibili.com/123456",
+            "合集/视频链接: https://www.bilibili.com/video/BVxxxx",
+        ],
+        "limit_label": "搜索页数",
+        "empty_tip": "可尝试直接输入 BV 号、UP 主页链接或合集链接，通常比模糊关键词更稳定。",
+        "result_tip": "B 站会沿用 GUI 的两层选择流程：先选主项目，再按需展开分 P / 合集。",
+    },
+    "kuaishou": {
+        "input_label": "快手主页链接、快手号或关键词",
+        "examples": [
+            "主页链接: https://www.kuaishou.com/profile/xxx",
+            "快手号: 直接输入账号标识或纯数字快手号",
+            "关键词: 先进入站内搜索，再从结果跳到主页继续扫描",
+        ],
+        "limit_label": "视频数量",
+        "empty_tip": "快手建议优先使用主页链接或快手号；关键词模式会先走站内搜索再进入主页。",
+        "result_tip": "快手会弹浏览器并允许你在页面里手动登录，随后继续滚动加载瀑布流。",
+    },
+    "missav": {
+        "input_label": "番号、演员名或 MissAV 链接",
+        "examples": [
+            "番号: SSIS-001",
+            "演员名: 三上悠亚",
+            "列表/详情链接: https://missav.ai/...",
+        ],
+        "limit_label": "筛选偏好",
+        "empty_tip": "如果没有结果，先确认代理可用，再尝试直接输入番号或作品链接。",
+        "result_tip": "MissAV 会先扫列表、再按 GUI 同步流程筛最佳版本并嗅探 m3u8。",
+    },
+}
 
 
 # ============== Cookie 智能检测（与 GUI spider 对齐） ==============
@@ -152,12 +202,17 @@ def add_interactive_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
     parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
     # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
-    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，B站合集场景)")
+    parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，传入时自动启用 --use-subdir，与 GUI 对齐)")
     parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
     # 与 GUI spider build_download_meta 对齐：文件名控制
     parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
     # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
     parser.add_argument("--content-type", type=str, default=None, help="内容类型 (video/image/gallery，与 --config '{\"content_type\":\"gallery\"}' 等价，影响文件扩展名和保存路径)")
+    # 与 CLI search/download --proxy 对齐：代理便捷参数
+    parser.add_argument("--proxy", type=str, default=None, help="代理 URL (与 --config '{\"proxy\":\"http://127.0.0.1:7890\"}' 等价，MissAV 平台会自动转换)")
+    # 与 CLI search/download --individual-only/--priority 对齐：MissAV 专属便捷参数
+    parser.add_argument("--individual-only", action="store_true", default=None, help="只看单体作品 (MissAV 专属，与 --config '{\"individual_only\":true}' 等价)")
+    parser.add_argument("--priority", type=str, default=None, help="优先级 (MissAV 专属，与 --config '{\"priority\":\"中文字幕优先\"}' 等价)")
 
 
 # ============== 交互辅助 ==============
@@ -175,432 +230,540 @@ def _input(prompt: str, default: str = "") -> str:
 
 def _choose(prompt: str, options: list[str], default_idx: int = 0) -> int:
     """选择菜单：显示编号选项，回车选默认。"""
-    print(f"{BOLD}{prompt}{RESET}")
-    for i, opt in enumerate(options):
-        marker = ">" if i == default_idx else " "
-        print(f"  {marker} {YELLOW}{i + 1}{RESET}. {opt}")
-    try:
-        raw = input(f"{CYAN}选择 (回车={default_idx + 1}): {RESET}").strip()
-    except (EOFError, KeyboardInterrupt):
+    while True:
+        print(f"{BOLD}{prompt}{RESET}")
+        for i, opt in enumerate(options):
+            marker = ">" if i == default_idx else " "
+            print(f"  {marker} {YELLOW}{i + 1}{RESET}. {opt}")
+        try:
+            raw = input(f"{CYAN}选择 (回车={default_idx + 1}): {RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default_idx
+        if not raw:
+            return default_idx
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(options):
+                return idx
+        except ValueError:
+            pass
+        print(f"  {DIM}无效选择，请重新输入。{RESET}")
+
+
+def _select_platform(platforms: list[dict], next_platform_id: str | None = None) -> dict | None:
+    """选择平台；支持复用上一次平台并在输入错误时重试。"""
+    cached = None
+    if next_platform_id:
+        cached = next((p for p in platforms if p.get("id") == next_platform_id), None)
+    if cached is not None:
+        print(f"{BOLD}步骤 1/5: 选择平台{RESET}")
+        print(f"  {GREEN}✓ 继续使用: {cached['name']}{RESET}\n")
+        return cached
+
+    while True:
+        print(f"{BOLD}步骤 1/5: 选择平台{RESET}\n")
+        for i, platform in enumerate(platforms, 1):
+            placeholder = platform.get("search_placeholder", "")
+            hint = f"  {DIM}({placeholder}){RESET}" if placeholder else ""
+            print(f"  {YELLOW}{i}{RESET}. {BOLD}{platform['name']}{RESET} ({platform['id']}){hint}")
         print()
-        return default_idx
-    if not raw:
-        return default_idx
-    try:
-        idx = int(raw) - 1
-        if 0 <= idx < len(options):
-            return idx
-    except ValueError:
-        pass
-    print(f"  {DIM}无效选择，使用默认{RESET}")
-    return default_idx
+
+        try:
+            choice = input(f"{CYAN}请输入编号: {RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消")
+            return None
+
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(platforms):
+                return platforms[idx]
+        except ValueError:
+            pass
+        print(f"{DIM}无效选择，请重新输入。{RESET}\n")
 
 
 def _is_temp_dir(path: str) -> bool:
     """检测路径是否是系统临时目录。"""
+    return is_temporary_path(path)
+
+
+def _persist_save_dir(save_dir: str) -> None:
+    """把交互式引导里确认过的下载目录同步写回配置。"""
+    if not save_dir:
+        return
+    if _is_temp_dir(save_dir):
+        return
     try:
-        temp_root = tempfile.gettempdir().lower()
-        if path.lower().startswith(temp_root):
-            return True
+        cfg.set("common", "save_directory", save_dir)
     except Exception:
         pass
-    # 常见临时目录模式
-    lower = path.lower().replace("\\", "/")
-    return "/temp/tmp" in lower or "/tmp/" in lower or "appdata/local/temp" in lower
+
+
+def _guide_for(platform_id: str) -> dict:
+    return _PLATFORM_GUIDE.get(platform_id, {})
+
+
+def _print_examples(platform_id: str) -> None:
+    examples = _guide_for(platform_id).get("examples", [])
+    if not examples:
+        return
+    print(f"  {DIM}示例:{RESET}")
+    for example in examples:
+        print(f"    - {example}")
+
+
+def _build_config_summary_lines(platform_id: str, config: dict, platform_name: str, keyword: str, save_dir: str) -> list[str]:
+    lines = [
+        f"  平台:   {platform_name}",
+        f"  关键词: {keyword}",
+        f"  保存到: {save_dir}",
+    ]
+    if platform_id == "douyin":
+        lines.append(f"  视频数: {config.get('max_items', 20)}")
+        lines.append("  登录:   浏览器扫码")
+    elif platform_id == "bilibili":
+        lines.append(f"  页数:   {config.get('max_pages', 1)}")
+        lines.append("  登录:   浏览器扫码")
+    elif platform_id == "kuaishou":
+        lines.append(f"  视频数: {config.get('max_items', 20)}")
+        lines.append("  登录:   浏览器手动登录")
+    elif platform_id == "missav":
+        lines.append(f"  偏好:   {config.get('priority', '')}")
+        lines.append(f"  仅单体: {'是' if config.get('individual_only') else '否'}")
+        lines.append(f"  代理:   {config.get('proxy', '')}")
+    return lines
+
+
+def _print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
+    """打印与 GUI 下载队列一致的最终结果摘要。"""
+    completed = []
+    failed = []
+    other = []
+    for item in items:
+        if not isinstance(item, dict):
+            other.append({"title": str(item), "status": ""})
+            continue
+        status = item.get("status", "")
+        local_path = item.get("local_path", "")
+        file_completed = False
+        if local_path:
+            try:
+                file_completed = os.path.exists(local_path) and os.path.getsize(local_path) > 0
+            except OSError:
+                file_completed = False
+        if status == "✅ 完成":
+            completed.append(item)
+        elif status == "❌ 失败":
+            failed.append(item)
+        elif file_completed:
+            snapshot = dict(item)
+            snapshot["status"] = "✅ 完成"
+            completed.append(snapshot)
+        else:
+            other.append(item)
+
+    print(f"\n{BOLD}执行完成{RESET}")
+    print(f"  总项目: {len(items)}")
+    print(f"  已完成: {len(completed)}")
+    print(f"  失败:   {len(failed)}")
+    print(f"  其他:   {len(other)}")
+    print(f"  耗时:   {elapsed:.1f}s")
+    print(f"  目录:   {save_dir}")
+
+    if completed:
+        print(f"\n{GREEN}已完成:{RESET}")
+        for i, item in enumerate(completed, 1):
+            title = item.get("title", item.get("id", "未知"))
+            local_path = item.get("local_path", "")
+            if len(title) > 60:
+                title = title[:57] + "..."
+            suffix = f" -> {local_path}" if local_path else ""
+            print(f"  {YELLOW}{i}{RESET}. {title}{suffix}")
+
+    if failed:
+        print(f"\n{RED}失败项目:{RESET}")
+        for i, item in enumerate(failed, 1):
+            title = item.get("title", item.get("id", "未知"))
+            error = item.get("meta", {}).get("download_error") or item.get("error", "未知错误")
+            if len(title) > 60:
+                title = title[:57] + "..."
+            print(f"  {YELLOW}{i}{RESET}. {title} ({error})")
+
+    if other:
+        print(f"\n{YELLOW}未完成项目:{RESET}")
+        for i, item in enumerate(other, 1):
+            title = item.get("title", item.get("id", "未知")) if isinstance(item, dict) else str(item)
+            status = item.get("status", "") if isinstance(item, dict) else ""
+            local_path = item.get("local_path", "") if isinstance(item, dict) else ""
+            if len(title) > 60:
+                title = title[:57] + "..."
+            if local_path:
+                suffix = f" [{status or '状态同步中'}] -> {local_path}"
+            else:
+                suffix = f" [{status}]" if status else ""
+            print(f"  {YELLOW}{i}{RESET}. {title}{suffix}")
+
+
+def _prompt_post_run_action(save_dir: str, *, allow_repeat: bool = True) -> str:
+    """下载或搜索结束后的后续动作。
+
+    Returns:
+        "exit" | "same" | "switch"
+    """
+    options = "o 打开目录 / s 同平台继续 / p 切换平台 / 直接回车结束" if allow_repeat else "o 打开目录 / 直接回车结束"
+    while True:
+        try:
+            choice = input(f"{CYAN}{options}: {RESET}").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return "exit"
+        if not choice:
+            return "exit"
+        if choice in ("o", "open"):
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(save_dir)
+                    print(f"{GREEN}已打开目录: {save_dir}{RESET}")
+                else:
+                    print(f"{YELLOW}当前平台不支持自动打开目录: {save_dir}{RESET}")
+            except OSError as exc:
+                print(f"{RED}❌ 打开目录失败: {exc}{RESET}")
+            continue
+        if allow_repeat and choice in ("s", "same"):
+            return "same"
+        if allow_repeat and choice in ("p", "platform", "switch"):
+            return "switch"
+        print(f"{DIM}无效输入，请重试。{RESET}")
 
 
 # ============== 主逻辑 ==============
 
 def handle_interactive_command(args: argparse.Namespace) -> int:
     """交互式引导：逐步收集参数后执行搜索/下载。"""
-    sdk = UcrawlSDK(verbose=True)
+    sdk = UcrawlSDK(verbose=not getattr(args, "quiet", False))
     try:
-        platforms = sdk.list_platforms()
-    except Exception as exc:
-        sys.stderr.write(f"❌ 获取平台列表失败: {exc}\n")
-        sdk.close()
-        return 1
-
-    # ---- 步骤 1: 选择平台 ----
-    print(f"\n{BOLD}{BLUE}╔══════════════════════════════════════╗")
-    print(f"║     UCrawl 交互式引导                  ║")
-    print(f"╚══════════════════════════════════════╝{RESET}\n")
-
-    print(f"{BOLD}步骤 1/5: 选择平台{RESET}\n")
-    for i, p in enumerate(platforms, 1):
-        placeholder = p.get("search_placeholder", "")
-        hint = f"  {DIM}({placeholder}){RESET}" if placeholder else ""
-        print(f"  {YELLOW}{i}{RESET}. {BOLD}{p['name']}{RESET} ({p['id']}){hint}")
-    print()
-
-    try:
-        choice = input(f"{CYAN}请输入编号: {RESET}").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\n已取消"); sdk.close(); return 0
-
-    try:
-        idx = int(choice) - 1
-        platform_info = platforms[idx]
-    except (ValueError, IndexError):
-        print(f"{RED}❌ 无效选择: {choice}{RESET}"); sdk.close(); return 1
-
-    platform_id = platform_info["id"]
-    platform_name = platform_info["name"]
-    placeholder = platform_info.get("search_placeholder", "输入关键词或链接")
-    print(f"  {GREEN}✓ 已选: {platform_name}{RESET}\n")
-
-    # ---- 步骤 2: 输入关键词（提示沿用 GUI placeholder） ----
-    print(f"{BOLD}步骤 2/5: 输入搜索内容{RESET}")
-    print(f"  {DIM}{placeholder}{RESET}")
-
-    try:
-        keyword = input(f"{CYAN}搜索: {RESET}").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\n已取消"); sdk.close(); return 0
-
-    if not keyword:
-        print(f"{RED}❌ 搜索内容不能为空{RESET}"); sdk.close(); return 1
-    print(f"  {GREEN}✓ {keyword}{RESET}\n")
-
-    # ---- 步骤 3: 平台参数配置（与 GUI 设置面板对齐） ----
-    config = get_platform_defaults(platform_id)
-
-    print(f"{BOLD}步骤 3/5: 平台参数{RESET}")
-
-    if platform_id == "douyin":
-        current = config.get("max_items", 20)
-        opts = ["1", "2", "5", "10", "20", "max (9999)"]
-        opt_vals = [1, 2, 5, 10, 20, 9999]
-        default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
-        idx = _choose("视频数量", opts, default_idx)
-        config["max_items"] = opt_vals[idx]
-        config["timeout"] = 10
-
-    elif platform_id == "bilibili":
-        current = config.get("max_pages", 1)
-        opts = ["1", "2", "5", "10", "20", "max (500)"]
-        opt_vals = [1, 2, 5, 10, 20, 500]
-        default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
-        idx = _choose("搜索页数", opts, default_idx)
-        config["max_pages"] = opt_vals[idx]
-
-    elif platform_id == "kuaishou":
-        current = config.get("max_items", 20)
-        opts = ["1", "2", "5", "10", "20", "max (9999)"]
-        opt_vals = [1, 2, 5, 10, 20, 9999]
-        default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
-        idx = _choose("视频数量", opts, default_idx)
-        config["max_items"] = opt_vals[idx]
-
-    elif platform_id == "missav":
-        current_individual = config.get("individual_only", False)
-        idx = _choose("仅单体作品", ["否", "是"], 0 if not current_individual else 1)
-        config["individual_only"] = idx == 1
-
-        current_priority = config.get("priority", "中文字幕优先")
-        opts = ["中文字幕优先", "无码流出优先"]
-        default_idx = 0 if current_priority == "中文字幕优先" else 1
-        idx = _choose("排序偏好", opts, default_idx)
-        config["priority"] = opts[idx]
-
-        current_proxy = config.get("proxy", "http://127.0.0.1:7890")
-        proxy_presets = ["Clash (7890)", "v2rayN (10809)", "自定义"]
-        if "7890" in current_proxy:
-            default_proxy_idx = 0
-        elif "10809" in current_proxy:
-            default_proxy_idx = 1
-        else:
-            default_proxy_idx = 2
-        idx = _choose("代理", proxy_presets, default_proxy_idx)
-        if idx < 2:
-            config["proxy"] = build_missav_proxy_url(proxy_presets[idx])
-        else:
-            custom = _input("代理地址", current_proxy)
-            config["proxy"] = build_missav_proxy_url(custom)
-
-    print()
-
-    # ---- 步骤 4: 保存路径 ----
-    print(f"{BOLD}步骤 4/5: 保存路径{RESET}")
-
-    default_save_dir = getattr(args, "save_dir", None) or get_default_save_dir()
-
-    # 检测临时目录
-    if _is_temp_dir(default_save_dir):
-        print(f"  {YELLOW}⚠ 当前配置的保存路径是临时目录，重启后可能丢失{RESET}")
-        # 建议更好的默认路径
         try:
-            from app.utils.runtime_paths import default_download_root
-            suggested = str(default_download_root())
-        except Exception:
-            suggested = str(Path.home() / "Downloads" / "UniversalCrawlerPro")
-        print(f"  {DIM}建议使用: {suggested}{RESET}")
-        default_save_dir = suggested
+            platforms = sdk.list_platforms()
+        except Exception as exc:
+            sys.stderr.write(f"❌ 获取平台列表失败: {exc}\n")
+            return 1
 
-    save_dir = _input("保存路径", default_save_dir)
-    if not save_dir:
-        save_dir = default_save_dir
-    print(f"  {GREEN}✓ {save_dir}{RESET}\n")
+        print(f"\n{BOLD}{BLUE}╔══════════════════════════════════════╗")
+        print(f"║         UCrawl 交互式引导              ║")
+        print(f"╚══════════════════════════════════════╝{RESET}\n")
 
-    # ---- 步骤 5: Cookie 状态 + 确认 ----
-    print(f"{BOLD}步骤 5/5: 确认执行{RESET}")
+        next_platform_id = None
+        default_save_dir = getattr(args, "save_dir", None) or get_default_save_dir()
 
-    # Cookie 状态检测（与 GUI spider 对齐）
-    cookie_data = _load_cookie(platform_id)
-    if _AUTH_FILE_MAP.get(platform_id) is None:
-        # MissAV 不需要 cookie
-        print(f"  Cookie: {DIM}该平台不需要{RESET}")
-    elif cookie_data is not None:
-        valid = _check_cookie_valid(platform_id, cookie_data)
-        cookie_path = _find_cookie_file(platform_id)
-        if valid:
-            cookie_str = _build_cookie_string(cookie_data)
-            if cookie_str:
-                config["cookie"] = cookie_str
-            print(f"  Cookie: {GREEN}✓ 本地有效 ({cookie_path.name}){RESET}")
-        else:
-            required = _REQUIRED_COOKIE_KEY.get(platform_id, "")
-            cookie_str = _build_cookie_string(cookie_data)
-            if cookie_str:
-                config["cookie"] = cookie_str
-            print(f"  Cookie: {YELLOW}⚠ 本地 Cookie 缺少 {required}，搜索时可能需要重新登录{RESET}")
-    else:
-        # 没有 cookie，告知 spider 会自动弹出登录窗口
-        login_desc = _LOGIN_DESC.get(platform_id, "将自动弹出浏览器窗口登录")
-        print(f"  Cookie: {YELLOW}未检测到本地 Cookie{RESET}")
-        print(f"          {DIM}{login_desc}{RESET}")
+        while True:
+            platform_info = _select_platform(platforms, next_platform_id)
+            if platform_info is None:
+                return 0
 
-    # 显示确认信息
-    max_items = config.get("max_items", config.get("max_pages", 20))
-    print(f"\n  平台:   {platform_name}")
-    print(f"  关键词: {keyword}")
-    print(f"  数量:   {max_items}")
-    print(f"  保存到: {save_dir}")
+            platform_id = platform_info["id"]
+            platform_name = platform_info["name"]
+            placeholder = platform_info.get("search_placeholder", "输入关键词或链接")
+            guide = _guide_for(platform_id)
+            next_platform_id = platform_id
+            print(f"  {GREEN}✓ 已选: {platform_name}{RESET}\n")
 
-    if platform_id == "missav":
-        print(f"  偏好:   {config.get('priority', '')}")
-        print(f"  仅单体: {'是' if config.get('individual_only') else '否'}")
-        print(f"  代理:   {config.get('proxy', '')}")
+            print(f"{BOLD}步骤 2/5: 输入搜索内容{RESET}")
+            print(f"  {DIM}{guide.get('input_label', placeholder)}{RESET}")
+            _print_examples(platform_id)
 
-    print()
-
-    try:
-        confirm = input(f"{CYAN}确认执行? [Y/n]: {RESET}").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("\n已取消"); sdk.close(); return 0
-
-    if confirm in ("n", "no"):
-        print("已取消"); sdk.close(); return 0
-
-    # ---- 合并 --config JSON 到 config（与 search 命令 _build_config 对齐） ----
-    config_json = getattr(args, "config", None)
-    if config_json:
-        try:
-            user_config = json.loads(config_json)
-            if isinstance(user_config, dict):
-                filtered = {k: v for k, v in user_config.items() if v is not None}
-                config.update(filtered)
-        except json.JSONDecodeError:
-            pass  # 校验在下面完成
-        # 校验 --config JSON 格式
-        try:
-            parsed = json.loads(config_json)
-            if not isinstance(parsed, dict):
-                sys.stderr.write("❌ --config 必须是 JSON 对象\n")
-                sdk.close(); return 1
-        except json.JSONDecodeError as e:
-            sys.stderr.write(f"❌ --config JSON 解析失败: {e}\n")
-            sdk.close(); return 1
-        # 与 SDK _validate_config 对齐：校验已知参数类型
-        from cli.defaults import validate_config_types
-        config_err = validate_config_types(parsed)
-        if config_err:
-            sys.stderr.write(f"❌ {config_err}\n")
-            sdk.close(); return 1
-
-    # ---- 合并便捷参数到 config（与 search 命令 _build_config 对齐，优先级最高） ----
-    if getattr(args, "cookie", None):
-        config["cookie"] = args.cookie
-    if getattr(args, "download_strategy", None):
-        config["download_strategy"] = args.download_strategy
-    if getattr(args, "referer", None):
-        config["referer"] = args.referer
-    if getattr(args, "ua", None):
-        config["ua"] = args.ua
-    # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
-    if getattr(args, "folder_name", None):
-        config["folder_name"] = args.folder_name
-    if getattr(args, "use_subdir", None):
-        config["use_subdir"] = True
-    # 与 GUI spider build_download_meta 对齐：文件名控制
-    if getattr(args, "file_name", None):
-        config["file_name"] = args.file_name
-    # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
-    if getattr(args, "content_type", None):
-        config["content_type"] = args.content_type
-
-
-    # ---- 校验 --run-timeout（与 search 命令对齐） ----
-    run_timeout = getattr(args, "run_timeout", None)
-    if run_timeout is not None and run_timeout <= 0:
-        sys.stderr.write("❌ --run-timeout 必须大于 0\n")
-        sdk.close(); return 1
-
-    # ---- 构建二次选择策略（交互式引导默认使用 GUI 弹窗，与 GUI 体验一致） ----
-    from cli.selection import RuleSelection, PipeSelection, InteractiveTTYSelection
-    if getattr(args, "pipe", False):
-        selection = PipeSelection()
-    elif getattr(args, "preload_choices", None):
-        rounds = []
-        for token in args.preload_choices.split("|"):
-            indices = []
-            for part in token.split(","):
-                part = part.strip()
-                if part:
-                    try:
-                        indices.append(int(part))
-                    except ValueError:
-                        pass
-            rounds.append(indices)
-        selection = PipeSelection(preloaded_choices=rounds)
-    elif getattr(args, "select", None) or getattr(args, "exclude", None) or getattr(args, "select_all", False) or getattr(args, "first", False) or getattr(args, "last", False):
-        # 用户显式指定了选择规则，使用 RuleSelection
-        selection = RuleSelection(
-            select=getattr(args, "select", None),
-            exclude=getattr(args, "exclude", None),
-            all_items=getattr(args, "select_all", False),
-            first=getattr(args, "first", False),
-            last=getattr(args, "last", False),
-        )
-    else:
-        # 交互式引导默认使用终端交互选择（CLI 环境下 GUISelection 会弹窗，不适合纯终端场景）
-        selection = InteractiveTTYSelection()
-
-    # ---- 执行搜索 ----
-    download = not getattr(args, "no_download", False)
-    verbose = not getattr(args, "quiet", False)
-
-    if run_timeout:
-        print(f"  {DIM}超时设置: {run_timeout}s{RESET}")
-
-    print(f"\n{BOLD}正在搜索...{RESET}\n")
-    try:
-        result = sdk.search(
-            source=platform_id,
-            keyword=keyword,
-            save_dir=save_dir,
-            download=download,
-            selection=selection,
-            run_timeout=run_timeout,
-            **config,
-        )
-    except Exception as exc:
-        sys.stderr.write(f"❌ 搜索失败: {exc}\n")
-        sdk.close(); return 1
-
-    # ---- 处理结果 ----
-    status = result.get("status", "error")
-    if status != "ok":
-        error = result.get("error", "未知错误")
-        sys.stderr.write(f"❌ {status}: {error}\n")
-        sdk.close(); return 1
-
-    items = result.get("items", [])
-    elapsed = result.get("elapsed", 0)
-
-    if not items:
-        print(f"{YELLOW}未找到结果 ({elapsed:.1f}s){RESET}")
-        print(f"  {DIM}提示：检查关键词是否正确，或尝试添加 Cookie{RESET}")
-        sdk.close(); return 0
-
-    # 显示结果
-    print(f"\n{GREEN}找到 {len(items)} 个结果 ({elapsed:.1f}s):{RESET}\n")
-    for i, item in enumerate(items):
-        if isinstance(item, dict):
-            title = item.get("title", item.get("id", "未知"))
-            content_type = item.get("content_type", "")
-            type_label = {"video": "视频", "gallery": "图集", "image": "图片"}.get(content_type, "")
-            extra = f"  [{type_label}]" if type_label else ""
-            if len(title) > 60:
-                title = title[:57] + "..."
-            print(f"  {YELLOW}{i}{RESET}. {title}{extra}")
-        else:
-            print(f"  {YELLOW}{i}{RESET}. {item}")
-
-    # --no-download + --pretty 时输出 JSON 格式的搜索结果（与 search 命令对齐）
-    if not download and getattr(args, "pretty", False):
-        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        sys.stdout.flush()
-
-    # 下载选择
-    if not download:
-        sdk.close(); return 0
-
-    print()
-    try:
-        sel = input(
-            f"{CYAN}选择下载（编号,逗号分隔 / a=全选 / q=退出）: {RESET}"
-        ).strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("\n已取消"); sdk.close(); return 0
-
-    if sel in ("q", "quit", ""):
-        sdk.close(); return 0
-
-    if sel in ("a", "all"):
-        indices = list(range(len(items)))
-    else:
-        try:
-            indices = [int(x.strip()) for x in sel.split(",") if x.strip()]
-        except ValueError:
-            print(f"{RED}❌ 无效选择{RESET}"); sdk.close(); return 1
-
-    # 下载（与 CLI download 命令和 REST API /api/download 对齐）
-    download_timeout = run_timeout or 300
-    # 从搜索 config 中提取下载相关配置（与 GUI spider meta 对齐）
-    # 与 SDK download_video meta 复制列表对齐：referer/ua/content_type/cookie/cookies/proxy/download_strategy/folder_name/use_subdir/audio_url/aweme_id/bvid/cid/file_name/preferred_filename/is_gallery/is_mix/images_data/size_mb/media_label/duration/mix_title/create_time/author/has_live_photo
-    download_config = {}
-    for key in ("proxy", "referer", "ua", "content_type", "cookie", "cookies", "download_strategy", "folder_name", "use_subdir", "audio_url", "aweme_id", "bvid", "cid", "file_name", "preferred_filename", "is_gallery", "is_mix", "images_data", "size_mb", "media_label", "duration", "mix_title", "create_time", "author", "has_live_photo"):
-        if key in config and config[key] is not None:
-            download_config[key] = config[key]
-
-    error_count = 0
-    for idx in indices:
-        if 0 <= idx < len(items):
-            item = items[idx]
-            if isinstance(item, dict):
-                item_url = item.get("url", "")
-                item_title = item.get("title", item.get("id", "未知"))
-            else:
-                item_url = str(item)
-                item_title = str(item)
-            print(f"  下载: {item_title}")
             try:
-                dl_result = sdk.download_video(
-                    url=item_url,
-                    source=platform_id,
-                    title=item_title,
-                    save_dir=save_dir,
-                    timeout=download_timeout,
-                    config=download_config if download_config else None,
-                    verbose=verbose,
-                )
-                # 检查下载结果（与 CLI download 命令对齐）
-                dl_status = dl_result.get("status", "error")
-                if dl_status != "ok":
-                    error_msg = dl_result.get("error", "未知错误")
-                    # 区分超时和其他错误（与 CLI download _print_pretty 对齐）
-                    if dl_status == "timeout" or "超时" in error_msg:
-                        sys.stderr.write(f"  ❌ 下载超时: {error_msg}\n")
-                    else:
-                        sys.stderr.write(f"  ❌ 下载失败: {error_msg}\n")
-                    error_count += 1
-            except (TypeError, ValueError) as exc:
-                sys.stderr.write(f"  ❌ 参数错误: {exc}\n")
-                error_count += 1
-            except Exception as exc:
-                sys.stderr.write(f"  ❌ 下载失败: {exc}\n")
-                error_count += 1
+                keyword = input(f"{CYAN}搜索: {RESET}").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n已取消")
+                return 0
 
-    sdk.close()
-    return 1 if error_count > 0 and error_count == len(indices) else 0
+            if not keyword:
+                print(f"{RED}❌ 搜索内容不能为空{RESET}")
+                return 1
+            print(f"  {GREEN}✓ {keyword}{RESET}\n")
+
+            config = get_platform_defaults(platform_id)
+            print(f"{BOLD}步骤 3/5: 平台参数{RESET}")
+
+            if platform_id == "douyin":
+                current = config.get("max_items", 20)
+                opts = ["1", "2", "5", "10", "20", "max (9999)"]
+                opt_vals = [1, 2, 5, 10, 20, 9999]
+                default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
+                idx = _choose("视频数量", opts, default_idx)
+                config["max_items"] = opt_vals[idx]
+                config["timeout"] = 10
+
+            elif platform_id == "bilibili":
+                current = config.get("max_pages", 1)
+                opts = ["1", "2", "5", "10", "20", "max (500)"]
+                opt_vals = [1, 2, 5, 10, 20, 500]
+                default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
+                idx = _choose("搜索页数", opts, default_idx)
+                config["max_pages"] = opt_vals[idx]
+
+            elif platform_id == "kuaishou":
+                current = config.get("max_items", 20)
+                opts = ["1", "2", "5", "10", "20", "max (9999)"]
+                opt_vals = [1, 2, 5, 10, 20, 9999]
+                default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
+                idx = _choose("视频数量", opts, default_idx)
+                config["max_items"] = opt_vals[idx]
+
+            elif platform_id == "missav":
+                current_individual = config.get("individual_only", False)
+                idx = _choose("仅单体作品", ["否", "是"], 0 if not current_individual else 1)
+                config["individual_only"] = idx == 1
+
+                current_priority = config.get("priority", "中文字幕优先")
+                opts = ["中文字幕优先", "无码流出优先"]
+                default_idx = 0 if current_priority == "中文字幕优先" else 1
+                idx = _choose("排序偏好", opts, default_idx)
+                config["priority"] = opts[idx]
+
+                current_proxy = config.get("proxy", "http://127.0.0.1:7890")
+                proxy_presets = ["Clash (7890)", "v2rayN (10809)", "自定义"]
+                if "7890" in current_proxy:
+                    default_proxy_idx = 0
+                elif "10809" in current_proxy:
+                    default_proxy_idx = 1
+                else:
+                    default_proxy_idx = 2
+                idx = _choose("代理", proxy_presets, default_proxy_idx)
+                if idx < 2:
+                    config["proxy"] = build_missav_proxy_url(proxy_presets[idx])
+                else:
+                    custom = _input("代理地址", current_proxy)
+                    config["proxy"] = build_missav_proxy_url(custom)
+
+            print(f"  {DIM}{guide.get('result_tip', '')}{RESET}" if guide.get("result_tip") else "")
+            print()
+
+            print(f"{BOLD}步骤 4/5: 保存路径{RESET}")
+            print(f"  {DIM}直接回车使用默认路径{RESET}")
+            if _is_temp_dir(default_save_dir):
+                print(f"  {YELLOW}⚠ 当前配置的保存路径是临时目录，重启后可能丢失{RESET}")
+                try:
+                    from app.utils.runtime_paths import default_download_root
+                    suggested = str(default_download_root())
+                except Exception:
+                    suggested = str(Path.home() / "Downloads" / "UniversalCrawlerPro")
+                print(f"  {DIM}建议使用: {suggested}{RESET}")
+                default_save_dir = suggested
+
+            save_dir = _input("保存路径", default_save_dir)
+            if not save_dir:
+                save_dir = default_save_dir
+            default_save_dir = save_dir
+            _persist_save_dir(save_dir)
+            print(f"  {GREEN}✓ {save_dir}{RESET}\n")
+
+            print(f"{BOLD}步骤 5/5: 确认执行{RESET}")
+            cookie_data = _load_cookie(platform_id)
+            if _AUTH_FILE_MAP.get(platform_id) is None:
+                print(f"  Cookie: {DIM}该平台不需要{RESET}")
+            elif cookie_data is not None:
+                valid = _check_cookie_valid(platform_id, cookie_data)
+                cookie_path = _find_cookie_file(platform_id)
+                if valid:
+                    print(f"  Cookie: {GREEN}✓ 本地有效 ({cookie_path.name}){RESET}")
+                else:
+                    required = _REQUIRED_COOKIE_KEY.get(platform_id, "")
+                    print(f"  Cookie: {YELLOW}⚠ 本地 Cookie 缺少 {required}，搜索时可能需要重新登录{RESET}")
+            else:
+                login_desc = _LOGIN_DESC.get(platform_id, "将自动弹出浏览器窗口登录")
+                print(f"  Cookie: {YELLOW}未检测到本地 Cookie{RESET}")
+                print(f"          {DIM}{login_desc}{RESET}")
+
+            print()
+            for line in _build_config_summary_lines(platform_id, config, platform_name, keyword, save_dir):
+                print(line)
+            print()
+
+            try:
+                confirm = input(f"{CYAN}确认执行? [Y/n]: {RESET}").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n已取消")
+                return 0
+
+            if confirm in ("n", "no"):
+                action = _prompt_post_run_action(save_dir, allow_repeat=True)
+                if action == "same":
+                    continue
+                if action == "switch":
+                    next_platform_id = None
+                    continue
+                return 0
+
+            config_json = getattr(args, "config", None)
+            if config_json:
+                try:
+                    user_config = json.loads(config_json)
+                    if isinstance(user_config, dict):
+                        filtered = {k: v for k, v in user_config.items() if v is not None}
+                        config.update(filtered)
+                except json.JSONDecodeError:
+                    pass
+                try:
+                    parsed = json.loads(config_json)
+                    if not isinstance(parsed, dict):
+                        sys.stderr.write("❌ --config 必须是 JSON 对象\n")
+                        return 1
+                except json.JSONDecodeError as e:
+                    sys.stderr.write(f"❌ --config JSON 解析失败: {e}\n")
+                    return 1
+                from cli.defaults import validate_config_types
+                config_err = validate_config_types(parsed)
+                if config_err:
+                    sys.stderr.write(f"❌ {config_err}\n")
+                    return 1
+
+            if getattr(args, "cookie", None):
+                config["cookie"] = args.cookie
+            if getattr(args, "download_strategy", None):
+                config["download_strategy"] = args.download_strategy
+            if getattr(args, "referer", None):
+                config["referer"] = args.referer
+            if getattr(args, "ua", None):
+                config["ua"] = args.ua
+            if getattr(args, "folder_name", None):
+                config["folder_name"] = args.folder_name
+            if getattr(args, "use_subdir", None):
+                config["use_subdir"] = True
+            # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+            # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
+            # 即有 folder_name 就自动使用子目录。CLI 用户只传 --folder-name 不传 --use-subdir 时，
+            # 应与 GUI 行为一致，自动启用子目录
+            if config.get("folder_name") and not config.get("use_subdir"):
+                config["use_subdir"] = True
+            if getattr(args, "file_name", None):
+                config["file_name"] = args.file_name
+            if getattr(args, "content_type", None):
+                config["content_type"] = args.content_type
+            # 与 CLI search/download --proxy 对齐：代理便捷参数合并到 config
+            if getattr(args, "proxy", None):
+                config["proxy"] = args.proxy
+            # 与 CLI search/download --individual-only/--priority 对齐：MissAV 专属便捷参数合并到 config
+            if getattr(args, "individual_only", None):
+                config["individual_only"] = True
+            if getattr(args, "priority", None):
+                config["priority"] = args.priority
+            # 与 CLI search/download 和 REST API/SDK 对齐：统一转换 missav proxy
+            if platform_id == "missav" and "proxy" in config and config["proxy"] is not None:
+                config["proxy"] = build_missav_proxy_url(config["proxy"])
+
+            run_timeout = getattr(args, "run_timeout", None)
+            if run_timeout is not None and run_timeout <= 0:
+                sys.stderr.write("❌ --run-timeout 必须大于 0\n")
+                return 1
+
+            from cli.selection import RuleSelection, PipeSelection, InteractiveTTYSelection
+            if getattr(args, "pipe", False):
+                selection = PipeSelection()
+            elif getattr(args, "preload_choices", None):
+                rounds = []
+                for token in args.preload_choices.split("|"):
+                    indices = []
+                    for part in token.split(","):
+                        part = part.strip()
+                        if part:
+                            try:
+                                indices.append(int(part))
+                            except ValueError:
+                                pass
+                    rounds.append(indices)
+                selection = PipeSelection(preloaded_choices=rounds)
+            elif getattr(args, "select", None) or getattr(args, "exclude", None) or getattr(args, "select_all", False) or getattr(args, "first", False) or getattr(args, "last", False):
+                selection = RuleSelection(
+                    select=getattr(args, "select", None),
+                    exclude=getattr(args, "exclude", None),
+                    all_items=getattr(args, "select_all", False),
+                    first=getattr(args, "first", False),
+                    last=getattr(args, "last", False),
+                )
+            else:
+                # GUISelection 在 CLI 交互式引导里会从 worker 线程触发 QApplication 边界，
+                # 运行时证据表明会导致多平台统一出现 0xC0000005 native crash。
+                # 这里先回退到稳定的 TTY 选择流程，保留 1 基索引和全选/取消等交互能力。
+                selection = InteractiveTTYSelection()
+
+            download = not getattr(args, "no_download", False)
+            if run_timeout:
+                print(f"  {DIM}超时设置: {run_timeout}s{RESET}")
+
+            print(f"\n{BOLD}正在搜索...{RESET}\n")
+            try:
+                runner = CLIRunner(
+                    source=platform_id,
+                    keyword=keyword,
+                    save_dir=save_dir,
+                    selection_strategy=selection,
+                    config=config,
+                    verbose=not getattr(args, "quiet", False),
+                    log_to_stderr=not getattr(args, "quiet", False),
+                    timeout=run_timeout,
+                    download=download,
+                )
+                result = runner.run()
+            except Exception as exc:
+                sys.stderr.write(f"❌ 搜索失败: {exc}\n")
+                return 1
+
+            status = result.get("status", "error")
+            if status != "ok":
+                error = result.get("error", "未知错误")
+                sys.stderr.write(f"❌ {status}: {error}\n")
+                return 1
+
+            items = result.get("items", [])
+            elapsed = result.get("elapsed", 0)
+
+            if not items:
+                print(f"{YELLOW}未找到结果 ({elapsed:.1f}s){RESET}")
+                print(f"  {DIM}{guide.get('empty_tip', '可尝试检查关键词、登录状态或平台参数配置。')}{RESET}")
+                action = _prompt_post_run_action(save_dir, allow_repeat=True)
+                if action == "same":
+                    continue
+                if action == "switch":
+                    next_platform_id = None
+                    continue
+                return 0
+
+            print(f"\n{GREEN}找到 {len(items)} 个结果 ({elapsed:.1f}s):{RESET}\n")
+            for i, item in enumerate(items):
+                if isinstance(item, dict):
+                    title = item.get("title", item.get("id", "未知"))
+                    content_type = item.get("content_type", "")
+                    type_label = {"video": "视频", "gallery": "图集", "image": "图片"}.get(content_type, "")
+                    extra = f"  [{type_label}]" if type_label else ""
+                    if len(title) > 60:
+                        title = title[:57] + "..."
+                    print(f"  {YELLOW}{i + 1}{RESET}. {title}{extra}")
+                else:
+                    print(f"  {YELLOW}{i + 1}{RESET}. {item}")
+
+            if not download and getattr(args, "pretty", False):
+                sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+                sys.stdout.flush()
+
+            if not download:
+                action = _prompt_post_run_action(save_dir, allow_repeat=True)
+                if action == "same":
+                    continue
+                if action == "switch":
+                    next_platform_id = None
+                    continue
+                return 0
+
+            _print_download_summary(items, elapsed, save_dir)
+            action = _prompt_post_run_action(save_dir, allow_repeat=True)
+            if action == "same":
+                continue
+            if action == "switch":
+                next_platform_id = None
+                continue
+            return 0
+    finally:
+        sdk.close()

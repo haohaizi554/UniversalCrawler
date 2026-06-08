@@ -9,9 +9,9 @@
     python tests/run_all_tests.py
 
     # 按类别
-    python tests/run_all_tests.py --category unit
+    python tests/run_all_tests.py --category cli_sdk
     python tests/run_all_tests.py --category all
-    python tests/run_all_tests.py --category web_browser
+    python tests/run_all_tests.py --category browser_e2e
 
     # 详细输出
     python tests/run_all_tests.py --verbose

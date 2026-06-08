@@ -9,7 +9,7 @@
 - **测试金字塔**（Mike Cohn）：底层单元测试最多，往上集成、E2E 逐渐减少
 - **FIRST 原则**：Fast、Independent、Repeatable、Self-validating、Timely
 - **AAA 模式**：Arrange（准备）/ Act（执行）/ Assert（断言）
-- **测试隔离**：每个测试独立 setUp/tearDown，unittest 框架保证
+- **测试隔离**：每个测试独立 setUp/tearDown，主要以 `unittest.TestCase` 风格编写，由 `pytest` 统一执行
 - **黑盒 vs 白盒**：黑盒只看 API 行为，白盒 mock 内部实现
 - **契约测试**：验证多个入口（CLI/SDK/API）的输出一致
 - **Pipeline 测试**：验证 stdin/stdout 数据流转换
@@ -19,17 +19,19 @@
 
 | 类别 | 文件数 | 用例数 | 说明 |
 |------|------|------|------|
-| **all** | 全部 | 全部 | 全量测试（运行所有 enabled 类别） |
-| unit | 7 | 130+ | CLI/SDK/选择策略/配置/默认值的最小单元测试 |
-| integration | 3 | 150+ | FastAPI 端点、Web 入口、CLI/SDK/API 三层契约 |
-| e2e | 1 | 30+ | 完整流程：scan → dir/change → search → state |
-| ui | 1 | 40+ | dispatcher 模式选择弹窗、端口冲突弹窗、TUI 菜单、托盘图标 |
-| pipeline | 1 | 30+ | stdin/stdout JSON 管道选择、合集场景多轮预加载 |
-| packaging | 1 | 40+ | PyInstaller spec / runtime hook / 图标 / 资源完整性 |
-| web_browser | 1 | 30+ | Playwright 真实浏览器测试 web UI（前端交互、可访问性） |
-| core | 6 | 100+ | 项目原有核心组件（控制器、下载器、爬虫、文件服务） |
+| **all** | 34 | 全部 | 当前 `tests/` 目录下所有可执行测试脚本 |
+| cli_sdk | 7 | 130+ | CLI、SDK、选择策略、默认值与 Runner |
+| web_api | 3 | 150+ | FastAPI 端点、Web 入口、多入口契约 |
+| app_flows | 3 | 30+ | 端到端流程、入口调度、跨模块流程 |
+| desktop_ui | 4 | 40+ | Qt 主窗口、控制器、队列面板、对话框 |
+| browser_e2e | 1 | 30+ | Playwright 真实浏览器前端交互回归 |
+| pipeline | 1 | 30+ | stdin/stdout JSON 管道与多轮预加载 |
+| packaging | 1 | 40+ | spec、runtime hook、资源与发布入口 |
+| core_services | 13 | 100+ | 下载器、文件服务、配置、日志、核心服务 |
+| suite_infra | 1 | 30+ | 测试入口、插件接入、测试套件自身行为 |
+| misc | 自动 | 自动 | 未命中规则的新测试脚本，便于后续补分类 |
 
-**总用例数：700+**
+**总用例数：数百个，持续增长**
 
 ## 核心测试基础设施（v2 升级）
 
@@ -38,11 +40,13 @@
 集中管理所有测试类别与文件：
 
 - `TestCategory` dataclass（id/name/description/files/icon_color/icon_letter/priority/requires_network/requires_gui/enabled）
-- 预置 9 个类别（all/unit/integration/e2e/ui/pipeline/packaging/web_browser/core）
+- 预置 11 个类别（all/cli_sdk/web_api/app_flows/desktop_ui/browser_e2e/pipeline/packaging/core_services/suite_infra/misc）
 - `register_category()` 运行时注册新类别
+- `register_category_rule()` 用 glob 规则自动归类
+- `register_test_files()` 便于后续把测试脚本接入现有套件
 - `get_enabled_categories()` 按 priority 排序
 - `get_resolved_files(cat_id)` 解析 `all` 为所有其他类别
-- `auto_discover_tests()` 自动发现未注册文件
+- `auto_discover_tests()` 自动发现未命中规则的新测试脚本
 
 ### 2. 测试运行引擎 [test_runner.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_runner.py)
 
@@ -63,9 +67,9 @@
 python tests/test_launcher.py
 
 # 2. 命令行直接跑某个类别
-python tests/test_launcher.py --category unit
+python tests/test_launcher.py --category cli_sdk
 python tests/test_launcher.py --category all
-python tests/test_launcher.py --category web_browser
+python tests/test_launcher.py --category browser_e2e
 
 # 3. TUI 菜单（无 GUI 环境）
 python tests/test_launcher.py --tui
@@ -78,14 +82,14 @@ python tests/test_launcher.py --gui
 ```
 
 特性：
-- 卡片选择（左侧 6px 边条 + 字母 + 名称 + 描述 + 元信息）
-- 实时运行面板（QTextEdit 滚动日志 + 进度条）
-- F5 运行 / Ctrl+A 全选 / Esc 全不选 / "推荐" 快捷按钮
+- 左侧分组套件列表 + 右侧统计/详情/控制台的现代双栏布局
+- 实时运行面板（统计卡片 + 进度条 + QTextEdit 滚动日志）
+- F5 运行 / Ctrl+1 全部 / Ctrl+R 推荐 / Esc 清空
 - failfast / verbose 复选框
-- **任务栏/窗口图标：tests/test.ico（多帧标准 ICO）**
+- **任务栏/窗口图标：优先使用根目录 `test.ico`，不存在时回退到 `tests/test.ico`**
 - Windows AppUserModelID：`ucrawl.universalcrawlerpro.test`
 
-### 4. 测试图标 [test.ico](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test.ico)
+### 4. 测试图标 [test.ico](file:///d:/desktop/project/UniversalCrawlerProplus/test.ico)
 
 **多帧标准 ICO**（BMP 转换后用 Pillow 重存）：
 
@@ -98,16 +102,18 @@ python tests/test_launcher.py --gui
 旧的 CLI 入口，重构后从 `test_registry` 读取类别：
 
 ```bash
-python tests/run_all_tests.py                       # 全量
-python tests/run_all_tests.py --category unit       # 按类别
-python tests/run_all_tests.py --list                # 列出
-python tests/run_all_tests.py --verbose             # 详细
-python tests/run_all_tests.py --no-failfast         # 不遇失败停止
+python tests/run_all_tests.py                         # 全量
+python tests/run_all_tests.py --category cli_sdk      # 按类别
+python tests/run_all_tests.py --list                  # 列出
+python tests/run_all_tests.py --verbose               # 详细
+python tests/run_all_tests.py --no-failfast           # 不遇失败停止
 ```
 
 ## 测试文件总览
 
-### CLI / SDK / 选择策略（unit 类别）
+命名与自动分类规则见 [NAMING.md](file:///d:/desktop/project/UniversalCrawlerProplus/tests/NAMING.md)。
+
+### CLI / SDK / 选择策略（cli_sdk 类别）
 - [test_cli_entry.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_cli_entry.py) - cli_entry 透传
 - [test_cli_main.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_cli_main.py) - argparse 解析 + 平台别名
 - [test_cli_selection.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_cli_selection.py) - RuleSelection/AutoSelection
@@ -116,7 +122,7 @@ python tests/run_all_tests.py --no-failfast         # 不遇失败停止
 - [test_cli_sdk.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_cli_sdk.py) - UcrawlSDK
 - [test_cli_runner.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_cli_runner.py) - CLIRunner 生命周期
 
-### 集成（integration 类别）
+### Web / API（web_api 类别）
 - [test_fastapi_endpoints.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_fastapi_endpoints.py) - FastAPI 全部 REST 端点
 - [test_web_entry.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_web_entry.py) - Web 入口
 - [test_contract.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_contract.py) - CLI/SDK/API 三层契约
@@ -127,7 +133,7 @@ python tests/run_all_tests.py --no-failfast         # 不遇失败停止
 - [test_ui_dialogs.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_ui_dialogs.py) - 弹窗与界面
 - [test_pipeline.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_pipeline.py) - 管道选择
 
-### Web 浏览器（web_browser 类别）
+### 浏览器 E2E（browser_e2e 类别）
 - [test_web_browser.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/test_web_browser.py) - Playwright 真实浏览器测试
   - StaticAssetsTests（HTML/CSS/JS 静态结构，不需 Playwright）
   - WebSocketMessageTypesTests（WS 消息类型一致性）
@@ -136,7 +142,7 @@ python tests/run_all_tests.py --no-failfast         # 不遇失败停止
   - WebDesignGuidelinesTests（focus 样式、hover、disabled、错误日志）
 - [web_test_app.py](file:///d:/desktop/project/UniversalCrawlerProplus/tests/web_test_app.py) - uvicorn 启动 shim（暴露 `app` 给 `tests.web_test_app:app`）
 
-### 核心组件（core 类别）
+### 核心组件（core_services 类别）
 - test_application_controller.py - 控制器
 - test_downloaders.py / test_download_manager_dispatch.py - 下载器
 - test_spider_helpers.py - 爬虫辅助
@@ -160,8 +166,8 @@ python tests/test_launcher.py
 
 # 命令行
 python tests/test_launcher.py --category all
-python tests/test_launcher.py --category unit
-python tests/test_launcher.py --category web_browser
+python tests/test_launcher.py --category cli_sdk
+python tests/test_launcher.py --category browser_e2e
 ```
 
 ### 全量（CLI）
@@ -173,14 +179,15 @@ python tests/run_all_tests.py
 ### 按类别（CLI）
 
 ```bash
-python tests/run_all_tests.py --category unit       # 单元
-python tests/run_all_tests.py --category integration # 集成
-python tests/run_all_tests.py --category e2e         # 端到端
-python tests/run_all_tests.py --category packaging   # 打包
-python tests/run_all_tests.py --category ui          # UI
-python tests/run_all_tests.py --category pipeline    # 管道
-python tests/run_all_tests.py --category web_browser # Web 浏览器
-python tests/run_all_tests.py --category core        # 核心组件
+python tests/run_all_tests.py --category cli_sdk       # CLI / SDK
+python tests/run_all_tests.py --category web_api       # Web / API
+python tests/run_all_tests.py --category app_flows     # 应用流程
+python tests/run_all_tests.py --category desktop_ui    # 桌面界面
+python tests/run_all_tests.py --category pipeline      # 管道
+python tests/run_all_tests.py --category packaging     # 打包
+python tests/run_all_tests.py --category browser_e2e   # 浏览器 E2E
+python tests/run_all_tests.py --category core_services # 核心服务
+python tests/run_all_tests.py --category suite_infra   # 测试套件
 ```
 
 ### 单个文件
@@ -203,7 +210,8 @@ python -m pytest tests/ --no-failfast
 
 ## 编写约定
 
-- 使用 `unittest` 框架（与历史一致）
+- 统一用 `pytest` 作为执行入口
+- 测试主体可继续使用 `unittest.TestCase` 风格（与历史资产兼容）
 - 测试文件名以 `test_` 开头
 - 类名以 `Test` 结尾（单元测试）或描述性名词
 - 方法名以 `test_` 开头
@@ -213,27 +221,32 @@ python -m pytest tests/ --no-failfast
 
 ## 扩展测试类别
 
-新增测试类别只需在 `test_registry.py` 的 `TEST_REGISTRY` 字典中加一项：
+新增测试类别或把新脚本纳入现有套件，优先走注册接口：
 
 ```python
-TEST_REGISTRY["perf"] = TestCategory(
+from tests.test_registry import (
+    register_category,
+    register_category_rule,
+    register_test_files,
+)
+
+register_category(
     id="perf",
     name="性能测试",
     description="基准测试 + 内存分析",
     files=["tests/test_perf_bench.py"],
-    icon_color="#FF5722",
-    priority=10,
 )
-```
 
-或运行时注册：
+register_category_rule(
+    id="plugin_api",
+    name="插件接口",
+    description="自动纳入某个命名规则下的新测试脚本",
+    include=["tests/test_plugin_*.py"],
+)
 
-```python
-from tests.test_registry import register_category
-register_category(
-    id="custom",
-    name="我的自定义",
-    files=["tests/test_custom.py"],
+register_test_files(
+    "suite_infra",
+    ["tests/test_new_suite_case.py"],
 )
 ```
 

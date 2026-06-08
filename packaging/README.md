@@ -2,50 +2,105 @@
 
 ## 目标
 
-`packaging/` 目录用于生成桌面端分发产物，当前支持：
+`packaging/` 目录用于产出当前项目的 Windows 分发物，覆盖两种交付形态：
 
-- 便携版目录打包
-- 安装包生成
-- 一键发布脚本
+- 便携版目录：解压即用，适合本地验证、灰度分发、免安装交付
+- 安装包：基于 Inno Setup 的标准 Windows 安装器，适合正式发布
 
-## 主要脚本
+如果你更关心“发布流程”和“人工验收清单”，请优先阅读 [docs/packaging.md](../docs/packaging.md)。
+
+当前打包链路已经适配本项目的真实入口结构：
+
+- 统一源码入口：`main.py` + `entry/dispatcher.py`
+- 打包后双 EXE：
+  - `UniversalCrawlerPro.exe`：桌面 GUI
+  - `CrawlerWebPortal.exe`：Web UI
+
+## 目录职责
 
 - `build_portable.py`
-  - 生成便携版目录，适合本地验证与手动分发。
+  - 构建便携版目录
+  - 校验关键入口、图标、外部工具、Playwright Chromium
+  - 生成 `BUILD_INFO.txt`
 - `build_installer.py`
-  - 基于 Inno Setup 生成安装包。
+  - 调用 Inno Setup 生成安装包
+  - 从 `pyproject.toml` 同步项目版本并注入 `installer.iss`
 - `build_release.py`
-  - 串联便携版与安装包流程。
+  - 串联便携版和安装包构建
+- `portable.spec`
+  - PyInstaller 打包规格
+- `installer.iss`
+  - Inno Setup 安装脚本
+- `runtime_hook.py`
+  - 运行时环境修正，如 `PLAYWRIGHT_BROWSERS_PATH`、标准输出兜底、任务栏 AppUserModelID
+- `project_meta.py`
+  - 打包链路共享元数据，收口项目版本、发布名称和 Windows 标识
+
+## 版本与元数据
+
+打包链路的版本源统一来自根目录 `pyproject.toml`：
+
+- Python 包版本：`[project].version`
+- 安装器显示版本：由 `build_installer.py` 注入 `installer.iss`
+- 安装包文件名：自动带当前版本号
+- 便携版 `BUILD_INFO.txt`：自动写入当前版本号
+
+这样可以避免：
+
+- 安装器版本和源码版本漂移
+- 手工改 `installer.iss` 忘记同步
+- 发布包版本不可追溯
 
 ## 便携版构建
+
+### 前置条件
+
+- Windows 环境
+- 已安装构建依赖
+- 已执行 `playwright install chromium`
+- 根目录可找到：
+  - `ffmpeg.exe`
+  - `N_m3u8DL-RE.exe`
+
+### 命令
 
 ```bash
 python packaging/build_portable.py
 ```
 
-典型产物：
+### 典型产物
 
 - `dist/UniversalCrawlerPro/UniversalCrawlerPro.exe`
+- `dist/UniversalCrawlerPro/CrawlerWebPortal.exe`
+- `dist/UniversalCrawlerPro/_internal/`
+- `dist/UniversalCrawlerPro/BUILD_INFO.txt`
 - 随包携带的 `ffmpeg.exe`
 - 随包携带的 `N_m3u8DL-RE.exe`
-- Playwright Chromium 运行时
+- 随包携带的 Playwright Chromium 运行时
 
 ## 安装包构建
 
-前置条件：
+### 前置条件
 
+- 已先完成便携版构建
 - 已安装 Inno Setup 6
 - 系统可访问 `ISCC.exe`
 
-执行：
+### 命令
 
 ```bash
 python packaging/build_installer.py
 ```
 
-安装器脚本位于：
+### 说明
 
-- `packaging/installer.iss`
+- 安装器脚本位于 `packaging/installer.iss`
+- `build_installer.py` 会把项目版本、发布者、输出文件名、AppUserModelID 注入安装器
+- 安装包文件名默认形如：
+
+```text
+dist/installer/UniversalCrawlerPro_Setup_<version>.exe
+```
 
 ## 一键构建
 
@@ -53,17 +108,68 @@ python packaging/build_installer.py
 python packaging/build_release.py
 ```
 
-## 打包注意事项
+执行顺序：
 
-- 用户数据不应被打进安装包。
-- `config.json` 与平台 Cookie 文件应保持为运行期产物。
-- 构建前请先执行完整测试，至少运行 `python -m unittest discover -s tests`。
-- 如果修改了外部工具路径发现逻辑，请同步验证打包后的运行时路径。
+1. 构建便携版
+2. 校验输出完整性
+3. 基于便携版生成安装包
 
-## 建议发布前检查
+## 当前产物约定
 
-- 主程序可启动。
-- Chromium 运行时可用。
-- `ffmpeg.exe` 与 `N_m3u8DL-RE.exe` 可被发现。
-- 下载目录与日志目录可正常创建。
-- UI 顶部调试入口可打开日志与错误摘要。
+### 主程序
+
+- `UniversalCrawlerPro.exe`
+- 入口：桌面 GUI
+- AppUserModelID：`ucrawl.universalcrawlerpro.main`
+
+### Web 门户
+
+- `CrawlerWebPortal.exe`
+- 入口：Web UI
+- AppUserModelID：`ucrawl.universalcrawlerpro.web`
+
+### 用户数据
+
+不允许把以下用户态文件打入产物：
+
+- `config.json`
+- `bili_auth.json`
+- `ks_auth.json`
+- `dy_auth.json`
+
+运行时用户数据路径应走项目现有规则：
+
+- 开发态：优先项目根目录 `user_data`
+- 打包态：优先 `%LOCALAPPDATA%` / `AppData`
+
+## 发布前检查
+
+至少执行以下检查：
+
+1. `python -m pytest tests/test_packaging.py`
+2. `python tests/test_launcher.py --list`
+3. 启动 `UniversalCrawlerPro.exe`
+4. 启动 `CrawlerWebPortal.exe`
+5. 验证 Chromium 运行时可用
+6. 验证 `ffmpeg.exe` 与 `N_m3u8DL-RE.exe` 能被找到
+7. 验证下载目录、日志目录和配置目录可正常创建
+8. 确认产物中未混入用户态配置和 Cookie
+
+## 常见问题
+
+### 未找到 `ms-playwright`
+
+先执行：
+
+```bash
+playwright install chromium
+```
+
+### 未找到 `ISCC.exe`
+
+请安装 Inno Setup 6，或确保 `ISCC.exe` 在系统 `PATH` 中可见。
+
+### 安装器版本不对
+
+不要手改 `installer.iss` 里的版本号。
+当前正确做法是修改根目录 `pyproject.toml` 中的 `[project].version`，再重新运行构建脚本。

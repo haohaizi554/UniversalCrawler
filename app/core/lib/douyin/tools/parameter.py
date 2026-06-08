@@ -246,13 +246,21 @@ class Parameter:
             enable=self.douyin_platform,
         )
         self.proxy_tiktok: str | None = self.__check_proxy_tiktok(proxy_tiktok)
-        self.client = create_client(
-            timeout=self.timeout,
-            proxy=self.proxy,
+        self.client = (
+            create_client(
+                timeout=self.timeout,
+                proxy=self.proxy,
+            )
+            if self.douyin_platform
+            else None
         )
-        self.client_tiktok = create_client(
-            timeout=self.timeout,
-            proxy=self.proxy_tiktok,
+        self.client_tiktok = (
+            create_client(
+                timeout=self.timeout,
+                proxy=self.proxy_tiktok,
+            )
+            if self.tiktok_platform
+            else None
         )
 
         self.__generate_folders()
@@ -376,6 +384,7 @@ class Parameter:
             self.logger,
             self.headers_params,
             proxy=self.proxy,
+            timeout=min(self.timeout, 3),
         ):
             self.logger.info(f"抖音 {TtWid.NAME} 请求值: {tt_wid[TtWid.NAME]}", False)
             return tt_wid
@@ -630,8 +639,27 @@ class Parameter:
                 self.console.info(
                     _("正在更新抖音参数，请稍等..."),
                 )
-                ms_token = await self.__get_token_params()
-                tt_wid = await self.__get_tt_wid_params()
+                local_ms_token = self.cookie_dict.get(MsToken.NAME) or self.get_cookie_value(
+                    self.cookie_str,
+                    MsToken.NAME,
+                )
+                cached_ms_token = ""
+                if API and isinstance(getattr(API, "params", None), dict):
+                    cached_ms_token = API.params.get("msToken", "")
+                if local_ms_token:
+                    ms_token = {MsToken.NAME: local_ms_token}
+                elif cached_ms_token:
+                    ms_token = {MsToken.NAME: cached_ms_token}
+                else:
+                    ms_token = await self.__get_token_params()
+                local_tt_wid = self.cookie_dict.get(TtWid.NAME) or self.get_cookie_value(
+                    self.cookie_str,
+                    TtWid.NAME,
+                )
+                if local_tt_wid:
+                    tt_wid = {TtWid.NAME: local_tt_wid}
+                else:
+                    tt_wid = await self.__get_tt_wid_params()
                 # 更新到 API 类参数
                 if API and ms_token:
                     API.params["msToken"] = ms_token.get(MsToken.NAME, "")
@@ -819,27 +847,26 @@ class Parameter:
         #     )
         #     return {}
         """提供 `__get_token_params` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
-        if d := await MsToken.get_real_ms_token(
-            self.logger,
-            self.headers_params,
-            # m,
-            proxy=self.proxy,
-        ):
-            self.logger.info(
-                f"抖音 MsToken 请求值: {d[MsToken.NAME]}",
-                False,
-            )
-            return d
-        else:
-            ms_token = self.cookie_dict.get(MsToken.NAME) or self.get_cookie_value(
-                self.cookie_str,
-                MsToken.NAME,
-            )
+        ms_token = self.cookie_dict.get(MsToken.NAME) or self.get_cookie_value(
+            self.cookie_str,
+            MsToken.NAME,
+        )
+        if ms_token:
             self.logger.info(
                 f"抖音 MsToken 本地值: {ms_token}",
                 False,
             )
             return {MsToken.NAME: ms_token}
+
+        # 速度优先：避免把不稳定的远程 msToken 刷新放到启动关键路径。
+        # 抖音接口模板本身允许空 msToken，这里进一步给出本地假值兜底，
+        # 让启动链保持确定性，后续如需更强兼容性可再补充异步刷新策略。
+        fake_ms_token = MsToken.get_fake_ms_token()
+        self.logger.info(
+            f"抖音 MsToken 使用本地兜底值: {fake_ms_token[MsToken.NAME]}",
+            False,
+        )
+        return fake_ms_token
 
     async def __get_token_params_tiktok(self) -> dict:
         """提供 `__get_token_params_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
@@ -1069,13 +1096,21 @@ class Parameter:
         if isinstance(proxy_tiktok, str):
             self.proxy_tiktok: str | None = self.__check_proxy_tiktok(proxy_tiktok)
         await self.close_client()
-        self.client = create_client(
-            timeout=self.timeout,
-            proxy=self.proxy,
+        self.client = (
+            create_client(
+                timeout=self.timeout,
+                proxy=self.proxy,
+            )
+            if self.douyin_platform
+            else None
         )
-        self.client_tiktok = create_client(
-            timeout=self.timeout,
-            proxy=self.proxy_tiktok,
+        self.client_tiktok = (
+            create_client(
+                timeout=self.timeout,
+                proxy=self.proxy_tiktok,
+            )
+            if self.tiktok_platform
+            else None
         )
 
     @staticmethod
@@ -1107,8 +1142,10 @@ class Parameter:
 
     async def close_client(self) -> None:
         """执行 `close_client` 对应的业务逻辑，供 `Parameter` 使用。"""
-        await self.client.aclose()
-        await self.client_tiktok.aclose()
+        if self.client is not None:
+            await self.client.aclose()
+        if self.client_tiktok is not None:
+            await self.client_tiktok.aclose()
 
     def __generate_folders(self):
         """提供 `__generate_folders` 对应的内部辅助逻辑，供 `Parameter` 使用。"""

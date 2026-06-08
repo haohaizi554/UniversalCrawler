@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication
 
-from app.core.plugins.settings_builders import (
+from app.ui.plugin_settings import (
     MissAVSettingsWidget,
     PageLimitSettingsWidget,
     read_bilibili_run_options,
@@ -45,7 +45,7 @@ class SettingsBuildersTests(unittest.TestCase):
 
         self.assertEqual(widget.current_value(), 1)
 
-    @patch("app.core.plugins.settings_builders.cfg.set")
+    @patch("app.ui.plugin_settings.cfg.set")
     def test_read_bilibili_run_options_persists_selected_pages(self, mocked_set):
         """验证 `test_read_bilibili_run_options_persists_selected_pages` 对应场景是否符合预期，供 `SettingsBuildersTests` 使用。"""
         widget = PageLimitSettingsWidget(
@@ -67,8 +67,8 @@ class SettingsBuildersTests(unittest.TestCase):
 
         self.assertEqual(result, {"max_items": 20, "timeout": 10})
 
-    @patch("app.core.plugins.settings_builders.cfg.update_missav_proxy")
-    @patch("app.core.plugins.settings_builders.cfg.set")
+    @patch("app.ui.plugin_settings.cfg.update_missav_proxy")
+    @patch("app.ui.plugin_settings.cfg.set")
     def test_read_missav_run_options_updates_config_and_normalizes_proxy(self, mocked_set, mocked_update_proxy):
         """验证 `test_read_missav_run_options_updates_config_and_normalizes_proxy` 对应场景是否符合预期，供 `SettingsBuildersTests` 使用。"""
         widget = MissAVSettingsWidget()

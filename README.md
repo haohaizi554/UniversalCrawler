@@ -8,7 +8,7 @@
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
   <img alt="Tests" src="https://img.shields.io/badge/Test-unittest-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
-  <img alt="License" src="https://img.shields.io/badge/License-Disclaimer-red" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green" />
 </p>
 
 **Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
@@ -118,23 +118,26 @@
 
 ```bash
 python main.py
+# 或
+python -m entry.gui_entry
 ```
 
+- `main.py` 是统一自适应入口，无参数时默认进入桌面 GUI。
+- 也可以直接走 `entry.gui_entry` 薄入口。
 - 完整的 PyQt6 桌面体验，适合日常本地使用。
 - 支持主题切换、媒体预览、全屏播放等。
 
 ### Web UI 模式
 
 ```bash
-python web_main.py                # 默认 http://localhost:8000
-python web_main.py --port 9000    # 自定义端口
-python web_main.py --no-qt        # 无 Qt 模式（仅 API，不支持爬虫）
-python web_main.py --script auto_download.py --script-arg keyword=舞蹈  # 启动时注入脚本
+python -m entry.web_entry --host 127.0.0.1 --port 8000
+# 或
+ucrawl-web --host 127.0.0.1 --port 8000
 ```
 
+- Web 入口已从历史上的 `web_main.py` 收敛到 `entry.web_entry`。
 - 启动后自动打开浏览器，通过 Web 界面操控下载。
 - 系统托盘驻留，右键可打开浏览器或退出。
-- 支持脚本注入，可用于自动化批量下载。
 - RESTful API 完整暴露，方便二次集成。
 
 ### Web API 速览
@@ -225,8 +228,8 @@ UniversalCrawlerPro/
 ├── tests/                  # 测试用例
 ├── ffmpeg.exe              # 外部工具
 ├── N_m3u8DL-RE.exe         # 外部工具
-├── main.py                 # 桌面 GUI 入口
-├── web_main.py             # Web UI 入口
+├── main.py                 # 统一自适应入口（默认进入 GUI）
+├── entry/                  # GUI / Web / CLI / Interactive / Test 薄入口
 └── pyproject.toml          # 项目配置与依赖
 ```
 
@@ -241,7 +244,7 @@ python main.py
 **Web UI 模式：**
 
 ```bash
-python web_main.py
+python -m entry.web_entry --host 127.0.0.1 --port 8000
 ```
 
 首次启动后，程序会自动完成必要的初始化，并准备默认运行环境。
@@ -445,16 +448,16 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 
 相关说明：
 
-- [日志文档](Logs/README.md)
 - [调试服务实现](app/services/debug_service.py)
 - [底层日志器实现](app/debug_logger.py)
+- [打包说明](packaging/README.md)
 
 ---
 
 <a id="testing"></a>
 ## 🧪 测试与质量保证
 
-项目当前统一使用 `unittest`，本地执行方式与 CI 保持一致。
+项目当前以 `pytest` 作为统一运行入口，测试代码主体仍以 `unittest.TestCase` 风格编写，兼容历史资产与新回归用例。
 
 ### 当前测试重点覆盖
 
@@ -468,15 +471,15 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 
 ### 当前分支的测试信号
 
-- 已具备 **180+** `unittest` 测试用例。
-- 已覆盖单元测试、半集成测试、mock 化系统流程测试等多个层面。
+- 已覆盖 CLI / SDK / Web API / 打包配置 / 桌面 UI / 浏览器 E2E 等多个层面。
+- 已接入自动分类测试套件，新增测试可按命名规则自动归类。
 - GitHub Actions 已接入基础自动化检查。
 
 ### 本地执行命令
 
 ```bash
 python -m compileall app tests main.py
-python -m unittest discover -s tests
+python -m pytest tests
 ```
 
 ### 测试策略建议
@@ -509,8 +512,10 @@ python -m unittest discover -s tests
 - [接口与关键对象](docs/api.md)
 - [测试策略](docs/testing.md)
 - [配置说明](docs/config.md)
-- [日志说明](Logs/README.md)
-- [打包说明](packaging/README.md)
+- [打包与发布指南](docs/packaging.md)
+- [容器化部署说明](docs/containerization.md)
+- [打包脚本说明](packaging/README.md)
+- [测试目录说明](tests/README.md)
 
 ### 关键目录 README
 
@@ -567,7 +572,7 @@ python -m unittest discover -s tests
 - 是否已通过完整测试
 - 是否确认不把用户态配置和 Cookie 打入产物
 
-详细说明见：[打包文档](packaging/README.md)
+详细说明见：[打包与发布指南](docs/packaging.md) 与 [打包脚本说明](packaging/README.md)
 
 ---
 
@@ -594,13 +599,13 @@ python -m unittest discover -s tests
 python -m compileall app tests main.py
 
 # 运行测试
-python -m unittest discover -s tests
+python -m pytest tests
 
 # 桌面 GUI 模式启动
 python main.py
 
 # Web UI 模式启动
-python web_main.py
+python -m entry.web_entry --host 127.0.0.1 --port 8000
 ```
 
 ### 一些对维护者很重要的约定

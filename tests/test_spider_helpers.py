@@ -220,6 +220,15 @@ class SpiderHelperTests(unittest.TestCase):
             ("https://cdn.example.com/video.m4s", "https://cdn.example.com/audio.m4s", 80),
         )
 
+    def test_bilibili_spider_formats_second_stage_choice_with_parent_context(self):
+        """第二层候选必须带父级标题，避免终端只显示裸 `[01] 标题`。"""
+        title = BilibiliSpider._format_episode_choice(
+            "sunny77小合集",
+            {"page_num": 3, "title": "我的好利来女友"},
+            2,
+        )
+        self.assertEqual(title, "sunny77小合集 · P03 · 我的好利来女友")
+
     def test_bilibili_parser_parse_play_url_response_allows_missing_audio(self):
         """验证 `test_bilibili_parser_parse_play_url_response_allows_missing_audio` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         parser = BilibiliParser()

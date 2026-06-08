@@ -1,0 +1,176 @@
+# 打包与发布指南
+
+## 目标
+
+本文档面向当前项目维护者，说明如何把 UniversalCrawlerProplus 打成可分发的 Windows 产物，并保证版本、入口、用户数据路径与当前工程实现一致。
+
+## 当前发布形态
+
+项目当前维护两种标准分发物：
+
+- 便携版目录
+  - 适合本地验证、灰度分发、无需安装的交付场景
+- Inno Setup 安装包
+  - 适合正式发布、桌面快捷方式、开始菜单、标准卸载
+
+两种发布物都基于同一套源码入口：
+
+- `main.py`：统一自适应入口
+- `entry.gui_entry`：桌面 GUI
+- `entry.web_entry`：Web UI
+
+## 关键原则
+
+- 版本号只认 `pyproject.toml`
+- 安装器版本不得手工硬编码
+- 打包态用户数据不得回写进仓库
+- 开发态与打包态路径必须继续遵守 `runtime_paths.py` 规范
+- 外部工具必须显式随包交付，不依赖用户手工补环境
+
+## 打包前准备
+
+### 1. 基础依赖
+
+```bash
+pip install -e .
+pip install -r packaging/requirements-build.txt
+playwright install chromium
+```
+
+### 2. 根目录外部工具
+
+以下文件必须位于项目根目录：
+
+- `ffmpeg.exe`
+- `N_m3u8DL-RE.exe`
+
+### 3. 发布前回归
+
+至少执行：
+
+```bash
+python -m pytest tests/test_packaging.py
+python -m pytest tests/test_downloaders.py
+python tests/test_launcher.py --list
+```
+
+如果近期改动过 Web、下载器、控制器或路径策略，建议补跑对应专题测试。
+
+## 构建流程
+
+### 便携版
+
+```bash
+python packaging/build_portable.py
+```
+
+产物目录：
+
+```text
+dist/UniversalCrawlerPro/
+```
+
+关键产物：
+
+- `UniversalCrawlerPro.exe`
+- `CrawlerWebPortal.exe`
+- `_internal/`
+- `BUILD_INFO.txt`
+- `ffmpeg.exe`
+- `N_m3u8DL-RE.exe`
+- `ms-playwright/`
+
+### 安装包
+
+```bash
+python packaging/build_installer.py
+```
+
+输出目录：
+
+```text
+dist/installer/
+```
+
+命名规则：
+
+- 安装包文件名自动带当前项目版本
+- 版本号来源于 `pyproject.toml`
+
+### 一键发布
+
+```bash
+python packaging/build_release.py
+```
+
+## 版本同步规则
+
+当前版本同步关系如下：
+
+- Python 包版本：`pyproject.toml`
+- 便携版说明：`packaging/build_portable.py` 写入 `BUILD_INFO.txt`
+- 安装器版本：`packaging/build_installer.py` 注入 `installer.iss`
+- 安装包输出名：同样由 `build_installer.py` 注入
+
+如果你要发布新版本，优先修改：
+
+```toml
+[project]
+version = "x.y.z"
+```
+
+不要再手改：
+
+- `installer.iss` 的版本号
+- 安装包文件名
+- 便携版构建说明里的版本文本
+
+## 任务栏与快捷方式标识
+
+为了让主程序与 Web 门户在 Windows 任务栏正确分组，当前约定如下：
+
+- 主程序：`ucrawl.universalcrawlerpro.main`
+- Web 门户：`ucrawl.universalcrawlerpro.web`
+
+这些标识必须在以下位置保持一致：
+
+- `packaging/runtime_hook.py`
+- `packaging/installer.iss`
+- GUI / Web 启动入口
+
+## 用户数据约束
+
+打包时必须排除：
+
+- `config.json`
+- `bili_auth.json`
+- `ks_auth.json`
+- `dy_auth.json`
+
+原因：
+
+- 这些都是运行期状态，不应进入发布物
+- 否则会污染用户环境，且容易把开发机状态带入正式包
+
+## 发布后人工验收
+
+建议至少人工验证以下项目：
+
+1. 双击 `UniversalCrawlerPro.exe` 能启动 GUI
+2. 双击 `CrawlerWebPortal.exe` 能启动 Web UI
+3. Web UI 能正常打开浏览器
+4. GUI / Web 都能创建下载目录
+5. `ffmpeg.exe` 与 `N_m3u8DL-RE.exe` 可被发现
+6. Playwright Chromium 可用
+7. 用户数据写入位置符合当前路径规范
+8. 安装包开始菜单和桌面快捷方式可用
+9. 卸载流程正常
+
+## 相关文件
+
+- [packaging/README.md](../packaging/README.md)
+- [packaging/build_portable.py](../packaging/build_portable.py)
+- [packaging/build_installer.py](../packaging/build_installer.py)
+- [packaging/portable.spec](../packaging/portable.spec)
+- [packaging/installer.iss](../packaging/installer.iss)
+- [tests/test_packaging.py](../tests/test_packaging.py)

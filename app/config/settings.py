@@ -10,8 +10,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QByteArray
-
 from app.config.constants import (
     DEFAULT_CONFIG_FILE,
     DEFAULT_DOWNLOAD_DIR,
@@ -20,7 +18,7 @@ from app.config.constants import (
     SUPPORTED_THEMES,
 )
 from app.exceptions import ConfigReadError, ConfigValidationError, ConfigWriteError
-from app.utils.runtime_paths import resolve_user_file, project_root
+from app.utils.runtime_paths import is_temporary_path, resolve_user_file
 
 
 @dataclass
@@ -36,6 +34,8 @@ class CommonSettings:
         if self.theme not in SUPPORTED_THEMES:
             self.theme = "dark" if self.dark_theme else "light"
         self.dark_theme = self.theme != "light" if isinstance(self.dark_theme, bool) else True
+        if is_temporary_path(self.save_directory):
+            self.save_directory = DEFAULT_DOWNLOAD_DIR
 
 
 @dataclass
@@ -312,19 +312,61 @@ class ConfigManager:
 
     def save_ui_state(
         self,
-        geometry: QByteArray,
-        state: QByteArray,
-        main_splitter: QByteArray,
-        right_splitter: QByteArray,
+        geometry: Any,
+        state: Any,
+        main_splitter: Any,
+        right_splitter: Any,
         is_fs: bool,
     ) -> None:
         """保存 `ui_state` 对应的数据、配置或文件，供 `ConfigManager` 使用。"""
-        self.settings.ui.geometry = geometry.toHex().data().decode()
-        self.settings.ui.window_state = state.toHex().data().decode()
-        self.settings.ui.main_splitter_state = main_splitter.toHex().data().decode()
-        self.settings.ui.right_splitter_state = right_splitter.toHex().data().decode()
+        self.settings.ui.geometry = self._encode_ui_state(geometry)
+        self.settings.ui.window_state = self._encode_ui_state(state)
+        self.settings.ui.main_splitter_state = self._encode_ui_state(main_splitter)
+        self.settings.ui.right_splitter_state = self._encode_ui_state(right_splitter)
         self.settings.ui.is_fullscreen_mode = is_fs
         self.save()
+
+    @staticmethod
+    def _encode_ui_state(value: Any) -> str:
+        """把 UI 状态编码成十六进制字符串，不依赖 Qt 类型。"""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, memoryview):
+            return value.tobytes().hex()
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).hex()
+        to_hex = getattr(value, "toHex", None)
+        if callable(to_hex):
+            hex_value = to_hex()
+            if isinstance(hex_value, memoryview):
+                return hex_value.tobytes().decode()
+            if isinstance(hex_value, (bytes, bytearray)):
+                return bytes(hex_value).decode()
+            data = getattr(hex_value, "data", None)
+            if callable(data):
+                raw = data()
+                if isinstance(raw, memoryview):
+                    raw = raw.tobytes()
+                if isinstance(raw, (bytes, bytearray)):
+                    return bytes(raw).decode()
+                if isinstance(raw, str):
+                    return raw
+            return str(hex_value)
+        data = getattr(value, "data", None)
+        if callable(data):
+            raw = data()
+            if isinstance(raw, memoryview):
+                raw = raw.tobytes()
+            if isinstance(raw, (bytes, bytearray)):
+                try:
+                    return bytes(raw).decode()
+                except UnicodeDecodeError:
+                    return bytes(raw).hex()
+            if isinstance(raw, str):
+                return raw
+        return str(value)
 
     def update_missav_proxy(self, proxy_type: str = "", port: int = 0, url: str = "") -> None:
         """更新 missav 代理配置。"""

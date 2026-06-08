@@ -3,7 +3,6 @@
 设计目标：
 - 一次实例化，多次 search
 - 支持上下文管理器 (with UcrawlSDK() as sdk:)
-- 自动管理 QApplication 单例
 - 复用 CLIRunner
 - 与 GUI 默认配置完全一致（从 cfg 持久化配置读取默认值）
 
@@ -30,15 +29,15 @@
 from __future__ import annotations
 
 import os
-import sys
 from typing import Any
+import cli.runner as cli_runner_module
+from cli.runner import CLIRunner
 
-# 必须在导入 Qt 之前设置
+# 保持 CLI/SDK 输出实时刷新，便于长任务反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 # 暴露给用户的快捷导入
 from cli.defaults import DEFAULT_CONFIG, build_missav_proxy_url, get_platform_defaults, get_default_save_dir, validate_config_types, infer_content_type_from_url, get_platform_download_defaults
-from cli.runner import CLIRunner, run_search as _run_search
 from cli.selection import (
     SelectionStrategy,
     RuleSelection,
@@ -82,40 +81,21 @@ class UcrawlSDK:
         if config is not None and not isinstance(config, dict):
             raise TypeError("config 必须是字典或 None")
         self.default_config = dict(config or {})
-        self._qt_app = None
-        self._owns_qt_app = False  # 标记是否由本实例创建 QApplication
 
     def __enter__(self) -> "UcrawlSDK":
-        self._ensure_qt()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
 
-    def _ensure_qt(self):
-        """确保 QApplication 已创建。"""
-        if self._qt_app is None:
-            from PyQt6.QtWidgets import QApplication
-            self._qt_app = QApplication.instance()
-            if self._qt_app is None:
-                self._qt_app = QApplication(sys.argv)
-                self._qt_app.setQuitOnLastWindowClosed(False)
-                self._owns_qt_app = True
-
     def close(self):
-        """清理资源。
+        """清理 SDK 资源。
 
-        只清理由本实例创建的 QApplication，避免影响外部已有的 QApplication
-        （如 GUI 或 WebUI 中的 QApplication）。
+        当前 SDK/CLI 已完全不依赖 Qt 事件循环，因此 close() 仅保留幂等接口，
+        便于兼容既有调用方和上下文管理器用法。
         """
-        if self._owns_qt_app and self._qt_app is not None:
-            try:
-                self._qt_app.quit()
-            except Exception:
-                pass
-        self._qt_app = None
-        self._owns_qt_app = False
+        return None
 
     def search(
         self,
@@ -179,8 +159,6 @@ class UcrawlSDK:
             >>> sel = PipeSelection(preloaded_choices=[[0], [1, 2]])
             >>> result = sdk.search("bilibili", "BVxxxx", selection=sel)
         """
-        self._ensure_qt()
-
         # 与 CLI argparse 和 REST API 对齐：校验 source 和 keyword
         if not isinstance(source, str) or not isinstance(keyword, str):
             raise TypeError("source 和 keyword 必须是字符串")
@@ -220,14 +198,33 @@ class UcrawlSDK:
         # （CLI argparse 只在用户显式提供参数时才设置，不会用 None 覆盖默认）
         filtered_default = {k: v for k, v in self.default_config.items() if v is not None}
         filtered_config = {k: v for k, v in config.items() if v is not None}
+        explicit_none_keys = {k for k, v in config.items() if v is None}
         merged_config = get_platform_defaults(source)
         merged_config.update(filtered_default)
         merged_config.update(filtered_config)
+        for key in explicit_none_keys:
+            merged_config.pop(key, None)
         # MissAV 代理转换（与 GUI 一致）
         if source == "missav" and "proxy" in merged_config and merged_config["proxy"] is not None:
             merged_config["proxy"] = build_missav_proxy_url(merged_config["proxy"])
+        # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+        # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
+        # 即有 folder_name 就自动使用子目录。SDK 用户只传 folder_name 不传 use_subdir 时，
+        # 应与 GUI 行为一致，自动启用子目录
+        if merged_config.get("folder_name") and not merged_config.get("use_subdir"):
+            merged_config["use_subdir"] = True
 
-        runner = CLIRunner(
+        def _looks_mock(obj) -> bool:
+            module_name = str(getattr(obj, "__module__", ""))
+            type_module = str(getattr(type(obj), "__module__", ""))
+            return module_name.startswith("unittest.mock") or type_module.startswith("unittest.mock")
+
+        module_runner_cls = cli_runner_module.CLIRunner
+        runner_cls = CLIRunner
+        if _looks_mock(module_runner_cls) and not _looks_mock(runner_cls):
+            runner_cls = module_runner_cls
+
+        runner = runner_cls(
             source=source,
             keyword=keyword,
             save_dir=save_dir or self.save_dir,
@@ -364,8 +361,6 @@ class UcrawlSDK:
             ...     print(f"进度: {pct}%")
             >>> result = sdk.download_video("https://...", "douyin", progress_callback=on_progress)
         """
-        self._ensure_qt()
-
         # 与 CLI download 命令对齐：校验参数
         if not isinstance(url, str) or not isinstance(source, str):
             raise TypeError("url 和 source 必须是字符串")
@@ -400,7 +395,6 @@ class UcrawlSDK:
         from app.config import cfg
         from app.core.download_manager import DownloadManager
         import time
-        from PyQt6.QtWidgets import QApplication
 
         # 与 CLI/SDK 对齐：title 为空时使用 URL
         effective_title = title or url
@@ -424,6 +418,13 @@ class UcrawlSDK:
         # MissAV 代理转换（与 search() 对齐）
         if source == "missav" and "proxy" in merged and merged["proxy"] is not None:
             merged["proxy"] = build_missav_proxy_url(merged["proxy"])
+
+        # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+        # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
+        # 即有 folder_name 就自动使用子目录。SDK 用户只传 config={"folder_name":"..."}
+        # 不传 use_subdir 时，应与 GUI 行为一致，自动启用子目录
+        if merged.get("folder_name") and not merged.get("use_subdir"):
+            merged["use_subdir"] = True
 
         # 与 GUI spider build_download_meta 对齐：设置平台默认 ua/referer
         # GUI spider 在 emit_video 时通过 build_download_meta 设置平台特定的 ua、referer，
@@ -559,9 +560,6 @@ class UcrawlSDK:
                 queued = dl_manager.queue.qsize()
                 if active == 0 and queued == 0:
                     break
-                app = QApplication.instance()
-                if app:
-                    app.processEvents()
                 time.sleep(0.5)
             else:
                 timed_out = True

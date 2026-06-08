@@ -152,18 +152,28 @@ def run_category(
         return result
 
     # 构造 pytest 命令
+    pytest_args = ["--tb=line"]  # 简短的错误回溯
+    if verbose:
+        pytest_args.append("-v")
+    else:
+        pytest_args.append("-q")
+    if not no_failfast:
+        pytest_args.append("-x")
+    if extra_args:
+        pytest_args.extend(extra_args)
+
     cmd = [
         sys.executable, "-m", "pytest",
         *existing,
-        "--tb=line",  # 简短的错误回溯
-        "-q",  # 简洁输出
+        *pytest_args,
     ]
-    if verbose:
-        cmd.append("-v")
-    if not no_failfast:
-        cmd.append("-x")
-    if extra_args:
-        cmd.extend(extra_args)
+
+    # #region debug-point B:test-runner-command
+    try:
+        import json, urllib.request, time as _dbg_time; _p='.dbg/cli-platform-regressions.env'; _u='http://127.0.0.1:7777/event'; _s='cli-platform-regressions'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"B","location":"tests/test_runner.py:run_category","msg":"[DEBUG] run_category aggregate cmd built","data":{"category_id":category_id,"verbose":verbose,"no_failfast":no_failfast,"extra_args":extra_args or [],"cmd":cmd,"existing":existing},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+    except Exception:
+        pass
+    # #endregion
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
@@ -184,10 +194,14 @@ def run_category(
         single_cmd = [
             sys.executable, "-m", "pytest",
             f,
-            "--tb=line", "-q",
+            *pytest_args,
         ]
-        if verbose:
-            single_cmd.append("-v")
+        # #region debug-point B:test-runner-single-cmd
+        try:
+            import json, urllib.request, time as _dbg_time; _p='.dbg/cli-platform-regressions.env'; _u='http://127.0.0.1:7777/event'; _s='cli-platform-regressions'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"B","location":"tests/test_runner.py:single_cmd","msg":"[DEBUG] run_category single file cmd built","data":{"file":f,"verbose":verbose,"single_cmd":single_cmd},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
+        except Exception:
+            pass
+        # #endregion
         try:
             cp = subprocess.run(
                 single_cmd,

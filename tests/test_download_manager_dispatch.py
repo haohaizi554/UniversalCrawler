@@ -16,7 +16,7 @@ class FakeSignal:
         self.targets = []
         self.emit = Mock()
 
-    def connect(self, target):
+    def connect(self, target, *_args):
         """执行 `connect` 对应的业务逻辑，供 `FakeSignal` 使用。"""
         self.targets.append(target)
 
@@ -77,10 +77,10 @@ class DownloadManagerDispatchTests(unittest.TestCase):
         self.assertIs(worker._completion_callback.__self__, manager)
         self.assertEqual(worker._completion_callback.__func__, manager._handle_worker_completion.__func__)
         self.assertFalse(worker._slot_released)
-        self.assertEqual(worker.sig_start.targets, [manager.task_started])
-        self.assertEqual(worker.sig_progress.targets, [manager.task_progress])
-        self.assertEqual(worker.sig_finished.targets, [manager.task_finished])
-        self.assertEqual(worker.sig_error.targets, [manager.task_error])
+        self.assertEqual(worker.sig_start.targets, [manager._emit_task_started])
+        self.assertEqual(worker.sig_progress.targets, [manager._emit_task_progress])
+        self.assertEqual(worker.sig_finished.targets, [manager._emit_task_finished])
+        self.assertEqual(worker.sig_error.targets, [manager._emit_task_error])
         self.assertEqual(len(worker.finished.targets), 1)
         worker.start.assert_called_once()
 
