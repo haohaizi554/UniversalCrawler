@@ -15,7 +15,6 @@ services:
         INSTALL_PLAYWRIGHT: ${UCRAWL_INSTALL_PLAYWRIGHT:-0}
     image: ucrawl-web:latest
     container_name: ucrawl-web
-    init: true
     ports:
       - "${UCRAWL_HOST_PORT:-8000}:8000"
     environment:

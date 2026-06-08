@@ -38,7 +38,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|http://security.debian.org/debian-security|$APT_SECURITY_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl tini \
+    && apt-get install -y --no-install-recommends ffmpeg curl tini gosu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-web.txt ./requirements-web.txt
@@ -62,8 +62,6 @@ COPY --chown=ucrawl:ucrawl ucrawl ./ucrawl
 COPY --chown=ucrawl:ucrawl main.py pyproject.toml README.md favicon.ico Web.ico ./
 
 RUN chown -R ucrawl:ucrawl /data /ms-playwright /app/tools
-
-USER ucrawl
 
 VOLUME ["/data/user_data", "/data/downloads", "/app/tools"]
 EXPOSE 8000

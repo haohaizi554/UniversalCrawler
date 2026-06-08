@@ -12,3 +12,4 @@ m3u8~=3.6.0
 playwright~=1.57.0
 yt-dlp>=2023.0.0
 loguru>=0.7.0
+websockets>=12.0

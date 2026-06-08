@@ -473,7 +473,7 @@ class ContainerizationAssetTests(unittest.TestCase):
     def test_dockerfile_uses_web_requirements_and_non_root_user(self):
         source = DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("requirements-web.txt", source)
-        self.assertIn("USER ucrawl", source)
+        self.assertIn("gosu", source)
         self.assertIn("APT_MIRROR", source)
         self.assertIn("PIP_INDEX_URL", source)
         self.assertIn("UCRAWL_TOOL_ROOT=/app/tools", source)
@@ -492,6 +492,7 @@ class ContainerizationAssetTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("python-docx") for line in requirement_lines))
         self.assertTrue(any(line.startswith("fastapi") for line in requirement_lines))
         self.assertTrue(any(line.startswith("uvicorn") for line in requirement_lines))
+        self.assertTrue(any(line.startswith("websockets") for line in requirement_lines))
 
     def test_docker_compose_exposes_healthcheck_and_build_arg(self):
         source = DOCKER_COMPOSE.read_text(encoding="utf-8")
@@ -503,6 +504,7 @@ class ContainerizationAssetTests(unittest.TestCase):
         self.assertIn("healthcheck:", source)
         self.assertIn("UCRAWL_HOST_PORT", source)
         self.assertIn("UCRAWL_EXTRA_ARGS", source)
+        self.assertNotIn("init: true", source)
 
     def test_env_example_contains_mainland_friendly_defaults(self):
         source = DOCKER_ENV_EXAMPLE.read_text(encoding="utf-8")
@@ -517,7 +519,9 @@ class ContainerizationAssetTests(unittest.TestCase):
         source = DOCKER_ENTRYPOINT.read_text(encoding="utf-8")
         self.assertIn("UCRAWL_USER_DATA_ROOT", source)
         self.assertIn("UCRAWL_DOWNLOAD_ROOT", source)
+        self.assertIn("UCRAWL_TOOL_ROOT", source)
         self.assertIn("UCRAWL_EXTRA_ARGS", source)
+        self.assertIn("gosu ucrawl", source)
         self.assertIn("entry.web_entry", source)
 
 
