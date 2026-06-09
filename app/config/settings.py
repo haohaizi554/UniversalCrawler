@@ -82,6 +82,29 @@ class DouyinSettings:
 
 
 @dataclass
+class XiaohongshuSettings:
+    """封装 `XiaohongshuSettings` 对应的配置数据与访问逻辑。"""
+
+    user_agent: str = DEFAULT_USER_AGENT
+    max_items: int = 20
+    search_max_pages: int = 5
+    sort: str = "general"
+    note_type: int = 0
+
+    def normalize(self) -> None:
+        """执行 `normalize` 对应的业务逻辑，供 `XiaohongshuSettings` 使用。"""
+        self.max_items = max(1, min(self.max_items, 9999))
+        self.search_max_pages = max(1, min(self.search_max_pages, 100))
+        if self.sort not in {"general", "popularity_descending", "time_descending"}:
+            self.sort = "general"
+        try:
+            note_type = int(self.note_type)
+        except (TypeError, ValueError):
+            note_type = 0
+        self.note_type = note_type if note_type in {0, 1, 2} else 0
+
+
+@dataclass
 class KuaishouSettings:
     """封装 `KuaishouSettings` 对应的配置数据与访问逻辑。"""
     user_agent: str = DEFAULT_USER_AGENT
@@ -98,12 +121,14 @@ class AuthSettings:
     bilibili_cookie_file: str = "bili_auth.json"
     kuaishou_cookie_file: str = "ks_auth.json"
     douyin_cookie_file: str = "dy_auth.json"
+    xiaohongshu_cookie_file: str = "xhs_auth.json"
 
     def normalize(self) -> None:
         """执行 `normalize` 对应的业务逻辑，供 `AuthSettings` 使用。"""
         self.bilibili_cookie_file = str(resolve_user_file(self.bilibili_cookie_file))
         self.kuaishou_cookie_file = str(resolve_user_file(self.kuaishou_cookie_file))
         self.douyin_cookie_file = str(resolve_user_file(self.douyin_cookie_file))
+        self.xiaohongshu_cookie_file = str(resolve_user_file(self.xiaohongshu_cookie_file))
 
 
 @dataclass
@@ -142,6 +167,7 @@ class AppSettings:
     missav: MissAVSettings = field(default_factory=MissAVSettings)
     bilibili: BilibiliSettings = field(default_factory=BilibiliSettings)
     douyin: DouyinSettings = field(default_factory=DouyinSettings)
+    xiaohongshu: XiaohongshuSettings = field(default_factory=XiaohongshuSettings)
     kuaishou: KuaishouSettings = field(default_factory=KuaishouSettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
     download: DownloadSettings = field(default_factory=DownloadSettings)
@@ -153,6 +179,7 @@ class AppSettings:
         self.missav.normalize()
         self.bilibili.normalize()
         self.douyin.normalize()
+        self.xiaohongshu.normalize()
         self.kuaishou.normalize()
         self.auth.normalize()
         self.download.normalize()
@@ -168,6 +195,7 @@ class ConfigManager:
         "missav": MissAVSettings,
         "bilibili": BilibiliSettings,
         "douyin": DouyinSettings,
+        "xiaohongshu": XiaohongshuSettings,
         "kuaishou": KuaishouSettings,
         "auth": AuthSettings,
         "download": DownloadSettings,

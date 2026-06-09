@@ -55,6 +55,7 @@ class ConfigManagerTests(unittest.TestCase):
             config_path = f"{temp_dir}/config.json"
             manager = ConfigManager(config_path)
             self.assertEqual(manager.settings.douyin.user_agent, DEFAULT_USER_AGENT)
+            self.assertEqual(manager.settings.xiaohongshu.user_agent, DEFAULT_USER_AGENT)
             self.assertEqual(manager.settings.bilibili.user_agent, DEFAULT_USER_AGENT)
             self.assertEqual(manager.settings.kuaishou.user_agent, DEFAULT_USER_AGENT)
 
@@ -65,6 +66,7 @@ class ConfigManagerTests(unittest.TestCase):
             manager = ConfigManager(config_path)
 
             self.assertEqual(manager.settings.douyin.max_items, 20)
+            self.assertEqual(manager.settings.xiaohongshu.max_items, 20)
             self.assertEqual(manager.settings.kuaishou.max_items, 20)
 
     def test_invalid_config_file_is_backed_up_and_reset(self):

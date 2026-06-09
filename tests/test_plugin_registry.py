@@ -14,7 +14,7 @@ class PluginRegistryTests(unittest.TestCase):
     def test_registry_exports_expected_plugins(self):
         """验证 `test_registry_exports_expected_plugins` 对应场景是否符合预期，供 `PluginRegistryTests` 使用。"""
         plugin_ids = [plugin.id for plugin in registry.get_all_plugins()]
-        self.assertEqual(plugin_ids, ["douyin", "kuaishou", "missav", "bilibili"])
+        self.assertEqual(plugin_ids, ["douyin", "xiaohongshu", "kuaishou", "missav", "bilibili"])
 
     def test_registry_exports_plugin_registry_type(self):
         """验证 `test_registry_exports_plugin_registry_type` 对应场景是否符合预期，供 `PluginRegistryTests` 使用。"""

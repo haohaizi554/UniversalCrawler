@@ -5,6 +5,7 @@ fastapi~=0.120.3
 uvicorn>=0.20.0
 httpx~=0.28.1
 requests~=2.32.5
+xhshow>=0.1.9
 emoji~=2.14.1
 gmssl~=3.2.2
 rich~=14.1.0

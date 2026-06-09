@@ -23,6 +23,7 @@ from app.core.downloaders import (
     MissAVDownloader,
     NM3U8DLREExternalTool,
     N_m3u8DL_RE_Downloader,
+    XiaohongshuDownloader,
 )
 from app.core.downloaders.external import ExternalToolRunner
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError, MergeError, StreamDownloadError
@@ -48,6 +49,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertTrue(KuaishouDownloader.can_handle(VideoItem(url="https://example.com/2", title="b", source="kuaishou")))
         self.assertTrue(MissAVDownloader.can_handle(VideoItem(url="https://example.com/3", title="c", source="missav")))
         self.assertTrue(BilibiliDownloader.can_handle(VideoItem(url="https://example.com/4", title="d", source="bilibili")))
+        self.assertTrue(XiaohongshuDownloader.can_handle(VideoItem(url="https://example.com/5", title="e", source="xiaohongshu")))
 
     def test_m3u8_url_detection(self):
         """验证 `test_m3u8_url_detection` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""

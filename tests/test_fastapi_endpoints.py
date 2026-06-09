@@ -71,11 +71,11 @@ class PlatformsEndpointTests(unittest.TestCase):
             self.assertIn("name", platform)
 
     def test_platforms_contains_4_platforms(self):
-        """默认必须支持 4 个平台（douyin/bilibili/kuaishou/missav）。"""
+        """默认必须支持 5 个平台（含小红书）。"""
         ids = [p["id"] for p in self.client.get("/api/platforms").json()]
-        self.assertGreaterEqual(len(ids), 4)
+        self.assertGreaterEqual(len(ids), 5)
         # 验证核心平台都存在
-        for expected in ("douyin", "bilibili", "kuaishou", "missav"):
+        for expected in ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"):
             self.assertIn(expected, ids, f"missing platform: {expected}")
 
 

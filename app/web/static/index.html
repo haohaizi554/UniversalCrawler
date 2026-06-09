@@ -1074,6 +1074,12 @@ function renderDynamicArea() {
       <option value="1">1</option><option value="2">2</option><option value="5">5</option>
       <option value="10">10</option><option value="20" selected>20</option>
       <option value="9999">max</option></select>`;
+  } else if (currentSource === 'xiaohongshu') {
+    html = `<label style="font-size:12px;color:var(--muted-text);white-space:nowrap">笔记数:</label>
+      <select id="cfg_max_items" title="小红书单次最多处理的笔记数量，可选 1/2/5/10/20/max。" style="min-width:84px;max-width:84px">
+      <option value="1">1</option><option value="2">2</option><option value="5">5</option>
+      <option value="10">10</option><option value="20" selected>20</option>
+      <option value="9999">max</option></select>`;
   } else if (currentSource === 'bilibili') {
     html = `<label style="font-size:12px;color:var(--muted-text);white-space:nowrap">页数:</label>
       <select id="cfg_max_pages" title="搜索或列表扫描页数，可选 1/2/5/10/20/max。" style="min-width:84px;max-width:84px">
@@ -1106,6 +1112,11 @@ function getRunConfig() {
     config.max_items = el ? parseInt(el.value) : 20;
     config.timeout = 10;  // 与 GUI read_douyin_run_options 一致
     sendWS('save_config', { section: 'douyin', key: 'max_items', value: config.max_items });
+  } else if (currentSource === 'xiaohongshu') {
+    const el = document.getElementById('cfg_max_items');
+    config.max_items = el ? parseInt(el.value) : 20;
+    config.search_max_pages = 5;
+    sendWS('save_config', { section: 'xiaohongshu', key: 'max_items', value: config.max_items });
   } else if (currentSource === 'kuaishou') {
     const el = document.getElementById('cfg_max_items');
     config.max_items = el ? parseInt(el.value) : 20;
@@ -1176,6 +1187,9 @@ function restorePluginConfig() {
   // 恢复动态配置区的选中值
   if (currentSource === 'douyin') {
     const saved = data.douyin && data.douyin.max_items;
+    if (saved) { const el = document.getElementById('cfg_max_items'); if (el) el.value = saved; }
+  } else if (currentSource === 'xiaohongshu') {
+    const saved = data.xiaohongshu && data.xiaohongshu.max_items;
     if (saved) { const el = document.getElementById('cfg_max_items'); if (el) el.value = saved; }
   } else if (currentSource === 'bilibili') {
     const saved = data.bilibili && data.bilibili.max_pages;

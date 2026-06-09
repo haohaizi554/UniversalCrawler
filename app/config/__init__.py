@@ -10,6 +10,7 @@ from .settings import (
     DouyinSettings,
     DownloadSettings,
     KuaishouSettings,
+    XiaohongshuSettings,
     cfg,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "DouyinSettings",
     "DownloadSettings",
     "KuaishouSettings",
+    "XiaohongshuSettings",
     "cfg",
 ]

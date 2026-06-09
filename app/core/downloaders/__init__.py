@@ -9,6 +9,7 @@ from .ffmpeg import FFmpegDownloader
 from .kuaishou import KuaishouDownloader
 from .m3u8 import N_m3u8DL_RE_Downloader
 from .missav import MissAVDownloader
+from .xiaohongshu import XiaohongshuDownloader
 
 __all__ = [
     "BaseDownloader",
@@ -23,4 +24,5 @@ __all__ = [
     "BilibiliDownloader",
     "FFmpegDownloader",
     "DouyinDownloader",
+    "XiaohongshuDownloader",
 ]

@@ -11,6 +11,7 @@ from app.ui.plugin_settings import (
     read_bilibili_run_options,
     read_douyin_run_options,
     read_missav_run_options,
+    read_xiaohongshu_run_options,
 )
 
 
@@ -66,6 +67,12 @@ class SettingsBuildersTests(unittest.TestCase):
         result = read_douyin_run_options(None)
 
         self.assertEqual(result, {"max_items": 20, "timeout": 10})
+
+    def test_read_xiaohongshu_run_options_returns_defaults_for_invalid_widget(self):
+        """验证小红书运行参数读取在无控件时使用默认值。"""
+        result = read_xiaohongshu_run_options(None)
+
+        self.assertEqual(result, {"max_items": 20, "search_max_pages": 5})
 
     @patch("app.ui.plugin_settings.cfg.update_missav_proxy")
     @patch("app.ui.plugin_settings.cfg.set")

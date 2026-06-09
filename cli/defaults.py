@@ -12,6 +12,7 @@ from __future__ import annotations
 # 兜底配置：当 cfg 不可用时使用（与 GUI AppSettings 默认值对齐）
 _FALLBACK_CONFIG = {
     "douyin": {"max_items": 20, "timeout": 10},
+    "xiaohongshu": {"max_items": 20, "search_max_pages": 5},
     "bilibili": {"max_pages": 1, "max_items": 30},
     "kuaishou": {"max_items": 20},
     "missav": {
@@ -47,6 +48,11 @@ def get_platform_defaults(source: str) -> dict:
             return {
                 "max_items": cfg.get("douyin", "max_items", 20),
                 "timeout": 10,  # 与 GUI read_douyin_run_options 对齐：始终返回 timeout=10
+            }
+        elif source == "xiaohongshu":
+            return {
+                "max_items": cfg.get("xiaohongshu", "max_items", 20),
+                "search_max_pages": cfg.get("xiaohongshu", "search_max_pages", 5),
             }
         elif source == "bilibili":
             return {
@@ -245,6 +251,7 @@ def infer_content_type_from_url(url: str) -> str:
 # 平台 → auth 文件名映射（与 app/config/settings.py AuthSettings 对齐）
 _AUTH_FILE_MAP = {
     "douyin":   "dy_auth.json",
+    "xiaohongshu": "xhs_auth.json",
     "bilibili": "bili_auth.json",
     "kuaishou": "ks_auth.json",
     "missav":   None,  # MissAV 不需要 cookie

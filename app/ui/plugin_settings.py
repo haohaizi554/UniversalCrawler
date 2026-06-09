@@ -124,6 +124,27 @@ def read_douyin_run_options(widget: QWidget | None) -> dict[str, int]:
     return {"max_items": max_items, "timeout": 10}
 
 
+def build_xiaohongshu_settings_widget(parent=None) -> PageLimitSettingsWidget:
+    return PageLimitSettingsWidget(
+        parent,
+        label_text="笔记数:",
+        max_pages=9999,
+        default_pages=cfg.get("xiaohongshu", "max_items", 20),
+        tooltip="小红书单次最多处理的笔记数量，可选 1/2/5/10/20/max。",
+    )
+
+
+def read_xiaohongshu_run_options(widget: QWidget | None) -> dict[str, int]:
+    if not isinstance(widget, PageLimitSettingsWidget):
+        return {"max_items": 20, "search_max_pages": 5}
+    max_items = widget.current_value()
+    cfg.set("xiaohongshu", "max_items", max_items)
+    return {
+        "max_items": max_items,
+        "search_max_pages": cfg.get("xiaohongshu", "search_max_pages", 5),
+    }
+
+
 def build_kuaishou_settings_widget(parent=None) -> PageLimitSettingsWidget:
     return PageLimitSettingsWidget(
         parent,
@@ -173,6 +194,7 @@ def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool]:
 PLUGIN_WIDGET_BUILDERS = {
     "bilibili": build_bilibili_settings_widget,
     "douyin": build_douyin_settings_widget,
+    "xiaohongshu": build_xiaohongshu_settings_widget,
     "kuaishou": build_kuaishou_settings_widget,
     "missav": build_missav_settings_widget,
 }
@@ -180,6 +202,7 @@ PLUGIN_WIDGET_BUILDERS = {
 PLUGIN_RUN_OPTION_READERS = {
     "bilibili": read_bilibili_run_options,
     "douyin": read_douyin_run_options,
+    "xiaohongshu": read_xiaohongshu_run_options,
     "kuaishou": read_kuaishou_run_options,
     "missav": read_missav_run_options,
 }

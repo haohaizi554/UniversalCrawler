@@ -50,6 +50,17 @@ _PLATFORM_GUIDE = {
         "empty_tip": "优先尝试主页链接或分享链接；纯数字 UID 当前仍不支持。",
         "result_tip": "抖音会优先按 GUI 同步流程拉起扫码、采集、选择并直接入队下载。",
     },
+    "xiaohongshu": {
+        "input_label": "小红书关键词、笔记链接或作者主页链接",
+        "examples": [
+            "关键词: 穿搭 / 探店 / 摄影",
+            "笔记链接: https://www.xiaohongshu.com/explore/...",
+            "作者主页: https://www.xiaohongshu.com/user/profile/...",
+        ],
+        "limit_label": "笔记数量",
+        "empty_tip": "建议优先使用完整笔记链接或作者主页链接；关键词模式会先搜索再二次选择。",
+        "result_tip": "小红书会自动准备浏览器 Cookie，会话不足时可在浏览器中手动登录后继续。",
+    },
     "bilibili": {
         "input_label": "BV 号、UP 主页、合集链接或关键词",
         "examples": [
@@ -91,6 +102,7 @@ _PLATFORM_GUIDE = {
 # 平台 → auth 文件名映射（与 app/config/settings.py AuthSettings 对齐）
 _AUTH_FILE_MAP = {
     "douyin":   "dy_auth.json",
+    "xiaohongshu": "xhs_auth.json",
     "bilibili": "bili_auth.json",
     "kuaishou": "ks_auth.json",
     "missav":   None,  # MissAV 不需要 cookie
@@ -99,6 +111,7 @@ _AUTH_FILE_MAP = {
 # 平台 → 必需的 cookie key（与 GUI spider 对齐）
 _REQUIRED_COOKIE_KEY = {
     "douyin":   "sessionid_ss",
+    "xiaohongshu": "a1",
     "bilibili": "SESSDATA",
     "kuaishou": "kuaishou.server.web_st",
 }
@@ -106,6 +119,7 @@ _REQUIRED_COOKIE_KEY = {
 # 平台 → 登录方式描述（与 GUI spider 实现对齐）
 _LOGIN_DESC = {
     "douyin":   "抖音将自动弹出浏览器窗口，请扫码登录",
+    "xiaohongshu": "小红书将自动拉起浏览器以获取 Cookie，必要时请在页面中手动登录",
     "bilibili": "B站将自动弹出浏览器窗口，请扫码登录",
     "kuaishou": "快手将自动弹出浏览器窗口，请手动登录",
 }
@@ -323,6 +337,10 @@ def _build_config_summary_lines(platform_id: str, config: dict, platform_name: s
     if platform_id == "douyin":
         lines.append(f"  视频数: {config.get('max_items', 20)}")
         lines.append("  登录:   浏览器扫码")
+    elif platform_id == "xiaohongshu":
+        lines.append(f"  笔记数: {config.get('max_items', 20)}")
+        lines.append(f"  搜索页: {config.get('search_max_pages', 5)}")
+        lines.append("  登录:   浏览器 Cookie / 手动登录")
     elif platform_id == "bilibili":
         lines.append(f"  页数:   {config.get('max_pages', 1)}")
         lines.append("  登录:   浏览器扫码")
@@ -495,6 +513,20 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
                 idx = _choose("视频数量", opts, default_idx)
                 config["max_items"] = opt_vals[idx]
                 config["timeout"] = 10
+
+            elif platform_id == "xiaohongshu":
+                current = config.get("max_items", 20)
+                opts = ["1", "2", "5", "10", "20", "max (9999)"]
+                opt_vals = [1, 2, 5, 10, 20, 9999]
+                default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
+                idx = _choose("笔记数量", opts, default_idx)
+                config["max_items"] = opt_vals[idx]
+                page_current = config.get("search_max_pages", 5)
+                page_opts = ["1", "2", "5", "10", "20"]
+                page_vals = [1, 2, 5, 10, 20]
+                page_idx = min(range(len(page_vals)), key=lambda i: abs(page_vals[i] - page_current))
+                idx = _choose("搜索页数", page_opts, page_idx)
+                config["search_max_pages"] = page_vals[idx]
 
             elif platform_id == "bilibili":
                 current = config.get("max_pages", 1)

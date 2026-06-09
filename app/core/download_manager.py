@@ -7,7 +7,14 @@ import threading
 from collections.abc import Callable
 
 from app.core.download_manager_core import DownloadManagerCore
-from app.core.downloaders import BaseDownloader, BilibiliDownloader, DouyinDownloader, KuaishouDownloader, MissAVDownloader
+from app.core.downloaders import (
+    BaseDownloader,
+    BilibiliDownloader,
+    DouyinDownloader,
+    KuaishouDownloader,
+    MissAVDownloader,
+    XiaohongshuDownloader,
+)
 from app.exceptions import AppError, DownloaderStoppedError
 from app.models import VideoItem
 from app.utils import sanitize_filename
@@ -17,6 +24,7 @@ from app.debug_logger import debug_logger
 #下载器注册表
 DOWNLOADER_REGISTRY: tuple[type[BaseDownloader], ...] = (
     DouyinDownloader,
+    XiaohongshuDownloader,
     KuaishouDownloader,
     MissAVDownloader,
     BilibiliDownloader,

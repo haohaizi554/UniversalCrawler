@@ -73,6 +73,24 @@ class DouyinPlugin(BasePlugin):
         return DouyinSpider
 
 
+class XiaohongshuPlugin(BasePlugin):
+    """封装 `XiaohongshuPlugin` 在 `app/core/plugins/definitions.py` 中承担的核心逻辑。"""
+
+    id = "xiaohongshu"
+    name = "小红书"
+    sort_order = 15
+
+    def get_search_placeholder(self) -> str:
+        """获取 `search_placeholder` 对应的数据或状态，供 `XiaohongshuPlugin` 使用。"""
+        return "输入：小红书关键词、笔记链接或作者主页链接..."
+
+    def get_spider_class(self):
+        """获取 `spider_class` 对应的数据或状态，供 `XiaohongshuPlugin` 使用。"""
+        from app.spiders.xiaohongshu.spider import XiaohongshuSpider
+
+        return XiaohongshuSpider
+
+
 def get_default_plugins() -> list[BasePlugin]:
     """获取 `default_plugins` 对应的数据或状态。"""
     from .discovery import discover_builtin_plugins
