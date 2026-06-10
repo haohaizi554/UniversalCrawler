@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.exceptions import FileOperationError
 from app.models import VideoItem
@@ -98,6 +99,32 @@ class MediaLibraryServiceTests(unittest.TestCase):
         item.local_path = os.path.join(self.temp_dir.name, "missing.mp4")
 
         self.assertFalse(self.service.delete_media(item))
+
+    @patch("app.services.file_service.time.sleep", return_value=None)
+    def test_delete_media_retries_briefly_after_permission_error(self, _mock_sleep):
+        """Windows 释放播放器句柄存在瞬时延迟时，删除应进行短暂重试。"""
+        base = self.temp_dir.name
+        file_path = os.path.join(base, "busy.mp4")
+        with open(file_path, "wb") as fp:
+            fp.write(b"test")
+        item = VideoItem(url="", title="busy", source="local")
+        item.local_path = file_path
+
+        real_remove = os.remove
+        attempts = {"count": 0}
+
+        def flaky_remove(path):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise PermissionError("文件被占用")
+            return real_remove(path)
+
+        with patch("app.services.file_service.os.remove", side_effect=flaky_remove):
+            deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertEqual(attempts["count"], 2)
+        self.assertFalse(os.path.exists(file_path))
 
 
 if __name__ == "__main__":

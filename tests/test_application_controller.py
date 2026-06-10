@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import call
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from app.controllers.application_controller import ApplicationController
 from app.exceptions import FileOperationError
@@ -36,8 +37,8 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.window.clear_video_rows.assert_called_once()
         self.assertEqual(controller.videos, {})
 
-    def test_on_delete_video_stops_preview_and_removes_row(self):
-        """验证 `test_on_delete_video_stops_preview_and_removes_row` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""
+    def test_on_delete_video_releases_preview_and_removes_row(self):
+        """删除当前播放项时必须先释放播放器 source，再执行本地删除。"""
         controller = self._make_controller()
         item = VideoItem(url="https://example.com/demo.mp4", title="demo", source="local")
         item.local_path = r"C:\temp\demo.mp4"
@@ -49,7 +50,8 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.on_delete_video(2, item.id)
 
         controller.dl_manager.cancel_task.assert_called_once_with(item.id)
-        controller.window.stop_media_playback.assert_called_once()
+        controller.window.release_media_playback.assert_called_once()
+        controller.window.stop_media_playback.assert_not_called()
         controller.window.remove_video_row.assert_called_once_with(2)
         controller.window.refresh_table_bindings.assert_called_once()
         self.assertNotIn(item.id, controller.videos)
@@ -67,7 +69,7 @@ class ApplicationControllerTests(unittest.TestCase):
 
         controller.on_delete_video(2, item.id)
 
-        controller.window.stop_media_playback.assert_called_once()
+        controller.window.release_media_playback.assert_called_once()
         controller.window.remove_video_row.assert_not_called()
         controller.window.refresh_table_bindings.assert_not_called()
         self.assertIn(item.id, controller.videos)
@@ -118,6 +120,41 @@ class ApplicationControllerTests(unittest.TestCase):
 
         controller.window.append_log.assert_called_once()
         controller._create_spider.assert_not_called()
+
+    def test_create_spider_logs_and_returns_none_when_constructor_fails(self):
+        """爬虫构造失败时，GUI 必须收到可见错误日志，而不是像无响应。"""
+        controller = self._make_controller()
+        plugin = Mock()
+        spider_cls = Mock(side_effect=RuntimeError("boom"))
+        plugin.get_spider_class.return_value = spider_cls
+
+        with patch("app.controllers.application_controller.registry.get_plugin", return_value=plugin):
+            returned_plugin, spider = controller._create_spider("bilibili", "BV1demo", {})
+
+        self.assertIs(returned_plugin, plugin)
+        self.assertIsNone(spider)
+        controller.window.append_log.assert_called_with("❌ 创建爬虫失败: boom")
+
+    def test_on_start_crawl_resets_running_state_when_start_raises(self):
+        """爬虫 start 抛错时，界面必须恢复可操作状态。"""
+        controller = self._make_controller()
+        controller._has_active_spider = Mock(return_value=False)
+        spider = Mock()
+        spider.start.side_effect = RuntimeError("thread start failed")
+        controller._create_spider = Mock(return_value=(Mock(name="plugin", name_attr="Bilibili"), spider))
+        controller._bind_spider_signals = Mock()
+        controller._log_crawl_start = Mock()
+
+        plugin = Mock()
+        plugin.name = "Bilibili"
+        controller._create_spider.return_value = (plugin, spider)
+
+        controller.on_start_crawl("BV1demo", "bilibili", {})
+
+        controller.window.set_crawl_running_state.assert_any_call(True)
+        controller.window.set_crawl_running_state.assert_any_call(False)
+        controller.window.append_log.assert_any_call("❌ 启动爬虫失败: thread start failed")
+        self.assertIsNone(controller.current_spider)
 
     def test_scan_local_dir_populates_rows_and_reports_truncation(self):
         """验证 `test_scan_local_dir_populates_rows_and_reports_truncation` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""

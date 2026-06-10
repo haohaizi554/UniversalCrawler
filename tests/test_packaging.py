@@ -602,5 +602,33 @@ class NoStaleBuildArtifactsTests(unittest.TestCase):
             self.assertGreaterEqual(len(pyc_files), 0)  # 只是记录
 
 
+class RepositoryHygieneTests(unittest.TestCase):
+    """仓库级静态卫生检查。"""
+
+    def test_app_code_has_no_leftover_debug_probe_transport(self):
+        forbidden_markers = (
+            "# #region debug-point",
+            "127.0.0.1:7777/event",
+            ".dbg/",
+            'runId":"pre-fix',
+        )
+        violations: list[str] = []
+        for path in (PROJECT_ROOT / "app").rglob("*"):
+            if path.suffix.lower() not in {".py", ".html", ".js"}:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if any(marker in text for marker in forbidden_markers):
+                violations.append(str(path.relative_to(PROJECT_ROOT)))
+        self.assertEqual(violations, [], f"leftover debug probes found: {violations}")
+
+    def test_packaging_docs_reference_runtime_paths_and_project_meta(self):
+        docs = (PROJECT_ROOT / "docs" / "packaging.md").read_text(encoding="utf-8")
+        readme = (PROJECT_ROOT / "packaging" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("runtime_paths.py", docs)
+        self.assertIn("project_meta.py", docs)
+        self.assertIn("runtime_paths.py", readme)
+        self.assertIn("project_meta.py", readme)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,26 @@
 - `project_meta.py`
   - 打包链路共享元数据，收口项目版本、发布名称和 Windows 标识
 
+## 打包模块联动规则
+
+`packaging/` 目录不是孤立存在的，下面这些文件与它构成一个同步单元：
+
+- 版本源：
+  - `pyproject.toml`
+  - `packaging/project_meta.py`
+- 路径规则：
+  - `app/utils/runtime_paths.py`
+- 维护文档：
+  - `README.md`
+  - `README_EN.md`
+  - `docs/packaging.md`
+  - `docs/testing.md`
+  - `CHANGELOG.md`
+- 静态验证：
+  - `tests/test_packaging.py`
+
+只修改 `portable.spec` 或 `installer.iss` 而不更新这些联动文件，后续最容易出现版本漂移、文档漂移和用户数据路径漂移。
+
 ## 版本与元数据
 
 打包链路的版本源统一来自根目录 `pyproject.toml`：
@@ -141,6 +161,8 @@ python packaging/build_release.py
 
 - 开发态：优先项目根目录 `user_data`
 - 打包态：优先 `%LOCALAPPDATA%` / `AppData`
+
+这里不要自行复制路径判断逻辑，统一以 `app/utils/runtime_paths.py` 为准。
 
 ## 发布前检查
 

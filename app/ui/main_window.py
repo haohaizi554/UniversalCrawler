@@ -338,6 +338,10 @@ class MainWindow(QMainWindow):
         """执行 `stop_media_playback` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.media_panel.stop_playback()
 
+    def release_media_playback(self) -> None:
+        """删除或切换媒体前显式释放播放器 source，避免本地文件仍被占用。"""
+        self.media_panel.release_media()
+
     def cleanup_media(self) -> None:
         """执行 `cleanup_media` 对应的业务逻辑，供 `MainWindow` 使用。"""
         self.media_panel.cleanup()

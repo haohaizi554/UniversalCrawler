@@ -212,7 +212,17 @@ class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
             self.window.append_log("❌ 未知的爬虫源")
             return None, None
         spider_cls = plugin.get_spider_class()
-        return plugin, spider_cls(keyword=keyword, config=config)
+        try:
+            return plugin, spider_cls(keyword=keyword, config=config)
+        except Exception as exc:
+            self.window.append_log(f"❌ 创建爬虫失败: {exc}")
+            debug_logger.log_exception(
+                "ApplicationController",
+                "create_spider",
+                exc,
+                context={"source_id": source_id, "keyword": keyword},
+            )
+            return plugin, None
 
     def _bind_spider_signals(self, spider) -> None:
         """spider 生命周期信号统一在这里接入。"""
@@ -311,7 +321,7 @@ class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
             return
 
         if self.current_playing_id == vid:
-            self.window.stop_media_playback()
+            self.window.release_media_playback()
             self.current_playing_id = None
         outcome = self._delete_video_sync(vid)
         if outcome.status == "error":
@@ -336,9 +346,20 @@ class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
 
         # 只有在 spider 实例成功创建后才切换 UI 状态，避免“假运行中”。
         self.window.set_crawl_running_state(True)
-        self.current_spider = spider
-        self._bind_spider_signals(self.current_spider)
-        self.current_spider.start()
+        try:
+            self.current_spider = spider
+            self._bind_spider_signals(self.current_spider)
+            self.current_spider.start()
+        except Exception as exc:
+            self.window.append_log(f"❌ 启动爬虫失败: {exc}")
+            debug_logger.log_exception(
+                "ApplicationController",
+                "start_crawl",
+                exc,
+                context={"source_id": source_id, "keyword": keyword},
+            )
+            self.window.set_crawl_running_state(False)
+            self.current_spider = None
 
     def _on_spider_item_found(self, item):
         """接收爬虫产出的资源条目，先入表，再交给下载器排队。"""

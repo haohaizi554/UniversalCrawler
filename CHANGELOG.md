@@ -23,7 +23,12 @@ and version numbers are aligned with the project version declared in `pyproject.
 - Improved test auto-classification rules for newly added Web and plugin tests.
 - Replaced the previous MIT wording with a personal non-commercial license.
 - Expanded the root README with direct Docker usage guidance and language switch links.
+- Expanded packaging documentation to include `project_meta.py`, `runtime_paths.py`, and the sync contract across build scripts, docs, and tests.
+- Hardened desktop media deletion so the GUI releases the active media source before removing files.
 
 ### Fixed
 - Fixed Douyin FFmpeg progress parsing and retry refresh behavior.
 - Fixed Web-side Douyin parameter initialization bottlenecks and packaging metadata drift.
+- Fixed Bilibili spider thread regressions and ensured single-item stream failures no longer terminate the whole task loop.
+- Removed leftover temporary debug probes from Kuaishou, Douyin, FFmpeg, and Web frontend code paths.
+- Filled missing XiaoHongShu regression coverage for route dispatch, HTML fallback, 461 cooldown, and downloader header propagation.

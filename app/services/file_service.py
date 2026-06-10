@@ -2,6 +2,7 @@
 
 import heapq
 import os
+import time
 from dataclasses import dataclass
 
 from app.exceptions import FileOperationError, MediaScanError
@@ -113,8 +114,17 @@ class MediaLibraryService:
         file_path = video.local_path
         if not file_path or not os.path.exists(file_path):
             return False
-        try:
-            os.remove(file_path)
-            return True
-        except OSError as exc:
-            raise FileOperationError(str(exc)) from exc
+        last_error: OSError | None = None
+        for attempt in range(3):
+            try:
+                os.remove(file_path)
+                return True
+            except PermissionError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                break
+            except OSError as exc:
+                raise FileOperationError(str(exc)) from exc
+        raise FileOperationError(str(last_error) if last_error else "删除文件失败")

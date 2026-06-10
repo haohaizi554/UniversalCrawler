@@ -97,7 +97,7 @@ class MediaPreviewPanel(QFrame):
         """执行 `show_image` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""
         self.vid_container.hide()
         self.img_lbl.show()
-        self.player.stop()
+        self.release_media()
         self.current_image_path = image_path
         self.scale_image_to_fit()
 
@@ -114,12 +114,16 @@ class MediaPreviewPanel(QFrame):
         self.player.stop()
         self._set_play_button_stopped()
 
-    def cleanup(self) -> None:
-        """退出前显式停止播放器，降低 QtMultimedia/FFmpeg 原生崩溃风险。"""
-        self.current_image_path = None
+    def release_media(self) -> None:
+        """显式卸载当前媒体源，释放 Windows/QtMultimedia 对本地文件的占用。"""
         self.player.stop()
         self.player.setSource(QUrl())
         self._set_play_button_stopped()
+
+    def cleanup(self) -> None:
+        """退出前显式停止播放器，降低 QtMultimedia/FFmpeg 原生崩溃风险。"""
+        self.current_image_path = None
+        self.release_media()
 
     def scale_image_to_fit(self) -> None:
         """执行 `scale_image_to_fit` 对应的业务逻辑，供 `MediaPreviewPanel` 使用。"""

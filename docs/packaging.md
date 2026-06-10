@@ -27,6 +27,29 @@
 - 开发态与打包态路径必须继续遵守 `runtime_paths.py` 规范
 - 外部工具必须显式随包交付，不依赖用户手工补环境
 
+## 联动更新矩阵
+
+打包链路一旦调整，下面这些文件必须一起看，避免“构建脚本变了，但 README / 安装器 / 路径规则没同步”：
+
+- 版本与展示名：
+  - `pyproject.toml`
+  - `packaging/project_meta.py`
+- 便携版构建：
+  - `packaging/build_portable.py`
+  - `packaging/portable.spec`
+  - `packaging/runtime_hook.py`
+- 安装包构建：
+  - `packaging/build_installer.py`
+  - `packaging/installer.iss`
+- 文档：
+  - `README.md`
+  - `README_EN.md`
+  - `packaging/README.md`
+  - `docs/testing.md`
+  - `CHANGELOG.md`
+
+当前项目要求以 `project_meta.py` 作为打包元数据收口层，以 `runtime_paths.py` 作为开发态 / 打包态用户数据路径规则的唯一口径。
+
 ## 打包前准备
 
 ### 1. 基础依赖
@@ -80,6 +103,8 @@ dist/UniversalCrawlerPro/
 - `N_m3u8DL-RE.exe`
 - `ms-playwright/`
 
+便携版验证时，用户数据默认仍应落到项目根目录 `user_data/`，这是开发与灰度阶段的默认行为，不应误判为打包路径异常。
+
 ### 安装包
 
 ```bash
@@ -96,6 +121,7 @@ dist/installer/
 
 - 安装包文件名自动带当前项目版本
 - 版本号来源于 `pyproject.toml`
+- 安装后运行时用户数据应写入 `%LOCALAPPDATA%` / `AppData`
 
 ### 一键发布
 
@@ -108,6 +134,7 @@ python packaging/build_release.py
 当前版本同步关系如下：
 
 - Python 包版本：`pyproject.toml`
+- 打包元数据：`packaging/project_meta.py`
 - 便携版说明：`packaging/build_portable.py` 写入 `BUILD_INFO.txt`
 - 安装器版本：`packaging/build_installer.py` 注入 `installer.iss`
 - 安装包输出名：同样由 `build_installer.py` 注入
@@ -165,6 +192,7 @@ version = "x.y.z"
 7. 用户数据写入位置符合当前路径规范
 8. 安装包开始菜单和桌面快捷方式可用
 9. 卸载流程正常
+10. 开发态落盘仍在项目根 `user_data/`，打包态落盘切到 `%LOCALAPPDATA%`
 
 ## 相关文件
 
@@ -173,4 +201,6 @@ version = "x.y.z"
 - [packaging/build_installer.py](../packaging/build_installer.py)
 - [packaging/portable.spec](../packaging/portable.spec)
 - [packaging/installer.iss](../packaging/installer.iss)
+- [packaging/project_meta.py](../packaging/project_meta.py)
+- [app/utils/runtime_paths.py](../app/utils/runtime_paths.py)
 - [tests/test_packaging.py](../tests/test_packaging.py)

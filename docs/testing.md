@@ -184,6 +184,8 @@ python tests/test_launcher.py --gui
 - 不真跑 PyInstaller（太慢）
 - exec spec 验证模块级变量
 - 静态分析 spec 关键字段
+- 校验打包文档与 `project_meta.py` / `runtime_paths.py` 的联动口径
+- 拦截 `.dbg/`、`debug-point`、`127.0.0.1:7777/event` 这类临时探针残留
 
 测试文件：
 

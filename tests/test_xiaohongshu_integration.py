@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import requests
 from unittest.mock import Mock, patch
 
 from app.core.downloaders.xiaohongshu import XiaohongshuDownloader
@@ -415,6 +416,44 @@ class XiaohongshuAuthTests(unittest.TestCase):
 
         mocked_log.assert_any_call("📥 已解析详情 2/2 | 成功 1")
 
+    def test_fetch_note_detail_falls_back_to_html_when_feed_returns_empty(self):
+        spider = XiaohongshuSpider("主页", {})
+        mocked_client = Mock()
+        mocked_client.get_note_detail.return_value = {}
+        mocked_client.get_note_detail_from_html.return_value = {"note_id": "note-1", "type": "video"}
+
+        with patch.object(spider.parser, "normalize_note", return_value={"note_id": "note-1", "type": "video"}) as mocked_normalize:
+            detail = spider._fetch_note_detail(
+                mocked_client,
+                {"note_id": "note-1", "xsec_source": "pc_search", "xsec_token": "token-1"},
+            )
+
+        self.assertEqual(detail, {"note_id": "note-1", "type": "video"})
+        mocked_client.get_note_detail_from_html.assert_called_once_with(
+            note_id="note-1",
+            xsec_source="pc_search",
+            xsec_token="token-1",
+        )
+        mocked_normalize.assert_called_once()
+
+    def test_fetch_note_detail_triggers_cooldown_on_461(self):
+        spider = XiaohongshuSpider("主页", {})
+        mocked_client = Mock()
+        response = Mock(status_code=461)
+        http_error = requests.HTTPError("status code 461")
+        http_error.response = response
+        mocked_client.get_note_detail.side_effect = http_error
+
+        with patch.object(spider, "_pause_between_requests") as mocked_pause, patch.object(spider, "log") as mocked_log:
+            detail = spider._fetch_note_detail(
+                mocked_client,
+                {"note_id": "note-1", "xsec_source": "pc_search", "xsec_token": "token-1"},
+            )
+
+        self.assertIsNone(detail)
+        mocked_pause.assert_called_once_with(multiplier=4.0)
+        mocked_log.assert_any_call("⏳ 小红书返回 461，触发限流冷却后继续")
+
     @patch.object(XiaohongshuSpider, "_collect_search_refs")
     @patch.object(XiaohongshuSpider, "_handle_multi_refs")
     @patch.object(XiaohongshuSpider, "_lookup_creator_by_keyword", return_value=None)
@@ -437,6 +476,52 @@ class XiaohongshuAuthTests(unittest.TestCase):
 
         mocked_collect_search_refs.assert_called_once_with(mocked_build_client.return_value, "test_creator")
         mocked_handle_multi_refs.assert_called_once()
+
+    @patch.object(XiaohongshuSpider, "_handle_note_url")
+    @patch.object(XiaohongshuSpider, "_ensure_cookie_string", return_value="a1=demo")
+    @patch.object(XiaohongshuSpider, "_build_client")
+    def test_run_routes_note_url_to_note_handler(self, mocked_build_client, _mocked_ensure_cookie, mocked_handle_note_url):
+        spider = XiaohongshuSpider(
+            "https://www.xiaohongshu.com/explore/66fad51c000000001b0224b8?xsec_token=demo-token&xsec_source=pc_search",
+            {},
+        )
+        mocked_build_client.return_value.check_cookie_ready.return_value = True
+        mocked_build_client.return_value.probe_login_status.return_value = True
+
+        spider.run()
+
+        mocked_handle_note_url.assert_called_once()
+        note_info = mocked_handle_note_url.call_args.args[1]
+        self.assertEqual(note_info.note_id, "66fad51c000000001b0224b8")
+        self.assertEqual(note_info.xsec_token, "demo-token")
+        self.assertEqual(mocked_handle_note_url.call_args.kwargs["referer"], spider.keyword)
+
+    @patch.object(XiaohongshuSpider, "_collect_creator_refs")
+    @patch.object(XiaohongshuSpider, "_handle_multi_refs")
+    @patch.object(XiaohongshuSpider, "_ensure_cookie_string", return_value="a1=demo")
+    @patch.object(XiaohongshuSpider, "_build_client")
+    def test_run_routes_creator_id_to_creator_collection(
+        self,
+        mocked_build_client,
+        _mocked_ensure_cookie,
+        mocked_handle_multi_refs,
+        mocked_collect_creator_refs,
+    ):
+        spider = XiaohongshuSpider("5eb8e1d400000000010075ae", {})
+        mocked_build_client.return_value.check_cookie_ready.return_value = True
+        mocked_build_client.return_value.probe_login_status.return_value = True
+        mocked_collect_creator_refs.return_value = [{"note_id": "note-1", "xsec_source": "pc_feed", "xsec_token": ""}]
+
+        spider.run()
+
+        mocked_collect_creator_refs.assert_called_once()
+        creator = mocked_collect_creator_refs.call_args.args[1]
+        self.assertEqual(creator.user_id, "5eb8e1d400000000010075ae")
+        mocked_handle_multi_refs.assert_called_once_with(
+            mocked_build_client.return_value,
+            mocked_collect_creator_refs.return_value,
+            "a1=demo",
+        )
 
     def test_extract_creator_candidates_from_note_search_prefers_relevant_author(self):
         spider = XiaohongshuSpider("@test_creator", {})
@@ -492,6 +577,27 @@ class XiaohongshuAuthTests(unittest.TestCase):
         mocked_browser_lookup.assert_called_once()
 
 class XiaohongshuDownloaderTests(unittest.TestCase):
+    @patch("app.core.downloaders.xiaohongshu.XiaohongshuDownloader._download_with_strategy_fallback")
+    def test_video_download_passes_headers_and_cookie_to_strategy(self, mocked_download_with_strategy_fallback):
+        downloader = XiaohongshuDownloader()
+        from app.models import VideoItem
+
+        item = VideoItem(url="https://cdn.example.com/video.mp4", title="视频", source="xiaohongshu")
+        item.meta.update(
+            {
+                "referer": "https://www.xiaohongshu.com/explore/demo",
+                "ua": "ua-demo",
+                "cookie": "a1=demo",
+            }
+        )
+
+        downloader.download(item, "D:/downloads/demo.mp4", lambda _value: None, lambda: False)
+
+        headers = mocked_download_with_strategy_fallback.call_args.kwargs["headers"]
+        self.assertEqual(headers["Referer"], "https://www.xiaohongshu.com/explore/demo")
+        self.assertEqual(headers["User-Agent"], "ua-demo")
+        self.assertEqual(headers["Cookie"], "a1=demo")
+
     @patch("app.core.downloaders.xiaohongshu.XiaohongshuDownloader._download_http_file")
     def test_gallery_download_expands_images_with_extensions(self, mocked_download_http_file):
         downloader = XiaohongshuDownloader()

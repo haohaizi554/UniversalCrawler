@@ -895,10 +895,6 @@ function mergeVideoPayload(videoId, data) {
 // ======== Server Message Handler ========
 function handleServerMessage(msg) {
   const {type, data} = msg;
-  // 调试: 记录关键事件类型（帮助排查 BUG-180 等消息丢失问题）
-  if (['clear_videos','item_found','scan_result','crawl_state','select_tasks'].includes(type)) {
-    console.log(`[WS] 收到事件: ${type}`, data);
-  }
   switch(type) {
     case 'init_state':
       // 不渲染旧 videos，因为 scan_local_dir 会立即推送 clear_videos + 新 item_found
@@ -1019,21 +1015,6 @@ function handleServerMessage(msg) {
       setCrawlState(data.is_running);
       break;
     case 'select_tasks':
-      if (data.timing) {
-        const nowWall = Date.now();
-        const relayLag = data.timing.controller_relay_perf_ms && data.timing.spider_emit_perf_ms
-          ? (data.timing.controller_relay_perf_ms - data.timing.spider_emit_perf_ms).toFixed(1)
-          : null;
-        const browserLag = data.timing.controller_relay_wall_ms
-          ? (nowWall - data.timing.controller_relay_wall_ms).toFixed(1)
-          : null;
-        console.log('[WS] select_tasks timing', {
-          itemCount: Array.isArray(data.items) ? data.items.length : 0,
-          relayLagMs: relayLag,
-          browserLagMs: browserLag,
-          timing: data.timing,
-        });
-      }
       showSelectionModal(data.items);
       break;
     case 'scan_result':

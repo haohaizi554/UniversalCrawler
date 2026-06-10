@@ -162,6 +162,91 @@ class BilibiliSpider(BaseSpider):
         episode_title = episode.get("title") or f"第 {fallback_index + 1} 集"
         return f"{parent} · P{num_str} · {episode_title}"
 
+    def _process_download_task(self, task: dict) -> bool:
+        """逐条取流并提交下载，单条失败不影响后续任务继续执行。"""
+        self.log(f"🎬 解析流: {task['file_name'][:15]}...")
+        try:
+            v_url, a_url, q_id = self.api.get_play_url(task['bvid'], task['cid'], trace_id=task['trace_id'])
+            if not v_url:
+                self.log("   ❌ 获取流失败")
+                self.debug_state(
+                    action="resolve_stream_empty",
+                    message="Bilibili 播放流响应为空",
+                    status_code="BILI_STREAM_EMPTY",
+                    context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
+                    details={
+                        "file_name": task["file_name"],
+                        "audio_url": a_url,
+                        "quality_id": q_id,
+                    },
+                    level="WARNING",
+                    trace_id=task["trace_id"],
+                )
+                return False
+
+            q_map = {127: "8K", 120: "4K", 116: "1080P60", 80: "1080P", 64: "720P"}
+            q_text = q_map.get(q_id, "高清")
+            self.log(f"   ✨ 获取成功 [{q_text}]")
+            folder_name = task.get("folder_name")
+            proxy_str = self.config.get("proxy", "")
+            cookie_dict = {c.name: c.value for c in self.api.sess.cookies if c.name}
+            meta = {
+                "trace_id": task["trace_id"],
+                "content_type": "video",
+                "media_label": "视频",
+                "audio_url": a_url,
+                "ua": HEADERS['User-Agent'],
+                "referer": task['referer'],
+                "use_subdir": bool(folder_name),
+                "bvid": task["bvid"],
+                "cid": task["cid"],
+                "preferred_filename": task["file_name"],
+                "cookies": cookie_dict,
+            }
+            if proxy_str:
+                meta["proxy"] = proxy_str
+            if folder_name:
+                meta["folder_name"] = folder_name
+            self.emit_video(
+                url=v_url,
+                title=os.path.splitext(task["file_name"])[0],
+                source="bilibili",
+                meta=meta
+            )
+            self.debug_state(
+                action="emit_download_task",
+                message="Bilibili 下载任务已提交到下载队列",
+                status_code="BILI_TASK_EMIT",
+                context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
+                details={
+                    "file_name": task["file_name"],
+                    "folder_name": folder_name,
+                    "quality_id": q_id,
+                    "video_url": v_url,
+                    "audio_url": a_url,
+                },
+                trace_id=task["trace_id"],
+            )
+            return True
+        except Exception as exc:
+            self.log(f"   ❌ 获取流失败: {exc}")
+            self.debug_state(
+                action="resolve_stream_failed",
+                message="Bilibili 获取播放流失败",
+                status_code="BILI_STREAM_FAIL",
+                context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
+                details={
+                    "file_name": task["file_name"],
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+                level="ERROR",
+                trace_id=task["trace_id"],
+            )
+            return False
+        finally:
+            time.sleep(0.5)
+
     #完整流程控制器
     def run(self):
         """执行当前对象或脚本的主流程，供 `BilibiliSpider` 使用。"""
@@ -292,82 +377,14 @@ class BilibiliSpider(BaseSpider):
                 },
             )
             success_count = 0
+            failure_count = 0
             for task in final_download_queue:
                 if not self.is_running: break
-                self.log(f"🎬 解析流: {task['file_name'][:15]}...")
-                try:
-                    v_url, a_url, q_id = self.api.get_play_url(task['bvid'], task['cid'], trace_id=task['trace_id'])
-                except StreamResolveError as exc:
-                    self.log(f"   ❌ 获取流失败: {exc}")
-                    self.debug_state(
-                        action="resolve_stream_failed",
-                        message="Bilibili 获取播放流失败",
-                        status_code="BILI_STREAM_FAIL",
-                        context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
-                        details={"file_name": task["file_name"], "error": str(exc)},
-                        level="ERROR",
-                        trace_id=task["trace_id"],
-                    )
-                    continue
-                if v_url:
-                    q_map = {127: "8K", 120: "4K", 116: "1080P60", 80: "1080P", 64: "720P"}
-                    q_text = q_map.get(q_id, "高清")
-                    self.log(f"   ✨ 获取成功 [{q_text}]")
-                    folder_name = task.get("folder_name")
-                    proxy_str = self.config.get("proxy", "")
-                    # 传递 cookie 给下载器，用于重试时重新获取 play_url
-                    cookie_dict = {c.name: c.value for c in self.api.sess.cookies if c.name}
-                    meta = {
-                        "trace_id": task["trace_id"],
-                        "content_type": "video",  # 与 DouyinParser/KuaishouTaskBuilder/MissAVTaskBuilder 对齐
-                        "media_label": "视频",  # 与 DouyinParser 对齐：GUI 日志使用
-                        "audio_url": a_url,
-                        "ua": HEADERS['User-Agent'],
-                        "referer": task['referer'],
-                        "use_subdir": bool(folder_name),
-                        "bvid": task["bvid"],
-                        "cid": task["cid"],
-                        "preferred_filename": task["file_name"],
-                        "cookies": cookie_dict,
-                    }
-                    if proxy_str:
-                        meta["proxy"] = proxy_str
-                    if folder_name:
-                        meta["folder_name"] = folder_name
-                    self.emit_video(
-                        url=v_url,
-                        title=os.path.splitext(task["file_name"])[0],
-                        source="bilibili",
-                        meta=meta
-                    )
-                    self.debug_state(
-                        action="emit_download_task",
-                        message="Bilibili 下载任务已提交到下载队列",
-                        status_code="BILI_TASK_EMIT",
-                        context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
-                        details={
-                            "file_name": task["file_name"],
-                            "folder_name": folder_name,
-                            "quality_id": q_id,
-                            "video_url": v_url,
-                            "audio_url": a_url,
-                        },
-                        trace_id=task["trace_id"],
-                    )
+                if self._process_download_task(task):
                     success_count += 1
                 else:
-                    self.log("   ❌ 获取流失败")
-                    self.debug_state(
-                        action="resolve_stream_empty",
-                        message="Bilibili 播放流响应为空",
-                        status_code="BILI_STREAM_EMPTY",
-                        context={"trace_id": task["trace_id"], "bvid": task["bvid"], "cid": task["cid"]},
-                        details={"file_name": task["file_name"], "audio_url": a_url, "quality_id": q_id},
-                        level="WARNING",
-                        trace_id=task["trace_id"],
-                    )
-                time.sleep(0.5)
-            self.log(f"🎉 全部完成: {success_count}/{len(final_download_queue)}")
+                    failure_count += 1
+            self.log(f"🎉 全部完成: 成功 {success_count}/{len(final_download_queue)} | 失败 {failure_count}")
         finally:
             self.debug_state(
                 action="run_finish",

@@ -86,7 +86,16 @@ class BaseSpider(threading.Thread):
         """执行 `log` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         self.sig_log.emit(msg)
 
-    def debug_state(self, action: str, message: str = "", status_code=None, context=None, details=None, trace_id=None):
+    def debug_state(
+        self,
+        action: str,
+        message: str = "",
+        status_code=None,
+        context=None,
+        details=None,
+        trace_id=None,
+        level: str = "INFO",
+    ):
         """执行 `debug_state` 对应的业务逻辑，供 `BaseSpider` 使用。"""
         if isinstance(context, dict):
             trace_id = trace_id or context.get("trace_id")
@@ -95,6 +104,7 @@ class BaseSpider(threading.Thread):
         debug_logger.log(
             component=self.__class__.__name__,
             action=action,
+            level=level,
             message=message,
             status_code=status_code,
             context=context,

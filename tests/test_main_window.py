@@ -138,6 +138,15 @@ class MainWindowTests(unittest.TestCase):
 
         window.media_panel.cleanup.assert_called_once()
 
+    def test_release_media_playback_delegates_to_media_panel(self):
+        """删除前的媒体释放必须委托到预览面板，确保文件句柄被真正释放。"""
+        window = self._make_window()
+        window.media_panel = Mock()
+
+        window.release_media_playback()
+
+        window.media_panel.release_media.assert_called_once()
+
     @patch("app.ui.main_window.generate_stylesheet", return_value="style")
     @patch("app.ui.main_window.cfg.set")
     def test_toggle_theme_persists_state_and_emits_signal(self, mock_cfg_set, _mock_stylesheet):

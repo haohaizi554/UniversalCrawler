@@ -2,7 +2,9 @@
 
 import asyncio
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -11,6 +13,7 @@ import requests
 from playwright.sync_api import Error as PlaywrightError
 
 from app.models import VideoItem
+from app.debug_logger import get_debug_logger
 from app.exceptions import InvalidCookieStateError, LoginCancelledError, LoginCheckError, SpiderParseError
 from app.exceptions import StreamResolveError
 from app.core.lib.douyin.interface.live import Live
@@ -29,6 +32,7 @@ from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
 from app.spiders.missav.spider import MissAVSpider
 from app.spiders.missav.task_builder import MissAVTaskBuilder
 from app.spiders.missav.parser import MissAVParser
+from app.spiders.base import BaseSpider
 
 
 class SpiderHelperTests(unittest.TestCase):
@@ -56,6 +60,17 @@ class SpiderHelperTests(unittest.TestCase):
         api.parser = BilibiliParser()
         api.auth_service = Mock(spec=AuthService)
         return api
+
+    def _make_bilibili_spider(self) -> BilibiliSpider:
+        """提供 `_make_bilibili_spider` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.config = {}
+        spider.log = Mock()
+        spider.debug_state = Mock()
+        spider.emit_video = Mock()
+        spider.api = Mock()
+        spider.api.sess = SimpleNamespace(cookies=[])
+        return spider
 
     def _make_kuaishou_capture_spider(self) -> KuaishouSpider:
         """提供 `_make_kuaishou_capture_spider` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
@@ -494,6 +509,63 @@ class SpiderHelperTests(unittest.TestCase):
 
         with self.assertRaises(StreamResolveError):
             api.get_play_url("BV1demo", 123)
+
+    def test_bilibili_spider_overrides_base_run(self):
+        """BilibiliSpider 必须实现自己的 run，而不是回落到 BaseSpider.run。"""
+        self.assertIsNot(BilibiliSpider.run, BaseSpider.run)
+
+    def test_base_spider_debug_state_accepts_level(self):
+        """BaseSpider.debug_state 必须兼容 level 参数，避免单条失败把线程打崩。"""
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        logger = get_debug_logger()
+
+        with patch.object(logger, "log") as mocked_log:
+            BaseSpider.debug_state(
+                spider,
+                action="resolve_stream_failed",
+                message="日志级别兼容验证",
+                status_code="TEST",
+                context={"trace_id": "trace-1"},
+                details={"error": "boom"},
+                level="ERROR",
+            )
+
+        mocked_log.assert_called_once()
+        self.assertEqual(mocked_log.call_args.kwargs["level"], "ERROR")
+        self.assertEqual(mocked_log.call_args.kwargs["trace_id"], "trace-1")
+
+    @patch("app.spiders.bilibili.spider.time.sleep", return_value=None)
+    def test_bilibili_process_download_task_continues_after_parse_error(self, _mock_sleep):
+        """单条取流解析失败后，后续任务仍必须继续提交。"""
+        spider = self._make_bilibili_spider()
+        first_task = {
+            "trace_id": "trace-1",
+            "bvid": "BV1fail",
+            "cid": 101,
+            "file_name": "P01_失败.mp4",
+            "referer": "https://www.bilibili.com/video/BV1fail",
+        }
+        second_task = {
+            "trace_id": "trace-2",
+            "bvid": "BV1ok",
+            "cid": 102,
+            "file_name": "P02_成功.mp4",
+            "referer": "https://www.bilibili.com/video/BV1ok",
+        }
+        spider.api.get_play_url.side_effect = [
+            SpiderParseError("payload malformed"),
+            ("https://video.example.com/v.mp4", "https://video.example.com/a.m4a", 80),
+        ]
+
+        first_result = spider._process_download_task(first_task)
+        second_result = spider._process_download_task(second_task)
+
+        self.assertFalse(first_result)
+        self.assertTrue(second_result)
+        self.assertEqual(spider.api.get_play_url.call_count, 2)
+        spider.emit_video.assert_called_once()
+        spider.log.assert_any_call("   ❌ 获取流失败: payload malformed")
+        spider.log.assert_any_call("   ✨ 获取成功 [1080P]")
 
     @patch("app.spiders.douyin.spider.os.path.exists", return_value=True)
     def test_douyin_load_or_login_falls_back_to_scan_when_local_cookie_invalid(self, _mock_exists):

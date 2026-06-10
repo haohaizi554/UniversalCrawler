@@ -216,12 +216,6 @@ class FFmpegDownloader(BaseDownloader):
 
                 while True:
                     if check_stop_func():
-                        # #region debug-point C:ffmpeg-stop-requested
-                        try:
-                            import json, urllib.request; _p='.dbg/cli-platform-regressions.env'; _u='http://127.0.0.1:7777/event'; _s='cli-platform-regressions'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"C","location":"app/core/downloaders/ffmpeg.py:stop-check","msg":"[DEBUG] ffmpeg stop requested before kill","data":{"save_path":save_path,"title":video_item.title,"pid":getattr(process,'pid',None),"poll":process.poll()},"ts":int(time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-                        except Exception:
-                            pass
-                        # #endregion
                         process.kill()
                         raise DownloaderStoppedError("用户停止下载")
 
@@ -248,19 +242,6 @@ class FFmpegDownloader(BaseDownloader):
                         progress_callback(parsed_progress)
 
                 process.wait()
-                # #region debug-point C:ffmpeg-process-exit
-                try:
-                    import json, urllib.request; _p='.dbg/cli-platform-regressions.env'; _u='http://127.0.0.1:7777/event'; _s='cli-platform-regressions'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"C","location":"app/core/downloaders/ffmpeg.py:process-wait","msg":"[DEBUG] ffmpeg process exited","data":{"save_path":save_path,"title":video_item.title,"pid":getattr(process,'pid',None),"returncode":process.returncode,"exists":os.path.exists(save_path),"size":os.path.getsize(save_path) if os.path.exists(save_path) else 0},"ts":int(time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-                except Exception:
-                    pass
-                # #endregion
-                if process.returncode != 0:
-                    # #region debug-point J:ffmpeg-stderr-tail
-                    try:
-                        import json, urllib.request; _p='.dbg/ffmpeg-intermittent-failure.env'; _u='http://127.0.0.1:7777/event'; _s='ffmpeg-intermittent-failure'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); urllib.request.urlopen(urllib.request.Request(_u, data=json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"J","location":"app/core/downloaders/ffmpeg.py:process-wait","msg":"[DEBUG] ffmpeg failed with stderr tail","data":{"trace_id":trace_id,"save_path":save_path,"returncode":process.returncode,"stderr_tail":list(stderr_tail)},"ts":int(time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-                    except Exception:
-                        pass
-                    # #endregion
                 if process.returncode == 0 and os.path.exists(save_path) and os.path.getsize(save_path) > 0:
                     progress_callback(100)
                     debug_logger.log(

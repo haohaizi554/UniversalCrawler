@@ -12,7 +12,6 @@
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
-
 **Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
 
 它不是一个套壳网页，也不是一堆零散脚本的堆叠，而是一个围绕 **可维护性、可扩展性、可调试性、可打包分发** 设计出来的桌面端采集工作站。
@@ -25,6 +24,7 @@
 ---
 
 <a id="toc"></a>
+
 ## 📑 目录导航
 
 - [✨ 核心特性](#features)
@@ -98,8 +98,9 @@
 | 平台 | 状态 | 认证方式 | 支持输入 | 典型策略 |
 | :-- | :--: | :-- | :-- | :-- |
 | **抖音** |  稳定 | 扫码登录 / Cookie | 作品链接、主页、合集、搜索词、短链、`modal_id` | 内置参数生成与接口访问，支持无水印图集拆分、实况图、普通视频下载 |
+| **小红书** | 稳定 | 浏览器 Cookie / 扫码登录 | 关键词、笔记链接、作者主页链接 | 浏览器预热 Cookie + `xhshow` 请求签名 + 笔记详情 / 作者笔记列表抓取 + 图文/视频统一下载 |
 | **Bilibili** |  稳定 | 扫码登录 / Cookie | BV、完整链接、空间链接、UID、搜索词 | 浏览器扫描 BV + API 拉详情 + DASH 音视频分离下载 + `ffmpeg` 合并 |
-| **快手** |  测试 | 浏览器辅助登录 | 主页链接、快手号、搜索关键词 | Playwright 页面滚动 + 媒体请求捕获，根据资源自动切换 HTTP / HLS |
+| **快手** | 稳定 | 浏览器辅助登录 | 主页链接、快手号、搜索关键词 | Playwright 页面滚动 + 媒体请求捕获，根据资源自动切换 HTTP / HLS |
 | **MissAV** |  稳定 | 无需站内登录 | 番号、演员、分类、列表、单体 URL | 双轮扫描 + 中文字幕/无码优先策略 + `playlist.m3u8` 嗅探 + `N_m3u8DL-RE` 下载 |
 
 ### 平台设计上的一个关键点
@@ -540,7 +541,7 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 - 配置读写与损坏恢复
 - 控制器编排与 UI 交互边界
 - 下载器策略选择、外部工具命令构建、文件落盘纯逻辑
-- 抖音 / B 站 / 快手 / MissAV 的关键解析与流程分支
+- 抖音 / 小红书 / B 站 / 快手 / MissAV 的关键解析与流程分支
 - Spider -> Controller -> DownloadManager 等半集成链路
 - 日志脱敏、错误摘要生成与调试服务行为
 
@@ -638,6 +639,17 @@ python -m pytest tests
 - [`packaging/portable.spec`](packaging/portable.spec) — PyInstaller 打包规格
 - [`packaging/installer.iss`](packaging/installer.iss) — Inno Setup 安装脚本
 - [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — 运行时初始化钩子
+- [`packaging/project_meta.py`](packaging/project_meta.py) — 打包共享元数据入口
+- [`app/utils/runtime_paths.py`](app/utils/runtime_paths.py) — 开发态 / 打包态用户数据路径规则
+
+### 打包链路联动说明
+
+如果你修改了打包链路，不要只改 `packaging/` 目录：
+
+- 版本与展示名需要同步 `pyproject.toml` + `packaging/project_meta.py`
+- 路径口径需要同步 `app/utils/runtime_paths.py`
+- 说明文档至少同步 `README.md`、`README_EN.md`、`docs/packaging.md`、`packaging/README.md`
+- 静态验证需要同步 `tests/test_packaging.py`
 
 ### 打包前建议检查
 
@@ -646,6 +658,7 @@ python -m pytest tests
 - `N_m3u8DL-RE` / `N_m3u8DL-RE.exe` 是否可用
 - 是否已通过完整测试
 - 是否确认不把用户态配置和 Cookie 打入产物
+- 是否确认开发态继续写入项目根 `user_data/`，打包态切换到 `%LOCALAPPDATA%`
 
 详细说明见：[打包与发布指南](docs/packaging.md) 与 [打包脚本说明](packaging/README.md)
 

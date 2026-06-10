@@ -380,12 +380,6 @@ class DouyinSpider(BaseSpider):
 
     async def _route_input(self, params, raw_text: str, link_extractor) -> None:
         """根据输入内容选择作品、合集、用户主页或关键词搜索路径。"""
-        # #region debug-point G:douyin-route-input
-        try:
-            import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"G","location":"app/spiders/douyin/spider.py:_route_input","msg":"[DEBUG] douyin route input received","data":{"raw_text":raw_text,"stripped_text":raw_text.strip(),"contains_http":"http" in raw_text,"contains_user":"user/" in raw_text,"contains_collection":"collection/" in raw_text or "mix/" in raw_text,"contains_modal":"modal_id=" in raw_text,"isdigit":raw_text.isdigit(),"isalnum_short":raw_text.isalnum() and len(raw_text) <= 20 and ' ' not in raw_text},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-        except Exception:
-            pass
-        # #endregion
         if "http" in raw_text:
             self.log("🔍 正在解析链接重定向...")
 
@@ -437,12 +431,6 @@ class DouyinSpider(BaseSpider):
     async def _handle_detail_link(self, params, raw_text: str, link_extractor) -> None:
         """解析普通作品详情链接，并把结果交给详情处理流程。"""
         res = await self._resolve_detail_link(link_extractor, raw_text)
-        # #region debug-point G:douyin-detail-link
-        try:
-            import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"G","location":"app/spiders/douyin/spider.py:_handle_detail_link","msg":"[DEBUG] douyin detail link resolved","data":{"raw_text":raw_text,"resolved_count":len(res or []),"resolved_ids":(res or [])[:5]},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-        except Exception:
-            pass
-        # #endregion
         if res:
             await self._process_detail(params, res)
             return
@@ -492,12 +480,6 @@ class DouyinSpider(BaseSpider):
             if not self.is_running: break
             api.detail_id = vid
             data = await api.run(single_page=True, data_key="aweme_detail")
-            # #region debug-point G:douyin-detail-data
-            try:
-                import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"G","location":"app/spiders/douyin/spider.py:_process_detail","msg":"[DEBUG] douyin detail api returned","data":{"aweme_id":vid,"has_data":bool(data),"keys":sorted(list(data.keys()))[:20] if isinstance(data, dict) else [],"data_type":type(data).__name__},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-            except Exception:
-                pass
-            # #endregion
             if data:
                 trace_id = f"dy-{vid}"
                 self.debug_api(
@@ -508,12 +490,6 @@ class DouyinSpider(BaseSpider):
                     status_code="DOUYIN_DETAIL_OK",
                 )
                 item = self.parser.parse_aweme(data)
-                # #region debug-point G:douyin-detail-parse
-                try:
-                    import json as _dbg_json, urllib.request as _dbg_request, time as _dbg_time; _p='.dbg/interactive-resource-crash.env'; _u='http://127.0.0.1:7777/event'; _s='interactive-resource-crash'; exec("try:\n with open(_p, encoding='utf-8') as f: c=f.read(); _u=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SERVER_URL=')),_u); _s=next((l.split('=',1)[1] for l in c.split('\\n') if l.startswith('DEBUG_SESSION_ID=')),_s)\nexcept Exception: pass"); _dbg_request.urlopen(_dbg_request.Request(_u, data=_dbg_json.dumps({"sessionId":_s,"runId":"pre-fix","hypothesisId":"G","location":"app/spiders/douyin/spider.py:_process_detail","msg":"[DEBUG] douyin detail parsed item","data":{"aweme_id":vid,"parsed":item is not None,"title":getattr(item,'title',None),"content_type":getattr(item,'meta',{}).get('content_type') if item is not None else None},"ts":int(_dbg_time.time()*1000)}).encode(), headers={"Content-Type":"application/json"}), timeout=0.5).read()
-                except Exception:
-                    pass
-                # #endregion
                 if item:
                     all_items.append(item)
 
