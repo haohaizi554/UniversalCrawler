@@ -5,7 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QWidget
 
-from app.config import cfg
+from app.config import cfg, get_platform_default_values, get_platform_runtime_defaults
 from app.core.plugins.run_options import build_missav_proxy_url
 
 
@@ -89,78 +89,104 @@ class MissAVSettingsWidget(QWidget):
 
 
 def build_bilibili_settings_widget(parent=None) -> PageLimitSettingsWidget:
+    defaults = get_platform_runtime_defaults("bilibili")
     return PageLimitSettingsWidget(
         parent,
         label_text="页数:",
         max_pages=500,
-        default_pages=cfg.get("bilibili", "max_pages", 1),
+        default_pages=int(defaults.get("max_pages", 1)),
         tooltip="搜索或列表扫描页数，可选 1/2/5/10/20/max。",
     )
 
 
 def read_bilibili_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
-        return {"max_pages": 1}
+        defaults = get_platform_default_values("bilibili")
+        return {"max_pages": int(defaults.get("max_pages", 1))}
     pages = widget.current_value()
     cfg.set("bilibili", "max_pages", pages)
     return {"max_pages": pages}
 
 
 def build_douyin_settings_widget(parent=None) -> PageLimitSettingsWidget:
+    defaults = get_platform_runtime_defaults("douyin")
     return PageLimitSettingsWidget(
         parent,
         label_text="视频数:",
         max_pages=9999,
-        default_pages=cfg.get("douyin", "max_items", 20),
+        default_pages=int(defaults.get("max_items", 20)),
         tooltip="抖音单次最多处理的视频数量，可选 1/2/5/10/20/max。",
     )
 
 
 def read_douyin_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
-        return {"max_items": 20, "timeout": 10}
+        defaults = get_platform_default_values("douyin")
+        return {
+            "max_items": int(defaults.get("max_items", 20)),
+            "timeout": int(defaults.get("timeout", 10)),
+        }
     max_items = widget.current_value()
     cfg.set("douyin", "max_items", max_items)
-    return {"max_items": max_items, "timeout": 10}
+    defaults = get_platform_runtime_defaults("douyin")
+    return {"max_items": max_items, "timeout": int(defaults.get("timeout", 10))}
 
 
 def build_xiaohongshu_settings_widget(parent=None) -> PageLimitSettingsWidget:
+    defaults = get_platform_runtime_defaults("xiaohongshu")
     return PageLimitSettingsWidget(
         parent,
         label_text="笔记数:",
         max_pages=9999,
-        default_pages=cfg.get("xiaohongshu", "max_items", 20),
+        default_pages=int(defaults.get("max_items", 20)),
         tooltip="小红书单次最多处理的笔记数量，可选 1/2/5/10/20/max。",
     )
 
 
-def read_xiaohongshu_run_options(widget: QWidget | None) -> dict[str, int]:
+def read_xiaohongshu_run_options(widget: QWidget | None) -> dict[str, int | float]:
+    defaults = get_platform_runtime_defaults("xiaohongshu")
     if not isinstance(widget, PageLimitSettingsWidget):
-        return {"max_items": 20, "search_max_pages": 5}
+        defaults = get_platform_default_values("xiaohongshu")
+        return {
+            "max_items": int(defaults.get("max_items", 20)),
+            "search_max_pages": int(defaults.get("search_max_pages", 5)),
+            "timeout": int(defaults.get("timeout", 30)),
+            "request_interval": float(defaults.get("request_interval", 1.5)),
+            "detail_request_interval": float(defaults.get("detail_request_interval", 0.5)),
+        }
     max_items = widget.current_value()
     cfg.set("xiaohongshu", "max_items", max_items)
     return {
         "max_items": max_items,
-        "search_max_pages": cfg.get("xiaohongshu", "search_max_pages", 5),
+        "search_max_pages": int(defaults.get("search_max_pages", 5)),
+        "timeout": int(defaults.get("timeout", 30)),
+        "request_interval": float(defaults.get("request_interval", 1.5)),
+        "detail_request_interval": float(defaults.get("detail_request_interval", 0.5)),
     }
 
 
 def build_kuaishou_settings_widget(parent=None) -> PageLimitSettingsWidget:
+    defaults = get_platform_runtime_defaults("kuaishou")
     return PageLimitSettingsWidget(
         parent,
         label_text="视频数:",
         max_pages=9999,
-        default_pages=cfg.get("kuaishou", "max_items", 20),
+        default_pages=int(defaults.get("max_items", 20)),
         tooltip="快手单次最多扫描的视频数量，可选 1/2/5/10/20/max。",
     )
 
 
 def read_kuaishou_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
-        return {"max_items": 20}
+        defaults = get_platform_default_values("kuaishou")
+        return {
+            "max_items": int(defaults.get("max_items", 20)),
+            "timeout": int(defaults.get("timeout", 10)),
+        }
     max_items = widget.current_value()
     cfg.set("kuaishou", "max_items", max_items)
-    return {"max_items": max_items}
+    defaults = get_platform_runtime_defaults("kuaishou")
+    return {"max_items": max_items, "timeout": int(defaults.get("timeout", 10))}
 
 
 def build_missav_settings_widget(parent=None) -> MissAVSettingsWidget:
@@ -169,10 +195,11 @@ def build_missav_settings_widget(parent=None) -> MissAVSettingsWidget:
 
 def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool]:
     if not isinstance(widget, MissAVSettingsWidget):
+        defaults = get_platform_default_values("missav")
         return {
-            "individual_only": False,
-            "priority": "中文字幕优先",
-            "proxy": "http://127.0.0.1:7890",
+            "individual_only": bool(defaults.get("individual_only", False)),
+            "priority": str(defaults.get("priority", "中文字幕优先")),
+            "proxy": str(defaults.get("proxy", "http://127.0.0.1:7890")),
         }
 
     is_individual = widget.chk_individual.isChecked()

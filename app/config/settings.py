@@ -42,6 +42,7 @@ class CommonSettings:
 class MissAVSettings:
     """封装 `MissAVSettings` 对应的配置数据与访问逻辑。"""
     proxy_type: str = "clash"          # clash / v2ray / custom
+    proxy_app: str = "Clash (7890)"
     proxy_port: int = 7890
     proxy_url: str = DEFAULT_MISSAV_PROXY_URL
     priority: str = "中文字幕优先"
@@ -59,12 +60,16 @@ class BilibiliSettings:
     auth_file: str = "bili_auth.json"
     user_agent: str = DEFAULT_USER_AGENT
     max_pages: int = 1
+    max_items: int = 30
+    timeout: int = 10
     api_workers: int = 8
 
     def normalize(self) -> None:
         """执行 `normalize` 对应的业务逻辑，供 `BilibiliSettings` 使用。"""
         self.auth_file = str(resolve_user_file(self.auth_file))
         self.max_pages = max(1, min(self.max_pages, 500))
+        self.max_items = max(1, min(self.max_items, 9999))
+        self.timeout = max(1, min(self.timeout, 300))
         self.api_workers = max(1, min(self.api_workers, 16))
 
 
@@ -74,11 +79,13 @@ class DouyinSettings:
     user_agent: str = DEFAULT_USER_AGENT
     search_max_pages: int = 1
     max_items: int = 20
+    timeout: int = 10
 
     def normalize(self) -> None:
         """执行 `normalize` 对应的业务逻辑，供 `DouyinSettings` 使用。"""
         self.search_max_pages = max(1, min(self.search_max_pages, 100))
         self.max_items = max(1, min(self.max_items, 9999))
+        self.timeout = max(1, min(self.timeout, 300))
 
 
 @dataclass
@@ -88,6 +95,9 @@ class XiaohongshuSettings:
     user_agent: str = DEFAULT_USER_AGENT
     max_items: int = 20
     search_max_pages: int = 5
+    timeout: int = 30
+    request_interval: float = 1.5
+    detail_request_interval: float = 0.4   #解析间隔基数
     sort: str = "general"
     note_type: int = 0
 
@@ -95,6 +105,9 @@ class XiaohongshuSettings:
         """执行 `normalize` 对应的业务逻辑，供 `XiaohongshuSettings` 使用。"""
         self.max_items = max(1, min(self.max_items, 9999))
         self.search_max_pages = max(1, min(self.search_max_pages, 100))
+        self.timeout = max(1, min(self.timeout, 300))
+        self.request_interval = max(0.0, min(float(self.request_interval), 10.0))
+        self.detail_request_interval = max(0.0, min(float(self.detail_request_interval), 5.0))
         if self.sort not in {"general", "popularity_descending", "time_descending"}:
             self.sort = "general"
         try:
@@ -109,10 +122,12 @@ class KuaishouSettings:
     """封装 `KuaishouSettings` 对应的配置数据与访问逻辑。"""
     user_agent: str = DEFAULT_USER_AGENT
     max_items: int = 20
+    timeout: int = 10
 
     def normalize(self) -> None:
         """执行 `normalize` 对应的业务逻辑，供 `KuaishouSettings` 使用。"""
         self.max_items = max(1, min(self.max_items, 9999))
+        self.timeout = max(1, min(self.timeout, 300))
 
 
 @dataclass
@@ -270,6 +285,13 @@ class ConfigManager:
                 return int(value)
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ConfigValidationError(f"{key} 必须是整数") from exc
+        if expected_type is float:
+            if isinstance(value, bool):
+                raise ConfigValidationError(f"{key} 类型非法")
+            try:
+                return float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ConfigValidationError(f"{key} 必须是数字") from exc
         if expected_type is str:
             return str(value)
         return value
@@ -405,6 +427,83 @@ class ConfigManager:
         if url:
             self.settings.missav.proxy_url = url
         self.save()
+
+
+def _build_default_settings() -> AppSettings:
+    """构建一份已标准化的默认配置快照，供无状态读取场景复用。"""
+    settings = AppSettings()
+    settings.normalize()
+    return settings
+
+
+DEFAULT_APP_SETTINGS = _build_default_settings()
+
+_PLATFORM_SECTION_MAP = {
+    "douyin": "douyin",
+    "xiaohongshu": "xiaohongshu",
+    "bilibili": "bilibili",
+    "kuaishou": "kuaishou",
+    "missav": "missav",
+}
+
+_PLATFORM_RUNTIME_FIELDS = {
+    "douyin": ("max_items", "timeout"),
+    "xiaohongshu": (
+        "max_items",
+        "search_max_pages",
+        "timeout",
+        "request_interval",
+        "detail_request_interval",
+        "sort",
+        "note_type",
+    ),
+    "bilibili": ("max_pages", "max_items", "timeout", "api_workers"),
+    "kuaishou": ("max_items", "timeout"),
+    "missav": ("individual_only", "priority"),
+}
+
+
+def get_setting_default(section: str, key: str) -> Any:
+    """读取配置模型中的默认值，避免调用方散落硬编码。"""
+    section_obj = getattr(DEFAULT_APP_SETTINGS, section, None)
+    if section_obj is None:
+        raise ConfigValidationError(f"未知配置分组: {section}")
+    if not hasattr(section_obj, key):
+        raise ConfigValidationError(f"未知配置字段: {section}.{key}")
+    return getattr(section_obj, key)
+
+
+def get_platform_default_values(source: str) -> dict[str, Any]:
+    """返回平台默认运行参数快照，不读取持久化配置。"""
+    section_name = _PLATFORM_SECTION_MAP.get(source)
+    if not section_name:
+        return {}
+
+    section_obj = getattr(DEFAULT_APP_SETTINGS, section_name)
+    result = {field: getattr(section_obj, field) for field in _PLATFORM_RUNTIME_FIELDS.get(source, ())}
+    if source == "missav":
+        result["proxy"] = getattr(section_obj, "proxy_url")
+    return result
+
+
+def get_platform_runtime_defaults(source: str, manager: ConfigManager | None = None) -> dict[str, Any]:
+    """返回平台运行配置快照，优先读取持久化配置，兜底配置模型默认值。"""
+    if source not in _PLATFORM_SECTION_MAP:
+        return {}
+
+    active_manager = manager or globals().get("cfg")
+    if active_manager is None:
+        return get_platform_default_values(source)
+
+    section_name = _PLATFORM_SECTION_MAP[source]
+    section_obj = getattr(active_manager.settings, section_name, None)
+    if section_obj is None:
+        return get_platform_default_values(source)
+
+    result = {field: getattr(section_obj, field) for field in _PLATFORM_RUNTIME_FIELDS.get(source, ())}
+    if source == "missav":
+        result["proxy"] = getattr(section_obj, "proxy_url")
+    return result
 
 
 cfg = ConfigManager()

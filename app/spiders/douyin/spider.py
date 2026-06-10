@@ -15,7 +15,7 @@ from typing import Optional
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 # UCP 基础类
-from app.config import cfg
+from app.config import cfg, get_setting_default
 from app.exceptions import InvalidCookieStateError, LoginCancelledError, LoginTimeoutError, SpiderAuthError
 from app.spiders.base import BaseSpider
 from app.spiders.douyin.parser import DouyinItemParser
@@ -200,15 +200,20 @@ class DouyinSpider(BaseSpider):
         self.parser = DouyinItemParser()
         self.task_builder = DouyinTaskBuilder()
         self.auth_service = AuthService()
-        self.auth_file = cfg.get("auth", "douyin_cookie_file", "dy_auth.json")
+        self.auth_file = cfg.get(
+            "auth",
+            "douyin_cookie_file",
+            get_setting_default("auth", "douyin_cookie_file"),
+        )
 
     def _max_items_limit(self) -> int:
         """读取最大资源数限制，并对非法配置做兜底。"""
-        limit = self.config.get("max_items", cfg.get("douyin", "max_items", 20))
+        default_limit = get_setting_default("douyin", "max_items")
+        limit = self.config.get("max_items", cfg.get("douyin", "max_items", default_limit))
         try:
             return max(1, int(limit))
         except (TypeError, ValueError):
-            return 20
+            return int(default_limit)
 
     def _trim_items(self, items: list[VideoItem], title_hint: str) -> list[VideoItem]:
         """按配置裁剪候选资源数量，避免一次性把过多条目丢给 UI。"""

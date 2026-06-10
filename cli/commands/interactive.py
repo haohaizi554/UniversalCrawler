@@ -511,7 +511,6 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
                 default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
                 idx = _choose("视频数量", opts, default_idx)
                 config["max_items"] = opt_vals[idx]
-                config["timeout"] = 10
 
             elif platform_id == "xiaohongshu":
                 current = config.get("max_items", 20)

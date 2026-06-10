@@ -10,7 +10,7 @@ from urllib.parse import quote
 import requests
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from app.config import DEFAULT_USER_AGENT, cfg
+from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
 from app.exceptions import SpiderAuthError, SpiderParseError
 from app.spiders.base import BaseSpider
 from app.services.auth_service import AuthService
@@ -42,7 +42,11 @@ class XiaohongshuSpider(BaseSpider):
         self.parser = XiaohongshuParser()
         self.task_builder = XiaohongshuTaskBuilder()
         self.auth_service = AuthService()
-        self.auth_file = cfg.get("auth", "xiaohongshu_cookie_file", "xhs_auth.json")
+        self.auth_file = cfg.get(
+            "auth",
+            "xiaohongshu_cookie_file",
+            get_setting_default("auth", "xiaohongshu_cookie_file"),
+        )
         self._detail_request_count = 0
 
     def _user_agent(self) -> str:
@@ -53,25 +57,28 @@ class XiaohongshuSpider(BaseSpider):
         return str(proxy).strip() if proxy else None
 
     def _max_items_limit(self) -> int:
-        value = self.config.get("max_items", cfg.get("xiaohongshu", "max_items", 20))
+        default_limit = get_setting_default("xiaohongshu", "max_items")
+        value = self.config.get("max_items", cfg.get("xiaohongshu", "max_items", default_limit))
         try:
             return max(1, min(int(value), 9999))
         except (TypeError, ValueError):
-            return 20
+            return int(default_limit)
 
     def _search_max_pages(self) -> int:
-        value = self.config.get("search_max_pages", cfg.get("xiaohongshu", "search_max_pages", 5))
+        default_pages = get_setting_default("xiaohongshu", "search_max_pages")
+        value = self.config.get("search_max_pages", cfg.get("xiaohongshu", "search_max_pages", default_pages))
         try:
             return max(1, min(int(value), 100))
         except (TypeError, ValueError):
-            return 5
+            return int(default_pages)
 
     def _request_interval(self) -> float:
-        value = self.config.get("request_interval", 1.5)
+        default_interval = get_setting_default("xiaohongshu", "request_interval")
+        value = self.config.get("request_interval", cfg.get("xiaohongshu", "request_interval", default_interval))
         try:
             return max(0.0, min(float(value), 10.0))
         except (TypeError, ValueError):
-            return 1.5
+            return float(default_interval)
 
     def _pause_between_requests(self, multiplier: float = 1.0) -> None:
         delay = self._request_interval() * max(multiplier, 0.0)
@@ -79,11 +86,15 @@ class XiaohongshuSpider(BaseSpider):
             self.interruptible_sleep(delay, step=min(0.5, delay))
 
     def _detail_request_interval(self) -> float:
-        value = self.config.get("detail_request_interval", 0.5)
+        default_interval = get_setting_default("xiaohongshu", "detail_request_interval")
+        value = self.config.get(
+            "detail_request_interval",
+            cfg.get("xiaohongshu", "detail_request_interval", default_interval),
+        )
         try:
             return max(0.0, min(float(value), 5.0))
         except (TypeError, ValueError):
-            return 0.5
+            return float(default_interval)
 
     def _pause_between_detail_requests(self, multiplier: float = 1.0) -> None:
         delay = self._detail_request_interval() * max(multiplier, 0.0)
@@ -296,11 +307,12 @@ class XiaohongshuSpider(BaseSpider):
         return self._bootstrap_cookie_string(entry_url)
 
     def _build_client(self, cookie_str: str) -> XiaohongshuClient:
+        default_timeout = get_setting_default("xiaohongshu", "timeout")
         return XiaohongshuClient(
             user_agent=self._user_agent(),
             cookie_str=cookie_str,
             proxy=self._proxy(),
-            timeout=int(self.config.get("timeout", 30) or 30),
+            timeout=int(self.config.get("timeout", cfg.get("xiaohongshu", "timeout", default_timeout)) or default_timeout),
         )
 
     def _fetch_note_detail(self, client: XiaohongshuClient, ref: dict[str, str]) -> dict[str, Any] | None:
@@ -380,8 +392,16 @@ class XiaohongshuSpider(BaseSpider):
                 keyword=keyword,
                 page=page,
                 page_size=page_size,
-                sort=str(self.config.get("sort") or cfg.get("xiaohongshu", "sort", "general")),
-                note_type=int(self.config.get("note_type", cfg.get("xiaohongshu", "note_type", 0))),
+                sort=str(
+                    self.config.get("sort")
+                    or cfg.get("xiaohongshu", "sort", get_setting_default("xiaohongshu", "sort"))
+                ),
+                note_type=int(
+                    self.config.get(
+                        "note_type",
+                        cfg.get("xiaohongshu", "note_type", get_setting_default("xiaohongshu", "note_type")),
+                    )
+                ),
             )
             items = data.get("items") or []
             page_added = 0

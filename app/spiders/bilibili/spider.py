@@ -10,7 +10,7 @@ import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
-from app.config import DEFAULT_USER_AGENT, cfg
+from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
 from app.exceptions import (
     InvalidCookieStateError,
     LoginCancelledError,
@@ -41,7 +41,12 @@ class BiliAPI:
         self.cookie_path = cookie_path#保存 Cookie 文件的本地路径
         self.parser = parser#注入页面解析器依赖
         self.auth_service = AuthService()#初始化认证服务实例
+        self.request_timeout = cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout"))
         self.load_cookies()
+
+    def _request_timeout(self):
+        """兼容直接 `__new__` 构造的测试对象，延迟读取超时配置。"""
+        return getattr(self, "request_timeout", cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout")))
 
     def load_cookies(self):
         """加载 `cookies` 对应的数据、配置或资源，供 `BiliAPI` 使用。"""
@@ -57,7 +62,7 @@ class BiliAPI:
         """执行 `check_login` 对应的业务逻辑，供 `BiliAPI` 使用。"""
         try:
             url = "https://api.bilibili.com/x/web-interface/nav"
-            response = self.sess.get(url, timeout=10)
+            response = self.sess.get(url, timeout=self._request_timeout())
             resp = response.json()
             debug_logger.log_api(
                 component="BiliAPI",
@@ -81,7 +86,7 @@ class BiliAPI:
         """获取视频详情，返回结构化数据"""
         try:
             url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
-            response = self.sess.get(url, timeout=10)
+            response = self.sess.get(url, timeout=self._request_timeout())
             resp = response.json()
             data = resp.get('data') or {}
             debug_logger.log_api(
@@ -113,7 +118,7 @@ class BiliAPI:
         def _request(fnval):
             """提供 `_request` 对应的内部辅助逻辑。"""
             url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
-            response = self.sess.get(url, timeout=10)
+            response = self.sess.get(url, timeout=self._request_timeout())
             return url, response.status_code, response.json()
         request_url, http_status, resp = _request(4048)
         request_mode = 4048
@@ -258,7 +263,11 @@ class BilibiliSpider(BaseSpider):
                 context={"keyword": self.keyword},
                 details={"config": self.config},
             )
-            cookie_file = cfg.get("auth", "bilibili_cookie_file", cfg.get("bilibili", "auth_file", "bili_auth.json"))
+            cookie_file = cfg.get(
+                "auth",
+                "bilibili_cookie_file",
+                cfg.get("bilibili", "auth_file", get_setting_default("bilibili", "auth_file")),
+            )
             self.api = BiliAPI(cookie_file, parser=self.parser)
             try:
                 is_logged_in = self.api.check_login()
@@ -461,7 +470,12 @@ class BilibiliSpider(BaseSpider):
         if "b23.tv" not in url:
             return url
         try:
-            response = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
+            request_timeout = getattr(
+                getattr(self, "api", None),
+                "request_timeout",
+                cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout")),
+            )
+            response = requests.get(url, headers=HEADERS, timeout=request_timeout, allow_redirects=True)
             resolved = response.url or url
             self.log(f"🔗 [短链解析] {url} -> {resolved}")
             return resolved
@@ -483,7 +497,9 @@ class BilibiliSpider(BaseSpider):
                 return None
             return self.api.get_video_info(bvid, trace_id=f"bili-{bvid}")
 
-        with ThreadPoolExecutor(max_workers=cfg.get("bilibili", "api_workers", 8)) as executor:
+        with ThreadPoolExecutor(
+            max_workers=cfg.get("bilibili", "api_workers", get_setting_default("bilibili", "api_workers"))
+        ) as executor:
             while True:
                 if self.browser_finished.is_set() and self.raw_bv_queue.empty():
                     break

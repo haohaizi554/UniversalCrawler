@@ -9,18 +9,11 @@ CLI/SDK/REST API 三层共用，确保默认值来源一致。
 
 from __future__ import annotations
 
+from app.config import get_platform_default_values, get_platform_runtime_defaults
+
 # 兜底配置：当 cfg 不可用时使用（与 GUI AppSettings 默认值对齐）
-_FALLBACK_CONFIG = {
-    "douyin": {"max_items": 20, "timeout": 10},
-    "xiaohongshu": {"max_items": 20, "search_max_pages": 5, "request_interval": 1.5, "detail_request_interval": 0.5},
-    "bilibili": {"max_pages": 1, "max_items": 30},
-    "kuaishou": {"max_items": 20},
-    "missav": {
-        "individual_only": False,
-        "priority": "中文字幕优先",
-        "proxy": "http://127.0.0.1:7890",
-    },
-}
+_SUPPORTED_PLATFORMS = ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav")
+_FALLBACK_CONFIG = {platform: get_platform_default_values(platform) for platform in _SUPPORTED_PLATFORMS}
 
 # 向后兼容别名
 DEFAULT_CONFIG = _FALLBACK_CONFIG
@@ -29,8 +22,8 @@ DEFAULT_CONFIG = _FALLBACK_CONFIG
 def get_platform_defaults(source: str) -> dict:
     """获取平台默认配置（与 GUI read_*_run_options 对齐）。
 
-    优先从 cfg 持久化配置读取（与 GUI 控件读取行为一致），
-    cfg 不可用时使用 _FALLBACK_CONFIG 兜底。
+    优先从配置中心读取持久化配置；若配置系统不可用，则回退到
+    `app.config.settings` 中声明的默认配置快照，避免 CLI 层维护重复常量。
 
     Args:
         source: 平台 ID (douyin/bilibili/kuaishou/missav)
@@ -40,45 +33,7 @@ def get_platform_defaults(source: str) -> dict:
     """
     if source not in _FALLBACK_CONFIG:
         return {}
-
-    try:
-        from app.config import cfg
-
-        if source == "douyin":
-            return {
-                "max_items": cfg.get("douyin", "max_items", 20),
-                "timeout": 10,  # 与 GUI read_douyin_run_options 对齐：始终返回 timeout=10
-            }
-        elif source == "xiaohongshu":
-            return {
-                "max_items": cfg.get("xiaohongshu", "max_items", 20),
-                "search_max_pages": cfg.get("xiaohongshu", "search_max_pages", 5),
-                "request_interval": 1.5,
-                "detail_request_interval": 0.5,
-            }
-        elif source == "bilibili":
-            return {
-                "max_pages": cfg.get("bilibili", "max_pages", 1),
-                "max_items": 30,  # bilibili 无 cfg 配置项，使用兜底值
-            }
-        elif source == "kuaishou":
-            return {
-                "max_items": cfg.get("kuaishou", "max_items", 20),
-            }
-        elif source == "missav":
-            # 与 GUI read_missav_run_options 对齐：直接读取已保存的 proxy_url
-            # GUI 在用户选择代理时会调用 cfg.update_missav_proxy 保存 proxy_url
-            proxy_url = cfg.get("missav", "proxy_url", "http://127.0.0.1:7890")
-            return {
-                "individual_only": cfg.get("missav", "individual_only", False),
-                "priority": cfg.get("missav", "priority", "中文字幕优先"),
-                "proxy": proxy_url,
-            }
-    except Exception:
-        pass
-
-    # cfg 不可用时使用兜底值
-    return dict(_FALLBACK_CONFIG.get(source, {}))
+    return dict(get_platform_runtime_defaults(source))
 
 
 def get_default_save_dir() -> str:

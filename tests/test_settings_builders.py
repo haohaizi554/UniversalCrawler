@@ -72,7 +72,16 @@ class SettingsBuildersTests(unittest.TestCase):
         """验证小红书运行参数读取在无控件时使用默认值。"""
         result = read_xiaohongshu_run_options(None)
 
-        self.assertEqual(result, {"max_items": 20, "search_max_pages": 5})
+        self.assertEqual(
+            result,
+            {
+                "max_items": 20,
+                "search_max_pages": 5,
+                "timeout": 30,
+                "request_interval": 1.5,
+                "detail_request_interval": 0.5,
+            },
+        )
 
     @patch("app.ui.plugin_settings.cfg.update_missav_proxy")
     @patch("app.ui.plugin_settings.cfg.set")

@@ -8,7 +8,7 @@ import urllib.parse
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
-from app.config import DEFAULT_USER_AGENT, cfg
+from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
 from app.spiders.base import BaseSpider
 from app.spiders.kuaishou.parser import KuaishouParser
 from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
@@ -29,11 +29,12 @@ class KuaishouSpider(BaseSpider):
 
     def _max_items_limit(self) -> int:
         """提供 `_max_items_limit` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
-        limit = self.config.get("max_items", cfg.get("kuaishou", "max_items", 20))
+        default_limit = get_setting_default("kuaishou", "max_items")
+        limit = self.config.get("max_items", cfg.get("kuaishou", "max_items", default_limit))
         try:
             return max(1, int(limit))
         except (TypeError, ValueError):
-            return 20
+            return int(default_limit)
 
     def _build_proxy_cfg(self) -> dict[str, str] | None:
         """提供 `_build_proxy_cfg` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""

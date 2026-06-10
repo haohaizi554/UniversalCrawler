@@ -69,6 +69,33 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(manager.settings.xiaohongshu.max_items, 20)
             self.assertEqual(manager.settings.kuaishou.max_items, 20)
 
+    def test_platform_runtime_defaults_are_declared_in_config_models(self):
+        """平台运行参数默认值应由配置模型统一声明，而非调用方各自硬编码。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+
+            self.assertEqual(manager.settings.douyin.timeout, 10)
+            self.assertEqual(manager.settings.bilibili.max_items, 30)
+            self.assertEqual(manager.settings.bilibili.timeout, 10)
+            self.assertEqual(manager.settings.xiaohongshu.timeout, 30)
+            self.assertEqual(manager.settings.xiaohongshu.request_interval, 1.5)
+            self.assertEqual(manager.settings.xiaohongshu.detail_request_interval, 0.5)
+            self.assertEqual(manager.settings.kuaishou.timeout, 10)
+
+    def test_set_coerces_float_runtime_settings(self):
+        """float 类型的平台运行参数应支持通过配置管理器持久化。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+            manager.set("xiaohongshu", "request_interval", "2.5")
+            manager.set("xiaohongshu", "detail_request_interval", "0.8")
+
+            reloaded = ConfigManager(config_path)
+
+            self.assertEqual(reloaded.get("xiaohongshu", "request_interval"), 2.5)
+            self.assertEqual(reloaded.get("xiaohongshu", "detail_request_interval"), 0.8)
+
     def test_invalid_config_file_is_backed_up_and_reset(self):
         """验证 `test_invalid_config_file_is_backed_up_and_reset` 对应场景是否符合预期，供 `ConfigManagerTests` 使用。"""
         with tempfile.TemporaryDirectory() as temp_dir:
