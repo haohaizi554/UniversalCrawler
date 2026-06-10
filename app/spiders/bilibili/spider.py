@@ -158,6 +158,8 @@ class BilibiliSpider(BaseSpider):
         self.parser = BilibiliParser()
         self.task_builder = BilibiliTaskBuilder(self.parser)
         self.auth_service = AuthService()
+        self._browser_thread: threading.Thread | None = None
+        self._api_pool_thread: threading.Thread | None = None
 
     @staticmethod
     def _format_episode_choice(parent_title: str, episode: dict, fallback_index: int) -> str:
@@ -291,10 +293,10 @@ class BilibiliSpider(BaseSpider):
             self.browser_finished = threading.Event()
             self.api_pool_finished = threading.Event()
             # 生产者线程负责翻页找 BV，加工线程负责打 API，主线程负责聚合和交互。
-            browser_thread = threading.Thread(target=self._producer_browser_task)
-            browser_thread.start()
-            api_pool_thread = threading.Thread(target=self._worker_api_pool)
-            api_pool_thread.start()
+            self._browser_thread = threading.Thread(target=self._producer_browser_task, name="bilibili-browser")
+            self._browser_thread.start()
+            self._api_pool_thread = threading.Thread(target=self._worker_api_pool, name="bilibili-api")
+            self._api_pool_thread.start()
             display_items = []
             cached_data = {}
             seen_season_ids = set()
@@ -334,8 +336,8 @@ class BilibiliSpider(BaseSpider):
                         self.log(f"   📊 已聚合 {valid_idx} 个有效资源...")
                 except queue.Empty:
                     continue
-            browser_thread.join()
-            api_pool_thread.join()
+            self._join_worker_thread(self._browser_thread, "browser")
+            self._join_worker_thread(self._api_pool_thread, "api")
             if not display_items:
                 self.log("❌ 未找到任何有效视频")
                 return
@@ -395,12 +397,22 @@ class BilibiliSpider(BaseSpider):
                     failure_count += 1
             self.log(f"🎉 全部完成: 成功 {success_count}/{len(final_download_queue)} | 失败 {failure_count}")
         finally:
+            self._browser_thread = None
+            self._api_pool_thread = None
             self.debug_state(
                 action="run_finish",
                 message="Bilibili 爬虫任务结束",
                 status_code="BILI_SPIDER_FINISH",
             )
             self.sig_finished.emit()
+
+    def _join_worker_thread(self, thread: threading.Thread | None, label: str, timeout: float = 5.0) -> None:
+        """等待后台线程退出，避免 stop() 因无超时 join 导致主流程长期卡住。"""
+        if thread is None:
+            return
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            self.log(f"⚠️ {label} 线程未在 {timeout:.0f}s 内退出，跳过继续收尾")
     # --- 线程任务：浏览器生产者 ---
     def _producer_browser_task(self):
         """只负责翻页和提取 BV，扔进队列"""
@@ -530,6 +542,7 @@ class BilibiliSpider(BaseSpider):
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=False)
+                self._playwright_browser = browser
                 page = browser.new_page()
                 current_url = url
                 page.goto(url, timeout=60000)
@@ -600,6 +613,8 @@ class BilibiliSpider(BaseSpider):
                 browser.close()
         except (PlaywrightError, ValueError, RuntimeError) as e:
             self.log(f"⚠️ 扫描异常: {e}")
+        finally:
+            self._playwright_browser = None
 
     def _scan_page_for_new_bvids(self, page, bv_set: set[str]) -> int:
         """提取当前页新增 BV；若首轮为空则补滚动一次再重试。"""
@@ -650,6 +665,7 @@ class BilibiliSpider(BaseSpider):
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=False)
+                self._playwright_browser = browser
                 context = browser.new_context()
                 page = context.new_page()
                 page.goto("https://passport.bilibili.com/login", timeout=60000)
@@ -673,3 +689,5 @@ class BilibiliSpider(BaseSpider):
                 raise LoginTimeoutError("等待 Bilibili 扫码登录超时")
         except (PlaywrightError, OSError) as exc:
             raise SpiderAuthError(f"Bilibili 登录失败: {exc}") from exc
+        finally:
+            self._playwright_browser = None

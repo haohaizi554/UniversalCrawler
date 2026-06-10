@@ -35,7 +35,7 @@ class MainWindowTests(unittest.TestCase):
             window.on_btn_start_clicked()
 
         window.sig_start_crawl.emit.assert_called_once_with("测试关键词", "douyin", {"max_pages": 5})
-        window.set_crawl_running_state.assert_called_once_with(True)
+        window.set_crawl_running_state.assert_not_called()
 
     def test_start_click_rejects_empty_keyword(self):
         """验证 `test_start_click_rejects_empty_keyword` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""

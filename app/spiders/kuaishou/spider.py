@@ -1,11 +1,13 @@
 """Kuaishou spider with browser-driven scan and realtime stream capture."""
 
+import json
 import os
 import random
 import re
 import threading
 import urllib.parse
 
+import requests
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
@@ -70,6 +72,157 @@ class KuaishouSpider(BaseSpider):
         if last_error:
             self.log(f"❌ {description}失败: {last_error}")
         return False
+
+    def _extract_first_url(self, raw_text: str) -> str:
+        """从分享文案中提取第一个 URL；没有则回退原始输入。"""
+        raw = str(raw_text or "").strip()
+        match = re.search(r"https?://[^\s`，。！？；;,)）\]'\"]+", raw)
+        candidate = match.group(0) if match else raw
+        return candidate.rstrip("，。！？；;,.!?)）]}'\"")
+
+    def _is_kuaishou_url(self, raw_text: str) -> bool:
+        """判断输入是否为快手相关 URL。"""
+        lowered = str(raw_text or "").lower()
+        return any(domain in lowered for domain in ("kuaishou.com", "chenzhongtech.com"))
+
+    def _is_detail_url(self, raw_text: str) -> bool:
+        """识别快手单条作品详情链接。"""
+        lowered = str(raw_text or "").lower()
+        return any(
+            marker in lowered
+            for marker in ("/short-video/", "/fw/photo/", "photoid=", "chenzhongtech.com/fw/photo/")
+        )
+
+    def _resolve_short_share_url(self, url: str) -> str:
+        """将快手短分享链解析为最终详情或主页链接。"""
+        if not self._is_kuaishou_url(url):
+            return url
+        lowered = url.lower()
+        if "v.kuaishou.com" not in lowered and "kuaishou.com/f/" not in lowered:
+            return url
+        try:
+            response = requests.get(
+                url,
+                headers={"User-Agent": cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT)},
+                timeout=cfg.get("kuaishou", "timeout", get_setting_default("kuaishou", "timeout")),
+                allow_redirects=True,
+            )
+            resolved = response.url or url
+            self.log(f"🔗 [分享链接解析] {url} -> {resolved}")
+            return resolved
+        except requests.RequestException as exc:
+            self.log(f"⚠️ [分享链接解析失败] {exc}")
+            return url
+
+    def _normalize_keyword(self, raw_text: str) -> str:
+        """兼容分享文案、短链和完整快手链接。"""
+        extracted = self._extract_first_url(raw_text)
+        return self._resolve_short_share_url(extracted)
+
+    def _build_detail_request_headers(self) -> dict[str, str]:
+        """构建分享详情页直连请求头。"""
+        return {
+            "User-Agent": cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+            "Referer": "https://www.kuaishou.com/",
+        }
+
+    def _extract_detail_id(self, url: str) -> str:
+        """从快手详情链接中提取作品 ID。"""
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query)
+        if "photoId" in params:
+            return params.get("photoId", [""])[0]
+        path = parsed.path.rstrip("/")
+        if "/short-video/" in path or "/fw/photo/" in path:
+            return path.split("/")[-1]
+        return ""
+
+    def _extract_state_blob(self, html: str, prefix: str, suffix: str = "</script>") -> str:
+        """从 HTML 中抽取指定状态脚本文本。"""
+        if not html or prefix not in html:
+            return ""
+        start = html.find(prefix)
+        if start < 0:
+            return ""
+        start += len(prefix)
+        end = html.find(suffix, start)
+        blob = html[start:end] if end >= 0 else html[start:]
+        return blob.strip()
+
+    def _load_json_blob(self, blob: str) -> dict:
+        """尽量用 JSON 解析页面状态；失败时返回空字典。"""
+        if not blob:
+            return {}
+        cleaned = blob.replace(
+            ";(function(){var s;(s=document.currentScript||document.scripts[document.scripts.length-1]).parentNode.removeChild(s);}());",
+            "",
+        ).rstrip(" ;")
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return {}
+
+    def _extract_apollo_video_detail(self, payload: dict, detail_id: str) -> tuple[str, str]:
+        """从 __APOLLO_STATE__ 中提取标题和直链。"""
+        client = payload.get("defaultClient", {}) if isinstance(payload, dict) else {}
+        detail = client.get(f"VisionVideoDetailPhoto:{detail_id}", {}) if isinstance(client, dict) else {}
+        if not isinstance(detail, dict):
+            return "", ""
+        title = str(detail.get("caption") or "").strip()
+        media_url = str(detail.get("photoUrl") or "").strip()
+        return title, media_url
+
+    def _fetch_share_detail_via_http(self, detail_url: str) -> tuple[str, str]:
+        """通过纯 HTTP 抓取快手分享/详情页，避免弹浏览器。"""
+        try:
+            response = requests.get(
+                detail_url,
+                headers=self._build_detail_request_headers(),
+                timeout=cfg.get("kuaishou", "timeout", get_setting_default("kuaishou", "timeout")),
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            self.log(f"⚠️ 快手分享详情页请求失败: {exc}")
+            return "", ""
+
+        detail_id = self._extract_detail_id(response.url or detail_url)
+        if not detail_id:
+            return "", ""
+
+        apollo_blob = self._extract_state_blob(response.text, "window.__APOLLO_STATE__=")
+        if apollo_blob:
+            title, media_url = self._extract_apollo_video_detail(self._load_json_blob(apollo_blob), detail_id)
+            if media_url:
+                return title or "快手分享作品", media_url
+
+        self.log("⚠️ 快手分享页未解析到 __APOLLO_STATE__ 视频直链，将回退浏览器链路")
+        return "", ""
+
+    def _try_direct_share_download(self) -> bool:
+        """分享/详情链接优先走纯 HTTP 快路，成功则不再打开浏览器。"""
+        if not self._is_detail_url(self.keyword):
+            return False
+        self.log("🎯 检测到快手分享/详情链接，优先尝试无浏览器直连解析...")
+        title, media_url = self._fetch_share_detail_via_http(self.keyword)
+        if not media_url:
+            return False
+        trace_id = self.new_trace_id("share")
+        self.debug_state(
+            action="emit_share_task_http",
+            message="快手分享链接已通过 HTTP 直连解析并提交到下载队列",
+            status_code="KUAISHOU_SHARE_TASK_HTTP_EMIT",
+            context={"trace_id": trace_id},
+            details={"title": title, "stream_url": media_url, "referer": self.keyword},
+        )
+        self.emit_video(
+            url=media_url,
+            title=title,
+            source="kuaishou",
+            meta=self.task_builder.build_download_meta(trace_id, self.keyword, media_url),
+        )
+        self.log(f"✨ 已无浏览器解析分享作品: {title[:24]}...")
+        return True
 
     def _is_logged_in(self, page) -> bool:
         """提供 `_is_logged_in` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
@@ -421,7 +574,7 @@ class KuaishouSpider(BaseSpider):
 
     def _navigate_to_target_page(self, page, context):
         """提供 `_navigate_to_target_page` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
-        if "kuaishou.com" in self.keyword:
+        if self._is_kuaishou_url(self.keyword):
             target_url = self.keyword.strip().strip("`")
             if not self._goto_with_retry(page, target_url, description="打开快手目标页"):
                 return None
@@ -431,6 +584,115 @@ class KuaishouSpider(BaseSpider):
             self.log("ℹ️ 当前输入为纯数字，按快手号优先进入用户搜索结果")
             return self._search_user_via_site(page, context, self.keyword)
         return self._search_keyword_via_site(page, self.keyword)
+
+    def _extract_detail_title(self, page) -> str:
+        """从单条详情页提取作品标题。"""
+        selectors = (
+            "[class*='caption']",
+            "[class*='title']",
+            "meta[property='og:title']",
+        )
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if not self._locator_visible(locator):
+                    continue
+                title = locator.inner_text().strip()
+                if title:
+                    return title
+            except PlaywrightError:
+                try:
+                    content = page.locator(selector).first.get_attribute("content")
+                except PlaywrightError:
+                    content = None
+                if content:
+                    return content.strip()
+        try:
+            title = page.title().strip()
+        except PlaywrightError:
+            title = ""
+        return title or "快手分享作品"
+
+    def _extract_detail_dom_media_url(self, page) -> str:
+        """优先从详情页 DOM 中直接提取 video src。"""
+        try:
+            media_url = page.evaluate(
+                """() => {
+                    const video = document.querySelector('video');
+                    if (!video) return '';
+                    return video.currentSrc || video.src || video.querySelector('source')?.src || '';
+                }"""
+            )
+        except PlaywrightError:
+            media_url = ""
+        return str(media_url or "").strip()
+
+    def _capture_single_detail_page(self, page) -> bool:
+        """处理快手分享/详情链接，直接捕获单条作品并入队。"""
+        if not self._is_detail_url(getattr(page, "url", "")):
+            return False
+
+        self.log("🎯 检测到快手分享/详情链接，直接解析单条作品...")
+        emitted = False
+        title = self._extract_detail_title(page)
+
+        def submit_stream(stream_url: str) -> bool:
+            nonlocal emitted
+            stream_url = str(stream_url or "").strip()
+            if emitted or not stream_url:
+                return False
+            emitted = True
+            trace_id = self.new_trace_id("share")
+            self.debug_state(
+                action="emit_share_task",
+                message="快手分享链接已解析并提交到下载队列",
+                status_code="KUAISHOU_SHARE_TASK_EMIT",
+                context={"trace_id": trace_id},
+                details={"title": title, "stream_url": stream_url, "referer": page.url},
+            )
+            self.emit_video(
+                url=stream_url,
+                title=title,
+                source="kuaishou",
+                meta=self.task_builder.build_download_meta(trace_id, page.url, stream_url),
+            )
+            self.log(f"✨ 已解析分享作品: {title[:24]}...")
+            return True
+
+        def handle_response(response):
+            ctype = response.headers.get("content-type", "")
+            if not (
+                response.request.resource_type == "media"
+                or "video/mp4" in ctype
+                or "mpegurl" in ctype.lower()
+                or ".m3u8" in response.url
+            ):
+                return
+            submit_stream(response.url)
+
+        page.on("response", handle_response)
+        if submit_stream(self._extract_detail_dom_media_url(page)):
+            return True
+
+        for _ in range(2):
+            if emitted or not self.is_running:
+                break
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2500)
+            except PlaywrightError:
+                break
+            try:
+                page.locator("video").first.click(timeout=1500)
+            except PlaywrightError:
+                pass
+            if submit_stream(self._extract_detail_dom_media_url(page)):
+                break
+
+        if emitted:
+            return True
+        self.log("❌ 未能从快手分享链接中解析出可下载视频")
+        return False
 
     def _wait_for_video_list(self, page) -> bool:
         """提供 `_wait_for_video_list` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
@@ -694,7 +956,11 @@ class KuaishouSpider(BaseSpider):
         """执行当前对象或脚本的主流程，供 `KuaishouSpider` 使用。"""
         auth_file = cfg.get("auth", "kuaishou_cookie_file", "ks_auth.json")
         proxy_cfg = self._build_proxy_cfg()
+        self.keyword = self._normalize_keyword(self.keyword)
         self.log(f"🚀 启动快手任务 | 目标: {self.keyword}")
+        if self._try_direct_share_download():
+            self.sig_finished.emit()
+            return
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
@@ -709,12 +975,17 @@ class KuaishouSpider(BaseSpider):
                 )
                 self._load_saved_cookies(context, auth_file)
                 page = context.new_page()
-                entry_url = self.keyword if "kuaishou.com" in self.keyword else None
+                entry_url = self.keyword if self._is_kuaishou_url(self.keyword) and not self._is_detail_url(self.keyword) else None
                 if not self._ensure_login(page, context, auth_file, entry_url=entry_url):
                     return
 
                 page = self._navigate_to_target_page(page, context)
-                if not page or not self._wait_for_video_list(page):
+                if not page:
+                    return
+                if self._capture_single_detail_page(page):
+                    browser.close()
+                    return
+                if not self._wait_for_video_list(page):
                     return
 
                 last_card_count = self._scan_video_cards(page)

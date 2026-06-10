@@ -303,6 +303,9 @@ class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
         if new_title == video.title or not os.path.exists(video.local_path):
             item.setText(video.title)
             return
+        if self.current_playing_id == vid:
+            self.window.release_media_playback()
+            self.current_playing_id = None
 
         outcome = self._rename_video_sync(vid, new_title, self.window.current_save_dir)
         if outcome.status == "ok":

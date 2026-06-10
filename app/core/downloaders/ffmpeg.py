@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
 import subprocess
+import threading
 import time
 from collections import deque
 
@@ -23,6 +25,8 @@ class FFmpegDownloader(BaseDownloader):
     """实现 `FFmpegDownloader` 对应的资源下载与落盘流程。"""
     SIZE_THRESHOLD_MB = 200
     DURATION_THRESHOLD_SEC = 600
+    PROGRESS_TIMEOUT_SEC = 30
+    STDERR_POLL_INTERVAL_SEC = 0.2
 
     @staticmethod
     def _parse_clock_to_seconds(raw: str) -> float | None:
@@ -213,18 +217,47 @@ class FFmpegDownloader(BaseDownloader):
                 )
                 last_progress_time = time.time()
                 last_progress = 0
+                stderr_queue: queue.Queue[bytes | None] = queue.Queue()
+                stderr_closed = False
+
+                def _pump_stderr() -> None:
+                    stderr = process.stderr
+                    if stderr is None:
+                        stderr_queue.put(None)
+                        return
+                    try:
+                        while True:
+                            line = stderr.readline()
+                            if not line:
+                                break
+                            stderr_queue.put(line)
+                    finally:
+                        stderr_queue.put(None)
+
+                stderr_thread = threading.Thread(
+                    target=_pump_stderr,
+                    name="ffmpeg-stderr-pump",
+                    daemon=True,
+                )
+                stderr_thread.start()
 
                 while True:
                     if check_stop_func():
                         process.kill()
                         raise DownloaderStoppedError("用户停止下载")
 
-                    line = process.stderr.readline() if process.stderr else b""
+                    try:
+                        line = stderr_queue.get(timeout=self.STDERR_POLL_INTERVAL_SEC)
+                    except queue.Empty:
+                        line = b""
+                    if line is None:
+                        stderr_closed = True
+                        line = b""
                     if not line:
-                        if time.time() - last_progress_time > 30:
+                        if time.time() - last_progress_time > self.PROGRESS_TIMEOUT_SEC:
                             process.kill()
                             break
-                        if process.poll() is not None:
+                        if process.poll() is not None and stderr_closed:
                             break
                         continue
 

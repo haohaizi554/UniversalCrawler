@@ -60,6 +60,16 @@ class PlatformDefaultsTests(unittest.TestCase):
         defaults = get_platform_defaults("unknown_platform")
         self.assertEqual(defaults, {})
 
+    def test_xiaohongshu_download_defaults_include_headers(self):
+        """SDK 直下载小红书时，必须补齐与 GUI 一致的 ua/referer 默认值。"""
+        from cli.defaults import get_platform_download_defaults
+
+        with patch("cli.defaults._try_load_cookie", return_value=None):
+            defaults = get_platform_download_defaults("xiaohongshu")
+
+        self.assertIn("ua", defaults)
+        self.assertEqual(defaults["referer"], "https://www.xiaohongshu.com/")
+
 
 class ValidateConfigTypesTests(unittest.TestCase):
     """validate_config_types 校验测试。"""

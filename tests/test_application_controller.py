@@ -25,6 +25,7 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.app = Mock()
         controller.videos = {}
         controller.current_playing_id = None
+        controller.current_spider = None
         return controller
 
     def test_clear_local_items_uses_window_api(self):
@@ -154,6 +155,17 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.window.set_crawl_running_state.assert_any_call(True)
         controller.window.set_crawl_running_state.assert_any_call(False)
         controller.window.append_log.assert_any_call("❌ 启动爬虫失败: thread start failed")
+        self.assertIsNone(controller.current_spider)
+
+    def test_on_start_crawl_does_not_set_running_state_when_spider_create_fails(self):
+        """spider 创建失败时，控制器不应把界面切到运行中。"""
+        controller = self._make_controller()
+        controller._has_active_spider = Mock(return_value=False)
+        controller._create_spider = Mock(return_value=(Mock(name="plugin"), None))
+
+        controller.on_start_crawl("BV1demo", "bilibili", {})
+
+        controller.window.set_crawl_running_state.assert_not_called()
         self.assertIsNone(controller.current_spider)
 
     def test_scan_local_dir_populates_rows_and_reports_truncation(self):
@@ -289,6 +301,25 @@ class ApplicationControllerTests(unittest.TestCase):
         self.assertEqual(item.title, "新标题")
         self.assertEqual(item.local_path, os.path.join("downloads", "新标题.mp4"))
         table_item.setToolTip.assert_called_once_with("新标题")
+
+    def test_on_rename_video_releases_preview_for_current_playing_item(self):
+        """当前播放项重命名前必须先释放播放器占用。"""
+        controller = self._make_controller()
+        controller.window.current_save_dir = "downloads"
+        item = VideoItem(url="", title="旧标题", source="local")
+        item.local_path = __file__
+        controller.videos[item.id] = item
+        controller.current_playing_id = item.id
+        table_item = Mock()
+        table_item.column.return_value = 0
+        table_item.data.return_value = item.id
+        table_item.text.return_value = "新标题"
+        controller.file_service.rename_media.return_value = ("old.mp4", os.path.join("downloads", "新标题.mp4"))
+
+        controller.on_rename_video(table_item)
+
+        controller.window.release_media_playback.assert_called_once()
+        self.assertIsNone(controller.current_playing_id)
 
     def test_copy_trace_id_for_video_delegates_to_debug_action(self):
         """验证 `test_copy_trace_id_for_video_delegates_to_debug_action` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""

@@ -52,6 +52,15 @@ class CliSearchSubcommandTests(unittest.TestCase):
         # 必须有 exit code（不一定 0，因为 mock 不完整；但不能崩）
         self.assertIn(result, (0, 1, 2))
 
+    def test_search_supports_xiaohongshu_source(self):
+        """通用 search 入口必须允许 xiaohongshu，与 GUI/SDK/插件能力保持一致。"""
+        from cli.main import main
+        with patch("cli.runner.CLIRunner") as MockRunner:
+            instance = MockRunner.return_value
+            instance.run.return_value = {"status": "ok", "items": [], "logs": []}
+            result = main(["search", "--source", "xiaohongshu", "kw"])
+        self.assertIn(result, (0, 1, 2))
+
     def test_search_invalid_source_rejected(self):
         """search --source invalid 必须被 argparse 拒绝（SystemExit 2）。"""
         from cli.main import main

@@ -506,6 +506,10 @@ class ListPlatformsContractTests(unittest.TestCase):
             self.assertIn("id", p)
             self.assertIn("name", p)
 
+        kuaishou = next((item for item in result if item["id"] == "kuaishou"), None)
+        self.assertIsNotNone(kuaishou)
+        self.assertIn("分享链接", kuaishou["search_placeholder"])
+
     @unittest.skipUnless(_has_fastapi(), "FastAPI not available")
     def test_sdk_list_platforms_matches_api(self):
         """SDK.list_platforms() 的字段名必须与 API 一致。"""

@@ -83,6 +83,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider.task_builder = Mock()
         spider.task_builder.build_download_meta.return_value = {"trace_id": "ks-trace-1"}
         spider.new_trace_id = Mock(return_value="ks-trace-1")
+        spider.config = {}
         spider.emit_video = Mock()
         spider.log = Mock()
         spider.debug_state = Mock()
@@ -514,6 +515,49 @@ class SpiderHelperTests(unittest.TestCase):
         """BilibiliSpider 必须实现自己的 run，而不是回落到 BaseSpider.run。"""
         self.assertIsNot(BilibiliSpider.run, BaseSpider.run)
 
+    def test_bilibili_join_worker_thread_uses_timeout_and_warns_on_hang(self):
+        """后台线程未退出时，join 必须带超时并记录告警，避免 stop 卡死。"""
+        spider = self._make_bilibili_spider()
+        worker = Mock()
+        worker.is_alive.return_value = True
+
+        spider._join_worker_thread(worker, "browser", timeout=1.0)
+
+        worker.join.assert_called_once_with(timeout=1.0)
+        spider.log.assert_called_once()
+        self.assertIn("browser 线程未在 1s 内退出", spider.log.call_args.args[0])
+
+    @patch("app.spiders.bilibili.spider.sync_playwright")
+    def test_bilibili_scan_registers_playwright_browser_for_stop(self, mocked_sync_playwright):
+        """扫描线程创建的 browser 必须暴露给 BaseSpider.stop()，便于强制打断。"""
+        spider = self._make_bilibili_spider()
+        spider.is_running = True
+        spider.raw_bv_queue = Mock()
+        browser = Mock()
+
+        class FakePage:
+            def goto(self, *_args, **_kwargs):
+                self.asserted = spider._playwright_browser is browser
+
+            def wait_for_load_state(self, *_args, **_kwargs):
+                return None
+
+            def evaluate(self, *_args, **_kwargs):
+                return None
+
+        page = FakePage()
+        browser.new_page.return_value = page
+        playwright = Mock()
+        playwright.chromium.launch.return_value = browser
+        mocked_sync_playwright.return_value.__enter__.return_value = playwright
+        mocked_sync_playwright.return_value.__exit__.return_value = None
+
+        spider._scan_with_browser_queue("https://www.bilibili.com/video/BV1demo", max_pages=0)
+
+        self.assertTrue(getattr(page, "asserted", False))
+        browser.close.assert_called_once()
+        self.assertIsNone(spider._playwright_browser)
+
     def test_base_spider_debug_state_accepts_level(self):
         """BaseSpider.debug_state 必须兼容 level 参数，避免单条失败把线程打崩。"""
         spider = BilibiliSpider.__new__(BilibiliSpider)
@@ -684,6 +728,90 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertIs(result, expected_page)
         spider._search_user_via_site.assert_called_once_with(page, context, "4753241670")
+
+    @patch("app.spiders.kuaishou.spider.requests.get")
+    def test_kuaishou_normalize_keyword_extracts_url_from_share_text(self, mocked_get):
+        """分享文案中的短链应先抽取 URL，再展开为真实详情链接。"""
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.log = Mock()
+        response = Mock()
+        response.url = "https://www.kuaishou.com/short-video/3xj8abcde"
+        mocked_get.return_value = response
+
+        normalized = spider._normalize_keyword("复制这条消息，打开快手查看作品 https://v.kuaishou.com/abc123/ ")
+
+        self.assertEqual(normalized, "https://www.kuaishou.com/short-video/3xj8abcde")
+        mocked_get.assert_called_once()
+
+    @patch("app.spiders.kuaishou.spider.requests.get")
+    def test_kuaishou_try_direct_share_download_emits_without_browser(self, mocked_get):
+        """分享详情链接应优先走 HTTP 直连，不依赖浏览器捕获媒体流。"""
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "https://www.kuaishou.com/short-video/3xj8abcde"
+        response = Mock()
+        response.url = spider.keyword
+        response.text = (
+            '<script>window.__APOLLO_STATE__='
+            '{"defaultClient":{"VisionVideoDetailPhoto:3xj8abcde":'
+            '{"caption":"分享作品","photoUrl":"https://cdn.example.com/video.mp4"}}};'
+            "</script>"
+        )
+        response.raise_for_status = Mock()
+        mocked_get.return_value = response
+
+        result = spider._try_direct_share_download()
+
+        self.assertTrue(result)
+        spider.emit_video.assert_called_once_with(
+            url="https://cdn.example.com/video.mp4",
+            title="分享作品",
+            source="kuaishou",
+            meta={"trace_id": "ks-trace-1"},
+        )
+
+    def test_kuaishou_run_skips_playwright_when_direct_share_download_succeeds(self):
+        """HTTP 直连成功时，run 不应再打开浏览器。"""
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "https://www.kuaishou.com/short-video/3xj8abcde"
+        spider._normalize_keyword = Mock(return_value=spider.keyword)
+        spider._try_direct_share_download = Mock(return_value=True)
+        spider.sig_finished = Mock()
+
+        with patch("app.spiders.kuaishou.spider.sync_playwright") as mocked_playwright:
+            spider.run()
+
+        spider._try_direct_share_download.assert_called_once()
+        spider.sig_finished.emit.assert_called_once()
+        mocked_playwright.assert_not_called()
+
+    def test_kuaishou_capture_single_detail_page_emits_video_from_dom_media(self):
+        """快手分享详情页应可直接解析单条作品并提交下载任务。"""
+        spider = self._make_kuaishou_capture_spider()
+        page = Mock()
+        page.url = "https://www.kuaishou.com/short-video/3xj8abcde"
+        page.on = Mock()
+        page.evaluate.return_value = "https://cdn.example.com/video.mp4"
+        spider._extract_detail_title = Mock(return_value="分享作品")
+
+        result = spider._capture_single_detail_page(page)
+
+        self.assertTrue(result)
+        page.on.assert_called_once()
+        spider.emit_video.assert_called_once_with(
+            url="https://cdn.example.com/video.mp4",
+            title="分享作品",
+            source="kuaishou",
+            meta={"trace_id": "ks-trace-1"},
+        )
+
+    def test_kuaishou_capture_single_detail_page_returns_false_when_not_detail_url(self):
+        """非单条详情页不应误走分享直下逻辑。"""
+        spider = self._make_kuaishou_capture_spider()
+        page = Mock()
+        page.url = "https://www.kuaishou.com/profile/3xj8abcde"
+
+        self.assertFalse(spider._capture_single_detail_page(page))
+        spider.emit_video.assert_not_called()
 
     def test_kuaishou_open_profile_from_search_results_prefers_name_click(self):
         """验证 `test_kuaishou_open_profile_from_search_results_prefers_name_click` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

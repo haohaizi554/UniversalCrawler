@@ -93,6 +93,33 @@ class MediaLibraryServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(FileOperationError, "已存在"):
             self.service.rename_media(item, "taken", base)
 
+    @patch("app.services.file_service.time.sleep", return_value=None)
+    def test_rename_media_retries_briefly_after_permission_error(self, _mock_sleep):
+        """Windows 释放播放器句柄存在瞬时延迟时，重命名也应进行短暂重试。"""
+        base = self.temp_dir.name
+        source_path = os.path.join(base, "old.mp4")
+        with open(source_path, "wb") as fp:
+            fp.write(b"test")
+        item = VideoItem(url="", title="old", source="local")
+        item.local_path = source_path
+
+        real_rename = os.rename
+        attempts = {"count": 0}
+        target_path = os.path.join(base, "new_name.mp4")
+
+        def flaky_rename(src, dst):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise PermissionError("文件被占用")
+            return real_rename(src, dst)
+
+        with patch("app.services.file_service.os.rename", side_effect=flaky_rename):
+            old_path, new_path = self.service.rename_media(item, "new_name", base)
+
+        self.assertEqual((old_path, new_path), (source_path, target_path))
+        self.assertEqual(attempts["count"], 2)
+        self.assertTrue(os.path.exists(target_path))
+
     def test_delete_media_returns_false_for_missing_path(self):
         """验证 `test_delete_media_returns_false_for_missing_path` 对应场景是否符合预期，供 `MediaLibraryServiceTests` 使用。"""
         item = VideoItem(url="", title="missing", source="local")

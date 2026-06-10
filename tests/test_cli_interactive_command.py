@@ -143,6 +143,16 @@ class InteractiveCommandTests(unittest.TestCase):
         self.assertTrue(any("笔记数" in line for line in lines))
         self.assertFalse(any("搜索页" in line for line in lines))
 
+    def test_kuaishou_guide_mentions_share_link(self):
+        """快手交互提示应与 GUI/WebUI 同步，明确支持分享链接。"""
+        from cli.commands.interactive import _PLATFORM_GUIDE
+
+        guide = _PLATFORM_GUIDE["kuaishou"]
+
+        self.assertIn("分享链接", guide["input_label"])
+        self.assertTrue(any("分享链接" in line for line in guide["examples"]))
+        self.assertIn("分享链接", guide["empty_tip"])
+
     def test_interactive_xiaohongshu_skips_search_page_prompt(self):
         """小红书交互式配置只询问目标数量，不再额外询问搜索页数。"""
         from cli.commands.interactive import handle_interactive_command

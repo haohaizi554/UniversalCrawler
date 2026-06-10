@@ -103,11 +103,20 @@ class MediaLibraryService:
             # Windows 下文件名大小写不敏感，因此需要按 lower() 比较是否真的是同一路径。
             raise FileOperationError(f"文件名 '{safe_name}' 已存在")
 
-        try:
-            os.rename(old_path, new_path)
-            return old_path, new_path
-        except OSError as exc:
-            raise FileOperationError(str(exc)) from exc
+        last_error: OSError | None = None
+        for attempt in range(3):
+            try:
+                os.rename(old_path, new_path)
+                return old_path, new_path
+            except PermissionError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                break
+            except OSError as exc:
+                raise FileOperationError(str(exc)) from exc
+        raise FileOperationError(str(last_error) if last_error else "重命名文件失败")
 
     def delete_media(self, video: VideoItem) -> bool:
         """删除 `media` 对应的对象、文件或记录，供 `MediaLibraryService` 使用。"""

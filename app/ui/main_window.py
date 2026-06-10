@@ -223,7 +223,6 @@ class MainWindow(QMainWindow):
                 self.append_log(f"❌ 配置读取错误: {exc}")
                 return
         self.sig_start_crawl.emit(keyword, self.current_plugin.id, run_options)
-        self.set_crawl_running_state(True)
 
     def on_source_changed(self, _index: int) -> None:
         # 切换平台时重建动态配置区域，避免把各平台差异写死在主窗口里。

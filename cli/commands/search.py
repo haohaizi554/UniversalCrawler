@@ -21,7 +21,7 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--source", "-s",
         required=True,
-        choices=["douyin", "bilibili", "kuaishou", "missav"],
+        choices=["douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"],
         help="平台 ID",
     )
     parser.add_argument(
@@ -35,7 +35,7 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max-items", type=int, default=None,
-        help="最大视频数 (各平台默认: douyin=20, bilibili=30, kuaishou=20, missav=全部)",
+        help="最大资源数 (各平台默认: douyin=20, xiaohongshu=20, bilibili=30, kuaishou=20, missav=全部)",
     )
     parser.add_argument(
         "--max-pages", type=int, default=None,

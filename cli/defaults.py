@@ -26,7 +26,7 @@ def get_platform_defaults(source: str) -> dict:
     `app.config.settings` 中声明的默认配置快照，避免 CLI 层维护重复常量。
 
     Args:
-        source: 平台 ID (douyin/bilibili/kuaishou/missav)
+        source: 平台 ID (douyin/xiaohongshu/bilibili/kuaishou/missav)
 
     Returns:
         dict: 平台默认配置（新 dict，可安全修改）
@@ -528,6 +528,10 @@ def get_platform_download_defaults(source: str) -> dict:
         "douyin": {
             "ua": cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT) if cfg else DEFAULT_USER_AGENT,
             "referer": "https://www.douyin.com/",
+        },
+        "xiaohongshu": {
+            "ua": cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT) if cfg else DEFAULT_USER_AGENT,
+            "referer": "https://www.xiaohongshu.com/",
         },
         "bilibili": {
             "ua": cfg.get("bilibili", "user_agent", DEFAULT_USER_AGENT) if cfg else DEFAULT_USER_AGENT,

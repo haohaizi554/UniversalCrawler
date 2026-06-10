@@ -255,6 +255,53 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(second_cmd[second_cmd.index("-i") + 1], "https://cdn2.example.com/video.mp4")
         self.assertEqual(progress, [100])
 
+    @patch.object(FFmpegDownloader, "PROGRESS_TIMEOUT_SEC", 0.01)
+    @patch.object(FFmpegDownloader, "STDERR_POLL_INTERVAL_SEC", 0.005)
+    @patch("app.core.downloaders.ffmpeg.time.sleep", return_value=None)
+    @patch("app.core.downloaders.ffmpeg.requests.head")
+    @patch("app.core.downloaders.ffmpeg.subprocess.Popen")
+    @patch("app.core.downloaders.ffmpeg.cfg.get")
+    @patch("app.core.downloaders.ffmpeg.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    def test_ffmpeg_downloader_kills_stalled_process_even_when_stderr_blocks(
+        self,
+        _mocked_resolve,
+        mocked_cfg_get,
+        mocked_popen,
+        mocked_head,
+        _mocked_sleep,
+    ):
+        """stderr 不再产出时，下载器仍应按无进度超时主动 kill 进程。"""
+        head_response = Mock()
+        head_response.url = "https://cdn.example.com/video.mp4"
+        head_response.status_code = 200
+        head_response.headers = {"content-length": "4096"}
+        mocked_head.return_value = head_response
+
+        def fake_cfg_get(section, key, default=None):
+            if (section, key) == ("download", "max_retries"):
+                return 1
+            return default
+
+        mocked_cfg_get.side_effect = fake_cfg_get
+
+        class BlockingStderr:
+            def readline(self):
+                threading.Event().wait(0.05)
+                return b""
+
+        process = Mock()
+        process.stderr = BlockingStderr()
+        process.poll.return_value = None
+        process.returncode = 1
+        mocked_popen.return_value = process
+
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with self.assertRaises(ExternalToolError):
+            FFmpegDownloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        process.kill.assert_called()
+
     def test_nm3u8_external_tool_build_download_command_uses_headers_and_save_name(self):
         """验证 `test_nm3u8_external_tool_build_download_command_uses_headers_and_save_name` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         command = NM3U8DLREExternalTool.build_download_command(

@@ -13,7 +13,7 @@ class KuaishouPlugin(BasePlugin):
 
     def get_search_placeholder(self) -> str:
         """获取 `search_placeholder` 对应的数据或状态，供 `KuaishouPlugin` 使用。"""
-        return "输入：快手主页链接、快手号或关键词..."
+        return "输入：快手主页链接、分享链接、快手号或关键词..."
 
     def get_spider_class(self):
         """获取 `spider_class` 对应的数据或状态，供 `KuaishouPlugin` 使用。"""

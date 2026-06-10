@@ -97,7 +97,7 @@ class XiaohongshuSettings:
     search_max_pages: int = 5
     timeout: int = 30
     request_interval: float = 1.5
-    detail_request_interval: float = 0.4   #解析间隔基数
+    detail_request_interval: float = 0.5   #解析间隔基数
     sort: str = "general"
     note_type: int = 0
 
