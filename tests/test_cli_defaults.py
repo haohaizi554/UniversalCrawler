@@ -35,6 +35,15 @@ class PlatformDefaultsTests(unittest.TestCase):
         defaults = get_platform_defaults("kuaishou")
         self.assertIn("max_items", defaults)
 
+    def test_xiaohongshu_defaults_include_detail_interval(self):
+        """xiaohongshu 默认包含更快的详情解析节奏配置。"""
+        from cli.defaults import get_platform_defaults
+        defaults = get_platform_defaults("xiaohongshu")
+        self.assertIn("max_items", defaults)
+        self.assertIn("search_max_pages", defaults)
+        self.assertIn("detail_request_interval", defaults)
+        self.assertEqual(defaults["detail_request_interval"], 0.5)
+
     def test_missav_defaults(self):
         """missav 默认包含 individual_only/priority/proxy。"""
         from cli.defaults import get_platform_defaults
@@ -175,9 +184,9 @@ class FallbackConfigTests(unittest.TestCase):
     """_FALLBACK_CONFIG 兜底配置测试。"""
 
     def test_fallback_config_has_all_platforms(self):
-        """兜底配置必须覆盖所有 4 个平台。"""
+        """兜底配置必须覆盖所有平台。"""
         from cli.defaults import _FALLBACK_CONFIG
-        for platform in ("douyin", "bilibili", "kuaishou", "missav"):
+        for platform in ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"):
             self.assertIn(platform, _FALLBACK_CONFIG)
 
     def test_default_config_alias(self):

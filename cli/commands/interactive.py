@@ -339,7 +339,6 @@ def _build_config_summary_lines(platform_id: str, config: dict, platform_name: s
         lines.append("  登录:   浏览器扫码")
     elif platform_id == "xiaohongshu":
         lines.append(f"  笔记数: {config.get('max_items', 20)}")
-        lines.append(f"  搜索页: {config.get('search_max_pages', 5)}")
         lines.append("  登录:   浏览器 Cookie / 手动登录")
     elif platform_id == "bilibili":
         lines.append(f"  页数:   {config.get('max_pages', 1)}")
@@ -521,12 +520,6 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
                 default_idx = min(range(len(opt_vals)), key=lambda i: abs(opt_vals[i] - current))
                 idx = _choose("笔记数量", opts, default_idx)
                 config["max_items"] = opt_vals[idx]
-                page_current = config.get("search_max_pages", 5)
-                page_opts = ["1", "2", "5", "10", "20"]
-                page_vals = [1, 2, 5, 10, 20]
-                page_idx = min(range(len(page_vals)), key=lambda i: abs(page_vals[i] - page_current))
-                idx = _choose("搜索页数", page_opts, page_idx)
-                config["search_max_pages"] = page_vals[idx]
 
             elif platform_id == "bilibili":
                 current = config.get("max_pages", 1)

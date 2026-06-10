@@ -49,6 +49,16 @@ from cli.selection import (
 )
 
 
+def _discover_platform_ids() -> tuple[str, ...]:
+    """Keep SDK platform enum aligned with the runtime plugin registry."""
+    try:
+        from app.core.plugin_registry import registry
+
+        return tuple(plugin.id for plugin in registry.get_all_plugins())
+    except Exception:
+        return ("douyin", "bilibili", "kuaishou", "missav", "xiaohongshu")
+
+
 class UcrawlSDK:
     """UCrawl Python SDK。
 
@@ -57,7 +67,7 @@ class UcrawlSDK:
         verbose: 是否输出 spider 日志
     """
 
-    PLATFORMS = ("douyin", "bilibili", "kuaishou", "missav")
+    PLATFORMS = _discover_platform_ids()
 
     def __init__(
         self,

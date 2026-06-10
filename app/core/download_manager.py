@@ -247,7 +247,8 @@ class DownloadWorker(threading.Thread):
         is_gallery = self.video.meta.get("is_gallery", False)
         is_mix = self.video.meta.get("is_mix", False)
         use_subdir = self.video.meta.get("use_subdir", False)
-        folder_name = sanitize_filename(self.video.meta.get("folder_name", ""))
+        raw_folder_name = str(self.video.meta.get("folder_name") or "").strip()
+        folder_name = sanitize_filename(raw_folder_name) if raw_folder_name else ""
 
         if folder_name and (is_gallery or content_type == "gallery" or is_mix or use_subdir):
             return os.path.join(save_dir, folder_name)

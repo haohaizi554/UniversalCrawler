@@ -169,3 +169,14 @@ class BaseSpider(threading.Thread):
             "spider_emit_perf_ms": self._selection_emit_perf_ms,
             "spider_emit_wall_ms": self._selection_emit_wall_ms,
         }
+
+    def revive_for_partial_selection(self, collected_count: int, label: str = "结果") -> bool:
+        """Allow selection on already collected items after the user clicks stop."""
+        if self.is_running:
+            return True
+        if collected_count <= 0:
+            self.log("🛑 任务已终止")
+            return False
+        self.log(f"⏸️ 抓取已停止，已保留 {collected_count} 个{label}，准备生成清单...")
+        self.is_running = True
+        return True

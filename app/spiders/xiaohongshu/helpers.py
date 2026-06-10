@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from app.utils.filenames import sanitize_filename
+
 
 def _base36_encode(number: int) -> str:
     alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -45,6 +47,14 @@ class CreatorUrlInfo:
     user_id: str
     xsec_token: str
     xsec_source: str
+    nickname: str = ""
+    red_id: str = ""
+    note_hint: str = ""
+
+
+@dataclass(slots=True)
+class CreatorLookupInfo:
+    keyword: str
 
 
 def extract_url_params_to_dict(url: str) -> dict[str, str]:
@@ -54,6 +64,14 @@ def extract_url_params_to_dict(url: str) -> dict[str, str]:
     return {key: values[-1] for key, values in params.items() if values}
 
 
+def extract_first_url(raw_text: str) -> str:
+    """Extract the first URL from copied share text, or return the stripped input."""
+    raw = str(raw_text or "").strip()
+    match = re.search(r"https?://[^\s`，。！？；;,)）\]'\"]+", raw)
+    candidate = match.group(0) if match else raw
+    return candidate.rstrip("，。！？；;,.!?)）]}'\"")
+
+
 def is_note_url(text: str) -> bool:
     lowered = text.lower()
     return "xiaohongshu.com/explore/" in lowered or "xiaohongshu.com/discovery/item/" in lowered
@@ -61,6 +79,23 @@ def is_note_url(text: str) -> bool:
 
 def is_creator_url(text: str) -> bool:
     return "xiaohongshu.com/user/profile/" in text.lower()
+
+
+def parse_creator_lookup_input(text: str) -> CreatorLookupInfo | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    prefixes = ("小红书号:", "小红书号：", "账号:", "账号：", "user:", "uid:", "redid:")
+    lowered = raw.lower()
+    for prefix in prefixes:
+        if lowered.startswith(prefix.lower()):
+            keyword = raw[len(prefix):].strip().lstrip("@")
+            return CreatorLookupInfo(keyword=keyword) if keyword else None
+    if raw.startswith("@") and len(raw) > 1:
+        return CreatorLookupInfo(keyword=raw[1:].strip())
+    if raw.isdigit() and len(raw) >= 6:
+        return CreatorLookupInfo(keyword=raw)
+    return None
 
 
 def parse_note_info_from_note_url(url: str) -> NoteUrlInfo:
@@ -116,10 +151,12 @@ def sanitize_note_title(note: dict[str, Any]) -> str:
     """Build a stable title for UI selection and file naming."""
     title = str(note.get("title") or "").strip()
     if title:
-        return title
+        if sanitize_filename(title) != "untitled":
+            return title[:60]
     desc = str(note.get("desc") or "").strip()
     if desc:
-        return desc[:60]
+        if sanitize_filename(desc) != "untitled":
+            return desc[:60]
     note_id = str(note.get("note_id") or note.get("noteId") or "xiaohongshu-note")
     return note_id
 
@@ -137,9 +174,6 @@ def extract_video_candidates(note: dict[str, Any]) -> list[str]:
     video_dict = note.get("video") or {}
     consumer = video_dict.get("consumer") or {}
     origin_video_key = consumer.get("origin_video_key") or consumer.get("originVideoKey") or ""
-    if origin_video_key:
-        return [f"http://sns-video-bd.xhscdn.com/{origin_video_key}"]
-
     media = video_dict.get("media") or {}
     stream = media.get("stream") or {}
     candidates: list[str] = []
@@ -150,17 +184,29 @@ def extract_video_candidates(note: dict[str, Any]) -> list[str]:
         for item in values:
             if not isinstance(item, dict):
                 continue
-            url = item.get("master_url") or item.get("backup_url") or item.get("backup_urls")
-            if isinstance(url, list):
-                candidates.extend(str(entry) for entry in url if entry)
-            elif url:
-                candidates.append(str(url))
+            for key in ("master_url", "backup_url", "backup_urls"):
+                url = item.get(key)
+                if isinstance(url, list):
+                    candidates.extend(str(entry) for entry in url if entry)
+                elif url:
+                    candidates.append(str(url))
+    if origin_video_key:
+        candidates.append(f"http://sns-video-bd.xhscdn.com/{origin_video_key}")
     deduped: list[str] = []
     seen: set[str] = set()
     for url in candidates:
         if url not in seen:
             seen.add(url)
             deduped.append(url)
+    def _candidate_score(url: str) -> tuple[int, int, int, int, int]:
+        lowered = url.lower()
+        bak_rank = 0 if "sns-bak" in lowered else 1
+        no_watermark_rank = 0 if "_114." in lowered else 1
+        medium_rank = 0 if "_115." in lowered or "_130." in lowered or "_108." in lowered else 1
+        origin_penalty = 1 if "sns-video-bd" in lowered else 0
+        watermark_penalty = 1 if "_259." in lowered else 0
+        return (bak_rank, no_watermark_rank, medium_rank, origin_penalty, watermark_penalty)
+    deduped.sort(key=_candidate_score)
     return deduped
 
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
+from urllib.parse import quote
 
+import requests
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from app.config import DEFAULT_USER_AGENT, cfg
@@ -14,10 +17,13 @@ from app.services.auth_service import AuthService
 
 from .client import XiaohongshuClient
 from .helpers import (
+    CreatorLookupInfo,
     CreatorUrlInfo,
     NoteUrlInfo,
+    extract_first_url,
     is_creator_url,
     is_note_url,
+    parse_creator_lookup_input,
     parse_creator_info_from_url,
     parse_note_info_from_note_url,
 )
@@ -37,6 +43,7 @@ class XiaohongshuSpider(BaseSpider):
         self.task_builder = XiaohongshuTaskBuilder()
         self.auth_service = AuthService()
         self.auth_file = cfg.get("auth", "xiaohongshu_cookie_file", "xhs_auth.json")
+        self._detail_request_count = 0
 
     def _user_agent(self) -> str:
         return str(self.config.get("ua") or cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT))
@@ -58,6 +65,120 @@ class XiaohongshuSpider(BaseSpider):
             return max(1, min(int(value), 100))
         except (TypeError, ValueError):
             return 5
+
+    def _request_interval(self) -> float:
+        value = self.config.get("request_interval", 1.5)
+        try:
+            return max(0.0, min(float(value), 10.0))
+        except (TypeError, ValueError):
+            return 1.5
+
+    def _pause_between_requests(self, multiplier: float = 1.0) -> None:
+        delay = self._request_interval() * max(multiplier, 0.0)
+        if delay > 0:
+            self.interruptible_sleep(delay, step=min(0.5, delay))
+
+    def _detail_request_interval(self) -> float:
+        value = self.config.get("detail_request_interval", 0.5)
+        try:
+            return max(0.0, min(float(value), 5.0))
+        except (TypeError, ValueError):
+            return 0.5
+
+    def _pause_between_detail_requests(self, multiplier: float = 1.0) -> None:
+        delay = self._detail_request_interval() * max(multiplier, 0.0)
+        if delay > 0:
+            self.interruptible_sleep(delay, step=min(0.5, delay))
+
+    def _detail_pause_multiplier(self) -> float:
+        # Parse details faster than list crawling, but still yield periodically.
+        if self._detail_request_count <= 6:
+            return 0.75
+        if self._detail_request_count > 0 and self._detail_request_count % 16 == 0:
+            return 1.9
+        if self._detail_request_count > 0 and self._detail_request_count % 8 == 0:
+            return 1.15
+        return 1.0
+
+    @staticmethod
+    def _extract_search_ref(entry: dict[str, Any]) -> dict[str, str] | None:
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("model_type") in {"rec_query", "hot_query"}:
+            return None
+        note_card = entry.get("note_card") if isinstance(entry.get("note_card"), dict) else {}
+        note_info = entry.get("note_info") if isinstance(entry.get("note_info"), dict) else {}
+        note = entry.get("note") if isinstance(entry.get("note"), dict) else {}
+        note_id = str(
+            entry.get("id")
+            or entry.get("note_id")
+            or note_card.get("note_id")
+            or note_card.get("id")
+            or note_info.get("note_id")
+            or note_info.get("id")
+            or note.get("note_id")
+            or note.get("id")
+            or ""
+        ).strip()
+        if not note_id:
+            return None
+        return {
+            "note_id": note_id,
+            "xsec_source": str(
+                entry.get("xsec_source")
+                or note_card.get("xsec_source")
+                or note_info.get("xsec_source")
+                or note.get("xsec_source")
+                or "pc_search"
+            ),
+            "xsec_token": str(
+                entry.get("xsec_token")
+                or note_card.get("xsec_token")
+                or note_info.get("xsec_token")
+                or note.get("xsec_token")
+                or ""
+            ),
+        }
+
+    def _resolve_short_share_url(self, url: str) -> str:
+        lowered = url.lower()
+        if not lowered.startswith(("http://", "https://")):
+            return url.strip()
+        if "xhslink.com" not in lowered and "xhslink.cn" not in lowered:
+            return url.strip()
+        try:
+            proxy = self._proxy()
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            response = requests.get(
+                url,
+                headers={"User-Agent": self._user_agent(), "Referer": self.HOME_URL},
+                timeout=10,
+                allow_redirects=True,
+                proxies=proxies,
+            )
+            resolved = response.url or url
+            self.log(f"🔗 [分享链接解析] {url} -> {resolved}")
+            return resolved
+        except requests.RequestException as exc:
+            self.log(f"⚠️ 小红书分享链接解析失败: {exc}")
+            return url.strip()
+
+    def _normalize_keyword(self, raw_text: str) -> str:
+        extracted = extract_first_url(raw_text)
+        return self._resolve_short_share_url(extracted)
+
+    def _classify_input(self, normalized_keyword: str) -> tuple[str, str]:
+        raw = normalized_keyword.strip()
+        creator_lookup = parse_creator_lookup_input(raw)
+        if creator_lookup:
+            return ("creator_lookup", creator_lookup.keyword)
+        if is_note_url(raw):
+            return ("note_url", raw)
+        if is_creator_url(raw):
+            return ("creator_url", raw)
+        if len(raw) == 24 and all(ch in "0123456789abcdef" for ch in raw.lower()):
+            return ("creator_id", raw)
+        return ("keyword", raw)
 
     def _current_web_session(self, cookies: list[dict[str, Any]] | dict[str, Any] | None) -> str:
         cookie_dict = self.auth_service.extract_cookie_dict(cookies)
@@ -186,6 +307,7 @@ class XiaohongshuSpider(BaseSpider):
         note_id = ref.get("note_id", "")
         xsec_source = ref.get("xsec_source", "")
         xsec_token = ref.get("xsec_token", "")
+        self._detail_request_count += 1
         try:
             detail = client.get_note_detail(note_id=note_id, xsec_source=xsec_source, xsec_token=xsec_token)
             if not detail:
@@ -198,6 +320,13 @@ class XiaohongshuSpider(BaseSpider):
                 self.log(f"⚠️ 无法解析小红书笔记详情: {note_id}")
                 return None
             return self.parser.normalize_note(detail)
+        except requests.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            self.log(f"⚠️ 获取小红书笔记失败: {note_id} | {exc}")
+            if status_code == 461:
+                self.log("⏳ 小红书返回 461，触发限流冷却后继续")
+                self._pause_between_requests(multiplier=4.0)
+            return None
         except Exception as exc:
             self.log(f"⚠️ 获取小红书笔记失败: {note_id} | {exc}")
             return None
@@ -215,7 +344,14 @@ class XiaohongshuSpider(BaseSpider):
             self.sig_item_found.emit(item)
         return len(items)
 
-    def _handle_note_url(self, client: XiaohongshuClient, note_info: NoteUrlInfo, cookie_str: str) -> None:
+    def _handle_note_url(
+        self,
+        client: XiaohongshuClient,
+        note_info: NoteUrlInfo,
+        cookie_str: str,
+        *,
+        referer: str,
+    ) -> None:
         note = self._fetch_note_detail(
             client,
             {
@@ -227,47 +363,45 @@ class XiaohongshuSpider(BaseSpider):
         if not note:
             self.log("❌ 未能获取指定小红书笔记详情")
             return
-        count = self._emit_note_items(note, cookie_str, referer=self.keyword)
+        count = self._emit_note_items(note, cookie_str, referer=referer)
         self.log(f"✅ 已生成 {count} 个小红书下载任务")
 
-    def _collect_search_refs(self, client: XiaohongshuClient) -> list[dict[str, str]]:
+    def _collect_search_refs(self, client: XiaohongshuClient, keyword: str) -> list[dict[str, str]]:
         refs: list[dict[str, str]] = []
         seen: set[str] = set()
         limit = self._max_items_limit()
-        page_size = min(20, limit)
+        page_size = 20
         max_pages = self._search_max_pages()
         for page in range(1, max_pages + 1):
             if not self.is_running or len(refs) >= limit:
                 break
-            self.log(f"🔎 正在搜索小红书，第 {page} 页...")
+            self.log(f"🔎 正在搜索小红书，第 {page} 页... 已发现 {len(refs)}/{limit}")
             data = client.search_notes(
-                keyword=self.keyword,
+                keyword=keyword,
                 page=page,
                 page_size=page_size,
                 sort=str(self.config.get("sort") or cfg.get("xiaohongshu", "sort", "general")),
                 note_type=int(self.config.get("note_type", cfg.get("xiaohongshu", "note_type", 0))),
             )
             items = data.get("items") or []
+            page_added = 0
             for entry in items:
-                if not isinstance(entry, dict):
+                ref = self._extract_search_ref(entry)
+                if not ref:
                     continue
-                if entry.get("model_type") in {"rec_query", "hot_query"}:
-                    continue
-                note_id = str(entry.get("id") or "")
-                if not note_id or note_id in seen:
+                note_id = ref["note_id"]
+                if note_id in seen:
                     continue
                 seen.add(note_id)
-                refs.append(
-                    {
-                        "note_id": note_id,
-                        "xsec_source": str(entry.get("xsec_source") or "pc_search"),
-                        "xsec_token": str(entry.get("xsec_token") or ""),
-                    }
-                )
+                refs.append(ref)
+                page_added += 1
+                self.log(f"🧾 搜索候选累计 {len(refs)}/{limit}")
                 if len(refs) >= limit:
                     break
+            self.log(f"📄 第 {page} 页新增 {page_added} 条候选")
             if not data.get("has_more", False):
                 break
+            self._pause_between_requests()
         return refs
 
     def _collect_creator_refs(self, client: XiaohongshuClient, creator: CreatorUrlInfo) -> list[dict[str, str]]:
@@ -276,7 +410,7 @@ class XiaohongshuSpider(BaseSpider):
         cursor = ""
         limit = self._max_items_limit()
         while self.is_running and len(refs) < limit:
-            self.log("👤 正在读取小红书作者笔记列表...")
+            self.log(f"👤 正在读取小红书作者笔记列表... 已抓到 {len(refs)}/{limit}")
             data = client.get_creator_notes(
                 user_id=creator.user_id,
                 cursor=cursor,
@@ -298,6 +432,7 @@ class XiaohongshuSpider(BaseSpider):
                         "xsec_token": str(entry.get("xsec_token") or creator.xsec_token or ""),
                     }
                 )
+                self.log(f"📚 主页候选累计 {len(refs)}/{limit}")
                 if len(refs) >= limit:
                     break
             if len(refs) >= limit or not data.get("has_more", False):
@@ -305,7 +440,197 @@ class XiaohongshuSpider(BaseSpider):
             cursor = str(data.get("cursor") or "")
             if not cursor:
                 break
+            self._pause_between_requests(multiplier=1.5)
         return refs
+
+    def _extract_creator_search_candidates(self, payload: dict[str, Any]) -> list[CreatorUrlInfo]:
+        items = payload.get("users") or payload.get("items") or payload.get("user_list") or []
+        candidates: list[CreatorUrlInfo] = []
+        seen: set[str] = set()
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            user = (
+                entry.get("user")
+                if isinstance(entry.get("user"), dict)
+                else entry.get("user_info")
+                if isinstance(entry.get("user_info"), dict)
+                else entry.get("author")
+                if isinstance(entry.get("author"), dict)
+                else entry.get("user_card")
+                if isinstance(entry.get("user_card"), dict)
+                else entry
+            )
+            user_id = str(user.get("user_id") or user.get("id") or user.get("userid") or "").strip()
+            if not user_id or user_id in seen:
+                continue
+            seen.add(user_id)
+            candidates.append(
+                CreatorUrlInfo(
+                    user_id=user_id,
+                    xsec_token=str(user.get("xsec_token") or entry.get("xsec_token") or ""),
+                    xsec_source=str(user.get("xsec_source") or entry.get("xsec_source") or "pc_search"),
+                    nickname=str(user.get("nickname") or user.get("nick_name") or entry.get("title") or "").strip(),
+                    red_id=str(
+                        user.get("red_id")
+                        or user.get("redId")
+                        or user.get("xhs_id")
+                        or user.get("display_id")
+                        or user.get("redid")
+                        or ""
+                    ).strip(),
+                )
+            )
+        return candidates
+
+    def _extract_creator_candidates_from_note_search(
+        self, payload: dict[str, Any], lookup_keyword: str
+    ) -> list[CreatorUrlInfo]:
+        items = payload.get("items") or []
+        candidates_by_user: dict[str, CreatorUrlInfo] = {}
+        keyword = lookup_keyword.strip().lower()
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            note_card = entry.get("note_card") if isinstance(entry.get("note_card"), dict) else {}
+            user = note_card.get("user") if isinstance(note_card.get("user"), dict) else {}
+            user_id = str(user.get("user_id") or user.get("id") or "").strip()
+            if not user_id:
+                continue
+            note_hint = str(
+                note_card.get("display_title")
+                or note_card.get("title")
+                or entry.get("display_title")
+                or entry.get("title")
+                or ""
+            ).strip()
+            candidate = candidates_by_user.get(user_id)
+            if candidate is None:
+                candidates_by_user[user_id] = CreatorUrlInfo(
+                    user_id=user_id,
+                    xsec_token=str(user.get("xsec_token") or ""),
+                    xsec_source=str(entry.get("xsec_source") or "pc_search"),
+                    nickname=str(user.get("nickname") or user.get("nick_name") or "").strip(),
+                    red_id=str(
+                        user.get("red_id")
+                        or user.get("redId")
+                        or user.get("xhs_id")
+                        or user.get("display_id")
+                        or user.get("redid")
+                        or ""
+                    ).strip(),
+                    note_hint=note_hint,
+                )
+            elif note_hint and not candidate.note_hint:
+                candidate.note_hint = note_hint
+
+        def _score(candidate: CreatorUrlInfo) -> tuple[int, int, int]:
+            red_id = candidate.red_id.lower()
+            nickname = candidate.nickname.lower()
+            note_hint = candidate.note_hint.lower()
+            red_id_exact = 0 if keyword and red_id == keyword else 1
+            nickname_exact = 0 if keyword and nickname == keyword else 1
+            text_contains = 0 if keyword and keyword in f"{red_id} {nickname} {note_hint}" else 1
+            return (red_id_exact, nickname_exact, text_contains)
+
+        return sorted(candidates_by_user.values(), key=_score)
+
+    def _pick_creator_candidate(self, candidates: list[CreatorUrlInfo], *, source_label: str) -> CreatorUrlInfo | None:
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        dialog_items = [
+            {
+                "title": " / ".join(
+                    part
+                    for part in (candidate.nickname, candidate.red_id, candidate.note_hint[:24], candidate.user_id)
+                    if part
+                ),
+                "index": idx,
+            }
+            for idx, candidate in enumerate(candidates)
+        ]
+        self.log(f"🧾 {source_label}共发现 {len(dialog_items)} 个账号候选，请选择主页...")
+        selected = self.ask_user_selection(dialog_items)
+        if not selected:
+            self.log(f"⚠️ 用户取消了{source_label}账号选择流程")
+            return None
+        chosen_idx = selected[0]
+        if not isinstance(chosen_idx, int) or chosen_idx < 0 or chosen_idx >= len(candidates):
+            return None
+        return candidates[chosen_idx]
+
+    def _lookup_creator_by_keyword(self, client: XiaohongshuClient, lookup: CreatorLookupInfo) -> CreatorUrlInfo | None:
+        self.log(f"🔍 正在搜索小红书账号: {lookup.keyword}")
+        try:
+            data = client.search_notes(keyword=lookup.keyword, page=1, page_size=20)
+        except Exception as exc:
+            self.log(f"⚠️ 小红书号预搜索失败，回退到网页用户搜索: {exc}")
+            return self._lookup_creator_by_browser_search(lookup)
+        candidates = self._extract_creator_candidates_from_note_search(data, lookup.keyword)
+        if not candidates:
+            self.log(f"⚠️ 预搜索未提取到小红书账号候选，回退网页用户搜索: {lookup.keyword}")
+            return self._lookup_creator_by_browser_search(lookup)
+        return self._pick_creator_candidate(candidates, source_label="预搜索")
+
+    def _lookup_creator_by_browser_search(self, lookup: CreatorLookupInfo) -> CreatorUrlInfo | None:
+        self.log(f"🌐 正在通过网页搜索小红书号: {lookup.keyword}")
+        proxy = self._proxy()
+        launch_kwargs: dict[str, Any] = {"headless": True}
+        if proxy:
+            launch_kwargs["proxy"] = {"server": proxy}
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(**launch_kwargs)
+            try:
+                context = browser.new_context(user_agent=self._user_agent())
+                if os.path.exists(self.auth_file):
+                    try:
+                        self.auth_service.restore_playwright_cookies(context, self.auth_file)
+                    except Exception:
+                        pass
+                page = context.new_page()
+                search_url = f"{self.HOME_URL}search_result?keyword={quote(lookup.keyword)}&type=51"
+                page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
+                current_url = page.url
+                if "/login" in current_url:
+                    self.log("⚠️ 网页用户搜索被重定向到登录页，无法直接解析小红书号")
+                    return None
+                raw_candidates = page.locator("a[href*='/user/profile/']").evaluate_all(
+                    """(elements) => elements.map((el) => ({
+                        href: el.href || '',
+                        text: (el.textContent || '').trim()
+                    }))"""
+                )
+                candidates: list[CreatorUrlInfo] = []
+                seen: set[str] = set()
+                for item in raw_candidates:
+                    href = str(item.get("href") or "").strip()
+                    if not href:
+                        continue
+                    try:
+                        parsed = parse_creator_info_from_url(href)
+                    except ValueError:
+                        continue
+                    if parsed.user_id in seen:
+                        continue
+                    seen.add(parsed.user_id)
+                    candidates.append(
+                        CreatorUrlInfo(
+                            user_id=parsed.user_id,
+                            xsec_token=parsed.xsec_token,
+                            xsec_source=parsed.xsec_source or "pc_search",
+                            nickname=str(item.get("text") or "").strip(),
+                        )
+                    )
+                if not candidates:
+                    self.log(f"⚠️ 网页用户搜索未找到匹配的小红书号: {lookup.keyword}")
+                    return None
+                return self._pick_creator_candidate(candidates, source_label="网页搜索")
+            finally:
+                browser.close()
 
     def _handle_multi_refs(self, client: XiaohongshuClient, refs: list[dict[str, str]], cookie_str: str) -> None:
         if not refs:
@@ -314,15 +639,21 @@ class XiaohongshuSpider(BaseSpider):
 
         notes: list[dict[str, Any]] = []
         selection_entries: list[dict[str, Any]] = []
-        for ref in refs:
+        total_refs = len(refs)
+        for idx, ref in enumerate(refs, 1):
             if not self.is_running:
-                return
+                break
             detail = self._fetch_note_detail(client, ref)
             if not detail:
+                self._pause_between_detail_requests(multiplier=max(1.2, self._detail_pause_multiplier()))
                 continue
             notes.append(detail)
             selection_entries.append(self.parser.build_selection_entry(detail))
+            self.log(f"📥 已解析详情 {idx}/{total_refs} | 成功 {len(notes)}")
+            self._pause_between_detail_requests(multiplier=self._detail_pause_multiplier())
 
+        if not self.revive_for_partial_selection(len(notes), "条候选笔记"):
+            return
         if not notes:
             self.log("⚠️ 未能成功解析任何小红书笔记详情")
             return
@@ -354,7 +685,11 @@ class XiaohongshuSpider(BaseSpider):
             details={"config": self.config},
         )
         try:
-            entry_url = self.keyword if self.keyword.startswith("http") else self.HOME_URL
+            normalized_keyword = self._normalize_keyword(self.keyword)
+            if normalized_keyword != self.keyword.strip():
+                self.log(f"🔗 小红书输入已归一化: {normalized_keyword}")
+            route, route_value = self._classify_input(normalized_keyword)
+            entry_url = normalized_keyword if normalized_keyword.startswith("http") else self.HOME_URL
             cookie_str = self._ensure_cookie_string(entry_url)
             if not cookie_str:
                 raise SpiderAuthError("无法获取小红书会话 Cookie（至少需要 a1）")
@@ -368,16 +703,27 @@ class XiaohongshuSpider(BaseSpider):
             if login_status is None:
                 self.log("⚠️ 小红书登录态探活失败，继续尝试使用当前浏览器确认过的会话")
 
-            if is_note_url(self.keyword):
-                self._handle_note_url(client, parse_note_info_from_note_url(self.keyword), cookie_str)
-            elif is_creator_url(self.keyword) or (
-                len(self.keyword.strip()) == 24 and self.keyword.strip().isalnum()
-            ):
-                creator = parse_creator_info_from_url(self.keyword)
+            if route == "note_url":
+                self._handle_note_url(
+                    client,
+                    parse_note_info_from_note_url(route_value),
+                    cookie_str,
+                    referer=route_value,
+                )
+            elif route in {"creator_url", "creator_id"}:
+                creator = parse_creator_info_from_url(route_value)
                 refs = self._collect_creator_refs(client, creator)
                 self._handle_multi_refs(client, refs, cookie_str)
+            elif route == "creator_lookup":
+                creator = self._lookup_creator_by_keyword(client, CreatorLookupInfo(keyword=route_value))
+                if creator:
+                    refs = self._collect_creator_refs(client, creator)
+                else:
+                    self.log(f"↩️ 小红书号未命中主页结果，回退为关键词搜索: {route_value}")
+                    refs = self._collect_search_refs(client, route_value)
+                self._handle_multi_refs(client, refs, cookie_str)
             else:
-                refs = self._collect_search_refs(client)
+                refs = self._collect_search_refs(client, route_value)
                 self._handle_multi_refs(client, refs, cookie_str)
         except (SpiderAuthError, SpiderParseError, ValueError, PlaywrightError) as exc:
             self.log(f"❌ 小红书任务失败: {exc}")

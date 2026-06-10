@@ -38,8 +38,6 @@ class XiaohongshuTaskBuilder(BaseTaskBuilder):
             cookie=cookie_str,
             note_id=note_id,
             author=author,
-            folder_name=author,
-            use_subdir=True,
         )
 
         if video_candidates:
@@ -53,14 +51,27 @@ class XiaohongshuTaskBuilder(BaseTaskBuilder):
             return [item]
 
         if images_data:
-            item = VideoItem(url=images_data[0].get("image_url", ""), title=title, source="xiaohongshu")
-            item.meta = {
-                **base_meta,
-                "content_type": "gallery",
-                "is_gallery": True,
-                "images_data": images_data,
-                "image_count": len(images_data),
-            }
-            return [item]
+            built_items: list[VideoItem] = []
+            for idx, image_info in enumerate(images_data, start=1):
+                image_url = str(image_info.get("image_url") or "").strip()
+                if not image_url:
+                    continue
+                item = VideoItem(
+                    url=image_url,
+                    title=f"{title}_{idx}",
+                    source="xiaohongshu",
+                )
+                item.meta = {
+                    **base_meta,
+                    **self.build_download_meta(
+                        trace_id=f"{base_trace}-img-{idx}",
+                        content_type="image",
+                        media_label="图文",
+                        image_index=idx,
+                        image_total=len(images_data),
+                    ),
+                }
+                built_items.append(item)
+            return built_items
 
         return []

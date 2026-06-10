@@ -124,6 +124,24 @@ class XiaohongshuClient:
             },
         )
 
+    def search_users(
+        self,
+        *,
+        keyword: str,
+        page: int,
+        page_size: int = 10,
+        search_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.post(
+            "/api/sns/web/v1/search/usersearch",
+            {
+                "keyword": keyword,
+                "page": page,
+                "page_size": page_size,
+                "search_id": search_id or build_search_id(),
+            },
+        )
+
     def get_note_detail(self, *, note_id: str, xsec_source: str = "", xsec_token: str = "") -> dict[str, Any]:
         payload = {
             "source_note_id": note_id,
@@ -171,7 +189,7 @@ class XiaohongshuClient:
         *,
         user_id: str,
         cursor: str = "",
-        page_size: int = 30,
+        page_size: int = 20,
         xsec_token: str = "",
         xsec_source: str = "pc_feed",
     ) -> dict[str, Any]:

@@ -128,6 +128,58 @@ class InteractiveCommandTests(unittest.TestCase):
         self.assertTrue(any("仅单体" in line for line in missav_lines))
         self.assertTrue(any("代理" in line for line in missav_lines))
 
+    def test_xiaohongshu_summary_hides_search_page_count(self):
+        """小红书交互摘要只暴露目标数量，不再要求用户理解搜索页数。"""
+        from cli.commands.interactive import _build_config_summary_lines
+
+        lines = _build_config_summary_lines(
+            "xiaohongshu",
+            {"max_items": 20, "search_max_pages": 5},
+            "小红书",
+            "摄影",
+            r"D:\Downloads\UCP",
+        )
+
+        self.assertTrue(any("笔记数" in line for line in lines))
+        self.assertFalse(any("搜索页" in line for line in lines))
+
+    def test_interactive_xiaohongshu_skips_search_page_prompt(self):
+        """小红书交互式配置只询问目标数量，不再额外询问搜索页数。"""
+        from cli.commands.interactive import handle_interactive_command
+
+        sdk = Mock()
+        sdk.list_platforms.return_value = [
+            {"id": "xiaohongshu", "name": "小红书", "search_placeholder": "输入关键词"},
+        ]
+        runner = Mock()
+        runner.run.return_value = {"status": "ok", "elapsed": 0.8, "items": []}
+
+        with patch("cli.commands.interactive.UcrawlSDK", return_value=sdk), patch(
+            "cli.commands.interactive.CLIRunner",
+            return_value=runner,
+        ) as mock_runner_cls, patch(
+            "cli.commands.interactive.get_default_save_dir",
+            return_value=r"D:\Downloads\UCP",
+        ), patch("cli.commands.interactive._is_temp_dir", return_value=False), patch(
+            "cli.commands.interactive._load_cookie",
+            return_value={"a1": "cookie-value"},
+        ), patch("cli.commands.interactive._check_cookie_valid", return_value=True), patch(
+            "cli.commands.interactive._find_cookie_file",
+            return_value=Path("xhs_auth.json"),
+        ), patch(
+            "cli.commands.interactive.cfg.set"
+        ), patch(
+            "builtins.input",
+            side_effect=["1", "摄影", "1", "", "y", ""],
+        ):
+            exit_code = handle_interactive_command(self._make_args())
+
+        self.assertEqual(exit_code, 0)
+        runner_kwargs = mock_runner_cls.call_args.kwargs
+        self.assertEqual(runner_kwargs["source"], "xiaohongshu")
+        self.assertEqual(runner_kwargs["config"]["max_items"], 1)
+        self.assertEqual(runner_kwargs["config"]["search_max_pages"], 5)
+
     def test_prompt_post_run_action_supports_open_and_switch(self):
         """完成后动作支持先打开目录，再切换平台继续。"""
         from cli.commands.interactive import _prompt_post_run_action

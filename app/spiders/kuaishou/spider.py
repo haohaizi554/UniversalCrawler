@@ -723,14 +723,9 @@ class KuaishouSpider(BaseSpider):
                     return
 
                 last_card_count = self._scan_video_cards(page)
-                if not self.is_running:
-                    if last_card_count > 0:
-                        self.log("⏸️ 扫描被中断，准备生成清单...")
-                        self.is_running = True
-                    else:
-                        self.log("🛑 任务已终止")
-                        browser.close()
-                        return
+                if not self.revive_for_partial_selection(last_card_count, "个候选作品"):
+                    browser.close()
+                    return
 
                 items_for_dialog, target_fingerprints_map = self._extract_items_for_dialog(page)
                 selected_indices = self._collect_selected_indices(items_for_dialog)

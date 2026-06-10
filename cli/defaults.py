@@ -12,7 +12,7 @@ from __future__ import annotations
 # 兜底配置：当 cfg 不可用时使用（与 GUI AppSettings 默认值对齐）
 _FALLBACK_CONFIG = {
     "douyin": {"max_items": 20, "timeout": 10},
-    "xiaohongshu": {"max_items": 20, "search_max_pages": 5},
+    "xiaohongshu": {"max_items": 20, "search_max_pages": 5, "request_interval": 1.5, "detail_request_interval": 0.5},
     "bilibili": {"max_pages": 1, "max_items": 30},
     "kuaishou": {"max_items": 20},
     "missav": {
@@ -53,6 +53,8 @@ def get_platform_defaults(source: str) -> dict:
             return {
                 "max_items": cfg.get("xiaohongshu", "max_items", 20),
                 "search_max_pages": cfg.get("xiaohongshu", "search_max_pages", 5),
+                "request_interval": 1.5,
+                "detail_request_interval": 0.5,
             }
         elif source == "bilibili":
             return {
@@ -120,6 +122,8 @@ def validate_config_types(user_config: dict) -> str | None:
         # 与 CLI download --timeout (float) 和 SDK download_video(timeout=float) 对齐：
         # timeout 既可以是 int 也可以是 float，统一用 (int, float) 接受
         "timeout": (int, float),
+        "request_interval": (int, float),
+        "detail_request_interval": (int, float),
         "individual_only": bool,
         "priority": str,
         "proxy": str,

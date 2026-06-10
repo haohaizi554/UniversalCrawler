@@ -82,7 +82,7 @@ class XiaohongshuPlugin(BasePlugin):
 
     def get_search_placeholder(self) -> str:
         """获取 `search_placeholder` 对应的数据或状态，供 `XiaohongshuPlugin` 使用。"""
-        return "输入：小红书关键词、笔记链接或作者主页链接..."
+        return "输入：关键词、分享链接、视频/笔记链接、主页链接，或小红书号..."
 
     def get_spider_class(self):
         """获取 `spider_class` 对应的数据或状态，供 `XiaohongshuPlugin` 使用。"""

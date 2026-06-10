@@ -547,6 +547,7 @@ def _bootstrap_registry() -> None:
             "tests/test_settings_builders.py",
             "tests/test_utils_filenames.py",
             "tests/test_video_item.py",
+            "tests/test_xiaohongshu_integration.py",
         ],
         include=[
             "tests/test_*_service.py",

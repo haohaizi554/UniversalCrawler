@@ -676,6 +676,32 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(worker._resolve_save_dir(), os.path.join("downloads", "合集目录"))
 
+    def test_download_worker_resolve_save_dir_keeps_xiaohongshu_video_flat(self):
+        """验证小红书单视频在未标记子目录时保持直接落盘。"""
+        item = VideoItem(url="https://example.com/video.mp4", title="单视频", source="xiaohongshu")
+        item.meta.update(
+            {
+                "content_type": "video",
+                "folder_name": "作者目录",
+            }
+        )
+        worker = DownloadWorker(item, "downloads")
+
+        self.assertEqual(worker._resolve_save_dir(), "downloads")
+
+    def test_download_worker_resolve_save_dir_keeps_xiaohongshu_gallery_flat_without_folder_name(self):
+        """小红书图文未显式提供目录名时，不应被空值清洗成 `untitled` 子目录。"""
+        item = VideoItem(url="https://example.com/cover.jpg", title="图文", source="xiaohongshu")
+        item.meta.update(
+            {
+                "content_type": "gallery",
+                "is_gallery": True,
+            }
+        )
+        worker = DownloadWorker(item, "downloads")
+
+        self.assertEqual(worker._resolve_save_dir(), "downloads")
+
     def test_download_worker_infer_extension_uses_content_type_and_url_hint(self):
         """验证 `test_download_worker_infer_extension_uses_content_type_and_url_hint` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         gallery_item = VideoItem(url="https://example.com/cover.bin", title="图集", source="douyin")

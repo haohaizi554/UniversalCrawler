@@ -7,6 +7,7 @@ import os
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.exceptions import DownloaderStoppedError
 from app.models import VideoItem
+from app.utils.filenames import sanitize_filename
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
@@ -65,6 +66,7 @@ class XiaohongshuDownloader(BaseDownloader):
         headers: dict[str, str],
     ) -> None:
         save_dir = os.path.dirname(save_path)
+        base_name = sanitize_filename(os.path.splitext(os.path.basename(save_path))[0])
         total = max(1, len(images_data))
         completed = 0
         for idx, image in enumerate(images_data, start=1):
@@ -81,17 +83,20 @@ class XiaohongshuDownloader(BaseDownloader):
                 ext = ".webp"
             elif ".gif" in lowered:
                 ext = ".gif"
+            target_path = os.path.join(save_dir, f"{base_name}_{idx}{ext}")
             self._download_http_file(
                 url=image_url,
-                save_path=os.path.join(save_dir, f"{video_item.title}_{idx}{ext}"),
+                save_path=target_path,
                 headers=headers,
                 check_stop_func=check_stop_func,
                 max_retries=cfg.get("download", "max_retries", 3),
                 timeout=cfg.get("download", "request_timeout", 60),
                 chunk_size=cfg.get("download", "chunk_size", 65536),
-                error_message=f"小红书图片下载失败: {video_item.title}_{idx}",
+                error_message=f"小红书图片下载失败: {base_name}_{idx}",
                 proxy=video_item.meta.get("proxy"),
             )
+            if completed == 0:
+                video_item.local_path = target_path
             completed += 1
             progress_callback(int(completed / total * 100))
         progress_callback(100)

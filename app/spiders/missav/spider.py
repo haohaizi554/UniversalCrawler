@@ -142,8 +142,9 @@ class MissAVSpider(BaseSpider):
                             except PlaywrightError as e:
                                 self.log(f"   ⚠️ 中文校验异常: {e}")
 
-                    if not self.is_running and scraped_data:
-                        self.is_running = True
+                    if not self.revive_for_partial_selection(len(scraped_data), "个候选结果"):
+                        browser.close()
+                        return
                     # --- 智能分组打分 ---
                     self.log(f"🧠 智能筛选中 (共 {len(scraped_data)} 个候选)...")
                     grouped = self.parser.group_candidates(scraped_data)
@@ -165,8 +166,6 @@ class MissAVSpider(BaseSpider):
                     return
                 self.log(f"🔔 扫描完成，共 {len(final_tasks)} 个最佳版本")
 
-                # 确保复活，否则弹窗逻辑会立即退出
-                self.is_running = True
                 # 弹窗选择
                 selected_indices = self.ask_user_selection(final_tasks)
                 # 如果此时返回 None，说明用户在弹窗里点了“取消”
