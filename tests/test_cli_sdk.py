@@ -10,7 +10,6 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-
 class UcrawlSDKInitTests(unittest.TestCase):
     """UcrawlSDK 初始化测试。"""
 
@@ -46,7 +45,6 @@ class UcrawlSDKInitTests(unittest.TestCase):
         with UcrawlSDK() as sdk:
             self.assertIsNotNone(sdk)
         sdk.close()
-
 
 class UcrawlSDKSelectionResolveTests(unittest.TestCase):
     """_resolve_selection 测试。"""
@@ -146,7 +144,6 @@ class UcrawlSDKSelectionResolveTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.sdk._resolve_selection(123)
 
-
 class UcrawlSDKSearchValidationTests(unittest.TestCase):
     """search() 参数校验测试（不真跑爬虫）。"""
 
@@ -208,7 +205,6 @@ class UcrawlSDKSearchValidationTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.sdk.search("douyin", "kw", max_items="abc")
 
-
 class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
     """search() 实际功能测试（mock CLIRunner）。"""
 
@@ -260,7 +256,6 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
         runner_config = MockRunner.call_args.kwargs["config"]
         self.assertEqual(runner_config["proxy"], "http://127.0.0.1:7890")
 
-
 class UcrawlSDKCloseTests(unittest.TestCase):
     """close() 资源清理测试。"""
 
@@ -277,7 +272,6 @@ class UcrawlSDKCloseTests(unittest.TestCase):
         sdk = UcrawlSDK()
         sdk.close()
         sdk.close()
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,12 +14,10 @@ from app.web.logging_utils import log_web_event
 
 _VIDEO_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
-
 def require_valid_video_id(video_id: str) -> str:
     if not isinstance(video_id, str) or not _VIDEO_ID_PATTERN.fullmatch(video_id):
         raise HTTPException(status_code=400, detail="invalid video_id")
     return video_id
-
 
 class WebControllerRouteService:
     """封装调试事件触发与视频改名/删除等控制器适配逻辑。"""

@@ -20,9 +20,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class CommentTikTok(Comment, APITikTok):
-    """封装 `CommentTikTok` 在 `app/core/lib/douyin/interface/comment_tiktok.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -44,7 +43,7 @@ class CommentTikTok(Comment, APITikTok):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `CommentTikTok` 使用。"""
+        
         return self.params | {
             "aweme_id": self.item_id,
             "count": self.count,
@@ -55,9 +54,8 @@ class CommentTikTok(Comment, APITikTok):
             "from_page": "video",
         }
 
-
 class ReplyTikTok(Reply, CommentTikTok, APITikTok):
-    """封装 `ReplyTikTok` 在 `app/core/lib/douyin/interface/comment_tiktok.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -89,7 +87,7 @@ class ReplyTikTok(Reply, CommentTikTok, APITikTok):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `ReplyTikTok` 使用。"""
+        
         return self.params | {
             "comment_id": self.comment_id,
             "count": self.count,
@@ -99,9 +97,8 @@ class ReplyTikTok(Reply, CommentTikTok, APITikTok):
             "item_id": self.item_id,
         }
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

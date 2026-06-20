@@ -1,5 +1,8 @@
 import unittest
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from app.core.event_bus import EventBus
 from app.exceptions import AppError
 from app.core.events import (
     build_crawl_state_event,
@@ -13,7 +16,8 @@ from app.core.events import (
 )
 from app.core.state import CrawlStatus, VideoStatus, parse_video_status, video_status_label
 from app.models import VideoItem
-
+from app.services.app_state import AppState
+from app.services.cache_service import CacheService
 
 class StateAndEventTests(unittest.TestCase):
     def test_app_error_exposes_metadata_for_recovery_and_logging(self):
@@ -108,4 +112,99 @@ class StateAndEventTests(unittest.TestCase):
         self.assertEqual(errored["event_type"], "task_error")
         self.assertEqual(errored["error"], "boom")
         self.assertEqual(errored["trace_id"], "trace-task")
+
+    def test_event_bus_isolates_handler_failures(self):
+        bus = EventBus()
+        calls: list[str] = []
+
+        def broken(_payload):
+            raise RuntimeError("boom")
+
+        def healthy(payload):
+            calls.append(payload)
+
+        bus.subscribe("topic", broken)
+        bus.subscribe("topic", healthy)
+
+        bus.publish("topic", "ok")
+
+        self.assertEqual(calls, ["ok"])
+
+    def test_app_state_restores_and_updates_visible_page(self):
+        cache_service = CacheService(namespace="test-app-state-visible-page")
+        cache_service.set("ui.visible_page", "logs", persist=True)
+        state = AppState(event_bus=EventBus(), cache_service=cache_service)
+
+        self.assertEqual(state.get_visible_page(), "logs")
+        state.set_visible_page("queue", ["queue", "logs"], emit_change=False)
+
+        self.assertEqual(state.get_visible_page(), "queue")
+        self.assertTrue(state.is_page_visible("queue"))
+        self.assertFalse(state.is_page_visible("logs"))
+
+    def test_app_state_current_playing_id_is_read_through_state_api(self):
+        state = AppState(event_bus=EventBus(), cache_service=CacheService(namespace="test-current-playing"))
+
+        state.set_current_playing_id("video-1")
+
+        self.assertEqual(state.get_current_playing_id(), "video-1")
+
+    def test_app_state_snapshots_do_not_expose_mutable_log_entries(self):
+        state = AppState(event_bus=EventBus(), cache_service=CacheService(namespace="test-log-snapshot"))
+        state.record_log("hello", trace_id="trace-1")
+
+        logs = state.get_log_buffer()
+        logs[0]["message"] = "mutated"
+
+        self.assertEqual(state.get_log_buffer()[0]["message"], "hello")
+
+    def test_app_state_video_snapshots_do_not_share_video_items(self):
+        state = AppState(event_bus=EventBus(), cache_service=CacheService(namespace="test-video-snapshot"))
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        item.meta["nested"] = {"value": 1}
+        state.upsert_video(item)
+
+        snapshot = state.snapshot_videos()
+        snapshot[item.id].title = "mutated"
+        snapshot[item.id].meta["nested"]["value"] = 2
+
+        fresh = state.snapshot_videos()[item.id]
+        self.assertEqual(fresh.title, "demo")
+        self.assertEqual(fresh.meta["nested"]["value"], 1)
+
+    def test_app_state_publish_change_limits_recursive_event_storms(self):
+        bus = EventBus()
+        state = AppState(event_bus=bus, cache_service=CacheService(namespace="test-publish-depth"))
+        calls: list[int] = []
+
+        def republish(_payload):
+            calls.append(len(calls))
+            state._publish_change("loop", {})
+
+        bus.subscribe("app_state.changed", republish)
+
+        state._publish_change("loop", {})
+
+        self.assertEqual(len(calls), state.MAX_PUBLISH_DEPTH)
+
+    def test_cache_service_does_not_update_memory_when_persistent_write_fails(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-consistency", cache_dir=temp_dir)
+            cache.set("key", "old")
+
+            with patch("app.services.cache_service.sqlite3.connect", side_effect=RuntimeError("disk full")):
+                with self.assertRaises(RuntimeError):
+                    cache.set("key", "new", persist=True)
+
+            self.assertEqual(cache.get("key"), "old")
+
+    def test_cache_service_returns_mutation_isolated_values(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-isolation", cache_dir=temp_dir)
+            cache.set("key", {"nested": {"value": 1}}, persist=True)
+
+            value = cache.get("key")
+            value["nested"]["value"] = 2
+
+            self.assertEqual(cache.get("key")["nested"]["value"], 1)
 

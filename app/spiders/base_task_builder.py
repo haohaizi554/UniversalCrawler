@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 class BaseTaskBuilder:
     """平台任务装配公共基类。
 

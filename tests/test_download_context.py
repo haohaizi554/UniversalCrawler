@@ -7,7 +7,6 @@ import unittest
 from app.models.download_context import DownloadContext
 from app.models.video_item import VideoItem
 
-
 class DownloadContextTests(unittest.TestCase):
     def test_from_meta_normalizes_numbers_booleans_and_filename_alias(self):
         context = DownloadContext.from_meta(
@@ -71,7 +70,6 @@ class DownloadContextTests(unittest.TestCase):
         self.assertTrue(merged.use_subdir)
         self.assertEqual(item.meta["download_strategy"], "ffmpeg")
         self.assertTrue(item.meta["use_subdir"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,9 +4,8 @@ import unittest
 
 from app.models import VideoItem
 
-
 class VideoItemTests(unittest.TestCase):
-    """封装 `VideoItemTests` 在 `tests/test_video_item.py` 中承担的核心逻辑。"""
+    
     def test_ids_use_unique_uuid_format(self):
         """验证 `test_ids_use_unique_uuid_format` 对应场景是否符合预期，供 `VideoItemTests` 使用。"""
         first = VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin")
@@ -72,7 +71,6 @@ class VideoItemTests(unittest.TestCase):
 
         self.assertEqual(item.meta, {"trace_id": "old"})
         self.assertEqual(item.local_path, "")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -52,34 +52,9 @@ ucrawl-gui = "entry.gui_entry:main"
 # 测试启动器 GUI（Windows 上启动不弹黑窗）
 ucrawl-test-gui = "entry.test_entry:main"
 
-[tool.setuptools]
-packages = [
-    "ucrawl",
-    "cli",
-    "cli.commands",
-    "entry",
-    "app",
-    "app.config",
-    "app.controllers",
-    "app.core",
-    "app.core.downloaders",
-    "app.core.plugins",
-    "app.exceptions",
-    "app.models",
-    "app.services",
-    "app.spiders",
-    "app.spiders.douyin",
-    "app.spiders.bilibili",
-    "app.spiders.kuaishou",
-    "app.spiders.missav",
-    "app.ui",
-    "app.ui.components",
-    "app.ui.dialogs",
-    "app.ui.styles",
-    "app.ui.widgets",
-    "app.utils",
-    "app.web",
-]
+[tool.setuptools.packages.find]
+include = ["app*", "cli*", "entry*", "shared*", "ucrawl*"]
+exclude = ["docs*", "packaging*", "tests*"]
 
 [tool.setuptools.package-data]
 ucrawl = []

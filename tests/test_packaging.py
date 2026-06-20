@@ -20,7 +20,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
@@ -33,7 +32,6 @@ DOCKERFILE = PROJECT_ROOT / "Dockerfile"
 DOCKER_COMPOSE = PROJECT_ROOT / "docker-compose.yml"
 DOCKER_ENTRYPOINT = PROJECT_ROOT / "docker" / "entrypoint.sh"
 DOCKER_ENV_EXAMPLE = PROJECT_ROOT / ".env.docker.example"
-
 
 class SpecFileExistenceTests(unittest.TestCase):
     """spec 文件基本检查。"""
@@ -52,7 +50,6 @@ class SpecFileExistenceTests(unittest.TestCase):
             compile(source, str(SPEC_FILE), "exec")
         except SyntaxError as e:
             self.fail(f"spec file has syntax error: {e}")
-
 
 class SpecAppMetadataTests(unittest.TestCase):
     """spec 文件中 app 元数据正确性。"""
@@ -91,7 +88,6 @@ class SpecAppMetadataTests(unittest.TestCase):
         self.assertTrue(str(self._spec_globals["icon_file"]).endswith("favicon.ico"))
         # Web EXE 用 Web.ico
         self.assertTrue(str(self._spec_globals["webui_icon"]).endswith("Web.ico"))
-
 
 class SpecHiddenImportsTests(unittest.TestCase):
     """hiddenimports 完整性。"""
@@ -146,7 +142,6 @@ class SpecHiddenImportsTests(unittest.TestCase):
         for mod in ("uvicorn.logging", "uvicorn.loops", "uvicorn.protocols"):
             self.assertIn(mod, h, f"missing uvicorn: {mod}")
 
-
 class SpecDataFilesTests(unittest.TestCase):
     """datas 完整性。"""
 
@@ -194,12 +189,16 @@ class SpecDataFilesTests(unittest.TestCase):
         self.assertTrue(any("Web.ico" in p for p in icon_targets),
                        "Web.ico not packaged")
 
+    def test_datas_includes_ui_icon_assets(self):
+        """UI/icon 图标资产必须打包，供 GUI/WebUI 运行时复用。"""
+        datas = self._spec_globals["datas"]
+        self.assertTrue(any(d[1] == "UI/icon" for d in datas), "UI/icon not packaged")
+
     def test_datas_includes_ffmpeg(self):
         """ffmpeg.exe 必须打包。"""
         datas = self._spec_globals["datas"]
         ffmpeg = [d for d in datas if "ffmpeg.exe" in d[0]]
         self.assertTrue(len(ffmpeg) >= 1, "ffmpeg.exe not in datas")
-
 
 class SpecExcludesTests(unittest.TestCase):
     """excludes 配置。"""
@@ -219,7 +218,6 @@ class SpecExcludesTests(unittest.TestCase):
         """tkinter 应当被排除（避免与 PyQt6 冲突）。"""
         excludes = self._spec_globals.get("excludes", [])
         self.assertIn("tkinter", excludes)
-
 
 class SpecRuntimeHookTests(unittest.TestCase):
     """runtime_hook 必须挂载。"""
@@ -243,7 +241,6 @@ class SpecRuntimeHookTests(unittest.TestCase):
             source = f.read()
         self.assertIn("runtime_hooks", source)
         self.assertIn("runtime_hook.py", source)
-
 
 class RuntimeHookTests(unittest.TestCase):
     """packaging/runtime_hook.py 行为测试。"""
@@ -296,7 +293,6 @@ class RuntimeHookTests(unittest.TestCase):
         ns["_NullStream"]().write("test")  # 不抛异常
         ns["_NullStream"]().flush()  # 不抛异常
         self.assertFalse(ns["_NullStream"]().isatty())
-
 
 class BuildScriptTests(unittest.TestCase):
     """build_portable.py 静态分析。"""
@@ -361,7 +357,6 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("--noconfirm", source)
         self.assertIn("--clean", source)
 
-
 class PackagingMetadataTests(unittest.TestCase):
     """project_meta.py 与 pyproject.toml 的一致性。"""
 
@@ -377,7 +372,6 @@ class PackagingMetadataTests(unittest.TestCase):
         source = PROJECT_META.read_text(encoding="utf-8")
         self.assertIn("INSTALLER_BASENAME", source)
         self.assertIn("PACKAGE_VERSION", source)
-
 
 class InstallerScriptTests(unittest.TestCase):
     """安装器脚本与构建脚本的一致性。"""
@@ -396,6 +390,58 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn('ucrawl.universalcrawlerpro.main', source)
         self.assertIn('ucrawl.universalcrawlerpro.web', source)
 
+    def test_installer_script_shows_media_association_tasks(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn('Name: "associatevideo"', source)
+        self.assertIn('Name: "associateimage"', source)
+        video_task = next(line for line in source.splitlines() if 'Name: "associatevideo"' in line)
+        self.assertNotIn("unchecked", video_task.lower())
+        self.assertNotIn("checkedonce", video_task.lower())
+        self.assertRegex(source, r'Name:\s*"associateimage".*Flags:\s*unchecked')
+
+    def test_installer_script_registers_supported_media_extensions(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn("ChangesAssociations=yes", source)
+        self.assertIn('"{app}\\{#AppExeName}"" ""%1"', source)
+        for ext in (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts"):
+            self.assertIn(f"Software\\Classes\\{ext}", source)
+            self.assertIn("UniversalCrawlerPro.Video", source)
+        for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
+            self.assertIn(f"Software\\Classes\\{ext}", source)
+            self.assertIn("UniversalCrawlerPro.Image", source)
+
+    def test_installer_script_registers_openwith_and_capabilities(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn("Software\\RegisteredApplications", source)
+        self.assertIn("Software\\UniversalCrawlerPro\\Capabilities", source)
+        self.assertIn("Software\\Classes\\Applications\\{#AppExeName}\\shell\\open\\command", source)
+        self.assertIn("OpenWithProgids", source)
+        self.assertIn("SupportedTypes", source)
+
+    def test_installer_script_runs_association_helper_without_inno_userchoice_write(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn("ChangesAssociations=yes", source)
+        self.assertIn('--app-name ""{#AppName}""', source)
+        self.assertIn("--register-file-associations{code:GetAssociationKinds}", source)
+        self.assertIn("--set-default-file-associations", source)
+        self.assertIn("ShouldOpenAssociationSettings", source)
+        association_run_line = next(
+            line for line in source.splitlines() if "--register-file-associations" in line
+        )
+        postinstall_run_line = next(
+            line for line in source.splitlines() if "postinstall" in line and "Description:" in line
+        )
+        self.assertNotIn("--open-default-apps-settings", association_run_line)
+        self.assertIn("StatusMsg:", association_run_line)
+        self.assertIn("runhidden", association_run_line.lower())
+        self.assertIn("unchecked", postinstall_run_line.lower())
+        self.assertIn("WizardIsTaskSelected('associatevideo')", source)
+        self.assertIn("WizardIsTaskSelected('associateimage')", source)
+        self.assertNotIn("UserChoice", source)
+        self.assertNotIn("Flags: deletekey", source)
+        self.assertNotIn("SHChangeNotifyW@shell32.dll", source)
+        self.assertNotIn("RegDeleteKeyIncludingSubkeys", source)
+
     def test_build_installer_injects_version_and_ids(self):
         source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
         self.assertIn("/DAppVersion=", source)
@@ -403,7 +449,6 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn("/DAppUserModelID=", source)
         self.assertIn("/DWebUIUserModelID=", source)
         self.assertIn("get_setup_exe_path", source)
-
 
 class LauncherTemplateTests(unittest.TestCase):
     """_gui_launcher.py 和 _webui_launcher.py 模板正确性。"""
@@ -439,7 +484,6 @@ class LauncherTemplateTests(unittest.TestCase):
         self.assertIn('icon=str(icon_file)', source)  # main 用 favicon
         self.assertIn('icon=str(webui_icon)', source)  # web 用 Web.ico
 
-
 class RequirementsBuildTests(unittest.TestCase):
     """requirements-build.txt 测试。"""
 
@@ -450,7 +494,6 @@ class RequirementsBuildTests(unittest.TestCase):
         with open(REQUIREMENTS_BUILD, "r", encoding="utf-8") as f:
             content = f.read().lower()
         self.assertIn("pyinstaller", content)
-
 
 class ContainerizationAssetTests(unittest.TestCase):
     """容器化交付资产测试。"""
@@ -524,7 +567,6 @@ class ContainerizationAssetTests(unittest.TestCase):
         self.assertIn("gosu ucrawl", source)
         self.assertIn("entry.web_entry", source)
 
-
 class ProjectFileExistenceTests(unittest.TestCase):
     """项目必要文件存在性。"""
 
@@ -559,7 +601,6 @@ class ProjectFileExistenceTests(unittest.TestCase):
     def test_setup_py_exists(self):
         self.assertTrue((PROJECT_ROOT / "setup.py").exists())
 
-
 class PyprojectEntryPointsTests(unittest.TestCase):
     """pyproject.toml entry_points 配置。"""
 
@@ -580,7 +621,6 @@ class PyprojectEntryPointsTests(unittest.TestCase):
         # 必须包含 ucrawl 主入口
         self.assertIn("ucrawl", scripts)
 
-
 class NoStaleBuildArtifactsTests(unittest.TestCase):
     """避免 build 残留文件。"""
 
@@ -600,7 +640,6 @@ class NoStaleBuildArtifactsTests(unittest.TestCase):
             # 检查是否有 .pyc 文件
             pyc_files = list(pycache.glob("*.pyc"))
             self.assertGreaterEqual(len(pyc_files), 0)  # 只是记录
-
 
 class RepositoryHygieneTests(unittest.TestCase):
     """仓库级静态卫生检查。"""
@@ -629,7 +668,6 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertIn("project_meta.py", docs)
         self.assertIn("runtime_paths.py", readme)
         self.assertIn("project_meta.py", readme)
-
 
 if __name__ == "__main__":
     unittest.main()

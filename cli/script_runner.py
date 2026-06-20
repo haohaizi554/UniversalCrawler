@@ -22,7 +22,6 @@ import os
 import sys
 from typing import Any
 
-
 def run_injected_script(script_path: str, controller: Any, **extra) -> int:
     """加载并执行注入脚本。
 
@@ -58,7 +57,6 @@ def run_injected_script(script_path: str, controller: Any, **extra) -> int:
     sys.stderr.write(f"[注入] 脚本返回: {result}\n")
     return result if isinstance(result, int) else 0
 
-
 def parse_script_args(argv: list[str] | None = None) -> argparse.Namespace:
     """解析 --script 和 --script-arg 参数。
 
@@ -78,7 +76,6 @@ def parse_script_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--script-delay", type=float, default=0.0, help="执行前延迟秒数")
     return parser.parse_known_args(argv)[0]
 
-
 def parse_kv_args(items: list[str]) -> dict:
     """把 ['name=alice', 'count=5'] 解析为 {'name': 'alice', 'count': 5}。
 
@@ -91,7 +88,6 @@ def parse_kv_args(items: list[str]) -> dict:
         k, v = item.split("=", 1)
         result[k] = _auto_convert(v)
     return result
-
 
 def _auto_convert(v: str):
     """自动类型转换。"""

@@ -6,7 +6,7 @@ import os
 import subprocess
 import time
 
-from app.config import DEFAULT_USER_AGENT
+from app.config import DEFAULT_USER_AGENT, cfg
 from app.exceptions import DownloaderStoppedError
 from app.utils.runtime_paths import resolve_tool_file
 
@@ -21,13 +21,11 @@ def build_hidden_startupinfo():
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     return startupinfo
 
-
 def build_new_console_flags() -> int:
     """返回 Windows 下用于创建独立控制台的进程标志。"""
     if os.name != "nt":
         return 0
     return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-
 
 class ExternalToolRunner:
     """封装外部工具查找、等待和停止控制的公共逻辑。"""
@@ -63,11 +61,17 @@ class ExternalToolRunner:
         while process.poll() is None:
             if check_stop_func():
                 process.kill()
+                try:
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
                 raise DownloaderStoppedError("用户停止下载")
             time.sleep(poll_interval)
             if progress_callback is not None and progress_value is not None:
-                progress_callback(progress_value)
-
+                try:
+                    progress_callback(progress_value)
+                except Exception:
+                    pass
 
 class FFmpegExternalTool:
     """封装 ffmpeg 的可执行文件查找与命令构造逻辑。"""
@@ -138,7 +142,6 @@ class FFmpegExternalTool:
         command.extend(["-c", "copy", save_path])
         return command
 
-
 class NM3U8DLREExternalTool:
     """封装 `N_m3u8DL-RE` 的定位、识别和命令构造逻辑。"""
     EXE_PATH = "N_m3u8DL-RE.exe"
@@ -193,6 +196,11 @@ class NM3U8DLREExternalTool:
         return ".m3u8" in url_lower or "m3u8" in url_lower
 
     @classmethod
+    def _m3u8_thread_count(cls) -> str:
+        max_concurrent = max(1, int(cfg.get("download", "max_concurrent", 3)))
+        return str(max(1, 16 // max_concurrent))
+
+    @classmethod
     def build_download_command(
         cls,
         executable: str,
@@ -213,7 +221,7 @@ class NM3U8DLREExternalTool:
             "--save-name",
             save_name_no_ext,
             "--thread-count",
-            "16",
+            cls._m3u8_thread_count(),
             "--download-retry-count",
             "10",
             "--auto-select",

@@ -6,7 +6,6 @@ from typing import Callable
 
 from fastapi import APIRouter, WebSocket
 
-
 def build_ws_router(
     *,
     session_binder,

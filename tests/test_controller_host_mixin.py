@@ -5,11 +5,9 @@ from app.controllers.controller_host_mixin import ControllerHostMixin
 from app.exceptions import DebugActionError
 from app.models import VideoItem
 
-
 class _DummyHostController(ControllerHostMixin):
     def __init__(self):
         self.window = Mock()
-
 
 class ControllerHostMixinTests(unittest.TestCase):
     def test_host_is_cached_after_first_adapter_creation(self):
@@ -68,7 +66,6 @@ class ControllerHostMixinTests(unittest.TestCase):
         action, exc = report_error.call_args.args
         self.assertEqual(action, "复制 trace_id")
         self.assertIsInstance(exc, DebugActionError)
-
 
 if __name__ == "__main__":
     unittest.main()

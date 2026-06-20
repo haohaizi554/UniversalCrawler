@@ -10,12 +10,11 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class AccountTikTok(
     Account,
     APITikTok,
 ):
-    """封装 `AccountTikTok` 在 `app/core/lib/douyin/interface/account_tiktok.py` 中承担的核心逻辑。"""
+    
     post_api = f"{APITikTok.domain}api/post/item_list/"
     favorite_api = f"{APITikTok.domain}api/favorite/item_list/"
 
@@ -112,7 +111,7 @@ class AccountTikTok(
         *args,
         **kwargs,
     ):
-        """执行 `run_batch` 对应的业务逻辑，供 `AccountTikTok` 使用。"""
+        
         await super().run_batch(
             data_key=data_key,
             error_text=error_text,
@@ -128,11 +127,11 @@ class AccountTikTok(
         )
 
     def generate_favorite_params(self) -> dict:
-        """执行 `generate_favorite_params` 对应的业务逻辑，供 `AccountTikTok` 使用。"""
+        
         return self.generate_post_params()
 
     def generate_post_params(self) -> dict:
-        """执行 `generate_post_params` 对应的业务逻辑，供 `AccountTikTok` 使用。"""
+        
         return self.params | {
             "secUid": self.sec_user_id,
             "count": self.count,
@@ -143,9 +142,8 @@ class AccountTikTok(
             "video_encoding": "mp4",
         }
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

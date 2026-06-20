@@ -5,14 +5,12 @@ from unittest.mock import Mock
 from app.spiders.base import BaseSpider
 from shared.spider_session_runtime import SpiderSession, SpiderSessionBindings
 
-
 class _FakeSignal:
     def __init__(self):
         self.targets = []
 
     def connect(self, target):
         self.targets.append(target)
-
 
 class _FakeSpider:
     def __init__(self):
@@ -22,7 +20,6 @@ class _FakeSpider:
         self.sig_finished = _FakeSignal()
         self.start = Mock()
         self.stop = Mock()
-
 
 class SpiderSessionTests(unittest.TestCase):
     def test_create_spider_raises_for_unknown_source(self):
@@ -83,6 +80,19 @@ class SpiderSessionTests(unittest.TestCase):
 
         spider.stop.assert_called_once()
 
+    def test_stop_session_does_not_unbind_signals(self):
+        spider = _FakeSpider()
+        bindings = SpiderSessionBindings(
+            on_log=Mock(),
+            on_item_found=Mock(),
+            on_select_tasks=Mock(),
+            on_finished=Mock(),
+        )
+        SpiderSession.bind_spider(spider, bindings)
+
+        SpiderSession.stop_session(spider, bindings)
+
+        self.assertEqual(spider.sig_finished.targets, [bindings.on_finished])
 
 class _LifecycleSpider(BaseSpider):
     def __init__(self, steps: list[str], *, should_fail: bool = False):
@@ -94,7 +104,6 @@ class _LifecycleSpider(BaseSpider):
         self.steps.append("run_impl")
         if self.should_fail:
             raise RuntimeError("boom")
-
 
 class BaseSpiderLifecycleTests(unittest.TestCase):
     def test_run_emits_finished_after_run_impl(self):

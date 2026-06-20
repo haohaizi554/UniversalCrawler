@@ -12,7 +12,6 @@ import sys
 import unittest
 from unittest.mock import patch
 
-
 class CliVersionTests(unittest.TestCase):
     """--version 标志测试。"""
 
@@ -26,7 +25,6 @@ class CliVersionTests(unittest.TestCase):
         all_written = "".join(call.args[0] for call in mocked_write.call_args_list)
         self.assertIn("ucrawl", all_written)
 
-
 class CliNoArgsTests(unittest.TestCase):
     """无子命令时必须打印帮助并退出 0。"""
 
@@ -36,7 +34,6 @@ class CliNoArgsTests(unittest.TestCase):
         with patch("sys.stdout.write"):
             result = main([])
         self.assertEqual(result, 0)
-
 
 class CliSearchSubcommandTests(unittest.TestCase):
     """search 子命令参数解析测试。"""
@@ -151,7 +148,6 @@ class CliSearchSubcommandTests(unittest.TestCase):
         args = parser.parse_args(["--source", "missav", "kw", "--priority", "中文字幕优先"])
         self.assertEqual(args.priority, "中文字幕优先")
 
-
 class CliPlatformAliasTests(unittest.TestCase):
     """平台别名（douyin/bilibili/kuaishou/missav）测试。"""
 
@@ -207,7 +203,6 @@ class CliPlatformAliasTests(unittest.TestCase):
         self.assertEqual(ns.max_items, 99, "explicit value must not be overwritten")
         self.assertEqual(ns.save_dir, "/tmp/dl")
 
-
 class CliPlatformsSubcommandTests(unittest.TestCase):
     """platforms 子命令测试。"""
 
@@ -226,7 +221,6 @@ class CliPlatformsSubcommandTests(unittest.TestCase):
             result = main(["platforms", "--pretty"])
         self.assertEqual(result, 0)
 
-
 class CliScanSubcommandTests(unittest.TestCase):
     """scan 子命令测试。"""
 
@@ -237,7 +231,6 @@ class CliScanSubcommandTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 main(["scan"])
         self.assertEqual(cm.exception.code, 2)
-
 
 class CliInteractiveSubcommandTests(unittest.TestCase):
     """interactive 子命令测试。"""
@@ -255,7 +248,6 @@ class CliInteractiveSubcommandTests(unittest.TestCase):
         with patch("cli.commands.interactive.handle_interactive_command", return_value=0) as mock:
             result = main(["i"])
         mock.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

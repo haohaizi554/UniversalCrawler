@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 class ScriptApiParsingTests(unittest.TestCase):
     def test_parse_kv_args_auto_converts_types(self):
         from app.web.script_api import parse_kv_args
@@ -29,7 +28,6 @@ class ScriptApiParsingTests(unittest.TestCase):
         self.assertEqual(args.script, "demo.py")
         self.assertEqual(args.script_arg, ["a=1", "b=true"])
         self.assertTrue(args.script_strict)
-
 
 class ScriptApiExecutionTests(unittest.TestCase):
     def test_run_injected_script_returns_one_when_file_missing(self):
@@ -96,7 +94,6 @@ class ScriptApiExecutionTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
 
-
 class ScriptApiAsyncTests(unittest.TestCase):
     def test_inject_script_async_does_not_exit_when_not_strict(self):
         from app.web.script_api import inject_script_async
@@ -123,7 +120,6 @@ class ScriptApiAsyncTests(unittest.TestCase):
 
         self.assertFalse(thread.is_alive())
         exit_mock.assert_called_once_with(3)
-
 
 if __name__ == "__main__":
     unittest.main()

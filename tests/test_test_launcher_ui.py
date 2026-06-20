@@ -6,14 +6,12 @@ import os
 import sys
 import unittest
 
-
 def _pyqt6_available() -> bool:
     try:
         import PyQt6  # noqa: F401
         return True
     except ImportError:
         return False
-
 
 @unittest.skipUnless(_pyqt6_available(), "PyQt6 不可用")
 class TestLauncherWindowUITests(unittest.TestCase):
@@ -91,7 +89,6 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertIn("已组合 2 个分类", window.left_selected_text.text())
         finally:
             window.close()
-
 
 if __name__ == "__main__":
     unittest.main()

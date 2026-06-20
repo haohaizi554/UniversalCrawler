@@ -24,7 +24,6 @@ except ImportError:
 
 __all__ = ["ColorfulConsole"]
 
-
 class ColorfulConsole:
     """
     简化的控制台类，不继承 rich.Console
@@ -37,29 +36,29 @@ class ColorfulConsole:
 
     def print(self, *args, style=GENERAL, highlight=False, **kwargs):
         # 简化实现，直接打印
-        """执行 `print` 对应的业务逻辑，供 `ColorfulConsole` 使用。"""
+        
         msg = " ".join(str(a) for a in args)
         print(msg)
 
     def info(self, *args, highlight=False, **kwargs):
-        """执行 `info` 对应的业务逻辑，供 `ColorfulConsole` 使用。"""
+        
         self.print(*args, **kwargs)
 
     def warning(self, *args, highlight=False, **kwargs):
-        """执行 `warning` 对应的业务逻辑，供 `ColorfulConsole` 使用。"""
+        
         self.print(*args, **kwargs)
 
     def error(self, *args, highlight=False, **kwargs):
-        """执行 `error` 对应的业务逻辑，供 `ColorfulConsole` 使用。"""
+        
         self.print(*args, **kwargs)
 
     def debug(self, *args, highlight=False, **kwargs):
-        """执行 `debug` 对应的业务逻辑，供 `ColorfulConsole` 使用。"""
+        
         if self.debug_mode:
             self.print(*args, **kwargs)
 
     def input(self, prompt="", style=PROMPT, *args, **kwargs):
-        """执行 `input` 对应的业务逻辑，供 `ColorfulConsole` 使用。"""
+        
         try:
             return input(prompt)
         except EOFError as e:

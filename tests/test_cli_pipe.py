@@ -11,7 +11,6 @@ import json
 import unittest
 from unittest.mock import patch
 
-
 class PipeSelectionPreloadTests(unittest.TestCase):
     """预加载多轮选择测试（合集场景）。"""
 
@@ -54,7 +53,6 @@ class PipeSelectionPreloadTests(unittest.TestCase):
         ps = PipeSelection(preloaded_choices=[[]])
         items = [{"i": 0}, {"i": 1}]
         self.assertEqual(ps.select(items), [])
-
 
 class PipeSelectionStdinTests(unittest.TestCase):
     """从 stdin 读取 JSON 测试。"""
@@ -101,7 +99,6 @@ class PipeSelectionStdinTests(unittest.TestCase):
         items = [{"i": 0}, {"i": 1}]
         self.assertIsNone(ps.select(items))
 
-
 class PipeSelectionOutputTests(unittest.TestCase):
     """PipeSelection prompt 输出到 stderr（用于管道消费）。"""
 
@@ -133,7 +130,6 @@ class PipeSelectionOutputTests(unittest.TestCase):
             self.assertIn("prompt", data)
         except json.JSONDecodeError:
             self.fail(f"prompt output is not valid JSON: {first_line}")
-
 
 if __name__ == "__main__":
     unittest.main()

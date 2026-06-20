@@ -23,7 +23,6 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
 
-
 class BilibiliDownloader(BaseDownloader):
     """实现 `BilibiliDownloader` 对应的资源下载与落盘流程。"""
     source_id = "bilibili"
@@ -80,7 +79,7 @@ class BilibiliDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `BilibiliDownloader` 使用。"""
+        
         trace_id = video_item.meta.get("trace_id")
         ffmpeg_path = FFmpegExternalTool.resolve_executable()
         if not ffmpeg_path:
@@ -133,7 +132,7 @@ class BilibiliDownloader(BaseDownloader):
         )
 
         def cleanup_temp_files() -> None:
-            """执行 `cleanup_temp_files` 对应的业务逻辑。"""
+            
             for temp_path in (temp_v, temp_a):
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -171,7 +170,7 @@ class BilibiliDownloader(BaseDownloader):
             return False
 
         def emit_combined_progress() -> None:
-            """执行 `emit_combined_progress` 对应的业务逻辑。"""
+            
             total = sum(item["total"] for item in stream_stats.values() if item["total"] > 0)
             downloaded = sum(item["downloaded"] for item in stream_stats.values())
             if total <= 0:
@@ -180,7 +179,7 @@ class BilibiliDownloader(BaseDownloader):
             percent = min(90, max(10, percent))
             if percent > last_progress[0]:
                 last_progress[0] = percent
-                progress_callback(percent)
+                self._emit_progress(progress_callback, percent, bytes_downloaded=downloaded, bytes_total=total)
 
         def download_stream(name: str, path: str) -> None:
             """下载单个流（video/audio），失败时重新获取 CDN URL 后重试。"""
@@ -257,7 +256,7 @@ class BilibiliDownloader(BaseDownloader):
                         os.remove(path)
                     break
 
-        progress_callback(10)
+        self._emit_progress(progress_callback, 10)
         try:
             threads = [threading.Thread(target=download_stream, args=("video", temp_v), daemon=True)]
             if audio_url:
@@ -276,7 +275,7 @@ class BilibiliDownloader(BaseDownloader):
             if stop_event.is_set() and check_stop_func():
                 raise DownloaderStoppedError("用户停止下载")
 
-            progress_callback(90)
+            self._emit_progress(progress_callback, 90)
             cmd_merge = FFmpegExternalTool.build_merge_command(ffmpeg_path, temp_v, temp_a if audio_url else None, save_path)
             debug_logger.log_command(
                 component="BilibiliDownloader",
@@ -295,7 +294,7 @@ class BilibiliDownloader(BaseDownloader):
                 stderr=subprocess.DEVNULL,
             )
             cleanup_temp_files()
-            progress_callback(100)
+            self._emit_progress(progress_callback, 100)
             debug_logger.log(
                 component="BilibiliDownloader",
                 action="merge_finished",

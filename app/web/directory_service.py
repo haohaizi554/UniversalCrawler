@@ -14,7 +14,6 @@ from app.web.api_result import error_result
 from app.web.logging_utils import log_web_event, log_web_exception
 from app.web.session_runtime import WebSessionContext
 
-
 GetRequestContext = Callable[[Request], WebSessionContext]
 RequireAllowedDirectory = Callable[[WebSessionContext, str], str]
 MAX_SCAN_LIMIT = 5000
@@ -62,7 +61,7 @@ class WebDirectoryService:
             scan_limit = self._normalize_scan_limit(cfg.get("download", "local_scan_limit", 1000))
 
         try:
-            session_controller.videos.clear()
+            self._clear_controller_videos(session_controller)
             result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 session_controller.file_service.scan_directory,
@@ -159,7 +158,7 @@ class WebDirectoryService:
                     )
 
             await asyncio.get_running_loop().run_in_executor(None, _save_cfg)
-            session_controller.videos.clear()
+            self._clear_controller_videos(session_controller)
 
             scan_limit = self._normalize_scan_limit(cfg.get("download", "local_scan_limit", 1000))
             result = await asyncio.get_running_loop().run_in_executor(
@@ -229,7 +228,7 @@ class WebDirectoryService:
         for item in items:
             item.status = "✅ 本地"
             item.progress = 100
-            session_controller.videos[item.id] = item
+            WebDirectoryService._store_controller_video(session_controller, item)
             try:
                 normalized_items.append(session_controller._video_item_to_dict(item))
             except Exception as exc:
@@ -254,6 +253,22 @@ class WebDirectoryService:
                     }
                 )
         return normalized_items
+
+    @staticmethod
+    def _clear_controller_videos(session_controller) -> None:
+        clear_videos = getattr(session_controller, "_clear_video_items", None)
+        if callable(clear_videos):
+            clear_videos()
+            return
+        session_controller.videos.clear()
+
+    @staticmethod
+    def _store_controller_video(session_controller, item) -> None:
+        store_video = getattr(session_controller, "_store_video_item", None)
+        if callable(store_video):
+            store_video(item)
+            return
+        session_controller.videos[item.id] = item
 
     @staticmethod
     def _build_scan_response(directory: str, result, items: list[dict]) -> dict:

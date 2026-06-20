@@ -12,7 +12,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from app.services.path_policy import PathPolicy
 
-
 class WebFileResponseService:
     """承载媒体文件与调试产物的文件响应逻辑。"""
 

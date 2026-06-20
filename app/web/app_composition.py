@@ -20,9 +20,7 @@ from app.web.ws_session_binding import WebSocketSessionBinder
 from app.web.ws_transport import ConnectionManager
 from app.web.workflow_route_service import WebWorkflowRouteService
 
-
 GetSearchRuntime = Callable[[], SearchRouteRuntime]
-
 
 @dataclass(slots=True)
 class WebAppComposition:
@@ -41,7 +39,6 @@ class WebAppComposition:
 
     def get_request_context(self, request: Request) -> WebSessionContext:
         return self.http_sessions.get_request_context(request)
-
 
 def build_web_app_composition(
     *,
@@ -116,7 +113,6 @@ def build_web_app_composition(
         workflow_route_service=workflow_route_service,
         search_service=search_service,
     )
-
 
 def publish_app_state(
     app: FastAPI,

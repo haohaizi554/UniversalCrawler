@@ -23,9 +23,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Slides"]
 
-
 class Slides(API):
-    """封装 `Slides` 在 `app/core/lib/douyin/interface/slides.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -43,9 +42,8 @@ class Slides(API):
         """执行当前对象或脚本的主流程，供 `Slides` 使用。"""
         pass
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 """测试模块，覆盖 `tests/test_main_window.py` 对应功能的行为与回归场景。"""
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.ui.main_window import MainWindow
 
-
 class MainWindowTests(unittest.TestCase):
-    """封装 `MainWindowTests` 在 `tests/test_main_window.py` 中承担的核心逻辑。"""
+    
     def _make_window(self) -> MainWindow:
         """提供 `_make_window` 对应的内部辅助逻辑，供 `MainWindowTests` 使用。"""
         window = MainWindow.__new__(MainWindow)
@@ -34,7 +34,11 @@ class MainWindowTests(unittest.TestCase):
         with patch("app.ui.main_window.read_plugin_run_options", return_value={"max_pages": 5}):
             window.on_btn_start_clicked()
 
-        window.sig_start_crawl.emit.assert_called_once_with("测试关键词", "douyin", {"max_pages": 5})
+        window.sig_start_crawl.emit.assert_called_once_with(
+            "测试关键词",
+            "douyin",
+            {"max_pages": 5, "max_items": 20},
+        )
         window.set_crawl_running_state.assert_not_called()
 
     def test_start_click_rejects_empty_keyword(self):
@@ -83,38 +87,47 @@ class MainWindowTests(unittest.TestCase):
         window.append_log.assert_called_once()
         window.sig_copy_trace_id.emit.assert_not_called()
 
+    def test_file_association_click_emits_selected_groups(self):
+        window = self._make_window()
+        window.sig_register_file_associations = Mock()
+        window.show_file_association_dialog = Mock(
+            return_value=SimpleNamespace(include_video=True, include_image=False)
+        )
+
+        window.on_btn_file_association_clicked()
+
+        window.sig_register_file_associations.emit.assert_called_once_with(True, False)
+
+    def test_file_association_click_ignores_cancel(self):
+        window = self._make_window()
+        window.sig_register_file_associations = Mock()
+        window.show_file_association_dialog = Mock(return_value=None)
+
+        window.on_btn_file_association_clicked()
+
+        window.sig_register_file_associations.emit.assert_not_called()
+
+    @patch("app.ui.main_window.get_platform_runtime_defaults", return_value={"max_items": 12})
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.registry.get_plugin")
-    @patch("app.ui.main_window.build_plugin_settings_widget")
-    def test_source_changed_rebuilds_dynamic_widget(self, mock_build_widget, mock_get_plugin, mock_cfg_set):
-        """验证 `test_source_changed_rebuilds_dynamic_widget` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
+    def test_source_changed_updates_top_bar_fields(self, mock_get_plugin, mock_cfg_set, mock_defaults):
+        """切换平台时更新统一顶部栏字段，不再重建平台专属动态控件。"""
         window = self._make_window()
         plugin = Mock()
-        plugin.id = "bilibili"
-        plugin.get_search_placeholder.return_value = "输入 BV 号"
-        plugin_widget = Mock()
-        mock_build_widget.return_value = plugin_widget
+        plugin.id = "douyin"
+        plugin.get_search_placeholder.return_value = "输入分享链接"
         mock_get_plugin.return_value = plugin
 
-        old_widget = Mock()
-        old_item = Mock()
-        old_item.widget.return_value = old_widget
-        layout_dynamic = Mock()
-        layout_dynamic.count.side_effect = [1, 0]
-        layout_dynamic.takeAt.return_value = old_item
-        window.layout_dynamic = layout_dynamic
         window.combo_source = Mock()
-        window.combo_source.currentData.return_value = "bilibili"
-        window.container_dynamic = Mock()
+        window.combo_source.currentData.return_value = "douyin"
+        window.top_bar = Mock()
 
         window.on_source_changed(0)
 
-        window.inp_search.setPlaceholderText.assert_called_once_with("输入 BV 号")
-        old_widget.deleteLater.assert_called_once()
-        layout_dynamic.addWidget.assert_called_once_with(plugin_widget)
-        plugin_widget.show.assert_called_once()
-        mock_build_widget.assert_called_once_with("bilibili", window.container_dynamic)
-        mock_cfg_set.assert_called_once_with("common", "last_source", "bilibili")
+        window.inp_search.setPlaceholderText.assert_called_once_with("输入分享链接")
+        window.top_bar.configure_for_platform.assert_called_once()
+        mock_defaults.assert_called_once_with("douyin")
+        mock_cfg_set.assert_called_once_with("common", "last_source", "douyin")
 
     @patch("app.ui.main_window.registry.get_plugin", return_value=None)
     def test_source_changed_ignores_unknown_plugin(self, _mock_get_plugin):
@@ -128,6 +141,75 @@ class MainWindowTests(unittest.TestCase):
         window.on_source_changed(0)
 
         window.inp_search.setPlaceholderText.assert_not_called()
+
+    def test_frontend_refresh_is_coalesced_by_timer(self):
+        class FakeScheduler:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def schedule(self, topic):
+                self.calls.append(topic)
+
+        window = self._make_window()
+        window.app_shell = Mock()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.get_snapshot.return_value = {"app_status": {}}
+        window._ui_update_scheduler = FakeScheduler()
+        window._frontend_refresh_pending_mock = False
+
+        MainWindow.refresh_frontend_state(window)
+        MainWindow.refresh_frontend_state(window)
+
+        self.assertEqual(window._ui_update_scheduler.calls, ["frontend", "frontend"])
+        window._frontend_state_service.get_snapshot.assert_not_called()
+
+        MainWindow._flush_frontend_state(window)
+
+        window._frontend_state_service.get_snapshot.assert_called_once_with(mock=False, sections=None)
+        window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
+
+    def test_frontend_refresh_force_renders_immediately(self):
+        window = self._make_window()
+        window.app_shell = Mock()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.get_snapshot.return_value = {"app_status": {}}
+        window._ui_update_scheduler = Mock()
+
+        MainWindow.refresh_frontend_state(window, force=True)
+
+        window._ui_update_scheduler.schedule.assert_not_called()
+        window._frontend_state_service.get_snapshot.assert_called_once_with(mock=False, sections=None)
+        window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
+
+    def test_page_changed_updates_visibility_without_forcing_extra_render(self):
+        window = self._make_window()
+        window.app_state = Mock()
+        window.refresh_frontend_state = Mock()
+        window.app_shell = Mock()
+        window.app_shell.pages = {"queue": Mock(), "logs": Mock()}
+
+        MainWindow._on_page_changed(window, "logs")
+
+        window.app_state.set_visible_page.assert_called_once_with("logs", ["queue", "logs"], emit_change=False)
+        window.refresh_frontend_state.assert_not_called()
+
+    def test_app_state_videos_update_schedules_frontend_refresh(self):
+        window = self._make_window()
+
+        class FakeScheduler:
+            def __init__(self):
+                self.calls = []
+
+            def schedule(self, topic="frontend", *, force=False):
+                self.calls.append(topic)
+
+        window._ui_update_scheduler = FakeScheduler()
+        window.refresh_frontend_state = Mock()
+
+        MainWindow._on_app_state_changed(window, {"topic": "videos.update"})
+
+        window.refresh_frontend_state.assert_not_called()
+        self.assertEqual(window._ui_update_scheduler.calls, ["frontend"])
 
     def test_cleanup_media_delegates_to_media_panel(self):
         """验证 `test_cleanup_media_delegates_to_media_panel` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
@@ -147,19 +229,20 @@ class MainWindowTests(unittest.TestCase):
 
         window.media_panel.release_media.assert_called_once()
 
-    @patch("app.ui.main_window.generate_stylesheet", return_value="style")
+    @patch("app.ui.main_window.apply_application_theme")
     @patch("app.ui.main_window.cfg.set")
-    def test_toggle_theme_persists_state_and_emits_signal(self, mock_cfg_set, _mock_stylesheet):
+    def test_toggle_theme_persists_state_and_emits_signal(self, mock_cfg_set, mock_apply_theme):
         """验证 `test_toggle_theme_persists_state_and_emits_signal` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
         window = self._make_window()
         window.is_dark_theme = True
         window.top_bar = Mock()
-        window.setStyleSheet = Mock()
+        window.setPalette = Mock()
         window.sig_theme_changed = Mock()
 
         window.toggle_theme()
 
         self.assertFalse(window.is_dark_theme)
+        mock_apply_theme.assert_called_once_with(False)
         window.top_bar.set_theme_icon.assert_called_once_with(False)
         window.sig_theme_changed.emit.assert_called_once_with(False)
         mock_cfg_set.assert_any_call("common", "dark_theme", False)
@@ -187,7 +270,6 @@ class MainWindowTests(unittest.TestCase):
         window.btn_fullscreen.setText.assert_called_once_with("[ 全屏 ]")
         window.restoreState.assert_called_once_with("restored-state")
         mock_cfg_get.assert_called_once_with("ui", "window_state")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,7 +83,7 @@ class AuthService:
         return "; ".join(f"{name}={value}" for name, value in cookie_dict.items())
 
     def restore_playwright_cookies(self, context, file_path: str) -> bool:
-        """执行 `restore_playwright_cookies` 对应的业务逻辑，供 `AuthService` 使用。"""
+        
         payload = self.load_json_file(file_path)
         cookies = self.extract_cookie_list(payload)
         if not cookies:
@@ -103,7 +103,7 @@ class AuthService:
         stop_check=None,
         wait_callback=None,
     ) -> bool:
-        """执行 `wait_for_cookie_and_persist` 对应的业务逻辑，供 `AuthService` 使用。"""
+        
         for _ in range(max_attempts):
             if stop_check and stop_check():
                 return False
@@ -120,7 +120,7 @@ class AuthService:
 
     @staticmethod
     def has_cookie(cookies: list[dict] | dict | None, cookie_name: str) -> bool:
-        """执行 `has_cookie` 对应的业务逻辑，供 `AuthService` 使用。"""
+        
         if isinstance(cookies, list):
             return any(cookie.get("name") == cookie_name for cookie in cookies)
         if isinstance(cookies, dict):

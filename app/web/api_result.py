@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
-
 def error_result(
     message: str,
     *,
@@ -18,10 +17,8 @@ def error_result(
     payload.update(extra)
     return payload
 
-
 def is_error_result(payload: Any) -> bool:
     return isinstance(payload, dict) and (payload.get("status") == "error" or "error" in payload)
-
 
 def finalize_api_result(payload: Any, *, default_error_status: int = 400) -> Any:
     if not is_error_result(payload):

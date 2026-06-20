@@ -18,9 +18,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Live(API):
-    """封装 `Live` 在 `app/core/lib/douyin/interface/live.py` 中承担的核心逻辑。"""
+    
     live_api = "https://live.douyin.com/webcast/room/web/enter/"
     live_api_share = "https://webcast.amemv.com/webcast/room/reflow/info/"
 
@@ -54,7 +53,7 @@ class Live(API):
             raise DownloaderError
 
     async def with_web_rid(self) -> dict:
-        """执行 `with_web_rid` 对应的业务逻辑，供 `Live` 使用。"""
+        
         self.set_referer("https://live.douyin.com/")
         # 直播页请求参数基本固定，只有房间标识会随入口变化。
         params = {
@@ -84,7 +83,7 @@ class Live(API):
         )
 
     async def with_room_id(self) -> dict:
-        """执行 `with_room_id` 对应的业务逻辑，供 `Live` 使用。"""
+        
         params = {
             "type_id": "0",
             "live_id": "1",
@@ -98,9 +97,8 @@ class Live(API):
             headers=self.black_headers,
         )
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

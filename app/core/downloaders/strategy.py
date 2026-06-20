@@ -7,8 +7,8 @@ from typing import Protocol
 
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
-from app.models import DownloadContext, VideoItem
-
+from app.models import VideoItem
+from app.models.download_context import DownloadContext
 
 @dataclass(slots=True)
 class DownloadRequest:
@@ -33,7 +33,6 @@ class DownloadRequest:
     def explicit_strategy(self) -> str:
         return self.context.explicit_strategy
 
-
 class StrategyCapableDownloader(Protocol):
     """Minimal downloader surface needed by the strategy chain."""
 
@@ -57,7 +56,6 @@ class StrategyCapableDownloader(Protocol):
     ) -> None:
         ...
 
-
 class DownloadStrategy(Protocol):
     """A single download strategy in the explicit chain."""
 
@@ -65,7 +63,6 @@ class DownloadStrategy(Protocol):
 
     def execute(self, downloader: StrategyCapableDownloader, request: DownloadRequest) -> bool:
         ...
-
 
 class M3U8DownloadStrategy:
     name = "m3u8"
@@ -84,7 +81,6 @@ class M3U8DownloadStrategy:
             request.check_stop_func,
         )
         return True
-
 
 class ChunkedDownloadStrategy:
     name = "chunked"
@@ -119,7 +115,6 @@ class ChunkedDownloadStrategy:
             )
             return False
 
-
 class FFmpegDownloadStrategy:
     name = "ffmpeg"
 
@@ -137,7 +132,6 @@ class FFmpegDownloadStrategy:
             request.check_stop_func,
         )
         return True
-
 
 class HttpDownloadStrategy:
     name = "http"
@@ -157,7 +151,6 @@ class HttpDownloadStrategy:
             proxy=request.context.proxy,
         )
         return True
-
 
 class DownloadStrategyChain:
     """Ordered strategy chain with optional task-level strategy override."""
@@ -203,7 +196,6 @@ class DownloadStrategyChain:
             raise ValueError(f"未知下载策略: '{explicit_strategy}'，可用策略: {available}")
         fallback = [strategy for strategy in self._strategies if strategy.name != explicit_strategy]
         return preferred + fallback
-
 
 DEFAULT_DOWNLOAD_STRATEGY_CHAIN = DownloadStrategyChain(
     [

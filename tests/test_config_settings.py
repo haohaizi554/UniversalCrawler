@@ -1,6 +1,7 @@
 """测试模块，覆盖 `tests/test_config_settings.py` 对应功能的行为与回归场景。"""
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -11,9 +12,8 @@ from app.config.constants import DEFAULT_DOWNLOAD_DIR
 from app.config.settings import ConfigManager
 from app.utils.runtime_paths import resolve_user_file
 
-
 class ConfigManagerTests(unittest.TestCase):
-    """封装 `ConfigManagerTests` 在 `tests/test_config_settings.py` 中承担的核心逻辑。"""
+    
     def test_legacy_theme_value_is_normalized(self):
         """验证 `test_legacy_theme_value_is_normalized` 对应场景是否符合预期，供 `ConfigManagerTests` 使用。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -25,6 +25,19 @@ class ConfigManagerTests(unittest.TestCase):
 
             self.assertEqual(manager.get("common", "theme"), "light")
             self.assertFalse(manager.get("common", "dark_theme"))
+
+    def test_legacy_dark_default_migrates_to_light(self):
+        """旧版本默认 dark 配置应迁移为新版浅色默认。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            with open(config_path, "w", encoding="utf-8") as fp:
+                fp.write('{"common":{"theme":"dark","dark_theme":true}}')
+
+            manager = ConfigManager(config_path)
+
+            self.assertEqual(manager.get("common", "theme"), "light")
+            self.assertFalse(manager.get("common", "dark_theme"))
+            self.assertEqual(manager.get("common", "theme_schema_version"), 2)
 
     def test_set_validates_and_persists(self):
         """验证 `test_set_validates_and_persists` 对应场景是否符合预期，供 `ConfigManagerTests` 使用。"""
@@ -107,7 +120,8 @@ class ConfigManagerTests(unittest.TestCase):
             backups = list(Path(temp_dir).glob("config.json.bak.*"))
             self.assertTrue(backups)
             self.assertIsNotNone(manager.last_load_error)
-            self.assertEqual(manager.get("common", "theme"), "dark")
+            self.assertEqual(manager.get("common", "theme"), "light")
+            self.assertFalse(manager.get("common", "dark_theme"))
 
     def test_set_and_get_keep_integer_values_consistent_after_reload(self):
         """验证 `test_set_and_get_keep_integer_values_consistent_after_reload` 对应场景是否符合预期，供 `ConfigManagerTests` 使用。"""
@@ -119,6 +133,29 @@ class ConfigManagerTests(unittest.TestCase):
             reloaded = ConfigManager(config_path)
 
         self.assertEqual(reloaded.get("download", "max_concurrent"), 6)
+
+    def test_get_set_are_safe_under_concurrent_access(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+            errors: list[Exception] = []
+
+            def worker(value: int) -> None:
+                try:
+                    for _ in range(10):
+                        manager.set("download", "max_concurrent", value)
+                        self.assertIsInstance(manager.get("download", "max_concurrent"), int)
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker, args=(value,)) for value in (2, 3, 4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+
+            self.assertEqual(errors, [])
+            self.assertIn(manager.get("download", "max_concurrent"), {2, 3, 4})
 
     def test_temp_save_directory_is_normalized_back_to_default_download_dir(self):
         """被临时目录污染的保存路径在加载配置时应自动回落到规范目录。"""
@@ -176,7 +213,6 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(manager.get("ui", "window_state"), "0304")
             self.assertEqual(manager.get("ui", "main_splitter_state"), "0506")
             self.assertEqual(manager.get("ui", "right_splitter_state"), "0708")
-
 
 if __name__ == "__main__":
     unittest.main()

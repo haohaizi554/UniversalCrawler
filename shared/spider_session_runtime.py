@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-
 @dataclass(slots=True)
 class SpiderSessionBindings:
     """Host callbacks used to bind a spider to its runtime adapter."""
@@ -16,7 +15,6 @@ class SpiderSessionBindings:
     on_finished: Callable[[], None]
     patch_spider: Callable[[Any], None] | None = None
 
-
 @dataclass(slots=True)
 class SpiderLaunchRequest:
     """显式描述一次 spider 启动请求。"""
@@ -26,7 +24,6 @@ class SpiderLaunchRequest:
     config: dict
     save_dir: str | None = None
     selection_strategy: Any | None = None
-
 
 class SpiderSession:
     """Small orchestration layer for spider create/bind/start/stop."""
@@ -56,6 +53,19 @@ class SpiderSession:
         spider.sig_select_tasks.connect(bindings.on_select_tasks)
         spider.sig_finished.connect(bindings.on_finished)
 
+    @staticmethod
+    def unbind_spider(spider, bindings: SpiderSessionBindings) -> None:
+        for signal, callback in (
+            (spider.sig_log, bindings.on_log),
+            (spider.sig_item_found, bindings.on_item_found),
+            (spider.sig_select_tasks, bindings.on_select_tasks),
+            (spider.sig_finished, bindings.on_finished),
+        ):
+            try:
+                signal.disconnect(callback)
+            except (TypeError, ValueError):
+                pass
+
     @classmethod
     def activate_spider(cls, spider, bindings: SpiderSessionBindings):
         cls.bind_spider(spider, bindings)
@@ -68,6 +78,7 @@ class SpiderSession:
         return plugin, spider
 
     @staticmethod
-    def stop_session(spider) -> None:
+    def stop_session(spider, bindings: SpiderSessionBindings | None = None) -> None:
+        """Request spider shutdown; keep signal bindings until sig_finished fires."""
         if spider:
             spider.stop()

@@ -21,9 +21,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Detail(API):
-    """封装 `Detail` 在 `app/core/lib/douyin/interface/detail.py` 中承担的核心逻辑。"""
+    
     def __init__(
             self,
             params: Union["Parameter", "Params"],
@@ -40,7 +39,7 @@ class Detail(API):
     def generate_params(
             self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `Detail` 使用。"""
+        
         return self.params | {
             "aweme_id": self.detail_id,
             "version_code": "190500",
@@ -88,7 +87,7 @@ class Detail(API):
             *args,
             **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `Detail` 使用。"""
+        
         try:
             if not (d := data_dict[data_key]):
                 self.log.warning(error_text)
@@ -99,12 +98,11 @@ class Detail(API):
                 _("数据解析失败，请告知作者处理: {data}").format(data=data_dict)
             )
 
-
 async def test():
     # 模拟 Params 类
-    """执行 `test` 对应的业务逻辑。"""
+    
     class MockParams:
-        """封装 `MockParams` 在 `app/core/lib/douyin/interface/detail.py` 中承担的核心逻辑。"""
+        
         headers = {"User-Agent": DEFAULT_USER_AGENT}
         max_retry = 3
         timeout = 10
@@ -116,7 +114,6 @@ async def test():
     # 这里的 test 代码很难独立运行，因为它依赖 tools/parameter.py 和 tools/session.py 的完整初始化
     # 所以我们暂时注释掉具体的执行部分，只保留类定义检查
     pass
-
 
 if __name__ == "__main__":
     from asyncio import run

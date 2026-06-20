@@ -24,7 +24,6 @@ from app.spiders.xiaohongshu.helpers import (
 from app.spiders.xiaohongshu.spider import XiaohongshuSpider
 from app.spiders.xiaohongshu.task_builder import XiaohongshuTaskBuilder
 
-
 class XiaohongshuHelperTests(unittest.TestCase):
     def test_build_search_id_returns_non_empty_token(self):
         token = build_search_id()
@@ -130,7 +129,6 @@ class XiaohongshuHelperTests(unittest.TestCase):
         )
         self.assertEqual(items[0].title, "note-fallback_1")
 
-
 class XiaohongshuTaskBuilderTests(unittest.TestCase):
     def setUp(self):
         self.builder = XiaohongshuTaskBuilder()
@@ -184,7 +182,6 @@ class XiaohongshuTaskBuilderTests(unittest.TestCase):
         self.assertNotIn("use_subdir", items[0].meta)
         self.assertEqual(items[0].url, "https://cdn.example.com/1.jpg")
         self.assertEqual(items[1].url, "https://cdn.example.com/2.webp")
-
 
 class XiaohongshuAuthTests(unittest.TestCase):
     def test_self_info_payload_detects_logged_in_state(self):
@@ -648,7 +645,6 @@ class XiaohongshuDownloaderTests(unittest.TestCase):
 
         first_path = mocked_download_http_file.call_args_list[0].kwargs["save_path"]
         self.assertTrue(first_path.endswith("163_40kg   淡颜系高马尾_1.jpeg"))
-
 
 if __name__ == "__main__":
     unittest.main()

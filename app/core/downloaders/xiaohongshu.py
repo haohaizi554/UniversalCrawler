@@ -11,7 +11,6 @@ from app.utils.filenames import sanitize_filename
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
-
 class XiaohongshuDownloader(BaseDownloader):
     """Handle XHS videos and gallery downloads."""
 

@@ -3,7 +3,6 @@
 
 from ucrawl import UcrawlSDK, RuleSelection
 
-
 def main(controller, **kwargs):
     """批量搜索示例。"""
     sdk = UcrawlSDK(save_dir=controller.current_save_dir, verbose=True)

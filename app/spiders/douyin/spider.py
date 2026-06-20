@@ -51,7 +51,7 @@ def _run_login_process(auth_file, user_agent, result_queue):
             context = browser.new_context(user_agent=user_agent)
             page = context.new_page()
 
-            page.goto("https://www.douyin.com/", timeout=60000)
+            page.goto("https://www.douyin.com/", timeout=10000)
 
             try:
                 login_btn = page.locator("header div:has-text('登录')").last
@@ -101,7 +101,6 @@ class MockSettings:
         """提供最小化的设置对象占位符，满足底层参数对象初始化。"""
         pass
 
-
 class MockCookie:
     """模拟 DouK 的 Cookie 类，实际 cookie 通过参数注入"""
 
@@ -112,7 +111,6 @@ class MockCookie:
     def extract(self, *args, **kwargs):
         """返回空结果，真实 Cookie 由外部参数直接注入。"""
         return {}
-
 
 class MockLogger:
     """将 DouK 的日志重定向到 UCP 的信号系统"""
@@ -146,7 +144,6 @@ class MockLogger:
         # 调试信息默认不发送到 UI，防止卡死
         """保留调试方法签名，但默认不把细碎日志推给界面。"""
         pass
-
 
 class SignalConsole:
     """
@@ -189,7 +186,6 @@ class SignalConsole:
         # 爬虫模式下不支持控制台输入，直接返回空
         """兼容底层交互接口，爬虫线程中始终返回空输入。"""
         return ""
-
 
 class DouyinSpider(BaseSpider):
     """抖音爬虫，负责扫码登录、路由解析和任务装配。"""
@@ -247,7 +243,9 @@ class DouyinSpider(BaseSpider):
             self.sig_finished.emit()
             return
         # 登录过程中可能已经被用户取消，这里需要在真正发请求前再次检查运行状态。
-        if not self.is_running: return
+        if not self.is_running:
+            self.sig_finished.emit()
+            return
         if not cookie_str:
             self.log("❌ 无法获取 Cookie，任务终止")
             self.sig_finished.emit()
@@ -453,8 +451,21 @@ class DouyinSpider(BaseSpider):
         self.log("   • 分享链接: https://v.douyin.com/xxxxx")
 
     async def _async_main(self, cookie_str: str):
+        self._active_douyin_params = None
+        try:
+            await self._async_main_body(cookie_str)
+        finally:
+            params = getattr(self, "_active_douyin_params", None)
+            if params is not None:
+                close_result = params.close_client()
+                if hasattr(close_result, "__await__"):
+                    await close_result
+                self._active_douyin_params = None
+
+    async def _async_main_body(self, cookie_str: str):
         """根据输入自动分流到作品、合集、用户主页或关键词搜索。"""
         params = self._build_runtime_params(cookie_str)
+        self._active_douyin_params = params
         proxy_str = self.config.get("proxy", "")
 
         await params.update_params()
@@ -486,7 +497,7 @@ class DouyinSpider(BaseSpider):
             api.detail_id = vid
             data = await api.run(single_page=True, data_key="aweme_detail")
             if data:
-                trace_id = f"dy-{vid}"
+                trace_id = f"dy_{str(vid).replace('-', '_')}"
                 self.debug_api(
                     api_name="detail",
                     request={"trace_id": trace_id, "aweme_id": vid},
@@ -845,7 +856,6 @@ class DouyinSpider(BaseSpider):
         self.log("   1. 输入用户主页链接（如 https://www.douyin.com/user/MS4w...）")
         self.log("   2. 输入用户昵称进行搜索")
         self.log("   3. 在抖音 APP 中复制分享链接")
-
 
     def _handle_selection(self, items: list[VideoItem], title_hint: str):
         """提供 `_handle_selection` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""

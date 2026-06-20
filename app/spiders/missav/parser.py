@@ -6,11 +6,10 @@ import re
 import urllib.parse
 from collections import defaultdict
 
-
 class MissAVParser:
     """负责 `MissAVParser` 对应的数据清洗与结构化解析。"""
     def inject_url_params(self, url: str, individual_only: bool) -> str:
-        """执行 `inject_url_params` 对应的业务逻辑，供 `MissAVParser` 使用。"""
+        
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         if individual_only:
@@ -22,7 +21,7 @@ class MissAVParser:
         return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs, doseq=True)))
 
     def add_chinese_filter(self, url: str) -> str:
-        """执行 `add_chinese_filter` 对应的业务逻辑，供 `MissAVParser` 使用。"""
+        
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         filters = qs.get("filters", [""])[0]
@@ -33,7 +32,7 @@ class MissAVParser:
         return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs, doseq=True)))
 
     def group_candidates(self, scraped_data: dict[str, str]) -> dict[str, list[tuple[str, str]]]:
-        """执行 `group_candidates` 对应的业务逻辑，供 `MissAVParser` 使用。"""
+        
         grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
         code_pattern = re.compile(r"/cn/.*?([a-zA-Z]+-\d+)")
         for url, title in scraped_data.items():
@@ -43,7 +42,7 @@ class MissAVParser:
         return grouped
 
     def calculate_score(self, url: str, title: str, verified_chinese: set[str], priority_list: list[str]) -> int:
-        """执行 `calculate_score` 对应的业务逻辑，供 `MissAVParser` 使用。"""
+        
         url_lower = url.lower()
         title_lower = title.lower()
         is_uncensored = "uncensored" in url_lower or "leak" in url_lower or "无码" in title_lower
@@ -66,7 +65,7 @@ class MissAVParser:
         return 0
 
     def generate_display_title(self, url: str, title: str, verified_chinese: set[str]) -> str:
-        """执行 `generate_display_title` 对应的业务逻辑，供 `MissAVParser` 使用。"""
+        
         tags: list[str] = []
         url_lower = url.lower()
         is_uncensored = "uncensored" in url_lower or "leak" in url_lower or "无码" in title.lower()

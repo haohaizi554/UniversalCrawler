@@ -6,7 +6,6 @@ from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import ScanResult
 
-
 class _DummyMediaController(MediaLibraryMixin):
     def __init__(self):
         self.file_service = Mock()
@@ -18,7 +17,6 @@ class _DummyMediaController(MediaLibraryMixin):
         item.status = "✅ 本地"
         item.progress = 100
         return item
-
 
 class MediaLibraryMixinTests(unittest.TestCase):
     def test_build_scan_summary_message_handles_all_states(self):

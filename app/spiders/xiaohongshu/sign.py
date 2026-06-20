@@ -9,11 +9,9 @@ import time
 from typing import Any
 from urllib.parse import quote
 
-
 def generate_trace_id() -> str:
     """Generate a stable 16-char trace id compatible with XHS link tracing."""
     return "".join(random.choice("abcdef0123456789") for _ in range(16))
-
 
 def _patch_xhshow_get_hash() -> None:
     """Patch xhshow GET signing so query strings participate in a3 hashing.
@@ -59,7 +57,6 @@ def _patch_xhshow_get_hash() -> None:
     patched_build._ucrawl_xhs_patched = True
     CryptoProcessor.build_payload_array = patched_build
 
-
 def _build_sign_string(uri: str, data: dict[str, Any] | str | None = None, method: str = "POST") -> str:
     """Build the exact content string expected by the XHS web signer."""
     if method.upper() == "POST":
@@ -83,7 +80,6 @@ def _build_sign_string(uri: str, data: dict[str, Any] | str | None = None, metho
             parts.append(f"{key}={quote(value_str, safe=',')}")
         return f"{uri}?{'&'.join(parts)}"
     return f"{uri}?{data}"
-
 
 def sign_with_xhshow(
     *,

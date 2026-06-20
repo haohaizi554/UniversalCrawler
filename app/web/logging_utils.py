@@ -6,7 +6,6 @@ from typing import Any
 
 from app.debug_logger import debug_logger
 
-
 def log_web_event(
     component: str,
     action: str,
@@ -27,7 +26,6 @@ def log_web_event(
         context=context,
         details=details,
     )
-
 
 def log_web_exception(
     component: str,

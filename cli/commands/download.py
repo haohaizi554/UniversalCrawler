@@ -9,8 +9,23 @@ import argparse
 import json
 import sys
 
+from app.core.plugin_registry import registry
+from cli.defaults import build_missav_proxy_url, get_default_save_dir, validate_config_types
 from cli.sdk import UcrawlSDK
+from shared import download_command_runtime as runtime
 
+def _runtime_env() -> runtime.DownloadCommandEnv:
+    return runtime.DownloadCommandEnv(
+        UcrawlSDK_cls=UcrawlSDK,
+        get_default_save_dir=get_default_save_dir,
+        build_missav_proxy_url=build_missav_proxy_url,
+        validate_config_types=validate_config_types,
+        get_plugin=registry.get_plugin,
+        list_platform_ids=lambda: [plugin.id for plugin in registry.get_all_plugins()],
+    )
+
+def _build_config(args: argparse.Namespace, *, source: str) -> tuple[dict | None, str | None]:
+    return runtime.build_config(args, source=source, env=_runtime_env())
 
 def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     """为 download 子命令添加参数。"""
@@ -54,9 +69,14 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     out_group.add_argument("--quiet", "-q", action="store_true", help="不输出下载进度到 stderr")
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式 (默认 JSON)")
 
-
 def handle_download_command(args: argparse.Namespace) -> int:
     """执行 download 命令。"""
+    exit_code, result, error_message = runtime.run_download_command(args, env=_runtime_env())
+    if error_message:
+        sys.stderr.write(f"{error_message}\n")
+    if result is not None:
+        runtime.emit_result(result, pretty=getattr(args, "pretty", False))
+    return exit_code
     # 从 cfg 读取默认保存目录（与 GUI 对齐）
     from cli.defaults import get_default_save_dir
     save_dir = getattr(args, "save_dir", None) or get_default_save_dir()
@@ -193,7 +213,6 @@ def handle_download_command(args: argparse.Namespace) -> int:
         "elapsed": 0,
     }, ensure_ascii=False, indent=2) + "\n")
     return 1
-
 
 def _print_pretty(result: dict) -> None:
     """人类可读格式输出（与 search 命令的 _print_pretty 对齐）。"""

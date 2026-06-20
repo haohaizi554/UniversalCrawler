@@ -10,7 +10,6 @@ from app.services.media_release_coordination import (
     read_media_release_request,
 )
 
-
 class MediaReleaseCoordinationTests(unittest.TestCase):
     def test_publish_and_read_media_release_request_round_trip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -39,7 +38,6 @@ class MediaReleaseCoordinationTests(unittest.TestCase):
 
         self.assertEqual(same_id, request.request_id)
         self.assertIsNone(loaded)
-
 
 if __name__ == "__main__":
     unittest.main()

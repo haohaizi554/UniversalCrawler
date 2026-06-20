@@ -8,7 +8,6 @@ from fastapi import Request
 
 from app.web.api_result import error_result
 
-
 class WebWorkflowRouteService:
     """封装 crawl/download 等基于 session workflow 的路由委派。"""
 

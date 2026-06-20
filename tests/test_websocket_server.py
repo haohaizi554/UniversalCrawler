@@ -3,14 +3,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-
 class _FakeBridge:
     def __init__(self):
         self.loop = None
 
     def set_loop(self, loop):
         self.loop = loop
-
 
 class _FakeController:
     instances = []
@@ -39,7 +37,6 @@ class _FakeController:
     def stop_crawl(self):
         self.stop_crawl_called = True
 
-
 class _FakeWorkflowService:
     instances = []
 
@@ -50,7 +47,6 @@ class _FakeWorkflowService:
         self.select_tasks = AsyncMock()
         self.direct_download = AsyncMock()
         type(self).instances.append(self)
-
 
 class WebsocketServerTests(unittest.TestCase):
     def _create_client(self):
@@ -104,7 +100,6 @@ class WebsocketServerTests(unittest.TestCase):
 
         self.assertEqual(message["type"], "log")
         self.assertIn("dark_theme 必须是布尔值", message["data"]["message"])
-
 
 if __name__ == "__main__":
     unittest.main()

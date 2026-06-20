@@ -29,7 +29,6 @@ from typing import Any
 # 保持 CLI 输出实时刷新，便于下载和选择流程即时反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
-
 class CLIRunner:
     """CLI 核心执行器：完全对齐 GUI ApplicationController 的行为。"""
 
@@ -588,7 +587,6 @@ class CLIRunner:
             self._spider.stop()
         if self._dl_manager:
             self._dl_manager.stop_all()
-
 
 def run_search(
     source: str,

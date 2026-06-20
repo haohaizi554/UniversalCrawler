@@ -7,7 +7,6 @@
 import unittest
 from unittest.mock import patch
 
-
 class PlatformDefaultsTests(unittest.TestCase):
     """get_platform_defaults 测试。"""
 
@@ -70,7 +69,6 @@ class PlatformDefaultsTests(unittest.TestCase):
         self.assertIn("ua", defaults)
         self.assertEqual(defaults["referer"], "https://www.xiaohongshu.com/")
 
-
 class ValidateConfigTypesTests(unittest.TestCase):
     """validate_config_types 校验测试。"""
 
@@ -126,7 +124,6 @@ class ValidateConfigTypesTests(unittest.TestCase):
         from cli.defaults import validate_config_types
         self.assertIsNone(validate_config_types({}))
 
-
 class MissAVProxyBuildTests(unittest.TestCase):
     """build_missav_proxy_url 测试。"""
 
@@ -178,7 +175,6 @@ class MissAVProxyBuildTests(unittest.TestCase):
             "http://127.0.0.1:7890",
         )
 
-
 class GetDefaultSaveDirTests(unittest.TestCase):
     """get_default_save_dir 测试。"""
 
@@ -188,7 +184,6 @@ class GetDefaultSaveDirTests(unittest.TestCase):
         save_dir = get_default_save_dir()
         self.assertIsInstance(save_dir, str)
         self.assertGreater(len(save_dir), 0)
-
 
 class FallbackConfigTests(unittest.TestCase):
     """_FALLBACK_CONFIG 兜底配置测试。"""
@@ -203,7 +198,6 @@ class FallbackConfigTests(unittest.TestCase):
         """DEFAULT_CONFIG 必须是 _FALLBACK_CONFIG 的引用（向后兼容）。"""
         from cli.defaults import DEFAULT_CONFIG, _FALLBACK_CONFIG
         self.assertIs(DEFAULT_CONFIG, _FALLBACK_CONFIG)
-
 
 if __name__ == "__main__":
     unittest.main()

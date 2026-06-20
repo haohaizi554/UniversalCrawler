@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 def run_cli_search(
     *,
     source: str,
@@ -30,7 +29,6 @@ def run_cli_search(
         download=download,
     )
     return runner.run()
-
 
 def build_sdk(*, save_dir: str):
     """Create the existing SDK object behind a host-neutral function."""

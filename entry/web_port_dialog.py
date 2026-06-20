@@ -7,7 +7,6 @@ from typing import Callable
 
 from entry.qt_entry_utils import ensure_windows_app_user_model_id, load_qt_icon
 
-
 def resolve_port_with_dialog(
     default_port: int,
     *,

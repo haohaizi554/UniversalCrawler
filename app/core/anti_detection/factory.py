@@ -5,7 +5,6 @@ from __future__ import annotations
 from .models import AntiDetectionContext
 from .strategies import BrowserAntiDetectionStrategy
 
-
 def build_browser_anti_detection(
     source: str,
     config: dict | None,

@@ -1,8 +1,8 @@
 import unittest
 
-from app.core.downloaders import DouyinDownloader, downloader_registry
+from app.core.downloaders.douyin import DouyinDownloader
+from app.core.downloaders.registry import downloader_registry
 from app.models import VideoItem
-
 
 class DownloaderRegistryTests(unittest.TestCase):
     def test_builtin_registry_resolves_by_video_source(self):

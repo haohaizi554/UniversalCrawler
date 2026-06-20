@@ -55,7 +55,6 @@ except ImportError:
     Qt = None
     pyqtSignal = None
 
-
 BG = "#070B14"
 SURFACE = "#0F172A"
 SURFACE_2 = "#131D32"
@@ -393,7 +392,6 @@ QScrollBar::sub-line:vertical {{
 }}
 """
 
-
 def _merge_results(current: TestResult | None, update: TestResult) -> TestResult:
     if current is None:
         return TestResult(
@@ -423,7 +421,6 @@ def _merge_results(current: TestResult | None, update: TestResult) -> TestResult
     current.success = current.returncode == 0
     current.finished_at = update.finished_at
     return current
-
 
 class TestRunnerWorker(threading.Thread):
     def __init__(self, category_ids, callback, *, no_failfast=True, verbose=False):
@@ -484,7 +481,6 @@ class TestRunnerWorker(threading.Thread):
                 break
 
         self._emit("all_done", "", "", self.results)
-
 
 if _PYQT6_AVAILABLE:
 
@@ -1245,10 +1241,8 @@ else:
         def __init__(self, *args, **kwargs):
             raise RuntimeError("PyQt6 不可用")
 
-
 def _pyqt6_available():
     return _PYQT6_AVAILABLE
-
 
 def _load_test_icon():
     if not _PYQT6_AVAILABLE:
@@ -1264,10 +1258,8 @@ def _load_test_icon():
             continue
     return None
 
-
 _APP_REF = []
 _LAST_WIN = []
-
 
 def _ensure_qapp():
     app = QApplication.instance()
@@ -1276,7 +1268,6 @@ def _ensure_qapp():
         _APP_REF.append(app)
     return app
 
-
 def _build_gui():
     if not _PYQT6_AVAILABLE:
         raise RuntimeError("PyQt6 不可用")
@@ -1284,7 +1275,6 @@ def _build_gui():
     window = LauncherWindow()
     _LAST_WIN.append(window)
     return window
-
 
 def _embed_gui(parent=None):
     window = _build_gui()
@@ -1300,7 +1290,6 @@ def _embed_gui(parent=None):
     _embed_gui._window = window  # type: ignore[attr-defined]
     return 0
 
-
 def _list_categories():
     print(f"{'ID':<16} {'名称':<14} {'文件':<6} {'分组':<10} 描述")
     print("-" * 100)
@@ -1309,7 +1298,6 @@ def _list_categories():
             f"{category.id:<16} {category.name:<14} {category.file_count():<6} "
             f"{category.section:<10} {category.description}"
         )
-
 
 def _run_tui():
     import shutil
@@ -1366,7 +1354,6 @@ def _run_tui():
         print(format_summary(results))
         input("\n回车继续...")
 
-
 def _run_cli(args):
     import argparse
 
@@ -1406,10 +1393,8 @@ def _run_cli(args):
             print(f"[GUI 失败: {exc}]")
     return _run_tui()
 
-
 def main():
     return _run_cli(sys.argv[1:])
-
 
 if __name__ == "__main__":
     sys.exit(main())

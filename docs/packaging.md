@@ -204,3 +204,4 @@ version = "x.y.z"
 - [packaging/project_meta.py](../packaging/project_meta.py)
 - [app/utils/runtime_paths.py](../app/utils/runtime_paths.py)
 - [tests/test_packaging.py](../tests/test_packaging.py)
+- [docs/windows-file-association.md](windows-file-association.md)

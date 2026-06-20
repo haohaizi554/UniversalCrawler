@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from typing import Callable
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame,
@@ -19,16 +21,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from app.models import VideoItem
-
+from app.ui.styles.table_rows import bind_qtablewidget_row_selection
 
 class DownloadQueuePanel(QFrame):
     """下载队列表面板，封装表格的增删改查和交互绑定。"""
+
+    _DIGIT_RE = re.compile(r"(\d+)")
 
     def __init__(self, current_save_dir: str, style_provider: QWidget):
         """初始化当前实例并准备运行所需的状态，供 `DownloadQueuePanel` 使用。"""
         super().__init__()
         self.setObjectName("ContentPanel")
         self._style_provider = style_provider
+        self._on_play: Callable[[str], None] | None = None
+        self._on_delete: Callable[[str], None] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -57,7 +63,9 @@ class DownloadQueuePanel(QFrame):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setFrameShape(QFrame.Shape.NoFrame)
+        bind_qtablewidget_row_selection(self.table)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         header = self.table.horizontalHeader()
@@ -78,9 +86,44 @@ class DownloadQueuePanel(QFrame):
         on_play: Callable[[str], None],
         on_delete: Callable[[str], None],
     ) -> None:
-        """执行 `add_video_row` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
-        row = self.table.rowCount()
+        
+        self._on_play = on_play
+        self._on_delete = on_delete
+        row = self._find_insert_row(video_item.title, video_item.id)
         self.table.insertRow(row)
+        self._populate_row(row, video_item)
+
+    @classmethod
+    def build_sort_key(cls, title: str, video_id: str = "") -> tuple:
+        """Natural sort key for visible media rows."""
+        tokens: list[tuple[int, object]] = []
+        for part in cls._DIGIT_RE.split((title or "").strip()):
+            if not part:
+                continue
+            if part.isdigit():
+                tokens.append((0, int(part)))
+            else:
+                tokens.append((1, part.casefold()))
+        return (*tokens, (2, video_id))
+
+    def reorder_video_row(self, video_item: VideoItem) -> int:
+        """Move an existing row to the position implied by the title sort key."""
+        current_row = self.find_row_by_video_id(video_item.id)
+        if current_row == -1:
+            return -1
+        was_selected = self.get_selected_video_id() == video_item.id
+        self.table.removeRow(current_row)
+        insert_row = self._find_insert_row(video_item.title, video_item.id)
+        self.table.insertRow(insert_row)
+        self._populate_row(insert_row, video_item)
+        if was_selected:
+            self.select_video_by_id(video_item.id)
+        return insert_row
+
+    def _populate_row(self, row: int, video_item: VideoItem) -> None:
+        """Populate a row after insert or reorder."""
+        if self._on_play is None or self._on_delete is None:
+            raise RuntimeError("video row callbacks must be configured before populating rows")
 
         title_item = QTableWidgetItem(video_item.title)
         title_item.setData(Qt.ItemDataRole.UserRole, video_item.id)
@@ -104,16 +147,29 @@ class DownloadQueuePanel(QFrame):
         play_btn = QPushButton()
         play_btn.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         play_btn.setFixedSize(28, 26)
-        play_btn.clicked.connect(lambda: on_play(video_item.id))
+        play_btn.clicked.connect(lambda: self._on_play(video_item.id))
 
         delete_btn = QPushButton()
         delete_btn.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         delete_btn.setFixedSize(28, 26)
-        delete_btn.clicked.connect(lambda checked=False, video_id=video_item.id: on_delete(video_id))
+        delete_btn.clicked.connect(
+            lambda checked=False, video_id=video_item.id: self._on_delete(video_id)
+        )
 
         operation_layout.addWidget(play_btn)
         operation_layout.addWidget(delete_btn)
         self.table.setCellWidget(row, 3, operation_widget)
+
+    def _find_insert_row(self, title: str, video_id: str) -> int:
+        target_key = self.build_sort_key(title, video_id)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+            current_key = self.build_sort_key(item.text(), item.data(Qt.ItemDataRole.UserRole) or "")
+            if target_key < current_key:
+                return row
+        return self.table.rowCount()
 
     def update_video_status(self, video_id: str, status: str, progress: int | None = None) -> None:
         """更新 `video_status` 对应的状态或数据内容，供 `DownloadQueuePanel` 使用。"""
@@ -130,7 +186,7 @@ class DownloadQueuePanel(QFrame):
                 break
 
     def refresh_delete_bindings(self, on_delete: Callable[[str], None]) -> None:
-        """执行 `refresh_delete_bindings` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
+        
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if not item:
@@ -150,20 +206,20 @@ class DownloadQueuePanel(QFrame):
                 button.clicked.connect(lambda checked=False, value=video_id: on_delete(value))
 
     def clear_rows(self) -> None:
-        """执行 `clear_rows` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
+        
         self.table.setRowCount(0)
 
     def remove_row(self, row: int) -> None:
-        """执行 `remove_row` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
+        
         if row >= 0:
             self.table.removeRow(row)
 
     def bind_title_rename(self, on_rename: Callable) -> None:
-        """执行 `bind_title_rename` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
+        
         self.table.itemChanged.connect(on_rename)
 
     def find_row_by_video_id(self, video_id: str) -> int:
-        """执行 `find_row_by_video_id` 对应的业务逻辑，供 `DownloadQueuePanel` 使用。"""
+        
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item and item.data(Qt.ItemDataRole.UserRole) == video_id:
@@ -171,9 +227,42 @@ class DownloadQueuePanel(QFrame):
         return -1
 
     def get_selected_video_id(self) -> str | None:
-        """获取 `selected_video_id` 对应的数据或状态，供 `DownloadQueuePanel` 使用。"""
+        
         row = self.table.currentRow()
         if row < 0:
             return None
         item = self.table.item(row, 0)
         return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def get_adjacent_video_id(self, current_video_id: str | None, direction: int, *, wrap: bool = True) -> str | None:
+        """Return the previous/next video id according to current table order."""
+        video_order = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None:
+                video_id = item.data(Qt.ItemDataRole.UserRole)
+                if video_id:
+                    video_order.append(video_id)
+        if not video_order:
+            return None
+        current_index = video_order.index(current_video_id) if current_video_id in video_order else -1
+        if current_index == -1:
+            return video_order[0] if direction >= 0 else video_order[-1]
+        next_index = current_index + (1 if direction >= 0 else -1)
+        if wrap:
+            next_index %= len(video_order)
+        elif next_index < 0 or next_index >= len(video_order):
+            return None
+        return video_order[next_index]
+
+    def select_video_by_id(self, video_id: str) -> bool:
+        """Select the row for a media id and scroll it into view."""
+        row = self.find_row_by_video_id(video_id)
+        if row == -1:
+            return False
+        self.table.setCurrentCell(row, 0)
+        self.table.selectRow(row)
+        item = self.table.item(row, 0)
+        if item is not None:
+            self.table.scrollToItem(item)
+        return True

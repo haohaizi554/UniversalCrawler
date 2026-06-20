@@ -16,9 +16,8 @@ except ImportError:
 
 __all__ = ["XBogus", "XBogusTikTok"]
 
-
 class XBogus:
-    """封装 `XBogus` 在 `app/core/lib/douyin/encrypt/xBogus.py` 中承担的核心逻辑。"""
+    
     __string = "Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe="
     __array = (
         [None for _ in range(48)]
@@ -30,7 +29,7 @@ class XBogus:
 
     @staticmethod
     def disturb_array(a, b, e, d, c, f, t, n, o, i, r, _, x, u, s, l, v, h, g):
-        """执行 `disturb_array` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         array = [0] * 19
         array[0] = a
         array[10] = b
@@ -55,7 +54,7 @@ class XBogus:
 
     @staticmethod
     def generate_garbled_1(a, b, e, d, c, f, t, n, o, i, r, _, x, u, s, l, v, h, g):
-        """执行 `generate_garbled_1` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         array = [0] * 19
         array[0] = a
         array[1] = r
@@ -80,7 +79,7 @@ class XBogus:
 
     @staticmethod
     def generate_num(text):
-        """执行 `generate_num` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         return [
             ord(text[i]) << 16 | ord(text[i + 1]) << 8 | ord(text[i + 2]) << 0
             for i in range(0, 21, 3)
@@ -88,12 +87,12 @@ class XBogus:
 
     @staticmethod
     def generate_garbled_2(a, b, c):
-        """执行 `generate_garbled_2` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         return chr(a) + chr(b) + c
 
     @staticmethod
     def generate_garbled_3(a, b):
-        """执行 `generate_garbled_3` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         d = list(range(256))
         c = 0
         f = ""
@@ -116,7 +115,7 @@ class XBogus:
         return f
 
     def calculate_md5(self, input_string):
-        """执行 `calculate_md5` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         if isinstance(input_string, str):
             array = self.md5_to_array(input_string)
         elif isinstance(input_string, list):
@@ -129,7 +128,7 @@ class XBogus:
         return md5_hash.hexdigest()
 
     def md5_to_array(self, md5_str):
-        """执行 `md5_to_array` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         if isinstance(md5_str, str) and len(md5_str) > 32:
             return [ord(char) for char in md5_str]
         else:
@@ -140,20 +139,20 @@ class XBogus:
             ]
 
     def process_url_path(self, url_path):
-        """执行 `process_url_path` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         return self.md5_to_array(
             self.calculate_md5(self.md5_to_array(self.calculate_md5(url_path)))
         )
 
     def generate_str(self, num):
-        """执行 `generate_str` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         string = [num & 16515072, num & 258048, num & 4032, num & 63]
         string = [i >> j for i, j in zip(string, range(18, -1, -6))]
         return "".join([self.__string[i] for i in string])
 
     @staticmethod
     def handle_ua(a, b):
-        """执行 `handle_ua` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         d = list(range(256))
         c = 0
         result = bytearray(len(b))
@@ -174,7 +173,7 @@ class XBogus:
         return result
 
     def generate_ua_array(self, user_agent: str, params: int) -> list:
-        """执行 `generate_ua_array` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         ua_key = ["\u0000", "\u0001", chr(params)]
         value = self.handle_ua(ua_key, user_agent.encode("utf-8"))
         value = b64encode(value)
@@ -183,7 +182,7 @@ class XBogus:
     def generate_x_bogus(
         self, query: list, params: int, user_agent: str, timestamp: int
     ):
-        """执行 `generate_x_bogus` 对应的业务逻辑，供 `XBogus` 使用。"""
+        
         ua_array = self.generate_ua_array(user_agent, params)
         array = [
             64,
@@ -219,14 +218,13 @@ class XBogus:
     def get_x_bogus(
         self, query: dict | str, params=8, user_agent=USERAGENT, test_time=None
     ):
-        """获取 `x_bogus` 对应的数据或状态，供 `XBogus` 使用。"""
+        
         timestamp = int(test_time or time())
         query = self.process_url_path(
             urlencode(query, quote_via=quote) if isinstance(query, dict) else query
         )
         return self.generate_x_bogus(query, params, user_agent, timestamp)
 
-
 class XBogusTikTok(XBogus):
-    """封装 `XBogusTikTok` 在 `app/core/lib/douyin/encrypt/xBogus.py` 中承担的核心逻辑。"""
+    
     pass

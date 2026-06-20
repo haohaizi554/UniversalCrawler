@@ -4,7 +4,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-
 def _create_test_client():
     from fastapi.testclient import TestClient
     from app.web.server import create_app, SESSION_TOKEN_HEADER
@@ -22,10 +21,8 @@ def _create_test_client():
     context.approve_directory("downloads")
     return client
 
-
 def _auth_headers(client):
     return {client._ucrawl_token_header: client._ucrawl_session_token}
-
 
 def _normalize_selection(strategy) -> dict:
     return {
@@ -36,7 +33,6 @@ def _normalize_selection(strategy) -> dict:
         "first": getattr(strategy, "first", None),
         "last": getattr(strategy, "last", None),
     }
-
 
 class _FakeSignal:
     def __init__(self):
@@ -49,14 +45,12 @@ class _FakeSignal:
         for callback in list(self._callbacks):
             callback(*args)
 
-
 class _NullLock:
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         return False
-
 
 class _FakeDownloadManager:
     last_video = None
@@ -81,7 +75,6 @@ class _FakeDownloadManager:
 
     def stop_all(self):
         return None
-
 
 class SearchEntryConsistencyTests(unittest.TestCase):
     def _cli_search_runner_kwargs(self):
@@ -235,7 +228,6 @@ class SearchEntryConsistencyTests(unittest.TestCase):
         self.assertEqual(_normalize_selection(cli_kwargs["selection_strategy"]), expected_selection)
         self.assertEqual(_normalize_selection(sdk_kwargs["selection_strategy"]), expected_selection)
         self.assertEqual(_normalize_selection(api_kwargs["selection_strategy"]), expected_selection)
-
 
 class DownloadEntryConsistencyTests(unittest.TestCase):
     def _cli_download_config(self):
@@ -449,7 +441,6 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         self.assertFalse(result["shutdown"]["all_workers_stopped"])
         self.assertFalse(result["shutdown"]["dispatcher_stopped"])
 
-
 class EntryResultStructureConsistencyTests(unittest.TestCase):
     def test_search_success_payload_is_passthrough_across_cli_sdk_and_api(self):
         expected = {
@@ -646,7 +637,6 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             self.assertEqual(api_result[field], expected[field])
         self.assertIn("video_id", api_result)
         self.assertIsInstance(api_result["elapsed"], (int, float))
-
 
 if __name__ == "__main__":
     unittest.main()

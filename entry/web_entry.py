@@ -28,12 +28,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-
 # ---- 端口处理 ----
 
 # 顺延查找的最大尝试次数（找不到就报错/弹窗）
 _PORT_PROBE_RANGE = 10
-
 
 def _is_port_in_use(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -43,7 +41,6 @@ def _is_port_in_use(host: str, port: int) -> bool:
             return False
         except OSError:
             return True
-
 
 def _find_available_port(host: str, start_port: int, max_probe: int = _PORT_PROBE_RANGE) -> int | None:
     """从 start_port 开始顺延查找可用端口，最多尝试 max_probe 次。
@@ -61,7 +58,6 @@ def _find_available_port(host: str, start_port: int, max_probe: int = _PORT_PROB
         if not _is_port_in_use(host, port):
             return port
     return None
-
 
 def _load_app_icon() -> "QIcon | None":
     """加载 Web 应用图标（Web.ico），找不到就回退 favicon.ico。
@@ -93,7 +89,6 @@ def _load_app_icon() -> "QIcon | None":
             continue
     return None
 
-
 def _ensure_app_user_model_id() -> None:
     """Windows 任务栏图标关键修复：设置 Web 模式专属 AppUserModelID。
 
@@ -109,7 +104,6 @@ def _ensure_app_user_model_id() -> None:
         )
     except Exception:
         pass
-
 
 def _resolve_port_with_dialog(default_port: int) -> int:
     """端口被占用时，弹自定义 Qt 弹窗让用户选新端口。
@@ -520,7 +514,6 @@ def _resolve_port_with_dialog(default_port: int) -> int:
             sys.exit(0)
         port = spin.value()
 
-
 def _create_tray_icon(qt_app, url: str, shutdown_event: threading.Event):
     """创建系统托盘图标（Windows 上增强体验）。"""
     from PyQt6.QtGui import QAction, QIcon
@@ -563,7 +556,6 @@ def _create_tray_icon(qt_app, url: str, shutdown_event: threading.Event):
     )
     return tray
 
-
 def _build_argparser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。"""
     parser = argparse.ArgumentParser(
@@ -586,7 +578,6 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--script-strict", action="store_true", help="脚本失败时退出 web 服务")
     parser.add_argument("--script-delay", type=float, default=0.0, help="执行脚本前延迟秒数")
     return parser
-
 
 def main(argv: list[str] | None = None) -> int:
     """Web UI 入口。"""
@@ -732,7 +723,6 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(_serve_with_patch())
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

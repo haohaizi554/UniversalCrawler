@@ -45,7 +45,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 # 离线模式
 os.environ.setdefault("UCRAWL_OFFLINE", "1")
 
-
 def _playwright_available() -> bool:
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
@@ -53,13 +52,21 @@ def _playwright_available() -> bool:
     except ImportError:
         return False
 
-
 def _find_free_port() -> int:
     """找一个空闲端口（避免与 web_entry 端口冲突）。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
 
+def _static_bundle_content() -> str:
+    """Read split WebUI assets as one bundle for static assertions."""
+    static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+    parts = []
+    for name in ("index.html", "app.css", "app.js"):
+        path = static_dir / name
+        if path.exists():
+            parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 @contextmanager
 def _running_server(host: str = "127.0.0.1", port: int = 0):
@@ -121,7 +128,6 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
         except subprocess.TimeoutExpired:
             proc.kill()
 
-
 # ============================================================
 # 静态资源测试（不需要 Playwright）
 # ============================================================
@@ -137,7 +143,7 @@ class StaticAssetsTests(unittest.TestCase):
     def test_index_html_has_doctype(self):
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         self.assertTrue(content.lower().startswith("<!doctype html>"))
 
     def test_index_html_required_ids(self):
@@ -145,7 +151,7 @@ class StaticAssetsTests(unittest.TestCase):
         from pathlib import Path
         import re
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         required_ids = [
             "sourceSelect", "searchInput", "dynamicArea",
             "startBtn", "stopBtn", "themeBtn",
@@ -168,18 +174,41 @@ class StaticAssetsTests(unittest.TestCase):
         from pathlib import Path
         import re
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 从 onclick="..." 提取函数名
         onclicks = re.findall(r'onclick="(\w+)\(', content)
         for fn in set(onclicks):
             self.assertIn(f"function {fn}(", content,
                          f"missing JS function: {fn}")
 
+    def test_preview_nav_buttons_are_visible(self):
+        from pathlib import Path
+        import re
+        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
+        content = _static_bundle_content()
+
+        block = re.search(r"\.(?:nav-btn|nav-item)\s*\{(?P<body>.*?)\}", content, re.S)
+
+        self.assertIsNotNone(block)
+        body = block.group("body").replace(" ", "").lower()
+        self.assertIn("display:flex", body)
+        self.assertNotIn("display:none", body)
+
+    def test_video_end_autoplays_next_preview(self):
+        from pathlib import Path
+        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
+        content = _static_bundle_content()
+
+        self.assertIn("function autoplayNextPreview(", content)
+        self.assertIn("setupPlayerEvents(player, id)", content)
+        self.assertIn("function setupPlayerEvents(player, sourceId)", content)
+        self.assertIn("autoplayNextPreview();", content)
+
     def test_css_variables_defined(self):
         """深色/浅色主题 CSS 变量必须定义。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 关键 CSS 变量
         for var in ("--bg", "--panel", "--accent", "--text", "--border"):
             self.assertIn(var, content, f"missing CSS variable: {var}")
@@ -188,18 +217,27 @@ class StaticAssetsTests(unittest.TestCase):
         """不应有明显错误模式。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 不应出现 TODO/FIXME 标记
         self.assertNotIn("TODO", content)
         self.assertNotIn("FIXME", content)
         # 不应有未配对的花括号（粗略检查）
         self.assertEqual(content.count("{"), content.count("}"))
 
+    def test_high_frequency_events_use_delta_not_full_state_fetch(self):
+        content = _static_bundle_content()
+        self.assertIn('case "frontend_delta":', content)
+        self.assertIn("function applyFrontendDelta(", content)
+        self.assertIn("function patchTableRows(", content)
+        high_event_block = content.split('case "item_found":', 1)[1].split('case "select_tasks":', 1)[0]
+        self.assertNotIn("fetchFrontendState();", high_event_block)
+        self.assertIn("applyLegacyFrontendEvent(type, data);", high_event_block)
+
     def test_websocket_endpoint_referenced(self):
         """前端必须连 /ws。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         self.assertIn("/ws", content)
 
     def test_no_xss_vulnerability(self):
@@ -207,12 +245,27 @@ class StaticAssetsTests(unittest.TestCase):
         from pathlib import Path
         import re
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 必须定义 esc 函数
         self.assertIn("function esc(", content)
         # 必须使用 esc（避免 XSS）
         self.assertGreater(content.count("esc("), 0)
 
+    def test_unified_seven_page_structure(self):
+        from pathlib import Path
+        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
+        content = p.read_text(encoding="utf-8")
+        for page_id in ("queue", "active", "completed", "failed", "logs", "settings", "toolbox"):
+            self.assertIn(f'id="page-{page_id}"', content)
+        top_bar = content.split('<header class="top-bar" id="topBar">', 1)[1].split("</header>", 1)[0]
+        for removed in ("错误摘要", "复制Trace", "导出日志", "清空记录"):
+            self.assertNotIn(removed, top_bar)
+        queue_page = content.split('id="page-queue"', 1)[1].split('id="page-active"', 1)[0]
+        self.assertNotIn("<video", queue_page)
+        self.assertNotIn('type="checkbox"', queue_page)
+        active_page = content.split('id="page-active"', 1)[1].split('id="page-completed"', 1)[0]
+        self.assertNotIn("<video", active_page)
+        self.assertNotIn("<th>状态</th>", active_page)
 
 class WebSocketMessageTypesTests(unittest.TestCase):
     """WebSocket 消息类型一致性测试。"""
@@ -222,9 +275,9 @@ class WebSocketMessageTypesTests(unittest.TestCase):
         from pathlib import Path
         import re
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 提取所有 case
-        cases = re.findall(r"case '(\w+)':", content)
+        cases = re.findall(r"case [\"'](\w+)[\"']:", content)
         # 必须的 case
         for required in (
             "init_state", "platforms", "config", "log", "item_found",
@@ -234,7 +287,6 @@ class WebSocketMessageTypesTests(unittest.TestCase):
             "select_tasks", "scan_result",
         ):
             self.assertIn(required, cases, f"missing WS case: {required}")
-
 
 # ============================================================
 # Playwright 浏览器测试（可选）
@@ -329,18 +381,13 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.goto(self._server_url)
         self._page.wait_for_load_state("networkidle")
         self._page.wait_for_timeout(3500)
-        # 初始是 dark（不设置 data-theme）
+        # 初始是 light（默认浅色主题）
         before = self._page.evaluate("document.documentElement.getAttribute('data-theme')")
-        # 点击主题按钮
         self._page.locator("#themeBtn").click()
-        # 等待至少 100ms
         self._page.wait_for_timeout(200)
         after = self._page.evaluate("document.documentElement.getAttribute('data-theme')")
-        # 应从 null/dark 变成 light
-        if before in (None, ""):
-            self.assertEqual(after, "light")
-        else:
-            self.assertIn(after, (None, ""))
+        self.assertEqual(before, "light")
+        self.assertEqual(after, "dark")
 
     def test_08_dir_modal_opens(self):
         """点击更改目录按钮应弹出目录弹窗。"""
@@ -472,7 +519,6 @@ class WebUIBrowserTests(unittest.TestCase):
         deleted = self._page.evaluate("window._deletedIds")
         self.assertEqual(deleted, ["x1"])
 
-
 @unittest.skipUnless(_playwright_available(), "playwright not installed")
 class WebUIAccessibilityTests(unittest.TestCase):
     """Web UI 可访问性测试。"""
@@ -531,7 +577,6 @@ class WebUIAccessibilityTests(unittest.TestCase):
         self.assertIsNotNone(viewport)
         self.assertIn("width=device-width", viewport)
 
-
 # ============================================================
 # Web 设计指南审查（来自 web-design-guidelines skill）
 # ============================================================
@@ -550,7 +595,7 @@ class WebDesignGuidelinesTests(unittest.TestCase):
         """必须有 focus 样式（键盘可达性）。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 至少有几个 :focus 规则
         self.assertIn(":focus", content)
         self.assertGreater(content.count(":focus"), 0)
@@ -559,7 +604,7 @@ class WebDesignGuidelinesTests(unittest.TestCase):
         """按钮必须有 hover 样式。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         self.assertIn(":hover", content)
         self.assertGreater(content.count(":hover"), 5)
 
@@ -567,17 +612,16 @@ class WebDesignGuidelinesTests(unittest.TestCase):
         """错误消息应写入日志（用户可见）。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         # 至少有几个 ❌ 错误日志
-        self.assertGreaterEqual(content.count("❌"), 3)
+        self.assertGreaterEqual(content.count("失败"), 3)
 
     def test_disabled_state_styled(self):
         """disabled 状态应有样式。"""
         from pathlib import Path
         p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
-        content = p.read_text(encoding="utf-8")
+        content = _static_bundle_content()
         self.assertIn(":disabled", content)
-
 
 if __name__ == "__main__":
     unittest.main()

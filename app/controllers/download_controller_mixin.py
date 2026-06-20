@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from app.controllers.event_bridge import DomainEventBridge
 from app.core.events import (
     DomainEvent,
@@ -9,7 +11,6 @@ from app.core.events import (
     build_task_started_event,
 )
 
-
 class DownloadControllerMixin:
     """Shared download bridge and event routing for host-backed controllers."""
 
@@ -17,23 +18,28 @@ class DownloadControllerMixin:
 
     def _connect_download_signals(self):
         """Connect download manager callbacks through the unified download bridge."""
+        self._last_download_progress: dict[str, int] = {}
+        self._download_progress_lock = threading.RLock()
         self.dl_manager.task_started.connect(self._emit_task_started_event)
         self.dl_manager.task_progress.connect(self._emit_task_progress_event)
         self.dl_manager.task_finished.connect(self._emit_task_finished_event)
         self.dl_manager.task_error.connect(self._emit_task_error_event)
 
     def _publish_video_state(self, vid: str, item, *, requested_progress: int | None) -> None:
-        self._host().update_video_status(
-            vid,
-            item.status,
-            requested_progress if requested_progress is not None else item.progress,
-        )
+        if item is None:
+            return
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state._publish_change(
+                "videos.update",
+                {"video_id": vid, "progress": requested_progress},
+            )
 
     def _emit_controller_log(self, message: str) -> None:
         self._host().append_log(message)
 
     def _resolve_event_video_item(self, video_id: str):
-        item = self.videos.get(video_id)
+        item = self._video_lookup(video_id) if hasattr(self, "_video_lookup") else self.videos.get(video_id)
         if item is not None:
             return item
         find_worker = getattr(self.dl_manager, "_find_worker", None)
@@ -44,21 +50,57 @@ class DownloadControllerMixin:
         return None
 
     def _emit_task_started_event(self, video_id: str) -> None:
-        self._download_bridge.sig_event.emit(build_task_started_event(video_id, self._resolve_event_video_item(video_id)))
+        if video_id:
+            with self._download_progress_guard():
+                self._last_progress_by_video()[video_id] = 0
+        item = self._resolve_event_video_item(video_id)
+        self._download_bridge.sig_event.emit(build_task_started_event(video_id, item))
 
     def _emit_task_progress_event(self, video_id: str, progress: int) -> None:
-        item = self.videos.get(video_id)
+        item = self._video_lookup(video_id) if hasattr(self, "_video_lookup") else self.videos.get(video_id)
         if item is None:
             return
+        try:
+            normalized = max(0, min(100, int(progress)))
+        except (TypeError, ValueError):
+            return
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None and not app_state.should_emit_progress(video_id, normalized):
+            return
+        with self._download_progress_guard():
+            last_progress = self._last_progress_by_video()
+            if last_progress.get(video_id) == normalized:
+                return
+            last_progress[video_id] = normalized
         self._download_bridge.sig_event.emit(
-            self._build_video_state_event(video_id, item, requested_progress=progress)
+            self._build_video_state_event(video_id, item, requested_progress=normalized)
         )
 
     def _emit_task_finished_event(self, video_id: str) -> None:
-        self._download_bridge.sig_event.emit(build_task_finished_event(video_id, self._resolve_event_video_item(video_id)))
+        with self._download_progress_guard():
+            self._last_progress_by_video().pop(video_id, None)
+        item = self._resolve_event_video_item(video_id)
+        self._download_bridge.sig_event.emit(build_task_finished_event(video_id, item))
 
     def _emit_task_error_event(self, video_id: str, error: str) -> None:
-        self._download_bridge.sig_event.emit(build_task_error_event(video_id, self._resolve_event_video_item(video_id), error))
+        with self._download_progress_guard():
+            self._last_progress_by_video().pop(video_id, None)
+        item = self._resolve_event_video_item(video_id)
+        self._download_bridge.sig_event.emit(build_task_error_event(video_id, item, error))
+
+    def _last_progress_by_video(self) -> dict[str, int]:
+        progress = getattr(self, "_last_download_progress", None)
+        if progress is None:
+            progress = {}
+            self._last_download_progress = progress
+        return progress
+
+    def _download_progress_guard(self) -> threading.RLock:
+        lock = getattr(self, "_download_progress_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._download_progress_lock = lock
+        return lock
 
     @staticmethod
     def _event_payload(event: DomainEvent) -> dict:

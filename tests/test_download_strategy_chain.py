@@ -7,7 +7,6 @@ from app.core.downloaders.strategy import DownloadStrategyChain
 from app.exceptions import StreamDownloadError
 from app.models import VideoItem
 
-
 class _ProbeDownloader(BaseDownloader):
     def __init__(self):
         self.http_calls = []
@@ -18,13 +17,11 @@ class _ProbeDownloader(BaseDownloader):
     def _download_http_file(self, **kwargs):
         self.http_calls.append(kwargs)
 
-
 class _ExplodingStrategy:
     name = "explode"
 
     def execute(self, _downloader, _request):
         raise StreamDownloadError("boom")
-
 
 class _HttpProbeStrategy:
     name = "http"
@@ -35,7 +32,6 @@ class _HttpProbeStrategy:
     def execute(self, _downloader, _request):
         self.calls += 1
         return True
-
 
 class DownloadStrategyChainTests(unittest.TestCase):
     @patch("app.core.downloaders.m3u8.N_m3u8DL_RE_Downloader.is_available", return_value=True)
@@ -156,7 +152,6 @@ class DownloadStrategyChainTests(unittest.TestCase):
         downloader = _ProbeDownloader()
 
         chain.execute(downloader, request)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,32 +4,17 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Callable
 
 from app.core.download_manager_core import DownloadManagerCore
-from app.core.downloaders import (
-    BaseDownloader,
-    BilibiliDownloader,
-    DouyinDownloader,
-    KuaishouDownloader,
-    MissAVDownloader,
-    XiaohongshuDownloader,
-)
+from app.core.downloaders import BaseDownloader
+from app.core.downloaders.registry import downloader_registry
 from app.exceptions import AppError, DownloaderStoppedError
 from app.models import VideoItem
 from app.utils import sanitize_filename
 from app.utils.callback_signal import CallbackSignal
 from app.debug_logger import debug_logger
-
-#下载器注册表
-DOWNLOADER_REGISTRY: tuple[type[BaseDownloader], ...] = (
-    DouyinDownloader,
-    XiaohongshuDownloader,
-    KuaishouDownloader,
-    MissAVDownloader,
-    BilibiliDownloader,
-)
-
 
 class DownloadWorker(threading.Thread):
     """执行单个下载任务，并把进度、完成、失败事件回传给管理器。"""
@@ -136,7 +121,7 @@ class DownloadWorker(threading.Thread):
             downloader.download(
                 video_item=self.video,
                 save_path=filepath,
-                progress_callback=lambda p: self.sig_progress.emit(self.video.id, p),
+                progress_callback=self._emit_progress_if_changed(),
                 check_stop_func=lambda: not self.is_running
             )
             if self.is_running and os.path.exists(filepath):
@@ -197,7 +182,7 @@ class DownloadWorker(threading.Thread):
                 trace_id=self._trace_id(),
             )
             self.sig_error.emit(self.video.id, "用户已停止")
-        except (AppError, OSError, RuntimeError, ValueError) as e:
+        except Exception as e:
             completion_reason = "task_error"
             debug_logger.log_exception(
                 "DownloadWorker",
@@ -209,6 +194,9 @@ class DownloadWorker(threading.Thread):
             )
             self.sig_error.emit(self.video.id, str(e))
         finally:
+            from app.services.download_telemetry import get_download_telemetry_service
+
+            get_download_telemetry_service().clear(self.video.id)
             try:
                 if callable(self._completion_callback):
                     self._completion_callback(self, completion_reason)
@@ -216,11 +204,50 @@ class DownloadWorker(threading.Thread):
                 self.finished.emit()
 
     def _select_downloader(self) -> BaseDownloader:
-        """统一从注册表中选择平台下载器，避免在 run() 中继续堆 if/elif。"""
-        for downloader_cls in DOWNLOADER_REGISTRY:
-            if downloader_cls.can_handle(self.video):
-                return downloader_cls()
+        """通过桥梁 `downloader_registry` 选择平台下载器（不再靠硬编码元组）。"""
+        cls = downloader_registry.resolve(self.video)
+        if cls is not None:
+            return cls()
         raise ValueError(f"Unknown source: {self.video.source}")
+
+    def _emit_progress_if_changed(self):
+        """Return a progress callback that coalesces duplicate percentages."""
+        from app.services.download_telemetry import get_download_telemetry_service
+
+        telemetry = get_download_telemetry_service()
+        last_progress: int | None = None
+        last_speed_bps = 0
+        last_emit_at = 0.0
+
+        def emit(
+            progress: int,
+            *,
+            bytes_downloaded: int | None = None,
+            bytes_total: int | None = None,
+        ) -> None:
+            nonlocal last_progress, last_speed_bps, last_emit_at
+            try:
+                normalized = max(0, min(100, int(progress)))
+            except (TypeError, ValueError):
+                return
+            snapshot = telemetry.record(
+                self.video,
+                progress=normalized,
+                bytes_downloaded=bytes_downloaded,
+                bytes_total=bytes_total,
+            )
+            now = time.monotonic()
+            should_emit = normalized != last_progress
+            if not should_emit and snapshot.speed_bps != last_speed_bps:
+                should_emit = now - last_emit_at >= telemetry.MIN_SAMPLE_INTERVAL_SECONDS
+            if not should_emit:
+                return
+            last_progress = normalized
+            last_speed_bps = snapshot.speed_bps
+            last_emit_at = now
+            self.sig_progress.emit(self.video.id, normalized)
+
+        return emit
 
     def stop(self):
         """通知下载器在下一次检查时尽快停止当前任务。"""
@@ -366,4 +393,10 @@ class DownloadManager(DownloadManagerCore):
 
     def _on_worker_thread_finished(self, worker):
         """线程真正退出后的兼容清理钩子。"""
+        for signal_name in ("sig_start", "sig_progress", "sig_finished", "sig_error", "finished"):
+            signal = getattr(worker, signal_name, None)
+            disconnect = getattr(signal, "disconnect", None)
+            if callable(disconnect):
+                disconnect()
+        worker._completion_callback = None
         worker.deleteLater()

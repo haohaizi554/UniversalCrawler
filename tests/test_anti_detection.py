@@ -4,7 +4,6 @@ import unittest
 
 from app.core.anti_detection import build_browser_anti_detection
 
-
 class AntiDetectionTests(unittest.TestCase):
     def test_build_browser_anti_detection_prefers_runtime_config(self):
         context = build_browser_anti_detection(
@@ -50,7 +49,6 @@ class AntiDetectionTests(unittest.TestCase):
                 "X-Test": "1",
             },
         )
-
 
 if __name__ == "__main__":
     unittest.main()

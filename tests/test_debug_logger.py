@@ -5,11 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.debug_logger import debug_logger
-
+from app.debug_logger import debug_logger, normalize_trace_prefix
 
 class DebugLoggerTests(unittest.TestCase):
-    """封装 `DebugLoggerTests` 在 `tests/test_debug_logger.py` 中承担的核心逻辑。"""
+    
     def test_debug_logger_proxy_is_lazy_until_first_attribute_access(self):
         """验证 `test_debug_logger_proxy_is_lazy_until_first_attribute_access` 对应场景是否符合预期，供 `DebugLoggerTests` 使用。"""
         import app.debug_logger as debug_logger_module
@@ -180,6 +179,15 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertNotIn("user:pass@", content)
         self.assertIn("Cookie: [已脱敏]", content)
 
+    def test_trace_id_prefixes_are_platform_normalized(self):
+        self.assertEqual(normalize_trace_prefix("douyin-dy"), "dy")
+        self.assertEqual(normalize_trace_prefix("bili-BV1xx-123"), "bilibili_BV1xx_123")
+        self.assertEqual(normalize_trace_prefix("miss-m3u8"), "missav_m3u8")
+
+        trace_id = debug_logger.new_trace_id("xiaohongshu-task")
+
+        self.assertTrue(trace_id.startswith("xhs_task_"))
+        self.assertNotIn("-", trace_id)
 
 if __name__ == "__main__":
     unittest.main()

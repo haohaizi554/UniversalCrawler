@@ -3,7 +3,6 @@
 
 from ucrawl import UcrawlSDK, PipeSelection
 
-
 def main(controller, **kwargs):
     """合集下载示例。"""
     sdk = UcrawlSDK(save_dir=controller.current_save_dir, verbose=True)

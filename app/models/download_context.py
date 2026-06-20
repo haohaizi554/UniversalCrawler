@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-
 @dataclass(slots=True)
 class DownloadContext:
     """Normalized download context for strategy, worker and downloader flows."""

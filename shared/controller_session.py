@@ -1,28 +1,25 @@
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.models import VideoItem
-
 
 def _video_status_enum():
     from app.core.state import VideoStatus
 
     return VideoStatus
 
-
 def _video_status_label(status):
     from app.core.state import video_status_label
 
     return video_status_label(status)
 
-
 def _build_video_state_event_impl(vid: str, item: "VideoItem", *, requested_progress: int | None):
     from app.core.events import build_video_state_event
 
     return build_video_state_event(vid, item, requested_progress=requested_progress)
-
 
 class _DebugLoggerProxy:
     """Lazy proxy so shared mixins do not import app.debug_logger at module import time."""
@@ -32,9 +29,7 @@ class _DebugLoggerProxy:
 
         return getattr(_debug_logger, name)
 
-
 debug_logger = _DebugLoggerProxy()
-
 
 class ControllerSessionMixin:
     """Shared download/session behavior for desktop, web, and CLI hosts."""
@@ -86,14 +81,16 @@ class ControllerSessionMixin:
         status: str | None = None,
         progress: int | None = None,
     ) -> "VideoItem" | None:
-        item = self.videos.get(vid)
-        if not item:
-            return None
-        if status is not None:
-            item.status = _video_status_label(status)
-        if progress is not None:
-            item.progress = progress
-        self._publish_video_state(vid, item, requested_progress=progress)
+        with self._video_state_guard():
+            item = self._video_lookup(vid)
+            if not item:
+                return None
+            if status is not None:
+                item.status = _video_status_label(status)
+            if progress is not None:
+                item.progress = progress
+        if item is not None:
+            self._publish_video_state(vid, item, requested_progress=progress)
         return item
 
     def _update_video_status(self, vid: str, status: str, progress: int | None = None) -> None:
@@ -133,11 +130,23 @@ class ControllerSessionMixin:
         )
 
     def _on_download_error(self, vid: str, error: str) -> None:
+        with self._video_state_guard():
+            current_item = self._video_lookup(vid)
+            cancel_requested = bool(current_item and current_item.meta.get("user_cancel_requested"))
+        if cancel_requested:
+            with self._video_state_guard():
+                current_item.meta.pop("user_cancel_requested", None)
+                current_item.meta.pop("download_error", None)
+                current_progress = current_item.progress
+            item = self._apply_video_state(vid, status=_video_status_enum().PENDING, progress=current_progress)
+            self._emit_controller_log(f"download paused: {item.title if item else vid}")
+            return
         item = self._apply_video_state(vid, status=_video_status_enum().FAILED, progress=self.DOWNLOAD_ERROR_PROGRESS)
         if item:
-            if item.meta is None:
-                item.meta = {}
-            item.meta["download_error"] = error
+            with self._video_state_guard():
+                if item.meta is None:
+                    item.meta = {}
+                item.meta["download_error"] = error
         self._after_task_error(vid, item, error)
         if not item:
             return
@@ -186,3 +195,13 @@ class ControllerSessionMixin:
 
     def _emit_controller_log(self, message: str) -> None:
         raise NotImplementedError
+
+    def _video_lookup(self, video_id: str) -> "VideoItem" | None:
+        return self.videos.get(video_id)
+
+    def _video_state_guard(self):
+        lock = getattr(self, "_video_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._video_state_lock = lock
+        return lock

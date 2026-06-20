@@ -10,6 +10,7 @@ include requirements-web.txt
 include .env.docker.example
 
 recursive-include app/web/static *
+recursive-include UI/icon *
 recursive-include app/core/lib/douyin *.js *.json *.md
 recursive-include docker *.sh
 recursive-include packaging *.spec *.iss *.md

@@ -1,8 +1,12 @@
-"""Downloader registry with lazy builtin discovery."""
+"""Downloader registry backed by the plugin system.
+
+Bridge: populates itself from ``BasePlugin.get_downloader_class()`` so one
+``get_downloader_class()`` override per plugin eliminates all hardcoded
+import lists in download dispatch code.
+"""
 
 from __future__ import annotations
 
-from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,48 +14,48 @@ if TYPE_CHECKING:
     from .base import BaseDownloader
 
 
-BUILTIN_DOWNLOADER_MODULES = (
-    "app.core.downloaders.douyin",
-    "app.core.downloaders.xiaohongshu",
-    "app.core.downloaders.kuaishou",
-    "app.core.downloaders.missav",
-    "app.core.downloaders.bilibili",
-)
-
-
 class DownloaderRegistry:
-    """Registry that mirrors PluginRegistry semantics for downloaders."""
+    """Lazily-built index of plugin-provided downloader classes."""
 
     def __init__(self) -> None:
-        self._downloaders: dict[str, type["BaseDownloader"]] = {}
-        self._builtin_loaded = False
+        self._downloaders: dict[str, type[BaseDownloader]] = {}
+        self._loaded = False
 
-    def _ensure_builtin_loaded(self) -> None:
-        if self._builtin_loaded:
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
             return
-        for module_name in BUILTIN_DOWNLOADER_MODULES:
-            import_module(module_name)
-        self._builtin_loaded = True
+        from app.core.plugin_registry import registry
 
-    def register(self, downloader_cls: type["BaseDownloader"]) -> None:
-        source_id = getattr(downloader_cls, "source_id", None)
-        if not source_id:
+        for plugin in registry.get_all_plugins():
+            downloader_cls = plugin.get_downloader_class()
+            if downloader_cls is not None:
+                sid = getattr(downloader_cls, "source_id", None) or plugin.id
+                existing = self._downloaders.get(sid)
+                if existing and existing is not downloader_cls:
+                    raise ValueError(f"重复的下载器 source_id: {sid}")
+                self._downloaders[sid] = downloader_cls
+        self._loaded = True
+
+    def register(self, downloader_cls: type[BaseDownloader]) -> None:
+        sid = getattr(downloader_cls, "source_id", None)
+        if not sid:
             return
-        existing = self._downloaders.get(source_id)
+        existing = self._downloaders.get(sid)
         if existing and existing is not downloader_cls:
-            raise ValueError(f"重复的下载器 source_id: {source_id}")
-        self._downloaders[source_id] = downloader_cls
+            raise ValueError(f"重复的下载器 source_id: {sid}")
+        self._downloaders[sid] = downloader_cls
 
-    def get(self, source_id: str) -> type["BaseDownloader"] | None:
-        self._ensure_builtin_loaded()
+    def get(self, source_id: str) -> type[BaseDownloader] | None:
+        self._ensure_loaded()
         return self._downloaders.get(source_id)
 
-    def all(self) -> list[type["BaseDownloader"]]:
-        self._ensure_builtin_loaded()
+    def all(self) -> list[type[BaseDownloader]]:
+        self._ensure_loaded()
         return list(self._downloaders.values())
 
-    def resolve(self, video_item: "VideoItem") -> type["BaseDownloader"] | None:
-        self._ensure_builtin_loaded()
+    def resolve(self, video_item: VideoItem) -> type[BaseDownloader] | None:
+        """Find a downloader whose ``can_handle()`` matches *video_item*."""
+        self._ensure_loaded()
         for downloader_cls in self._downloaders.values():
             if downloader_cls.can_handle(video_item):
                 return downloader_cls
@@ -59,4 +63,3 @@ class DownloaderRegistry:
 
 
 downloader_registry = DownloaderRegistry()
-

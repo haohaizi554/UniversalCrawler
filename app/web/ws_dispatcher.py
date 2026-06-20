@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Awaitable, Callable
 
 from app.config import cfg
@@ -9,10 +10,8 @@ from app.web.controller_config_service import WebControllerConfigService
 from app.web.logging_utils import log_web_exception
 from app.web.session_runtime import WebSessionContext
 
-
 Handler = Callable[[dict[str, Any], WebSessionContext], Awaitable[None]]
 MAX_SCAN_LIMIT = 5000
-
 
 class WebSocketMessageDispatcher:
     """集中处理 WebSocket 协议消息，避免 server.py 承担业务分发职责。"""
@@ -31,6 +30,7 @@ class WebSocketMessageDispatcher:
             "delete_video": self._handle_delete_video,
             "rename_video": self._handle_rename_video,
             "download": self._handle_download,
+            "frontend_action": self._handle_frontend_action,
         }
 
     async def handle(self, msg: dict, context: WebSessionContext) -> None:
@@ -200,3 +200,27 @@ class WebSocketMessageDispatcher:
         if payload is None:
             return
         await context.workflow.direct_download(payload, log_error=True)
+
+    async def _handle_frontend_action(self, data: dict[str, Any], context: WebSessionContext) -> None:
+        action = data.get("action", "")
+        payload = data.get("payload", {}) or {}
+        if not isinstance(action, str) or not isinstance(payload, dict):
+            await self._emit_log(context, "❌ frontend_action 参数非法")
+            return
+        handler = getattr(context.controller, "async_handle_frontend_action", None)
+        if not callable(handler):
+            handler = getattr(context.controller, "handle_frontend_action", None)
+        if not callable(handler):
+            await self._emit_log(context, "❌ frontend action 不可用")
+            return
+        result = handler(action, payload)
+        if inspect.isawaitable(result):
+            result = await result
+        await context.send("frontend_action_result", result)
+        delta_getter = getattr(context.controller, "get_frontend_delta", None)
+        if callable(delta_getter):
+            await context.send("frontend_delta", delta_getter(0))
+            return
+        getter = getattr(context.controller, "get_frontend_state", None)
+        if callable(getter):
+            await context.send("frontend_state", getter())

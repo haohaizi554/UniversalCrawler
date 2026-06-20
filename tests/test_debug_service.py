@@ -7,11 +7,10 @@ from unittest.mock import Mock, patch
 from app.exceptions import DebugActionError
 from app.services.debug_service import DebugArtifactsService
 
-
 class DebugArtifactsServiceTests(unittest.TestCase):
-    """封装 `DebugArtifactsServiceTests` 在 `tests/test_debug_service.py` 中承担的核心逻辑。"""
+    
     def setUp(self):
-        """执行 `setUp` 对应的业务逻辑，供 `DebugArtifactsServiceTests` 使用。"""
+        
         self.service = DebugArtifactsService()
 
     def test_open_path_raises_when_file_is_missing(self):
@@ -49,7 +48,6 @@ class DebugArtifactsServiceTests(unittest.TestCase):
         self.service.copy_trace_id(clipboard, "trace-123")
 
         clipboard.setText.assert_called_once_with("trace-123")
-
 
 if __name__ == "__main__":
     unittest.main()

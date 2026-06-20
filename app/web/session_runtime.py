@@ -4,25 +4,24 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
 import time
+import asyncio
+import logging
 from typing import Any, Callable
 from urllib.parse import urlsplit
-
 
 SendFactory = Callable[[str], Callable[[str, Any], Any]]
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"}
 
-
 def normalize_directory(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
-
 
 def is_within_root(path: str, root: str) -> bool:
     try:
         return os.path.commonpath([path, root]) == root
     except ValueError:
         return False
-
 
 def normalize_origin(origin: str) -> str:
     parts = urlsplit(origin)
@@ -34,7 +33,6 @@ def normalize_origin(origin: str) -> str:
     if port is None or port == default_port:
         return f"{parts.scheme}://{host}"
     return f"{parts.scheme}://{host}:{port}"
-
 
 def configured_allowed_origins() -> set[str]:
     raw = os.getenv("UCRAWL_ALLOWED_ORIGINS", "")
@@ -49,10 +47,8 @@ def configured_allowed_origins() -> set[str]:
             continue
     return origins
 
-
 def is_local_host(host: str | None) -> bool:
     return (host or "").strip().lower() in LOCAL_HOSTS
-
 
 def is_allowed_origin(origin: str | None, *, expected_origin: str | None = None) -> bool:
     if not origin:
@@ -64,7 +60,6 @@ def is_allowed_origin(origin: str | None, *, expected_origin: str | None = None)
     if expected_origin and normalized_origin == normalize_origin(expected_origin):
         return True
     return normalized_origin in configured_allowed_origins()
-
 
 class WebSessionContext:
     def __init__(
@@ -84,8 +79,27 @@ class WebSessionContext:
         self.session_token = secrets.token_urlsafe(24)
         self.csrf_token = secrets.token_urlsafe(24)
         self.approved_roots: set[str] = set()
+        self.background_tasks: set[asyncio.Task] = set()
+        self._background_tasks_lock = threading.RLock()
         self.last_access_at = time.monotonic()
         self.approve_directory(self.controller.current_save_dir)
+
+    def track_background_task(self, task: asyncio.Task) -> asyncio.Task:
+        with self._background_tasks_lock:
+            self.background_tasks.add(task)
+
+        def _discard(done_task: asyncio.Task) -> None:
+            with self._background_tasks_lock:
+                self.background_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.getLogger(__name__).exception("Web session background task failed")
+
+        task.add_done_callback(_discard)
+        return task
 
     def approve_directory(self, directory: str) -> str:
         normalized = normalize_directory(directory)
@@ -101,7 +115,6 @@ class WebSessionContext:
         if not self.is_directory_allowed(normalized):
             raise PermissionError("目录未被当前会话授权访问")
         return normalized
-
 
 class WebSessionRegistry:
     def __init__(
@@ -119,6 +132,7 @@ class WebSessionRegistry:
         self._controller_factory = controller_factory
         self._workflow_factory = workflow_factory
         self._contexts: dict[str, WebSessionContext] = {}
+        self._lock = threading.RLock()
         self._max_contexts = max(1, int(max_contexts))
         self._idle_ttl_seconds = max(float(idle_ttl_seconds), 0.0)
         self._pinned_session_ids = set(pinned_session_ids or ())
@@ -126,16 +140,17 @@ class WebSessionRegistry:
 
     def get_or_create(self, session_id: str) -> WebSessionContext:
         self.prune()
-        context = self._contexts.get(session_id)
-        if context is None:
-            context = WebSessionContext(
-                session_id,
-                send_factory=self._send_factory,
-                controller_factory=self._controller_factory,
-                workflow_factory=self._workflow_factory,
-            )
-            self._contexts[session_id] = context
-        context.last_access_at = self._monotonic()
+        with self._lock:
+            context = self._contexts.get(session_id)
+            if context is None:
+                context = WebSessionContext(
+                    session_id,
+                    send_factory=self._send_factory,
+                    controller_factory=self._controller_factory,
+                    workflow_factory=self._workflow_factory,
+                )
+                self._contexts[session_id] = context
+            context.last_access_at = self._monotonic()
         self._evict_overflow()
         return context
 
@@ -143,38 +158,62 @@ class WebSessionRegistry:
         if self._idle_ttl_seconds <= 0:
             return
         now = self._monotonic()
-        expired_session_ids = [
-            session_id
-            for session_id, context in self._contexts.items()
-            if session_id not in self._pinned_session_ids
-            and now - getattr(context, "last_access_at", now) > self._idle_ttl_seconds
-        ]
+        with self._lock:
+            expired_session_ids = [
+                session_id
+                for session_id, context in self._contexts.items()
+                if session_id not in self._pinned_session_ids
+                and now - getattr(context, "last_access_at", now) > self._idle_ttl_seconds
+            ]
         for session_id in expired_session_ids:
             self._dispose_context(session_id)
 
     def _evict_overflow(self) -> None:
-        overflow = len(self._contexts) - self._max_contexts
+        with self._lock:
+            overflow = len(self._contexts) - self._max_contexts
+            if overflow <= 0:
+                return
+            eviction_candidates = sorted(
+                (
+                    (getattr(context, "last_access_at", 0.0), session_id)
+                    for session_id, context in self._contexts.items()
+                    if session_id not in self._pinned_session_ids
+                ),
+                key=lambda item: item[0],
+            )
         if overflow <= 0:
             return
-        eviction_candidates = sorted(
-            (
-                (getattr(context, "last_access_at", 0.0), session_id)
-                for session_id, context in self._contexts.items()
-                if session_id not in self._pinned_session_ids
-            ),
-            key=lambda item: item[0],
-        )
         for _, session_id in eviction_candidates[:overflow]:
             self._dispose_context(session_id)
 
     def _dispose_context(self, session_id: str) -> None:
-        context = self._contexts.pop(session_id, None)
+        with self._lock:
+            context = self._contexts.pop(session_id, None)
         if context is None:
             return
+        workflow = getattr(context, "workflow", None)
+        cancel_broadcasts = getattr(workflow, "cancel_pending_broadcasts", None)
+        if callable(cancel_broadcasts):
+            cancel_broadcasts()
+        tasks: list = []
+        with context._background_tasks_lock:
+            tasks = list(context.background_tasks)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
         controller = getattr(context, "controller", None)
         shutdown = getattr(controller, "shutdown", None)
         if callable(shutdown):
-            try:
-                shutdown()
-            except Exception:
-                pass
+            threading.Thread(
+                target=self._safe_shutdown_controller,
+                args=(shutdown,),
+                daemon=True,
+                name=f"web-session-shutdown-{session_id}",
+            ).start()
+
+    @staticmethod
+    def _safe_shutdown_controller(shutdown: Callable[[], Any]) -> None:
+        try:
+            shutdown()
+        except Exception:
+            pass

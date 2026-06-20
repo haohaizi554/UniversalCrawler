@@ -26,17 +26,14 @@ else:
         WEBUI_USER_MODEL_ID,
     )
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = PROJECT_ROOT / "dist" / "UniversalCrawlerPro"
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
 
-
 def get_setup_exe_path() -> Path:
     """返回当前版本对应的安装包输出路径。"""
     return OUTPUT_DIR / f"{INSTALLER_BASENAME}.exe"
-
 
 def _resolve_iscc_from_registry() -> str | None:
     """提供 `_resolve_iscc_from_registry` 对应的内部辅助逻辑。"""
@@ -84,7 +81,6 @@ def _resolve_iscc_from_registry() -> str | None:
             continue
     return None
 
-
 def _query_registry_value(winreg_module, key, value_name: str) -> str | None:
     """提供 `_query_registry_value` 对应的内部辅助逻辑。"""
     try:
@@ -92,7 +88,6 @@ def _query_registry_value(winreg_module, key, value_name: str) -> str | None:
     except OSError:
         return None
     return value if isinstance(value, str) and value.strip() else None
-
 
 def resolve_iscc() -> str | None:
     """解析并确定 `iscc` 对应的最终结果。"""
@@ -107,9 +102,8 @@ def resolve_iscc() -> str | None:
         return registry_match
     return shutil.which("ISCC.exe") or shutil.which("iscc")
 
-
 def ensure_prerequisites() -> str:
-    """执行 `ensure_prerequisites` 对应的业务逻辑。"""
+    
     if not DIST_DIR.exists():
         raise SystemExit(
             "未找到绿色版输出目录，请先运行 `python packaging/build_portable.py`。\n"
@@ -124,7 +118,6 @@ def ensure_prerequisites() -> str:
             "请先安装 Inno Setup 6，然后重新运行此脚本。"
         )
     return iscc
-
 
 def main() -> None:
     """作为脚本入口组织整体执行流程。"""
@@ -150,7 +143,6 @@ def main() -> None:
     if setup_exe.stat().st_mtime < build_started_at:
         raise SystemExit(f"安装包未被重新生成，输出文件时间异常: {setup_exe}")
     print(f"安装包构建完成: {setup_exe}")
-
 
 if __name__ == "__main__":
     main()

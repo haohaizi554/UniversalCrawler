@@ -14,7 +14,6 @@ from app.utils.runtime_paths import user_data_root
 _MEDIA_RELEASE_REQUEST_FILE = "media_release_request.json"
 _MAX_REQUEST_AGE_SEC = 10.0
 
-
 def normalize_media_path(path: str | None) -> str | None:
     if not path or not isinstance(path, str):
         return None
@@ -26,7 +25,6 @@ def normalize_media_path(path: str | None) -> str | None:
     except (OSError, TypeError, ValueError):
         return os.path.normcase(raw)
 
-
 @dataclass(slots=True, frozen=True)
 class MediaReleaseRequest:
     request_id: str
@@ -35,10 +33,8 @@ class MediaReleaseRequest:
     source: str
     reason: str
 
-
 def _request_file() -> Path:
     return user_data_root() / _MEDIA_RELEASE_REQUEST_FILE
-
 
 def publish_media_release_request(
     *,
@@ -62,10 +58,16 @@ def publish_media_release_request(
         "source": request.source,
         "reason": request.reason,
     }
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    try:
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
     return request
-
 
 def read_media_release_request() -> MediaReleaseRequest | None:
     path = _request_file()
@@ -96,7 +98,6 @@ def read_media_release_request() -> MediaReleaseRequest | None:
         source=source,
         reason=reason if isinstance(reason, str) and reason else "delete",
     )
-
 
 def poll_media_release_request(last_request_id: str | None) -> tuple[str | None, MediaReleaseRequest | None]:
     request = read_media_release_request()

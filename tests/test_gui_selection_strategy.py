@@ -4,14 +4,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-
 def _pyqt6_available():
     try:
         import PyQt6  # noqa: F401
         return True
     except ImportError:
         return False
-
 
 class GUISelectionStrategyTests(unittest.TestCase):
     def test_gui_selection_falls_back_to_tty_when_pyqt6_is_missing(self):
@@ -70,7 +68,6 @@ class GUISelectionStrategyTests(unittest.TestCase):
         self.assertEqual(observed.get("items"), ["a", "b"])
         self.assertEqual(observed.get("prompt"), "挑一个")
         self.assertEqual(result_holder.get("result"), [0])
-
 
 if __name__ == "__main__":
     unittest.main()

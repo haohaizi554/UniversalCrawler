@@ -24,7 +24,6 @@ except ImportError:
     print("警告: 未安装BeautifulReport，将使用默认文本报告")
     print("安装命令: pip install BeautifulReport")
 
-
 # 黑盒测试模块（BB-001 ~ BB-010）
 BLACKBOX_TEST_MODULES = [
     "tests.test_utils_filenames",           # BB-001, BB-002
@@ -44,7 +43,6 @@ WHITEBOX_TEST_MODULES = [
     "tests.test_debug_logger",              # WB-008
 ]
 
-
 def load_tests_from_modules(module_names: list) -> unittest.TestSuite:
     """从模块名称列表加载测试到TestSuite。"""
     loader = unittest.TestLoader()
@@ -60,7 +58,6 @@ def load_tests_from_modules(module_names: list) -> unittest.TestSuite:
             print(f"✗ 加载测试模块失败 {module_name}: {e}")
     
     return suite
-
 
 def run_tests_with_suite(test_modules: list, report_dir: str = "test_reports") -> int:
     suite = load_tests_from_modules(test_modules)
@@ -94,7 +91,6 @@ def run_tests_with_suite(test_modules: list, report_dir: str = "test_reports") -
         runner = unittest.TextTestRunner(verbosity=2)
         result = runner.run(suite)
         return 0 if result.wasSuccessful() else 1
-
 
 if __name__ == "__main__":
     import argparse

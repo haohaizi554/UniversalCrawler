@@ -3,17 +3,14 @@ from __future__ import annotations
 import os
 from typing import Iterable
 
-
 def normalize_path(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
-
 
 def is_within_root(path: str, root: str) -> bool:
     try:
         return os.path.commonpath([path, root]) == root
     except ValueError:
         return False
-
 
 class PathPolicy:
     """统一文件/目录的最终路径授权策略。"""

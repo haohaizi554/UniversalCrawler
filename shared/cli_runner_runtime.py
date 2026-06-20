@@ -33,12 +33,10 @@ from shared.spider_session_runtime import SpiderSession, SpiderSessionBindings
 # 保持 CLI 输出实时刷新，便于下载和选择流程即时反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
-
 def _video_status_enum():
     from app.core.state import VideoStatus
 
     return VideoStatus
-
 
 class CLIRunner(ControllerSessionMixin):
     """CLI 核心执行器：完全对齐 GUI ApplicationController 的行为。"""
@@ -616,7 +614,6 @@ class CLIRunner(ControllerSessionMixin):
             self._spider_session.stop_session(self._spider)
         if self._dl_manager:
             self._dl_manager.stop_all()
-
 
 def run_search(
     source: str,

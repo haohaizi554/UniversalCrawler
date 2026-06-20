@@ -7,7 +7,6 @@ from typing import Any
 
 from entry.qt_entry_utils import resolve_icon_path
 
-
 def create_tray_icon(qt_app: Any, url: str, shutdown_event: Any):
     """创建系统托盘图标。"""
     from PyQt6.QtGui import QAction, QIcon

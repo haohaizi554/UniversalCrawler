@@ -11,7 +11,6 @@ from app.web.session_runtime import WebSessionContext
 from app.web.ws_dispatcher import WebSocketMessageDispatcher
 from app.web.ws_transport import ConnectionManager
 
-
 class WebSocketRuntime:
     """封装 WebSocket 消息接收循环与断连清理。"""
 
@@ -63,4 +62,6 @@ class WebSocketRuntime:
                 exc,
                 context={"session_id": getattr(context, "session_id", "")},
             )
+            self._connection_manager.disconnect(ws)
+        finally:
             self._connection_manager.disconnect(ws)

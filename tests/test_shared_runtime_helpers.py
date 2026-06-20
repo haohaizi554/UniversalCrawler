@@ -7,7 +7,6 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-
 class RuntimeOptionsTests(unittest.TestCase):
     def test_merge_convenience_params_sets_folder_name_and_use_subdir(self):
         from shared.runtime_options import merge_convenience_params
@@ -115,7 +114,6 @@ class RuntimeOptionsTests(unittest.TestCase):
 
         self.assertEqual(save_dir, "downloads-fallback")
 
-
 class RuntimeAdaptersTests(unittest.TestCase):
     def test_run_cli_search_builds_runner_and_returns_result(self):
         from shared.runtime_adapters import run_cli_search
@@ -157,7 +155,6 @@ class RuntimeAdaptersTests(unittest.TestCase):
 
         self.assertIs(built, sdk)
         sdk_cls.assert_called_once_with(save_dir="downloads")
-
 
 class SharedSelectionRuntimeTests(unittest.TestCase):
     def test_parse_preloaded_choices_rejects_non_nested_sequence(self):
@@ -223,7 +220,6 @@ class SharedSelectionRuntimeTests(unittest.TestCase):
         strategy = SimpleNamespace(strategy_name="custom", select=lambda items, prompt="": [0])
 
         self.assertIs(SelectionStrategyFactory.from_value(strategy), strategy)
-
 
 if __name__ == "__main__":
     unittest.main()

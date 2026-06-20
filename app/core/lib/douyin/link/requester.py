@@ -30,11 +30,11 @@ except ImportError:
             return func
 
     def capture_error_request(func):
-        """执行 `capture_error_request` 对应的业务逻辑。"""
+        
         return func
 
     async def wait():
-        """执行 `wait` 对应的业务逻辑。"""
+        
         pass
 
 if TYPE_CHECKING:
@@ -44,9 +44,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Requester"]
 
-
 class Requester:
-    """封装 `Requester` 在 `app/core/lib/douyin/link/requester.py` 中承担的核心逻辑。"""
+    
     URL = compile(r"(https?://[^\s\"<>\\^`{|}，。；！？、【】《》]+)")
 
     def __init__(
@@ -61,6 +60,11 @@ class Requester:
         self.log = params.logger
         self.max_retry = params.max_retry
         self.timeout = params.timeout
+
+    async def aclose(self) -> None:
+        close = getattr(self.client, "aclose", None)
+        if callable(close):
+            await close()
 
     async def run(
             self,
@@ -91,7 +95,7 @@ class Requester:
             content="url",
             proxy: str = None,
     ):
-        """执行 `request_url` 对应的业务逻辑，供 `Requester` 使用。"""
+        
         self.log.info(f"URL: {url}", False)
         # 简单判断是否需要处理（抖音短链通常是 v.douyin.com）
         if "douyin.com" not in url and "tiktok.com" not in url:

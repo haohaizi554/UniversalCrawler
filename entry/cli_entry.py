@@ -19,7 +19,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口：透传到 cli.main。
 
@@ -31,7 +30,6 @@ def main(argv: list[str] | None = None) -> int:
     """
     from cli.main import main as _cli_main
     return _cli_main(argv)
-
 
 if __name__ == "__main__":
     sys.exit(main())

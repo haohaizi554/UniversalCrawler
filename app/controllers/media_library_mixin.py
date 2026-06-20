@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 
 from app.config import cfg
@@ -8,13 +9,11 @@ from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import ScanResult
 
-
 @dataclass
 class MediaDeleteContext:
     video_id: str
     video: VideoItem
     cancel_result: str | None
-
 
 @dataclass
 class MediaDeleteOutcome:
@@ -25,7 +24,6 @@ class MediaDeleteOutcome:
     deleted: bool = False
     error: str | None = None
 
-
 @dataclass
 class MediaRenameOutcome:
     status: str
@@ -34,7 +32,6 @@ class MediaRenameOutcome:
     old_path: str | None = None
     new_path: str | None = None
     error: str | None = None
-
 
 class MediaLibraryMixin:
     """Shared media-library orchestration for GUI/Web controllers."""
@@ -69,19 +66,20 @@ class MediaLibraryMixin:
         items: list[VideoItem] = []
         for item in result.items:
             self._prepare_local_item(item)
-            self.videos[item.id] = item
             items.append(item)
+            if getattr(self, "app_state", None) is None:
+                self._store_video_item(item)
         return items
 
     def _begin_delete_video(self, video_id: str) -> MediaDeleteContext | None:
-        video = self.videos.get(video_id)
+        video = self._video_lookup(video_id)
         if not video:
             return None
         cancel_result = self.dl_manager.cancel_task(video_id)
         return MediaDeleteContext(video_id=video_id, video=video, cancel_result=cancel_result)
 
     def _complete_delete_video(self, context: MediaDeleteContext, *, deleted: bool) -> MediaDeleteOutcome:
-        self.videos.pop(context.video_id, None)
+        self._remove_video_item(context.video_id)
         return MediaDeleteOutcome(
             status="ok",
             video_id=context.video_id,
@@ -123,7 +121,7 @@ class MediaLibraryMixin:
         return messages
 
     def _rename_video_sync(self, video_id: str, new_title: str, save_dir: str) -> MediaRenameOutcome:
-        video = self.videos.get(video_id)
+        video = self._video_lookup(video_id)
         if not video:
             return MediaRenameOutcome(status="missing", video_id=video_id, error="视频不存在")
         normalized_title = new_title.strip()
@@ -155,3 +153,22 @@ class MediaLibraryMixin:
         if outcome.status != "ok" or not outcome.old_path or not outcome.new_path:
             return None
         return f"📝 重命名: {os.path.basename(outcome.old_path)} -> {os.path.basename(outcome.new_path)}"
+
+    def _video_state_guard(self):
+        lock = getattr(self, "_videos_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._videos_lock = lock
+        return lock
+
+    def _video_lookup(self, video_id: str) -> VideoItem | None:
+        with self._video_state_guard():
+            return self.videos.get(video_id)
+
+    def _store_video_item(self, item: VideoItem) -> None:
+        with self._video_state_guard():
+            self.videos[item.id] = item
+
+    def _remove_video_item(self, video_id: str) -> VideoItem | None:
+        with self._video_state_guard():
+            return self.videos.pop(video_id, None)

@@ -28,9 +28,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Search(API):
-    """封装 `Search` 在 `app/core/lib/douyin/interface/search.py` 中承担的核心逻辑。"""
+    
     search_params = (
         SimpleNamespace(
             note=_("综合搜索"),
@@ -228,7 +227,7 @@ class Search(API):
     def generate_filter_selected(
             self,
     ) -> str | None:
-        """执行 `generate_filter_selected` 对应的业务逻辑，供 `Search` 使用。"""
+        
         if any(
                 (
                         self.sort_type,
@@ -253,7 +252,7 @@ class Search(API):
     def generate_search_filter_value(
             self,
     ) -> str | None:
-        """执行 `generate_search_filter_value` 对应的业务逻辑，供 `Search` 使用。"""
+        
         if any(
                 (
                         self.douyin_user_fans,
@@ -390,7 +389,7 @@ class Search(API):
             *args,
             **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `Search` 使用。"""
+        
         try:
             if not isinstance(d := data_dict[data_key], list):
                 self.log.warning(error_text)
@@ -427,12 +426,11 @@ class Search(API):
             data: list[dict],
             key: str,
     ) -> None:
-        """执行 `append_response_video` 对应的业务逻辑，供 `Search` 使用。"""
+        
         self.append_response([i[key] for i in data])
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from app.debug_logger import debug_logger
+from app.core.state import VideoStatus
 from app.models import VideoItem
-
 
 class ControllerSessionMixin:
     """Shared controller session behavior for GUI and Web adapters."""
@@ -56,13 +57,14 @@ class ControllerSessionMixin:
         status: str | None = None,
         progress: int | None = None,
     ) -> VideoItem | None:
-        item = self.videos.get(vid)
-        if not item:
-            return None
-        if status is not None:
-            item.status = status
-        if progress is not None:
-            item.progress = progress
+        with self._video_state_guard():
+            item = self._video_lookup(vid)
+            if not item:
+                return None
+            if status is not None:
+                item.status = status
+            if progress is not None:
+                item.progress = progress
         self._publish_video_state(vid, item, requested_progress=progress)
         return item
 
@@ -103,11 +105,23 @@ class ControllerSessionMixin:
         )
 
     def _on_download_error(self, vid: str, error: str) -> None:
+        with self._video_state_guard():
+            current_item = self._video_lookup(vid)
+            cancel_requested = bool(current_item and current_item.meta.get("user_cancel_requested"))
+        if cancel_requested:
+            with self._video_state_guard():
+                current_item.meta.pop("user_cancel_requested", None)
+                current_item.meta.pop("download_error", None)
+                current_progress = current_item.progress
+            item = self._apply_video_state(vid, status=VideoStatus.PENDING.label, progress=current_progress)
+            self._emit_controller_log(f"download paused: {item.title if item else vid}")
+            return
         item = self._apply_video_state(vid, status="❌ 失败", progress=self.DOWNLOAD_ERROR_PROGRESS)
         if item:
-            if item.meta is None:
-                item.meta = {}
-            item.meta["download_error"] = error
+            with self._video_state_guard():
+                if item.meta is None:
+                    item.meta = {}
+                item.meta["download_error"] = error
         self._after_task_error(vid, item, error)
         if not item:
             return
@@ -146,3 +160,13 @@ class ControllerSessionMixin:
 
     def _emit_controller_log(self, message: str) -> None:
         raise NotImplementedError
+
+    def _video_lookup(self, video_id: str) -> VideoItem | None:
+        return self.videos.get(video_id)
+
+    def _video_state_guard(self):
+        lock = getattr(self, "_video_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._video_state_lock = lock
+        return lock

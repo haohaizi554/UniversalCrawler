@@ -13,7 +13,6 @@ from app.exceptions import SpiderParseError
 from .helpers import build_search_id, extract_note_detail_from_html
 from .sign import sign_with_xhshow
 
-
 class XiaohongshuClient:
     """Signed XHS web-api client."""
 
@@ -249,3 +248,9 @@ class XiaohongshuClient:
     def check_cookie_ready(self) -> bool:
         """Guest and login flows both need at least the a1 cookie for signing."""
         return "a1=" in self.cookie_str
+
+    def close(self) -> None:
+        try:
+            self.session.close()
+        except Exception:
+            pass

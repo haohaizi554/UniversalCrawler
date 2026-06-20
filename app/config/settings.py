@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time as time_module
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -20,23 +21,22 @@ from app.config.constants import (
 from app.exceptions import ConfigReadError, ConfigValidationError, ConfigWriteError
 from app.utils.runtime_paths import is_temporary_path, resolve_user_file
 
-
 @dataclass
 class CommonSettings:
     """封装 `CommonSettings` 对应的配置数据与访问逻辑。"""
     save_directory: str = DEFAULT_DOWNLOAD_DIR
     last_source: str = "kuaishou"
-    theme: str = "dark"
-    dark_theme: bool = True
+    theme: str = "light"
+    dark_theme: bool = False
+    theme_schema_version: int = 2
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `CommonSettings` 使用。"""
+        
         if self.theme not in SUPPORTED_THEMES:
             self.theme = "dark" if self.dark_theme else "light"
-        self.dark_theme = self.theme != "light" if isinstance(self.dark_theme, bool) else True
+        self.dark_theme = self.theme != "light" if isinstance(self.dark_theme, bool) else False
         if is_temporary_path(self.save_directory):
             self.save_directory = DEFAULT_DOWNLOAD_DIR
-
 
 @dataclass
 class MissAVSettings:
@@ -49,10 +49,9 @@ class MissAVSettings:
     individual_only: bool = False
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `MissAVSettings` 使用。"""
+        
         if self.priority not in {"中文字幕优先", "无码流出优先"}:
             self.priority = "中文字幕优先"
-
 
 @dataclass
 class BilibiliSettings:
@@ -65,13 +64,12 @@ class BilibiliSettings:
     api_workers: int = 8
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `BilibiliSettings` 使用。"""
+        
         self.auth_file = str(resolve_user_file(self.auth_file))
         self.max_pages = max(1, min(self.max_pages, 500))
         self.max_items = max(1, min(self.max_items, 9999))
         self.timeout = max(1, min(self.timeout, 300))
         self.api_workers = max(1, min(self.api_workers, 16))
-
 
 @dataclass
 class DouyinSettings:
@@ -82,11 +80,10 @@ class DouyinSettings:
     timeout: int = 10
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `DouyinSettings` 使用。"""
+        
         self.search_max_pages = max(1, min(self.search_max_pages, 100))
         self.max_items = max(1, min(self.max_items, 9999))
         self.timeout = max(1, min(self.timeout, 300))
-
 
 @dataclass
 class XiaohongshuSettings:
@@ -102,7 +99,7 @@ class XiaohongshuSettings:
     note_type: int = 0
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `XiaohongshuSettings` 使用。"""
+        
         self.max_items = max(1, min(self.max_items, 9999))
         self.search_max_pages = max(1, min(self.search_max_pages, 100))
         self.timeout = max(1, min(self.timeout, 300))
@@ -116,7 +113,6 @@ class XiaohongshuSettings:
             note_type = 0
         self.note_type = note_type if note_type in {0, 1, 2} else 0
 
-
 @dataclass
 class KuaishouSettings:
     """封装 `KuaishouSettings` 对应的配置数据与访问逻辑。"""
@@ -125,10 +121,9 @@ class KuaishouSettings:
     timeout: int = 10
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `KuaishouSettings` 使用。"""
+        
         self.max_items = max(1, min(self.max_items, 9999))
         self.timeout = max(1, min(self.timeout, 300))
-
 
 @dataclass
 class AuthSettings:
@@ -139,12 +134,11 @@ class AuthSettings:
     xiaohongshu_cookie_file: str = "xhs_auth.json"
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `AuthSettings` 使用。"""
+        
         self.bilibili_cookie_file = str(resolve_user_file(self.bilibili_cookie_file))
         self.kuaishou_cookie_file = str(resolve_user_file(self.kuaishou_cookie_file))
         self.douyin_cookie_file = str(resolve_user_file(self.douyin_cookie_file))
         self.xiaohongshu_cookie_file = str(resolve_user_file(self.xiaohongshu_cookie_file))
-
 
 @dataclass
 class DownloadSettings:
@@ -156,13 +150,12 @@ class DownloadSettings:
     chunk_size: int = 65536
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `DownloadSettings` 使用。"""
+        
         self.max_concurrent = max(1, min(self.max_concurrent, 8))
         self.local_scan_limit = max(100, min(self.local_scan_limit, 5000))
         self.max_retries = max(1, min(self.max_retries, 10))
         self.request_timeout = max(10, min(self.request_timeout, 300))
         self.chunk_size = max(8192, min(self.chunk_size, 1024 * 1024))
-
 
 @dataclass
 class UISettings:
@@ -173,7 +166,6 @@ class UISettings:
     main_splitter_state: str = ""
     right_splitter_state: str = ""
     is_fullscreen_mode: bool = False
-
 
 @dataclass
 class AppSettings:
@@ -189,7 +181,7 @@ class AppSettings:
     ui: UISettings = field(default_factory=UISettings)
 
     def normalize(self) -> None:
-        """执行 `normalize` 对应的业务逻辑，供 `AppSettings` 使用。"""
+        
         self.common.normalize()
         self.missav.normalize()
         self.bilibili.normalize()
@@ -200,7 +192,7 @@ class AppSettings:
         self.download.normalize()
 
     def to_dict(self) -> dict[str, Any]:
-        """执行 `to_dict` 对应的业务逻辑，供 `AppSettings` 使用。"""
+        
         return asdict(self)
 
 class ConfigManager:
@@ -219,6 +211,7 @@ class ConfigManager:
 
     def __init__(self, filename: str = DEFAULT_CONFIG_FILE):
         """初始化当前实例并准备运行所需的状态，供 `ConfigManager` 使用。"""
+        self._lock = threading.RLock()
         self.filename = str(resolve_user_file(filename))
         # 确保用户数据目录存在（项目目录下的 user_data/）
         Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +221,10 @@ class ConfigManager:
         self.settings.normalize()
 
     def _load_from_disk(self) -> None:
+        with self._lock:
+            self._load_from_disk_unlocked()
+
+    def _load_from_disk_unlocked(self) -> None:
         """提供 `_load_from_disk` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
         try:
             with open(self.filename, "r", encoding="utf-8") as fp:
@@ -257,6 +254,8 @@ class ConfigManager:
                 continue
             if not isinstance(raw_section, dict):
                 raise ConfigValidationError(f"{section_name} 必须是对象")
+            if section_name == "common":
+                raw_section = self._migrate_common_section(raw_section)
 
             current = getattr(self.settings, section_name)
             defaults = asdict(section_model())
@@ -266,6 +265,16 @@ class ConfigManager:
                 normalized[key] = self._coerce_value(key, value, default_value)
             setattr(self.settings, section_name, section_model(**normalized))
             self._normalize_section(section_name)
+
+    @staticmethod
+    def _migrate_common_section(raw_section: dict[str, Any]) -> dict[str, Any]:
+        migrated = dict(raw_section)
+        if "theme_schema_version" not in migrated:
+            if migrated.get("theme") == "dark" and migrated.get("dark_theme") is True:
+                migrated["theme"] = "light"
+                migrated["dark_theme"] = False
+            migrated["theme_schema_version"] = 2
+        return migrated
 
     def _coerce_value(self, key: str, value: Any, default_value: Any) -> Any:
         """提供 `_coerce_value` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
@@ -316,7 +325,11 @@ class ConfigManager:
             normalize()
 
     def save(self) -> None:
-        """执行 `save` 对应的业务逻辑，供 `ConfigManager` 使用。"""
+        with self._lock:
+            self._save_unlocked()
+
+    def _save_unlocked(self) -> None:
+        
         import logging
         logger = logging.getLogger(__name__)
         try:
@@ -336,19 +349,25 @@ class ConfigManager:
 
     @property
     def data(self) -> dict[str, Any]:
-        """执行 `data` 对应的业务逻辑，供 `ConfigManager` 使用。"""
-        return self.settings.to_dict()
+        
+        with self._lock:
+            return self.settings.to_dict()
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
-        """执行 `get` 对应的业务逻辑，供 `ConfigManager` 使用。"""
-        section_obj = getattr(self.settings, section, None)
-        if section_obj is None:
-            return default
-        value = getattr(section_obj, key, default)
-        return default if value is None else value
+        
+        with self._lock:
+            section_obj = getattr(self.settings, section, None)
+            if section_obj is None:
+                return default
+            value = getattr(section_obj, key, default)
+            return default if value is None else value
 
     def set(self, section: str, key: str, value: Any) -> None:
-        """执行 `set` 对应的业务逻辑，供 `ConfigManager` 使用。"""
+        with self._lock:
+            self._set_unlocked(section, key, value)
+
+    def _set_unlocked(self, section: str, key: str, value: Any) -> None:
+        
         section_obj = getattr(self.settings, section, None)
         if section_obj is None:
             raise ConfigValidationError(f"未知配置分组: {section}")
@@ -369,12 +388,13 @@ class ConfigManager:
         is_fs: bool,
     ) -> None:
         """保存 `ui_state` 对应的数据、配置或文件，供 `ConfigManager` 使用。"""
-        self.settings.ui.geometry = self._encode_ui_state(geometry)
-        self.settings.ui.window_state = self._encode_ui_state(state)
-        self.settings.ui.main_splitter_state = self._encode_ui_state(main_splitter)
-        self.settings.ui.right_splitter_state = self._encode_ui_state(right_splitter)
-        self.settings.ui.is_fullscreen_mode = is_fs
-        self.save()
+        with self._lock:
+            self.settings.ui.geometry = self._encode_ui_state(geometry)
+            self.settings.ui.window_state = self._encode_ui_state(state)
+            self.settings.ui.main_splitter_state = self._encode_ui_state(main_splitter)
+            self.settings.ui.right_splitter_state = self._encode_ui_state(right_splitter)
+            self.settings.ui.is_fullscreen_mode = is_fs
+            self.save()
 
     @staticmethod
     def _encode_ui_state(value: Any) -> str:
@@ -420,21 +440,20 @@ class ConfigManager:
 
     def update_missav_proxy(self, proxy_type: str = "", port: int = 0, url: str = "") -> None:
         """更新 missav 代理配置。"""
-        if proxy_type:
-            self.settings.missav.proxy_type = proxy_type
-        if port:
-            self.settings.missav.proxy_port = port
-        if url:
-            self.settings.missav.proxy_url = url
-        self.save()
-
+        with self._lock:
+            if proxy_type:
+                self.settings.missav.proxy_type = proxy_type
+            if port:
+                self.settings.missav.proxy_port = port
+            if url:
+                self.settings.missav.proxy_url = url
+            self._save_unlocked()
 
 def _build_default_settings() -> AppSettings:
     """构建一份已标准化的默认配置快照，供无状态读取场景复用。"""
     settings = AppSettings()
     settings.normalize()
     return settings
-
 
 DEFAULT_APP_SETTINGS = _build_default_settings()
 
@@ -462,7 +481,6 @@ _PLATFORM_RUNTIME_FIELDS = {
     "missav": ("individual_only", "priority"),
 }
 
-
 def get_setting_default(section: str, key: str) -> Any:
     """读取配置模型中的默认值，避免调用方散落硬编码。"""
     section_obj = getattr(DEFAULT_APP_SETTINGS, section, None)
@@ -471,7 +489,6 @@ def get_setting_default(section: str, key: str) -> Any:
     if not hasattr(section_obj, key):
         raise ConfigValidationError(f"未知配置字段: {section}.{key}")
     return getattr(section_obj, key)
-
 
 def get_platform_default_values(source: str) -> dict[str, Any]:
     """返回平台默认运行参数快照，不读取持久化配置。"""
@@ -485,7 +502,6 @@ def get_platform_default_values(source: str) -> dict[str, Any]:
         result["proxy"] = getattr(section_obj, "proxy_url")
     return result
 
-
 def get_platform_runtime_defaults(source: str, manager: ConfigManager | None = None) -> dict[str, Any]:
     """返回平台运行配置快照，优先读取持久化配置，兜底配置模型默认值。"""
     if source not in _PLATFORM_SECTION_MAP:
@@ -495,15 +511,20 @@ def get_platform_runtime_defaults(source: str, manager: ConfigManager | None = N
     if active_manager is None:
         return get_platform_default_values(source)
 
-    section_name = _PLATFORM_SECTION_MAP[source]
-    section_obj = getattr(active_manager.settings, section_name, None)
-    if section_obj is None:
-        return get_platform_default_values(source)
+    def _snapshot() -> dict[str, Any]:
+        section_name = _PLATFORM_SECTION_MAP[source]
+        section_obj = getattr(active_manager.settings, section_name, None)
+        if section_obj is None:
+            return get_platform_default_values(source)
+        result = {field: getattr(section_obj, field) for field in _PLATFORM_RUNTIME_FIELDS.get(source, ())}
+        if source == "missav":
+            result["proxy"] = getattr(section_obj, "proxy_url")
+        return result
 
-    result = {field: getattr(section_obj, field) for field in _PLATFORM_RUNTIME_FIELDS.get(source, ())}
-    if source == "missav":
-        result["proxy"] = getattr(section_obj, "proxy_url")
-    return result
-
+    lock = getattr(active_manager, "_lock", None)
+    if lock is None:
+        return _snapshot()
+    with lock:
+        return _snapshot()
 
 cfg = ConfigManager()

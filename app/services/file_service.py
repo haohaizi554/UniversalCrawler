@@ -12,14 +12,13 @@ from app.utils import sanitize_filename
 #本地媒体文件管理服务
 @dataclass
 class ScanResult:
-    """封装 `ScanResult` 在 `app/services/file_service.py` 中承担的核心逻辑。"""
+    
     items: list[VideoItem]
     total_count: int
     video_count: int
     image_count: int
     truncated: bool = False
     original_count: int = 0
-
 
 class MediaLibraryService:
     """本地媒体库服务，负责扫描、重命名、删除。"""
@@ -90,7 +89,7 @@ class MediaLibraryService:
             raise MediaScanError(str(exc)) from exc
 
     def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:
-        """执行 `rename_media` 对应的业务逻辑，供 `MediaLibraryService` 使用。"""
+        
         if not os.path.exists(video.local_path):
             raise FileOperationError("文件不存在，无法重命名")
 

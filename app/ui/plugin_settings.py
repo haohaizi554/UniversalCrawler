@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QWidget
 
 from app.config import cfg, get_platform_default_values, get_platform_runtime_defaults
 from app.core.plugins.run_options import build_missav_proxy_url
-
 
 class PageLimitSettingsWidget(QWidget):
     """统一的数量下拉控件，固定为少量常用档位。"""
@@ -57,7 +58,6 @@ class PageLimitSettingsWidget(QWidget):
                 index = self.combo_pages.findData(1)
         self.combo_pages.setCurrentIndex(max(index, 0))
 
-
 class MissAVSettingsWidget(QWidget):
     """MissAV Qt 配置控件。"""
 
@@ -87,7 +87,6 @@ class MissAVSettingsWidget(QWidget):
         self.combo_proxy.setMinimumWidth(110)
         layout.addWidget(self.combo_proxy)
 
-
 def build_bilibili_settings_widget(parent=None) -> PageLimitSettingsWidget:
     defaults = get_platform_runtime_defaults("bilibili")
     return PageLimitSettingsWidget(
@@ -98,7 +97,6 @@ def build_bilibili_settings_widget(parent=None) -> PageLimitSettingsWidget:
         tooltip="搜索或列表扫描页数，可选 1/2/5/10/20/max。",
     )
 
-
 def read_bilibili_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
         defaults = get_platform_default_values("bilibili")
@@ -106,7 +104,6 @@ def read_bilibili_run_options(widget: QWidget | None) -> dict[str, int]:
     pages = widget.current_value()
     cfg.set("bilibili", "max_pages", pages)
     return {"max_pages": pages}
-
 
 def build_douyin_settings_widget(parent=None) -> PageLimitSettingsWidget:
     defaults = get_platform_runtime_defaults("douyin")
@@ -117,7 +114,6 @@ def build_douyin_settings_widget(parent=None) -> PageLimitSettingsWidget:
         default_pages=int(defaults.get("max_items", 20)),
         tooltip="抖音单次最多处理的视频数量，可选 1/2/5/10/20/max。",
     )
-
 
 def read_douyin_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
@@ -131,7 +127,6 @@ def read_douyin_run_options(widget: QWidget | None) -> dict[str, int]:
     defaults = get_platform_runtime_defaults("douyin")
     return {"max_items": max_items, "timeout": int(defaults.get("timeout", 10))}
 
-
 def build_xiaohongshu_settings_widget(parent=None) -> PageLimitSettingsWidget:
     defaults = get_platform_runtime_defaults("xiaohongshu")
     return PageLimitSettingsWidget(
@@ -141,7 +136,6 @@ def build_xiaohongshu_settings_widget(parent=None) -> PageLimitSettingsWidget:
         default_pages=int(defaults.get("max_items", 20)),
         tooltip="小红书单次最多处理的笔记数量，可选 1/2/5/10/20/max。",
     )
-
 
 def read_xiaohongshu_run_options(widget: QWidget | None) -> dict[str, int | float]:
     defaults = get_platform_runtime_defaults("xiaohongshu")
@@ -164,7 +158,6 @@ def read_xiaohongshu_run_options(widget: QWidget | None) -> dict[str, int | floa
         "detail_request_interval": float(defaults.get("detail_request_interval", 0.5)),
     }
 
-
 def build_kuaishou_settings_widget(parent=None) -> PageLimitSettingsWidget:
     defaults = get_platform_runtime_defaults("kuaishou")
     return PageLimitSettingsWidget(
@@ -174,7 +167,6 @@ def build_kuaishou_settings_widget(parent=None) -> PageLimitSettingsWidget:
         default_pages=int(defaults.get("max_items", 20)),
         tooltip="快手单次最多扫描的视频数量，可选 1/2/5/10/20/max。",
     )
-
 
 def read_kuaishou_run_options(widget: QWidget | None) -> dict[str, int]:
     if not isinstance(widget, PageLimitSettingsWidget):
@@ -188,10 +180,8 @@ def read_kuaishou_run_options(widget: QWidget | None) -> dict[str, int]:
     defaults = get_platform_runtime_defaults("kuaishou")
     return {"max_items": max_items, "timeout": int(defaults.get("timeout", 10))}
 
-
 def build_missav_settings_widget(parent=None) -> MissAVSettingsWidget:
     return MissAVSettingsWidget(parent)
-
 
 def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool]:
     if not isinstance(widget, MissAVSettingsWidget):
@@ -217,33 +207,34 @@ def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool]:
         "proxy": proxy_url,
     }
 
+def _iter_plugin_settings_functions():
+    """Yield (plugin_id, builder_fn, reader_fn) for every plugin in the registry.
 
-PLUGIN_WIDGET_BUILDERS = {
-    "bilibili": build_bilibili_settings_widget,
-    "douyin": build_douyin_settings_widget,
-    "xiaohongshu": build_xiaohongshu_settings_widget,
-    "kuaishou": build_kuaishou_settings_widget,
-    "missav": build_missav_settings_widget,
-}
+    Uses naming convention ``build_<id>_settings_widget`` /
+    ``read_<id>_run_options`` within this module to auto-discover functions,
+    eliminating the need for a manual registry dict.
 
-PLUGIN_RUN_OPTION_READERS = {
-    "bilibili": read_bilibili_run_options,
-    "douyin": read_douyin_run_options,
-    "xiaohongshu": read_xiaohongshu_run_options,
-    "kuaishou": read_kuaishou_run_options,
-    "missav": read_missav_run_options,
-}
+    A plugin without a settings builder simply yields ``(builder=None, reader=None)``.
+    """
+    from app.core.plugin_registry import registry
 
+    module = sys.modules[__name__]
+    for p in registry.get_all_plugins():
+        pid = p.id
+        builder = getattr(module, f"build_{pid}_settings_widget", None)
+        reader = getattr(module, f"read_{pid}_run_options", None)
+        yield pid, builder, reader
 
 def build_plugin_settings_widget(plugin_id: str, parent=None) -> QWidget | None:
-    builder = PLUGIN_WIDGET_BUILDERS.get(plugin_id)
-    if builder is None:
-        return None
-    return builder(parent)
-
+    """Build the settings widget for *plugin_id*, or return ``None``."""
+    for pid, builder, _reader in _iter_plugin_settings_functions():
+        if pid == plugin_id and builder is not None:
+            return builder(parent)
+    return None
 
 def read_plugin_run_options(plugin_id: str, widget: QWidget | None) -> dict:
-    reader = PLUGIN_RUN_OPTION_READERS.get(plugin_id)
-    if reader is None:
-        return {}
-    return reader(widget)
+    """Read run options from the widget for *plugin_id*."""
+    for pid, _builder, reader in _iter_plugin_settings_functions():
+        if pid == plugin_id and reader is not None:
+            return reader(widget)
+    return {}

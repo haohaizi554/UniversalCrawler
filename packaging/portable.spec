@@ -33,6 +33,7 @@ datas += optional_tree(project_root / "ffmpeg.exe", ".")
 datas += optional_tree(project_root / "N_m3u8DL-RE.exe", ".")
 datas += optional_tree(project_root / "app" / "core" / "lib" / "douyin" / "js", "app/core/lib/douyin/js")
 datas += optional_tree(project_root / "app" / "web" / "static", "app/web/static")
+datas += optional_tree(project_root / "UI" / "icon", "UI/icon")
 # 包含 docs（用于 README / 帮助文档），但排除 INTERACTION_MAP.md（太大且非运行时所需）
 datas += optional_tree(project_root / "README.md", ".")
 # 注意：cli/skill/ 下的 SKILL.md 不必打包（AI 工具独立读取仓库）

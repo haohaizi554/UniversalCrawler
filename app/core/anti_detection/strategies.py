@@ -8,7 +8,6 @@ from app.config import cfg
 
 from .models import AntiDetectionContext
 
-
 @dataclass(frozen=True, slots=True)
 class BrowserAntiDetectionStrategy:
     """Builds a browser/request runtime from shared config fields."""

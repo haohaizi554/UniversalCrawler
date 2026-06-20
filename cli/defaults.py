@@ -18,7 +18,6 @@ _FALLBACK_CONFIG = {platform: get_platform_default_values(platform) for platform
 # 向后兼容别名
 DEFAULT_CONFIG = _FALLBACK_CONFIG
 
-
 def get_platform_defaults(source: str) -> dict:
     """获取平台默认配置（与 GUI read_*_run_options 对齐）。
 
@@ -34,7 +33,6 @@ def get_platform_defaults(source: str) -> dict:
     if source not in _FALLBACK_CONFIG:
         return {}
     return dict(get_platform_runtime_defaults(source))
-
 
 def get_default_save_dir() -> str:
     """获取默认保存目录（与 GUI MainWindow.current_save_dir 对齐）。
@@ -54,7 +52,6 @@ def get_default_save_dir() -> str:
         return DEFAULT_DOWNLOAD_DIR
     except Exception:
         return "downloads"
-
 
 def validate_config_types(user_config: dict) -> str | None:
     """校验 config 中已知参数的类型（与 CLI argparse type 和 SDK _validate_config 对齐）。
@@ -132,7 +129,6 @@ def validate_config_types(user_config: dict) -> str | None:
 
     return None
 
-
 def build_missav_proxy_url(proxy_str: str) -> str:
     """构建 MissAV 代理 URL（与 GUI build_missav_proxy_url 完全一致）。
 
@@ -140,7 +136,6 @@ def build_missav_proxy_url(proxy_str: str) -> str:
     """
     from app.core.plugins.run_options import build_missav_proxy_url as _build
     return _build(proxy_str)
-
 
 def infer_content_type(local_path: str) -> str:
     """根据文件扩展名推断 content_type（与 GUI spider 设置对齐）。
@@ -172,7 +167,6 @@ def infer_content_type(local_path: str) -> str:
     if ext in image_exts:
         return "image"
     return ""
-
 
 def infer_content_type_from_url(url: str) -> str:
     """根据 URL 推断 content_type（与 GUI spider 下载前设置对齐）。
@@ -206,7 +200,6 @@ def infer_content_type_from_url(url: str) -> str:
             return "image"
     return ""
 
-
 # 平台 → auth 文件名映射（与 app/config/settings.py AuthSettings 对齐）
 _AUTH_FILE_MAP = {
     "douyin":   "dy_auth.json",
@@ -215,7 +208,6 @@ _AUTH_FILE_MAP = {
     "kuaishou": "ks_auth.json",
     "missav":   None,  # MissAV 不需要 cookie
 }
-
 
 def _try_load_cookie(source: str) -> str | None:
     """尝试加载本地 cookie 文件并构建 cookie 字符串（与 GUI spider 对齐）。
@@ -279,7 +271,6 @@ def _try_load_cookie(source: str) -> str | None:
         if isinstance(data, dict):
             return "; ".join(f"{k}={v}" for k, v in data.items() if v is not None)
         return None
-
 
 def _try_load_cookies_dict(source: str) -> dict | None:
     """尝试加载本地 cookie 文件并构建 cookie dict（与 GUI BilibiliSpider 对齐）。
@@ -347,7 +338,6 @@ def _try_load_cookies_dict(source: str) -> dict | None:
         pass
 
     return None
-
 
 def merge_convenience_params(body: dict, config: dict, source: str = "") -> dict:
     """将 REST API/WebSocket 请求体中的便捷参数合并到 config 字典。
@@ -443,7 +433,6 @@ def merge_convenience_params(body: dict, config: dict, source: str = "") -> dict
 
     return config
 
-
 def _validate_convenience_param_types(body: dict) -> str | None:
     """校验 REST API/WebSocket 请求体中便捷参数的类型。
 
@@ -490,7 +479,6 @@ def _validate_convenience_param_types(body: dict) -> str | None:
             return f"{key} 必须是{type_name}，收到 {type(val).__name__}"
 
     return None
-
 
 def get_platform_download_defaults(source: str) -> dict:
     """获取平台下载默认 meta 字段（与 GUI spider build_download_meta 对齐）。

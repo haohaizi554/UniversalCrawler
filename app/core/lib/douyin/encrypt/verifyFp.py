@@ -32,7 +32,7 @@ class VerifyFp:
     """
     @staticmethod
     def get_verify_fp(timestamp: int = None):
-        """获取 `verify_fp` 对应的数据或状态，供 `VerifyFp` 使用。"""
+        
         base_str = digits + ascii_uppercase + ascii_lowercase
         t = len(base_str)
         milliseconds = timestamp or int(round(time() * 1000))

@@ -34,9 +34,19 @@ from app.spiders.missav.task_builder import MissAVTaskBuilder
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.base import BaseSpider
 
-
 class SpiderHelperTests(unittest.TestCase):
-    """封装 `SpiderHelperTests` 在 `tests/test_spider_helpers.py` 中承担的核心逻辑。"""
+    
+    def test_bili_api_snapshots_cookies_under_session_lock(self):
+        api = BiliAPI.__new__(BiliAPI)
+        api.sess = requests.Session()
+        api._session_lock = threading.RLock()
+        api.sess.cookies.set("SESSDATA", "abc", domain=".bilibili.com")
+
+        with api._session_guard():
+            snapshot = api.snapshot_cookies()
+
+        self.assertEqual(snapshot, {"SESSDATA": "abc"})
+
     def _make_douyin_spider(self, keyword: str) -> DouyinSpider:
         """提供 `_make_douyin_spider` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
         spider = DouyinSpider.__new__(DouyinSpider)
@@ -64,6 +74,7 @@ class SpiderHelperTests(unittest.TestCase):
     def _make_bilibili_spider(self) -> BilibiliSpider:
         """提供 `_make_bilibili_spider` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
         spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.is_running = True
         spider.config = {}
         spider.log = Mock()
         spider.debug_state = Mock()
@@ -92,36 +103,36 @@ class SpiderHelperTests(unittest.TestCase):
     def _make_kuaishou_capture_page(self):
         """提供 `_make_kuaishou_capture_page` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
         class FakeLocator:
-            """封装 `FakeLocator` 在 `tests/test_spider_helpers.py` 中承担的核心逻辑。"""
+            
             def __init__(self, visible=True):
                 """初始化当前实例并准备运行所需的状态，供 `FakeLocator` 使用。"""
                 self._visible = visible
                 self.first = self
 
             def is_visible(self):
-                """执行 `is_visible` 对应的业务逻辑，供 `FakeLocator` 使用。"""
+                
                 return self._visible
 
             def scroll_into_view_if_needed(self):
-                """执行 `scroll_into_view_if_needed` 对应的业务逻辑，供 `FakeLocator` 使用。"""
+                
                 return None
 
             def click(self):
-                """执行 `click` 对应的业务逻辑，供 `FakeLocator` 使用。"""
+                
                 return None
 
         class FakeKeyboard:
-            """封装 `FakeKeyboard` 在 `tests/test_spider_helpers.py` 中承担的核心逻辑。"""
+            
             def __init__(self, trigger_response):
                 """初始化当前实例并准备运行所需的状态，供 `FakeKeyboard` 使用。"""
                 self._trigger_response = trigger_response
 
             def press(self, _key):
-                """执行 `press` 对应的业务逻辑，供 `FakeKeyboard` 使用。"""
+                
                 self._trigger_response()
 
         class FakePage:
-            """封装 `FakePage` 在 `tests/test_spider_helpers.py` 中承担的核心逻辑。"""
+            
             def __init__(self):
                 """初始化当前实例并准备运行所需的状态，供 `FakePage` 使用。"""
                 self.url = "https://www.kuaishou.com/profile/demo"
@@ -131,20 +142,20 @@ class SpiderHelperTests(unittest.TestCase):
                 self.keyboard = FakeKeyboard(self._trigger_response)
 
             def on(self, event, handler):
-                """执行 `on` 对应的业务逻辑，供 `FakePage` 使用。"""
+                
                 if event == "response":
                     self.response_handler = handler
 
             def evaluate(self, _script):
-                """执行 `evaluate` 对应的业务逻辑，供 `FakePage` 使用。"""
+                
                 return None
 
             def wait_for_timeout(self, _ms):
-                """执行 `wait_for_timeout` 对应的业务逻辑，供 `FakePage` 使用。"""
+                
                 return None
 
             def locator(self, selector):
-                """执行 `locator` 对应的业务逻辑，供 `FakePage` 使用。"""
+                
                 if selector == ".photo-card, .video-card":
                     return FakeLocator(True)
                 if selector == ".close-icon":
@@ -445,9 +456,28 @@ class SpiderHelperTests(unittest.TestCase):
             referer="https://www.bilibili.com/video/BV1xx",
         )
 
-        self.assertEqual(task["trace_id"], "bili-BV1xx-123")
+        self.assertEqual(task["trace_id"], "bilibili_BV1xx_123")
         self.assertEqual(task["bvid"], "BV1xx")
         self.assertTrue(task["file_name"].endswith(".mp4"))
+
+    def test_bili_api_get_video_info_supports_legacy_aid_lookup(self):
+        api = self._make_bili_api()
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BVfromAid",
+                "title": "demo",
+                "owner": {"name": "up"},
+                "pages": [{"part": "P1", "cid": 123, "page": 1}],
+            },
+        }
+        api.sess.get.return_value = response
+
+        result = api.get_video_info(None, trace_id="trace-aid", aid=123456)
+
+        self.assertEqual(result["bvid"], "BVfromAid")
+        self.assertIn("aid=123456", api.sess.get.call_args.args[0])
 
     def test_bili_api_load_cookies_rejects_invalid_payload_shape(self):
         """验证 `test_bili_api_load_cookies_rejects_invalid_payload_shape` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -526,6 +556,13 @@ class SpiderHelperTests(unittest.TestCase):
         worker.join.assert_called_once_with(timeout=1.0)
         spider.log.assert_called_once()
         self.assertIn("browser 线程未在 1s 内退出", spider.log.call_args.args[0])
+
+    def test_bilibili_run_finally_joins_worker_threads(self):
+        import inspect
+
+        source = inspect.getsource(BilibiliSpider.run)
+        self.assertIn("_join_worker_thread(self._browser_thread", source)
+        self.assertIn("_join_worker_thread(self._api_pool_thread", source)
 
     @patch("app.spiders.bilibili.spider.sync_playwright")
     def test_bilibili_scan_registers_playwright_browser_for_stop(self, mocked_sync_playwright):
@@ -976,7 +1013,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider._scan_pages(page, collected)
 
         self.assertEqual(collected, {"https://missav.ai/cn/abc-123": "A"})
-        page.goto.assert_called_once_with("https://missav.ai/cn/search/ipx?page=2", timeout=60000)
+        page.goto.assert_called_once_with("https://missav.ai/cn/search/ipx?page=2", timeout=3000)
 
     def test_missav_scan_pages_logs_page_errors(self):
         """验证 `test_missav_scan_pages_logs_page_errors` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1049,10 +1086,10 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(bv_set, {"BV1old", "BV1new"})
         spider.raw_bv_queue.put.assert_called_once_with("BV1new")
 
-    @patch("app.spiders.bilibili.spider.time.sleep", return_value=None)
-    def test_bilibili_scan_page_retries_after_empty_first_pass(self, _mock_sleep):
+    def test_bilibili_scan_page_retries_after_empty_first_pass(self):
         """验证 `test_bilibili_scan_page_retries_after_empty_first_pass` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.is_running = True
         spider.raw_bv_queue = Mock()
         page = Mock()
         page.evaluate.side_effect = [
@@ -1102,6 +1139,90 @@ class SpiderHelperTests(unittest.TestCase):
         spider.raw_bv_queue.put.assert_called_once_with("BV1xx411c7mD")
         spider._scan_with_browser_queue.assert_not_called()
         spider.browser_finished.set.assert_called_once()
+
+    def test_bilibili_producer_routes_space_home_link_to_video_tab(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://space.bilibili.com/1513751793?spm_id_from=333.337.0.0"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider._scan_with_browser_queue.assert_called_once_with(
+            "https://space.bilibili.com/1513751793/video",
+            max_pages=5,
+            is_search=False,
+            is_space=True,
+        )
+        spider.raw_bv_queue.put.assert_not_called()
+
+    def test_bilibili_producer_routes_plain_video_url_to_bv_queue(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://www.bilibili.com/video/BV1xx411c7mD?p=2&vd_source=demo"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider.raw_bv_queue.put.assert_called_once_with("BV1xx411c7mD")
+        spider._scan_with_browser_queue.assert_not_called()
+
+    def test_bilibili_producer_routes_collection_video_url_to_scan(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://www.bilibili.com/video/BV1xx411c7mD?list=ML123"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider._scan_with_browser_queue.assert_called_once_with(
+            "https://www.bilibili.com/video/BV1xx411c7mD?list=ML123",
+            max_pages=5,
+            is_search=False,
+            is_space=False,
+        )
+        spider.raw_bv_queue.put.assert_not_called()
+
+    def test_bilibili_producer_routes_search_url_to_search_scan(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://search.bilibili.com/all?keyword=test"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider._scan_with_browser_queue.assert_called_once_with(
+            "https://search.bilibili.com/all?keyword=test",
+            max_pages=5,
+            is_search=True,
+            is_space=False,
+        )
+
+    def test_bilibili_producer_routes_av_url_to_aid_queue(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://www.bilibili.com/video/av123456"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider.raw_bv_queue.put.assert_called_once_with({"aid": "123456"})
+        spider._scan_with_browser_queue.assert_not_called()
 
     def test_bilibili_producer_builds_search_url_from_keyword(self):
         """验证 `test_bilibili_producer_builds_search_url_from_keyword` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1268,7 +1389,6 @@ class SpiderHelperTests(unittest.TestCase):
         )
         spider._process_mix.assert_awaited_once_with(params, "7480000000000000001")
         spider._process_detail.assert_not_awaited()
-
 
 if __name__ == "__main__":
     unittest.main()

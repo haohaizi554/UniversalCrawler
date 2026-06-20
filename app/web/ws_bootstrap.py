@@ -11,9 +11,7 @@ from fastapi import WebSocket
 from app.web.logging_utils import log_web_exception
 from app.web.session_runtime import WebSessionContext
 
-
 CreateTaskFn = Callable[[Awaitable[Any]], asyncio.Task[Any]]
-
 
 class WebSocketBootstrapper:
     """封装 WebSocket 连接成功后的首包与初始化副作用。"""
@@ -32,6 +30,13 @@ class WebSocketBootstrapper:
         controller = context.controller
         try:
             await ws.send_text(json.dumps({"type": "init_state", "data": controller.get_state()}, ensure_ascii=False))
+            getter = getattr(controller, "get_frontend_state", None)
+            if callable(getter):
+                snapshot = getter()
+                await ws.send_text(json.dumps({"type": "frontend_state", "data": snapshot}, ensure_ascii=False))
+                marker = getattr(getattr(controller, "bridge", None), "mark_frontend_version_sent", None)
+                if callable(marker):
+                    marker(snapshot.get("version", 0) if isinstance(snapshot, dict) else 0)
             await ws.send_text(json.dumps({"type": "platforms", "data": controller.get_platforms()}, ensure_ascii=False))
             await ws.send_text(json.dumps({"type": "config", "data": controller.get_config()}, ensure_ascii=False))
             await self._replay_cached_videos(ws, controller)
@@ -39,7 +44,8 @@ class WebSocketBootstrapper:
             log_web_exception("WebSocketBootstrapper", "send_initial_snapshot", exc)
 
     async def _replay_cached_videos(self, ws: WebSocket, controller: Any) -> None:
-        videos = getattr(controller, "videos", None)
+        snapshot = getattr(controller, "_video_items_snapshot", None)
+        videos = snapshot() if callable(snapshot) else getattr(controller, "videos", None)
         if not videos:
             return
         for item in videos.values():
@@ -91,6 +97,10 @@ class WebSocketBootstrapper:
                 finally:
                     controller._bootstrap_scan_pending = False
 
-            create_task(_run_initial_scan())
+            task = create_task(_run_initial_scan())
+            tracker = getattr(context, "track_background_task", None)
+            if callable(tracker):
+                tracker(task)
         except Exception as exc:
+            controller._bootstrap_scan_pending = False
             log_web_exception("WebSocketBootstrapper", "kickoff_initial_scan", exc)

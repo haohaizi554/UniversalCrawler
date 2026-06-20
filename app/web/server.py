@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import inspect
 import mimetypes
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,10 +20,46 @@ from app.debug_logger import debug_logger
 controller = None
 
 STATIC_DIR = Path(__file__).parent / "static"
+UI_ICON_DIR = Path(__file__).resolve().parents[2] / "UI" / "icon"
+SESSION_COOKIE_NAME = "ucrawl_session"
+SESSION_TOKEN_COOKIE_NAME = "ucrawl_session_token"
+CSRF_COOKIE_NAME = "ucrawl_csrf_token"
+SESSION_TOKEN_HEADER = "X-Ucrawl-Session-Token"
+DEFAULT_SESSION_ID = "default"
 
 # 确保 MIME 类型已注册
 mimetypes.init()
 
+def run_cli_search(**kwargs) -> dict:
+    """Run a CLI search with normalized Web/API arguments."""
+    from cli.runner import CLIRunner
+
+    runner = CLIRunner(
+        source=kwargs["source"],
+        keyword=kwargs["keyword"],
+        save_dir=kwargs.get("save_dir") or "downloads",
+        selection_strategy=kwargs.get("selection_strategy"),
+        config=kwargs.get("config") or {},
+        verbose=False,
+        log_to_stderr=False,
+        timeout=kwargs.get("timeout"),
+        download=bool(kwargs.get("download", True)),
+    )
+    return runner.run()
+
+def _clear_controller_videos(active_controller) -> None:
+    clear_videos = getattr(active_controller, "_clear_video_items", None)
+    if callable(clear_videos):
+        clear_videos()
+        return
+    active_controller.videos.clear()
+
+def _store_controller_video(active_controller, item) -> None:
+    store_video = getattr(active_controller, "_store_video_item", None)
+    if callable(store_video):
+        store_video(item)
+        return
+    active_controller.videos[item.id] = item
 
 def create_app(lifespan=None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
@@ -39,55 +75,6 @@ def create_app(lifespan=None) -> FastAPI:
 
     # ---- WebSocket 连接管理 ----
 
-    class ConnectionManager:
-        def __init__(self):
-            self.active_connections: list[dict] = []
-
-        async def _sender(self, ws: WebSocket, queue: asyncio.Queue[str]):
-            while True:
-                try:
-                    msg = await queue.get()
-                except asyncio.CancelledError:
-                    break
-                if msg is None:
-                    break
-                try:
-                    await ws.send_text(msg)
-                except Exception:
-                    self.disconnect(ws)
-                    break
-
-        async def connect(self, ws: WebSocket):
-            await ws.accept()
-            queue: asyncio.Queue[str] = asyncio.Queue()
-            sender_task = asyncio.create_task(self._sender(ws, queue))
-            self.active_connections.append({"ws": ws, "queue": queue, "sender_task": sender_task})
-
-        def disconnect(self, ws: WebSocket):
-            for conn in list(self.active_connections):
-                if conn["ws"] is ws:
-                    self.active_connections.remove(conn)
-                    sender_task = conn.get("sender_task")
-                    if sender_task is not None:
-                        sender_task.cancel()
-                    break
-
-        async def broadcast(self, event_type: str, data=None):
-            msg = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
-            connections = list(self.active_connections)
-            if not connections:
-                return
-            dead_connections = []
-            for conn in connections:
-                try:
-                    conn["queue"].put_nowait(msg)
-                except Exception:
-                    dead_connections.append(conn["ws"])
-            for ws in dead_connections:
-                self.disconnect(ws)
-
-    manager = ConnectionManager()
-
     # ---- 初始化 WebController ----
 
     global controller
@@ -100,8 +87,42 @@ def create_app(lifespan=None) -> FastAPI:
     )
     # 不在 create_app 时获取事件循环，因为 uvicorn 可能使用不同的事件循环
     # 传入 None，在首次 emit 时延迟获取正确的事件循环
-    controller = WebController(None, manager.broadcast)
-    workflow = WebWorkflowService(controller, manager.broadcast)
+    from app.web.app_composition import build_web_app_composition, publish_app_state
+    from app.web.search_service import SearchRouteRuntime
+
+    def _search_runtime_provider() -> SearchRouteRuntime:
+        return SearchRouteRuntime(
+            build_selection_strategy=_build_selection_strategy,
+            merge_default_config=_merge_default_config,
+            validate_config_types=_validate_config_types,
+            run_cli_search=run_cli_search,
+        )
+
+    composition = build_web_app_composition(
+        controller_factory=WebController,
+        workflow_factory=WebWorkflowService,
+        session_cookie_name=SESSION_COOKIE_NAME,
+        session_token_cookie_name=SESSION_TOKEN_COOKIE_NAME,
+        csrf_cookie_name=CSRF_COOKIE_NAME,
+        session_token_header=SESSION_TOKEN_HEADER,
+        default_session_id=DEFAULT_SESSION_ID,
+        search_runtime_provider=_search_runtime_provider,
+    )
+    publish_app_state(
+        app,
+        composition=composition,
+        session_cookie_name=SESSION_COOKIE_NAME,
+        session_token_cookie_name=SESSION_TOKEN_COOKIE_NAME,
+        csrf_cookie_name=CSRF_COOKIE_NAME,
+        session_token_header=SESSION_TOKEN_HEADER,
+    )
+    manager = composition.manager
+    controller = composition.default_context.controller
+    workflow = composition.default_context.workflow
+
+    @app.middleware("http")
+    async def http_session_middleware(request: Request, call_next):
+        return await composition.http_sessions.handle(request, call_next)
 
     # ---- REST API ----
 
@@ -129,6 +150,32 @@ def create_app(lifespan=None) -> FastAPI:
     @app.get("/api/state")
     async def get_state():
         return controller.get_state()
+
+    @app.get("/api/frontend/state")
+    async def get_frontend_state():
+        return controller.get_frontend_state()
+
+    @app.get("/api/frontend/icons")
+    async def get_frontend_icons():
+        return controller.get_frontend_icons()
+
+    @app.post("/api/frontend/action")
+    async def frontend_action(body: dict):
+        if not isinstance(body, dict):
+            return {"status": "error", "error": "请求体必须是 JSON 对象"}
+        action = body.get("action", "")
+        payload = body.get("payload") or {}
+        if not isinstance(action, str) or not action:
+            return {"status": "error", "error": "action 必须是非空字符串"}
+        if not isinstance(payload, dict):
+            return {"status": "error", "error": "payload 必须是 JSON 对象"}
+        handler = getattr(controller, "async_handle_frontend_action", None)
+        if not callable(handler):
+            handler = getattr(controller, "handle_frontend_action", None)
+        result = handler(action, payload)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     @app.post("/api/scan")
     async def scan_directory(request: Request):
@@ -165,7 +212,7 @@ def create_app(lifespan=None) -> FastAPI:
 
         try:
             # 与 GUI 对齐：扫描不改变 current_save_dir（只有 /api/dir/change 才改变）
-            controller.videos.clear()
+            _clear_controller_videos(controller)
 
             result = await asyncio.get_running_loop().run_in_executor(
                 None, controller.file_service.scan_directory, directory, scan_limit,
@@ -176,7 +223,7 @@ def create_app(lifespan=None) -> FastAPI:
                 # 与 SDK scan_directory 一致：本地文件标记为"✅ 本地"，进度 100%
                 item.status = "✅ 本地"
                 item.progress = 100
-                controller.videos[item.id] = item
+                _store_controller_video(controller, item)
                 try:
                     items.append(controller._video_item_to_dict(item))
                 except Exception:
@@ -298,24 +345,20 @@ def create_app(lifespan=None) -> FastAPI:
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
-        def _run_search():
-            from cli.runner import CLIRunner
-            runner = CLIRunner(
-                source=source,
-                keyword=keyword,
-                save_dir=save_dir,
-                selection_strategy=strategy,
-                config=merged_config,
-                verbose=False,
-                log_to_stderr=False,
-                timeout=timeout,
-                download=download,
-            )
-            return runner.run()
-
         try:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, _run_search)
+            result = await loop.run_in_executor(
+                None,
+                lambda: run_cli_search(
+                    source=source,
+                    keyword=keyword,
+                    save_dir=save_dir,
+                    selection_strategy=strategy,
+                    config=merged_config,
+                    timeout=timeout,
+                    download=download,
+                ),
+            )
             return result
         except Exception as exc:
             logger.error(f"[search] 搜索失败: {exc}", exc_info=True)
@@ -331,8 +374,9 @@ def create_app(lifespan=None) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/api/crawl/select")
-    async def select_tasks(body: dict):
-        return await workflow.select_tasks(body, log_error=False)
+    async def select_tasks(request: Request, body: dict):
+        context = composition.get_request_context(request)
+        return await context.workflow.select_tasks(body, log_error=False)
 
     # ---- 调试: 手动触发选择弹窗 ----
     @app.post("/api/debug/trigger-select")
@@ -373,9 +417,10 @@ def create_app(lifespan=None) -> FastAPI:
         return result
 
     @app.post("/api/download")
-    async def download_video(body: dict):
+    async def download_video(request: Request, body: dict):
         """直接下载指定 URL 的视频（与 CLI download 命令和 SDK download_video 对齐）。"""
-        return await workflow.direct_download(body, log_error=False)
+        context = composition.get_request_context(request)
+        return await context.workflow.direct_download(body, log_error=False)
 
     # ---- 媒体文件服务（支持 Range 请求，视频拖拽进度条必需） ----
 
@@ -520,7 +565,7 @@ def create_app(lifespan=None) -> FastAPI:
             await asyncio.get_running_loop().run_in_executor(None, _save_cfg)
 
             # 3. 清空旧数据
-            controller.videos.clear()
+            _clear_controller_videos(controller)
 
             # 4. 扫描新目录（文件 I/O 在线程池中执行）
             scan_limit = cfg.get("download", "local_scan_limit", 1000)
@@ -543,7 +588,7 @@ def create_app(lifespan=None) -> FastAPI:
                 # 与 SDK scan_directory 一致：本地文件标记为"✅ 本地"，进度 100%
                 item.status = "✅ 本地"
                 item.progress = 100
-                controller.videos[item.id] = item
+                _store_controller_video(controller, item)
                 try:
                     items.append(controller._video_item_to_dict(item))
                 except Exception:
@@ -639,145 +684,16 @@ def create_app(lifespan=None) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
-        await manager.connect(ws)
-        # 连接后立即推送当前状态
-        try:
-            state = controller.get_state()
-            await ws.send_text(json.dumps({"type": "init_state", "data": state}, ensure_ascii=False))
-            platforms = controller.get_platforms()
-            await ws.send_text(json.dumps({"type": "platforms", "data": platforms}, ensure_ascii=False))
-            config_data = controller.get_config()
-            await ws.send_text(json.dumps({"type": "config", "data": config_data}, ensure_ascii=False))
-        except Exception:
-            pass
-
-        # 首次连接自动扫描目录（与桌面 GUI 启动行为一致）
-        # 修复 BUG-180: 使用 async_scan_local_dir，文件 I/O 在线程池中执行，
-        # bridge.emit 在事件循环中调用，避免跨线程调度静默失败
-        try:
-            controller.bridge.set_loop(asyncio.get_running_loop())
-            asyncio.create_task(controller.async_scan_local_dir())
-        except Exception:
-            pass
-
-        try:
-            while True:
-                raw = await ws.receive_text()
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                await _handle_client_message(msg)
-        except WebSocketDisconnect:
-            manager.disconnect(ws)
-        except Exception:
-            manager.disconnect(ws)
-
-    async def _handle_client_message(msg: dict):
-        """处理客户端 WebSocket 消息。
-
-        修复 BUG-182: 每个消息类型都加 try/except，防止单个消息处理异常
-        杀死整个 WebSocket 连接。异常通过 WebSocket 推送给前端显示。
-        """
-        import logging
-        msg_type = msg.get("type", "")
-        data = msg.get("data", {}) or {}
-
-        try:
-            if msg_type == "start_crawl":
-                await workflow.start_crawl(data, log_error=True)
-            elif msg_type == "stop_crawl":
-                controller.stop_crawl()
-            elif msg_type == "select_tasks":
-                await workflow.select_tasks(data, log_error=True)
-            elif msg_type == "scan_dir":
-                # 与 REST API /api/scan 对齐：支持 scan_limit 参数
-                directory = data.get("directory")
-                # 与 GUI QFileDialog 对齐：directory 必须是字符串
-                if directory is not None and not isinstance(directory, str):
-                    await manager.broadcast("log", {"message": "❌ directory 必须是字符串"})
-                    return
-                scan_limit = data.get("scan_limit")
-                if scan_limit is not None:
-                    # 与 SDK scan_directory 对齐：scan_limit 必须是整数
-                    if not isinstance(scan_limit, int):
-                        await manager.broadcast("log", {"message": "❌ scan_limit 必须是整数"})
-                        return
-                    # 与 SDK scan_directory 和 REST API /api/scan 对齐：scan_limit 必须大于 0
-                    if scan_limit <= 0:
-                        await manager.broadcast("log", {"message": "❌ scan_limit 必须大于 0"})
-                        return
-                await controller.async_scan_local_dir(data.get("directory"), scan_limit=scan_limit)
-            elif msg_type == "change_dir":
-                directory = data.get("directory", "")
-                # 与 REST API /api/dir/change 对齐：校验目录非空
-                if not directory:
-                    await manager.broadcast("log", {"message": "❌ 目录路径不能为空"})
-                    return
-                # 与 GUI QFileDialog 对齐：directory 必须是字符串
-                if not isinstance(directory, str):
-                    await manager.broadcast("log", {"message": "❌ directory 必须是字符串"})
-                    return
-                await controller.async_change_dir(directory)
-            elif msg_type == "change_theme":
-                is_dark = data.get("dark_theme", True)
-                # 与 GUI QCheckBox 对齐：dark_theme 必须是布尔值
-                if not isinstance(is_dark, bool):
-                    await manager.broadcast("log", {"message": "❌ dark_theme 必须是布尔值"})
-                    return
-                cfg.set("common", "dark_theme", is_dark)
-                cfg.set("common", "theme", "dark" if is_dark else "light")
-            elif msg_type == "change_source":
-                new_source = data.get("source", "")
-                # 与 GUI QComboBox 对齐：source 必须是字符串
-                if not isinstance(new_source, str):
-                    await manager.broadcast("log", {"message": "❌ source 必须是字符串"})
-                    return
-                # 与 GUI QComboBox 对齐：只允许有效平台 ID
-                if new_source:
-                    from app.core.plugin_registry import registry
-                    if not registry.get_plugin(new_source):
-                        valid_ids = [p.id for p in registry.get_all_plugins()]
-                        await manager.broadcast("log", {"message": f"❌ 无效平台: {new_source}。支持: {valid_ids}"})
-                        return
-                cfg.set("common", "last_source", new_source)
-            elif msg_type == "save_config":
-                section = data.get("section", "")
-                key = data.get("key", "")
-                value = data.get("value")
-                # 与 GUI 对齐：section 和 key 必须是字符串
-                if not isinstance(section, str) or not isinstance(key, str):
-                    await manager.broadcast("log", {"message": "❌ section 和 key 必须是字符串"})
-                    return
-                if section and key:
-                    try:
-                        cfg.set(section, key, value)
-                    except Exception as exc:
-                        await manager.broadcast("log", {"message": f"❌ 保存配置失败: {exc}"})
-            elif msg_type == "delete_video":
-                vid = data.get("video_id", "")
-                # 与 REST API /api/video/{video_id} 对齐：video_id 必须是字符串
-                if not isinstance(vid, str):
-                    await manager.broadcast("log", {"message": "❌ video_id 必须是字符串"})
-                    return
-                await controller.async_delete_video(vid)
-            elif msg_type == "rename_video":
-                vid = data.get("video_id", "")
-                title = data.get("new_title", "")
-                # 与 REST API /api/video/rename 对齐：参数必须是字符串
-                if not isinstance(vid, str) or not isinstance(title, str):
-                    await manager.broadcast("log", {"message": "❌ video_id 和 new_title 必须是字符串"})
-                    return
-                await controller.async_rename_video(vid, title)
-            elif msg_type == "download":
-                await workflow.direct_download(data, log_error=True)
-        except Exception as exc:
-            logging.error(f"[WS] 处理消息 {msg_type} 失败: {exc}", exc_info=True)
-            # 尝试通过 WebSocket 推送错误信息给前端
-            try:
-                await manager.broadcast("log", {"message": f"❌ 处理 {msg_type} 失败: {exc}"})
-            except Exception:
-                pass
+        binding = await composition.ws_session_binder.bind(ws)
+        if binding is None:
+            return
+        await manager.connect(ws, binding.session_id)
+        await composition.ws_bootstrapper.initialize(
+            ws,
+            binding.context,
+            create_task_fn=asyncio.create_task,
+        )
+        await composition.ws_runtime.run(ws, binding.context)
 
     # ---- 静态文件 ----
 
@@ -791,5 +707,7 @@ def create_app(lifespan=None) -> FastAPI:
     # 挂载静态目录（放在最后，避免覆盖 API 路由）
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    if UI_ICON_DIR.exists():
+        app.mount("/ui-icon", StaticFiles(directory=str(UI_ICON_DIR)), name="ui-icon")
 
     return app

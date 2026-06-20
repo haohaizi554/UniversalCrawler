@@ -18,9 +18,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class MixTikTok(APITikTok):
-    """封装 `MixTikTok` 在 `app/core/lib/douyin/interface/mix_tiktok.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -47,7 +46,7 @@ class MixTikTok(APITikTok):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `MixTikTok` 使用。"""
+        
         return self.params | {
             "count": self.count,
             "cursor": self.cursor,
@@ -86,9 +85,8 @@ class MixTikTok(APITikTok):
             **kwargs,
         )
 
-
 class MixListTikTok(APITikTok):
-    """封装 `MixListTikTok` 在 `app/core/lib/douyin/interface/mix_tiktok.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -111,7 +109,7 @@ class MixListTikTok(APITikTok):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `MixListTikTok` 使用。"""
+        
         return self.params | {
             "count": self.count,
             "cursor": self.cursor,
@@ -149,9 +147,8 @@ class MixListTikTok(APITikTok):
             **kwargs,
         )
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

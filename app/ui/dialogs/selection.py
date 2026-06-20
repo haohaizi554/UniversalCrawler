@@ -1,47 +1,105 @@
 """Task selection dialog shown after spider scanning completes."""
 
+from __future__ import annotations
+
+from typing import Any
+
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.config import cfg
-from app.ui.styles import generate_stylesheet
+from app.ui.components.theme_checkbox import ThemeCheckBox
+from app.ui.styles import apply_dialog_theme, theme_colors
+from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
+_ROW_HEIGHT = 34
 
-#任务选择对话框
+def normalize_selection_items(items: list[Any] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(items or []):
+        if isinstance(item, dict):
+            title = item.get("title") or item.get("name") or f"项目 {index + 1}"
+        else:
+            title = getattr(item, "title", None) or getattr(item, "name", None) or str(item)
+        normalized.append({"title": str(title), "index": index})
+    return normalized
+
+def exec_selection_dialog(parent, items: list[Any] | None, *, title: str = "任务清单确认") -> list[int] | None:
+    """Show the modal selection dialog and return chosen row indexes."""
+    normalized = normalize_selection_items(items)
+    if not normalized:
+        return []
+
+    dialog = SelectionDialog(parent, title=title, items=normalized)
+    dialog.setModal(True)
+    dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+    dialog.raise_()
+    dialog.activateWindow()
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        return dialog.selected_indices
+    return None
+
 class SelectionDialog(QDialog):
     """Lets the user choose which scanned items should enter the queue."""
 
-    def __init__(self, parent, title="\u4efb\u52a1\u6e05\u5355\u786e\u8ba4", items=None):
-        """初始化当前实例并准备运行所需的状态，供 `SelectionDialog` 使用。"""
+    def __init__(self, parent, title="任务清单确认", items=None):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self.setObjectName("SelectionDialog")
+        self.setModal(True)
         self.resize(800, 600)
-        self.selected_indices = []
-        self.items = items or []
-        self.setStyleSheet(parent.styleSheet() if parent else generate_stylesheet(cfg.get("common", "dark_theme", True)))
+        self.selected_indices: list[int] = []
+        self.items = normalize_selection_items(items)
+        self._is_dark = apply_dialog_theme(self, parent=parent)
+        self._colors = theme_colors(self._is_dark)
         self.init_ui()
 
-    def init_ui(self):
-        """执行 `init_ui` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
+
+    def init_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
         header = QLabel(
-            f"\u5171\u626b\u63cf\u5230 {len(self.items)} \u4e2a\u8d44\u6e90\uff0c\u8bf7\u52fe\u9009\u9700\u8981\u4e0b\u8f7d\u7684\u9879\u76ee\uff1a"
+            f"共扫描到 {len(self.items)} 个资源，请勾选需要下载的项目："
         )
-        header.setStyleSheet("font-size: 14px; font-weight: bold;")
+        header.setObjectName("SelectionDialogHeader")
         layout.addWidget(header)
 
         self.table = QTableWidget()
+        self.table.setObjectName("SelectionTable")
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(
-            ["\u9009\u62e9", "\u89c6\u9891\u6807\u9898 / \u63cf\u8ff0"]
-        )
+        self.table.setHorizontalHeaderLabels(["选择", "视频标题 / 描述"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 60)
+        self.table.setColumnWidth(0, 48)
         self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.table.cellClicked.connect(self._on_cell_clicked)
+        install_click_only_row_selection(self.table)
+        install_stable_vertical_scrollbar(self.table)
+        self.table.selectionModel().selectionChanged.connect(self._on_row_selection_changed)
         self.populate_table()
         layout.addWidget(self.table)
 
@@ -49,8 +107,12 @@ class SelectionDialog(QDialog):
         btn_layout = QHBoxLayout(btn_box)
         btn_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_all = QPushButton("\u5168\u9009")
-        self.btn_invert = QPushButton("\u53cd\u9009")
+        self.btn_all = QPushButton("全选")
+        self.btn_invert = QPushButton("反选")
+        self.btn_all.setObjectName("SelectionActionBtn")
+        self.btn_invert.setObjectName("SelectionActionBtn")
+        self.btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_invert.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all.setFixedSize(80, 30)
         self.btn_invert.setFixedSize(80, 30)
         self.btn_all.clicked.connect(self.select_all)
@@ -59,59 +121,119 @@ class SelectionDialog(QDialog):
         btn_layout.addWidget(self.btn_invert)
         btn_layout.addStretch()
 
-        self.btn_cancel = QPushButton("\u53d6\u6d88\u4efb\u52a1")
+        self.btn_cancel = QPushButton("取消任务")
         self.btn_cancel.setObjectName("DangerBtn")
+        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cancel.setFixedSize(100, 35)
         self.btn_cancel.clicked.connect(self.reject)
 
-        self.btn_confirm = QPushButton("\u5f00\u59cb\u4e0b\u8f7d")
+        self.btn_confirm = QPushButton("开始下载")
         self.btn_confirm.setObjectName("PrimaryBtn")
+        self.btn_confirm.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_confirm.setFixedSize(120, 35)
         self.btn_confirm.clicked.connect(self.confirm_selection)
         btn_layout.addWidget(self.btn_cancel)
         btn_layout.addWidget(self.btn_confirm)
         layout.addWidget(btn_box)
 
-    def populate_table(self):
-        """执行 `populate_table` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
+        apply_dialog_theme(self, is_dark=self._is_dark)
+
+    def populate_table(self) -> None:
         self.table.setRowCount(len(self.items))
         for index, item_data in enumerate(self.items):
-            # Keep the checkbox centered by wrapping it in a tiny frame.
-            chk_widget = QFrame()
-            chk_layout = QHBoxLayout(chk_widget)
-            chk_layout.setContentsMargins(0, 0, 0, 0)
-            chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            chk = QCheckBox()
-            chk.setChecked(True)
-            chk_layout.addWidget(chk)
-            self.table.setCellWidget(index, 0, chk_widget)
+            row_widget = QWidget()
+            row_widget.setAutoFillBackground(True)
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            checkbox = ThemeCheckBox(checked=True, colors=self._colors, interactive=False)
+            checkbox.toggled.connect(lambda _checked, row=index: self._sync_row_style(row))
+            row_layout.addWidget(checkbox)
+            self.table.setCellWidget(index, 0, row_widget)
 
-            title_item = QTableWidgetItem(
-                item_data.get("title", "\u672a\u77e5\u6807\u9898")
-            )
+            title_item = QTableWidgetItem(str(item_data.get("title", "未知标题")))
             title_item.setFlags(title_item.flags() ^ Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(index, 1, title_item)
+            self._sync_row_style(index)
 
-    def select_all(self):
-        """执行 `select_all` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
-        for index in range(self.table.rowCount()):
-            widget = self.table.cellWidget(index, 0)
-            chk = widget.findChild(QCheckBox)
-            chk.setChecked(True)
+    def _checkbox_at(self, row: int) -> ThemeCheckBox | None:
+        widget = self.table.cellWidget(row, 0)
+        if widget is None:
+            return None
+        child = widget.findChild(ThemeCheckBox)
+        return child if isinstance(child, ThemeCheckBox) else None
 
-    def select_invert(self):
-        """执行 `select_invert` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
-        for index in range(self.table.rowCount()):
-            widget = self.table.cellWidget(index, 0)
-            chk = widget.findChild(QCheckBox)
-            chk.setChecked(not chk.isChecked())
+    def _row_colors(self, checked: bool, *, selected: bool) -> tuple[QColor, QColor]:
+        if selected:
+            return QColor(self._colors["row_selected"]), QColor(self._colors["text"])
+        if checked:
+            return QColor(self._colors["panel"]), QColor(self._colors["text"])
+        return QColor(self._colors["panel_soft"]), QColor(self._colors["muted"])
 
-    def confirm_selection(self):
-        """执行 `confirm_selection` 对应的业务逻辑，供 `SelectionDialog` 使用。"""
+    def _is_row_selected(self, row: int) -> bool:
+        model = self.table.selectionModel()
+        if model is None:
+            return False
+        return row in {index.row() for index in model.selectedRows()}
+
+    def _sync_row_style(self, row: int) -> None:
+        if row < 0 or row >= self.table.rowCount():
+            return
+        item = self.table.item(row, 1)
+        checkbox = self._checkbox_at(row)
+        if item is None or checkbox is None:
+            return
+        background, foreground = self._row_colors(
+            checkbox.isChecked(),
+            selected=self._is_row_selected(row),
+        )
+        item.setBackground(background)
+        item.setForeground(foreground)
+
+        cell_widget = self.table.cellWidget(row, 0)
+        if cell_widget is not None:
+            palette = cell_widget.palette()
+            palette.setColor(cell_widget.backgroundRole(), background)
+            cell_widget.setPalette(palette)
+            cell_widget.setAutoFillBackground(True)
+
+    def _apply_bulk_check(self, *, select_all: bool | None) -> None:
+        """Bulk update check states without re-entrant signal storms."""
+        self.table.setUpdatesEnabled(False)
+        try:
+            for index in range(self.table.rowCount()):
+                checkbox = self._checkbox_at(index)
+                if checkbox is None:
+                    continue
+                if select_all is None:
+                    checkbox.setChecked(not checkbox.isChecked(), notify=False)
+                else:
+                    checkbox.setChecked(select_all, notify=False)
+                self._sync_row_style(index)
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.viewport().update()
+
+    def _on_row_selection_changed(self, *_args) -> None:
+        for row in range(self.table.rowCount()):
+            self._sync_row_style(row)
+
+    def _on_cell_clicked(self, row: int, column: int) -> None:
+        self.table.selectRow(row)
+        checkbox = self._checkbox_at(row)
+        if checkbox is not None:
+            checkbox.setChecked(not checkbox.isChecked())
+
+    def select_all(self) -> None:
+        self._apply_bulk_check(select_all=True)
+
+    def select_invert(self) -> None:
+        self._apply_bulk_check(select_all=None)
+
+    def confirm_selection(self) -> None:
         self.selected_indices = []
         for index in range(self.table.rowCount()):
-            widget = self.table.cellWidget(index, 0)
-            chk = widget.findChild(QCheckBox)
-            if chk.isChecked():
+            checkbox = self._checkbox_at(index)
+            if checkbox is not None and checkbox.isChecked():
                 self.selected_indices.append(index)
         self.accept()

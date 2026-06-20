@@ -2,7 +2,6 @@ import argparse
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-
 def _create_test_client():
     from fastapi.testclient import TestClient
     from app.web.server import create_app, SESSION_TOKEN_HEADER
@@ -18,14 +17,11 @@ def _create_test_client():
     client._ucrawl_session_context = context
     return client
 
-
 def _auth_headers(client):
     return {client._ucrawl_token_header: client._ucrawl_session_token}
 
-
 def _get_session_context(client):
     return client._ucrawl_session_context
-
 
 class CliSearchFacadeContractTests(unittest.TestCase):
     def test_handle_search_command_delegates_to_shared_runtime_and_emits_result(self):
@@ -55,7 +51,6 @@ class CliSearchFacadeContractTests(unittest.TestCase):
         self.assertEqual(strategy, "sel")
         build_selection.assert_called_once()
         self.assertEqual(build_selection.call_args.kwargs["env"].selection_factory.__name__, "SelectionStrategyFactory")
-
 
 class CliDownloadFacadeContractTests(unittest.TestCase):
     def test_handle_download_command_delegates_to_shared_runtime_and_stderr(self):
@@ -87,7 +82,6 @@ class CliDownloadFacadeContractTests(unittest.TestCase):
         self.assertEqual(result, ({"timeout": 10}, None))
         build_config.assert_called_once()
         self.assertEqual(build_config.call_args.kwargs["source"], "douyin")
-
 
 class CliSdkFacadeContractTests(unittest.TestCase):
     def test_module_search_delegates_and_closes_sdk(self):
@@ -186,7 +180,6 @@ class CliSdkFacadeContractTests(unittest.TestCase):
 
         self.assertIs(runner_cls, runner_sentinel)
 
-
 class FastApiWorkflowRouteContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -231,7 +224,6 @@ class FastApiWorkflowRouteContractTests(unittest.TestCase):
             {"url": "https://example.com/video", "source": "douyin"},
             log_error=False,
         )
-
 
 if __name__ == "__main__":
     unittest.main()

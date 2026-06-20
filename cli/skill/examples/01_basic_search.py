@@ -3,7 +3,6 @@
 
 from ucrawl import UcrawlSDK
 
-
 def main(controller, **kwargs):
     """基本搜索示例。"""
     sdk = UcrawlSDK(save_dir=controller.current_save_dir, verbose=True)

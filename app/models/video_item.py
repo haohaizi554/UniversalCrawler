@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 from uuid import uuid4
+
+from app.models.download_context import DownloadContext
 from app.utils.filenames import build_media_filename
 
 #视频媒体项的数据模型定义，统一封装 “待下载 / 已下载的视频项” 的数据结构和基础操作
@@ -28,8 +30,22 @@ class VideoItem:
             self.title = self.title.strip()
 
     def get_safe_filename(self, extension: str = ".mp4") -> str:
-        """获取 `safe_filename` 对应的数据或状态，供 `VideoItem` 使用。"""
+        
         return build_media_filename(self.title or f"{self.source}_{self.id}", self.source, extension, self.meta)
+
+    def build_download_context(self) -> DownloadContext:
+        """Build a normalized download context from this item's metadata."""
+        return DownloadContext.from_meta(self.meta)
+
+    def merge_download_context(self, context: DownloadContext | None = None, **overrides) -> DownloadContext:
+        """Merge normalized download context values back into ``meta``."""
+        base_patch = (context or self.build_download_context()).to_meta_patch()
+        for key, value in overrides.items():
+            if value is not None:
+                base_patch[key] = value
+        merged = DownloadContext.from_meta(base_patch)
+        self.meta.update(merged.to_meta_patch())
+        return merged
 
     def update_from_dict(self, data: dict):
         """更新 `from_dict` 对应的状态或数据内容，供 `VideoItem` 使用。"""

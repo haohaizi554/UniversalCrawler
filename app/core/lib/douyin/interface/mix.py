@@ -24,9 +24,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Mix(API):
-    """封装 `Mix` 在 `app/core/lib/douyin/interface/mix.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -58,7 +57,7 @@ class Mix(API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `Mix` 使用。"""
+        
         return self.params | {
             "mix_id": self.mix_id,
             "cursor": self.cursor,
@@ -107,9 +106,8 @@ class Mix(API):
         if not self.mix_id:
             self.mix_id = Extractor.extract_mix_id(await self.detail.run())
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

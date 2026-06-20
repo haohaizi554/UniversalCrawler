@@ -12,7 +12,6 @@ from app.web.api_result import error_result
 from app.web.logging_utils import log_web_exception
 from shared.runtime_options import merge_convenience_params
 
-
 @dataclass(frozen=True, slots=True)
 class SearchRouteRuntime:
     """描述 search 路由运行时依赖。"""
@@ -21,7 +20,6 @@ class SearchRouteRuntime:
     merge_default_config: Callable[[str, dict], dict]
     validate_config_types: Callable[[dict], str | None]
     run_cli_search: Callable[..., dict]
-
 
 class WebSearchService:
     """承载 `/api/search` 的输入校验、参数归一与运行时委派。"""

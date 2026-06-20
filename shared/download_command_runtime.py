@@ -10,7 +10,6 @@ from typing import Any, Callable
 
 from shared.runtime_options import compose_runtime_config
 
-
 @dataclass(slots=True)
 class DownloadCommandEnv:
     UcrawlSDK_cls: Any
@@ -19,7 +18,6 @@ class DownloadCommandEnv:
     validate_config_types: Callable[[dict], str | None]
     get_plugin: Callable[[str], Any]
     list_platform_ids: Callable[[], list[str]]
-
 
 def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("video_id", help="视频 ID / 标题")
@@ -44,10 +42,8 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     out_group.add_argument("--quiet", "-q", action="store_true", help="不输出下载进度到 stderr")
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式 (默认 JSON)")
 
-
 def resolve_source(args: argparse.Namespace) -> str:
     return getattr(args, "source", "") or getattr(args, "_platform", "")
-
 
 def build_missing_url_result(args: argparse.Namespace, *, save_dir: str) -> dict:
     return {
@@ -63,7 +59,6 @@ def build_missing_url_result(args: argparse.Namespace, *, save_dir: str) -> dict
         "meta": {},
         "elapsed": 0,
     }
-
 
 def parse_user_config(args: argparse.Namespace, *, env: DownloadCommandEnv) -> tuple[dict | None, str | None]:
     config_json = getattr(args, "config", None)
@@ -82,7 +77,6 @@ def parse_user_config(args: argparse.Namespace, *, env: DownloadCommandEnv) -> t
     if config_err:
         return None, f"❌ {config_err}"
     return dict(parsed), None
-
 
 def build_config(args: argparse.Namespace, *, source: str, env: DownloadCommandEnv) -> tuple[dict | None, str | None]:
     user_config, error = parse_user_config(args, env=env)
@@ -122,7 +116,6 @@ def build_config(args: argparse.Namespace, *, source: str, env: DownloadCommandE
         if config_err:
             return None, f"❌ {config_err}"
     return config, None
-
 
 def run_download_command(
     args: argparse.Namespace,
@@ -167,7 +160,6 @@ def run_download_command(
 
     return (0 if result.get("status") == "ok" else 1), result, None
 
-
 def print_pretty(result: dict) -> None:
     if result.get("status") != "ok":
         status = result.get("status", "error")
@@ -196,7 +188,6 @@ def print_pretty(result: dict) -> None:
     if elapsed is not None:
         sys.stdout.write(f"⏱️  耗时: {elapsed}s\n")
     sys.stdout.write("\n")
-
 
 def emit_result(result: dict, *, pretty: bool) -> None:
     if pretty:

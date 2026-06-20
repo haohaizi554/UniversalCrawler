@@ -18,9 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 
 @dataclass
 class TestResult:
@@ -58,10 +56,8 @@ class TestResult:
             "failed_tests": self.failed_tests,
         }
 
-
 # 进度回调签名：(当前文件索引, 总文件数, 文件名, 输出行)
 ProgressCallback = Callable[[int, int, str, str], None]
-
 
 def _parse_pytest_output(output: str) -> tuple[int, int, int, int, list[str]]:
     """解析 pytest 输出。
@@ -101,7 +97,6 @@ def _parse_pytest_output(output: str) -> tuple[int, int, int, int, list[str]]:
         failed_names.append(m.group(1))
 
     return passed, failed, skipped, errors, failed_names
-
 
 def run_category(
     category_id: str,
@@ -227,7 +222,6 @@ def run_category(
     result.finished_at = time.time()
     return result
 
-
 def run_categories(
     category_ids: list[str],
     verbose: bool = False,
@@ -266,7 +260,6 @@ def run_categories(
         results.append(result)
     return results
 
-
 def format_summary(results: list[TestResult]) -> str:
     """格式化结果汇总（多行文本）。"""
     lines = ["=" * 70, "测试结果汇总", "=" * 70]
@@ -290,7 +283,6 @@ def format_summary(results: list[TestResult]) -> str:
         f"S={total_skipped} E={total_errors} 耗时={total_duration:.2f}s"
     )
     return "\n".join(lines)
-
 
 if __name__ == "__main__":
     # 简单命令行测试

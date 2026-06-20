@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from typing import Any, Awaitable, Callable
 
 from app.models.video_item import VideoItem
-
+from app.debug_logger import debug_logger
 
 BroadcastFn = Callable[[str, Any], Awaitable[None]]
 
+def get_platform_defaults(source: str) -> dict:
+    from cli.defaults import get_platform_defaults as _get_platform_defaults
+
+    return _get_platform_defaults(source)
+
+def build_sdk(save_dir: str):
+    from cli.sdk import UcrawlSDK
+
+    return UcrawlSDK(save_dir=save_dir)
 
 def build_selection_strategy(selection_dict: dict | None):
     """从 Web 端 selection 参数构建 SelectionStrategy 实例。"""
@@ -55,10 +63,9 @@ def build_selection_strategy(selection_dict: dict | None):
         return PipeSelection()
     return None
 
-
 def merge_default_config(source: str, user_config: dict) -> dict:
     """合并平台默认配置与用户配置。"""
-    from cli.defaults import build_missav_proxy_url, get_platform_defaults
+    from cli.defaults import build_missav_proxy_url
 
     merged = get_platform_defaults(source)
     merged.update({k: v for k, v in user_config.items() if v is not None})
@@ -66,13 +73,11 @@ def merge_default_config(source: str, user_config: dict) -> dict:
         merged["proxy"] = build_missav_proxy_url(merged["proxy"])
     return merged
 
-
 def validate_config_types(user_config: dict) -> str | None:
     """委托 CLI defaults 统一校验 config 类型。"""
     from cli.defaults import validate_config_types as shared_validate
 
     return shared_validate(user_config)
-
 
 class WebWorkflowService:
     """统一 WebUI REST / WS 工作流，减少路由层重复。"""
@@ -80,6 +85,10 @@ class WebWorkflowService:
     def __init__(self, controller, broadcast: BroadcastFn):
         self.controller = controller
         self.broadcast = broadcast
+        self._pending_tasks: set[asyncio.Task] = set()
+        self._pending_progress_tasks: dict[str, asyncio.Task] = {}
+        self._progress_throttle_seconds = 0.25
+        self._last_progress_emit: dict[str, tuple[int, float]] = {}
 
     async def _emit_log(self, message: str) -> None:
         await self.broadcast("log", {"message": message})
@@ -118,7 +127,12 @@ class WebWorkflowService:
             valid_ids = [p.id for p in registry.get_all_plugins()]
             return await self._error(f"无效平台: {source}。支持: {valid_ids}", log_error=log_error, crawl_state_false=True)
 
-        if self.controller.current_spider and self.controller.current_spider.isRunning():
+        has_active_spider = getattr(self.controller, "_has_active_spider", None)
+        spider_running = has_active_spider() if callable(has_active_spider) else bool(
+            getattr(self.controller, "current_spider", None)
+            and self.controller.current_spider.isRunning()
+        )
+        if spider_running:
             message = "当前已有任务在运行，请先停止或等待结束"
             if log_error:
                 await self._emit_log(f"⚠️ {message}")
@@ -169,7 +183,12 @@ class WebWorkflowService:
         return {"status": "ok"}
 
     async def select_tasks(self, payload: dict, *, log_error: bool) -> dict:
-        if not self.controller.current_spider or not self.controller.current_spider.isRunning():
+        has_active_spider = getattr(self.controller, "_has_active_spider", None)
+        spider_running = has_active_spider() if callable(has_active_spider) else bool(
+            getattr(self.controller, "current_spider", None)
+            and self.controller.current_spider.isRunning()
+        )
+        if not spider_running:
             return await self._error("当前没有正在运行的爬虫，无法进行二次选择", log_error=log_error)
         indices = payload.get("indices", [])
         if indices is None:
@@ -186,8 +205,8 @@ class WebWorkflowService:
 
     def _create_pending_item(self, url: str, source: str, title: str) -> VideoItem:
         item = VideoItem(url=url, title=title, source=source, status="⏳ 等待中", progress=0)
-        prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
-        item.meta["trace_id"] = f"{prefix}-dl-{uuid.uuid4().hex[:8]}"
+        prefix = {"douyin": "dy", "bilibili": "bilibili", "kuaishou": "ks", "missav": "missav", "xiaohongshu": "xhs"}.get(source, source)
+        item.meta["trace_id"] = debug_logger.new_trace_id(f"{prefix}_dl")
         from cli.defaults import infer_content_type_from_url
 
         pre_ct = infer_content_type_from_url(url)
@@ -196,10 +215,92 @@ class WebWorkflowService:
         return item
 
     def _schedule_broadcast(self, loop: asyncio.AbstractEventLoop, event_type: str, data: dict) -> None:
-        loop.call_soon_threadsafe(loop.create_task, self.broadcast(event_type, data))
+        def _schedule() -> None:
+            task = loop.create_task(self.broadcast(event_type, data))
+            self._pending_tasks.add(task)
+
+            def _discard(done_task: asyncio.Task) -> None:
+                self._pending_tasks.discard(done_task)
+                try:
+                    done_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    import logging
+
+                    logging.getLogger(__name__).exception("Web workflow broadcast failed")
+
+            task.add_done_callback(_discard)
+
+        loop.call_soon_threadsafe(_schedule)
+
+    def cancel_pending_broadcasts(self) -> None:
+        for task in list(self._pending_tasks):
+            task.cancel()
+        self._pending_tasks.clear()
+        for task in list(self._pending_progress_tasks.values()):
+            task.cancel()
+        self._pending_progress_tasks.clear()
+        self._last_progress_emit.clear()
+
+    def _should_emit_progress(self, video_id: str, progress: int) -> bool:
+        now = time.monotonic()
+        last = self._last_progress_emit.get(video_id)
+        if last is not None:
+            last_progress, last_at = last
+            if progress == last_progress:
+                return False
+            if now - last_at < self._progress_throttle_seconds:
+                return False
+        self._last_progress_emit[video_id] = (progress, now)
+        return True
+
+    def _schedule_progress_broadcast(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        video_id: str,
+        pending_item: VideoItem,
+        progress: int,
+    ) -> None:
+        if not self._should_emit_progress(video_id, progress):
+            return
+        existing = self._pending_progress_tasks.get(video_id)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        payload = {
+            "video_id": video_id,
+            "status": pending_item.status,
+            "progress": progress,
+        }
+
+        def _schedule() -> None:
+            task = loop.create_task(self.broadcast("video_state_changed", payload))
+            self._pending_tasks.add(task)
+            self._pending_progress_tasks[video_id] = task
+
+            def _discard(done_task: asyncio.Task) -> None:
+                self._pending_tasks.discard(done_task)
+                if self._pending_progress_tasks.get(video_id) is done_task:
+                    self._pending_progress_tasks.pop(video_id, None)
+                try:
+                    done_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    import logging
+
+                    logging.getLogger(__name__).exception("Web workflow progress broadcast failed")
+
+            task.add_done_callback(_discard)
+
+        loop.call_soon_threadsafe(_schedule)
 
     async def _broadcast_download_started(self, pending_item: VideoItem) -> None:
-        self.controller.videos[pending_item.id] = pending_item
+        store_video = getattr(self.controller, "_store_video_item", None)
+        if callable(store_video):
+            store_video(pending_item)
+        else:
+            self.controller.videos[pending_item.id] = pending_item
         await self.broadcast("item_found", self.controller._video_item_to_dict(pending_item))
         pending_item.status = "⏳ 下载中..."
         await self.broadcast("task_started", {
@@ -313,12 +414,13 @@ class WebWorkflowService:
             return await self._error("timeout 必须大于 0", log_error=log_error)
 
         effective_save_dir = save_dir or self.controller.current_save_dir
-        from cli.defaults import get_platform_defaults, merge_convenience_params
+        from cli.defaults import merge_convenience_params
 
         merged_config = get_platform_defaults(source)
         merged_config.update({k: v for k, v in user_config.items() if v is not None})
         try:
-            merge_convenience_params(payload, merged_config, source)
+            config_payload = {key: value for key, value in payload.items() if key != "timeout"}
+            merge_convenience_params(config_payload, merged_config, source)
         except ValueError as exc:
             return await self._error(str(exc), log_error=log_error)
         user_config = merged_config
@@ -326,18 +428,12 @@ class WebWorkflowService:
         pending_item = self._create_pending_item(url, source, title or url)
         await self._broadcast_download_started(pending_item)
 
-        from cli.sdk import UcrawlSDK
-
-        sdk = UcrawlSDK(save_dir=effective_save_dir)
+        sdk = build_sdk(effective_save_dir)
         loop = asyncio.get_running_loop()
         try:
             def on_download_progress(pct: int) -> None:
                 pending_item.progress = pct
-                self._schedule_broadcast(loop, "video_state_changed", {
-                    "video_id": pending_item.id,
-                    "status": pending_item.status,
-                    "progress": pct,
-                })
+                self._schedule_progress_broadcast(loop, pending_item.id, pending_item, pct)
 
             result = await loop.run_in_executor(
                 None,

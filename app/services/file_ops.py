@@ -11,14 +11,12 @@ from app.exceptions import FileOperationError
 
 T = TypeVar("T")
 
-
 @dataclass(slots=True, frozen=True)
 class FileRetryPolicy:
     """Retry policy for transient file lock failures."""
 
     max_attempts: int = 10
     retry_delay_sec: float = 0.2
-
 
 class FileOpPolicy:
     """Centralized file operation policy for rename/remove style mutations."""

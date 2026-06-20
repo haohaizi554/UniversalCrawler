@@ -5,11 +5,9 @@ from unittest.mock import Mock
 from app.spiders.base import BaseSpider
 from app.web.controller import WebController
 
-
 class _DummySpider(BaseSpider):
     def run(self):
         return
-
 
 class WebControllerSelectionBridgeTests(unittest.TestCase):
     def test_bind_spider_signals_monkey_patches_web_selection_bridge(self):
@@ -32,7 +30,6 @@ class WebControllerSelectionBridgeTests(unittest.TestCase):
         result = spider.ask_user_selection([{"title": "A", "index": 0}, {"title": "B", "index": 1}])
 
         self.assertEqual(result, [1])
-
 
 if __name__ == "__main__":
     unittest.main()

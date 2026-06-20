@@ -52,6 +52,7 @@
 - **纯本地桌面程序**：默认面向 Windows 10 / 11，无需额外部署 Web 服务，也不用维护前后端分离栈。
 - **PyQt6 原生交互**：主窗口、下载队列、日志面板、媒体预览、主题切换、全屏播放等体验完整。
 - **下载后即管理**：支持本地媒体扫描、重命名、删除、图片预览与视频播放，不需要再切回文件夹手工整理。
+- **双击媒体即预览**：安装版可在安装向导中把视频/图片默认打开方式绑定到本软件；免安装版也可在应用内点击“默认打开”注册。双击已关联的媒体文件后，会自动切到文件所在目录、选中对应资源并播放或预览。
 - **对小白友好**：平台选择、参数输入、结果勾选、进度观察都在统一界面中完成。
 
 ### 🌐 2. Web UI 远程操控
@@ -253,7 +254,19 @@ python -m entry.web_entry --host 127.0.0.1 --port 8000
 
 首次启动后，程序会自动完成必要的初始化，并准备默认运行环境。
 
-### 6. 用户数据实际存放在哪里？
+### 6. 发布版使用方式
+
+如果使用打包产物而不是源码运行：
+
+- `UniversalCrawlerPro.exe`：桌面 GUI 主程序，适合本地下载、管理和预览。
+- `CrawlerWebPortal.exe`：Web UI 入口，会启动本地服务并打开浏览器控制台。
+- 安装版默认安装到 `%LOCALAPPDATA%\Programs\UniversalCrawlerPro`。
+- 安装向导会询问是否把本软件设为支持资源的默认打开方式：视频默认勾选，图片默认不勾选。
+- 默认打开方式绑定成功后，安装器不会再跳转 Windows 设置页；只有绑定失败或仍有扩展名待确认时，应用内“默认打开”按钮才会打开系统设置作为兜底。
+
+已关联的视频或图片文件可以直接双击打开。本软件会从启动参数中识别文件路径，自动切换到该文件所在目录，选中资源并进入播放或预览。
+
+### 7. 用户数据实际存放在哪里？
 
 项目运行时的用户数据并不推荐直接散落在仓库里，程序会优先使用用户目录下的数据路径。对于 Windows 环境，通常位于：
 
@@ -629,6 +642,9 @@ python -m pytest tests
 - 安装到 `%LOCALAPPDATA%\Programs\UniversalCrawlerPro`
 - 创建开始菜单快捷方式（Universal CrawlerPro / Crawler WebPortal）
 - 可选创建桌面快捷方式
+- 可选绑定默认打开方式：视频默认勾选，图片默认不勾选
+- 安装完成时通过隐藏 helper 配置文件关联，避免额外命令行窗口一闪而过
+- 默认打开方式配置成功后不再跳转 Windows 设置页；仍有待确认扩展名时才由应用内兜底打开设置页
 - 支持标准卸载流程
 
 ### 打包相关文件
@@ -641,6 +657,7 @@ python -m pytest tests
 - [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — 运行时初始化钩子
 - [`packaging/project_meta.py`](packaging/project_meta.py) — 打包共享元数据入口
 - [`app/utils/runtime_paths.py`](app/utils/runtime_paths.py) — 开发态 / 打包态用户数据路径规则
+- [`docs/windows-file-association.md`](docs/windows-file-association.md) — Windows 默认打开方式接入经验
 
 ### 打包链路联动说明
 

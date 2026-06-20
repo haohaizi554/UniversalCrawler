@@ -14,13 +14,12 @@ from app.ui.plugin_settings import (
     read_xiaohongshu_run_options,
 )
 
-
 class SettingsBuildersTests(unittest.TestCase):
     """验证平台设置控件和运行参数读取逻辑。"""
 
     @classmethod
     def setUpClass(cls):
-        """执行 `setUpClass` 对应的业务逻辑，供 `SettingsBuildersTests` 使用。"""
+        
         cls.app = QApplication.instance() or QApplication([])
 
     def test_page_limit_widget_caps_values_to_max_entry(self):
@@ -118,7 +117,6 @@ class SettingsBuildersTests(unittest.TestCase):
                 "proxy": "http://127.0.0.1:7890",
             },
         )
-
 
 if __name__ == "__main__":
     unittest.main()

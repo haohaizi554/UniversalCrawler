@@ -25,7 +25,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Sequence
 
-
 class Mode(str, Enum):
     """UCrawl 支持的所有运行模式。"""
 
@@ -35,7 +34,6 @@ class Mode(str, Enum):
     INTERACTIVE = "interactive"  # 交互式引导 (逐步选择)
     TEST = "test"                # 测试套件 (GUI/TUI/CLI 三模)
 
-
 class _MenuUnavailable(Exception):
     """TUI 菜单无法显示（环境非交互）。
 
@@ -43,7 +41,6 @@ class _MenuUnavailable(Exception):
     区别于用户主动选 q 的退出码 0。
     """
     pass
-
 
 # ---- 各 mode 的参数特征（用于有参自适应检测） ----
 
@@ -70,7 +67,6 @@ _INTERACTIVE_FLAGS = frozenset({
     "--no-download", "--pretty",
 })
 
-
 # ---- 模式解析（行业标准的多源配置优先级） ----
 
 def parse_mode_arg(argv: Sequence[str]) -> Mode | None:
@@ -93,7 +89,6 @@ def parse_mode_arg(argv: Sequence[str]) -> Mode | None:
         )
         return None
 
-
 def parse_env_mode() -> Mode | None:
     """从环境变量 UCRAWL_MODE 中提取模式。"""
     env = os.environ.get("UCRAWL_MODE", "").strip().lower()
@@ -103,7 +98,6 @@ def parse_env_mode() -> Mode | None:
         return Mode(env)
     except ValueError:
         return None
-
 
 def is_gui_available() -> bool:
     """检测 GUI 所需依赖是否齐全。"""
@@ -116,7 +110,6 @@ def is_gui_available() -> bool:
     if sys.platform == "darwin":
         return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-
 
 def is_tty() -> bool:
     """判断当前 stdio 是否可交互（用于决定能否弹 TUI 菜单）。
@@ -163,11 +156,9 @@ def is_tty() -> bool:
 
     return False
 
-
 def _arg_starts_with(token: str, argv: Sequence[str]) -> bool:
     """判断 argv 元素是否以 token 开头（处理 --port=8000 这种情况）。"""
     return any(t == token or t.startswith(token + "=") for t in argv)
-
 
 def detect_mode_intent(argv: Sequence[str]) -> Mode:
     """按参数特征智能识别模式（用于**有参数**场景）。
@@ -205,7 +196,6 @@ def detect_mode_intent(argv: Sequence[str]) -> Mode:
 
     return Mode.CLI
 
-
 def detect_mode(argv: Sequence[str] | None = None) -> Mode:
     """自适应检测运行模式。
 
@@ -241,7 +231,6 @@ def detect_mode(argv: Sequence[str] | None = None) -> Mode:
         return Mode.WEB
     return Mode.GUI
 
-
 # ---- 启动横幅 ----
 
 _BANNER = r"""
@@ -253,7 +242,6 @@ _BANNER = r"""
 +================================================+
 """
 
-
 def print_banner(mode: Mode) -> None:
     """打印启动横幅。"""
     if not is_tty():
@@ -261,7 +249,6 @@ def print_banner(mode: Mode) -> None:
     sys.stderr.write(_BANNER)
     sys.stderr.write(f"  🎯 模式: {mode.value}\n\n")
     sys.stderr.flush()
-
 
 # ---- TUI 模式菜单（无参数时弹出） ----
 
@@ -275,7 +262,6 @@ _MENU_ITEMS = [
     ("q", "退出",                                    None),
 ]
 
-
 def _display_width(text: str) -> int:
     """计算字符串在终端的显示宽度（汉字/East Asian Wide 字符按 2 计算）。"""
     import unicodedata
@@ -287,14 +273,12 @@ def _display_width(text: str) -> int:
             width += 1
     return width
 
-
 def _pad_to_width(text: str, target: int) -> str:
     """用空格把字符串填充到目标显示宽度。"""
     cur = _display_width(text)
     if cur >= target:
         return text
     return text + " " * (target - cur)
-
 
 def _has_pyqt6() -> bool:
     """检测 PyQt6 是否可用（用于 Qt 弹窗后备）。"""
@@ -303,7 +287,6 @@ def _has_pyqt6() -> bool:
         return True
     except Exception:
         return False
-
 
 def _load_app_icon() -> "QIcon | None":
     """加载应用图标（favicon.ico），找不到就返回 None。
@@ -337,7 +320,6 @@ def _load_app_icon() -> "QIcon | None":
         except Exception:
             continue
     return None
-
 
 def _prompt_mode_with_qt() -> Mode | None:
     """当 stdin/stdout 不是 TTY 时，用 Qt 弹窗让用户选 mode。
@@ -740,7 +722,6 @@ def _prompt_mode_with_qt() -> Mode | None:
     dialog.exec()
     return result["mode"]
 
-
 def prompt_mode_menu() -> Mode | None:
     """弹出菜单让用户选模式。
 
@@ -817,7 +798,6 @@ def prompt_mode_menu() -> Mode | None:
     sys.stderr.write(f"❌ 无效输入: {raw!r}\n")
     return None
 
-
 # ---- 模式分发 ----
 
 def run_gui(argv: Sequence[str] | None = None) -> int:
@@ -825,30 +805,25 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     from entry.gui_entry import main as _main
     return _main(list(argv) if argv else None)
 
-
 def run_web(argv: Sequence[str] | None = None) -> int:
     """启动 Web UI。"""
     from entry.web_entry import main as _main
     return _main(list(argv) if argv else None)
-
 
 def run_cli(argv: Sequence[str] | None = None) -> int:
     """启动 CLI 单次执行。"""
     from entry.cli_entry import main as _main
     return _main(list(argv) if argv else None)
 
-
 def run_interactive(argv: Sequence[str] | None = None) -> int:
     """启动交互式引导。"""
     from entry.interactive_entry import main as _main
     return _main(list(argv) if argv else None)
 
-
 def run_test(argv: Sequence[str] | None = None) -> int:
     """启动测试套件（GUI / TUI / CLI 自适应）。"""
     from entry.test_entry import main as _main
     return _main(list(argv) if argv else None)
-
 
 # ---- 模式 -> 处理器映射 ----
 
@@ -859,7 +834,6 @@ _HANDLERS = {
     Mode.INTERACTIVE: run_interactive,
     Mode.TEST: run_test,
 }
-
 
 def _strip_dispatcher_args(argv: Sequence[str]) -> list[str]:
     """从 argv 中剥离 dispatcher 自己的参数（--mode / -m / --mode=xxx），
@@ -884,7 +858,6 @@ def _strip_dispatcher_args(argv: Sequence[str]) -> list[str]:
             continue
         result.append(arg)
     return result
-
 
 def run(argv: Sequence[str] | None = None) -> int:
     """自适应入口主函数。
@@ -932,7 +905,6 @@ def run(argv: Sequence[str] | None = None) -> int:
     print_banner(mode)
     return _dispatch(mode, passthrough)
 
-
 def _dispatch(mode: Mode, argv: Sequence[str]) -> int:
     """派发到具体 handler。"""
     handler = _HANDLERS.get(mode)
@@ -940,7 +912,6 @@ def _dispatch(mode: Mode, argv: Sequence[str]) -> int:
         sys.stderr.write(f"❌ 没有 {mode} 模式的处理器\n")
         return 2
     return handler(argv)
-
 
 if __name__ == "__main__":
     sys.exit(run())

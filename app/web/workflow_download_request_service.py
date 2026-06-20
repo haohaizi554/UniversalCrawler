@@ -7,14 +7,11 @@ from typing import Callable
 
 from shared.runtime_options import validate_direct_download_url
 
-
 ValidateConfigTypesFn = Callable[[dict], str | None]
-
 
 @dataclass(frozen=True, slots=True)
 class DirectDownloadBuildFailure:
     error: str
-
 
 @dataclass(frozen=True, slots=True)
 class DirectDownloadRequest:
@@ -24,7 +21,6 @@ class DirectDownloadRequest:
     save_dir: str
     timeout: float
     config: dict
-
 
 class WebDirectDownloadRequestBuilder:
     """Builds normalized direct-download requests from web payloads."""

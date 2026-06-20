@@ -2,7 +2,10 @@
 
 import os
 import tempfile
+import threading
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -12,9 +15,8 @@ from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import ScanResult
 
-
 class ApplicationControllerTests(unittest.TestCase):
-    """封装 `ApplicationControllerTests` 在 `tests/test_application_controller.py` 中承担的核心逻辑。"""
+    
     def _make_controller(self) -> ApplicationController:
         """提供 `_make_controller` 对应的内部辅助逻辑，供 `ApplicationControllerTests` 使用。"""
         controller = ApplicationController.__new__(ApplicationController)
@@ -25,13 +27,58 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.app = Mock()
         controller.videos = {}
         controller.current_playing_id = None
+        controller.app_state = Mock()
+        controller.app_state.videos = controller.videos
+        controller.app_state._lock = threading.RLock()
+        controller.app_state.upsert_video.side_effect = lambda item: controller.videos.__setitem__(item.id, item)
+        controller.app_state.clear_videos.side_effect = lambda: controller.videos.clear()
+        controller.app_state.snapshot_videos.side_effect = lambda: dict(controller.videos)
+        controller.app_state.replace_videos.side_effect = lambda videos: (
+            controller.videos.clear(),
+            controller.videos.update(videos),
+        )
+
+        def _update_video_state(video_id, *, status=None, progress=None):
+            item = controller.videos.get(video_id)
+            if item is None:
+                return None
+            if status is not None:
+                item.status = status
+            if progress is not None:
+                item.progress = progress
+            return item
+
+        controller.app_state.update_video_state.side_effect = _update_video_state
+        controller.app_state._publish_change = Mock()
+        controller.app_state.current_playing_id = None
+        controller.app_state.set_current_playing_id.side_effect = lambda video_id: setattr(
+            controller.app_state,
+            "current_playing_id",
+            video_id,
+        )
         controller.current_spider = None
         return controller
+
+    def test_collect_launch_media_paths_filters_flags_and_unsupported_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_path = os.path.join(temp_dir, "demo.mp4")
+            text_path = os.path.join(temp_dir, "notes.txt")
+            with open(media_path, "wb") as handle:
+                handle.write(b"video")
+            with open(text_path, "w", encoding="utf-8") as handle:
+                handle.write("text")
+
+            paths = ApplicationController._collect_launch_media_paths(
+                ["--mode", "gui", media_path, text_path, media_path]
+            )
+
+        self.assertEqual(paths, [str(Path(media_path).resolve())])
 
     def test_clear_local_items_uses_window_api(self):
         """验证 `test_clear_local_items_uses_window_api` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""
         controller = self._make_controller()
-        controller.videos = {"v1": VideoItem(url="https://example.com", title="demo", source="local")}
+        item = VideoItem(url="https://example.com", title="demo", source="local")
+        controller._store_video_item(item)
 
         controller._clear_local_items()
 
@@ -44,6 +91,7 @@ class ApplicationControllerTests(unittest.TestCase):
         item = VideoItem(url="https://example.com/demo.mp4", title="demo", source="local")
         item.local_path = r"C:\temp\demo.mp4"
         controller.videos[item.id] = item
+        controller.app_state.current_playing_id = item.id
         controller.current_playing_id = item.id
         controller.file_service.delete_media.return_value = True
         controller.dl_manager.cancel_task.return_value = "running"
@@ -64,6 +112,7 @@ class ApplicationControllerTests(unittest.TestCase):
         item = VideoItem(url="https://example.com/demo.mp4", title="demo", source="local")
         item.local_path = r"C:\temp\demo.mp4"
         controller.videos[item.id] = item
+        controller.app_state.current_playing_id = item.id
         controller.current_playing_id = item.id
         controller.file_service.delete_media.side_effect = FileOperationError("权限不足")
         controller.dl_manager.cancel_task.return_value = "queued"
@@ -109,6 +158,70 @@ class ApplicationControllerTests(unittest.TestCase):
 
             controller.window.play_video.assert_called_once_with(video_path)
             controller.window.show_image.assert_not_called()
+        controller.app_state.set_current_playing_id.assert_called_once_with(item.id)
+
+    def test_register_file_associations_skips_settings_when_defaults_are_applied(self):
+        controller = self._make_controller()
+        with patch.object(controller, "_current_executable_path", return_value=r"C:\App\UniversalCrawlerPro.exe"), \
+             patch("app.services.windows_file_association_service.WindowsFileAssociationService") as service_cls:
+            service = service_cls.return_value
+            service.register_current_user.return_value = SimpleNamespace(registered=True, message="")
+            service.set_current_user_defaults.return_value = SimpleNamespace(
+                applied=True,
+                defaulted_extensions=(".mp4",),
+                failed_extensions=(),
+                message="",
+            )
+            service.diagnose_current_user.return_value = SimpleNamespace(
+                available=True,
+                pending_extensions=(),
+            )
+            service.open_default_apps_settings.return_value = True
+
+            controller.on_register_file_associations(True, False)
+
+        service.register_current_user.assert_called_once_with(
+            r"C:\App\UniversalCrawlerPro.exe",
+            include_video=True,
+            include_image=False,
+        )
+        service.set_current_user_defaults.assert_called_once_with(include_video=True, include_image=False)
+        service.diagnose_current_user.assert_called_once_with(include_video=True, include_image=False)
+        service.open_default_apps_settings.assert_not_called()
+        self.assertTrue(any(".mp4" in call_.args[0] for call_ in controller.window.append_log.call_args_list))
+        self.assertTrue(
+            any("默认打开方式已生效" in call_.args[0] for call_ in controller.window.append_log.call_args_list)
+        )
+
+    def test_register_file_associations_opens_settings_when_extensions_remain_pending(self):
+        controller = self._make_controller()
+        with patch.object(controller, "_current_executable_path", return_value=r"C:\App\UniversalCrawlerPro.exe"), \
+             patch("app.services.windows_file_association_service.WindowsFileAssociationService") as service_cls:
+            service = service_cls.return_value
+            service.register_current_user.return_value = SimpleNamespace(registered=True, message="")
+            service.set_current_user_defaults.return_value = SimpleNamespace(
+                applied=False,
+                defaulted_extensions=(".mp4",),
+                failed_extensions=(".mkv",),
+                message="",
+            )
+            service.diagnose_current_user.return_value = SimpleNamespace(
+                available=True,
+                pending_extensions=(".mkv",),
+            )
+            service.open_default_apps_settings.return_value = True
+
+            controller.on_register_file_associations(True, False)
+
+        service.open_default_apps_settings.assert_called_once_with()
+        self.assertTrue(any(".mkv" in call_.args[0] for call_ in controller.window.append_log.call_args_list))
+
+    def test_register_file_associations_rejects_empty_choice(self):
+        controller = self._make_controller()
+
+        controller.on_register_file_associations(False, False)
+
+        controller.window.append_log.assert_called_once_with("未选择需要注册的资源类型")
 
     def test_on_start_crawl_rejects_duplicate_running_spider(self):
         """验证 `test_on_start_crawl_rejects_duplicate_running_spider` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""
@@ -186,7 +299,7 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.scan_local_dir()
 
         controller.window.clear_video_rows.assert_called_once()
-        self.assertEqual(controller.window.add_video_row.call_count, 2)
+        self.assertEqual(len(controller.videos), 2)
         self.assertIn(video.id, controller.videos)
         self.assertIn(image.id, controller.videos)
         log_messages = [call.args[0] for call in controller.window.append_log.call_args_list]
@@ -246,12 +359,7 @@ class ApplicationControllerTests(unittest.TestCase):
 
         self.assertEqual(item.status, "❌ 失败")
         self.assertEqual(item.progress, 100)
-        controller.window.update_video_status.assert_has_calls(
-            [
-                call(item.id, "✅ 完成", 100),
-                call(item.id, "❌ 失败", None),
-            ]
-        )
+        controller.window.update_video_status.assert_not_called()
         log_messages = [call_.args[0] for call_ in controller.window.append_log.call_args_list]
         self.assertTrue(any("下载完成" in msg for msg in log_messages))
         self.assertTrue(any("下载失败" in msg for msg in log_messages))
@@ -309,6 +417,7 @@ class ApplicationControllerTests(unittest.TestCase):
         item = VideoItem(url="", title="旧标题", source="local")
         item.local_path = __file__
         controller.videos[item.id] = item
+        controller.app_state.current_playing_id = item.id
         controller.current_playing_id = item.id
         table_item = Mock()
         table_item.column.return_value = 0
@@ -353,6 +462,18 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.current_spider.wait.assert_called_once_with(2000)
         controller.dl_manager.stop_all.assert_called_once()
 
+    def test_cleanup_dead_spider_clears_stale_reference(self):
+        controller = self._make_controller()
+        dead_spider = Mock()
+        dead_spider.isRunning.return_value = False
+        controller.current_spider = dead_spider
+        controller._active_spider_bindings = Mock()
+        controller._host().finish_crawl = Mock()
+
+        controller._cleanup_dead_spider()
+
+        self.assertIsNone(controller.current_spider)
+        controller._host().finish_crawl.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()

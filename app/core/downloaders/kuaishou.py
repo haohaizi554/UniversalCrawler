@@ -8,7 +8,6 @@ from app.models import VideoItem
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
-
 class KuaishouDownloader(BaseDownloader):
     """实现 `KuaishouDownloader` 对应的资源下载与落盘流程。"""
     source_id = "kuaishou"
@@ -20,7 +19,7 @@ class KuaishouDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `KuaishouDownloader` 使用。"""
+        
         trace_id = video_item.meta.get("trace_id")
         download_cfg = cfg.settings.download
         headers = {

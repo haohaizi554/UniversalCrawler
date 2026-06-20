@@ -17,7 +17,6 @@ import unittest
 import unittest.mock as mock
 from unittest.mock import patch, MagicMock
 
-
 # ---- Helper ----
 
 def _pyqt6_available():
@@ -26,7 +25,6 @@ def _pyqt6_available():
         return True
     except ImportError:
         return False
-
 
 def _qt_app():
     """获取或创建 QApplication（单例模式）。"""
@@ -39,7 +37,6 @@ def _qt_app():
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         app = QApplication(sys.argv)
     return app
-
 
 # ---- dispatcher.py 纯函数测试 ----
 
@@ -65,7 +62,6 @@ class DispatcherModeEnumTests(unittest.TestCase):
         from entry.dispatcher import Mode
         self.assertEqual(Mode.GUI + "-mode", "gui-mode")
         self.assertIn("gui", Mode.GUI)
-
 
 class DispatcherParseModeArgTests(unittest.TestCase):
     """parse_mode_arg 各种参数格式。"""
@@ -105,7 +101,6 @@ class DispatcherParseModeArgTests(unittest.TestCase):
         # "--mode" 后面跟另一个选项，不算 mode
         self.assertIsNone(parse_mode_arg(["--mode", "--port", "8000"]))
 
-
 class DispatcherParseEnvModeTests(unittest.TestCase):
     """环境变量解析。"""
 
@@ -130,7 +125,6 @@ class DispatcherParseEnvModeTests(unittest.TestCase):
         from entry.dispatcher import parse_env_mode, Mode
         with patch.dict(os.environ, {"UCRAWL_MODE": "GUI"}):
             self.assertEqual(parse_env_mode(), Mode.GUI)
-
 
 class DispatcherDetectModeIntentTests(unittest.TestCase):
     """参数特征智能识别。"""
@@ -168,7 +162,6 @@ class DispatcherDetectModeIntentTests(unittest.TestCase):
         from entry.dispatcher import detect_mode_intent, Mode
         self.assertEqual(detect_mode_intent([]), Mode.CLI)
 
-
 class DispatcherDetectModeTests(unittest.TestCase):
     """detect_mode 完整优先级链。"""
 
@@ -203,7 +196,6 @@ class DispatcherDetectModeTests(unittest.TestCase):
              patch("entry.dispatcher.is_gui_available", return_value=True):
             self.assertEqual(detect_mode([]), Mode.GUI)
 
-
 class DispatcherTTYTests(unittest.TestCase):
     """is_tty 各种环境行为。"""
 
@@ -233,7 +225,6 @@ class DispatcherTTYTests(unittest.TestCase):
              patch("sys.stdout.isatty", return_value=False):
             self.assertFalse(is_tty())
 
-
 class DispatcherGUIAvailableTests(unittest.TestCase):
     """is_gui_available 平台检测。"""
 
@@ -245,7 +236,6 @@ class DispatcherGUIAvailableTests(unittest.TestCase):
                           (_ for _ in ()).throw(ImportError()) if "PyQt6" in name
                           else __import__(name, *args, **kwargs)):
                 self.assertFalse(is_gui_available())
-
 
 class DispatcherUtilityTests(unittest.TestCase):
     """_display_width / _pad_to_width 等工具函数。"""
@@ -271,7 +261,6 @@ class DispatcherUtilityTests(unittest.TestCase):
         self.assertEqual(_pad_to_width("abcdef", 3), "abcdef")
         # CJK 也正确填充
         self.assertEqual(_pad_to_width("中", 4), "中  ")
-
 
 # ---- dispatcher.py Qt 弹窗测试（需要 PyQt6） ----
 
@@ -321,7 +310,6 @@ class DispatcherQtDialogTests(unittest.TestCase):
                 icon = _load_app_icon()
                 self.assertIsNotNone(icon)
 
-
 # ---- web_entry.py 端口冲突弹窗测试 ----
 
 @unittest.skipUnless(_pyqt6_available(), "PyQt6 not available")
@@ -355,7 +343,6 @@ class WebEntryPortDialogTests(unittest.TestCase):
         self.assertIn("socket", source.lower())
         self.assertIn(".bind", source)
 
-
 class WebEntryModuleTests(unittest.TestCase):
     """web_entry 模块导出（不依赖 Qt）。"""
 
@@ -375,7 +362,6 @@ class WebEntryModuleTests(unittest.TestCase):
         from entry import web_entry
         source = open(web_entry.__file__, encoding="utf-8").read()
         self.assertIn("--no-qt", source)
-
 
 # ---- dispatcher TUI 菜单测试（mock stdio）----
 
@@ -415,7 +401,6 @@ class DispatcherTUIMenuTests(unittest.TestCase):
             with patch("entry.dispatcher.is_tty", return_value=True):
                 self.assertEqual(prompt_mode_menu(), Mode.CLI)
 
-
 # ---- Qt 模式不可用时的 fallback ----
 
 class DispatcherFallbackTests(unittest.TestCase):
@@ -437,6 +422,20 @@ class DispatcherFallbackTests(unittest.TestCase):
                 # 抛 ImportError 或其他 → 也是可预测的
                 self.assertIsInstance(e, (ImportError, FileNotFoundError, OSError))
 
-
 if __name__ == "__main__":
     unittest.main()
+
+@unittest.skipUnless(_pyqt6_available(), "PyQt6 not available")
+class FileAssociationDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _qt_app()
+
+    def test_default_choice_checks_video_not_image(self):
+        from app.ui.dialogs.file_association import FileAssociationDialog
+
+        dialog = FileAssociationDialog()
+        choice = dialog.choice()
+
+        self.assertTrue(choice.include_video)
+        self.assertFalse(choice.include_image)

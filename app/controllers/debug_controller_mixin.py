@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 class DebugControllerMixin:
     """Debug artifact actions for host-backed desktop controllers."""
 

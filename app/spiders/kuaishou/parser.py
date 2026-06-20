@@ -6,7 +6,6 @@ import base64
 import re
 import urllib.parse
 
-
 class KuaishouParser:
     """负责 `KuaishouParser` 对应的数据清洗与结构化解析。"""
     def extract_all_possible_ids(self, url: str) -> set[str]:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
+from copy import deepcopy
 from typing import Any, Callable
 
 from app.config import cfg
@@ -16,16 +18,34 @@ from app.debug_logger import debug_logger
 from app.exceptions import DebugActionError, FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.services.file_service import MediaLibraryService
+from app.services.frontend_event_aggregator import FrontendEventPriority, priority_for_topic, sections_for_topic
+from app.services.frontend_state_service import FrontendStateService
+from app.services.icon_registry import icon_manifest
 
 class WebSocketBridge:
-    """纯 Python 桥：直接调度到 asyncio 事件循环，不依赖 Qt。"""
+    """Thread-safe Python bridge from controller events to WebSocket transport."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop | None, send_func: Callable):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop | None,
+        send_func: Callable,
+        *,
+        event_recorder: Callable[[str, dict[str, Any]], None] | None = None,
+        delta_provider: Callable[[int], dict[str, Any]] | None = None,
+        delta_interval_seconds: float = 0.12,
+    ):
         self._loop = loop
         self._send_func = send_func
+        self._event_recorder = event_recorder
+        self._delta_provider = delta_provider
+        self._delta_interval_seconds = max(0.02, float(delta_interval_seconds))
+        self._pending_tasks: set[asyncio.Task] = set()
+        self._delta_lock = threading.RLock()
+        self._delta_pending = False
+        self._last_delta_version = 0
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """获取事件循环，延迟获取以确保是 uvicorn 运行时的事件循环。"""
+        """Resolve the uvicorn loop lazily so worker threads can emit safely."""
         if self._loop is None or self._loop.is_closed():
             try:
                 self._loop = asyncio.get_running_loop()
@@ -37,11 +57,78 @@ class WebSocketBridge:
         return self._loop
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
-        """显式设置事件循环（在 WebSocket 连接时由主线程调用）。"""
+        """Explicitly bind the running WebSocket event loop."""
         self._loop = loop
 
+    def mark_frontend_version_sent(self, version: int) -> None:
+        try:
+            normalized = int(version or 0)
+        except (TypeError, ValueError):
+            normalized = 0
+        with self._delta_lock:
+            self._last_delta_version = max(self._last_delta_version, normalized)
+
     def emit(self, event_type: str, data: Any = None):
-        """从任意线程安全地广播事件。"""
+        """Safely broadcast an event from any thread and schedule frontend deltas."""
+        event_type = str(event_type or "")
+        payload = data if isinstance(data, dict) else {}
+        self._record_frontend_event(event_type, payload)
+        self._schedule_frontend_delta(event_type)
+        self._schedule_send(event_type, data)
+
+    def _record_frontend_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type in {"frontend_state", "frontend_delta", "init_state", "platforms", "config"}:
+            return
+        if self._event_recorder is None:
+            return
+        try:
+            self._event_recorder(event_type, payload)
+        except Exception as exc:
+            debug_logger.log_exception("WebSocketBridge", "record_frontend_event", exc)
+
+    def _schedule_frontend_delta(self, event_type: str) -> None:
+        if self._delta_provider is None or event_type in {"frontend_state", "frontend_delta"}:
+            return
+        if sections_for_topic(event_type) is None:
+            return
+        priority = priority_for_topic(event_type)
+        delay = 0.0 if priority == FrontendEventPriority.CRITICAL else self._delta_interval_seconds
+        with self._delta_lock:
+            if self._delta_pending and priority != FrontendEventPriority.CRITICAL:
+                return
+            self._delta_pending = True
+        loop = self._get_loop()
+
+        def _schedule() -> None:
+            if delay <= 0:
+                loop.call_soon(self._flush_frontend_delta)
+            else:
+                loop.call_later(delay, self._flush_frontend_delta)
+
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(_schedule)
+        else:
+            self._flush_frontend_delta()
+
+    def _flush_frontend_delta(self) -> None:
+        with self._delta_lock:
+            self._delta_pending = False
+            base_version = self._last_delta_version
+        if self._delta_provider is None:
+            return
+        try:
+            delta = self._delta_provider(base_version)
+        except Exception as exc:
+            debug_logger.log_exception("WebSocketBridge", "frontend_delta", exc)
+            return
+        version = int(delta.get("version") or base_version or 0)
+        if version == base_version and not delta.get("changed_sections"):
+            return
+        with self._delta_lock:
+            self._last_delta_version = version
+        self._schedule_send("frontend_delta", delta)
+
+    def _schedule_send(self, event_type: str, data: Any = None) -> None:
         target_loop = self._get_loop()
         try:
             current_loop = asyncio.get_running_loop()
@@ -49,7 +136,7 @@ class WebSocketBridge:
                 def _schedule():
                     coro = self._send_func(event_type, data)
                     if asyncio.iscoroutine(coro):
-                        current_loop.create_task(coro)
+                        self._track_task(current_loop.create_task(coro))
 
                 current_loop.call_soon(_schedule)
                 return
@@ -60,21 +147,37 @@ class WebSocketBridge:
             def _schedule():
                 coro = self._send_func(event_type, data)
                 if asyncio.iscoroutine(coro):
-                    target_loop.create_task(coro)
+                    self._track_task(target_loop.create_task(coro))
 
             target_loop.call_soon_threadsafe(_schedule)
         else:
             import logging
-            logging.warning(f"WebSocketBridge: 事件循环未运行，丢弃事件 {event_type}")
+            logging.warning(f"WebSocketBridge: event loop is not running; dropped event {event_type}")
+
+    def _track_task(self, task: asyncio.Task) -> None:
+        add_done_callback = getattr(task, "add_done_callback", None)
+        if not callable(add_done_callback):
+            return
+        self._pending_tasks.add(task)
+
+        def _discard(done_task: asyncio.Task) -> None:
+            self._pending_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                debug_logger.log_exception("WebSocketBridge", "send_task", exc)
+
+        add_done_callback(_discard)
 
     def call_later(self, delay_seconds: float, callback: Callable[[], None]) -> None:
-        """在 Web 事件循环中延迟调度回调。"""
+        """Schedule a callback on the Web event loop when available."""
         loop = self._get_loop()
         if loop and loop.is_running():
             loop.call_soon_threadsafe(lambda: loop.call_later(delay_seconds, callback))
             return
         callback()
-
 
 class WebController(ControllerSessionMixin, MediaLibraryMixin):
     """Web 端核心控制器，逻辑与 ApplicationController 对称，但输出到 WebSocket。"""
@@ -91,23 +194,89 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     def __init__(self, loop: asyncio.AbstractEventLoop, send_func: Callable):
         self._loop = loop
         self._send_func = send_func
-        self.bridge = WebSocketBridge(loop, send_func)
+        self.frontend_state_service = FrontendStateService(self)
+        self.bridge = WebSocketBridge(
+            loop,
+            send_func,
+            event_recorder=self.frontend_state_service.record_event,
+            delta_provider=self.get_frontend_delta,
+        )
 
         self.file_service = MediaLibraryService(self.VIDEO_EXTENSIONS, self.IMAGE_EXTENSIONS)
-        self.dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
+        self._dl_manager: DownloadManager | None = None
+        self._dl_manager_lock = threading.RLock()
 
         self.videos: dict[str, VideoItem] = {}
+        self._videos_lock = threading.RLock()
         self.current_spider = None
-        self.current_save_dir: str = cfg.get("common", "save_directory", "downloads")
+        self._lifecycle_lock = threading.RLock()
+        self._lifecycle_condition = threading.Condition(self._lifecycle_lock)
+        self._is_shutting_down = False
+        self._save_dir_lock = threading.RLock()
+        self._current_save_dir: str = cfg.get("common", "save_directory", "downloads")
+        self._stop_wait_lock = threading.RLock()
+        self._stop_wait_count = 0
+        self._stop_wait_spider = None
         self._pending_selection_strategy = None  # 由 /api/crawl/start 设置，供 _bind_spider_signals 使用
+    @property
+    def dl_manager(self) -> DownloadManager:
+        """延迟创建 DownloadManager，避免空闲会话也创建实例。"""
+        with self._dl_manager_lock:
+            if self._dl_manager is None:
+                self._dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
+                self._connect_download_signals()
+            return self._dl_manager
 
-        self._connect_download_signals()
+    @property
+    def current_save_dir(self) -> str:
+        with self._save_dir_lock:
+            return self._current_save_dir
+
+    @current_save_dir.setter
+    def current_save_dir(self, value: str) -> None:
+        with self._save_dir_lock:
+            self._current_save_dir = str(value)
 
     def _connect_download_signals(self):
-        self.dl_manager.task_started.connect(self._on_task_started)
-        self.dl_manager.task_progress.connect(self._on_task_progress)
-        self.dl_manager.task_finished.connect(self._on_task_finished)
-        self.dl_manager.task_error.connect(self._on_task_error)
+        manager = self._dl_manager
+        if manager is None:
+            return
+        manager.task_started.connect(self._on_task_started)
+        manager.task_progress.connect(self._on_task_progress)
+        manager.task_finished.connect(self._on_task_finished)
+        manager.task_error.connect(self._on_task_error)
+
+    def _video_lookup(self, video_id: str) -> VideoItem | None:
+        with self._videos_lock:
+            return self.videos.get(video_id)
+
+    def _video_state_guard(self):
+        return self._videos_lock
+
+    def _store_video_item(self, item: VideoItem) -> None:
+        with self._videos_lock:
+            self.videos[item.id] = item
+
+    def _remove_video_item(self, video_id: str) -> VideoItem | None:
+        with self._videos_lock:
+            return self.videos.pop(video_id, None)
+
+    def _clear_video_items(self) -> None:
+        with self._videos_lock:
+            self.videos.clear()
+
+    def _video_items_snapshot(self) -> dict[str, VideoItem]:
+        with self._videos_lock:
+            return deepcopy(self.videos)
+
+    def _video_count(self) -> int:
+        with self._videos_lock:
+            return len(self.videos)
+
+    def _has_active_spider(self) -> bool:
+        with self._lifecycle_lock:
+            spider = self.current_spider
+        return bool(spider and spider.isRunning())
 
     # ---- 下载信号处理 ----
 
@@ -191,11 +360,24 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         """
         if self.current_spider and not self.current_spider.isRunning():
             self.bridge.emit("log", {"message": "⚠️ 上次任务未正常结束，正在清理..."})
+            self._disconnect_spider_signals(self.current_spider)
             self.current_spider = None
             self._pending_selection_strategy = None
             self.bridge.emit("crawl_state", {"is_running": False})
 
     def start_crawl(self, source_id: str, keyword: str, config: dict):
+        with self._lifecycle_condition:
+            shutdown_deadline = time.monotonic() + 10.0
+            while self._is_shutting_down:
+                remaining = shutdown_deadline - time.monotonic()
+                if remaining <= 0:
+                    self.bridge.emit("log", {"message": "上一个任务仍在停止中，请稍后再试"})
+                    self.bridge.emit("crawl_state", {"is_running": False})
+                    return
+                self._lifecycle_condition.wait(timeout=min(0.5, remaining))
+            self._start_crawl_unlocked(source_id, keyword, config)
+
+    def _start_crawl_unlocked(self, source_id: str, keyword: str, config: dict):
         # 清理已退出但残留的 spider 引用
         self._cleanup_dead_spider()
 
@@ -298,14 +480,41 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             spider.ask_user_selection = MethodType(ask_user_selection_web, spider)
 
         # BaseSpider 现在使用纯 Python 回调信号；WebSocketBridge 自身已负责跨线程投递到 asyncio。
-        spider.sig_log.connect(lambda msg: self.bridge.emit("log", {"message": msg}))
+        on_log = lambda msg: self.bridge.emit("log", {"message": msg})
+        spider.sig_log.connect(on_log)
         spider.sig_item_found.connect(self._on_spider_item_found)
         spider.sig_select_tasks.connect(self._on_spider_select_tasks)
         spider.sig_finished.connect(self._on_spider_finished)
+        self._spider_signal_handlers = {
+            "on_log": on_log,
+            "on_item_found": self._on_spider_item_found,
+            "on_select_tasks": self._on_spider_select_tasks,
+            "on_finished": self._on_spider_finished,
+        }
+
+    def _disconnect_spider_signals(self, spider) -> None:
+        handlers = getattr(self, "_spider_signal_handlers", None) or {}
+        mapping = (
+            ("sig_log", handlers.get("on_log")),
+            ("sig_item_found", handlers.get("on_item_found")),
+            ("sig_select_tasks", handlers.get("on_select_tasks")),
+            ("sig_finished", handlers.get("on_finished")),
+        )
+        for signal_name, callback in mapping:
+            if callback is None:
+                continue
+            signal = getattr(spider, signal_name, None)
+            disconnect = getattr(signal, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    disconnect(callback)
+                except (TypeError, ValueError):
+                    pass
+        self._spider_signal_handlers = {}
 
     def _on_spider_item_found(self, item: VideoItem):
         self._prepare_pending_item(item)
-        self.videos[item.id] = item
+        self._store_video_item(item)
         self.bridge.emit("item_found", self._video_item_to_dict(item))
         self.dl_manager.add_task(item, self.current_save_dir)
         # 与 GUI _on_spider_item_found 对齐：记录 item 发现日志（含 context 和 trace_id）
@@ -377,7 +586,12 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         )
 
     def _on_spider_finished(self):
+        with self._lifecycle_lock:
+            self._on_spider_finished_unlocked()
+
+    def _on_spider_finished_unlocked(self):
         import threading
+        spider = self.current_spider
         debug_logger.log(
             component="WebController",
             action="_on_spider_finished_enter",
@@ -390,6 +604,8 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             },
         )
         self.bridge.emit("log", {"message": "✅ 爬虫任务结束"})
+        if spider is not None:
+            self._disconnect_spider_signals(spider)
         self.bridge.emit("crawl_state", {"is_running": False})
         # 与 GUI _on_spider_finished 对齐：记录完成日志
         debug_logger.log(
@@ -404,11 +620,16 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._pending_selection_strategy = None
 
     def stop_crawl(self):
+        with self._lifecycle_lock:
+            self._stop_crawl_unlocked()
+
+    def _stop_crawl_unlocked(self):
         if not self.current_spider:
             return
         # 防抖：如果已经在停止等待中，忽略重复请求
-        if getattr(self, '_stop_wait_spider', None) is not None:
-            return
+        with self._stop_wait_lock:
+            if getattr(self, '_stop_wait_spider', None) is not None:
+                return
         self._do_stop_crawl()
 
     def _do_stop_crawl(self):
@@ -426,24 +647,29 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             status_code="WEB_CRAWL_STOP",
         )
         # 异步等待 spider 退出（避免阻塞 Qt 事件循环）
-        self._stop_wait_count = 0
-        self._stop_wait_spider = spider
+        with self._stop_wait_lock:
+            self._stop_wait_count = 0
+            self._stop_wait_spider = spider
         self._schedule_stop_wait()
 
     def _schedule_stop_wait(self):
         """异步等待 spider 线程退出（避免阻塞 Qt 事件循环）。"""
-        spider = getattr(self, '_stop_wait_spider', None)
-        if spider is None:
-            return
-
-        self._stop_wait_count += 1
+        with self._stop_wait_lock:
+            spider = getattr(self, '_stop_wait_spider', None)
+            if spider is None:
+                return
+            self._stop_wait_count += 1
+            stop_wait_count = self._stop_wait_count
 
         if not spider.isRunning():
             # spider 已退出
             self._finish_stop(spider, forced=False)
             return
 
-        if self._stop_wait_count >= 10:  # 1 秒超时（10 * 100ms）
+        if stop_wait_count >= 300:  # 30 秒超时（300 * 100ms）
+            if self._spider_in_selection_wait(spider) and stop_wait_count < 600:
+                self.bridge.call_later(0.1, self._schedule_stop_wait)
+                return
             # spider 仍在运行（Playwright 阻塞），强制清理
             self._finish_stop(spider, forced=True)
             return
@@ -451,31 +677,41 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         # 继续等待
         self.bridge.call_later(0.1, self._schedule_stop_wait)
 
+    @staticmethod
+    def _spider_in_selection_wait(spider) -> bool:
+        if spider is None or not spider.is_alive():
+            return False
+        resume_event = getattr(spider, "_resume_event", None)
+        if resume_event is None:
+            return False
+        return not resume_event.is_set() and bool(getattr(spider, "_selection_emit_perf_ms", 0))
+
     def _finish_stop(self, spider, forced: bool = False):
+        with self._lifecycle_lock:
+            self._finish_stop_unlocked(spider, forced=forced)
+
+    def _finish_stop_unlocked(self, spider, forced: bool = False):
         """完成停止操作的清理。"""
         # 强制释放时断开 spider 信号，防止幽灵 spider 继续发消息到前端
+        self._disconnect_spider_signals(spider)
         if forced:
-            try:
-                spider.sig_log.disconnect()
-                spider.sig_item_found.disconnect()
-                spider.sig_select_tasks.disconnect()
-                spider.sig_finished.disconnect()
-            except Exception:
-                pass
-            self.bridge.emit("log", {"message": "⚠️ 爬虫线程未能在 1 秒内退出，已强制释放"})
+            self.bridge.emit("log", {"message": "⚠️ 爬虫线程未能在 30 秒内退出，已强制释放"})
         else:
             self.bridge.emit("log", {"message": "✅ 任务已停止"})
         # 清理 spider 引用（与 GUI _on_spider_finished 对齐）
         if self.current_spider is spider:
             self.current_spider = None
         self._pending_selection_strategy = None
-        self._stop_wait_spider = None
-        self._stop_wait_count = 0
+        with self._stop_wait_lock:
+            self._stop_wait_spider = None
+            self._stop_wait_count = 0
         self.bridge.emit("crawl_state", {"is_running": False})
 
     def resume_spider_selection(self, selected_indices: list[int] | None):
-        if self.current_spider:
-            self.current_spider.resume_from_ui(selected_indices)
+        with self._lifecycle_lock:
+            spider = self.current_spider
+        if spider:
+            spider.resume_from_ui(selected_indices)
 
     # ---- 目录扫描 ----
 
@@ -499,7 +735,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             details={"directory": directory},
         )
 
-        self.videos.clear()
+        self._clear_video_items()
         self.bridge.emit("clear_videos", {"directory": directory})
 
         try:
@@ -553,7 +789,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             status_code="WEB_SCAN_START",
             details={"directory": directory},
         )
-        self.videos.clear()
+        self._clear_video_items()
         await self._send_func("clear_videos", {"directory": directory})
 
         # 2. 文件 I/O 在线程池中执行（不阻塞事件循环）
@@ -642,7 +878,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             self.bridge.emit("log", {"message": message})
         self.bridge.emit("video_removed", {"video_id": video_id})
 
-    async def async_delete_video(self, video_id: str):
+    async def async_delete_video(self, video_id: str, _approved_roots=None):
         """异步版删除视频：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。"""
         import asyncio
         context = self._begin_delete_video(video_id)
@@ -676,10 +912,10 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         )
         return {"status": "ok"}
 
-    async def async_rename_video(self, video_id: str, new_title: str) -> dict:
+    async def async_rename_video(self, video_id: str, new_title: str, _approved_roots=None) -> dict:
         """异步版重命名：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。"""
         import asyncio
-        video = self.videos.get(video_id)
+        video = self._video_lookup(video_id)
         if not video:
             return {"status": "error", "message": "视频不存在"}
         normalized_title = new_title.strip()
@@ -750,17 +986,41 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     # ---- 状态快照 ----
 
     def get_state(self) -> dict:
+        with self._lifecycle_lock:
+            spider = self.current_spider
         return {
             "current_save_dir": self.current_save_dir,
-            "is_crawling": bool(self.current_spider and self.current_spider.isRunning()),
+            "is_crawling": bool(spider and spider.isRunning()),
             # 与 GUI 状态栏对齐：返回当前已加载的视频数量
-            "video_count": len(self.videos),
+            "video_count": self._video_count(),
         }
+
+    def get_frontend_state(self) -> dict:
+        return self.frontend_state_service.get_snapshot()
+
+    def get_frontend_delta(self, since_version: int = 0) -> dict:
+        return self.frontend_state_service.get_delta(since_version)
+
+    def get_frontend_icons(self) -> dict:
+        return icon_manifest()
+
+    def handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
+        return self.frontend_state_service.handle_action(action, payload or {})
+
+    async def async_handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        if action == "delete_item":
+            video_id = str(payload.get("id") or payload.get("video_id") or "")
+            if not video_id:
+                return {"status": "error", "message": "missing video id"}
+            await self.async_delete_video(video_id)
+            return {"status": "ok", "message": "deleted", "data": {"video_id": video_id}}
+        return self.handle_frontend_action(action, payload)
 
     # ---- 媒体路径 ----
 
     def get_media_path(self, video_id: str) -> str | None:
-        item = self.videos.get(video_id)
+        item = self._video_lookup(video_id)
         if item and item.local_path and os.path.exists(item.local_path):
             return item.local_path
         return None
@@ -773,7 +1033,23 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         return item.to_dict()
 
     def shutdown(self):
-        if self.current_spider and self.current_spider.isRunning():
-            self.current_spider.stop()
-            self.current_spider.wait(2000)
-        self.dl_manager.stop_all()
+        with self._lifecycle_condition:
+            self._is_shutting_down = True
+            spider = self.current_spider
+            self.current_spider = None
+            self._pending_selection_strategy = None
+            manager = self._dl_manager
+
+        try:
+            if spider and spider.isRunning():
+                spider.stop()
+                spider.wait(2000)
+            if manager is not None:
+                manager.stop_all()
+        finally:
+            with self._lifecycle_condition:
+                self._is_shutting_down = False
+                self._lifecycle_condition.notify_all()
+
+    def _shutdown_unlocked(self):
+        self.shutdown()

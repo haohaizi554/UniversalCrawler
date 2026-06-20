@@ -22,7 +22,6 @@ from unittest.mock import patch, MagicMock
 # 让 cli.sdk 可被 import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
 def _has_pyqt6():
     try:
         import PyQt6
@@ -30,14 +29,12 @@ def _has_pyqt6():
     except ImportError:
         return False
 
-
 def _has_fastapi():
     try:
         import fastapi
         return True
     except ImportError:
         return False
-
 
 # ---- 测试 helper：触发 SDK 校验失败 ----
 
@@ -51,7 +48,6 @@ def _sdk_invalid_source(source):
     except (ValueError, TypeError) as e:
         return e
 
-
 def _sdk_invalid_keyword_type(keyword):
     """触发 SDK 拒绝非法 keyword 类型。"""
     from cli.sdk import UcrawlSDK
@@ -62,7 +58,6 @@ def _sdk_invalid_keyword_type(keyword):
     except (ValueError, TypeError) as e:
         return e
 
-
 def _sdk_invalid_timeout(timeout):
     from cli.sdk import UcrawlSDK
     sdk = UcrawlSDK(save_dir=".")
@@ -71,7 +66,6 @@ def _sdk_invalid_timeout(timeout):
         return None
     except (ValueError, TypeError) as e:
         return e
-
 
 def _api_invalid_source(source):
     """触发 REST API 拒绝非法 source（通过 TestClient）。"""
@@ -83,7 +77,6 @@ def _api_invalid_source(source):
     r = client.post("/api/search", json={"source": source, "keyword": "kw"})
     return r
 
-
 def _api_invalid_keyword_type(keyword):
     """API 的 keyword 是 str 类型，传入 int 不会拒（FastAPI 会自动转 str 或 422）"""
     if not _has_fastapi():
@@ -93,7 +86,6 @@ def _api_invalid_keyword_type(keyword):
     client = TestClient(create_app())
     r = client.post("/api/search", json={"source": "douyin", "keyword": keyword})
     return r
-
 
 def _api_invalid_timeout(timeout):
     if not _has_fastapi():
@@ -105,7 +97,6 @@ def _api_invalid_timeout(timeout):
         "source": "douyin", "keyword": "kw", "timeout": timeout
     })
     return r
-
 
 def _cli_invalid_source(source):
     """触发 CLI 拒绝非法 source（通过 main()）。"""
@@ -119,7 +110,6 @@ def _cli_invalid_source(source):
             return 0  # 不抛
         except SystemExit as e:
             return e.code
-
 
 # ============================================================
 # 测试用例
@@ -163,7 +153,6 @@ class PlatformEnumContractTests(unittest.TestCase):
             # API 返回的所有平台 SDK 都应该支持
             self.assertIn(p, sdk_ids,
                           f"SDK missing platform: {p}")
-
 
 class SourceValidationContractTests(unittest.TestCase):
     """source 校验契约：SDK/CLI/API 都拒绝非法平台。"""
@@ -215,7 +204,6 @@ class SourceValidationContractTests(unittest.TestCase):
         if r.status_code == 200:
             self.assertEqual(r.json().get("status"), "error")
 
-
 class KeywordValidationContractTests(unittest.TestCase):
     """keyword 校验契约。"""
 
@@ -231,7 +219,6 @@ class KeywordValidationContractTests(unittest.TestCase):
     def test_api_rejects_empty_keyword(self):
         r = _api_invalid_keyword_type("")
         self.assertEqual(r.json().get("status"), "error")
-
 
 class TimeoutValidationContractTests(unittest.TestCase):
     """timeout 校验契约：所有层都拒绝 timeout <= 0 和非数字。"""
@@ -259,7 +246,6 @@ class TimeoutValidationContractTests(unittest.TestCase):
     def test_api_rejects_string_timeout(self):
         r = _api_invalid_timeout("abc")
         self.assertEqual(r.json().get("status"), "error")
-
 
 class SelectionStrategyContractTests(unittest.TestCase):
     """选择策略名称契约：SDK/CLI/API 接受相同的 strategy 名称。"""
@@ -343,7 +329,6 @@ class SelectionStrategyContractTests(unittest.TestCase):
                     except SystemExit as e:
                         self.fail(f"CLI rejected flag {flag}: exit={e.code}")
 
-
 class ConfigValidationContractTests(unittest.TestCase):
     """config 校验契约。"""
 
@@ -363,7 +348,6 @@ class ConfigValidationContractTests(unittest.TestCase):
             "config": {"max_items": "not_int"},
         })
         self.assertEqual(r.json().get("status"), "error")
-
 
 class DownloadValidationContractTests(unittest.TestCase):
     """download_video 校验契约。"""
@@ -402,7 +386,6 @@ class DownloadValidationContractTests(unittest.TestCase):
         self.assertEqual(r.json().get("status"), "error")
         self.assertIn("url", r.json().get("error", ""))
 
-
 class ScanValidationContractTests(unittest.TestCase):
     """scan_directory 校验契约。"""
 
@@ -437,7 +420,6 @@ class ScanValidationContractTests(unittest.TestCase):
         client = TestClient(create_app())
         r = client.post("/api/scan", json={"directory": ".", "scan_limit": "abc"})
         self.assertEqual(r.json().get("status"), "error")
-
 
 class SelectionDictContractTests(unittest.TestCase):
     """selection 字典格式契约（与 API 对齐）。"""
@@ -475,7 +457,6 @@ class SelectionDictContractTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             sdk._resolve_selection({"strategy": "preload", "choices": [0, 1]})  # 1D list
 
-
 class SDKOutputStructureTests(unittest.TestCase):
     """SDK 输出结构契约（与 REST API /api/search 对齐）。"""
     # 这里只验证错误时抛出的异常结构，验证成功时需 mock runner
@@ -491,7 +472,6 @@ class SDKOutputStructureTests(unittest.TestCase):
             result = sdk.search("douyin", "kw")
         self.assertIsInstance(result, dict)
         self.assertEqual(result["status"], "ok")
-
 
 class ListPlatformsContractTests(unittest.TestCase):
     """list_platforms 输出契约。"""
@@ -510,6 +490,11 @@ class ListPlatformsContractTests(unittest.TestCase):
         self.assertIsNotNone(kuaishou)
         self.assertIn("分享链接", kuaishou["search_placeholder"])
 
+        bilibili = next((item for item in result if item["id"] == "bilibili"), None)
+        self.assertIsNotNone(bilibili)
+        for token in ("BV", "UP", "\u5408\u96c6", "\u4e3b\u9875", "\u89c6\u9891", "\u5206\u4eab", "\u5173\u952e\u8bcd"):
+            self.assertIn(token, bilibili["search_placeholder"])
+
     @unittest.skipUnless(_has_fastapi(), "FastAPI not available")
     def test_sdk_list_platforms_matches_api(self):
         """SDK.list_platforms() 的字段名必须与 API 一致。"""
@@ -526,7 +511,6 @@ class ListPlatformsContractTests(unittest.TestCase):
         for pid in sdk_list:
             self.assertEqual(set(sdk_list[pid].keys()) - {"description", "settings"},
                              set(api_list[pid].keys()) - {"description", "settings"})
-
 
 if __name__ == "__main__":
     unittest.main()

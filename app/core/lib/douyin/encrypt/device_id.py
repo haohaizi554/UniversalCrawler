@@ -10,7 +10,7 @@ try:
     from ..tools import PARAMS_HEADERS_TIKTOK, request_params
 except ImportError:
     PARAMS_HEADERS_TIKTOK = {}
-    """执行 `request_params` 对应的业务逻辑。"""
+    
     async def request_params(*args, **kwargs):
         """Fallback async request stub used when the real helper is unavailable."""
 
@@ -24,9 +24,8 @@ if TYPE_CHECKING:
 
 __all__ = ["DeviceId"]
 
-
 class DeviceId:
-    """封装 `DeviceId` 在 `app/core/lib/douyin/encrypt/device_id.py` 中承担的核心逻辑。"""
+    
     NAME = "device_id"
     URL = "https://www.tiktok.com/explore"
     DEVICE_ID = compile(r'"wid":"(\d{19})"')
@@ -38,7 +37,7 @@ class DeviceId:
         headers: dict,
         **kwargs,
     ) -> [str, str]:
-        """获取 `device_id` 对应的数据或状态，供 `DeviceId` 使用。"""
+        
         response = await request_params(
             logger,
             cls.URL,
@@ -62,7 +61,7 @@ class DeviceId:
         number: int,
         **kwargs,
     ) -> [[str, str]]:
-        """获取 `device_ids` 对应的数据或状态，供 `DeviceId` 使用。"""
+        
         return [
             await cls.get_device_id(
                 logger,
@@ -72,17 +71,16 @@ class DeviceId:
             for _ in range(number)
         ]
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     class Logger:
-        """执行 `error` 对应的业务逻辑，供 `Logger` 使用。"""
+        
         """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
         def error(self, msg):
             """Print an error message to the console."""
 
             print(msg)
-        """执行 `info` 对应的业务逻辑，供 `Logger` 使用。"""
+        
         def info(self, msg, *args):
             """Print an informational message to the console."""
 

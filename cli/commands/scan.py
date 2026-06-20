@@ -11,7 +11,6 @@ import sys
 
 from cli.sdk import UcrawlSDK
 
-
 def add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("directory", help="要扫描的目录")
     parser.add_argument("--limit", type=int, default=None,
@@ -20,7 +19,6 @@ def add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     out_group = parser.add_argument_group("输出")
     out_group.add_argument("--quiet", "-q", action="store_true", help="不输出扫描进度到 stderr")
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式")
-
 
 def handle_scan_command(args: argparse.Namespace) -> int:
     # 与 SDK scan_directory() 和 REST API /api/scan 对齐：limit 从配置读取

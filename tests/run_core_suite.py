@@ -23,7 +23,6 @@ except ImportError:
     print("警告: 未安装BeautifulReport，将使用默认文本报告")
     print("安装命令: pip install BeautifulReport")
 
-
 CORE_TEST_MODULES = [
     "tests.test_video_item",
     "tests.test_utils_filenames",
@@ -40,7 +39,6 @@ CORE_TEST_MODULES = [
     "tests.test_main_entry",
 ]
 
-
 def build_suite() -> unittest.TestSuite:
     """构建核心测试套件，逐模块加载并打印状态。"""
     loader = unittest.defaultTestLoader
@@ -52,7 +50,6 @@ def build_suite() -> unittest.TestSuite:
         except Exception as e:
             print(f"✗ 加载测试模块失败 {module_name}: {e}")
     return suite
-
 
 if __name__ == "__main__":
     import argparse

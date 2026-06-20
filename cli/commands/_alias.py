@@ -13,7 +13,6 @@ import argparse
 
 from cli.commands.search import add_search_arguments, handle_search_command
 
-
 def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None:
     """为每个平台添加 search 子命令。"""
     for source in ["douyin", "bilibili", "kuaishou", "missav"]:
@@ -36,7 +35,6 @@ def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None
         # argparse 不支持"修改"已添加参数，我们这里覆盖
         # 通过 set_defaults 预填充 source
         search_parser.set_defaults(source=source)
-
 
 def handle_platform_alias(args: argparse.Namespace) -> int:
     """处理平台子命令。"""

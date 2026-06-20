@@ -8,18 +8,15 @@ from typing import Any, Callable
 from shared.selection_runtime import SelectionStrategyFactory
 from shared.spider_session_runtime import SpiderLaunchRequest
 
-
 BuildSelectionStrategyFn = Callable[[dict | None], Any]
 MergeDefaultConfigFn = Callable[[str, dict], dict]
 ValidateConfigTypesFn = Callable[[dict], str | None]
 MergeConvenienceParamsFn = Callable[[dict, dict, str], Any]
 
-
 @dataclass(frozen=True, slots=True)
 class LaunchBuildFailure:
     error: str
     requires_crawl_state_reset: bool = True
-
 
 class WebWorkflowLaunchBuilder:
     """Builds SpiderLaunchRequest from web payload with validation."""

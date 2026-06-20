@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.models import VideoItem
 
-
 class DesktopHostAdapter:
     """Thin adapter that isolates direct MainWindow side effects from controllers."""
 
@@ -81,6 +80,9 @@ class DesktopHostAdapter:
 
     def refresh_table_bindings(self) -> None:
         self.window.refresh_table_bindings()
+
+    def refresh_frontend_state(self, *, force: bool = False, topics: set[str] | None = None) -> None:
+        self.window.refresh_frontend_state(force=force, topics=topics)
 
     def reorder_video_row(self, item: VideoItem) -> int:
         return self.window.reorder_video_row(item)

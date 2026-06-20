@@ -5,14 +5,12 @@ from app.controllers.debug_controller_mixin import DebugControllerMixin
 from app.models import VideoItem
 from shared.controller_session import ControllerSessionMixin
 
-
 class _DummyDebugController(DebugControllerMixin, ControllerSessionMixin):
     def __init__(self):
         self.debug_service = Mock()
         self.app = Mock()
         self.videos = {}
         self._run_debug_action = Mock()
-
 
 class DebugControllerMixinTests(unittest.TestCase):
     def test_open_latest_log_delegates_to_run_debug_action(self):
@@ -65,7 +63,6 @@ class DebugControllerMixinTests(unittest.TestCase):
         self.assertEqual(action_name, "复制 trace_id")
         callback()
         controller.debug_service.copy_trace_id.assert_called_once_with(clipboard, None)
-
 
 if __name__ == "__main__":
     unittest.main()

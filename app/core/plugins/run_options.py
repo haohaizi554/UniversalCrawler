@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 def build_missav_proxy_url(proxy_str: str) -> str:
     """Normalize preset labels and custom host:port values into URLs."""
     normalized = proxy_str.strip()

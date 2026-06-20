@@ -24,7 +24,6 @@ class DownloaderError(Exception):
         """提供 `__str__` 对应的内部辅助逻辑，供 `DownloaderError` 使用。"""
         return f"DownloaderError: {self.message}"
 
-
 class CacheError(Exception):
     """定义 `CacheError` 异常类型，用于表达特定失败场景。"""
     def __init__(self, message: str):

@@ -4,9 +4,8 @@ import unittest
 
 from app.utils import build_media_filename, sanitize_filename
 
-
 class FilenameUtilsTests(unittest.TestCase):
-    """封装 `FilenameUtilsTests` 在 `tests/test_utils_filenames.py` 中承担的核心逻辑。"""
+    
     def test_sanitize_filename_replaces_invalid_characters_and_trims_suffix(self):
         """验证 `test_sanitize_filename_replaces_invalid_characters_and_trims_suffix` 对应场景是否符合预期，供 `FilenameUtilsTests` 使用。"""
         result = sanitize_filename('  bad:/name?*.mp4.  ')
@@ -41,7 +40,6 @@ class FilenameUtilsTests(unittest.TestCase):
         result = build_media_filename("", "douyin", "jpg")
 
         self.assertEqual(result, "untitled.jpg")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,20 +18,17 @@ import unittest
 import tempfile
 from typing import Any
 
-
 def _create_test_client():
     """创建 FastAPI TestClient（fixture）。"""
     from fastapi.testclient import TestClient
     from app.web.server import create_app
     return TestClient(create_app())
 
-
 def _is_error_response(data: Any) -> bool:
     """判断响应是否为错误（status=error 或包含 error 字段）。"""
     if isinstance(data, dict):
         return data.get("status") == "error" or "error" in data
     return False
-
 
 class PingEndpointTests(unittest.TestCase):
     """GET /api/ping 健康检查。"""
@@ -48,7 +45,6 @@ class PingEndpointTests(unittest.TestCase):
         data = self.client.get("/api/ping").json()
         self.assertIn("version", data)
         self.assertEqual(data.get("status"), "ok")
-
 
 class PlatformsEndpointTests(unittest.TestCase):
     """GET /api/platforms 平台列表。"""
@@ -77,7 +73,6 @@ class PlatformsEndpointTests(unittest.TestCase):
         # 验证核心平台都存在
         for expected in ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"):
             self.assertIn(expected, ids, f"missing platform: {expected}")
-
 
 class ConfigEndpointTests(unittest.TestCase):
     """GET/PUT /api/config 持久化配置。"""
@@ -113,7 +108,6 @@ class ConfigEndpointTests(unittest.TestCase):
         r = self.client.put("/api/config", json={})
         self.assertEqual(r.status_code, 200)
 
-
 class StateEndpointTests(unittest.TestCase):
     """GET /api/state 全局状态。"""
 
@@ -140,6 +134,24 @@ class StateEndpointTests(unittest.TestCase):
         data = self.client.get("/api/state").json()
         self.assertIsInstance(data["is_crawling"], bool)
 
+    def test_frontend_state_exposes_unified_pages(self):
+        data = self.client.get("/api/frontend/state").json()
+
+        self.assertEqual(
+            [page["id"] for page in data["pages"]],
+            ["queue", "active", "completed", "failed", "logs", "settings", "toolbox"],
+        )
+        for key in (
+            "queue_items",
+            "active_downloads",
+            "completed_items",
+            "failed_items",
+            "log_items",
+            "settings_snapshot",
+            "toolbox_items",
+            "app_status",
+        ):
+            self.assertIn(key, data)
 
 class ScanEndpointTests(unittest.TestCase):
     """POST /api/scan 扫描本地目录。"""
@@ -189,7 +201,6 @@ class ScanEndpointTests(unittest.TestCase):
         r = self.client.post("/api/scan", json={"directory": 123})
         self.assertEqual(r.status_code, 200)
         self.assertTrue(_is_error_response(r.json()))
-
 
 class SearchEndpointValidationTests(unittest.TestCase):
     """POST /api/search 输入校验（不真跑爬虫）。"""
@@ -278,7 +289,6 @@ class SearchEndpointValidationTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(_is_error_response(r.json()))
 
-
 class CrawlStartStopTests(unittest.TestCase):
     """POST /api/crawl/start + /api/crawl/stop 输入校验。"""
 
@@ -309,7 +319,6 @@ class CrawlStartStopTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json().get("status"), "ok")
 
-
 class CrawlSelectTests(unittest.TestCase):
     """POST /api/crawl/select 二次选择。"""
 
@@ -332,7 +341,6 @@ class CrawlSelectTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         # 非整数 → 校验失败
         self.assertTrue(_is_error_response(r.json()))
-
 
 class VideoDeleteRenameTests(unittest.TestCase):
     """DELETE /api/video/{id} + POST /api/video/rename。"""
@@ -364,7 +372,6 @@ class VideoDeleteRenameTests(unittest.TestCase):
         # 实际上 controller.rename_video 接受空字符串，应该进入调用
         # 但实际上没有该 video 所以可能返回 error
         self.assertIn(r.json().get("status"), ("ok", "error"))
-
 
 class DownloadEndpointValidationTests(unittest.TestCase):
     """POST /api/download 输入校验。"""
@@ -431,7 +438,6 @@ class DownloadEndpointValidationTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(_is_error_response(r.json()))
 
-
 class MediaEndpointTests(unittest.TestCase):
     """GET /api/media/{video_id} 媒体文件服务。"""
 
@@ -449,7 +455,6 @@ class MediaEndpointTests(unittest.TestCase):
         # 实际路由会先尝试匹配 /api/media，再 fallback 到 /api/media/{video_id}
         # 这里只测一个肯定不存在的 ID
         self.assertIn(r.status_code, (200, 307, 404))
-
 
 class DirListChangeTests(unittest.TestCase):
     """GET /api/dir/list + POST /api/dir/change。"""
@@ -505,7 +510,6 @@ class DirListChangeTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(_is_error_response(r.json()))
 
-
 class DebugEndpointTests(unittest.TestCase):
     """GET /api/debug/* + POST /api/debug/trigger-select。"""
 
@@ -529,7 +533,6 @@ class DebugEndpointTests(unittest.TestCase):
         r = self.client.get("/api/debug/error-summary")
         self.assertEqual(r.status_code, 200)
 
-
 class IndexEndpointTests(unittest.TestCase):
     """GET / 静态首页。"""
 
@@ -541,7 +544,6 @@ class IndexEndpointTests(unittest.TestCase):
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
         self.assertIn("text/html", r.headers.get("content-type", ""))
-
 
 class ServerCORSHeadersTests(unittest.TestCase):
     """CORS 中间件测试。"""
@@ -555,7 +557,6 @@ class ServerCORSHeadersTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         # CORS 中间件应返回 access-control-allow-origin
         self.assertIn("access-control-allow-origin", {k.lower() for k in r.headers.keys()})
-
 
 class ServerModuleExportsTests(unittest.TestCase):
     """app.web.server 模块导出检查。"""
@@ -599,7 +600,6 @@ class ServerModuleExportsTests(unittest.TestCase):
         app = create_app()
         routes = [r.path for r in app.routes]
         self.assertIn("/static", routes)
-
 
 class CrossLayerContractTests(unittest.TestCase):
     """跨层契约测试：验证 REST API 的行为与 CLI/SDK 一致。
@@ -656,7 +656,6 @@ class CrossLayerContractTests(unittest.TestCase):
                         self.assertTrue(call_args.interactive)
                     elif flag == "--pipe":
                         self.assertTrue(call_args.pipe)
-
 
 if __name__ == "__main__":
     unittest.main()

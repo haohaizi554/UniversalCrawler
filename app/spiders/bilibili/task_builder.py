@@ -5,7 +5,6 @@ from __future__ import annotations
 from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.base_task_builder import BaseTaskBuilder
 
-
 class BilibiliTaskBuilder(BaseTaskBuilder):
     """负责将解析结果转换为 `BilibiliTaskBuilder` 对应的任务或数据对象。"""
     def __init__(self, parser: BilibiliParser):
@@ -15,7 +14,7 @@ class BilibiliTaskBuilder(BaseTaskBuilder):
     def build_single_task(self, episode: dict, referer: str) -> dict:
         """构建 `single_task` 对应的结果、参数或对象，供 `BilibiliTaskBuilder` 使用。"""
         return self.build_download_meta(
-            trace_id=f"bili-{episode['bvid']}-{episode['cid']}",
+            trace_id=f"bilibili_{episode['bvid']}_{episode['cid']}",
             referer=referer,
             bvid=episode["bvid"],
             cid=episode["cid"],
@@ -29,7 +28,7 @@ class BilibiliTaskBuilder(BaseTaskBuilder):
         num_str = str(episode.get("page_num", sub_idx + 1)).zfill(2)
         safe_title = self.parser.clean_name(episode["title"])
         return self.build_download_meta(
-            trace_id=f"bili-{episode['bvid']}-{episode['cid']}",
+            trace_id=f"bilibili_{episode['bvid']}_{episode['cid']}",
             referer=f"https://www.bilibili.com/video/{episode['bvid']}",
             bvid=episode["bvid"],
             cid=episode["cid"],

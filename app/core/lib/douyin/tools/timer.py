@@ -5,11 +5,10 @@ from time import time
 
 __all__ = ["run_time"]
 
-
 def run_time(function):
-    """执行 `run_time` 对应的业务逻辑。"""
+    
     def inner(self, *args, **kwargs):
-        """执行 `inner` 对应的业务逻辑。"""
+        
         start = time()
         result = function(self, *args, **kwargs)
         print(f"{function.__name__}运行耗时: {time() - start}s")

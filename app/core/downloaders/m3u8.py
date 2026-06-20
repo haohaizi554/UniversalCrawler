@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+from pathlib import Path
 
 from app.config import DEFAULT_USER_AGENT
 from app.debug_logger import debug_logger
@@ -13,18 +15,17 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import ExternalToolRunner, NM3U8DLREExternalTool, build_new_console_flags
 
-
 class N_m3u8DL_RE_Downloader(BaseDownloader):
     """调用 `N_m3u8DL-RE` 完成 HLS 资源下载与状态回传。"""
 
     @classmethod
     def is_available(cls) -> bool:
-        """执行 `is_available` 对应的业务逻辑，供 `N_m3u8DL_RE_Downloader` 使用。"""
+        
         return NM3U8DLREExternalTool.is_available()
 
     @classmethod
     def is_m3u8_url(cls, url: str) -> bool:
-        """执行 `is_m3u8_url` 对应的业务逻辑，供 `N_m3u8DL_RE_Downloader` 使用。"""
+        
         return NM3U8DLREExternalTool.is_m3u8_url(url)
 
     def download(
@@ -34,7 +35,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `N_m3u8DL_RE_Downloader` 使用。"""
+        
         executable = NM3U8DLREExternalTool.resolve_executable()
         if not executable:
             raise ExternalToolNotFoundError("未找到 N_m3u8DL-RE 可执行文件（支持 Windows .exe、Linux 二进制和 PATH）")
@@ -57,6 +58,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
         creation_flags = build_new_console_flags()
         progress_callback(10)
+        download_succeeded = False
+        process = None
         try:
             # 显式窗口：CREATE_NEW_CONSOLE 让 N_m3u8DL-RE 在独立控制台窗口运行，
             # 用户可实时看到下载进度，也方便排查问题
@@ -71,7 +74,17 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             if process.returncode != 0:
                 raise ExternalToolError(f"N_m3u8DL-RE 异常退出 (Code: {process.returncode})")
 
-            progress_callback(100)
+            download_succeeded = True
+            try:
+                progress_callback(100)
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "progress_callback_error",
+                    exc,
+                    context={"title": video_item.title, "save_path": save_path},
+                    trace_id=trace_id,
+                )
             debug_logger.log(
                 component="N_m3u8DL_RE_Downloader",
                 action="download_finished",
@@ -91,3 +104,43 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 trace_id=trace_id,
             )
             raise ExternalToolError(f"N_m3u8DL-RE 下载失败: {exc}") from exc
+        finally:
+            if process is not None and process.poll() is None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
+            if not download_succeeded:
+                self._cleanup_external_temp_files(save_path)
+
+    @staticmethod
+    def _cleanup_external_temp_files(save_path: str) -> None:
+        target = Path(save_path)
+        parent = target.parent
+        stem = target.stem
+        candidates = {
+            target,
+            parent / f"{target.name}.tmp",
+            parent / f"{target.name}.part",
+            parent / f"{stem}.tmp",
+            parent / f"{stem}.part",
+            parent / f"{stem}_tmp",
+            parent / f"{stem}.download",
+        }
+        candidates.update(parent.glob(f"{stem}*.tmp"))
+        candidates.update(parent.glob(f"{stem}*.part"))
+        candidates.update(parent.glob(f"{stem}*.aria2"))
+        candidates.update(parent.glob(f"{stem}*.ts"))
+        candidates.update(path for path in parent.glob(f"{stem}*") if path.is_dir())
+        for path in candidates:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                elif path.exists():
+                    path.unlink()
+            except OSError:
+                continue

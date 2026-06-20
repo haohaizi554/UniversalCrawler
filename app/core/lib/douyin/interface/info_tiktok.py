@@ -19,9 +19,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class InfoTikTok(APITikTok):
-    """封装 `InfoTikTok` 在 `app/core/lib/douyin/interface/info_tiktok.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -55,7 +54,7 @@ class InfoTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """执行 `run_single` 对应的业务逻辑，供 `InfoTikTok` 使用。"""
+        
         await super().run_single(
             "",
         )
@@ -66,7 +65,7 @@ class InfoTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `InfoTikTok` 使用。"""
+        
         if d := data_dict.get("userInfo"):
             self.append_response(d)
         else:
@@ -78,13 +77,13 @@ class InfoTikTok(APITikTok):
         *args,
         **kwargs,
     ) -> None:
-        """执行 `append_response` 对应的业务逻辑，供 `InfoTikTok` 使用。"""
+        
         self.response.append(data)
 
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `InfoTikTok` 使用。"""
+        
         return self.params | {
             "abTestVersion": "[object Object]",
             "appType": "t",
@@ -93,9 +92,8 @@ class InfoTikTok(APITikTok):
             "user": "[object Object]",
         }
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

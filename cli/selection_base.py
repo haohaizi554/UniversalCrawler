@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from typing import Protocol
 
-
 class SelectionStrategy(Protocol):
     """二次选择策略协议。
 
@@ -32,7 +31,6 @@ class SelectionStrategy(Protocol):
         """
         ...
 
-
 def is_selection_strategy(obj) -> bool:
     """检查对象是否是有效的 SelectionStrategy 实例（duck-type check）。
 
@@ -45,7 +43,6 @@ def is_selection_strategy(obj) -> bool:
         and hasattr(obj, "strategy_name")
         and callable(getattr(obj, "select", None))
     )
-
 
 def _parse_index_list(s: str, max_count: int) -> list[int]:
     """解析逗号分隔的索引字符串，支持范围 (如 "0,2-5" 或 "0,2:5")。
@@ -82,18 +79,15 @@ def _parse_index_list(s: str, max_count: int) -> list[int]:
                 continue
     return sorted(indices)
 
-
 def build_selection_prompt(selection_round: int, item_count: int) -> str:
     """构建统一的二次选择提示文案。"""
     return f"二次选择 #{selection_round}: {item_count} 个候选"
-
 
 def format_selection_result(indices: list[int], preview_limit: int = 10) -> str:
     """格式化统一的二次选择结果摘要。"""
     preview = indices[:preview_limit]
     suffix = "..." if len(indices) > preview_limit else ""
     return f"  → 选中 {len(indices)} 项: {preview}{suffix}"
-
 
 class RuleSelection(SelectionStrategy):
     """基于规则的策略：--select / --exclude / --all / --first / --last。
@@ -153,7 +147,6 @@ class RuleSelection(SelectionStrategy):
             base = [i for i in base if i not in excluded]
 
         return base
-
 
 class AutoSelection:
     """自动选择：根据环境自动挑选合适的策略。

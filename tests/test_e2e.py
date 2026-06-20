@@ -26,7 +26,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 # 让 cli.sdk 可被 import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
 def _has_pyqt6():
     try:
         import PyQt6
@@ -34,14 +33,12 @@ def _has_pyqt6():
     except ImportError:
         return False
 
-
 def _has_fastapi():
     try:
         import fastapi
         return True
     except ImportError:
         return False
-
 
 # ---- 通用 mock spider ----
 
@@ -71,7 +68,6 @@ class MockVideoItem:
             "meta": self.meta,
         }
 
-
 class MockSpider:
     """模拟爬虫：返回固定 items，不真发网络请求。"""
 
@@ -89,7 +85,6 @@ class MockSpider:
 
     def on_search_start(self, *args, **kwargs):
         pass
-
 
 # ============================================================
 # E2E: SDK 完整流程
@@ -198,7 +193,6 @@ class SDKEndToEndTests(unittest.TestCase):
         self.assertEqual(call_strategy.strategy_name, "rule")
         self.assertTrue(call_strategy.first)
 
-
 # ============================================================
 # E2E: CLI 完整流程
 # ============================================================
@@ -266,7 +260,6 @@ class CLIEndToEndTests(unittest.TestCase):
                 self.assertEqual(e.code, 2)
         # 不强制 handler 被调用（参数不全时可能直接 SystemExit）
 
-
 # ============================================================
 # E2E: REST API 完整流程
 # ============================================================
@@ -328,7 +321,6 @@ class RESTAPIEndToEndTests(unittest.TestCase):
         r = self.client.post("/api/crawl/stop")
         self.assertEqual(r.json()["status"], "ok")
 
-
 # ============================================================
 # E2E: 配置持久化
 # ============================================================
@@ -369,7 +361,6 @@ class ConfigPersistenceTests(unittest.TestCase):
         # 取决于具体实现
         self.assertTrue(isinstance(defaults, dict))
 
-
 # ============================================================
 # E2E: SDK 资源管理
 # ============================================================
@@ -409,7 +400,6 @@ class SDKResourceManagementTests(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0)
 
-
 # ============================================================
 # E2E: SDK download 完整流程
 # ============================================================
@@ -434,7 +424,6 @@ class SDKDownloadEndToEndTests(unittest.TestCase):
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises((TypeError, ValueError)):
             sdk.download_video(url="", source="douyin")
-
 
 # ============================================================
 # E2E: 跨入口一致性
@@ -468,7 +457,6 @@ class CrossEntryConsistencyTests(unittest.TestCase):
         # API 是 SDK 的子集或相等
         self.assertTrue(api_ids.issubset(sdk_ids) or api_ids == sdk_ids,
                        f"API platforms {api_ids} not in SDK {sdk_ids}")
-
 
 # ============================================================
 # E2E: 完整集成（start to finish）
@@ -516,7 +504,6 @@ class FullIntegrationTests(unittest.TestCase):
         # 至少验证返回合法结构 + douyin 字段存在
         r3 = self.client.get("/api/config")
         self.assertIn("douyin", r3.json())
-
 
 if __name__ == "__main__":
     unittest.main()

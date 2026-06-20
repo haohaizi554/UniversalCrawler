@@ -17,7 +17,6 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-
 def _ensure_search_defaults(args: argparse.Namespace, platform: str) -> None:
     """为平台别名命令补全通用 search 参数的默认值。
 
@@ -63,7 +62,6 @@ def _ensure_search_defaults(args: argparse.Namespace, platform: str) -> None:
     for key, default in _defaults.items():
         if not hasattr(args, key):
             setattr(args, key, default)
-
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口函数。
@@ -191,7 +189,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     return handler(args)
-
 
 if __name__ == "__main__":
     sys.exit(main())

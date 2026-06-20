@@ -11,7 +11,6 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
-
 class WebEntryPortProbeTests(unittest.TestCase):
     """_is_port_in_use / _find_available_port 单测。"""
 
@@ -95,7 +94,6 @@ class WebEntryPortProbeTests(unittest.TestCase):
         result = _find_available_port("127.0.0.1", 65530, max_probe=20)
         # 65530 + 20 = 65550 > 65535，应该停止
         self.assertLessEqual(result if result else 0, 65535)
-
 
 class WebEntryArgparseTests(unittest.TestCase):
     """_build_argparser 测试。"""
@@ -184,7 +182,6 @@ class WebEntryArgparseTests(unittest.TestCase):
         args = parser.parse_args(["--script-delay", "2.5"])
         self.assertEqual(args.script_delay, 2.5)
 
-
 class WebEntryIconLoadTests(unittest.TestCase):
     """_load_app_icon / _ensure_app_user_model_id 测试。"""
 
@@ -215,17 +212,21 @@ class WebEntryIconLoadTests(unittest.TestCase):
             # 不应抛异常
             web_entry._ensure_app_user_model_id()
 
-
 class WebEntryMainIntegrationTests(unittest.TestCase):
     """main() 集成测试（mock uvicorn/Qt）。"""
 
     def test_main_no_qt_port_busy_auto_increment(self):
         """--no-qt + 端口被占 → 自动顺延。"""
         from entry import web_entry
-        # 占用 8000
+        # 占用一个高位端口（避免 Windows 保留端口范围和常见服务端口）
         import socket
+        test_port = 58000
         server = socket.socket()
-        server.bind(("127.0.0.1", 8000))
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server.bind(("127.0.0.1", test_port))
+        except OSError:
+            self.skipTest(f"无法绑定端口 {test_port}")
         try:
             with patch.dict("sys.modules", {"uvicorn": MagicMock()}):
                 mock_uvicorn = sys.modules["uvicorn"]
@@ -238,11 +239,11 @@ class WebEntryMainIntegrationTests(unittest.TestCase):
                 mock_server.serve = fake_serve
                 with patch("entry.web_entry.webbrowser"):
                     try:
-                        web_entry.main(["--no-qt", "--no-browser", "--host", "127.0.0.1", "--port", "8000"])
+                        web_entry.main(["--no-qt", "--no-browser", "--host", "127.0.0.1", "--port", str(test_port)])
                     except (KeyboardInterrupt, SystemExit):
                         pass
             # 验证：args.port 必须被改
-            self.assertGreater(mock_uvicorn.Config.call_args.kwargs["port"], 8000)
+            self.assertGreater(mock_uvicorn.Config.call_args.kwargs["port"], test_port)
         finally:
             server.close()
 
@@ -270,7 +271,6 @@ class WebEntryMainIntegrationTests(unittest.TestCase):
         self.assertEqual(args.script, "/tmp/fake_script.py")
         self.assertEqual(args.script_arg, ["key1=v1"])
         self.assertTrue(args.script_strict)
-
 
 if __name__ == "__main__":
     unittest.main()

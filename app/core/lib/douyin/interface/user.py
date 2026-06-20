@@ -20,9 +20,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class User(API):
-    """封装 `User` 在 `app/core/lib/douyin/interface/user.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -59,7 +58,7 @@ class User(API):
         *args,
         **kwargs,
     ):
-        """执行 `run_batch` 对应的业务逻辑，供 `User` 使用。"""
+        
         pass
 
     def check_response(
@@ -70,7 +69,7 @@ class User(API):
         *args,
         **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `User` 使用。"""
+        
         try:
             if not (d := data_dict[data_key]):
                 self.log.warning(error_text)
@@ -85,7 +84,7 @@ class User(API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `User` 使用。"""
+        
         return self.params | {
             "publish_video_strategy_type": "2",
             "sec_user_id": self.sec_user_id,
@@ -96,9 +95,8 @@ class User(API):
             "version_name": "17.4.0",
         }
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

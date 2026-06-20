@@ -7,9 +7,8 @@ from unittest.mock import patch
 
 from app.utils import runtime_paths
 
-
 class RuntimePathsTests(unittest.TestCase):
-    """封装 `RuntimePathsTests` 在 `tests/test_runtime_paths.py` 中承担的核心逻辑。"""
+    
     def test_install_root_uses_executable_parent_when_frozen(self):
         """验证 `test_install_root_uses_executable_parent_when_frozen` 对应场景是否符合预期，供 `RuntimePathsTests` 使用。"""
         with patch("app.utils.runtime_paths.is_frozen", return_value=True), patch(
@@ -174,7 +173,6 @@ class RuntimePathsTests(unittest.TestCase):
                 result = runtime_paths.resolve_tool_file("N_m3u8DL-RE.exe")
 
         self.assertEqual(result, Path("N_m3u8DL-RE.exe"))
-
 
 if __name__ == "__main__":
     unittest.main()

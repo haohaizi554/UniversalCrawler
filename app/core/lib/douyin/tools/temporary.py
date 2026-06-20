@@ -11,16 +11,13 @@ from time import time
 
 CHARACTER = ascii_lowercase + ascii_uppercase + digits
 
-
 def timestamp() -> str:
-    """执行 `timestamp` 对应的业务逻辑。"""
+    
     return str(time())[:10]
 
-
 def random_string(length: int = 10) -> str:
-    """执行 `random_string` 对应的业务逻辑。"""
+    
     return "".join(choice(CHARACTER) for _ in range(length))
-
 
 if __name__ == "__main__":
     print(timestamp())

@@ -8,21 +8,19 @@ from unittest.mock import Mock, patch
 from app.core.download_manager import DownloadManager
 from app.models import VideoItem
 
-
 class FakeSignal:
-    """封装 `FakeSignal` 在 `tests/test_download_manager_dispatch.py` 中承担的核心逻辑。"""
+    
     def __init__(self):
         """初始化当前实例并准备运行所需的状态，供 `FakeSignal` 使用。"""
         self.targets = []
         self.emit = Mock()
 
     def connect(self, target, *_args):
-        """执行 `connect` 对应的业务逻辑，供 `FakeSignal` 使用。"""
+        
         self.targets.append(target)
 
-
 class DownloadManagerDispatchTests(unittest.TestCase):
-    """封装 `DownloadManagerDispatchTests` 在 `tests/test_download_manager_dispatch.py` 中承担的核心逻辑。"""
+    
     def _make_manager(self) -> DownloadManager:
         """提供 `_make_manager` 对应的内部辅助逻辑，供 `DownloadManagerDispatchTests` 使用。"""
         manager = DownloadManager.__new__(DownloadManager)
@@ -64,7 +62,7 @@ class DownloadManagerDispatchTests(unittest.TestCase):
         worker.finished = FakeSignal()
 
         def stop_after_start():
-            """执行 `stop_after_start` 对应的业务逻辑。"""
+            
             manager.is_running = False
 
         worker.start.side_effect = stop_after_start
@@ -93,7 +91,7 @@ class DownloadManagerDispatchTests(unittest.TestCase):
         manager._wait_for_dispatch_slot = Mock(return_value=True)
 
         def raise_and_stop(*_args, **_kwargs):
-            """执行 `raise_and_stop` 对应的业务逻辑。"""
+            
             manager.is_running = False
             raise ValueError("坏任务")
 
@@ -102,7 +100,6 @@ class DownloadManagerDispatchTests(unittest.TestCase):
         manager._dispatch_loop()
 
         manager.task_error.emit.assert_called_once_with(item.id, "调度失败: 坏任务")
-
 
 if __name__ == "__main__":
     unittest.main()

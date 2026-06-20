@@ -25,7 +25,7 @@ class DouyinTaskBuilder(BaseTaskBuilder):
                 live_item.meta = item.meta.copy()
                 live_item.meta.update(
                     self.build_download_meta(
-                        trace_id=f"{base_trace}-live-{seq}",
+                        trace_id=f"{base_trace}_live_{seq}",
                         is_gallery=False,
                         content_type="video",
                         media_label="实况",
@@ -37,7 +37,7 @@ class DouyinTaskBuilder(BaseTaskBuilder):
                 image_item.meta = item.meta.copy()
                 image_item.meta.update(
                     self.build_download_meta(
-                        trace_id=f"{base_trace}-img-{seq}",
+                        trace_id=f"{base_trace}_img_{seq}",
                         is_gallery=False,
                         content_type="image",
                         media_label="图集",

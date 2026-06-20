@@ -9,7 +9,6 @@ from app.spiders.base_task_builder import BaseTaskBuilder
 
 from .helpers import note_author_name, sanitize_note_title
 
-
 class XiaohongshuTaskBuilder(BaseTaskBuilder):
     """Convert normalized XHS note payloads into download items."""
 

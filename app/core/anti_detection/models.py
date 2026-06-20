@@ -7,7 +7,6 @@ from typing import Any
 
 AUTOMATION_CONTROLLED_ARG = "--disable-blink-features=AutomationControlled"
 
-
 @dataclass(frozen=True, slots=True)
 class AntiDetectionContext:
     """Normalized anti-detection runtime for browser/request setup."""

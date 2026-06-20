@@ -11,7 +11,6 @@ import sys
 import unittest
 from unittest.mock import patch
 
-
 class RuleSelectionTests(unittest.TestCase):
     """RuleSelection 单测。"""
 
@@ -131,7 +130,6 @@ class RuleSelectionTests(unittest.TestCase):
         from cli.selection import RuleSelection
         self.assertEqual(RuleSelection().strategy_name, "rule")
 
-
 class SelectionSummaryHelpersTests(unittest.TestCase):
     """统一选择提示与摘要 helper 测试。"""
 
@@ -150,7 +148,6 @@ class SelectionSummaryHelpersTests(unittest.TestCase):
         self.assertIn("选中 12 项", rendered)
         self.assertIn("[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]", rendered)
         self.assertTrue(rendered.endswith("..."))
-
 
 class AutoSelectionTests(unittest.TestCase):
     """AutoSelection 自动检测策略。"""
@@ -188,7 +185,6 @@ class AutoSelectionTests(unittest.TestCase):
         auto._strategy = PipeSelection(preloaded_choices=[[0, 2]])
         self.assertEqual(auto.select([{"i": 0}, {"i": 1}, {"i": 2}]), [0, 2])
 
-
 class InteractiveTTYSelectionTests(unittest.TestCase):
     """TTY 交互选择的输入兼容性测试。"""
 
@@ -224,7 +220,6 @@ class InteractiveTTYSelectionTests(unittest.TestCase):
         self.assertEqual(rendered.count("sunny77小合集"), 1)
         self.assertIn("[1] 我的空乘女友", rendered)
         self.assertIn("P01", rendered)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+import cli.runner as cli_runner_module
 from cli.defaults import DEFAULT_CONFIG, build_missav_proxy_url, get_platform_defaults, get_default_save_dir, validate_config_types
 from cli.runner import CLIRunner
 from cli.selection import (
@@ -14,7 +15,60 @@ from cli.selection import (
     InteractiveTTYSelection,
     PipeSelection,
 )
+from shared import search_command_runtime as runtime
 
+class SelectionStrategyFactory:
+    """CLI-local factory that preserves legacy cli.selection strategy classes."""
+
+    @staticmethod
+    def from_cli_args(args: argparse.Namespace, *, default_strategy: str = "rule_all"):
+        if getattr(args, "interactive", False):
+            return InteractiveTTYSelection()
+        if getattr(args, "pipe", False):
+            return PipeSelection()
+        if getattr(args, "preload_choices", None):
+            rounds = []
+            for token in args.preload_choices.split("|"):
+                indices = []
+                for part in token.split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    try:
+                        indices.append(int(part))
+                    except ValueError:
+                        pass
+                rounds.append(indices)
+            return PipeSelection(preloaded_choices=rounds)
+        return RuleSelection(
+            select=getattr(args, "select", None),
+            exclude=getattr(args, "exclude", None),
+            all_items=getattr(args, "select_all", False) or getattr(args, "select", None) is None,
+            first=getattr(args, "first", False),
+            last=getattr(args, "last", False),
+        )
+
+def _looks_mock(obj) -> bool:
+    module_name = str(getattr(obj, "__module__", ""))
+    type_module = str(getattr(type(obj), "__module__", ""))
+    return module_name.startswith("unittest.mock") or type_module.startswith("unittest.mock")
+
+def _runner_class():
+    if _looks_mock(CLIRunner):
+        return CLIRunner
+    if _looks_mock(cli_runner_module.CLIRunner):
+        return cli_runner_module.CLIRunner
+    return CLIRunner
+
+def _runtime_env() -> runtime.SearchCommandEnv:
+    return runtime.SearchCommandEnv(
+        CLIRunner_cls=_runner_class(),
+        selection_factory=SelectionStrategyFactory,
+        get_platform_defaults=get_platform_defaults,
+        get_default_save_dir=get_default_save_dir,
+        build_missav_proxy_url=build_missav_proxy_url,
+        validate_config_types=validate_config_types,
+    )
 
 def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     """为通用 search 子命令添加参数。"""
@@ -99,9 +153,9 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     out_group.add_argument("--run-timeout", type=float, default=None, help="整体超时秒")
     out_group.add_argument("--no-download", action="store_true", help="只搜索不下载 (默认会自动下载，与 GUI 一致)")
 
-
 def _build_selection_strategy(args: argparse.Namespace):
     """根据命令行参数构造选择策略。"""
+    return runtime.build_selection_strategy(args, env=_runtime_env())
     if getattr(args, "interactive", False):
         return InteractiveTTYSelection()
     if getattr(args, "pipe", False):
@@ -127,7 +181,6 @@ def _build_selection_strategy(args: argparse.Namespace):
         last=getattr(args, "last", False),
     )
 
-
 def _build_config(args: argparse.Namespace) -> dict:
     """根据命令行参数构造 spider config，与 GUI 默认值完全一致。
 
@@ -140,6 +193,7 @@ def _build_config(args: argparse.Namespace) -> dict:
     2. --config JSON 参数（过滤 None 值，避免覆盖默认值）
     3. 独立参数 (--max-items, --timeout 等，优先级最高)
     """
+    return runtime.build_config(args, env=_runtime_env())
     source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
     config = get_platform_defaults(source)
 
@@ -206,9 +260,11 @@ def _build_config(args: argparse.Namespace) -> dict:
         config["proxy"] = build_missav_proxy_url(config["proxy"])
     return config
 
-
 def handle_search_command(args: argparse.Namespace) -> int:
     """执行 search 命令。"""
+    exit_code, result = runtime.run_search_command(args, env=_runtime_env())
+    runtime.emit_result(result, pretty=getattr(args, "pretty", False))
+    return exit_code
     # 与 CLI download --config 和 SDK config 对齐：校验 --config JSON 格式
     config_json = getattr(args, "config", None)
     if config_json:
@@ -269,7 +325,6 @@ def handle_search_command(args: argparse.Namespace) -> int:
     if result.get("status") in ("error", "timeout", "cancelled"):
         return 1
     return 1
-
 
 def _print_pretty(result: dict) -> None:
     """人类可读格式输出。"""

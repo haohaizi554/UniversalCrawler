@@ -6,7 +6,6 @@ from app.controllers import session_mixin
 from app.controllers.session_mixin import ControllerSessionMixin
 from app.models import VideoItem
 
-
 class _DummyController(ControllerSessionMixin):
     DOWNLOAD_LOG_COMPONENT = "DummyController"
     DOWNLOAD_FINISHED_STATUS_CODE = "DUMMY_OK"
@@ -45,10 +44,8 @@ class _DummyController(ControllerSessionMixin):
     def _build_download_error_log_details(self, item: VideoItem, error: str) -> dict:
         return {"title": item.title, "error": error}
 
-
 class _ProgressResetController(_DummyController):
     DOWNLOAD_ERROR_PROGRESS = 0
-
 
 class ControllerSessionMixinTests(unittest.TestCase):
     def test_prepare_helpers_align_item_states(self):

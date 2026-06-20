@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import QApplication
 
 from app.ui.components.log_panel import LogPanel
 
-
 class LogPanelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -26,7 +25,6 @@ class LogPanelTests(unittest.TestCase):
 
         self.assertEqual(panel.blockCount(), 3)
         self.assertEqual(panel.toPlainText().splitlines(), ["line-2", "line-3", "line-4"])
-
 
 if __name__ == "__main__":
     unittest.main()

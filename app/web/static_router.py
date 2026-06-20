@@ -8,13 +8,11 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
     "Expires": "0",
 }
-
 
 class NoCacheStaticFiles(StaticFiles):
     """Static file mount that disables browser caching for packaged/local UI assets."""
@@ -24,7 +22,6 @@ class NoCacheStaticFiles(StaticFiles):
         for key, value in NO_CACHE_HEADERS.items():
             response.headers[key] = value
         return response
-
 
 def build_static_router(*, static_dir: Path) -> APIRouter:
     """构建首页静态路由。"""
@@ -39,7 +36,6 @@ def build_static_router(*, static_dir: Path) -> APIRouter:
         return {"error": "index.html not found"}
 
     return router
-
 
 def mount_static_files(app: FastAPI, *, static_dir: Path) -> None:
     """挂载静态目录。"""

@@ -10,7 +10,6 @@ import time
 import webbrowser
 from typing import Any, Awaitable, Callable
 
-
 def try_reuse_existing_instance(
     *,
     host: str,
@@ -31,7 +30,6 @@ def try_reuse_existing_instance(
         browser_opener(existing_url)
     return True
 
-
 def print_startup_banner(url: str, *, script: str | None = None, stderr=None) -> None:
     """输出 Web 启动横幅。"""
     stderr = stderr or sys.stderr
@@ -42,7 +40,6 @@ def print_startup_banner(url: str, *, script: str | None = None, stderr=None) ->
         stderr.write(f"  启动时注入脚本: {script}\n")
     stderr.write("\n")
     stderr.flush()
-
 
 def start_browser_open_thread(
     url: str,
@@ -60,7 +57,6 @@ def start_browser_open_thread(
     thread.start()
     return thread
 
-
 def install_shutdown_signal_handlers(
     shutdown_event: threading.Event,
     *,
@@ -77,7 +73,6 @@ def install_shutdown_signal_handlers(
     signal_module.signal(signal_module.SIGINT, _signal_handler)
     signal_module.signal(signal_module.SIGTERM, _signal_handler)
     return _signal_handler
-
 
 def run_server_with_qt(
     qt_app: Any,
@@ -113,7 +108,6 @@ def run_server_with_qt(
     timer.start(100)
     qt_app.exec()
     server_thread.join(timeout=5)
-
 
 def run_server_without_qt(*, serve_async: Callable[[], Awaitable[None]]) -> None:
     """无 Qt 模式下直接在主线程运行 asyncio。"""

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 
-
 # 平台 ID 映射
 PLATFORMS = {
     "douyin": {"name": "抖音", "aliases": ["dy", "douyin"]},
@@ -31,11 +30,9 @@ for platform_id, info in PLATFORMS.items():
     for alias in info.get("aliases", []):
         ALIAS_TO_PLATFORM[alias] = platform_id
 
-
 def resolve_platform(name: str) -> str | None:
     """将别名解析为标准平台 ID。"""
     return ALIAS_TO_PLATFORM.get(name.lower())
-
 
 def add_platform_subparsers(subparsers: argparse._SubParsersAction) -> dict[str, argparse.ArgumentParser]:
     """为每个平台添加子命令。
@@ -93,7 +90,6 @@ def add_platform_subparsers(subparsers: argparse._SubParsersAction) -> dict[str,
         }
 
     return parsers
-
 
 def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
     """为 search 子命令添加参数。"""
@@ -161,7 +157,6 @@ def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
     out_group = parser.add_argument_group("输出")
     out_group.add_argument("--quiet", "-q", action="store_true", help="不输出 spider 日志")
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式")
-
 
 def _add_download_args(parser: argparse.ArgumentParser) -> None:
     """为 download 子命令添加参数（与通用 download 命令对齐）。"""

@@ -13,7 +13,7 @@ except ImportError:
     USERAGENT = DEFAULT_USER_AGENT
 
 class XGnarly:
-    """封装 `XGnarly` 在 `app/core/lib/douyin/encrypt/xGnarly.py` 中承担的核心逻辑。"""
+    
     _AA = [
         0xFFFFFFFF,
         138,
@@ -199,7 +199,7 @@ class XGnarly:
 
     # ── JS-faithful PRNG (rand) ────────────────────────────
     def rand(self) -> float:
-        """执行 `rand` 对应的业务逻辑，供 `XGnarly` 使用。"""
+        
         e = self._chacha_block(self.kt, 8)
         t = e[self.St]
         r = (e[self.St + 8] & 0xFFFFFFF0) >> 11
@@ -291,7 +291,7 @@ class XGnarly:
         envcode: int = 0,
         version: str = "5.1.1",
     ) -> str:
-        """执行 `generate` 对应的业务逻辑，供 `XGnarly` 使用。"""
+        
         timestamp_ms = int(time() * 1000)
 
         obj = {

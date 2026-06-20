@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-
 # PyInstaller console=False 时 sys.stdout / sys.stderr 为 None，
 # 会导致 uvicorn 等库调用 .isatty() 时崩溃，这里提供兜底。
 class _NullStream:
@@ -24,12 +23,10 @@ class _NullStream:
     def fileno(self):
         raise OSError("fileno not available on NullStream")
 
-
 if sys.stdout is None:
     sys.stdout = _NullStream()  # type: ignore[assignment]
 if sys.stderr is None:
     sys.stderr = _NullStream()  # type: ignore[assignment]
-
 
 def _resolve_bundle_root() -> Path:
     """提供 `_resolve_bundle_root` 对应的内部辅助逻辑。"""
@@ -37,12 +34,10 @@ def _resolve_bundle_root() -> Path:
         return Path(sys._MEIPASS).resolve()
     return Path(__file__).resolve().parent
 
-
 bundle_root = _resolve_bundle_root()
 browser_root = bundle_root / "ms-playwright"
 if browser_root.exists():
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
-
 
 # Windows 任务栏图标 / 窗口分组：两个 EXE 都用主图标的 AppUserModelID
 # 这样 Windows 任务栏能正确显示 EXE 自带的 favicon.ico 图标资源，

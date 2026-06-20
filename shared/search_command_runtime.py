@@ -10,7 +10,6 @@ from typing import Any, Callable
 
 from shared.runtime_options import compose_runtime_config
 
-
 @dataclass(slots=True)
 class SearchCommandEnv:
     CLIRunner_cls: Any
@@ -19,7 +18,6 @@ class SearchCommandEnv:
     get_default_save_dir: Callable[[], str]
     build_missav_proxy_url: Callable[[str], str]
     validate_config_types: Callable[[dict], str | None]
-
 
 def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", "-s", required=True, choices=["douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"], help="平台 ID")
@@ -57,10 +55,8 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     out_group.add_argument("--run-timeout", type=float, default=None, help="整体超时秒")
     out_group.add_argument("--no-download", action="store_true", help="只搜索不下载 (默认会自动下载，与 GUI 一致)")
 
-
 def build_selection_strategy(args: argparse.Namespace, *, env: SearchCommandEnv):
     return env.selection_factory.from_cli_args(args, default_strategy="rule_all")
-
 
 def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
     source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
@@ -105,7 +101,6 @@ def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
         proxy_normalizer=env.build_missav_proxy_url,
     )
 
-
 def validate_args(args: argparse.Namespace, *, env: SearchCommandEnv) -> str | None:
     config_json = getattr(args, "config", None)
     if config_json:
@@ -126,7 +121,6 @@ def validate_args(args: argparse.Namespace, *, env: SearchCommandEnv) -> str | N
     if spider_timeout is not None and spider_timeout <= 0:
         return "❌ --timeout 必须大于 0"
     return None
-
 
 def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tuple[int, dict]:
     error = validate_args(args, env=env)
@@ -151,7 +145,6 @@ def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tu
     if result.get("status") == "ok":
         return 0, result
     return 1, result
-
 
 def print_pretty(result: dict) -> None:
     if result.get("status") != "ok":
@@ -182,7 +175,6 @@ def print_pretty(result: dict) -> None:
         if item.get("local_path"):
             sys.stdout.write(f"      本地: {item['local_path']}\n")
         sys.stdout.write("\n")
-
 
 def emit_result(result: dict, *, pretty: bool) -> None:
     if pretty:

@@ -26,9 +26,9 @@ __all__ = [
 ]
 
 def capture_error_params(function):
-    """执行 `capture_error_params` 对应的业务逻辑。"""
+    
     async def inner(logger: Union["BaseLogger", "LoggerManager"], *args, **kwargs):
-        """执行 `inner` 对应的业务逻辑。"""
+        
         try:
             return await function(logger, *args, **kwargs)
         except (
@@ -51,9 +51,9 @@ def capture_error_params(function):
     return inner
 
 def capture_error_request(function):
-    """执行 `capture_error_request` 对应的业务逻辑。"""
+    
     async def inner(self, *args, **kwargs):
-        """执行 `inner` 对应的业务逻辑。"""
+        
         try:
             return await function(self, *args, **kwargs)
         except (JSONDecodeError, UnicodeDecodeError):

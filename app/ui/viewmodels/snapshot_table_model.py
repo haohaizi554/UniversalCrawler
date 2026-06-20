@@ -1,0 +1,130 @@
+"""Reusable read-only table model for snapshot-driven pages."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PyQt6.QtGui import QIcon
+
+from app.services.icon_registry import platform_icon_file, queue_status_icon_file, ui_icon_path
+from app.utils.qt_runtime import load_qt_icon
+
+SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 2
+
+class SnapshotTableModel(QAbstractTableModel):
+    """Simple QAbstractTableModel for frontend snapshot rows."""
+
+    def __init__(self, *, headers: list[str], columns: list[str], icon_columns: set[str] | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self._headers = list(headers)
+        self._columns = list(columns)
+        self._icon_columns = set(icon_columns or ())
+        self._rows: list[dict[str, Any]] = []
+        self._signature: tuple[Any, ...] | None = None
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        if parent.isValid():
+            return 0
+        return len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        if parent.isValid():
+            return 0
+        return len(self._columns)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        row = self._rows[index.row()]
+        key = self._columns[index.column()]
+        value = row.get(key, "")
+        if role in {Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole}:
+            if key == "title" and role == Qt.ItemDataRole.ToolTipRole:
+                subtitle = str(row.get("subtitle") or "")
+                title = str(value)
+                return f"{title}\n{subtitle}" if subtitle else title
+            return str(value)
+        if key == "title" and role == SUBTITLE_ROLE:
+            return str(row.get("subtitle") or "")
+        if role == Qt.ItemDataRole.DecorationRole and key in self._icon_columns:
+            icon_file = None
+            if key == "platform":
+                icon_file = platform_icon_file(str(row.get("platform_id") or ""))
+            elif key == "status":
+                icon_file = queue_status_icon_file(str(row.get("status") or ""))
+            if icon_file:
+                icon = load_qt_icon([ui_icon_path(icon_file)])
+                if icon is not None:
+                    return QIcon(icon)
+        if role == Qt.ItemDataRole.UserRole and index.column() == 0:
+            return row.get("id", "")
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            if index.column() == 0:
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+        return None
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:  # noqa: N802
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal and 0 <= section < len(self._headers):
+            return self._headers[section]
+        return super().headerData(section, orientation, role)
+
+    def set_rows(self, rows: list[dict[str, Any]]) -> bool:
+        rows = list(rows)
+        signature = self._build_signature(rows)
+        if signature == self._signature:
+            return False
+        old_signature = self._signature or ()
+        same_ids = [item[0] for item in signature] == [item[0] for item in old_signature]
+        if same_ids and len(rows) == len(self._rows):
+            self._rows = rows
+            for row_index, (old, new) in enumerate(zip(old_signature, signature)):
+                if old == new:
+                    continue
+                self.dataChanged.emit(
+                    self.index(row_index, 0),
+                    self.index(row_index, self.columnCount() - 1),
+                    [
+                        Qt.ItemDataRole.DisplayRole,
+                        Qt.ItemDataRole.ToolTipRole,
+                        Qt.ItemDataRole.UserRole,
+                        Qt.ItemDataRole.DecorationRole,
+                    ],
+                )
+        else:
+            self.beginResetModel()
+            self._rows = rows
+            self.endResetModel()
+        self._signature = signature
+        return True
+
+    def force_reset(self) -> None:
+        self._signature = None
+
+    def row_for_id(self, item_id: str) -> int:
+        for row, item in enumerate(self._rows):
+            if item.get("id") == item_id:
+                return row
+        return -1
+
+    def id_order(self) -> list[str]:
+        return [item.get("id", "") for item in self._rows if item.get("id")]
+
+    def row_at(self, row: int) -> dict[str, Any] | None:
+        if 0 <= row < len(self._rows):
+            return self._rows[row]
+        return None
+
+    def _build_signature(self, rows: list[dict[str, Any]]) -> tuple[Any, ...]:
+        return tuple(
+            (
+                row.get("id", ""),
+                tuple(str(row.get(column, "")) for column in self._columns),
+                str(row.get("platform_id", "")),
+                str(row.get("subtitle", "")),
+            )
+            for row in rows
+        )

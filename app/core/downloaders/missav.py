@@ -8,7 +8,6 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .m3u8 import N_m3u8DL_RE_Downloader
 
-
 class MissAVDownloader(BaseDownloader):
     """实现 `MissAVDownloader` 对应的资源下载与落盘流程。"""
     source_id = "missav"
@@ -20,7 +19,7 @@ class MissAVDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `MissAVDownloader` 使用。"""
+        
         trace_id = video_item.meta.get("trace_id")
         video_item.meta.setdefault("referer", video_item.meta.get("referer", "https://missav.ai/"))
         debug_logger.log(

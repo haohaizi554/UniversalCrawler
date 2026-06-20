@@ -11,16 +11,14 @@ from app.models import VideoItem
 from app.spiders.base import BaseSpider
 from app.spiders.douyin.parser import DouyinItemParser
 
-
 class DummySpider(BaseSpider):
     """封装 `DummySpider` 对应的平台采集、登录或任务编排逻辑。"""
     def run(self):
         """执行当前对象或脚本的主流程，供 `DummySpider` 使用。"""
         return None
 
-
 class IntegrationFlowTests(unittest.TestCase):
-    """封装 `IntegrationFlowTests` 在 `tests/test_integration_flows.py` 中承担的核心逻辑。"""
+    
     def _make_controller(self) -> ApplicationController:
         """提供 `_make_controller` 对应的内部辅助逻辑，供 `IntegrationFlowTests` 使用。"""
         controller = ApplicationController.__new__(ApplicationController)
@@ -50,7 +48,7 @@ class IntegrationFlowTests(unittest.TestCase):
         cached = controller.videos[item.id]
         self.assertEqual(cached.id, item.id)
         self.assertEqual(cached.title, "集成测试视频")
-        self.assertEqual(cached.meta["trace_id"], "dy-aweme-1")
+        self.assertEqual(cached.meta["trace_id"], "dy_aweme_1")
         self.assertEqual(cached.status, "⏳ 等待中")
         controller.window.add_video_row.assert_called_once_with(item)
         controller.dl_manager.add_task.assert_called_once_with(item, "downloads")
@@ -87,7 +85,7 @@ class IntegrationFlowTests(unittest.TestCase):
         class FakeDownloader:
             """实现 `FakeDownloader` 对应的资源下载与落盘流程。"""
             def download(self, video_item, save_path, progress_callback, check_stop_func):
-                """执行 `download` 对应的业务逻辑，供 `FakeDownloader` 使用。"""
+                
                 progress_callback(55)
                 with open(save_path, "wb") as fp:
                     fp.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 24)
@@ -105,7 +103,6 @@ class IntegrationFlowTests(unittest.TestCase):
         self.assertIn(55, events["progress"])
         self.assertEqual(events["finished"], [item.id])
         self.assertEqual(events["errors"], [])
-
 
 if __name__ == "__main__":
     unittest.main()

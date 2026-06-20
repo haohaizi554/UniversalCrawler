@@ -32,12 +32,35 @@ import os
 from typing import Any
 import cli.runner as cli_runner_module
 from cli.runner import CLIRunner
+from shared import sdk_runtime as _sdk_runtime
+from shared.cli_runner_runtime import CLIRunner as SharedCLIRunner
 
 # 保持 CLI/SDK 输出实时刷新，便于长任务反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 # 暴露给用户的快捷导入
-from cli.defaults import DEFAULT_CONFIG, build_missav_proxy_url, get_platform_defaults, get_default_save_dir, validate_config_types, infer_content_type_from_url, get_platform_download_defaults
+DEFAULT_CONFIG = _sdk_runtime.DEFAULT_CONFIG
+
+def build_missav_proxy_url(proxy_str: str) -> str:
+    return _sdk_runtime.build_missav_proxy_url(proxy_str)
+
+def get_platform_defaults(source: str) -> dict:
+    return _sdk_runtime.get_platform_defaults(source)
+
+def get_default_save_dir() -> str:
+    return _sdk_runtime.get_default_save_dir()
+
+def validate_config_types(user_config: dict) -> str | None:
+    return _sdk_runtime.validate_config_types(user_config)
+
+def infer_content_type(local_path: str) -> str:
+    return _sdk_runtime.infer_content_type(local_path)
+
+def infer_content_type_from_url(url: str) -> str:
+    return _sdk_runtime.infer_content_type_from_url(url)
+
+def get_platform_download_defaults(source: str) -> dict:
+    return _sdk_runtime.get_platform_download_defaults(source)
 from cli.selection import (
     SelectionStrategy,
     RuleSelection,
@@ -48,7 +71,6 @@ from cli.selection import (
     is_selection_strategy,
 )
 
-
 def _discover_platform_ids() -> tuple[str, ...]:
     """Keep SDK platform enum aligned with the runtime plugin registry."""
     try:
@@ -57,7 +79,6 @@ def _discover_platform_ids() -> tuple[str, ...]:
         return tuple(plugin.id for plugin in registry.get_all_plugins())
     except Exception:
         return ("douyin", "bilibili", "kuaishou", "missav", "xiaohongshu")
-
 
 class UcrawlSDK:
     """UCrawl Python SDK。
@@ -106,6 +127,12 @@ class UcrawlSDK:
         便于兼容既有调用方和上下文管理器用法。
         """
         return None
+
+    def _get_runner_class(self):
+        """Return the runner class while preserving CLI/SDK patch seams."""
+        if CLIRunner is not SharedCLIRunner:
+            return CLIRunner
+        return cli_runner_module.CLIRunner
 
     def search(
         self,
@@ -223,16 +250,12 @@ class UcrawlSDK:
         # 应与 GUI 行为一致，自动启用子目录
         if merged_config.get("folder_name") and not merged_config.get("use_subdir"):
             merged_config["use_subdir"] = True
+        if merged_config.get("author") and not merged_config.get("folder_name"):
+            merged_config["folder_name"] = merged_config["author"]
+            if not merged_config.get("use_subdir"):
+                merged_config["use_subdir"] = True
 
-        def _looks_mock(obj) -> bool:
-            module_name = str(getattr(obj, "__module__", ""))
-            type_module = str(getattr(type(obj), "__module__", ""))
-            return module_name.startswith("unittest.mock") or type_module.startswith("unittest.mock")
-
-        module_runner_cls = cli_runner_module.CLIRunner
-        runner_cls = CLIRunner
-        if _looks_mock(module_runner_cls) and not _looks_mock(runner_cls):
-            runner_cls = module_runner_cls
+        runner_cls = self._get_runner_class()
 
         runner = runner_cls(
             source=source,
@@ -435,6 +458,10 @@ class UcrawlSDK:
         # 不传 use_subdir 时，应与 GUI 行为一致，自动启用子目录
         if merged.get("folder_name") and not merged.get("use_subdir"):
             merged["use_subdir"] = True
+        if merged.get("author") and not merged.get("folder_name"):
+            merged["folder_name"] = merged["author"]
+            if not merged.get("use_subdir"):
+                merged["use_subdir"] = True
 
         # 与 GUI spider build_download_meta 对齐：设置平台默认 ua/referer
         # GUI spider 在 emit_video 时通过 build_download_meta 设置平台特定的 ua、referer，
@@ -543,11 +570,13 @@ class UcrawlSDK:
         def on_error(vid, error):
             if item.id == vid:
                 item.status = "❌ 失败"
-                item.meta["download_error"] = error
                 # 防御：不覆盖已设置的 timeout 状态（dl_manager.stop_all() 可能触发
                 # on_error 回调，此时 result_holder["status"] 可能已被设为 "timeout"）
                 if result_holder["status"] != "timeout":
+                    item.meta["download_error"] = error
                     result_holder["status"] = "error"
+                else:
+                    item.meta.setdefault("shutdown_error", error)
                 result_holder["error"] = error
                 if verbose:
                     sys.stderr.write(f"❌ 下载失败 [{item.title}]: {error}\n")
@@ -560,6 +589,7 @@ class UcrawlSDK:
 
         dl_manager.add_task(item, save_dir)
 
+        stop_summary = None
         try:
             # 等待下载完成（与 CLI _wait_download 对齐）
             deadline = time.time() + timeout
@@ -583,13 +613,33 @@ class UcrawlSDK:
                 result_holder["error"] = f"下载超时 ({timeout}s)"
         finally:
             # 与 GUI shutdown 对齐：无论成功/失败/异常，都清理 DownloadManager 资源
-            dl_manager.stop_all()
+            stop_summary = dl_manager.stop_all()
+
+        shutdown = {
+            "queued_tasks_cleared": 0,
+            "workers_requested": 0,
+            "unfinished_workers": [],
+            "all_workers_stopped": True,
+            "dispatcher_stopped": True,
+        }
+        if isinstance(stop_summary, dict):
+            shutdown.update(
+                {
+                    "queued_tasks_cleared": int(stop_summary.get("queued_tasks_cleared", 0) or 0),
+                    "workers_requested": int(stop_summary.get("workers_requested", 0) or 0),
+                    "unfinished_workers": [
+                        str(worker_id)
+                        for worker_id in (stop_summary.get("unfinished_workers") or [])
+                    ],
+                    "all_workers_stopped": bool(stop_summary.get("all_workers_stopped", True)),
+                    "dispatcher_stopped": bool(stop_summary.get("dispatcher_stopped", True)),
+                }
+            )
 
         # 与 search() 对齐：计算耗时
         elapsed = round(time.time() - start_time, 2)
 
         # 与 GUI spider 结果对齐：直接下载不经过 spider，根据文件扩展名推断 content_type
-        from cli.defaults import infer_content_type
         detected_content_type = item.meta.get("content_type", "") if item.meta else ""
         if not detected_content_type and item.local_path:
             detected_content_type = infer_content_type(item.local_path)
@@ -609,11 +659,14 @@ class UcrawlSDK:
                 # 与 search() 返回的 item.to_dict() 对齐：包含 content_type 和 meta
                 "content_type": detected_content_type,
                 "meta": dict(item.meta) if item.meta else {},
+                "shutdown": shutdown,
                 # 与 search() 返回结构对齐：包含 elapsed 字段
                 "elapsed": elapsed,
             }
         else:
             error_msg = item.meta.get("download_error", item.status)
+            if not shutdown["all_workers_stopped"] or not shutdown["dispatcher_stopped"]:
+                error_msg = f"{error_msg}；后台任务仍在停止中"
             # 与 CLIRunner.run() 对齐：超时返回 "timeout"，其他错误返回 "error"
             result_status = result_holder["status"]
             return {
@@ -629,6 +682,7 @@ class UcrawlSDK:
                 # 与 search() 返回的 item.to_dict() 对齐：包含 content_type 和 meta
                 "content_type": detected_content_type,
                 "meta": dict(item.meta) if item.meta else {},
+                "shutdown": shutdown,
                 # 与 search() 返回结构对齐：包含 elapsed 字段
                 "elapsed": elapsed,
             }
@@ -728,7 +782,6 @@ class UcrawlSDK:
             # 与成功响应对齐：错误响应也包含 directory 字段
             return {"status": "error", "error": str(e), "directory": directory}
 
-
 # ========== 便捷函数 (函数式 API) ==========
 
 def search(
@@ -756,7 +809,6 @@ def search(
     finally:
         sdk.close()
 
-
 def list_platforms() -> list[dict]:
     """列出所有可用平台。
 
@@ -771,7 +823,6 @@ def list_platforms() -> list[dict]:
     finally:
         sdk.close()
 
-
 def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
     """扫描本地目录。
 
@@ -784,7 +835,6 @@ def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
         return sdk.scan_directory(directory, scan_limit)
     finally:
         sdk.close()
-
 
 def download_video(
     url: str,

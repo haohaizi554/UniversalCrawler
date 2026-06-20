@@ -17,9 +17,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Collection(API):
-    """封装 `Collection` 在 `app/core/lib/douyin/interface/collection.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -77,7 +76,7 @@ class Collection(API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `Collection` 使用。"""
+        
         return self.params | {
             "publish_video_strategy_type": "2",
             "version_code": "170400",
@@ -87,7 +86,7 @@ class Collection(API):
     def generate_data(
         self,
     ) -> dict:
-        """执行 `generate_data` 对应的业务逻辑，供 `Collection` 使用。"""
+        
         return {
             "count": self.count,
             "cursor": self.cursor,
@@ -105,7 +104,7 @@ class Collection(API):
         *args,
         **kwargs,
     ):
-        """执行 `request_data` 对应的业务逻辑，供 `Collection` 使用。"""
+        
         return await super().request_data(
             url,
             params,
@@ -118,9 +117,8 @@ class Collection(API):
             **kwargs,
         )
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

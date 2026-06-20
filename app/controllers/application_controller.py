@@ -1,65 +1,177 @@
 #!/usr/bin/env python3
-"""
-应用控制器
-职责: 组装 UI、服务层、爬虫、下载器，处理信号交互
-"""
+"""Desktop application composition root."""
+
+from __future__ import annotations
+
 import os
 import sys
+import time
+import threading
+from pathlib import Path
+from typing import Sequence
 
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication
 
 from app.config import cfg
+from app.models import VideoItem
+from app.controllers.application_lifecycle_mixin import ApplicationLifecycleMixin
+from app.controllers.controller_host_mixin import ControllerHostMixin
+from app.controllers.crawl_controller_mixin import CrawlControllerMixin
+from app.controllers.debug_controller_mixin import DebugControllerMixin
+from app.controllers.desktop_host import DesktopHostAdapter
+from app.controllers.download_controller_mixin import DownloadControllerMixin
+from app.controllers.event_bridge import DomainEventBridge
+from app.core.event_bus import EventBus
+from app.controllers.media_host_controller_mixin import MediaHostControllerMixin
 from app.controllers.media_library_mixin import MediaLibraryMixin
-from app.controllers.session_mixin import ControllerSessionMixin
 from app.core.download_manager import DownloadManager
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
-from app.exceptions import DebugActionError, MediaScanError
-from app.models import VideoItem
+from app.services.app_state import AppState
+from app.services.cache_service import CacheService
 from app.services.debug_service import DebugArtifactsService
 from app.services.file_service import MediaLibraryService
+from app.services.frontend_state_service import FrontendStateService
+from app.services.media_release_coordination import (
+    normalize_media_path,
+    poll_media_release_request,
+    publish_media_release_request,
+)
 from app.ui.main_window import MainWindow
-from app.utils.runtime_paths import install_root, resolve_resource_file
+from app.utils.qt_runtime import MAIN_APP_USER_MODEL_ID, ensure_windows_app_user_model_id, load_qt_icon
+from app.utils.runtime_paths import install_root
+from shared.controller_session import ControllerSessionMixin
+from shared.spider_session_runtime import SpiderSession
 
-
-class SpiderEventBridge(QObject):
-    """Marshal pure-Python spider callbacks back onto the Qt UI thread."""
-
-    sig_log = pyqtSignal(str)
-    sig_item_found = pyqtSignal(object)
-    sig_select_tasks = pyqtSignal(object)
-    sig_finished = pyqtSignal()
-
-
-class DownloadEventBridge(QObject):
-    """Marshal pure-Python download callbacks back onto the Qt UI thread."""
-
-    sig_task_started = pyqtSignal(str)
-    sig_task_progress = pyqtSignal(str, int)
-    sig_task_finished = pyqtSignal(str)
-    sig_task_error = pyqtSignal(str, str)
-
-
-class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
-    """应用控制器，协调各组件。"""
+class ApplicationController(
+    ControllerHostMixin,
+    CrawlControllerMixin,
+    DownloadControllerMixin,
+    DebugControllerMixin,
+    ApplicationLifecycleMixin,
+    MediaHostControllerMixin,
+    ControllerSessionMixin,
+    MediaLibraryMixin,
+):
+    """Compose desktop UI, services, event bridges, and long-running workers."""
 
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
     IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+    MEDIA_FILE_EXTENSIONS = VIDEO_EXTENSIONS + IMAGE_EXTENSIONS
     DOWNLOAD_LOG_COMPONENT = "ApplicationController"
     DOWNLOAD_FINISHED_STATUS_CODE = "APP_DL_FINISH"
     DOWNLOAD_ERROR_STATUS_CODE = "APP_DL_ERROR"
     DOWNLOAD_FINISHED_MESSAGE = "下载任务完成"
     DOWNLOAD_ERROR_MESSAGE = "下载任务失败"
+    MEDIA_DELETE_COORDINATION_DELAY_SEC = 0.45
+    MEDIA_RELEASE_POLL_INTERVAL_MS = 200
 
-    def __init__(self):
-        """初始化桌面应用、窗口、服务对象与下载调度器。"""
+    def __init__(self, launch_args: Sequence[str] | None = None):
         self.project_root = install_root()
-        self.app = QApplication(sys.argv)   #启动图形界面引擎
-        self.file_service = MediaLibraryService(self.VIDEO_EXTENSIONS, self.IMAGE_EXTENSIONS)   #创建 “媒体文件管理工具
-        self.debug_service = DebugArtifactsService()    #创建 “调试日志 / 调试文件工具
+        self.launch_media_paths = self._collect_launch_media_paths(launch_args or ())
+        self.app = self._create_application()
+        self.file_service = MediaLibraryService(self.VIDEO_EXTENSIONS, self.IMAGE_EXTENSIONS)
+        self.debug_service = DebugArtifactsService()
+        self.spider_session = SpiderSession(registry)
+        self.event_bus = EventBus()
+        self.cache_service = CacheService(namespace="frontend_state")
+        self.app_state = AppState(event_bus=self.event_bus, cache_service=self.cache_service)
 
+        self._log_app_init()
+        self._configure_application_identity()
+        self._create_window_host()
+        self._initialize_event_bridges()
+        self._initialize_runtime_state()
+        self._initialize_media_release_coordination()
+
+        self.dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
+        self.frontend_state_service = FrontendStateService(self, app_state=self.app_state, cache_service=self.cache_service)
+        if hasattr(self.window, "set_frontend_state_service"):
+            self.window.set_frontend_state_service(self.frontend_state_service)
+        self._connect_download_signals()
+        self._connect_window_signals()
+
+        if self.launch_media_paths:
+            QTimer.singleShot(200, self._open_first_launch_media)
+        else:
+            QTimer.singleShot(200, self.scan_local_dir)
+        self._log_app_ready()
+
+    @classmethod
+    def _collect_launch_media_paths(cls, launch_args: Sequence[str]) -> list[str]:
+        """Keep supported media file paths passed on the command line (file association / double-click)."""
+        paths: list[str] = []
+        seen: set[str] = set()
+        for arg in launch_args:
+            token = str(arg or "").strip().strip('"')
+            if not token or token.startswith("-"):
+                continue
+            path = Path(token)
+            try:
+                resolved = str(path.resolve())
+            except OSError:
+                continue
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if suffix not in cls.MEDIA_FILE_EXTENSIONS:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            paths.append(resolved)
+        return paths
+
+    def _open_first_launch_media(self) -> None:
+        """Open the first launch argument media file after switching to its directory."""
+        paths = list(self.launch_media_paths or [])
+        if not paths:
+            return
+        target_path = paths[0]
+        target_dir = os.path.dirname(target_path)
+        host = self._host()
+        if target_dir:
+            host.set_current_save_dir(target_dir, persist=False)
+        self.scan_local_dir()
+        video_id = self._video_id_for_local_path(target_path)
+        if video_id is None:
+            item = self._video_item_for_launch_path(target_path)
+            self._store_video_item(item)
+            video_id = item.id
+            host.refresh_frontend_state(force=True)
+        if video_id is None:
+            return
+        host.select_video_by_id(video_id)
+        self.play_video(video_id)
+
+    def _video_id_for_local_path(self, file_path: str) -> str | None:
+        normalized = normalize_media_path(file_path)
+        if not normalized:
+            return None
+        with self._video_state_guard():
+            for video_id, item in self.videos.items():
+                if normalize_media_path(getattr(item, "local_path", "")) == normalized:
+                    return video_id
+        return None
+
+    def _video_item_for_launch_path(self, file_path: str) -> VideoItem:
+        path = Path(file_path)
+        item = VideoItem(url="", title=path.stem, source="local")
+        self._prepare_local_item(item)
+        item.local_path = str(path.resolve())
+        suffix = path.suffix.lower()
+        if suffix in self.VIDEO_EXTENSIONS:
+            item.meta["content_type"] = "video"
+        elif suffix in self.IMAGE_EXTENSIONS:
+            item.meta["content_type"] = "image"
+        return item
+
+    @staticmethod
+    def _create_application() -> QApplication:
+        return QApplication(sys.argv)
+
+    def _log_app_init(self) -> None:
         debug_logger.log(
             component="ApplicationController",
             action="app_init",
@@ -68,401 +180,190 @@ class ApplicationController(ControllerSessionMixin, MediaLibraryMixin):
             details={"project_root": str(self.project_root)},
         )
 
+    def _configure_application_identity(self) -> None:
         self.app.setApplicationName("Universal Crawler Pro")
         self.app.setOrganizationName("UCP")
-        try:
-            import ctypes
+        ensure_windows_app_user_model_id(MAIN_APP_USER_MODEL_ID)
+        icon = load_qt_icon(["favicon.ico"], fallback_names=["Web.ico"])
+        if icon is not None:
+            self.app.setWindowIcon(icon)
 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ucp.crawler.v1") #唯一软件ID
-        except (ImportError, AttributeError, OSError) as exc:
-            debug_logger.log_exception("ApplicationController", "set_app_user_model_id", exc)
-
-        icon_path = resolve_resource_file("favicon.ico")
-        if icon_path.exists():
-            self.app.setWindowIcon(QIcon(str(icon_path)))
-
-        self.window = MainWindow()
+    def _create_window_host(self) -> None:
+        self.window = MainWindow(app_state=self.app_state, event_bus=self.event_bus)
         self.window.show()
+        self.host = DesktopHostAdapter(self.window)
         self.app.aboutToQuit.connect(self.shutdown)
-        self._spider_bridge = SpiderEventBridge()
-        self._spider_bridge.sig_log.connect(self.window.append_log)
-        self._spider_bridge.sig_item_found.connect(self._on_spider_item_found)
-        self._spider_bridge.sig_select_tasks.connect(self._on_spider_select_tasks)
-        self._spider_bridge.sig_finished.connect(self._on_spider_finished)
-        self._download_bridge = DownloadEventBridge()
-        self._download_bridge.sig_task_started.connect(self._on_task_started)
-        self._download_bridge.sig_task_progress.connect(self._on_task_progress)
-        self._download_bridge.sig_task_finished.connect(self._on_task_finished)
-        self._download_bridge.sig_task_error.connect(self._on_task_error)
 
-        self.videos: dict[str, VideoItem] = {}
+    def _initialize_event_bridges(self) -> None:
+        self._spider_bridge = DomainEventBridge()
+        self._spider_bridge.sig_event.connect(
+            lambda event: self.event_bus.publish("spider.domain_event", event),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._download_bridge = self.EVENT_BRIDGE_CLASS()
+        self._download_bridge.sig_event.connect(
+            lambda event: self.event_bus.publish("download.domain_event", event),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.event_bus.subscribe("spider.domain_event", self._dispatch_spider_event)
+        self.event_bus.subscribe("download.domain_event", self._dispatch_download_event)
+
+    def _initialize_runtime_state(self) -> None:
+        self.videos = self.app_state.videos
         self.current_playing_id: str | None = None
+        self.app_state.set_current_playing_id(None)
         self.current_spider = None
+        self._active_spider_bindings = None
+        self._last_media_release_request_id: str | None = None
 
-        self.dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
-        self._connect_download_signals()
-        self._connect_window_signals()
+    def _video_state_guard(self):
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            return app_state._lock
+        lock = getattr(self, "_videos_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._videos_lock = lock
+        return lock
 
-        # 首次显示窗口后延迟扫描目录，避免界面初始化阶段被大量 I/O 阻塞。
-        QTimer.singleShot(200, self.scan_local_dir)
+    def _video_lookup(self, video_id: str) -> VideoItem | None:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            with app_state._lock:
+                return app_state.videos.get(video_id)
+        with self._video_state_guard():
+            return self.videos.get(video_id)
+
+    def _store_video_item(self, item: VideoItem) -> None:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state.upsert_video(item)
+            return
+        with self._video_state_guard():
+            self.videos[item.id] = item
+
+    def _remove_video_item(self, video_id: str) -> VideoItem | None:
+        app_state = getattr(self, "app_state", None)
+        if app_state is None:
+            with self._video_state_guard():
+                return self.videos.pop(video_id, None)
+        with app_state._lock:
+            item = app_state.videos.pop(video_id, None)
+            if item is not None:
+                app_state.task_state.pop(video_id, None)
+                app_state._last_progress_emit_at.pop(video_id, None)
+        if item is not None:
+            app_state._publish_change("videos.remove", {"video_id": video_id})
+        return item
+
+    def _video_items_snapshot(self) -> dict[str, VideoItem]:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            return app_state.snapshot_videos()
+        with self._video_state_guard():
+            return dict(self.videos)
+
+    def _initialize_media_release_coordination(self) -> None:
+        self._media_release_timer = QTimer()
+        self._media_release_timer.setInterval(self.MEDIA_RELEASE_POLL_INTERVAL_MS)
+        self._media_release_timer.timeout.connect(self._poll_external_media_release_requests)
+        self._media_release_timer.start()
+
+    def _log_app_ready(self) -> None:
         debug_logger.log(
             component="ApplicationController",
             action="app_ready",
             message="主窗口初始化完成",
             status_code="APP_READY",
-            details={"save_dir": self.window.current_save_dir},
+            details={"save_dir": self._host().current_save_dir},
         )
 
-    def _connect_window_signals(self):
-        """集中绑定 UI 发出的业务信号。"""
+    def _connect_window_signals(self) -> None:
         self.window.sig_start_crawl.connect(self.on_start_crawl)
         self.window.sig_stop_crawl.connect(self.on_stop_crawl)
         self.window.sig_change_dir.connect(self.on_dir_changed)
         self.window.sig_play_video.connect(self.play_video)
         self.window.sig_delete_video.connect(self.on_delete_video)
+        if hasattr(self.window, "sig_clear_queue"):
+            self.window.sig_clear_queue.connect(self.on_clear_queue)
         self.window.sig_open_latest_log.connect(self.open_latest_log)
         self.window.sig_open_error_summary.connect(self.open_latest_error_summary)
         self.window.sig_copy_trace_id.connect(self.copy_trace_id_for_video)
+        if hasattr(self.window, "sig_register_file_associations"):
+            self.window.sig_register_file_associations.connect(self.on_register_file_associations)
         self.window.bind_video_rename(self.on_rename_video)
+        if hasattr(self.window, "sig_switch_preview"):
+            self.window.sig_switch_preview.connect(self.switch_preview)
+        if hasattr(self.window, "sig_auto_next_preview"):
+            self.window.sig_auto_next_preview.connect(self.autoplay_next_preview)
 
-    def _connect_download_signals(self):
-        """下载管理器回调只在这里接入一次，避免散落在构造流程里。"""
-        self.dl_manager.task_started.connect(self._download_bridge.sig_task_started.emit)
-        self.dl_manager.task_progress.connect(self._download_bridge.sig_task_progress.emit)
-        self.dl_manager.task_finished.connect(self._download_bridge.sig_task_finished.emit)
-        self.dl_manager.task_error.connect(self._download_bridge.sig_task_error.emit)
-
-    def _item_details(self, item: VideoItem | None) -> dict:
-        """提取资源详情中的关键字段，避免日志里塞入过多无关数据。"""
-        if not item:
-            return {}
-        return debug_logger.pick_used(
-            {
-                "title": item.title,
-                "url": item.url,
-                "local_path": item.local_path,
-                "content_type": item.meta.get("content_type"),
-                "media_label": item.meta.get("media_label"),
-                "folder_name": item.meta.get("folder_name"),
-                "aweme_id": item.meta.get("aweme_id"),
-                "audio_url": item.meta.get("audio_url"),
-                "download_strategy": item.meta.get("download_strategy"),
-                "referer": item.meta.get("referer"),
-            },
-            "title",
-            "url",
-            "local_path",
-            "content_type",
-            "media_label",
-            "folder_name",
-            "aweme_id",
-            "audio_url",
-            "download_strategy",
-            "referer",
+    def _before_media_delete(self, context) -> None:
+        publish_media_release_request(
+            local_path=context.video.local_path,
+            source="gui",
+            reason="delete",
         )
+        time.sleep(self.MEDIA_DELETE_COORDINATION_DELAY_SEC)
 
-    def _report_debug_action_error(self, action: str, exc: Exception):
-        """统一处理调试入口失败时的界面提示和异常日志。"""
-        self.window.append_log(f"❌ {action}失败: {exc}")
-        debug_logger.log_exception("ApplicationController", action, exc)
-
-    def _run_debug_action(self, success_message: str, action_name: str, func) -> None:
-        """包装调试类快捷操作，让成功与失败反馈走同一套出口。"""
-        try:
-            func()
-            self.window.append_log(success_message)
-        except DebugActionError as exc:
-            self._report_debug_action_error(action_name, exc)
-
-    def _log_crawl_start(self, plugin_name: str, keyword: str, source_id: str, config: dict) -> None:
-        """记录一次爬虫启动的输入条件，方便复盘当前任务上下文。"""
-        debug_logger.log(
-            component="ApplicationController",
-            action="start_crawl",
-            message="用户启动爬虫任务",
-            status_code="APP_CRAWL_START",
-            details={
-                "keyword": keyword,
-                "source_id": source_id,
-                "plugin_name": plugin_name,
-                "active_config": self._summarize_active_config(config),
-            },
-        )
-
-    def _publish_video_state(self, vid: str, item: VideoItem, *, requested_progress: int | None) -> None:
-        self.window.update_video_status(
-            vid,
-            item.status,
-            item.progress if requested_progress is not None else requested_progress,
-        )
-
-    def _emit_controller_log(self, message: str) -> None:
-        self.window.append_log(message)
-
-    def _build_download_finished_log_details(self, item: VideoItem) -> dict:
-        return self._item_details(item)
-
-    def _build_download_error_log_details(self, item: VideoItem, error: str) -> dict:
-        return {**self._item_details(item), "error": error}
-
-    def _create_spider(self, source_id: str, keyword: str, config: dict):
-        """根据插件定义创建 spider，控制器不感知各平台具体类。"""
-        plugin = registry.get_plugin(source_id)
-        if not plugin:
-            self.window.append_log("❌ 未知的爬虫源")
-            return None, None
-        spider_cls = plugin.get_spider_class()
-        try:
-            return plugin, spider_cls(keyword=keyword, config=config)
-        except Exception as exc:
-            self.window.append_log(f"❌ 创建爬虫失败: {exc}")
-            debug_logger.log_exception(
-                "ApplicationController",
-                "create_spider",
-                exc,
-                context={"source_id": source_id, "keyword": keyword},
-            )
-            return plugin, None
-
-    def _bind_spider_signals(self, spider) -> None:
-        """spider 生命周期信号统一在这里接入。"""
-        spider.sig_log.connect(self._spider_bridge.sig_log.emit)
-        spider.sig_item_found.connect(self._spider_bridge.sig_item_found.emit)
-        spider.sig_select_tasks.connect(self._spider_bridge.sig_select_tasks.emit)
-        spider.sig_finished.connect(self._spider_bridge.sig_finished.emit)
-
-    def _clear_local_items(self) -> None:
-        """清空当前界面与内存中的本地媒体列表，为重新扫描做准备。"""
-        self.window.clear_video_rows()
-        self.videos.clear()
-
-    def _append_scanned_items(self, result) -> None:
-        """把扫描得到的媒体结果批量写入缓存并显示到表格。"""
-        for item in self._cache_scanned_items(result):
-            self.window.add_video_row(item)
-
-    def scan_local_dir(self):
-        """扫描当前保存目录，并把已有媒体文件恢复到界面列表。"""
-        directory = self.window.current_save_dir
-        self.window.append_log(f"📂 正在扫描目录: {directory}")
-        debug_logger.log(
-            component="ApplicationController",
-            action="scan_local_dir",
-            message="开始扫描本地媒体目录",
-            status_code="APP_SCAN_START",
-            details={"directory": directory},
-        )
-
-        # 先清空旧数据，避免目录切换或重复扫描后出现残留条目。
-        self._clear_local_items()
-        try:
-            result = self._scan_media_directory(directory)
-            self._append_scanned_items(result)
-            for message in self._build_scan_messages(result):
-                self.window.append_log(message)
-            if result.total_count > 0:
-                debug_logger.log(
-                    component="ApplicationController",
-                    action="scan_local_dir_finished",
-                    message="本地媒体目录扫描完成",
-                    status_code="APP_SCAN_OK",
-                    details={
-                        "directory": directory,
-                        "count": result.total_count,
-                        "video_count": result.video_count,
-                        "image_count": result.image_count,
-                    },
-                )
-        except MediaScanError as exc:
-            self.window.append_log(f"❌ 扫描目录出错: {exc}")
-            debug_logger.log_exception("ApplicationController", "scan_local_dir", exc, context={"directory": directory})
-
-    def on_dir_changed(self):
-        """在用户切换保存目录后刷新日志和本地媒体列表。"""
-        self.window.append_log(f"📂 目录已变更: {self.window.current_save_dir}")
-        debug_logger.log(
-            component="ApplicationController",
-            action="change_save_dir",
-            message="保存目录已变更",
-            status_code="APP_DIR_CHANGED",
-            details={"save_dir": self.window.current_save_dir},
-        )
-        self.scan_local_dir()
-
-    def on_rename_video(self, item):
-        """处理表格内重命名操作，并同步修改磁盘文件与内存状态。"""
-        if item.column() != 0:
-            return
-        vid = item.data(Qt.ItemDataRole.UserRole)
-        if not vid or vid not in self.videos:
+    def on_register_file_associations(self, include_video: bool, include_image: bool) -> None:
+        if not include_video and not include_image:
+            self.window.append_log("未选择需要注册的资源类型")
             return
 
-        video = self.videos[vid]
-        new_title = item.text().strip()
-        # 文件不存在或标题未变化时，直接回退到原值，避免误触发重命名逻辑。
-        if new_title == video.title or not os.path.exists(video.local_path):
-            item.setText(video.title)
-            return
-        if self.current_playing_id == vid:
-            self.window.release_media_playback()
-            self.current_playing_id = None
+        from app.services.windows_file_association_service import WindowsFileAssociationService
 
-        outcome = self._rename_video_sync(vid, new_title, self.window.current_save_dir)
-        if outcome.status == "ok":
-            item.setToolTip(new_title)
-            message = self._rename_outcome_message(outcome)
-            if message:
-                self.window.append_log(message)
-        else:
-            self.window.append_log(f"❌ 重命名失败: {outcome.error}")
-            item.setText(video.title)
-
-    def on_delete_video(self, row_idx, vid):
-        """删除本地媒体，并尽量同步取消排队中或执行中的下载任务。"""
-        if vid not in self.videos:
-            self.window.remove_video_row(row_idx)
-            return
-
-        if self.current_playing_id == vid:
-            self.window.release_media_playback()
-            self.current_playing_id = None
-        outcome = self._delete_video_sync(vid)
-        if outcome.status == "error":
-            self.window.append_log(f"❌ 删除文件失败: {outcome.error}")
-            return
-        for message in self._delete_outcome_messages(outcome):
-            self.window.append_log(message)
-        self.window.remove_video_row(row_idx)
-        self.window.refresh_table_bindings()
-
-    def on_start_crawl(self, keyword, source_id, config):
-        # 爬虫线程未退出前拒绝重复启动，避免 current_spider 被覆盖后出现状态串线。
-        """根据平台配置创建爬虫线程并启动一次新的采集任务。"""
-        if self._has_active_spider():
-            self.window.append_log("⚠️ 当前已有任务在运行，请先停止或等待结束")
-            return
-        plugin, spider = self._create_spider(source_id, keyword, config)
-        if not plugin or not spider:
-            return
-        self.window.append_log(f"🟢 启动任务 | 模式: {plugin.name}")
-        self._log_crawl_start(plugin.name, keyword, source_id, config)
-
-        # 只有在 spider 实例成功创建后才切换 UI 状态，避免“假运行中”。
-        self.window.set_crawl_running_state(True)
-        try:
-            self.current_spider = spider
-            self._bind_spider_signals(self.current_spider)
-            self.current_spider.start()
-        except Exception as exc:
-            self.window.append_log(f"❌ 启动爬虫失败: {exc}")
-            debug_logger.log_exception(
-                "ApplicationController",
-                "start_crawl",
-                exc,
-                context={"source_id": source_id, "keyword": keyword},
-            )
-            self.window.set_crawl_running_state(False)
-            self.current_spider = None
-
-    def _on_spider_item_found(self, item):
-        """接收爬虫产出的资源条目，先入表，再交给下载器排队。"""
-        self._prepare_pending_item(item)
-        self.videos[item.id] = item
-        self.window.add_video_row(item)
-        debug_logger.log(
-            component="ApplicationController",
-            action="item_found",
-            message="爬虫发现可下载资源",
-            status_code="APP_ITEM_FOUND",
-            context=self._item_context(item),
-            details=self._item_details(item),
-            trace_id=self._item_trace_id(item),
+        service = WindowsFileAssociationService()
+        result = service.register_current_user(
+            self._current_executable_path(),
+            include_video=include_video,
+            include_image=include_image,
         )
-        self.dl_manager.add_task(item, self.window.current_save_dir)
-
-    def _on_spider_select_tasks(self, items):
-        """当平台返回候选资源集合时，交给选择对话框由用户筛选。"""
-        selected = self.window.show_selection_dialog(items)
-        if self.current_spider:
-            self.current_spider.resume_from_ui(selected)
-
-    def _on_spider_finished(self):
-        """在爬虫线程结束后恢复界面状态，并清空当前 spider 引用。"""
-        self.window.append_log("✅ 爬虫任务结束")
-        debug_logger.log(
-            component="ApplicationController",
-            action="crawl_finished",
-            message="爬虫任务结束",
-            status_code="APP_CRAWL_FINISH",
-        )
-        self.window.set_crawl_running_state(False)
-        self.current_spider = None
-
-    def on_stop_crawl(self):
-        """响应用户手动停止，向当前爬虫线程发送终止请求。"""
-        if self.current_spider:
-            self.current_spider.stop()
-            self.window.append_log("🛑 正在停止任务...")
-            debug_logger.log(
-                component="ApplicationController",
-                action="stop_crawl",
-                level="WARN",
-                message="用户请求停止爬虫任务",
-                status_code="APP_CRAWL_STOP",
-            )
-
-    def open_latest_log(self):
-        """打开最新的脱敏调试日志文件。"""
-        self._run_debug_action("📄 已打开最新调试日志", "打开最新日志", self.debug_service.open_latest_log)
-
-    def open_latest_error_summary(self):
-        """打开最近一次异常生成的错误摘要文档。"""
-        self._run_debug_action("🚨 已打开最近错误摘要", "打开错误摘要", self.debug_service.open_latest_error_summary)
-
-    def copy_trace_id_for_video(self, video_id: str):
-        """把指定资源的 trace_id 复制到剪贴板，便于快速排障。"""
-        item = self.videos.get(video_id)
-        trace_id = self._item_trace_id(item)
-        self._run_debug_action(
-            f"📋 已复制 trace_id: {trace_id}",
-            "复制 trace_id",
-            lambda: self.debug_service.copy_trace_id(self.app.clipboard(), trace_id),
-        )
-
-    def shutdown(self):
-        """在应用退出前停止媒体播放、爬虫线程和下载线程。"""
-        debug_logger.log(
-            component="ApplicationController",
-            action="shutdown",
-            level="WARN",
-            message="应用开始退出清理",
-            status_code="APP_SHUTDOWN",
-        )
-        # 先停止播放器，避免外部媒体资源仍被 UI 持有。
-        self.window.cleanup_media()
-        if self.current_spider and self.current_spider.isRunning():
-            self.current_spider.stop()
-            self.current_spider.wait(2000)
-        self.dl_manager.stop_all()
-
-    def play_video(self, vid):
-        """根据文件类型选择图片预览或视频播放器进行展示。"""
-        video = self.videos.get(vid)
-        if not video or not os.path.exists(video.local_path):
-            self.window.append_log("❌ 文件不存在或已被删除")
+        if not result.registered:
+            self.window.append_log(f"文件关联注册未完成: {result.message}")
             return
-        self.current_playing_id = vid
-        self.window.append_log(f"▶️ 播放: {video.title}")
 
-        if self._is_image_file(video.local_path):
-            self.window.show_image(video.local_path)
-        else:
-            self.window.play_video(video.local_path)
+        default_result = service.set_current_user_defaults(
+            include_video=include_video,
+            include_image=include_image,
+        )
+        if default_result.defaulted_extensions:
+            preview = ", ".join(default_result.defaulted_extensions[:6])
+            suffix = "..." if len(default_result.defaulted_extensions) > 6 else ""
+            self.window.append_log(f"已设置默认打开方式: {preview}{suffix}")
+        if default_result.failed_extensions:
+            preview = ", ".join(default_result.failed_extensions[:6])
+            suffix = "..." if len(default_result.failed_extensions) > 6 else ""
+            self.window.append_log(f"部分默认打开方式设置失败: {preview}{suffix}")
 
-    def _is_image_file(self, file_path: str) -> bool:
-        """判断给定路径是否属于图片资源。"""
-        return os.path.splitext(file_path)[1].lower() in self.IMAGE_EXTENSIONS
+        diagnostics = service.diagnose_current_user(include_video=include_video, include_image=include_image)
+        if diagnostics.available and diagnostics.pending_extensions:
+            preview = ", ".join(diagnostics.pending_extensions[:6])
+            suffix = "..." if len(diagnostics.pending_extensions) > 6 else ""
+            self.window.append_log(f"仍需在 Windows 默认应用中确认: {preview}{suffix}")
+            if service.open_default_apps_settings():
+                self.window.append_log("已打开 Windows 默认应用设置，请手动确认剩余默认打开方式")
+                return
+            self.window.append_log("请手动打开 Windows 默认应用设置，确认剩余默认打开方式")
+            return
 
-    def run(self):
-        """启动 Qt 事件循环。"""
-        sys.exit(self.app.exec())
+        self.window.append_log("默认打开方式已生效")
+
+    @staticmethod
+    def _current_executable_path() -> str:
+        if getattr(sys, "frozen", False):
+            return sys.executable
+        return sys.argv[0]
+
+    def _poll_external_media_release_requests(self) -> None:
+        self._last_media_release_request_id, request = poll_media_release_request(self._last_media_release_request_id)
+        current_playing_id = self._get_current_playing_id()
+        if request is None or not request.local_path or not current_playing_id:
+            return
+        current_video = self.videos.get(current_playing_id)
+        if current_video is None:
+            self._set_current_playing_id(None)
+            return
+        if normalize_media_path(current_video.local_path) != request.local_path:
+            return
+        self._host().release_media_playback()
+        self._set_current_playing_id(None)

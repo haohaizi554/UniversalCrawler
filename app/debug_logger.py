@@ -11,6 +11,34 @@ from typing import Any
 
 from app.utils.runtime_paths import user_logs_root
 
+_TRACE_PREFIX_ALIASES = {
+    "douyin": "dy",
+    "dy": "dy",
+    "bilibili": "bilibili",
+    "bili": "bilibili",
+    "kuaishou": "ks",
+    "ks": "ks",
+    "xiaohongshu": "xhs",
+    "xhs": "xhs",
+    "missav": "missav",
+    "miss": "missav",
+}
+
+def normalize_trace_prefix(prefix: str = "trace") -> str:
+    """Normalize frontend trace prefixes to stable platform_name segments."""
+    raw = str(prefix or "trace").strip() or "trace"
+    raw = re.sub(r"[^0-9A-Za-z_-]+", "_", raw).replace("-", "_").strip("_")
+    parts = [part for part in raw.split("_") if part]
+    if not parts:
+        return "trace"
+    base = _TRACE_PREFIX_ALIASES.get(parts[0].lower(), parts[0].lower())
+    tail: list[str] = []
+    for part in parts[1:]:
+        normalized = _TRACE_PREFIX_ALIASES.get(part.lower(), part)
+        if not tail and str(normalized).lower() == base.lower():
+            continue
+        tail.append(str(normalized))
+    return "_".join([base, *tail])
 
 class DebugLogger:
     """统一调试日志记录器。
@@ -233,13 +261,14 @@ class DebugLogger:
         return value
 
     def new_trace_id(self, prefix: str = "trace") -> str:
-        """执行 `new_trace_id` 对应的业务逻辑，供 `DebugLogger` 使用。"""
+        """Create a normalized trace id with a stable platform prefix."""
+        normalized = normalize_trace_prefix(prefix)
         stamp = datetime.now().strftime("%H%M%S")
         short = uuid.uuid4().hex[:8]
-        return f"{prefix}-{stamp}-{short}"
+        return f"{normalized}_{stamp}_{short}"
 
     def pick_used(self, source: dict[str, Any] | None, *keys: str) -> dict[str, Any]:
-        """执行 `pick_used` 对应的业务逻辑，供 `DebugLogger` 使用。"""
+        
         if not source:
             return {}
         return self._clean_mapping({key: source.get(key) for key in keys if key in source})
@@ -378,7 +407,7 @@ class DebugLogger:
         details: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ):
-        """执行 `log` 对应的业务逻辑，供 `DebugLogger` 使用。"""
+        
         context = self._clean_mapping(context)
         details = self._clean_mapping(details)
         lines = [
@@ -409,7 +438,7 @@ class DebugLogger:
         status_code: int | str | None = None,
         trace_id: str | None = None,
     ):
-        """执行 `log_api` 对应的业务逻辑，供 `DebugLogger` 使用。"""
+        
         request = self._clean_mapping(request)
         response_summary = self._clean_mapping(response_summary)
         lines = [
@@ -438,7 +467,7 @@ class DebugLogger:
         context: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ):
-        """执行 `log_command` 对应的业务逻辑，供 `DebugLogger` 使用。"""
+        
         details = {}
         if command_args:
             details["args"] = list(command_args)
@@ -465,7 +494,7 @@ class DebugLogger:
         trace_id: str | None = None,
         details: dict[str, Any] | None = None,
     ):
-        """执行 `log_exception` 对应的业务逻辑，供 `DebugLogger` 使用。"""
+        
         self.log(
             component=component,
             action=action,
@@ -476,17 +505,14 @@ class DebugLogger:
             trace_id=trace_id,
         )
 
-
 _debug_logger_singleton: DebugLogger | None = None
 
-
 def get_debug_logger() -> DebugLogger:
-    """获取 `debug_logger` 对应的数据或状态。"""
+    
     global _debug_logger_singleton
     if _debug_logger_singleton is None:
         _debug_logger_singleton = DebugLogger()
     return _debug_logger_singleton
-
 
 class DebugLoggerProxy:
     """惰性代理，避免模块导入时立刻创建日志目录和文件。"""
@@ -498,6 +524,5 @@ class DebugLoggerProxy:
     def __setattr__(self, name: str, value):
         """提供 `__setattr__` 对应的内部辅助逻辑，供 `DebugLoggerProxy` 使用。"""
         setattr(get_debug_logger(), name, value)
-
 
 debug_logger = DebugLoggerProxy()

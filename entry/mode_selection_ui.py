@@ -16,7 +16,6 @@ from entry.qt_entry_utils import MAIN_APP_USER_MODEL_ID, ensure_windows_app_user
 if TYPE_CHECKING:
     from PyQt6.QtGui import QIcon
 
-
 # 菜单项定义: (显示标签, 描述, 模式)
 _MENU_ITEMS = [
     ("1", "桌面 GUI    (PyQt6 图形界面)", Mode.GUI),
@@ -26,7 +25,6 @@ _MENU_ITEMS = [
     ("5", "测试套件    (全量/单元/UI/浏览器 等)", Mode.TEST),
     ("q", "退出", None),
 ]
-
 
 def _display_width(text: str) -> int:
     """计算字符串在终端的显示宽度（汉字/East Asian Wide 字符按 2 计算）。"""
@@ -40,14 +38,12 @@ def _display_width(text: str) -> int:
             width += 1
     return width
 
-
 def _pad_to_width(text: str, target: int) -> str:
     """用空格把字符串填充到目标显示宽度。"""
     cur = _display_width(text)
     if cur >= target:
         return text
     return text + " " * (target - cur)
-
 
 def _write_menu_item(key: str, label: str, mode: "Mode | None", width: int) -> None:
     """输出单个模式菜单项，统一处理退出项与普通项的对齐逻辑。"""
@@ -60,7 +56,6 @@ def _write_menu_item(key: str, label: str, mode: "Mode | None", width: int) -> N
     line = f"[{key}] {label}"
     sys.stderr.write("  " + _pad_to_width(line, width) + marker + "\n")
 
-
 def _has_pyqt6() -> bool:
     """检测 PyQt6 是否可用（用于 Qt 弹窗后备）。"""
     try:
@@ -70,11 +65,9 @@ def _has_pyqt6() -> bool:
     except Exception:
         return False
 
-
 def _load_app_icon() -> "QIcon | None":
     """加载应用图标（favicon.ico），找不到就返回 None。"""
     return load_qt_icon(["favicon.ico"], fallback_names=["Web.ico"])
-
 
 def _prompt_mode_with_qt() -> Mode | None:
     """当 stdin/stdout 不是 TTY 时，用 Qt 弹窗让用户选 mode。"""
@@ -426,7 +419,6 @@ def _prompt_mode_with_qt() -> Mode | None:
 
     dialog.exec()
     return result["mode"]
-
 
 def prompt_mode_menu() -> Mode | None:
     """弹出菜单让用户选模式。"""

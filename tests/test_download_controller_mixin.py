@@ -6,7 +6,6 @@ from app.core.events import build_log_event, build_task_error_event, build_task_
 from app.models import VideoItem
 from shared.controller_session import ControllerSessionMixin
 
-
 class _DummyDownloadController(DownloadControllerMixin, ControllerSessionMixin):
     DOWNLOAD_LOG_COMPONENT = "DummyDownloadController"
     DOWNLOAD_FINISHED_STATUS_CODE = "DUMMY_OK"
@@ -33,7 +32,6 @@ class _DummyDownloadController(DownloadControllerMixin, ControllerSessionMixin):
             requested_progress if requested_progress is not None else item.progress,
         )
 
-
 class DownloadControllerMixinTests(unittest.TestCase):
     def test_connect_download_signals_binds_bridge_callbacks(self):
         controller = _DummyDownloadController()
@@ -51,6 +49,17 @@ class DownloadControllerMixinTests(unittest.TestCase):
         controller._emit_task_progress_event("missing", 66)
 
         controller._download_bridge.sig_event.emit.assert_not_called()
+
+    def test_emit_task_progress_event_drops_duplicate_percentages(self):
+        controller = _DummyDownloadController()
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        controller.videos[item.id] = item
+
+        for progress in (10, 10, "10", 11):
+            controller._emit_task_progress_event(item.id, progress)
+
+        events = [call.args[0].to_payload() for call in controller._download_bridge.sig_event.emit.call_args_list]
+        self.assertEqual([event["progress"] for event in events], [10, 11])
 
     def test_emit_task_started_event_falls_back_to_running_worker_video(self):
         controller = _DummyDownloadController()
@@ -109,7 +118,6 @@ class DownloadControllerMixinTests(unittest.TestCase):
         controller._dispatch_download_event(build_task_started_event("", None))
 
         controller._on_task_started.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()

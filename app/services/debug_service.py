@@ -3,7 +3,6 @@
 import os
 import subprocess
 from pathlib import Path
-
 from app.debug_logger import debug_logger
 from app.exceptions import DebugActionError
 
@@ -16,11 +15,11 @@ class DebugArtifactsService:
         self.logs_dir = debug_logger.logs_dir
 
     def latest_log_path(self) -> str:
-        """执行 `latest_log_path` 对应的业务逻辑，供 `DebugArtifactsService` 使用。"""
+        
         return str(debug_logger.latest_file)
 
     def latest_error_summary_path(self) -> str:
-        """执行 `latest_error_summary_path` 对应的业务逻辑，供 `DebugArtifactsService` 使用。"""
+        
         return str(debug_logger.latest_error_summary_file)
 
     def open_path(self, file_path: str):

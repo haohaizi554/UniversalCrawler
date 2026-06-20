@@ -12,7 +12,6 @@ from .helpers import (
     sanitize_note_title,
 )
 
-
 class XiaohongshuParser:
     """Normalize raw XHS payloads into spider-friendly structures."""
 

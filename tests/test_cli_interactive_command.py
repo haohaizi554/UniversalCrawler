@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-
 class InteractiveCommandTests(unittest.TestCase):
     """覆盖 interactive 子命令与 GUI 对齐的关键行为。"""
 
@@ -267,7 +266,6 @@ class InteractiveCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         selection = mock_runner_cls.call_args.kwargs["selection_strategy"]
         self.assertIsInstance(selection, InteractiveTTYSelection)
-
 
 if __name__ == "__main__":
     unittest.main()

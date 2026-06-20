@@ -17,7 +17,7 @@ except ImportError:
     PARAMS_HEADERS = {}
     PARAMS_HEADERS_TIKTOK = {}
     USERAGENT = ""
-    """执行 `request_params` 对应的业务逻辑。"""
+    
     async def request_params(*args, **kwargs):
         """Fallback async request stub used when the real helper is unavailable."""
 
@@ -43,9 +43,8 @@ if TYPE_CHECKING:
 
 __all__ = ["MsToken", "MsTokenTikTok"]
 
-
 class MsToken:
-    """封装 `MsToken` 在 `app/core/lib/douyin/encrypt/msToken.py` 中承担的核心逻辑。"""
+    
     NAME = "msToken"
     # API = "https://mssdk.bytedance.com/web/report"
     API = "https://mssdk.bytedance.com/web/common"
@@ -143,7 +142,7 @@ class MsToken:
         proxy: str = None,
         **kwargs,
     ) -> dict | None:
-        """获取 `real_ms_token` 对应的数据或状态，供 `MsToken` 使用。"""
+        
         params = {cls.NAME: token}
         return await cls._get_ms_token(
             logger,
@@ -162,7 +161,7 @@ class MsToken:
         proxy: str = None,
         **kwargs,
     ) -> dict | None:
-        """获取 `long_ms_token` 对应的数据或状态，供 `MsToken` 使用。"""
+        
         return await cls.get_real_ms_token(
             logger,
             headers,
@@ -171,9 +170,8 @@ class MsToken:
             **kwargs,
         )
 
-
 class MsTokenTikTok(MsToken):
-    """封装 `MsTokenTikTok` 在 `app/core/lib/douyin/encrypt/msToken.py` 中承担的核心逻辑。"""
+    
     REFERER = "https://www.tiktok.com/"
     API = "https://mssdk-ttp2.tiktokw.us/web/report"
     DATA = {
@@ -245,7 +243,7 @@ class MsTokenTikTok(MsToken):
         proxy: str = None,
         **kwargs,
     ) -> dict | None:
-        """获取 `real_ms_token` 对应的数据或状态，供 `MsTokenTikTok` 使用。"""
+        
         params = {cls.NAME: token}
         if token:
             headers |= {"Cookie": f"{cls.NAME}={token}"}
@@ -263,17 +261,16 @@ class MsTokenTikTok(MsToken):
             **kwargs,
         )
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     class Logger:
-        """执行 `error` 对应的业务逻辑，供 `Logger` 使用。"""
+        
         """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
         def error(self, msg):
             """Print an error message to the console."""
 
             print(msg)
-        """执行 `info` 对应的业务逻辑，供 `Logger` 使用。"""
+        
         def info(self, msg, *args):
             """Print an informational message to the console."""
 
@@ -300,7 +297,6 @@ async def test():
             Logger(), PARAMS_HEADERS_TIKTOK, proxy="http://127.0.0.1:7890"
         ),
     )
-
 
 if __name__ == "__main__":
     run(test())

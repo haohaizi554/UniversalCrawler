@@ -16,7 +16,6 @@ from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Protocol, runtime_checkable
 
-
 TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_DIR.parent
 TEST_ICON_PATH = PROJECT_ROOT / "test.ico" if (PROJECT_ROOT / "test.ico").exists() else TESTS_DIR / "test.ico"
@@ -38,7 +37,6 @@ RECOMMENDED_CATEGORY_IDS = (
     "pipeline",
     "core_services",
 )
-
 
 @dataclass
 class TestCategory:
@@ -66,11 +64,9 @@ class TestCategory:
     def total_count(self) -> int:
         return self.file_count()
 
-
 TEST_REGISTRY: dict[str, TestCategory] = {}
 _PLUGIN_DIRS: dict[str, Path] = {}
 _PLUGIN_PATTERNS: dict[str, str] = {}
-
 
 def _normalize_path(path_like: str | Path) -> str:
     path = Path(path_like)
@@ -80,7 +76,6 @@ def _normalize_path(path_like: str | Path) -> str:
         except ValueError:
             return str(path).replace("\\", "/")
     return str(path).replace("\\", "/")
-
 
 def _dedupe(items: Iterable[str]) -> list[str]:
     seen: set[str] = set()
@@ -92,11 +87,9 @@ def _dedupe(items: Iterable[str]) -> list[str]:
             result.append(normalized)
     return result
 
-
 def _matches(path_str: str, patterns: Iterable[str]) -> bool:
     posix_path = PurePosixPath(path_str)
     return any(fnmatch(path_str, pat) or posix_path.match(pat) for pat in patterns)
-
 
 def discover_test_files(
     tests_dir: Path | None = None,
@@ -115,7 +108,6 @@ def discover_test_files(
             continue
         discovered.append(rel)
     return discovered
-
 
 def _resolve_direct_category_files(category: TestCategory) -> list[str]:
     discovered_local = discover_test_files()
@@ -139,7 +131,6 @@ def _resolve_direct_category_files(category: TestCategory) -> list[str]:
 
     return _dedupe(files)
 
-
 def _assigned_local_test_files() -> set[str]:
     assigned: set[str] = set()
     for category in TEST_REGISTRY.values():
@@ -150,17 +141,14 @@ def _assigned_local_test_files() -> set[str]:
                 assigned.add(rel)
     return assigned
 
-
 def get_category(cat_id: str) -> TestCategory:
     if cat_id not in TEST_REGISTRY:
         raise KeyError(f"Unknown test category: {cat_id}. Available: {list(TEST_REGISTRY.keys())}")
     return TEST_REGISTRY[cat_id]
 
-
 def get_enabled_categories() -> list[TestCategory]:
     categories = [category for category in TEST_REGISTRY.values() if category.enabled]
     return sorted(categories, key=lambda item: (item.priority, item.id))
-
 
 def get_resolved_files(cat_id: str) -> list[str]:
     """返回某个类别最终会运行的测试脚本列表。"""
@@ -179,7 +167,6 @@ def get_resolved_files(cat_id: str) -> list[str]:
 
     return _resolve_direct_category_files(get_category(cat_id))
 
-
 def auto_discover_tests(tests_dir: Path | None = None) -> list[str]:
     """返回尚未被任何内置分类规则收录的测试脚本。"""
 
@@ -187,7 +174,6 @@ def auto_discover_tests(tests_dir: Path | None = None) -> list[str]:
     discovered = discover_test_files(tests_dir)
     assigned = _assigned_local_test_files()
     return [rel for rel in discovered if rel not in assigned]
-
 
 def register_category(
     id: str,
@@ -232,7 +218,6 @@ def register_category(
     TEST_REGISTRY[id] = category
     return category
 
-
 def register_category_rule(
     id: str,
     name: str,
@@ -268,7 +253,6 @@ def register_category_rule(
         source="rule",
     )
 
-
 def register_test_files(category_id: str, files: list[str], *, append: bool = True) -> TestCategory:
     """向现有类别追加或覆盖测试脚本，便于后续脚本接入测试套件。"""
 
@@ -276,7 +260,6 @@ def register_test_files(category_id: str, files: list[str], *, append: bool = Tr
     normalized = _dedupe(files)
     category.files = _dedupe((category.files if append else []) + normalized)
     return category
-
 
 @runtime_checkable
 class TestPlugin(Protocol):
@@ -289,7 +272,6 @@ class TestPlugin(Protocol):
 
     def get_files(self) -> list[str]: ...
 
-
 def _scan_plugin_files(directory: Path, pattern: str) -> list[str]:
     files: list[str] = []
     if directory.exists() and directory.is_dir():
@@ -298,7 +280,6 @@ def _scan_plugin_files(directory: Path, pattern: str) -> list[str]:
                 continue
             files.append(_normalize_path(path))
     return _dedupe(files)
-
 
 def register_plugin_directory(
     category_id: str,
@@ -346,7 +327,6 @@ def register_plugin_directory(
     _PLUGIN_PATTERNS[category_id] = pattern
     return category
 
-
 def register_plugin(plugin: TestPlugin) -> TestCategory:
     """注册一个实现 TestPlugin 协议的对象。"""
 
@@ -363,7 +343,6 @@ def register_plugin(plugin: TestPlugin) -> TestCategory:
         source="plugin",
     )
 
-
 def unregister_plugin_directory(category_id: str) -> bool:
     if category_id not in _PLUGIN_DIRS:
         return False
@@ -374,10 +353,8 @@ def unregister_plugin_directory(category_id: str) -> bool:
     _PLUGIN_PATTERNS.pop(category_id, None)
     return True
 
-
 def list_plugin_directories() -> dict[str, str]:
     return {category_id: str(path) for category_id, path in _PLUGIN_DIRS.items()}
-
 
 def _rescan_plugin(category_id: str) -> TestCategory | None:
     if category_id not in _PLUGIN_DIRS or category_id not in TEST_REGISTRY:
@@ -389,7 +366,6 @@ def _rescan_plugin(category_id: str) -> TestCategory | None:
     )
     return category
 
-
 def refresh_registry() -> dict[str, int]:
     """刷新动态来源的类别。"""
 
@@ -400,7 +376,6 @@ def refresh_registry() -> dict[str, int]:
         "runnable_files": len(get_resolved_files("all")),
         "unassigned_files": len(get_resolved_files("misc")),
     }
-
 
 def summary() -> dict:
     return {
@@ -422,7 +397,6 @@ def summary() -> dict:
         ],
     }
 
-
 def _bootstrap_registry() -> None:
     TEST_REGISTRY.clear()
 
@@ -437,6 +411,7 @@ def _bootstrap_registry() -> None:
         badges=["全集"],
         source="builtin",
     )
+    # ── 接口层 ──────────────────────────────────────────────
     register_category_rule(
         id="cli_sdk",
         name="CLI / SDK",
@@ -448,14 +423,12 @@ def _bootstrap_registry() -> None:
         section="接口层",
         badges=["推荐", "快速"],
     )
-    register_category(
+    register_category_rule(
         id="web_api",
         name="Web / API",
         description="FastAPI 端点、Web 入口、Web 控制器桥接和多入口契约一致性。",
-        files=[
-            "tests/test_contract.py",
-        ],
         include=[
+            "tests/test_contract.py",
             "tests/test_fastapi_*.py",
             "tests/test_web_*.py",
             "tests/test_web_entry.py",
@@ -469,31 +442,42 @@ def _bootstrap_registry() -> None:
         section="接口层",
         badges=["推荐"],
     )
-    register_category(
+    # ── 流程层 ──────────────────────────────────────────────
+    register_category_rule(
         id="app_flows",
         name="应用流程",
         description="端到端流程、入口调度与跨模块集成流。",
-        files=[
+        include=[
             "tests/test_e2e.py",
             "tests/test_main_entry.py",
+            "tests/test_*_entry.py",
+            "tests/test_*_entry_*.py",
+            "tests/test_entry_*.py",
+            "tests/test_cross_entry_*.py",
+            "tests/test_integration_*.py",
         ],
-        include=["tests/test_integration_*.py"],
         icon_color="#F97316",
         icon_letter="FLOW",
         priority=30,
         section="流程层",
         badges=["推荐"],
     )
-    register_category(
+    # ── 体验层 ──────────────────────────────────────────────
+    register_category_rule(
         id="desktop_ui",
         name="桌面界面",
-        description="Qt 主窗口、控制器、队列面板与对话框相关测试。",
-        files=[
+        description="Qt 主窗口、控制器、队列面板、宿主适配层与对话框相关测试。",
+        include=[
             "tests/test_application_controller.py",
             "tests/test_download_queue_panel.py",
             "tests/test_main_window.py",
+            "tests/test_desktop_host.py",
+            "tests/test_gui_*.py",
+            "tests/test_media_preview_panel.py",
+            "tests/test_log_panel.py",
+            "tests/test_ui_*.py",
+            "tests/test_unified_frontend_contract.py",
         ],
-        include=["tests/test_ui_*.py"],
         icon_color="#EC4899",
         icon_letter="UI",
         priority=40,
@@ -501,11 +485,11 @@ def _bootstrap_registry() -> None:
         badges=["桌面"],
         requires_gui=True,
     )
-    register_category(
+    register_category_rule(
         id="browser_e2e",
         name="浏览器 E2E",
         description="Playwright 驱动的真实浏览器测试与前端交互回归。",
-        files=["tests/test_web_browser.py"],
+        include=["tests/test_web_browser.py"],
         icon_color="#6366F1",
         icon_letter="WEB",
         priority=50,
@@ -513,50 +497,60 @@ def _bootstrap_registry() -> None:
         badges=["浏览器"],
         requires_network=True,
     )
-    register_category(
+    # ── 流程层（续） ───────────────────────────────────────
+    register_category_rule(
         id="pipeline",
         name="数据管道",
         description="stdin/stdout JSON 管道、多轮选择与预加载链路。",
-        files=["tests/test_pipeline.py"],
+        include=["tests/test_pipeline.py"],
         icon_color="#06B6D4",
         icon_letter="PIPE",
         priority=60,
         section="流程层",
         badges=["推荐"],
     )
-    register_category(
+    # ── 保障层 ──────────────────────────────────────────────
+    register_category_rule(
         id="packaging",
         name="打包发布",
         description="spec、runtime hook、资源文件和发布入口完整性检查。",
-        files=["tests/test_packaging.py"],
+        include=["tests/test_packaging.py"],
         icon_color="#A16207",
         icon_letter="PKG",
         priority=70,
         section="保障层",
         badges=["发布"],
     )
-    register_category(
+    register_category_rule(
         id="core_services",
         name="核心服务",
         description="业务核心、下载器、文件服务、配置和基础设施测试。",
-        files=[
-            "tests/test_config_settings.py",
+        include=[
+            "tests/test_config_*.py",
             "tests/test_debug_logger.py",
-            "tests/test_plugin_registry.py",
+            "tests/test_plugin_*.py",
             "tests/test_runtime_paths.py",
-            "tests/test_settings_builders.py",
-            "tests/test_utils_filenames.py",
+            "tests/test_settings_*.py",
+            "tests/test_utils_*.py",
             "tests/test_video_item.py",
             "tests/test_xiaohongshu_integration.py",
-        ],
-        include=[
+            "tests/test_core_*.py",
             "tests/test_*_service.py",
             "tests/test_*_parameter.py",
             "tests/test_download*.py",
             "tests/test_download_*.py",
             "tests/test_*_mixin.py",
-            "tests/test_plugin_*.py",
             "tests/test_spider_*.py",
+            "tests/test_shared_*.py",
+            "tests/test_anti_detection.py",
+            "tests/test_media_release_*.py",
+            "tests/test_media_library_*.py",
+            "tests/test_controller_*_mixin.py",
+            "tests/test_concurrency_*.py",
+            "tests/test_frontend_event_*.py",
+            "tests/test_m3u8_*.py",
+            "tests/test_task_runtime_*.py",
+            "tests/test_ws_transport_*.py",
         ],
         exclude=["tests/test_download_queue_panel.py"],
         icon_color="#22C55E",
@@ -565,11 +559,11 @@ def _bootstrap_registry() -> None:
         section="保障层",
         badges=["推荐"],
     )
-    register_category(
+    # ── 套件自身 ────────────────────────────────────────────
+    register_category_rule(
         id="suite_infra",
         name="测试套件",
         description="测试入口、分类注册、启动器 UI 与测试套件自身的行为验证。",
-        files=["tests/test_test_entry.py"],
         include=["tests/test_test_*.py"],
         icon_color="#8B5CF6",
         icon_letter="KIT",
@@ -577,6 +571,7 @@ def _bootstrap_registry() -> None:
         section="套件自身",
         badges=["扩展接口"],
     )
+    # ── 兜底 ────────────────────────────────────────────────
     register_category(
         id="misc",
         name="未归类",
@@ -589,11 +584,9 @@ def _bootstrap_registry() -> None:
         source="builtin",
     )
 
-
 _bootstrap_registry()
 
 _CORE_CATEGORIES = frozenset(TEST_REGISTRY.keys())
-
 
 if __name__ == "__main__":
     import json

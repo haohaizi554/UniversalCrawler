@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 from app.web.controller import WebSocketBridge
 
-
 class _FakeLoop:
     def __init__(self):
         self.soon_calls = []
@@ -28,7 +27,6 @@ class _FakeLoop:
         self.created_coroutines.append(coro)
         coro.close()
         return object()
-
 
 class WebSocketBridgeTests(unittest.TestCase):
     def test_emit_schedules_broadcast_on_target_loop_thread_safely(self):
@@ -57,7 +55,6 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual(len(foreign_loop.call_soon_calls), 0)
         self.assertEqual(len(target_loop.soon_calls), 1)
         self.assertEqual(len(target_loop.created_coroutines), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,6 @@ from typing import Any, Callable
 
 from shared.runtime_options import compose_runtime_config
 
-
 BOLD = "\033[1m"
 RESET = "\033[0m"
 CYAN = "\033[96m"
@@ -21,7 +20,6 @@ YELLOW = "\033[93m"
 RED = "\033[91m"
 DIM = "\033[2m"
 BLUE = "\033[94m"
-
 
 PLATFORM_GUIDE = {
     "douyin": {
@@ -104,7 +102,6 @@ LOGIN_DESC = {
     "kuaishou": "快手将自动弹出浏览器窗口，请手动登录",
 }
 
-
 @dataclass(slots=True)
 class InteractiveCommandEnv:
     UcrawlSDK_cls: Any
@@ -122,7 +119,6 @@ class InteractiveCommandEnv:
     build_config_summary_lines: Callable[[str, dict, str, str, str], list[str]]
     print_download_summary: Callable[[list, float, str], None]
     prompt_post_run_action: Callable[[str], str]
-
 
 def add_interactive_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--save-dir", "-d", default=None, help="保存目录")
@@ -153,7 +149,6 @@ def add_interactive_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--individual-only", action="store_true", default=None, help="只看单体作品 (MissAV 专属，与 --config '{\"individual_only\":true}' 等价)")
     parser.add_argument("--priority", type=str, default=None, help="优先级 (MissAV 专属，与 --config '{\"priority\":\"中文字幕优先\"}' 等价)")
 
-
 def find_cookie_file(platform_id: str) -> Path | None:
     auth_name = AUTH_FILE_MAP.get(platform_id)
     if auth_name is None:
@@ -183,7 +178,6 @@ def find_cookie_file(platform_id: str) -> Path | None:
             return path
     return None
 
-
 def load_cookie(platform_id: str, *, cookie_finder: Callable[[str], Path | None] = find_cookie_file) -> dict | list | None:
     path = cookie_finder(platform_id)
     if path is None:
@@ -197,12 +191,10 @@ def load_cookie(platform_id: str, *, cookie_finder: Callable[[str], Path | None]
     except (json.JSONDecodeError, OSError):
         return None
 
-
 def build_cookie_string(cookie_data) -> str:
     from app.services.auth_service import AuthService
 
     return AuthService.build_cookie_string(cookie_data)
-
 
 def check_cookie_valid(
     platform_id: str,
@@ -215,7 +207,6 @@ def check_cookie_valid(
         return True
     return required in cookie_string_builder(cookie_data)
 
-
 def prompt_with_default(prompt: str, default: str = "") -> str:
     hint = f" [{default}]" if default else ""
     try:
@@ -224,7 +215,6 @@ def prompt_with_default(prompt: str, default: str = "") -> str:
         print()
         return ""
     return raw if raw else default
-
 
 def choose_option(prompt: str, options: list[str], default_idx: int = 0) -> int:
     while True:
@@ -246,7 +236,6 @@ def choose_option(prompt: str, options: list[str], default_idx: int = 0) -> int:
         except ValueError:
             pass
         print(f"  {DIM}无效选择，请重新输入。{RESET}")
-
 
 def select_platform(platforms: list[dict], next_platform_id: str | None = None) -> dict | None:
     cached = None
@@ -277,7 +266,6 @@ def select_platform(platforms: list[dict], next_platform_id: str | None = None) 
             pass
         print(f"{DIM}无效选择，请重新输入。{RESET}\n")
 
-
 def persist_save_dir(
     save_dir: str,
     *,
@@ -291,10 +279,8 @@ def persist_save_dir(
     except Exception:
         pass
 
-
 def guide_for(platform_id: str) -> dict:
     return PLATFORM_GUIDE.get(platform_id, {})
-
 
 def print_examples(platform_id: str) -> None:
     examples = guide_for(platform_id).get("examples", [])
@@ -303,7 +289,6 @@ def print_examples(platform_id: str) -> None:
     print(f"  {DIM}示例:{RESET}")
     for example in examples:
         print(f"    - {example}")
-
 
 def build_config_summary_lines(platform_id: str, config: dict, platform_name: str, keyword: str, save_dir: str) -> list[str]:
     lines = [
@@ -328,7 +313,6 @@ def build_config_summary_lines(platform_id: str, config: dict, platform_name: st
         lines.append(f"  仅单体: {'是' if config.get('individual_only') else '否'}")
         lines.append(f"  代理:   {config.get('proxy', '')}")
     return lines
-
 
 def print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
     completed = []
@@ -395,7 +379,6 @@ def print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
             suffix = f" [{status or '状态同步中'}] -> {local_path}" if local_path else (f" [{status}]" if status else "")
             print(f"  {YELLOW}{i}{RESET}. {title}{suffix}")
 
-
 def prompt_post_run_action(
     save_dir: str,
     *,
@@ -426,7 +409,6 @@ def prompt_post_run_action(
         if allow_repeat and choice in ("p", "platform", "switch"):
             return "switch"
         print(f"{DIM}无效输入，请重试。{RESET}")
-
 
 def _merge_cli_convenience_config(args, platform_id: str, config: dict, env: InteractiveCommandEnv) -> dict:
     user_config: dict = {}
@@ -472,7 +454,6 @@ def _merge_cli_convenience_config(args, platform_id: str, config: dict, env: Int
         defaults_factory=env.get_platform_defaults,
         proxy_normalizer=env.build_missav_proxy_url,
     )
-
 
 def run_interactive_command(args: argparse.Namespace, *, env: InteractiveCommandEnv) -> int:
     sdk = env.UcrawlSDK_cls(verbose=not getattr(args, "quiet", False))

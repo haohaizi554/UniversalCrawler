@@ -18,7 +18,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-
 def main(argv: list[str] | None = None) -> int:
     """交互式引导入口。
 
@@ -43,7 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     add_interactive_arguments(parser)
     args = parser.parse_args(argv)
     return handle_interactive_command(args)
-
 
 if __name__ == "__main__":
     sys.exit(main())

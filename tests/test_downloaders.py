@@ -1,4 +1,5 @@
-"""测试模块，覆盖 `tests/test_downloaders.py` 对应功能的行为与回归场景。"""
+"""Downloader lifecycle and strategy tests."""
+from __future__ import annotations
 
 import asyncio
 import os
@@ -12,26 +13,20 @@ from unittest.mock import AsyncMock, Mock, patch
 import requests
 
 from app.core.download_manager import DownloadManager, DownloadWorker
+from app.core.download_manager_core import PendingDownloadQueue
 from app.core.lib.douyin.tools.session import create_client, request_params
-from app.core.downloaders import (
-    BilibiliDownloader,
-    ChunkedDownloader,
-    DouyinDownloader,
-    FFmpegDownloader,
-    FFmpegExternalTool,
-    KuaishouDownloader,
-    MissAVDownloader,
-    NM3U8DLREExternalTool,
-    N_m3u8DL_RE_Downloader,
-    XiaohongshuDownloader,
-)
+from app.core.downloaders import ChunkedDownloader, FFmpegDownloader, FFmpegExternalTool, NM3U8DLREExternalTool, N_m3u8DL_RE_Downloader
+from app.core.downloaders.bilibili import BilibiliDownloader
+from app.core.downloaders.douyin import DouyinDownloader
+from app.core.downloaders.kuaishou import KuaishouDownloader
+from app.core.downloaders.missav import MissAVDownloader
+from app.core.downloaders.xiaohongshu import XiaohongshuDownloader
 from app.core.downloaders.external import ExternalToolRunner
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError, MergeError, StreamDownloadError
 from app.models import VideoItem
 
-
 class DownloaderStrategyTests(unittest.TestCase):
-    """封装 `DownloaderStrategyTests` 在 `tests/test_downloaders.py` 中承担的核心逻辑。"""
+    
     def _make_stream_response(self, chunks, headers=None, status_code=200):
         """提供 `_make_stream_response` 对应的内部辅助逻辑，供 `DownloaderStrategyTests` 使用。"""
         response = Mock()
@@ -55,6 +50,54 @@ class DownloaderStrategyTests(unittest.TestCase):
         """验证 `test_m3u8_url_detection` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         self.assertTrue(N_m3u8DL_RE_Downloader.is_m3u8_url("https://example.com/master.m3u8"))
         self.assertFalse(N_m3u8DL_RE_Downloader.is_m3u8_url("https://example.com/video.mp4"))
+
+    def test_m3u8_cleanup_removes_external_tool_temp_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            temp_file = os.path.join(temp_dir, "demo.part")
+            temp_dir_path = os.path.join(temp_dir, "demo_tmp")
+            open(save_path, "wb").close()
+            open(temp_file, "wb").close()
+            os.mkdir(temp_dir_path)
+
+            N_m3u8DL_RE_Downloader._cleanup_external_temp_files(save_path)
+
+            self.assertFalse(os.path.exists(save_path))
+            self.assertFalse(os.path.exists(temp_file))
+            self.assertFalse(os.path.exists(temp_dir_path))
+
+    def test_bili_api_close_closes_requests_session(self):
+        from app.spiders.bilibili.spider import BiliAPI
+
+        api = BiliAPI.__new__(BiliAPI)
+        api.sess = Mock()
+
+        api.close()
+
+        api.sess.close.assert_called_once()
+
+    def test_douyin_async_main_closes_runtime_params(self):
+        from app.spiders.douyin.spider import DouyinSpider
+
+        class FakeParams:
+            def __init__(self):
+                self.closed = False
+
+            async def close_client(self):
+                self.closed = True
+
+        fake_params = FakeParams()
+        spider = DouyinSpider.__new__(DouyinSpider)
+
+        async def fake_body(_cookie):
+            spider._active_douyin_params = fake_params
+
+        spider._async_main_body = fake_body
+
+        asyncio.run(spider._async_main("cookie"))
+
+        self.assertTrue(fake_params.closed)
+        self.assertIsNone(spider._active_douyin_params)
 
     def test_chunked_downloader_threshold(self):
         """验证 `test_chunked_downloader_threshold` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -125,6 +168,7 @@ class DownloaderStrategyTests(unittest.TestCase):
             ExternalToolRunner.wait_process(process, lambda: True, poll_interval=0)
 
         process.kill.assert_called_once()
+        process.wait.assert_called_once_with(timeout=2)
 
     def test_ffmpeg_external_tool_build_merge_command_skips_audio_when_none(self):
         """验证 `test_ffmpeg_external_tool_build_merge_command_skips_audio_when_none` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -188,6 +232,7 @@ class DownloaderStrategyTests(unittest.TestCase):
             FFmpegDownloader().download(item, save_path, progress.append, lambda: False)
 
         self.assertEqual(progress, [10, 50, 100])
+        process.stderr.close.assert_called()
 
     def test_ffmpeg_progress_parser_treats_large_out_time_ms_as_microseconds(self):
         """较新的 FFmpeg 会把 out_time_ms 输出为微秒值，不能按毫秒直接换算。"""
@@ -360,6 +405,37 @@ class DownloaderStrategyTests(unittest.TestCase):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         worker = DownloadWorker(item, "downloads")
         self.assertIsInstance(worker._select_downloader(), DouyinDownloader)
+
+    def test_download_worker_drops_duplicate_progress_percentages(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+        emitted: list[tuple[str, int]] = []
+        worker.sig_progress.connect(lambda video_id, progress: emitted.append((video_id, progress)))
+        progress = worker._emit_progress_if_changed()
+
+        for value in (0, 0, 1, 1, 1, 2, 2, 100, 100):
+            progress(value)
+
+        self.assertEqual(
+            emitted,
+            [(item.id, 0), (item.id, 1), (item.id, 2), (item.id, 100)],
+        )
+
+    def test_download_worker_records_byte_progress_and_refreshes_speed(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+        emitted: list[tuple[str, int]] = []
+        worker.sig_progress.connect(lambda video_id, progress: emitted.append((video_id, progress)))
+        progress = worker._emit_progress_if_changed()
+
+        with patch("app.core.download_manager.time.monotonic", side_effect=[0.0, 0.0, 1.0, 1.0]):
+            progress(10, bytes_downloaded=1_000, bytes_total=10_000)
+            progress(10, bytes_downloaded=3_000, bytes_total=10_000)
+
+        self.assertEqual(emitted, [(item.id, 10), (item.id, 10)])
+        self.assertEqual(item.meta["bytes_downloaded"], 3_000)
+        self.assertEqual(item.meta["bytes_total"], 10_000)
+        self.assertGreater(item.meta["speed_bps"], 0)
 
     @patch("app.core.downloaders.missav.N_m3u8DL_RE_Downloader.download")
     def test_missav_downloader_delegates_to_m3u8(self, mocked_download):
@@ -595,6 +671,63 @@ class DownloaderStrategyTests(unittest.TestCase):
         with self.assertRaises(ExternalToolError):
             N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
 
+    @patch.object(N_m3u8DL_RE_Downloader, "_cleanup_external_temp_files")
+    @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_m3u8_downloader_keeps_successful_output_when_final_progress_callback_fails(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        mocked_wait_process,
+        mocked_cleanup,
+    ):
+        process = Mock()
+        process.returncode = 0
+        process.poll.return_value = 0
+        mocked_popen.return_value = process
+        mocked_wait_process.return_value = None
+        item = VideoItem(url="https://cdn.example.com/live/index.m3u8", title="直播", source="douyin")
+
+        def progress(value):
+            if value == 100:
+                raise RuntimeError("ui callback failed")
+
+        N_m3u8DL_RE_Downloader().download(item, "demo.mp4", progress, lambda: False)
+
+        mocked_cleanup.assert_not_called()
+
+    @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process", side_effect=RuntimeError("callback failed"))
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_m3u8_downloader_kills_process_when_wait_process_raises(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        _mocked_wait_process,
+    ):
+        alive = {"value": True}
+        process = Mock()
+
+        def poll():
+            return None if alive["value"] else -9
+
+        def kill():
+            alive["value"] = False
+            process.returncode = -9
+
+        process.returncode = None
+        process.poll.side_effect = poll
+        process.kill.side_effect = kill
+        mocked_popen.return_value = process
+        item = VideoItem(url="https://cdn.example.com/live/index.m3u8", title="直播", source="douyin")
+
+        with self.assertRaises(ExternalToolError):
+            N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        process.kill.assert_called_once()
+        process.wait.assert_called_with(timeout=2)
+
     @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value=None)
     def test_m3u8_downloader_raises_when_executable_missing(self, _mocked_resolve):
         """验证 `test_m3u8_downloader_raises_when_executable_missing` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -607,7 +740,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         """验证 `test_download_manager_stop_all_waits_with_timeout` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         manager = DownloadManager.__new__(DownloadManager)
         manager.is_running = True
-        manager.queue = queue.Queue()
+        manager.queue = PendingDownloadQueue()
         manager.dispatcher_thread = Mock()
         manager._workers_lock = threading.Lock()
         worker = Mock()
@@ -657,7 +790,7 @@ class DownloaderStrategyTests(unittest.TestCase):
     def test_download_manager_cancel_task_removes_queued_item_without_touching_slots(self):
         """验证 `test_download_manager_cancel_task_removes_queued_item_without_touching_slots` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         manager = DownloadManager.__new__(DownloadManager)
-        manager.queue = queue.Queue()
+        manager.queue = PendingDownloadQueue()
         manager._workers_lock = threading.Lock()
         manager.workers = []
         manager.slot_semaphore = Mock()
@@ -688,6 +821,7 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(result, "running")
         worker.stop.assert_called_once()
+        self.assertTrue(worker.video.meta["user_cancel_requested"])
 
     def test_download_manager_cancel_task_returns_none_when_missing(self):
         """验证 `test_download_manager_cancel_task_returns_none_when_missing` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -698,6 +832,25 @@ class DownloaderStrategyTests(unittest.TestCase):
         manager.workers = []
 
         self.assertIsNone(manager.cancel_task("missing"))
+
+    def test_worker_thread_finished_disconnects_worker_callbacks(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        worker = DownloadWorker(VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin"), "downloads")
+        worker.sig_start.connect(lambda *_args: None)
+        worker.sig_progress.connect(lambda *_args: None)
+        worker.sig_finished.connect(lambda *_args: None)
+        worker.sig_error.connect(lambda *_args: None)
+        worker.finished.connect(lambda *_args: None)
+        worker._completion_callback = Mock()
+
+        manager._on_worker_thread_finished(worker)
+
+        self.assertEqual(worker.sig_start._callbacks, [])
+        self.assertEqual(worker.sig_progress._callbacks, [])
+        self.assertEqual(worker.sig_finished._callbacks, [])
+        self.assertEqual(worker.sig_error._callbacks, [])
+        self.assertEqual(worker.finished._callbacks, [])
+        self.assertIsNone(worker._completion_callback)
 
     def test_download_worker_generate_filename_prefers_meta_filename(self):
         """验证 `test_download_worker_generate_filename_prefers_meta_filename` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -821,7 +974,7 @@ class DownloaderStrategyTests(unittest.TestCase):
     ):
         """验证 `test_kuaishou_downloader_prefers_kuaishou_user_agent_config` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         def fake_get(section, key, default=None):
-            """执行 `fake_get` 对应的业务逻辑。"""
+            
             if (section, key) == ("kuaishou", "user_agent"):
                 return "kuaishou-ua"
             return default
@@ -847,7 +1000,6 @@ class DownloaderStrategyTests(unittest.TestCase):
         KuaishouDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
 
         self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "meta-ua")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,14 +11,12 @@ import sys
 
 from cli.sdk import UcrawlSDK
 
-
 def add_platforms_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--describe", metavar="ID", help="显示指定平台的详细参数")
     # 输出参数（与 scan/search/download 命令的 --quiet/--pretty 对齐）
     out_group = parser.add_argument_group("输出")
     out_group.add_argument("--quiet", "-q", action="store_true", help="不输出额外信息到 stderr")
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式")
-
 
 def handle_platforms_command(args: argparse.Namespace) -> int:
     # 与 scan 命令 --quiet 对齐：静默模式不输出 SDK 内部日志

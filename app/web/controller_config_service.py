@@ -7,14 +7,12 @@ from typing import Any
 
 from app.config import cfg
 
-
 @dataclass(frozen=True, slots=True)
 class ConfigWriteError:
     section: str
     key: str
     value: Any
     error: str
-
 
 class WebControllerConfigService:
     """Owns config read/write side effects used by WebController."""

@@ -9,7 +9,6 @@ import traceback
 import io
 from pathlib import Path
 
-
 def main():
     """手动复现入口。"""
     import builtins
@@ -65,7 +64,6 @@ def main():
         sys.stdin.isatty = real_isatty
         builtins.input = real_input
         sys.exit = real_exit
-
 
 if __name__ == "__main__":
     main()

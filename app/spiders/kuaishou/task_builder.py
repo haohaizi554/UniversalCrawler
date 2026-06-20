@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.spiders.base_task_builder import BaseTaskBuilder
 
-
 class KuaishouTaskBuilder(BaseTaskBuilder):
     """负责将解析结果转换为 `KuaishouTaskBuilder` 对应的任务或数据对象。"""
     def build_download_meta(self, trace_id: str, referer: str, stream_url: str) -> dict:

@@ -3,7 +3,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 class _FakeController:
     def __init__(self):
         self.current_spider = None
@@ -22,7 +21,6 @@ class _FakeController:
             "local_path": item.local_path,
             "meta": item.meta,
         }
-
 
 class WebWorkflowHelpersTests(unittest.TestCase):
     def test_build_selection_strategy_supports_preload(self):
@@ -51,7 +49,6 @@ class WebWorkflowHelpersTests(unittest.TestCase):
 
         self.assertEqual(merged["proxy"], "http://127.0.0.1:7890")
         self.assertEqual(merged["timeout"], 20)
-
 
 class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -188,7 +185,6 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("task_error", event_names)
         self.assertIn("log", event_names)
         fake_sdk.close.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

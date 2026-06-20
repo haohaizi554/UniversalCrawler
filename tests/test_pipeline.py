@@ -20,7 +20,6 @@ from unittest.mock import patch, MagicMock
 
 from cli.pipe import PipeSelection, PipeOutput
 
-
 class PipeSelectionBasicTests(unittest.TestCase):
     """PipeSelection 基础行为。"""
 
@@ -41,7 +40,6 @@ class PipeSelectionBasicTests(unittest.TestCase):
         s = PipeSelection(input_stream=inp, output_stream=out)
         self.assertIs(s.input, inp)
         self.assertIs(s.output, out)
-
 
 class PipeSelectionJSONParsingTests(unittest.TestCase):
     """PipeSelection JSON 格式解析。"""
@@ -88,7 +86,6 @@ class PipeSelectionJSONParsingTests(unittest.TestCase):
         result = s.select(["a", "b"])
         self.assertEqual(result, [])
 
-
 class PipeSelectionErrorTests(unittest.TestCase):
     """PipeSelection 错误处理。"""
 
@@ -118,7 +115,6 @@ class PipeSelectionErrorTests(unittest.TestCase):
         s = PipeSelection(input_stream=inp)
         result = s.select(["a", "b"])
         self.assertIsNone(result)
-
 
 class PipeSelectionPreloadedTests(unittest.TestCase):
     """PipeSelection 预加载多轮选择。"""
@@ -172,7 +168,6 @@ class PipeSelectionPreloadedTests(unittest.TestCase):
         # stdin 不应被消费
         self.assertEqual(inp.read(), "should not be read\n")
 
-
 class PipeSelectionStderrTests(unittest.TestCase):
     """PipeSelection stderr 提示。"""
 
@@ -190,7 +185,6 @@ class PipeSelectionStderrTests(unittest.TestCase):
         with patch("sys.stderr") as mock_stderr:
             s.select(["a"], prompt="")
         self.assertTrue(mock_stderr.write.called)
-
 
 class PipeOutputTests(unittest.TestCase):
     """PipeOutput 结构化输出。"""
@@ -272,7 +266,6 @@ class PipeOutputTests(unittest.TestCase):
         for line in lines:
             json.loads(line)
 
-
 class PipeSelectionVsOtherStrategiesTests(unittest.TestCase):
     """PipeSelection vs RuleSelection 一致性测试。
 
@@ -292,7 +285,6 @@ class PipeSelectionVsOtherStrategiesTests(unittest.TestCase):
             s = PipeSelection(input_stream=inp)
             result = s.select(["a", "b"])
             self.assertIsNone(result)
-
 
 if __name__ == "__main__":
     unittest.main()

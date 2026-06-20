@@ -69,7 +69,6 @@ if TYPE_CHECKING:
 
 __all__ = ["Extractor"]
 
-
 class Extractor:
     """把抖音或 TikTok 原始响应清洗成统一的数据记录结构。"""
     statistics_keys = (
@@ -716,13 +715,13 @@ class Extractor:
 
     @staticmethod
     def time_conversion(time_: int) -> str:
-        """执行 `time_conversion` 对应的业务逻辑，供 `Extractor` 使用。"""
+        
         second = time_ // 1000
         return f"{second // 3600:0>2d}:{second % 3600 // 60:0>2d}:{second % 3600 % 60:0>2d}"
 
     @staticmethod
     def time_conversion_tiktok(seconds: int) -> str:
-        """执行 `time_conversion_tiktok` 对应的业务逻辑，供 `Extractor` 使用。"""
+        
         minutes, seconds = divmod(seconds, 60)
         hours, minutes = divmod(minutes, 60)
         return "{:02d}:{:02d}:{:02d}".format(int(hours), int(minutes), int(seconds))
@@ -924,7 +923,7 @@ class Extractor:
         str,
         str,
     ]:
-        """执行 `preprocessing_data` 对应的业务逻辑，供 `Extractor` 使用。"""
+        
         if isinstance(data, dict):
             info = (
                 self.get_user_info_tiktok(data) if tiktok else self.get_user_info(data)
@@ -1546,7 +1545,7 @@ class Extractor:
         latest: "date",
         tiktok=False,
     ) -> list[dict]:
-        """执行 `source_date_filter` 对应的业务逻辑，供 `Extractor` 使用。"""
+        
         if tiktok:
             return self.__source_date_filter(
                 data,

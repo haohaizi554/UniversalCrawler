@@ -28,13 +28,11 @@ import sys
 import time
 from pathlib import Path
 
-
 # 让 test_registry / test_runner 可被 import
 TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_DIR.parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -138,7 +136,6 @@ def main():
         print(f"\n❌ 有 {sum(1 for r in results if not r.success)} 个类别失败")
         return 1
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -13,7 +13,6 @@ from app.models import VideoItem
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
-
 class DouyinDownloader(BaseDownloader):
     """抖音下载器。"""
     source_id = "douyin"
@@ -25,7 +24,7 @@ class DouyinDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `DouyinDownloader` 使用。"""
+        
         trace_id = video_item.meta.get("trace_id")
         download_cfg = cfg.settings.download
         headers = {

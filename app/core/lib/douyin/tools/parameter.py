@@ -86,9 +86,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Parameter"]
 
-
 class Parameter:
-    """封装 `Parameter` 在 `app/core/lib/douyin/tools/parameter.py` 中承担的核心逻辑。"""
+    
     NAME_KEYS = (
         "id",
         "desc",
@@ -297,14 +296,14 @@ class Parameter:
     def check_bool_false(
         value: bool,
     ) -> bool:
-        """执行 `check_bool_false` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         return value if isinstance(value, bool) else False
 
     @staticmethod
     def check_bool_true(
         value: bool,
     ) -> bool:
-        """执行 `check_bool_true` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         return value if isinstance(value, bool) else True
 
     def __check_cookie_tiktok(
@@ -926,7 +925,7 @@ class Parameter:
         return None
 
     def get_settings_data(self) -> dict:
-        """获取 `settings_data` 对应的数据或状态，供 `Parameter` 使用。"""
+        
         return {
             "accounts_urls": [vars(i) for i in self.accounts_urls],
             "accounts_urls_tiktok": [vars(i) for i in self.accounts_urls_tiktok],
@@ -1022,13 +1021,13 @@ class Parameter:
         #         item["mark"] = ""
         #     items.append(item)
         # return Extractor.generate_data_object(items)
-        """执行 `check_urls_params` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         return []
 
     @staticmethod
     # def check_url_params(data: dict) -> SimpleNamespace:
     def check_url_params(data: dict) -> Any:
-        """执行 `check_url_params` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         if not data.get("url"):
             return SimpleNamespace(
                 mark="",
@@ -1118,7 +1117,7 @@ class Parameter:
         browser_info: dict,
         new_info: dict,
     ) -> dict:
-        """执行 `merge_browser_info` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         return browser_info | new_info
 
     def set_browser_info(self, browser_info: dict, browser_info_tiktok: dict):
@@ -1137,11 +1136,11 @@ class Parameter:
 
     @staticmethod
     def check_str(value: str) -> str:
-        """执行 `check_str` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         return value if isinstance(value, str) else ""
 
     async def close_client(self) -> None:
-        """执行 `close_client` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         if self.client is not None:
             await self.client.aclose()
         if self.client_tiktok is not None:
@@ -1332,7 +1331,7 @@ class Parameter:
         return f"{key}={value}" if return_key else value
 
     def compatible(self):
-        """执行 `compatible` 对应的业务逻辑，供 `Parameter` 使用。"""
+        
         if (
             old := self.ROOT.parent.joinpath("Cache")
         ).exists() and not self.cache.exists():

@@ -29,16 +29,13 @@ except ImportError:
     PROGRESS = "bold magenta"
     USERAGENT = ""
 
-
     async def wait():
-        """执行 `wait` 对应的业务逻辑。"""
+        
         pass
-
 
     class DownloaderError(Exception):
         """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
         pass
-
 
     class FakeProgress:
         """提供一个最小可用的进度条替身，保证兜底分支仍能正常运行。"""
@@ -59,7 +56,6 @@ except ImportError:
             """兼容真实进度条接口，但在兜底模式下不做任何展示。"""
             pass
 
-
     class Retry:
         """提供最小化的重试装饰器兼容层。"""
 
@@ -68,9 +64,8 @@ except ImportError:
             """在兜底模式下直接返回原函数，避免导入失败影响主流程。"""
             return func
 
-
     def capture_error_request(func):
-        """执行 `capture_error_request` 对应的业务逻辑。"""
+        
         return func
 
 try:
@@ -91,18 +86,15 @@ __all__ = [
     "APITikTok",
 ]
 
-
 def _extract_chrome_version(user_agent: str) -> str:
     """从 UA 中提取 Chrome 主版本串，避免把整段 Mozilla 标识误传给接口。"""
     match = re.search(r"Chrome/([\d.]+)", user_agent or "")
     return match.group(1) if match else "139.0.0.0"
 
-
 CHROME_VERSION = _extract_chrome_version(USERAGENT)
 
-
 class API:
-    """封装 `API` 在 `app/core/lib/douyin/interface/template.py` 中承担的核心逻辑。"""
+    
     domain = "https://www.douyin.com/"
     short_domain = "https://www.iesdouyin.com/"
     referer = f"{domain}?recommend=1"
@@ -175,11 +167,11 @@ class API:
     def generate_params(
             self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `API` 使用。"""
+        
         return self.params
 
     def generate_data(self, *args, **kwargs) -> dict:
-        """执行 `generate_data` 对应的业务逻辑，供 `API` 使用。"""
+        
         return {}
 
     async def run(
@@ -243,7 +235,7 @@ class API:
             *args,
             **kwargs,
     ):
-        """执行 `run_single` 对应的业务逻辑，供 `API` 使用。"""
+        
         if data := await self.request_data(
                 self.api,
                 params=params() or self.generate_params(),
@@ -272,7 +264,7 @@ class API:
             *args,
             **kwargs,
     ):
-        """执行 `run_batch` 对应的业务逻辑，供 `API` 使用。"""
+        
         with self.progress_object() as progress:
             task_id = progress.add_task(
                 _("正在获取{text}数据").format(text=self.text),
@@ -306,7 +298,7 @@ class API:
             *args,
             **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `API` 使用。"""
+        
         try:
             if not (d := data_dict[data_key]):
                 self.log.warning(error_text)
@@ -339,7 +331,7 @@ class API:
     ):
         # [DEBUG] 打印签名过程
         # self.log.info(f"Signing params for {url}...", False)
-        """执行 `request_data` 对应的业务逻辑，供 `API` 使用。"""
+        
         params = self.deal_url_params(
             params,
             encryption,
@@ -396,7 +388,7 @@ class API:
             finished=False,
             **kwargs,
     ):
-        """执行 `request_data_get` 对应的业务逻辑，供 `API` 使用。"""
+        
         self.__record_request_messages(
             url,
             params,
@@ -421,7 +413,7 @@ class API:
             finished=False,
             **kwargs,
     ):
-        """执行 `request_data_get_proxy` 对应的业务逻辑，供 `API` 使用。"""
+        
         self.__record_request_messages(
             url,
             params,
@@ -445,7 +437,7 @@ class API:
     async def request_data_post(
             self, url: str, params: str, data: dict, headers: dict, finished=False, **kwargs
     ):
-        """执行 `request_data_post` 对应的业务逻辑，供 `API` 使用。"""
+        
         self.__record_request_messages(
             url,
             params,
@@ -466,7 +458,7 @@ class API:
     async def request_data_post_proxy(
             self, url: str, params: str, data: dict, headers: dict, finished=False, **kwargs
     ):
-        """执行 `request_data_post_proxy` 对应的业务逻辑，供 `API` 使用。"""
+        
         verify = kwargs.pop("verify", True)
         self.__record_request_messages(
             url,
@@ -542,7 +534,7 @@ class API:
             method="GET",
             **kwargs,
     ) -> str:
-        """执行 `deal_url_params` 对应的业务逻辑，供 `API` 使用。"""
+        
         if params:
             # [DEBUG] 打印签名结果
             # self.log.info(f"Encoding params: {params}", False)
@@ -561,7 +553,7 @@ class API:
     def summary_works(
             self,
     ) -> None:
-        """执行 `summary_works` 对应的业务逻辑，供 `API` 使用。"""
+        
         self.log.info(
             _("共获取到 {count} 个{text}").format(
                 count=len(self.response), text=self.text
@@ -573,14 +565,14 @@ class API:
             cls,
             server_mode: bool = False,
     ) -> None:
-        """执行 `init_progress_object` 对应的业务逻辑，供 `API` 使用。"""
+        
         if server_mode:
             cls._progress_factory = cls.__fake_progress_object
         else:
             cls._progress_factory = cls.__general_progress_object
 
     def progress_object(self):
-        """执行 `progress_object` 对应的业务逻辑，供 `API` 使用。"""
+        
         factory = getattr(self, "_progress_factory", self.__general_progress_object)
         return factory()
 
@@ -614,14 +606,13 @@ class API:
             *args,
             **kwargs,
     ) -> None:
-        """执行 `append_response` 对应的业务逻辑，供 `API` 使用。"""
+        
         for item in data[start:end]:
             self.response.append(item)
         # self.response.extend(data[start:end])
 
-
 class APITikTok(API):
-    """封装 `APITikTok` 在 `app/core/lib/douyin/interface/template.py` 中承担的核心逻辑。"""
+    
     domain = "https://www.tiktok.com/"
     short_domain = ""
     referer = f"{domain}explore"
@@ -687,7 +678,7 @@ class APITikTok(API):
             *args,
             **kwargs,
     ):
-        """执行 `request_data` 对应的业务逻辑，供 `APITikTok` 使用。"""
+        
         return await super().request_data(
             url=url,
             params=params,
@@ -706,7 +697,7 @@ class APITikTok(API):
             number=8,
             **kwargs,
     ) -> str:
-        """执行 `deal_url_params` 对应的业务逻辑，供 `APITikTok` 使用。"""
+        
         if params:
             params = urlencode(
                 params,

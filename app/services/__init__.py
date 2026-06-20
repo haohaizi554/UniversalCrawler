@@ -10,7 +10,6 @@ _EXPORTS = {
     "ScanResult": (".file_service", "ScanResult"),
 }
 
-
 def __getattr__(name: str) -> Any:
     """提供 `__getattr__` 对应的内部辅助逻辑。"""
     if name not in _EXPORTS:

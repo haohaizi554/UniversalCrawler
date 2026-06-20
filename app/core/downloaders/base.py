@@ -12,13 +12,11 @@ from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
 
-ProgressCallback = Callable[[int], None]
+ProgressCallback = Callable[..., None]
 StopCheck = Callable[[], bool]
-
 
 class BaseDownloader:
     """实现 `BaseDownloader` 对应的资源下载与落盘流程。"""
-
 
     source_id: str | None = None
 
@@ -26,6 +24,24 @@ class BaseDownloader:
     def can_handle(cls, video_item: VideoItem) -> bool:
         """判断当前对象是否满足 `can_handle` 所需的处理条件，供 `BaseDownloader` 使用。"""
         return bool(cls.source_id and video_item.source == cls.source_id)
+
+    @staticmethod
+    def _emit_progress(
+        progress_callback: ProgressCallback | None,
+        progress: int,
+        *,
+        bytes_downloaded: int | None = None,
+        bytes_total: int | None = None,
+    ) -> None:
+        if progress_callback is None:
+            return
+        if bytes_downloaded is None and bytes_total is None:
+            progress_callback(progress)
+            return
+        try:
+            progress_callback(progress, bytes_downloaded=bytes_downloaded, bytes_total=bytes_total)
+        except TypeError:
+            progress_callback(progress)
 
     def _apply_runtime_headers(self, video_item: VideoItem, headers: dict[str, str]) -> None:
         """让策略下载器复用上层已经确定好的认证头信息。"""
@@ -50,6 +66,23 @@ class BaseDownloader:
         error_message: str = "下载失败",
     ) -> None:
         """按流类型/体积选择外部工具、分块下载或普通 HTTP 下载。"""
+        from .strategy import DEFAULT_DOWNLOAD_STRATEGY_CHAIN, DownloadRequest
+
+        request = DownloadRequest(
+            video_item=video_item,
+            save_path=save_path,
+            headers=headers,
+            progress_callback=progress_callback,
+            check_stop_func=check_stop_func,
+            max_retries=max_retries,
+            timeout=timeout,
+            chunk_size=chunk_size,
+            support_resume=support_resume,
+            error_message=error_message,
+        )
+        DEFAULT_DOWNLOAD_STRATEGY_CHAIN.execute(self, request)
+        return
+
         from .chunked import ChunkedDownloader
         from .ffmpeg import FFmpegDownloader
         from .m3u8 import N_m3u8DL_RE_Downloader
@@ -170,7 +203,7 @@ class BaseDownloader:
                                 fp.write(chunk)
                                 downloaded += len(chunk)
                                 if progress_callback and total_size > 0:
-                                    progress_callback(int(downloaded / total_size * 100))
+                                    self._emit_progress(progress_callback, int(downloaded / total_size * 100), bytes_downloaded=downloaded, bytes_total=total_size)
                 success = True
                 break
             except DownloaderStoppedError:
@@ -194,7 +227,7 @@ class BaseDownloader:
 
         self._finalize_download(temp_path, save_path)
         if progress_callback:
-            progress_callback(100)
+            self._emit_progress(progress_callback, 100, bytes_downloaded=total_size or downloaded, bytes_total=total_size or downloaded)
 
     def download(
         self,
@@ -203,5 +236,5 @@ class BaseDownloader:
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `BaseDownloader` 使用。"""
+        
         raise NotImplementedError

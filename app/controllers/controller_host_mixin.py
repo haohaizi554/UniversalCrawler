@@ -5,7 +5,6 @@ from app.debug_logger import debug_logger
 from app.exceptions import DebugActionError
 from app.models import VideoItem
 
-
 class ControllerHostMixin:
     """Shared host, debug-action, and item-detail helpers for host-backed controllers."""
 

@@ -7,17 +7,16 @@ from PyQt6.QtWidgets import QApplication, QWidget
 from app.models import VideoItem
 from app.ui.components.download_queue_panel import DownloadQueuePanel
 
-
 class DownloadQueuePanelTests(unittest.TestCase):
     """验证下载队列表格组件的增删改查与状态刷新行为。"""
 
     @classmethod
     def setUpClass(cls):
-        """执行 `setUpClass` 对应的业务逻辑，供 `DownloadQueuePanelTests` 使用。"""
+        
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        """执行 `setUp` 对应的业务逻辑，供 `DownloadQueuePanelTests` 使用。"""
+        
         self.host = QWidget()
         self.panel = DownloadQueuePanel("downloads", self.host)
 
@@ -78,7 +77,6 @@ class DownloadQueuePanelTests(unittest.TestCase):
         self.panel.table.selectRow(0)
 
         self.assertEqual(self.panel.get_selected_video_id(), item.id)
-
 
 if __name__ == "__main__":
     unittest.main()

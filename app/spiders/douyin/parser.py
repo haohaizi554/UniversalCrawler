@@ -6,7 +6,6 @@ from typing import Any
 
 from app.models import VideoItem
 
-
 class DouyinItemParser:
     """抖音数据解析器。"""
 
@@ -14,6 +13,7 @@ class DouyinItemParser:
         """解析 `aweme` 对应的输入数据并返回结构化结果，供 `DouyinItemParser` 使用。"""
         try:
             aweme_id = data.get("aweme_id", "unknown")
+            trace_aweme_id = str(aweme_id).replace("-", "_")
             desc = data.get("desc", aweme_id)
             create_time = data.get("create_time", 0)
             author = data.get("author", {}).get("nickname", "Unknown")
@@ -59,7 +59,7 @@ class DouyinItemParser:
             if is_real_video and not images_data:
                 item = VideoItem(url=video_url, title=desc, source="douyin")
                 item.meta = {
-                    "trace_id": f"dy-{aweme_id}",
+                    "trace_id": f"dy_{trace_aweme_id}",
                     "content_type": "video",
                     "media_label": "视频",
                     "aweme_id": aweme_id,
@@ -73,7 +73,7 @@ class DouyinItemParser:
             if images_data:
                 item = VideoItem(url=images_data[0]["image_url"], title=desc, source="douyin")
                 item.meta = {
-                    "trace_id": f"dy-{aweme_id}",
+                    "trace_id": f"dy_{trace_aweme_id}",
                     "content_type": "gallery",
                     "media_label": "实况" if has_live_photo else "图集",
                     "is_gallery": True,
@@ -92,7 +92,7 @@ class DouyinItemParser:
         return None
 
     def summarize_aweme(self, data: dict[str, Any]) -> dict[str, Any]:
-        """执行 `summarize_aweme` 对应的业务逻辑，供 `DouyinItemParser` 使用。"""
+        
         video = data.get("video", {}) or {}
         author = data.get("author", {}) or {}
         images = data.get("images") or []

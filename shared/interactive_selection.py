@@ -6,7 +6,6 @@ import sys
 
 from shared.selection_runtime import SelectionStrategy
 
-
 class InteractiveTTYSelection(SelectionStrategy):
     """TTY 交互式选择策略。"""
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, Awaitable, Callable
 
 from app.core.events import (
@@ -13,11 +12,11 @@ from app.core.events import (
 )
 from app.core.state import VideoStatus
 from app.models.video_item import VideoItem
+from app.debug_logger import debug_logger
 from app.web.logging_utils import log_web_event
 from shared.runtime_options import infer_content_type, infer_content_type_from_url
 
 BroadcastFn = Callable[[str, Any], Awaitable[None]]
-
 
 class _WorkflowLoggerCompat:
     """兼容旧测试 patch 接缝，同时把日志转发到统一调试入口。"""
@@ -36,9 +35,7 @@ class _WorkflowLoggerCompat:
             level="WARNING",
         )
 
-
 logger = _WorkflowLoggerCompat()
-
 
 class WebWorkflowDownloadService:
     """Owns pending-item creation and download event broadcasting."""
@@ -49,15 +46,19 @@ class WebWorkflowDownloadService:
 
     def create_pending_item(self, url: str, source: str, title: str) -> VideoItem:
         item = VideoItem(url=url, title=title, source=source, status=VideoStatus.PENDING.label, progress=0)
-        prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
-        item.meta["trace_id"] = f"{prefix}-dl-{uuid.uuid4().hex[:8]}"
+        prefix = {"douyin": "dy", "bilibili": "bilibili", "kuaishou": "ks", "missav": "missav", "xiaohongshu": "xhs"}.get(source, source)
+        item.meta["trace_id"] = debug_logger.new_trace_id(f"{prefix}_dl")
         pre_ct = infer_content_type_from_url(url)
         if pre_ct:
             item.meta["content_type"] = pre_ct
         return item
 
     async def broadcast_download_started(self, pending_item: VideoItem) -> None:
-        self.controller.videos[pending_item.id] = pending_item
+        store_video = getattr(self.controller, "_store_video_item", None)
+        if callable(store_video):
+            store_video(pending_item)
+        else:
+            self.controller.videos[pending_item.id] = pending_item
         await self.broadcast("item_found", self.controller._video_item_to_dict(pending_item))
         pending_item.status = VideoStatus.DOWNLOADING.label
         await self.broadcast("task_started", build_task_started_event(pending_item.id, pending_item).to_payload())

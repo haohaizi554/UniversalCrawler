@@ -6,6 +6,10 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+try:
+    from PyQt6.QtWidgets import QWidget
+except Exception:  # pragma: no cover - PyQt may be absent in some entry paths
+    QWidget = None
 
 class CallbackSignal:
     """A tiny thread-safe signal helper with a Qt-like API surface."""
@@ -20,6 +24,9 @@ class CallbackSignal:
         Extra positional arguments are ignored so existing `.connect(cb, Qt.ConnectionType...)`
         call sites can be simplified incrementally without breaking compatibility.
         """
+        bound_self = getattr(callback, "__self__", None)
+        if QWidget is not None and isinstance(bound_self, QWidget):
+            raise TypeError("worker signals must not connect directly to QWidget methods; route through EventBus/bridge")
         with self._lock:
             self._callbacks.append(callback)
         return callback

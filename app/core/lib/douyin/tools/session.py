@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 __all__ = ["request_params", "create_client"]
 
-
 def create_client(
     user_agent=USERAGENT,
     timeout=TIMEOUT,
@@ -58,7 +57,6 @@ def create_client(
         **kwargs,
     )
 
-
 async def request_params(
     logger: Union[
         "BaseLogger",
@@ -76,7 +74,7 @@ async def request_params(
     proxy: str = None,
     **kwargs,
 ):
-    """执行 `request_params` 对应的业务逻辑。"""
+    
     verify = kwargs.pop("verify", True)
     trust_env = kwargs.pop("trust_env", False)
     client_kwargs = {
@@ -110,7 +108,6 @@ async def request_params(
             **kwargs,
         )
 
-
 @Retry.retry_lite
 @capture_error_params
 async def request(
@@ -125,7 +122,7 @@ async def request(
     resp="json",
     **kwargs,
 ):
-    """执行 `request` 对应的业务逻辑。"""
+    
     response = client.request(method, url, **kwargs)
     response.raise_for_status()
     match resp:

@@ -2,28 +2,25 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from typing import Any, Callable
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from app.web.api_result import error_result, finalize_api_result
 from app.web.controller_route_service import require_valid_video_id
 
-
 class _RequestModel(BaseModel):
     model_config = ConfigDict(extra="allow")
-
 
 class ConfigUpdatesRequest(RootModel[dict[str, dict[str, Any]]]):
     pass
 
-
 class ScanDirectoryRequest(_RequestModel):
     directory: str | None = Field(default=None, max_length=4096)
     scan_limit: int | None = Field(default=None, ge=1, le=5000)
-
 
 class SearchRequest(_RequestModel):
     source: str = Field(..., min_length=1, max_length=64)
@@ -35,7 +32,6 @@ class SearchRequest(_RequestModel):
     run_timeout: float | None = None
     download: Any = True
 
-
 class DownloadRequest(_RequestModel):
     url: str = Field(..., min_length=1, max_length=4096)
     source: str = Field(..., min_length=1, max_length=64)
@@ -43,6 +39,10 @@ class DownloadRequest(_RequestModel):
     save_dir: str | None = Field(default=None, max_length=4096)
     timeout: float | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+
+class FrontendActionRequest(_RequestModel):
+    action: str = Field(..., min_length=1, max_length=80)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 def build_rest_router(
     *,
@@ -87,6 +87,46 @@ def build_rest_router(
     @router.get("/api/state")
     async def get_state(request: Request):
         return get_request_context(request).controller.get_state()
+
+    @router.get("/api/frontend/state")
+    async def get_frontend_state(request: Request):
+        controller = get_request_context(request).controller
+        getter = getattr(controller, "get_frontend_state", None)
+        if callable(getter):
+            return getter()
+        return {"status": "error", "message": "frontend state is unavailable"}
+
+    @router.get("/api/frontend/delta")
+    async def get_frontend_delta(request: Request, since_version: int = Query(default=0, ge=0)):
+        controller = get_request_context(request).controller
+        getter = getattr(controller, "get_frontend_delta", None)
+        if callable(getter):
+            return getter(since_version)
+        snapshot_getter = getattr(controller, "get_frontend_state", None)
+        if callable(snapshot_getter):
+            return {"version": 0, "base_version": since_version, "full": True, "sections": snapshot_getter()}
+        return {"status": "error", "message": "frontend delta is unavailable"}
+
+    @router.get("/api/frontend/icons")
+    async def get_frontend_icons(request: Request):
+        controller = get_request_context(request).controller
+        getter = getattr(controller, "get_frontend_icons", None)
+        if callable(getter):
+            return getter()
+        return {"status": "error", "message": "frontend icons are unavailable"}
+
+    @router.post("/api/frontend/action")
+    async def frontend_action(request: Request, body: FrontendActionRequest):
+        controller = get_request_context(request).controller
+        handler = getattr(controller, "async_handle_frontend_action", None)
+        if not callable(handler):
+            handler = getattr(controller, "handle_frontend_action", None)
+        if callable(handler):
+            result = handler(body.action, body.payload)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        return finalize_api_result(error_result("frontend action is unavailable", http_status=501))
 
     @router.post("/api/scan")
     async def scan_directory(request: Request, body: ScanDirectoryRequest):

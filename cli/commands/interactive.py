@@ -25,7 +25,6 @@ from cli.runner import CLIRunner
 from app.config import cfg
 from app.utils.runtime_paths import is_temporary_path
 
-
 # ============== 颜色常量 ==============
 
 BOLD  = "\033[1m"
@@ -36,7 +35,6 @@ YELLOW = "\033[93m"
 RED   = "\033[91m"
 DIM   = "\033[2m"
 BLUE  = "\033[94m"
-
 
 _PLATFORM_GUIDE = {
     "douyin": {
@@ -97,7 +95,6 @@ _PLATFORM_GUIDE = {
     },
 }
 
-
 # ============== Cookie 智能检测（与 GUI spider 对齐） ==============
 
 # 平台 → auth 文件名映射（与 app/config/settings.py AuthSettings 对齐）
@@ -124,7 +121,6 @@ _LOGIN_DESC = {
     "bilibili": "B站将自动弹出浏览器窗口，请扫码登录",
     "kuaishou": "快手将自动弹出浏览器窗口，请手动登录",
 }
-
 
 def _find_cookie_file(platform_id: str) -> Path | None:
     """在多个候选路径中查找 cookie JSON 文件（与 GUI resolve_user_file 对齐）。"""
@@ -155,7 +151,6 @@ def _find_cookie_file(platform_id: str) -> Path | None:
             return p
     return None
 
-
 def _load_cookie(platform_id: str) -> dict | list | None:
     """尝试加载本地 cookie JSON（与 GUI AuthService.load_json_file 对齐）。"""
     path = _find_cookie_file(platform_id)
@@ -170,12 +165,10 @@ def _load_cookie(platform_id: str) -> dict | list | None:
     except (json.JSONDecodeError, OSError):
         return None
 
-
 def _build_cookie_string(cookie_data) -> str:
     """构建 cookie 字符串（与 GUI AuthService.build_cookie_string 对齐）。"""
     from app.services.auth_service import AuthService
     return AuthService.build_cookie_string(cookie_data)
-
 
 def _check_cookie_valid(platform_id: str, cookie_data) -> bool:
     """检查 cookie 是否包含必需的 key（与 GUI spider 启动前校验对齐）。"""
@@ -184,7 +177,6 @@ def _check_cookie_valid(platform_id: str, cookie_data) -> bool:
         return True
     cookie_str = _build_cookie_string(cookie_data)
     return required in cookie_str
-
 
 # ============== 参数解析 ==============
 
@@ -229,7 +221,6 @@ def add_interactive_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--individual-only", action="store_true", default=None, help="只看单体作品 (MissAV 专属，与 --config '{\"individual_only\":true}' 等价)")
     parser.add_argument("--priority", type=str, default=None, help="优先级 (MissAV 专属，与 --config '{\"priority\":\"中文字幕优先\"}' 等价)")
 
-
 # ============== 交互辅助 ==============
 
 def _input(prompt: str, default: str = "") -> str:
@@ -241,7 +232,6 @@ def _input(prompt: str, default: str = "") -> str:
         print()
         return ""
     return raw if raw else default
-
 
 def _choose(prompt: str, options: list[str], default_idx: int = 0) -> int:
     """选择菜单：显示编号选项，回车选默认。"""
@@ -264,7 +254,6 @@ def _choose(prompt: str, options: list[str], default_idx: int = 0) -> int:
         except ValueError:
             pass
         print(f"  {DIM}无效选择，请重新输入。{RESET}")
-
 
 def _select_platform(platforms: list[dict], next_platform_id: str | None = None) -> dict | None:
     """选择平台；支持复用上一次平台并在输入错误时重试。"""
@@ -298,11 +287,9 @@ def _select_platform(platforms: list[dict], next_platform_id: str | None = None)
             pass
         print(f"{DIM}无效选择，请重新输入。{RESET}\n")
 
-
 def _is_temp_dir(path: str) -> bool:
     """检测路径是否是系统临时目录。"""
     return is_temporary_path(path)
-
 
 def _persist_save_dir(save_dir: str) -> None:
     """把交互式引导里确认过的下载目录同步写回配置。"""
@@ -315,10 +302,8 @@ def _persist_save_dir(save_dir: str) -> None:
     except Exception:
         pass
 
-
 def _guide_for(platform_id: str) -> dict:
     return _PLATFORM_GUIDE.get(platform_id, {})
-
 
 def _print_examples(platform_id: str) -> None:
     examples = _guide_for(platform_id).get("examples", [])
@@ -327,7 +312,6 @@ def _print_examples(platform_id: str) -> None:
     print(f"  {DIM}示例:{RESET}")
     for example in examples:
         print(f"    - {example}")
-
 
 def _build_config_summary_lines(platform_id: str, config: dict, platform_name: str, keyword: str, save_dir: str) -> list[str]:
     lines = [
@@ -352,7 +336,6 @@ def _build_config_summary_lines(platform_id: str, config: dict, platform_name: s
         lines.append(f"  仅单体: {'是' if config.get('individual_only') else '否'}")
         lines.append(f"  代理:   {config.get('proxy', '')}")
     return lines
-
 
 def _print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
     """打印与 GUI 下载队列一致的最终结果摘要。"""
@@ -423,7 +406,6 @@ def _print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
                 suffix = f" [{status}]" if status else ""
             print(f"  {YELLOW}{i}{RESET}. {title}{suffix}")
 
-
 def _prompt_post_run_action(save_dir: str, *, allow_repeat: bool = True) -> str:
     """下载或搜索结束后的后续动作。
 
@@ -454,7 +436,6 @@ def _prompt_post_run_action(save_dir: str, *, allow_repeat: bool = True) -> str:
         if allow_repeat and choice in ("p", "platform", "switch"):
             return "switch"
         print(f"{DIM}无效输入，请重试。{RESET}")
-
 
 # ============== 主逻辑 ==============
 

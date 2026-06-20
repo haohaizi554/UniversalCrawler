@@ -8,7 +8,6 @@ from app.core.state import CrawlStatus
 from app.models import VideoItem
 from shared.controller_session import ControllerSessionMixin
 
-
 class _DummyCrawlController(CrawlControllerMixin, ControllerSessionMixin):
     DOWNLOAD_LOG_COMPONENT = "DummyCrawlController"
     DOWNLOAD_FINISHED_STATUS_CODE = "DUMMY_OK"
@@ -41,6 +40,8 @@ class _DummyCrawlController(CrawlControllerMixin, ControllerSessionMixin):
         item.progress = 0
         return item
 
+    def _store_video_item(self, item: VideoItem) -> None:
+        self.videos[item.id] = item
 
 class CrawlControllerMixinTests(unittest.TestCase):
     def test_create_spider_reports_unknown_source(self):
@@ -105,8 +106,29 @@ class CrawlControllerMixinTests(unittest.TestCase):
         with patch("app.controllers.crawl_controller_mixin.debug_logger", Mock()):
             controller.on_stop_crawl()
 
-        controller.spider_session.stop_session.assert_called_once_with(controller.current_spider)
+        controller.spider_session.stop_session.assert_called_once_with(
+            controller.current_spider,
+            getattr(controller, "_active_spider_bindings", None),
+        )
         controller.host.notify_crawl_stop_requested.assert_called_once()
+
+    def test_on_stop_crawl_keeps_bindings_until_spider_finished(self):
+        controller = _DummyCrawlController()
+        bindings = Mock()
+        controller._active_spider_bindings = bindings
+        controller.current_spider = Mock()
+
+        with patch("app.controllers.crawl_controller_mixin.debug_logger", Mock()):
+            controller.on_stop_crawl()
+
+        self.assertIs(controller._active_spider_bindings, bindings)
+        controller.host.finish_crawl.assert_not_called()
+
+        controller._on_spider_finished()
+
+        controller.host.finish_crawl.assert_called_once()
+        self.assertIsNone(controller._active_spider_bindings)
+        self.assertIsNone(controller.current_spider)
 
     def test_on_spider_item_found_prepares_item_and_enqueues_download(self):
         controller = _DummyCrawlController()
@@ -137,7 +159,6 @@ class CrawlControllerMixinTests(unittest.TestCase):
         controller._on_spider_item_found.assert_called_once_with(item)
         controller._on_spider_select_tasks.assert_called_once_with([item])
         controller._on_spider_finished.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

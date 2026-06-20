@@ -19,9 +19,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Collects(API):
-    """封装 `Collects` 在 `app/core/lib/douyin/interface/collects.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -42,7 +41,7 @@ class Collects(API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `Collects` 使用。"""
+        
         return self.params | {
             "cursor": self.cursor,
             "count": self.count,
@@ -81,9 +80,8 @@ class Collects(API):
             **kwargs,
         )
 
-
 class CollectsDetail(Collection, API):
-    """封装 `CollectsDetail` 在 `app/core/lib/douyin/interface/collects.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -108,7 +106,7 @@ class CollectsDetail(Collection, API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `CollectsDetail` 使用。"""
+        
         return self.params | {
             "collects_id": self.collects_id,
             "cursor": self.cursor,
@@ -150,9 +148,8 @@ class CollectsDetail(Collection, API):
         )
         return self.response
 
-
 class CollectsMix(API):
-    """封装 `CollectsMix` 在 `app/core/lib/douyin/interface/collects.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -173,7 +170,7 @@ class CollectsMix(API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `CollectsMix` 使用。"""
+        
         return self.params | {
             "cursor": self.cursor,
             "count": self.count,
@@ -214,9 +211,8 @@ class CollectsMix(API):
             **kwargs,
         )
 
-
 class CollectsSeries(CollectsMix):
-    """封装 `CollectsSeries` 在 `app/core/lib/douyin/interface/collects.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -271,9 +267,8 @@ class CollectsSeries(CollectsMix):
             **kwargs,
         )
 
-
 class CollectsMusic(CollectsMix):
-    """封装 `CollectsMusic` 在 `app/core/lib/douyin/interface/collects.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -328,9 +323,8 @@ class CollectsMusic(CollectsMix):
             **kwargs,
         )
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

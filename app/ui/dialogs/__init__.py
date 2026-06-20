@@ -1,5 +1,6 @@
 """Dialog exports."""
 
-from .selection import SelectionDialog
+from .file_association import FileAssociationChoice, FileAssociationDialog
+from .selection import SelectionDialog, exec_selection_dialog, normalize_selection_items
 
-__all__ = ["SelectionDialog"]
+__all__ = ["FileAssociationChoice", "FileAssociationDialog", "SelectionDialog", "exec_selection_dialog", "normalize_selection_items"]

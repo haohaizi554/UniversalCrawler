@@ -7,7 +7,6 @@ from typing import Any
 
 from app.exceptions import SpiderParseError
 
-
 class BilibiliParser:
     """负责 `BilibiliParser` 对应的数据清洗与结构化解析。"""
     def parse_video_info_response(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -69,5 +68,5 @@ class BilibiliParser:
 
     @staticmethod
     def clean_name(name: str) -> str:
-        """执行 `clean_name` 对应的业务逻辑，供 `BilibiliParser` 使用。"""
+        
         return re.sub(r'[\\/:*?"<>|]', "_", str(name)).strip()

@@ -26,18 +26,15 @@ import traceback
 from pathlib import Path
 from typing import Sequence
 
-
 # 关键：把项目根目录加进 sys.path，使 `from tests.xxx import yyy` 始终可用
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-
 # 关键：让 tests/ 下的 test_registry / test_runner / test_launcher 可被 import
 _TESTS_DIR = _ROOT / "tests"
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
-
 
 # 检测 PyQt6 是否可用（模块级）
 try:
@@ -45,7 +42,6 @@ try:
     _PYQT6_AVAILABLE = True
 except ImportError:
     _PYQT6_AVAILABLE = False
-
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """解析命令行参数。
@@ -105,7 +101,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     return parser.parse_args(argv)
 
-
 def _apply_plugin_args(plugin_dirs: list[str], plugins: list[str]) -> None:
     """把 --plugin-dir / --plugin 转换为注册表调用。"""
     from tests.test_registry import register_plugin_directory, register_category
@@ -144,7 +139,6 @@ def _apply_plugin_args(plugin_dirs: list[str], plugins: list[str]) -> None:
         except Exception as exc:
             sys.stderr.write(f"⚠️  --plugin 失败: {spec!r}: {exc}\n")
 
-
 def _run_list() -> int:
     """列出所有可用测试类别并退出。"""
     from tests.test_registry import (
@@ -178,7 +172,6 @@ def _run_list() -> int:
         for cid, path in list_plugin_directories().items():
             print(f"  - {cid}: {path}")
     return 0
-
 
 def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     """弹 Qt 测试启动器。
@@ -240,7 +233,6 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         sys.stderr.write(f"⚠️  GUI 事件循环异常: {exc}\n")
         traceback.print_exc(file=sys.stderr)
         return _run_tui(category, no_failfast, verbose)
-
 
 def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     """TUI 菜单模式。"""
@@ -335,7 +327,6 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     print(format_summary(results))
     return 0 if all(r.success for r in results) else 1
 
-
 def _run_cli(category: str, no_failfast: bool, verbose: bool) -> int:
     """CLI 模式：直接跑指定类别。"""
     from tests.test_registry import get_enabled_categories, get_resolved_files
@@ -360,7 +351,6 @@ def _run_cli(category: str, no_failfast: bool, verbose: bool) -> int:
     )
     print(format_summary([res]))
     return 0 if res.success else 1
-
 
 def _detect_mode(args: argparse.Namespace) -> str:
     """根据参数和上下文选择运行模式：gui / tui / cli。"""
@@ -388,7 +378,6 @@ def _detect_mode(args: argparse.Namespace) -> str:
     except Exception:
         pass
     return "gui"
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     """测试入口主函数。
@@ -427,10 +416,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"❌ 未知模式: {mode}\n")
         return 2
 
-
 # 暴露给 dispatcher 用的别名
 run = main
-
 
 if __name__ == "__main__":
     sys.exit(main())

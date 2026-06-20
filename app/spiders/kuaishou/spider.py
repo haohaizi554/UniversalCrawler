@@ -16,7 +16,6 @@ from app.spiders.kuaishou.parser import KuaishouParser
 from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
 from app.services.auth_service import AuthService
 
-
 class KuaishouSpider(BaseSpider):
     """快手爬虫，负责页面滚动扫描、任务选择和流监听。"""
 
@@ -62,13 +61,19 @@ class KuaishouSpider(BaseSpider):
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
-                page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
-                page.wait_for_timeout(1500)
+                if not self.interruptible_playwright_goto(
+                    page,
+                    target_url,
+                    timeout=60000,
+                    wait_until="domcontentloaded",
+                ):
+                    return False
+                self.interruptible_page_wait(page, 1500)
                 return True
             except PlaywrightError as exc:
                 last_error = exc
                 self.log(f"⚠️ {description}失败，第 {attempt}/{attempts} 次重试: {exc}")
-                page.wait_for_timeout(1000)
+                self.interruptible_page_wait(page, 1000)
         if last_error:
             self.log(f"❌ {description}失败: {last_error}")
         return False
@@ -247,16 +252,22 @@ class KuaishouSpider(BaseSpider):
     def _refresh_logged_in_state(self, page, target_url: str) -> bool:
         """提供 `_refresh_logged_in_state` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
         try:
-            page.reload(wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(1500)
+            page.reload(wait_until="domcontentloaded", timeout=5000)
+            self.interruptible_page_wait(page, 1500)
             if self._is_logged_in(page):
                 return True
         except PlaywrightError:
             pass
         if target_url != "https://www.kuaishou.com/":
             try:
-                page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
-                page.wait_for_timeout(1500)
+                if not self.interruptible_playwright_goto(
+                    page,
+                    target_url,
+                    timeout=60000,
+                    wait_until="domcontentloaded",
+                ):
+                    return False
+                self.interruptible_page_wait(page, 1500)
                 return self._is_logged_in(page)
             except PlaywrightError:
                 return False
@@ -284,7 +295,7 @@ class KuaishouSpider(BaseSpider):
             if current_user_ids and (has_new_user_cookie or self._is_logged_in(page)):
                 self.auth_service.save_json_file(auth_file, context.storage_state())
                 return True
-            page.wait_for_timeout(1000)
+            self.interruptible_page_wait(page, 1000)
         return False
 
     def _ensure_login(self, page, context, auth_file: str, entry_url: str | None = None) -> bool:
@@ -315,7 +326,8 @@ class KuaishouSpider(BaseSpider):
             if success:
                 self.log("✅ 登录成功，Cookie 已保存")
                 try:
-                    page.goto("https://www.kuaishou.com/", timeout=60000)
+                    if not self.interruptible_playwright_goto(page, "https://www.kuaishou.com/", timeout=60000):
+                        return False
                 except PlaywrightError:
                     pass
                 return True
@@ -334,7 +346,7 @@ class KuaishouSpider(BaseSpider):
                 locator = page.locator(selector).first
                 if self._locator_visible(locator):
                     locator.click()
-                    page.wait_for_timeout(1200)
+                    self.interruptible_page_wait(page, 1200)
                     if self._has_login_qr(page):
                         self.log("📱 已自动打开快手扫码登录弹窗")
                     return
@@ -406,7 +418,7 @@ class KuaishouSpider(BaseSpider):
             search_input.click()
             search_input.fill(keyword)
             search_input.press("Enter")
-            page.wait_for_timeout(2500)
+            self.interruptible_page_wait(page, 2500)
         except PlaywrightError:
             self.log("❌ 无法执行快手站内搜索")
             return None
@@ -433,7 +445,7 @@ class KuaishouSpider(BaseSpider):
                 locator.click()
                 locator.fill(keyword)
                 locator.press("Enter")
-                page.wait_for_timeout(2500)
+                self.interruptible_page_wait(page, 2500)
                 if self._has_video_list(page, timeout=5000):
                     self.log(f"✅ 已进入搜索结果视频列表: {keyword}")
                     return page
@@ -457,7 +469,7 @@ class KuaishouSpider(BaseSpider):
                 tab = page.locator(selector).first
                 if self._locator_visible(tab):
                     tab.click()
-                    page.wait_for_timeout(1500)
+                    self.interruptible_page_wait(page, 1500)
                     return
             except PlaywrightError:
                 continue
@@ -499,7 +511,7 @@ class KuaishouSpider(BaseSpider):
                     continue
                 self.log(f"👉 点击搜索结果名字进入主页: {keyword}")
                 name_link.click()
-                page.wait_for_timeout(3000)
+                self.interruptible_page_wait(page, 3000)
                 if len(context.pages) > 1:
                     page = context.pages[-1]
                     page.bring_to_front()
@@ -522,7 +534,7 @@ class KuaishouSpider(BaseSpider):
                     continue
                 self.log(f"👉 点击搜索结果头像进入主页: {keyword}")
                 avatar.click()
-                page.wait_for_timeout(3000)
+                self.interruptible_page_wait(page, 3000)
                 if len(context.pages) > 1:
                     page = context.pages[-1]
                     page.bring_to_front()
@@ -549,7 +561,7 @@ class KuaishouSpider(BaseSpider):
                     name = keyword
                 self.log(f"👉 点击用户卡片进入主页: {name or keyword}")
                 user_link.click()
-                page.wait_for_timeout(2000)
+                self.interruptible_page_wait(page, 2000)
                 return self._open_profile_from_search_results(page, context, keyword)
             except PlaywrightError:
                 continue
@@ -679,7 +691,7 @@ class KuaishouSpider(BaseSpider):
                 break
             try:
                 page.reload(wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(2500)
+                self.interruptible_page_wait(page, 2500)
             except PlaywrightError:
                 break
             try:
@@ -721,9 +733,9 @@ class KuaishouSpider(BaseSpider):
                 pass
 
             page.evaluate("window.scrollBy(0, 800)")
-            page.wait_for_timeout(500)
+            self.interruptible_page_wait(page, 500)
             page.mouse.wheel(0, 500)
-            page.wait_for_timeout(1000)
+            self.interruptible_page_wait(page, 1000)
 
             cards = page.locator(".photo-card, .video-card")
             current_card_count = cards.count()
@@ -747,7 +759,7 @@ class KuaishouSpider(BaseSpider):
                 if no_new_content_count >= 5:
                     self.log("🔄 似乎卡住了，尝试回滚刷新...")
                     page.evaluate("window.scrollBy(0, -1000)")
-                    page.wait_for_timeout(1000)
+                    self.interruptible_page_wait(page, 1000)
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     no_new_content_count = 0
             else:
@@ -822,7 +834,7 @@ class KuaishouSpider(BaseSpider):
         total_scrolls = self._capture_scroll_budget(items_for_dialog)
 
         def handle_response(response):
-            """执行 `handle_response` 对应的业务逻辑。"""
+            
             if not self.is_running:
                 return
             ctype = response.headers.get("content-type", "")
@@ -893,14 +905,14 @@ class KuaishouSpider(BaseSpider):
             self.log("❌ 详情页已关闭，无法启动捕获流水线")
             return
         page.evaluate("window.scrollTo(0, 0)")
-        page.wait_for_timeout(1000)
+        self.interruptible_page_wait(page, 1000)
         cards = page.locator(".photo-card, .video-card")
         try:
             first_card = cards.first
             if not first_card.is_visible():
                 first_card.scroll_into_view_if_needed()
             first_card.click()
-            page.wait_for_timeout(3000)
+            self.interruptible_page_wait(page, 3000)
             try:
                 page.mouse.click(200, 200)
             except PlaywrightError:
@@ -968,6 +980,7 @@ class KuaishouSpider(BaseSpider):
                     proxy=proxy_cfg,
                     args=["--disable-blink-features=AutomationControlled"],
                 )
+                self._track_playwright_browser(browser)
                 context = browser.new_context(
                     # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
                     user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
@@ -983,14 +996,14 @@ class KuaishouSpider(BaseSpider):
                 if not page:
                     return
                 if self._capture_single_detail_page(page):
-                    browser.close()
+                    self._close_tracked_playwright_browser(browser)
                     return
                 if not self._wait_for_video_list(page):
                     return
 
                 last_card_count = self._scan_video_cards(page)
                 if not self.revive_for_partial_selection(last_card_count, "个候选作品"):
-                    browser.close()
+                    self._close_tracked_playwright_browser(browser)
                     return
 
                 items_for_dialog, target_fingerprints_map = self._extract_items_for_dialog(page)
@@ -1001,8 +1014,15 @@ class KuaishouSpider(BaseSpider):
                 self._selected_indices = selected_indices
                 self.log(f"✅ 选中 {len(selected_indices)} 个任务，流水线启动...")
                 self._run_capture_pipeline(page, items_for_dialog, target_fingerprints_map)
-                browser.close()
+                self._close_tracked_playwright_browser(browser)
         except (PlaywrightError, OSError, ValueError, RuntimeError) as e:
             self.log(f"💥 爬虫错误: {e}")
         finally:
+            browser = self._tracked_playwright_browser()
+            if browser is not None:
+                try:
+                    self._close_tracked_playwright_browser(browser)
+                except PlaywrightError:
+                    pass
+            self._clear_playwright_browser(browser)
             self.sig_finished.emit()

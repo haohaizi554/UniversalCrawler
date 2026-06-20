@@ -7,11 +7,10 @@ from unittest.mock import Mock, patch
 from app.exceptions import CookieLoadError
 from app.services.auth_service import AuthService
 
-
 class AuthServiceTests(unittest.TestCase):
-    """封装 `AuthServiceTests` 在 `tests/test_auth_service.py` 中承担的核心逻辑。"""
+    
     def setUp(self):
-        """执行 `setUp` 对应的业务逻辑，供 `AuthServiceTests` 使用。"""
+        
         self.service = AuthService()
 
     def test_extract_cookie_list_reads_storage_state_shape(self):
@@ -42,7 +41,7 @@ class AuthServiceTests(unittest.TestCase):
     def test_extract_cookie_dict_skips_values_that_fail_string_conversion(self):
         """验证 `test_extract_cookie_dict_skips_values_that_fail_string_conversion` 对应场景是否符合预期，供 `AuthServiceTests` 使用。"""
         class BrokenValue:
-            """封装 `BrokenValue` 在 `tests/test_auth_service.py` 中承担的核心逻辑。"""
+            
             def __str__(self):
                 """提供 `__str__` 对应的内部辅助逻辑，供 `BrokenValue` 使用。"""
                 raise TypeError("broken")
@@ -129,7 +128,6 @@ class AuthServiceTests(unittest.TestCase):
             restored = self.service.load_json_file(file_path)
 
         self.assertEqual(restored, payload)
-
 
 if __name__ == "__main__":
     unittest.main()

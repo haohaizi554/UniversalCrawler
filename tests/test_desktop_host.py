@@ -7,7 +7,6 @@ from app.controllers.application_controller import ApplicationController
 from app.controllers.desktop_host import DesktopHostAdapter
 from app.models import VideoItem
 
-
 class DesktopHostAdapterTests(unittest.TestCase):
     def test_host_adapter_delegates_window_calls(self):
         window = Mock()
@@ -89,7 +88,6 @@ class DesktopHostAdapterTests(unittest.TestCase):
         self.assertIs(host1, host2)
         self.assertIsInstance(host1, DesktopHostAdapter)
         self.assertIs(host1.window, controller.window)
-
 
 if __name__ == "__main__":
     unittest.main()

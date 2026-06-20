@@ -8,7 +8,6 @@ from typing import Any
 
 from shared.selection_runtime import SelectionStrategy
 
-
 class PipeSelection(SelectionStrategy):
     """stdin 管道选择策略。"""
 
@@ -99,7 +98,6 @@ class PipeSelection(SelectionStrategy):
         }
         sys.stderr.write(json.dumps(msg, ensure_ascii=False) + "\n")
         sys.stderr.flush()
-
 
 class PipeOutput:
     """结构化输出器：向 stdout 写入 JSON 格式的进度和结果。"""

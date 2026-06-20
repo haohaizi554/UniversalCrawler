@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, patch
 
 from app.core.lib.douyin.tools.parameter import MsToken, Parameter, TtWid
 
-
 class ParameterUpdateParamsTests(unittest.IsolatedAsyncioTestCase):
     def _make_parameter(self, cookie_str: str):
         param = object.__new__(Parameter)
@@ -90,7 +89,6 @@ class ParameterUpdateParamsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tt_wid[TtWid.NAME], "remote-ttwid")
         self.assertEqual(mock_ttwid.await_args.kwargs["timeout"], 3)
-
 
 if __name__ == "__main__":
     unittest.main()

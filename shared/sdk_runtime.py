@@ -57,7 +57,6 @@ from shared.selection_runtime import (
     is_selection_strategy,
 )
 
-
 def _discover_platform_ids() -> tuple[str, ...]:
     """Keep SDK platform enum aligned with the runtime plugin registry."""
     try:
@@ -66,7 +65,6 @@ def _discover_platform_ids() -> tuple[str, ...]:
         return tuple(plugin.id for plugin in registry.get_all_plugins())
     except Exception:
         return ("douyin", "bilibili", "kuaishou", "missav", "xiaohongshu")
-
 
 class UcrawlSDK:
     """UCrawl Python SDK。
@@ -693,7 +691,6 @@ class UcrawlSDK:
             # 与成功响应对齐：错误响应也包含 directory 字段
             return {"status": "error", "error": str(e), "directory": directory}
 
-
 # ========== 便捷函数 (函数式 API) ==========
 
 def search(
@@ -721,7 +718,6 @@ def search(
     finally:
         sdk.close()
 
-
 def list_platforms() -> list[dict]:
     """列出所有可用平台。
 
@@ -736,7 +732,6 @@ def list_platforms() -> list[dict]:
     finally:
         sdk.close()
 
-
 def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
     """扫描本地目录。
 
@@ -749,7 +744,6 @@ def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
         return sdk.scan_directory(directory, scan_limit)
     finally:
         sdk.close()
-
 
 def download_video(
     url: str,

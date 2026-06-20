@@ -19,9 +19,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Info(API):
-    """封装 `Info` 在 `app/core/lib/douyin/interface/info.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -59,7 +58,7 @@ class Info(API):
         *args,
         **kwargs,
     ):
-        """执行 `run_single` 对应的业务逻辑，供 `Info` 使用。"""
+        
         await super().run_single(
             "",
             params=lambda: self.static_params,
@@ -73,7 +72,7 @@ class Info(API):
         *args,
         **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `Info` 使用。"""
+        
         if d := data_dict.get("data"):
             self.append_response(d)
         else:
@@ -90,9 +89,8 @@ class Info(API):
             "sec_user_ids": value,
         }
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

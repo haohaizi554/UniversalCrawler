@@ -6,7 +6,6 @@ import argparse
 import unittest
 from unittest.mock import Mock
 
-
 class SearchCommandRuntimeTests(unittest.TestCase):
     def _make_env(self):
         from shared.search_command_runtime import SearchCommandEnv
@@ -114,7 +113,6 @@ class SearchCommandRuntimeTests(unittest.TestCase):
         self.assertFalse(runner_kwargs["download"])
         self.assertEqual(runner_kwargs["selection_strategy"], "selection")
 
-
 class DownloadCommandRuntimeTests(unittest.TestCase):
     def _make_env(self):
         from shared.download_command_runtime import DownloadCommandEnv
@@ -211,7 +209,6 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         self.assertIn("bad timeout", error)
         sdk.close.assert_called_once()
 
-
 class SDKRuntimeTests(unittest.TestCase):
     def test_discover_platform_ids_falls_back_when_registry_errors(self):
         import shared.sdk_runtime as runtime
@@ -221,7 +218,6 @@ class SDKRuntimeTests(unittest.TestCase):
 
         self.assertIn("douyin", platforms)
         self.assertIn("missav", platforms)
-
 
 if __name__ == "__main__":
     unittest.main()

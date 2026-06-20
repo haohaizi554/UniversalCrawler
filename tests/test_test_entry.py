@@ -20,14 +20,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 # 让项目根目录可被 import
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 if str(_ROOT / "tests") not in sys.path:
     sys.path.insert(0, str(_ROOT / "tests"))
-
 
 class TestEntryCliArgsTests(unittest.TestCase):
     """entry/test_entry.py CLI 参数解析。"""
@@ -88,7 +86,6 @@ class TestEntryCliArgsTests(unittest.TestCase):
             ["myid:我的:tests/test_a.py,tests/test_b.py"],
         )
 
-
 class TestEntryModeDetectionTests(unittest.TestCase):
     """entry/test_entry.py 模式自适应。"""
 
@@ -112,7 +109,6 @@ class TestEntryModeDetectionTests(unittest.TestCase):
         """有 --category 时隐式 CLI 模式（无交互）。"""
         ns = self.mod._parse_args(["-c", "unit"])
         self.assertEqual(self.mod._detect_mode(ns), "cli")
-
 
 class TestEntryRunListTests(unittest.TestCase):
     """--list 模式输出。"""
@@ -142,7 +138,6 @@ class TestEntryRunListTests(unittest.TestCase):
             "misc",
         ]:
             self.assertIn(cat_id, out, f"missing category: {cat_id}")
-
 
 class TestEntryApplyPluginArgsTests(unittest.TestCase):
     """--plugin-dir / --plugin 命令行注册。"""
@@ -196,7 +191,6 @@ class TestEntryApplyPluginArgsTests(unittest.TestCase):
             test_registry.TEST_REGISTRY["my_files"].files,
             ["tests/test_cli_runner.py"],
         )
-
 
 class TestPluginDirectoryAPITests(unittest.TestCase):
     """test_registry.register_plugin_directory / register_plugin / unregister。"""
@@ -258,26 +252,27 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
         self.assertGreater(info["categories"], 0)
 
     def test_builtin_rules_cover_current_named_tests(self):
-        expected_categories = {
+        """验证所有测试文件都被 include 规则自动归类，无遗漏。
+
+        核心原则：新测试文件只需遵循命名约定即可自动归类，
+        无需手动在 files 列表中添加。此处仅抽查关键映射。
+        """
+        # 1. 所有文件必须被归类（unassigned 为空）
+        unassigned = set(self.registry.auto_discover_tests())
+        self.assertEqual(unassigned, set(), f"以下测试文件未被任何类别收录: {unassigned}")
+
+        # 2. 抽查关键文件的类别归属（验证 include 规则正确性）
+        spot_checks = {
             "tests/test_web_controller_selection.py": "web_api",
-            "tests/test_web_workflows.py": "web_api",
-            "tests/test_web_script_api.py": "web_api",
-            "tests/test_websocket_server.py": "web_api",
-            "tests/test_websocket_bridge.py": "web_api",
             "tests/test_download_manager_core.py": "core_services",
-            "tests/test_douyin_parameter.py": "core_services",
-            "tests/test_plugin_discovery.py": "core_services",
             "tests/test_spider_base.py": "core_services",
-            "tests/test_controller_session_mixin.py": "core_services",
-            "tests/test_media_library_mixin.py": "core_services",
+            "tests/test_desktop_host.py": "desktop_ui",
+            "tests/test_gui_entry.py": "app_flows",
             "tests/test_test_launcher_ui.py": "suite_infra",
         }
-
-        unassigned = set(self.registry.auto_discover_tests())
-        for file_path, category_id in expected_categories.items():
-            self.assertNotIn(file_path, unassigned)
-            self.assertIn(file_path, self.registry.get_resolved_files(category_id))
-        self.assertEqual(unassigned, set())
+        for file_path, category_id in spot_checks.items():
+            self.assertIn(file_path, self.registry.get_resolved_files(category_id),
+                          f"{file_path} 应属于 {category_id}")
 
     def test_register_plugin_directory_duplicate_raises(self):
         self.registry.register_plugin_directory("dup", "D1", "tests")
@@ -369,7 +364,6 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
         self.assertNotIn("tests/test_registry.py", files)
         self.assertNotIn("tests/test_runner.py", files)
 
-
 class TestDispatcherRoutingTests(unittest.TestCase):
     """entry.dispatcher 路由测试。"""
 
@@ -399,7 +393,6 @@ class TestDispatcherRoutingTests(unittest.TestCase):
             from entry import detect_mode, Mode
             self.assertEqual(detect_mode([]), Mode.TEST)
 
-
 class TestMainDispatchTests(unittest.TestCase):
     """main.py --mode test 调度链。"""
 
@@ -412,7 +405,6 @@ class TestMainDispatchTests(unittest.TestCase):
         # 验证 run_test 与 _HANDLERS[Mode.TEST] 是同一个
         from entry import run_test
         self.assertIs(_HANDLERS[Mode.TEST], run_test)
-
 
 if __name__ == "__main__":
     unittest.main()

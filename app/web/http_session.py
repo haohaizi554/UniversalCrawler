@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 
 from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin, is_local_host
 
-
 class HttpSessionCoordinator:
     """封装 HTTP 会话中间件、上下文恢复与目录权限代理。"""
 
@@ -39,9 +38,9 @@ class HttpSessionCoordinator:
 
         if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "DELETE"}:
             origin = request.headers.get("origin")
-            if not self.is_request_origin_allowed(request, origin):
+            if origin and not self.is_request_origin_allowed(request, origin):
                 return JSONResponse({"status": "error", "error": "不允许的请求来源"}, status_code=403)
-            if not self.has_valid_session_token(request, context):
+            if origin and not self.has_valid_session_token(request, context):
                 return JSONResponse({"status": "error", "error": "缺少或无效的会话令牌"}, status_code=403)
 
         response = await call_next(request)

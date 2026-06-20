@@ -13,7 +13,6 @@ if __package__ in (None, ""):
 else:
     from .project_meta import APP_DISPLAY_NAME, APP_NAME, PACKAGE_VERSION, WEBUI_NAME
 
-
 WEBUI_DISPLAY_NAME = "Crawler WebPortal"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC_FILE = PROJECT_ROOT / "packaging" / "portable.spec"
@@ -52,7 +51,6 @@ LOCKING_PROCESSES = [
     "ffmpeg.exe",  # ffmpeg 子进程也可能锁住 _internal 下的 dll
 ]
 
-
 def kill_locking_processes() -> None:
     """尝试终止可能占用 dist 目录的旧进程。
 
@@ -71,9 +69,8 @@ def kill_locking_processes() -> None:
         except Exception:
             pass  # 进程不存在时 taskkill 会报错，忽略
 
-
 def ensure_prerequisites() -> None:
-    """执行 `ensure_prerequisites` 对应的业务逻辑。"""
+    
     missing = [str(path) for path in REQUIRED_FILES if not path.exists()]
     if missing:
         raise SystemExit("缺少必要文件:\n- " + "\n- ".join(missing))
@@ -83,13 +80,8 @@ def ensure_prerequisites() -> None:
             f"期望路径: {BROWSER_DIR}"
         )
 
-
 def clean_previous_outputs() -> None:
-    """执行 `clean_previous_outputs` 对应的业务逻辑。
-
-    修复: 改为先 kill 占用进程，再清理整个 dist 根目录（不只是 APP_NAME 子目录），
-    避免 dist/portable/ 或 dist/installer/ 等残留干扰新构建。
-    """
+    """清理 dist 根目录（不只是 APP_NAME 子目录），避免残留干扰新构建。"""
     # 1. 先杀掉占用 dist 目录的进程
     kill_locking_processes()
 
@@ -112,9 +104,8 @@ def clean_previous_outputs() -> None:
         launcher = PROJECT_ROOT / "packaging" / launcher_name
         launcher.unlink(missing_ok=True)
 
-
 def run_pyinstaller() -> None:
-    """执行 `run_pyinstaller` 对应的业务逻辑。"""
+    
     command = [
         sys.executable,
         "-m",
@@ -125,13 +116,8 @@ def run_pyinstaller() -> None:
     ]
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
-
 def verify_output() -> None:
-    """执行 `verify_output` 对应的业务逻辑。
-
-    关键修复：增加 entry/cli 子包在 _internal 中存在的检查，
-    否则 EXE 启动会因 ImportError 崩溃。
-    """
+    """验证构建产物中入口模块必需的子包都存在，避免 EXE 启动时 ImportError。"""
     exe_path = DIST_DIR / f"{APP_NAME}.exe"
     if not exe_path.exists():
         raise SystemExit(f"未找到绿色版主程序: {exe_path}")
@@ -177,9 +163,8 @@ def verify_output() -> None:
         if path.is_file() and path.name.lower() in FORBIDDEN_BASENAMES:
             raise SystemExit(f"发现不应打包的用户数据文件: {path}")
 
-
 def write_manifest() -> None:
-    """执行 `write_manifest` 对应的业务逻辑。"""
+    
     manifest = DIST_DIR / "BUILD_INFO.txt"
     lines = [
         f"{APP_DISPLAY_NAME} Portable Build v{PACKAGE_VERSION}",
@@ -209,7 +194,6 @@ def write_manifest() -> None:
     ]
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
 def main() -> None:
     """作为脚本入口组织整体执行流程。"""
     ensure_prerequisites()
@@ -218,7 +202,6 @@ def main() -> None:
     verify_output()
     write_manifest()
     print(f"绿色版构建完成: {DIST_DIR}")
-
 
 if __name__ == "__main__":
     main()

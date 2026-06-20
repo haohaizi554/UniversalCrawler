@@ -3,7 +3,6 @@ from unittest.mock import Mock, patch
 
 from app.controllers.application_lifecycle_mixin import ApplicationLifecycleMixin
 
-
 class _DummyLifecycleController(ApplicationLifecycleMixin):
     def __init__(self):
         self.host = Mock()
@@ -13,7 +12,6 @@ class _DummyLifecycleController(ApplicationLifecycleMixin):
 
     def _host(self):
         return self.host
-
 
 class ApplicationLifecycleMixinTests(unittest.TestCase):
     def test_stop_active_spider_ignores_missing_or_idle_spider(self):
@@ -60,7 +58,6 @@ class ApplicationLifecycleMixinTests(unittest.TestCase):
 
         controller.app.exec.assert_called_once()
         exit_mock.assert_called_once_with(7)
-
 
 if __name__ == "__main__":
     unittest.main()

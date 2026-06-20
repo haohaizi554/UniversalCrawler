@@ -23,9 +23,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class Hot(API):
-    """封装 `Hot` 在 `app/core/lib/douyin/interface/hot.py` 中承担的核心逻辑。"""
+    
     board_params = (
         SimpleNamespace(
             name=_("抖音热榜"),
@@ -70,7 +69,7 @@ class Hot(API):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `Hot` 使用。"""
+        
         return self.params | {
             "detail_list": "1",
             "source": "6",
@@ -127,7 +126,7 @@ class Hot(API):
         *args,
         **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `Hot` 使用。"""
+        
         try:
             if not (d := data_dict["data"]["word_list"]):
                 self.log.info(error_text)
@@ -138,9 +137,8 @@ class Hot(API):
                 _("数据解析失败，请告知作者处理: {data}").format(data=data_dict)
             )
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

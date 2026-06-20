@@ -21,9 +21,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class DetailTikTok(APITikTok):
-    """封装 `DetailTikTok` 在 `app/core/lib/douyin/interface/detail_tiktok.py` 中承担的核心逻辑。"""
+    
     def __init__(
         self,
         params: Union["Parameter", "Params"],
@@ -40,7 +39,7 @@ class DetailTikTok(APITikTok):
     def generate_params(
         self,
     ) -> dict:
-        """执行 `generate_params` 对应的业务逻辑，供 `DetailTikTok` 使用。"""
+        
         return self.params | {
             "itemId": self.detail_id,
         }
@@ -86,7 +85,7 @@ class DetailTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `DetailTikTok` 使用。"""
+        
         try:
             if not (d := data_dict["itemInfo"]["itemStruct"]):
                 self.log.info(error_text)
@@ -98,7 +97,7 @@ class DetailTikTok(APITikTok):
             )
 
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

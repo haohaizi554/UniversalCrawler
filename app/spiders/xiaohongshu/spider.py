@@ -30,7 +30,6 @@ from .helpers import (
 from .parser import XiaohongshuParser
 from .task_builder import XiaohongshuTaskBuilder
 
-
 class XiaohongshuSpider(BaseSpider):
     """Browser-assisted XiaoHongShu spider."""
 
@@ -48,6 +47,7 @@ class XiaohongshuSpider(BaseSpider):
             get_setting_default("auth", "xiaohongshu_cookie_file"),
         )
         self._detail_request_count = 0
+        self._client: XiaohongshuClient | None = None
 
     def _user_agent(self) -> str:
         return str(self.config.get("ua") or cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT))
@@ -256,8 +256,8 @@ class XiaohongshuSpider(BaseSpider):
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(**launch_kwargs)
-            self._playwright_pw = playwright
-            self._playwright_browser = browser
+            self._track_playwright_instance(playwright)
+            self._track_playwright_browser(browser)
             try:
                 context = browser.new_context(user_agent=self._user_agent())
                 if os.path.exists(self.auth_file):
@@ -269,8 +269,15 @@ class XiaohongshuSpider(BaseSpider):
                 page = context.new_page()
                 target = entry_url or self.HOME_URL
                 baseline_web_session = self._current_web_session(context.cookies())
-                page.goto(target, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(3000)
+                if not self.interruptible_playwright_goto(
+                    page,
+                    target,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                ):
+                    return ""
+                if not self.interruptible_page_wait(page, 3000):
+                    return ""
                 if self._page_shows_logged_in_state(page, context=context, baseline_web_session=baseline_web_session):
                     cookie_str = self._save_context_cookies(context)
                     if cookie_str:
@@ -281,7 +288,8 @@ class XiaohongshuSpider(BaseSpider):
                 for _ in range(120):
                     if not self.is_running:
                         return ""
-                    page.wait_for_timeout(1000)
+                    if not self.interruptible_page_wait(page, 1000):
+                        return ""
                     if self._page_shows_logged_in_state(
                         page,
                         context=context,
@@ -292,12 +300,8 @@ class XiaohongshuSpider(BaseSpider):
                         return cookie_str
                 return ""
             finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-                self._playwright_browser = None
-                self._playwright_pw = None
+                self._close_tracked_playwright_browser(browser)
+                self._clear_playwright_instance(playwright)
 
     def _ensure_cookie_string(self, entry_url: str) -> str:
         cookie_str = self._load_saved_cookie_string()
@@ -603,6 +607,8 @@ class XiaohongshuSpider(BaseSpider):
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(**launch_kwargs)
+            self._track_playwright_instance(playwright)
+            self._track_playwright_browser(browser)
             try:
                 context = browser.new_context(user_agent=self._user_agent())
                 if os.path.exists(self.auth_file):
@@ -612,8 +618,15 @@ class XiaohongshuSpider(BaseSpider):
                         pass
                 page = context.new_page()
                 search_url = f"{self.HOME_URL}search_result?keyword={quote(lookup.keyword)}&type=51"
-                page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(3000)
+                if not self.interruptible_playwright_goto(
+                    page,
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                ):
+                    return None
+                if not self.interruptible_page_wait(page, 3000):
+                    return None
                 current_url = page.url
                 if "/login" in current_url:
                     self.log("⚠️ 网页用户搜索被重定向到登录页，无法直接解析小红书号")
@@ -650,7 +663,8 @@ class XiaohongshuSpider(BaseSpider):
                     return None
                 return self._pick_creator_candidate(candidates, source_label="网页搜索")
             finally:
-                browser.close()
+                self._close_tracked_playwright_browser(browser)
+                self._clear_playwright_instance(playwright)
 
     def _handle_multi_refs(self, client: XiaohongshuClient, refs: list[dict[str, str]], cookie_str: str) -> None:
         if not refs:
@@ -715,6 +729,7 @@ class XiaohongshuSpider(BaseSpider):
                 raise SpiderAuthError("无法获取小红书会话 Cookie（至少需要 a1）")
 
             client = self._build_client(cookie_str)
+            self._client = client
             if not client.check_cookie_ready():
                 raise SpiderAuthError("小红书 Cookie 缺少 a1，无法进行签名请求")
             login_status = client.probe_login_status()
@@ -762,6 +777,10 @@ class XiaohongshuSpider(BaseSpider):
                 details={"error": str(exc)},
             )
         finally:
+            client = getattr(self, "_client", None)
+            if client is not None:
+                client.close()
+                self._client = None
             self.debug_state(
                 action="run_finish",
                 message="小红书爬虫任务结束",

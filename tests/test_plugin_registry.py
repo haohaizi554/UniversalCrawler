@@ -8,9 +8,8 @@ from unittest.mock import Mock
 from app.core.plugin_registry import PluginRegistry, registry
 from app.core.plugins.run_options import build_missav_proxy_url
 
-
 class PluginRegistryTests(unittest.TestCase):
-    """封装 `PluginRegistryTests` 在 `tests/test_plugin_registry.py` 中承担的核心逻辑。"""
+    
     def test_registry_exports_expected_plugins(self):
         """验证 `test_registry_exports_expected_plugins` 对应场景是否符合预期，供 `PluginRegistryTests` 使用。"""
         plugin_ids = [plugin.id for plugin in registry.get_all_plugins()]
@@ -81,7 +80,6 @@ class PluginRegistryTests(unittest.TestCase):
             for name, module in snapshots.items():
                 if module is not None:
                     sys.modules[name] = module
-
 
 if __name__ == "__main__":
     unittest.main()

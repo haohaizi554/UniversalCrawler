@@ -4,17 +4,15 @@
 from contextlib import suppress
 from pathlib import Path
 
-
 def file_switch(path: Path) -> None:
-    """执行 `file_switch` 对应的业务逻辑。"""
+    
     if path.exists():
         path.unlink()
     else:
         path.touch()
 
-
 def remove_empty_directories(path: Path) -> None:
-    """执行 `remove_empty_directories` 对应的业务逻辑。"""
+    
     exclude = {
         "\\.",
         "\\_",

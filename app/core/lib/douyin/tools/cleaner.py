@@ -16,7 +16,7 @@ except ImportError:
 __all__ = ["Cleaner"]
 
 class Cleaner:
-    """封装 `Cleaner` 在 `app/core/lib/douyin/tools/cleaner.py` 中承担的核心逻辑。"""
+    
     CONTROL_CHARACTERS = compile(r"[\x00-\x1F\x7F]")
     def __init__(self):
         """初始化当前实例并准备运行所需的状态，供 `Cleaner` 使用。"""
@@ -51,7 +51,7 @@ class Cleaner:
         """设置 `rule` 对应的值或运行状态，供 `Cleaner` 使用。"""
         self.rule = {**self.rule, **rule} if update else rule
     def filter(self, text: str) -> str:
-        """执行 `filter` 对应的业务逻辑，供 `Cleaner` 使用。"""
+        
         for i in self.rule:
             text = text.replace(i, self.rule[i])
         return text
@@ -71,7 +71,7 @@ class Cleaner:
 
     @staticmethod
     def clear_spaces(string: str):
-        """执行 `clear_spaces` 对应的业务逻辑，供 `Cleaner` 使用。"""
+        
         return " ".join(string.split())
     @classmethod
     def remove_control_characters(
@@ -80,7 +80,7 @@ class Cleaner:
         replace="",
     ):
         # 使用正则表达式匹配所有控制字符
-        """执行 `remove_control_characters` 对应的业务逻辑，供 `Cleaner` 使用。"""
+        
         return cls.CONTROL_CHARACTERS.sub(
             replace,
             text,

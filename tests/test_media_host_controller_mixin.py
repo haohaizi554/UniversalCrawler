@@ -1,13 +1,15 @@
 import os
 import tempfile
+import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.controllers.media_host_controller_mixin import MediaHostControllerMixin
 from app.exceptions import MediaScanError
 from app.models import VideoItem
+from app.services.app_state import AppState
 from app.services.file_service import ScanResult
-
 
 class _DummyMediaHostController(MediaHostControllerMixin):
     IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -45,8 +47,27 @@ class _DummyMediaHostController(MediaHostControllerMixin):
     def _delete_outcome_messages(outcome):
         return getattr(outcome, "messages", [])
 
-
 class MediaHostControllerMixinTests(unittest.TestCase):
+    def test_current_playing_id_prefers_app_state_over_stale_controller_mirror(self):
+        controller = _DummyMediaHostController()
+        controller.current_playing_id = "stale"
+        controller.app_state = Mock()
+        controller.app_state.current_playing_id = "fresh"
+        controller.app_state.get_current_playing_id.side_effect = lambda: controller.app_state.current_playing_id
+
+        def set_current_playing_id(video_id):
+            controller.app_state.current_playing_id = video_id
+
+        controller.app_state.set_current_playing_id.side_effect = set_current_playing_id
+
+        self.assertEqual(controller._get_current_playing_id(), "fresh")
+        self.assertEqual(controller.current_playing_id, "fresh")
+
+        controller._set_current_playing_id("next")
+
+        controller.app_state.set_current_playing_id.assert_called_once_with("next")
+        self.assertEqual(controller.current_playing_id, "next")
+
     def test_scan_local_dir_announces_scan_and_populates_rows(self):
         controller = _DummyMediaHostController()
         controller.host.current_save_dir = "downloads"
@@ -185,6 +206,67 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.host.append_log.assert_called_once_with("ℹ️ 已播放到最后一项")
         controller.play_video.assert_not_called()
 
+    def test_on_clear_queue_removes_queue_items_and_keeps_completed(self):
+        controller = _DummyMediaHostController()
+        queued = VideoItem(url="https://example.com/q", title="queued", source="douyin")
+        queued.status = "\u23f3 \u7b49\u5f85\u4e2d"
+        completed = VideoItem(url="", title="done", source="local")
+        completed.status = "\u2705 \u672c\u5730"
+        completed.progress = 100
+        completed.local_path = __file__
+        controller.app_state = Mock()
+        controller.app_state.videos = {queued.id: queued, completed.id: completed}
+        controller.app_state.task_state = {queued.id: {"progress": 0}}
+        controller.app_state._last_progress_emit_at = {queued.id: 1.0}
+        controller.app_state._lock = threading.RLock()
+        controller.app_state._publish_change = Mock()
+        controller.videos = controller.app_state.videos
+        controller.dl_manager = Mock()
+        controller.dl_manager.cancel_task.return_value = "queued"
+        controller.frontend_state_service = Mock()
+        controller.frontend_state_service.queue_item_ids = Mock(return_value={queued.id})
+        controller.frontend_state_service.get_snapshot.side_effect = AssertionError("full snapshot should not be used")
+
+        controller.on_clear_queue()
+
+        self.assertNotIn(queued.id, controller.app_state.videos)
+        self.assertIn(completed.id, controller.app_state.videos)
+        self.assertNotIn(queued.id, controller.app_state.task_state)
+        self.assertNotIn(queued.id, controller.app_state._last_progress_emit_at)
+        controller.dl_manager.cancel_task.assert_called_once_with(queued.id)
+        controller.app_state._publish_change.assert_called_once_with(
+            "videos.remove_many",
+            {"video_ids": [queued.id], "count": 1},
+        )
+        controller.host.append_log.assert_called_once_with("\U0001f5d1\ufe0f \u5df2\u6e05\u7a7a\u4e0b\u8f7d\u961f\u5217 (1 \u9879)")
+        controller.host.refresh_frontend_state.assert_called_once_with(force=False, topics={"videos.remove_many"})
+
+    def test_on_clear_queue_batches_large_queue_without_snapshot(self):
+        controller = _DummyMediaHostController()
+        controller.app_state = AppState()
+        items = [VideoItem(url=f"https://example.com/{index}.mp4", title=f"queued-{index}", source="douyin") for index in range(10000)]
+        for item in items:
+            item.status = "\u23f3 \u7b49\u5f85\u4e2d"
+        ids = {item.id for item in items}
+        with controller.app_state._lock:
+            controller.app_state.videos = {item.id: item for item in items}
+            controller.app_state.task_state = {item.id: {"progress": 0} for item in items}
+        controller.videos = controller.app_state.videos
+        controller.dl_manager = SimpleNamespace(cancel_tasks=Mock(return_value={video_id: "queued" for video_id in ids}))
+        controller.frontend_state_service = SimpleNamespace(
+            queue_item_ids=Mock(return_value=ids),
+            get_snapshot=Mock(side_effect=AssertionError("full snapshot should not be used")),
+        )
+
+        controller.on_clear_queue()
+
+        self.assertEqual(controller.app_state.videos, {})
+        self.assertEqual(controller.app_state.task_state, {})
+        controller.frontend_state_service.queue_item_ids.assert_called_once()
+        controller.frontend_state_service.get_snapshot.assert_not_called()
+        controller.dl_manager.cancel_tasks.assert_called_once()
+        self.assertEqual(len(next(iter(controller.dl_manager.cancel_tasks.call_args.args))), 10000)
+        controller.host.refresh_frontend_state.assert_called_once_with(force=False, topics={"videos.remove_many"})
 
 if __name__ == "__main__":
     unittest.main()

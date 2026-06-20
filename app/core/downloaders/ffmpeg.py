@@ -115,12 +115,12 @@ class FFmpegDownloader(BaseDownloader):
 
     @classmethod
     def is_available(cls) -> bool:
-        """执行 `is_available` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
+        
         return FFmpegExternalTool.is_available()
 
     @classmethod
     def should_use(cls, video_item: VideoItem) -> bool:
-        """执行 `should_use` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
+        
         duration_sec = video_item.meta.get("duration", 0)
         size_mb = video_item.meta.get("size_mb", 0)
         return bool(size_mb > cls.SIZE_THRESHOLD_MB or duration_sec > cls.DURATION_THRESHOLD_SEC)
@@ -132,7 +132,7 @@ class FFmpegDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `FFmpegDownloader` 使用。"""
+        
         original_url = video_item.url
         url = original_url
         headers = {
@@ -193,6 +193,7 @@ class FFmpegDownloader(BaseDownloader):
 
         max_retries = cfg.get("download", "max_retries", 3)
         for attempt in range(max_retries):
+            attempt_completed = False
             stderr_tail: deque[str] = deque(maxlen=12)
             current_url, current_expected_size = _resolve_stream_url(original_url)
             url = current_url
@@ -207,6 +208,8 @@ class FFmpegDownloader(BaseDownloader):
                 context={"save_path": save_path, "source_url": url, "title": video_item.title, "attempt": attempt + 1},
                 trace_id=trace_id,
             )
+            process = None
+            stderr_thread = None
             try:
                 process = subprocess.Popen(
                     cmd,
@@ -231,6 +234,8 @@ class FFmpegDownloader(BaseDownloader):
                             if not line:
                                 break
                             stderr_queue.put(line)
+                    except Exception:
+                        pass
                     finally:
                         stderr_queue.put(None)
 
@@ -276,7 +281,17 @@ class FFmpegDownloader(BaseDownloader):
 
                 process.wait()
                 if process.returncode == 0 and os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-                    progress_callback(100)
+                    attempt_completed = True
+                    try:
+                        progress_callback(100)
+                    except Exception as exc:
+                        debug_logger.log_exception(
+                            "FFmpegDownloader",
+                            "progress_callback",
+                            exc,
+                            context={"save_path": save_path, "source_url": url, "title": video_item.title},
+                            trace_id=trace_id,
+                        )
                     debug_logger.log(
                         component="FFmpegDownloader",
                         action="download_finished",
@@ -304,3 +319,39 @@ class FFmpegDownloader(BaseDownloader):
                         trace_id=trace_id,
                     )
                     raise ExternalToolError(f"ffmpeg 下载失败: {exc}") from exc
+            finally:
+                if process is not None:
+                    returncode = getattr(process, "returncode", None)
+                    if returncode is None:
+                        try:
+                            returncode = process.poll()
+                        except Exception:
+                            returncode = None
+                    if returncode is None:
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                    stderr = getattr(process, "stderr", None)
+                    close_stderr = getattr(stderr, "close", None)
+                    if callable(close_stderr):
+                        try:
+                            close_stderr()
+                        except Exception:
+                            pass
+                    if returncode is None:
+                        try:
+                            process.wait(timeout=2)
+                        except Exception:
+                            pass
+                if stderr_thread is not None:
+                    try:
+                        stderr_thread.join(timeout=1)
+                    except Exception:
+                        pass
+                if not attempt_completed:
+                    try:
+                        if os.path.exists(save_path):
+                            os.remove(save_path)
+                    except OSError:
+                        pass

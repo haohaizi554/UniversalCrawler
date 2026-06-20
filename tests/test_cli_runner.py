@@ -13,7 +13,6 @@ import unittest
 from types import MethodType
 from unittest.mock import MagicMock, patch
 
-
 class CLIRunnerInitTests(unittest.TestCase):
     """CLIRunner 初始化测试。"""
 
@@ -72,7 +71,6 @@ class CLIRunnerInitTests(unittest.TestCase):
         from cli.selection import AutoSelection
         runner = CLIRunner(source="douyin", keyword="kw")
         self.assertIsInstance(runner.selection_strategy, AutoSelection)
-
 
 class CLIRunnerApplyStateTests(unittest.TestCase):
     """_apply_video_state 测试。"""
@@ -138,7 +136,6 @@ class CLIRunnerApplyStateTests(unittest.TestCase):
         self.assertIn("超大视频", output)
         self.assertIn("35%", output)
         self.assertIn("[", output)
-
 
 class CLIRunnerAskUserSelectionTests(unittest.TestCase):
     """_make_ask_user_selection monkey-patch 测试。"""
@@ -207,7 +204,6 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
         runner._dl_manager.task_progress.connect.assert_called_once_with(runner._on_task_progress)
         runner._dl_manager.task_finished.connect.assert_called_once_with(runner._on_task_finished)
         runner._dl_manager.task_error.connect.assert_called_once_with(runner._on_task_error)
-
 
 class CLIRunnerRunTests(unittest.TestCase):
     """CLIRunner.run() 端到端测试（mock spider + mock download）。"""
@@ -408,7 +404,6 @@ class CLIRunnerRunTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
-
 class CLIRunnerBuildResultTests(unittest.TestCase):
     """_build_result 测试。"""
 
@@ -428,7 +423,6 @@ class CLIRunnerBuildResultTests(unittest.TestCase):
         self.assertIn("logs", result)
         self.assertEqual(result["logs"], ["log1"])
         self.assertIn("elapsed", result)
-
 
 if __name__ == "__main__":
     unittest.main()

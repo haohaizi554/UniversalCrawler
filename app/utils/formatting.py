@@ -2,7 +2,6 @@
 #数据格式化
 import math
 
-
 def format_size(size_bytes):
     """Render a byte count as a human-friendly string."""
     if size_bytes == 0:

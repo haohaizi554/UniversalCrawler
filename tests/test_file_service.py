@@ -9,11 +9,10 @@ from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import MediaLibraryService
 
-
 class MediaLibraryServiceTests(unittest.TestCase):
-    """封装 `MediaLibraryServiceTests` 在 `tests/test_file_service.py` 中承担的核心逻辑。"""
+    
     def setUp(self):
-        """执行 `setUp` 对应的业务逻辑，供 `MediaLibraryServiceTests` 使用。"""
+        
         self.service = MediaLibraryService(
             video_extensions=(".mp4", ".webm"),
             image_extensions=(".jpg", ".png"),
@@ -152,7 +151,6 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertTrue(deleted)
         self.assertEqual(attempts["count"], 2)
         self.assertFalse(os.path.exists(file_path))
-
 
 if __name__ == "__main__":
     unittest.main()

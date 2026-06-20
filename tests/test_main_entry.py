@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 import main
 
-
 class MainEntryTests(unittest.TestCase):
     """验证 `main.py` 顶层入口（dispatcher）的行为。"""
 
@@ -35,7 +34,6 @@ class MainEntryTests(unittest.TestCase):
         """直接执行 main.py (无参数 + 无 TTY) 应不抛异常。"""
         # 不调用 main()，只验证 import 不出错
         self.assertTrue(callable(main.main))
-
 
 class DispatcherTests(unittest.TestCase):
     """验证 entry.dispatcher 的核心逻辑。"""
@@ -216,7 +214,6 @@ class DispatcherTests(unittest.TestCase):
         with patch.object(dispatcher, "is_tty", return_value=False), \
              patch.object(dispatcher, "_has_pyqt6", return_value=False):
             self.assertIsNone(dispatcher.prompt_mode_menu())
-
 
 if __name__ == "__main__":
     unittest.main()

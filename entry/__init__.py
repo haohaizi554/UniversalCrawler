@@ -27,7 +27,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-
 # 导出统一入口函数（让外部包级引用 `from entry import run_gui, run_web, run_cli` 也可用）
 from entry.dispatcher import (  # noqa: E402
     Mode,

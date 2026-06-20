@@ -94,7 +94,7 @@ BLANK_PREVIEW = "static/images/blank.png"
 
 # --- Functions ---
 async def wait() -> None:
-    """执行 `wait` 对应的业务逻辑。"""
+    
     await asyncio.sleep(randint(5, 20) * 0.1)
 
 from .cleaner import Cleaner

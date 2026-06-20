@@ -1,98 +1,149 @@
-"""插件模块，负责 `app/core/plugins/definitions.py` 对应的平台定义、注册或设置构建逻辑。"""
+"""Concrete plugin classes for all builtin platforms.
+
+Each class is auto-registered via ``BasePlugin.__init_subclass__`` — no
+manual registry entry needed.  Adding a new platform means authoring a new
+``*Plugin`` class in this file (or in a separate module under this package).
+"""
 
 from __future__ import annotations
 
+from typing import Any
+
 from .base import BasePlugin
 
-#实现插件，但是设置界面只是定义
 class KuaishouPlugin(BasePlugin):
-    """封装 `KuaishouPlugin` 在 `app/core/plugins/definitions.py` 中承担的核心逻辑。"""
     id = "kuaishou"
     name = "快手"
     sort_order = 20
 
     def get_search_placeholder(self) -> str:
-        """获取 `search_placeholder` 对应的数据或状态，供 `KuaishouPlugin` 使用。"""
         return "输入：快手主页链接、分享链接、快手号或关键词..."
 
     def get_spider_class(self):
-        """获取 `spider_class` 对应的数据或状态，供 `KuaishouPlugin` 使用。"""
         from app.spiders.kuaishou.spider import KuaishouSpider
-
         return KuaishouSpider
 
+    def get_downloader_class(self):
+        from app.core.downloaders.kuaishou import KuaishouDownloader
+        return KuaishouDownloader
+
+    def get_default_config(self) -> dict[str, Any]:
+        return {"max_items": 20, "timeout": 10}
+
+    def get_download_defaults(self) -> dict[str, str]:
+        return {
+            "referer": "https://www.kuaishou.com/",
+        }
 
 class MissAVPlugin(BasePlugin):
-    """封装 `MissAVPlugin` 在 `app/core/plugins/definitions.py` 中承担的核心逻辑。"""
     id = "missav"
     name = "MissAV"
     sort_order = 30
 
     def get_search_placeholder(self) -> str:
-        """获取 `search_placeholder` 对应的数据或状态，供 `MissAVPlugin` 使用。"""
         return "输入：番号或老师名..."
 
     def get_spider_class(self):
-        """获取 `spider_class` 对应的数据或状态，供 `MissAVPlugin` 使用。"""
         from app.spiders.missav.spider import MissAVSpider
-
         return MissAVSpider
 
+    def get_downloader_class(self):
+        from app.core.downloaders.missav import MissAVDownloader
+        return MissAVDownloader
+
+    def get_default_config(self) -> dict[str, Any]:
+        return {
+            "individual_only": False,
+            "priority": "中文字幕优先",
+            "proxy": "http://127.0.0.1:7890",
+        }
+
+    def get_download_defaults(self) -> dict[str, str]:
+        return {
+            "referer": "https://missav.ai/",
+        }
 
 class BilibiliPlugin(BasePlugin):
-    """封装 `BilibiliPlugin` 在 `app/core/plugins/definitions.py` 中承担的核心逻辑。"""
     id = "bilibili"
     name = "Bilibili"
     sort_order = 40
 
     def get_search_placeholder(self) -> str:
-        """获取 `search_placeholder` 对应的数据或状态，供 `BilibiliPlugin` 使用。"""
         return "输入：BV号、UP主ID、合集链接、主页链接、视频链接、分享链接或关键词..."
 
     def get_spider_class(self):
-        """获取 `spider_class` 对应的数据或状态，供 `BilibiliPlugin` 使用。"""
         from app.spiders.bilibili.spider import BilibiliSpider
-
         return BilibiliSpider
 
+    def get_downloader_class(self):
+        from app.core.downloaders.bilibili import BilibiliDownloader
+        return BilibiliDownloader
+
+    def get_default_config(self) -> dict[str, Any]:
+        return {"max_pages": 1, "max_items": 30, "timeout": 10, "api_workers": 8}
+
+    def get_download_defaults(self) -> dict[str, str]:
+        return {
+            "referer": "https://www.bilibili.com",
+        }
 
 class DouyinPlugin(BasePlugin):
-    """封装 `DouyinPlugin` 在 `app/core/plugins/definitions.py` 中承担的核心逻辑。"""
     id = "douyin"
     name = "抖音"
     sort_order = 10
 
     def get_search_placeholder(self) -> str:
-        """获取 `search_placeholder` 对应的数据或状态，供 `DouyinPlugin` 使用。"""
         return "输入：主页链接、分享链接或合集链接..."
 
     def get_spider_class(self):
-        """获取 `spider_class` 对应的数据或状态，供 `DouyinPlugin` 使用。"""
         from app.spiders.douyin.spider import DouyinSpider
-
         return DouyinSpider
 
+    def get_downloader_class(self):
+        from app.core.downloaders.douyin import DouyinDownloader
+        return DouyinDownloader
+
+    def get_default_config(self) -> dict[str, Any]:
+        return {"max_items": 20, "timeout": 10}
+
+    def get_download_defaults(self) -> dict[str, str]:
+        return {
+            "referer": "https://www.douyin.com/",
+        }
 
 class XiaohongshuPlugin(BasePlugin):
-    """封装 `XiaohongshuPlugin` 在 `app/core/plugins/definitions.py` 中承担的核心逻辑。"""
-
     id = "xiaohongshu"
     name = "小红书"
     sort_order = 15
 
     def get_search_placeholder(self) -> str:
-        """获取 `search_placeholder` 对应的数据或状态，供 `XiaohongshuPlugin` 使用。"""
         return "输入：关键词、分享链接、视频/笔记链接、主页链接，或小红书号..."
 
     def get_spider_class(self):
-        """获取 `spider_class` 对应的数据或状态，供 `XiaohongshuPlugin` 使用。"""
         from app.spiders.xiaohongshu.spider import XiaohongshuSpider
-
         return XiaohongshuSpider
 
+    def get_downloader_class(self):
+        from app.core.downloaders.xiaohongshu import XiaohongshuDownloader
+        return XiaohongshuDownloader
+
+    def get_default_config(self) -> dict[str, Any]:
+        return {
+            "max_items": 20,
+            "search_max_pages": 5,
+            "timeout": 30,
+            "request_interval": 1.5,
+            "detail_request_interval": 0.5,
+            "sort": "general",
+            "note_type": 0,
+        }
+
+    def get_download_defaults(self) -> dict[str, str]:
+        return {
+            "referer": "https://www.xiaohongshu.com/",
+        }
 
 def get_default_plugins() -> list[BasePlugin]:
-    """获取 `default_plugins` 对应的数据或状态。"""
+    """Return instantiated builtin plugins ordered by sort_order."""
     from .discovery import discover_builtin_plugins
-
     return discover_builtin_plugins()

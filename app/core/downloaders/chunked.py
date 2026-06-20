@@ -9,11 +9,11 @@ import time
 import requests
 
 from app.config import DEFAULT_USER_AGENT, cfg
+from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
-
 
 class ChunkedDownloader(BaseDownloader):
     """多线程分块下载器。"""
@@ -24,8 +24,13 @@ class ChunkedDownloader(BaseDownloader):
     DURATION_THRESHOLD_SEC = 600
 
     @classmethod
+    def _effective_thread_count(cls) -> int:
+        max_concurrent = max(1, int(cfg.get("download", "max_concurrent", 3)))
+        return max(1, cls.THREAD_COUNT // max_concurrent)
+
+    @classmethod
     def should_use(cls, video_item: VideoItem) -> bool:
-        """执行 `should_use` 对应的业务逻辑，供 `ChunkedDownloader` 使用。"""
+        
         duration_sec = video_item.meta.get("duration", 0)
         size_mb = video_item.meta.get("size_mb", 0)
         return bool(size_mb > cls.SIZE_THRESHOLD_MB or duration_sec > cls.DURATION_THRESHOLD_SEC)
@@ -37,7 +42,7 @@ class ChunkedDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
-        """执行 `download` 对应的业务逻辑，供 `ChunkedDownloader` 使用。"""
+        
         url = video_item.url
         headers = {
             "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
@@ -61,8 +66,9 @@ class ChunkedDownloader(BaseDownloader):
             raise StreamDownloadError("服务器不支持 Range 分块下载")
 
         chunk_count = max(1, total_size // self.CHUNK_SIZE)
-        if chunk_count > self.THREAD_COUNT:
-            chunk_count = self.THREAD_COUNT
+        thread_budget = self._effective_thread_count()
+        if chunk_count > thread_budget:
+            chunk_count = thread_budget
         chunk_size = total_size // chunk_count
 
         chunks: list[tuple[int, int]] = []
@@ -84,7 +90,7 @@ class ChunkedDownloader(BaseDownloader):
         error_holder: list[Exception] = []
 
         def cleanup_temp_files() -> None:
-            """执行 `cleanup_temp_files` 对应的业务逻辑。"""
+            
             for temp_file in temp_files:
                 try:
                     os.remove(temp_file)
@@ -92,7 +98,7 @@ class ChunkedDownloader(BaseDownloader):
                     pass
 
         def download_chunk(idx: int, start_byte: int, end_byte: int, temp_file: str) -> bool | None:
-            """执行 `download_chunk` 对应的业务逻辑。"""
+            
             try:
                 request_headers = headers.copy()
                 request_headers["Range"] = f"bytes={start_byte}-{end_byte}"
@@ -122,55 +128,89 @@ class ChunkedDownloader(BaseDownloader):
                 return False
 
         threads: list[threading.Thread] = []
-        for index, (start, end) in enumerate(chunks):
-            thread = threading.Thread(target=download_chunk, args=(index, start, end, temp_files[index]), daemon=True)
-            thread.start()
-            threads.append(thread)
+        merged = False
+        completed = False
+        try:
+            for index, (start, end) in enumerate(chunks):
+                thread = threading.Thread(target=download_chunk, args=(index, start, end, temp_files[index]), daemon=True)
+                thread.start()
+                threads.append(thread)
 
-        last_progress = -1
-        while any(thread.is_alive() for thread in threads):
-            if stop_event.is_set():
-                for thread in threads:
-                    thread.join(timeout=2)
-                cleanup_temp_files()
-                raise DownloaderStoppedError("用户停止下载")
+            last_progress = -1
+            while any(thread.is_alive() for thread in threads):
+                if stop_event.is_set():
+                    for thread in threads:
+                        thread.join(timeout=5)
+                    raise DownloaderStoppedError("用户停止下载")
+
+                if error_event.is_set():
+                    for thread in threads:
+                        thread.join(timeout=5)
+                    first_error = error_holder[0] if error_holder else StreamDownloadError("分块下载失败")
+                    if isinstance(first_error, DownloaderStoppedError):
+                        raise first_error
+                    raise StreamDownloadError(f"分块下载失败: {first_error}") from first_error
+
+                with lock:
+                    total_downloaded = sum(downloaded_bytes)
+                percent = int(total_downloaded / total_size * 100) if total_size > 0 else 0
+                if percent != last_progress:
+                    try:
+                        self._emit_progress(progress_callback, percent, bytes_downloaded=total_downloaded, bytes_total=total_size)
+                    except Exception as exc:
+                        error_event.set()
+                        for thread in threads:
+                            thread.join(timeout=5)
+                        raise StreamDownloadError(f"分块下载进度回调失败: {exc}") from exc
+                    last_progress = percent
+                time.sleep(0.1)
+
+            for thread in threads:
+                thread.join()
 
             if error_event.is_set():
-                for thread in threads:
-                    thread.join(timeout=2)
-                cleanup_temp_files()
                 first_error = error_holder[0] if error_holder else StreamDownloadError("分块下载失败")
                 if isinstance(first_error, DownloaderStoppedError):
                     raise first_error
                 raise StreamDownloadError(f"分块下载失败: {first_error}") from first_error
 
-            with lock:
-                total_downloaded = sum(downloaded_bytes)
-            percent = int(total_downloaded / total_size * 100) if total_size > 0 else 0
-            if percent != last_progress:
-                progress_callback(percent)
-                last_progress = percent
-            time.sleep(0.1)
-
-        for thread in threads:
-            thread.join()
-
-        if error_event.is_set():
-            cleanup_temp_files()
-            first_error = error_holder[0] if error_holder else StreamDownloadError("分块下载失败")
-            if isinstance(first_error, DownloaderStoppedError):
-                raise first_error
-            raise StreamDownloadError(f"分块下载失败: {first_error}") from first_error
-
-        progress_callback(98)
-        with open(save_path, "wb") as output_fp:
-            for temp_file in temp_files:
-                with open(temp_file, "rb") as input_fp:
-                    while True:
-                        data = input_fp.read(65536)
-                        if not data:
-                            break
-                        output_fp.write(data)
-
-        cleanup_temp_files()
-        progress_callback(100)
+            try:
+                self._emit_progress(progress_callback, 98, bytes_downloaded=total_size, bytes_total=total_size)
+                with open(save_path, "wb") as output_fp:
+                    for temp_file in temp_files:
+                        with open(temp_file, "rb") as input_fp:
+                            while True:
+                                data = input_fp.read(65536)
+                                if not data:
+                                    break
+                                output_fp.write(data)
+                merged = True
+            except Exception as exc:
+                raise StreamDownloadError(f"分块下载合并失败: {exc}") from exc
+            self._emit_progress(progress_callback, 100, bytes_downloaded=total_size, bytes_total=total_size)
+            completed = True
+        finally:
+            if not completed:
+                stop_event.set()
+                for thread in threads:
+                    if thread.is_alive():
+                        thread.join(timeout=5)
+            all_threads_stopped = not any(thread.is_alive() for thread in threads)
+            if all_threads_stopped:
+                cleanup_temp_files()
+            else:
+                debug_logger.log(
+                    component="ChunkedDownloader",
+                    action="cleanup_deferred",
+                    level="WARN",
+                    message="Deferred temp-file cleanup because chunk worker threads are still running",
+                    status_code="CHUNK_CLEANUP_DEFERRED",
+                    details={"save_path": save_path, "alive_threads": sum(1 for thread in threads if thread.is_alive())},
+                    trace_id=video_item.meta.get("trace_id") if video_item.meta else None,
+                )
+            if not merged and all_threads_stopped:
+                try:
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                except OSError:
+                    pass

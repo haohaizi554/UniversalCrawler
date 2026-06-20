@@ -14,7 +14,6 @@ from app.debug_logger import debug_logger
 from app.models import VideoItem
 from shared.spider_session_runtime import SpiderSession, SpiderSessionBindings
 
-
 class CrawlControllerMixin:
     """Shared crawl-session orchestration for host-backed controllers."""
 
@@ -93,12 +92,21 @@ class CrawlControllerMixin:
         spider_session = getattr(self, "spider_session", SpiderSession(registry))
         spider_session.bind_spider(spider, self._build_spider_session_bindings())
 
+    def _cleanup_dead_spider(self) -> None:
+        spider = getattr(self, "current_spider", None)
+        if spider is None or spider.isRunning():
+            return
+        bindings = getattr(self, "_active_spider_bindings", None)
+        if bindings is not None:
+            SpiderSession.unbind_spider(spider, bindings)
+        self._active_spider_bindings = None
+        self._host().append_log("⚠️ 上次任务未正常结束，正在清理...")
+        self._host().finish_crawl()
+        self.current_spider = None
+
     def on_start_crawl(self, keyword, source_id, config):
         """Create, bind and start a crawl task through the shared spider session."""
-        current_spider = self.current_spider
-        if current_spider and getattr(current_spider, "is_running", False):
-            self._host().notify_crawl_already_running()
-            return
+        self._cleanup_dead_spider()
         if self._has_active_spider():
             self._host().notify_crawl_already_running()
             return
@@ -110,10 +118,11 @@ class CrawlControllerMixin:
 
         try:
             self.current_spider = spider
+            self._active_spider_bindings = self._build_spider_session_bindings()
             spider_session = getattr(self, "spider_session", SpiderSession(registry))
             spider_session.activate_spider(
                 self.current_spider,
-                self._build_spider_session_bindings(),
+                self._active_spider_bindings,
             )
         except Exception as exc:
             self._host().fail_crawl_start(exc)
@@ -143,7 +152,7 @@ class CrawlControllerMixin:
     def _on_spider_item_found(self, item):
         """Append a newly discovered item into the host and queue it for download."""
         self._prepare_pending_item(item)
-        self.videos[item.id] = item
+        self._store_video_item(item)
         self._host().add_video_row(item)
         debug_logger.log(
             component="ApplicationController",
@@ -164,6 +173,11 @@ class CrawlControllerMixin:
 
     def _on_spider_finished(self):
         """Reset host crawl state when the current spider session ends."""
+        spider = self.current_spider
+        bindings = getattr(self, "_active_spider_bindings", None)
+        if spider is not None and bindings is not None:
+            SpiderSession.unbind_spider(spider, bindings)
+        self._active_spider_bindings = None
         self._host().finish_crawl()
         debug_logger.log(
             component="ApplicationController",
@@ -175,9 +189,13 @@ class CrawlControllerMixin:
 
     def on_stop_crawl(self):
         """Request the active spider session to stop and report that to the host."""
+        dismiss = getattr(self._host(), "dismiss_selection_dialog", None)
+        if callable(dismiss):
+            dismiss()
         if self.current_spider:
             spider_session = getattr(self, "spider_session", SpiderSession(registry))
-            spider_session.stop_session(self.current_spider)
+            bindings = getattr(self, "_active_spider_bindings", None)
+            spider_session.stop_session(self.current_spider, bindings)
             self._host().notify_crawl_stop_requested()
             debug_logger.log(
                 component="ApplicationController",

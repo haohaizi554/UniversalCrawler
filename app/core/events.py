@@ -10,7 +10,6 @@ from typing import Any
 from app.core.state import CrawlStatus, VideoStatus, parse_video_status
 from app.models import VideoItem
 
-
 class DomainEventType(str, Enum):
     """Canonical domain event categories."""
 
@@ -22,7 +21,6 @@ class DomainEventType(str, Enum):
     SELECTION_REQUIRED = "selection_required"
     CRAWL_STATE_CHANGED = "crawl_state_changed"
     LOG = "log"
-
 
 @dataclass(slots=True)
 class DomainEvent:
@@ -43,7 +41,6 @@ class DomainEvent:
         if self.entity_id:
             data.setdefault("entity_id", self.entity_id)
         return data
-
 
 def build_video_state_event(
     video_id: str,
@@ -69,7 +66,6 @@ def build_video_state_event(
         entity_id=video_id,
     )
 
-
 def build_crawl_state_event(status: CrawlStatus, **payload: Any) -> DomainEvent:
     """Build a canonical crawl lifecycle event."""
     data = {"status": status.value, **payload}
@@ -78,14 +74,12 @@ def build_crawl_state_event(status: CrawlStatus, **payload: Any) -> DomainEvent:
         payload=data,
     )
 
-
 def build_log_event(message: str, **payload: Any) -> DomainEvent:
     """Build a canonical log event."""
     return DomainEvent(
         event_type=DomainEventType.LOG,
         payload={"message": message, **payload},
     )
-
 
 def build_item_found_event(item: VideoItem) -> DomainEvent:
     """Build a canonical item-found event."""
@@ -96,14 +90,12 @@ def build_item_found_event(item: VideoItem) -> DomainEvent:
         entity_id=item.id,
     )
 
-
 def build_selection_required_event(items: list[Any]) -> DomainEvent:
     """Build a canonical selection-required event."""
     return DomainEvent(
         event_type=DomainEventType.SELECTION_REQUIRED,
         payload={"items": items},
     )
-
 
 def _build_task_event_payload(video_id: str, item: VideoItem | None, *, error: str | None = None) -> tuple[dict[str, Any], str | None]:
     payload: dict[str, Any] = {
@@ -117,7 +109,6 @@ def _build_task_event_payload(video_id: str, item: VideoItem | None, *, error: s
     trace_id = item.meta.get("trace_id") if item and item.meta else None
     return payload, trace_id
 
-
 def build_task_started_event(video_id: str, item: VideoItem | None) -> DomainEvent:
     """Build a task-started event while keeping legacy Web payload shape."""
     payload, trace_id = _build_task_event_payload(video_id, item)
@@ -128,7 +119,6 @@ def build_task_started_event(video_id: str, item: VideoItem | None) -> DomainEve
         entity_id=video_id,
     )
 
-
 def build_task_finished_event(video_id: str, item: VideoItem | None) -> DomainEvent:
     """Build a task-finished event while keeping legacy Web payload shape."""
     payload, trace_id = _build_task_event_payload(video_id, item)
@@ -138,7 +128,6 @@ def build_task_finished_event(video_id: str, item: VideoItem | None) -> DomainEv
         trace_id=trace_id,
         entity_id=video_id,
     )
-
 
 def build_task_error_event(video_id: str, item: VideoItem | None, error: str) -> DomainEvent:
     """Build a task-error event while keeping legacy Web payload shape."""

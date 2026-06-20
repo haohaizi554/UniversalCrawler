@@ -18,9 +18,8 @@ if TYPE_CHECKING:
     Parameter = Any
     Params = Any
 
-
 class LiveTikTok(APITikTok):
-    """封装 `LiveTikTok` 在 `app/core/lib/douyin/interface/live_tiktok.py` 中承担的核心逻辑。"""
+    
     live_api = "https://webcast.us.tiktok.com/webcast/room/enter/"
 
     def __init__(
@@ -45,7 +44,7 @@ class LiveTikTok(APITikTok):
         return self.check_response(response)
 
     async def with_room_id(self) -> dict:
-        """执行 `with_room_id` 对应的业务逻辑，供 `LiveTikTok` 使用。"""
+        
         return await self.request_data(
             self.live_api,
             self.params,
@@ -68,15 +67,14 @@ class LiveTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """执行 `check_response` 对应的业务逻辑，供 `LiveTikTok` 使用。"""
+        
         if data_dict and "prompt" in data_dict["data"]:
             self.console.warning(_("此直播可能会令部分观众感到不适，请登录后重试！"))
             return {}
         return data_dict
 
-
 async def test():
-    """执行 `test` 对应的业务逻辑。"""
+    
     pass
 
 if __name__ == "__main__":

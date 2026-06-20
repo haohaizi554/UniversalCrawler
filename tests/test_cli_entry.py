@@ -12,7 +12,6 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
-
 class CliEntryPassthroughTests(unittest.TestCase):
     """entry.cli_entry 必须做薄透传，不写任何业务逻辑。"""
 
@@ -64,7 +63,6 @@ class CliEntryPassthroughTests(unittest.TestCase):
         # sys.path.count 必须保持不变（不重复 insert）
         self.assertEqual(sys.path.count(root), original_count)
 
-
 class CliEntrySysPathTests(unittest.TestCase):
     """验证 cli_entry 启动时正确注入项目根目录到 sys.path。"""
 
@@ -78,7 +76,6 @@ class CliEntrySysPathTests(unittest.TestCase):
         self.assertIn(root, sys.path)
         # _ROOT 必须是绝对路径
         self.assertTrue(os.path.isabs(root))
-
 
 if __name__ == "__main__":
     unittest.main()
