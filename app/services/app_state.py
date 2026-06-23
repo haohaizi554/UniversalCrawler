@@ -191,6 +191,11 @@ class AppState:
         with self._lock:
             return deepcopy(list(self.log_buffer))
 
+    def clear_logs(self) -> None:
+        with self._lock:
+            self.log_buffer.clear()
+        self._publish_change("logs.append", {"count": 0, "cleared": True})
+
     def snapshot_meta(self) -> dict[str, Any]:
         with self._lock:
             return {

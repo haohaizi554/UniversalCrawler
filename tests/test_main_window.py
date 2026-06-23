@@ -211,6 +211,44 @@ class MainWindowTests(unittest.TestCase):
         window.refresh_frontend_state.assert_not_called()
         self.assertEqual(window._ui_update_scheduler.calls, ["frontend"])
 
+    def test_settings_update_topic_refreshes_download_options_sections(self):
+        sections = MainWindow._sections_for_topics(self._make_window(), {"settings.update"})
+
+        self.assertEqual(sections, frozenset({"settings_snapshot", "download_options", "app_status"}))
+
+    def test_metadata_topic_refreshes_completed_sections(self):
+        sections = MainWindow._sections_for_topics(self._make_window(), {"videos.metadata"})
+
+        self.assertEqual(sections, frozenset({"completed_items", "app_status"}))
+
+    def test_terminal_video_topic_refreshes_completed_and_failed_sections(self):
+        sections = MainWindow._sections_for_topics(self._make_window(), {"videos.terminal"})
+
+        self.assertEqual(
+            sections,
+            frozenset({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"}),
+        )
+
+    def test_update_download_options_refreshes_effective_options_immediately(self):
+        window = self._make_window()
+        window._cached_snapshot = {"version": 1, "download_options": {"max_concurrent": 3}}
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.handle_action.return_value = {
+            "status": "ok",
+            "data": {"auto_retry": True, "max_retries": 3, "max_concurrent": 6},
+        }
+        window._render_frontend_state = Mock()
+        window.refresh_frontend_state = Mock()
+
+        MainWindow._update_download_options(window, {"max_concurrent": 6})
+
+        window._frontend_state_service.handle_action.assert_called_once_with(
+            "update_download_options",
+            {"max_concurrent": 6},
+        )
+        window._render_frontend_state.assert_called_once_with(topics={"settings.update"})
+        window.refresh_frontend_state.assert_not_called()
+
     def test_cleanup_media_delegates_to_media_panel(self):
         """验证 `test_cleanup_media_delegates_to_media_panel` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
         window = self._make_window()

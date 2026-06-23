@@ -1,6 +1,7 @@
 """MissAV spider with two-pass scan and m3u8 sniffing."""
 
 import re
+import os
 import time
 import urllib.parse
 from collections import defaultdict
@@ -23,9 +24,8 @@ class MissAVSpider(BaseSpider):
         """执行当前对象或脚本的主流程，供 `MissAVSpider` 使用。"""
         try:
             # 配置解析 (保持不变)
-            proxy_server = None
-            if self.config.get('proxy'):
-                proxy_server = self.config['proxy']
+            proxy_server = self._effective_proxy_server()
+            if proxy_server:
                 self.log(f"🌍 使用代理: {proxy_server}")
             enable_individual = self.config.get('individual_only', False)
             priority_text = self.config.get('priority', "中文字幕优先")
@@ -35,7 +35,8 @@ class MissAVSpider(BaseSpider):
             }
             self.priority_list = priority_map.get(priority_text, priority_map["中文字幕优先"])
             self.log(f"⚙️ 偏好设置: 单体={enable_individual}, 优先级={self.priority_list}")
-            my_ua = DEFAULT_USER_AGENT
+            configured_ua = str(self.config.get("ua") or "").strip()
+            my_ua = configured_ua or DEFAULT_USER_AGENT
             # 路由解析 (保持不变)
             target_url = ""
             is_single_video_mode = False
@@ -71,8 +72,14 @@ class MissAVSpider(BaseSpider):
                 )
                 self._track_playwright_browser(browser)
                 try:
-                    context = browser.new_context(user_agent=my_ua)
+                    context_kwargs = {"user_agent": configured_ua} if configured_ua else {}
+                    context = browser.new_context(**context_kwargs)
                     page = context.new_page()
+                    if not configured_ua:
+                        try:
+                            my_ua = str(page.evaluate("navigator.userAgent") or my_ua)
+                        except (PlaywrightError, TypeError, AttributeError):
+                            pass
                     self.log("🚀 正在访问页面...")
                     if not self.interruptible_playwright_goto(page, target_url, timeout=60000):
                         return
@@ -168,6 +175,7 @@ class MissAVSpider(BaseSpider):
                         self.log("❌ 筛选后无有效结果")
                         self._close_tracked_playwright_browser(browser)
                         return
+                    final_tasks = self._trim_final_tasks(final_tasks)
                     self.log(f"🔔 扫描完成，共 {len(final_tasks)} 个最佳版本")
 
                     # 弹窗选择
@@ -188,11 +196,40 @@ class MissAVSpider(BaseSpider):
                         title = task['title']
                         self.log(f"🕵️ [{i + 1}/{len(selected_indices)}] 嗅探: {title[:15]}...")
                         m3u8_url = None
+                        m3u8_headers = {}
+                        m3u8_status = None
+                        m3u8_ready = False
+                        m3u8_playlist_cache = {}
                         def handle_request(req):
                             
-                            nonlocal m3u8_url
+                            nonlocal m3u8_url, m3u8_headers
                             if "playlist.m3u8" in req.url:
                                 m3u8_url = req.url
+                                m3u8_headers = self._headers_from_request(req)
+                        def handle_response(resp):
+                            nonlocal m3u8_url, m3u8_headers, m3u8_status, m3u8_ready, m3u8_playlist_cache
+                            try:
+                                req = resp.request
+                                req_url = req.url
+                            except (PlaywrightError, TypeError, AttributeError):
+                                return
+                            if "playlist.m3u8" not in req_url:
+                                return
+                            try:
+                                status = int(resp.status)
+                            except (TypeError, ValueError):
+                                status = 0
+                            m3u8_url = req_url
+                            m3u8_status = status
+                            m3u8_headers = self._headers_from_request(req)
+                            if status in (200, 206):
+                                try:
+                                    playlist_text = resp.text()
+                                except (PlaywrightError, UnicodeDecodeError, TypeError, ValueError):
+                                    playlist_text = ""
+                                if self._looks_like_hls_playlist(playlist_text):
+                                    m3u8_playlist_cache[req_url] = playlist_text
+                                    m3u8_ready = True
                         def on_popup(popup):
                             
                             if popup != page:
@@ -202,6 +239,7 @@ class MissAVSpider(BaseSpider):
                                     pass
                         context.on("page", on_popup)
                         page.on("request", handle_request)
+                        page.on("response", handle_response)
                         try:
                             if not self.interruptible_playwright_goto(page, target_page_url, timeout=60000):
                                 break
@@ -215,11 +253,24 @@ class MissAVSpider(BaseSpider):
                             except PlaywrightError:
                                 pass
                             for _ in range(15):
-                                if m3u8_url or not self.is_running: break
+                                if m3u8_ready or not self.is_running: break
                                 self.interruptible_sleep(1)  # 修复 BUG-168
                             if not self.is_running: break
-                            if m3u8_url:
+                            if m3u8_url and m3u8_ready:
                                 trace_id = self.new_trace_id("m3u8")
+                                download_headers = self._download_headers_for_context(
+                                    context,
+                                    target_page_url,
+                                    my_ua,
+                                    stream_url=m3u8_url,
+                                    request_headers=m3u8_headers,
+                                )
+                                cookie_header = download_headers.get("Cookie", "")
+                                browser_storage_state = {}
+                                try:
+                                    browser_storage_state = context.storage_state()
+                                except (PlaywrightError, TypeError, AttributeError):
+                                    browser_storage_state = {}
                                 self.log("   ✨ 嗅探成功")
                                 self.debug_state(
                                     action="emit_download_task",
@@ -231,13 +282,27 @@ class MissAVSpider(BaseSpider):
                                         "stream_url": m3u8_url,
                                         "referer": target_page_url,
                                         "proxy": proxy_server,
+                                        "has_cookie": bool(cookie_header),
+                                        "m3u8_status": m3u8_status,
+                                        "header_names": sorted(download_headers),
                                     },
                                 )
                                 self.emit_video(
                                     url=m3u8_url,
                                     title=title,
                                     source="missav",
-                                    meta=self.task_builder.build_video_meta(trace_id, target_page_url, my_ua, proxy_server)
+                                    meta=self.task_builder.build_video_meta(
+                                        trace_id,
+                                        target_page_url,
+                                        my_ua,
+                                        proxy_server,
+                                        headers=download_headers,
+                                        cookie=cookie_header,
+                                        include_cookies=bool(cookie_header),
+                                        use_browser_headers=True,
+                                        browser_storage_state=browser_storage_state,
+                                        playlist_cache=m3u8_playlist_cache,
+                                    )
                                 )
                                 success_count += 1
                             else:
@@ -250,6 +315,9 @@ class MissAVSpider(BaseSpider):
                                         "title": title,
                                         "target_page_url": target_page_url,
                                         "selected_index": idx,
+                                        "stream_url": m3u8_url,
+                                        "m3u8_status": m3u8_status,
+                                        "m3u8_ready": m3u8_ready,
                                     },
                                     level="WARNING",
                                 )
@@ -269,6 +337,10 @@ class MissAVSpider(BaseSpider):
                         finally:
                             try:
                                 page.remove_listener("request", handle_request)
+                            except PlaywrightError:
+                                pass
+                            try:
+                                page.remove_listener("response", handle_response)
                             except PlaywrightError:
                                 pass
                             try:
@@ -299,7 +371,8 @@ class MissAVSpider(BaseSpider):
     def _scan_pages(self, page, data_dict, is_chinese_pass=False):
         """列表扫描允许局部页失败，但尽量保住已抓到的候选数据。"""
         current_page = 1
-        max_pages = 100
+        max_pages = self._max_scan_pages()
+        max_items = self._max_items_limit()
         base_url = page.url
         while self.is_running and current_page <= max_pages:
             self.log(f"   📄 扫描第 {current_page} 页...")
@@ -319,6 +392,8 @@ class MissAVSpider(BaseSpider):
                 code_pattern = re.compile(r'/cn/.*[a-zA-Z]+-\d+')
                 new_count = 0
                 for item in items:
+                    if len(data_dict) >= max_items:
+                        break
                     url = item['url']
                     title = item['title']
                     if "/cn/" in url and code_pattern.search(url):
@@ -327,6 +402,9 @@ class MissAVSpider(BaseSpider):
                                 data_dict[url] = title
                                 new_count += 1
 
+                if len(data_dict) >= max_items:
+                    self.log(f"   ✅ 已达到视频数上限 {max_items}，停止翻页")
+                    break
                 if not page.query_selector("a[rel='next']"):
                     break
                 current_page += 1
@@ -343,3 +421,220 @@ class MissAVSpider(BaseSpider):
             except (PlaywrightError, ValueError, TypeError) as e:
                 self.log(f"   ⚠️ 页面扫描异常: {e}")
                 break
+
+    def _max_items_limit(self) -> int:
+        config = getattr(self, "config", {}) or {}
+        try:
+            value = int(config.get("max_items") or config.get("limit") or 20)
+        except (TypeError, ValueError):
+            value = 20
+        return max(1, value)
+
+    def _max_scan_pages(self) -> int:
+        config = getattr(self, "config", {}) or {}
+        try:
+            value = int(config.get("search_max_pages") or config.get("max_pages") or 100)
+        except (TypeError, ValueError):
+            value = 100
+        return max(1, value)
+
+    def _trim_final_tasks(self, tasks):
+        limit = self._max_items_limit()
+        if len(tasks) <= limit:
+            return list(tasks)
+        self.log(f"   ✂️ 按视频数上限裁剪: {len(tasks)} -> {limit}")
+        return list(tasks)[:limit]
+
+    @staticmethod
+    def _looks_like_hls_playlist(text: str | None) -> bool:
+        return "#EXTM3U" in str(text or "")
+
+    def _headers_from_request(self, request) -> dict[str, str]:
+        try:
+            raw_headers = request.all_headers()
+        except (PlaywrightError, TypeError, AttributeError):
+            try:
+                raw_headers = request.headers
+            except (PlaywrightError, TypeError, AttributeError):
+                raw_headers = {}
+        return self._sanitize_download_headers(raw_headers)
+
+    def _download_headers_for_context(
+        self,
+        context,
+        referer: str,
+        user_agent: str,
+        *,
+        stream_url: str = "",
+        request_headers: dict | None = None,
+    ) -> dict[str, str]:
+        has_browser_request_headers = bool(request_headers)
+        headers = self._sanitize_download_headers(request_headers or {})
+        headers.setdefault("User-Agent", user_agent or DEFAULT_USER_AGENT)
+        headers.setdefault("Referer", referer)
+        self._apply_browser_download_header_defaults(headers, referer, preserve_captured=has_browser_request_headers)
+        if self._is_surrit_stream_url(stream_url):
+            headers.setdefault("Range", "bytes=0-")
+        if "Cookie" not in headers:
+            cookie_header = self._cookie_header_for_context(context, stream_url, referer)
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+        return headers
+
+    @staticmethod
+    def _is_surrit_stream_url(stream_url: str) -> bool:
+        try:
+            host = urllib.parse.urlparse(str(stream_url or "")).netloc.lower()
+        except (TypeError, ValueError):
+            return False
+        return host == "surrit.com" or host.endswith(".surrit.com")
+
+    def _cookie_header_for_context(self, context, stream_url: str, referer: str) -> str:
+        urls = [url for url in (stream_url, referer) if url][:1]
+        try:
+            cookies = context.cookies(urls) if urls else context.cookies()
+        except TypeError:
+            try:
+                cookies = context.cookies()
+            except (PlaywrightError, TypeError, AttributeError):
+                cookies = []
+        except (PlaywrightError, AttributeError):
+            cookies = []
+        return "; ".join(
+            f"{cookie.get('name')}={cookie.get('value')}"
+            for cookie in cookies
+            if isinstance(cookie, dict) and cookie.get("name") and cookie.get("value") is not None
+        )
+
+    @staticmethod
+    def _sanitize_download_headers(raw_headers: dict | None) -> dict[str, str]:
+        blocked = {
+            "host",
+            "content-length",
+            "connection",
+            "transfer-encoding",
+        }
+        headers: dict[str, str] = {}
+        for key, value in (raw_headers or {}).items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if not key_text or not value_text:
+                continue
+            lowered = key_text.lower()
+            if lowered.startswith(":") or lowered in blocked:
+                continue
+            canonical = "-".join(part[:1].upper() + part[1:].lower() for part in lowered.split("-"))
+            headers[canonical] = value_text
+        return headers
+
+    @classmethod
+    def _apply_browser_download_header_defaults(
+        cls,
+        headers: dict[str, str],
+        referer: str,
+        *,
+        preserve_captured: bool = False,
+    ) -> None:
+        headers.setdefault("Accept", "*/*")
+        headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9,en-CN;q=0.8,en;q=0.7")
+        headers.setdefault("Cache-Control", "no-cache")
+        headers.setdefault("Pragma", "no-cache")
+        headers.setdefault("Priority", "u=1, i")
+        if preserve_captured:
+            return
+        origin = cls._origin_from_referer(referer)
+        if origin:
+            headers.setdefault("Origin", origin)
+        headers.setdefault("Sec-Fetch-Dest", "empty")
+        headers.setdefault("Sec-Fetch-Mode", "cors")
+        headers.setdefault("Sec-Fetch-Site", "cross-site")
+        headers.setdefault("Sec-Ch-Ua-Mobile", "?0")
+        headers.setdefault("Sec-Ch-Ua-Platform", '"Windows"')
+
+    @staticmethod
+    def _origin_from_referer(referer: str) -> str:
+        try:
+            parsed = urllib.parse.urlparse(str(referer or ""))
+        except (TypeError, ValueError):
+            return ""
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _effective_proxy_server(self) -> str | None:
+        configured = self._normalize_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
+        if configured:
+            return configured
+        env_proxy = self._proxy_from_environment()
+        if env_proxy:
+            return env_proxy
+        return self._proxy_from_windows_settings()
+
+    @classmethod
+    def _proxy_from_environment(cls) -> str | None:
+        for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            proxy = cls._normalize_proxy_server(os.environ.get(name))
+            if proxy:
+                return proxy
+        return None
+
+    @classmethod
+    def _proxy_from_windows_settings(cls) -> str | None:
+        if os.name != "nt":
+            return None
+        try:
+            import winreg
+        except ImportError:
+            return None
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            ) as key:
+                enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+                if not enabled:
+                    return None
+                raw_proxy, _ = winreg.QueryValueEx(key, "ProxyServer")
+        except OSError:
+            return None
+        return cls._proxy_from_proxy_server_string(raw_proxy)
+
+    @classmethod
+    def _proxy_from_proxy_server_string(cls, value: str | None) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if ";" not in text and "=" not in text:
+            return cls._normalize_proxy_server(text)
+        entries: dict[str, str] = {}
+        for part in text.split(";"):
+            if "=" not in part:
+                continue
+            key, raw_proxy = part.split("=", 1)
+            entries[key.strip().lower()] = raw_proxy.strip()
+        for key in ("https", "http", "socks", "socks5"):
+            raw_proxy = entries.get(key)
+            if key.startswith("socks") and raw_proxy and "://" not in raw_proxy:
+                raw_proxy = f"socks5://{raw_proxy}"
+            proxy = cls._normalize_proxy_server(raw_proxy)
+            if proxy:
+                return proxy
+        return None
+
+    @staticmethod
+    def _normalize_proxy_server(value: object) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered in {"system", "system proxy", "auto", "none", "direct"} or text == "系统代理":
+            return None
+        if text == "Clash (7890)":
+            return "http://127.0.0.1:7890"
+        if text == "v2rayN (10809)":
+            return "http://127.0.0.1:10809"
+        if lowered.startswith(("http://", "https://", "socks5://", "socks4://")):
+            return text
+        if ":" in text:
+            return f"http://{text}"
+        return None

@@ -13,6 +13,7 @@
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
 
+
 **Universal Crawler Pro** is a multi-platform media crawling and downloading tool built specifically for the **Windows desktop environment**. Based on **Python + PyQt6 + Playwright + FastAPI**, it provides a complete desktop workflow covering **site access and data sniffing**, **resource parsing and selection**, **unified download scheduling**, and **local asset management and preview**, while also supporting **remote control through Web UI**.
 
 It is neither a thin shell around a webpage nor a pile of scattered scripts. It is a desktop-grade media crawling workstation designed around **maintainability, extensibility, debuggability, and distributable packaging**.
@@ -25,6 +26,7 @@ It is neither a thin shell around a webpage nor a pile of scattered scripts. It 
 ---
 
 <a id="toc"></a>
+
 ## 📑 Table Of Contents
 
 - [✨ Core Features](#features)

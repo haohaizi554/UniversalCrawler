@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import urllib.parse
 
 from app.debug_logger import debug_logger
 from app.models import VideoItem
@@ -148,10 +149,10 @@ class BaseSpider(threading.Thread):
         url: str,
         *,
         timeout: int = 60000,
-        slice_ms: int = 3000,
+        slice_ms: int = 15000,
         **kwargs,
     ) -> bool:
-        """Navigate with short Playwright timeouts so stop() is observed promptly."""
+        """Navigate without repeatedly refreshing slow pages, while still observing stop()."""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         deadline = time.monotonic() + max(0, timeout) / 1000
@@ -163,20 +164,49 @@ class BaseSpider(threading.Thread):
                     raise last_timeout
                 return False
             try:
+                before_url = str(getattr(page, "url", "") or "")
                 page.goto(url, timeout=max(1, min(slice_ms, remaining_ms)), **kwargs)
                 return True
             except PlaywrightTimeoutError as exc:
                 if not self.is_running or self.interrupt_requested:
                     return False
+                if self._playwright_navigation_has_started(before_url, str(getattr(page, "url", "") or ""), url):
+                    return True
                 last_timeout = exc
             except Exception as exc:
                 if not self.is_running or self.interrupt_requested:
                     return False
                 if exc.__class__.__name__ == "TimeoutError":
+                    if self._playwright_navigation_has_started(
+                        before_url,
+                        str(getattr(page, "url", "") or ""),
+                        url,
+                    ):
+                        return True
                     last_timeout = exc
                     continue
                 raise
         return False
+
+    @staticmethod
+    def _playwright_navigation_has_started(before_url: str, current_url: str, target_url: str) -> bool:
+        current = str(current_url or "").strip()
+        before = str(before_url or "").strip()
+        if not current or current == "about:blank":
+            return False
+        if current != before:
+            return True
+        try:
+            current_parsed = urllib.parse.urlparse(current)
+            target_parsed = urllib.parse.urlparse(str(target_url or ""))
+        except (TypeError, ValueError):
+            return False
+        if not current_parsed.netloc or not target_parsed.netloc:
+            return False
+        return (
+            current_parsed.netloc.lower() == target_parsed.netloc.lower()
+            and current_parsed.path.rstrip("/") == target_parsed.path.rstrip("/")
+        )
 
     def run(self):
         """执行当前对象或脚本的主流程，供 `BaseSpider` 使用。

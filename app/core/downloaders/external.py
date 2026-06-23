@@ -209,10 +209,14 @@ class NM3U8DLREExternalTool:
         user_agent: str,
         referer: str,
         proxy: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        thread_count: str | int | None = None,
     ) -> list[str]:
         """构造 `N_m3u8DL-RE` 的下载命令，并指定输出目录与文件名。"""
         save_dir = os.path.dirname(save_path)
         save_name_no_ext = os.path.splitext(os.path.basename(save_path))[0]
+        headers = cls._normalized_headers(user_agent, referer, extra_headers)
+        thread_count_text = str(thread_count or cls._m3u8_thread_count())
         cmd = [
             executable,
             source_url,
@@ -221,17 +225,44 @@ class NM3U8DLREExternalTool:
             "--save-name",
             save_name_no_ext,
             "--thread-count",
-            cls._m3u8_thread_count(),
+            thread_count_text,
             "--download-retry-count",
             "10",
             "--auto-select",
-            "--header",
-            f"User-Agent: {user_agent}",
-            "--header",
-            f"Referer: {referer}",
+            "true",
             "--mux-after-done",
             "format=mp4",
         ]
+        for key, value in headers.items():
+            cmd.extend(["--header", f"{key}: {value}"])
         if proxy:
             cmd.extend(["--custom-proxy", proxy])
         return cmd
+
+    @staticmethod
+    def _normalized_headers(
+        user_agent: str,
+        referer: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        blocked_headers = {
+            "host",
+            "content-length",
+            "connection",
+            "transfer-encoding",
+        }
+        for key, value in (extra_headers or {}).items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if not key_text or not value_text:
+                continue
+            lowered = key_text.lower()
+            if lowered.startswith(":") or lowered in blocked_headers:
+                continue
+            canonical = "-".join(part[:1].upper() + part[1:].lower() for part in lowered.split("-"))
+            headers[canonical] = value_text
+        headers["User-Agent"] = headers.get("User-Agent") or str(user_agent or DEFAULT_USER_AGENT)
+        if referer:
+            headers["Referer"] = headers.get("Referer") or str(referer)
+        return headers

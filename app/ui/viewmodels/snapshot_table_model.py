@@ -48,10 +48,12 @@ class SnapshotTableModel(QAbstractTableModel):
         if key == "title" and role == SUBTITLE_ROLE:
             return str(row.get("subtitle") or "")
         if role == Qt.ItemDataRole.DecorationRole and key in self._icon_columns:
-            icon_file = None
-            if key == "platform":
+            icon_file = str(row.get(f"{key}_icon_file") or "")
+            if not icon_file and key.endswith("_label"):
+                icon_file = str(row.get(f"{key[:-6]}_icon_file") or "")
+            if not icon_file and key == "platform":
                 icon_file = platform_icon_file(str(row.get("platform_id") or ""))
-            elif key == "status":
+            elif not icon_file and key == "status":
                 icon_file = queue_status_icon_file(str(row.get("status") or ""))
             if icon_file:
                 icon = load_qt_icon([ui_icon_path(icon_file)])
@@ -123,6 +125,7 @@ class SnapshotTableModel(QAbstractTableModel):
             (
                 row.get("id", ""),
                 tuple(str(row.get(column, "")) for column in self._columns),
+                tuple(str(row.get(f"{column}_icon_file") or row.get(f"{column[:-6]}_icon_file" if column.endswith("_label") else "") or "") for column in self._columns),
                 str(row.get("platform_id", "")),
                 str(row.get("subtitle", "")),
             )

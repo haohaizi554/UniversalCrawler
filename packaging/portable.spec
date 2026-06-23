@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
+_packaging_dir = Path(SPEC).resolve().parent
+if str(_packaging_dir) not in sys.path:
+    sys.path.insert(0, str(_packaging_dir))
+from project_meta import APP_DISPLAY_NAME, APP_NAME, WEBUI_DISPLAY_NAME, WEBUI_NAME
 
-APP_NAME = "UniversalCrawlerPro"
-WEBUI_NAME = "CrawlerWebPortal"
-APP_DISPLAY_NAME = "Universal CrawlerPro"
-WEBUI_DISPLAY_NAME = "Crawler WebPortal"
 project_root = Path(SPEC).resolve().parents[1]
 main_script = project_root / "main.py"
 # 关键：两个 EXE 用各自的图标
@@ -30,6 +31,7 @@ datas = []
 datas += optional_tree(project_root / "favicon.ico", ".")
 datas += optional_tree(project_root / "Web.ico", ".")
 datas += optional_tree(project_root / "ffmpeg.exe", ".")
+datas += optional_tree(project_root / "ffprobe.exe", ".")
 datas += optional_tree(project_root / "N_m3u8DL-RE.exe", ".")
 datas += optional_tree(project_root / "app" / "core" / "lib" / "douyin" / "js", "app/core/lib/douyin/js")
 datas += optional_tree(project_root / "app" / "web" / "static", "app/web/static")
@@ -44,6 +46,7 @@ datas += optional_tree(project_root / "README.md", ".")
 # 主脚本 main.py 不会静态 import 它，所以必须用 datas 方式把整个目录复制过去
 datas += optional_tree(project_root / "entry", "entry")
 datas += optional_tree(project_root / "cli", "cli")
+datas += optional_tree(project_root / "shared", "shared")
 datas += optional_tree(project_root / "ucrawl", "ucrawl")
 
 if browser_root.exists():
@@ -58,6 +61,7 @@ hiddenimports = sorted(
         + collect_submodules("cli")
         + collect_submodules("cli.commands")
         + collect_submodules("entry")
+        + collect_submodules("shared")
         + collect_submodules("ucrawl")
         # 第三方依赖（部分需要手动提示）
         + collect_submodules("playwright")
@@ -76,7 +80,15 @@ hiddenimports = sorted(
         + ["entry.cli_entry", "entry.gui_entry", "entry.web_entry", "entry.interactive_entry", "entry.dispatcher"]
         # cli 动态加载的子命令模块（保险起见显式列）
         + ["cli.commands.search", "cli.commands.download", "cli.commands.scan", "cli.commands.interactive"]
+        + [
+            "shared.controller_session",
+            "shared.spider_session_runtime",
+            "shared.cli_runner_runtime",
+            "shared.runtime_options",
+            "shared.selection_runtime",
+        ]
         + ["uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto", "uvicorn.protocols", "uvicorn.protocols.http", "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets", "uvicorn.protocols.websockets.auto", "uvicorn.lifespan", "uvicorn.lifespan.on"]
+        + ["PyQt6"]
     )
 )
 

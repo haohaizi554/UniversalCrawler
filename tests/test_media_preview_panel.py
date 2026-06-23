@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtMultimedia import QMediaPlayer
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.ui.components.media_preview_panel import MediaPreviewPanel
 
@@ -78,6 +78,21 @@ class MediaPreviewPanelTests(unittest.TestCase):
         panel.player.durationChanged.emit(65000)
 
         self.assertEqual(panel.slider.maximum(), 65000)
+
+    def test_duration_changed_emits_completed_metadata_backfill(self):
+        host = QWidget()
+        panel = MediaPreviewPanel(host)
+        emitted: list[tuple[str, dict]] = []
+        panel.sig_media_metadata_detected.connect(lambda path, metadata: emitted.append((path, metadata)))
+        panel._active_source_path = r"D:\media\done.mp4"
+
+        panel.on_player_duration_changed(208000)
+
+        self.assertEqual(emitted, [(r"D:\media\done.mp4", {"duration": "00:03:28"})])
+
+    def test_format_clock_time_uses_hours_minutes_seconds(self):
+        self.assertEqual(MediaPreviewPanel.format_clock_time(208000), "00:03:28")
+        self.assertEqual(MediaPreviewPanel.format_clock_time(3_725_000), "01:02:05")
 
     def test_position_changed_updates_time_label(self):
         host = QWidget()
@@ -404,6 +419,48 @@ class MediaPreviewPanelTests(unittest.TestCase):
 
         self.assertEqual(FakeRepairService.deleted, [cache])
         self.assertNotIn(cache, panel._pending_cache_cleanup)
+
+    def test_fullscreen_button_uses_media_window_not_main_window_signal(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        emitted: list[str] = []
+        panel.sig_toggle_fullscreen.connect(lambda: emitted.append("main"))
+
+        panel.btn_fullscreen.click()
+        self.app.processEvents()
+
+        self.assertEqual(emitted, [])
+        self.assertIsNotNone(panel._fullscreen_window)
+        self.assertEqual(panel.btn_fullscreen.text(), "[ 退出 ]")
+
+        panel.exit_media_fullscreen()
+        self.app.processEvents()
+
+        self.assertIs(panel.parentWidget(), host)
+        self.assertEqual(panel.btn_fullscreen.text(), "[ 全屏 ]")
+
+    def test_image_preview_uses_same_media_fullscreen_window(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        with TemporaryDirectory() as tmp:
+            image = Path(tmp) / "image.png"
+            image.write_bytes(b"not-a-real-png")
+            panel.show_image(str(image))
+
+            panel.enter_media_fullscreen()
+            self.app.processEvents()
+
+            self.assertIsNotNone(panel._fullscreen_window)
+            self.assertFalse(panel.img_lbl.isHidden())
+
+            panel.exit_media_fullscreen()
+            self.app.processEvents()
+
+        self.assertIs(panel.parentWidget(), host)
 
 if __name__ == "__main__":
     unittest.main()

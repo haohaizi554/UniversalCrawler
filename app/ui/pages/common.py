@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QStyle,
     QStyleOptionProgressBar,
+    QStyleOptionViewItem,
     QStyledItemDelegate,
     QTableView,
     QTableWidget,
@@ -47,12 +48,16 @@ COLUMN_WIDTHS = {
     "speed": 92,
     "remaining_time": 100,
     "completed_at": 120,
+    "completed_at_table": 168,
     "failed_at": 132,
-    "duration": 68,
+    "failed_at_table": 112,
+    "duration": 124,
     "resolution": 84,
     "size": 72,
     "format": 60,
     "reason": 160,
+    "reason_label": 150,
+    "status_label": 82,
 }
 
 class PageFrame(QFrame):
@@ -295,6 +300,8 @@ class SnapshotActionDelegate(QStyledItemDelegate):
         title_columns: set[int],
         action_column: int | None,
         action_ids: tuple[str, ...],
+        cell_padding: tuple[int, int] = (8, 8),
+        suppress_native_selection: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -303,9 +310,14 @@ class SnapshotActionDelegate(QStyledItemDelegate):
         self._title_columns = title_columns
         self._action_column = action_column
         self._action_ids = action_ids
+        self._cell_padding = cell_padding
+        self._suppress_native_selection = suppress_native_selection
 
     def paint(self, painter: QPainter, option, index) -> None:
         paint_item_selection_background(painter, option)
+        if self._is_failed_status_cell(index):
+            self._paint_failed_status(painter, option, index)
+            return
         if index.column() in self._progress_columns:
             value = int(index.data(Qt.ItemDataRole.DisplayRole) or 0)
             progress_option = QStyleOptionProgressBar()
@@ -326,8 +338,14 @@ class SnapshotActionDelegate(QStyledItemDelegate):
         if index.column() in self._icon_columns:
             self._paint_icon_text(painter, option, index)
             return
-        normalize_table_item_option(option)
-        super().paint(painter, option, index)
+        padded = QStyleOptionViewItem(option)
+        normalize_table_item_option(padded)
+        if self._suppress_native_selection:
+            padded.state &= ~QStyle.StateFlag.State_Selected
+            padded.state &= ~QStyle.StateFlag.State_HasFocus
+        left, right = self._cell_padding
+        padded.rect = padded.rect.adjusted(left, 0, -right, 0)
+        super().paint(painter, padded, index)
 
     def _paint_title_cell(self, painter: QPainter, option, index) -> None:
         title = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
@@ -365,13 +383,66 @@ class SnapshotActionDelegate(QStyledItemDelegate):
         rect = option.rect.adjusted(8, 0, -8, 0)
         icon_size = 16
         gap = 6
+        has_icon = isinstance(icon, QIcon) and not icon.isNull()
+        center_content = self._is_failed_reason_cell(index)
+        available_text_width = max(0, rect.width() - (icon_size + gap if has_icon else 0))
+        display_text = option.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, available_text_width)
+        text_width = min(available_text_width, option.fontMetrics.horizontalAdvance(display_text))
+        content_width = (icon_size + gap if has_icon else 0) + text_width
+        x = rect.x() + max(0, (rect.width() - content_width) // 2) if center_content else rect.x()
         if isinstance(icon, QIcon) and not icon.isNull():
-            icon_rect = QRect(rect.x(), rect.y() + max(0, (rect.height() - icon_size) // 2), icon_size, icon_size)
+            icon_rect = QRect(x, rect.y() + max(0, (rect.height() - icon_size) // 2), icon_size, icon_size)
             icon.paint(painter, icon_rect)
-            text_rect = QRect(icon_rect.right() + gap, rect.y(), rect.width() - icon_size - gap, rect.height())
+            text_rect = QRect(icon_rect.right() + gap, rect.y(), max(text_width + 2, available_text_width if not center_content else text_width + 2), rect.height())
         else:
-            text_rect = rect
+            text_rect = QRect(x, rect.y(), max(text_width + 2, rect.width() if not center_content else text_width + 2), rect.height())
         painter.setPen(option.palette.color(option.palette.ColorRole.Text))
+        painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), display_text)
+        painter.restore()
+
+    def _is_failed_reason_cell(self, index) -> bool:
+        parent = self.parent()
+        if not parent or getattr(parent, "objectName", lambda: "")() != "FailedItemsTable":
+            return False
+        return self._column_key(index) == "reason_label"
+
+    def _is_failed_status_cell(self, index) -> bool:
+        parent = self.parent()
+        if not parent or getattr(parent, "objectName", lambda: "")() != "FailedItemsTable":
+            return False
+        return self._column_key(index) == "status_label"
+
+    @staticmethod
+    def _column_key(index) -> str:
+        columns = getattr(index.model(), "_columns", ())
+        if 0 <= index.column() < len(columns):
+            return str(columns[index.column()])
+        return ""
+
+    def _paint_failed_status(self, painter: QPainter, option, index) -> None:
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "失败")
+        painter.save()
+        rect = option.rect.adjusted(8, 0, -8, 0)
+        icon_size = 15
+        gap = 7
+        content_width = icon_size + gap + min(28, max(0, option.fontMetrics.horizontalAdvance(text)))
+        x = rect.x() + max(0, (rect.width() - content_width) // 2)
+        y = rect.y() + max(0, (rect.height() - icon_size) // 2)
+        circle_rect = QRect(x, y, icon_size, icon_size)
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(QColor("#ef4444"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(circle_rect)
+
+        painter.setPen(QPen(QColor("#ffffff"), 1.7))
+        pad = 4
+        painter.drawLine(circle_rect.left() + pad, circle_rect.top() + pad, circle_rect.right() - pad, circle_rect.bottom() - pad)
+        painter.drawLine(circle_rect.right() - pad, circle_rect.top() + pad, circle_rect.left() + pad, circle_rect.bottom() - pad)
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(option.palette.color(option.palette.ColorRole.Text))
+        text_rect = QRect(circle_rect.right() + gap, rect.y(), rect.right() - circle_rect.right() - gap, rect.height())
         painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), text)
         painter.restore()
 
@@ -388,6 +459,8 @@ class SnapshotActionTable(QTableView):
         icon_columns: set[str] | None = None,
         title_columns: set[str] | None = None,
         row_height: int = 56,
+        cell_padding: tuple[int, int] = (8, 8),
+        suppress_native_selection: bool = False,
     ) -> None:
         super().__init__()
         self._data_columns = list(columns)
@@ -421,6 +494,8 @@ class SnapshotActionTable(QTableView):
                 title_columns=title_column_indexes,
                 action_column=self._action_column,
                 action_ids=tuple(self._actions),
+                cell_padding=cell_padding,
+                suppress_native_selection=suppress_native_selection,
                 parent=self,
             )
         )

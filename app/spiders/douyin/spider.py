@@ -51,7 +51,7 @@ def _run_login_process(auth_file, user_agent, result_queue):
             context = browser.new_context(user_agent=user_agent)
             page = context.new_page()
 
-            page.goto("https://www.douyin.com/", timeout=10000)
+            page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=60000)
 
             try:
                 login_btn = page.locator("header div:has-text('登录')").last

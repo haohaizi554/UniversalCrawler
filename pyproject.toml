@@ -30,6 +30,8 @@ dependencies = [
     "uvicorn>=0.20.0",
     "requests>=2.28.0",
     "yt-dlp>=2023.0.0",
+    "curl-cffi>=0.10.0",
+    "pycryptodome>=3.20.0",
     "playwright>=1.30.0",
     "loguru>=0.7.0",
 ]
@@ -42,7 +44,7 @@ ucrawl-i = "entry.interactive_entry:main"
 # Web UI（启动 FastAPI + 浏览器）
 ucrawl-web = "entry.web_entry:main"
 # 自适应入口（不指定模式时自动检测）
-ucrawl-auto = "entry:main"
+ucrawl-auto = "entry.dispatcher:run"
 # 测试套件（GUI / TUI / CLI 三模自适应）
 ucrawl-test = "entry.test_entry:main"
 

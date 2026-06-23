@@ -234,7 +234,14 @@ class CLIRunner(ControllerSessionMixin):
         """CLI 端暂不额外广播视频状态事件，仅复用统一状态更新链。"""
         return None
 
-    def _emit_controller_log(self, message: str) -> None:
+    def _emit_controller_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "Controller",
+        level: str = "INFO",
+    ) -> None:
         if not self.log_to_stderr:
             return
         sys.stderr.write(f"{message}\n")

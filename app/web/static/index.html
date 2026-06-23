@@ -77,8 +77,8 @@
             <div class="controls-panel active-controls">
               <div class="active-control-row compact">
                 <label class="active-toggle"><input id="activeAutoRetry" type="checkbox" checked onchange="updateDownloadOptions()" /><span>失败自动重试</span></label>
-                <label>最大重试次数 <select id="activeMaxRetries" onchange="updateDownloadOptions()"><option value="1">1次</option><option value="2">2次</option><option value="3" selected>3次</option><option value="5">5次</option></select></label>
-                <label>并发数 <select id="activeMaxConcurrent" onchange="updateDownloadOptions()"><option value="2">2</option><option value="3" selected>3</option><option value="5">5</option></select></label>
+                <label>最大重试次数 <select id="activeMaxRetries" onchange="updateDownloadOptions()"><option value="1">1次</option><option value="2">2次</option><option value="3" selected>3次</option><option value="4">4次</option><option value="5">5次</option><option value="6">6次</option><option value="7">7次</option><option value="8">8次</option><option value="9">9次</option><option value="10">10次</option></select></label>
+                <label>并发数 <select id="activeMaxConcurrent" onchange="updateDownloadOptions()"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></label>
                 <span id="activeSummary"></span>
               </div>
             </div>
@@ -89,30 +89,41 @@
 
 
 <section class="page" id="page-completed" data-page="completed">
-        <div class="page-grid">
-          <div>
-            <div class="page-head"><h1>已完成</h1><p id="completedSummary"></p></div>
+        <div class="page-grid completed-grid">
+          <div class="completed-table-card">
             <div class="table-shell">
               <table>
-                <thead><tr><th>标题</th><th>完成时间</th><th>时长</th><th>分辨率</th><th>大小</th><th>格式</th><th>操作</th></tr></thead>
+                <thead><tr><th>标题</th><th>完成时间</th><th>时长</th><th>格式</th><th>操作</th></tr></thead>
                 <tbody id="completedBody"></tbody>
               </table>
             </div>
+            <div class="queue-footer completed-footer">
+              <span id="completedTotal">共 0 项</span>
+              <div class="pager">
+                <button class="icon-btn" onclick="setCompletedPage(-1)" title="上一页">‹</button>
+                <span><b id="completedPageNow">1</b> / <span id="completedTotalPages">1</span> 页</span>
+                <button class="icon-btn" onclick="setCompletedPage(1)" title="下一页">›</button>
+                <select id="completedPageSize" onchange="setCompletedPageSize(this.value)" aria-label="每页条数">
+                  <option value="20">20 条/页</option>
+                  <option value="50">50 条/页</option>
+                  <option value="100">100 条/页</option>
+                </select>
+              </div>
+            </div>
           </div>
           <aside class="detail-panel completed-detail">
-            <div id="previewPanel" class="preview-panel">
+            <div id="previewPanel" class="preview-panel completed-preview-card">
               <video id="videoPlayer" controls></video>
               <div id="previewArea" class="preview-placeholder">选择已完成文件进行播放</div>
             </div>
-            <div id="completedDetail"></div>
+            <div id="completedDetail" class="completed-info-card"></div>
           </aside>
         </div>
       </section>
 
       <section class="page" id="page-failed" data-page="failed">
-        <div class="page-grid">
-          <div>
-            <div class="page-head"><h1>失败列表</h1></div>
+        <div class="page-grid failed-grid">
+          <div class="failed-table-card">
             <div class="table-shell">
               <table>
                 <thead><tr><th>标题</th><th>失败时间</th><th>失败原因</th><th>状态</th><th>操作</th></tr></thead>
@@ -120,31 +131,46 @@
               </table>
             </div>
           </div>
-          <aside class="detail-panel" id="failedDetail"></aside>
+          <aside class="failed-right-column">
+            <div class="failed-detail-card" id="failedDetail"></div>
+            <div class="failed-solutions-card" id="failedSolutions"></div>
+          </aside>
         </div>
       </section>
 
-      <section class="page" id="page-logs" data-page="logs">
-        <div class="page-grid">
-          <div>
-            <div class="tabs"><button class="tab active">下载日志</button><button class="tab">系统日志</button><button class="tab">错误日志</button></div>
-            <div class="filters">
-              <select id="logLevelFilter"><option>全部</option><option>INFO</option><option>WARN</option><option>ERROR</option></select>
-              <select id="logTimeFilter"><option>近 24 小时</option><option>近 7 天</option><option>全部</option></select>
-              <select id="logPlatformFilter"><option>全部</option><option>抖音</option><option>Bilibili</option><option>快手</option><option>MissAV</option><option>小红书</option></select>
-              <input id="logTraceFilter" placeholder="Trace ID" />
-              <input id="logKeywordFilter" placeholder="关键词" />
+        <section class="page" id="page-logs" data-page="logs">
+          <div class="page-grid logs-grid">
+            <div class="logs-table-card">
+              <div class="tabs log-tabs" id="logTabs">
+                <button class="tab active" data-log-tab="all" onclick="setLogTab('all')">全部日志</button>
+                <button class="tab" data-log-tab="download" onclick="setLogTab('download')">下载日志</button>
+                <button class="tab" data-log-tab="system" onclick="setLogTab('system')">系统日志</button>
+                <button class="tab" data-log-tab="error" onclick="setLogTab('error')">错误日志</button>
+              </div>
+              <div class="filters log-filters">
+                <label><span>日志级别</span><select id="logLevelFilter" onchange="syncLogFiltersFromDom()"><option>全部</option><option>INFO</option><option>SUCCESS</option><option>WARN</option><option>ERROR</option></select></label>
+                <label><span>时间范围</span><select id="logTimeFilter" onchange="syncLogFiltersFromDom()"><option>近 30 分钟</option><option>近 1 小时</option><option selected>近 24 小时</option><option>全部</option></select></label>
+                <label><span>平台</span><select id="logPlatformFilter" onchange="syncLogFiltersFromDom()"><option>全部</option><option>抖音</option><option>Bilibili</option><option>快手</option><option>MissAV</option><option>小红书</option><option>系统</option></select></label>
+                <label><span>Trace ID</span><input id="logTraceFilter" placeholder="请输入 Trace ID" oninput="syncLogFiltersFromDom()" /></label>
+                <label><span>关键词搜索</span><input id="logKeywordFilter" placeholder="请输入关键词..." oninput="syncLogFiltersFromDom()" /></label>
+              </div>
+              <div class="log-actions">
+                <button class="btn btn-danger" onclick="runLogOperation('clear')">清空日志</button>
+                <button class="btn" onclick="runLogOperation('export')">导出日志</button>
+                <button class="btn" onclick="runLogOperation('refresh')">刷新缓冲</button>
+                <button class="btn" onclick="runLogOperation('open_latest')">打开 latest_debug.log</button>
+                <button class="btn" onclick="runLogOperation('open_error_summary')">打开 latest_error_summary.md</button>
+              </div>
+              <div class="table-shell">
+                <table>
+                  <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>Trace ID</th><th>消息摘要</th></tr></thead>
+                  <tbody id="logBody"></tbody>
+                </table>
+              </div>
             </div>
-            <div class="table-shell">
-              <table>
-                <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>Trace ID</th><th>消息摘要</th></tr></thead>
-                <tbody id="logBody"></tbody>
-              </table>
-            </div>
+            <aside class="logs-right-column" id="logDetail"></aside>
           </div>
-          <aside class="detail-panel" id="logDetail"></aside>
-        </div>
-      </section>
+        </section>
 
       <section class="page" id="page-settings" data-page="settings">
         <div class="page-head"><h1>配置中心</h1></div>

@@ -11,7 +11,17 @@ let selected = {
 };
 let queuePage = 1;
 let queuePageSize = Number(localStorage.getItem("webui_queue_page_size") || 20);
+let completedPage = 1;
+let completedPageSize = Number(localStorage.getItem("webui_completed_page_size") || 20);
 let queueDensity = localStorage.getItem("webui_queue_density") || "comfortable";
+let logFilters = {
+  category: "all",
+  level: "全部",
+  time: "近 24 小时",
+  platform: "全部",
+  trace: "",
+  keyword: "",
+};
 
 // Compatibility globals used by a few older browser tests.
 let videos = {};
@@ -70,7 +80,10 @@ function flushRenderSections() {
     renderCounts();
   }
   if (sections.has("queue_items") && currentPage === "queue") renderQueue();
-  if (sections.has("active_downloads") && currentPage === "active") renderActive();
+  const shouldRenderActive =
+    currentPage === "active" &&
+    (sections.has("active_downloads") || sections.has("download_options") || sections.has("settings_snapshot"));
+  if (shouldRenderActive) renderActive();
   if (sections.has("completed_items") && currentPage === "completed") renderCompleted();
   if (sections.has("failed_items") && currentPage === "failed") renderFailed();
   if (sections.has("log_items") && currentPage === "logs") renderLogs();
@@ -260,7 +273,7 @@ function buildMockState() {
       { id: "a1", title: "川西雪山之旅 | 云海翻涌的一天", platform: "抖音", progress: 65, speed: "4.2 MB/s", remaining_time: "00:01:42", eta: "00:01:42", trace_id: "dy_20260412_182452_a1", save_dir: "D:\\desktop\\Videos", output_filename: "douyin_snow_mountain_20260412.mp4", thread_count: 8, retry_count: 0, write_status: "正在写入（39 个分片）", merge_status: "等待全部分片完成后自动合并", source_url: "https://v.douyin.com/abc123", chunk_progress: { completed: 39, total: 60, percent: 65 }, speed_trend: [3.2, 3.6, 3.1, 4.2, 3.8, 4.9], events: [{ time: "20:12:03", message: "开始下载" }, { time: "20:12:06", message: "写入分片 #39" }] },
     ],
     completed_items: [
-      { id: "c1", title: "川西雪山之旅 | 云海翻涌的一天", completed_at: "2026-04-12 18:24:35", duration: "00:00:24", resolution: "1920 x 1080", size: "24.6 MB", format: "MP4", local_path: "D:\\desktop\\视频\\川西雪山之旅_20260412.mp4", content_type: "video", actions: ["play", "open_directory", "delete"] },
+      { id: "c1", title: "川西雪山之旅 | 云海翻涌的一天", completed_at: "2026-04-12 18:24:35", completed_at_table: "04-12 18:24", duration: "00:00:24", resolution: "1920 x 1080", size: "24.6 MB", format: "MP4", filename: "川西雪山之旅_20260412.mp4", save_dir: "D:\\desktop\\视频", download_speed: "4.2 MB/s", download_speed_bps: 4404019, local_path: "D:\\desktop\\视频\\川西雪山之旅_20260412.mp4", content_type: "video", metadata_pending: false, actions: ["play", "open_directory", "delete"] },
     ],
     failed_items: [
       { id: "f1", title: "南岳山间的清晨", failed_at: "2026-04-12 07:31:12", reason: "需要登录", status: "失败", trace_id: "dy_failed_001", platform: "抖音", log_excerpt: ["请求视频链接", "接口返回需要登录", "任务标记为失败"], solutions: [{ title: "确认登录态", description: "检查平台认证状态。" }, { title: "重新获取链接", description: "登录后重新复制分享链接并重试。" }], actions: ["retry", "copy_diagnostics", "delete"] },
@@ -277,6 +290,7 @@ function buildMockState() {
       "日志设置": { retention_days: 30, level: "信息", auto_copy_trace_on_error: true },
       "外观设置": { theme: "light", accent: "#0d6efd", scale: "100%", font_size: "中" },
     },
+    download_options: { auto_retry: true, max_retries: 3, max_concurrent: 5 },
     toolbox_items: [
       { id: "link_parser", title: "链接解析", summary: "解析网页或文本中的链接，提取视频、图片等资源地址", input_example: "https://www.douyin.com/user/MS4wLjABAAAA...", output_example: "解析出视频、图片、作者主页等可下载资源地址" },
       { id: "batch_rename", title: "批量重命名", summary: "批量重命名文件，支持规则、序号和预览", input_example: "D:\\Videos\\*.mp4 + {platform}_{title}_{index}", output_example: "生成可预览、可回滚的批量重命名方案" },
@@ -523,6 +537,7 @@ function setQueueDensity(mode) {
 }
 
 function renderActive() {
+  syncActiveDownloadOptions();
   const items = frontendState.active_downloads || [];
   if (!selected.active && items.length) selected.active = items[0].id;
   patchTableRows("activeBody", items, item => item.id, item => `
@@ -537,6 +552,46 @@ function renderActive() {
   `);
   byId("activeSummary").textContent = `\u5f53\u524d\u8fd0\u884c\uff1a${items.length} \u4e2a\u4efb\u52a1`;
   renderActiveDetail();
+}
+
+function currentDownloadOptions() {
+  const settings = (frontendState.settings_snapshot || {})["\u4e0b\u8f7d\u8bbe\u7f6e"] || {};
+  return {
+    auto_retry: true,
+    max_retries: Number(settings.max_retries || 3),
+    max_concurrent: Number(settings.max_concurrent || 3),
+    ...(frontendState.download_options || {}),
+  };
+}
+
+function ensureSelectOption(select, value, label = String(value)) {
+  if (!select) return;
+  const target = String(value);
+  if (!Array.from(select.options).some(option => option.value === target)) {
+    const option = document.createElement("option");
+    option.value = target;
+    option.textContent = label;
+    select.appendChild(option);
+    Array.from(select.options)
+      .sort((a, b) => Number(a.value) - Number(b.value))
+      .forEach(optionNode => select.appendChild(optionNode));
+  }
+}
+
+function syncActiveDownloadOptions() {
+  const options = currentDownloadOptions();
+  const autoRetry = byId("activeAutoRetry");
+  const retries = byId("activeMaxRetries");
+  const concurrent = byId("activeMaxConcurrent");
+  if (autoRetry) autoRetry.checked = Boolean(options.auto_retry);
+  if (retries) {
+    ensureSelectOption(retries, options.max_retries, `${options.max_retries}\u6b21`);
+    retries.value = String(options.max_retries);
+  }
+  if (concurrent) {
+    ensureSelectOption(concurrent, options.max_concurrent);
+    concurrent.value = String(options.max_concurrent);
+  }
 }
 
 function updateDownloadOptions() {
@@ -558,7 +613,7 @@ function selectActive(id) {
 function renderActiveDetail() {
   const item = (frontendState.active_downloads || []).find(row => row.id === selected.active) || (frontendState.active_downloads || [])[0];
   if (!item) {
-    byId("activeDetail").innerHTML = `<div class="active-detail-card"><h2>\u5f53\u524d\u4e0b\u8f7d</h2><p>\u6682\u65e0\u6b63\u5728\u4e0b\u8f7d\u7684\u4efb\u52a1</p></div>`;
+    byId("activeDetail").innerHTML = `<div class="active-detail-card"><h2>\u5f53\u524d\u4e0b\u8f7d</h2><div class="active-detail-fields"><p>\u6682\u65e0\u6b63\u5728\u4e0b\u8f7d\u7684\u4efb\u52a1</p></div></div>`;
     return;
   }
   const chunk = item.chunk_progress || {};
@@ -567,17 +622,20 @@ function renderActiveDetail() {
   byId("activeDetail").innerHTML = `
     <div class="active-detail-card">
       <h2>\u5f53\u524d\u4e0b\u8f7d</h2>
-      ${kvHtml([
-        ["\u6807\u9898", item.title], ["\u5e73\u53f0", item.platform], ["\u4fdd\u5b58\u76ee\u5f55", item.save_dir || ""], ["\u8f93\u51fa\u6587\u4ef6\u540d", item.output_filename || ""],
-        ["\u7ebf\u7a0b\u6570", item.thread_count], ["\u91cd\u8bd5\u6b21\u6570", item.retry_count], ["\u5199\u5165\u72b6\u6001", item.write_status], ["\u5408\u5e76\u72b6\u6001", item.merge_status],
-        ["\u6765\u6e90\u94fe\u63a5", item.source_url], ["Trace ID", item.trace_id]
-      ], new Set(["\u4fdd\u5b58\u76ee\u5f55", "\u8f93\u51fa\u6587\u4ef6\u540d", "\u6765\u6e90\u94fe\u63a5"]))}
-      <div class="active-chunk">
-        <div><strong>\u5206\u7247\u8fdb\u5ea6</strong><span>${esc(chunkText)}</span></div>
-        ${progressHtml(chunkPercent)}
+      <div class="active-detail-fields">
+        ${kvHtml([
+          ["\u6807\u9898", item.title], ["\u5e73\u53f0", item.platform], ["\u4fdd\u5b58\u76ee\u5f55", item.save_dir || ""], ["\u8f93\u51fa\u6587\u4ef6\u540d", item.output_filename || ""],
+          ["\u6765\u6e90\u94fe\u63a5", item.source_url], ["Trace ID", item.trace_id]
+        ], new Set(["\u4fdd\u5b58\u76ee\u5f55", "\u8f93\u51fa\u6587\u4ef6\u540d", "\u6765\u6e90\u94fe\u63a5"]))}
       </div>
-      <h2>\u901f\u5ea6\u8d8b\u52bf\uff08\u8fd160\u79d2\uff09</h2>
-      ${activeTrendHtml(item.speed_trend || [], item.speed || "0 B/s")}
+      <div class="active-detail-metrics">
+        <div class="active-chunk">
+          <div><strong>\u5206\u7247\u8fdb\u5ea6</strong><span>${esc(chunkText)}</span></div>
+          ${progressHtml(chunkPercent)}
+        </div>
+        <h2>\u901f\u5ea6\u8d8b\u52bf\uff08\u8fd160\u79d2\uff09</h2>
+        ${activeTrendHtml(item.speed_trend || [], item.speed || "0 B/s")}
+      </div>
     </div>
     <div class="active-events-card">
       <h2>\u5f53\u524d\u4efb\u52a1\u4e8b\u4ef6</h2>
@@ -598,13 +656,16 @@ function activeTrendHtml(values, speedLabel = "0 B/s") {
   const normalized = Math.max(...raw, 0) > 1024 ? raw.map(value => value / 1048576) : raw;
   const max = Math.max(...normalized, 6);
   const width = 260;
-  const height = 112;
+  const height = 128;
   const left = 12;
   const right = width - 12;
-  const top = 20;
-  const bottom = height - 18;
+  const top = 22;
+  const bottom = height - 30;
   const usableWidth = width - 24;
   const usableHeight = bottom - top;
+  const grid1 = bottom - usableHeight / 3;
+  const grid2 = bottom - usableHeight * 2 / 3;
+  const grid3 = top;
   const points = normalized.map((value, index) => {
     const x = left + (normalized.length <= 1 ? usableWidth : usableWidth * index / (normalized.length - 1));
     const y = bottom - usableHeight * value / max;
@@ -613,29 +674,38 @@ function activeTrendHtml(values, speedLabel = "0 B/s") {
   return `
     <svg class="speed-trend" viewBox="0 0 ${width} ${height}" role="img" aria-label="\u901f\u5ea6\u8d8b\u52bf">
       <path d="M12 ${bottom}H248M12 ${top}V${bottom}" class="axis" />
-      <path d="M12 74H248M12 50H248M12 26H248" class="grid" />
+      <path d="M12 ${grid1.toFixed(1)}H248M12 ${grid2.toFixed(1)}H248M12 ${grid3.toFixed(1)}H248" class="grid" />
       <polyline points="${points}" class="line" />
-      <text x="12" y="108">60\u79d2</text><text x="76" y="108">45\u79d2</text><text x="136" y="108">30\u79d2</text><text x="196" y="108">15\u79d2</text><text x="224" y="108">\u73b0\u5728</text>
-      <text class="speed-label" x="${right}" y="16" text-anchor="end">${esc(speedLabel || "0 B/s")}</text>
+      <text x="12" y="120">60\u79d2</text><text x="76" y="120">45\u79d2</text><text x="136" y="120">30\u79d2</text><text x="196" y="120">15\u79d2</text><text x="224" y="120">\u73b0\u5728</text>
+      <text class="speed-label" x="${right}" y="17" text-anchor="end">${esc(speedLabel || "0 B/s")}</text>
     </svg>
   `;
 }
 
 function renderCompleted() {
-  const items = frontendState.completed_items || [];
+  const allItems = frontendState.completed_items || [];
+  const totalPages = Math.max(1, Math.ceil(allItems.length / completedPageSize));
+  completedPage = Math.max(1, Math.min(completedPage, totalPages));
+  if (selected.completed) {
+    const selectedIndex = allItems.findIndex(item => item.id === selected.completed);
+    if (selectedIndex >= 0) completedPage = Math.floor(selectedIndex / completedPageSize) + 1;
+  }
+  const start = (completedPage - 1) * completedPageSize;
+  const items = allItems.slice(start, start + completedPageSize);
   if (!selected.completed && items.length) selected.completed = items[0].id;
-  byId("completedSummary").textContent = `共 ${items.length} 个`;
   patchTableRows("completedBody", items, item => item.id, item => `
     <tr data-id="${escAttr(item.id)}" class="${selected.completed === item.id ? "selected" : ""}" onclick="selectCompleted('${escAttr(item.id)}')">
       <td title="${escAttr(item.title)}">${esc(item.title)}</td>
-      <td>${esc(item.completed_at)}</td>
-      <td>${esc(item.duration)}</td>
-      <td>${esc(item.resolution)}</td>
-      <td>${esc(item.size)}</td>
+      <td>${esc(item.completed_at_table || item.completed_at || "")}</td>
+      <td>${esc(displayMetadataValue(item.duration, item.metadata_pending))}</td>
       <td>${esc(item.format)}</td>
       <td>${actionButton("play", "播放", `event.stopPropagation();playCompleted('${escAttr(item.id)}')`)}${actionButton("open_directory", "打开目录", `event.stopPropagation();openDirectory('${escAttr(item.id)}')`)}${actionButton("delete", "删除", `event.stopPropagation();frontendAction('delete_item',{id:'${escAttr(item.id)}'})`, true)}</td>
     </tr>
   `);
+  byId("completedTotal").textContent = `共 ${allItems.length} 项`;
+  byId("completedPageNow").textContent = String(completedPage);
+  byId("completedTotalPages").textContent = String(totalPages);
+  byId("completedPageSize").value = String(completedPageSize);
   renderCompletedDetail();
 }
 
@@ -645,19 +715,50 @@ function selectCompleted(id) {
   renderCompleted();
 }
 
+function setCompletedPage(delta) {
+  completedPage += Number(delta) || 0;
+  selected.completed = "";
+  renderCompleted();
+}
+
+function setCompletedPageSize(value) {
+  completedPageSize = Math.max(20, Number(value) || 20);
+  completedPage = 1;
+  selected.completed = "";
+  localStorage.setItem("webui_completed_page_size", String(completedPageSize));
+  renderCompleted();
+}
+
 function renderCompletedDetail() {
   const item = (frontendState.completed_items || []).find(row => row.id === selected.completed) || (frontendState.completed_items || [])[0];
   if (!item) {
     byId("completedDetail").innerHTML = "<h2>文件信息</h2><p>暂无已完成文件</p>";
     return;
   }
+  const filename = item.filename || basenameFromPath(item.local_path) || item.title || "";
+  const saveDir = item.save_dir || dirnameFromPath(item.local_path) || "";
   const html = `
     <h2>文件信息</h2>
-    ${kvHtml([["保存路径", item.local_path], ["完成时间", item.completed_at], ["时长", item.duration], ["分辨率", item.resolution], ["格式", item.format], ["大小", item.size]])}
-    <h2>完成概览</h2>
-    ${kvHtml([["已完成", `${(frontendState.completed_items || []).length} 个`], ["存储占用", item.size]])}
+    ${kvHtml([["文件名", filename], ["保存路径", saveDir], ["完成时间", item.completed_at], ["时长", displayMetadataValue(item.duration, item.metadata_pending)], ["分辨率", displayMetadataValue(item.resolution, item.metadata_pending)], ["大小", item.size], ["格式", item.format]])}
   `;
   setHtmlIfChanged("completedDetail", html);
+}
+
+function displayMetadataValue(value, pending = false) {
+  const text = String(value || "").trim();
+  if (text && text !== "--") return text;
+  return pending ? "检测中" : "--";
+}
+
+function basenameFromPath(path) {
+  const parts = String(path || "").split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
+function dirnameFromPath(path) {
+  const text = String(path || "");
+  const slash = Math.max(text.lastIndexOf("\\"), text.lastIndexOf("/"));
+  return slash > 0 ? text.slice(0, slash) : "";
 }
 
 function renderFailed() {
@@ -666,10 +767,10 @@ function renderFailed() {
   patchTableRows("failedBody", items, item => item.id, item => `
     <tr data-id="${escAttr(item.id)}" class="${selected.failed === item.id ? "selected" : ""}" onclick="selectFailed('${escAttr(item.id)}')">
       <td title="${escAttr(item.title)}">${esc(item.title)}</td>
-      <td>${esc(item.failed_at)}</td>
-      <td>${esc(item.reason)}</td>
-      <td>${esc(item.status)}</td>
-      <td>${actionButton("retry", "重试", `event.stopPropagation();frontendAction('retry_failed',{id:'${escAttr(item.id)}'})`)}${actionButton("copy_diagnostics", "复制诊断", `event.stopPropagation();copyDiagnostics('${escAttr(item.id)}')`)}${actionButton("delete", "删除", `event.stopPropagation();frontendAction('delete_item',{id:'${escAttr(item.id)}'})`, true)}</td>
+      <td>${esc(item.failed_at_table || item.failed_at)}</td>
+      <td>${iconTextHtml(item.reason_label || item.reason || "", item.reason_icon_file || "status_error_warning.png")}</td>
+      <td>${failedStatusHtml(item.status_label || item.status || "失败")}</td>
+      <td>${actionButton("copy_diagnostics", "复制 Trace ID", `event.stopPropagation();copyDiagnostics('${escAttr(item.id)}')`)}${actionButton("delete", "删除", `event.stopPropagation();frontendAction('delete_item',{id:'${escAttr(item.id)}'})`, true)}</td>
     </tr>
   `);
   renderFailedDetail();
@@ -684,23 +785,71 @@ function renderFailedDetail() {
   const item = (frontendState.failed_items || []).find(row => row.id === selected.failed) || (frontendState.failed_items || [])[0];
   if (!item) {
     byId("failedDetail").innerHTML = "<h2>错误详情</h2><p>暂无失败任务</p>";
+    byId("failedSolutions").innerHTML = "<h2>可能的解决方案</h2><p>暂无建议</p>";
     return;
   }
+  const platformIcon = iconManifest.platforms?.[String(item.platform_id || "").toLowerCase()] || "platform_web.png";
+  const logItems = item.log_excerpt_items || (item.log_excerpt || []).map(message => ({ level: "INFO", time: "", message, icon_file: "log_level_info.png" }));
   byId("failedDetail").innerHTML = `
     <h2>错误详情</h2>
-    ${kvHtml([["标题", item.title], ["失败时间", item.failed_at], ["失败原因", item.reason], ["平台", item.platform], ["Trace ID", item.trace_id]])}
+    <div class="failed-summary">
+      ${detailRowHtml("标题", item.title)}
+      ${detailRowHtml("失败时间", item.failed_at)}
+      ${detailRowHtml("失败原因", item.reason_detail || item.reason, item.reason_icon_file || "status_error_warning.png")}
+      ${detailRowHtml("平台", item.platform, platformIcon)}
+      ${detailRowHtml("Trace ID", item.trace_id)}
+    </div>
     <h2>Trace / 日志片段</h2>
-    <div class="log-snippet">${esc((item.log_excerpt || []).join("\n"))}</div>
+    <div class="failed-log-list">${logItems.length ? logItems.map(failedLogRowHtml).join("") : `<div class="empty-note">暂无日志片段</div>`}</div>
+  `;
+  byId("failedSolutions").innerHTML = `
     <h2>可能的解决方案</h2>
-    <div class="event-list">${esc((item.solutions || []).map(solution => `${solution.title}: ${solution.description}`).join("\n"))}</div>
+    <div class="failed-solution-list">${(item.solutions || []).length ? (item.solutions || []).map(solutionRowHtml).join("") : `<div class="empty-note">暂无建议</div>`}</div>
+  `;
+}
+
+function iconFileUrl(file) {
+  return `${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(file || iconManifest.fallback || "view_grid.png")}`;
+}
+
+function iconTextHtml(text, iconFile) {
+  return `<span class="icon-text"><img src="${iconFileUrl(iconFile)}" alt="" />${esc(text || "")}</span>`;
+}
+
+function failedStatusHtml(text) {
+  return `<span class="failed-status-chip"><i aria-hidden="true">×</i>${esc(text || "失败")}</span>`;
+}
+
+function detailRowHtml(label, value, iconFile = "") {
+  const icon = iconFile ? `<img src="${iconFileUrl(iconFile)}" alt="" />` : "";
+  return `<div class="failed-detail-row"><span>${esc(label)}</span><strong>${icon}${esc(value || "")}</strong></div>`;
+}
+
+function failedLogRowHtml(entry) {
+  return `
+    <div class="failed-log-row">
+      <span class="log-time">${esc(String(entry.time || "--:--:--").slice(-8))}</span>
+      <img src="${iconFileUrl(entry.icon_file || "log_level_info.png")}" alt="" />
+      <span class="log-message">${esc(entry.message || "")}</span>
+    </div>
+  `;
+}
+
+function solutionRowHtml(solution) {
+  return `
+    <div class="failed-solution-row">
+      <img src="${iconFileUrl(solution.icon_file || "action_help.png")}" alt="" />
+      <span><strong>${esc(solution.title || "建议")}</strong><small>${esc(solution.description || "")}</small></span>
+    </div>
   `;
 }
 
 function renderLogs() {
-  const items = frontendState.log_items || [];
-  if (!selected.log && items.length) selected.log = String(items.length - 1);
-  patchTableRows("logBody", items, (item, index) => `${index}:${item.time || ""}:${item.trace_id || ""}`, (item, index) => `
-    <tr class="${selected.log === String(index) ? "selected" : ""}" onclick="selectLog('${index}')">
+  syncLogFilterControls();
+  const items = filteredLogItems();
+  if (!items.some(item => logItemId(item) === selected.log)) selected.log = items.length ? logItemId(items[0]) : "";
+  patchTableRows("logBody", items, item => logItemId(item), item => `
+    <tr class="${selected.log === logItemId(item) ? "selected" : ""}" onclick="selectLog('${escAttr(logItemId(item))}')">
       <td>${esc(item.time)}</td>
       <td>${esc(item.level)}</td>
       <td>${esc(item.source)}</td>
@@ -711,25 +860,113 @@ function renderLogs() {
   renderLogDetail();
 }
 
-function selectLog(index) {
-  selected.log = String(index);
+function logItemId(item) {
+  return String(item.id || `${item.time || ""}|${item.trace_id || ""}|${item.source || ""}|${item.message_summary || ""}`);
+}
+
+function selectLog(id) {
+  selected.log = String(id);
   renderLogs();
 }
 
 function renderLogDetail() {
-  const item = (frontendState.log_items || [])[Number(selected.log)] || (frontendState.log_items || [])[0];
+  const items = filteredLogItems();
+  const item = items.find(row => logItemId(row) === selected.log) || items[0];
   if (!item) {
-    byId("logDetail").innerHTML = "<h2>日志详情</h2><p>暂无日志</p>";
+    byId("logDetail").innerHTML = `<div class="log-detail-card"><h2>日志详情</h2><p>暂无日志</p></div>`;
     return;
   }
+  const detail = String(item.detail || "").trim();
+  const stack = String(item.stack || "").trim();
+  const extraBlocks = [];
+  if (detail) extraBlocks.push(`<div class="log-extra-card"><h2>详细信息</h2><pre class="log-snippet">${esc(detail)}</pre></div>`);
+  if (stack && stack !== "无") extraBlocks.push(`<div class="log-extra-card"><h2>堆栈跟踪</h2><pre class="log-snippet">${esc(stack)}</pre></div>`);
   byId("logDetail").innerHTML = `
-    <h2>日志详情</h2>
-    ${kvHtml([["时间", item.time], ["级别", item.level], ["来源", item.source], ["线程", item.thread || ""], ["Trace ID", item.trace_id || ""], ["消息", item.message || item.message_summary]])}
-    <h2>详细信息</h2>
-    <div class="log-snippet">${esc(item.detail || "")}</div>
-    <h2>堆栈跟踪</h2>
-    <div class="log-snippet">${esc(item.stack || "无")}</div>
+    <div class="log-detail-card">
+      <h2>日志详情</h2>
+      ${kvHtml([["时间", item.time], ["级别", item.level], ["来源", item.source], ["平台", item.platform || ""], ["线程", item.thread || ""], ["Trace ID", item.trace_id || ""], ["消息", item.message || item.message_summary]])}
+    </div>
+    ${extraBlocks.join("")}
   `;
+}
+
+function setLogTab(category) {
+  logFilters.category = category || "all";
+  selected.log = "";
+  renderLogs();
+}
+
+function syncLogFiltersFromDom() {
+  logFilters.level = byId("logLevelFilter")?.value || "全部";
+  logFilters.time = byId("logTimeFilter")?.value || "近 24 小时";
+  logFilters.platform = byId("logPlatformFilter")?.value || "全部";
+  logFilters.trace = byId("logTraceFilter")?.value.trim() || "";
+  logFilters.keyword = byId("logKeywordFilter")?.value.trim() || "";
+  selected.log = "";
+  renderLogs();
+}
+
+function syncLogFilterControls() {
+  document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => button.classList.toggle("active", button.dataset.logTab === logFilters.category));
+  const bindings = [
+    ["logLevelFilter", logFilters.level],
+    ["logTimeFilter", logFilters.time],
+    ["logPlatformFilter", logFilters.platform],
+    ["logTraceFilter", logFilters.trace],
+    ["logKeywordFilter", logFilters.keyword],
+  ];
+  for (const [id, value] of bindings) {
+    const node = byId(id);
+    if (node && node.value !== value) node.value = value;
+  }
+}
+
+function filteredLogItems() {
+  return (frontendState.log_items || []).filter(logMatchesFilters);
+}
+
+function logMatchesFilters(item) {
+  const category = logCategory(item);
+  if (logFilters.category === "error") {
+    if (String(item.level || "").toUpperCase() !== "ERROR" && category !== "error") return false;
+  } else if (logFilters.category !== "all" && category !== logFilters.category) {
+    return false;
+  }
+  if (logFilters.level !== "全部" && String(item.level || "").toUpperCase() !== logFilters.level) return false;
+  if (!logMatchesTime(item)) return false;
+  const haystack = logSearchText(item).toLowerCase();
+  if (logFilters.platform !== "全部" && !logSearchText(item).includes(logFilters.platform)) return false;
+  if (logFilters.trace && !String(item.trace_id || "").toLowerCase().includes(logFilters.trace.toLowerCase())) return false;
+  if (logFilters.keyword && !haystack.includes(logFilters.keyword.toLowerCase())) return false;
+  return true;
+}
+
+function logCategory(item) {
+  const level = String(item.level || "").toUpperCase();
+  if (level === "ERROR") return "error";
+  if (item.category) return String(item.category);
+  const text = logSearchText(item).toLowerCase();
+  if (/(download|下载|bilibili|douyin|kuaishou|missav|小红书|抖音|快手)/.test(text)) return "download";
+  return "system";
+}
+
+function logSearchText(item) {
+  return [item.platform, item.source, item.trace_id, item.level, item.message_summary, item.message, item.detail, item.stack].map(value => String(value || "")).join(" ");
+}
+
+function logMatchesTime(item) {
+  const minutes = {"近 30 分钟": 30, "近 1 小时": 60, "近 24 小时": 24 * 60}[logFilters.time];
+  if (!minutes) return true;
+  const timestamp = Number(item.timestamp_ms || Date.parse(String(item.time || "").replace(" ", "T")));
+  if (!timestamp) return false;
+  return timestamp >= Date.now() - minutes * 60 * 1000;
+}
+
+function runLogOperation(operation) {
+  frontendAction("log_operation", { operation });
+  if (operation === "refresh" || operation === "clear") {
+    setTimeout(fetchFrontendDelta, 200);
+  }
 }
 
 function renderSettings() {
@@ -892,9 +1129,10 @@ function smartWrapText(value) {
 }
 
 function kvHtml(pairs, wrapKeys = new Set()) {
+  const implicitWrapKeys = new Set(["文件名", "保存路径", "保存目录", "输出文件名", "来源链接"]);
   return `<div class="kv">${pairs.map(([key, value]) => {
     const keyText = String(key);
-    const shouldWrap = wrapKeys.has(keyText);
+    const shouldWrap = wrapKeys.has(keyText) || implicitWrapKeys.has(keyText);
     const valueClass = shouldWrap ? "kv-value smart-wrap" : "kv-value";
     const valueHtml = shouldWrap ? smartWrapText(value) : esc(String(value ?? ""));
     return `<span>${esc(keyText)}</span><span class="${valueClass}">${valueHtml}</span>`;
@@ -949,6 +1187,7 @@ function playCompleted(id) {
   const placeholder = byId("previewArea");
   if (item.local_path) {
     video.src = `/api/media/${encodeURIComponent(id)}`;
+    setupPlayerEvents(video, id);
     video.style.display = "block";
     placeholder.style.display = "none";
     video.play().catch(() => {});
@@ -967,7 +1206,7 @@ function copyDiagnostics(id) {
   }).then(response => response.json()).then(result => {
     const text = result.data && result.data.text ? result.data.text : "";
     if (text && navigator.clipboard) navigator.clipboard.writeText(text);
-    appendLog("诊断信息已复制");
+    appendLog(text ? "Trace ID 已复制" : "未找到 Trace ID");
   });
 }
 
@@ -1073,9 +1312,52 @@ function previewVideo(id) {
 }
 function setupPlayerEvents(player, sourceId) {
   if (!player) return;
+  player.onloadedmetadata = () => reportCompletedPlayerMetadata(sourceId, player);
   player.onended = () => {
     if (currentPlayingId === sourceId) autoplayNextPreview();
   };
+}
+
+function reportCompletedPlayerMetadata(sourceId, player) {
+  if (!sourceId || !player) return;
+  const metadata = {};
+  if (Number.isFinite(player.duration) && player.duration > 0) {
+    metadata.duration = fmtClockTime(player.duration);
+  }
+  if (player.videoWidth > 0 && player.videoHeight > 0) {
+    metadata.resolution = `${player.videoWidth} x ${player.videoHeight}`;
+  }
+  if (!Object.keys(metadata).length) return;
+  const changed = applyCompletedMetadataLocally(sourceId, metadata);
+  frontendAction("update_completed_metadata", { id: sourceId, metadata, source: "web_player" });
+  if (changed) renderCompleted();
+}
+
+function applyCompletedMetadataLocally(sourceId, metadata) {
+  const item = (frontendState.completed_items || []).find(row => row.id === sourceId);
+  if (!item) return false;
+  let changed = false;
+  if (metadata.duration && !hasDisplayDuration(item.duration)) {
+    item.duration = metadata.duration;
+    changed = true;
+  }
+  if (metadata.resolution && !isRealResolution(item.resolution)) {
+    item.resolution = metadata.resolution;
+    changed = true;
+  }
+  if (hasDisplayDuration(item.duration) && isRealResolution(item.resolution)) {
+    item.metadata_pending = false;
+  }
+  return changed;
+}
+
+function hasDisplayDuration(value) {
+  const text = String(value || "").trim();
+  return !!text && text !== "--" && text !== "检测中" && text !== "00:00:00";
+}
+
+function isRealResolution(value) {
+  return /^\d{2,5}\s*x\s*\d{2,5}$/i.test(String(value || "").trim());
 }
 function autoplayNextPreview() {
   const order = (frontendState.completed_items || []).map(item => item.id);
@@ -1088,14 +1370,27 @@ function togglePlay() {
   if (video.paused) video.play().catch(() => {}); else video.pause();
 }
 function toggleFullscreen() {
-  isFullscreenMode = !isFullscreenMode;
-  document.body.classList.toggle("is-fullscreen", isFullscreenMode);
+  const panel = byId("previewPanel");
+  if (!panel || !panel.requestFullscreen) return;
+  if (document.fullscreenElement === panel) {
+    document.exitFullscreen().catch(() => {});
+    return;
+  }
+  panel.requestFullscreen().catch(error => appendLog(error.message || String(error)));
 }
 function fmtTime(seconds) {
   const value = Number(seconds) || 0;
   const min = Math.floor(value / 60);
   const sec = Math.floor(value % 60);
   return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+function fmtClockTime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 function selectVideo(id) {
   selectedVideoId = id;
@@ -1118,7 +1413,9 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape") {
     if (byId("dirModal").style.display === "flex") cancelDirDialog();
     if (byId("selectionModal").style.display === "flex") cancelSelection();
-    if (isFullscreenMode) toggleFullscreen();
+    if (isFullscreenMode && document.fullscreenElement === byId("previewPanel")) {
+      document.exitFullscreen().catch(() => {});
+    }
   }
   if ((event.key === "ArrowUp" || event.key === "ArrowDown") && videoOrder.length > 0) {
     const tag = document.activeElement && document.activeElement.tagName;
@@ -1133,6 +1430,12 @@ document.addEventListener("keydown", event => {
   if (event.key === "Delete" && selectedVideoId && document.activeElement === document.body) {
     deleteVideo(selectedVideoId);
   }
+});
+
+document.addEventListener("fullscreenchange", () => {
+  const panel = byId("previewPanel");
+  isFullscreenMode = !!panel && document.fullscreenElement === panel;
+  if (panel) panel.classList.toggle("is-fullscreen", isFullscreenMode);
 });
 
 function byId(id) {

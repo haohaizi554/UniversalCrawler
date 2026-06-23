@@ -16,7 +16,7 @@ class FrontendEventPriority(IntEnum):
     CRITICAL = 2
 
 VIDEO_SECTIONS = frozenset({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
-STATIC_SECTIONS = frozenset({"pages", "icon_manifest", "toolbox_items", "toolbox_recent_items", "settings_snapshot"})
+STATIC_SECTIONS = frozenset({"pages", "icon_manifest", "toolbox_items", "toolbox_recent_items", "settings_snapshot", "download_options"})
 ALL_FRONTEND_SECTIONS = VIDEO_SECTIONS | STATIC_SECTIONS | frozenset({"log_items"})
 
 NOISY_TOPICS = frozenset(
@@ -57,6 +57,7 @@ NORMAL_TOPICS = frozenset(
         "app.running_state",
         "page.visibility",
         "media.current_playing",
+        "videos.metadata",
         "settings.update",
         "config",
         "platforms",
@@ -77,6 +78,8 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
     normalized = str(topic or "")
     if normalized in {"videos.update", "video_state_changed", "task_progress"}:
         return frozenset({"active_downloads", "app_status"})
+    if normalized == "videos.metadata":
+        return frozenset({"completed_items", "app_status"})
     if normalized in {
         "videos.upsert",
         "videos.remove",
@@ -98,7 +101,7 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
     if normalized in {"app.running_state", "crawl_state", "crawl_state_changed", "page.visibility"}:
         return frozenset({"app_status"})
     if normalized in {"settings.update", "config"}:
-        return frozenset({"settings_snapshot", "app_status"})
+        return frozenset({"settings_snapshot", "download_options", "app_status"})
     if normalized == "platforms":
         return frozenset({"settings_snapshot"})
     return None

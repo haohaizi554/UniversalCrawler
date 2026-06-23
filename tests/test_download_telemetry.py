@@ -17,6 +17,28 @@ class DownloadTelemetryServiceTests(unittest.TestCase):
         self.assertNotEqual(second.remaining_time, "--")
         self.assertEqual(first.video_id, item.id)
 
+    def test_high_frequency_samples_keep_baseline_until_speed_can_be_computed(self):
+        service = DownloadTelemetryService()
+        item = VideoItem(url="https://example.com/a.mp4", title="demo", source="bilibili")
+
+        service.record(item, progress=10, bytes_downloaded=1_000, bytes_total=10_000, now=0.0)
+        service.record(item, progress=11, bytes_downloaded=2_000, bytes_total=10_000, now=0.1)
+        service.record(item, progress=12, bytes_downloaded=3_000, bytes_total=10_000, now=0.2)
+        snapshot = service.record(item, progress=50, bytes_downloaded=5_000, bytes_total=10_000, now=0.5)
+
+        self.assertGreater(snapshot.speed_bps, 0)
+        self.assertNotEqual(item.meta["speed"], "0 B/s")
+
+    def test_completion_sample_can_compute_speed_before_regular_interval(self):
+        service = DownloadTelemetryService()
+        item = VideoItem(url="https://example.com/a.mp4", title="demo", source="bilibili")
+
+        service.record(item, progress=10, bytes_downloaded=1_000, bytes_total=10_000, now=0.0)
+        snapshot = service.record(item, progress=100, bytes_downloaded=10_000, bytes_total=10_000, now=0.1)
+
+        self.assertGreater(snapshot.speed_bps, 0)
+        self.assertEqual(snapshot.remaining_time, "00:00")
+
     def test_status_indicator_idle_running_error(self):
         from app.services.frontend_state_service import FrontendStateService
 

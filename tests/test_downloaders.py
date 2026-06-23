@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
+from pathlib import Path
 import queue
 import subprocess
+import sys
 import tempfile
 import threading
+import time
+import types
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -22,6 +27,7 @@ from app.core.downloaders.kuaishou import KuaishouDownloader
 from app.core.downloaders.missav import MissAVDownloader
 from app.core.downloaders.xiaohongshu import XiaohongshuDownloader
 from app.core.downloaders.external import ExternalToolRunner
+from app.core.downloaders.m3u8 import _LocalHlsProxy
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError, MergeError, StreamDownloadError
 from app.models import VideoItem
 
@@ -50,6 +56,11 @@ class DownloaderStrategyTests(unittest.TestCase):
         """验证 `test_m3u8_url_detection` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         self.assertTrue(N_m3u8DL_RE_Downloader.is_m3u8_url("https://example.com/master.m3u8"))
         self.assertFalse(N_m3u8DL_RE_Downloader.is_m3u8_url("https://example.com/video.mp4"))
+
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.is_available", return_value=False)
+    @patch("app.core.downloaders.m3u8.N_m3u8DL_RE_Downloader._python_hls_fallback_available", return_value=True)
+    def test_m3u8_downloader_is_available_when_python_hls_fallback_exists(self, _mocked_python, _mocked_external):
+        self.assertTrue(N_m3u8DL_RE_Downloader.is_available())
 
     def test_m3u8_cleanup_removes_external_tool_temp_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -361,6 +372,114 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIn("--save-name", command)
         self.assertIn("User-Agent: ua-demo", command)
         self.assertIn("Referer: https://www.douyin.com/", command)
+        auto_select_index = command.index("--auto-select")
+        self.assertEqual(command[auto_select_index + 1], "true")
+
+    def test_nm3u8_external_tool_build_download_command_includes_extra_headers(self):
+        command = NM3U8DLREExternalTool.build_download_command(
+            "N_m3u8DL-RE.exe",
+            "https://surrit.com/live/index.m3u8",
+            os.path.join("downloads", "demo.mp4"),
+            "ua-demo",
+            "https://missav.ai/cn/abc-123",
+            extra_headers={
+                "Cookie": "session=abc",
+                "Origin": "https://missav.ai",
+                "Host": "surrit.com",
+                "Accept-Encoding": "gzip, br",
+                "Range": "bytes=0-",
+                "Sec-Fetch-Dest": "video",
+            },
+        )
+
+        self.assertIn("Cookie: session=abc", command)
+        self.assertIn("Origin: https://missav.ai", command)
+        self.assertNotIn("Host: surrit.com", command)
+        self.assertIn("Accept-Encoding: gzip, br", command)
+        self.assertIn("Range: bytes=0-", command)
+        self.assertIn("Sec-Fetch-Dest: video", command)
+
+    def test_nm3u8_external_tool_accepts_explicit_thread_count(self):
+        command = NM3U8DLREExternalTool.build_download_command(
+            "N_m3u8DL-RE.exe",
+            "https://surrit.com/live/index.m3u8",
+            os.path.join("downloads", "demo.mp4"),
+            "ua-demo",
+            "https://missav.ai/cn/abc-123",
+            thread_count=16,
+        )
+
+        self.assertEqual(command[command.index("--thread-count") + 1], "16")
+
+    def test_m3u8_downloader_headers_from_missav_meta_default_to_legacy_minimum(self):
+        item = VideoItem(url="https://surrit.com/live/index.m3u8", title="demo", source="missav")
+        item.meta.update(
+            {
+                "headers": {"Cookie": "session=abc"},
+                "referer": "https://missav.ai/cn/abc-123",
+            }
+        )
+
+        headers = N_m3u8DL_RE_Downloader._headers_from_meta(
+            item,
+            "ua-demo",
+            "https://missav.ai/cn/abc-123",
+        )
+
+        self.assertEqual(headers, {"User-Agent": "ua-demo", "Referer": "https://missav.ai/cn/abc-123"})
+
+    def test_m3u8_downloader_headers_from_missav_meta_can_preserve_cookie_when_enabled(self):
+        item = VideoItem(url="https://surrit.com/live/index.m3u8", title="demo", source="missav")
+        item.meta.update(
+            {
+                "headers": {"Cookie": "session=abc"},
+                "referer": "https://missav.ai/cn/abc-123",
+                "missav_include_cookies": True,
+            }
+        )
+
+        headers = N_m3u8DL_RE_Downloader._headers_from_meta(
+            item,
+            "ua-demo",
+            "https://missav.ai/cn/abc-123",
+        )
+
+        self.assertEqual(headers["Cookie"], "session=abc")
+        self.assertNotIn("Origin", headers)
+        self.assertEqual(headers["User-Agent"], "ua-demo")
+
+    def test_m3u8_downloader_headers_from_missav_browser_meta_preserve_detailed_headers(self):
+        item = VideoItem(url="https://surrit.com/live/index.m3u8", title="demo", source="missav")
+        item.meta.update(
+            {
+                "headers": {
+                    "Cookie": "session=abc",
+                    "Sec-Fetch-Site": "cross-site",
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate, br, zstd",
+                    "Origin": "https://missav.ai",
+                    "Cache-Control": "no-cache",
+                    "Sec-Ch-Ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+                },
+                "referer": "https://missav.ai/cn/abc-123",
+                "missav_use_browser_headers": True,
+            }
+        )
+
+        headers = N_m3u8DL_RE_Downloader._headers_from_meta(
+            item,
+            "ua-demo",
+            "https://missav.ai/cn/abc-123",
+        )
+
+        self.assertEqual(headers["Cookie"], "session=abc")
+        self.assertEqual(headers["Sec-Fetch-Site"], "cross-site")
+        self.assertEqual(headers["Accept"], "*/*")
+        self.assertEqual(headers["Accept-Encoding"], "gzip, deflate, br, zstd")
+        self.assertEqual(headers["Origin"], "https://missav.ai")
+        self.assertEqual(headers["Cache-Control"], "no-cache")
+        self.assertEqual(headers["Sec-Ch-Ua"], '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"')
+        self.assertEqual(headers["Referer"], "https://missav.ai/cn/abc-123")
 
     @patch("app.core.downloaders.external.os.name", "nt")
     @patch("app.core.downloaders.external.resolve_tool_file")
@@ -670,6 +789,888 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         with self.assertRaises(ExternalToolError):
             N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_curl_cffi_hls")
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_nm3u8_external")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_missav_surrit_downloader_prefers_external_tool_before_python_fallback(
+        self, mocked_resolve, mocked_external, mocked_curl
+    ):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        item.meta.update({"headers": {"Referer": "https://missav.ai/cn/demo"}, "missav_use_browser_headers": True})
+
+        N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        mocked_resolve.assert_called_once()
+        mocked_external.assert_called_once()
+        self.assertEqual(mocked_external.call_args.args[7], 16)
+        mocked_curl.assert_not_called()
+
+    def test_missav_surrit_external_tool_uses_local_hls_proxy_url(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+
+        class FakeProxy:
+            url = "http://127.0.0.1:12345/hls?u=demo"
+
+            def progress_snapshot(self):
+                return 50, 0
+
+            def stop(self):
+                pass
+
+        with patch.object(downloader, "_start_local_hls_proxy", return_value=FakeProxy()) as mocked_start, patch.object(
+            downloader, "_run_nm3u8_external_command"
+        ) as mocked_run:
+            downloader._download_with_nm3u8_external(
+                item,
+                "demo.mp4",
+                "N_m3u8DL-RE.exe",
+                "ua-demo",
+                "https://missav.ai/cn/demo",
+                "http://127.0.0.1:7890",
+                {"Referer": "https://missav.ai/cn/demo"},
+                16,
+                lambda _value: None,
+                lambda: False,
+            )
+
+        mocked_start.assert_called_once()
+        args = mocked_run.call_args.args
+        self.assertEqual(args[3], "http://127.0.0.1:12345/hls?u=demo")
+        self.assertIsNone(args[6])
+        self.assertEqual(args[8], 16)
+        self.assertTrue(mocked_run.call_args.kwargs["local_proxy"])
+        self.assertTrue(callable(mocked_run.call_args.kwargs["progress_provider"]))
+
+    def test_hls_proxy_rewrites_playlist_urls_to_local_proxy_urls(self):
+        playlist = """#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+#EXTINF:4,
+seg1.ts
+#EXT-X-MAP:URI='init.mp4'
+https://cdn.example.com/seg2.ts
+"""
+
+        result = N_m3u8DL_RE_Downloader._rewrite_hls_playlist_for_proxy(
+            playlist,
+            "https://surrit.com/demo/playlist.m3u8",
+            lambda url: f"local://{url}",
+        )
+
+        self.assertIn('URI="local://https://surrit.com/demo/key.bin"', result)
+        self.assertIn("local://https://surrit.com/demo/seg1.ts", result)
+        self.assertIn("URI='local://https://surrit.com/demo/init.mp4'", result)
+        self.assertIn("local://https://cdn.example.com/seg2.ts", result)
+
+    def test_hls_proxy_counts_media_segments_without_master_variants(self):
+        playlist = """#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=800000
+variant/index.m3u8
+#EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+#EXTINF:4,
+seg1.ts
+#EXTINF:4,
+https://cdn.example.com/seg2.m4s?token=1
+"""
+
+        self.assertEqual(N_m3u8DL_RE_Downloader._count_hls_media_entries(playlist), 2)
+
+    def test_external_process_progress_uses_local_proxy_provider(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        process = Mock()
+        process.returncode = 0
+        poll_calls = {"count": 0}
+
+        def poll():
+            poll_calls["count"] += 1
+            return None if poll_calls["count"] == 1 else 0
+
+        process.poll.side_effect = poll
+        updates = []
+
+        def progress(value, **kwargs):
+            updates.append((value, kwargs))
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "app.core.downloaders.m3u8.time.sleep", return_value=None
+        ):
+            downloader._wait_external_process_with_file_progress(
+                process,
+                os.path.join(temp_dir, "demo.mp4"),
+                lambda: False,
+                progress,
+                50,
+                progress_provider=lambda: (71, 2048),
+            )
+
+        self.assertEqual(updates[-1][0], 71)
+        self.assertEqual(updates[-1][1]["bytes_downloaded"], 2048)
+
+    def test_local_hls_proxy_streams_segment_bytes_for_live_speed(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        proxy = _LocalHlsProxy(downloader, "https://surrit.com/demo/playlist.m3u8", {}, None)
+        proxy._segment_total = 1
+
+        class FakeResponse:
+            status_code = 200
+            headers = {"Content-Type": "video/mp4", "Content-Length": "6"}
+
+            def iter_content(self, chunk_size=0):
+                yield b"abc"
+                yield b"def"
+
+            def close(self):
+                pass
+
+        class FakeHandler:
+            def __init__(self):
+                self.status = None
+                self.headers = []
+                self.wfile = io.BytesIO()
+
+            def send_response(self, status):
+                self.status = status
+
+            def send_header(self, key, value):
+                self.headers.append((key, value))
+
+            def end_headers(self):
+                pass
+
+        handler = FakeHandler()
+        with patch.object(downloader, "_hls_proxy_open_upstream", return_value=FakeResponse()):
+            proxy.serve(handler, "https://surrit.com/demo/seg1.m4s")
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.wfile.getvalue(), b"abcdef")
+        self.assertEqual(proxy.progress_snapshot(), (95, 6))
+
+    def test_local_hls_proxy_forwards_range_response_headers(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        proxy = _LocalHlsProxy(downloader, "https://surrit.com/demo/playlist.m3u8", {}, None)
+
+        class FakeResponse:
+            status_code = 206
+            headers = {
+                "Content-Type": "video/mp4",
+                "Content-Length": "6",
+                "Content-Range": "bytes 0-5/6",
+                "Accept-Ranges": "bytes",
+                "ETag": '"demo"',
+            }
+            content = b"abcdef"
+
+            def close(self):
+                pass
+
+        class FakeHandler:
+            def __init__(self):
+                self.status = None
+                self.headers = []
+                self.wfile = io.BytesIO()
+
+            def send_response(self, status):
+                self.status = status
+
+            def send_header(self, key, value):
+                self.headers.append((key, value))
+
+            def end_headers(self):
+                pass
+
+        handler = FakeHandler()
+        with patch.object(downloader, "_hls_proxy_open_upstream", return_value=FakeResponse()):
+            proxy.serve(handler, "https://surrit.com/demo/seg1.m4s")
+
+        self.assertEqual(handler.status, 206)
+        self.assertIn(("Content-Range", "bytes 0-5/6"), handler.headers)
+        self.assertIn(("Accept-Ranges", "bytes"), handler.headers)
+        self.assertIn(("ETag", '"demo"'), handler.headers)
+        self.assertEqual(handler.wfile.getvalue(), b"abcdef")
+
+    def test_hls_proxy_segment_headers_mimic_browser_media_request(self):
+        headers = {
+            "User-Agent": "ua-demo",
+            "Referer": "https://missav.ai/cn/demo",
+            "Origin": "https://missav.ai",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
+        }
+
+        media_headers = N_m3u8DL_RE_Downloader._headers_for_hls_proxy_upstream(
+            "https://surrit.com/demo/seg-0001.ts",
+            headers,
+        )
+        playlist_headers = N_m3u8DL_RE_Downloader._headers_for_hls_proxy_upstream(
+            "https://surrit.com/demo/playlist.m3u8",
+            headers,
+        )
+
+        self.assertNotIn("Origin", media_headers)
+        self.assertEqual(media_headers["Accept-Encoding"], "identity;q=1, *;q=0")
+        self.assertEqual(media_headers["Range"], "bytes=0-")
+        self.assertEqual(media_headers["Sec-Fetch-Dest"], "video")
+        self.assertEqual(media_headers["Sec-Fetch-Mode"], "no-cors")
+        self.assertEqual(media_headers["Sec-Fetch-Site"], "same-origin")
+        self.assertEqual(playlist_headers["Sec-Fetch-Dest"], "empty")
+
+    def test_hls_proxy_open_upstream_avoids_curl_cffi_stream_mode(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "video/mp4"}
+        fake_curl_cffi = types.ModuleType("curl_cffi")
+        fake_curl_cffi.requests = object()
+
+        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            return_value=response,
+        ) as mocked_get:
+            result = downloader._hls_proxy_open_upstream(
+                "https://surrit.com/demo/seg1.m4s",
+                {"Referer": "https://missav.ai/cn/demo"},
+                None,
+            )
+
+        self.assertIs(result, response)
+        self.assertNotIn("stream", mocked_get.call_args.kwargs)
+
+    def test_response_iter_bytes_prefers_buffered_content_before_iter_content(self):
+        class FakeResponse:
+            content = b"abcdef"
+
+            def iter_content(self, *args, **kwargs):
+                raise AssertionError("buffered content should be used before iter_content")
+
+        self.assertEqual(
+            list(N_m3u8DL_RE_Downloader._response_iter_bytes(FakeResponse(), chunk_size=3)),
+            [b"abc", b"def"],
+        )
+
+    def test_response_iter_bytes_prefers_no_arg_iter_content_without_buffered_content(self):
+        class FakeResponse:
+            content = b""
+
+            def iter_content(self, *args, **kwargs):
+                if args or kwargs:
+                    raise AssertionError("chunk_size should not be passed first")
+                return iter([b"abc"])
+
+        self.assertEqual(list(N_m3u8DL_RE_Downloader._response_iter_bytes(FakeResponse())), [b"abc"])
+
+    def test_downloaded_file_size_hint_includes_recent_external_temp_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            started_at = time.time()
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            temp_segments = Path(temp_dir) / "N_m3u8DL-RE_Download"
+            temp_segments.mkdir()
+            (temp_segments / "0001.m4s").write_bytes(b"a" * 1024)
+            (temp_segments / "0002.m4s").write_bytes(b"b" * 2048)
+
+            size = N_m3u8DL_RE_Downloader._downloaded_file_size_hint(save_path, since=started_at)
+
+        self.assertEqual(size, 3072)
+
+    def test_missav_surrit_external_headers_are_clean_referer_headers(self):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        item.meta.update(
+            {
+                "headers": {
+                    "Referer": "https://missav.ai/cn/demo",
+                    "Origin": "https://missav.ai",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "cross-site",
+                    "Range": "bytes=0-",
+                    "Cookie": "__cf_bm=token",
+                },
+                "missav_use_browser_headers": True,
+            }
+        )
+        headers = N_m3u8DL_RE_Downloader._headers_from_meta(item, "ua-demo", "https://missav.ai/cn/demo")
+
+        clean = N_m3u8DL_RE_Downloader._headers_for_nm3u8_external(
+            item, headers, "ua-demo", "https://missav.ai/cn/demo"
+        )
+
+        self.assertEqual(clean["User-Agent"], "ua-demo")
+        self.assertEqual(clean["Referer"], "https://missav.ai/cn/demo")
+        self.assertEqual(clean["Cookie"], "__cf_bm=token")
+        self.assertNotIn("Origin", clean)
+        self.assertNotIn("Sec-Fetch-Mode", clean)
+        self.assertNotIn("Range", clean)
+
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_playwright_hls")
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_curl_cffi_hls", side_effect=ExternalToolError("curl blocked"))
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable")
+    def test_missav_surrit_downloader_uses_playwright_after_curl_cffi_failure(
+        self,
+        mocked_resolve,
+        _mocked_curl,
+        mocked_playwright,
+    ):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        item.meta.update(
+            {
+                "headers": {"Referer": "https://missav.ai/cn/demo", "Cookie": "__cf_bm=token"},
+                "missav_use_browser_headers": True,
+                "browser_storage_state": {"cookies": [], "origins": []},
+                "force_python_hls": True,
+            }
+        )
+
+        N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        mocked_playwright.assert_called_once()
+        mocked_resolve.assert_not_called()
+
+    def test_playlist_text_from_cache_ignores_fragment(self):
+        cache = {"https://surrit.com/demo/playlist.m3u8?token=1": "#EXTM3U"}
+
+        result = N_m3u8DL_RE_Downloader._playlist_text_from_cache(
+            cache,
+            "https://surrit.com/demo/playlist.m3u8?token=1#media",
+        )
+
+        self.assertEqual(result, "#EXTM3U")
+
+    def test_playwright_launch_kwargs_use_visible_browser_for_missav_surrit(self):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+
+        kwargs = N_m3u8DL_RE_Downloader._playwright_launch_kwargs(item, "http://127.0.0.1:7890")
+
+        self.assertFalse(kwargs["headless"])
+        self.assertEqual(kwargs["proxy"], {"server": "http://127.0.0.1:7890"})
+        self.assertIn("--disable-blink-features=AutomationControlled", kwargs["args"])
+
+    def test_playwright_capture_playlist_from_referer_reads_browser_response_body(self):
+        class ExpectResponseContext:
+            def __init__(self, response):
+                self.value = response
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        page = Mock()
+        response = Mock()
+        response.url = "https://surrit.com/demo/playlist.m3u8"
+        response.status = 200
+        response.body.return_value = b"#EXTM3U\n#EXTINF:4,\nseg.ts\n"
+        page.expect_response.return_value = ExpectResponseContext(response)
+
+        result = N_m3u8DL_RE_Downloader._playwright_capture_playlist_from_referer(
+            page,
+            "https://missav.ai/cn/demo",
+            "https://surrit.com/demo/playlist.m3u8",
+        )
+
+        self.assertEqual(result["https://surrit.com/demo/playlist.m3u8"], "#EXTM3U\n#EXTINF:4,\nseg.ts\n")
+        page.goto.assert_called_once_with("https://missav.ai/cn/demo", wait_until="domcontentloaded", timeout=60000)
+        page.expect_response.assert_called_once()
+
+    def test_playwright_capture_playlist_from_referer_ignores_non_playlist_body(self):
+        class ExpectResponseContext:
+            def __init__(self, response):
+                self.value = response
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        page = Mock()
+        response = Mock()
+        response.url = "https://surrit.com/demo/playlist.m3u8"
+        response.status = 200
+        response.body.return_value = b"Forbidden"
+        page.expect_response.return_value = ExpectResponseContext(response)
+
+        result = N_m3u8DL_RE_Downloader._playwright_capture_playlist_from_referer(
+            page,
+            "https://missav.ai/cn/demo",
+            "https://surrit.com/demo/playlist.m3u8",
+        )
+
+        self.assertEqual(result, {})
+
+    def test_playwright_fetch_bytes_decodes_page_result(self):
+        page = Mock()
+        page.evaluate.return_value = {"status": 200, "body": "YWFh"}
+
+        result = N_m3u8DL_RE_Downloader._playwright_fetch_bytes(page, "https://surrit.com/seg.ts")
+
+        self.assertEqual(result, b"aaa")
+        page.evaluate.assert_called_once()
+
+    def test_playwright_fetch_or_goto_tries_media_request_before_plain_same_origin_fetch(self):
+        page = Mock()
+        with patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_fetch_bytes",
+            side_effect=ExternalToolError("CORS blocked"),
+        ) as mocked_fetch, patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_same_origin_media_request_bytes",
+            return_value=b"media",
+        ) as mocked_media, patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_same_origin_fetch_bytes",
+        ) as mocked_same_origin, patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_goto_bytes",
+        ) as mocked_goto:
+            result = N_m3u8DL_RE_Downloader._playwright_fetch_or_goto_bytes(
+                page,
+                "https://surrit.com/demo/seg.ts",
+            )
+
+        self.assertEqual(result, b"media")
+        mocked_fetch.assert_called_once()
+        mocked_media.assert_called_once()
+        mocked_same_origin.assert_not_called()
+        mocked_goto.assert_not_called()
+
+    def test_playwright_fetch_or_goto_uses_plain_same_origin_fetch_when_media_fails(self):
+        page = Mock()
+        with patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_fetch_bytes",
+            side_effect=ExternalToolError("CORS blocked"),
+        ), patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_same_origin_media_request_bytes",
+            side_effect=ExternalToolError("video blocked"),
+        ), patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_same_origin_fetch_bytes",
+            return_value=b"plain",
+        ) as mocked_same_origin, patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_goto_bytes",
+        ) as mocked_goto:
+            result = N_m3u8DL_RE_Downloader._playwright_fetch_or_goto_bytes(
+                page,
+                "https://surrit.com/demo/seg.ts",
+            )
+
+        self.assertEqual(result, b"plain")
+        mocked_same_origin.assert_called_once()
+        mocked_goto.assert_not_called()
+
+    def test_playwright_fetch_or_goto_uses_navigation_when_fetches_fail(self):
+        page = Mock()
+        with patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_fetch_bytes",
+            side_effect=ExternalToolError("CORS blocked"),
+        ), patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_same_origin_media_request_bytes",
+            side_effect=ExternalToolError("video blocked"),
+        ), patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_same_origin_fetch_bytes",
+            side_effect=ExternalToolError("plain blocked"),
+        ), patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_playwright_goto_bytes",
+            return_value=b"segment",
+        ) as mocked_goto:
+            result = N_m3u8DL_RE_Downloader._playwright_fetch_or_goto_bytes(
+                page,
+                "https://surrit.com/seg.ts",
+            )
+
+        self.assertEqual(result, b"segment")
+        mocked_goto.assert_called_once()
+
+    def test_playwright_same_origin_media_request_reads_browser_response(self):
+        class ExpectResponseContext:
+            def __init__(self, response):
+                self.value = response
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        page = Mock()
+        response = Mock()
+        response.url = "https://surrit.com/demo/playlist.m3u8"
+        response.status = 206
+        response.body.return_value = b"playlist"
+        page.expect_response.return_value = ExpectResponseContext(response)
+
+        result = N_m3u8DL_RE_Downloader._playwright_same_origin_media_request_bytes(
+            page,
+            "https://surrit.com/demo/playlist.m3u8",
+        )
+
+        self.assertEqual(result, b"playlist")
+        page.goto.assert_called_once_with("https://surrit.com/demo/", wait_until="commit", timeout=60000)
+        page.expect_response.assert_called_once()
+        page.evaluate.assert_called_once()
+
+    def test_playwright_same_origin_landing_url_uses_directory(self):
+        result = N_m3u8DL_RE_Downloader._playwright_same_origin_landing_url(
+            "https://surrit.com/a/b/playlist.m3u8?token=1"
+        )
+
+        self.assertEqual(result, "https://surrit.com/a/b/")
+
+    def test_playwright_cookie_header_expands_to_stream_and_referer_hosts(self):
+        cookies = N_m3u8DL_RE_Downloader._cookies_from_header(
+            "__cf_bm=token; sid=abc",
+            "https://surrit.com/demo/playlist.m3u8",
+            "https://missav.ai/cn/demo",
+        )
+
+        pairs = {(cookie["domain"], cookie["name"], cookie["value"]) for cookie in cookies}
+        self.assertIn(("surrit.com", "__cf_bm", "token"), pairs)
+        self.assertIn(("missav.ai", "sid", "abc"), pairs)
+
+    def test_hls_encryption_guard_allows_aes_128(self):
+        import m3u8
+
+        playlist = m3u8.loads(
+            """#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+#EXTINF:4,
+seg.ts
+#EXT-X-ENDLIST
+""",
+            uri="https://surrit.com/demo/playlist.m3u8",
+        )
+
+        self.assertFalse(N_m3u8DL_RE_Downloader._has_unsupported_hls_encryption(playlist))
+
+    def test_hls_encryption_guard_rejects_unknown_method(self):
+        import m3u8
+
+        playlist = m3u8.loads(
+            """#EXTM3U
+#EXT-X-KEY:METHOD=SAMPLE-AES,URI="key.bin"
+#EXTINF:4,
+seg.ts
+#EXT-X-ENDLIST
+""",
+            uri="https://surrit.com/demo/playlist.m3u8",
+        )
+
+        self.assertTrue(N_m3u8DL_RE_Downloader._has_unsupported_hls_encryption(playlist))
+
+    def test_hls_segment_writer_reports_byte_progress_for_speed(self):
+        import m3u8
+
+        downloader = N_m3u8DL_RE_Downloader()
+        playlist = m3u8.loads(
+            """#EXTM3U
+#EXTINF:4,
+seg1.ts
+#EXTINF:4,
+seg2.ts
+#EXT-X-ENDLIST
+""",
+            uri="https://surrit.com/demo/playlist.m3u8",
+        )
+        progress_calls = []
+
+        def fetch(url):
+            return b"aaa" if url.endswith("seg1.ts") else b"bbbbb"
+
+        def progress(value, **kwargs):
+            progress_calls.append((value, kwargs))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_path = Path(temp_dir) / "out.ts"
+            downloader._write_hls_segments(playlist, raw_path, fetch, progress, lambda: False)
+
+        self.assertEqual(progress_calls[-1][1]["bytes_downloaded"], 8)
+        self.assertGreater(progress_calls[-1][0], progress_calls[0][0])
+
+    def test_hls_aes_128_segments_are_decrypted_with_media_sequence_iv(self):
+        import m3u8
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import pad
+
+        downloader = N_m3u8DL_RE_Downloader()
+        key = b"0123456789abcdef"
+        plain = b"hls-segment-data"
+        iv = (42).to_bytes(16, byteorder="big")
+        encrypted = AES.new(key, AES.MODE_CBC, iv).encrypt(pad(plain, 16))
+        playlist_text = """#EXTM3U
+#EXT-X-MEDIA-SEQUENCE:42
+#EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+#EXTINF:4,
+seg.ts
+#EXT-X-ENDLIST
+"""
+        playlist = m3u8.loads(playlist_text, uri="https://surrit.com/demo/playlist.m3u8")
+
+        def fetch(url):
+            if url.endswith("key.bin"):
+                return key
+            if url.endswith("seg.ts"):
+                return encrypted
+            raise AssertionError(url)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_path = os.path.join(temp_dir, "out.ts")
+            downloader._write_hls_segments(playlist, Path(raw_path), fetch, lambda _value: None, lambda: False)
+            with open(raw_path, "rb") as fp:
+                self.assertEqual(fp.read(), plain)
+
+    def test_hls_aes_128_iv_parser_accepts_hex_iv(self):
+        iv = N_m3u8DL_RE_Downloader._hls_aes_iv("0x1", 99)
+        self.assertEqual(iv, (1).to_bytes(16, byteorder="big"))
+
+    def test_curl_cffi_hls_fallback_uses_cached_playlist_text(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        item.meta["playlist_cache"] = {
+            "https://surrit.com/demo/playlist.m3u8": """#EXTM3U
+#EXT-X-TARGETDURATION:8
+#EXTINF:4,
+seg1.ts
+#EXT-X-ENDLIST
+"""
+        }
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, headers=None, timeout=None):
+                self.calls.append(url)
+                response = Mock()
+                response.status_code = 200
+                response.text = ""
+                response.content = b"aaa" if url.endswith("seg1.ts") else b""
+                return response
+
+            def close(self):
+                pass
+
+        fake_session = FakeSession()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.ts")
+            with patch.object(downloader, "_make_curl_cffi_session", return_value=fake_session):
+                downloader._download_with_curl_cffi_hls(
+                    item,
+                    save_path,
+                    {"Referer": "https://missav.ai/cn/demo"},
+                    None,
+                    lambda _value: None,
+                    lambda: False,
+                )
+            with open(save_path, "rb") as fp:
+                self.assertEqual(fp.read(), b"aaa")
+
+        self.assertEqual(fake_session.calls, ["https://surrit.com/demo/seg1.ts"])
+
+    def test_curl_cffi_hls_fallback_downloads_media_segments(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        playlist = """#EXTM3U
+#EXT-X-TARGETDURATION:8
+#EXTINF:4,
+seg1.ts
+#EXTINF:4,
+https://cdn.example.com/seg2.ts
+#EXT-X-ENDLIST
+"""
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url, headers=None, timeout=None):
+                self.calls.append((url, headers, timeout))
+                response = Mock()
+                response.status_code = 200
+                if url.endswith("playlist.m3u8"):
+                    response.text = playlist
+                    response.content = playlist.encode("utf-8")
+                elif url.endswith("seg1.ts"):
+                    response.text = ""
+                    response.content = b"aaa"
+                elif url.endswith("seg2.ts"):
+                    response.text = ""
+                    response.content = b"bbb"
+                else:
+                    response.status_code = 404
+                    response.text = ""
+                    response.content = b""
+                return response
+
+            def close(self):
+                pass
+
+        fake_session = FakeSession()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.ts")
+            with patch.object(downloader, "_make_curl_cffi_session", return_value=fake_session):
+                downloader._download_with_curl_cffi_hls(
+                    item,
+                    save_path,
+                    {"Referer": "https://missav.ai/cn/demo"},
+                    None,
+                    lambda _value: None,
+                    lambda: False,
+                )
+            with open(save_path, "rb") as fp:
+                self.assertEqual(fp.read(), b"aaabbb")
+
+        self.assertEqual(fake_session.calls[0][0], "https://surrit.com/demo/playlist.m3u8")
+        self.assertEqual(fake_session.calls[1][0], "https://surrit.com/demo/seg1.ts")
+        self.assertEqual(fake_session.calls[2][0], "https://cdn.example.com/seg2.ts")
+
+    @patch.object(N_m3u8DL_RE_Downloader, "_cleanup_external_temp_files")
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_yt_dlp_fallback")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_missav_surrit_skips_external_tool_after_browser_fallback_failure(
+        self,
+        mocked_resolve,
+        mocked_popen,
+        mocked_fallback,
+        mocked_cleanup,
+    ):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        item.meta.update(
+            {
+                "headers": {"Referer": "https://missav.ai/cn/demo"},
+                "missav_use_browser_headers": True,
+                "force_python_hls": True,
+            }
+        )
+
+        with patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_download_with_curl_cffi_hls",
+            side_effect=ExternalToolError("curl blocked"),
+        ) as mocked_curl, patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_download_with_playwright_hls",
+            side_effect=ExternalToolError("browser blocked"),
+        ) as mocked_playwright:
+            N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        mocked_curl.assert_called_once()
+        mocked_playwright.assert_called_once()
+        mocked_fallback.assert_called_once()
+        mocked_resolve.assert_not_called()
+        mocked_popen.assert_not_called()
+        mocked_cleanup.assert_not_called()
+
+    @patch.object(N_m3u8DL_RE_Downloader, "_cleanup_external_temp_files")
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_yt_dlp_fallback")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_missav_surrit_with_cached_playlist_skips_yt_dlp_network_playlist_retry(
+        self,
+        mocked_resolve,
+        mocked_popen,
+        mocked_fallback,
+        mocked_cleanup,
+    ):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        item.meta.update(
+            {
+                "headers": {"Referer": "https://missav.ai/cn/demo"},
+                "missav_use_browser_headers": True,
+                "playlist_cache": {"https://surrit.com/demo/playlist.m3u8": "#EXTM3U"},
+                "force_python_hls": True,
+            }
+        )
+
+        with patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_download_with_curl_cffi_hls",
+            side_effect=ExternalToolError("segment blocked"),
+        ) as mocked_curl, patch.object(
+            N_m3u8DL_RE_Downloader,
+            "_download_with_playwright_hls",
+            side_effect=ExternalToolError("browser blocked"),
+        ) as mocked_playwright:
+            with self.assertRaises(ExternalToolError):
+                N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        mocked_curl.assert_called_once()
+        mocked_playwright.assert_called_once()
+        mocked_fallback.assert_not_called()
+        mocked_resolve.assert_not_called()
+        mocked_popen.assert_not_called()
+        mocked_cleanup.assert_not_called()
+
+    @patch.object(N_m3u8DL_RE_Downloader, "_download_with_yt_dlp_fallback")
+    @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_m3u8_downloader_does_not_use_yt_dlp_fallback_for_other_sources(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        mocked_wait_process,
+        mocked_fallback,
+    ):
+        process = Mock()
+        process.returncode = 3
+        process.poll.return_value = 0
+        mocked_popen.return_value = process
+        mocked_wait_process.return_value = None
+        item = VideoItem(url="https://cdn.example.com/live/index.m3u8", title="live", source="douyin")
+
+        with self.assertRaises(ExternalToolError):
+            N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+        mocked_fallback.assert_not_called()
+
+    def test_yt_dlp_fallback_params_enable_impersonation_and_proxy(self):
+        params = N_m3u8DL_RE_Downloader._yt_dlp_params(
+            "D:/downloads/demo.mp4",
+            {"Referer": "https://missav.ai/cn/demo"},
+            "http://127.0.0.1:7890",
+            lambda _status: None,
+        )
+
+        self.assertEqual(params["impersonate"], "")
+        self.assertEqual(params["proxy"], "http://127.0.0.1:7890")
+        self.assertEqual(params["http_headers"]["Referer"], "https://missav.ai/cn/demo")
+
+    def test_yt_dlp_fallback_retries_without_impersonation_and_wraps_failure(self):
+        from yt_dlp.utils import YoutubeDLError
+
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            with patch.object(downloader, "_run_yt_dlp") as mocked_run:
+                mocked_run.side_effect = [YoutubeDLError("bad impersonation"), YoutubeDLError("still forbidden")]
+
+                with self.assertRaises(ExternalToolError):
+                    downloader._download_with_yt_dlp_fallback(
+                        item,
+                        save_path,
+                        {"Referer": "https://missav.ai/cn/demo"},
+                        None,
+                        lambda _value: None,
+                        lambda: False,
+                    )
+
+        self.assertEqual(mocked_run.call_count, 2)
+        first_params = mocked_run.call_args_list[0].args[1]
+        retry_params = mocked_run.call_args_list[1].args[1]
+        self.assertIn("impersonate", first_params)
+        self.assertNotIn("impersonate", retry_params)
 
     @patch.object(N_m3u8DL_RE_Downloader, "_cleanup_external_temp_files")
     @patch("app.core.downloaders.m3u8.ExternalToolRunner.wait_process")

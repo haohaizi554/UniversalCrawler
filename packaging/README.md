@@ -11,10 +11,11 @@
 
 当前打包链路已经适配本项目的真实入口结构：
 
-- 统一源码入口：`main.py` + `entry/dispatcher.py`
-- 打包后双 EXE：
-  - `UniversalCrawlerPro.exe`：桌面 GUI
-  - `CrawlerWebPortal.exe`：Web UI
+- 源码自适应入口：`main.py` / `ucrawl-auto` → `entry/dispatcher.py`
+- 打包后双 EXE 直启（绕过 dispatcher）：
+  - `UniversalCrawlerPro.exe`：桌面 GUI（`entry.gui_entry`）
+  - `CrawlerWebPortal.exe`：Web UI（`entry.web_entry`）
+- 跨入口共享层：`shared/` 已显式纳入 `portable.spec` 的 `datas` 与 `hiddenimports`
 
 ## 目录职责
 
@@ -80,6 +81,7 @@
 - 已执行 `playwright install chromium`
 - 根目录可找到：
   - `ffmpeg.exe`
+  - `ffprobe.exe`
   - `N_m3u8DL-RE.exe`
 
 ### 命令
@@ -95,6 +97,7 @@ python packaging/build_portable.py
 - `dist/UniversalCrawlerPro/_internal/`
 - `dist/UniversalCrawlerPro/BUILD_INFO.txt`
 - 随包携带的 `ffmpeg.exe`
+- 随包携带的 `ffprobe.exe`
 - 随包携带的 `N_m3u8DL-RE.exe`
 - 随包携带的 Playwright Chromium 运行时
 
@@ -105,6 +108,7 @@ python packaging/build_portable.py
 - 已先完成便携版构建
 - 已安装 Inno Setup 6
 - 系统可访问 `ISCC.exe`
+- `packaging/wizard_image.bmp` 与 `packaging/wizard_small_image.bmp` 已就绪
 
 ### 命令
 
@@ -173,7 +177,7 @@ python packaging/build_release.py
 3. 启动 `UniversalCrawlerPro.exe`
 4. 启动 `CrawlerWebPortal.exe`
 5. 验证 Chromium 运行时可用
-6. 验证 `ffmpeg.exe` 与 `N_m3u8DL-RE.exe` 能被找到
+6. 验证 `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 能被找到
 7. 验证下载目录、日志目录和配置目录可正常创建
 8. 确认产物中未混入用户态配置和 Cookie
 

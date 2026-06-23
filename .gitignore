@@ -37,6 +37,7 @@ dist/
 pip-wheel-metadata/
 *.whl
 *.tar.gz
+ffprobe.exe
 
 # Node / Browser Runtime
 node_modules/

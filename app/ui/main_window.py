@@ -142,12 +142,13 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.retry_requested, self._retry_failed_item)
         self._connections.connect(self.app_shell.copy_diagnostics_requested, self._copy_item_diagnostics)
         self._connections.connect(self.app_shell.tool_requested, self._run_tool)
+        self._connections.connect(self.app_shell.completed_metadata_detected, self._update_completed_metadata)
         self._connections.connect(self.app_shell.file_association_requested, self._register_file_associations_from_frontend)
         self._connections.connect(self.app_shell.page_changed, self._on_page_changed)
         self._connections.connect(self.app_shell.refresh_requested, self._on_queue_refresh_requested)
         self._connections.connect(self.app_shell.clear_all_requested, self._on_clear_queue_requested)
         self._connections.connect(self.app_shell.active_options_changed, self._update_download_options)
-        self._connections.connect(self.media_panel.sig_toggle_fullscreen, self.toggle_fullscreen_mode)
+        self._connections.connect(self.app_shell.log_action_requested, self._handle_log_action)
         self._connections.connect(self.media_panel.sig_switch_preview, self.sig_switch_preview.emit)
         self._connections.connect(self.media_panel.sig_auto_next_preview, self.sig_auto_next_preview.emit)
 
@@ -246,12 +247,18 @@ class MainWindow(QMainWindow):
         for topic in topics:
             if topic == "videos.update":
                 sections.update({"active_downloads", "app_status"})
+            elif topic == "videos.terminal":
+                sections.update({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
+            elif topic == "videos.metadata":
+                sections.update({"completed_items", "app_status"})
             elif topic in {"videos.upsert", "videos.remove", "videos.remove_many", "videos.clear", "videos.replace"}:
                 sections.update({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
             elif topic == "logs.append":
                 sections.add("log_items")
             elif topic in {"app.running_state", "page.visibility"}:
                 sections.add("app_status")
+            elif topic in {"settings.update", "config"}:
+                sections.update({"settings_snapshot", "download_options", "app_status"})
             else:
                 return None
         if "log_items" in sections:
@@ -270,8 +277,13 @@ class MainWindow(QMainWindow):
             if not self._log_refresh_timer.isActive():
                 self._log_refresh_timer.start()
             return
-        if topic == "videos.update":
-            self.__dict__.setdefault("_pending_refresh_topics", set()).add(topic)
+        if topic in {"videos.update", "videos.metadata"}:
+            refresh_topic = topic
+            if topic == "videos.update" and isinstance(payload, dict):
+                sections = FrontendStateService._sections_for_recorded_event(topic, payload)
+                if sections is not None and "completed_items" in sections:
+                    refresh_topic = "videos.terminal"
+            self.__dict__.setdefault("_pending_refresh_topics", set()).add(refresh_topic)
             self._ui_update_scheduler.schedule("frontend")
             return
         if topic in {"videos.upsert", "videos.remove", "videos.remove_many", "videos.clear", "videos.replace", "app.running_state"}:
@@ -290,6 +302,18 @@ class MainWindow(QMainWindow):
 
     def _on_clear_queue_requested(self) -> None:
         self.sig_clear_queue.emit()
+
+    def _handle_log_action(self, operation: str) -> None:
+        if operation == "open_latest":
+            self.sig_open_latest_log.emit()
+            return
+        if operation == "open_error_summary":
+            self.sig_open_error_summary.emit()
+            return
+        result = self._frontend_state_service.handle_action("log_operation", {"operation": operation})
+        if operation != "clear":
+            self.append_log(result.get("message") or "日志操作完成")
+        self.refresh_frontend_state(topics={"logs.append"}, force=True)
 
     def _on_page_changed(self, page_id: str) -> None:
         self.app_state.set_visible_page(page_id, list(self.app_shell.pages), emit_change=False)
@@ -501,8 +525,20 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.reject()
 
-    def append_log(self, msg) -> None:
-        self._frontend_state_service.record_log(str(msg), source="GUI")
+    def append_log(
+        self,
+        msg,
+        *,
+        trace_id: str | None = None,
+        source: str = "GUI",
+        level: str = "INFO",
+    ) -> None:
+        self._frontend_state_service.record_log(
+            str(msg),
+            source=source or "GUI",
+            level=level or "INFO",
+            trace_id=str(trace_id or ""),
+        )
 
     def _emit_delete_for_video(self, video_id: str) -> None:
         if "app_shell" in self.__dict__:
@@ -600,7 +636,7 @@ class MainWindow(QMainWindow):
             return
         text = (result.get("data") or {}).get("text", "")
         QApplication.clipboard().setText(text)
-        self.append_log("诊断信息已复制")
+        self.append_log("Trace ID 已复制")
 
     def _update_download_options(self, options: dict) -> None:
         result = self._frontend_state_service.handle_action("update_download_options", options or {})
@@ -609,8 +645,17 @@ class MainWindow(QMainWindow):
             self.append_log(
                 f"Download options updated: concurrency={data.get('max_concurrent')}, retries={data.get('max_retries')}, auto_retry={data.get('auto_retry')}"
             )
+            if self.__dict__.get("_cached_snapshot"):
+                self._render_frontend_state(topics={"settings.update"})
+            else:
+                self.refresh_frontend_state(force=True)
         else:
             self.append_log(result.get("message") or "download options update failed")
+
+    def _update_completed_metadata(self, video_id: str, metadata: dict) -> None:
+        result = self._frontend_state_service.update_completed_metadata(video_id, metadata or {}, source="gui_player")
+        if result.get("status") == "ok" and self.__dict__.get("_cached_snapshot"):
+            self.refresh_frontend_state(topics={"videos.metadata"})
 
     def _pause_download_item(self, video_id: str) -> None:
         result = self._frontend_state_service.handle_action("pause_download", {"video_id": video_id})

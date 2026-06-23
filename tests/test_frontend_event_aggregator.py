@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services.frontend_event_aggregator import (
     FrontendEventAggregator,
     FrontendEventPriority,
+    sections_for_topic,
 )
 
 def test_noisy_progress_events_coalesce_by_video_id():
@@ -41,3 +42,13 @@ def test_remove_event_tracks_deleted_ids():
 
     assert state.deleted_ids == ("gone",)
     assert "queue_items" in state.changed_sections
+
+def test_metadata_event_refreshes_completed_section_only():
+    aggregator = FrontendEventAggregator()
+
+    aggregator.record("videos.metadata", {"video_id": "done", "metadata": True})
+    state = aggregator.peek()
+
+    assert sections_for_topic("videos.metadata") == frozenset({"completed_items", "app_status"})
+    assert state.changed_sections == frozenset({"completed_items", "app_status"})
+    assert state.priority == FrontendEventPriority.NORMAL

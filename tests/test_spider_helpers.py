@@ -1,6 +1,8 @@
 """测试模块，覆盖 `tests/test_spider_helpers.py` 对应功能的行为与回归场景。"""
 
 import asyncio
+import os
+import queue
 import threading
 import tempfile
 import unittest
@@ -439,14 +441,51 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(meta["referer"], "https://www.kuaishou.com/")
         self.assertEqual(meta["download_strategy"], "m3u8")
 
+    def test_missav_hls_playlist_detector_requires_extm3u(self):
+        self.assertTrue(MissAVSpider._looks_like_hls_playlist("#EXTM3U\n#EXT-X-VERSION:3"))
+        self.assertFalse(MissAVSpider._looks_like_hls_playlist(""))
+        self.assertFalse(MissAVSpider._looks_like_hls_playlist("Forbidden"))
+
     def test_missav_task_builder_keeps_compat_alias(self):
         """验证 `test_missav_task_builder_keeps_compat_alias` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         builder = MissAVTaskBuilder()
-        new_meta = builder.build_download_meta("trace-2", "https://missav.ai", "ua-demo", "http://127.0.0.1:7890")
-        old_meta = builder.build_video_meta("trace-2", "https://missav.ai", "ua-demo", "http://127.0.0.1:7890")
+        headers = {"Cookie": "sid=abc", "Origin": "https://missav.ai"}
+        storage_state = {"cookies": [{"name": "sid", "value": "abc", "domain": "surrit.com"}], "origins": []}
+        playlist_cache = {"https://surrit.com/demo/playlist.m3u8": "#EXTM3U"}
+        new_meta = builder.build_download_meta(
+            "trace-2",
+            "https://missav.ai",
+            "ua-demo",
+            "http://127.0.0.1:7890",
+            headers=headers,
+            cookie="sid=abc",
+            include_cookies=True,
+            use_browser_headers=True,
+            browser_storage_state=storage_state,
+            playlist_cache=playlist_cache,
+        )
+        old_meta = builder.build_video_meta(
+            "trace-2",
+            "https://missav.ai",
+            "ua-demo",
+            "http://127.0.0.1:7890",
+            headers=headers,
+            cookie="sid=abc",
+            include_cookies=True,
+            use_browser_headers=True,
+            browser_storage_state=storage_state,
+            playlist_cache=playlist_cache,
+        )
 
         self.assertEqual(new_meta, old_meta)
         self.assertEqual(new_meta["ua"], "ua-demo")
+        self.assertEqual(new_meta["headers"], headers)
+        self.assertEqual(new_meta["cookie"], "sid=abc")
+        self.assertEqual(new_meta["m3u8_thread_count"], 16)
+        self.assertTrue(new_meta["missav_include_cookies"])
+        self.assertTrue(new_meta["missav_use_browser_headers"])
+        self.assertEqual(new_meta["browser_storage_state"], storage_state)
+        self.assertEqual(new_meta["playlist_cache"], playlist_cache)
 
     def test_bilibili_task_builder_reuses_standard_meta_layout(self):
         """验证 `test_bilibili_task_builder_reuses_standard_meta_layout` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -563,6 +602,22 @@ class SpiderHelperTests(unittest.TestCase):
         source = inspect.getsource(BilibiliSpider.run)
         self.assertIn("_join_worker_thread(self._browser_thread", source)
         self.assertIn("_join_worker_thread(self._api_pool_thread", source)
+
+    def test_bilibili_api_worker_logs_empty_api_result(self):
+        spider = self._make_bilibili_spider()
+        spider.raw_bv_queue = queue.Queue()
+        spider.raw_bv_queue.put("BV19nRWBtEnF")
+        spider.parsed_info_queue = queue.Queue()
+        spider.browser_finished = threading.Event()
+        spider.browser_finished.set()
+        spider.api_pool_finished = threading.Event()
+        spider.api.get_video_info.return_value = None
+
+        spider._worker_api_pool()
+
+        self.assertTrue(spider.api_pool_finished.is_set())
+        self.assertTrue(spider.parsed_info_queue.empty())
+        self.assertTrue(any("BV19nRWBtEnF" in str(call.args[0]) for call in spider.log.call_args_list))
 
     @patch("app.spiders.bilibili.spider.sync_playwright")
     def test_bilibili_scan_registers_playwright_browser_for_stop(self, mocked_sync_playwright):
@@ -1013,7 +1068,126 @@ class SpiderHelperTests(unittest.TestCase):
         spider._scan_pages(page, collected)
 
         self.assertEqual(collected, {"https://missav.ai/cn/abc-123": "A"})
-        page.goto.assert_called_once_with("https://missav.ai/cn/search/ipx?page=2", timeout=3000)
+        page.goto.assert_called_once_with("https://missav.ai/cn/search/ipx?page=2", timeout=15000)
+
+    def test_missav_scan_pages_stops_at_configured_max_items(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        spider.is_running = True
+        spider.config = {"max_items": 1}
+        spider.log = Mock()
+        page = Mock()
+        page.url = "https://missav.ai/cn/search/ipx"
+        page.evaluate.return_value = [
+            {"url": "https://missav.ai/cn/abc-123", "title": "A"},
+            {"url": "https://missav.ai/cn/def-456", "title": "B"},
+        ]
+        collected = {}
+
+        spider._scan_pages(page, collected)
+
+        self.assertEqual(list(collected), ["https://missav.ai/cn/abc-123"])
+        page.query_selector.assert_not_called()
+
+    def test_missav_download_headers_merge_browser_request_and_context_cookie(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        spider.config = {}
+        context = Mock()
+        context.cookies.return_value = [
+            {"name": "session", "value": "abc"},
+            {"name": "cf_clearance", "value": "token"},
+        ]
+
+        headers = spider._download_headers_for_context(
+            context,
+            "https://missav.ai/cn/abc-123",
+            "ua-demo",
+            stream_url="https://surrit.com/stream/playlist.m3u8",
+            request_headers={
+                "accept": "*/*",
+                "accept-encoding": "gzip, br",
+                "sec-fetch-site": "cross-site",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-dest": "empty",
+                "origin": "https://missav.ai",
+                "referer": "https://missav.ai/cn/abc-123",
+                ":authority": "surrit.com",
+            },
+        )
+
+        self.assertEqual(headers["User-Agent"], "ua-demo")
+        self.assertEqual(headers["Referer"], "https://missav.ai/cn/abc-123")
+        self.assertEqual(headers["Accept"], "*/*")
+        self.assertEqual(headers["Accept-Encoding"], "gzip, br")
+        self.assertEqual(headers["Cache-Control"], "no-cache")
+        self.assertEqual(headers["Priority"], "u=1, i")
+        self.assertEqual(headers["Sec-Fetch-Dest"], "empty")
+        self.assertEqual(headers["Sec-Fetch-Mode"], "cors")
+        self.assertEqual(headers["Sec-Fetch-Site"], "cross-site")
+        self.assertEqual(headers["Origin"], "https://missav.ai")
+        self.assertEqual(headers["Range"], "bytes=0-")
+        self.assertEqual(headers["Cookie"], "session=abc; cf_clearance=token")
+        self.assertNotIn(":authority", headers)
+        context.cookies.assert_called_once_with(["https://surrit.com/stream/playlist.m3u8"])
+
+    def test_missav_download_headers_fallback_adds_cross_site_defaults_and_cookie(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        context = Mock()
+        context.cookies.return_value = [{"name": "__cf_bm", "value": "token"}]
+
+        headers = spider._download_headers_for_context(
+            context,
+            "https://missav.ai/cn/abc-123",
+            "ua-demo",
+            stream_url="https://surrit.com/stream/playlist.m3u8",
+            request_headers={},
+        )
+
+        self.assertEqual(headers["Origin"], "https://missav.ai")
+        self.assertEqual(headers["Sec-Fetch-Mode"], "cors")
+        self.assertEqual(headers["Sec-Fetch-Site"], "cross-site")
+        self.assertEqual(headers["Cookie"], "__cf_bm=token")
+        context.cookies.assert_called_once_with(["https://surrit.com/stream/playlist.m3u8"])
+
+    def test_missav_headers_from_request_sanitizes_browser_headers(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        request = Mock()
+        request.all_headers.return_value = {
+            "user-agent": "ua-real",
+            "sec-ch-ua": '"Chromium";v="126"',
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "host": "surrit.com",
+            "connection": "keep-alive",
+        }
+
+        headers = spider._headers_from_request(request)
+
+        self.assertEqual(headers["User-Agent"], "ua-real")
+        self.assertEqual(headers["Sec-Ch-Ua"], '"Chromium";v="126"')
+        self.assertEqual(headers["Accept-Encoding"], "gzip, deflate, br, zstd")
+        self.assertNotIn("Host", headers)
+        self.assertNotIn("Connection", headers)
+
+    def test_missav_proxy_helpers_normalize_browser_system_proxy(self):
+        self.assertEqual(
+            MissAVSpider._proxy_from_proxy_server_string("http=127.0.0.1:8080;https=127.0.0.1:7890"),
+            "http://127.0.0.1:7890",
+        )
+        self.assertEqual(
+            MissAVSpider._proxy_from_proxy_server_string("socks=127.0.0.1:1080"),
+            "socks5://127.0.0.1:1080",
+        )
+        self.assertEqual(MissAVSpider._normalize_proxy_server("Clash (7890)"), "http://127.0.0.1:7890")
+        self.assertEqual(MissAVSpider._normalize_proxy_server("127.0.0.1:7890"), "http://127.0.0.1:7890")
+        self.assertIsNone(MissAVSpider._normalize_proxy_server("系统代理"))
+
+    def test_missav_effective_proxy_prefers_config_then_environment(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        spider.config = {"proxy": "127.0.0.1:9001"}
+        self.assertEqual(spider._effective_proxy_server(), "http://127.0.0.1:9001")
+
+        spider.config = {}
+        with patch.dict(os.environ, {"HTTPS_PROXY": "127.0.0.1:7890"}, clear=True):
+            self.assertEqual(spider._effective_proxy_server(), "http://127.0.0.1:7890")
 
     def test_missav_scan_pages_logs_page_errors(self):
         """验证 `test_missav_scan_pages_logs_page_errors` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1070,21 +1244,21 @@ class SpiderHelperTests(unittest.TestCase):
         """验证 `test_bilibili_enqueue_new_bvids_filters_duplicates` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         spider = BilibiliSpider.__new__(BilibiliSpider)
         spider.raw_bv_queue = Mock()
-        bv_set = {"BV1old"}
+        bv_set = {"BV1xx411old0"}
 
         new_count = spider._enqueue_new_bvids(
             [
-                "https://www.bilibili.com/video/BV1old",
-                "https://www.bilibili.com/video/BV1new",
-                "https://www.bilibili.com/video/BV1new?p=2",
+                "https://www.bilibili.com/video/BV1xx411old0",
+                "https://www.bilibili.com/video/BV1xx411new0",
+                "https://www.bilibili.com/video/BV1xx411new0?p=2",
                 "https://www.bilibili.com/read/cv123",
             ],
             bv_set,
         )
 
         self.assertEqual(new_count, 1)
-        self.assertEqual(bv_set, {"BV1old", "BV1new"})
-        spider.raw_bv_queue.put.assert_called_once_with("BV1new")
+        self.assertEqual(bv_set, {"BV1xx411old0", "BV1xx411new0"})
+        spider.raw_bv_queue.put.assert_called_once_with("BV1xx411new0")
 
     def test_bilibili_scan_page_retries_after_empty_first_pass(self):
         """验证 `test_bilibili_scan_page_retries_after_empty_first_pass` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1095,14 +1269,14 @@ class SpiderHelperTests(unittest.TestCase):
         page.evaluate.side_effect = [
             [],
             None,
-            ["https://www.bilibili.com/video/BV1retry"],
+            ["https://www.bilibili.com/video/BV1xx411try0"],
         ]
 
         new_count = spider._scan_page_for_new_bvids(page, set())
 
         self.assertEqual(new_count, 1)
         page.evaluate.assert_any_call("window.scrollTo(0, document.body.scrollHeight)")
-        spider.raw_bv_queue.put.assert_called_once_with("BV1retry")
+        spider.raw_bv_queue.put.assert_called_once_with("BV1xx411try0")
 
     def test_bilibili_producer_routes_uid_to_space_scan(self):
         """验证 `test_bilibili_producer_routes_uid_to_space_scan` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1192,6 +1366,84 @@ class SpiderHelperTests(unittest.TestCase):
         )
         spider.raw_bv_queue.put.assert_not_called()
 
+    def test_bilibili_producer_routes_ugc_season_bv_url_to_api_queue(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333.788.videopod.sections&vd_source=demo"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider.raw_bv_queue.put.assert_called_once_with("BV1xx411c7mD")
+        spider._scan_with_browser_queue.assert_not_called()
+
+    def test_bilibili_producer_routes_ugc_season_id_bv_url_to_api_queue(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://www.bilibili.com/video/BV1xx411c7mD?ugc_season_id=123456&section_id=789"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider.raw_bv_queue.put.assert_called_once_with("BV1xx411c7mD")
+        spider._scan_with_browser_queue.assert_not_called()
+
+    def test_bilibili_producer_routes_space_collection_url_to_scan(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "https://space.bilibili.com/1513751793/channel/collectiondetail?sid=123456"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+
+        spider._producer_browser_task()
+
+        spider._scan_with_browser_queue.assert_called_once_with(
+            "https://space.bilibili.com/1513751793/channel/collectiondetail?sid=123456",
+            max_pages=5,
+            is_search=False,
+            is_space=False,
+        )
+
+    def test_bilibili_classify_share_text_with_embedded_bvid(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        route = spider._classify_input("【测试标题】快来看看 BV1xx411c7mD 吧")
+        self.assertEqual(route.kind, "bvid")
+        self.assertEqual(route.value, "BV1xx411c7mD")
+
+    def test_bilibili_classify_bvid_adjacent_to_chinese_text(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        route = spider._classify_input("BV19nRWBtEnF合集BV号")
+        self.assertEqual(route.kind, "keyword")
+        self.assertIn("BV19nRWBtEnF", route.value)
+        self.assertEqual(route.scan_kwargs, {"is_search": True, "is_space": False})
+
+    def test_bilibili_classify_bvid_embedded_in_chinese_text(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        route = spider._classify_input("这是一个合集BV19nRWBtEnF合集BV号")
+        self.assertEqual(route.kind, "keyword")
+        self.assertIn("BV19nRWBtEnF", route.value)
+        self.assertEqual(route.scan_kwargs, {"is_search": True, "is_space": False})
+
+    def test_bilibili_classify_plain_av_number(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        route = spider._classify_input("av123456")
+        self.assertEqual(route.kind, "aid")
+        self.assertEqual(route.value, "123456")
+
+    def test_bilibili_classify_uid_label(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        route = spider._classify_input("UID:1513751793")
+        self.assertEqual(route.kind, "scan")
+        self.assertEqual(route.value, "https://space.bilibili.com/1513751793/video")
+
     def test_bilibili_producer_routes_search_url_to_search_scan(self):
         spider = BilibiliSpider.__new__(BilibiliSpider)
         spider.keyword = "https://search.bilibili.com/all?keyword=test"
@@ -1243,6 +1495,22 @@ class SpiderHelperTests(unittest.TestCase):
             is_space=False,
         )
         spider.browser_finished.set.assert_called_once()
+
+    @patch("app.spiders.bilibili.spider.requests.get")
+    def test_bilibili_producer_routes_resolved_b23_short_link_to_bv_queue(self, mocked_get):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.keyword = "share https://b23.tv/demo123"
+        spider.config = {"max_pages": 5}
+        spider.raw_bv_queue = Mock()
+        spider._scan_with_browser_queue = Mock()
+        spider.browser_finished = Mock()
+        spider.log = Mock()
+        mocked_get.return_value.url = "https://www.bilibili.com/video/BV1xx411c7mD?share_source=copy_web"
+
+        spider._producer_browser_task()
+
+        spider.raw_bv_queue.put.assert_called_once_with("BV1xx411c7mD")
+        spider._scan_with_browser_queue.assert_not_called()
 
     @patch("app.spiders.bilibili.spider.requests.get")
     def test_bilibili_normalize_keyword_resolves_b23_short_link(self, mocked_get):

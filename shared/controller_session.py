@@ -118,7 +118,12 @@ class ControllerSessionMixin:
         self._after_task_finished(vid, item)
         if not item:
             return
-        self._emit_controller_log(self._format_download_finished_message(item))
+        self._emit_controller_log(
+            self._format_download_finished_message(item),
+            trace_id=self._item_trace_id(item),
+            source="Downloader",
+            level="INFO",
+        )
         debug_logger.log(
             component=self.DOWNLOAD_LOG_COMPONENT,
             action="download_finished",
@@ -139,7 +144,12 @@ class ControllerSessionMixin:
                 current_item.meta.pop("download_error", None)
                 current_progress = current_item.progress
             item = self._apply_video_state(vid, status=_video_status_enum().PENDING, progress=current_progress)
-            self._emit_controller_log(f"download paused: {item.title if item else vid}")
+            self._emit_controller_log(
+                f"download paused: {item.title if item else vid}",
+                trace_id=self._item_trace_id(item),
+                source="Downloader",
+                level="WARN",
+            )
             return
         item = self._apply_video_state(vid, status=_video_status_enum().FAILED, progress=self.DOWNLOAD_ERROR_PROGRESS)
         if item:
@@ -150,7 +160,12 @@ class ControllerSessionMixin:
         self._after_task_error(vid, item, error)
         if not item:
             return
-        self._emit_controller_log(self._format_download_error_message(item, error))
+        self._emit_controller_log(
+            self._format_download_error_message(item, error),
+            trace_id=self._item_trace_id(item),
+            source="Downloader",
+            level="ERROR",
+        )
         debug_logger.log(
             component=self.DOWNLOAD_LOG_COMPONENT,
             action="download_error",
@@ -193,7 +208,14 @@ class ControllerSessionMixin:
     def _build_video_state_event(vid: str, item: "VideoItem", *, requested_progress: int | None):
         return _build_video_state_event_impl(vid, item, requested_progress=requested_progress)
 
-    def _emit_controller_log(self, message: str) -> None:
+    def _emit_controller_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "Controller",
+        level: str = "INFO",
+    ) -> None:
         raise NotImplementedError
 
     def _video_lookup(self, video_id: str) -> "VideoItem" | None:

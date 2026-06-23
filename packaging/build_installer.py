@@ -30,6 +30,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = PROJECT_ROOT / "dist" / "UniversalCrawlerPro"
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
+WIZARD_IMAGE = PROJECT_ROOT / "packaging" / "wizard_image.bmp"
+WIZARD_SMALL_IMAGE = PROJECT_ROOT / "packaging" / "wizard_small_image.bmp"
 
 def get_setup_exe_path() -> Path:
     """返回当前版本对应的安装包输出路径。"""
@@ -111,6 +113,16 @@ def ensure_prerequisites() -> str:
         )
     if not ISS_FILE.exists():
         raise SystemExit(f"未找到安装脚本: {ISS_FILE}")
+    missing_wizard_assets = [
+        str(path)
+        for path in (WIZARD_IMAGE, WIZARD_SMALL_IMAGE)
+        if not path.exists()
+    ]
+    if missing_wizard_assets:
+        raise SystemExit(
+            "缺少 Inno Setup 向导图资源，请确认以下文件存在:\n- "
+            + "\n- ".join(missing_wizard_assets)
+        )
     iscc = resolve_iscc()
     if not iscc:
         raise SystemExit(

@@ -6,15 +6,23 @@ import os
 import threading
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QSizeF, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+try:
+    from PyQt6.QtMultimedia import QMediaMetaData
+except ImportError:  # pragma: no cover - depends on the PyQt6 build
+    QMediaMetaData = None
+from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import (
     QFrame,
+    QGraphicsScene,
+    QGraphicsView,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QStyle,
     QVBoxLayout,
@@ -23,7 +31,6 @@ from PyQt6.QtWidgets import (
 
 from app.services.mkv_repair_service import MkvPlaybackRepairService
 from app.ui.task_runtime import LongTaskRunner, ShortTaskRunner, TaskCancelToken
-from app.ui.widgets import ClickableVideoWidget
 
 @dataclass(slots=True)
 class _RepairUiState:
@@ -32,6 +39,70 @@ class _RepairUiState:
     percent: int
     message: str
     repaired_path: str = ""
+
+
+class _ClickableImageLabel(QLabel):
+    sig_double_click = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.sig_double_click.emit()
+        super().mouseDoubleClickEvent(event)
+
+
+class _VideoGraphicsView(QGraphicsView):
+    sig_double_click = pyqtSignal()
+
+    def __init__(self, scene: QGraphicsScene, video_item: QGraphicsVideoItem, parent=None) -> None:
+        super().__init__(scene, parent)
+        self._video_item = video_item
+        self.setObjectName("VideoSurface")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        size = self.viewport().size()
+        self.scene().setSceneRect(0, 0, size.width(), size.height())
+        self._video_item.setSize(QSizeF(size.width(), size.height()))
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.sig_double_click.emit()
+        super().mouseDoubleClickEvent(event)
+
+
+class _MediaFullscreenWindow(QWidget):
+    def __init__(self, panel: "MediaPreviewPanel") -> None:
+        super().__init__(None)
+        self.panel = panel
+        self._allow_close = False
+        self.setObjectName("MediaFullscreenWindow")
+        self.setWindowTitle("Universal Crawler Pro - Media")
+        self.setWindowFlag(Qt.WindowType.Window)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.panel.exit_media_fullscreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:
+        if self._allow_close:
+            super().closeEvent(event)
+            return
+        event.ignore()
+        self.panel.exit_media_fullscreen()
+
+    def allow_close(self) -> None:
+        self._allow_close = True
+
 
 class MediaPreviewPanel(QFrame):
     """Preview local media and repair only when playback is actually not seekable."""
@@ -43,12 +114,14 @@ class MediaPreviewPanel(QFrame):
     sig_repair_finished = pyqtSignal(str, str, str, bool, str)
     sig_repair_commit_progress = pyqtSignal(str, int, str)
     sig_repair_commit_finished = pyqtSignal(str, str, bool, str)
+    sig_media_metadata_detected = pyqtSignal(str, dict)
 
     def __init__(self, style_provider, repair_service: MkvPlaybackRepairService | None = None):
         super().__init__(style_provider if isinstance(style_provider, QWidget) else None)
         self._style_provider = style_provider
         self._repair_service = repair_service or MkvPlaybackRepairService()
         self._active_video_source: str | None = None
+        self._active_source_path: str | None = None
         self._repair_candidate_path: str | None = None
         self._repair_candidate_key: str | None = None
         self._repairing_sources: set[str] = set()
@@ -64,6 +137,9 @@ class MediaPreviewPanel(QFrame):
         self.current_image_path: str | None = None
         self.is_slider_pressed = False
         self._end_emitted_for_source = False
+        self._last_metadata_emit_signature: tuple | None = None
+        self._fullscreen_window: _MediaFullscreenWindow | None = None
+        self._fullscreen_restore: tuple[QWidget | None, QVBoxLayout | None, int, int] | None = None
 
         self.setObjectName("ContentPanel")
         layout = QVBoxLayout(self)
@@ -76,20 +152,26 @@ class MediaPreviewPanel(QFrame):
         vid_layout.setContentsMargins(0, 0, 0, 0)
         vid_layout.setSpacing(0)
 
-        self.vid_w = ClickableVideoWidget()
-        self.vid_w.sig_double_click.connect(self.sig_toggle_fullscreen.emit)
+        self.video_scene = QGraphicsScene(self)
+        self.video_scene.setBackgroundBrush(QColor(0, 0, 0, 0))
+        self.video_item = QGraphicsVideoItem()
+        self.video_item.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.video_scene.addItem(self.video_item)
+        self.vid_w = _VideoGraphicsView(self.video_scene, self.video_item)
+        self.vid_w.sig_double_click.connect(self.toggle_media_fullscreen)
         vid_layout.addWidget(self.vid_w)
 
-        self.img_lbl = QLabel()
+        self.img_lbl = _ClickableImageLabel()
         self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_lbl.setObjectName("ImageLabel")
         self.img_lbl.setMinimumSize(1, 1)
+        self.img_lbl.sig_double_click.connect(self.toggle_media_fullscreen)
         self.img_lbl.hide()
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.vid_w)
+        self.player.setVideoOutput(self.video_item)
 
         self.destroyed.connect(self._cleanup_before_destroy)
 
@@ -159,8 +241,8 @@ class MediaPreviewPanel(QFrame):
         self.btn_fullscreen = QPushButton("[ 全屏 ]")
         self.btn_fullscreen.setFixedHeight(32)
         self.btn_fullscreen.setObjectName("FullscreenBtn")
-        self.btn_fullscreen.setToolTip("沉浸模式 (双击画面)")
-        self.btn_fullscreen.clicked.connect(self.sig_toggle_fullscreen.emit)
+        self.btn_fullscreen.setToolTip("媒体全屏 (双击画面)")
+        self.btn_fullscreen.clicked.connect(self.toggle_media_fullscreen)
 
         controls_layout.addWidget(self.btn_play)
         controls_layout.addWidget(self.btn_prev)
@@ -201,6 +283,8 @@ class MediaPreviewPanel(QFrame):
 
         source_key = self._normalize_path(video_path)
         self._active_video_source = source_key
+        self._active_source_path = video_path
+        self._last_metadata_emit_signature = None
         self._prune_repair_states(source_key)
         self._end_emitted_for_source = False
         self._repair_candidate_path = None
@@ -223,7 +307,7 @@ class MediaPreviewPanel(QFrame):
         self.player.setSource(QUrl.fromLocalFile(playable_path))
         self._schedule_pending_cache_cleanup()
         self._restore_repair_status(source_key)
-        self.player.setVideoOutput(self.vid_w)
+        self.player.setVideoOutput(self.video_item)
         self.player.play()
         self._set_play_button_paused()
 
@@ -233,7 +317,9 @@ class MediaPreviewPanel(QFrame):
 
     def release_media(self) -> None:
         self._active_video_source = None
+        self._active_source_path = None
         self._end_emitted_for_source = False
+        self._last_metadata_emit_signature = None
         self._repair_candidate_path = None
         self._repair_candidate_key = None
         self._duration_probe_timer.stop()
@@ -244,28 +330,84 @@ class MediaPreviewPanel(QFrame):
         self._hide_repair_status()
         self._schedule_pending_cache_cleanup()
 
+    def toggle_media_fullscreen(self) -> None:
+        if self._fullscreen_window is not None:
+            self.exit_media_fullscreen()
+        else:
+            self.enter_media_fullscreen()
+
+    def enter_media_fullscreen(self) -> None:
+        if self._fullscreen_window is not None:
+            return
+        parent = self.parentWidget()
+        parent_layout = parent.layout() if parent is not None else None
+        index = parent_layout.indexOf(self) if parent_layout is not None else -1
+        stretch = parent_layout.stretch(index) if parent_layout is not None and index >= 0 and hasattr(parent_layout, "stretch") else 0
+        if parent_layout is not None:
+            parent_layout.removeWidget(self)
+        window = _MediaFullscreenWindow(self)
+        window.layout().addWidget(self)
+        self._fullscreen_restore = (parent, parent_layout if isinstance(parent_layout, QVBoxLayout) else None, index, stretch)
+        self._fullscreen_window = window
+        self.btn_fullscreen.setText("[ 退出 ]")
+        window.showFullScreen()
+        self.resize_media()
+        self._resize_video_surface()
+
+    def exit_media_fullscreen(self) -> None:
+        window = self._fullscreen_window
+        restore = self._fullscreen_restore
+        if window is None:
+            return
+        window.layout().removeWidget(self)
+        parent, parent_layout, index, stretch = restore or (None, None, -1, 0)
+        self.setParent(parent)
+        if parent_layout is not None:
+            if index >= 0:
+                parent_layout.insertWidget(index, self, stretch)
+            else:
+                parent_layout.addWidget(self, stretch)
+        self.show()
+        self._fullscreen_window = None
+        self._fullscreen_restore = None
+        self.btn_fullscreen.setText("[ 全屏 ]")
+        window.allow_close()
+        window.close()
+        window.deleteLater()
+        self.resize_media()
+        self._resize_video_surface()
+
     def cleanup(self) -> None:
         if self._cleanup_done:
             return
         self._cleanup_done = True
+        self.exit_media_fullscreen()
         self._cleanup_requested.set()
         self.current_image_path = None
-        for signal, slot in (
-            (self.player.positionChanged, self.on_player_position_changed),
-            (self.player.durationChanged, self.on_player_duration_changed),
-            (self.player.mediaStatusChanged, self.on_player_media_status_changed),
-            (self.player.errorOccurred, self.on_player_error),
-        ):
-            try:
-                signal.disconnect(slot)
-            except (TypeError, RuntimeError):
-                pass
-        self.release_media()
-        self._short_task_runner.cancel_all(timeout_ms=5000)
-        self._long_task_runner.cancel_all(timeout_ms=10000)
-        with self._repair_lock:
-            self._repair_states.clear()
-            self._pending_cache_cleanup.clear()
+        player = getattr(self, "player", None)
+        if player is not None:
+            for signal, slot in (
+                (player.positionChanged, self.on_player_position_changed),
+                (player.durationChanged, self.on_player_duration_changed),
+                (player.mediaStatusChanged, self.on_player_media_status_changed),
+                (player.errorOccurred, self.on_player_error),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            self.release_media()
+        short_runner = getattr(self, "_short_task_runner", None)
+        if short_runner is not None:
+            short_runner.cancel_all(timeout_ms=5000)
+        long_runner = getattr(self, "_long_task_runner", None)
+        if long_runner is not None:
+            long_runner.cancel_all(timeout_ms=10000)
+        repair_lock = getattr(self, "_repair_lock", None)
+        if repair_lock is not None:
+            with repair_lock:
+                self._repair_states.clear()
+                self._pending_cache_cleanup.clear()
 
     def deleteLater(self) -> None:
         self.cleanup()
@@ -289,6 +431,18 @@ class MediaPreviewPanel(QFrame):
 
     def resize_media(self) -> None:
         QTimer.singleShot(10, self.scale_image_to_fit)
+        QTimer.singleShot(10, self._resize_video_surface)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._resize_video_surface()
+
+    def _resize_video_surface(self) -> None:
+        if not hasattr(self, "vid_w") or not hasattr(self, "video_scene") or not hasattr(self, "video_item"):
+            return
+        size = self.vid_w.viewport().size()
+        self.video_scene.setSceneRect(0, 0, size.width(), size.height())
+        self.video_item.setSize(QSizeF(size.width(), size.height()))
 
     def toggle_play(self) -> None:
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -306,6 +460,7 @@ class MediaPreviewPanel(QFrame):
         self.slider.setRange(0, max(0, duration))
         if duration > 0:
             self._duration_probe_timer.stop()
+            self._emit_current_media_metadata(duration_ms=duration)
 
     def on_player_position_changed(self, pos: int) -> None:
         if not self.is_slider_pressed:
@@ -322,6 +477,8 @@ class MediaPreviewPanel(QFrame):
         }
         if status in loaded_statuses and self._seek_is_unavailable():
             self._schedule_seek_repair_probe()
+        if status in loaded_statuses:
+            self._emit_current_media_metadata()
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             self._set_play_button_stopped()
             if self._active_video_source and not self._end_emitted_for_source:
@@ -635,6 +792,76 @@ class MediaPreviewPanel(QFrame):
             return source.toLocalFile()
         return ""
 
+    def _emit_current_media_metadata(self, *, duration_ms: int | None = None) -> None:
+        source_path = self._active_source_path or self._current_player_path()
+        if not source_path:
+            return
+        metadata: dict[str, str] = {}
+        if duration_ms is None:
+            try:
+                duration_ms = int(self.player.duration())
+            except (TypeError, ValueError, RuntimeError):
+                duration_ms = 0
+        if duration_ms and duration_ms > 0:
+            duration = self.format_clock_time(duration_ms)
+            if duration:
+                metadata["duration"] = duration
+        resolution = self._current_video_resolution()
+        if resolution:
+            metadata["resolution"] = resolution
+        if not metadata:
+            return
+        signature = (self._normalize_path(source_path), tuple(sorted(metadata.items())))
+        if signature == self._last_metadata_emit_signature:
+            return
+        self._last_metadata_emit_signature = signature
+        self.sig_media_metadata_detected.emit(source_path, metadata)
+
+    def _current_video_resolution(self) -> str:
+        for size in (self._video_item_native_size(), self._player_metadata_resolution()):
+            resolution = self._size_to_resolution(size)
+            if resolution:
+                return resolution
+        return ""
+
+    def _video_item_native_size(self):
+        getter = getattr(self.video_item, "nativeSize", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except RuntimeError:
+            return None
+
+    def _player_metadata_resolution(self):
+        if QMediaMetaData is None:
+            return None
+        metadata_getter = getattr(self.player, "metaData", None)
+        if not callable(metadata_getter):
+            return None
+        try:
+            metadata = metadata_getter()
+            key = QMediaMetaData.Key.Resolution
+            value_getter = getattr(metadata, "value", None)
+            return value_getter(key) if callable(value_getter) else None
+        except (AttributeError, RuntimeError, TypeError):
+            return None
+
+    @staticmethod
+    def _size_to_resolution(size) -> str:
+        if size is None:
+            return ""
+        width_getter = getattr(size, "width", None)
+        height_getter = getattr(size, "height", None)
+        try:
+            width = int(round(width_getter() if callable(width_getter) else 0))
+            height = int(round(height_getter() if callable(height_getter) else 0))
+        except (TypeError, ValueError):
+            return ""
+        if width <= 0 or height <= 0:
+            return ""
+        return f"{width} x {height}"
+
     def _seek_is_unavailable(self) -> bool:
         return self.player.duration() <= 0 and self.slider.maximum() <= 0
 
@@ -665,3 +892,15 @@ class MediaPreviewPanel(QFrame):
         seconds = (ms // 1000) % 60
         minutes = ms // 60000
         return f"{minutes:02}:{seconds:02}"
+
+    @staticmethod
+    def format_clock_time(ms: int) -> str:
+        try:
+            total_seconds = int(ms // 1000)
+        except (TypeError, ValueError):
+            return ""
+        if total_seconds <= 0:
+            return ""
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02}:{minutes:02}:{seconds:02}"

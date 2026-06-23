@@ -422,11 +422,29 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.goto(self._server_url)
         self._page.wait_for_load_state("networkidle")
         self._page.wait_for_timeout(3500)
-        before = self._page.evaluate("document.body.classList.contains('is-fullscreen')")
-        self._page.evaluate("toggleFullscreen()")
+        result = self._page.evaluate(
+            """
+            () => {
+              const panel = document.getElementById('previewPanel');
+              let called = false;
+              Object.defineProperty(panel, 'requestFullscreen', {
+                configurable: true,
+                value: () => {
+                  called = true;
+                  return Promise.resolve();
+                }
+              });
+              toggleFullscreen();
+              return {
+                called,
+                bodyFullscreen: document.body.classList.contains('is-fullscreen')
+              };
+            }
+            """
+        )
         self._page.wait_for_timeout(200)
-        after = self._page.evaluate("document.body.classList.contains('is-fullscreen')")
-        self.assertNotEqual(before, after)
+        self.assertTrue(result["called"])
+        self.assertFalse(result["bodyFullscreen"])
 
     def test_11_esc_closes_modals(self):
         """Esc 键应关闭弹窗。"""

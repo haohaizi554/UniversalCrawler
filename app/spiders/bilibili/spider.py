@@ -490,6 +490,10 @@ class BilibiliSpider(BaseSpider):
         "collection_id",
         "media_id",
     }
+    UID_LABEL_PATTERN = re.compile(r"(?i)^(?:uid|mid|up主|up主id|用户id)[:：\s]+(\d+)$")
+    BVID_TEXT_PATTERN = re.compile(r"(?i)(?<![0-9A-Za-z])(BV[0-9A-Za-z]{10})(?![0-9A-Za-z])")
+    AVID_TEXT_PATTERN = re.compile(r"(?i)(?<![0-9A-Za-z])av(\d+)(?![0-9A-Za-z])")
+    SHORT_LINK_HOSTS = ("b23.tv", "bili2233.cn", "bili22.cn")
 
     def _execute_input_route(self, route: BilibiliInputRoute, *, max_pages: int) -> None:
         if route.kind == "bvid":
@@ -514,6 +518,20 @@ class BilibiliSpider(BaseSpider):
         match = re.search(r"https?://[^\s`'\"<>]+", text)
         if match:
             return self._strip_url_trailing_punctuation(match.group(0))
+        match = re.search(
+            r"(?://)?(?:www\.)?bilibili\.com/[^\s`'\"<>]+",
+            text,
+            re.I,
+        )
+        if match:
+            candidate = match.group(0)
+            if "://" not in candidate:
+                candidate = f"https://{candidate.lstrip('/')}"
+            return self._strip_url_trailing_punctuation(candidate)
+        for host in self.SHORT_LINK_HOSTS:
+            match = re.search(rf"(?i)\b{re.escape(host)}/[^\s`'\"<>]+", text)
+            if match:
+                return self._strip_url_trailing_punctuation(f"https://{match.group(0)}")
         return text.strip().strip("`")
 
     @classmethod
@@ -521,22 +539,31 @@ class BilibiliSpider(BaseSpider):
         return str(value or "").strip().strip("`").rstrip(cls.URL_TRAILING_PUNCTUATION)
 
     def _resolve_short_share_url(self, url: str) -> str:
-        """提供 `_resolve_short_share_url` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
-        if "b23.tv" not in url:
-            return url
+        """Resolve Bilibili short share links to their final destination URL."""
+        candidate = str(url or "").strip()
+        if candidate and not candidate.lower().startswith(("http://", "https://")):
+            if any(host in candidate.lower() for host in self.SHORT_LINK_HOSTS):
+                candidate = f"https://{candidate.lstrip('/')}"
+            elif candidate.lower().startswith(("www.bilibili.com/", "bilibili.com/")):
+                candidate = f"https://{candidate.lstrip('/')}"
+        lowered = candidate.lower()
+        if not any(host in lowered for host in self.SHORT_LINK_HOSTS):
+            return candidate
         try:
             request_timeout = getattr(
                 getattr(self, "api", None),
                 "request_timeout",
                 cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout")),
             )
-            response = requests.get(url, headers=HEADERS, timeout=request_timeout, allow_redirects=True)
-            resolved = response.url or url
-            self.log(f"🔗 [短链解析] {url} -> {resolved}")
+            response = requests.get(candidate, headers=HEADERS, timeout=request_timeout, allow_redirects=True)
+            resolved = response.url or candidate
+            if hasattr(self, "sig_log"):
+                self.log(f"🔗 [短链解析] {candidate} -> {resolved}")
             return resolved
         except requests.RequestException as exc:
-            self.log(f"⚠️ [短链解析失败] {exc}")
-            return url
+            if hasattr(self, "sig_log"):
+                self.log(f"⚠️ [短链解析失败] {exc}")
+            return candidate
 
     def _normalize_keyword(self, raw_text: str) -> str:
         """Normalize share text and short links before route classification."""
@@ -544,25 +571,53 @@ class BilibiliSpider(BaseSpider):
         return self._resolve_short_share_url(extracted)
 
     def _classify_input(self, raw_text: str) -> BilibiliInputRoute:
-        normalized = self._normalize_keyword(raw_text)
+        raw = str(raw_text or "").strip()
+        normalized = self._normalize_keyword(raw)
         value = str(normalized or "").strip()
         if not value:
             return self._keyword_route("")
+
+        uid_label = self.UID_LABEL_PATTERN.match(raw)
+        if uid_label:
+            uid = uid_label.group(1)
+            return BilibiliInputRoute(
+                "scan",
+                f"https://space.bilibili.com/{uid}/video",
+                {"is_search": False, "is_space": True},
+            )
+
         if re.fullmatch(r"\d+", value):
             return BilibiliInputRoute(
                 "scan",
                 f"https://space.bilibili.com/{value}/video",
                 {"is_search": False, "is_space": True},
             )
-        if re.fullmatch(r"(?i)BV[A-Za-z0-9]+", value):
+        if re.fullmatch(r"(?i)BV[0-9A-Za-z]{10}", value):
             return BilibiliInputRoute("bvid", "BV" + value[2:])
+        if re.fullmatch(r"(?i)av\d+", value):
+            return BilibiliInputRoute("aid", value[2:])
+
         if value.lower().startswith(("http://", "https://")):
             return self._route_url(value)
+
+        bvid = self._bvid_from_text(value)
+        if bvid:
+            if self._looks_like_collection_bvid_hint(raw):
+                return self._keyword_route(bvid)
+            return BilibiliInputRoute("bvid", bvid)
+        aid = self._aid_from_text(value)
+        if aid:
+            return BilibiliInputRoute("aid", aid)
         return self._keyword_route(value)
 
     def _keyword_route(self, keyword: str) -> BilibiliInputRoute:
         search_url = f"https://search.bilibili.com/all?keyword={urllib.parse.quote(str(keyword or ''))}"
         return BilibiliInputRoute("keyword", search_url, {"is_search": True, "is_space": False})
+
+    @staticmethod
+    def _looks_like_collection_bvid_hint(raw_text: str) -> bool:
+        lowered = str(raw_text or "").lower()
+        return any(marker in lowered for marker in ("合集", "系列", "列表", "收藏", "collection", "season", "series"))
 
     def _route_url(self, url: str) -> BilibiliInputRoute:
         url = self._strip_url_trailing_punctuation(url)
@@ -572,6 +627,8 @@ class BilibiliSpider(BaseSpider):
         if "bilibili.com" not in host and "b23.tv" not in host:
             return self._keyword_route(url)
         if "space.bilibili.com" in host:
+            if self._is_collection_like_url(parsed):
+                return BilibiliInputRoute("scan", url, {"is_search": False, "is_space": False})
             uid_match = re.search(r"/(\d+)(?:/|$)", path)
             target_url = url
             if uid_match and not re.search(r"/(video|lists?)(?:/|$)", path):
@@ -579,9 +636,11 @@ class BilibiliSpider(BaseSpider):
             return BilibiliInputRoute("scan", target_url, {"is_search": False, "is_space": True})
         if "search.bilibili.com" in host:
             return BilibiliInputRoute("scan", url, {"is_search": True, "is_space": False})
+        bvid = self._bvid_from_url(url)
+        if bvid and self._is_bvid_ugc_season_entry_url(parsed):
+            return BilibiliInputRoute("bvid", bvid)
         if self._is_collection_like_url(parsed):
             return BilibiliInputRoute("scan", url, {"is_search": False, "is_space": False})
-        bvid = self._bvid_from_url(url)
         if bvid:
             return BilibiliInputRoute("bvid", bvid)
         aid = self._aid_from_url(url)
@@ -598,12 +657,40 @@ class BilibiliSpider(BaseSpider):
         return any(key.lower() in cls.COLLECTION_QUERY_KEYS for key in query)
 
     @staticmethod
-    def _bvid_from_url(url: str) -> str:
-        match = re.search(r"(?i)(BV[A-Za-z0-9]+)", str(url or ""))
+    def _is_bvid_ugc_season_entry_url(parsed: urllib.parse.ParseResult) -> bool:
+        """Bilibili UGC season entries are best resolved through the BV detail API."""
+        if not re.search(r"(?i)/video/BV[0-9A-Za-z]{10}", parsed.path or ""):
+            return False
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        query_keys = {str(key).lower() for key in query}
+        if {"ugc_season_id", "section_id", "season_id", "series_id"} & query_keys:
+            return True
+        spm_values = [value for key, values in query.items() if str(key).lower() in {"spm_id_from", "from_spmid"} for value in values]
+        return any("videopod.sections" in str(value).lower() or "ugc_season" in str(value).lower() for value in spm_values)
+
+    @staticmethod
+    def _normalize_bvid(value: str) -> str:
+        text = str(value or "").strip()
+        if len(text) >= 2 and text[:2].upper() == "BV":
+            return "BV" + text[2:]
+        return text
+
+    @classmethod
+    def _bvid_from_url(cls, url: str) -> str:
+        match = re.search(r"(?i)video/(BV[0-9A-Za-z]{10})", str(url or ""))
         if not match:
-            return ""
-        raw = match.group(1)
-        return "BV" + raw[2:]
+            match = cls.BVID_TEXT_PATTERN.search(str(url or ""))
+        return cls._normalize_bvid(match.group(1)) if match else ""
+
+    @classmethod
+    def _bvid_from_text(cls, text: str) -> str:
+        match = cls.BVID_TEXT_PATTERN.search(str(text or ""))
+        return cls._normalize_bvid(match.group(1)) if match else ""
+
+    @classmethod
+    def _aid_from_text(cls, text: str) -> str:
+        match = cls.AVID_TEXT_PATTERN.search(str(text or ""))
+        return match.group(1) if match else ""
 
     @staticmethod
     def _aid_from_url(url: str) -> str:
@@ -638,7 +725,7 @@ class BilibiliSpider(BaseSpider):
                 try:
                     bvid = self.raw_bv_queue.get(timeout=0.5)
                     future = executor.submit(process_one, bvid)
-                    def callback(f):
+                    def callback(f, raw_id=bvid):
                         
                         if not self.is_running:
                             return
@@ -646,6 +733,8 @@ class BilibiliSpider(BaseSpider):
                             res = f.result()
                             if res:
                                 self.parsed_info_queue.put(res)
+                            else:
+                                self.log(f"⚠️ Bilibili API 未返回可用视频信息: {raw_id}")
                         except SpiderParseError as exc:
                             self.log(f"⚠️ 视频信息解析失败: {exc}")
                         except (RuntimeError, ValueError, KeyError, TypeError) as exc:
@@ -660,6 +749,21 @@ class BilibiliSpider(BaseSpider):
                 executor.shutdown(wait=True, cancel_futures=True)
             self.api_pool_finished.set()
 
+    def _restore_scan_cookies(self, page) -> None:
+        context = getattr(page, "context", None)
+        if context is None:
+            return
+        try:
+            cookie_file = cfg.get(
+                "auth",
+                "bilibili_cookie_file",
+                cfg.get("bilibili", "auth_file", get_setting_default("bilibili", "auth_file")),
+            )
+            auth_service = getattr(self, "auth_service", None) or AuthService()
+            auth_service.restore_playwright_cookies(context, cookie_file)
+        except Exception as exc:
+            self.log(f"⚠️ Bilibili 扫描 Cookie 恢复失败，继续匿名扫描: {exc}")
+
     # --- 浏览器扫描逻辑 ---
     def _scan_with_browser_queue(self, url, max_pages=1, is_search=False, is_space=False):
         """提供 `_scan_with_browser_queue` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
@@ -669,6 +773,7 @@ class BilibiliSpider(BaseSpider):
                 browser = p.chromium.launch(headless=False)
                 self._track_playwright_browser(browser)
                 page = browser.new_page()
+                self._restore_scan_cookies(page)
                 current_url = url
                 if not self.interruptible_playwright_goto(page, url, timeout=60000):
                     return

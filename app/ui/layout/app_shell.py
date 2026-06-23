@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
 
 from app.ui.layout.island import IslandCard
 from app.ui.layout.sidebar import SidebarWidget
@@ -26,10 +26,12 @@ class AppShell(QWidget):
     retry_requested = pyqtSignal(str)
     copy_diagnostics_requested = pyqtSignal(str)
     tool_requested = pyqtSignal(str)
+    completed_metadata_detected = pyqtSignal(str, dict)
     file_association_requested = pyqtSignal(bool, bool)
     refresh_requested = pyqtSignal()
     clear_all_requested = pyqtSignal()
     active_options_changed = pyqtSignal(dict)
+    log_action_requested = pyqtSignal(str)
 
     def __init__(self, *, is_dark_theme: bool, style_provider) -> None:
         super().__init__()
@@ -41,6 +43,8 @@ class AppShell(QWidget):
         self.status_bar = StatusBarWidget(is_dark=is_dark_theme)
         self.stack = QStackedWidget()
         self.stack.setObjectName("PageStack")
+        self.stack.setMinimumHeight(0)
+        self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.pages: dict[str, QWidget] = {
             "queue": DownloadQueuePage(),
@@ -52,6 +56,8 @@ class AppShell(QWidget):
             "toolbox": ToolboxPage(),
         }
         for page in self.pages.values():
+            page.setMinimumHeight(0)
+            page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             self.stack.addWidget(page)
 
         self.control_island = IslandCard(object_name="ControlIsland")
@@ -60,6 +66,7 @@ class AppShell(QWidget):
 
         self.status_island = IslandCard(object_name="StatusIsland")
         self.status_island.content_layout.setContentsMargins(8, 0, 8, 0)
+        self.status_island.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.status_island.add_widget(self.status_bar)
 
         root = QVBoxLayout(self)
@@ -107,6 +114,7 @@ class AppShell(QWidget):
         completed.play_requested.connect(self.play_requested.emit)
         completed.open_directory_requested.connect(self.open_directory_requested.emit)
         completed.delete_requested.connect(self.delete_requested.emit)
+        completed.metadata_detected.connect(self.completed_metadata_detected.emit)
         failed = self.pages["failed"]
         failed.retry_requested.connect(self.retry_requested.emit)
         failed.copy_diagnostics_requested.connect(self.copy_diagnostics_requested.emit)
@@ -115,6 +123,8 @@ class AppShell(QWidget):
         toolbox.tool_requested.connect(self.tool_requested.emit)
         settings = self.pages["settings"]
         settings.file_association_requested.connect(self.file_association_requested.emit)
+        logs = self.pages["logs"]
+        logs.log_action_requested.connect(self.log_action_requested.emit)
 
     def show_page(self, page_id: str, *, emit_change: bool = True, render_page: bool = True) -> None:
         page = self.pages.get(page_id)
@@ -170,6 +180,8 @@ class AppShell(QWidget):
             return True
         if page_id == "logs":
             return "log_items" in changed_sections
+        if page_id == "active" and {"settings_snapshot", "download_options"} & changed_sections:
+            return True
         section = self._PAGE_SECTION_KEYS.get(page_id)
         return bool(section and section in changed_sections)
 

@@ -21,22 +21,29 @@ DIST_DIR = DIST_ROOT / APP_NAME
 BUILD_DIR = PROJECT_ROOT / "build"
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
 BROWSER_DIR = LOCALAPPDATA / "ms-playwright"
-# 关键修复：原版本检查 web_main.py，但项目已重构（统一通过 main.py 自适应派发）
-# 现在只需一个入口 main.py，CrawlerWebPortal.exe 启动时自动 --mode web
+# 打包产物为双 EXE 直启：UniversalCrawlerPro.exe -> gui_entry，CrawlerWebPortal.exe -> web_entry。
+# 自适应 dispatcher 仅用于源码 python main.py / ucrawl-auto，不用于冻结 EXE。
 REQUIRED_FILES = [
     PROJECT_ROOT / "main.py",
     PROJECT_ROOT / "favicon.ico",  # 主图标（桌面 EXE 用）
     PROJECT_ROOT / "Web.ico",      # Web 专用图标（Web EXE 用）
     PROJECT_ROOT / "ffmpeg.exe",
+    PROJECT_ROOT / "ffprobe.exe",
     PROJECT_ROOT / "N_m3u8DL-RE.exe",
     SPEC_FILE,
-    # 自适应入口子包必须存在，否则打包后 EXE 启动崩溃
+    PROJECT_ROOT / "shared" / "__init__.py",
+    # 入口子包必须存在，否则打包后 EXE 启动崩溃
     PROJECT_ROOT / "entry" / "__init__.py",
     PROJECT_ROOT / "entry" / "dispatcher.py",
     PROJECT_ROOT / "entry" / "gui_entry.py",
     PROJECT_ROOT / "entry" / "web_entry.py",
     PROJECT_ROOT / "entry" / "cli_entry.py",
     PROJECT_ROOT / "entry" / "interactive_entry.py",
+    PROJECT_ROOT / "entry" / "mode_selection_ui.py",
+    PROJECT_ROOT / "entry" / "web_tray_ui.py",
+    PROJECT_ROOT / "entry" / "web_launch_runtime.py",
+    PROJECT_ROOT / "entry" / "qt_entry_utils.py",
+    PROJECT_ROOT / "entry" / "web_port_dialog.py",
 ]
 FORBIDDEN_BASENAMES = {
     "config.json",
@@ -126,7 +133,7 @@ def verify_output() -> None:
     if not webui_path.exists():
         raise SystemExit(f"未找到 WebUI 入口程序: {webui_path}")
 
-    for required_name in ("ffmpeg.exe", "N_m3u8DL-RE.exe"):
+    for required_name in ("ffmpeg.exe", "ffprobe.exe", "N_m3u8DL-RE.exe"):
         matches = list(DIST_DIR.glob(f"**/{required_name}"))
         if not matches:
             raise SystemExit(f"缺少运行依赖: {required_name}")
@@ -159,6 +166,15 @@ def verify_output() -> None:
     if not (cli_pkg / "__init__.py").exists():
         raise SystemExit("子包 cli 缺少关键模块: __init__.py")
 
+    shared_pkg = internal / "shared"
+    if not shared_pkg.exists():
+        raise SystemExit(
+            "未找到打包后的子包: shared\n"
+            "EXE 启动将因 ImportError 崩溃，请检查 portable.spec 的 datas。"
+        )
+    if not (shared_pkg / "__init__.py").exists():
+        raise SystemExit("子包 shared 缺少关键模块: __init__.py")
+
     for path in DIST_DIR.glob("**/*"):
         if path.is_file() and path.name.lower() in FORBIDDEN_BASENAMES:
             raise SystemExit(f"发现不应打包的用户数据文件: {path}")
@@ -172,14 +188,14 @@ def write_manifest() -> None:
         f"Executable: {APP_NAME}.exe",
         f"WebUI: {WEBUI_NAME}.exe",
         "",
-        "启动模式（自适应入口）：",
-        f"- 双击 {APP_NAME}.exe        → 默认进入 GUI 模式（无参数自适应）",
-        f"- 双击 {WEBUI_NAME}.exe  → 直接进入 Web 模式",
-        f"- 命令行 {APP_NAME}.exe --mode cli  search  → CLI 模式",
-        f"- 命令行 {APP_NAME}.exe --mode interactive → 交互式引导",
+        "启动方式（双 EXE 直启）：",
+        f"- 双击 {APP_NAME}.exe       → 桌面 GUI",
+        f"- 双击 {WEBUI_NAME}.exe → Web UI（FastAPI + 托盘）",
+        "- CLI / 交互式模式请使用源码环境：ucrawl / ucrawl-i，或 python main.py --mode cli",
         "",
         "Bundled tools:",
         "- ffmpeg.exe",
+        "- ffprobe.exe",
         "- N_m3u8DL-RE.exe",
         "- Playwright Chromium (ms-playwright)",
         "",

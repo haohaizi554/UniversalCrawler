@@ -15,9 +15,14 @@
 
 两种发布物都基于同一套源码入口：
 
-- `main.py`：统一自适应入口
+- `main.py` / `ucrawl-auto`：统一自适应入口（`entry.dispatcher`）
 - `entry.gui_entry`：桌面 GUI
 - `entry.web_entry`：Web UI
+
+打包后的 Windows EXE **不走 dispatcher**，而是双 EXE 直启：
+
+- `UniversalCrawlerPro.exe` → `entry.gui_entry`
+- `CrawlerWebPortal.exe` → `entry.web_entry`
 
 ## 关键原则
 
@@ -65,7 +70,10 @@ playwright install chromium
 以下文件必须位于项目根目录：
 
 - `ffmpeg.exe`
+- `ffprobe.exe`（标准 FFmpeg 发行包自带，供 `media_metadata_service` 使用）
 - `N_m3u8DL-RE.exe`
+
+安装包构建还需要 `packaging/wizard_image.bmp` 与 `packaging/wizard_small_image.bmp`。
 
 ### 3. 发布前回归
 
@@ -100,10 +108,11 @@ dist/UniversalCrawlerPro/
 - `_internal/`
 - `BUILD_INFO.txt`
 - `ffmpeg.exe`
+- `ffprobe.exe`
 - `N_m3u8DL-RE.exe`
 - `ms-playwright/`
 
-便携版验证时，用户数据默认仍应落到项目根目录 `user_data/`，这是开发与灰度阶段的默认行为，不应误判为打包路径异常。
+便携版 EXE 为冻结运行时，用户数据应写入 `%LOCALAPPDATA%\UniversalCrawlerPro`（见 `runtime_paths.py`）。仅源码开发态默认使用项目根目录 `user_data/`。
 
 ### 安装包
 
@@ -187,7 +196,7 @@ version = "x.y.z"
 2. 双击 `CrawlerWebPortal.exe` 能启动 Web UI
 3. Web UI 能正常打开浏览器
 4. GUI / Web 都能创建下载目录
-5. `ffmpeg.exe` 与 `N_m3u8DL-RE.exe` 可被发现
+5. `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 可被发现
 6. Playwright Chromium 可用
 7. 用户数据写入位置符合当前路径规范
 8. 安装包开始菜单和桌面快捷方式可用

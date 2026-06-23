@@ -12,6 +12,8 @@
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
+
+
 **Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
 
 它不是一个套壳网页，也不是一堆零散脚本的堆叠，而是一个围绕 **可维护性、可扩展性、可调试性、可打包分发** 设计出来的桌面端采集工作站。

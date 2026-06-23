@@ -16,6 +16,7 @@ and version numbers are aligned with the project version declared in `pyproject.
 - Added `README_EN.md` as the English companion to the default Chinese README.
 - Added Docker runtime helper assets such as `requirements-web.txt`, `docker/entrypoint.sh`, and `.env.docker.example`.
 - Added Docker build validation workflow in `.github/workflows/docker-build.yml`.
+- Bundled `ffprobe.exe` and explicitly packaged `shared/` in portable builds for `media_metadata_service` and cross-entry runtime helpers.
 
 ### Changed
 - Unified installer version injection with `pyproject.toml`.
@@ -25,6 +26,7 @@ and version numbers are aligned with the project version declared in `pyproject.
 - Expanded the root README with direct Docker usage guidance and language switch links.
 - Expanded packaging documentation to include `project_meta.py`, `runtime_paths.py`, and the sync contract across build scripts, docs, and tests.
 - Hardened desktop media deletion so the GUI releases the active media source before removing files.
+- Aligned `portable.spec` metadata with `project_meta.py` and updated `BUILD_INFO.txt` / packaging docs for the dual-EXE direct-launcher model.
 
 ### Fixed
 - Fixed Douyin FFmpeg progress parsing and retry refresh behavior.
@@ -32,3 +34,4 @@ and version numbers are aligned with the project version declared in `pyproject.
 - Fixed Bilibili spider thread regressions and ensured single-item stream failures no longer terminate the whole task loop.
 - Removed leftover temporary debug probes from Kuaishou, Douyin, FFmpeg, and Web frontend code paths.
 - Filled missing XiaoHongShu regression coverage for route dispatch, HTML fallback, 461 cooldown, and downloader header propagation.
+- Fixed broken `ucrawl-auto` console entry to target `entry.dispatcher:run`.

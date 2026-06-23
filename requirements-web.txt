@@ -12,5 +12,7 @@ rich~=14.1.0
 m3u8~=3.6.0
 playwright~=1.57.0
 yt-dlp>=2023.0.0
+curl-cffi>=0.10.0
+pycryptodome>=3.20.0
 loguru>=0.7.0
 websockets>=12.0

@@ -22,8 +22,15 @@ class _DummyDownloadController(DownloadControllerMixin, ControllerSessionMixin):
     def _host(self):
         return self.host
 
-    def _emit_controller_log(self, message: str) -> None:
-        self.host.append_log(message)
+    def _emit_controller_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "Controller",
+        level: str = "INFO",
+    ) -> None:
+        self.host.append_log(message, trace_id=trace_id, source=source, level=level)
 
     def _publish_video_state(self, vid: str, item, *, requested_progress: int | None) -> None:
         self.host.update_video_status(

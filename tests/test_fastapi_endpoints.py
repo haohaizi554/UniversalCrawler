@@ -148,6 +148,7 @@ class StateEndpointTests(unittest.TestCase):
             "failed_items",
             "log_items",
             "settings_snapshot",
+            "download_options",
             "toolbox_items",
             "app_status",
         ):

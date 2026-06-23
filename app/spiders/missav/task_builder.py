@@ -1,23 +1,67 @@
-"""爬虫实现模块，负责 `app/spiders/missav/task_builder.py` 对应平台的采集、解析或任务装配逻辑。"""
+"""Task builder for MissAV download items."""
 
 from __future__ import annotations
 
 from app.spiders.base_task_builder import BaseTaskBuilder
 
+
 class MissAVTaskBuilder(BaseTaskBuilder):
-    """负责将解析结果转换为 `MissAVTaskBuilder` 对应的任务或数据对象。"""
-    def build_download_meta(self, trace_id: str, referer: str, user_agent: str, proxy: str | None) -> dict:
-        """构建 `download_meta` 对应的结果、参数或对象，供 `MissAVTaskBuilder` 使用。"""
+    """Build normalized metadata for MissAV HLS tasks."""
+
+    def build_download_meta(
+        self,
+        trace_id: str,
+        referer: str,
+        user_agent: str,
+        proxy: str | None,
+        *,
+        headers: dict | None = None,
+        cookie: str | None = None,
+        include_cookies: bool = False,
+        use_browser_headers: bool = False,
+        browser_storage_state: dict | None = None,
+        playlist_cache: dict | None = None,
+    ) -> dict:
         return super().build_download_meta(
             trace_id=trace_id,
             referer=referer,
             user_agent=user_agent,
             proxy=proxy,
-            download_strategy="m3u8",  # 与 KuaishouTaskBuilder 对齐：MissAV 视频始终使用 m3u8 下载策略
-            content_type="video",  # 与 DouyinParser/BilibiliSpider/KuaishouTaskBuilder 对齐：MissAV 视频始终为 video
-            media_label="视频",  # 与 DouyinParser 对齐：GUI 日志使用
+            download_strategy="m3u8",
+            content_type="video",
+            media_label="video",
+            m3u8_thread_count=16,
+            headers=headers,
+            cookie=cookie,
+            missav_include_cookies=include_cookies,
+            missav_use_browser_headers=use_browser_headers,
+            browser_storage_state=browser_storage_state,
+            playlist_cache=playlist_cache,
         )
 
-    def build_video_meta(self, trace_id: str, referer: str, user_agent: str, proxy: str | None) -> dict:
-        """兼容旧调用点，逐步收敛到统一的 build_download_meta。"""
-        return self.build_download_meta(trace_id, referer, user_agent, proxy)
+    def build_video_meta(
+        self,
+        trace_id: str,
+        referer: str,
+        user_agent: str,
+        proxy: str | None,
+        *,
+        headers: dict | None = None,
+        cookie: str | None = None,
+        include_cookies: bool = False,
+        use_browser_headers: bool = False,
+        browser_storage_state: dict | None = None,
+        playlist_cache: dict | None = None,
+    ) -> dict:
+        return self.build_download_meta(
+            trace_id,
+            referer,
+            user_agent,
+            proxy,
+            headers=headers,
+            cookie=cookie,
+            include_cookies=include_cookies,
+            use_browser_headers=use_browser_headers,
+            browser_storage_state=browser_storage_state,
+            playlist_cache=playlist_cache,
+        )

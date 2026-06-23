@@ -93,7 +93,12 @@ class ControllerSessionMixin:
         self._after_task_finished(vid, item)
         if not item:
             return
-        self._emit_controller_log(f"✅ 下载完成: {item.title}")
+        self._emit_controller_log(
+            f"✅ 下载完成: {item.title}",
+            trace_id=self._item_trace_id(item),
+            source="Downloader",
+            level="INFO",
+        )
         debug_logger.log(
             component=self.DOWNLOAD_LOG_COMPONENT,
             action="download_finished",
@@ -114,7 +119,12 @@ class ControllerSessionMixin:
                 current_item.meta.pop("download_error", None)
                 current_progress = current_item.progress
             item = self._apply_video_state(vid, status=VideoStatus.PENDING.label, progress=current_progress)
-            self._emit_controller_log(f"download paused: {item.title if item else vid}")
+            self._emit_controller_log(
+                f"download paused: {item.title if item else vid}",
+                trace_id=self._item_trace_id(item),
+                source="Downloader",
+                level="WARN",
+            )
             return
         item = self._apply_video_state(vid, status="❌ 失败", progress=self.DOWNLOAD_ERROR_PROGRESS)
         if item:
@@ -125,7 +135,12 @@ class ControllerSessionMixin:
         self._after_task_error(vid, item, error)
         if not item:
             return
-        self._emit_controller_log(f"❌ 下载失败 [{item.title}]: {error}")
+        self._emit_controller_log(
+            f"❌ 下载失败 [{item.title}]: {error}",
+            trace_id=self._item_trace_id(item),
+            source="Downloader",
+            level="ERROR",
+        )
         debug_logger.log(
             component=self.DOWNLOAD_LOG_COMPONENT,
             action="download_error",
@@ -158,7 +173,14 @@ class ControllerSessionMixin:
     def _publish_video_state(self, vid: str, item: VideoItem, *, requested_progress: int | None) -> None:
         raise NotImplementedError
 
-    def _emit_controller_log(self, message: str) -> None:
+    def _emit_controller_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "Controller",
+        level: str = "INFO",
+    ) -> None:
         raise NotImplementedError
 
     def _video_lookup(self, video_id: str) -> VideoItem | None:

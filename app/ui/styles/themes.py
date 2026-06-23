@@ -27,7 +27,7 @@ LIGHT = {
     "row_alt": "#fbfdff",
     "scrollbar_bg": "#f1f5f9",
     "scrollbar_handle": "#cbd5e1",
-    "video_bg": "#111827",
+    "video_bg": "#f8fafc",
     "log_bg": "#ffffff",
 }
 
@@ -264,14 +264,23 @@ QLabel#PageTitle {{
 
 QFrame#ActiveTableCard,
 QFrame#ActiveDetailCard,
-QFrame#ActiveEventsCard {{
+QFrame#ActiveEventsCard,
+QFrame#CompletedTableCard,
+QFrame#CompletedPreviewCard,
+QFrame#CompletedInfoCard,
+QFrame#FailedTableCard,
+QFrame#FailedDetailCard,
+QFrame#FailedSolutionsCard {{
     background-color: {c["panel"]};
     border: 1px solid {c["border"]};
     border-radius: 8px;
 }}
 
 QFrame#ActiveDetailCard QLabel,
-QFrame#ActiveEventsCard QLabel {{
+QFrame#ActiveEventsCard QLabel,
+QFrame#CompletedInfoCard QLabel,
+QFrame#FailedDetailCard QLabel,
+QFrame#FailedSolutionsCard QLabel {{
     background: transparent;
     font-size: 13px;
 }}
@@ -326,6 +335,17 @@ QTableView#ActiveDownloadsTable::item {{
 
 QTableView#ActiveDownloadsTable QHeaderView::section {{
     padding-left: 10px;
+    padding-right: 10px;
+}}
+
+QTableView#CompletedItemsTable {{
+    border: none;
+    border-radius: 0px;
+    background-color: {c["panel"]};
+}}
+
+QTableView#CompletedItemsTable QHeaderView::section {{
+    padding-left: 12px;
     padding-right: 10px;
 }}
 
@@ -878,6 +898,114 @@ QTableView::item:selected:active {{
     background-color: {c["row_selected"]};
 }}
 
+QTableView#CompletedItemsTable::item:selected,
+QTableView#CompletedItemsTable::item:selected:active,
+QTableView#FailedItemsTable::item:selected,
+QTableView#FailedItemsTable::item:selected:active {{
+    color: {c["text"]};
+    background-color: transparent;
+}}
+
+QFrame#FailedDetailCard,
+QFrame#FailedSolutionsCard,
+QFrame#FailedTableCard,
+QFrame#LogTableCard,
+QFrame#LogDetailCard,
+QFrame#LogExtraCard {{
+    background-color: {c["panel"]};
+    border: 1px solid {c["border"]};
+    border-radius: 10px;
+}}
+
+QPushButton#LogTabButton {{
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    color: {c["text"]};
+    font-weight: 600;
+    padding: 8px 14px;
+}}
+
+QPushButton#LogTabButton:checked {{
+    color: {c["accent"]};
+    background-color: {c["accent_soft"]};
+    border-color: {c["accent"]};
+}}
+
+QPushButton#LogActionButton {{
+    background-color: {c["panel_soft"]};
+    border: 1px solid {c["border"]};
+    border-radius: 7px;
+    color: {c["text"]};
+    font-weight: 600;
+    padding: 7px 12px;
+}}
+
+QPushButton#LogActionButton:hover {{
+    color: {c["accent"]};
+    border-color: {c["accent"]};
+}}
+
+QTextEdit#LogDetailText,
+QTextEdit#LogExtraText {{
+    background-color: {c["log_bg"]};
+    color: {c["text"]};
+    border: 1px solid {c["border"]};
+    border-radius: 8px;
+    padding: 8px;
+}}
+
+QLabel#FailedDetailKey {{
+    color: {c["muted"]};
+    font-size: 13px;
+}}
+
+QWidget#FailedDetailValueText,
+QLabel#FailedDetailValueText {{
+    color: {c["text"]};
+    font-size: 13px;
+}}
+
+QFrame#FailedLogRow,
+QFrame#FailedSolutionRow {{
+    background-color: {c["panel_soft"]};
+    border: 1px solid {c["border"]};
+    border-radius: 8px;
+}}
+
+QLabel#FailedLogTime {{
+    color: {c["muted"]};
+    font-family: Consolas, 'Microsoft YaHei UI', monospace;
+    font-size: 12px;
+}}
+
+QLabel#FailedLogLevel {{
+    color: {c["accent"]};
+    font-family: Consolas, 'Microsoft YaHei UI', monospace;
+    font-size: 12px;
+    font-weight: 700;
+}}
+
+QLabel#FailedLogMessage {{
+    color: {c["text"]};
+    font-size: 12px;
+}}
+
+QLabel#FailedSolutionTitle {{
+    color: {c["text"]};
+    font-weight: 700;
+}}
+
+QLabel#FailedSolutionDescription {{
+    color: {c["muted"]};
+    font-size: 12px;
+}}
+
+QScrollArea#FailedLogExcerptScroll {{
+    background: transparent;
+    border: none;
+}}
+
 QTableView::item:hover {{
     background-color: transparent;
     color: {c["text"]};
@@ -1002,8 +1130,14 @@ QFrame#VideoContainer {{
     border-radius: 10px;
 }}
 
-QVideoWidget, QVideoWidget#VideoSurface {{
+QGraphicsView#VideoSurface,
+QVideoWidget,
+QVideoWidget#VideoSurface {{
     background-color: transparent;
+}}
+
+QWidget#MediaFullscreenWindow {{
+    background-color: {c["video_bg"]};
 }}
 
 QLabel#ImageLabel {{

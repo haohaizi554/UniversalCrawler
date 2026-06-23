@@ -30,13 +30,25 @@ class DownloadControllerMixin:
             return
         app_state = getattr(self, "app_state", None)
         if app_state is not None:
-            app_state._publish_change(
-                "videos.update",
-                {"video_id": vid, "progress": requested_progress},
-            )
+            progress = requested_progress if requested_progress is not None else getattr(item, "progress", None)
+            payload = {
+                "video_id": vid,
+                "progress": progress,
+                "status": str(getattr(item, "status", "") or ""),
+                "local_path": str(getattr(item, "local_path", "") or ""),
+                "content_type": str(getattr(item, "content_type", "") or ""),
+            }
+            app_state._publish_change("videos.update", payload)
 
-    def _emit_controller_log(self, message: str) -> None:
-        self._host().append_log(message)
+    def _emit_controller_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "Downloader",
+        level: str = "INFO",
+    ) -> None:
+        self._host().append_log(message, trace_id=trace_id, source=source, level=level)
 
     def _resolve_event_video_item(self, video_id: str):
         item = self._video_lookup(video_id) if hasattr(self, "_video_lookup") else self.videos.get(video_id)

@@ -201,6 +201,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             event_recorder=self.frontend_state_service.record_event,
             delta_provider=self.get_frontend_delta,
         )
+        self.frontend_state_service.set_frontend_event_emitter(self.bridge.emit)
 
         self.file_service = MediaLibraryService(self.VIDEO_EXTENSIONS, self.IMAGE_EXTENSIONS)
         self._dl_manager: DownloadManager | None = None
@@ -333,8 +334,23 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             event_data["content_type"] = (item.meta.get("content_type", "") if item.meta else "")
         self.bridge.emit("video_state_changed", event_data)
 
-    def _emit_controller_log(self, message: str) -> None:
-        self.bridge.emit("log", {"message": message})
+    def _emit_controller_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "Downloader",
+        level: str = "INFO",
+    ) -> None:
+        self.bridge.emit(
+            "log",
+            {
+                "message": message,
+                "trace_id": trace_id or "",
+                "source": source or "Downloader",
+                "level": level or "INFO",
+            },
+        )
 
     def _build_download_finished_log_details(self, item: VideoItem) -> dict[str, Any]:
         return {
@@ -428,6 +444,8 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             },
         )
 
+        spider.ui_trace_id = debug_logger.new_trace_id(f"{source_id}-crawl")
+        spider.source_id = source_id
         self.current_spider = spider
         self._bind_spider_signals(spider)
         spider.start()
@@ -480,7 +498,15 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             spider.ask_user_selection = MethodType(ask_user_selection_web, spider)
 
         # BaseSpider 现在使用纯 Python 回调信号；WebSocketBridge 自身已负责跨线程投递到 asyncio。
-        on_log = lambda msg: self.bridge.emit("log", {"message": msg})
+        on_log = lambda msg: self.bridge.emit(
+            "log",
+            {
+                "message": msg,
+                "trace_id": getattr(spider, "ui_trace_id", "") or "",
+                "source": getattr(spider, "source_id", "") or "Spider",
+                "level": "INFO",
+            },
+        )
         spider.sig_log.connect(on_log)
         spider.sig_item_found.connect(self._on_spider_item_found)
         spider.sig_select_tasks.connect(self._on_spider_select_tasks)

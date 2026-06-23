@@ -8,6 +8,7 @@ class _FakeLoop:
         self.soon_calls = []
         self.created_coroutines = []
         self.call_soon_calls = []
+        self.call_later_calls = []
 
     def is_closed(self):
         return False
@@ -21,6 +22,10 @@ class _FakeLoop:
 
     def call_soon(self, callback, *args):
         self.call_soon_calls.append((callback, args))
+        callback(*args)
+
+    def call_later(self, delay, callback, *args):
+        self.call_later_calls.append((delay, callback, args))
         callback(*args)
 
     def create_task(self, coro):
@@ -55,6 +60,36 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual(len(foreign_loop.call_soon_calls), 0)
         self.assertEqual(len(target_loop.soon_calls), 1)
         self.assertEqual(len(target_loop.created_coroutines), 1)
+
+    def test_metadata_event_schedules_frontend_delta(self):
+        loop = _FakeLoop()
+        recorded = []
+        delta_bases = []
+
+        async def send_func(event_type, data):
+            return {"event_type": event_type, "data": data}
+
+        def delta_provider(base_version):
+            delta_bases.append(base_version)
+            return {
+                "version": 1,
+                "changed_sections": ["completed_items", "app_status"],
+                "sections": {"completed_items": []},
+            }
+
+        bridge = WebSocketBridge(
+            loop,
+            send_func,
+            event_recorder=lambda topic, payload: recorded.append((topic, payload)),
+            delta_provider=delta_provider,
+        )
+
+        bridge.emit("videos.metadata", {"video_id": "done", "metadata": True})
+
+        self.assertEqual(recorded, [("videos.metadata", {"video_id": "done", "metadata": True})])
+        self.assertEqual(delta_bases, [0])
+        self.assertEqual(len(loop.call_later_calls), 1)
+        self.assertEqual(len(loop.created_coroutines), 2)
 
 if __name__ == "__main__":
     unittest.main()

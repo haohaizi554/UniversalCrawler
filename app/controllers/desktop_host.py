@@ -15,8 +15,15 @@ class DesktopHostAdapter:
     def set_current_save_dir(self, save_dir: str, *, persist: bool = False) -> None:
         self.window.set_current_save_dir(save_dir, persist=persist)
 
-    def append_log(self, message: str) -> None:
-        self.window.append_log(message)
+    def append_log(
+        self,
+        message: str,
+        *,
+        trace_id: str | None = None,
+        source: str = "GUI",
+        level: str = "INFO",
+    ) -> None:
+        self.window.append_log(message, trace_id=trace_id, source=source, level=level)
 
     def set_crawl_running_state(self, is_running: bool) -> None:
         self.window.set_crawl_running_state(is_running)

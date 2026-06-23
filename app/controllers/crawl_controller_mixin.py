@@ -18,7 +18,11 @@ class CrawlControllerMixin:
     """Shared crawl-session orchestration for host-backed controllers."""
 
     def _emit_spider_log_event(self, message: str) -> None:
-        self._spider_bridge.sig_event.emit(build_log_event(message))
+        trace_id = getattr(getattr(self, "current_spider", None), "ui_trace_id", None)
+        source = getattr(getattr(self, "current_spider", None), "source_id", None) or "Spider"
+        self._spider_bridge.sig_event.emit(
+            build_log_event(message, trace_id=trace_id, source=source, level="INFO")
+        )
 
     def _emit_spider_item_found_event(self, item: VideoItem) -> None:
         self._spider_bridge.sig_event.emit(build_item_found_event(item))
@@ -30,7 +34,13 @@ class CrawlControllerMixin:
         self._spider_bridge.sig_event.emit(build_crawl_state_event(CrawlStatus.FINISHED))
 
     def _handle_spider_log_event(self, event: DomainEvent) -> None:
-        self._host().append_log(self._event_payload(event).get("message", ""))
+        payload = self._event_payload(event)
+        self._host().append_log(
+            payload.get("message", ""),
+            trace_id=payload.get("trace_id") or event.trace_id,
+            source=payload.get("source") or "Spider",
+            level=payload.get("level") or "INFO",
+        )
 
     def _handle_spider_item_found_event(self, event: DomainEvent) -> None:
         item = self._event_payload(event).get("item")
@@ -117,6 +127,8 @@ class CrawlControllerMixin:
         self._log_crawl_start(plugin.name, keyword, source_id, config)
 
         try:
+            spider.ui_trace_id = debug_logger.new_trace_id(f"{source_id}-crawl")
+            spider.source_id = source_id
             self.current_spider = spider
             self._active_spider_bindings = self._build_spider_session_bindings()
             spider_session = getattr(self, "spider_session", SpiderSession(registry))

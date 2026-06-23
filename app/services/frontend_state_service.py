@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -21,13 +22,21 @@ from pathlib import Path
 from typing import Any
 
 from app.config import cfg
+from app.debug_logger import debug_logger
 from app.core.plugin_registry import registry
 from app.core.state import VideoStatus, parse_video_status
 from app.models import VideoItem
 from app.services.app_state import AppState
 from app.services.cache_service import CacheService
-from app.services.frontend_event_aggregator import ALL_FRONTEND_SECTIONS, FrontendEventAggregator
+from app.services.frontend_event_aggregator import (
+    ALL_FRONTEND_SECTIONS,
+    VIDEO_SECTIONS,
+    FrontendEventAggregator,
+    sections_for_topic,
+)
 from app.services.icon_registry import icon_manifest, tool_icon_file
+from app.services.media_metadata_service import MediaMetadata, MediaMetadataService
+from app.utils.runtime_paths import user_data_root
 
 QUEUE_STATUSES = ("待解析", "解析中", "已解析", "排队中", "已存在", "待下载")
 
@@ -128,6 +137,7 @@ class FrontendStateService:
     LOG_ENTRY_RE = re.compile(
         r"^\[(?P<time>[^\]]+)\]\s+\[(?P<level>[^\]]+)\]\s+(?P<source>[^/]+?)\s*/\s*(?P<action>.+)$"
     )
+    METADATA_PROBES_PER_SNAPSHOT = 64
 
     def __init__(
         self,
@@ -139,6 +149,8 @@ class FrontendStateService:
         directory_opener: Callable[[str], None] | None = None,
         association_service_factory: Callable[[], Any] | None = None,
         executable_path_provider: Callable[[], str] | None = None,
+        media_metadata_service: MediaMetadataService | None = None,
+        frontend_event_emitter: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.controller = controller
         self.config = config_manager
@@ -147,6 +159,8 @@ class FrontendStateService:
         self._directory_opener = directory_opener or self._open_directory_with_system
         self._association_service_factory = association_service_factory
         self._executable_path_provider = executable_path_provider or self._current_executable_path
+        self.media_metadata_service = media_metadata_service or MediaMetadataService()
+        self._frontend_event_emitter = frontend_event_emitter
         self._file_log_cache: list[dict[str, Any]] = []
         self._file_log_cache_at = 0.0
         self._file_log_cache_ttl_seconds = 1.0
@@ -155,6 +169,10 @@ class FrontendStateService:
         self._static_snapshot_cache: dict[str, Any] | None = None
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
+        self._active_event_time_cache: dict[str, str] = {}
+        self._metadata_retry_lock = threading.RLock()
+        self._metadata_retry_timers: dict[str, threading.Timer] = {}
+        self._metadata_probe_budget_remaining: int | None = None
         self._app_state_event_handler = self.app_state.event_bus.subscribe(
             "app_state.changed",
             self._record_app_state_change,
@@ -170,6 +188,9 @@ class FrontendStateService:
         if callable(snapshot_videos):
             self.app_state.replace_videos(snapshot_videos())
 
+    def set_frontend_event_emitter(self, emitter: Callable[[str, dict[str, Any]], None] | None) -> None:
+        self._frontend_event_emitter = emitter
+
     def set_running(self, is_running: bool) -> None:
         self._running_state = "运行中" if is_running else "空闲中"
         self.app_state.set_running_state(self._running_state)
@@ -181,6 +202,8 @@ class FrontendStateService:
         self.app_state.upsert_video(item)
 
     def remove_video(self, video_id: str) -> None:
+        self._active_event_time_cache.pop(str(video_id), None)
+        self._cancel_metadata_retry(str(video_id))
         self.app_state.remove_video(video_id)
 
     def clear_videos(self) -> None:
@@ -191,6 +214,8 @@ class FrontendStateService:
             self._file_log_cache_at = 0.0
         self.cache_service.delete("frontend.file_log_cache")
         self._static_snapshot_cache = None
+        self._active_event_time_cache.clear()
+        self._cancel_all_metadata_retries()
         self._event_aggregator.reset()
 
     @property
@@ -201,14 +226,48 @@ class FrontendStateService:
         return self._event_aggregator.metrics()
 
     def record_event(self, topic: str, payload: Mapping[str, Any] | None = None) -> None:
-        self._event_aggregator.record(str(topic or ""), dict(payload or {}))
+        normalized = str(topic or "")
+        payload_dict = dict(payload or {})
+        if normalized == "log":
+            message = str(payload_dict.get("message") or "")
+            if message:
+                self.record_log(
+                    message,
+                    level=str(payload_dict.get("level") or "INFO"),
+                    source=str(payload_dict.get("source") or "Web"),
+                    trace_id=str(payload_dict.get("trace_id") or ""),
+                )
+            return
+        sections = self._sections_for_recorded_event(normalized, payload_dict)
+        self._event_aggregator.record(normalized, payload_dict, sections=sections)
 
     def _record_app_state_change(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             self._event_aggregator.record("app_state.changed", {})
             return
         topic = str(payload.get("topic") or "app_state.changed")
-        self._event_aggregator.record(topic, payload)
+        sections = self._sections_for_recorded_event(topic, payload)
+        self._event_aggregator.record(topic, payload, sections=sections)
+
+    @staticmethod
+    def _sections_for_recorded_event(topic: str, payload: Mapping[str, Any]) -> frozenset[str] | None:
+        normalized = str(topic or "")
+        if normalized not in {"videos.update", "video_state_changed", "task_progress"}:
+            return sections_for_topic(normalized)
+        status = str(payload.get("status") or "")
+        parsed_status = parse_video_status(status)
+        try:
+            progress = int(payload.get("progress"))
+        except (TypeError, ValueError):
+            progress = None
+        terminal_text = any(marker in status for marker in ("\u5b8c\u6210", "\u5931\u8d25", "\u8d85\u65f6", "\u672c\u5730"))
+        if (
+            parsed_status in {VideoStatus.COMPLETED, VideoStatus.LOCAL, VideoStatus.FAILED, VideoStatus.TIMED_OUT}
+            or terminal_text
+            or progress == 100
+        ):
+            return VIDEO_SECTIONS
+        return None
 
     def _static_snapshot_parts(self) -> dict[str, Any]:
         if self._static_snapshot_cache is None:
@@ -219,7 +278,9 @@ class FrontendStateService:
                 "toolbox_recent_items": self.toolbox_recent_items(),
                 "icon_manifest": icon_manifest(),
             }
-        return self._static_snapshot_cache
+        parts = dict(self._static_snapshot_cache)
+        parts["download_options"] = self.download_options_snapshot()
+        return parts
 
     def _build_video_sections(
         self,
@@ -234,26 +295,33 @@ class FrontendStateService:
         active_downloads: list[dict[str, Any]] = []
         completed_items: list[dict[str, Any]] = []
         failed_items: list[dict[str, Any]] = []
-        log_excerpt_index: dict[str, list[str]] | None = None
+        log_excerpt_index: dict[str, list[dict[str, Any]]] | None = None
 
         want_failed = only is None or "failed_items" in only
+        want_completed = only is None or "completed_items" in only
         if want_failed:
             log_excerpt_index = self._log_excerpt_index()
 
-        for item in videos.values():
-            bucket = self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
-            if bucket == "active":
-                if only is None or "active_downloads" in only:
-                    active_downloads.append(self._active_item(item))
-            elif bucket == "completed":
-                if only is None or "completed_items" in only:
-                    completed_items.append(self._completed_item(item))
-            elif bucket == "failed":
-                if want_failed:
-                    failed_items.append(self._failed_item(item, log_excerpt_index=log_excerpt_index))
-            else:
-                if only is None or "queue_items" in only:
-                    queue_items.append(self._queue_item(item, queued_ids=queued_ids))
+        previous_probe_budget = self._metadata_probe_budget_remaining
+        if want_completed:
+            self._metadata_probe_budget_remaining = self.METADATA_PROBES_PER_SNAPSHOT
+        try:
+            for item in videos.values():
+                bucket = self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+                if bucket == "active":
+                    if only is None or "active_downloads" in only:
+                        active_downloads.append(self._active_item(item))
+                elif bucket == "completed":
+                    if want_completed:
+                        completed_items.append(self._completed_item(item))
+                elif bucket == "failed":
+                    if want_failed:
+                        failed_items.append(self._failed_item(item, log_excerpt_index=log_excerpt_index))
+                else:
+                    if only is None or "queue_items" in only:
+                        queue_items.append(self._queue_item(item, queued_ids=queued_ids))
+        finally:
+            self._metadata_probe_budget_remaining = previous_probe_budget
 
         sections: dict[str, Any] = {}
         if only is None or "queue_items" in only:
@@ -281,7 +349,7 @@ class FrontendStateService:
             snapshot["version"] = self.frontend_version
             return snapshot
 
-        static_keys = frozenset({"pages", "icon_manifest", "toolbox_items", "toolbox_recent_items", "settings_snapshot"})
+        static_keys = frozenset({"pages", "icon_manifest", "toolbox_items", "toolbox_recent_items", "settings_snapshot", "download_options"})
         video_keys = frozenset({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
         if sections is None:
             video_parts = self._build_video_sections(shallow=False)
@@ -357,6 +425,8 @@ class FrontendStateService:
             "run_tool": self._action_run_tool,
             "register_file_associations": self._action_register_file_associations,
             "update_download_options": self._action_update_download_options,
+            "update_completed_metadata": self._action_update_completed_metadata,
+            "log_operation": self._action_log_operation,
         }.get(action)
         if handler is None:
             return FrontendActionResult("error", f"unknown frontend action: {action}").to_dict()
@@ -439,12 +509,12 @@ class FrontendStateService:
 
     def _bucket_for_item(self, item: VideoItem, *, queued_ids: set[str], active_ids: set[str]) -> str:
         parsed = parse_video_status(item.status)
-        if item.id in active_ids or parsed == VideoStatus.DOWNLOADING:
-            return "active"
         if parsed in {VideoStatus.COMPLETED, VideoStatus.LOCAL}:
             return "completed"
         if parsed in {VideoStatus.FAILED, VideoStatus.TIMED_OUT}:
             return "failed"
+        if item.id in active_ids or parsed == VideoStatus.DOWNLOADING:
+            return "active"
         if item.progress >= 100 and item.local_path:
             return "completed"
         if item.id in queued_ids or parsed == VideoStatus.PENDING:
@@ -560,52 +630,416 @@ class FrontendStateService:
         path = Path(item.local_path) if item.local_path else None
         meta = item.meta or {}
         size_bytes = int(meta.get("size_bytes", 0) or 0)
-        stat = None
+        stat = self._safe_stat(path) if path is not None else None
         if size_bytes <= 0 and path is not None:
-            stat = self._safe_stat(path)
             size_bytes = stat.st_size if stat else 0
         completed_at = str(meta.get("completed_at") or meta.get("mtime") or self._format_mtime(stat))
+        metadata, metadata_pending = self._completed_media_metadata(item, path)
+        duration = self._display_duration(meta.get("duration") or metadata.duration)
+        resolution = self._display_resolution(meta.get("resolution"), meta.get("quality"), metadata.resolution)
+        pending_label = "\u68c0\u6d4b\u4e2d"
+        format_label = str(meta.get("format") or metadata.format or self._format_from_path(path))
+        content_type = str(meta.get("content_type") or metadata.content_type or self._content_type_from_path(path))
+        filename = str(meta.get("filename") or (path.name if path else "") or item.title)
+        save_dir = str(meta.get("save_dir") or (path.parent if path else ""))
         return {
             "id": item.id,
             "title": item.title,
             "thumbnail": str(meta.get("thumbnail") or ""),
             "completed_at": completed_at,
-            "duration": str(meta.get("duration") or "--"),
-            "resolution": str(meta.get("resolution") or meta.get("quality") or "--"),
+            "completed_at_table": self._format_completed_at_table(completed_at),
+            "duration": duration or (pending_label if metadata_pending else "--"),
+            "resolution": resolution if resolution != "--" else (pending_label if metadata_pending else "--"),
             "size": self._format_size(size_bytes),
             "size_bytes": size_bytes,
-            "format": str(meta.get("format") or self._format_from_path(path)),
+            "format": format_label,
+            "filename": filename,
+            "save_dir": save_dir,
+            "download_speed": str(meta.get("speed") or "--"),
+            "download_speed_bps": int(meta.get("speed_bps") or 0),
             "local_path": item.local_path or "",
-            "content_type": str(meta.get("content_type") or ""),
+            "content_type": content_type,
+            "metadata_pending": metadata_pending,
             "platform": self._platform_label(item),
             "actions": ["play", "open_directory", "delete"],
         }
+
+    def _completed_media_metadata(self, item: VideoItem, path: Path | None) -> tuple[MediaMetadata, bool]:
+        meta = item.meta or {}
+        if self._has_media_metadata(meta, path):
+            return MediaMetadata(), False
+        if path is None or not path.exists():
+            return MediaMetadata(), False
+        cached = self.media_metadata_service.cached(path)
+        if cached is not None:
+            return cached, False
+        deferred = getattr(self.media_metadata_service, "is_probe_deferred", None)
+        if callable(deferred) and deferred(path):
+            return MediaMetadata(), True
+        if not self._consume_metadata_probe_budget():
+            return MediaMetadata(), True
+
+        def on_metadata_ready(metadata: MediaMetadata, *, video_id: str = item.id, source_path: str = str(path)) -> None:
+            target = self._video_for_update(video_id)
+            if target is None:
+                debug_logger.log(
+                    component="FrontendStateService",
+                    action="metadata_probe_discarded",
+                    level="WARN",
+                    message="Completed media metadata probe result was discarded because the item no longer exists",
+                    details={"video_id": video_id, "source_path": source_path},
+                )
+                return
+            if not self._same_local_path(str(getattr(target, "local_path", "") or ""), source_path):
+                debug_logger.log(
+                    component="FrontendStateService",
+                    action="metadata_probe_discarded",
+                    level="WARN",
+                    message="Completed media metadata probe result was discarded because the local path changed",
+                    details={
+                        "video_id": video_id,
+                        "source_path": source_path,
+                        "current_path": str(getattr(target, "local_path", "") or ""),
+                    },
+                )
+                return
+            metadata_payload = {
+                "duration": metadata.duration,
+                "resolution": metadata.resolution,
+                "format": metadata.format,
+                "content_type": metadata.content_type,
+            }
+            has_useful_metadata = bool(metadata.duration or metadata.resolution)
+            changed = self._apply_completed_metadata(target, metadata_payload)
+            if has_useful_metadata:
+                self._cancel_metadata_retry(video_id)
+            else:
+                self._schedule_metadata_retry(video_id)
+            if not has_useful_metadata:
+                debug_logger.log(
+                    component="FrontendStateService",
+                    action="metadata_probe_empty",
+                    level="WARN",
+                    message="Completed media metadata probe finished without usable duration or resolution",
+                    details={"video_id": video_id, "source_path": source_path},
+                )
+            self._emit_frontend_event(
+                "videos.metadata",
+                {"video_id": video_id, "metadata": has_useful_metadata},
+            )
+
+        pending = self.media_metadata_service.ensure_probe(path, on_metadata_ready)
+        if not pending:
+            pending = bool(deferred(path)) if callable(deferred) else False
+        return MediaMetadata(), pending
+
+    def _consume_metadata_probe_budget(self) -> bool:
+        budget = self._metadata_probe_budget_remaining
+        if budget is None:
+            return True
+        if budget <= 0:
+            return False
+        self._metadata_probe_budget_remaining = budget - 1
+        return True
+
+    def update_completed_metadata(
+        self,
+        video_id: str,
+        metadata: Mapping[str, Any] | None,
+        *,
+        source: str = "",
+    ) -> dict[str, Any]:
+        video_id = str(video_id or "")
+        if not video_id:
+            return FrontendActionResult("error", "missing video id").to_dict()
+        item = self._video_for_update(video_id)
+        if item is None:
+            return FrontendActionResult("error", "completed item not found", {"video_id": video_id}).to_dict()
+        normalized = self._normalize_completed_metadata_payload(metadata or {})
+        if not any(normalized.values()):
+            return FrontendActionResult("ok", "metadata ignored", {"video_id": video_id, "changed": False}).to_dict()
+        changed = self._apply_completed_metadata(item, normalized)
+        if changed:
+            self._emit_frontend_event(
+                "videos.metadata",
+                {"video_id": video_id, "metadata": True, "source": source or "frontend"},
+            )
+        return FrontendActionResult(
+            "ok",
+            "metadata updated" if changed else "metadata unchanged",
+            {"video_id": video_id, "changed": changed},
+        ).to_dict()
+
+    def _action_update_completed_metadata(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        video_id = str(payload.get("id") or payload.get("video_id") or "")
+        metadata = dict(payload.get("metadata") or {})
+        for key in ("duration", "resolution", "format", "content_type", "duration_ms", "width", "height"):
+            if key in payload and key not in metadata:
+                metadata[key] = payload[key]
+        result = self.update_completed_metadata(video_id, metadata, source=str(payload.get("source") or "web_player"))
+        return FrontendActionResult(
+            str(result.get("status") or "error"),
+            str(result.get("message") or ""),
+            dict(result.get("data") or {}),
+        )
+
+    def _action_log_operation(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        operation = str(payload.get("operation") or payload.get("id") or "").strip()
+        try:
+            if operation == "refresh":
+                self.invalidate_refresh_caches()
+                self.record_event("logs.append", {"operation": operation})
+                return FrontendActionResult("ok", "日志缓存已刷新")
+            if operation == "clear":
+                self.app_state.clear_logs()
+                self._truncate_latest_debug_log()
+                self.invalidate_refresh_caches()
+                self.record_event("logs.append", {"operation": operation, "cleared": True})
+                return FrontendActionResult("ok", "日志已清空")
+            if operation == "export":
+                export_path = self._export_latest_debug_log()
+                return FrontendActionResult("ok", "日志已导出", {"path": str(export_path)})
+            if operation == "open_latest":
+                path = Path(debug_logger.latest_file)
+                self._open_file_path(path)
+                return FrontendActionResult("ok", "已打开 latest_debug.log", {"path": str(path)})
+            if operation == "open_error_summary":
+                path = Path(debug_logger.latest_error_summary_file)
+                self._open_file_path(path)
+                return FrontendActionResult("ok", "已打开 latest_error_summary.md", {"path": str(path)})
+            return FrontendActionResult("error", f"unknown log operation: {operation}")
+        except Exception as exc:
+            return FrontendActionResult("error", f"日志操作失败: {exc}", {"operation": operation})
+
+    @staticmethod
+    def _truncate_latest_debug_log() -> None:
+        try:
+            Path(debug_logger.latest_file).write_text("", encoding="utf-8")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _export_latest_debug_log() -> Path:
+        source = Path(debug_logger.latest_file)
+        export_dir = user_data_root() / "Exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        target = export_dir / f"latest_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        if source.exists():
+            shutil.copyfile(source, target)
+        else:
+            target.write_text("", encoding="utf-8")
+        return target
+
+    @staticmethod
+    def _open_file_path(path: Path) -> None:
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        if os.name == "nt":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return
+        import subprocess
+
+        subprocess.Popen(["xdg-open", str(path)])
+
+    def _normalize_completed_metadata_payload(self, metadata: Mapping[str, Any]) -> dict[str, str]:
+        duration = self._display_duration(metadata.get("duration"))
+        if not duration:
+            try:
+                duration_ms = float(metadata.get("duration_ms") or 0)
+            except (TypeError, ValueError):
+                duration_ms = 0
+            if duration_ms > 0:
+                duration = MediaMetadataService.format_duration(duration_ms / 1000)
+        if not duration:
+            duration = self._display_duration(metadata.get("duration_seconds"))
+        resolution = str(metadata.get("resolution") or "").strip()
+        if not self._is_real_resolution(resolution):
+            try:
+                width = int(float(metadata.get("width") or 0))
+                height = int(float(metadata.get("height") or 0))
+            except (TypeError, ValueError):
+                width = height = 0
+            resolution = f"{width} x {height}" if width > 0 and height > 0 else ""
+        return {
+            "duration": duration,
+            "resolution": resolution if self._is_real_resolution(resolution) else "",
+            "format": str(metadata.get("format") or "").strip(),
+            "content_type": str(metadata.get("content_type") or "").strip(),
+        }
+
+    def _apply_completed_metadata(self, item: VideoItem, metadata: Mapping[str, Any]) -> bool:
+        changed = False
+        if item.meta is None:
+            item.meta = {}
+        for key, value in metadata.items():
+            value_text = str(value or "").strip()
+            if not value_text:
+                continue
+            current = str(item.meta.get(key) or "").strip()
+            if key == "resolution":
+                should_update = self._is_real_resolution(value_text) and not self._is_real_resolution(current)
+            elif key == "duration":
+                should_update = self._has_display_duration(value_text) and not self._has_display_duration(current)
+            else:
+                should_update = current in {"", "--"}
+            if should_update:
+                item.meta[key] = value_text
+                changed = True
+        return changed
+
+    def _emit_frontend_event(self, topic: str, payload: dict[str, Any]) -> None:
+        emitter = self._frontend_event_emitter
+        if callable(emitter):
+            emitter(topic, payload)
+            return
+        publisher = getattr(self.app_state, "_publish_change", None)
+        if callable(publisher):
+            publisher(topic, payload)
+            return
+        self.record_event(topic, payload)
+
+    def _schedule_metadata_retry(self, video_id: str) -> None:
+        key = str(video_id or "")
+        if not key:
+            return
+        delay = float(getattr(self.media_metadata_service, "EMPTY_RETRY_SECONDS", 30.0) or 30.0)
+        delay = max(1.0, min(delay, 60.0)) + 0.25
+        with self._metadata_retry_lock:
+            if key in self._metadata_retry_timers:
+                return
+
+            def fire() -> None:
+                with self._metadata_retry_lock:
+                    self._metadata_retry_timers.pop(key, None)
+                self._emit_frontend_event("videos.metadata", {"video_id": key, "metadata": False, "retry": True})
+
+            timer = threading.Timer(delay, fire)
+            timer.daemon = True
+            self._metadata_retry_timers[key] = timer
+            timer.start()
+
+    def _cancel_metadata_retry(self, video_id: str) -> None:
+        key = str(video_id or "")
+        if not key:
+            return
+        with self._metadata_retry_lock:
+            timer = self._metadata_retry_timers.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _cancel_all_metadata_retries(self) -> None:
+        with self._metadata_retry_lock:
+            timers = list(self._metadata_retry_timers.values())
+            self._metadata_retry_timers.clear()
+        for timer in timers:
+            timer.cancel()
+
+    @classmethod
+    def _has_media_metadata(cls, meta: Mapping[str, Any], path: Path | None = None) -> bool:
+        resolution = str(meta.get("resolution") or meta.get("quality") or "").strip()
+        content_type = str(meta.get("content_type") or "").strip().lower()
+        is_image = content_type == "image" or (
+            path is not None and path.suffix.lower() in MediaMetadataService.IMAGE_EXTENSIONS
+        )
+        if is_image:
+            return cls._is_real_resolution(resolution)
+        return cls._has_display_duration(meta.get("duration")) and cls._is_real_resolution(resolution)
+
+    @staticmethod
+    def _has_display_duration(value: Any) -> bool:
+        text = str(value or "").strip()
+        if text in {"", "--", "00:00:00"}:
+            return False
+        return True
+
+    @classmethod
+    def _display_resolution(cls, *values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if cls._is_real_resolution(text):
+                return text
+        return "--"
+
+    @staticmethod
+    def _is_real_resolution(value: Any) -> bool:
+        return bool(re.match(r"^\d{2,5}\s*x\s*\d{2,5}$", str(value or "").strip(), flags=re.IGNORECASE))
+
+    @classmethod
+    def _same_local_path(cls, left: str, right: str) -> bool:
+        normalized_left = cls._normalize_local_path(left)
+        normalized_right = cls._normalize_local_path(right)
+        return bool(normalized_left and normalized_right and normalized_left == normalized_right)
+
+    @staticmethod
+    def _normalize_local_path(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            resolved = Path(text).expanduser().resolve(strict=False)
+            normalized = str(resolved)
+        except (OSError, RuntimeError, ValueError):
+            normalized = os.path.abspath(os.path.normpath(text))
+        return os.path.normcase(os.path.normpath(normalized)).replace("\\", "/")
+
+    @staticmethod
+    def _display_duration(value: Any) -> str:
+        if isinstance(value, (int, float)):
+            return MediaMetadataService.format_duration(value)
+        text = str(value or "").strip()
+        if not text or text == "--":
+            return ""
+        if text.isdigit():
+            return MediaMetadataService.format_duration(text)
+        return text
+
+    @staticmethod
+    def _format_completed_at_table(value: str) -> str:
+        text = str(value or "").strip().replace("T", " ")
+        if not text or text == "--":
+            return text or "--"
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S"):
+            try:
+                return datetime.strptime(text[:19], fmt).strftime("%m-%d %H:%M")
+            except ValueError:
+                pass
+        if len(text) >= 16 and text[4:5] in {"-", "/"}:
+            return text[5:16]
+        return text
 
     def _failed_item(
         self,
         item: VideoItem,
         *,
-        log_excerpt_index: dict[str, list[str]] | None = None,
+        log_excerpt_index: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         meta = item.meta or {}
         reason = str(meta.get("download_error") or meta.get("error") or item.status or "未知错误")
         trace_id = self._trace_id(item)
-        if log_excerpt_index is None:
-            log_excerpt = self._log_excerpt(trace_id)
-        else:
-            log_excerpt = list(log_excerpt_index.get(trace_id, []))[-8:]
+        category = self._failure_category(reason)
+        log_excerpt_items = self._failed_log_excerpt_items(item, trace_id, log_excerpt_index)
+        failed_at = str(meta.get("failed_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         return {
             "id": item.id,
             "title": item.title,
-            "failed_at": str(meta.get("failed_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "failed_at": failed_at,
+            "failed_at_table": self._format_failed_at_table(failed_at),
             "reason": reason,
+            "reason_detail": reason,
+            "reason_label": category["label"],
+            "reason_category": category["key"],
+            "reason_icon_file": category["icon_file"],
             "status": "失败",
+            "status_label": "失败",
+            "status_icon_file": "status_failed.png",
             "trace_id": trace_id,
             "platform": self._platform_label(item),
+            "platform_id": item.source,
             "source_url": item.url,
-            "log_excerpt": log_excerpt,
+            "log_excerpt": [entry["message"] for entry in log_excerpt_items],
+            "log_excerpt_items": log_excerpt_items,
             "solutions": self._solutions_for_reason(reason),
-            "actions": ["retry", "copy_diagnostics", "delete"],
+            "actions": ["copy_diagnostics", "delete"],
         }
 
     @staticmethod
@@ -639,6 +1073,12 @@ class FrontendStateService:
         return path.suffix.lstrip(".").upper()
 
     @staticmethod
+    def _content_type_from_path(path: Path | None) -> str:
+        if not path:
+            return ""
+        return "image" if path.suffix.lower() in MediaMetadataService.IMAGE_EXTENSIONS else "video"
+
+    @staticmethod
     def _default_speed_trend(progress: int) -> list[float]:
         seed = max(0, min(100, progress)) / 100
         return [round((0.7 + ((index % 5) * 0.12)) * seed, 2) for index in range(12)]
@@ -656,7 +1096,6 @@ class FrontendStateService:
         merge_status: str,
         trace_id: str,
     ) -> list[dict[str, str]]:
-        now = datetime.now().strftime("%H:%M:%S")
         existing: list[dict[str, str]] = []
         for event in list((item.meta or {}).get("events") or [])[-6:]:
             if not isinstance(event, Mapping):
@@ -664,7 +1103,11 @@ class FrontendStateService:
             message = str(event.get("message") or "").strip()
             if not message:
                 continue
-            existing.append({"time": str(event.get("time") or now), "message": message})
+            existing.append({"time": str(event.get("time") or ""), "message": message})
+        event_time = self._stable_active_event_time(item, existing)
+        for event in existing:
+            if not event["time"]:
+                event["time"] = event_time
         if len(existing) >= 6:
             return existing[-6:]
 
@@ -692,11 +1135,45 @@ class FrontendStateService:
         for message in derived:
             if message in seen:
                 continue
-            result.append({"time": now, "message": message})
+            result.append({"time": event_time, "message": message})
             seen.add(message)
             if len(result) >= 6:
                 break
         return result[:6]
+
+    def _stable_active_event_time(self, item: VideoItem, existing: list[dict[str, str]]) -> str:
+        for event in existing:
+            value = str(event.get("time") or "").strip()
+            if value:
+                return value
+        meta = item.meta or {}
+        for key in ("event_time", "download_started_at", "started_at", "created_at", "discovered_at", "added_at"):
+            formatted = self._format_event_clock(meta.get(key))
+            if formatted:
+                self._active_event_time_cache[item.id] = formatted
+                return formatted
+        cached = self._active_event_time_cache.get(item.id)
+        if cached:
+            return cached
+        generated = datetime.now().strftime("%H:%M:%S")
+        self._active_event_time_cache[item.id] = generated
+        return generated
+
+    @staticmethod
+    def _format_event_clock(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.strftime("%H:%M:%S")
+        raw = str(value).strip()
+        if not raw:
+            return ""
+        if len(raw) >= 8 and raw[-8:].count(":") == 2:
+            return raw[-8:]
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%H:%M:%S")
+        except ValueError:
+            return raw
 
     @staticmethod
     def _default_active_events(item: VideoItem) -> list[dict[str, str]]:
@@ -712,18 +1189,51 @@ class FrontendStateService:
         lowered = reason.lower()
         if "login" in lowered or "登录" in reason:
             return [
-                {"title": "确认登录态", "description": "部分内容需要登录后才能访问，请检查平台认证状态。"},
-                {"title": "重新获取链接", "description": "登录后重新复制分享链接并重试任务。"},
+                {"title": "确认登录态", "description": "部分内容需要登录后才能访问，请检查平台认证状态。", "icon_file": "action_user.png"},
+                {"title": "重新获取链接", "description": "登录后重新复制分享链接并重试任务。", "icon_file": "action_trace_link.png"},
             ]
         if "timeout" in lowered or "超时" in reason:
             return [
-                {"title": "检查网络", "description": "确认网络连接正常，或尝试切换网络环境后重试。"},
-                {"title": "增加超时时间", "description": "在配置中心提高请求超时和重试次数。"},
+                {"title": "检查网络", "description": "确认网络连接正常，或尝试切换网络环境后重试。", "icon_file": "status_network_warning.png"},
+                {"title": "增加超时时间", "description": "在配置中心提高请求超时和重试次数。", "icon_file": "status_timeout.png"},
+            ]
+        if any(token in lowered for token in ("connection", "network", "403", "404", "forbidden")) or any(token in reason for token in ("连接", "网络", "拒绝", "失效")):
+            return [
+                {"title": "重新获取链接", "description": "请重新复制最新的分享链接并重试任务。", "icon_file": "action_trace_link.png"},
+                {"title": "检查网络", "description": "确认代理、DNS 和网络环境正常，必要时切换网络后重试。", "icon_file": "status_network_warning.png"},
+            ]
+        if any(token in lowered for token in ("permission", "occupied", "file")) or any(token in reason for token in ("占用", "权限", "文件")):
+            return [
+                {"title": "释放文件占用", "description": "关闭正在播放或占用目标文件的程序后重试。", "icon_file": "status_locked.png"},
+                {"title": "更改目录", "description": "尝试切换到有写入权限的保存目录。", "icon_file": "action_open_directory.png"},
             ]
         return [
-            {"title": "重新获取链接", "description": "请重新复制最新的分享链接并重试任务。"},
-            {"title": "查看 Trace ID", "description": "在日志中心按 Trace ID 过滤，定位同一任务的上下游日志。"},
+            {"title": "重新获取链接", "description": "请重新复制最新的分享链接并重试任务。", "icon_file": "action_trace_link.png"},
+            {"title": "查看 Trace ID", "description": "在日志中心按 Trace ID 过滤，定位同一任务的上下游日志。", "icon_file": "action_search.png"},
         ]
+
+    @staticmethod
+    def _failure_category(reason: str) -> dict[str, str]:
+        lowered = str(reason or "").lower()
+        if "login" in lowered or "登录" in reason:
+            return {"key": "login", "label": "需要登录", "icon_file": "action_user.png"}
+        if "timeout" in lowered or "超时" in reason:
+            return {"key": "timeout", "label": "网络超时", "icon_file": "status_timeout.png"}
+        if any(token in lowered for token in ("connection", "network", "403", "404", "forbidden", "ssl", "proxy")) or any(
+            token in reason for token in ("连接", "网络", "拒绝", "失效", "链接")
+        ):
+            return {"key": "link", "label": "链接失败", "icon_file": "action_trace_link.png"}
+        if any(token in lowered for token in ("permission", "occupied", "file")) or any(token in reason for token in ("占用", "权限", "文件")):
+            return {"key": "file", "label": "文件占用", "icon_file": "status_locked.png"}
+        if any(token in lowered for token in ("parse", "parser", "extract", "decode")) or any(token in reason for token in ("解析", "提取")):
+            return {"key": "parse", "label": "解析失败", "icon_file": "action_code.png"}
+        if any(token in lowered for token in ("ffmpeg", "m3u8", "external", "tool")) or any(token in reason for token in ("外部工具", "合并")):
+            return {"key": "tool", "label": "工具异常", "icon_file": "action_repair.png"}
+        return {"key": "unknown", "label": "任务失败", "icon_file": "status_error_warning.png"}
+
+    @classmethod
+    def _format_failed_at_table(cls, value: str) -> str:
+        return cls._format_completed_at_table(value)
 
     def log_items(self) -> list[dict[str, Any]]:
         now = time.monotonic()
@@ -746,7 +1256,8 @@ class FrontendStateService:
         buffer = self.app_state.get_log_buffer()
         with self._file_log_cache_lock:
             file_log_cache = deepcopy(self._file_log_cache)
-        return [*file_log_cache, *buffer][-300:]
+        merged = [*file_log_cache, *buffer][-300:]
+        return [self._enrich_log_item(item) for item in merged]
 
     def _read_log_items(self, *, limit: int) -> list[dict[str, Any]]:
         try:
@@ -790,14 +1301,85 @@ class FrontendStateService:
             if stripped.startswith("说明:"):
                 current["message"] = stripped.replace("说明:", "", 1).strip()
                 current["message_summary"] = current["message"][:120]
-            elif stripped.startswith("追踪ID:"):
-                current["trace_id"] = stripped.replace("追踪ID:", "", 1).strip()
+            elif self._looks_like_trace_line(stripped):
+                current["trace_id"] = self._parse_trace_line(stripped)
             detail_lines.append(line)
 
         if current is not None:
             current["detail"] = "\n".join(detail_lines).strip()
             items.append(current)
         return items[-limit:]
+
+    def _enrich_log_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        enriched = dict(item or {})
+        enriched["level"] = self._normalize_log_level(str(enriched.get("level") or "INFO"))
+        enriched["trace_id"] = str(enriched.get("trace_id") or self._trace_from_log_detail(enriched) or "")
+        enriched["platform"] = str(enriched.get("platform") or self._platform_from_log(enriched) or "系统")
+        enriched["category"] = self._log_category(enriched)
+        enriched["timestamp_ms"] = self._log_timestamp_ms(str(enriched.get("time") or ""))
+        if not enriched.get("message_summary"):
+            enriched["message_summary"] = str(enriched.get("message") or "")[:120]
+        return enriched
+
+    @staticmethod
+    def _trace_from_log_detail(item: Mapping[str, Any]) -> str:
+        text = "\n".join(
+            str(item.get(key) or "")
+            for key in ("detail", "message", "message_summary")
+        )
+        for pattern in (
+            r"(?:trace_id|Trace ID|追踪ID)\s*[:：]\s*([A-Za-z0-9_.:-]+)",
+            r"-\s*trace_id\s*[:：]\s*([A-Za-z0-9_.:-]+)",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).strip().rstrip(",;")
+        return ""
+
+    @staticmethod
+    def _platform_from_log(item: Mapping[str, Any]) -> str:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("trace_id", "source", "message", "message_summary", "detail")
+        ).lower()
+        mapping = (
+            ("bilibili", "Bilibili"),
+            ("bili", "Bilibili"),
+            ("douyin", "抖音"),
+            ("dy_", "抖音"),
+            ("kuaishou", "快手"),
+            ("ks_", "快手"),
+            ("missav", "MissAV"),
+            ("xhs", "小红书"),
+            ("xiaohongshu", "小红书"),
+        )
+        for token, label in mapping:
+            if token in text:
+                return label
+        return ""
+
+    @classmethod
+    def _log_category(cls, item: Mapping[str, Any]) -> str:
+        level = str(item.get("level") or "").upper()
+        if level == "ERROR":
+            return "error"
+        source = str(item.get("source") or "")
+        platform = str(item.get("platform") or "")
+        message = str(item.get("message") or item.get("message_summary") or "")
+        text = f"{source} {platform} {message}".lower()
+        if any(token in text for token in ("download", "下载", "bilibili", "douyin", "kuaishou", "missav", "小红书", "抖音", "快手")):
+            return "download"
+        return "system"
+
+    @staticmethod
+    def _log_timestamp_ms(value: str) -> int:
+        text = str(value or "").strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+            try:
+                return int(datetime.strptime(text, fmt).timestamp() * 1000)
+            except ValueError:
+                continue
+        return 0
 
     @staticmethod
     def _normalize_log_level(level: str) -> str:
@@ -806,23 +1388,115 @@ class FrontendStateService:
             return "INFO"
         return normalized
 
-    def _log_excerpt_index(self) -> dict[str, list[str]]:
-        index: dict[str, list[str]] = {}
+    @staticmethod
+    def _looks_like_trace_line(line: str) -> bool:
+        lowered = str(line or "").strip().lower()
+        return lowered.startswith((
+            "追踪id:",
+            "追踪id：",
+            "trace id:",
+            "trace id：",
+            "trace_id:",
+            "trace_id：",
+            "- trace_id:",
+            "- trace_id：",
+            "- trace id:",
+            "- trace id：",
+        ))
+
+    @staticmethod
+    def _parse_trace_line(line: str) -> str:
+        text = str(line or "").strip()
+        if text.startswith("-"):
+            text = text[1:].strip()
+        for delimiter in (":", "："):
+            if delimiter in text:
+                return text.split(delimiter, 1)[1].strip()
+        return ""
+
+    def _log_excerpt_index(self) -> dict[str, list[dict[str, Any]]]:
+        index: dict[str, list[dict[str, Any]]] = {}
+        fallback_key = "__recent_errors__"
         for item in self.log_items():
             trace_id = str(item.get("trace_id") or "")
-            if not trace_id:
-                continue
             message = str(item.get("message_summary") or item.get("message") or "")
-            index.setdefault(trace_id, []).append(message)
+            if not message:
+                continue
+            entry = {
+                "time": str(item.get("time") or "")[-8:],
+                "level": self._normalize_log_level(str(item.get("level") or "INFO")),
+                "source": str(item.get("source") or ""),
+                "trace_id": trace_id,
+                "message": message,
+                "icon_file": self._log_level_icon_file(str(item.get("level") or "INFO")),
+            }
+            if trace_id:
+                index.setdefault(trace_id, []).append(entry)
+            if entry["level"] in {"ERROR", "WARN", "WARNING"}:
+                index.setdefault(fallback_key, []).append(entry)
         return index
 
     def _log_excerpt(self, trace_id: str) -> list[str]:
         if not trace_id:
             return []
-        return self._log_excerpt_index().get(trace_id, [])[-8:]
+        return [entry["message"] for entry in self._log_excerpt_index().get(trace_id, [])[-8:]]
+
+    def _failed_log_excerpt_items(
+        self,
+        item: VideoItem,
+        trace_id: str,
+        log_excerpt_index: dict[str, list[dict[str, Any]]] | None,
+    ) -> list[dict[str, Any]]:
+        index = log_excerpt_index if log_excerpt_index is not None else self._log_excerpt_index()
+        entries = list(index.get(trace_id, [])) if trace_id else []
+        if not entries:
+            entries = self._fallback_failed_log_entries(item, index)
+        return entries[-8:]
+
+    def _fallback_failed_log_entries(
+        self,
+        item: VideoItem,
+        index: dict[str, list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        meta = item.meta or {}
+        title = str(item.title or "").strip()
+        reason = str(meta.get("download_error") or meta.get("error") or item.status or "").strip()
+        needles = [part for part in (title[:24], reason[:32], item.source or "") if part]
+        matched: list[dict[str, Any]] = []
+        for entries in index.values():
+            for entry in entries:
+                message = str(entry.get("message") or "")
+                if any(needle and needle in message for needle in needles):
+                    matched.append(entry)
+        if matched:
+            return matched[-8:]
+        fallback = list(index.get("__recent_errors__", []))
+        if fallback:
+            return fallback[-8:]
+        reason_text = reason or "任务失败，暂无可匹配日志片段"
+        return [
+            {
+                "time": str(meta.get("failed_at") or "")[-8:],
+                "level": "ERROR",
+                "source": self._platform_label(item),
+                "trace_id": self._trace_id(item),
+                "message": reason_text,
+                "icon_file": "log_level_error.png",
+            }
+        ]
+
+    @staticmethod
+    def _log_level_icon_file(level: str) -> str:
+        normalized = str(level or "").upper()
+        if normalized in {"WARN", "WARNING"}:
+            return "log_level_warn.png"
+        if normalized == "ERROR":
+            return "log_level_error.png"
+        return "log_level_info.png"
 
     def settings_snapshot(self) -> dict[str, Any]:
         data = self.config.data
+        download_options = self.download_options_snapshot()
         platforms = []
         for plugin in registry.get_all_plugins():
             section = data.get(plugin.id, {})
@@ -843,9 +1517,9 @@ class FrontendStateService:
                 "default_open_mode": "系统默认播放器",
             },
             "下载设置": {
-                "max_concurrent": data.get("download", {}).get("max_concurrent", 3),
+                "max_concurrent": download_options["max_concurrent"],
                 "request_timeout": data.get("download", {}).get("request_timeout", 60),
-                "max_retries": data.get("download", {}).get("max_retries", 3),
+                "max_retries": download_options["max_retries"],
                 "resume_enabled": True,
                 "speed_limit_kb": 0,
                 "video_only": False,
@@ -889,6 +1563,27 @@ class FrontendStateService:
             {"id": "video_to_audio", "title": "视频转音频", "last_used": "今天 17:35"},
             {"id": "metadata_viewer", "title": "元数据查看", "last_used": "今天 14:10"},
         ]
+
+    def download_options_snapshot(self) -> dict[str, Any]:
+        try:
+            configured_concurrent = int(self.config.get("download", "max_concurrent", 3))
+        except (TypeError, ValueError):
+            configured_concurrent = 3
+        manager = self._dl_manager()
+        try:
+            effective_concurrent = int(getattr(manager, "max_concurrent", configured_concurrent) or configured_concurrent)
+        except (TypeError, ValueError):
+            effective_concurrent = configured_concurrent
+        try:
+            max_retries = int(self.config.get("download", "max_retries", 3))
+        except (TypeError, ValueError):
+            max_retries = 3
+        auto_retry = bool(self.cache_service.get("download.auto_retry", True))
+        return {
+            "auto_retry": auto_retry,
+            "max_retries": max(1, min(max_retries, 10)),
+            "max_concurrent": max(1, min(effective_concurrent, 8)),
+        }
 
     def app_status(
         self,
@@ -1044,22 +1739,25 @@ class FrontendStateService:
             max_concurrent = int(data.get("max_concurrent") or self.config.get("download", "max_concurrent", 3))
         except (TypeError, ValueError):
             max_concurrent = 3
-        if max_concurrent not in {2, 3, 5}:
-            max_concurrent = min({2, 3, 5}, key=lambda value: abs(value - max_concurrent))
+        max_concurrent = max(1, min(max_concurrent, 8))
         try:
             max_retries = int(data.get("max_retries") or self.config.get("download", "max_retries", 3))
         except (TypeError, ValueError):
             max_retries = 3
         max_retries = max(1, min(max_retries, 10))
-        auto_retry = bool(data.get("auto_retry"))
-        self.config.set("download", "max_concurrent", max_concurrent)
-        self.config.set("download", "max_retries", max_retries)
+        auto_retry = bool(data.get("auto_retry", self.cache_service.get("download.auto_retry", True)))
         self.cache_service.set("download.auto_retry", auto_retry, persist=False)
         manager = self._dl_manager()
         setter = getattr(manager, "set_max_concurrent", None)
         if callable(setter):
-            setter(max_concurrent)
-        self.record_event("settings.update", {"section": "download", "max_concurrent": max_concurrent})
+            try:
+                max_concurrent = int(setter(max_concurrent))
+            except (TypeError, ValueError):
+                max_concurrent = max(1, min(max_concurrent, 8))
+        self.config.set("download", "max_concurrent", max_concurrent)
+        self.config.set("download", "max_retries", max_retries)
+        self._static_snapshot_cache = None
+        self.record_event("settings.update", {"section": "download", "max_concurrent": max_concurrent, "download_options": True})
         return FrontendActionResult(
             "ok",
             "download options updated",
@@ -1083,16 +1781,9 @@ class FrontendStateService:
         if not item:
             return FrontendActionResult("error", "task not found")
         trace_id = self._trace_id(item)
-        text = "\n".join(
-            [
-                f"标题: {item.title}",
-                f"平台: {self._platform_label(item)}",
-                f"Trace ID: {trace_id or '未提供'}",
-                f"状态: {item.status}",
-                f"错误: {(item.meta or {}).get('download_error', '')}",
-            ]
-        )
-        return FrontendActionResult("ok", "diagnostics ready", {"text": text, "trace_id": trace_id})
+        if not trace_id:
+            return FrontendActionResult("error", "trace id not found", {"video_id": video_id})
+        return FrontendActionResult("ok", "trace id ready", {"text": trace_id, "trace_id": trace_id})
 
     def _action_change_directory(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         directory = str(payload.get("directory") or "")
@@ -1277,13 +1968,19 @@ class FrontendStateService:
                     "title": '\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5 | \u4e91\u6d77\u7ffb\u6d8c\u7684\u4e00\u5929',
                     "thumbnail": "",
                     "completed_at": f"{now_date} 18:24:35",
+                    "completed_at_table": "04-12 18:24",
                     "duration": "00:00:24",
                     "resolution": "1920 x 1080",
                     "size": "24.6 MB",
                     "size_bytes": 24_600_000,
                     "format": "MP4",
+                    "download_speed": "4.2 MB/s",
+                    "download_speed_bps": 4_404_019,
                     "local_path": 'D:\\desktop\\\u89c6\u9891\\\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5_20260412.mp4',
+                    "filename": '\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5_20260412.mp4',
+                    "save_dir": 'D:\\desktop\\\u89c6\u9891',
                     "content_type": "video",
+                    "metadata_pending": False,
                     "platform": '\u6296\u97f3',
                     "actions": ["play", "open_directory", "delete"],
                 }
@@ -1293,13 +1990,19 @@ class FrontendStateService:
                     "title": f"\u5df2\u5b8c\u6210\u793a\u4f8b\u89c6\u9891 {index:03d}",
                     "thumbnail": "",
                     "completed_at": f"{now_date} 17:{index % 60:02d}:10",
+                    "completed_at_table": f"04-12 17:{index % 60:02d}",
                     "duration": "00:01:36",
                     "resolution": "1920 x 1080",
                     "size": f"{18 + index % 23}.4 MB",
                     "size_bytes": (18 + index % 23) * 1_048_576,
                     "format": "MP4",
+                    "download_speed": f"{1 + index % 5}.2 MB/s",
+                    "download_speed_bps": (1 + index % 5) * 1_258_291,
                     "local_path": f"D:\\desktop\\\u89c6\u9891\\completed_{index:03d}.mp4",
+                    "filename": f"completed_{index:03d}.mp4",
+                    "save_dir": "D:\\desktop\\\u89c6\u9891",
                     "content_type": "video",
+                    "metadata_pending": False,
                     "platform": '\u6296\u97f3' if index % 2 else "Bilibili",
                     "actions": ["play", "open_directory", "delete"],
                 }
@@ -1310,15 +2013,27 @@ class FrontendStateService:
                     "id": "f1",
                     "title": '\u5357\u5cb3\u5c71\u95f4\u7684\u6e05\u6668',
                     "failed_at": f"{now_date} 07:31:12",
+                    "failed_at_table": "04-12 07:31",
                     "reason": '\u9700\u8981\u767b\u5f55',
+                    "reason_detail": '\u9700\u8981\u767b\u5f55',
+                    "reason_label": '\u9700\u8981\u767b\u5f55',
+                    "reason_icon_file": "action_user.png",
                     "status": '\u5931\u8d25',
+                    "status_label": '\u5931\u8d25',
+                    "status_icon_file": "status_failed.png",
                     "trace_id": "dy_failed_001",
                     "platform": '\u6296\u97f3',
+                    "platform_id": "douyin",
                     "source_url": "https://v.douyin.com/fail",
                     "log_excerpt": ['\u8bf7\u6c42\u89c6\u9891\u94fe\u63a5', '\u63a5\u53e3\u8fd4\u56de\u9700\u8981\u767b\u5f55', '\u4efb\u52a1\u6807\u8bb0\u4e3a\u5931\u8d25'],
+                    "log_excerpt_items": [
+                        {"time": f"{now_date} 07:31:02", "level": "INFO", "message": '\u8bf7\u6c42\u89c6\u9891\u94fe\u63a5', "icon_file": "log_level_info.png"},
+                        {"time": f"{now_date} 07:31:09", "level": "WARN", "message": '\u63a5\u53e3\u8fd4\u56de\u9700\u8981\u767b\u5f55', "icon_file": "log_level_warn.png"},
+                        {"time": f"{now_date} 07:31:12", "level": "ERROR", "message": '\u4efb\u52a1\u6807\u8bb0\u4e3a\u5931\u8d25', "icon_file": "log_level_error.png"},
+                    ],
                     "solutions": [
-                        {"title": '\u786e\u8ba4\u767b\u5f55\u6001', "description": '\u90e8\u5206\u5185\u5bb9\u9700\u8981\u767b\u5f55\u540e\u624d\u80fd\u8bbf\u95ee\uff0c\u8bf7\u68c0\u67e5\u767b\u5f55\u72b6\u6001\u3002'},
-                        {"title": '\u91cd\u65b0\u83b7\u53d6\u94fe\u63a5', "description": '\u767b\u5f55\u540e\u91cd\u65b0\u590d\u5236\u5206\u4eab\u94fe\u63a5\u5e76\u91cd\u8bd5\u3002'},
+                        {"title": '\u786e\u8ba4\u767b\u5f55\u6001', "description": '\u90e8\u5206\u5185\u5bb9\u9700\u8981\u767b\u5f55\u540e\u624d\u80fd\u8bbf\u95ee\uff0c\u8bf7\u68c0\u67e5\u767b\u5f55\u72b6\u6001\u3002', "icon_file": "action_user.png"},
+                        {"title": '\u91cd\u65b0\u83b7\u53d6\u94fe\u63a5', "description": '\u767b\u5f55\u540e\u91cd\u65b0\u590d\u5236\u5206\u4eab\u94fe\u63a5\u5e76\u91cd\u8bd5\u3002', "icon_file": "action_trace_link.png"},
                     ],
                     "actions": ["retry", "copy_diagnostics", "delete"],
                 }
@@ -1327,15 +2042,27 @@ class FrontendStateService:
                     "id": f"f{index}",
                     "title": f"\u5931\u8d25\u793a\u4f8b\u4efb\u52a1 {index}",
                     "failed_at": f"{now_date} 07:{30 + index:02d}:12",
+                    "failed_at_table": f"04-12 07:{30 + index:02d}",
                     "reason": ['\u7f51\u7edc\u8d85\u65f6', '\u94fe\u63a5\u5df2\u5931\u6548', '\u5e73\u53f0\u9700\u8981\u767b\u5f55'][index % 3],
+                    "reason_detail": ['\u7f51\u7edc\u8d85\u65f6', '\u94fe\u63a5\u5df2\u5931\u6548', '\u5e73\u53f0\u9700\u8981\u767b\u5f55'][index % 3],
+                    "reason_label": ['\u7f51\u7edc\u8d85\u65f6', '\u94fe\u63a5\u5931\u8d25', '\u9700\u8981\u767b\u5f55'][index % 3],
+                    "reason_icon_file": ["status_timeout.png", "action_trace_link.png", "action_user.png"][index % 3],
                     "status": '\u5931\u8d25',
+                    "status_label": '\u5931\u8d25',
+                    "status_icon_file": "status_failed.png",
                     "trace_id": f"dy_failed_{index:03d}",
                     "platform": '\u6296\u97f3' if index % 2 else '\u5feb\u624b',
+                    "platform_id": "douyin" if index % 2 else "kuaishou",
                     "source_url": f"https://example.com/fail/{index}",
                     "log_excerpt": ['\u5f00\u59cb\u89e3\u6790\u94fe\u63a5', '\u4e0b\u8f7d\u5668\u8fd4\u56de\u9519\u8bef', '\u4efb\u52a1\u8fdb\u5165\u5931\u8d25\u5217\u8868'],
+                    "log_excerpt_items": [
+                        {"time": f"{now_date} 07:{30 + index:02d}:04", "level": "INFO", "message": '\u5f00\u59cb\u89e3\u6790\u94fe\u63a5', "icon_file": "log_level_info.png"},
+                        {"time": f"{now_date} 07:{30 + index:02d}:09", "level": "ERROR", "message": '\u4e0b\u8f7d\u5668\u8fd4\u56de\u9519\u8bef', "icon_file": "log_level_error.png"},
+                        {"time": f"{now_date} 07:{30 + index:02d}:12", "level": "WARN", "message": '\u4efb\u52a1\u8fdb\u5165\u5931\u8d25\u5217\u8868', "icon_file": "log_level_warn.png"},
+                    ],
                     "solutions": [
-                        {"title": '\u91cd\u8bd5\u4efb\u52a1', "description": '\u7f51\u7edc\u6296\u52a8\u65f6\u53ef\u7a0d\u540e\u91cd\u8bd5\u3002'},
-                        {"title": '\u68c0\u67e5\u94fe\u63a5', "description": '\u786e\u8ba4\u5206\u4eab\u94fe\u63a5\u4ecd\u53ef\u8bbf\u95ee\u3002'},
+                        {"title": '\u91cd\u8bd5\u4efb\u52a1', "description": '\u7f51\u7edc\u6296\u52a8\u65f6\u53ef\u7a0d\u540e\u91cd\u8bd5\u3002', "icon_file": "action_refresh.png"},
+                        {"title": '\u68c0\u67e5\u94fe\u63a5', "description": '\u786e\u8ba4\u5206\u4eab\u94fe\u63a5\u4ecd\u53ef\u8bbf\u95ee\u3002', "icon_file": "action_trace_link.png"},
                     ],
                     "actions": ["retry", "copy_diagnostics", "delete"],
                 }
@@ -1346,6 +2073,7 @@ class FrontendStateService:
                 {"time": f"{now_date} 18:25:03", "level": "ERROR", "source": "下载器", "thread": "download-worker-1", "trace_id": "b7c5d8e9f0a1b2c3", "message_summary": "下载失败：无法解析视频播放地址", "message": "下载失败：无法解析视频播放地址", "detail": "code: 1001", "stack": ""},
             ],
             "settings_snapshot": FrontendStateService().settings_snapshot(),
+            "download_options": {"auto_retry": True, "max_retries": 3, "max_concurrent": 3},
             "toolbox_items": FrontendStateService.toolbox_items(),
             "toolbox_recent_items": FrontendStateService.toolbox_recent_items(),
             "icon_manifest": icon_manifest(),

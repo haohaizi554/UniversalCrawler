@@ -120,10 +120,11 @@ class DownloadTelemetryService:
 
         speed_bps = 0
         last = self._last_sample.get(video.id)
+        force_sample = normalized_progress >= 100
         if last is not None:
             last_bytes, last_at, last_bps = last
             elapsed = now - last_at
-            if elapsed >= self.MIN_SAMPLE_INTERVAL_SECONDS and bytes_downloaded >= last_bytes:
+            if (elapsed >= self.MIN_SAMPLE_INTERVAL_SECONDS or force_sample) and elapsed > 0 and bytes_downloaded >= last_bytes:
                 speed_bps = max(0, int((bytes_downloaded - last_bytes) / elapsed))
             elif elapsed < self.MIN_SAMPLE_INTERVAL_SECONDS:
                 speed_bps = last_bps
@@ -131,7 +132,8 @@ class DownloadTelemetryService:
         if speed_bps <= 0 and last is not None:
             speed_bps = last[2]
 
-        self._last_sample[video.id] = (bytes_downloaded, now, speed_bps)
+        if last is None or now - last[1] >= self.MIN_SAMPLE_INTERVAL_SECONDS or force_sample:
+            self._last_sample[video.id] = (bytes_downloaded, now, speed_bps)
 
         eta_seconds: int | None = None
         if speed_bps > 0 and bytes_total > bytes_downloaded:

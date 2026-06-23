@@ -112,5 +112,32 @@ class BaseSpiderTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(len(calls), 1)
 
+    def test_interruptible_playwright_goto_does_not_refresh_after_navigation_started(self):
+        spider = _DummySpider(keyword="demo", config={})
+        calls: list[int] = []
+
+        class PlaywrightLikeTimeoutError(Exception):
+            pass
+
+        PlaywrightLikeTimeoutError.__name__ = "TimeoutError"
+
+        class FakePage:
+            url = "about:blank"
+
+            def goto(self, url, *_args, **_kwargs):
+                calls.append(_kwargs["timeout"])
+                self.url = url
+                raise PlaywrightLikeTimeoutError("slow load")
+
+        result = spider.interruptible_playwright_goto(
+            FakePage(),
+            "https://example.com/slow",
+            timeout=60000,
+            slice_ms=15000,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(calls, [15000])
+
 if __name__ == "__main__":
     unittest.main()

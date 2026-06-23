@@ -1,9 +1,23 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QLabel, QSplitter, QTextEdit, QVBoxLayout, QWidget
+from typing import Any
 
-from app.ui.pages.common import PageFrame, SnapshotActionTable, key_value_panel
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.services.icon_registry import platform_icon_file, ui_icon_path
+from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.utils.qt_runtime import load_qt_icon
+
 
 class FailedPage(PageFrame):
     retry_requested = pyqtSignal(str)
@@ -11,36 +25,99 @@ class FailedPage(PageFrame):
     delete_requested = pyqtSignal(str)
 
     def __init__(self) -> None:
-        super().__init__("失败列表", use_island=True)
+        super().__init__("", use_island=False)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("FailedPageSplitter")
+
+        self.table_card = QFrame()
+        self.table_card.setObjectName("FailedTableCard")
+        table_card_layout = QVBoxLayout(self.table_card)
+        table_card_layout.setContentsMargins(12, 10, 12, 12)
+        table_card_layout.setSpacing(0)
         self.table = SnapshotActionTable(
             headers=["标题", "失败时间", "失败原因", "状态", "操作"],
-            columns=["title", "failed_at", "reason", "status"],
-            actions={"retry": "重试", "copy_diagnostics": "复制诊断", "delete": "删除"},
+            columns=["title", "failed_at_table", "reason_label", "status_label"],
+            actions={"copy_diagnostics": "复制 Trace ID", "delete": "删除"},
+            icon_columns={"reason_label"},
+            cell_padding=(12, 10),
+            suppress_native_selection=True,
         )
-        splitter.addWidget(self.table)
+        self.table.setObjectName("FailedItemsTable")
+        table_card_layout.addWidget(self.table, 1)
+        splitter.addWidget(self.table_card)
+
         self.detail = QWidget()
-        self.detail.setMinimumWidth(340)
-        self.detail.setMaximumWidth(460)
+        self.detail.setObjectName("FailedRightColumn")
+        self.detail.setMinimumWidth(380)
+        self.detail.setMaximumWidth(520)
         self.detail_layout = QVBoxLayout(self.detail)
-        self.detail_layout.setContentsMargins(14, 0, 0, 0)
+        self.detail_layout.setContentsMargins(0, 0, 0, 0)
+        self.detail_layout.setSpacing(10)
+
+        self.detail_card = QFrame()
+        self.detail_card.setObjectName("FailedDetailCard")
+        self.detail_card_layout = QVBoxLayout(self.detail_card)
+        self.detail_card_layout.setContentsMargins(14, 12, 14, 14)
+        self.detail_card_layout.setSpacing(10)
         self.detail_title = QLabel("错误详情")
-        self.detail_title.setObjectName("PageTitle")
-        self.detail_layout.addWidget(self.detail_title)
-        self.detail_body = QWidget()
-        self.detail_layout.addWidget(self.detail_body)
-        self.log_excerpt = QTextEdit()
-        self.log_excerpt.setReadOnly(True)
-        self.detail_layout.addWidget(QLabel("Trace / 日志片段"))
-        self.detail_layout.addWidget(self.log_excerpt, 1)
+        self.detail_title.setObjectName("SectionTitle")
+        self.detail_card_layout.addWidget(self.detail_title)
+
+        self.summary_body = QWidget()
+        self.summary_body.setObjectName("FailedSummaryBody")
+        self.summary_layout = QVBoxLayout(self.summary_body)
+        self.summary_layout.setContentsMargins(0, 0, 0, 0)
+        self.summary_layout.setSpacing(7)
+        self.detail_card_layout.addWidget(self.summary_body)
+
+        self.log_title = QLabel("Trace / 日志片段")
+        self.log_title.setObjectName("SectionTitle")
+        self.detail_card_layout.addWidget(self.log_title)
+        self.log_scroll = self._scroll_container("FailedLogExcerptScroll")
+        self.log_list = QWidget()
+        self.log_list.setObjectName("FailedLogExcerptList")
+        self.log_layout = QVBoxLayout(self.log_list)
+        self.log_layout.setContentsMargins(0, 0, 0, 0)
+        self.log_layout.setSpacing(5)
+        self.log_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.log_scroll.setWidget(self.log_list)
+        self.detail_card_layout.addWidget(self.log_scroll, 1)
+        self.detail_layout.addWidget(self.detail_card, 2)
+
+        self.solutions_card = QFrame()
+        self.solutions_card.setObjectName("FailedSolutionsCard")
+        self.solutions_layout = QVBoxLayout(self.solutions_card)
+        self.solutions_layout.setContentsMargins(14, 12, 14, 14)
+        self.solutions_layout.setSpacing(8)
+        self.solutions_title = QLabel("可能的解决方案")
+        self.solutions_title.setObjectName("SectionTitle")
+        self.solutions_layout.addWidget(self.solutions_title)
+        self.solutions_list = QWidget()
+        self.solutions_list.setObjectName("FailedSolutionsList")
+        self.solutions_list_layout = QVBoxLayout(self.solutions_list)
+        self.solutions_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.solutions_list_layout.setSpacing(8)
+        self.solutions_layout.addWidget(self.solutions_list, 1)
+        self.detail_layout.addWidget(self.solutions_card, 1)
+
         splitter.addWidget(self.detail)
-        splitter.setSizes([760, 360])
+        splitter.setSizes([820, 420])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         self.root_layout.addWidget(splitter, 1)
-        self.items: list[dict] = []
+
+        self.items: list[dict[str, Any]] = []
         self.table.selectionModel().currentChanged.connect(lambda *_args: self._render_selected_detail())
         self.table.action_requested.connect(self._on_table_action)
+
+    @staticmethod
+    def _scroll_container(object_name: str) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setObjectName(object_name)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return scroll
 
     def render(self, snapshot: dict) -> None:
         self.items = list(snapshot.get("failed_items") or [])
@@ -49,7 +126,7 @@ class FailedPage(PageFrame):
             self.table.selectRow(0)
         self._render_selected_detail()
 
-    def _selected_item(self) -> dict | None:
+    def _selected_item(self) -> dict[str, Any] | None:
         selected = self.table.selected_id()
         if not selected and self.items:
             selected = self.items[0].get("id")
@@ -65,26 +142,146 @@ class FailedPage(PageFrame):
 
     def _render_selected_detail(self) -> None:
         item = self._selected_item()
-        self.detail_layout.removeWidget(self.detail_body)
-        self.detail_body.deleteLater()
+        self._clear_layout(self.summary_layout)
+        self._clear_layout(self.log_layout)
+        self._clear_layout(self.solutions_list_layout)
         if not item:
-            self.detail_body = QWidget()
-            self.detail_layout.insertWidget(1, self.detail_body)
-            self.log_excerpt.setPlainText("")
+            self.summary_layout.addWidget(self._empty_label("暂无失败任务"))
+            self.log_layout.addWidget(self._empty_label("暂无日志片段"))
+            self.solutions_list_layout.addWidget(self._empty_label("暂无建议"))
             return
-        solutions = "\n".join(f"- {s.get('title')}: {s.get('description')}" for s in item.get("solutions", []))
-        self.detail_body = key_value_panel(
-            [
-                ("标题", item.get("title", "")),
-                ("失败时间", item.get("failed_at", "")),
-                ("失败原因", item.get("reason", "")),
-                ("平台", item.get("platform", "")),
-                ("Trace ID", item.get("trace_id", "")),
-                ("可能解决方案", solutions),
-            ]
+
+        self.summary_layout.addWidget(self._detail_row("标题", item.get("title", "")))
+        self.summary_layout.addWidget(self._detail_row("失败时间", item.get("failed_at", "")))
+        self.summary_layout.addWidget(
+            self._detail_row(
+                "失败原因",
+                item.get("reason_detail") or item.get("reason") or "",
+                icon_file=str(item.get("reason_icon_file") or ""),
+                emphasized=True,
+            )
         )
-        self.detail_layout.insertWidget(1, self.detail_body)
-        self.log_excerpt.setPlainText("\n".join(item.get("log_excerpt", [])))
+        self.summary_layout.addWidget(
+            self._detail_row(
+                "平台",
+                item.get("platform", ""),
+                icon_file=platform_icon_file(str(item.get("platform_id") or "")),
+            )
+        )
+        self.summary_layout.addWidget(self._detail_row("Trace ID", item.get("trace_id", "")))
+
+        for entry in list(item.get("log_excerpt_items") or []):
+            self.log_layout.addWidget(self._log_row(entry))
+        if not (item.get("log_excerpt_items") or []):
+            for message in list(item.get("log_excerpt") or []):
+                self.log_layout.addWidget(self._log_row({"level": "INFO", "message": message, "icon_file": "log_level_info.png"}))
+        if self.log_layout.count() == 0:
+            self.log_layout.addWidget(self._empty_label("暂无日志片段"))
+        self.log_layout.addStretch(1)
+
+        for solution in list(item.get("solutions") or []):
+            self.solutions_list_layout.addWidget(self._solution_row(solution))
+        if self.solutions_list_layout.count() == 0:
+            self.solutions_list_layout.addWidget(self._empty_label("暂无建议"))
+        self.solutions_list_layout.addStretch(1)
+
+    def _detail_row(self, label: str, value: Any, *, icon_file: str = "", emphasized: bool = False) -> QWidget:
+        row = QWidget()
+        row.setObjectName("FailedDetailRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(10)
+        key = QLabel(label)
+        key.setObjectName("FailedDetailKey")
+        key.setMinimumWidth(82)
+        row_layout.addWidget(key, 0, Qt.AlignmentFlag.AlignTop)
+        value_widget = self._icon_text(value, icon_file=icon_file, object_name="FailedDetailValue")
+        if emphasized:
+            value_widget.setProperty("emphasized", True)
+        row_layout.addWidget(value_widget, 1)
+        return row
+
+    def _log_row(self, entry: dict[str, Any]) -> QWidget:
+        row = QFrame()
+        row.setObjectName("FailedLogRow")
+        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(2, 5, 8, 5)
+        layout.setSpacing(7)
+        time_label = QLabel(str(entry.get("time") or "--:--:--")[-8:])
+        time_label.setObjectName("FailedLogTime")
+        time_label.setFixedWidth(52)
+        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop)
+        icon = self._icon_label(str(entry.get("icon_file") or "log_level_info.png"), 28)
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        message = QLabel(str(entry.get("message") or ""))
+        message.setObjectName("FailedLogMessage")
+        message.setWordWrap(True)
+        message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(message, 1)
+        return row
+
+    def _solution_row(self, solution: dict[str, Any]) -> QWidget:
+        row = QFrame()
+        row.setObjectName("FailedSolutionRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
+        layout.addWidget(self._icon_label(str(solution.get("icon_file") or "action_help.png"), 18), 0, Qt.AlignmentFlag.AlignTop)
+        text_box = QWidget()
+        text_layout = QVBoxLayout(text_box)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(3)
+        title = QLabel(str(solution.get("title") or "建议"))
+        title.setObjectName("FailedSolutionTitle")
+        desc = QLabel(str(solution.get("description") or ""))
+        desc.setObjectName("FailedSolutionDescription")
+        desc.setWordWrap(True)
+        text_layout.addWidget(title)
+        text_layout.addWidget(desc)
+        layout.addWidget(text_box, 1)
+        return row
+
+    def _icon_text(self, value: Any, *, icon_file: str = "", object_name: str = "") -> QWidget:
+        widget = QWidget()
+        widget.setObjectName(object_name)
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(7)
+        if icon_file:
+            layout.addWidget(self._icon_label(icon_file, 18), 0, Qt.AlignmentFlag.AlignTop)
+        label = QLabel(str(value or ""))
+        label.setObjectName(f"{object_name}Text" if object_name else "IconTextLabel")
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(label, 1)
+        return widget
+
+    @staticmethod
+    def _icon_label(icon_file: str, size: int) -> QLabel:
+        label = QLabel()
+        label.setObjectName("InlineIcon")
+        label.setFixedSize(size, size)
+        icon = load_qt_icon([ui_icon_path(icon_file)])
+        if icon is not None:
+            label.setPixmap(icon.pixmap(size, size))
+        return label
+
+    @staticmethod
+    def _empty_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("MutedLabel")
+        label.setWordWrap(True)
+        return label
+
+    @staticmethod
+    def _clear_layout(layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     def selected_id(self) -> str | None:
         return self.table.selected_id()

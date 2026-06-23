@@ -142,6 +142,18 @@ class SpecHiddenImportsTests(unittest.TestCase):
         for mod in ("uvicorn.logging", "uvicorn.loops", "uvicorn.protocols"):
             self.assertIn(mod, h, f"missing uvicorn: {mod}")
 
+    def test_hiddenimports_includes_shared_modules(self):
+        """shared 子包必须显式列入 hiddenimports。"""
+        h = self._spec_globals["hiddenimports"]
+        shared_mods = [m for m in h if m.startswith("shared.")]
+        self.assertGreater(len(shared_mods), 3, "should collect shared.* submodules")
+        for mod in (
+            "shared.controller_session",
+            "shared.spider_session_runtime",
+            "shared.cli_runner_runtime",
+        ):
+            self.assertIn(mod, h, f"missing hiddenimport: {mod}")
+
 class SpecDataFilesTests(unittest.TestCase):
     """datas 完整性。"""
 
@@ -200,15 +212,41 @@ class SpecDataFilesTests(unittest.TestCase):
         ffmpeg = [d for d in datas if "ffmpeg.exe" in d[0]]
         self.assertTrue(len(ffmpeg) >= 1, "ffmpeg.exe not in datas")
 
+    def test_datas_includes_ffprobe(self):
+        """ffprobe.exe 必须打包。"""
+        datas = self._spec_globals["datas"]
+        if (PROJECT_ROOT / "ffprobe.exe").exists():
+            ffprobe = [d for d in datas if "ffprobe.exe" in d[0]]
+            self.assertTrue(len(ffprobe) >= 1, "ffprobe.exe not in datas")
+        else:
+            self.assertIn("ffprobe.exe", SPEC_FILE.read_text(encoding="utf-8"))
+
+    def test_datas_includes_shared_package(self):
+        """shared/ 整个子包必须作为 data 复制。"""
+        datas = self._spec_globals["datas"]
+        if (PROJECT_ROOT / "shared").exists():
+            shared_data = [d for d in datas if d[1] == "shared"]
+            self.assertTrue(len(shared_data) >= 1, f"shared package not in datas: {datas}")
+        else:
+            self.assertIn('"shared"', SPEC_FILE.read_text(encoding="utf-8"))
+
 class SpecExcludesTests(unittest.TestCase):
     """excludes 配置。"""
 
     @classmethod
     def setUpClass(cls):
-        cls._spec_globals = {"__file__": str(SPEC_FILE), "__name__": "__test_spec__"}
+        cls._analysis_mock = MagicMock()
+        cls._spec_globals = {
+            "__file__": str(SPEC_FILE),
+            "__name__": "__test_spec__",
+            "SPEC": str(SPEC_FILE),
+            "Analysis": cls._analysis_mock,
+            "PYZ": MagicMock(),
+            "EXE": MagicMock(),
+            "COLLECT": MagicMock(),
+        }
         with open(SPEC_FILE, "r", encoding="utf-8") as f:
             spec_source = f.read()
-        cls._spec_globals["SPEC"] = str(SPEC_FILE)
         try:
             exec(spec_source, cls._spec_globals)
         except Exception as e:
@@ -216,7 +254,8 @@ class SpecExcludesTests(unittest.TestCase):
 
     def test_excludes_tkinter(self):
         """tkinter 应当被排除（避免与 PyQt6 冲突）。"""
-        excludes = self._spec_globals.get("excludes", [])
+        kwargs = self._analysis_mock.call_args.kwargs
+        excludes = kwargs.get("excludes", [])
         self.assertIn("tkinter", excludes)
 
 class SpecRuntimeHookTests(unittest.TestCase):
@@ -224,10 +263,17 @@ class SpecRuntimeHookTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._spec_globals = {"__file__": str(SPEC_FILE), "__name__": "__test_spec__"}
+        cls._spec_globals = {
+            "__file__": str(SPEC_FILE),
+            "__name__": "__test_spec__",
+            "SPEC": str(SPEC_FILE),
+            "Analysis": MagicMock(),
+            "PYZ": MagicMock(),
+            "EXE": MagicMock(),
+            "COLLECT": MagicMock(),
+        }
         with open(SPEC_FILE, "r", encoding="utf-8") as f:
             spec_source = f.read()
-        cls._spec_globals["SPEC"] = str(SPEC_FILE)
         try:
             exec(spec_source, cls._spec_globals)
         except Exception as e:
@@ -322,6 +368,14 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("portable.spec",
                      (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8"))
 
+    def test_required_files_includes_ffprobe(self):
+        source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
+        self.assertIn("ffprobe.exe", source)
+
+    def test_required_files_includes_shared_package(self):
+        source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
+        self.assertIn('"shared" / "__init__.py"', source)
+
     def test_forbidden_filenames_includes_user_data(self):
         """不应打包用户数据文件。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
@@ -333,6 +387,7 @@ class BuildScriptTests(unittest.TestCase):
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
         self.assertIn("entry", source)
         self.assertIn("cli", source)
+        self.assertIn("shared", source)
         # 必须检查关键模块
         for mod in ("__init__.py", "dispatcher.py"):
             self.assertIn(mod, source)
@@ -449,6 +504,23 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn("/DAppUserModelID=", source)
         self.assertIn("/DWebUIUserModelID=", source)
         self.assertIn("get_setup_exe_path", source)
+
+    def test_installer_wizard_assets_exist_or_documented(self):
+        wizard_image = PACKAGING_DIR / "wizard_image.bmp"
+        wizard_small_image = PACKAGING_DIR / "wizard_small_image.bmp"
+        if not wizard_image.exists() or not wizard_small_image.exists():
+            self.skipTest(
+                "installer wizard BMP assets are local build prerequisites: "
+                f"{wizard_image.name}, {wizard_small_image.name}"
+            )
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn("wizard_image.bmp", source)
+        self.assertIn("wizard_small_image.bmp", source)
+
+    def test_build_installer_checks_wizard_assets(self):
+        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+        self.assertIn("wizard_image.bmp", source)
+        self.assertIn("wizard_small_image.bmp", source)
 
 class LauncherTemplateTests(unittest.TestCase):
     """_gui_launcher.py 和 _webui_launcher.py 模板正确性。"""
@@ -584,6 +656,9 @@ class ProjectFileExistenceTests(unittest.TestCase):
     def test_ffmpeg_exists(self):
         self.assertTrue((PROJECT_ROOT / "ffmpeg.exe").exists())
 
+    def test_ffprobe_exists(self):
+        self.assertTrue((PROJECT_ROOT / "ffprobe.exe").exists())
+
     def test_m3u8dl_exists(self):
         self.assertTrue((PROJECT_ROOT / "N_m3u8DL-RE.exe").exists())
 
@@ -594,6 +669,9 @@ class ProjectFileExistenceTests(unittest.TestCase):
                        "web_entry.py", "cli_entry.py", "interactive_entry.py"):
             path = entry_dir / module
             self.assertTrue(path.exists(), f"missing: {path}")
+
+    def test_shared_package_exists(self):
+        self.assertTrue((PROJECT_ROOT / "shared" / "__init__.py").exists())
 
     def test_pyproject_toml_exists(self):
         self.assertTrue((PROJECT_ROOT / "pyproject.toml").exists())
@@ -620,6 +698,7 @@ class PyprojectEntryPointsTests(unittest.TestCase):
         scripts = data["project"]["scripts"]
         # 必须包含 ucrawl 主入口
         self.assertIn("ucrawl", scripts)
+        self.assertEqual(scripts.get("ucrawl-auto"), "entry.dispatcher:run")
 
 class NoStaleBuildArtifactsTests(unittest.TestCase):
     """避免 build 残留文件。"""
