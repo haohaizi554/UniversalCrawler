@@ -37,6 +37,7 @@ class WebControllerConfigService:
             "remember_position",
             "autoplay_next",
             "manual_image_switch",
+            "image_auto_advance_interval_seconds",
         },
         "logging": {
             "retention_days",
