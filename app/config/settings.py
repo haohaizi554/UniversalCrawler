@@ -46,6 +46,12 @@ PLAYBACK_PLAYER_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": DEFAULT_OPEN_MODE, "label": "\u5185\u7f6e\u64ad\u653e\u5668"},
     {"value": "system_default", "label": "\u7cfb\u7edf\u9ed8\u8ba4\u64ad\u653e\u5668"},
 )
+IMAGE_AUTO_ADVANCE_INTERVAL_OPTIONS: tuple[dict[str, str], ...] = (
+    {"value": "1", "label": "1 \u79d2"},
+    {"value": "3", "label": "3 \u79d2"},
+    {"value": "5", "label": "5 \u79d2\uff08\u63a8\u8350\uff09"},
+    {"value": "10", "label": "10 \u79d2"},
+)
 LOG_LEVEL_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "debug", "label": "\u8c03\u8bd5"},
     {"value": "info", "label": "\u4fe1\u606f"},
@@ -171,6 +177,10 @@ def open_mode_options() -> list[dict[str, str]]:
 
 def playback_player_options() -> list[dict[str, str]]:
     return [dict(option) for option in PLAYBACK_PLAYER_OPTIONS]
+
+
+def image_auto_advance_interval_options() -> list[dict[str, str]]:
+    return [dict(option) for option in IMAGE_AUTO_ADVANCE_INTERVAL_OPTIONS]
 
 
 def log_level_options() -> list[dict[str, str]]:
@@ -521,6 +531,7 @@ class PlaybackSettings:
     hardware_acceleration: bool = True
     autoplay_next: bool = True
     manual_image_switch: bool = True
+    image_auto_advance_interval_seconds: int = 5
 
     def normalize(self) -> None:
 
@@ -529,6 +540,8 @@ class PlaybackSettings:
         if self.builtin_player_enabled is False and self.default_player == DEFAULT_OPEN_MODE:
             self.default_player = "system_default"
         self.builtin_player_enabled = bool(self.builtin_player_enabled)
+        if str(self.image_auto_advance_interval_seconds) not in _option_values(IMAGE_AUTO_ADVANCE_INTERVAL_OPTIONS):
+            self.image_auto_advance_interval_seconds = 5
 
 @dataclass
 class LogSettings:
@@ -798,6 +811,11 @@ class ConfigManager:
             if player not in _option_values(PLAYBACK_PLAYER_OPTIONS):
                 raise ConfigValidationError(f"未知播放器: {value}")
             return player
+        if section == "playback" and key == "image_auto_advance_interval_seconds":
+            seconds = int(value)
+            if str(seconds) not in _option_values(IMAGE_AUTO_ADVANCE_INTERVAL_OPTIONS):
+                raise ConfigValidationError(f"unknown image auto advance interval: {value}")
+            return seconds
         if section == "logging" and key == "level":
             level = str(value or "info").strip().lower()
             if level not in _option_values(LOG_LEVEL_OPTIONS):

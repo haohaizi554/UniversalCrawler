@@ -330,6 +330,19 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("selected[key] = \"\"", remove_block)
         self.assertIn("selectedVideoId = null", remove_block)
         self.assertIn("currentPlayingId = null", remove_block)
+        self.assertIn("removePlaybackPosition(id)", remove_block)
+
+    def test_web_playback_position_cache_uses_path_key_and_cleans_orphans(self):
+        content = _static_bundle_content()
+
+        self.assertIn("const PLAYBACK_POSITION_PREFIX", content)
+        self.assertIn("function playbackPositionIdentity(id)", content)
+        self.assertIn("item.local_path || item.filename || item.id", content)
+        self.assertIn("encodeURIComponent(playbackPositionIdentity(id))", content)
+        self.assertIn("function cleanupWebPlaybackPositions(items)", content)
+        self.assertIn("key.startsWith(PLAYBACK_POSITION_PREFIX)", content)
+        self.assertIn("cleanupWebPlaybackPositions(allItems);", content)
+        self.assertIn("localStorage.removeItem(legacyPlaybackPositionKey(sourceId))", content)
 
     def test_append_log_uses_batched_render_scheduler(self):
         content = _static_bundle_content()

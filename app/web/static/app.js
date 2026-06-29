@@ -26,6 +26,8 @@ let currentSettingsGroup = localStorage.getItem("webui_settings_group") || "基�
 let openCustomSelect = null;
 let imageAutoAdvanceTimer = null;
 
+const PLAYBACK_POSITION_PREFIX = "ucp_playback_position_";
+
 const SETTINGS_GROUP_ORDER_FALLBACK = ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"];
 const SETTINGS_GROUP_DESCRIPTIONS_FALLBACK = {
   "基础设置": "下载目录、命名规则和打开行为",
@@ -716,6 +718,7 @@ function applyFrontendDelta(delta) {
 
 function removeDeletedFromFrontendState(ids) {
   const doomed = new Set(ids.map(id => String(id)));
+  for (const id of doomed) removePlaybackPosition(id);
   for (const section of ["queue_items", "active_downloads", "completed_items", "failed_items"]) {
     frontendState[section] = (frontendState[section] || []).filter(item => !doomed.has(String(item.id)));
   }
@@ -1568,6 +1571,7 @@ function activeTrendHtml(values, speedLabel = "0 B/s") {
 
 function renderCompleted() {
   const allItems = frontendState.completed_items || [];
+  cleanupWebPlaybackPositions(allItems);
   const totalPages = Math.max(1, Math.ceil(allItems.length / completedPageSize));
   completedPage = Math.max(1, Math.min(completedPage, totalPages));
   if (selected.completed) {
@@ -1736,11 +1740,22 @@ function failedLogRowHtml(entry) {
   const level = failedLogLevel(entry);
   return `
     <div class="failed-log-row">
-      <span class="log-time">${esc(String(entry.time || "--:--:--").slice(-8))}</span>
+      <span class="log-time">${esc(failedLogTime(entry.time))}</span>
       <span class="log-level log-level-${failedLogLevelClass(level)}">${esc(level)}</span>
       <span class="log-message">${esc(entry.message || "")}</span>
     </div>
   `;
+}
+
+function failedLogTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "--:--:--";
+  let candidate = text.split(/\s+/).pop() || text;
+  candidate = candidate.split(".")[0];
+  if (/^\d{1,2}:\d{2}:\d{2}$/.test(candidate)) return candidate.padStart(8, "0");
+  const match = text.match(/(\d{1,2}:\d{2}:\d{2})(?:\.\d+)?/);
+  if (match) return match[1].padStart(8, "0");
+  return text.slice(-8).padStart(8, "-");
 }
 
 function solutionRowHtml(solution) {
@@ -2297,8 +2312,45 @@ function shouldManualSwitchImages() {
   return playbackSettings().manual_image_switch !== false;
 }
 
+function completedItemById(id) {
+  return (frontendState.completed_items || []).find(item => String(item.id) === String(id));
+}
+
+function playbackPositionIdentity(id) {
+  const item = completedItemById(id);
+  return String((item && (item.local_path || item.filename || item.id)) || id || "");
+}
+
 function playbackPositionKey(id) {
-  return `ucp_playback_position_${id}`;
+  return `${PLAYBACK_POSITION_PREFIX}${encodeURIComponent(playbackPositionIdentity(id))}`;
+}
+
+function legacyPlaybackPositionKey(id) {
+  return `${PLAYBACK_POSITION_PREFIX}${id}`;
+}
+
+function removePlaybackPosition(id) {
+  try {
+    localStorage.removeItem(playbackPositionKey(id));
+    localStorage.removeItem(legacyPlaybackPositionKey(id));
+  } catch (_error) {}
+}
+
+function cleanupWebPlaybackPositions(items) {
+  const validKeys = new Set();
+  for (const item of items || []) {
+    if (!item || !item.id) continue;
+    validKeys.add(playbackPositionKey(item.id));
+    validKeys.add(legacyPlaybackPositionKey(item.id));
+  }
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith(PLAYBACK_POSITION_PREFIX) && !validKeys.has(key)) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch (_error) {}
 }
 
 function isImageItem(item) {
@@ -2562,7 +2614,7 @@ function setupPlayerEvents(player, sourceId) {
   };
   player.ontimeupdate = () => rememberWebPlaybackPosition(sourceId, player);
   player.onended = () => {
-    try { localStorage.removeItem(playbackPositionKey(sourceId)); } catch (_error) {}
+    removePlaybackPosition(sourceId);
     if (currentPlayingId === sourceId && shouldAutoplayNext()) autoplayNextPreview();
   };
 }
@@ -2571,16 +2623,22 @@ function rememberWebPlaybackPosition(sourceId, player) {
   if (!sourceId || !player || !shouldRememberPlaybackPosition()) return;
   if (!Number.isFinite(player.currentTime) || player.currentTime < 1) return;
   if (Number.isFinite(player.duration) && player.duration > 0 && player.currentTime >= player.duration - 1.5) {
-    try { localStorage.removeItem(playbackPositionKey(sourceId)); } catch (_error) {}
+    removePlaybackPosition(sourceId);
     return;
   }
-  try { localStorage.setItem(playbackPositionKey(sourceId), String(Math.floor(player.currentTime))); } catch (_error) {}
+  try {
+    localStorage.setItem(playbackPositionKey(sourceId), String(Math.floor(player.currentTime)));
+    localStorage.removeItem(legacyPlaybackPositionKey(sourceId));
+  } catch (_error) {}
 }
 
 function restoreWebPlaybackPosition(sourceId, player) {
   if (!sourceId || !player || !shouldRememberPlaybackPosition()) return;
   let seconds = 0;
-  try { seconds = Number(localStorage.getItem(playbackPositionKey(sourceId)) || 0); } catch (_error) { seconds = 0; }
+  try {
+    const value = localStorage.getItem(playbackPositionKey(sourceId)) || localStorage.getItem(legacyPlaybackPositionKey(sourceId));
+    seconds = Number(value || 0);
+  } catch (_error) { seconds = 0; }
   if (seconds > 0 && Number.isFinite(seconds)) player.currentTime = seconds;
 }
 

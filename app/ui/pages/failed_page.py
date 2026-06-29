@@ -207,12 +207,12 @@ class FailedPage(PageFrame):
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 1, 0, 1)
-        layout.setSpacing(4)
-        time_label = QLabel(str(entry.get("time") or "--:--:--")[-8:])
+        layout.setSpacing(6)
+        time_label = QLabel(self._format_log_time(entry.get("time")))
         time_label.setObjectName("FailedLogTime")
-        time_width = max(52, time_label.fontMetrics().horizontalAdvance("00:00:00"))
+        time_width = max(68, time_label.fontMetrics().horizontalAdvance("00:00:00") + 8)
         time_label.setFixedWidth(time_width)
-        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         level_badge = self._log_level_badge(entry)
         layout.addWidget(level_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -250,6 +250,19 @@ class FailedPage(PageFrame):
             return level
         return level[:8] or "INFO"
 
+    @staticmethod
+    def _format_log_time(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return "--:--:--"
+        parts = text.split()
+        candidate = parts[-1] if parts else text
+        if "." in candidate:
+            candidate = candidate.split(".", 1)[0]
+        if len(candidate) >= 8 and candidate[-8:-6].isdigit() and candidate[-5:-3].isdigit() and candidate[-2:].isdigit():
+            return candidate[-8:]
+        return text[-8:].rjust(8, "-")
+
     def _log_level_badge(self, entry: dict[str, Any]) -> QLabel:
         level = self._log_level_text(entry)
         object_names = {
@@ -264,8 +277,7 @@ class FailedPage(PageFrame):
         badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setFixedHeight(22)
-        badge.setMinimumWidth(max(46, badge.fontMetrics().horizontalAdvance(level) + 18))
-        badge.setMaximumWidth(92)
+        badge.setFixedWidth(74)
         return badge
 
     def _solution_row(self, solution: dict[str, Any]) -> QWidget:

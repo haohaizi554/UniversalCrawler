@@ -1808,14 +1808,38 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         log_row = failed.findChild(QFrame, "FailedLogRow")
         self.assertIsNotNone(log_row)
         self.assertEqual(log_row.layout().contentsMargins().left(), 0)
-        self.assertEqual(log_row.layout().spacing(), 4)
+        self.assertEqual(log_row.layout().spacing(), 6)
         self.assertEqual(log_row.layout().itemAt(0).widget().objectName(), "FailedLogTime")
         time_widget = log_row.layout().itemAt(0).widget()
-        self.assertEqual(time_widget.width(), max(52, time_widget.fontMetrics().horizontalAdvance("00:00:00")))
+        self.assertEqual(time_widget.width(), max(68, time_widget.fontMetrics().horizontalAdvance("00:00:00") + 8))
         level_badge = log_row.layout().itemAt(1).widget()
         self.assertIn(level_badge.objectName(), {"LogLevelBadgeInfo", "LogLevelBadgeSuccess", "LogLevelBadgeWarn", "LogLevelBadgeError", "LogLevelBadgeCommand"})
         self.assertEqual(level_badge.height(), 22)
-        self.assertGreaterEqual(level_badge.width(), 46)
+        self.assertEqual(level_badge.width(), 74)
+
+    def test_failed_log_rows_keep_full_time_and_aligned_messages(self):
+        shell = self._make_shell()
+        failed = shell.pages["failed"]
+        rows = [
+            {"time": "2026-06-30 03:32:05", "level": "WARN", "message": "下载策略执行失败，回退到后续策略"},
+            {"time": "2026-06-30 03:32:06", "level": "ERROR", "message": "小红书视频下载失败"},
+            {"time": "03:32:07", "level": "INFO", "message": "Released download concurrency slot"},
+        ]
+
+        widgets = [failed._log_row(row) for row in rows]
+
+        message_x = []
+        for widget in widgets:
+            layout = widget.layout()
+            time_widget = layout.itemAt(0).widget()
+            badge = layout.itemAt(1).widget()
+            message = layout.itemAt(2).widget()
+            self.assertRegex(time_widget.text(), r"^\d{2}:\d{2}:\d{2}$")
+            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 4)
+            self.assertEqual(badge.width(), 74)
+            message_x.append(layout.itemAt(2).geometry().x() if widget.isVisible() else time_widget.width() + layout.spacing() + badge.width() + layout.spacing())
+
+        self.assertEqual(len(set(message_x)), 1)
 
     def test_queue_recent_events_skip_identical_rebuilds(self):
         shell = self._make_shell()
@@ -1880,8 +1904,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("log-level", failed_log_fn)
         self.assertNotIn("<img", failed_log_fn)
         self.assertLess(failed_log_fn.index("log-time"), failed_log_fn.index("log-level"))
-        self.assertIn("grid-template-columns: 8ch max-content minmax(0, 1fr)", css)
+        self.assertIn("grid-template-columns: 8.5ch 74px minmax(0, 1fr)", css)
         self.assertIn("padding: 2px 0", css)
+        self.assertIn("function failedLogTime", content)
+        self.assertIn("failedLogTime(entry.time)", failed_log_fn)
         self.assertIn("#page-failed tbody td:nth-child(3)", css)
         self.assertIn(".failed-log-row .log-level", css)
 

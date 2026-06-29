@@ -7,8 +7,10 @@ from unittest.mock import Mock, patch
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtMultimedia import QMediaPlayer
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
+from app.services.playback_position_service import PlaybackPositionService
 from app.ui.components.media_preview_panel import MediaPreviewPanel
 
 class MediaPreviewPanelTests(unittest.TestCase):
@@ -495,6 +497,41 @@ class MediaPreviewPanelTests(unittest.TestCase):
 
         panel.apply_playback_settings({"remember_position": False})
         self.assertEqual(panel._saved_positions, {})
+
+    def test_playback_position_service_restores_across_panel_instances(self):
+        with TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir) / "demo.mp4"
+            media.write_bytes(b"video")
+            service = PlaybackPositionService(Path(temp_dir) / "positions.json")
+            service.save(media, 30_000, duration_ms=100_000)
+
+            panel = MediaPreviewPanel(QWidget(), playback_position_service=service)
+            source_key = panel._normalize_path(str(media))
+            panel._active_video_source = source_key
+            panel.player.setPosition = Mock()
+
+            panel._restore_playback_position_later(source_key)
+            QTest.qWait(420)
+            self.app.processEvents()
+
+            panel.player.setPosition.assert_called_once_with(30_000)
+
+    def test_playback_position_is_deleted_when_media_ends_or_memory_disabled(self):
+        with TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir) / "demo.mp4"
+            media.write_bytes(b"video")
+            service = PlaybackPositionService(Path(temp_dir) / "positions.json")
+            panel = MediaPreviewPanel(QWidget(), playback_position_service=service)
+            source_key = panel._normalize_path(str(media))
+
+            service.save(media, 20_000, duration_ms=100_000)
+            panel._active_video_source = source_key
+            panel.on_player_media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertEqual(service.get(media), 0)
+
+            service.save(media, 25_000, duration_ms=100_000)
+            panel.apply_playback_settings({"remember_position": False})
+            self.assertEqual(service.snapshot(), {})
 
     def test_image_auto_advance_respects_manual_switch_setting(self):
         panel = MediaPreviewPanel(QWidget())
