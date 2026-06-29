@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QSizeF, Qt, QTimer, QUrl, pyqtSignal
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.services.mkv_repair_service import MkvPlaybackRepairService
+from app.services.playback_position_service import PlaybackPositionService
 from app.ui.task_runtime import LongTaskRunner, ShortTaskRunner, TaskCancelToken
 
 @dataclass(slots=True)
@@ -116,10 +118,16 @@ class MediaPreviewPanel(QFrame):
     sig_repair_commit_finished = pyqtSignal(str, str, bool, str)
     sig_media_metadata_detected = pyqtSignal(str, dict)
 
-    def __init__(self, style_provider, repair_service: MkvPlaybackRepairService | None = None):
+    def __init__(
+        self,
+        style_provider,
+        repair_service: MkvPlaybackRepairService | None = None,
+        playback_position_service: PlaybackPositionService | None = None,
+    ):
         super().__init__(style_provider if isinstance(style_provider, QWidget) else None)
         self._style_provider = style_provider
         self._repair_service = repair_service or MkvPlaybackRepairService()
+        self._playback_position_service = playback_position_service or PlaybackPositionService()
         self._active_video_source: str | None = None
         self._active_source_path: str | None = None
         self._repair_candidate_path: str | None = None
@@ -144,6 +152,7 @@ class MediaPreviewPanel(QFrame):
         self._autoplay_next_enabled = True
         self._manual_image_switch = True
         self._saved_positions: dict[str, int] = {}
+        self._last_position_flush_at: dict[str, float] = {}
 
         self.setObjectName("ContentPanel")
         layout = QVBoxLayout(self)
@@ -280,6 +289,8 @@ class MediaPreviewPanel(QFrame):
         self._manual_image_switch = bool(settings.get("manual_image_switch", True))
         if not self._remember_position_enabled:
             self._saved_positions.clear()
+            self._last_position_flush_at.clear()
+            self._playback_position_service.clear()
         self._refresh_image_auto_advance_timer()
 
     def show_image(self, image_path: str) -> None:
@@ -333,10 +344,12 @@ class MediaPreviewPanel(QFrame):
         self._set_play_button_paused()
 
     def stop_playback(self) -> None:
+        self._persist_current_playback_position(force=True)
         self.player.stop()
         self._set_play_button_stopped()
 
     def release_media(self) -> None:
+        self._persist_current_playback_position(force=True)
         self._active_video_source = None
         self._active_source_path = None
         self._end_emitted_for_source = False
@@ -507,6 +520,7 @@ class MediaPreviewPanel(QFrame):
             self._set_play_button_stopped()
             if self._active_video_source:
                 self._saved_positions.pop(self._active_video_source, None)
+                self._playback_position_service.delete(self._active_video_source)
             if self._autoplay_next_enabled and self._active_video_source and not self._end_emitted_for_source:
                 self._end_emitted_for_source = True
                 self.sig_auto_next_preview.emit()
@@ -521,11 +535,16 @@ class MediaPreviewPanel(QFrame):
             return
         if position_ms >= 1000:
             self._saved_positions[self._active_video_source] = position_ms
+            self._persist_current_playback_position(position_ms=position_ms, duration_ms=duration_ms)
 
     def _restore_playback_position_later(self, source_key: str) -> None:
         if not self._remember_position_enabled or not source_key:
             return
         position_ms = int(self._saved_positions.get(source_key) or 0)
+        if position_ms <= 0:
+            position_ms = self._playback_position_service.get(source_key)
+            if position_ms > 0:
+                self._saved_positions[source_key] = position_ms
         if position_ms <= 0:
             return
         QTimer.singleShot(350, lambda key=source_key, pos=position_ms: self._restore_playback_position(key, pos))
@@ -534,6 +553,32 @@ class MediaPreviewPanel(QFrame):
         if self._active_video_source != source_key or not self._remember_position_enabled:
             return
         self.player.setPosition(max(0, int(position_ms)))
+
+    def _persist_current_playback_position(
+        self,
+        *,
+        position_ms: int | None = None,
+        duration_ms: int | None = None,
+        force: bool = False,
+    ) -> None:
+        if not self._remember_position_enabled or not self._active_video_source:
+            return
+        if position_ms is None:
+            position_ms = int(self.player.position() or 0)
+        if duration_ms is None:
+            duration_ms = int(self.player.duration() or 0)
+        position_ms = max(0, int(position_ms or 0))
+        duration_ms = max(0, int(duration_ms or 0))
+        now = time.monotonic()
+        last_flush = self._last_position_flush_at.get(self._active_video_source, 0.0)
+        if not force and now - last_flush < 5.0:
+            return
+        self._last_position_flush_at[self._active_video_source] = now
+        self._playback_position_service.save(
+            self._active_video_source,
+            position_ms,
+            duration_ms=duration_ms,
+        )
 
     def _refresh_image_auto_advance_timer(self) -> None:
         if not hasattr(self, "_image_auto_advance_timer"):

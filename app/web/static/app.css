@@ -900,8 +900,8 @@ tr.selected { background: var(--row-selected); }
 .failed-log-row {
   display: grid;
   align-items: start;
-  grid-template-columns: 8ch max-content minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 8.5ch 74px minmax(0, 1fr);
+  gap: 6px;
   padding: 2px 0;
   font-size: 12px;
   background: transparent;
@@ -917,13 +917,13 @@ tr.selected { background: var(--row-selected); }
 .failed-log-row .log-time {
   color: var(--muted);
   font-family: Consolas, "Microsoft YaHei UI", monospace;
-  text-align: left;
+  text-align: right;
   line-height: 22px;
 }
 
 .failed-log-row .log-level {
-  min-width: 46px;
-  max-width: 92px;
+  width: 74px;
+  box-sizing: border-box;
   height: 22px;
   padding: 0 8px;
   border-radius: 999px;
