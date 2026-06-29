@@ -34,6 +34,7 @@ from app.config.settings import (
     filename_template_options,
     font_size_label,
     font_size_options,
+    image_auto_advance_interval_options,
     language_label,
     language_options,
     log_retention_options,
@@ -2173,7 +2174,13 @@ class FrontendStateService:
                 "remember_position": bool(playback.get("remember_position", True)),
                 "autoplay_next": bool(playback.get("autoplay_next", True)),
                 "manual_image_switch": bool(playback.get("manual_image_switch", True)),
-                "_options": {"default_player": playback_player_options()},
+                "image_auto_advance_interval_seconds": int(
+                    playback.get("image_auto_advance_interval_seconds", 5) or 5
+                ),
+                "_options": {
+                    "default_player": playback_player_options(),
+                    "image_auto_advance_interval_seconds": image_auto_advance_interval_options(),
+                },
             },
             "日志设置": {
                 "retention_days": int(logging_cfg.get("retention_days", 1) or 1),
