@@ -920,10 +920,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             [str(interval_combo.itemData(index)) for index in range(interval_combo.count())],
             ["1", "3", "5", "10"],
         )
-        self.assertFalse(interval_combo.isVisible())
+        self.assertTrue(interval_combo.isHidden())
         manual_switch.setChecked(False)
         self.app.processEvents()
-        self.assertTrue(interval_combo.isVisible())
+        self.assertFalse(interval_combo.isHidden())
 
     def test_settings_render_does_not_rebuild_while_editor_has_focus(self):
         shell = self._make_shell()
