@@ -2172,14 +2172,17 @@ function imageManualSwitchSetting(value, options) {
     { value: "10", label: "10 秒" },
   ];
   const currentInterval = String(value.image_auto_advance_interval_seconds || 5);
-  const intervalSelect = settingSelect(
-    "",
-    "image_auto_advance_interval_seconds",
-    currentInterval,
-    intervalOptions,
-    "playback",
-    manual ? " hidden disabled" : ""
-  ).replace('class="setting-row"', 'class="image-auto-interval"');
+  const normalized = intervalOptions.map(normalizeSettingOption).filter(option => option.value);
+  const intervalSelect = `
+    <select
+      class="image-auto-interval"
+      data-setting="image_auto_advance_interval_seconds"
+      onchange="updateSetting('playback', 'image_auto_advance_interval_seconds', this.value)"
+      ${manual ? "hidden disabled" : ""}
+    >
+      ${normalized.map(option => `<option value="${escAttr(option.value)}" ${currentInterval === option.value ? "selected" : ""}>${esc(optionLabel(option.label))}</option>`).join("")}
+    </select>
+  `;
   return `
     <label class="setting-row image-manual-row">
       <span>${esc(t("手动切换图片"))}</span>
