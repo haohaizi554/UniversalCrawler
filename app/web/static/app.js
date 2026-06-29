@@ -2361,6 +2361,11 @@ function shouldManualSwitchImages() {
   return playbackSettings().manual_image_switch !== false;
 }
 
+function imageAutoAdvanceIntervalMs() {
+  const seconds = Number(playbackSettings().image_auto_advance_interval_seconds || 5);
+  return [1, 3, 5, 10].includes(seconds) ? seconds * 1000 : 5000;
+}
+
 function completedItemById(id) {
   return (frontendState.completed_items || []).find(item => String(item.id) === String(id));
 }
@@ -2421,7 +2426,7 @@ function scheduleImageAutoAdvance(id) {
   imageAutoAdvanceTimer = setTimeout(() => {
     imageAutoAdvanceTimer = null;
     if (currentPlayingId === id) autoplayNextPreview();
-  }, 5000);
+  }, imageAutoAdvanceIntervalMs());
 }
 
 function frontendAction(action, payload) {
