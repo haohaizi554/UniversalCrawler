@@ -1337,10 +1337,15 @@ function rebuildCompatibilityState() {
 }
 
 function renderCounts() {
-  byId("countQueue").textContent = String((frontendState.queue_items || []).length);
-  byId("countActive").textContent = String((frontendState.active_downloads || []).length);
-  byId("countCompleted").textContent = String((frontendState.completed_items || []).length);
-  byId("countFailed").textContent = String((frontendState.failed_items || []).length);
+  const status = frontendState.app_status || {};
+  const countFor = (key, section) => {
+    if (Object.prototype.hasOwnProperty.call(status, key)) return Number(status[key] || 0);
+    return (frontendState[section] || []).length;
+  };
+  byId("countQueue").textContent = String(countFor("queue_count", "queue_items"));
+  byId("countActive").textContent = String(countFor("active_count", "active_downloads"));
+  byId("countCompleted").textContent = String(countFor("completed_count", "completed_items"));
+  byId("countFailed").textContent = String(countFor("failed_count", "failed_items"));
 }
 
 function renderQueue() {
@@ -2263,6 +2268,7 @@ function renderToolDetail() {
 
 function renderStatus() {
   const status = frontendState.app_status || {};
+  renderCounts();
   byId("statusState").textContent = t(status.running_state || "空闲中");
   byId("statusDownload").textContent = `${t("下载速度")}：${status.download_speed || "0 B/s"}`;
   byId("statusUpload").textContent = `${t("上传速度")}：${status.upload_speed || "0 B/s"}`;

@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from app.services.frontend_state_service import FrontendStateService
 from app.ui.main_window import MainWindow
 
 class MainWindowTests(unittest.TestCase):
@@ -243,7 +244,7 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_state_service.get_snapshot.assert_called_once_with(mock=False, sections=None)
         window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
-    def test_page_changed_updates_visibility_without_forcing_extra_render(self):
+    def test_page_changed_updates_visibility_and_requests_visible_page_section(self):
         window = self._make_window()
         window.app_state = Mock()
         window.refresh_frontend_state = Mock()
@@ -253,7 +254,7 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._on_page_changed(window, "logs")
 
         window.app_state.set_visible_page.assert_called_once_with("logs", ["queue", "logs"], emit_change=False)
-        window.refresh_frontend_state.assert_not_called()
+        window.refresh_frontend_state.assert_called_once_with(topics={"page.visible.logs"})
 
     def test_app_state_videos_update_schedules_frontend_refresh(self):
         window = self._make_window()
@@ -419,6 +420,63 @@ class MainWindowTests(unittest.TestCase):
         for topic, expected in cases.items():
             with self.subTest(topic=topic):
                 self.assertEqual(MainWindow._sections_for_topics(self._make_window(), {topic}), expected)
+
+    def test_video_topics_only_request_visible_page_section(self):
+        window = self._make_window()
+        window.app_shell = SimpleNamespace(current_page_id="completed")
+
+        self.assertEqual(
+            MainWindow._sections_for_topics(window, {"videos.terminal"}),
+            frozenset({"completed_items", "app_status"}),
+        )
+        self.assertEqual(
+            MainWindow._sections_for_topics(window, {"task_progress"}),
+            frozenset({"app_status"}),
+        )
+
+    def test_visible_active_page_keeps_active_progress_section(self):
+        window = self._make_window()
+        window.app_shell = SimpleNamespace(current_page_id="active")
+
+        self.assertEqual(
+            MainWindow._sections_for_topics(window, {"task_progress"}),
+            frozenset({"active_downloads", "app_status"}),
+        )
+
+    def test_hidden_log_append_only_updates_status(self):
+        window = self._make_window()
+        window.app_shell = SimpleNamespace(current_page_id="active")
+
+        self.assertEqual(MainWindow._sections_for_topics(window, {"logs.append"}), frozenset({"app_status"}))
+
+    def test_page_visibility_topic_requests_page_section_without_full_refresh(self):
+        window = self._make_window()
+        window.app_shell = SimpleNamespace(current_page_id="active")
+
+        self.assertEqual(
+            MainWindow._sections_for_topics(window, {"page.visible.failed"}),
+            frozenset({"failed_items", "app_status"}),
+        )
+
+    def test_topic_scoped_render_uses_exact_snapshot_sections_not_delta_union(self):
+        window = self._make_window()
+        window.app_shell = Mock()
+        window.app_shell.current_page_id = "active"
+        window.app_shell.render = Mock()
+        service = FrontendStateService()
+        service.get_snapshot = Mock(return_value={"active_downloads": [], "app_status": {}, "version": 2})
+        service.get_delta = Mock()
+        window._frontend_state_service = service
+        window._cached_snapshot = {"version": 1, "active_downloads": [], "app_status": {}}
+
+        MainWindow._render_frontend_state(window, topics={"videos.terminal"})
+
+        service.get_delta.assert_not_called()
+        service.get_snapshot.assert_called_once_with(
+            mock=False,
+            sections=frozenset({"active_downloads", "app_status"}),
+        )
+        window.app_shell.render.assert_called_once()
 
     def test_update_basic_setting_updates_current_directory_and_refreshes(self):
         window = self._make_window()

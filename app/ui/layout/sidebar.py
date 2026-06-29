@@ -217,6 +217,8 @@ class NavItemWidget(QFrame):
         self._sync_badge()
 
     def set_count(self, count: int | None) -> None:
+        if self._count == count:
+            return
         self._count = count
         self._sync_badge()
 

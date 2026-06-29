@@ -1352,6 +1352,8 @@ class FrontendStateServiceTests(unittest.TestCase):
 
         self.assertEqual(snapshot["app_status"]["completed_count"], 1)
         self.assertEqual(snapshot["app_status"]["failed_count"], 0)
+        self.assertEqual(snapshot["app_status"]["queue_count"], 1)
+        self.assertEqual(snapshot["app_status"]["active_count"], 1)
         self.assertIn("2.0 KB/s", snapshot["app_status"]["download_speed"])
 
     def test_app_status_parses_compact_speed_strings_when_bps_missing(self):

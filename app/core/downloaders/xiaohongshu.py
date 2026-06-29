@@ -78,40 +78,6 @@ class XiaohongshuDownloader(BaseDownloader):
             check_stop_func=check_stop_func,
             headers=headers,
         )
-        return
-        total = max(1, len(images_data))
-        completed = 0
-        for idx, image in enumerate(images_data, start=1):
-            if check_stop_func():
-                raise DownloaderStoppedError("用户停止下载")
-            image_url = image.get("image_url", "")
-            if not image_url:
-                continue
-            ext = ".jpeg"
-            lowered = image_url.lower()
-            if ".png" in lowered:
-                ext = ".png"
-            elif ".webp" in lowered:
-                ext = ".webp"
-            elif ".gif" in lowered:
-                ext = ".gif"
-            target_path = os.path.join(save_dir, f"{base_name}_{idx}{ext}")
-            self._download_http_file(
-                url=image_url,
-                save_path=target_path,
-                headers=headers,
-                check_stop_func=check_stop_func,
-                max_retries=cfg.get("download", "max_retries", 3),
-                timeout=cfg.get("download", "request_timeout", 60),
-                chunk_size=cfg.get("download", "chunk_size", 65536),
-                error_message=f"小红书图片下载失败: {base_name}_{idx}",
-                proxy=video_item.meta.get("proxy"),
-            )
-            if completed == 0:
-                video_item.local_path = target_path
-            completed += 1
-            self._emit_progress(progress_callback, int(completed / total * 100))
-        self._emit_progress(progress_callback, 100)
 
     def _download_gallery_parallel(
         self,

@@ -211,14 +211,9 @@ class AppShell(QWidget):
             self.status_bar.render(snapshot.get("app_status") or {})
 
         count_sections = set(self._PAGE_SECTION_KEYS.values())
-        if full_refresh or changed_sections & count_sections:
-            counts = {
-                "queue": len(snapshot.get("queue_items") or []),
-                "active": len(snapshot.get("active_downloads") or []),
-                "completed": len(snapshot.get("completed_items") or []),
-                "failed": len(snapshot.get("failed_items") or []),
-            }
-            if full_refresh:
+        if full_refresh or "app_status" in changed_sections or changed_sections & count_sections:
+            counts = self._counts_from_snapshot(snapshot)
+            if full_refresh or "app_status" in changed_sections:
                 self.sidebar.set_counts(counts)
             else:
                 keys = {
@@ -227,6 +222,24 @@ class AppShell(QWidget):
                     if section in changed_sections
                 }
                 self.sidebar.update_counts({page_id: counts[page_id] for page_id in keys})
+
+    def _counts_from_snapshot(self, snapshot: dict) -> dict[str, int]:
+        status = snapshot.get("app_status") or {}
+
+        def count_for(status_key: str, section_key: str) -> int:
+            if isinstance(status, dict) and status_key in status:
+                try:
+                    return int(status.get(status_key) or 0)
+                except (TypeError, ValueError):
+                    return 0
+            return len(snapshot.get(section_key) or [])
+
+        return {
+            "queue": count_for("queue_count", "queue_items"),
+            "active": count_for("active_count", "active_downloads"),
+            "completed": count_for("completed_count", "completed_items"),
+            "failed": count_for("failed_count", "failed_items"),
+        }
 
     def _sync_top_quantity_from_settings(self, settings_snapshot: dict) -> None:
         rows = settings_snapshot.get("平台设置") if isinstance(settings_snapshot, dict) else None

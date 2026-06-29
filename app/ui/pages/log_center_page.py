@@ -616,15 +616,6 @@ class LogCenterPage(PageFrame):
             max_width=168,
             horizontal_padding=16,
         )
-        return
-        metrics = self.page_size_combo.fontMetrics()
-        widest = max(
-            (metrics.horizontalAdvance(self.page_size_combo.itemText(index)) for index in range(self.page_size_combo.count())),
-            default=metrics.horizontalAdvance(self.page_size_combo.currentText() or "20 条/页"),
-        )
-        target_width = max(104, min(168, widest + 50))
-        self.page_size_combo.setFixedWidth(target_width)
-        self.page_size_combo.setProperty("comboPopupMaxWidth", target_width)
 
     def _build_right_panel(self) -> QFrame:
         panel = self._style_panel(QFrame())

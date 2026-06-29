@@ -33,6 +33,13 @@ class MainWindow(QMainWindow):
     FRONTEND_REFRESH_INTERVAL_MS = 200
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
+    PAGE_SECTION_BY_ID = {
+        "queue": "queue_items",
+        "active": "active_downloads",
+        "completed": "completed_items",
+        "failed": "failed_items",
+    }
+    VISIBLE_SCOPED_SECTIONS = frozenset(PAGE_SECTION_BY_ID.values()) | frozenset({"log_items"})
 
     sig_start_crawl = pyqtSignal(str, str, dict)
     sig_stop_crawl = pyqtSignal()
@@ -221,8 +228,14 @@ class MainWindow(QMainWindow):
         service = self._frontend_state_service
         cached = self.__dict__.get("_cached_snapshot")
         changed_keys: set[str] | None = None
+        # GUI refreshes ask for exactly the sections that can be painted now.
+        # `get_delta()` intentionally unions retained dirty history for WebSocket
+        # recovery, which would re-expand hidden pages during event storms.
+        use_delta = False
 
         if (
+            use_delta
+            and
             not mock
             and sections
             and cached
@@ -278,7 +291,25 @@ class MainWindow(QMainWindow):
         if not topics:
             return None
         sections: set[str] = set()
+        visibility_sections: set[str] = set()
         for topic in topics:
+            visible_page = self._page_id_from_visibility_topic(topic)
+            if visible_page:
+                section = self.PAGE_SECTION_BY_ID.get(visible_page)
+                if section:
+                    sections.update({section, "app_status"})
+                    visibility_sections.add(section)
+                    continue
+                if visible_page == "logs":
+                    sections.update({"log_items", "app_status"})
+                    visibility_sections.add("log_items")
+                    continue
+                if visible_page == "settings":
+                    sections.update({"settings_snapshot", "settings_contract", "download_options", "app_status"})
+                    visibility_sections.update({"settings_snapshot", "settings_contract", "download_options"})
+                    continue
+                sections.add("app_status")
+                continue
             if topic == "videos.terminal":
                 sections.update({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
                 continue
@@ -288,7 +319,49 @@ class MainWindow(QMainWindow):
             sections.update(mapped)
         if "log_items" in sections:
             sections.add("app_status")
-        return frozenset(sections) if sections else None
+        if not sections:
+            return None
+        scoped = set(self._scope_sections_to_visible_page(frozenset(sections)))
+        scoped.update(visibility_sections)
+        if visibility_sections:
+            scoped.add("app_status")
+        return frozenset(scoped)
+
+    def _scope_sections_to_visible_page(self, sections: frozenset[str]) -> frozenset[str]:
+        scoped = set(sections)
+        current_page = self._current_visible_page_id()
+        if current_page is None:
+            return sections
+        visible_section = self.PAGE_SECTION_BY_ID.get(current_page)
+        page_sections = scoped & set(self.PAGE_SECTION_BY_ID.values())
+        if page_sections:
+            scoped.difference_update(page_sections)
+            if visible_section in page_sections:
+                scoped.add(visible_section)
+            scoped.add("app_status")
+        if "log_items" in scoped and current_page != "logs":
+            scoped.discard("log_items")
+            scoped.add("app_status")
+        return frozenset(scoped)
+
+    def _current_visible_page_id(self) -> str | None:
+        shell = self.__dict__.get("app_shell")
+        page_id = getattr(shell, "current_page_id", None)
+        if not isinstance(page_id, str):
+            return None
+        return page_id
+
+    @staticmethod
+    def _visibility_topic_for_page(page_id: str) -> str:
+        return f"page.visible.{page_id}"
+
+    @staticmethod
+    def _page_id_from_visibility_topic(topic: str) -> str | None:
+        prefix = "page.visible."
+        normalized = str(topic or "")
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+        return None
 
     def _flush_log_refresh(self) -> None:
         self._add_pending_refresh_topic("logs.append")
@@ -343,6 +416,7 @@ class MainWindow(QMainWindow):
 
     def _on_page_changed(self, page_id: str) -> None:
         self.app_state.set_visible_page(page_id, list(self.app_shell.pages), emit_change=False)
+        self.refresh_frontend_state(topics={self._visibility_topic_for_page(page_id)})
 
     def bind_video_rename(self, on_rename) -> None:
         # Titles are no longer editable in the queue table.  Keep the hook so the

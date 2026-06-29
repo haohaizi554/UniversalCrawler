@@ -444,10 +444,13 @@ class FrontendStateService:
         active_downloads: list[dict[str, Any]] = []
         completed_items: list[dict[str, Any]] = []
         failed_items: list[dict[str, Any]] = []
+        bucket_counts = {"queue": 0, "active": 0, "completed": 0, "failed": 0}
         log_excerpt_index: dict[str, list[dict[str, Any]]] | None = None
 
         want_failed = only is None or "failed_items" in only
         want_completed = only is None or "completed_items" in only
+        want_active_items = only is None or "active_downloads" in only
+        want_active_for_status = only is not None and "app_status" in only
         if want_failed:
             log_excerpt_index = self._log_excerpt_index()
 
@@ -457,8 +460,10 @@ class FrontendStateService:
         try:
             for item in videos.values():
                 bucket = self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+                if bucket in bucket_counts:
+                    bucket_counts[bucket] += 1
                 if bucket == "active":
-                    if only is None or "active_downloads" in only:
+                    if want_active_items or want_active_for_status:
                         active_downloads.append(self._active_item(item))
                 elif bucket == "completed":
                     if want_completed:
@@ -482,13 +487,13 @@ class FrontendStateService:
         if only is None or "failed_items" in only:
             sections["failed_items"] = failed_items
         if only is None or "app_status" in only:
-            count_completed = only is None or "completed_items" in only
-            count_failed = only is None or "failed_items" in only
             include_active = only is None or "active_downloads" in only
             sections["app_status"] = self.app_status(
-                completed_count=len(completed_items) if count_completed else None,
-                failed_count=len(failed_items) if count_failed else None,
-                active_downloads=active_downloads if include_active else None,
+                queue_count=bucket_counts["queue"],
+                active_count=bucket_counts["active"],
+                completed_count=bucket_counts["completed"],
+                failed_count=bucket_counts["failed"],
+                active_downloads=active_downloads if (include_active or want_active_for_status) else None,
             )
         return sections
 
@@ -2284,6 +2289,8 @@ class FrontendStateService:
     def app_status(
         self,
         *,
+        queue_count: int | None = None,
+        active_count: int | None = None,
         completed_count: int | None = None,
         failed_count: int | None = None,
         active_downloads: list[dict[str, Any]] | None = None,
@@ -2293,11 +2300,16 @@ class FrontendStateService:
         except Exception:
             __version__ = "1.0.0"
 
-        videos = self._videos()
-        if completed_count is None:
-            completed_count = sum(1 for item in videos.values() if self._bucket_for_item(item, queued_ids=set(), active_ids=set()) == "completed")
-        if failed_count is None:
-            failed_count = sum(1 for item in videos.values() if self._bucket_for_item(item, queued_ids=set(), active_ids=set()) == "failed")
+        if any(value is None for value in (queue_count, active_count, completed_count, failed_count)):
+            counts = self._video_bucket_counts()
+            if queue_count is None:
+                queue_count = counts["queue"]
+            if active_count is None:
+                active_count = counts["active"]
+            if completed_count is None:
+                completed_count = counts["completed"]
+            if failed_count is None:
+                failed_count = counts["failed"]
         running = self._is_running()
         if active_downloads is None:
             if running:
@@ -2314,10 +2326,22 @@ class FrontendStateService:
             "status_indicator": indicator,
             "download_speed": self._format_transfer_speed(speed_bps),
             "download_speed_bps": speed_bps,
+            "queue_count": queue_count,
+            "active_count": active_count,
             "completed_count": completed_count,
             "failed_count": failed_count,
             "version": f"v{__version__}",
         }
+
+    def _video_bucket_counts(self) -> dict[str, int]:
+        queued_ids = self._queued_video_ids()
+        active_ids = self._active_video_ids()
+        counts = {"queue": 0, "active": 0, "completed": 0, "failed": 0}
+        for item in self._videos(shallow=True).values():
+            bucket = self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+            if bucket in counts:
+                counts[bucket] += 1
+        return counts
 
     @staticmethod
     def _format_transfer_speed(bps: int) -> str:
