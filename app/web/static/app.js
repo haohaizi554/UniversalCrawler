@@ -1982,7 +1982,7 @@ function settingsControls(group, value) {
       settingSelect("\u6253\u5f00\u65b9\u5f0f", "default_player", value && value.default_player, options.default_player || [], "playback"),
       settingCheckbox("\u8bb0\u4f4f\u64ad\u653e\u4f4d\u7f6e", "remember_position", !!(value && value.remember_position), "playback"),
       settingCheckbox("\u81ea\u52a8\u64ad\u653e\u4e0b\u4e00\u9879", "autoplay_next", !!(value && value.autoplay_next), "playback"),
-      settingCheckbox("\u624b\u52a8\u5207\u6362\u56fe\u7247", "manual_image_switch", !!(value && value.manual_image_switch), "playback"),
+      imageManualSwitchSetting(value || {}, options || {}),
     ].join("");
   }
   if (group === "\u65e5\u5fd7\u8bbe\u7f6e") {
@@ -2161,6 +2161,34 @@ function settingCheckbox(label, key, checked, scope = "") {
     ? ` onchange="updateBasicSetting('${escAttr(key)}', this.checked)"`
     : (scope ? ` onchange="updateSetting('${escAttr(scope)}', '${escAttr(key)}', this.checked)"` : "");
   return `<label class="setting-row"><span>${esc(t(label))}</span><input data-setting="${escAttr(key)}" type="checkbox" ${checked ? "checked" : ""}${action} /></label>`;
+}
+
+function imageManualSwitchSetting(value, options) {
+  const manual = value.manual_image_switch !== false;
+  const intervalOptions = options.image_auto_advance_interval_seconds || [
+    { value: "1", label: "1 秒" },
+    { value: "3", label: "3 秒" },
+    { value: "5", label: "5 秒（推荐）" },
+    { value: "10", label: "10 秒" },
+  ];
+  const currentInterval = String(value.image_auto_advance_interval_seconds || 5);
+  const intervalSelect = settingSelect(
+    "",
+    "image_auto_advance_interval_seconds",
+    currentInterval,
+    intervalOptions,
+    "playback",
+    manual ? " hidden disabled" : ""
+  ).replace('class="setting-row"', 'class="image-auto-interval"');
+  return `
+    <label class="setting-row image-manual-row">
+      <span>${esc(t("手动切换图片"))}</span>
+      <span class="image-auto-controls">
+        ${intervalSelect}
+        <input data-setting="manual_image_switch" type="checkbox" ${manual ? "checked" : ""} onchange="updateSetting('playback', 'manual_image_switch', this.checked)" />
+      </span>
+    </label>
+  `;
 }
 
 function normalizeSettingOption(option) {
