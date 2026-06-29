@@ -904,6 +904,27 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("错误时自动复制 Trace", label_texts)
         self.assertNotIn("日志级别", label_texts)
 
+        playback_nav = next(
+            button
+            for button in settings.findChildren(QPushButton)
+            if button.property("groupName") == "播放设置"
+        )
+        playback_nav.click()
+        self.app.processEvents()
+        interval_combo = settings.findChild(QComboBox, "ImageAutoAdvanceIntervalCombo")
+        manual_switch = settings.findChild(QCheckBox, "ImageManualSwitch")
+        self.assertIsNotNone(interval_combo)
+        self.assertIsNotNone(manual_switch)
+        self.assertEqual(interval_combo.currentData(), "5")
+        self.assertEqual(
+            [str(interval_combo.itemData(index)) for index in range(interval_combo.count())],
+            ["1", "3", "5", "10"],
+        )
+        self.assertFalse(interval_combo.isVisible())
+        manual_switch.setChecked(False)
+        self.app.processEvents()
+        self.assertTrue(interval_combo.isVisible())
+
     def test_settings_render_does_not_rebuild_while_editor_has_focus(self):
         shell = self._make_shell()
         settings = shell.pages["settings"]

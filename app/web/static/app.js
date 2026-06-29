@@ -2146,6 +2146,13 @@ function updateSetting(section, key, value) {
     }
     else if (key === "font_size" || key === "scale") renderCurrentPage();
   }
+  if (section === "playback") {
+    const playback = ((frontendState.settings_snapshot || {})["\u64ad\u653e\u8bbe\u7f6e"] ||= {});
+    playback[key] = key === "image_auto_advance_interval_seconds" ? Number(value || 5) : value;
+    if (currentPage === "settings" && currentSettingsGroup === "\u64ad\u653e\u8bbe\u7f6e") renderSettings(true);
+    const currentItem = completedItemById(currentPlayingId);
+    if (currentItem && isImageItem(currentItem)) scheduleImageAutoAdvance(currentPlayingId);
+  }
   frontendAction("update_setting", { section, key, value });
 }
 

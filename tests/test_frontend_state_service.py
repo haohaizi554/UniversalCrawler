@@ -94,6 +94,12 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertIn({"value": "1", "label": "1 天（推荐）"}, logging_options["retention_days"])
             self.assertNotIn("hardware_acceleration", playback)
             self.assertNotIn("builtin_player_enabled", playback)
+            self.assertEqual(playback["image_auto_advance_interval_seconds"], 5)
+            self.assertIn("image_auto_advance_interval_seconds", playback["_options"])
+            self.assertIn(
+                {"value": "5", "label": "5 秒（推荐）"},
+                playback["_options"]["image_auto_advance_interval_seconds"],
+            )
             self.assertIn({"value": "zh-CN", "label": "简体中文（推荐）"}, appearance_options["language"])
             self.assertTrue(all("count_options" in row for row in platforms))
             self.assertTrue(all("timeout_config_key" in row for row in platforms))
@@ -231,6 +237,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 {"section": "download", "key": "max_retries", "value": 0},
                 {"section": "download", "key": "speed_limit_kb", "value": "2048"},
                 {"section": "playback", "key": "default_player", "value": "system_default"},
+                {"section": "playback", "key": "image_auto_advance_interval_seconds", "value": 10},
                 {"section": "logging", "key": "retention_days", "value": 3},
                 {"section": "appearance", "key": "accent", "value": "green"},
                 {"section": "appearance", "key": "language", "value": "zh-TW"},
@@ -247,12 +254,14 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(snapshot["下载设置"]["max_retries"], 0)
             self.assertEqual(snapshot["下载设置"]["speed_limit_kb"], 2048)
             self.assertEqual(snapshot["播放设置"]["default_player"], "system_default")
+            self.assertEqual(snapshot["播放设置"]["image_auto_advance_interval_seconds"], 10)
             self.assertEqual(snapshot["日志设置"]["retention_days"], 3)
             self.assertEqual(snapshot["外观设置"]["accent"], "green")
             self.assertEqual(snapshot["外观设置"]["language"], "zh-TW")
             self.assertEqual(snapshot["外观设置"]["theme"], "dark")
             self.assertEqual(reloaded.get("download", "max_retries"), 0)
             self.assertEqual(reloaded.get("playback", "default_player"), "system_default")
+            self.assertEqual(reloaded.get("playback", "image_auto_advance_interval_seconds"), 10)
             self.assertEqual(reloaded.get("logging", "retention_days"), 3)
             self.assertEqual(reloaded.get("appearance", "accent"), "green")
             self.assertEqual(reloaded.get("appearance", "language"), "zh-TW")

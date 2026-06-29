@@ -543,9 +543,13 @@ class MediaPreviewPanelTests(unittest.TestCase):
         panel._on_image_auto_advance_timeout()
         self.assertEqual(emitted, [])
 
-        panel.apply_playback_settings({"manual_image_switch": False})
+        panel.apply_playback_settings({"manual_image_switch": False, "image_auto_advance_interval_seconds": 3})
+        self.assertEqual(panel._image_auto_advance_timer.interval(), 3000)
         panel._on_image_auto_advance_timeout()
         self.assertEqual(emitted, [1])
+
+        panel.apply_playback_settings({"manual_image_switch": False, "image_auto_advance_interval_seconds": 99})
+        self.assertEqual(panel._image_auto_advance_timer.interval(), 5000)
 
 if __name__ == "__main__":
     unittest.main()

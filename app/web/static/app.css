@@ -1578,6 +1578,23 @@ tr.selected { background: var(--row-selected); }
   accent-color: var(--accent);
 }
 
+.image-manual-row .image-auto-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.image-manual-row .image-auto-interval {
+  width: 118px;
+  min-width: 118px;
+}
+
+.image-manual-row .image-auto-interval[hidden] {
+  display: none;
+}
+
 .setting-platform {
   display: grid;
   grid-template-columns: 122px 112px 210px 132px minmax(224px, 1fr);
