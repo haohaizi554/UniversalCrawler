@@ -151,6 +151,7 @@ class MediaPreviewPanel(QFrame):
         self._remember_position_enabled = True
         self._autoplay_next_enabled = True
         self._manual_image_switch = True
+        self._image_auto_advance_interval_ms = 5000
         self._saved_positions: dict[str, int] = {}
         self._last_position_flush_at: dict[str, float] = {}
 
@@ -250,7 +251,7 @@ class MediaPreviewPanel(QFrame):
 
         self._image_auto_advance_timer = QTimer(self)
         self._image_auto_advance_timer.setSingleShot(True)
-        self._image_auto_advance_timer.setInterval(5000)
+        self._image_auto_advance_timer.setInterval(self._image_auto_advance_interval_ms)
         self._image_auto_advance_timer.timeout.connect(self._on_image_auto_advance_timeout)
 
         self.lbl_time = QLabel("00:00")
@@ -287,6 +288,14 @@ class MediaPreviewPanel(QFrame):
         self._remember_position_enabled = bool(settings.get("remember_position", True))
         self._autoplay_next_enabled = bool(settings.get("autoplay_next", True))
         self._manual_image_switch = bool(settings.get("manual_image_switch", True))
+        try:
+            interval_seconds = int(settings.get("image_auto_advance_interval_seconds", 5) or 5)
+        except (TypeError, ValueError):
+            interval_seconds = 5
+        if interval_seconds not in {1, 3, 5, 10}:
+            interval_seconds = 5
+        self._image_auto_advance_interval_ms = interval_seconds * 1000
+        self._image_auto_advance_timer.setInterval(self._image_auto_advance_interval_ms)
         if not self._remember_position_enabled:
             self._saved_positions.clear()
             self._last_position_flush_at.clear()

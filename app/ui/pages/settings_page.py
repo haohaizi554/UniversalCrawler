@@ -2106,11 +2106,49 @@ class SettingsPage(PageFrame):
         )
         layout.addWidget(self._build_setting_row("视频播放完自动下一项", autoplay_switch))
 
+        image_controls = QWidget()
+        image_controls.setObjectName("ImageAutoAdvanceControls")
+        image_controls.setProperty("settingsControlHeight", 38)
+        image_layout = QHBoxLayout(image_controls)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.setSpacing(10)
+
+        interval_combo = self._build_combo(
+            self._dict_value(options, "image_auto_advance_interval_seconds", []),
+            self._dict_value(value, "image_auto_advance_interval_seconds", 5),
+            width=self._scaled_px(126, minimum=112),
+        )
+        interval_combo.setObjectName("ImageAutoAdvanceIntervalCombo")
+        interval_combo.setToolTip(self._t("\u56fe\u7247\u81ea\u52a8\u8f6e\u64ad\u7684\u5207\u6362\u95f4\u9694"))
+        interval_combo.currentIndexChanged.connect(
+            lambda *_args, combo=interval_combo: self._emit_setting_changed(
+                "playback",
+                "image_auto_advance_interval_seconds",
+                self._current_combo_int_value(combo, 5),
+            )
+        )
+
         image_switch = self._build_switch(self._dict_value(value, "manual_image_switch", True))
+        image_switch.setObjectName("ImageManualSwitch")
+
+        def sync_interval_visibility(checked: bool) -> None:
+            show_interval = not bool(checked)
+            interval_combo.setVisible(show_interval)
+            interval_combo.setEnabled(show_interval)
+            image_controls.setProperty("autoAdvanceEnabled", "true" if show_interval else "false")
+            image_controls.style().unpolish(image_controls)
+            image_controls.style().polish(image_controls)
+            image_controls.updateGeometry()
+
+        sync_interval_visibility(image_switch.isChecked())
+        image_switch.toggled.connect(sync_interval_visibility)
         image_switch.toggled.connect(
             lambda checked: self._emit_setting_changed("playback", "manual_image_switch", bool(checked))
         )
-        layout.addWidget(self._build_setting_row("图片只手动切换", image_switch))
+        image_layout.addStretch(1)
+        image_layout.addWidget(interval_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        image_layout.addWidget(image_switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._build_setting_row("\u56fe\u7247\u53ea\u624b\u52a8\u5207\u6362", image_controls))
 
     def _build_log_settings(self, layout: QVBoxLayout, value: Any) -> None:
         options = self._dict_value(value, "_options", {})
