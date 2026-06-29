@@ -2140,7 +2140,6 @@ class SettingsPage(PageFrame):
             image_controls.style().polish(image_controls)
             image_controls.updateGeometry()
 
-        sync_interval_visibility(image_switch.isChecked())
         image_switch.toggled.connect(sync_interval_visibility)
         image_switch.toggled.connect(
             lambda checked: self._emit_setting_changed("playback", "manual_image_switch", bool(checked))
@@ -2148,6 +2147,7 @@ class SettingsPage(PageFrame):
         image_layout.addStretch(1)
         image_layout.addWidget(interval_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         image_layout.addWidget(image_switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        sync_interval_visibility(image_switch.isChecked())
         layout.addWidget(self._build_setting_row("\u56fe\u7247\u53ea\u624b\u52a8\u5207\u6362", image_controls))
 
     def _build_log_settings(self, layout: QVBoxLayout, value: Any) -> None:

@@ -14,6 +14,7 @@ let queuePageSize = Number(localStorage.getItem("webui_queue_page_size") || 20);
 let completedPage = 1;
 let completedPageSize = Number(localStorage.getItem("webui_completed_page_size") || 20);
 let queueDensity = localStorage.getItem("webui_queue_density") || "comfortable";
+const LOG_RENDER_ROW_BUDGET = 300;
 let logFilters = {
   category: "all",
   level: "全部",
@@ -1293,16 +1294,7 @@ function renderAll() {
   configureTopCountForSource(byId("sourceSelect")?.value || "douyin");
   rebuildCompatibilityState();
   renderCounts();
-  renderQueue();
-  renderActive();
-  renderCompleted();
-  renderFailed();
-  renderLogs();
-  renderSettings();
-  renderToolbox();
-  renderStatus();
-  enhanceSelects();
-  translateVisibleText();
+  renderCurrentPage();
 }
 
 function renderCurrentPage() {
@@ -1780,7 +1772,8 @@ function solutionRowHtml(solution) {
 
 function renderLogs() {
   syncLogFilterControls();
-  const items = filteredLogItems();
+  const filteredItems = filteredLogItems();
+  const items = visibleLogItems(filteredItems);
   if (!items.some(item => logItemId(item) === selected.log)) selected.log = items.length ? logItemId(items[0]) : "";
   patchTableRows("logBody", items, item => logItemId(item), item => `
     <tr class="${selected.log === logItemId(item) ? "selected" : ""}" onclick="selectLog('${escAttr(logItemId(item))}')">
@@ -1791,7 +1784,7 @@ function renderLogs() {
       <td title="${escAttr(item.message_summary || "")}">${esc(item.message_summary || "")}</td>
     </tr>
   `);
-  renderLogDetail();
+  renderLogDetail(items);
 }
 
 function logItemId(item) {
@@ -1803,8 +1796,8 @@ function selectLog(id) {
   renderLogs();
 }
 
-function renderLogDetail() {
-  const items = filteredLogItems();
+function renderLogDetail(itemsOverride) {
+  const items = Array.isArray(itemsOverride) ? itemsOverride : visibleLogItems(filteredLogItems());
   const item = items.find(row => logItemId(row) === selected.log) || items[0];
   if (!item) {
     byId("logDetail").innerHTML = `<div class="log-detail-card"><h2>日志详情</h2><p>暂无日志</p></div>`;
@@ -1858,6 +1851,12 @@ function syncLogFilterControls() {
 function filteredLogItems() {
   trimFrontendLogItems();
   return (frontendState.log_items || []).filter(logMatchesFilters);
+}
+
+function visibleLogItems(items) {
+  if (!Array.isArray(items)) return [];
+  if (items.length <= LOG_RENDER_ROW_BUDGET) return items;
+  return items.slice(-LOG_RENDER_ROW_BUDGET);
 }
 
 function logMatchesFilters(item) {

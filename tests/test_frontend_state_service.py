@@ -931,6 +931,60 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(items[0]["message_summary"], "file-log-200")
         self.assertEqual(items[-1]["message_summary"], "file-log-699")
 
+    def test_large_log_display_limit_does_not_backfill_entire_file_cache(self):
+        original_latest_file = debug_logger.latest_file
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            manager.set("logging", "ui_log_max_display_count", 2000)
+            latest_file = Path(temp_dir) / "latest_debug.log"
+            latest_file.write_text(
+                "\n".join(
+                    f"[2026-06-30 10:{index // 60:02d}:{index % 60:02d}] [INFO] Test / file-log-{index:04d}"
+                    for index in range(2000)
+                ),
+                encoding="utf-8",
+            )
+            debug_logger.latest_file = latest_file
+            try:
+                service = FrontendStateService(config_manager=manager)
+                items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
+            finally:
+                debug_logger.latest_file = original_latest_file
+
+        self.assertEqual(len(items), FrontendStateService.FILE_LOG_BACKFILL_LIMIT)
+        self.assertEqual(items[0]["message_summary"], "file-log-1500")
+        self.assertEqual(items[-1]["message_summary"], "file-log-1999")
+
+    def test_log_display_limit_increase_keeps_existing_window_without_backfill(self):
+        original_latest_file = debug_logger.latest_file
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            manager.set("logging", "ui_log_max_display_count", 100)
+            latest_file = Path(temp_dir) / "latest_debug.log"
+            latest_file.write_text(
+                "\n".join(
+                    f"[2026-06-30 10:{index // 60:02d}:{index % 60:02d}] [INFO] Test / file-log-{index:04d}"
+                    for index in range(1000)
+                ),
+                encoding="utf-8",
+            )
+            debug_logger.latest_file = latest_file
+            try:
+                service = FrontendStateService(config_manager=manager)
+                initial_items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
+                service.handle_action(
+                    "update_setting",
+                    {"section": "logging", "key": "ui_log_max_display_count", "value": 1000},
+                )
+                expanded_items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
+            finally:
+                debug_logger.latest_file = original_latest_file
+
+        self.assertEqual(len(initial_items), 100)
+        self.assertEqual(len(expanded_items), 100)
+        self.assertEqual(expanded_items[0]["message_summary"], "file-log-0900")
+        self.assertEqual(expanded_items[-1]["message_summary"], "file-log-0999")
+
     def test_log_display_limit_update_trims_existing_items(self):
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))

@@ -83,16 +83,8 @@ LANGUAGE_OPTIONS: tuple[dict[str, str], ...] = (
 )
 DOWNLOAD_CONCURRENCY_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "1", "label": "1"},
-    {"value": "2", "label": "2"},
     {"value": "3", "label": "3\uff08\u63a8\u8350\uff09"},
-    {"value": "4", "label": "4"},
     {"value": "5", "label": "5"},
-    {"value": "6", "label": "6"},
-    {"value": "8", "label": "8"},
-    {"value": "12", "label": "12"},
-    {"value": "16", "label": "16"},
-    {"value": "24", "label": "24"},
-    {"value": "32", "label": "32"},
 )
 REQUEST_TIMEOUT_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "30", "label": "30 \u79d2"},
@@ -205,6 +197,19 @@ def language_options() -> list[dict[str, str]]:
 
 def download_concurrency_options() -> list[dict[str, str]]:
     return [dict(option) for option in DOWNLOAD_CONCURRENCY_OPTIONS]
+
+
+def normalize_download_concurrency(value: int | str | None, default: int = 3) -> int:
+    """Normalize regular download concurrency to the supported production choices."""
+    try:
+        numeric = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        numeric = int(default)
+    if numeric <= 1:
+        return 1
+    if numeric <= 3:
+        return 3
+    return 5
 
 
 def request_timeout_options() -> list[dict[str, str]]:
@@ -511,16 +516,22 @@ class DownloadSettings:
     speed_limit_kb: int = 0
     video_only: bool = False
     image_respects_concurrency: bool = False
+    image_fast_lane_limit: int = 10
 
     def normalize(self) -> None:
 
-        self.max_concurrent = max(1, min(self.max_concurrent, 32))
+        self.max_concurrent = normalize_download_concurrency(self.max_concurrent)
         self.local_scan_limit = max(100, min(self.local_scan_limit, 5000))
         self.max_retries = max(0, min(self.max_retries, 10))
         self.request_timeout = max(10, min(self.request_timeout, 300))
         self.chunk_size = max(8192, min(self.chunk_size, 1024 * 1024))
         self.speed_limit_kb = max(0, min(self.speed_limit_kb, 999999))
         self.image_respects_concurrency = bool(self.image_respects_concurrency)
+        try:
+            image_limit = int(self.image_fast_lane_limit or 10)
+        except (TypeError, ValueError):
+            image_limit = 10
+        self.image_fast_lane_limit = max(1, min(image_limit, 10))
 
 @dataclass
 class PlaybackSettings:

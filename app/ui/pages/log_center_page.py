@@ -1143,11 +1143,12 @@ class LogCenterPage(PageFrame):
 
     def _refresh_paged_table(self) -> None:
         if self._page_size <= 0:
-            self.items = list(self._filtered_items)
+            page_items = list(self._filtered_items)
         else:
             start = (self._current_page - 1) * self._page_size
             end = start + self._page_size
-            self.items = self._filtered_items[start:end]
+            page_items = self._filtered_items[start:end]
+        self.items = [self._decorate_log_item(item) for item in page_items]
 
         self.table.set_rows(self.items)
         self._configure_table_columns()
@@ -1177,8 +1178,7 @@ class LogCenterPage(PageFrame):
     def _apply_filters(self) -> None:
         previous_id = self.selected_id()
         raw_items = [item for item in self._all_items if self._matches_filters(item)]
-        raw_items = self._sort_log_items(raw_items)
-        self._filtered_items = [self._decorate_log_item(item) for item in raw_items]
+        self._filtered_items = self._sort_log_items(raw_items)
         self._current_page = 1
         if previous_id:
             for index, item in enumerate(self._filtered_items):

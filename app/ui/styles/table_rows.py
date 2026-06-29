@@ -15,10 +15,10 @@ def row_is_selected(option: QStyleOptionViewItem) -> bool:
 
 def normalize_table_item_option(option: QStyleOptionViewItem) -> None:
     """Keep row visuals click-driven: ignore hover/current focus tinting."""
+    option.state &= ~QStyle.StateFlag.State_HasFocus
     if row_is_selected(option):
         return
     option.state &= ~QStyle.StateFlag.State_MouseOver
-    option.state &= ~QStyle.StateFlag.State_HasFocus
 
 def selection_fill_color(option: QStyleOptionViewItem) -> QColor:
     return option.palette.color(QPalette.ColorRole.Highlight)

@@ -362,6 +362,23 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("frontendState.log_items = frontendState.log_items.slice(-limit);", content)
         self.assertIn("if (trimFrontendLogItems() && !changed.includes(\"log_items\")) changed.push(\"log_items\");", content)
 
+    def test_web_log_rendering_is_current_page_and_budgeted(self):
+        content = _static_bundle_content()
+        render_all_block = content.split("function renderAll()", 1)[1].split(
+            "function renderCurrentPage()",
+            1,
+        )[0]
+        render_logs_block = content.split("function renderLogs()", 1)[1].split(
+            "function logItemId",
+            1,
+        )[0]
+
+        self.assertIn("const LOG_RENDER_ROW_BUDGET = 300;", content)
+        self.assertIn("renderCurrentPage();", render_all_block)
+        self.assertNotIn("renderLogs();", render_all_block)
+        self.assertIn("visibleLogItems(filteredItems)", render_logs_block)
+        self.assertIn("function visibleLogItems(items)", content)
+
     def test_websocket_endpoint_referenced(self):
         """前端必须连 /ws。"""
         from pathlib import Path

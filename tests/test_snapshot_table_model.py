@@ -3,8 +3,10 @@ from unittest.mock import Mock, patch
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem
 
 from app.ui.pages.common import SnapshotActionDelegate
+from app.ui.styles.table_rows import normalize_table_item_option
 from app.ui.viewmodels.snapshot_table_model import SnapshotTableModel
 
 
@@ -70,6 +72,16 @@ class SnapshotTableModelTests(unittest.TestCase):
             self.assertIsNone(delegate._action_icon("delete"))
 
         loader.assert_called_once()
+
+    def test_table_item_option_removes_focus_rect_even_when_selected(self):
+        option = QStyleOptionViewItem()
+        option.state |= QStyle.StateFlag.State_Selected
+        option.state |= QStyle.StateFlag.State_HasFocus
+
+        normalize_table_item_option(option)
+
+        self.assertTrue(option.state & QStyle.StateFlag.State_Selected)
+        self.assertFalse(option.state & QStyle.StateFlag.State_HasFocus)
 
 
 if __name__ == "__main__":

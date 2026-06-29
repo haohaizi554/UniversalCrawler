@@ -180,6 +180,7 @@ class FrontendStateService:
     METADATA_PROBES_PER_SNAPSHOT = 64
     METADATA_EMPTY_MAX_RETRIES = 3
     FRONTEND_DELTA_EVENTS_LIMIT = 64
+    FILE_LOG_BACKFILL_LIMIT = 500
 
     def __init__(
         self,
@@ -701,7 +702,10 @@ class FrontendStateService:
         configure_buffer = getattr(self.app_state, "configure_log_buffer", None)
         if callable(configure_buffer):
             configure_buffer(logging_cfg.get("ui_log_max_display_count", 300))
-        self._invalidate_file_log_cache(limit=logging_cfg.get("ui_log_max_display_count", 300))
+        if cleanup_old_logs:
+            self._invalidate_file_log_cache(limit=logging_cfg.get("ui_log_max_display_count", 300))
+        else:
+            self._resize_file_log_cache_limit(logging_cfg.get("ui_log_max_display_count", 300))
         set_auto_copy = getattr(self.app_state, "set_auto_copy_trace_on_error", None)
         if callable(set_auto_copy):
             set_auto_copy(bool(logging_cfg.get("auto_copy_trace_on_error", True)))
@@ -1672,17 +1676,22 @@ class FrontendStateService:
     def log_items(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         limit = self._ui_log_display_limit()
-        needs_refresh = False
+        read_limit = 0
         with self._file_log_cache_lock:
-            needs_refresh = (
-                self._file_log_cache_limit != limit
-                or now - self._file_log_cache_at >= self._file_log_cache_ttl_seconds
-            )
-        if needs_refresh:
-            cache_key = self._file_log_cache_key(limit)
+            if len(self._file_log_cache) > limit:
+                self._file_log_cache = self._file_log_cache[-limit:]
+                if self._file_log_cache_limit:
+                    self._file_log_cache_limit = min(self._file_log_cache_limit, limit)
+                self._file_log_cache_at = now
+            if self._file_log_cache_limit <= 0:
+                read_limit = min(limit, self.FILE_LOG_BACKFILL_LIMIT)
+            elif now - self._file_log_cache_at >= self._file_log_cache_ttl_seconds:
+                read_limit = min(limit, max(1, self._file_log_cache_limit, len(self._file_log_cache)))
+        if read_limit > 0:
+            cache_key = self._file_log_cache_key(read_limit)
             cached = self.cache_service.get(cache_key)
             if cached is None:
-                cached = self._read_log_items(limit=limit)
+                cached = self._read_log_items(limit=read_limit)
                 self.cache_service.set(
                     cache_key,
                     cached,
@@ -1690,8 +1699,8 @@ class FrontendStateService:
                     persist=False,
                 )
             with self._file_log_cache_lock:
-                self._file_log_cache = deepcopy(cached)[-limit:]
-                self._file_log_cache_limit = limit
+                self._file_log_cache = deepcopy(cached)[-read_limit:]
+                self._file_log_cache_limit = read_limit
                 self._file_log_cache_at = time.monotonic()
         buffer = self.app_state.get_log_buffer()
         with self._file_log_cache_lock:
@@ -1722,6 +1731,23 @@ class FrontendStateService:
             self._file_log_cache_limit = 0
         self.cache_service.delete("frontend.file_log_cache")
         self.cache_service.delete(self._file_log_cache_key(normalized_limit))
+
+    def _resize_file_log_cache_limit(self, limit: Any) -> None:
+        try:
+            normalized_limit = max(100, min(int(limit), 5000))
+        except (TypeError, ValueError):
+            normalized_limit = 300
+        with self._file_log_cache_lock:
+            if self._file_log_cache_limit and normalized_limit < self._file_log_cache_limit:
+                self._file_log_cache_limit = normalized_limit
+                self._file_log_cache_at = time.monotonic()
+            if len(self._file_log_cache) > normalized_limit:
+                self._file_log_cache = self._file_log_cache[-normalized_limit:]
+                self._file_log_cache_limit = min(
+                    self._file_log_cache_limit or normalized_limit,
+                    normalized_limit,
+                )
+                self._file_log_cache_at = time.monotonic()
 
     def _read_log_items(self, *, limit: int) -> list[dict[str, Any]]:
         try:

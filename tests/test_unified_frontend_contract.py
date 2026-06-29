@@ -920,6 +920,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             [str(interval_combo.itemData(index)) for index in range(interval_combo.count())],
             ["1", "3", "5", "10"],
         )
+        self.assertFalse(interval_combo.isHidden())
+        manual_switch.setChecked(True)
+        self.app.processEvents()
         self.assertTrue(interval_combo.isHidden())
         manual_switch.setChecked(False)
         self.app.processEvents()
