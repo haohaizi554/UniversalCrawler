@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Virtual Envs
+venv/
+.venv/
+env/
+.python-version
+
+# IDE / Editor
+.idea/
+.vscode/
+*.code-workspace
+.trae/
+.env
+.env.*
+!.env.docker.example
+.agents/
+.claude/
+.codex/
+.codex_tmp/
+.cursor/
+
+# Build Outputs
+build/
+dist/
+.cache/
+pip-wheel-metadata/
+*.whl
+*.tar.gz
+
+# Node / Browser Runtime
+node_modules/
+ms-playwright/
+chromium/
+
+# Runtime Data
+downloads/
+temp/
+tmp/
+data/
+dataset/
+user_data/
+
+# Local Config / Auth
+config.json
+*_auth.json
+dy_auth.json
+bili_auth.json
+ks_auth.json
+missav_auth.json
+
+# Logs / Reports
+*.log
+Logs/*.log
+.dbg/
+
+# Archives
+*.zip
+*.rar
+*.7z
+
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temp / Backup
+*.bak
+*.tmp
+*.orig
+
+人工测试.txt

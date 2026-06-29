@@ -1,0 +1,47 @@
+"""爬虫实现模块，负责 `app/spiders/douyin/task_builder.py` 对应平台的采集、解析或任务装配逻辑。"""
+
+from __future__ import annotations
+from app.models import VideoItem
+from app.spiders.base_task_builder import BaseTaskBuilder
+
+class DouyinTaskBuilder(BaseTaskBuilder):
+    """负责将解析结果转换为 `DouyinTaskBuilder` 对应的任务或数据对象。"""
+    def build_items(self, item: VideoItem, trace_id_factory) -> list[VideoItem]:
+        """构建 `items` 对应的结果、参数或对象，供 `DouyinTaskBuilder` 使用。"""
+        if not item.meta.get("is_gallery"):
+            return [item]
+
+        built_items: list[VideoItem] = []
+        images_data = item.meta.get("images_data", [])
+        base_title = item.title
+        for idx, image_info in enumerate(images_data):
+            image_url = image_info.get("image_url", "")
+            live_url = image_info.get("live_video_url", "")
+            seq = idx + 1
+            base_trace = item.meta.get("trace_id", trace_id_factory("dy"))
+
+            if live_url:
+                live_item = VideoItem(url=live_url, title=f"{base_title}_{seq}", source="douyin")
+                live_item.meta = item.meta.copy()
+                live_item.meta.update(
+                    self.build_download_meta(
+                        trace_id=f"{base_trace}_live_{seq}",
+                        is_gallery=False,
+                        content_type="video",
+                        media_label="实况",
+                    )
+                )
+                built_items.append(live_item)
+            elif image_url:
+                image_item = VideoItem(url=image_url, title=f"{base_title}_{seq}", source="douyin")
+                image_item.meta = item.meta.copy()
+                image_item.meta.update(
+                    self.build_download_meta(
+                        trace_id=f"{base_trace}_img_{seq}",
+                        is_gallery=False,
+                        content_type="image",
+                        media_label="图集",
+                    )
+                )
+                built_items.append(image_item)
+        return built_items

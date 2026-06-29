@@ -1,0 +1,731 @@
+"""Pure-Python download dispatch core."""
+
+from __future__ import annotations
+
+import queue
+import threading
+import time
+from collections import deque
+from typing import Any, Iterable
+
+from app.config import cfg
+from app.debug_logger import debug_logger
+from app.exceptions import AppError
+from app.models import VideoItem
+
+class PendingDownloadQueue:
+    """Thread-safe FIFO queue with explicit cancellation/snapshot operations."""
+
+    def __init__(self) -> None:
+        self._items: deque[tuple[VideoItem, str]] = deque()
+        self._condition = threading.Condition()
+        self._queued_ids: dict[str, int] = {}
+
+    def _track_enqueue(self, video_id: str) -> None:
+        if video_id:
+            self._queued_ids[video_id] = self._queued_ids.get(video_id, 0) + 1
+
+    def _track_dequeue(self, video_id: str) -> None:
+        if not video_id:
+            return
+        count = self._queued_ids.get(video_id, 0)
+        if count <= 1:
+            self._queued_ids.pop(video_id, None)
+        else:
+            self._queued_ids[video_id] = count - 1
+
+    def put(self, item: tuple[VideoItem, str]) -> None:
+        with self._condition:
+            self._items.append(item)
+            self._track_enqueue(getattr(item[0], "id", ""))
+            self._condition.notify()
+
+    def get(self, timeout: float | None = None) -> tuple[VideoItem, str]:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while not self._items:
+                if timeout is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic() if deadline is not None else 0.0
+                if remaining <= 0:
+                    raise queue.Empty
+                self._condition.wait(remaining)
+            item = self._items.popleft()
+            self._track_dequeue(getattr(item[0], "id", ""))
+            return item
+
+    def get_nowait(self) -> tuple[VideoItem, str]:
+        return self.get(timeout=0.0)
+
+    def empty(self) -> bool:
+        with self._condition:
+            return not self._items
+
+    def qsize(self) -> int:
+        with self._condition:
+            return len(self._items)
+
+    def drain(self) -> list[tuple[VideoItem, str]]:
+        with self._condition:
+            items = list(self._items)
+            self._items.clear()
+            self._queued_ids.clear()
+            return items
+
+    def remove_video(self, video_id: str) -> VideoItem | None:
+        removed = self.remove_videos({video_id})
+        return removed[0] if removed else None
+
+    def remove_videos(self, video_ids: Iterable[str]) -> list[VideoItem]:
+        ids = {str(video_id) for video_id in video_ids if video_id}
+        if not ids:
+            return []
+        with self._condition:
+            retained: deque[tuple[VideoItem, str]] = deque()
+            removed: list[VideoItem] = []
+            while self._items:
+                queued_video, save_dir = self._items.popleft()
+                if queued_video.id in ids:
+                    removed.append(queued_video)
+                    self._track_dequeue(queued_video.id)
+                    continue
+                retained.append((queued_video, save_dir))
+            self._items = retained
+            return removed
+
+    def snapshot_video_ids(self) -> set[str]:
+        with self._condition:
+            return set(self._queued_ids)
+
+class DownloadManagerCore:
+    """Maintain queueing, concurrency slots, cancellation, and worker lifecycle."""
+
+    WORKER_STOP_TIMEOUT_MS = 2000
+    LIGHTWEIGHT_MIN_CONCURRENT = 12
+    LIGHTWEIGHT_CONCURRENCY_CAP = 32
+    _GUARD_INIT_LOCK = threading.RLock()
+
+    def __init__(self, max_concurrent: int | None = None):
+        self.queue = PendingDownloadQueue()
+        self.workers: list[Any] = []
+        self.max_concurrent = max_concurrent or cfg.get("download", "max_concurrent", 3)
+        self.max_retries = cfg.get("download", "max_retries", 3)
+        self.request_timeout = cfg.get("download", "request_timeout", 60)
+        self.resume_enabled = cfg.get("download", "resume_enabled", True)
+        self.speed_limit_kb = cfg.get("download", "speed_limit_kb", 0)
+        self.video_only = cfg.get("download", "video_only", False)
+        self.image_respects_concurrency = bool(cfg.get("download", "image_respects_concurrency", False))
+        self._slot_semaphore_capacity = self._slot_capacity()
+        self.slot_semaphore = threading.BoundedSemaphore(self._slot_semaphore_capacity)
+        self._slot_semaphore_lock = threading.RLock()
+        self._dispatch_slot_gate = threading.Event()
+        self._dispatch_slot_gate.set()
+        self._workers_lock = threading.RLock()
+        self._start_stop_lock = threading.RLock()
+        self.is_running = True
+        self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
+        self.dispatcher_thread.start()
+
+    def set_max_concurrent(self, value: int) -> int:
+        try:
+            new_value = int(value)
+        except (TypeError, ValueError):
+            new_value = self.max_concurrent
+        new_value = max(1, min(new_value, 32))
+        with self._start_stop_guard():
+            old_value = int(getattr(self, "max_concurrent", 1) or 1)
+            old_slot_capacity = int(getattr(self, "_slot_semaphore_capacity", old_value) or old_value)
+            self.max_concurrent = new_value
+            new_slot_capacity = self._slot_capacity_for(new_value)
+            if new_slot_capacity > old_slot_capacity:
+                self._rebuild_slot_semaphore(old_value=old_slot_capacity, new_value=new_slot_capacity)
+                self._slot_semaphore_capacity = new_slot_capacity
+                self._get_dispatch_slot_gate().set()
+            elif new_value < old_value:
+                self._get_dispatch_slot_gate().set()
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="set_max_concurrent",
+                    level="INFO",
+                    message="Reduced concurrency: existing download workers will wind down as they complete.",
+                    status_code="DL_CONCURRENCY_DECREASE_DEFERRED",
+                    details={"old_value": old_value, "new_value": new_value},
+                )
+        return self.max_concurrent
+
+    def set_image_respects_concurrency(self, value: Any) -> bool:
+        enabled = bool(value)
+        with self._start_stop_guard():
+            old_enabled = bool(getattr(self, "image_respects_concurrency", False))
+            old_slot_capacity = int(
+                getattr(self, "_slot_semaphore_capacity", self._slot_capacity()) or self._slot_capacity()
+            )
+            self.image_respects_concurrency = enabled
+            new_slot_capacity = self._slot_capacity()
+            if new_slot_capacity > old_slot_capacity:
+                self._rebuild_slot_semaphore(old_value=old_slot_capacity, new_value=new_slot_capacity)
+                self._slot_semaphore_capacity = new_slot_capacity
+            self._get_dispatch_slot_gate().set()
+            if enabled and not old_enabled and new_slot_capacity < old_slot_capacity:
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="set_image_respects_concurrency",
+                    level="INFO",
+                    message="Image fast lane disabled: existing lightweight workers will wind down as they complete.",
+                    status_code="DL_IMAGE_CONCURRENCY_LIMIT_ENABLED",
+                    details={"old_slot_capacity": old_slot_capacity, "new_slot_capacity": new_slot_capacity},
+                )
+        return self.image_respects_concurrency
+
+    def _rebuild_slot_semaphore(self, *, old_value: int, new_value: int) -> None:
+        with self._slot_semaphore_guard():
+            available_tokens = 0
+            for _ in range(max(0, old_value)):
+                if not self.slot_semaphore.acquire(blocking=False):
+                    break
+                available_tokens += 1
+            in_use_tokens = max(0, old_value - available_tokens)
+            next_semaphore = threading.BoundedSemaphore(new_value)
+            for _ in range(min(in_use_tokens, new_value)):
+                next_semaphore.acquire(blocking=False)
+            self.slot_semaphore = next_semaphore
+        debug_logger.log(
+            component="DownloadManager",
+            action="set_max_concurrent",
+            message="Increased concurrency by rebuilding dispatch semaphore capacity.",
+            status_code="DL_CONCURRENCY_INCREASE_REBUILT",
+            details={"old_value": old_value, "new_value": new_value, "in_use_tokens": in_use_tokens},
+        )
+
+    def set_runtime_options(self, **options: Any) -> dict[str, Any]:
+        """Apply download settings that should affect newly dispatched work immediately."""
+        applied: dict[str, Any] = {}
+        if "max_concurrent" in options:
+            applied["max_concurrent"] = self.set_max_concurrent(options["max_concurrent"])
+        if "max_retries" in options:
+            try:
+                self.max_retries = max(0, min(int(options["max_retries"]), 10))
+            except (TypeError, ValueError):
+                pass
+            applied["max_retries"] = self.max_retries
+        if "request_timeout" in options:
+            try:
+                self.request_timeout = max(10, min(int(options["request_timeout"]), 300))
+            except (TypeError, ValueError):
+                pass
+            applied["request_timeout"] = self.request_timeout
+        if "resume_enabled" in options:
+            self.resume_enabled = bool(options["resume_enabled"])
+            applied["resume_enabled"] = self.resume_enabled
+        if "speed_limit_kb" in options:
+            try:
+                self.speed_limit_kb = max(0, min(int(options["speed_limit_kb"]), 999999))
+            except (TypeError, ValueError):
+                pass
+            applied["speed_limit_kb"] = self.speed_limit_kb
+        if "video_only" in options:
+            self.video_only = bool(options["video_only"])
+            applied["video_only"] = self.video_only
+        if "image_respects_concurrency" in options:
+            applied["image_respects_concurrency"] = self.set_image_respects_concurrency(
+                options["image_respects_concurrency"]
+            )
+        return applied
+
+    def _get_dispatch_slot_gate(self) -> threading.Event:
+        gate = getattr(self, "_dispatch_slot_gate", None)
+        if gate is None:
+            with self._GUARD_INIT_LOCK:
+                gate = getattr(self, "_dispatch_slot_gate", None)
+                if gate is None:
+                    gate = threading.Event()
+                    gate.set()
+                    self._dispatch_slot_gate = gate
+        return gate
+
+    def _has_dispatch_capacity(self) -> bool:
+        self.prune_finished_workers()
+        with self._workers_lock:
+            return len(self.workers) < int(getattr(self, "max_concurrent", 1) or 1)
+
+    def _slot_capacity_for(self, max_concurrent: int) -> int:
+        configured = max(1, int(max_concurrent or 1))
+        if bool(getattr(self, "image_respects_concurrency", False)):
+            return configured
+        lightweight_floor = max(1, int(getattr(self, "LIGHTWEIGHT_MIN_CONCURRENT", 12)))
+        lightweight_cap = max(lightweight_floor, int(getattr(self, "LIGHTWEIGHT_CONCURRENCY_CAP", 32)))
+        return min(max(configured, lightweight_floor), lightweight_cap)
+
+    def _slot_capacity(self) -> int:
+        return self._slot_capacity_for(int(getattr(self, "max_concurrent", 1) or 1))
+
+    def _has_any_dispatch_capacity(self) -> bool:
+        self.prune_finished_workers()
+        with self._workers_lock:
+            return len(self.workers) < self._slot_capacity()
+
+    def _is_lightweight_download(self, video: VideoItem | None) -> bool:
+        if video is None:
+            return False
+        meta = getattr(video, "meta", None) or {}
+        content_type = str(meta.get("content_type", "") or "").lower()
+        if content_type in {"image", "gallery", "photo", "photos"}:
+            return True
+        if meta.get("images_data") or meta.get("image_url") or meta.get("image_index"):
+            return True
+        url = str(getattr(video, "url", "") or "").split("?", 1)[0].lower()
+        return url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"))
+
+    def _active_heavy_worker_count(self) -> int:
+        self.prune_finished_workers()
+        with self._workers_lock:
+            return self._active_heavy_worker_count_unlocked()
+
+    def _active_heavy_worker_count_unlocked(self) -> int:
+        count = 0
+        for worker in list(getattr(self, "workers", [])):
+            if not self._is_lightweight_download(getattr(worker, "video", None)):
+                count += 1
+        return count
+
+    def _has_capacity_for(self, video: VideoItem) -> bool:
+        self.prune_finished_workers()
+        with self._workers_lock:
+            if len(self.workers) >= self._slot_capacity():
+                return False
+            if self._is_lightweight_download(video):
+                return True
+            return self._active_heavy_worker_count_unlocked() < int(getattr(self, "max_concurrent", 1) or 1)
+
+    def add_task(self, video: VideoItem, save_dir: str):
+        """Add a video item into the download queue."""
+        trace_id = video.meta.get("trace_id")
+        debug_logger.log(
+            component="DownloadManager",
+            action="queue_task",
+            message="Download task has been queued",
+            status_code="DL_QUEUE",
+            context=debug_logger.pick_used(
+                {"trace_id": trace_id, "video_id": video.id, "source": video.source},
+                "trace_id", "video_id", "source",
+            ),
+            details=debug_logger.pick_used(
+                {"title": video.title, "save_dir": save_dir, "url": video.url, "content_type": video.meta.get("content_type")},
+                "title", "save_dir", "url", "content_type",
+            ),
+            trace_id=trace_id,
+        )
+        with self._start_stop_guard():
+            if not self.is_running:
+                raise RuntimeError("DownloadManager 已停止，无法继续添加任务")
+            self.queue.put((video, save_dir))
+            self._get_dispatch_slot_gate().set()
+
+    def cancel_task(self, video_id: str) -> str | None:
+        """Cancel a queued or running task."""
+        return self.cancel_tasks({video_id}).get(video_id)
+
+    def cancel_tasks(self, video_ids: Iterable[str]) -> dict[str, str | None]:
+        """Cancel many queued or running tasks with one queue scan."""
+        ids = {str(video_id) for video_id in video_ids if video_id}
+        results: dict[str, str | None] = {video_id: None for video_id in ids}
+        if not ids:
+            return results
+
+        queued_videos = self._remove_queued_tasks(ids)
+        queued_ids = {video.id for video in queued_videos}
+        for video in queued_videos:
+            video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
+            video.meta["user_cancel_requested"] = True
+            results[video.id] = "queued"
+
+        remaining_ids = ids - queued_ids
+        if not remaining_ids:
+            return results
+
+        running_workers = []
+        with self._workers_lock:
+            for worker in list(self.workers):
+                worker_id = getattr(getattr(worker, "video", None), "id", None)
+                if worker_id in remaining_ids:
+                    running_workers.append(worker)
+
+        for worker in running_workers:
+            video = worker.video
+            video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
+            video.meta["user_cancel_requested"] = True
+            worker.stop()
+            results[video.id] = "running"
+
+        return results
+
+    def _dispatch_loop(self):
+        """Dispatcher thread acquires a slot before dequeuing a worker task."""
+        while self.is_running:
+            slot_acquired = False
+            worker = None
+            video = None
+            save_dir = None
+            try:
+                if not self._wait_for_dispatch_slot():
+                    break
+                slot_acquired = True
+                try:
+                    video, save_dir = self.queue.get(timeout=0.2)
+                except queue.Empty:
+                    self._release_dispatch_slot("dispatch_slot_queue_empty")
+                    slot_acquired = False
+                    continue
+
+                with self._start_stop_guard():
+                    if not self.is_running:
+                        self.queue.put((video, save_dir))
+                        self._release_dispatch_slot("dispatch_slot_manager_stopped")
+                        slot_acquired = False
+                        break
+
+                if not self._has_capacity_for(video):
+                    self.queue.put((video, save_dir))
+                    self._release_dispatch_slot("dispatch_slot_task_capacity_full")
+                    slot_acquired = False
+                    time.sleep(0.02)
+                    continue
+
+                worker = self._create_worker(video, save_dir)
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="dispatch_task",
+                    message="Dispatched queued task to a download worker",
+                    status_code="DL_DISPATCH",
+                    context=debug_logger.pick_used(
+                        {"trace_id": video.meta.get("trace_id"), "video_id": video.id, "source": video.source},
+                        "trace_id", "video_id", "source",
+                    ),
+                    details=debug_logger.pick_used(
+                        {
+                            "title": video.title,
+                            "max_concurrent": self.max_concurrent,
+                            "slot_capacity": self._slot_capacity(),
+                            "lightweight_task": self._is_lightweight_download(video),
+                        },
+                        "title", "max_concurrent", "slot_capacity", "lightweight_task",
+                    ),
+                    trace_id=video.meta.get("trace_id"),
+                )
+                self._connect_worker_callbacks(worker)
+                worker._slot_released = False
+                worker._completion_callback = self._handle_worker_completion
+                with self._start_stop_guard():
+                    if not self.is_running:
+                        if slot_acquired:
+                            self._release_dispatch_slot("dispatch_slot_manager_stopped_before_worker_append")
+                            slot_acquired = False
+                        break
+                    with self._workers_lock:
+                        self.workers.append(worker)
+                    worker.start()
+                slot_acquired = False
+            except queue.Empty:
+                continue
+            except Exception as e:
+                failed_video = locals().get("video")
+                if worker is not None:
+                    with self._workers_lock:
+                        if worker in self.workers:
+                            self.workers.remove(worker)
+                if slot_acquired:
+                    self._release_dispatch_slot("dispatch_slot_worker_create_failed")
+                    slot_acquired = False
+                with self._workers_lock:
+                    active_workers = len(self.workers)
+                debug_logger.log_exception(
+                    "DownloadManager",
+                    "dispatch_loop",
+                    e,
+                    details={"queued_tasks": self.queue.qsize(), "active_workers": active_workers},
+                )
+                if failed_video is not None:
+                    self._emit_task_error(failed_video.id, f"调度失败: {e}")
+            finally:
+                if slot_acquired:
+                    self._release_dispatch_slot("dispatch_slot_finally")
+
+    def _create_worker(self, video: VideoItem, save_dir: str):
+        raise NotImplementedError
+
+    def _connect_worker_callbacks(self, worker: Any) -> None:
+        worker.sig_start.connect(self._emit_task_started)
+        worker.sig_progress.connect(self._emit_task_progress)
+        worker.sig_finished.connect(self._emit_task_finished)
+        worker.sig_error.connect(self._emit_task_error)
+        worker.finished.connect(lambda w=worker: self._on_worker_thread_finished(w))
+
+    def _emit_task_started(self, video_id: str) -> None:
+        raise NotImplementedError
+
+    def _emit_task_progress(self, video_id: str, progress: int) -> None:
+        raise NotImplementedError
+
+    def _emit_task_finished(self, video_id: str) -> None:
+        raise NotImplementedError
+
+    def _emit_task_error(self, video_id: str, error: str) -> None:
+        raise NotImplementedError
+
+    def _find_worker(self, video_id: str):
+        self.prune_finished_workers()
+        with self._workers_lock:
+            for worker in self.workers:
+                if worker.video.id == video_id:
+                    return worker
+        return None
+
+    def prune_finished_workers(self) -> int:
+        """Drop stale completed workers before capacity accounting.
+
+        A worker normally removes itself via `_handle_worker_completion`.  This
+        guard keeps the dispatcher healthy if a completion callback is delayed,
+        disconnected, or skipped by an adapter edge case: stale workers must not
+        keep occupying dynamic concurrency slots forever.
+        """
+        stale_workers: list[Any] = []
+        with self._workers_lock:
+            retained_workers: list[Any] = []
+            for worker in list(getattr(self, "workers", []) or []):
+                if self._worker_has_finished(worker):
+                    stale_workers.append(worker)
+                else:
+                    retained_workers.append(worker)
+            if not stale_workers:
+                return 0
+            self.workers = retained_workers
+
+        for worker in stale_workers:
+            if not getattr(worker, "_slot_released", False):
+                self._release_worker_slot(worker, "stale_worker_pruned")
+            if not getattr(worker, "_manager_cleanup_done", False):
+                worker._manager_cleanup_done = True
+                try:
+                    self._on_worker_thread_finished(worker)
+                except Exception as exc:  # pragma: no cover - defensive cleanup path
+                    debug_logger.log_exception(
+                        "DownloadManager",
+                        "stale_worker_cleanup",
+                        exc,
+                        details={"video_id": getattr(getattr(worker, "video", None), "id", "")},
+                    )
+        qsize = getattr(self.queue, "qsize", None)
+        try:
+            queued_tasks = int(qsize()) if callable(qsize) else 0
+        except Exception:
+            queued_tasks = 0
+        debug_logger.log(
+            component="DownloadManager",
+            action="prune_finished_workers",
+            level="WARN",
+            message="Pruned stale completed workers from active concurrency accounting.",
+            status_code="DL_STALE_WORKERS_PRUNED",
+            details={"count": len(stale_workers), "queued_tasks": queued_tasks},
+        )
+        self._get_dispatch_slot_gate().set()
+        return len(stale_workers)
+
+    @staticmethod
+    def _worker_has_finished(worker: Any) -> bool:
+        is_alive = getattr(worker, "is_alive", None)
+        if callable(is_alive):
+            try:
+                if bool(is_alive()):
+                    return False
+                return getattr(worker, "ident", None) is not None
+            except RuntimeError:
+                return True
+        is_running = getattr(worker, "isRunning", None)
+        if callable(is_running):
+            try:
+                return not bool(is_running())
+            except RuntimeError:
+                return True
+        if hasattr(worker, "is_running"):
+            return not bool(getattr(worker, "is_running"))
+        return False
+
+    def _start_stop_guard(self) -> threading.RLock:
+        lock = getattr(self, "_start_stop_lock", None)
+        if lock is None:
+            with self._GUARD_INIT_LOCK:
+                lock = getattr(self, "_start_stop_lock", None)
+                if lock is None:
+                    lock = threading.RLock()
+                    self._start_stop_lock = lock
+        return lock
+
+    def _remove_queued_task(self, video_id: str) -> VideoItem | None:
+        removed = self._remove_queued_tasks({video_id})
+        return removed[0] if removed else None
+
+    def _remove_queued_tasks(self, video_ids: Iterable[str]) -> list[VideoItem]:
+        remove_videos = getattr(self.queue, "remove_videos", None)
+        if callable(remove_videos):
+            return list(remove_videos(video_ids))
+        remove_video = getattr(self.queue, "remove_video", None)
+        if callable(remove_video):
+            removed = []
+            for video_id in video_ids:
+                video = remove_video(video_id)
+                if video is not None:
+                    removed.append(video)
+            return removed
+        return []
+
+    def queued_video_ids(self) -> set[str]:
+        snapshot_video_ids = getattr(self.queue, "snapshot_video_ids", None)
+        if callable(snapshot_video_ids):
+            return snapshot_video_ids()
+        return set()
+
+    def _wait_for_dispatch_slot(self) -> bool:
+        gate = self._get_dispatch_slot_gate()
+        gate_wait_s = 0.25
+        acquire_timeout_s = 0.25
+        while self.is_running:
+            if not self._has_any_dispatch_capacity():
+                gate.wait(gate_wait_s)
+                gate.clear()
+                continue
+            if not self._acquire_dispatch_slot(acquire_timeout_s):
+                continue
+            if self._has_any_dispatch_capacity():
+                return True
+            self._release_dispatch_slot("dispatch_slot_discarded_capacity")
+        return False
+
+    def _slot_semaphore_guard(self) -> threading.RLock:
+        lock = getattr(self, "_slot_semaphore_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._slot_semaphore_lock = lock
+        return lock
+
+    def _acquire_dispatch_slot(self, timeout_s: float) -> bool:
+        with self._slot_semaphore_guard():
+            semaphore = self.slot_semaphore
+        if not semaphore.acquire(timeout=timeout_s):
+            return False
+        with self._slot_semaphore_guard():
+            if semaphore is self.slot_semaphore:
+                return True
+        try:
+            semaphore.release()
+        except ValueError:
+            debug_logger.log(
+                component="DownloadManager",
+                action="release_stale_slot_skip",
+                level="WARN",
+                message="Stale dispatch semaphore token could not be returned after concurrency rebuild.",
+                status_code="DL_STALE_SLOT_RELEASE_SKIP",
+            )
+        return False
+
+    def _release_worker_slot(self, worker: Any, reason: str) -> None:
+        self._release_dispatch_slot(reason, worker=worker)
+    def _release_dispatch_slot(self, reason: str, worker: Any | None = None) -> None:
+        if worker is not None and getattr(worker, "_slot_released", False):
+            return
+        if worker is not None:
+            worker._slot_released = True
+        try:
+            with self._slot_semaphore_guard():
+                self.slot_semaphore.release()
+        except ValueError:
+            debug_logger.log(
+                component="DownloadManager",
+                action="release_slot_skip",
+                level="WARN",
+                message="Download slot release skipped because semaphore capacity is already full",
+                status_code="DL_SLOT_RELEASE_SKIP",
+                details={"reason": reason},
+            )
+            return
+        self._get_dispatch_slot_gate().set()
+
+        context = None
+        trace_id = None
+        if worker is not None:
+            context = debug_logger.pick_used(
+                {"trace_id": worker.video.meta.get("trace_id"), "video_id": worker.video.id},
+                "trace_id", "video_id",
+            )
+            trace_id = worker.video.meta.get("trace_id")
+
+        if worker is not None:
+            debug_logger.log(
+                component="DownloadManager",
+                action="release_slot",
+                message="Released download concurrency slot",
+                status_code="DL_SLOT_RELEASE",
+                context=context,
+                details={"reason": reason},
+                trace_id=trace_id,
+            )
+
+    def _handle_worker_completion(self, worker: Any, reason: str) -> None:
+        with self._workers_lock:
+            if worker in self.workers:
+                self.workers.remove(worker)
+        self._release_worker_slot(worker, reason)
+        self._get_dispatch_slot_gate().set()
+
+    def _on_worker_thread_finished(self, worker: Any):
+        """Adapter hook for thread-object cleanup."""
+
+    def stop_all(self):
+        with self._start_stop_guard():
+            self.is_running = False
+            self._get_dispatch_slot_gate().set()
+            with self._workers_lock:
+                active_workers = len(self.workers)
+            debug_logger.log(
+                component="DownloadManager",
+                action="stop_all",
+                level="WARN",
+                message="Download manager stopping, draining queue and workers",
+                status_code="DL_STOP_ALL",
+                details={"active_workers": active_workers},
+            )
+            drain = getattr(self.queue, "drain", None)
+            if callable(drain):
+                drain()
+            else:
+                while True:
+                    try:
+                        self.queue.get_nowait()
+                    except queue.Empty:
+                        break
+            with self._workers_lock:
+                workers_snapshot = list(self.workers)
+        for worker in workers_snapshot:
+            worker.stop()
+            try:
+                _wait_ok = worker.wait(self.WORKER_STOP_TIMEOUT_MS)
+            except RuntimeError:
+                _wait_ok = True
+            if not _wait_ok:
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="stop_all_worker_timeout",
+                    level="WARN",
+                    message="Worker stop timeout reached; forcing shutdown cleanup",
+                    status_code="DL_STOP_TIMEOUT",
+                    details={"video_id": worker.video.id, "timeout_ms": self.WORKER_STOP_TIMEOUT_MS},
+                    trace_id=worker.video.meta.get("trace_id"),
+                )
+        if not self.dispatcher_thread.join(timeout=2):
+            debug_logger.log(
+                component="DownloadManager",
+                action="stop_all_dispatcher_timeout",
+                level="WARN",
+                message="Dispatcher thread failed to stop within 2 seconds",
+                status_code="DL_DISPATCHER_STOP_TIMEOUT",
+            )

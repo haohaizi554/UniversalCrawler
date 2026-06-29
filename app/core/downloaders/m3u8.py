@@ -1,0 +1,1962 @@
+"""HLS downloader backed by N_m3u8DL-RE with a MissAV yt-dlp fallback."""
+
+from __future__ import annotations
+
+import base64
+import http.server
+import io
+import os
+import re
+import shutil
+import socketserver
+import subprocess
+import time
+import urllib.parse
+import threading
+from pathlib import Path
+from typing import Any, Callable
+
+from app.config import DEFAULT_USER_AGENT
+from app.debug_logger import debug_logger
+from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
+from app.models import VideoItem
+
+from .base import BaseDownloader, ProgressCallback, StopCheck
+from .external import (
+    ExternalToolRunner,
+    FFmpegExternalTool,
+    NM3U8DLREExternalTool,
+    build_hidden_startupinfo,
+    build_new_console_flags,
+)
+
+try:
+    from playwright.sync_api import Error as PlaywrightError
+except ImportError:  # pragma: no cover - optional browser fallback
+    PlaywrightError = RuntimeError
+
+
+class _ThreadingHlsProxyServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class _HlsProxyHandler(http.server.BaseHTTPRequestHandler):
+    server: _ThreadingHlsProxyServer
+
+    def do_GET(self) -> None:
+        owner = getattr(self.server, "owner", None)
+        if owner is None:
+            self.send_error(500)
+            return
+        try:
+            upstream_url = owner.upstream_url_from_path(self.path)
+            owner.serve(self, upstream_url)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "N_m3u8DL_RE_Downloader",
+                "local_hls_proxy_error",
+                exc,
+                context={"path": self.path},
+            )
+            self.send_error(502)
+            return
+
+    def log_message(self, _format: str, *args: Any) -> None:
+        return
+
+
+class _LocalHlsProxy:
+    def __init__(
+        self,
+        downloader: "N_m3u8DL_RE_Downloader",
+        root_url: str,
+        headers: dict[str, str],
+        upstream_proxy: str | None,
+    ) -> None:
+        self.downloader = downloader
+        self.root_url = root_url
+        self.headers = dict(headers)
+        self.upstream_proxy = upstream_proxy
+        self.server: _ThreadingHlsProxyServer | None = None
+        self.thread: threading.Thread | None = None
+        self.base_url = ""
+        self.url = ""
+        self._lock = threading.Lock()
+        self._segment_total = 0
+        self._segment_completed = 0
+        self._bytes_served = 0
+
+    def start(self) -> "_LocalHlsProxy":
+        self.server = _ThreadingHlsProxyServer(("127.0.0.1", 0), _HlsProxyHandler)
+        self.server.owner = self  # type: ignore[attr-defined]
+        host, port = self.server.server_address[:2]
+        self.base_url = f"http://{host}:{port}"
+        self.url = self.local_url_for(self.root_url)
+        self.thread = threading.Thread(target=self.server.serve_forever, name="ucp-hls-proxy", daemon=True)
+        self.thread.start()
+        return self
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+    def local_url_for(self, upstream_url: str) -> str:
+        token = base64.urlsafe_b64encode(str(upstream_url).encode("utf-8")).decode("ascii")
+        return f"{self.base_url}/hls?u={urllib.parse.quote(token)}"
+
+    def upstream_url_from_path(self, path: str) -> str:
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+        token = (query.get("u") or [""])[0]
+        if not token:
+            return self.root_url
+        try:
+            return base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ExternalToolError("Invalid local HLS proxy URL token") from exc
+
+    def fetch(self, upstream_url: str) -> tuple[int, str, bytes]:
+        upstream_headers = self.downloader._headers_for_hls_proxy_upstream(upstream_url, self.headers)
+        status, content_type, body = self.downloader._hls_proxy_fetch_upstream(
+            upstream_url,
+            upstream_headers,
+            self.upstream_proxy,
+        )
+        if self.downloader._looks_like_hls_playlist(upstream_url, content_type, body):
+            text = body.decode("utf-8", errors="replace")
+            self._record_playlist(text)
+            rewritten = self.downloader._rewrite_hls_playlist_for_proxy(text, upstream_url, self.local_url_for)
+            return 200, "application/vnd.apple.mpegurl; charset=utf-8", rewritten.encode("utf-8")
+        self._record_resource(upstream_url, len(body))
+        return status, content_type, body
+
+    def serve(self, handler: http.server.BaseHTTPRequestHandler, upstream_url: str) -> None:
+        upstream_headers = self.downloader._headers_for_hls_proxy_upstream(upstream_url, self.headers)
+        response = self.downloader._hls_proxy_open_upstream(
+            upstream_url,
+            upstream_headers,
+            self.upstream_proxy,
+        )
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+            response_headers = getattr(response, "headers", {}) or {}
+            content_type = str(response_headers.get("Content-Type", "") or "")
+            if self.downloader._looks_like_hls_playlist_url(upstream_url, content_type):
+                body = self.downloader._response_content_bytes(response)
+                text = body.decode("utf-8", errors="replace")
+                self._record_playlist(text)
+                rewritten = self.downloader._rewrite_hls_playlist_for_proxy(text, upstream_url, self.local_url_for)
+                payload = rewritten.encode("utf-8")
+                handler.send_response(200)
+                handler.send_header("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
+                handler.send_header("Content-Length", str(len(payload)))
+                handler.send_header("Access-Control-Allow-Origin", "*")
+                handler.end_headers()
+                handler.wfile.write(payload)
+                return
+
+            handler.send_response(status)
+            handler.send_header("Content-Type", content_type or "application/octet-stream")
+            for header_name in (
+                "Content-Length",
+                "Content-Range",
+                "Accept-Ranges",
+                "ETag",
+                "Last-Modified",
+                "Cache-Control",
+            ):
+                header_value = str(response_headers.get(header_name) or "").strip()
+                if header_value:
+                    handler.send_header(header_name, header_value)
+            handler.send_header("Access-Control-Allow-Origin", "*")
+            handler.end_headers()
+            self._stream_response_body(handler, upstream_url, response)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except (OSError, RuntimeError, AttributeError) as exc:
+                    debug_logger.log_exception("M3U8Proxy", "close_upstream_response", exc, details={"url": upstream_url})
+
+    def _stream_response_body(
+        self,
+        handler: http.server.BaseHTTPRequestHandler,
+        upstream_url: str,
+        response,
+    ) -> None:
+        completed = False
+        for chunk in self.downloader._response_iter_bytes(response):
+            if not chunk:
+                continue
+            handler.wfile.write(chunk)
+            try:
+                handler.wfile.flush()
+            except (BrokenPipeError, OSError, RuntimeError) as exc:
+                debug_logger.log_exception("M3U8Proxy", "flush_response_body", exc, details={"url": upstream_url})
+            self._record_resource_bytes(len(chunk))
+            completed = True
+        if completed:
+            self._record_resource_complete(upstream_url)
+
+    def _record_playlist(self, playlist_text: str) -> None:
+        segment_total = self.downloader._count_hls_media_entries(playlist_text)
+        if segment_total <= 0:
+            return
+        with self._lock:
+            self._segment_total = max(self._segment_total, segment_total)
+
+    def _record_resource(self, upstream_url: str, byte_count: int) -> None:
+        self._record_resource_bytes(byte_count)
+        self._record_resource_complete(upstream_url)
+
+    def _record_resource_bytes(self, byte_count: int) -> None:
+        with self._lock:
+            self._bytes_served += max(0, int(byte_count or 0))
+
+    def _record_resource_complete(self, upstream_url: str) -> None:
+        with self._lock:
+            if self.downloader._looks_like_hls_media_resource(upstream_url) or not self.downloader._looks_like_hls_playlist_url(upstream_url, ""):
+                self._segment_completed += 1
+
+    def progress_snapshot(self) -> tuple[int, int]:
+        with self._lock:
+            segment_total = self._segment_total
+            segment_completed = self._segment_completed
+            bytes_served = self._bytes_served
+        if segment_total > 0:
+            progress = 10 + int(min(segment_completed, segment_total) * 85 / segment_total)
+            return min(95, max(10, progress)), bytes_served
+        return 50, bytes_served
+
+
+class _Nm3u8OutputProgress:
+    """Parse N_m3u8DL-RE console progress into UI-friendly telemetry."""
+
+    _PERCENT_RE = re.compile(r"(?P<percent>\d+(?:\.\d+)?)%")
+    _SPEED_RE = re.compile(
+        r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)(?:ps|/s)",
+        re.IGNORECASE,
+    )
+    _UNIT_FACTORS = {
+        "B": 1,
+        "KB": 1024,
+        "KIB": 1024,
+        "MB": 1024**2,
+        "MIB": 1024**2,
+        "GB": 1024**3,
+        "GIB": 1024**3,
+        "TB": 1024**4,
+        "TIB": 1024**4,
+    }
+
+    def __init__(self, *, default_progress: int = 50) -> None:
+        self._lock = threading.Lock()
+        self._progress = max(0, min(100, int(default_progress)))
+        self._speed_bps = 0
+        self._synthetic_bytes = 0.0
+        self._last_at = time.monotonic()
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        now = time.monotonic()
+        with self._lock:
+            self._advance_locked(now)
+            percent_match = None
+            for percent_match in self._PERCENT_RE.finditer(text):
+                pass
+            if percent_match is not None:
+                try:
+                    percent = float(percent_match.group("percent"))
+                except (TypeError, ValueError):
+                    percent = -1.0
+                if percent >= 0:
+                    self._progress = max(0, min(95, int(percent)))
+
+            speed_match = None
+            for speed_match in self._SPEED_RE.finditer(text):
+                pass
+            if speed_match is not None:
+                self._speed_bps = self._parse_speed_match(speed_match)
+
+    def snapshot(self) -> tuple[int, int]:
+        now = time.monotonic()
+        with self._lock:
+            self._advance_locked(now)
+            return self._progress, int(self._synthetic_bytes)
+
+    def _advance_locked(self, now: float) -> None:
+        elapsed = max(0.0, now - self._last_at)
+        if self._speed_bps > 0 and elapsed > 0:
+            self._synthetic_bytes += self._speed_bps * elapsed
+        self._last_at = now
+
+    @classmethod
+    def _parse_speed_match(cls, match: re.Match[str]) -> int:
+        try:
+            value = float(match.group("value"))
+        except (TypeError, ValueError):
+            return 0
+        unit = str(match.group("unit") or "B").upper()
+        return max(0, int(value * cls._UNIT_FACTORS.get(unit, 1)))
+
+
+class N_m3u8DL_RE_Downloader(BaseDownloader):
+    """Download HLS streams with N_m3u8DL-RE, falling back for stricter MissAV CDNs."""
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return NM3U8DLREExternalTool.is_available() or cls._python_hls_fallback_available()
+
+    @staticmethod
+    def _python_hls_fallback_available() -> bool:
+        try:
+            import m3u8  # noqa: F401
+            from curl_cffi import requests as curl_requests  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    @classmethod
+    def is_m3u8_url(cls, url: str) -> bool:
+        return NM3U8DLREExternalTool.is_m3u8_url(url)
+
+    def download(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        url = video_item.url
+        trace_id = video_item.meta.get("trace_id")
+        ua = video_item.meta.get("ua", DEFAULT_USER_AGENT)
+        referer = video_item.meta.get("referer", "https://www.douyin.com/")
+        proxy = video_item.meta.get("proxy")
+        headers = self._headers_from_meta(video_item, ua, referer)
+        thread_count = video_item.meta.get("m3u8_thread_count")
+        if str(video_item.source or "").lower() == "missav" and not thread_count:
+            thread_count = 16
+
+        self._emit_progress(progress_callback, 10)
+        download_succeeded = False
+        process = None
+        browser_fallback_error: Exception | None = None
+        external_first_error: Exception | None = None
+
+        if self._should_try_nm3u8_first(video_item):
+            executable = NM3U8DLREExternalTool.resolve_executable()
+            if executable:
+                try:
+                    external_headers = self._headers_for_nm3u8_external(video_item, headers, ua, referer)
+                    self._download_with_nm3u8_external(
+                        video_item,
+                        save_path,
+                        executable,
+                        ua,
+                        referer,
+                        proxy,
+                        external_headers,
+                        thread_count,
+                        progress_callback,
+                        check_stop_func,
+                    )
+                    download_succeeded = True
+                    self._emit_progress(progress_callback, 100, bytes_downloaded=self._downloaded_file_size_hint(save_path))
+                    return
+                except DownloaderStoppedError:
+                    raise
+                except (OSError, RuntimeError, ValueError, ExternalToolError, ExternalToolNotFoundError) as external_exc:
+                    external_first_error = external_exc
+                    debug_logger.log_exception(
+                        "N_m3u8DL_RE_Downloader",
+                        "missav_nm3u8_first_error",
+                        external_exc,
+                        context={"title": video_item.title, "save_path": save_path, "source_url": url},
+                        trace_id=trace_id,
+                    )
+
+        if self._should_try_curl_cffi_first(video_item):
+            try:
+                debug_logger.log(
+                    component="N_m3u8DL_RE_Downloader",
+                    action="curl_cffi_hls_start",
+                    message="Trying curl_cffi browser-impersonated HLS download for MissAV",
+                    status_code="M3U8_CURL_CFFI_START",
+                    details={"title": video_item.title, "save_path": save_path, "source_url": url},
+                    trace_id=trace_id,
+                )
+                self._download_with_curl_cffi_hls(
+                    video_item,
+                    save_path,
+                    headers,
+                    proxy,
+                    progress_callback,
+                    check_stop_func,
+                )
+                download_succeeded = True
+                self._emit_progress(progress_callback, 100)
+                return
+            except DownloaderStoppedError:
+                raise
+            except (OSError, RuntimeError, ValueError, ExternalToolError, ExternalToolNotFoundError) as curl_exc:
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "curl_cffi_hls_error",
+                    curl_exc,
+                    context={"title": video_item.title, "save_path": save_path, "source_url": url},
+                    trace_id=trace_id,
+                )
+                try:
+                    debug_logger.log(
+                        component="N_m3u8DL_RE_Downloader",
+                        action="playwright_hls_start",
+                        message="Trying Playwright browser-context HLS download for MissAV",
+                        status_code="M3U8_PLAYWRIGHT_START",
+                        details={"title": video_item.title, "save_path": save_path, "source_url": url},
+                        trace_id=trace_id,
+                    )
+                    self._download_with_playwright_hls(
+                        video_item,
+                        save_path,
+                        headers,
+                        proxy,
+                        progress_callback,
+                        check_stop_func,
+                    )
+                    download_succeeded = True
+                    self._emit_progress(progress_callback, 100)
+                    return
+                except DownloaderStoppedError:
+                    raise
+                except (OSError, RuntimeError, ValueError, ExternalToolError, ExternalToolNotFoundError) as browser_exc:
+                    browser_fallback_error = browser_exc
+                    debug_logger.log_exception(
+                        "N_m3u8DL_RE_Downloader",
+                        "playwright_hls_error",
+                        browser_exc,
+                        context={"title": video_item.title, "save_path": save_path, "source_url": url},
+                        trace_id=trace_id,
+                    )
+
+        if self._should_try_curl_cffi_first(video_item) and browser_fallback_error is not None:
+            if self._should_skip_network_playlist_fallback(video_item):
+                debug_logger.log(
+                    component="N_m3u8DL_RE_Downloader",
+                    action="skip_network_playlist_fallback",
+                    level="WARN",
+                    message="MissAV browser HLS failed after cached playlist; skipping network playlist fallback that would re-hit 403",
+                    status_code="M3U8_SKIP_NETWORK_PLAYLIST_FALLBACK",
+                    details={
+                        "title": video_item.title,
+                        "save_path": save_path,
+                        "source_url": url,
+                        "playlist_cache_keys": sorted(self._playlist_cache_from_meta(video_item)),
+                        "browser_error": str(browser_fallback_error),
+                    },
+                    trace_id=trace_id,
+                )
+                raise ExternalToolError(f"MissAV browser HLS failed after cached playlist: {browser_fallback_error}") from browser_fallback_error
+            try:
+                debug_logger.log(
+                    component="N_m3u8DL_RE_Downloader",
+                    action="yt_dlp_fallback_start",
+                    message="MissAV browser HLS failed; trying yt-dlp before skipping N_m3u8DL-RE",
+                    status_code="M3U8_YTDLP_AFTER_BROWSER",
+                    details={"title": video_item.title, "save_path": save_path, "source_url": url},
+                    trace_id=trace_id,
+                )
+                self._download_with_yt_dlp_fallback(
+                    video_item,
+                    save_path,
+                    headers,
+                    proxy,
+                    progress_callback,
+                    check_stop_func,
+                )
+                download_succeeded = True
+                self._emit_progress(progress_callback, 100)
+                return
+            except DownloaderStoppedError:
+                raise
+            except (OSError, RuntimeError, ValueError, ExternalToolError, ExternalToolNotFoundError) as fallback_exc:
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "yt_dlp_after_browser_error",
+                    fallback_exc,
+                    context={"title": video_item.title, "save_path": save_path, "source_url": url},
+                    trace_id=trace_id,
+                )
+                raise ExternalToolError(
+                    f"MissAV browser HLS failed: {browser_fallback_error}; yt-dlp fallback failed: {fallback_exc}"
+                ) from fallback_exc
+
+        executable = NM3U8DLREExternalTool.resolve_executable()
+        if not executable:
+            if self._should_try_yt_dlp_fallback(video_item):
+                self._download_with_yt_dlp_fallback(
+                    video_item,
+                    save_path,
+                    headers,
+                    proxy,
+                    progress_callback,
+                    check_stop_func,
+                )
+                download_succeeded = True
+                self._emit_progress(progress_callback, 100)
+                return
+            raise ExternalToolNotFoundError("N_m3u8DL-RE executable not found")
+
+        cmd = NM3U8DLREExternalTool.build_download_command(
+            executable,
+            url,
+            save_path,
+            ua,
+            referer,
+            proxy=proxy,
+            extra_headers=headers,
+            thread_count=thread_count,
+        )
+        debug_logger.log_command(
+            component="N_m3u8DL_RE_Downloader",
+            tool_name="N_m3u8DL-RE",
+            command_args=cmd,
+            message="Preparing N_m3u8DL-RE HLS download",
+            context={"title": video_item.title, "save_path": save_path, "source_url": url},
+            trace_id=trace_id,
+        )
+
+        creation_flags = build_new_console_flags()
+        output_reader: threading.Thread | None = None
+        try:
+            output_progress = _Nm3u8OutputProgress(default_progress=50)
+            process = self._popen_nm3u8_process(cmd, creation_flags)
+            output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
+            self._wait_external_process_with_file_progress(
+                process,
+                save_path,
+                check_stop_func,
+                progress_callback,
+                50,
+                progress_provider=output_progress.snapshot,
+            )
+
+            if process.returncode != 0:
+                raise ExternalToolError(f"N_m3u8DL-RE exited abnormally (Code: {process.returncode})")
+
+            download_succeeded = True
+            try:
+                self._emit_progress(progress_callback, 100)
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "progress_callback_error",
+                    exc,
+                    context={"title": video_item.title, "save_path": save_path},
+                    trace_id=trace_id,
+                )
+            debug_logger.log(
+                component="N_m3u8DL_RE_Downloader",
+                action="download_finished",
+                message="N_m3u8DL-RE download finished",
+                status_code="M3U8_OK",
+                details={"title": video_item.title, "save_path": save_path},
+                trace_id=trace_id,
+            )
+        except DownloaderStoppedError:
+            raise
+        except (OSError, RuntimeError, ValueError, ExternalToolError) as exc:
+            debug_logger.log_exception(
+                "N_m3u8DL_RE_Downloader",
+                "download_error",
+                exc,
+                context={"title": video_item.title, "save_path": save_path, "source_url": url},
+                trace_id=trace_id,
+            )
+            if self._should_try_yt_dlp_fallback(video_item):
+                try:
+                    debug_logger.log(
+                        component="N_m3u8DL_RE_Downloader",
+                        action="yt_dlp_fallback_start",
+                        message="N_m3u8DL-RE failed; trying yt-dlp impersonation fallback",
+                        status_code="M3U8_YTDLP_FALLBACK",
+                        details={"title": video_item.title, "save_path": save_path, "source_url": url},
+                        trace_id=trace_id,
+                    )
+                    self._download_with_yt_dlp_fallback(
+                        video_item,
+                        save_path,
+                        headers,
+                        proxy,
+                        progress_callback,
+                        check_stop_func,
+                    )
+                    download_succeeded = True
+                    try:
+                        self._emit_progress(progress_callback, 100)
+                    except Exception as callback_exc:
+                        debug_logger.log_exception(
+                            "N_m3u8DL_RE_Downloader",
+                            "yt_dlp_progress_callback_error",
+                            callback_exc,
+                            context={"title": video_item.title, "save_path": save_path},
+                            trace_id=trace_id,
+                        )
+                    return
+                except DownloaderStoppedError:
+                    raise
+                except (OSError, RuntimeError, ValueError, ExternalToolError) as fallback_exc:
+                    debug_logger.log_exception(
+                        "N_m3u8DL_RE_Downloader",
+                        "yt_dlp_fallback_error",
+                        fallback_exc,
+                        context={"title": video_item.title, "save_path": save_path, "source_url": url},
+                        trace_id=trace_id,
+                    )
+                    raise ExternalToolError(
+                        f"N_m3u8DL-RE failed: {exc}; yt-dlp fallback failed: {fallback_exc}"
+                    ) from fallback_exc
+            raise ExternalToolError(f"N_m3u8DL-RE failed: {exc}") from exc
+        finally:
+            self._join_nm3u8_output_reader(output_reader)
+            if process is not None and process.poll() is None:
+                ExternalToolRunner.terminate_process(process)
+            if not download_succeeded:
+                self._cleanup_external_temp_files(save_path)
+
+    @staticmethod
+    def _should_try_yt_dlp_fallback(video_item: VideoItem) -> bool:
+        return str(video_item.source or "").lower() == "missav"
+
+    @classmethod
+    def _should_try_curl_cffi_first(cls, video_item: VideoItem) -> bool:
+        if str(video_item.source or "").lower() != "missav":
+            return False
+        try:
+            host = urllib.parse.urlparse(str(video_item.url or "")).netloc.lower()
+        except (TypeError, ValueError):
+            host = ""
+        return host == "surrit.com" or host.endswith(".surrit.com")
+
+    @classmethod
+    def _should_try_nm3u8_first(cls, video_item: VideoItem) -> bool:
+        return cls._should_try_curl_cffi_first(video_item) and not bool(video_item.meta.get("force_python_hls"))
+
+    @classmethod
+    def _headers_for_nm3u8_external(
+        cls,
+        video_item: VideoItem,
+        headers: dict[str, str],
+        user_agent: str,
+        referer: str,
+    ) -> dict[str, str]:
+        if not cls._should_try_curl_cffi_first(video_item):
+            return dict(headers)
+        clean = {
+            "User-Agent": str(headers.get("User-Agent") or user_agent or DEFAULT_USER_AGENT),
+        }
+        referer_text = str(referer or headers.get("Referer") or video_item.meta.get("referer") or "").strip()
+        if referer_text:
+            clean["Referer"] = referer_text
+        cookie = str(headers.get("Cookie") or video_item.meta.get("cookie") or "").strip()
+        if cookie:
+            clean["Cookie"] = cookie
+        return clean
+
+    def _download_with_nm3u8_external(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        executable: str,
+        user_agent: str,
+        referer: str,
+        proxy: str | None,
+        headers: dict[str, str],
+        thread_count: str | int | None,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        if self._should_use_local_hls_proxy(video_item):
+            local_proxy = self._start_local_hls_proxy(video_item, headers, proxy)
+            try:
+                local_headers = {"User-Agent": str(user_agent or DEFAULT_USER_AGENT)}
+                self._run_nm3u8_external_command(
+                    video_item,
+                    save_path,
+                    executable,
+                    local_proxy.url,
+                    user_agent,
+                    "",
+                    None,
+                    local_headers,
+                    thread_count,
+                    progress_callback,
+                    check_stop_func,
+                    local_proxy=True,
+                    progress_provider=local_proxy.progress_snapshot,
+                )
+            finally:
+                local_proxy.stop()
+            return
+        self._run_nm3u8_external_command(
+            video_item,
+            save_path,
+            executable,
+            video_item.url,
+            user_agent,
+            referer,
+            proxy,
+            headers,
+            thread_count,
+            progress_callback,
+            check_stop_func,
+            local_proxy=False,
+        )
+
+    def _run_nm3u8_external_command(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        executable: str,
+        source_url: str,
+        user_agent: str,
+        referer: str,
+        proxy: str | None,
+        headers: dict[str, str],
+        thread_count: str | int | None,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+        *,
+        local_proxy: bool,
+        progress_provider: Callable[[], tuple[int, int]] | None = None,
+    ) -> None:
+        cmd = NM3U8DLREExternalTool.build_download_command(
+            executable,
+            source_url,
+            save_path,
+            user_agent,
+            referer,
+            proxy=proxy,
+            extra_headers=headers,
+            thread_count=thread_count,
+        )
+        trace_id = video_item.meta.get("trace_id")
+        debug_logger.log_command(
+            component="N_m3u8DL_RE_Downloader",
+            tool_name="N_m3u8DL-RE",
+            command_args=cmd,
+            message="Preparing N_m3u8DL-RE HLS download",
+            context={
+                "title": video_item.title,
+                "save_path": save_path,
+                "source_url": video_item.url,
+                "local_hls_proxy": local_proxy,
+                "thread_count": thread_count,
+            },
+            trace_id=trace_id,
+        )
+        output_progress = _Nm3u8OutputProgress(default_progress=50)
+        process = self._popen_nm3u8_process(cmd, build_new_console_flags())
+        output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
+        combined_provider = self._combine_progress_providers(progress_provider, output_progress.snapshot)
+        try:
+            self._wait_external_process_with_file_progress(
+                process,
+                save_path,
+                check_stop_func,
+                progress_callback,
+                50,
+                progress_provider=combined_provider,
+            )
+            if process.returncode != 0:
+                raise ExternalToolError(f"N_m3u8DL-RE exited abnormally (Code: {process.returncode})")
+        finally:
+            self._join_nm3u8_output_reader(output_reader)
+            if process.poll() is None:
+                ExternalToolRunner.terminate_process(process)
+
+    @staticmethod
+    def _combine_progress_providers(
+        first: Callable[[], tuple[int, int]] | None,
+        second: Callable[[], tuple[int, int]] | None,
+    ) -> Callable[[], tuple[int, int]] | None:
+        providers = [provider for provider in (first, second) if provider is not None]
+        if not providers:
+            return None
+
+        def combined() -> tuple[int, int]:
+            progress_values: list[int] = []
+            byte_values: list[int] = []
+            for provider in providers:
+                try:
+                    progress, byte_count = provider()
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "N_m3u8DL_RE_Downloader",
+                        "combined_progress_provider_error",
+                        exc,
+                    )
+                    continue
+                progress_values.append(int(progress or 0))
+                byte_values.append(int(byte_count or 0))
+            return max(progress_values or [50]), max(byte_values or [0])
+
+        return combined
+
+    @staticmethod
+    def _popen_nm3u8_process(cmd: list[str], creation_flags: int) -> subprocess.Popen:
+        return subprocess.Popen(
+            cmd,
+            creationflags=creation_flags,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+    @staticmethod
+    def _start_nm3u8_output_reader(
+        process: subprocess.Popen,
+        progress: _Nm3u8OutputProgress,
+        trace_id: str | None = None,
+    ) -> threading.Thread | None:
+        stream = getattr(process, "stdout", None)
+        if not isinstance(stream, io.IOBase):
+            return None
+
+        def read_output() -> None:
+            buffer: list[str] = []
+            try:
+                while True:
+                    chunk = stream.read(1)
+                    if not chunk:
+                        break
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8", errors="replace")
+                    if chunk in ("\r", "\n"):
+                        if buffer:
+                            progress.feed("".join(buffer))
+                            buffer.clear()
+                        continue
+                    buffer.append(str(chunk))
+                    if len(buffer) >= 4096:
+                        progress.feed("".join(buffer))
+                        buffer.clear()
+                if buffer:
+                    progress.feed("".join(buffer))
+            except (OSError, RuntimeError, ValueError) as exc:
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "nm3u8_output_reader_error",
+                    exc,
+                    trace_id=trace_id,
+                )
+
+        reader = threading.Thread(target=read_output, name="ucp-nm3u8-progress", daemon=True)
+        reader.start()
+        return reader
+
+    @staticmethod
+    def _join_nm3u8_output_reader(reader: threading.Thread | None) -> None:
+        if reader is not None:
+            reader.join(timeout=1.0)
+
+    @classmethod
+    def _should_use_local_hls_proxy(cls, video_item: VideoItem) -> bool:
+        return cls._should_try_curl_cffi_first(video_item) and not bool(video_item.meta.get("disable_local_hls_proxy"))
+
+    def _start_local_hls_proxy(
+        self,
+        video_item: VideoItem,
+        headers: dict[str, str],
+        upstream_proxy: str | None,
+    ) -> _LocalHlsProxy:
+        proxy_headers = self._headers_for_hls_proxy(video_item, headers)
+        local_proxy = _LocalHlsProxy(self, str(video_item.url), proxy_headers, upstream_proxy).start()
+        debug_logger.log(
+            component="N_m3u8DL_RE_Downloader",
+            action="local_hls_proxy_start",
+            message="Started local HLS proxy for protected MissAV stream",
+            status_code="M3U8_LOCAL_PROXY_START",
+            details={"source_url": video_item.url, "local_url": local_proxy.url},
+            trace_id=video_item.meta.get("trace_id"),
+        )
+        return local_proxy
+
+    @classmethod
+    def _headers_for_hls_proxy(cls, video_item: VideoItem, headers: dict[str, str]) -> dict[str, str]:
+        proxy_headers = {
+            key: value
+            for key, value in cls._headers_for_yt_dlp(headers).items()
+            if str(key).lower() not in {"host", "content-length", "connection", "transfer-encoding"}
+        }
+        referer = str(video_item.meta.get("referer") or headers.get("Referer") or "").strip()
+        if referer:
+            proxy_headers["Referer"] = referer
+        proxy_headers.setdefault("User-Agent", str(video_item.meta.get("ua") or headers.get("User-Agent") or DEFAULT_USER_AGENT))
+        proxy_headers.setdefault("Accept", "*/*")
+        proxy_headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9,en-CN;q=0.8,en;q=0.7")
+        return proxy_headers
+
+    @classmethod
+    def _headers_for_hls_proxy_upstream(cls, upstream_url: str, headers: dict[str, str]) -> dict[str, str]:
+        upstream_headers = dict(headers)
+        if cls._looks_like_hls_playlist_url(upstream_url, ""):
+            return upstream_headers
+        upstream_headers.pop("Origin", None)
+        upstream_headers["Accept"] = "*/*"
+        upstream_headers["Accept-Encoding"] = "identity;q=1, *;q=0"
+        upstream_headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9,en-CN;q=0.8,en;q=0.7")
+        upstream_headers.setdefault("Cache-Control", "no-cache")
+        upstream_headers.setdefault("Pragma", "no-cache")
+        upstream_headers["Priority"] = "i"
+        upstream_headers.setdefault("Range", "bytes=0-")
+        upstream_headers["Sec-Fetch-Dest"] = "video"
+        upstream_headers["Sec-Fetch-Mode"] = "no-cors"
+        upstream_headers["Sec-Fetch-Site"] = "same-origin"
+        return upstream_headers
+
+    def _hls_proxy_fetch_upstream(
+        self,
+        upstream_url: str,
+        headers: dict[str, str],
+        upstream_proxy: str | None,
+    ) -> tuple[int, str, bytes]:
+        try:
+            from curl_cffi import requests as curl_requests
+        except ImportError as exc:
+            raise ExternalToolNotFoundError("curl_cffi is required for local MissAV HLS proxy") from exc
+        first_error: Exception | None = None
+        for request_headers in self._hls_proxy_header_attempts(headers):
+            try:
+                response = self._curl_cffi_get_response(curl_requests, upstream_url, request_headers, upstream_proxy)
+            except Exception as exc:
+                first_error = exc
+                continue
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in (200, 206):
+                content_type = str(getattr(response, "headers", {}).get("Content-Type", "") or "")
+                return status, content_type, bytes(getattr(response, "content", b"") or b"")
+            first_error = ExternalToolError(f"local HLS proxy upstream request failed ({status}) for {upstream_url}")
+            if status != 403:
+                break
+        if first_error is not None:
+            raise first_error
+        raise ExternalToolError(f"local HLS proxy upstream request failed for {upstream_url}")
+
+    def _hls_proxy_open_upstream(
+        self,
+        upstream_url: str,
+        headers: dict[str, str],
+        upstream_proxy: str | None,
+    ):
+        try:
+            from curl_cffi import requests as curl_requests
+        except ImportError as exc:
+            raise ExternalToolNotFoundError("curl_cffi is required for local MissAV HLS proxy") from exc
+        first_error: Exception | None = None
+        for request_headers in self._hls_proxy_header_attempts(headers):
+            response = None
+            try:
+                response = self._curl_cffi_get_response(
+                    curl_requests,
+                    upstream_url,
+                    request_headers,
+                    upstream_proxy,
+                )
+            except Exception as exc:
+                first_error = exc
+                continue
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in (200, 206):
+                return response
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except (OSError, RuntimeError, AttributeError) as exc:
+                    debug_logger.log_exception("M3U8Downloader", "close_retry_response", exc, details={"url": upstream_url})
+            first_error = ExternalToolError(f"local HLS proxy upstream request failed ({status}) for {upstream_url}")
+            if status != 403:
+                break
+        if first_error is not None:
+            raise first_error
+        raise ExternalToolError(f"local HLS proxy upstream request failed for {upstream_url}")
+
+    @staticmethod
+    def _hls_proxy_header_attempts(headers: dict[str, str]) -> list[dict[str, str]]:
+        primary = dict(headers)
+        attempts = [primary]
+        if any(str(key).lower() == "cookie" for key in primary):
+            without_cookie = {key: value for key, value in primary.items() if str(key).lower() != "cookie"}
+            attempts.append(without_cookie)
+        return attempts
+
+    @staticmethod
+    def _curl_cffi_get_response(
+        curl_requests,
+        url: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        *,
+        stream: bool = False,
+    ):
+        kwargs: dict[str, Any] = {"headers": headers, "timeout": 60, "impersonate": "chrome"}
+        if proxy:
+            kwargs["proxy"] = proxy
+        if stream:
+            kwargs["stream"] = True
+        try:
+            return curl_requests.get(url, **kwargs)
+        except TypeError:
+            kwargs.pop("impersonate", None)
+            if stream:
+                kwargs.pop("stream", None)
+            return curl_requests.get(url, **kwargs)
+
+    @staticmethod
+    def _looks_like_hls_playlist(url: str, content_type: str, body: bytes) -> bool:
+        if b"#EXTM3U" in body[:4096]:
+            return True
+        lowered_type = str(content_type or "").lower()
+        if "mpegurl" in lowered_type or "m3u8" in lowered_type:
+            return True
+        return ".m3u8" in str(url or "").lower()
+
+    @staticmethod
+    def _looks_like_hls_playlist_url(url: str, content_type: str) -> bool:
+        lowered_type = str(content_type or "").lower()
+        if "mpegurl" in lowered_type or "m3u8" in lowered_type:
+            return True
+        return ".m3u8" in str(url or "").lower()
+
+    @staticmethod
+    def _response_content_bytes(response) -> bytes:
+        content = getattr(response, "content", None)
+        if content:
+            return bytes(content or b"")
+        chunks = []
+        for chunk in N_m3u8DL_RE_Downloader._response_iter_bytes(response):
+            if chunk:
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _response_iter_bytes(response, chunk_size: int = 256 * 1024):
+        content = getattr(response, "content", None)
+        if content:
+            payload = bytes(content)
+            chunk_size = max(1, int(chunk_size))
+            for offset in range(0, len(payload), chunk_size):
+                yield payload[offset : offset + chunk_size]
+            return
+        iter_content = getattr(response, "iter_content", None)
+        if callable(iter_content):
+            try:
+                yield from iter_content()
+                return
+            except TypeError:
+                try:
+                    yield from iter_content(chunk_size=chunk_size)
+                    return
+                except TypeError:
+                    yield from iter_content(chunk_size)
+                    return
+
+    @staticmethod
+    def _looks_like_hls_media_resource(url: str) -> bool:
+        path = urllib.parse.urlparse(str(url or "")).path.lower()
+        return path.endswith((".ts", ".m4s", ".mp4", ".m4v", ".aac", ".mp3"))
+
+    @staticmethod
+    def _count_hls_media_entries(playlist_text: str) -> int:
+        count = 0
+        for raw_line in str(playlist_text or "").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            path = urllib.parse.urlparse(line).path.lower()
+            if path.endswith(".m3u8"):
+                continue
+            count += 1
+        return count
+
+    @classmethod
+    def _rewrite_hls_playlist_for_proxy(cls, playlist_text: str, playlist_url: str, local_url_for) -> str:
+        base_url = str(playlist_url or "")
+        rewritten_lines: list[str] = []
+        for raw_line in str(playlist_text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                rewritten_lines.append(raw_line)
+                continue
+            if line.startswith("#"):
+                rewritten_lines.append(cls._rewrite_hls_attribute_uris(raw_line, base_url, local_url_for))
+                continue
+            absolute_url = urllib.parse.urljoin(base_url, line)
+            rewritten_lines.append(local_url_for(absolute_url))
+        return "\n".join(rewritten_lines) + "\n"
+
+    @staticmethod
+    def _rewrite_hls_attribute_uris(line: str, base_url: str, local_url_for) -> str:
+        import re
+
+        def replace_uri(match):
+            quote = match.group(1)
+            uri = match.group(2)
+            absolute_url = urllib.parse.urljoin(base_url, uri)
+            return f"URI={quote}{local_url_for(absolute_url)}{quote}"
+
+        return re.sub(r"URI=([\"'])(.*?)(?:\1)", replace_uri, line)
+
+
+    def _wait_external_process_with_file_progress(
+        self,
+        process: subprocess.Popen,
+        save_path: str,
+        check_stop_func: StopCheck,
+        progress_callback: ProgressCallback | None,
+        progress_value: int,
+        *,
+        progress_provider: Callable[[], tuple[int, int]] | None = None,
+    ) -> None:
+        started_at = time.time()
+        last_emit_at = 0.0
+        while process.poll() is None:
+            if check_stop_func():
+                ExternalToolRunner.terminate_process(process)
+                raise DownloaderStoppedError("Download stopped by user")
+            time.sleep(0.5)
+            now = time.time()
+            if now - last_emit_at >= 1.0:
+                last_emit_at = now
+                provider_progress = progress_value
+                provider_bytes = 0
+                if progress_provider is not None:
+                    try:
+                        provider_progress, provider_bytes = progress_provider()
+                    except Exception as exc:
+                        debug_logger.log_exception(
+                            "N_m3u8DL_RE_Downloader",
+                            "external_progress_provider_error",
+                            exc,
+                        )
+                        provider_progress, provider_bytes = progress_value, 0
+                bytes_downloaded = max(
+                    int(provider_bytes or 0),
+                    self._downloaded_file_size_hint(save_path, since=started_at),
+                )
+                self._emit_progress(
+                    progress_callback,
+                    provider_progress,
+                    bytes_downloaded=bytes_downloaded,
+                )
+
+    @staticmethod
+    def _downloaded_file_size_hint(save_path: str, *, since: float | None = None) -> int:
+        target = Path(save_path)
+        total = 0
+        candidates: list[Path] = []
+        try:
+            if target.exists():
+                candidates.append(target)
+            candidates.extend(path for path in target.parent.glob(f"{target.stem}*") if path != target)
+            if since is not None:
+                for path in target.parent.iterdir():
+                    if path in candidates:
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    if stat.st_mtime >= since - 2 and (
+                        path.is_dir() or path.suffix.lower() in {".ts", ".m4s", ".mp4", ".tmp", ".part"}
+                    ):
+                        candidates.append(path)
+        except OSError:
+            return 0
+        seen: set[Path] = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve(strict=False)
+            except OSError:
+                resolved = candidate
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                if candidate.is_file():
+                    total += candidate.stat().st_size
+                elif candidate.is_dir():
+                    for child in candidate.rglob("*"):
+                        if child.is_file():
+                            total += child.stat().st_size
+            except OSError:
+                continue
+        return int(total)
+
+    @staticmethod
+    def _playlist_cache_from_meta(video_item: VideoItem) -> dict[str, str]:
+        cache = video_item.meta.get("playlist_cache")
+        if not isinstance(cache, dict):
+            return {}
+        result: dict[str, str] = {}
+        for key, value in cache.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "")
+            if key_text and value_text:
+                result[key_text] = value_text
+        return result
+
+    @staticmethod
+    def _playlist_text_from_cache(cache: dict[str, str], url: str) -> str | None:
+        if not cache:
+            return None
+        url_text = str(url or "")
+        candidates = [url_text, url_text.split("#", 1)[0]]
+        for candidate in candidates:
+            if candidate in cache:
+                return cache[candidate]
+        parsed_target = urllib.parse.urlparse(url_text)
+        for cached_url, text in cache.items():
+            parsed_cached = urllib.parse.urlparse(str(cached_url or ""))
+            if (
+                parsed_cached.scheme == parsed_target.scheme
+                and parsed_cached.netloc == parsed_target.netloc
+                and parsed_cached.path == parsed_target.path
+                and parsed_cached.query == parsed_target.query
+            ):
+                return text
+        return None
+
+    @classmethod
+    def _should_skip_network_playlist_fallback(cls, video_item: VideoItem) -> bool:
+        return cls._should_try_curl_cffi_first(video_item) and bool(cls._playlist_cache_from_meta(video_item))
+
+    @classmethod
+    def _playwright_launch_kwargs(cls, video_item: VideoItem, proxy: str | None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "headless": not cls._should_try_curl_cffi_first(video_item),
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+        if proxy:
+            kwargs["proxy"] = {"server": proxy}
+        return kwargs
+
+    def _download_with_curl_cffi_hls(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        try:
+            import m3u8
+            from curl_cffi import requests as curl_requests
+        except ImportError as exc:
+            raise ExternalToolNotFoundError("curl_cffi and m3u8 are required for MissAV browser HLS fallback") from exc
+
+        target = Path(save_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp_dir = target.parent / f"{target.stem}_curl_cffi_hls"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = temp_dir / f"{target.stem}.ts"
+        session = self._make_curl_cffi_session(curl_requests, headers, proxy)
+        playlist_cache = self._playlist_cache_from_meta(video_item)
+        try:
+            playlist_url = str(video_item.url)
+            playlist_text = self._playlist_text_from_cache(playlist_cache, playlist_url)
+            if playlist_text is None:
+                playlist_text = self._curl_cffi_get_text(session, playlist_url, headers)
+            playlist = m3u8.loads(playlist_text, uri=playlist_url)
+            if playlist.is_variant:
+                variant = self._choose_m3u8_variant(playlist)
+                playlist_url = variant.absolute_uri
+                playlist_text = self._playlist_text_from_cache(playlist_cache, playlist_url)
+                if playlist_text is None:
+                    playlist_text = self._curl_cffi_get_text(session, playlist_url, headers)
+                playlist = m3u8.loads(playlist_text, uri=playlist_url)
+            if not playlist.segments:
+                raise ExternalToolError("curl_cffi HLS fallback found no media segments")
+            if self._has_unsupported_hls_encryption(playlist):
+                raise ExternalToolError("curl_cffi HLS fallback found unsupported encrypted HLS segments")
+
+            self._write_hls_segments(
+                playlist,
+                raw_path,
+                lambda fetch_url: self._curl_cffi_get_bytes(session, fetch_url, headers),
+                progress_callback,
+                check_stop_func,
+            )
+
+            if raw_path.stat().st_size <= 0:
+                raise ExternalToolError("curl_cffi HLS fallback produced an empty media file")
+            self._finalize_curl_cffi_hls_output(raw_path, target, check_stop_func)
+        finally:
+            try:
+                session.close()
+            except (OSError, RuntimeError, AttributeError) as exc:
+                debug_logger.log_exception("M3U8Downloader", "close_curl_cffi_session", exc)
+            if target.exists() and target.stat().st_size > 0:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _download_with_playwright_hls(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        try:
+            import m3u8
+            from playwright.sync_api import Error as PlaywrightError
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise ExternalToolNotFoundError("playwright and m3u8 are required for MissAV browser HLS fallback") from exc
+
+        target = Path(save_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp_dir = target.parent / f"{target.stem}_playwright_hls"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = temp_dir / f"{target.stem}.ts"
+        storage_state = video_item.meta.get("browser_storage_state")
+        referer = str(video_item.meta.get("referer") or headers.get("Referer") or "")
+        user_agent = str(video_item.meta.get("ua") or headers.get("User-Agent") or DEFAULT_USER_AGENT)
+        playlist_cache = self._playlist_cache_from_meta(video_item)
+
+        with sync_playwright() as playwright:
+            launch_kwargs = self._playwright_launch_kwargs(video_item, proxy)
+            browser = playwright.chromium.launch(**launch_kwargs)
+            try:
+                context_kwargs: dict[str, Any] = {"user_agent": user_agent}
+                if isinstance(storage_state, dict) and storage_state:
+                    context_kwargs["storage_state"] = storage_state
+                context = browser.new_context(**context_kwargs)
+                self._add_cookie_header_to_context(context, headers.get("Cookie"), video_item.url, referer)
+                page = context.new_page()
+                captured_playlist_cache: dict[str, str] = {}
+
+                playlist_url = str(video_item.url)
+                playlist_text = self._playlist_text_from_cache(playlist_cache, playlist_url)
+                if playlist_text is None and referer:
+                    captured_playlist_cache = self._playwright_capture_playlist_from_referer(page, referer, playlist_url)
+                    playlist_text = self._playlist_text_from_cache(captured_playlist_cache, playlist_url)
+                elif referer:
+                    try:
+                        page.goto(referer, wait_until="domcontentloaded", timeout=60000)
+                    except PlaywrightError:
+                        pass
+                if playlist_text is None:
+                    playlist_bytes = self._playwright_fetch_or_goto_bytes(page, playlist_url)
+                    playlist_text = playlist_bytes.decode("utf-8", errors="replace")
+                playlist = m3u8.loads(playlist_text, uri=playlist_url)
+                if playlist.is_variant:
+                    variant = self._choose_m3u8_variant(playlist)
+                    playlist_url = variant.absolute_uri
+                    playlist_text = self._playlist_text_from_cache(playlist_cache, playlist_url)
+                    if playlist_text is None:
+                        playlist_text = self._playlist_text_from_cache(captured_playlist_cache, playlist_url)
+                    if playlist_text is None:
+                        playlist_bytes = self._playwright_fetch_or_goto_bytes(page, playlist_url)
+                        playlist_text = playlist_bytes.decode("utf-8", errors="replace")
+                    playlist = m3u8.loads(playlist_text, uri=playlist_url)
+                if not playlist.segments:
+                    raise ExternalToolError("Playwright HLS fallback found no media segments")
+                if self._has_unsupported_hls_encryption(playlist):
+                    raise ExternalToolError("Playwright HLS fallback found unsupported encrypted HLS segments")
+
+                self._write_hls_segments(
+                    playlist,
+                    raw_path,
+                    lambda fetch_url: self._playwright_fetch_or_goto_bytes(page, fetch_url),
+                    progress_callback,
+                    check_stop_func,
+                )
+                if raw_path.stat().st_size <= 0:
+                    raise ExternalToolError("Playwright HLS fallback produced an empty media file")
+                self._finalize_curl_cffi_hls_output(raw_path, target, check_stop_func)
+            finally:
+                try:
+                    browser.close()
+                finally:
+                    if target.exists() and target.stat().st_size > 0:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @classmethod
+    def _playwright_capture_playlist_from_referer(cls, page, referer: str, playlist_url: str) -> dict[str, str]:
+        captured: dict[str, str] = {}
+        try:
+            with page.expect_response(
+                lambda response: cls._playwright_response_matches_url(response, playlist_url)
+                and int(getattr(response, "status", 0) or 0) in (200, 206),
+                timeout=30000,
+            ) as response_info:
+                page.goto(referer, wait_until="domcontentloaded", timeout=60000)
+                cls._playwright_trigger_media_playback(page)
+            response = response_info.value
+            body = response.body()
+        except Exception:
+            return captured
+        try:
+            text = bytes(body or b"").decode("utf-8", errors="replace")
+        except (TypeError, ValueError):
+            text = ""
+        if "#EXTM3U" in text:
+            captured[str(getattr(response, "url", "") or playlist_url)] = text
+        return captured
+
+    @staticmethod
+    def _playwright_trigger_media_playback(page) -> None:
+        try:
+            page.evaluate(
+                """
+                async () => {
+                    const video = document.querySelector('video');
+                    const buttons = [
+                        document.querySelector('button[data-plyr="play"]'),
+                        document.querySelector('.plyr__control[data-plyr="play"]'),
+                        document.querySelector('.plyr'),
+                    ].filter(Boolean);
+                    for (const button of buttons) {
+                        try { button.click(); } catch (_) {}
+                    }
+                    if (video) {
+                        video.muted = true;
+                        video.playsInline = true;
+                        try { await video.play(); } catch (_) {}
+                        try { video.load(); } catch (_) {}
+                    }
+                }
+                """
+            )
+        except (PlaywrightError, RuntimeError, AttributeError) as exc:
+            debug_logger.log_exception("M3U8Downloader", "trigger_media_playback_eval", exc)
+        try:
+            page.mouse.click(400, 300)
+        except (PlaywrightError, RuntimeError, AttributeError) as exc:
+            debug_logger.log_exception("M3U8Downloader", "trigger_media_playback_click", exc)
+
+    @classmethod
+    def _playwright_fetch_or_goto_bytes(cls, page, url: str) -> bytes:
+        try:
+            return cls._playwright_fetch_bytes(page, url)
+        except ExternalToolError:
+            pass
+        try:
+            return cls._playwright_same_origin_media_request_bytes(page, url)
+        except ExternalToolError:
+            pass
+        try:
+            return cls._playwright_same_origin_fetch_bytes(page, url)
+        except ExternalToolError:
+            return cls._playwright_goto_bytes(page, url)
+
+    @classmethod
+    def _playwright_same_origin_media_request_bytes(cls, page, url: str) -> bytes:
+        landing_url = cls._playwright_same_origin_landing_url(url)
+        try:
+            page.goto(landing_url, wait_until="commit", timeout=60000)
+        except (PlaywrightError, RuntimeError, AttributeError) as exc:
+            debug_logger.log_exception("M3U8Downloader", "same_origin_media_landing_goto", exc, details={"url": landing_url})
+        try:
+            with page.expect_response(
+                lambda response: cls._playwright_response_matches_url(response, url)
+                and int(getattr(response, "status", 0) or 0) in (200, 206),
+                timeout=60000,
+            ) as response_info:
+                page.evaluate(
+                    """
+                    async (url) => {
+                        const previous = document.getElementById('__ucp_hls_probe');
+                        if (previous) { previous.remove(); }
+                        const video = document.createElement('video');
+                        video.id = '__ucp_hls_probe';
+                        video.preload = 'auto';
+                        video.muted = true;
+                        video.playsInline = true;
+                        video.style.cssText = 'position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;';
+                        document.body.appendChild(video);
+                        video.src = url;
+                        video.load();
+                        await new Promise(resolve => setTimeout(resolve, 250));
+                    }
+                    """,
+                    url,
+                )
+            response = response_info.value
+            body = response.body()
+        except Exception as exc:
+            raise ExternalToolError(f"Playwright media request failed for {url}: {exc}") from exc
+        if not body:
+            raise ExternalToolError(f"Playwright media request returned empty body for {url}")
+        return bytes(body)
+
+    @classmethod
+    def _playwright_same_origin_fetch_bytes(cls, page, url: str) -> bytes:
+        landing_url = cls._playwright_same_origin_landing_url(url)
+        try:
+            page.goto(landing_url, wait_until="commit", timeout=60000)
+        except (PlaywrightError, RuntimeError, AttributeError) as exc:
+            debug_logger.log_exception("M3U8Downloader", "same_origin_fetch_landing_goto", exc, details={"url": landing_url})
+        return cls._playwright_fetch_bytes(page, url)
+
+    @staticmethod
+    def _playwright_response_matches_url(response, url: str) -> bool:
+        response_url = str(getattr(response, "url", "") or "").split("#", 1)[0]
+        target_url = str(url or "").split("#", 1)[0]
+        return response_url == target_url
+
+    @staticmethod
+    def _playwright_same_origin_landing_url(url: str) -> str:
+        parsed = urllib.parse.urlparse(str(url or ""))
+        if not parsed.scheme or not parsed.netloc:
+            return str(url or "")
+        path = parsed.path or "/"
+        if path.endswith("/"):
+            directory = path
+        else:
+            directory = path.rsplit("/", 1)[0] + "/"
+        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, directory or "/", "", "", ""))
+
+    @staticmethod
+    def _playwright_fetch_bytes(page, url: str) -> bytes:
+        try:
+            result = page.evaluate(
+                """
+                async (url) => {
+                    const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+                    if (!response.ok && response.status !== 206) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    const buffer = await response.arrayBuffer();
+                    const bytes = new Uint8Array(buffer);
+                    let binary = '';
+                    const chunkSize = 0x8000;
+                    for (let i = 0; i < bytes.length; i += chunkSize) {
+                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+                    }
+                    return { status: response.status, body: btoa(binary) };
+                }
+                """,
+                url,
+            )
+        except Exception as exc:
+            raise ExternalToolError(f"Playwright fetch failed for {url}: {exc}") from exc
+        if not isinstance(result, dict) or not result.get("body"):
+            raise ExternalToolError(f"Playwright fetch returned no body for {url}")
+        try:
+            return base64.b64decode(str(result["body"]))
+        except (ValueError, TypeError) as exc:
+            raise ExternalToolError(f"Playwright fetch returned invalid body for {url}") from exc
+
+    @staticmethod
+    def _playwright_goto_bytes(page, url: str) -> bytes:
+        response = page.goto(url, wait_until="commit", timeout=60000)
+        if response is None:
+            raise ExternalToolError(f"Playwright navigation returned no response for {url}")
+        status = int(response.status or 0)
+        if status not in (200, 206):
+            raise ExternalToolError(f"Playwright HLS request failed ({status}) for {url}")
+        body = response.body()
+        if not body:
+            raise ExternalToolError(f"Playwright navigation returned empty body for {url}")
+        return bytes(body)
+
+    @classmethod
+    def _add_cookie_header_to_context(cls, context, cookie_header: str | None, stream_url: str, referer: str) -> None:
+        cookies = cls._cookies_from_header(cookie_header, stream_url, referer)
+        if not cookies:
+            return
+        try:
+            context.add_cookies(cookies)
+        except Exception:
+            return
+
+    @staticmethod
+    def _cookies_from_header(cookie_header: str | None, stream_url: str, referer: str) -> list[dict[str, Any]]:
+        if not cookie_header:
+            return []
+        hosts: list[str] = []
+        for url in (stream_url, referer):
+            try:
+                host = urllib.parse.urlparse(str(url or "")).hostname
+            except (TypeError, ValueError):
+                host = None
+            if host and host not in hosts:
+                hosts.append(host)
+        cookies: list[dict[str, Any]] = []
+        for pair in str(cookie_header).split(";"):
+            if "=" not in pair:
+                continue
+            name, value = pair.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if not name:
+                continue
+            for host in hosts:
+                cookies.append(
+                    {
+                        "name": name,
+                        "value": value,
+                        "domain": host,
+                        "path": "/",
+                        "secure": True,
+                    }
+                )
+        return cookies
+
+    def _write_hls_segments(
+        self,
+        playlist,
+        raw_path: Path,
+        fetch_bytes,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        written_maps: set[str] = set()
+        key_cache: dict[str, bytes] = {}
+        total = len(playlist.segments)
+        bytes_written = 0
+        with raw_path.open("wb") as output:
+            for index, segment in enumerate(playlist.segments, start=1):
+                if check_stop_func():
+                    raise DownloaderStoppedError("Download stopped by user")
+                init_section = getattr(segment, "init_section", None)
+                init_uri = getattr(init_section, "absolute_uri", None) if init_section else None
+                if init_uri and init_uri not in written_maps:
+                    init_bytes = fetch_bytes(init_uri)
+                    output.write(init_bytes)
+                    bytes_written += len(init_bytes)
+                    written_maps.add(init_uri)
+                segment_bytes = fetch_bytes(segment.absolute_uri)
+                decoded_segment = self._decrypt_hls_segment(segment, segment_bytes, fetch_bytes, key_cache)
+                output.write(decoded_segment)
+                bytes_written += len(decoded_segment)
+                self._emit_progress(
+                    progress_callback,
+                    min(95, 10 + int(index * 85 / total)),
+                    bytes_downloaded=bytes_written,
+                )
+
+    def _decrypt_hls_segment(
+        self,
+        segment,
+        data: bytes,
+        fetch_bytes,
+        key_cache: dict[str, bytes],
+    ) -> bytes:
+        key = getattr(segment, "key", None)
+        method = str(getattr(key, "method", "") or "").upper()
+        if not key or not method or method == "NONE":
+            return data
+        if method != "AES-128":
+            raise ExternalToolError(f"Unsupported HLS encryption method: {method}")
+        key_uri = getattr(key, "absolute_uri", None) or getattr(key, "uri", None)
+        if not key_uri:
+            raise ExternalToolError("AES-128 HLS key URI is missing")
+        if key_uri not in key_cache:
+            key_bytes = fetch_bytes(key_uri)
+            if len(key_bytes) != 16:
+                raise ExternalToolError(f"AES-128 HLS key must be 16 bytes, got {len(key_bytes)}")
+            key_cache[key_uri] = key_bytes
+        sequence = int(getattr(segment, "media_sequence", 0) or 0)
+        iv = self._hls_aes_iv(getattr(key, "iv", None), sequence)
+        return self._aes_128_cbc_decrypt(data, key_cache[key_uri], iv)
+
+    @staticmethod
+    def _hls_aes_iv(iv_text: str | None, media_sequence: int) -> bytes:
+        if iv_text:
+            text = str(iv_text).strip()
+            if text.lower().startswith("0x"):
+                text = text[2:]
+            text = text.zfill(32)[-32:]
+            try:
+                return bytes.fromhex(text)
+            except ValueError as exc:
+                raise ExternalToolError(f"Invalid HLS AES IV: {iv_text}") from exc
+        return int(media_sequence).to_bytes(16, byteorder="big", signed=False)
+
+    @staticmethod
+    def _aes_128_cbc_decrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
+        try:
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import unpad
+        except ImportError as crypto_exc:
+            try:
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                from cryptography.hazmat.backends import default_backend
+            except ImportError as cryptography_exc:
+                raise ExternalToolNotFoundError("pycryptodome or cryptography is required for AES-128 HLS") from cryptography_exc
+            decryptor = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend()).decryptor()
+            decrypted = decryptor.update(data) + decryptor.finalize()
+            return N_m3u8DL_RE_Downloader._pkcs7_unpad(decrypted)
+        try:
+            return unpad(AES.new(key, AES.MODE_CBC, iv).decrypt(data), 16)
+        except ValueError:
+            # Some HLS producers already align MPEG-TS packets without PKCS7 padding.
+            return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+
+    @staticmethod
+    def _pkcs7_unpad(data: bytes) -> bytes:
+        if not data:
+            return data
+        pad = data[-1]
+        if pad < 1 or pad > 16 or data[-pad:] != bytes([pad]) * pad:
+            return data
+        return data[:-pad]
+
+    @staticmethod
+    def _make_curl_cffi_session(curl_requests, headers: dict[str, str], proxy: str | None):
+        kwargs: dict[str, Any] = {"impersonate": "chrome", "headers": headers}
+        if proxy:
+            kwargs["proxy"] = proxy
+        try:
+            return curl_requests.Session(**kwargs)
+        except TypeError:
+            kwargs.pop("impersonate", None)
+            return curl_requests.Session(**kwargs)
+
+    @staticmethod
+    def _curl_cffi_get_text(session, url: str, headers: dict[str, str]) -> str:
+        response = session.get(url, headers=headers, timeout=30)
+        if response.status_code not in (200, 206):
+            raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
+        return response.text
+
+    @staticmethod
+    def _curl_cffi_get_bytes(session, url: str, headers: dict[str, str]) -> bytes:
+        response = session.get(url, headers=headers, timeout=60)
+        if response.status_code not in (200, 206):
+            raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
+        return bytes(response.content or b"")
+
+    @staticmethod
+    def _has_unsupported_hls_encryption(playlist) -> bool:
+        for segment in playlist.segments:
+            key = getattr(segment, "key", None)
+            method = str(getattr(key, "method", "") or "").upper()
+            if method and method not in ("NONE", "AES-128"):
+                return True
+        return False
+
+    @staticmethod
+    def _choose_m3u8_variant(playlist):
+        variants = list(playlist.playlists or [])
+        if not variants:
+            raise ExternalToolError("curl_cffi HLS fallback found no variant streams")
+
+        def score(item) -> tuple[int, int]:
+            stream_info = getattr(item, "stream_info", None)
+            bandwidth = int(getattr(stream_info, "bandwidth", 0) or 0)
+            resolution = getattr(stream_info, "resolution", None) or (0, 0)
+            try:
+                pixels = int(resolution[0] or 0) * int(resolution[1] or 0)
+            except (TypeError, ValueError, IndexError):
+                pixels = 0
+            return bandwidth, pixels
+
+        return max(variants, key=score)
+
+    def _finalize_curl_cffi_hls_output(self, raw_path: Path, target: Path, check_stop_func: StopCheck) -> None:
+        if target.exists():
+            target.unlink()
+        if target.suffix.lower() != ".mp4":
+            shutil.move(str(raw_path), str(target))
+            return
+        ffmpeg = FFmpegExternalTool.resolve_executable()
+        if not ffmpeg:
+            raise ExternalToolNotFoundError("ffmpeg executable not found for MissAV HLS remux")
+        command = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(raw_path),
+            "-c",
+            "copy",
+            "-bsf:a",
+            "aac_adtstoasc",
+            str(target),
+        ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=build_hidden_startupinfo(),
+            creationflags=0 if os.name != "nt" else getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        ExternalToolRunner.wait_process(process, check_stop_func, None, None, poll_interval=0.2)
+        if process.returncode != 0:
+            raise ExternalToolError(f"ffmpeg remux failed (Code: {process.returncode})")
+        if not target.exists() or target.stat().st_size <= 0:
+            raise ExternalToolError("ffmpeg remux did not create a valid output file")
+
+    def _download_with_yt_dlp_fallback(
+        self,
+        video_item: VideoItem,
+        save_path: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+    ) -> None:
+        try:
+            from yt_dlp.utils import YoutubeDLError
+        except ImportError as exc:
+            raise ExternalToolNotFoundError("yt-dlp is unavailable; cannot run MissAV m3u8 fallback") from exc
+
+        target = Path(save_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        ydl_headers = self._headers_for_yt_dlp(headers)
+
+        def progress_hook(status: dict[str, Any]) -> None:
+            if check_stop_func():
+                raise DownloaderStoppedError("Download stopped by user")
+            if status.get("status") == "downloading":
+                downloaded = float(status.get("downloaded_bytes") or 0)
+                total = float(status.get("total_bytes") or status.get("total_bytes_estimate") or 0)
+                if total > 0:
+                    value = min(95, max(10, int(downloaded * 90 / total)))
+                    self._emit_progress(progress_callback, value)
+            elif status.get("status") == "finished":
+                self._emit_progress(progress_callback, 95)
+
+        params = self._yt_dlp_params(str(target), ydl_headers, proxy, progress_hook)
+        try:
+            self._run_yt_dlp(video_item.url, dict(params))
+        except YoutubeDLError as exc:
+            params.pop("impersonate", None)
+            try:
+                self._run_yt_dlp(video_item.url, dict(params))
+            except YoutubeDLError as retry_exc:
+                raise ExternalToolError(f"yt-dlp fallback failed: {retry_exc}") from retry_exc
+            else:
+                debug_logger.log(
+                    component="N_m3u8DL_RE_Downloader",
+                    action="yt_dlp_impersonation_retry",
+                    message="yt-dlp fallback succeeded without impersonation",
+                    status_code="M3U8_YTDLP_RETRY_OK",
+                    details={"initial_error": str(exc)},
+                    trace_id=video_item.meta.get("trace_id"),
+                )
+
+        if not target.exists() or target.stat().st_size <= 0:
+            raise ExternalToolError("yt-dlp fallback did not create a valid output file")
+
+    @staticmethod
+    def _headers_for_yt_dlp(headers: dict[str, str]) -> dict[str, str]:
+        blocked = {
+            "host",
+            "content-length",
+            "connection",
+            "transfer-encoding",
+        }
+        result: dict[str, str] = {}
+        for key, value in (headers or {}).items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if not key_text or not value_text:
+                continue
+            lowered = key_text.lower()
+            if lowered in blocked or lowered.startswith(":"):
+                continue
+            result[key_text] = value_text
+        return result
+
+    @staticmethod
+    def _yt_dlp_params(
+        save_path: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        progress_hook,
+    ) -> dict[str, Any]:
+        return {
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "outtmpl": {"default": save_path},
+            "paths": {"home": str(Path(save_path).parent)},
+            "http_headers": headers,
+            "proxy": proxy or None,
+            "retries": 10,
+            "fragment_retries": 10,
+            "continuedl": True,
+            "nopart": False,
+            "merge_output_format": "mp4",
+            "progress_hooks": [progress_hook],
+            "impersonate": "",
+        }
+
+    @staticmethod
+    def _run_yt_dlp(url: str, params: dict[str, Any]) -> None:
+        from yt_dlp import YoutubeDL
+
+        with YoutubeDL(params) as ydl:
+            ydl.download([url])
+
+    @staticmethod
+    def _headers_from_meta(video_item: VideoItem, user_agent: str, referer: str) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        meta_headers = video_item.meta.get("headers")
+        if isinstance(meta_headers, dict):
+            headers.update({str(key): str(value) for key, value in meta_headers.items() if value})
+        headers.setdefault("User-Agent", str(user_agent or DEFAULT_USER_AGENT))
+        if referer:
+            headers.setdefault("Referer", str(referer))
+        if (
+            str(video_item.source or "").lower() == "missav"
+            and not video_item.meta.get("missav_use_browser_headers")
+            and not video_item.meta.get("missav_include_cookies")
+        ):
+            return {
+                key: headers[key]
+                for key in ("User-Agent", "Referer")
+                if headers.get(key)
+            }
+        cookie_dict = video_item.meta.get("cookies")
+        if isinstance(cookie_dict, dict) and cookie_dict:
+            headers.setdefault("Cookie", "; ".join(f"{key}={value}" for key, value in cookie_dict.items()))
+        elif isinstance(video_item.meta.get("cookie"), str) and video_item.meta.get("cookie"):
+            headers.setdefault("Cookie", str(video_item.meta["cookie"]))
+        return headers
+
+    @staticmethod
+    def _cleanup_external_temp_files(save_path: str) -> None:
+        target = Path(save_path)
+        parent = target.parent
+        stem = target.stem
+        candidates = {
+            target,
+            parent / f"{target.name}.tmp",
+            parent / f"{target.name}.part",
+            parent / f"{stem}.tmp",
+            parent / f"{stem}.part",
+            parent / f"{stem}_tmp",
+            parent / f"{stem}.download",
+        }
+        candidates.update(parent.glob(f"{stem}*.tmp"))
+        candidates.update(parent.glob(f"{stem}*.part"))
+        candidates.update(parent.glob(f"{stem}*.aria2"))
+        candidates.update(parent.glob(f"{stem}*.ts"))
+        candidates.update(path for path in parent.glob(f"{stem}*") if path.is_dir())
+        for path in candidates:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                elif path.exists():
+                    path.unlink()
+            except OSError:
+                continue

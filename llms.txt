@@ -1,0 +1,50 @@
+# UniversalCrawlerProplus
+
+UniversalCrawlerProplus is a PyQt6 + FastAPI crawler and media download application. It coordinates desktop GUI flows, Web UI APIs, crawler spiders, media playback, download workers, and runtime configuration through explicit signal, event, and thread boundaries.
+
+## Tech stack
+
+- Python 3
+- PyQt6 desktop GUI
+- FastAPI and WebSocket Web UI services
+- Playwright-based crawler helpers
+- Threaded workers, Qt signals, EventBus, and bounded dispatch semaphores
+- pytest test suite
+
+## Entry files
+
+- `main.py`: main application launcher.
+- `entry/dispatcher.py`: startup mode routing.
+- `app/config/settings.py`: ConfigManager singleton and runtime configuration entrypoint.
+- `app/controllers/application_controller.py`: desktop application orchestration.
+- `app/web/controller.py`: Web UI controller.
+- `app/spiders/base.py`: shared spider runtime, navigation helpers, and crawler guardrails.
+- `app/core/download_manager_core.py`: download dispatch semaphore core.
+
+## Rule files
+
+- `rules/index.md`: agent and synchronization safety rules.
+- `.trae/rules/agent-native-engineering.md`: native engineering workflow rules.
+- `.trae/rules/resilience.md`: resilience and failure-handling rules.
+- `.trae/rules/security-baseline.md`: security baseline rules.
+
+## Documentation index
+
+- `SIGNAL_BASELINE_REPORT.md`: baseline signal/semaphore audit report.
+- `docs/adr/0001-signal-semaphore-hardening.md`: signal, semaphore, EventBus, and guardrail ADR.
+- `docs/architecture.md`: system architecture.
+- `docs/config.md`: runtime configuration behavior.
+- `docs/api.md`: HTTP/Web API notes.
+- `docs/testing.md`: testing guidance.
+- `docs/development.md`: development workflow.
+- `docs/cli/CLI_GUIDE.md`: CLI usage.
+- `docs/cli/API_REFERENCE.md`: CLI/API reference.
+- `docs/postmortems/clear-queue-409-freeze.md`: clear-queue freeze postmortem.
+- `docs/postmortems/missav-surrit-hls-403-local-proxy.md`: MissAV HLS proxy postmortem.
+
+## Test entrypoints
+
+- `python -m pytest`: full test suite.
+- `python -m pytest tests/test_spider_base.py tests/test_media_preview_panel.py tests/test_download_manager_core.py -q`: focused signal/guardrail/media checks.
+- `python -m pytest tests/test_main_window.py tests/test_ui_update_scheduler.py tests/test_websocket_server.py tests/test_fastapi_endpoints.py -q`: GUI/Web/API regression checks.
+- `python main.py`: application startup smoke check.

@@ -1,0 +1,211 @@
+"""Reusable read-only table model for snapshot-driven pages."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PyQt6.QtGui import QIcon
+
+from app.services.icon_registry import platform_icon_file, queue_status_icon_file, ui_icon_path
+from app.ui.localization import normalize_language, tr
+from app.utils.qt_runtime import load_qt_icon
+
+SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 2
+
+class SnapshotTableModel(QAbstractTableModel):
+    """Simple QAbstractTableModel for frontend snapshot rows."""
+
+    def __init__(self, *, headers: list[str], columns: list[str], icon_columns: set[str] | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self._headers = list(headers)
+        self._columns = list(columns)
+        self._icon_columns = set(icon_columns or ())
+        self._rows: list[dict[str, Any]] = []
+        self._signature: tuple[Any, ...] | None = None
+        self._icon_cache: dict[str, QIcon] = {}
+        self._missing_icon_files: set[str] = set()
+        self._language = "zh-CN"
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        if parent.isValid():
+            return 0
+        return len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        if parent.isValid():
+            return 0
+        return len(self._columns)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        row = self._rows[index.row()]
+        key = self._columns[index.column()]
+        value = row.get(key, "")
+        if role in {Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole}:
+            if key == "title" and role == Qt.ItemDataRole.ToolTipRole:
+                subtitle = str(row.get("subtitle") or "")
+                title = str(value)
+                return f"{title}\n{subtitle}" if subtitle else title
+            if key == "source_display" and role == Qt.ItemDataRole.ToolTipRole:
+                return str(row.get("source_display_full") or value)
+            if key == "message_summary" and role == Qt.ItemDataRole.ToolTipRole:
+                return str(row.get("message") or row.get("message_summary") or value)
+            if key in {"status", "status_label", "level", "level_display", "reason_label"}:
+                return tr(str(value), self._language)
+            return str(value)
+        if key == "title" and role == SUBTITLE_ROLE:
+            return str(row.get("subtitle") or "")
+        if role == Qt.ItemDataRole.DecorationRole and key in self._icon_columns:
+            icon_file = str(row.get(f"{key}_icon_file") or "")
+            if not icon_file and key == "source_display":
+                platform_id = str(row.get("platform_id") or "")
+                if platform_id and platform_id != "system":
+                    icon_file = platform_icon_file(platform_id)
+            if not icon_file and key.endswith("_label"):
+                icon_file = str(row.get(f"{key[:-6]}_icon_file") or "")
+            if not icon_file and key == "platform":
+                icon_file = platform_icon_file(str(row.get("platform_id") or ""))
+            elif not icon_file and key == "status":
+                icon_file = queue_status_icon_file(str(row.get("status") or ""))
+            if icon_file:
+                return self._cached_icon(icon_file)
+        if role == Qt.ItemDataRole.UserRole and index.column() == 0:
+            return row.get("id", "")
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            align = str(row.get(f"{key}_align") or "").strip().lower()
+            if align == "center":
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+            if align == "left":
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            if align == "right":
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+            left_keys = {
+                "time",
+                "title",
+                "source",
+                "source_display",
+                "message",
+                "message_summary",
+                "subtitle",
+                "platform",
+                "reason",
+                "reason_label",
+            }
+            center_keys = {
+                "level",
+                "level_display",
+                "trace_id",
+                "status",
+                "status_label",
+            }
+            if key in left_keys:
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            if key in center_keys:
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+            if index.column() == 0:
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter)
+        return None
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:  # noqa: N802
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal and 0 <= section < len(self._headers):
+            return self._headers[section]
+        return super().headerData(section, orientation, role)
+
+    def set_headers(self, headers: list[str]) -> None:
+        headers = list(headers)
+        if headers == self._headers:
+            return
+        self._headers = headers
+        if headers:
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(headers) - 1)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        if self._rows:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._rows) - 1, max(0, self.columnCount() - 1)),
+                [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
+            )
+
+    def set_rows(self, rows: list[dict[str, Any]]) -> bool:
+        rows = list(rows)
+        signature = self._build_signature(rows)
+        if signature == self._signature:
+            return False
+        old_signature = self._signature or ()
+        same_ids = [item[0] for item in signature] == [item[0] for item in old_signature]
+        if same_ids and len(rows) == len(self._rows):
+            self._rows = rows
+            for row_index, (old, new) in enumerate(zip(old_signature, signature)):
+                if old == new:
+                    continue
+                self.dataChanged.emit(
+                    self.index(row_index, 0),
+                    self.index(row_index, self.columnCount() - 1),
+                    [
+                        Qt.ItemDataRole.DisplayRole,
+                        Qt.ItemDataRole.ToolTipRole,
+                        Qt.ItemDataRole.UserRole,
+                        Qt.ItemDataRole.DecorationRole,
+                        Qt.ItemDataRole.TextAlignmentRole,
+                    ],
+                )
+        else:
+            self.beginResetModel()
+            self._rows = rows
+            self.endResetModel()
+        self._signature = signature
+        return True
+
+    def force_reset(self) -> None:
+        self._signature = None
+
+    def row_for_id(self, item_id: str) -> int:
+        for row, item in enumerate(self._rows):
+            if item.get("id") == item_id:
+                return row
+        return -1
+
+    def id_order(self) -> list[str]:
+        return [item.get("id", "") for item in self._rows if item.get("id")]
+
+    def row_at(self, row: int) -> dict[str, Any] | None:
+        if 0 <= row < len(self._rows):
+            return self._rows[row]
+        return None
+
+    def _build_signature(self, rows: list[dict[str, Any]]) -> tuple[Any, ...]:
+        return tuple(
+            (
+                row.get("id", ""),
+                tuple(str(row.get(column, "")) for column in self._columns),
+                tuple(str(row.get(f"{column}_icon_file") or row.get(f"{column[:-6]}_icon_file" if column.endswith("_label") else "") or "") for column in self._columns),
+                str(row.get("platform_id", "")),
+                str(row.get("subtitle", "")),
+            )
+            for row in rows
+        )
+
+    def _cached_icon(self, icon_file: str) -> QIcon | None:
+        normalized = str(icon_file or "").strip()
+        if not normalized or normalized in self._missing_icon_files:
+            return None
+        cached = self._icon_cache.get(normalized)
+        if cached is not None:
+            return cached
+        icon = load_qt_icon([ui_icon_path(normalized)])
+        if icon is None:
+            self._missing_icon_files.add(normalized)
+            return None
+        self._icon_cache[normalized] = icon
+        return icon

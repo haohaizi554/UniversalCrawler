@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ucrawl"
+version = "1.0.0"
+description = "UCrawl - 通用爬虫 (CLI / SDK / REST API / AI Skill)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+    {name = "haohaizi554"},
+]
+keywords = ["crawler", "spider", "douyin", "bilibili", "kuaishou", "missav"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# 完整依赖需要 PyQt6, FastAPI, etc. (与原项目一致)
+dependencies = [
+    "PyQt6>=6.4.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "requests>=2.28.0",
+    "yt-dlp>=2023.0.0",
+    "curl-cffi>=0.10.0",
+    "pycryptodome>=3.20.0",
+    "playwright>=1.30.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+# CLI 主命令（单次执行后退出）
+ucrawl = "entry.cli_entry:main"
+# 交互式引导（逐步选择）
+ucrawl-i = "entry.interactive_entry:main"
+# Web UI（启动 FastAPI + 浏览器）
+ucrawl-web = "entry.web_entry:main"
+# 自适应入口（不指定模式时自动检测）
+ucrawl-auto = "entry.dispatcher:run"
+# 测试套件（GUI / TUI / CLI 三模自适应）
+ucrawl-test = "entry.test_entry:main"
+
+[project.gui-scripts]
+# 桌面 GUI（Windows 上启动不弹黑窗）
+ucrawl-gui = "entry.gui_entry:main"
+# 测试启动器 GUI（Windows 上启动不弹黑窗）
+ucrawl-test-gui = "entry.test_entry:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "cli*", "entry*", "shared*", "ucrawl*"]
+exclude = ["docs*", "packaging*", "tests*"]
+
+[tool.setuptools.package-data]
+ucrawl = []
+cli = [
+    "skill/*.md",
+    "skill/examples/*.py",
+]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

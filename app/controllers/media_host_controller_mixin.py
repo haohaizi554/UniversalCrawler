@@ -1,0 +1,636 @@
+from __future__ import annotations
+
+import os
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Sequence
+
+from PyQt6.QtCore import QCoreApplication, QObject, Qt, QThread, pyqtSignal
+
+from app.config import cfg
+from app.debug_logger import debug_logger
+from app.exceptions import FileOperationError, MediaScanError
+from app.models import VideoItem
+from app.services.media_release_coordination import normalize_media_path
+from app.ui.task_runtime import ShortTaskRunner
+
+class _UiCallbackInvoker(QObject):
+    """Marshal background callbacks back onto the Qt main thread."""
+
+    callback_requested = pyqtSignal(object)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.callback_requested.connect(self._run_callback, Qt.ConnectionType.QueuedConnection)
+
+    def invoke(self, callback) -> None:
+        self.callback_requested.emit(callback)
+
+    def _run_callback(self, callback) -> None:
+        callback()
+
+class MediaHostControllerMixin:
+    """Host-backed media library and playback orchestration."""
+
+    CLEAR_QUEUE_DETAIL_LOG_LIMIT = 200
+
+    def _video_state_guard(self):
+        lock = getattr(self, "_videos_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._videos_lock = lock
+        return lock
+
+    def _video_lookup(self, video_id: str) -> VideoItem | None:
+        with self._video_state_guard():
+            return self.videos.get(video_id)
+
+    def _store_video_item(self, item: VideoItem) -> None:
+        with self._video_state_guard():
+            self.videos[item.id] = item
+
+    def _remove_video_item(self, video_id: str) -> VideoItem | None:
+        with self._video_state_guard():
+            return self.videos.pop(video_id, None)
+
+    def _get_current_playing_id(self) -> str | None:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            getter = getattr(app_state, "get_current_playing_id", None)
+            current = getter() if callable(getter) else getattr(app_state, "current_playing_id", None)
+            if current is not None and not isinstance(current, str):
+                current = getattr(app_state, "current_playing_id", None)
+            self.current_playing_id = current
+            return current
+        return getattr(self, "current_playing_id", None)
+
+    def _set_current_playing_id(self, video_id: str | None) -> None:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state.set_current_playing_id(video_id)
+            getter = getattr(app_state, "get_current_playing_id", None)
+            current = getter() if callable(getter) else getattr(app_state, "current_playing_id", video_id)
+            if current is not None and not isinstance(current, str):
+                current = video_id
+            self.current_playing_id = current
+            return
+        self.current_playing_id = video_id
+
+    def _clear_local_items(self) -> None:
+        """Clear cached local media and host rows before a rescan."""
+        self._host().clear_video_rows()
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state.clear_videos()
+            return
+        with self._video_state_guard():
+            self.videos.clear()
+
+    def _append_scanned_items(self, result) -> None:
+        """Populate scanned media rows through a single replace publish."""
+        items = self._cache_scanned_items(result)
+        if not items:
+            return
+        videos = {item.id: item for item in items}
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state.replace_videos(videos)
+            return
+        with self._video_state_guard():
+            self.videos.clear()
+            self.videos.update(videos)
+        host = self._host()
+        add_row = getattr(host, "add_video_row", None)
+        if callable(add_row):
+            for item in items:
+                add_row(item)
+
+    def scan_local_dir(self):
+        """Scan the current save directory and restore local media into the host."""
+        host = self._host()
+        directory = host.current_save_dir
+        host.announce_scan_start(directory)
+        debug_logger.log(
+            component="ApplicationController",
+            action="scan_local_dir",
+            message="开始扫描本地媒体目录",
+            status_code="APP_SCAN_START",
+            details={"directory": directory},
+        )
+
+        self._clear_local_items()
+        generation = int(getattr(self, "_local_scan_generation", 0) or 0) + 1
+        self._local_scan_generation = generation
+        previous_token = getattr(self, "_local_scan_token", None)
+        if previous_token is not None:
+            previous_token.cancel()
+        if not self._should_scan_local_dir_in_background():
+            try:
+                result = self._scan_media_directory(directory)
+            except MediaScanError as exc:
+                self._finish_local_scan_error(directory, generation, exc)
+                return
+            except Exception as exc:
+                self._finish_local_scan_error(directory, generation, exc)
+                return
+            self._finish_local_scan_success(directory, generation, result)
+            return
+        invoker = self._ensure_ui_callback_invoker()
+        runner = self._ensure_short_task_runner()
+
+        def scan_in_background(cancel_token) -> None:
+            try:
+                result = self._scan_media_directory(directory)
+            except MediaScanError as exc:
+                invoker.invoke(lambda exc=exc: self._finish_local_scan_error(directory, generation, exc))
+                return
+            except Exception as exc:
+                invoker.invoke(lambda exc=exc: self._finish_local_scan_error(directory, generation, exc))
+                return
+            if cancel_token.is_cancelled():
+                return
+            invoker.invoke(lambda result=result: self._finish_local_scan_success(directory, generation, result))
+
+        self._local_scan_token = runner.submit(name="scan-local-dir", fn=scan_in_background)
+
+    def _finish_local_scan_success(self, directory: str, generation: int, result) -> None:
+        if generation != int(getattr(self, "_local_scan_generation", 0) or 0):
+            return
+        host = self._host()
+        if normalize_media_path(directory) != normalize_media_path(host.current_save_dir):
+            return
+        self._append_scanned_items(result)
+        for message in self._build_scan_messages(result):
+            host.append_log(message)
+        if result.total_count > 0:
+            debug_logger.log(
+                component="ApplicationController",
+                action="scan_local_dir_finished",
+                message="本地媒体目录扫描完成",
+                status_code="APP_SCAN_OK",
+                details={
+                    "directory": directory,
+                    "count": result.total_count,
+                    "video_count": result.video_count,
+                    "image_count": result.image_count,
+                },
+            )
+
+    def _finish_local_scan_error(self, directory: str, generation: int, exc: Exception) -> None:
+        if generation != int(getattr(self, "_local_scan_generation", 0) or 0):
+            return
+        self._host().report_scan_error(exc)
+        debug_logger.log_exception("ApplicationController", "scan_local_dir", exc, context={"directory": directory})
+
+    def on_dir_changed(self):
+        """React to directory changes and refresh the host media list."""
+        host = self._host()
+        host.announce_directory_changed(host.current_save_dir)
+        debug_logger.log(
+            component="ApplicationController",
+            action="change_save_dir",
+            message="保存目录已变更",
+            status_code="APP_DIR_CHANGED",
+            details={"save_dir": host.current_save_dir},
+        )
+        self.scan_local_dir()
+
+    def on_rename_video(self, item):
+        """Rename a media item and keep host state in sync."""
+        if item.column() != 0:
+            return
+        vid = item.data(Qt.ItemDataRole.UserRole)
+        video = self._video_lookup(vid) if vid else None
+        if not video:
+            return
+
+        new_title = item.text().strip()
+        if new_title == video.title or not os.path.exists(video.local_path):
+            item.setText(video.title)
+            return
+        if self._get_current_playing_id() == vid:
+            self._host().release_media_playback()
+            self._set_current_playing_id(None)
+
+        outcome = self._rename_video_sync(vid, new_title, self._host().current_save_dir)
+        if outcome.status == "ok":
+            item.setToolTip(new_title)
+            self._host().reorder_video_row(video)
+            message = self._rename_outcome_message(outcome)
+            if message:
+                self._host().append_log(message)
+        else:
+            self._host().report_rename_error(outcome.error or "未知错误")
+            item.setText(video.title)
+
+    def on_delete_video(self, row_idx, vid):
+        """Delete a media item and reconcile host/download queue state."""
+        if self._video_lookup(vid) is None:
+            self._remove_video_row_from_host(row_idx, vid)
+            return
+
+        release_before_delete = self._get_current_playing_id() == vid
+        if release_before_delete:
+            self._host().release_media_playback()
+            self._set_current_playing_id(None)
+        if self._should_delete_media_asynchronously():
+            context = self._begin_delete_video(vid)
+            if context is None:
+                self._remove_video_row_from_host(row_idx, vid)
+                return
+            before_delete = getattr(self, "_before_media_delete", None)
+            if callable(before_delete):
+                before_delete(context)
+            self._optimistic_remove_video_item(vid)
+            self._remove_video_row_from_host(row_idx, vid)
+            self._host().refresh_table_bindings()
+            self._submit_delete_video_task(
+                row_idx,
+                context,
+                delay_sec=self._delete_coordination_delay(release_before_delete),
+                ui_removed=True,
+            )
+            return
+        outcome = self._delete_video_sync(vid)
+        self._finalize_delete_video(row_idx, outcome)
+
+    def _delete_video_after_release(self, row_idx: int, video_id: str) -> None:
+        outcome = self._delete_video_sync(video_id)
+        self._finalize_delete_video(row_idx, outcome)
+
+    def _submit_delete_video_task(
+        self,
+        row_idx: int,
+        context,
+        *,
+        delay_sec: float = 0.0,
+        ui_removed: bool = False,
+    ) -> None:
+        invoker = self._ensure_ui_callback_invoker()
+        runner = self._ensure_short_task_runner()
+
+        def delete_in_background(cancel_token) -> None:
+            if not self._sleep_before_delete(delay_sec, cancel_token):
+                return
+            outcome = self._delete_video_context_sync(context)
+            invoker.invoke(lambda outcome=outcome: self._finalize_delete_video(row_idx, outcome, ui_removed=ui_removed))
+
+        runner.submit(name=f"delete-video-{context.video_id}", fn=delete_in_background)
+
+    def _delete_coordination_delay(self, release_before_delete: bool) -> float:
+        if not release_before_delete:
+            return 0.0
+        try:
+            return max(0.0, float(getattr(self, "MEDIA_DELETE_COORDINATION_DELAY_SEC", 0.18)))
+        except (TypeError, ValueError):
+            return 0.18
+
+    @staticmethod
+    def _sleep_before_delete(delay_sec: float, cancel_token) -> bool:
+        remaining = max(0.0, float(delay_sec or 0.0))
+        deadline = time.monotonic() + remaining
+        while remaining > 0:
+            if cancel_token.is_cancelled():
+                return False
+            time.sleep(min(0.02, remaining))
+            remaining = deadline - time.monotonic()
+        return not cancel_token.is_cancelled()
+
+    def _delete_video_context_sync(self, context):
+        try:
+            deleted = self.file_service.delete_media(context.video)
+        except FileOperationError as exc:
+            return SimpleNamespace(
+                status="error",
+                video_id=context.video_id,
+                video=context.video,
+                cancel_result=context.cancel_result,
+                deleted=False,
+                error=str(exc),
+            )
+        return SimpleNamespace(
+            status="ok",
+            video_id=context.video_id,
+            video=context.video,
+            cancel_result=context.cancel_result,
+            deleted=deleted,
+            error=None,
+        )
+
+    def _finalize_delete_video(self, row_idx: int, outcome, *, ui_removed: bool = False) -> None:
+        if outcome.status == "error":
+            if ui_removed and getattr(outcome, "video", None) is not None:
+                self._restore_video_item_after_delete_error(outcome.video)
+                adder = getattr(self._host(), "add_video_row", None)
+                if callable(adder):
+                    adder(outcome.video)
+                self._host().refresh_table_bindings()
+            self._host().report_delete_error(outcome.error or "未知错误")
+            return
+        video_id = getattr(outcome, "video_id", None)
+        if video_id and not ui_removed:
+            self._remove_video_item(video_id)
+        for message in self._delete_outcome_messages(outcome):
+            self._host().append_log(message)
+        if not ui_removed:
+            self._remove_video_row_from_host(row_idx, video_id)
+            self._host().refresh_table_bindings()
+
+    def _remove_video_row_from_host(self, row_idx: int, video_id: str | None = None) -> None:
+        remover = getattr(self._host(), "remove_video_row", None)
+        if not callable(remover):
+            return
+        if video_id:
+            try:
+                remover(row_idx, video_id)
+                return
+            except TypeError:
+                pass
+        remover(row_idx)
+
+    def _optimistic_remove_video_item(self, video_id: str) -> None:
+        remover = getattr(self, "_remove_video_item", None)
+        if callable(remover):
+            remover(video_id)
+            return
+        videos = getattr(self, "videos", None)
+        if isinstance(videos, dict):
+            videos.pop(video_id, None)
+
+    def _restore_video_item_after_delete_error(self, video: VideoItem) -> None:
+        storer = getattr(self, "_store_video_item", None)
+        if callable(storer):
+            storer(video)
+            return
+        videos = getattr(self, "videos", None)
+        if isinstance(videos, dict):
+            videos[video.id] = video
+
+    def _should_delete_media_asynchronously(self) -> bool:
+        app = self._qt_app_for_background_work()
+        if app is None:
+            return False
+        return QThread.currentThread() == app.thread()
+
+    def on_clear_queue(self) -> None:
+        """Remove queued items without blocking the Qt main thread."""
+        if self._should_clear_queue_in_background():
+            invoker = self._ensure_ui_callback_invoker()
+
+            def clear_in_background() -> None:
+                try:
+                    ids = self._queue_item_ids_for_clear()
+                    labels = self._queue_delete_log_labels(ids)
+                    if not ids:
+                        invoker.invoke(lambda: self._finalize_clear_queue_removal(set(), labels))
+                        return
+                    self._cancel_queue_items(ids)
+                    removed_ids = self._remove_queue_items_from_state(ids)
+                except Exception as exc:  # pragma: no cover - defensive UI recovery path
+                    message = str(exc)
+                    debug_logger.log_exception(
+                        "MediaHostControllerMixin",
+                        "clear_queue_background",
+                        exc,
+                        details={"item_count": len(locals().get("ids", set()))},
+                    )
+                    invoker.invoke(lambda: self._host().append_log(f"Clear queue failed: {message}"))
+                    return
+                invoker.invoke(lambda: self._finalize_clear_queue_removal(removed_ids, labels))
+
+            threading.Thread(
+                target=clear_in_background,
+                name="ClearDownloadQueueWorker",
+                daemon=True,
+            ).start()
+            return
+
+        ids = self._queue_item_ids_for_clear()
+        if not ids:
+            return
+        labels = self._queue_delete_log_labels(ids)
+        self._cancel_queue_items(ids)
+        removed_ids = self._remove_queue_items_from_state(ids)
+        self._finalize_clear_queue_removal(removed_ids, labels)
+
+    def _should_clear_queue_in_background(self) -> bool:
+        app = self._qt_app_for_background_work()
+        if app is None:
+            return False
+        return QThread.currentThread() == app.thread()
+
+    def _should_scan_local_dir_in_background(self) -> bool:
+        app = self._qt_app_for_background_work()
+        if app is None:
+            return False
+        return QThread.currentThread() == app.thread()
+
+    def _qt_app_for_background_work(self):
+        app = QCoreApplication.instance()
+        if app is None or getattr(self, "app", None) is not app:
+            return None
+        return app
+
+    def _ensure_ui_callback_invoker(self) -> _UiCallbackInvoker:
+        invoker = getattr(self, "_ui_callback_invoker", None)
+        if invoker is None:
+            invoker = _UiCallbackInvoker()
+            self._ui_callback_invoker = invoker
+        return invoker
+
+    def _ensure_short_task_runner(self) -> ShortTaskRunner:
+        runner = getattr(self, "_short_task_runner", None)
+        if runner is None:
+            runner = ShortTaskRunner(max_thread_count=4)
+            self._short_task_runner = runner
+        return runner
+
+    def _queue_item_ids_for_clear(self) -> set[str]:
+        service = getattr(self, "frontend_state_service", None)
+        service_dict = getattr(service, "__dict__", {}) if service is not None else {}
+        queue_item_ids = service_dict.get("queue_item_ids") if isinstance(service_dict, dict) else None
+        if not callable(queue_item_ids) and callable(getattr(type(service), "queue_item_ids", None)):
+            queue_item_ids = getattr(service, "queue_item_ids", None)
+        if callable(queue_item_ids):
+            return {str(video_id) for video_id in queue_item_ids() if video_id}
+        if service is not None:
+            snapshot = service.get_snapshot(sections=frozenset({"queue_items"}))
+            return {str(item["id"]) for item in snapshot.get("queue_items", []) if item.get("id")}
+        return set()
+
+    def _cancel_queue_items(self, video_ids: set[str]) -> None:
+        manager_dict = getattr(self.dl_manager, "__dict__", {}) if self.dl_manager is not None else {}
+        cancel_tasks = manager_dict.get("cancel_tasks") if isinstance(manager_dict, dict) else None
+        if not callable(cancel_tasks):
+            cancel_tasks = getattr(type(self.dl_manager), "cancel_tasks", None)
+        if callable(cancel_tasks):
+            self.dl_manager.cancel_tasks(video_ids)
+        else:
+            for video_id in video_ids:
+                self.dl_manager.cancel_task(video_id)
+        try:
+            from app.services.download_telemetry import get_download_telemetry_service
+
+            telemetry = get_download_telemetry_service()
+            for video_id in video_ids:
+                telemetry.clear(video_id)
+        except (RuntimeError, AttributeError) as exc:
+            debug_logger.log_exception(
+                "MediaHostControllerMixin",
+                "clear_download_telemetry",
+                exc,
+                details={"video_ids": list(video_ids)},
+            )
+
+    def _remove_queue_items_from_state(self, video_ids: set[str]) -> set[str]:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state_dict = getattr(app_state, "__dict__", {})
+            remover = app_state_dict.get("remove_videos") if isinstance(app_state_dict, dict) else None
+            if not callable(remover) and callable(getattr(type(app_state), "remove_videos", None)):
+                remover = getattr(app_state, "remove_videos", None)
+            if callable(remover):
+                removed = remover(video_ids, publish=False)
+                if isinstance(removed, int):
+                    return set(list(video_ids)[: max(0, removed)])
+                return {str(video_id) for video_id in removed if video_id}
+            with app_state._lock:
+                removed: set[str] = set()
+                for video_id in video_ids:
+                    if app_state.videos.pop(video_id, None) is None:
+                        continue
+                    removed.add(video_id)
+                    app_state.task_state.pop(video_id, None)
+                    app_state._last_progress_emit_at.pop(video_id, None)
+                return removed
+        with self._video_state_guard():
+            removed: set[str] = set()
+            for video_id in video_ids:
+                if self.videos.pop(video_id, None) is not None:
+                    removed.add(video_id)
+            return removed
+
+    def _queue_delete_log_labels(self, video_ids: set[str]) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None and hasattr(app_state, "videos"):
+            lock = getattr(app_state, "_lock", None)
+            if lock is not None:
+                with lock:
+                    source_items = {video_id: app_state.videos.get(video_id) for video_id in video_ids}
+            else:
+                source_items = {video_id: app_state.videos.get(video_id) for video_id in video_ids}
+        else:
+            with self._video_state_guard():
+                source_items = {video_id: self.videos.get(video_id) for video_id in video_ids}
+        for video_id, item in source_items.items():
+            labels[video_id] = self._delete_log_label(item, fallback=video_id)
+        return labels
+
+    @staticmethod
+    def _delete_log_label(video: VideoItem | None, *, fallback: str) -> str:
+        if video is None:
+            return fallback
+        local_path = str(getattr(video, "local_path", "") or "")
+        if local_path:
+            return os.path.basename(local_path) or local_path
+        title = str(getattr(video, "title", "") or "")
+        return title or fallback
+
+    def _append_clear_queue_delete_logs(self, host, removed_ids: set[str], labels: dict[str, str]) -> None:
+        limit = max(0, int(getattr(self, "CLEAR_QUEUE_DETAIL_LOG_LIMIT", 200) or 0))
+        ordered_ids = sorted(removed_ids, key=lambda video_id: labels.get(video_id, video_id))
+        for video_id in ordered_ids[:limit]:
+            host.append_log(f"🗑️ 已删除: {labels.get(video_id, video_id)}")
+        omitted = len(ordered_ids) - min(len(ordered_ids), limit)
+        if omitted > 0:
+            host.append_log(f"ℹ️ 另有 {omitted} 项已从下载队列移除，已省略逐条日志")
+
+    def _finalize_clear_queue_removal(self, removed_ids: set[str], labels: dict[str, str] | None = None) -> None:
+        removed = len(removed_ids)
+        if removed <= 0:
+            return
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            app_state._publish_change(
+                "videos.remove_many",
+                {"video_ids": list(removed_ids), "count": int(removed)},
+            )
+        host = self._host()
+        self._append_clear_queue_delete_logs(host, removed_ids, labels or {})
+        host.append_log(f"🗑️ 已清空下载队列 ({removed} 项)")
+        refresh = getattr(host, "refresh_frontend_state", None)
+        if callable(refresh):
+            refresh(force=False, topics={"videos.remove_many"})
+
+    def play_video(self, vid):
+        """Preview a local media item through the host adapter."""
+        video = self._video_lookup(vid) if vid else None
+        if not video or not os.path.exists(video.local_path):
+            self._host().report_missing_media()
+            return
+        self._set_current_playing_id(vid)
+        self._host().announce_playback(video.title)
+
+        if self._should_open_with_system_player():
+            releaser = getattr(self._host(), "release_media_playback", None)
+            if callable(releaser):
+                releaser()
+            self._open_media_with_system_default(video.local_path)
+            return
+
+        if self._is_image_file(video.local_path):
+            self._host().show_image(video.local_path)
+        else:
+            self._host().play_video(video.local_path)
+
+    def _should_open_with_system_player(self) -> bool:
+        return str(cfg.get("playback", "default_player", "builtin_player") or "builtin_player") == "system_default"
+
+    def _open_media_with_system_default(self, file_path: str) -> None:
+        opener = getattr(self, "_open_path_with_system_default", None)
+        if callable(opener):
+            opener(file_path)
+            return
+        host_opener = getattr(self._host(), "open_with_system_default", None)
+        if callable(host_opener):
+            host_opener(file_path)
+            return
+        if os.name == "nt":
+            startfile = getattr(os, "startfile", None)
+            if startfile is None:
+                raise OSError("os.startfile is unavailable")
+            startfile(file_path)
+            return
+        import subprocess
+
+        subprocess.Popen(["xdg-open", file_path])
+
+    def switch_preview(self, direction: int) -> None:
+        """Switch to the previous or next preview item in host table order."""
+        self._switch_preview(direction, wrap=True)
+
+    def autoplay_next_preview(self) -> None:
+        """Advance to the next preview item after playback, without wrapping."""
+        if not bool(cfg.get("playback", "autoplay_next", True)):
+            return
+        self._switch_preview(1, wrap=False, auto_advance=True)
+
+    def _switch_preview(self, direction: int, *, wrap: bool, auto_advance: bool = False) -> None:
+        host = self._host()
+        anchor_id = self._get_current_playing_id() or host.get_selected_video_id()
+        next_video_id = host.get_adjacent_video_id(anchor_id, direction, wrap=wrap)
+        if not next_video_id:
+            if auto_advance:
+                host.append_log("\u2139\ufe0f \u5df2\u64ad\u653e\u5230\u6700\u540e\u4e00\u9879")
+            elif not getattr(self, "videos", {}):
+                host.append_log("\u26a0\ufe0f \u961f\u5217\u4e3a\u7a7a\uff0c\u6ca1\u6709\u53ef\u5207\u6362\u7684\u8d44\u6e90")
+            return
+        host.select_video_by_id(next_video_id)
+        self.play_video(next_video_id)
+
+    def _is_image_file(self, file_path: str) -> bool:
+        """Return whether the given local path should be previewed as an image."""
+        return os.path.splitext(file_path)[1].lower() in self.IMAGE_EXTENSIONS

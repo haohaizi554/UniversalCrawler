@@ -1,0 +1,31 @@
+include README.md
+include README_EN.md
+include LICENSE
+include CHANGELOG.md
+include favicon.ico
+include Web.ico
+include Dockerfile
+include docker-compose.yml
+include requirements-web.txt
+include .env.docker.example
+
+recursive-include app/web/static *
+recursive-include UI/icon *
+recursive-include app/core/lib/douyin *.js *.json *.md
+recursive-include docker *.sh
+recursive-include packaging *.spec *.iss *.md
+recursive-include docs *.md
+
+global-exclude __pycache__/*
+global-exclude *.py[cod]
+global-exclude *.log
+global-exclude *_auth.json
+global-exclude config.json
+
+prune build
+prune dist
+prune user_data
+prune .dbg
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache

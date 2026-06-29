@@ -1,0 +1,45 @@
+"""平台子命令别名：ucrawl douyin search "测试" 等价于 ucrawl search -s douyin "测试"。
+
+支持的别名：
+- ucrawl douyin search ...
+- ucrawl bilibili search ...
+- ucrawl kuaishou search ...
+- ucrawl missav search ...
+"""
+
+from __future__ import annotations
+
+import argparse
+
+from cli.commands.search import add_search_arguments, handle_search_command
+
+def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None:
+    """为每个平台添加 search 子命令。"""
+    for source in ["douyin", "bilibili", "kuaishou", "missav"]:
+        platform_parser = subparsers.add_parser(
+            source,
+            help=f"{source} 平台快捷命令 (等价于 ucrawl search --source {source})",
+        )
+        platform_subparsers = platform_parser.add_subparsers(
+            dest=f"{source}_command",
+            required=False,
+        )
+        # search 子命令
+        search_parser = platform_subparsers.add_parser(
+            "search",
+            help=f"在 {source} 平台搜索",
+        )
+        search_parser.set_defaults(_platform_source=source)
+        add_search_arguments(search_parser)
+        # 移除 --source 参数 (强制为当前平台)
+        # argparse 不支持"修改"已添加参数，我们这里覆盖
+        # 通过 set_defaults 预填充 source
+        search_parser.set_defaults(source=source)
+
+def handle_platform_alias(args: argparse.Namespace) -> int:
+    """处理平台子命令。"""
+    # 如果用户没指定子命令 (比如 `ucrawl douyin "测试"`)，当作 search
+    if not hasattr(args, "_platform_source") or getattr(args, "source", None) is None:
+        return 2  # argparse 会显示帮助
+    # 把 platform 命令转成 search 命令
+    return handle_search_command(args)

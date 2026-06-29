@@ -1,0 +1,385 @@
+"""纯 Python 下载调度内核测试。"""
+
+import queue
+import threading
+import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+from app.core.download_manager_core import DownloadManagerCore, PendingDownloadQueue
+from app.models import VideoItem
+
+class _CallbackSignal:
+    def __init__(self):
+        self.targets = []
+
+    def connect(self, target, *_args):
+        self.targets.append(target)
+
+    def emit(self, *args):
+        for target in list(self.targets):
+            target(*args)
+
+class _FakeWorker:
+    def __init__(self, video, save_dir):
+        self.video = video
+        self.save_dir = save_dir
+        self.sig_start = _CallbackSignal()
+        self.sig_progress = _CallbackSignal()
+        self.sig_finished = _CallbackSignal()
+        self.sig_error = _CallbackSignal()
+        self.finished = _CallbackSignal()
+        self._slot_released = False
+        self._completion_callback = None
+        self.stop = Mock()
+        self.wait = Mock(return_value=True)
+        self.deleted = False
+
+    def start(self):
+        self.sig_start.emit(self.video.id)
+        self.sig_progress.emit(self.video.id, 50)
+        self.sig_finished.emit(self.video.id)
+        if callable(self._completion_callback):
+            self._completion_callback(self, "task_finished")
+        self.finished.emit()
+
+    def deleteLater(self):
+        self.deleted = True
+
+class _CoreManager(DownloadManagerCore):
+    def __init__(self):
+        self.started = []
+        self.progress = []
+        self.finished = []
+        self.errors = []
+        super().__init__(max_concurrent=1)
+
+    def _create_worker(self, video, save_dir):
+        return _FakeWorker(video, save_dir)
+
+    def _emit_task_started(self, video_id: str) -> None:
+        self.started.append(video_id)
+
+    def _emit_task_progress(self, video_id: str, progress: int) -> None:
+        self.progress.append((video_id, progress))
+
+    def _emit_task_finished(self, video_id: str) -> None:
+        self.finished.append(video_id)
+
+    def _emit_task_error(self, video_id: str, error: str) -> None:
+        self.errors.append((video_id, error))
+
+    def _on_worker_thread_finished(self, worker):
+        worker.deleteLater()
+
+class DownloadManagerCoreTests(unittest.TestCase):
+    def test_pending_download_queue_removes_item_without_private_queue_state(self):
+        pending = PendingDownloadQueue()
+        first = VideoItem(url="https://example.com/1.mp4", title="first", source="douyin")
+        second = VideoItem(url="https://example.com/2.mp4", title="second", source="douyin")
+        third = VideoItem(url="https://example.com/3.mp4", title="third", source="douyin")
+        pending.put((first, "downloads"))
+        pending.put((second, "downloads"))
+        pending.put((third, "downloads"))
+
+        removed = pending.remove_video(second.id)
+
+        self.assertIs(removed, second)
+        self.assertEqual(pending.snapshot_video_ids(), {first.id, third.id})
+        self.assertEqual(pending.get_nowait()[0].id, first.id)
+        self.assertEqual(pending.get_nowait()[0].id, third.id)
+
+    def test_pending_download_queue_removes_many_items_in_one_pass(self):
+        pending = PendingDownloadQueue()
+        first = VideoItem(url="https://example.com/1.mp4", title="first", source="douyin")
+        second = VideoItem(url="https://example.com/2.mp4", title="second", source="douyin")
+        third = VideoItem(url="https://example.com/3.mp4", title="third", source="douyin")
+        pending.put((first, "downloads"))
+        pending.put((second, "downloads"))
+        pending.put((third, "downloads"))
+
+        removed = pending.remove_videos({first.id, third.id})
+
+        self.assertEqual([item.id for item in removed], [first.id, third.id])
+        self.assertEqual(pending.snapshot_video_ids(), {second.id})
+        self.assertEqual(pending.get_nowait()[0].id, second.id)
+
+    def test_cancel_tasks_batches_queued_and_running_items(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.Lock()
+        manager.workers = []
+        queued = VideoItem(url="https://example.com/q.mp4", title="queued", source="douyin")
+        keep = VideoItem(url="https://example.com/k.mp4", title="keep", source="douyin")
+        running = VideoItem(url="https://example.com/r.mp4", title="running", source="douyin")
+        worker = _FakeWorker(running, "downloads")
+        manager.workers = [worker]
+        manager.queue.put((queued, "downloads"))
+        manager.queue.put((keep, "downloads"))
+
+        result = manager.cancel_tasks({queued.id, running.id, "missing"})
+
+        self.assertEqual(result[queued.id], "queued")
+        self.assertEqual(result[running.id], "running")
+        self.assertIsNone(result["missing"])
+        self.assertEqual(manager.queued_video_ids(), {keep.id})
+        worker.stop.assert_called_once()
+        self.assertTrue(queued.meta["user_cancel_requested"])
+        self.assertTrue(running.meta["user_cancel_requested"])
+
+    def test_dispatch_loop_runs_without_qt_adapter(self):
+        manager = _CoreManager()
+        manager.is_running = False
+        manager.dispatcher_thread.join(timeout=2)
+        manager.queue = queue.Queue()
+        manager.workers = []
+        manager._workers_lock = threading.Lock()
+        manager.is_running = True
+        manager.slot_semaphore = Mock()
+        manager.slot_semaphore.acquire.return_value = True
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        manager.queue.put((item, "downloads"))
+
+        def stop_after_release():
+            manager.is_running = False
+
+        manager.slot_semaphore.release.side_effect = stop_after_release
+
+        manager._dispatch_loop()
+
+        self.assertEqual(manager.started, [item.id])
+        self.assertEqual(manager.progress, [(item.id, 50)])
+        self.assertEqual(manager.finished, [item.id])
+        self.assertEqual(manager.errors, [])
+        self.assertEqual(manager.workers, [])
+        manager.slot_semaphore.release.assert_called_once()
+
+    def test_dispatch_loop_releases_slot_when_worker_start_fails(self):
+        class FailingWorker(_FakeWorker):
+            def start(self):
+                raise RuntimeError("start failed")
+
+        class FailingManager(DownloadManagerCore):
+            def _create_worker(self, video, save_dir):
+                return FailingWorker(video, save_dir)
+
+            def _emit_task_started(self, video_id: str) -> None:
+                raise AssertionError("worker should not start")
+
+            def _emit_task_progress(self, video_id: str, progress: int) -> None:
+                raise AssertionError("worker should not report progress")
+
+            def _emit_task_finished(self, video_id: str) -> None:
+                raise AssertionError("worker should not finish")
+
+            def _emit_task_error(self, video_id: str, error: str) -> None:
+                self.errors.append((video_id, error))
+                self.is_running = False
+
+        manager = FailingManager.__new__(FailingManager)
+        manager.queue = queue.Queue()
+        manager.workers = []
+        manager._workers_lock = threading.Lock()
+        manager.is_running = True
+        manager.errors = []
+        manager.max_concurrent = 1
+        manager.slot_semaphore = Mock()
+        manager.slot_semaphore.acquire.return_value = True
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        manager.queue.put((item, "downloads"))
+
+        manager._dispatch_loop()
+
+        self.assertEqual(manager.workers, [])
+        self.assertEqual(manager.errors[0][0], item.id)
+        manager.slot_semaphore.release.assert_called_once()
+
+    def test_dispatch_requeues_dequeued_task_when_manager_stops(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager.workers = []
+        manager._workers_lock = threading.RLock()
+        manager._start_stop_lock = threading.RLock()
+        manager.max_concurrent = 1
+        manager.is_running = True
+        manager.slot_semaphore = threading.Semaphore(1)
+        item = VideoItem(url="https://example.com/x", title="demo", source="douyin")
+        manager.queue.put((item, "downloads"))
+        manager._create_worker = Mock(side_effect=AssertionError("worker should not start"))
+
+        original_get = manager.queue.get
+
+        def get_and_stop(timeout=1):
+            video, save_dir = original_get(timeout=timeout)
+            manager.is_running = False
+            return video, save_dir
+
+        manager.queue.get = get_and_stop
+        manager._dispatch_loop()
+
+        self.assertEqual(manager.queue.snapshot_video_ids(), {item.id})
+        self.assertEqual(manager.workers, [])
+        manager._create_worker.assert_not_called()
+
+    def test_stop_all_fallback_drains_queue_without_empty_probe(self):
+        class QueueWithoutReliableEmpty:
+            def __init__(self):
+                self.items = [object(), object()]
+
+            def empty(self):
+                raise AssertionError("stop_all must not rely on Queue.empty()")
+
+            def get_nowait(self):
+                if not self.items:
+                    raise queue.Empty
+                return self.items.pop()
+
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = QueueWithoutReliableEmpty()
+        manager.workers = []
+        manager._workers_lock = threading.RLock()
+        manager._start_stop_lock = threading.RLock()
+        manager._dispatch_slot_gate = threading.Event()
+        manager.dispatcher_thread = Mock()
+        manager.dispatcher_thread.join.return_value = True
+        manager.is_running = True
+
+        manager.stop_all()
+
+        self.assertEqual(manager.queue.items, [])
+        manager.dispatcher_thread.join.assert_called_once_with(timeout=2)
+
+    def test_cancel_task_uses_pending_queue_public_remove_api(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.Lock()
+        manager.workers = []
+        keep_item = VideoItem(url="https://example.com/1.mp4", title="keep", source="douyin")
+        cancel_item = VideoItem(url="https://example.com/2.mp4", title="cancel", source="douyin")
+        manager.queue.put((keep_item, "downloads"))
+        manager.queue.put((cancel_item, "downloads"))
+
+        result = manager.cancel_task(cancel_item.id)
+
+        self.assertEqual(result, "queued")
+        self.assertEqual(manager.queued_video_ids(), {keep_item.id})
+
+    def test_set_max_concurrent_rebuilds_capacity_and_preserves_in_use_slots(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.max_concurrent = 2
+        manager.slot_semaphore = threading.BoundedSemaphore(2)
+        manager.slot_semaphore.acquire(blocking=False)
+        manager._start_stop_lock = threading.RLock()
+
+        result = manager.set_max_concurrent(5)
+
+        self.assertEqual(result, 5)
+        self.assertEqual(manager.max_concurrent, 5)
+        acquired = 0
+        while manager.slot_semaphore.acquire(blocking=False):
+            acquired += 1
+        self.assertEqual(acquired, DownloadManagerCore.LIGHTWEIGHT_MIN_CONCURRENT - 1)
+        self.assertEqual(manager._slot_semaphore_capacity, DownloadManagerCore.LIGHTWEIGHT_MIN_CONCURRENT)
+
+    def test_set_max_concurrent_allows_high_image_batch_parallelism(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.max_concurrent = 8
+        manager.slot_semaphore = threading.BoundedSemaphore(8)
+        manager._start_stop_lock = threading.RLock()
+
+        result = manager.set_max_concurrent(32)
+
+        self.assertEqual(result, 32)
+        self.assertEqual(manager.max_concurrent, 32)
+        self.assertEqual(manager._slot_semaphore_capacity, 32)
+
+    def test_dispatch_capacity_uses_live_max_concurrent(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.max_concurrent = 2
+        manager._workers_lock = threading.RLock()
+        manager.workers = [object(), object()]
+
+        self.assertFalse(manager._has_dispatch_capacity())
+
+        manager.max_concurrent = 3
+
+        self.assertTrue(manager._has_dispatch_capacity())
+
+    def test_stale_finished_workers_do_not_keep_concurrency_slots(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager.max_concurrent = 3
+        manager.image_respects_concurrency = True
+        manager._workers_lock = threading.RLock()
+        manager._slot_semaphore_lock = threading.RLock()
+        manager._dispatch_slot_gate = threading.Event()
+        manager.slot_semaphore = threading.BoundedSemaphore(3)
+        manager.workers = []
+
+        stale_workers = []
+        for index in range(3):
+            video = VideoItem(url=f"https://example.com/{index}.mp4", title="done", source="douyin")
+            video.meta["content_type"] = "video"
+            worker = SimpleNamespace(
+                video=video,
+                ident=index + 1,
+                is_alive=lambda: False,
+                _slot_released=False,
+            )
+            stale_workers.append(worker)
+            manager.workers.append(worker)
+            self.assertTrue(manager.slot_semaphore.acquire(blocking=False))
+
+        next_video = VideoItem(url="https://example.com/next.mp4", title="next", source="douyin")
+        next_video.meta["content_type"] = "video"
+
+        self.assertTrue(manager._has_capacity_for(next_video))
+        self.assertEqual(manager.workers, [])
+        self.assertTrue(all(worker._slot_released for worker in stale_workers))
+
+        available_tokens = 0
+        while manager.slot_semaphore.acquire(blocking=False):
+            available_tokens += 1
+        self.assertEqual(available_tokens, 3)
+
+    def test_lightweight_downloads_can_dispatch_above_video_limit(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.max_concurrent = 3
+        manager.image_respects_concurrency = False
+        manager._workers_lock = threading.RLock()
+        manager.workers = []
+        for index in range(3):
+            video = VideoItem(url=f"https://example.com/{index}.mp4", title="video", source="douyin")
+            video.meta["content_type"] = "video"
+            manager.workers.append(SimpleNamespace(video=video))
+
+        image = VideoItem(url="https://example.com/image.jpg", title="image", source="douyin")
+        image.meta["content_type"] = "image"
+        heavy_video = VideoItem(url="https://example.com/next.mp4", title="next", source="douyin")
+        heavy_video.meta["content_type"] = "video"
+
+        self.assertFalse(manager._has_dispatch_capacity())
+        self.assertTrue(manager._has_any_dispatch_capacity())
+        self.assertTrue(manager._has_capacity_for(image))
+        self.assertFalse(manager._has_capacity_for(heavy_video))
+
+    def test_lightweight_downloads_can_respect_regular_concurrency_when_enabled(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.max_concurrent = 3
+        manager.image_respects_concurrency = True
+        manager._workers_lock = threading.RLock()
+        manager.workers = []
+        for index in range(3):
+            image_worker = VideoItem(url=f"https://example.com/{index}.jpg", title="image", source="xiaohongshu")
+            image_worker.meta["content_type"] = "image"
+            manager.workers.append(SimpleNamespace(video=image_worker))
+
+        next_image = VideoItem(url="https://example.com/next.jpg", title="next", source="xiaohongshu")
+        next_image.meta["content_type"] = "image"
+
+        self.assertEqual(manager._slot_capacity(), 3)
+        self.assertFalse(manager._has_any_dispatch_capacity())
+        self.assertFalse(manager._has_capacity_for(next_image))
+
+if __name__ == "__main__":
+    unittest.main()
