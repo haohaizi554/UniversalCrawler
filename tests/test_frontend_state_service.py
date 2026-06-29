@@ -1211,10 +1211,10 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertIn(("download", "max_concurrent", 5), config.set_calls)
         self.assertIn(("download", "max_retries", 5), config.set_calls)
         self.assertIn(("download", "image_respects_concurrency", False), config.set_calls)
-        manager.set_max_concurrent.assert_called_once_with(6)
+        manager.set_max_concurrent.assert_called_once_with(5)
         cache.set.assert_called_once_with("download.auto_retry", True, persist=False)
 
-    def test_update_download_options_keeps_high_image_concurrency(self):
+    def test_update_download_options_caps_regular_concurrency_for_image_fast_lane(self):
         class FakeConfig:
             def __init__(self):
                 self.values = {
@@ -1231,7 +1231,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 self.values[(section, key)] = value
                 self.set_calls.append((section, key, value))
 
-        manager = SimpleNamespace(set_max_concurrent=Mock(return_value=24))
+        manager = SimpleNamespace(set_max_concurrent=Mock(return_value=5))
         controller = SimpleNamespace(_dl_manager=manager)
         cache = Mock()
         config = FakeConfig()
@@ -1240,9 +1240,9 @@ class FrontendStateServiceTests(unittest.TestCase):
         result = service.handle_action("update_download_options", {"max_retries": 3, "max_concurrent": 24})
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["data"]["max_concurrent"], 24)
-        manager.set_max_concurrent.assert_called_once_with(24)
-        self.assertIn(("download", "max_concurrent", 24), config.set_calls)
+        self.assertEqual(result["data"]["max_concurrent"], 5)
+        manager.set_max_concurrent.assert_called_once_with(5)
+        self.assertIn(("download", "max_concurrent", 5), config.set_calls)
 
     def test_update_download_options_applies_image_concurrency_switch(self):
         class FakeConfig:
@@ -1301,7 +1301,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             {
                 "auto_retry": False,
                 "max_retries": 7,
-                "max_concurrent": 6,
+                "max_concurrent": 5,
                 "image_respects_concurrency": True,
             },
         )

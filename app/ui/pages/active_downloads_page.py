@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.config.settings import download_concurrency_options
+from app.config.settings import download_concurrency_options, normalize_download_concurrency
 from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import ThemedComboBox
 from app.ui.components.smart_wrap_label import SmartWrapLabel
@@ -698,7 +698,10 @@ class ActiveDownloadsPage(PageFrame):
         try:
             self.auto_retry.setChecked(bool(options.get("auto_retry", True)))
             self._set_combo_value(self.retry_combo, int(options.get("max_retries") or 3), suffix="次")
-            self._set_combo_value(self.thread_combo, int(options.get("max_concurrent") or 3))
+            self._set_combo_value(
+                self.thread_combo,
+                normalize_download_concurrency(options.get("max_concurrent") or 3),
+            )
         finally:
             self._syncing_download_options = False
 

@@ -790,13 +790,13 @@ class XiaohongshuDownloaderTests(unittest.TestCase):
     def test_gallery_worker_count_scales_for_image_batches(self):
         def fake_get(section, key, default=None):
             if (section, key) == ("download", "max_concurrent"):
-                return 12
+                return 5
             if (section, key) == ("download", "image_respects_concurrency"):
                 return False
             return default
 
         with patch("app.core.downloaders.xiaohongshu.cfg.get", side_effect=fake_get):
-            self.assertEqual(XiaohongshuDownloader._gallery_image_worker_count(100), 24)
+            self.assertEqual(XiaohongshuDownloader._gallery_image_worker_count(100), 10)
             self.assertEqual(XiaohongshuDownloader._gallery_image_worker_count(4), 4)
 
     def test_gallery_worker_count_can_follow_regular_concurrency(self):

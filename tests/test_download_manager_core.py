@@ -281,17 +281,19 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertEqual(acquired, DownloadManagerCore.LIGHTWEIGHT_MIN_CONCURRENT - 1)
         self.assertEqual(manager._slot_semaphore_capacity, DownloadManagerCore.LIGHTWEIGHT_MIN_CONCURRENT)
 
-    def test_set_max_concurrent_allows_high_image_batch_parallelism(self):
+    def test_set_max_concurrent_caps_regular_workers_but_keeps_image_fast_lane(self):
         manager = DownloadManagerCore.__new__(DownloadManagerCore)
-        manager.max_concurrent = 8
-        manager.slot_semaphore = threading.BoundedSemaphore(8)
+        manager.max_concurrent = 5
+        manager.image_respects_concurrency = False
+        manager.image_fast_lane_limit = 10
+        manager.slot_semaphore = threading.BoundedSemaphore(5)
         manager._start_stop_lock = threading.RLock()
 
         result = manager.set_max_concurrent(32)
 
-        self.assertEqual(result, 32)
-        self.assertEqual(manager.max_concurrent, 32)
-        self.assertEqual(manager._slot_semaphore_capacity, 32)
+        self.assertEqual(result, 5)
+        self.assertEqual(manager.max_concurrent, 5)
+        self.assertEqual(manager._slot_semaphore_capacity, 10)
 
     def test_dispatch_capacity_uses_live_max_concurrent(self):
         manager = DownloadManagerCore.__new__(DownloadManagerCore)

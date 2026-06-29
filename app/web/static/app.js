@@ -1055,6 +1055,9 @@ function buildMockState() {
         speed_limit_kb: 0,
         video_only: false,
         image_respects_concurrency: false,
+        _options: {
+          max_concurrent: [{ value: "1", label: "1" }, { value: "3", label: "3（推荐）" }, { value: "5", label: "5" }],
+        },
       },
       "平台设置": [{ id: "douyin", name: "抖音", auth_status: "已认证", default_count: 20, count_config_key: "max_items", count_unit: "videos", count_editable: true, count_options: countFallbackOptions("videos"), default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒" }], proxy: "系统代理", proxy_config_key: "", proxy_editable: false }],
       "播放设置": {
@@ -1444,12 +1447,21 @@ function renderActive() {
 
 function currentDownloadOptions() {
   const settings = (frontendState.settings_snapshot || {})["\u4e0b\u8f7d\u8bbe\u7f6e"] || {};
-  return {
+  const options = {
     auto_retry: true,
     max_retries: Number(settings.max_retries || 3),
-    max_concurrent: Number(settings.max_concurrent || 3),
+    max_concurrent: normalizeDownloadConcurrency(settings.max_concurrent || 3),
     ...(frontendState.download_options || {}),
   };
+  options.max_concurrent = normalizeDownloadConcurrency(options.max_concurrent);
+  return options;
+}
+
+function normalizeDownloadConcurrency(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 1) return 1;
+  if (numeric <= 3) return 3;
+  return 5;
 }
 
 function ensureSelectOption(select, value, label = String(value)) {
@@ -1477,15 +1489,15 @@ function syncActiveDownloadOptions() {
     retries.value = String(options.max_retries);
   }
   if (concurrent) {
-    ensureSelectOption(concurrent, options.max_concurrent);
-    concurrent.value = String(options.max_concurrent);
+    const maxConcurrent = normalizeDownloadConcurrency(options.max_concurrent);
+    concurrent.value = String(maxConcurrent);
   }
 }
 
 function updateDownloadOptions() {
   const autoRetry = Boolean(byId("activeAutoRetry") && byId("activeAutoRetry").checked);
   const maxRetries = Number(byId("activeMaxRetries") && byId("activeMaxRetries").value) || 3;
-  const maxConcurrent = Number(byId("activeMaxConcurrent") && byId("activeMaxConcurrent").value) || 3;
+  const maxConcurrent = normalizeDownloadConcurrency(byId("activeMaxConcurrent") && byId("activeMaxConcurrent").value);
   frontendAction("update_download_options", {
     auto_retry: autoRetry,
     max_retries: maxRetries,

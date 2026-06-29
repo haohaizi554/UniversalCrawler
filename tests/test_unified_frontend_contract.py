@@ -717,7 +717,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertEqual(
             [active.thread_combo.itemData(i) for i in range(active.thread_combo.count())],
-            [1, 2, 3, 4, 5, 6, 8, 12, 16, 24, 32],
+            [1, 3, 5],
         )
         self.assertEqual(active.thread_combo.currentData(), 3)
         self.assertIn("推荐", active.thread_combo.currentText())
@@ -731,7 +731,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertTrue(active.auto_retry.isChecked())
         QTest.mouseClick(active.auto_retry, Qt.MouseButton.LeftButton, pos=QPoint(active.auto_retry.width() - 12, active.auto_retry.height() // 2))
         self.assertFalse(active.auto_retry.isChecked())
-        active.thread_combo.setCurrentIndex(4)
+        active.thread_combo.setCurrentIndex(2)
         active.retry_combo.setCurrentIndex(4)
 
         self.assertTrue(emitted)
@@ -753,7 +753,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertFalse(active.auto_retry.isChecked())
         self.assertEqual(active.retry_combo.currentData(), 7)
-        self.assertEqual(active.thread_combo.currentData(), 6)
+        self.assertEqual(active.thread_combo.currentData(), 5)
         self.assertEqual(emitted, [])
 
     def test_active_progress_refresh_does_not_reset_download_options(self):
@@ -775,7 +775,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertFalse(active.auto_retry.isChecked())
         self.assertEqual(active.retry_combo.currentData(), 7)
-        self.assertEqual(active.thread_combo.currentData(), 6)
+        self.assertEqual(active.thread_combo.currentData(), 5)
 
     def test_snapshot_list_pages_use_model_view_tables(self):
         shell = self._make_shell()

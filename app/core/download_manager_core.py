@@ -8,7 +8,7 @@ import time
 from collections import deque
 from typing import Any, Iterable
 
-from app.config import cfg
+from app.config import cfg, normalize_download_concurrency
 from app.debug_logger import debug_logger
 from app.exceptions import AppError
 from app.models import VideoItem
@@ -102,20 +102,23 @@ class DownloadManagerCore:
     """Maintain queueing, concurrency slots, cancellation, and worker lifecycle."""
 
     WORKER_STOP_TIMEOUT_MS = 2000
-    LIGHTWEIGHT_MIN_CONCURRENT = 12
-    LIGHTWEIGHT_CONCURRENCY_CAP = 32
+    LIGHTWEIGHT_MIN_CONCURRENT = 10
+    LIGHTWEIGHT_CONCURRENCY_CAP = 10
     _GUARD_INIT_LOCK = threading.RLock()
 
     def __init__(self, max_concurrent: int | None = None):
         self.queue = PendingDownloadQueue()
         self.workers: list[Any] = []
-        self.max_concurrent = max_concurrent or cfg.get("download", "max_concurrent", 3)
+        self.max_concurrent = normalize_download_concurrency(max_concurrent or cfg.get("download", "max_concurrent", 3))
         self.max_retries = cfg.get("download", "max_retries", 3)
         self.request_timeout = cfg.get("download", "request_timeout", 60)
         self.resume_enabled = cfg.get("download", "resume_enabled", True)
         self.speed_limit_kb = cfg.get("download", "speed_limit_kb", 0)
         self.video_only = cfg.get("download", "video_only", False)
         self.image_respects_concurrency = bool(cfg.get("download", "image_respects_concurrency", False))
+        self.image_fast_lane_limit = self._normalize_image_fast_lane_limit(
+            cfg.get("download", "image_fast_lane_limit", 10)
+        )
         self._slot_semaphore_capacity = self._slot_capacity()
         self.slot_semaphore = threading.BoundedSemaphore(self._slot_semaphore_capacity)
         self._slot_semaphore_lock = threading.RLock()
@@ -129,10 +132,9 @@ class DownloadManagerCore:
 
     def set_max_concurrent(self, value: int) -> int:
         try:
-            new_value = int(value)
+            new_value = normalize_download_concurrency(value)
         except (TypeError, ValueError):
             new_value = self.max_concurrent
-        new_value = max(1, min(new_value, 32))
         with self._start_stop_guard():
             old_value = int(getattr(self, "max_concurrent", 1) or 1)
             old_slot_capacity = int(getattr(self, "_slot_semaphore_capacity", old_value) or old_value)
@@ -177,6 +179,20 @@ class DownloadManagerCore:
                     details={"old_slot_capacity": old_slot_capacity, "new_slot_capacity": new_slot_capacity},
                 )
         return self.image_respects_concurrency
+
+    def set_image_fast_lane_limit(self, value: Any) -> int:
+        new_value = self._normalize_image_fast_lane_limit(value)
+        with self._start_stop_guard():
+            old_slot_capacity = int(
+                getattr(self, "_slot_semaphore_capacity", self._slot_capacity()) or self._slot_capacity()
+            )
+            self.image_fast_lane_limit = new_value
+            new_slot_capacity = self._slot_capacity()
+            if new_slot_capacity > old_slot_capacity:
+                self._rebuild_slot_semaphore(old_value=old_slot_capacity, new_value=new_slot_capacity)
+                self._slot_semaphore_capacity = new_slot_capacity
+            self._get_dispatch_slot_gate().set()
+        return self.image_fast_lane_limit
 
     def _rebuild_slot_semaphore(self, *, old_value: int, new_value: int) -> None:
         with self._slot_semaphore_guard():
@@ -231,6 +247,8 @@ class DownloadManagerCore:
             applied["image_respects_concurrency"] = self.set_image_respects_concurrency(
                 options["image_respects_concurrency"]
             )
+        if "image_fast_lane_limit" in options:
+            applied["image_fast_lane_limit"] = self.set_image_fast_lane_limit(options["image_fast_lane_limit"])
         return applied
 
     def _get_dispatch_slot_gate(self) -> threading.Event:
@@ -250,15 +268,26 @@ class DownloadManagerCore:
             return len(self.workers) < int(getattr(self, "max_concurrent", 1) or 1)
 
     def _slot_capacity_for(self, max_concurrent: int) -> int:
-        configured = max(1, int(max_concurrent or 1))
+        configured = normalize_download_concurrency(max_concurrent)
         if bool(getattr(self, "image_respects_concurrency", False)):
             return configured
-        lightweight_floor = max(1, int(getattr(self, "LIGHTWEIGHT_MIN_CONCURRENT", 12)))
-        lightweight_cap = max(lightweight_floor, int(getattr(self, "LIGHTWEIGHT_CONCURRENCY_CAP", 32)))
+        lightweight_floor = max(1, int(getattr(self, "LIGHTWEIGHT_MIN_CONCURRENT", 10)))
+        configured_limit = self._normalize_image_fast_lane_limit(
+            getattr(self, "image_fast_lane_limit", cfg.get("download", "image_fast_lane_limit", 10))
+        )
+        lightweight_cap = max(1, min(int(getattr(self, "LIGHTWEIGHT_CONCURRENCY_CAP", 10)), configured_limit))
         return min(max(configured, lightweight_floor), lightweight_cap)
 
     def _slot_capacity(self) -> int:
         return self._slot_capacity_for(int(getattr(self, "max_concurrent", 1) or 1))
+
+    @staticmethod
+    def _normalize_image_fast_lane_limit(value: Any) -> int:
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            numeric = 10
+        return max(1, min(numeric, 10))
 
     def _has_any_dispatch_capacity(self) -> bool:
         self.prune_finished_workers()

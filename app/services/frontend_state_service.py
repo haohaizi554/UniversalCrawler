@@ -38,6 +38,7 @@ from app.config.settings import (
     language_label,
     language_options,
     log_retention_options,
+    normalize_download_concurrency,
     open_mode_label,
     open_mode_options,
     playback_player_label,
@@ -666,6 +667,7 @@ class FrontendStateService:
                 "speed_limit_kb": 0,
                 "video_only": False,
                 "image_respects_concurrency": False,
+                "image_fast_lane_limit": 10,
             },
         )
         set_runtime_options = getattr(manager, "set_runtime_options", None)
@@ -678,6 +680,7 @@ class FrontendStateService:
                 speed_limit_kb=download_cfg.get("speed_limit_kb", 0),
                 video_only=download_cfg.get("video_only", False),
                 image_respects_concurrency=download_cfg.get("image_respects_concurrency", False),
+                image_fast_lane_limit=download_cfg.get("image_fast_lane_limit", 10),
             )
             return
 
@@ -2274,7 +2277,7 @@ class FrontendStateService:
         return {
             "auto_retry": auto_retry,
             "max_retries": max(0, min(max_retries, 10)),
-            "max_concurrent": max(1, min(effective_concurrent, 32)),
+            "max_concurrent": normalize_download_concurrency(effective_concurrent),
             "image_respects_concurrency": image_respects_concurrency,
         }
 
@@ -2483,7 +2486,7 @@ class FrontendStateService:
             max_concurrent = int(data.get("max_concurrent", self.config.get("download", "max_concurrent", 3)))
         except (TypeError, ValueError):
             max_concurrent = 3
-        max_concurrent = max(1, min(max_concurrent, 32))
+        max_concurrent = normalize_download_concurrency(max_concurrent)
         # max_retries=0 is a valid user choice: disable automatic retry.
         try:
             max_retries = int(data.get("max_retries", self.config.get("download", "max_retries", 3)))
@@ -2501,7 +2504,8 @@ class FrontendStateService:
             try:
                 max_concurrent = int(setter(max_concurrent))
             except (TypeError, ValueError):
-                max_concurrent = max(1, min(max_concurrent, 32))
+                max_concurrent = normalize_download_concurrency(max_concurrent)
+            max_concurrent = normalize_download_concurrency(max_concurrent)
         self.config.set("download", "max_concurrent", max_concurrent)
         self.config.set("download", "max_retries", max_retries)
         self.config.set("download", "image_respects_concurrency", image_respects_concurrency)

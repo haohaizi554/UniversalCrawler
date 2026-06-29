@@ -17,7 +17,7 @@ class XiaohongshuDownloader(BaseDownloader):
     """Handle XHS videos and gallery downloads."""
 
     source_id = "xiaohongshu"
-    GALLERY_IMAGE_WORKER_CAP = 32
+    GALLERY_IMAGE_WORKER_CAP = 10
 
     def download(
         self,
@@ -188,5 +188,5 @@ class XiaohongshuDownloader(BaseDownloader):
         if bool(cfg.get("download", "image_respects_concurrency", False)):
             target = configured
         else:
-            target = max(12, configured * 2)
+            target = cls.GALLERY_IMAGE_WORKER_CAP
         return max(1, min(int(total or 1), cls.GALLERY_IMAGE_WORKER_CAP, target))

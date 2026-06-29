@@ -516,7 +516,7 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_state_service = Mock()
         window._frontend_state_service.handle_action.return_value = {
             "status": "ok",
-            "data": {"auto_retry": True, "max_retries": 3, "max_concurrent": 6},
+            "data": {"auto_retry": True, "max_retries": 3, "max_concurrent": 5},
         }
         window._render_frontend_state = Mock()
         window.refresh_frontend_state = Mock()

@@ -245,7 +245,7 @@ class ConfigManagerTests(unittest.TestCase):
 
             reloaded = ConfigManager(config_path)
 
-        self.assertEqual(reloaded.get("download", "max_concurrent"), 6)
+        self.assertEqual(reloaded.get("download", "max_concurrent"), 5)
 
     def test_recommended_options_match_default_values(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -290,15 +290,17 @@ class ConfigManagerTests(unittest.TestCase):
             with self.assertRaises(ConfigValidationError):
                 manager.set("logging", "retention_days", 30)
 
-    def test_download_concurrency_allows_fast_image_batches(self):
+    def test_download_concurrency_caps_regular_workers_while_images_use_fast_lane(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = f"{temp_dir}/config.json"
             manager = ConfigManager(config_path)
             manager.set("download", "max_concurrent", "24")
+            manager.set("download", "image_fast_lane_limit", "99")
 
             reloaded = ConfigManager(config_path)
 
-        self.assertEqual(reloaded.get("download", "max_concurrent"), 24)
+        self.assertEqual(reloaded.get("download", "max_concurrent"), 5)
+        self.assertEqual(reloaded.get("download", "image_fast_lane_limit"), 10)
 
     def test_get_set_are_safe_under_concurrent_access(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -314,14 +316,14 @@ class ConfigManagerTests(unittest.TestCase):
                 except Exception as exc:
                     errors.append(exc)
 
-            threads = [threading.Thread(target=worker, args=(value,)) for value in (2, 3, 4)]
+            threads = [threading.Thread(target=worker, args=(value,)) for value in (1, 3, 5)]
             for thread in threads:
                 thread.start()
             for thread in threads:
                 thread.join(timeout=2)
 
             self.assertEqual(errors, [])
-            self.assertIn(manager.get("download", "max_concurrent"), {2, 3, 4})
+            self.assertIn(manager.get("download", "max_concurrent"), {1, 3, 5})
 
     def test_temp_save_directory_is_normalized_back_to_default_download_dir(self):
         """被临时目录污染的保存路径在加载配置时应自动回落到规范目录。"""
