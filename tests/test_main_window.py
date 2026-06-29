@@ -606,6 +606,43 @@ class MainWindowTests(unittest.TestCase):
 
         window.media_panel.release_media.assert_called_once()
 
+    def test_resize_media_panel_before_exposed_is_safe(self):
+        window = self._make_window()
+
+        MainWindow._resize_media_panel_if_ready(window)
+
+        window.media_panel = Mock()
+        MainWindow._resize_media_panel_if_ready(window)
+
+        window.media_panel.resize_media.assert_called_once()
+
+    def test_frameless_hit_test_keeps_native_resize_and_drag_regions(self):
+        from PyQt6.QtCore import QPoint, QRect
+
+        class FakeTitleBar:
+            def isVisible(self):
+                return True
+
+            def mapFromGlobal(self, pos):
+                return QPoint(pos.x() - 100, pos.y() - 100)
+
+            def rect(self):
+                return QRect(0, 0, 500, 34)
+
+            def is_interactive_at(self, _pos):
+                return False
+
+        window = self._make_window()
+        window.isFullScreen = Mock(return_value=False)
+        window.isMaximized = Mock(return_value=False)
+        window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        window.window_title_bar = FakeTitleBar()
+
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(100, 100)), MainWindow.HTTOPLEFT)
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(599, 499)), MainWindow.HTBOTTOMRIGHT)
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(180, 116)), MainWindow.HTCAPTION)
+        self.assertIsNone(MainWindow._frameless_hit_test(window, QPoint(250, 250)))
+
     @patch("app.ui.main_window.apply_application_theme")
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.cfg.set_many")

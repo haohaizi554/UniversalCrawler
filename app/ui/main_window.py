@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import threading
 import time
+import sys
+from ctypes import wintypes
 
-from PyQt6.QtCore import QByteArray, QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QPalette
-from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox
+from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QVBoxLayout, QWidget
 
 from app.config import cfg, get_platform_runtime_defaults
 from app.debug_logger import debug_logger
@@ -20,6 +22,7 @@ from app.ui.connection_registry import ConnectionRegistry
 from app.ui.dialogs import FileAssociationDialog
 from app.ui.dialogs.selection import SelectionDialog
 from app.ui.layout.app_shell import AppShell
+from app.ui.layout.window_title_bar import WindowTitleBar
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette, polish_data_views
 from app.ui.ui_update_scheduler import UiUpdateScheduler
@@ -33,6 +36,18 @@ class MainWindow(QMainWindow):
     FRONTEND_REFRESH_INTERVAL_MS = 200
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
+    FRAMELESS_RESIZE_BORDER_PX = 8
+    WM_NCHITTEST = 0x0084
+    HTCLIENT = 1
+    HTCAPTION = 2
+    HTLEFT = 10
+    HTRIGHT = 11
+    HTTOP = 12
+    HTTOPLEFT = 13
+    HTTOPRIGHT = 14
+    HTBOTTOM = 15
+    HTBOTTOMLEFT = 16
+    HTBOTTOMRIGHT = 17
     PAGE_SECTION_BY_ID = {
         "queue": "queue_items",
         "active": "active_downloads",
@@ -62,6 +77,7 @@ class MainWindow(QMainWindow):
         self.setAutoFillBackground(True)
         self._qt_initialized = True
         self.setWindowTitle("Universal Crawler Pro")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         QApplication.setFont(QFont("Microsoft YaHei UI", 10))
         self.resize(1500, 880)
         configured_theme = str(cfg.get("common", "theme", "dark" if cfg.get("common", "dark_theme", False) else "light") or "light").lower()
@@ -128,8 +144,23 @@ class MainWindow(QMainWindow):
             self._current_save_dir = str(value)
 
     def _build_ui(self) -> None:
+        self.window_root = QWidget()
+        self.window_root.setObjectName("WindowRoot")
+        self.window_root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.window_root.setAutoFillBackground(True)
+        self.window_title_bar = WindowTitleBar(
+            title=self.windowTitle(),
+            icon=self.windowIcon(),
+            is_dark_theme=self.is_dark_theme,
+        )
         self.app_shell = AppShell(is_dark_theme=self.is_dark_theme, style_provider=self)
-        self.setCentralWidget(self.app_shell)
+
+        root_layout = QVBoxLayout(self.window_root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        root_layout.addWidget(self.window_title_bar)
+        root_layout.addWidget(self.app_shell, stretch=1)
+        self.setCentralWidget(self.window_root)
 
     def _expose_component_refs(self) -> None:
         self.top_bar = self.app_shell.top_bar
@@ -146,8 +177,14 @@ class MainWindow(QMainWindow):
         self.btn_fullscreen = self.media_panel.btn_fullscreen
         self.btn_prev = self.media_panel.btn_prev
         self.btn_next = self.media_panel.btn_next
+        self.window_title_bar.set_icon(self.windowIcon())
+        self.window_title_bar.set_maximized(self.isMaximized())
 
     def _bind_component_signals(self) -> None:
+        self._connections.connect(self.windowTitleChanged, self.window_title_bar.set_title)
+        self._connections.connect(self.window_title_bar.minimize_requested, self.showMinimized)
+        self._connections.connect(self.window_title_bar.maximize_restore_requested, self._toggle_maximized)
+        self._connections.connect(self.window_title_bar.close_requested, self.close)
         self._connections.connect(self.combo_source.currentIndexChanged, self.on_source_changed)
         self._connections.connect(self.btn_start.clicked, self.on_btn_start_clicked)
         self._connections.connect(self.inp_search.returnPressed, self.on_btn_start_clicked)
@@ -462,6 +499,9 @@ class MainWindow(QMainWindow):
         self._apply_root_background()
         apply_application_theme(self.is_dark_theme)
         self._apply_root_background()
+        title_bar = self.__dict__.get("window_title_bar")
+        if title_bar is not None:
+            title_bar.apply_theme(self.is_dark_theme)
         top_bar = self.__dict__.get("top_bar")
         if top_bar is not None and refresh_shell_theme:
             top_bar.set_theme_icon(self.is_dark_theme)
@@ -495,6 +535,8 @@ class MainWindow(QMainWindow):
                 widgets.append(self.centralWidget())
             except RuntimeError:
                 pass
+        widgets.append(self.__dict__.get("window_root"))
+        widgets.append(self.__dict__.get("window_title_bar"))
         widgets.append(self.__dict__.get("app_shell"))
         for widget in widgets:
             try:
@@ -575,6 +617,18 @@ class MainWindow(QMainWindow):
         self.sig_theme_changed.emit(is_dark)
         self.refresh_frontend_state(topics={"settings.update"})
 
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self._sync_window_title_bar_state()
+
+    def _sync_window_title_bar_state(self) -> None:
+        title_bar = self.__dict__.get("window_title_bar")
+        if title_bar is not None:
+            title_bar.set_maximized(self.isMaximized())
+
     def toggle_fullscreen_mode(self) -> None:
         if "app_shell" in self.__dict__:
             top_bar = self.app_shell.top_bar
@@ -584,15 +638,16 @@ class MainWindow(QMainWindow):
             top_bar = getattr(self, "top_bar", None)
             sidebar = getattr(self, "left_panel", None)
             status_bar = getattr(self, "log_txt", None)
+        title_bar = self.__dict__.get("window_title_bar")
         if not self.is_fullscreen_mode:
-            for widget in (top_bar, sidebar, status_bar):
+            for widget in (title_bar, top_bar, sidebar, status_bar):
                 if widget is not None:
                     widget.hide()
             self.showFullScreen()
             self.is_fullscreen_mode = True
             self.btn_fullscreen.setText("[ 退出 ]")
             return
-        for widget in (top_bar, sidebar, status_bar):
+        for widget in (title_bar, top_bar, sidebar, status_bar):
             if widget is not None:
                 widget.show()
         self.showNormal()
@@ -608,6 +663,11 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_window_title_bar_state()
 
     def load_initial_state(self) -> None:
         last_source_id = cfg.get("common", "last_source", "kuaishou")
@@ -893,15 +953,90 @@ class MainWindow(QMainWindow):
     def show_image(self, image_path: str) -> None:
         self.app_shell.show_image(image_path)
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_window_title_bar_state()
+
+    def nativeEvent(self, event_type, message):
+        hit_test = self._handle_frameless_native_event(event_type, message)
+        if hit_test is not None:
+            return True, hit_test
+        return super().nativeEvent(event_type, message)
+
+    def _handle_frameless_native_event(self, _event_type, message) -> int | None:
+        if not sys.platform.startswith("win"):
+            return None
+        try:
+            msg = wintypes.MSG.from_address(int(message))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if int(msg.message) != self.WM_NCHITTEST:
+            return None
+        return self._frameless_hit_test(self._global_pos_from_lparam(int(msg.lParam)))
+
+    @classmethod
+    def _global_pos_from_lparam(cls, lparam: int) -> QPoint:
+        return QPoint(cls._signed_word(lparam), cls._signed_word(lparam >> 16))
+
+    @staticmethod
+    def _signed_word(value: int) -> int:
+        value &= 0xFFFF
+        return value - 0x10000 if value & 0x8000 else value
+
+    def _frameless_hit_test(self, global_pos: QPoint) -> int | None:
+        if self.isFullScreen():
+            return None
+        frame = self.frameGeometry()
+        if not frame.contains(global_pos):
+            return None
+        if not self.isMaximized():
+            border = self.FRAMELESS_RESIZE_BORDER_PX
+            left = frame.left() <= global_pos.x() < frame.left() + border
+            right = frame.right() - border < global_pos.x() <= frame.right()
+            top = frame.top() <= global_pos.y() < frame.top() + border
+            bottom = frame.bottom() - border < global_pos.y() <= frame.bottom()
+            if top and left:
+                return self.HTTOPLEFT
+            if top and right:
+                return self.HTTOPRIGHT
+            if bottom and left:
+                return self.HTBOTTOMLEFT
+            if bottom and right:
+                return self.HTBOTTOMRIGHT
+            if left:
+                return self.HTLEFT
+            if right:
+                return self.HTRIGHT
+            if top:
+                return self.HTTOP
+            if bottom:
+                return self.HTBOTTOM
+
+        title_bar = self.__dict__.get("window_title_bar")
+        if title_bar is not None and title_bar.isVisible():
+            local_pos = title_bar.mapFromGlobal(global_pos)
+            if title_bar.rect().contains(local_pos) and not title_bar.is_interactive_at(local_pos):
+                return self.HTCAPTION
+        return None
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self.media_panel.resize_media()
+        self._resize_media_panel_if_ready()
+
+    def _resize_media_panel_if_ready(self) -> None:
+        media_panel = self.__dict__.get("media_panel")
+        resize_media = getattr(media_panel, "resize_media", None)
+        if callable(resize_media):
+            resize_media()
 
     def play_video(self, video_path: str) -> None:
         self.app_shell.play_video(video_path)
 
     def stop_media_playback(self) -> None:
-        self.media_panel.stop_playback()
+        media_panel = self.__dict__.get("media_panel")
+        stop_playback = getattr(media_panel, "stop_playback", None)
+        if callable(stop_playback):
+            stop_playback()
 
     def release_media_playback(self) -> None:
         if "app_shell" in self.__dict__:
