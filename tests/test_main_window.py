@@ -660,6 +660,31 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(started)
         handle.startSystemResize.assert_called_once()
 
+    def test_frameless_resize_edges_use_native_cursor_shapes(self):
+        from PyQt6.QtCore import Qt
+
+        self.assertEqual(
+            MainWindow._cursor_for_resize_edges(Qt.Edge.TopEdge),
+            Qt.CursorShape.SizeVerCursor,
+        )
+        self.assertEqual(
+            MainWindow._cursor_for_resize_edges(Qt.Edge.RightEdge),
+            Qt.CursorShape.SizeHorCursor,
+        )
+        self.assertEqual(
+            MainWindow._cursor_for_resize_edges(Qt.Edge.TopEdge | Qt.Edge.LeftEdge),
+            Qt.CursorShape.SizeFDiagCursor,
+        )
+        self.assertEqual(
+            MainWindow._cursor_for_resize_edges(Qt.Edge.TopEdge | Qt.Edge.RightEdge),
+            Qt.CursorShape.SizeBDiagCursor,
+        )
+
+    def test_custom_title_bar_uses_compact_native_like_height(self):
+        from app.ui.layout.window_title_bar import WindowTitleBar
+
+        self.assertEqual(WindowTitleBar.HEIGHT, 28)
+
     def test_mouse_press_on_frameless_edge_accepts_started_resize(self):
         from PyQt6.QtCore import QPoint, Qt
 
