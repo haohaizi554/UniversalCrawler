@@ -22,6 +22,7 @@ from app.ui.components.combo_popup import (
 )
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.layout.app_shell import AppShell
+from app.ui.layout.sidebar import _badge_size
 from app.ui.main_window import MainWindow
 from app.ui.pages.active_downloads_page import EventTimelineWidget, SpeedTrendWidget, TEXT
 from app.ui.pages.common import ActionTable, connect_table_actions
@@ -97,6 +98,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             list(shell.pages),
             ["queue", "active", "completed", "failed", "logs", "settings", "toolbox"],
         )
+
+    def test_sidebar_count_badge_uses_compact_mainstream_size(self):
+        self.assertEqual(_badge_size("3"), QSize(24, 24))
+        self.assertEqual(_badge_size("20").height(), 24)
+        self.assertGreater(_badge_size("200").width(), _badge_size("20").width())
+        self.assertLessEqual(_badge_size("200").height(), 24)
 
     def test_language_change_translates_current_page_and_defers_hidden_pages(self):
         shell = self._make_shell()

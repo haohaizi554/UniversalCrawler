@@ -4,7 +4,9 @@
 
 - Qt Model/View Programming: keep data ownership in models, let views render only visible state, and prefer model signals over widget rebuilds.
 - Qt Threads and QObjects: GUI objects must stay on the GUI thread; background work should communicate through queued signals or a main-thread invoker.
+- Qt QWindow `startSystemMove()` / `startSystemResize()`: prefer system interactive move/resize over manual position/geometry changes for native snap, tiling and edge-follow behavior.
 - Microsoft window messages: frameless Windows windows need a coherent `WM_NCCALCSIZE`, `WM_NCHITTEST`, and `WM_GETMINMAXINFO` strategy.
+- Microsoft DWM custom frame guidance: once the standard frame is removed with `WM_NCCALCSIZE`, resizing and moving behavior must be restored through non-client hit testing.
 - Mature frameless Qt projects commonly keep native resize capability while hiding native frame painting, instead of mixing partial native and partial custom behavior.
 
 ## Current Lessons
@@ -30,9 +32,21 @@
 7. Translation and log filters are part of the render budget.
    Language changes should translate the visible page immediately and mark hidden pages dirty. Log views should skip table rebuilds when the item window and filter signature did not change, and category counts should be computed in one pass.
 
+8. Native-feeling resize also needs hover cursor parity.
+   Returning `HTLEFT/HTTOP/...` handles true non-client hit testing, but Qt child widgets can still occupy the client edge. Mirror the same edge calculation into hover cursor updates so users see the expected horizontal, vertical and diagonal resize cursors before pressing.
+
+9. Window geometry belongs to the shell, not page content.
+   The main window should have a deterministic default size, a screen-aware minimum size, and `WM_GETMINMAXINFO` max-track limits. Restored geometry must be clamped back onto the active work area so old configs cannot reopen or resize the app outside the visible screen.
+
+10. Count badges are not buttons.
+    Sidebar counters should use compact badge proportions, usually a 20-24px height with width growing by content. Large circular badges compete with navigation labels and make the sidebar feel less mature.
+
 ## Review Findings To Track
 
 - Done 2026-06-30: `app/ui/main_window.py` now uses native hit-test plus `startSystemResize()` fallback and a window-scoped event filter for border dragging.
+- Done 2026-06-30: `app/ui/main_window.py` now maps resize edges to native cursor shapes on hover, and `app/ui/layout/window_title_bar.py` uses a compact 28px custom title bar.
+- Done 2026-06-30: `app/ui/main_window.py` now applies default/minimum window geometry, clamps restored geometry to the screen work area, and caps Win32 max-track resize to the current monitor work area.
+- Done 2026-06-30: `app/ui/layout/sidebar.py` now uses compact 24px count badges with content-based width instead of oversized circular counters.
 - Done 2026-06-30: `app/ui/layout/app_shell.py` now translates only the current page immediately and defers hidden pages with dirty flags.
 - Done 2026-06-30: `app/ui/pages/log_center_page.py` now skips unchanged log renders and computes category counts in a single filtered pass.
 - Done 2026-06-30: `app/services/frontend_state_service.py` now dispatches runtime GUI settings through a queued QObject invoker when a Qt app exists.

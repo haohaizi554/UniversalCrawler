@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from app.core.plugin_registry import registry
@@ -16,16 +16,13 @@ from app.utils.qt_runtime import load_qt_icon
 _PRIMARY_PAGE_IDS = ("queue", "active", "completed", "failed")
 _SECONDARY_PAGE_IDS = ("logs", "settings", "toolbox")
 
-def _badge_diameter(text: str) -> int:
-    length = len(text)
-    if length <= 1:
-        return 30
-    if length == 2:
-        return 34
-    return 38
+def _badge_size(text: str) -> QSize:
+    height = 24
+    width = max(height, 16 + len(str(text)) * 7)
+    return QSize(width, height)
 
 class NavBadgeLabel(QLabel):
-    """Soft circular count bubble for sidebar navigation."""
+    """Compact count badge for sidebar navigation."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -46,8 +43,7 @@ class NavBadgeLabel(QLabel):
             return
         self._count_text = str(count)
         self._filled = filled
-        diameter = _badge_diameter(self._count_text)
-        self.setFixedSize(diameter, diameter)
+        self.setFixedSize(_badge_size(self._count_text))
         self.show()
         self.update()
 
@@ -61,8 +57,7 @@ class NavBadgeLabel(QLabel):
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
             rect = self.rect().adjusted(1, 1, -1, -1)
-            center = rect.center()
-            radius = min(rect.width(), rect.height()) / 2.0
+            radius = rect.height() / 2.0
 
             if self._filled:
                 accent = QColor(colors["accent"])
@@ -70,16 +65,11 @@ class NavBadgeLabel(QLabel):
                 glow.setAlpha(90)
                 painter.setBrush(glow)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawEllipse(rect.adjusted(-1, -1, 1, 1))
+                painter.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
 
-                gradient = QRadialGradient(center.x(), center.y() - radius * 0.22, radius * 1.05)
-                gradient.setColorAt(0.0, accent.lighter(145))
-                gradient.setColorAt(0.45, accent.lighter(108))
-                gradient.setColorAt(0.82, accent)
-                gradient.setColorAt(1.0, accent.darker(108))
-                painter.setBrush(gradient)
+                painter.setBrush(accent)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawEllipse(rect)
+                painter.drawRoundedRect(rect, radius, radius)
                 text_color = QColor("#ffffff")
             else:
                 fill = QColor(colors["accent_soft"])
@@ -91,11 +81,11 @@ class NavBadgeLabel(QLabel):
                 accent_pen.setAlpha(140)
                 pen.setColor(accent_pen)
                 painter.setPen(pen)
-                painter.drawEllipse(rect)
+                painter.drawRoundedRect(rect, radius, radius)
                 text_color = QColor(colors["accent"])
 
             font = QFont(painter.font())
-            font.setPixelSize(13 if len(self._count_text) <= 2 else 12)
+            font.setPixelSize(11)
             font.setWeight(QFont.Weight.DemiBold)
             painter.setFont(font)
             painter.setPen(text_color)

@@ -8,7 +8,7 @@ import ctypes
 import sys
 from ctypes import wintypes
 
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QVBoxLayout, QWidget
 
@@ -58,6 +58,9 @@ class MainWindow(QMainWindow):
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
     FRAMELESS_RESIZE_BORDER_PX = 8
+    DEFAULT_WINDOW_SIZE = QSize(1500, 880)
+    MIN_WINDOW_SIZE = QSize(1180, 720)
+    WINDOW_SCREEN_MARGIN_PX = 24
     GWL_STYLE = -16
     MONITOR_DEFAULTTONEAREST = 2
     SWP_NOMOVE = 0x0002
@@ -114,7 +117,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Universal Crawler Pro")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         QApplication.setFont(QFont("Microsoft YaHei UI", 10))
-        self.resize(1500, 880)
+        self._apply_default_window_geometry()
         configured_theme = str(cfg.get("common", "theme", "dark" if cfg.get("common", "dark_theme", False) else "light") or "light").lower()
         self.is_dark_theme = configured_theme == "dark"
         self._apply_theme_stylesheet()
@@ -203,6 +206,57 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.window_title_bar)
         root_layout.addWidget(self.app_shell, stretch=1)
         self.setCentralWidget(self.window_root)
+
+    @classmethod
+    def _bounded_window_size(cls, desired: QSize, available: QRect | None) -> QSize:
+        if available is None or available.isNull() or not available.isValid():
+            return QSize(desired)
+        width = min(desired.width(), max(1, available.width() - cls.WINDOW_SCREEN_MARGIN_PX))
+        height = min(desired.height(), max(1, available.height() - cls.WINDOW_SCREEN_MARGIN_PX))
+        return QSize(width, height)
+
+    @classmethod
+    def _minimum_window_size_for_available(cls, available: QRect | None) -> QSize:
+        return cls._bounded_window_size(cls.MIN_WINDOW_SIZE, available)
+
+    @classmethod
+    def _default_window_size_for_available(cls, available: QRect | None) -> QSize:
+        minimum = cls._minimum_window_size_for_available(available)
+        size = cls._bounded_window_size(cls.DEFAULT_WINDOW_SIZE, available)
+        return QSize(max(size.width(), minimum.width()), max(size.height(), minimum.height()))
+
+    def _available_geometry_for_rect(self, rect: QRect | None = None) -> QRect:
+        probe = rect.center() if rect is not None and rect.isValid() else QCursor.pos()
+        screen = QApplication.screenAt(probe) or self.screen() or QApplication.primaryScreen()
+        return screen.availableGeometry() if screen is not None else QRect()
+
+    def _apply_default_window_geometry(self) -> None:
+        available = self._available_geometry_for_rect()
+        minimum = self._minimum_window_size_for_available(available)
+        default_size = self._default_window_size_for_available(available)
+        self.setMinimumSize(minimum)
+        self.resize(default_size)
+        if available.isValid():
+            x = available.x() + max(0, (available.width() - default_size.width()) // 2)
+            y = available.y() + max(0, (available.height() - default_size.height()) // 2)
+            self.setGeometry(QRect(QPoint(x, y), default_size))
+
+    def _constrain_window_geometry_to_screen(self) -> None:
+        available = self._available_geometry_for_rect(self.frameGeometry())
+        if not available.isValid():
+            return
+        minimum = self._minimum_window_size_for_available(available)
+        self.setMinimumSize(minimum)
+        current = self.geometry()
+        width = min(max(current.width(), minimum.width()), available.width())
+        height = min(max(current.height(), minimum.height()), available.height())
+        max_x = available.x() + max(0, available.width() - width)
+        max_y = available.y() + max(0, available.height() - height)
+        x = min(max(current.x(), available.x()), max_x)
+        y = min(max(current.y(), available.y()), max_y)
+        constrained = QRect(x, y, width, height)
+        if constrained != current:
+            self.setGeometry(constrained)
 
     def _expose_component_refs(self) -> None:
         self.top_bar = self.app_shell.top_bar
@@ -775,8 +829,16 @@ class MainWindow(QMainWindow):
         if visible_page in self.app_shell.pages:
             self.app_shell.show_page(visible_page, emit_change=False, render_page=False)
         geometry_hex = cfg.get("ui", "geometry")
+        geometry_restored = False
         if geometry_hex:
-            self.restoreGeometry(QByteArray.fromHex(geometry_hex.encode()))
+            try:
+                geometry_restored = bool(self.restoreGeometry(QByteArray.fromHex(geometry_hex.encode())))
+            except (RuntimeError, ValueError) as exc:
+                debug_logger.log_exception("MainWindow", "restore_geometry", exc)
+        if geometry_restored:
+            self._constrain_window_geometry_to_screen()
+        else:
+            self._apply_default_window_geometry()
         state_hex = cfg.get("ui", "window_state")
         if state_hex:
             self.restoreState(QByteArray.fromHex(state_hex.encode()))
@@ -1140,13 +1202,23 @@ class MainWindow(QMainWindow):
             work_rect = monitor_info.rcWork
             min_max_info.ptMaxPosition.x = work_rect.left - monitor_rect.left
             min_max_info.ptMaxPosition.y = work_rect.top - monitor_rect.top
-            min_max_info.ptMaxSize.x = work_rect.right - work_rect.left
-            min_max_info.ptMaxSize.y = work_rect.bottom - work_rect.top
+            max_track_width = max(1, work_rect.right - work_rect.left)
+            max_track_height = max(1, work_rect.bottom - work_rect.top)
+            min_max_info.ptMaxSize.x = max_track_width
+            min_max_info.ptMaxSize.y = max_track_height
+            min_max_info.ptMaxTrackSize.x = max_track_width
+            min_max_info.ptMaxTrackSize.y = max_track_height
             min_size = self.minimumSize()
             if min_size.width() > 0:
-                min_max_info.ptMinTrackSize.x = max(min_max_info.ptMinTrackSize.x, min_size.width())
+                min_max_info.ptMinTrackSize.x = min(
+                    max_track_width,
+                    max(min_max_info.ptMinTrackSize.x, min_size.width()),
+                )
             if min_size.height() > 0:
-                min_max_info.ptMinTrackSize.y = max(min_max_info.ptMinTrackSize.y, min_size.height())
+                min_max_info.ptMinTrackSize.y = min(
+                    max_track_height,
+                    max(min_max_info.ptMinTrackSize.y, min_size.height()),
+                )
         except Exception as exc:
             debug_logger.log_exception("MainWindow", "handle_get_min_max_info", exc)
 

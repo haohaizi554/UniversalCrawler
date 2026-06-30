@@ -681,9 +681,45 @@ class MainWindowTests(unittest.TestCase):
         )
 
     def test_custom_title_bar_uses_compact_native_like_height(self):
-        from app.ui.layout.window_title_bar import WindowTitleBar
+        from app.ui.layout.window_title_bar import WindowChromeButton, WindowTitleBar
 
         self.assertEqual(WindowTitleBar.HEIGHT, 28)
+        self.assertEqual(WindowChromeButton.WIDTH, 46)
+
+    def test_default_window_size_is_bounded_by_available_screen(self):
+        from PyQt6.QtCore import QRect, QSize
+
+        available = QRect(0, 0, 1366, 768)
+
+        size = MainWindow._default_window_size_for_available(available)
+        minimum = MainWindow._minimum_window_size_for_available(available)
+
+        self.assertLessEqual(size.width(), available.width())
+        self.assertLessEqual(size.height(), available.height())
+        self.assertGreaterEqual(size.width(), minimum.width())
+        self.assertGreaterEqual(size.height(), minimum.height())
+
+        roomy = MainWindow._default_window_size_for_available(QRect(0, 0, 2560, 1440))
+        self.assertEqual(roomy, QSize(1500, 880))
+
+    def test_constrain_window_geometry_keeps_window_inside_available_screen(self):
+        from PyQt6.QtCore import QRect, QSize
+
+        window = self._make_window()
+        window._available_geometry_for_rect = Mock(return_value=QRect(0, 0, 1280, 720))
+        window.geometry = Mock(return_value=QRect(-200, -120, 1800, 1000))
+        window.frameGeometry = Mock(return_value=QRect(-200, -120, 1800, 1000))
+        window.setMinimumSize = Mock()
+        window.setGeometry = Mock()
+
+        MainWindow._constrain_window_geometry_to_screen(window)
+
+        window.setMinimumSize.assert_called_once()
+        constrained = window.setGeometry.call_args.args[0]
+        self.assertGreaterEqual(constrained.x(), 0)
+        self.assertGreaterEqual(constrained.y(), 0)
+        self.assertLessEqual(constrained.right(), 1279)
+        self.assertLessEqual(constrained.bottom(), 719)
 
     def test_mouse_press_on_frameless_edge_accepts_started_resize(self):
         from PyQt6.QtCore import QPoint, Qt

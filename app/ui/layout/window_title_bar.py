@@ -12,6 +12,8 @@ from app.ui.styles import theme_colors
 class WindowChromeButton(QAbstractButton):
     """Window control button painted by Qt instead of a font glyph."""
 
+    WIDTH = 46
+
     def __init__(self, kind: str, tooltip: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.kind = kind
@@ -19,7 +21,7 @@ class WindowChromeButton(QAbstractButton):
         self._maximized = False
         self.setObjectName("WindowCloseButton" if kind == "close" else "WindowChromeButton")
         self.setToolTip(tooltip)
-        self.setFixedSize(42, WindowTitleBar.HEIGHT)
+        self.setFixedSize(self.WIDTH, WindowTitleBar.HEIGHT)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setMouseTracking(True)
