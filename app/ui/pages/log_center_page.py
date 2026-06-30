@@ -197,6 +197,10 @@ class LogCenterPage(PageFrame):
         self._page_size = 20
         self._current_page = 1
         self._filtered_items: list[dict[str, Any]] = []
+        self._log_items_signature: tuple[Any, ...] | None = None
+        self._filter_signature: tuple[Any, ...] | None = None
+        self._category_count_signature: tuple[Any, ...] | None = None
+        self._category_counts: dict[str, int] = {key: 0 for key in LOG_CATEGORIES}
         self._last_json_text = "{}"
         self._inspector_item_id = ""
 
@@ -1009,11 +1013,60 @@ class LogCenterPage(PageFrame):
 
     def render(self, snapshot: dict) -> None:
         self._refresh_platform_filter(snapshot)
-        self._all_items = list(snapshot.get("log_items") or [])
-
+        incoming_items = list(snapshot.get("log_items") or [])
+        incoming_signature = self._make_log_items_signature(incoming_items)
+        filter_signature = self._make_filter_signature()
+        if incoming_signature == self._log_items_signature and filter_signature == self._filter_signature:
+            self._sync_tab_buttons()
+            return
+        self._all_items = incoming_items
+        self._log_items_signature = incoming_signature
+        self._category_count_signature = None
         self._sync_tab_buttons()
-
         self._apply_filters()
+
+    def _make_log_items_signature(self, items: list[dict[str, Any]]) -> tuple[Any, ...]:
+        if not items:
+            return (0, "", "")
+        return (
+            len(items),
+            self._stable_log_item_signature(items[0], 0),
+            self._stable_log_item_signature(items[-1], len(items) - 1),
+        )
+
+    @staticmethod
+    def _stable_log_item_signature(item: dict[str, Any], index: int) -> tuple[Any, ...]:
+        return (
+            item.get("id"),
+            item.get("time"),
+            item.get("trace_id"),
+            item.get("message_summary") or item.get("message"),
+            index,
+        )
+
+    def _make_filter_signature(self) -> tuple[Any, ...]:
+        level = self.level_filter.currentData() if hasattr(self, "level_filter") else None
+        if level is None and hasattr(self, "level_filter"):
+            level = self.level_filter.currentText()
+        time_range = self.time_filter.currentData() if hasattr(self, "time_filter") else None
+        if time_range is None and hasattr(self, "time_filter"):
+            time_range = self.time_filter.currentText()
+        return (
+            self._category,
+            str(level or ""),
+            str(time_range or ""),
+            self._selected_platform_id() or "",
+            self.trace_filter.text().strip().lower() if hasattr(self, "trace_filter") else "",
+            self.keyword_filter.text().strip().lower() if hasattr(self, "keyword_filter") else "",
+            self._platform_option_ids,
+        )
+
+    def _make_category_count_signature(self) -> tuple[Any, ...]:
+        signature = self._make_filter_signature()
+        return (
+            self._log_items_signature,
+            signature[1:],
+        )
 
     def _debug_classification_counts(self) -> dict[str, int]:
         counts = {key: 0 for key in LOG_CATEGORIES}
@@ -1073,13 +1126,22 @@ class LogCenterPage(PageFrame):
         self._apply_filters()
 
     def _category_count(self, category: str) -> int:
-        count = 0
+        signature = self._make_category_count_signature()
+        if signature != self._category_count_signature:
+            self._rebuild_category_counts(signature)
+        return int(self._category_counts.get(category, 0))
+
+    def _rebuild_category_counts(self, signature: tuple[Any, ...] | None = None) -> None:
+        counts = {key: 0 for key in LOG_CATEGORIES}
         for item in self._all_items:
             if not self._matches_non_category_filters(item):
                 continue
-            if category == "all" or self._matches_category_for_count(item, category):
-                count += 1
-        return count
+            counts["all"] += 1
+            scope = self._derive_log_scope(item)
+            if scope in counts:
+                counts[scope] += 1
+        self._category_counts = counts
+        self._category_count_signature = signature or self._make_category_count_signature()
 
     def _matches_category_for_count(self, item: dict[str, Any], category: str) -> bool:
         if category == "all":
@@ -1170,6 +1232,7 @@ class LogCenterPage(PageFrame):
         previous_id = self.selected_id()
         raw_items = [item for item in self._all_items if self._matches_filters(item)]
         self._filtered_items = self._sort_log_items(raw_items)
+        self._filter_signature = self._make_filter_signature()
         self._current_page = 1
         if previous_id:
             for index, item in enumerate(self._filtered_items):

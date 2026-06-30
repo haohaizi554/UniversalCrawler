@@ -1065,7 +1065,7 @@ function buildMockState() {
         default_player_label: "内置播放器",
         remember_position: true,
         autoplay_next: true,
-        manual_image_switch: true,
+        manual_image_switch: false,
         image_auto_advance_interval_seconds: 5,
         _options: {
           default_player: [{ value: "builtin_player", label: "内置播放器" }, { value: "system_default", label: "系统默认播放器" }],
@@ -2187,7 +2187,7 @@ function settingCheckbox(label, key, checked, scope = "") {
 }
 
 function imageManualSwitchSetting(value, options) {
-  const manual = value.manual_image_switch !== false;
+  const manual = value.manual_image_switch === true;
   const intervalOptions = options.image_auto_advance_interval_seconds || [
     { value: "1", label: "1 秒" },
     { value: "3", label: "3 秒" },
@@ -2375,7 +2375,7 @@ function shouldAutoplayNext() {
 }
 
 function shouldManualSwitchImages() {
-  return playbackSettings().manual_image_switch !== false;
+  return playbackSettings().manual_image_switch === true;
 }
 
 function imageAutoAdvanceIntervalMs() {

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import threading
 import time
+import ctypes
 import sys
 from ctypes import wintypes
 
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QPalette
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QCursor, QFont, QPalette
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QVBoxLayout, QWidget
 
 from app.config import cfg, get_platform_runtime_defaults
@@ -30,6 +31,26 @@ from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
 from app.utils.safe_slot import safe_slot
 
+
+class _MINMAXINFO(ctypes.Structure):
+    _fields_ = [
+        ("ptReserved", wintypes.POINT),
+        ("ptMaxSize", wintypes.POINT),
+        ("ptMaxPosition", wintypes.POINT),
+        ("ptMinTrackSize", wintypes.POINT),
+        ("ptMaxTrackSize", wintypes.POINT),
+    ]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
 class MainWindow(QMainWindow):
     """Thin GUI host that forwards user actions and renders frontend snapshots."""
 
@@ -37,6 +58,20 @@ class MainWindow(QMainWindow):
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
     FRAMELESS_RESIZE_BORDER_PX = 8
+    GWL_STYLE = -16
+    MONITOR_DEFAULTTONEAREST = 2
+    SWP_NOMOVE = 0x0002
+    SWP_NOSIZE = 0x0001
+    SWP_NOZORDER = 0x0004
+    SWP_NOACTIVATE = 0x0010
+    SWP_FRAMECHANGED = 0x0020
+    WS_CAPTION = 0x00C00000
+    WS_MAXIMIZEBOX = 0x00010000
+    WS_MINIMIZEBOX = 0x00020000
+    WS_SYSMENU = 0x00080000
+    WS_THICKFRAME = 0x00040000
+    WM_GETMINMAXINFO = 0x0024
+    WM_NCCALCSIZE = 0x0083
     WM_NCHITTEST = 0x0084
     HTCLIENT = 1
     HTCAPTION = 2
@@ -92,6 +127,12 @@ class MainWindow(QMainWindow):
         self.current_plugin = None
         self.plugin_widget = None
         self.is_fullscreen_mode = False
+        self._pre_fullscreen_geometry: QByteArray | None = None
+        self._pre_fullscreen_was_maximized = False
+        self._custom_maximized = False
+        self._pre_custom_maximize_geometry: QRect | None = None
+        self._windows_frameless_style_applied = False
+        self._frameless_resize_override_cursor_active = False
         self.event_bus = event_bus or EventBus()
         self.app_state = app_state or AppState(event_bus=self.event_bus)
         self._frontend_state_service = FrontendStateService(app_state=self.app_state)
@@ -124,6 +165,7 @@ class MainWindow(QMainWindow):
         self._apply_theme_stylesheet()
         self.load_initial_state()
         self.refresh_frontend_state(mock=True, force=True)
+        self._install_frameless_resize_event_filter()
 
     @property
     def current_save_dir(self) -> str:
@@ -618,44 +660,99 @@ class MainWindow(QMainWindow):
         self.refresh_frontend_state(topics={"settings.update"})
 
     def _toggle_maximized(self) -> None:
-        if self.isMaximized():
-            self.showNormal()
+        if self.is_fullscreen_mode:
+            self.toggle_fullscreen_mode()
+            return
+        if self._is_effectively_maximized():
+            self._restore_from_custom_or_native_maximized()
         else:
-            self.showMaximized()
+            self._maximize_to_work_area()
         self._sync_window_title_bar_state()
+        QTimer.singleShot(0, self._sync_window_title_bar_state)
+
+    def _is_effectively_maximized(self) -> bool:
+        try:
+            native_maximized = bool(self.windowState() & Qt.WindowState.WindowMaximized) or self.isMaximized()
+        except RuntimeError:
+            native_maximized = bool(self.isMaximized())
+        return bool(self.__dict__.get("_custom_maximized", False)) or native_maximized
+
+    def _current_work_area_geometry(self) -> QRect:
+        screen = QApplication.screenAt(self.frameGeometry().center()) or self.screen() or QApplication.primaryScreen()
+        return screen.availableGeometry() if screen is not None else self.geometry()
+
+    def _maximize_to_work_area(self) -> None:
+        if not self.__dict__.get("_qt_initialized", False):
+            self.showMaximized()
+            return
+        if not self.__dict__.get("_custom_maximized", False):
+            self._pre_custom_maximize_geometry = QRect(self.geometry())
+        if self.isMaximized() or self.isFullScreen():
+            self.showNormal()
+        self.setGeometry(self._current_work_area_geometry())
+        self.__dict__["_custom_maximized"] = True
+
+    def _restore_from_custom_or_native_maximized(self) -> None:
+        if self.isMaximized() or self.isFullScreen():
+            self.showNormal()
+        if self.__dict__.get("_custom_maximized", False):
+            geometry = self.__dict__.get("_pre_custom_maximize_geometry")
+            self.__dict__["_custom_maximized"] = False
+            self._pre_custom_maximize_geometry = None
+            if isinstance(geometry, QRect) and geometry.isValid():
+                self.setGeometry(geometry)
 
     def _sync_window_title_bar_state(self) -> None:
         title_bar = self.__dict__.get("window_title_bar")
         if title_bar is not None:
-            title_bar.set_maximized(self.isMaximized())
+            title_bar.set_maximized(self._is_effectively_maximized())
+
+    def _set_shell_widgets_visible(self, visible: bool) -> None:
+        if "app_shell" in self.__dict__:
+            widgets = (
+                self.__dict__.get("window_title_bar"),
+                self.app_shell.top_bar,
+                self.app_shell.sidebar,
+                self.app_shell.status_bar,
+            )
+        else:
+            widgets = (
+                self.__dict__.get("window_title_bar"),
+                getattr(self, "top_bar", None),
+                getattr(self, "left_panel", None),
+                getattr(self, "log_txt", None),
+            )
+        for widget in widgets:
+            if widget is not None:
+                widget.setVisible(visible)
 
     def toggle_fullscreen_mode(self) -> None:
-        if "app_shell" in self.__dict__:
-            top_bar = self.app_shell.top_bar
-            sidebar = self.app_shell.sidebar
-            status_bar = self.app_shell.status_bar
-        else:
-            top_bar = getattr(self, "top_bar", None)
-            sidebar = getattr(self, "left_panel", None)
-            status_bar = getattr(self, "log_txt", None)
-        title_bar = self.__dict__.get("window_title_bar")
         if not self.is_fullscreen_mode:
-            for widget in (title_bar, top_bar, sidebar, status_bar):
-                if widget is not None:
-                    widget.hide()
+            self._pre_fullscreen_geometry = self.saveGeometry()
+            self._pre_fullscreen_was_maximized = self._is_effectively_maximized()
+            self._set_shell_widgets_visible(False)
             self.showFullScreen()
             self.is_fullscreen_mode = True
             self.btn_fullscreen.setText("[ 退出 ]")
+            self._sync_window_title_bar_state()
             return
-        for widget in (title_bar, top_bar, sidebar, status_bar):
-            if widget is not None:
-                widget.show()
+        self._set_shell_widgets_visible(True)
+        was_maximized = bool(self.__dict__.get("_pre_fullscreen_was_maximized", False))
+        geometry = self.__dict__.get("_pre_fullscreen_geometry")
         self.showNormal()
+        if was_maximized:
+            self._maximize_to_work_area()
+        else:
+            if geometry is not None:
+                self.restoreGeometry(geometry)
         self.is_fullscreen_mode = False
+        self._pre_fullscreen_geometry = None
+        self._pre_fullscreen_was_maximized = False
         self.btn_fullscreen.setText("[ 全屏 ]")
         state_hex = cfg.get("ui", "window_state")
         if state_hex:
             self.restoreState(QByteArray.fromHex(state_hex.encode()))
+        self._sync_window_title_bar_state()
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape and self.is_fullscreen_mode:
@@ -687,6 +784,7 @@ class MainWindow(QMainWindow):
     @safe_slot
     def closeEvent(self, event) -> None:
         self._connections.disconnect_all()
+        self._remove_frameless_resize_event_filter()
         self.cleanup_media()
         self._ui_update_scheduler.stop()
         self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
@@ -955,13 +1053,14 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._apply_windows_frameless_window_style()
         self._sync_window_title_bar_state()
 
     def nativeEvent(self, event_type, message):
         hit_test = self._handle_frameless_native_event(event_type, message)
         if hit_test is not None:
             return True, hit_test
-        return super().nativeEvent(event_type, message)
+        return False, 0
 
     def _handle_frameless_native_event(self, _event_type, message) -> int | None:
         if not sys.platform.startswith("win"):
@@ -970,9 +1069,86 @@ class MainWindow(QMainWindow):
             msg = wintypes.MSG.from_address(int(message))
         except (AttributeError, TypeError, ValueError):
             return None
-        if int(msg.message) != self.WM_NCHITTEST:
-            return None
-        return self._frameless_hit_test(self._global_pos_from_lparam(int(msg.lParam)))
+        message_id = int(msg.message)
+        if message_id == self.WM_NCCALCSIZE:
+            return 0
+        if message_id == self.WM_GETMINMAXINFO:
+            self._handle_get_min_max_info(msg)
+            return 0
+        if message_id == self.WM_NCHITTEST:
+            return self._frameless_hit_test(self._native_hit_test_global_pos(msg))
+        return None
+
+    def _native_hit_test_global_pos(self, msg) -> QPoint:
+        native_pos = self._global_pos_from_lparam(int(msg.lParam))
+        cursor_pos = QCursor.pos()
+        if (cursor_pos - native_pos).manhattanLength() <= 24:
+            return cursor_pos
+        return native_pos
+
+    def _apply_windows_frameless_window_style(self) -> None:
+        if self.__dict__.get("_windows_frameless_style_applied", False):
+            return
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            hwnd = int(self.winId())
+            user32 = ctypes.windll.user32
+            get_window_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+            set_window_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+            style = int(get_window_long(hwnd, self.GWL_STYLE))
+            desired_style = style | (
+                self.WS_CAPTION
+                | self.WS_THICKFRAME
+                | self.WS_SYSMENU
+                | self.WS_MINIMIZEBOX
+                | self.WS_MAXIMIZEBOX
+            )
+            if desired_style != style:
+                set_window_long(hwnd, self.GWL_STYLE, desired_style)
+            user32.SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                self.SWP_NOMOVE
+                | self.SWP_NOSIZE
+                | self.SWP_NOZORDER
+                | self.SWP_NOACTIVATE
+                | self.SWP_FRAMECHANGED,
+            )
+            self.__dict__["_windows_frameless_style_applied"] = True
+        except Exception as exc:
+            debug_logger.log_exception("MainWindow", "apply_windows_frameless_window_style", exc)
+
+    def _handle_get_min_max_info(self, msg) -> None:
+        try:
+            monitor = ctypes.windll.user32.MonitorFromWindow(
+                msg.hWnd,
+                self.MONITOR_DEFAULTTONEAREST,
+            )
+            if not monitor:
+                return
+            monitor_info = _MONITORINFO()
+            monitor_info.cbSize = ctypes.sizeof(_MONITORINFO)
+            if not ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
+                return
+            min_max_info = ctypes.cast(msg.lParam, ctypes.POINTER(_MINMAXINFO)).contents
+            monitor_rect = monitor_info.rcMonitor
+            work_rect = monitor_info.rcWork
+            min_max_info.ptMaxPosition.x = work_rect.left - monitor_rect.left
+            min_max_info.ptMaxPosition.y = work_rect.top - monitor_rect.top
+            min_max_info.ptMaxSize.x = work_rect.right - work_rect.left
+            min_max_info.ptMaxSize.y = work_rect.bottom - work_rect.top
+            min_size = self.minimumSize()
+            if min_size.width() > 0:
+                min_max_info.ptMinTrackSize.x = max(min_max_info.ptMinTrackSize.x, min_size.width())
+            if min_size.height() > 0:
+                min_max_info.ptMinTrackSize.y = max(min_max_info.ptMinTrackSize.y, min_size.height())
+        except Exception as exc:
+            debug_logger.log_exception("MainWindow", "handle_get_min_max_info", exc)
 
     @classmethod
     def _global_pos_from_lparam(cls, lparam: int) -> QPoint:
@@ -989,7 +1165,7 @@ class MainWindow(QMainWindow):
         frame = self.frameGeometry()
         if not frame.contains(global_pos):
             return None
-        if not self.isMaximized():
+        if not self._is_effectively_maximized():
             border = self.FRAMELESS_RESIZE_BORDER_PX
             left = frame.left() <= global_pos.x() < frame.left() + border
             right = frame.right() - border < global_pos.x() <= frame.right()
@@ -1018,6 +1194,139 @@ class MainWindow(QMainWindow):
             if title_bar.rect().contains(local_pos) and not title_bar.is_interactive_at(local_pos):
                 return self.HTCAPTION
         return None
+
+    def _frameless_resize_edges_for_global_pos(self, global_pos: QPoint):
+        if self.isFullScreen() or self._is_effectively_maximized():
+            return None
+        frame = self.frameGeometry()
+        if not frame.contains(global_pos):
+            return None
+        border = self.FRAMELESS_RESIZE_BORDER_PX
+        left = frame.left() <= global_pos.x() < frame.left() + border
+        right = frame.right() - border < global_pos.x() <= frame.right()
+        top = frame.top() <= global_pos.y() < frame.top() + border
+        bottom = frame.bottom() - border < global_pos.y() <= frame.bottom()
+        edge = None
+        for enabled, qt_edge in (
+            (left, Qt.Edge.LeftEdge),
+            (right, Qt.Edge.RightEdge),
+            (top, Qt.Edge.TopEdge),
+            (bottom, Qt.Edge.BottomEdge),
+        ):
+            if enabled:
+                edge = qt_edge if edge is None else edge | qt_edge
+        return edge
+
+    @staticmethod
+    def _cursor_for_resize_edges(edges) -> Qt.CursorShape | None:
+        if edges is None:
+            return None
+        left = bool(edges & Qt.Edge.LeftEdge)
+        right = bool(edges & Qt.Edge.RightEdge)
+        top = bool(edges & Qt.Edge.TopEdge)
+        bottom = bool(edges & Qt.Edge.BottomEdge)
+        if (top and left) or (bottom and right):
+            return Qt.CursorShape.SizeFDiagCursor
+        if (top and right) or (bottom and left):
+            return Qt.CursorShape.SizeBDiagCursor
+        if left or right:
+            return Qt.CursorShape.SizeHorCursor
+        if top or bottom:
+            return Qt.CursorShape.SizeVerCursor
+        return None
+
+    def _set_frameless_resize_cursor(self, cursor: Qt.CursorShape | None) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        active = bool(self.__dict__.get("_frameless_resize_override_cursor_active", False))
+        if cursor is None:
+            if active:
+                app.restoreOverrideCursor()
+                self.__dict__["_frameless_resize_override_cursor_active"] = False
+            return
+        qt_cursor = QCursor(cursor)
+        if active:
+            app.changeOverrideCursor(qt_cursor)
+        else:
+            app.setOverrideCursor(qt_cursor)
+            self.__dict__["_frameless_resize_override_cursor_active"] = True
+
+    def _update_frameless_resize_cursor(self, global_pos: QPoint) -> None:
+        cursor = self._cursor_for_resize_edges(self._frameless_resize_edges_for_global_pos(global_pos))
+        self._set_frameless_resize_cursor(cursor)
+
+    def _start_frameless_system_resize(self, global_pos: QPoint) -> bool:
+        edge = self._frameless_resize_edges_for_global_pos(global_pos)
+        if edge is None:
+            return False
+        window_handle = self.windowHandle()
+        start_resize = getattr(window_handle, "startSystemResize", None)
+        if not callable(start_resize):
+            return False
+        try:
+            started = bool(start_resize(edge))
+            if started:
+                self._set_frameless_resize_cursor(None)
+            return started
+        except Exception as exc:
+            debug_logger.log_exception("MainWindow", "start_system_resize", exc)
+            return False
+
+    def _install_frameless_resize_event_filter(self) -> None:
+        app = QApplication.instance()
+        if app is None or self.__dict__.get("_frameless_resize_event_filter_installed", False):
+            return
+        app.installEventFilter(self)
+        self.__dict__["_frameless_resize_event_filter_installed"] = True
+
+    def _remove_frameless_resize_event_filter(self) -> None:
+        if not self.__dict__.get("_frameless_resize_event_filter_installed", False):
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self.__dict__["_frameless_resize_event_filter_installed"] = False
+        self._set_frameless_resize_cursor(None)
+
+    def _event_belongs_to_this_window(self, watched: object) -> bool:
+        widget = watched if isinstance(watched, QWidget) else None
+        return widget is not None and widget.window() is self
+
+    @staticmethod
+    def _mouse_event_global_pos(event) -> QPoint:
+        global_position = getattr(event, "globalPosition", None)
+        if callable(global_position):
+            return global_position().toPoint()
+        global_pos = getattr(event, "globalPos", None)
+        if callable(global_pos):
+            return global_pos()
+        return QCursor.pos()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._start_frameless_system_resize(self._mouse_event_global_pos(event)):
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        event_type = event.type()
+        if self._event_belongs_to_this_window(watched):
+            if event_type in {QEvent.Type.MouseMove, QEvent.Type.HoverMove, QEvent.Type.Enter}:
+                self._update_frameless_resize_cursor(self._mouse_event_global_pos(event))
+            elif event_type in {QEvent.Type.Leave, QEvent.Type.WindowDeactivate}:
+                self._set_frameless_resize_cursor(None)
+            elif (
+                event_type == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+                and self._start_frameless_system_resize(self._mouse_event_global_pos(event))
+            ):
+                event.accept()
+                return True
+        elif event_type in {QEvent.Type.Leave, QEvent.Type.WindowDeactivate}:
+            self._set_frameless_resize_cursor(None)
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

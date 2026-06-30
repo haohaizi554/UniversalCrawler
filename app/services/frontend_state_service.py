@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QCoreApplication, QObject, QThread, Qt, pyqtSignal
 
 from app.config import cfg
 from app.config.settings import (
@@ -80,6 +80,20 @@ PLATFORM_AUTH_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "kuaishou": ("kuaishou_cookie_file", ("userId",)),
     "xiaohongshu": ("xiaohongshu_cookie_file", ("web_session", "a1")),
 }
+
+
+class _GuiRuntimeInvoker(QObject):
+    call_requested = pyqtSignal(object)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_requested.connect(self._run, Qt.ConnectionType.QueuedConnection)
+
+    def invoke(self, callback: Callable[[], None]) -> None:
+        self.call_requested.emit(callback)
+
+    def _run(self, callback: Callable[[], None]) -> None:
+        callback()
 
 PAGE_DEFINITIONS: tuple[dict[str, str], ...] = (
     {"id": "queue", "title": "下载队列"},
@@ -206,6 +220,7 @@ class FrontendStateService:
         self._executable_path_provider = executable_path_provider or self._current_executable_path
         self.media_metadata_service = media_metadata_service or MediaMetadataService()
         self._frontend_event_emitter = frontend_event_emitter
+        self._gui_runtime_invoker = self._create_gui_runtime_invoker()
         self._file_log_cache: list[dict[str, Any]] = []
         self._file_log_cache_at = 0.0
         self._file_log_cache_limit = 0
@@ -237,6 +252,23 @@ class FrontendStateService:
             else None
         )
         self._apply_logging_runtime_settings(cleanup_old_logs=True)
+
+    @staticmethod
+    def _is_qt_gui_thread() -> bool:
+        app = QCoreApplication.instance()
+        if app is None:
+            return threading.current_thread() is threading.main_thread()
+        return QThread.currentThread() == app.thread()
+
+    @staticmethod
+    def _create_gui_runtime_invoker() -> _GuiRuntimeInvoker | None:
+        app = QCoreApplication.instance()
+        if app is None:
+            return None
+        invoker = _GuiRuntimeInvoker()
+        if invoker.thread() != app.thread():
+            invoker.moveToThread(app.thread())
+        return invoker
 
     def bind_controller(self, controller: Any) -> None:
         if self._destroyed:
@@ -770,10 +802,14 @@ class FrontendStateService:
                     details={"args": list(args)},
                 )
 
-        if threading.current_thread() is threading.main_thread():
+        if self._is_qt_gui_thread():
             _call()
+        elif callable(getattr(target, "invoke_on_ui_thread", None)):
+            target.invoke_on_ui_thread(_call)
+        elif self._gui_runtime_invoker is not None:
+            self._gui_runtime_invoker.invoke(_call)
         else:
-            QTimer.singleShot(0, _call)
+            _call()
         return True
 
     def _queued_video_ids(self) -> set[str]:
@@ -2207,7 +2243,7 @@ class FrontendStateService:
                 "default_player_label": playback_player_label(default_player),
                 "remember_position": bool(playback.get("remember_position", True)),
                 "autoplay_next": bool(playback.get("autoplay_next", True)),
-                "manual_image_switch": bool(playback.get("manual_image_switch", True)),
+                "manual_image_switch": bool(playback.get("manual_image_switch", False)),
                 "image_auto_advance_interval_seconds": int(
                     playback.get("image_auto_advance_interval_seconds", 5) or 5
                 ),
@@ -2875,6 +2911,8 @@ class FrontendStateService:
         playback_settings = settings_snapshot.get("播放设置", {})
         playback_settings["default_player"] = DEFAULT_OPEN_MODE
         playback_settings["default_player_label"] = playback_player_label(DEFAULT_OPEN_MODE)
+        playback_settings["manual_image_switch"] = False
+        playback_settings["image_auto_advance_interval_seconds"] = 5
         for row in settings_snapshot.get("平台设置", []):
             if row.get("id") != "missav":
                 continue

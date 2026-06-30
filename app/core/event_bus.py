@@ -13,6 +13,7 @@ from typing import Any
 
 MAX_PUBLISH_DEPTH = 16
 LOCK_WARN_SECONDS = 1.0
+HANDLER_WARN_SECONDS = 0.2
 
 class EventBus:
     """Small publish/subscribe bus used to decouple workers, reducers and UI."""
@@ -91,10 +92,20 @@ class EventBus:
         self._publish_depth.set(depth + 1)
         try:
             for handler in handlers:
+                started = time.monotonic()
                 try:
                     handler(payload)
                 except Exception:  # pragma: no cover - defensive isolation
                     self._logger.exception("EventBus handler failed for topic %s", topic)
+                finally:
+                    elapsed = time.monotonic() - started
+                    if elapsed > HANDLER_WARN_SECONDS:
+                        self._logger.warning(
+                            "EventBus slow handler %.3fs for topic %s: %r",
+                            elapsed,
+                            topic,
+                            handler,
+                        )
         finally:
             self._publish_depth.set(depth)
 

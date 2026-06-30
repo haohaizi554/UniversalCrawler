@@ -3,10 +3,85 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QIcon, QMouseEvent
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPen
+from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from app.ui.styles import theme_colors
+
+
+class WindowChromeButton(QAbstractButton):
+    """Window control button painted by Qt instead of a font glyph."""
+
+    def __init__(self, kind: str, tooltip: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.kind = kind
+        self._colors = theme_colors(False)
+        self._maximized = False
+        self.setObjectName("WindowCloseButton" if kind == "close" else "WindowChromeButton")
+        self.setToolTip(tooltip)
+        self.setFixedSize(42, WindowTitleBar.HEIGHT)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setMouseTracking(True)
+
+    def set_theme_colors(self, colors: dict[str, str]) -> None:
+        self._colors = dict(colors)
+        self.update()
+
+    def set_maximized(self, maximized: bool) -> None:
+        self._maximized = bool(maximized)
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.update()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        colors = self._colors
+        hovered = self.underMouse()
+        pressed = self.isDown()
+        background = colors["bg"]
+
+        if hovered or pressed:
+            if self.kind == "close":
+                background = colors["danger_hover"] if pressed else colors["danger"]
+            else:
+                background = colors["border"] if pressed else colors["panel_soft"]
+            painter.fillRect(self.rect(), QColor(background))
+
+        foreground = "#ffffff" if self.kind == "close" and hovered else colors["text"]
+        pen = QPen(QColor(foreground), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.SquareCap)
+        painter.setPen(pen)
+        center = self.rect().center()
+
+        if self.kind == "minimize":
+            y = center.y() + 5
+            painter.drawLine(center.x() - 6, y, center.x() + 6, y)
+        elif self.kind == "maximize":
+            if self._maximized:
+                painter.drawRect(center.x() - 4, center.y() - 7, 10, 10)
+                painter.fillRect(center.x() - 7, center.y() - 4, 10, 10, QColor(background))
+                painter.drawRect(center.x() - 7, center.y() - 4, 10, 10)
+            else:
+                painter.drawRect(center.x() - 6, center.y() - 6, 12, 12)
+        elif self.kind == "close":
+            painter.drawLine(center.x() - 6, center.y() - 6, center.x() + 6, center.y() + 6)
+            painter.drawLine(center.x() + 6, center.y() - 6, center.x() - 6, center.y() + 6)
 
 
 class WindowTitleBar(QWidget):
@@ -16,7 +91,7 @@ class WindowTitleBar(QWidget):
     maximize_restore_requested = pyqtSignal()
     close_requested = pyqtSignal()
 
-    HEIGHT = 34
+    HEIGHT = 28
 
     def __init__(self, *, title: str, icon: QIcon | None = None, is_dark_theme: bool = False) -> None:
         super().__init__()
@@ -28,7 +103,7 @@ class WindowTitleBar(QWidget):
 
         self.icon_label = QLabel()
         self.icon_label.setObjectName("WindowTitleIcon")
-        self.icon_label.setFixedSize(22, 22)
+        self.icon_label.setFixedSize(18, 18)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -37,13 +112,13 @@ class WindowTitleBar(QWidget):
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-        self.btn_minimize = self._make_button("─", "最小化", "WindowChromeButton")
-        self.btn_maximize = self._make_button("□", "最大化", "WindowChromeButton")
-        self.btn_close = self._make_button("×", "关闭", "WindowCloseButton")
+        self.btn_minimize = self._make_button("minimize", "最小化")
+        self.btn_maximize = self._make_button("maximize", "最大化")
+        self.btn_close = self._make_button("close", "关闭")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(9, 0, 0, 0)
+        layout.setSpacing(5)
         layout.addWidget(self.icon_label)
         layout.addWidget(self.title_label, stretch=1)
         layout.addWidget(self.btn_minimize)
@@ -57,14 +132,8 @@ class WindowTitleBar(QWidget):
         self.set_icon(icon)
         self.apply_theme(is_dark_theme)
 
-    def _make_button(self, text: str, tooltip: str, object_name: str) -> QPushButton:
-        button = QPushButton(text)
-        button.setObjectName(object_name)
-        button.setToolTip(tooltip)
-        button.setFixedSize(46, self.HEIGHT)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setCursor(Qt.CursorShape.ArrowCursor)
-        return button
+    def _make_button(self, kind: str, tooltip: str) -> WindowChromeButton:
+        return WindowChromeButton(kind, tooltip, self)
 
     def set_title(self, title: str) -> None:
         self.title_label.setText(str(title or "Universal Crawler Pro"))
@@ -75,11 +144,11 @@ class WindowTitleBar(QWidget):
             self.icon_label.hide()
             return
         self.icon_label.show()
-        self.icon_label.setPixmap(icon.pixmap(18, 18))
+        self.icon_label.setPixmap(icon.pixmap(16, 16))
 
     def set_maximized(self, maximized: bool) -> None:
         self._is_maximized = bool(maximized)
-        self.btn_maximize.setText("❐" if self._is_maximized else "□")
+        self.btn_maximize.set_maximized(self._is_maximized)
         self.btn_maximize.setToolTip("还原" if self._is_maximized else "最大化")
 
     def is_interactive_at(self, pos) -> bool:
@@ -90,7 +159,8 @@ class WindowTitleBar(QWidget):
 
     def apply_theme(self, is_dark: bool) -> None:
         c = theme_colors(is_dark)
-        normal_hover = c["panel_soft"] if is_dark else c["accent_soft"]
+        for button in (self.btn_minimize, self.btn_maximize, self.btn_close):
+            button.set_theme_colors(c)
         self.setStyleSheet(
             f"""
             QWidget#WindowTitleBar {{
@@ -99,31 +169,8 @@ class WindowTitleBar(QWidget):
             }}
             QLabel#WindowTitleLabel {{
                 color: {c["text"]};
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 500;
-            }}
-            QPushButton#WindowChromeButton,
-            QPushButton#WindowCloseButton {{
-                background: transparent;
-                border: none;
-                border-radius: 0px;
-                color: {c["text"]};
-                font-size: 15px;
-                font-weight: 600;
-            }}
-            QPushButton#WindowChromeButton:hover {{
-                background: {normal_hover};
-            }}
-            QPushButton#WindowChromeButton:pressed {{
-                background: {c["row_selected"]};
-            }}
-            QPushButton#WindowCloseButton:hover {{
-                background: {c["danger"]};
-                color: #ffffff;
-            }}
-            QPushButton#WindowCloseButton:pressed {{
-                background: {c["danger_hover"]};
-                color: #ffffff;
             }}
             """
         )

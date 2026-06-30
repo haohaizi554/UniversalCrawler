@@ -1758,13 +1758,12 @@ class SettingsPage(PageFrame):
 
         custom_allowed = bool(row.get("proxy_custom_allowed"))
         proxy_width = int(width or PLATFORM_DETAIL_COL_WIDTHS["proxy"])
+        active_container_width = max(proxy_width, 190) if custom_allowed else proxy_width
         collapsed_combo_width = proxy_width
-        active_combo_width = max(72, min(206, int(proxy_width * 0.58))) if custom_allowed else proxy_width
+        active_combo_width = max(72, min(206, int(active_container_width * 0.48))) if custom_allowed else proxy_width
         active_input_min_width = 0
         if custom_allowed:
-            active_input_min_width = max(54, min(112, proxy_width - active_combo_width - 8))
-            if active_combo_width + active_input_min_width + 8 > proxy_width:
-                active_combo_width = max(72, proxy_width - active_input_min_width - 8)
+            active_input_min_width = max(86, active_container_width - active_combo_width - 8)
         proxy_combo = self._build_combo(options, proxy_value, width=collapsed_combo_width)
         proxy_combo.setEnabled(editable)
         proxy_combo.setProperty("proxyCustomAllowed", "true" if custom_allowed else "false")
@@ -1801,6 +1800,7 @@ class SettingsPage(PageFrame):
 
         def _sync_custom_state(active: bool, *, focus: bool = False) -> None:
             proxy_combo.setProperty("customProxy", "true" if active else "false")
+            container.setFixedWidth(active_container_width if active else proxy_width)
             proxy_combo.setFixedWidth(active_combo_width if active else collapsed_combo_width)
             line_edit.setVisible(bool(active))
             line_edit.setEnabled(bool(active and editable))
@@ -1812,6 +1812,8 @@ class SettingsPage(PageFrame):
                 line_edit.setFocus(Qt.FocusReason.OtherFocusReason)
                 line_edit.selectAll()
             container.updateGeometry()
+            if row_container is not None:
+                row_container.updateGeometry()
             proxy_combo.style().unpolish(proxy_combo)
             proxy_combo.style().polish(proxy_combo)
             line_edit.style().unpolish(line_edit)

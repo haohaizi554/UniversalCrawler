@@ -643,6 +643,153 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(180, 116)), MainWindow.HTCAPTION)
         self.assertIsNone(MainWindow._frameless_hit_test(window, QPoint(250, 250)))
 
+    def test_frameless_resize_fallback_uses_system_resize(self):
+        from PyQt6.QtCore import QPoint, QRect
+
+        window = self._make_window()
+        window.isFullScreen = Mock(return_value=False)
+        window.isMaximized = Mock(return_value=False)
+        window._custom_maximized = False
+        window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        handle = Mock()
+        handle.startSystemResize.return_value = True
+        window.windowHandle = Mock(return_value=handle)
+
+        started = MainWindow._start_frameless_system_resize(window, QPoint(599, 499))
+
+        self.assertTrue(started)
+        handle.startSystemResize.assert_called_once()
+
+    def test_mouse_press_on_frameless_edge_accepts_started_resize(self):
+        from PyQt6.QtCore import QPoint, Qt
+
+        class _PointWrapper:
+            def toPoint(self):
+                return QPoint(599, 300)
+
+        class _MouseEvent:
+            def __init__(self):
+                self.accept = Mock()
+
+            def button(self):
+                return Qt.MouseButton.LeftButton
+
+            def globalPosition(self):
+                return _PointWrapper()
+
+        window = self._make_window()
+        window._start_frameless_system_resize = Mock(return_value=True)
+        event = _MouseEvent()
+
+        MainWindow.mousePressEvent(window, event)
+
+        event.accept.assert_called_once()
+        window._start_frameless_system_resize.assert_called_once_with(QPoint(599, 300))
+
+    def test_custom_maximized_window_does_not_expose_resize_edges(self):
+        from PyQt6.QtCore import QPoint, QRect, Qt
+
+        window = self._make_window()
+        window._custom_maximized = True
+        window.isFullScreen = Mock(return_value=False)
+        window.isMaximized = Mock(return_value=False)
+        window.windowState = Mock(return_value=Qt.WindowState.WindowNoState)
+        window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        window.window_title_bar = None
+
+        self.assertIsNone(MainWindow._frameless_hit_test(window, QPoint(599, 300)))
+
+    def test_work_area_maximize_restores_saved_geometry_without_qt_maximize_state(self):
+        from PyQt6.QtCore import QRect
+
+        window = self._make_window()
+        window._qt_initialized = True
+        window._custom_maximized = False
+        normal_geometry = QRect(10, 20, 900, 600)
+        work_area = QRect(0, 0, 1440, 960)
+        window.geometry = Mock(return_value=normal_geometry)
+        window._current_work_area_geometry = Mock(return_value=work_area)
+        window.setGeometry = Mock()
+        window.isMaximized = Mock(return_value=False)
+        window.isFullScreen = Mock(return_value=False)
+        window.showNormal = Mock()
+
+        MainWindow._maximize_to_work_area(window)
+
+        self.assertTrue(window._custom_maximized)
+        self.assertEqual(window._pre_custom_maximize_geometry, normal_geometry)
+        window.setGeometry.assert_called_once_with(work_area)
+
+        window.setGeometry.reset_mock()
+        MainWindow._restore_from_custom_or_native_maximized(window)
+
+        self.assertFalse(window._custom_maximized)
+        window.setGeometry.assert_called_once_with(normal_geometry)
+
+    def test_native_event_unhandled_returns_false_without_super_call(self):
+        window = self._make_window()
+        window._handle_frameless_native_event = Mock(return_value=None)
+
+        handled, result = MainWindow.nativeEvent(window, "windows_generic_MSG", object())
+
+        self.assertFalse(handled)
+        self.assertEqual(result, 0)
+
+    @patch("app.ui.main_window.cfg.get", return_value=None)
+    def test_fullscreen_mode_restores_previous_normal_geometry(self, _mock_cfg_get):
+        window = self._make_window()
+        window.is_fullscreen_mode = False
+        window.saveGeometry = Mock(return_value="saved-geometry")
+        window.isMaximized = Mock(return_value=False)
+        window.showFullScreen = Mock()
+        window.showNormal = Mock()
+        window.showMaximized = Mock()
+        window.restoreGeometry = Mock()
+        window.restoreState = Mock()
+        window._set_shell_widgets_visible = Mock()
+        window._sync_window_title_bar_state = Mock()
+        window.btn_fullscreen = Mock()
+
+        MainWindow.toggle_fullscreen_mode(window)
+
+        window._set_shell_widgets_visible.assert_called_once_with(False)
+        window.showFullScreen.assert_called_once()
+        self.assertTrue(window.is_fullscreen_mode)
+        self.assertEqual(window._pre_fullscreen_geometry, "saved-geometry")
+
+        window._set_shell_widgets_visible.reset_mock()
+        MainWindow.toggle_fullscreen_mode(window)
+
+        window._set_shell_widgets_visible.assert_called_once_with(True)
+        window.showNormal.assert_called_once()
+        window.showMaximized.assert_not_called()
+        window.restoreGeometry.assert_called_once_with("saved-geometry")
+        self.assertFalse(window.is_fullscreen_mode)
+        self.assertIsNone(window._pre_fullscreen_geometry)
+
+    @patch("app.ui.main_window.cfg.get", return_value=None)
+    def test_fullscreen_mode_restores_previous_maximized_state(self, _mock_cfg_get):
+        window = self._make_window()
+        window.is_fullscreen_mode = False
+        window.saveGeometry = Mock(return_value="saved-geometry")
+        window.isMaximized = Mock(return_value=True)
+        window.showFullScreen = Mock()
+        window.showNormal = Mock()
+        window.showMaximized = Mock()
+        window.restoreGeometry = Mock()
+        window.restoreState = Mock()
+        window._set_shell_widgets_visible = Mock()
+        window._sync_window_title_bar_state = Mock()
+        window.btn_fullscreen = Mock()
+
+        MainWindow.toggle_fullscreen_mode(window)
+        MainWindow.toggle_fullscreen_mode(window)
+
+        window.showNormal.assert_called_once()
+        window.showMaximized.assert_called_once()
+        window.restoreGeometry.assert_not_called()
+        self.assertFalse(window.is_fullscreen_mode)
+
     @patch("app.ui.main_window.apply_application_theme")
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.cfg.set_many")

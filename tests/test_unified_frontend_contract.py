@@ -98,6 +98,19 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             ["queue", "active", "completed", "failed", "logs", "settings", "toolbox"],
         )
 
+    def test_language_change_translates_current_page_and_defers_hidden_pages(self):
+        shell = self._make_shell()
+        calls: list[str] = []
+
+        with patch.object(shell, "_translate_page", side_effect=lambda page_id: calls.append(page_id)):
+            changed = shell.apply_language("en-US")
+            shell.show_page("active", emit_change=False)
+
+        self.assertTrue(changed)
+        self.assertEqual(calls[0], "queue")
+        self.assertIn("active", calls)
+        self.assertNotIn("completed", calls)
+
     def test_global_stylesheet_applies_without_qss_parse_warnings(self):
         from PyQt6.QtCore import qInstallMessageHandler
 
@@ -1453,6 +1466,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         shell = self._make_shell()
         shell.show_page("logs")
         logs = shell.pages["logs"]
+        logs.time_filter.setCurrentText("全部")
         snapshot = deepcopy(FrontendStateService.mock_snapshot())
         snapshot["log_items"] = [
             {
@@ -2059,7 +2073,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('id="activeAutoRetry"', active_page)
         self.assertIn('id="activeMaxConcurrent"', active_page)
         self.assertIn('<option value="3" selected>3（推荐）</option>', active_page)
-        self.assertIn('<option value="8">8</option>', active_page)
+        self.assertIn('<option value="1">1</option>', active_page)
+        self.assertIn('<option value="5">5</option>', active_page)
+        self.assertNotIn('<option value="8">8</option>', active_page)
         self.assertNotIn('<option value="12" selected>', active_page)
         self.assertIn('<option value="10">', active_page)
         self.assertIn("function syncActiveDownloadOptions", content)

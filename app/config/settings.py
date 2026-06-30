@@ -541,7 +541,7 @@ class PlaybackSettings:
     remember_position: bool = True
     hardware_acceleration: bool = True
     autoplay_next: bool = True
-    manual_image_switch: bool = True
+    manual_image_switch: bool = False
     image_auto_advance_interval_seconds: int = 5
 
     def normalize(self) -> None:

@@ -57,6 +57,7 @@ class AppShell(QWidget):
         self.current_page_id = "queue"
         self._last_snapshot: dict | None = None
         self._language = "zh-CN"
+        self._translation_dirty_pages: set[str] = set()
         self._top_quantity_signature: tuple | None = None
         self.top_bar = TopBarWidget(is_dark_theme)
         self.sidebar = SidebarWidget()
@@ -313,8 +314,10 @@ class AppShell(QWidget):
             self.top_bar.set_language(normalized)
             self.sidebar.set_language(normalized)
             self.status_bar.set_language(normalized)
-            for page_id in self.pages:
-                self._translate_page(page_id)
+            self._translation_dirty_pages = set(self.pages)
+            self._translation_dirty_pages.discard("settings")
+            self._translation_dirty_pages.discard(self.current_page_id)
+            self._translate_page(self.current_page_id)
         finally:
             self.setUpdatesEnabled(updates_enabled)
             if updates_enabled:
@@ -329,12 +332,13 @@ class AppShell(QWidget):
         render = getattr(page, "render", None)
         if callable(render):
             render(snapshot)
-        should_translate = True
+        should_translate = page_id in self._translation_dirty_pages
         consume_translation_dirty = getattr(page, "consume_translation_dirty", None)
         if callable(consume_translation_dirty):
-            should_translate = bool(consume_translation_dirty())
+            should_translate = bool(consume_translation_dirty()) or should_translate
         if should_translate:
             self._translate_page(page_id)
+            self._translation_dirty_pages.discard(page_id)
 
     def _translate_page(self, page_id: str) -> None:
         if page_id == "settings":
