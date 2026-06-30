@@ -12,7 +12,7 @@ from app.ui.styles import theme_colors
 class WindowChromeButton(QAbstractButton):
     """Window control button painted by Qt instead of a font glyph."""
 
-    WIDTH = 46
+    WIDTH = 38
 
     def __init__(self, kind: str, tooltip: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -66,24 +66,24 @@ class WindowChromeButton(QAbstractButton):
             painter.fillRect(self.rect(), QColor(background))
 
         foreground = "#ffffff" if self.kind == "close" and hovered else colors["text"]
-        pen = QPen(QColor(foreground), 1.6)
+        pen = QPen(QColor(foreground), 1.35)
         pen.setCapStyle(Qt.PenCapStyle.SquareCap)
         painter.setPen(pen)
         center = self.rect().center()
 
         if self.kind == "minimize":
-            y = center.y() + 5
-            painter.drawLine(center.x() - 6, y, center.x() + 6, y)
+            y = center.y() + 4
+            painter.drawLine(center.x() - 5, y, center.x() + 5, y)
         elif self.kind == "maximize":
             if self._maximized:
-                painter.drawRect(center.x() - 4, center.y() - 7, 10, 10)
-                painter.fillRect(center.x() - 7, center.y() - 4, 10, 10, QColor(background))
-                painter.drawRect(center.x() - 7, center.y() - 4, 10, 10)
+                painter.drawRect(center.x() - 3, center.y() - 6, 9, 9)
+                painter.fillRect(center.x() - 6, center.y() - 3, 9, 9, QColor(background))
+                painter.drawRect(center.x() - 6, center.y() - 3, 9, 9)
             else:
-                painter.drawRect(center.x() - 6, center.y() - 6, 12, 12)
+                painter.drawRect(center.x() - 5, center.y() - 5, 10, 10)
         elif self.kind == "close":
-            painter.drawLine(center.x() - 6, center.y() - 6, center.x() + 6, center.y() + 6)
-            painter.drawLine(center.x() + 6, center.y() - 6, center.x() - 6, center.y() + 6)
+            painter.drawLine(center.x() - 5, center.y() - 5, center.x() + 5, center.y() + 5)
+            painter.drawLine(center.x() + 5, center.y() - 5, center.x() - 5, center.y() + 5)
 
 
 class WindowTitleBar(QWidget):

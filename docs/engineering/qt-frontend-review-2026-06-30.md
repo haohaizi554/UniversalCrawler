@@ -41,12 +41,19 @@
 10. Count badges are not buttons.
     Sidebar counters should use compact badge proportions, usually a 20-24px height with width growing by content. Large circular badges compete with navigation labels and make the sidebar feel less mature.
 
+11. Minimum window size is a layout contract, not a cosmetic value.
+    A three-column desktop shell should not be shrinkable below the point where top-bar actions, the sidebar, and the active page cards overlap. Keep the configured minimum large enough for real work, but clamp it to the current screen work area for small displays and remote/offscreen sessions.
+
+12. Caption controls need separate hit area and icon scale.
+    In a compact custom title bar, a 28px height pairs better with roughly 36-40px control widths and smaller painted glyphs. Keeping native-like hit testing while shrinking the glyphs avoids the oversized button look.
+
 ## Review Findings To Track
 
 - Done 2026-06-30: `app/ui/main_window.py` now uses native hit-test plus `startSystemResize()` fallback and a window-scoped event filter for border dragging.
 - Done 2026-06-30: `app/ui/main_window.py` now maps resize edges to native cursor shapes on hover, and `app/ui/layout/window_title_bar.py` uses a compact 28px custom title bar.
 - Done 2026-06-30: `app/ui/main_window.py` now applies default/minimum window geometry, clamps restored geometry to the screen work area, and caps Win32 max-track resize to the current monitor work area.
 - Done 2026-06-30: `app/ui/layout/sidebar.py` now uses compact 24px count badges with content-based width instead of oversized circular counters.
+- Done 2026-06-30: `app/ui/main_window.py` now raises the roomy-screen minimum window size to protect the seven-page shell layout, while still clamping to small screen work areas; `app/ui/layout/window_title_bar.py` now uses narrower 38px caption controls with smaller glyphs.
 - Done 2026-06-30: `app/ui/layout/app_shell.py` now translates only the current page immediately and defers hidden pages with dirty flags.
 - Done 2026-06-30: `app/ui/pages/log_center_page.py` now skips unchanged log renders and computes category counts in a single filtered pass.
 - Done 2026-06-30: `app/services/frontend_state_service.py` now dispatches runtime GUI settings through a queued QObject invoker when a Qt app exists.

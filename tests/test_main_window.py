@@ -684,7 +684,7 @@ class MainWindowTests(unittest.TestCase):
         from app.ui.layout.window_title_bar import WindowChromeButton, WindowTitleBar
 
         self.assertEqual(WindowTitleBar.HEIGHT, 28)
-        self.assertEqual(WindowChromeButton.WIDTH, 46)
+        self.assertEqual(WindowChromeButton.WIDTH, 38)
 
     def test_default_window_size_is_bounded_by_available_screen(self):
         from PyQt6.QtCore import QRect, QSize
@@ -701,6 +701,8 @@ class MainWindowTests(unittest.TestCase):
 
         roomy = MainWindow._default_window_size_for_available(QRect(0, 0, 2560, 1440))
         self.assertEqual(roomy, QSize(1500, 880))
+        roomy_minimum = MainWindow._minimum_window_size_for_available(QRect(0, 0, 2560, 1440))
+        self.assertEqual(roomy_minimum, QSize(1360, 760))
 
     def test_constrain_window_geometry_keeps_window_inside_available_screen(self):
         from PyQt6.QtCore import QRect, QSize
