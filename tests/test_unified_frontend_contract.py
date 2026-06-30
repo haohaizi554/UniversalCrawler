@@ -339,6 +339,15 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             self.assertIn(f"background: {dark_input}", combo.styleSheet())
             self.assertIn(theme_colors(True)["panel"], combo.view().styleSheet())
 
+    def test_log_filter_text_inputs_use_theme_focus_border(self):
+        light_style = generate_stylesheet(False)
+        dark_style = generate_stylesheet(True)
+
+        self.assertIn("QLineEdit#LogFilterControl:focus", light_style)
+        self.assertIn(f"border: 2px solid {theme_colors(False)['accent']}", light_style)
+        self.assertIn("QLineEdit#LogFilterControl:focus", dark_style)
+        self.assertIn(f"border: 2px solid {theme_colors(True)['accent']}", dark_style)
+
     def test_main_window_directory_picker_uses_native_folder_picker(self):
         window = MainWindow()
         self.addCleanup(window.deleteLater)
@@ -1495,6 +1504,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         shell.render(snapshot, changed_sections={"log_items"})
         self.app.processEvents()
+        message_index = logs.table.model().index(0, 4)
+        self.assertEqual(
+            message_index.data(Qt.ItemDataRole.TextAlignmentRole),
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter),
+        )
         self.assertTrue(logs.detail_copy_button.isEnabled())
         self.assertTrue(logs.detail_export_button.isEnabled())
         self.assertTrue(logs.json_copy_button.isEnabled())

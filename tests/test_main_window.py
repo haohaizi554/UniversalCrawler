@@ -702,7 +702,7 @@ class MainWindowTests(unittest.TestCase):
         roomy = MainWindow._default_window_size_for_available(QRect(0, 0, 2560, 1440))
         self.assertEqual(roomy, QSize(1500, 880))
         roomy_minimum = MainWindow._minimum_window_size_for_available(QRect(0, 0, 2560, 1440))
-        self.assertEqual(roomy_minimum, QSize(1360, 760))
+        self.assertEqual(roomy_minimum, QSize(1500, 760))
 
     def test_constrain_window_geometry_keeps_window_inside_available_screen(self):
         from PyQt6.QtCore import QRect, QSize

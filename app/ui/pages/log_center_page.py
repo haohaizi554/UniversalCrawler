@@ -2475,6 +2475,7 @@ class LogCenterPage(PageFrame):
         row["source_display"] = display_text
         row["source_display_full"] = display_text
         row["source_display_align"] = "center"
+        row["message_summary_align"] = "center"
 
         result_type = self._derive_result_type(item)
         raw_level = self._normalized_raw_level(item)

@@ -374,6 +374,11 @@ QLineEdit#LogFilterControl {{
     font-size: 13px;
     color: {c["text"]};
 }}
+QLineEdit#LogFilterControl:focus {{
+    background: {c["input"]};
+    border: 2px solid {c["accent"]};
+    padding: 1px 9px;
+}}
 QComboBox#LogFilterControl QAbstractItemView {{
     background: {c["panel"]};
     color: {c["text"]};

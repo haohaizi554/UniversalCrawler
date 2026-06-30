@@ -513,7 +513,16 @@ class SettingsPage(PageFrame):
         self._relayout_pending = False
         if getattr(self, "_rendering", False):
             return
+        previous_inner_width = getattr(self, "_last_platform_inner_width", None)
         self._sync_content_card_widths()
+        current_inner_width = self._form_inner_width()
+        if (
+            self._current_group == self.GROUP_ORDER[2]
+            and self._settings_snapshot
+            and previous_inner_width is not None
+            and abs(int(previous_inner_width) - int(current_inner_width)) >= 4
+        ):
+            self._render_current_group()
 
     def _content_card_width(self) -> int:
         detail_width = self.detail_panel.width() if hasattr(self, "detail_panel") else 1000
@@ -1996,6 +2005,7 @@ class SettingsPage(PageFrame):
 
     def _build_platform_settings(self, layout: QVBoxLayout, value: Any) -> None:
         rows = value if isinstance(value, list) else []
+        self._last_platform_inner_width = self._form_inner_width()
 
         layout.addWidget(self._build_platform_summary_bar(rows), 0, Qt.AlignmentFlag.AlignTop)
         layout.addSpacing(8)
