@@ -139,12 +139,11 @@ LOG_RETENTION_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "7", "label": "7 \u5929"},
 )
 UI_LOG_MAX_DISPLAY_OPTIONS: tuple[dict[str, str], ...] = (
+    {"value": "100", "label": "100 \u6761"},
     {"value": "300", "label": "300 \u6761\uff08\u63a8\u8350\uff09"},
     {"value": "500", "label": "500 \u6761"},
-    {"value": "1000", "label": "1000 \u6761"},
-    {"value": "2000", "label": "2000 \u6761"},
-    {"value": "5000", "label": "5000 \u6761"},
 )
+UI_LOG_MAX_DISPLAY_DEFAULT = 300
 PROXY_APP_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "\u7cfb\u7edf\u4ee3\u7406", "label": "\u7cfb\u7edf\u4ee3\u7406"},
     {"value": "\u76f4\u8fde", "label": "\u76f4\u8fde\uff08\u4e0d\u4f7f\u7528\u4ee3\u7406\uff09"},
@@ -242,6 +241,16 @@ def log_retention_options() -> list[dict[str, str]]:
 
 def ui_log_max_display_options() -> list[dict[str, str]]:
     return [dict(option) for option in UI_LOG_MAX_DISPLAY_OPTIONS]
+
+
+def normalize_ui_log_max_display_count(value: Any, default: int = UI_LOG_MAX_DISPLAY_DEFAULT) -> int:
+    """Normalize UI log display count to the supported lightweight choices."""
+    try:
+        numeric = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        numeric = int(default)
+    allowed = {int(option["value"]) for option in UI_LOG_MAX_DISPLAY_OPTIONS}
+    return numeric if numeric in allowed else int(default)
 
 
 def proxy_app_options() -> list[dict[str, str]]:
@@ -567,7 +576,7 @@ class LogSettings:
 
         if str(self.retention_days) not in _option_values(LOG_RETENTION_OPTIONS):
             self.retention_days = 1
-        self.ui_log_max_display_count = max(100, min(self.ui_log_max_display_count, 5000))
+        self.ui_log_max_display_count = normalize_ui_log_max_display_count(self.ui_log_max_display_count)
         if self.level not in _option_values(LOG_LEVEL_OPTIONS):
             self.level = "info"
 
@@ -857,6 +866,8 @@ class ConfigManager:
             if language not in _option_values(LANGUAGE_OPTIONS):
                 raise ConfigValidationError(f"未知界面语言: {value}")
             return language
+        if section == "logging" and key == "ui_log_max_display_count":
+            return normalize_ui_log_max_display_count(value)
         return value
 
     def _reset_config(self) -> None:

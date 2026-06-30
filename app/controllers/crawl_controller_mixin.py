@@ -8,6 +8,8 @@ from app.core.events import (
     build_log_event,
     build_selection_required_event,
 )
+from app.config import cfg
+from app.core.media_filter import should_skip_for_video_only
 from app.core.plugin_registry import registry
 from app.core.state import CrawlStatus
 from app.debug_logger import debug_logger
@@ -16,6 +18,33 @@ from shared.spider_session_runtime import SpiderSession, SpiderSessionBindings
 
 class CrawlControllerMixin:
     """Shared crawl-session orchestration for host-backed controllers."""
+
+    def _video_only_mode_enabled(self) -> bool:
+        manager_value = getattr(getattr(self, "dl_manager", None), "video_only", None)
+        if isinstance(manager_value, bool):
+            return manager_value
+        return bool(cfg.get("download", "video_only", False))
+
+    def _should_skip_for_video_only(self, item: VideoItem) -> bool:
+        return self._video_only_mode_enabled() and should_skip_for_video_only(item)
+
+    def _log_video_only_skip(self, item: VideoItem) -> None:
+        title = getattr(item, "title", "") or getattr(item, "url", "")
+        self._host().append_log(
+            f"Video-only mode skipped non-video resource: {title}",
+            trace_id=self._item_trace_id(item),
+            source="Downloader",
+            level="INFO",
+        )
+        debug_logger.log(
+            component="ApplicationController",
+            action="skip_non_video_resource",
+            message="Video-only mode skipped a non-video resource",
+            status_code="APP_SKIP_VIDEO_ONLY",
+            context=self._item_context(item),
+            details=self._item_details(item),
+            trace_id=self._item_trace_id(item),
+        )
 
     def _emit_spider_log_event(self, message: str) -> None:
         trace_id = getattr(getattr(self, "current_spider", None), "ui_trace_id", None)
@@ -163,6 +192,9 @@ class CrawlControllerMixin:
 
     def _on_spider_item_found(self, item):
         """Append a newly discovered item into the host and queue it for download."""
+        if self._should_skip_for_video_only(item):
+            self._log_video_only_skip(item)
+            return
         self._prepare_pending_item(item)
         self._store_video_item(item)
         self._host().add_video_row(item)

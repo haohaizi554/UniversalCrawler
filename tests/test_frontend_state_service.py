@@ -284,14 +284,25 @@ class FrontendStateServiceTests(unittest.TestCase):
                 runtime_payload = download_manager.set_runtime_options.call_args.kwargs
                 self.assertEqual(runtime_payload["request_timeout"], 120)
 
+                download_manager.set_runtime_options.reset_mock()
                 result = service.handle_action(
                     "update_setting",
-                    {"section": "logging", "key": "ui_log_max_display_count", "value": 600},
+                    {"section": "download", "key": "video_only", "value": True},
+                )
+                self.assertEqual(result["status"], "ok")
+                download_manager.set_runtime_options.assert_called()
+                runtime_payload = download_manager.set_runtime_options.call_args.kwargs
+                self.assertTrue(runtime_payload["video_only"])
+                self.assertTrue(manager.get("download", "video_only"))
+
+                result = service.handle_action(
+                    "update_setting",
+                    {"section": "logging", "key": "ui_log_max_display_count", "value": 500},
                 )
                 self.assertEqual(result["status"], "ok")
                 configure_logger.assert_called()
                 self.assertFalse(configure_logger.call_args.kwargs["cleanup_old_logs"])
-                self.assertEqual(service.app_state.log_buffer.maxlen, 600)
+                self.assertEqual(service.app_state.log_buffer.maxlen, 500)
 
                 result = service.handle_action(
                     "update_setting",
@@ -931,11 +942,11 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(items[0]["message_summary"], "file-log-200")
         self.assertEqual(items[-1]["message_summary"], "file-log-699")
 
-    def test_large_log_display_limit_does_not_backfill_entire_file_cache(self):
+    def test_max_log_display_limit_does_not_backfill_entire_file_cache(self):
         original_latest_file = debug_logger.latest_file
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
-            manager.set("logging", "ui_log_max_display_count", 2000)
+            manager.set("logging", "ui_log_max_display_count", 500)
             latest_file = Path(temp_dir) / "latest_debug.log"
             latest_file.write_text(
                 "\n".join(
@@ -974,7 +985,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 initial_items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
                 service.handle_action(
                     "update_setting",
-                    {"section": "logging", "key": "ui_log_max_display_count", "value": 1000},
+                    {"section": "logging", "key": "ui_log_max_display_count", "value": 500},
                 )
                 expanded_items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
             finally:
@@ -1176,6 +1187,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 self.values = {
                     ("download", "max_concurrent"): 3,
                     ("download", "max_retries"): 3,
+                    ("download", "video_only"): False,
                     ("download", "image_respects_concurrency"): False,
                 }
                 self.set_calls = []
@@ -1205,11 +1217,13 @@ class FrontendStateServiceTests(unittest.TestCase):
                 "auto_retry": True,
                 "max_retries": 5,
                 "max_concurrent": 5,
+                "video_only": False,
                 "image_respects_concurrency": False,
             },
         )
         self.assertIn(("download", "max_concurrent", 5), config.set_calls)
         self.assertIn(("download", "max_retries", 5), config.set_calls)
+        self.assertIn(("download", "video_only", False), config.set_calls)
         self.assertIn(("download", "image_respects_concurrency", False), config.set_calls)
         manager.set_max_concurrent.assert_called_once_with(5)
         cache.set.assert_called_once_with("download.auto_retry", True, persist=False)
@@ -1220,6 +1234,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 self.values = {
                     ("download", "max_concurrent"): 3,
                     ("download", "max_retries"): 3,
+                    ("download", "video_only"): False,
                     ("download", "image_respects_concurrency"): False,
                 }
                 self.set_calls = []
@@ -1250,6 +1265,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 self.values = {
                     ("download", "max_concurrent"): 3,
                     ("download", "max_retries"): 3,
+                    ("download", "video_only"): False,
                     ("download", "image_respects_concurrency"): False,
                 }
                 self.set_calls = []
@@ -1283,12 +1299,12 @@ class FrontendStateServiceTests(unittest.TestCase):
 
     def test_download_options_snapshot_uses_effective_manager_values(self):
         class FakeConfig:
-            data = {"download": {"max_concurrent": 3, "max_retries": 7, "image_respects_concurrency": True}}
+            data = {"download": {"max_concurrent": 3, "max_retries": 7, "video_only": False, "image_respects_concurrency": True}}
 
             def get(self, section, key, default=None):
                 return self.data.get(section, {}).get(key, default)
 
-        manager = SimpleNamespace(max_concurrent=6, image_respects_concurrency=True)
+        manager = SimpleNamespace(max_concurrent=6, video_only=True, image_respects_concurrency=True)
         controller = SimpleNamespace(_dl_manager=manager)
         cache = Mock()
         cache.get.return_value = False
@@ -1302,6 +1318,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 "auto_retry": False,
                 "max_retries": 7,
                 "max_concurrent": 5,
+                "video_only": True,
                 "image_respects_concurrency": True,
             },
         )

@@ -101,8 +101,34 @@ class XiaohongshuDownloader(BaseDownloader):
             return
 
         completed = 0
+        downloaded_by_image: dict[int, int] = {}
+        total_by_image: dict[int, int] = {}
+        progress_by_image: dict[int, int] = {}
         first_index = total + 1
         progress_lock = threading.RLock()
+
+        def emit_gallery_progress(
+            idx: int,
+            image_progress: int,
+            *,
+            image_bytes_downloaded: int | None = None,
+            image_bytes_total: int | None = None,
+        ) -> None:
+            with progress_lock:
+                if image_bytes_downloaded is not None:
+                    downloaded_by_image[idx] = max(0, int(image_bytes_downloaded or 0))
+                if image_bytes_total is not None:
+                    total_by_image[idx] = max(0, int(image_bytes_total or 0))
+                progress_by_image[idx] = max(0, min(100, int(image_progress or 0)))
+                aggregate_downloaded = sum(downloaded_by_image.values())
+                aggregate_total = sum(total_by_image.values())
+                aggregate_progress = int((completed + sum(progress_by_image.values()) / 100) / total * 100)
+            self._emit_progress(
+                progress_callback,
+                aggregate_progress,
+                bytes_downloaded=aggregate_downloaded if aggregate_downloaded > 0 else None,
+                bytes_total=aggregate_total if aggregate_total > 0 else None,
+            )
 
         def download_one(idx: int, image: dict[str, str]) -> tuple[int, str]:
             if check_stop_func():
@@ -117,11 +143,26 @@ class XiaohongshuDownloader(BaseDownloader):
             elif ".gif" in lowered:
                 ext = ".gif"
             target_path = os.path.join(save_dir, f"{base_name}_{idx}{ext}")
+
+            def image_progress_callback(
+                progress: int,
+                *,
+                bytes_downloaded: int | None = None,
+                bytes_total: int | None = None,
+            ) -> None:
+                emit_gallery_progress(
+                    idx,
+                    progress,
+                    image_bytes_downloaded=bytes_downloaded,
+                    image_bytes_total=bytes_total,
+                )
+
             self._download_http_file(
                 url=image_url,
                 save_path=target_path,
                 headers=headers,
                 check_stop_func=check_stop_func,
+                progress_callback=image_progress_callback,
                 max_retries=cfg.get("download", "max_retries", 3),
                 timeout=cfg.get("download", "request_timeout", 60),
                 chunk_size=cfg.get("download", "chunk_size", 65536),
@@ -139,10 +180,26 @@ class XiaohongshuDownloader(BaseDownloader):
                     if idx < first_index:
                         first_index = idx
                         video_item.local_path = target_path
+                    progress_by_image.pop(idx, None)
                     completed += 1
                     progress = int(completed / total * 100)
-                self._emit_progress(progress_callback, progress)
-        self._emit_progress(progress_callback, 100)
+                    aggregate_downloaded = sum(downloaded_by_image.values())
+                    aggregate_total = sum(total_by_image.values())
+                self._emit_progress(
+                    progress_callback,
+                    progress,
+                    bytes_downloaded=aggregate_downloaded if aggregate_downloaded > 0 else None,
+                    bytes_total=aggregate_total if aggregate_total > 0 else None,
+                )
+        with progress_lock:
+            aggregate_downloaded = sum(downloaded_by_image.values())
+            aggregate_total = sum(total_by_image.values())
+        self._emit_progress(
+            progress_callback,
+            100,
+            bytes_downloaded=aggregate_downloaded if aggregate_downloaded > 0 else None,
+            bytes_total=aggregate_total if aggregate_total > 0 else None,
+        )
 
     @classmethod
     def _gallery_image_worker_count(cls, total: int) -> int:

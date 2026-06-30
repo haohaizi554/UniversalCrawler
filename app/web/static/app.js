@@ -55,8 +55,8 @@ function logSettingsSnapshot() {
 
 function uiLogDisplayLimit() {
   const raw = Number(logSettingsSnapshot().ui_log_max_display_count || 300);
-  const value = Number.isFinite(raw) ? raw : 300;
-  return Math.max(100, Math.min(value, 5000));
+  const value = Number.isFinite(raw) ? Math.floor(raw) : 300;
+  return [100, 300, 500].includes(value) ? value : 300;
 }
 
 function trimFrontendLogItems() {
@@ -1072,7 +1072,7 @@ function buildMockState() {
           image_auto_advance_interval_seconds: [{ value: "1", label: "1 秒" }, { value: "3", label: "3 秒" }, { value: "5", label: "5 秒（推荐）" }, { value: "10", label: "10 秒" }],
         },
       },
-      "日志设置": { retention_days: 1, ui_log_max_display_count: 300, auto_copy_trace_on_error: true, _options: { retention_days: [{ value: "1", label: "1 天（推荐）" }, { value: "3", label: "3 天" }, { value: "5", label: "5 天" }, { value: "7", label: "7 天" }], ui_log_max_display_count: [{ value: "300", label: "300 条（推荐）" }, { value: "500", label: "500 条" }, { value: "1000", label: "1000 条" }, { value: "2000", label: "2000 条" }, { value: "5000", label: "5000 条" }] } },
+      "日志设置": { retention_days: 1, ui_log_max_display_count: 300, auto_copy_trace_on_error: true, _options: { retention_days: [{ value: "1", label: "1 天（推荐）" }, { value: "3", label: "3 天" }, { value: "5", label: "5 天" }, { value: "7", label: "7 天" }], ui_log_max_display_count: [{ value: "100", label: "100 条" }, { value: "300", label: "300 条（推荐）" }, { value: "500", label: "500 条" }] } },
       "外观设置": { follow_system: false, theme: "light", accent: "blue", accent_label: "蓝色", scale: "100%", font_size: "medium", font_size_label: "中（推荐）", language: "zh-CN", language_label: "简体中文（推荐）", _options: { theme: [{ value: "light", label: "浅色" }, { value: "dark", label: "深色" }], accent: [{ value: "blue", label: "蓝色" }, { value: "green", label: "绿色" }], scale: [{ value: "90%", label: "90%" }, { value: "100%", label: "100%（推荐）" }, { value: "110%", label: "110%" }, { value: "125%", label: "125%" }], font_size: [{ value: "small", label: "小" }, { value: "medium", label: "中（推荐）" }, { value: "large", label: "大" }], language: [{ value: "zh-CN", label: "简体中文（推荐）" }, { value: "en-US", label: "English" }, { value: "zh-TW", label: "繁體中文" }] } },
     },
     settings_contract: {

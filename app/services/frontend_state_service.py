@@ -68,12 +68,13 @@ from app.services.frontend_event_aggregator import (
     FrontendEventAggregator,
     sections_for_topic,
 )
+from app.services import frontend_video_adapter as video_adapter
 from app.services.icon_registry import icon_manifest, tool_icon_file
 from app.services.media_metadata_service import MediaMetadata, MediaMetadataService
 from app.utils.runtime_paths import user_data_root
 from app.utils.safe_slot import safe_slot
 
-QUEUE_STATUSES = ("待解析", "解析中", "已解析", "排队中", "已存在", "待下载")
+QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
 PLATFORM_AUTH_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "douyin": ("douyin_cookie_file", ("sessionid_ss",)),
     "bilibili": ("bilibili_cookie_file", ("SESSDATA",)),
@@ -845,18 +846,7 @@ class FrontendStateService:
         return ids
 
     def _bucket_for_item(self, item: VideoItem, *, queued_ids: set[str], active_ids: set[str]) -> str:
-        parsed = parse_video_status(item.status)
-        if parsed in {VideoStatus.COMPLETED, VideoStatus.LOCAL}:
-            return "completed"
-        if parsed in {VideoStatus.FAILED, VideoStatus.TIMED_OUT}:
-            return "failed"
-        if item.id in active_ids or parsed == VideoStatus.DOWNLOADING:
-            return "active"
-        if item.progress >= 100 and item.local_path:
-            return "completed"
-        if item.id in queued_ids or parsed == VideoStatus.PENDING:
-            return "queue"
-        return "queue"
+        return video_adapter.bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
 
     def _platform_label(self, item: VideoItem) -> str:
         plugin = registry.get_plugin(item.source)
@@ -864,104 +854,25 @@ class FrontendStateService:
 
     @staticmethod
     def _trace_id(item: VideoItem) -> str:
-        return str((item.meta or {}).get("trace_id") or "")
+        return video_adapter.trace_id(item)
 
     def _queue_status(self, item: VideoItem, queued_ids: set[str]) -> str:
-        meta = item.meta or {}
-        parsed = parse_video_status(item.status)
-        if parsed == VideoStatus.LOCAL:
-            return "本地"
-        if meta.get("frontend_status") in QUEUE_STATUSES:
-            return str(meta["frontend_status"])
-        if meta.get("already_exists"):
-            return "已存在"
-        if item.id in queued_ids:
-            return "排队中"
-        raw = str(item.status or "")
-        if "解析" in raw:
-            return "已解析"
-        if "等待" in raw:
-            return "待下载"
-        return "待解析" if not item.url else "待下载"
+        return video_adapter.queue_status(item, queued_ids)
 
     def _queue_item(self, item: VideoItem, *, queued_ids: set[str]) -> dict[str, Any]:
-        meta = item.meta or {}
-        return {
-            "id": item.id,
-            "title": item.title,
-            "subtitle": self._queue_subtitle(meta),
-            "platform": self._platform_label(item),
-            "platform_id": item.source,
-            "status": self._queue_status(item, queued_ids),
-            "source_url": item.url,
-            "trace_id": self._trace_id(item),
-            "created_at": str(meta.get("created_at") or meta.get("discovered_at") or meta.get("added_at") or ""),
-            "actions": ["delete"],
-        }
+        return video_adapter.queue_item(item, queued_ids=queued_ids, platform_label=self._platform_label)
 
     @staticmethod
     def _queue_subtitle(meta: dict) -> str:
-        raw = str(meta.get("created_at") or meta.get("discovered_at") or meta.get("added_at") or "").strip()
-        if not raw:
-            return ""
-        return raw.replace("T", " ")[:19]
+        return video_adapter.queue_subtitle(meta)
 
     def _active_item(self, item: VideoItem) -> dict[str, Any]:
-        meta = item.meta or {}
-        progress = int(item.progress or 0)
-        chunks_done = int(meta.get("chunks_done", 0) or 0)
-        chunks_total = int(meta.get("chunks_total", 0) or 0)
-        if chunks_total <= 0:
-            chunks_total = 100
-            chunks_done = progress
-        path = Path(item.local_path) if item.local_path else None
-        save_dir = str(meta.get("save_dir") or meta.get("download_dir") or (path.parent if path is not None else self._current_save_dir()))
-        output_filename = str(meta.get("output_filename") or meta.get("filename") or (path.name if path is not None else item.title))
-        speed = str(meta.get("speed") or "0 B/s")
-        remaining_time = str(meta.get("remaining_time") or meta.get("eta") or "--")
-        trace_id = self._trace_id(item)
-        write_status = str(meta.get("write_status") or "\u7b49\u5f85\u5199\u5165")
-        merge_status = str(meta.get("merge_status") or "\u7b49\u5f85\u5408\u5e76")
-        return {
-            "id": item.id,
-            "title": item.title,
-            "platform": self._platform_label(item),
-            "platform_id": item.source,
-            "progress": progress,
-            "save_dir": save_dir,
-            "output_filename": output_filename,
-            "speed": speed,
-            "speed_bps": int(meta.get("speed_bps") or 0),
-            "bytes_downloaded": int(meta.get("bytes_downloaded", 0) or 0),
-            "bytes_total": int(meta.get("bytes_total", 0) or 0),
-            "eta_seconds": meta.get("eta_seconds"),
-            "eta": str(meta.get("eta") or "--"),
-            "remaining_time": remaining_time,
-            "trace_id": trace_id,
-            "thread_count": int(meta.get("thread_count", meta.get("threads", 1)) or 1),
-            "retry_count": int(meta.get("retry_count", 0) or 0),
-            "write_status": write_status,
-            "merge_status": merge_status,
-            "source_url": item.url,
-            "chunk_progress": {
-                "completed": chunks_done,
-                "total": chunks_total,
-                "percent": progress,
-            },
-            "speed_trend": list(meta.get("speed_trend") or self._default_speed_trend(progress)),
-            "events": self._active_events(
-                item,
-                progress=progress,
-                chunks_done=chunks_done,
-                chunks_total=chunks_total,
-                speed=speed,
-                remaining_time=remaining_time,
-                write_status=write_status,
-                merge_status=merge_status,
-                trace_id=trace_id,
-            ),
-            "actions": ["delete"],
-        }
+        return video_adapter.active_item(
+            item,
+            platform_label=self._platform_label,
+            current_save_dir=self._current_save_dir(),
+            active_events=self._active_events,
+        )
 
     def _completed_item(self, item: VideoItem) -> dict[str, Any]:
         path = Path(item.local_path) if item.local_path else None
@@ -1435,15 +1346,11 @@ class FrontendStateService:
 
     @classmethod
     def _display_resolution(cls, *values: Any) -> str:
-        for value in values:
-            text = str(value or "").strip()
-            if cls._is_real_resolution(text):
-                return text
-        return "--"
+        return video_adapter.display_resolution(*values)
 
     @staticmethod
     def _is_real_resolution(value: Any) -> bool:
-        return bool(re.match(r"^\d{2,5}\s*x\s*\d{2,5}$", str(value or "").strip(), flags=re.IGNORECASE))
+        return video_adapter.is_real_resolution(value)
 
     @classmethod
     def _same_local_path(cls, left: str, right: str) -> bool:
@@ -1465,28 +1372,11 @@ class FrontendStateService:
 
     @staticmethod
     def _display_duration(value: Any) -> str:
-        if isinstance(value, (int, float)):
-            return MediaMetadataService.format_duration(value)
-        text = str(value or "").strip()
-        if not text or text == "--":
-            return ""
-        if text.isdigit():
-            return MediaMetadataService.format_duration(text)
-        return text
+        return video_adapter.display_duration(value)
 
     @staticmethod
     def _format_completed_at_table(value: str) -> str:
-        text = str(value or "").strip().replace("T", " ")
-        if not text or text == "--":
-            return text or "--"
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S"):
-            try:
-                return datetime.strptime(text[:19], fmt).strftime("%m-%d %H:%M")
-            except ValueError:
-                pass
-        if len(text) >= 16 and text[4:5] in {"-", "/"}:
-            return text[5:16]
-        return text
+        return video_adapter.format_completed_at_table(value)
 
     def _failed_item(
         self,
@@ -1494,35 +1384,14 @@ class FrontendStateService:
         *,
         log_excerpt_index: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        meta = item.meta or {}
-        reason = str(meta.get("download_error") or meta.get("error") or item.status or "未知错误")
-        trace_id = self._trace_id(item)
-        category = self._failure_category(reason)
-        log_excerpt_items = self._failed_log_excerpt_items(item, trace_id, log_excerpt_index)
-        failed_at = str(meta.get("failed_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        return {
-            "id": item.id,
-            "title": item.title,
-            "failed_at": failed_at,
-            "failed_at_table": self._format_failed_at_table(failed_at),
-            "reason": reason,
-            "reason_detail": reason,
-            "reason_label": category["label"],
-            "reason_label_align": "center",
-            "reason_category": category["key"],
-            "reason_icon_file": category["icon_file"],
-            "status": "失败",
-            "status_label": "失败",
-            "status_icon_file": "status_failed.png",
-            "trace_id": trace_id,
-            "platform": self._platform_label(item),
-            "platform_id": item.source,
-            "source_url": item.url,
-            "log_excerpt": [entry["message"] for entry in log_excerpt_items],
-            "log_excerpt_items": log_excerpt_items,
-            "solutions": self._solutions_for_reason(reason),
-            "actions": ["copy_diagnostics", "delete"],
-        }
+        item_trace_id = self._trace_id(item)
+        log_excerpt_items = self._failed_log_excerpt_items(item, item_trace_id, log_excerpt_index)
+        return video_adapter.failed_item(
+            item,
+            platform_label=self._platform_label,
+            log_excerpt_items=log_excerpt_items,
+            failed_at_fallback=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
     @staticmethod
     def _safe_stat(path: Path | None):
@@ -1541,29 +1410,19 @@ class FrontendStateService:
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
-        size = float(max(size_bytes, 0))
-        for unit in ("B", "KB", "MB", "GB", "TB"):
-            if size < 1024 or unit == "TB":
-                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-            size /= 1024
-        return "0 B"
+        return video_adapter.format_size(size_bytes)
 
     @staticmethod
     def _format_from_path(path: Path | None) -> str:
-        if not path or not path.suffix:
-            return "--"
-        return path.suffix.lstrip(".").upper()
+        return video_adapter.format_from_path(path)
 
     @staticmethod
     def _content_type_from_path(path: Path | None) -> str:
-        if not path:
-            return ""
-        return "image" if path.suffix.lower() in MediaMetadataService.IMAGE_EXTENSIONS else "video"
+        return video_adapter.content_type_from_path(path)
 
     @staticmethod
     def _default_speed_trend(progress: int) -> list[float]:
-        seed = max(0, min(100, progress)) / 100
-        return [round((0.7 + ((index % 5) * 0.12)) * seed, 2) for index in range(12)]
+        return video_adapter.default_speed_trend(progress)
 
     def _active_events(
         self,
@@ -1668,50 +1527,11 @@ class FrontendStateService:
         ]
 
     def _solutions_for_reason(self, reason: str) -> list[dict[str, str]]:
-        lowered = reason.lower()
-        if "login" in lowered or "登录" in reason:
-            return [
-                {"title": "确认登录态", "description": "部分内容需要登录后才能访问，请检查平台认证状态。", "icon_file": "action_user.png"},
-                {"title": "重新获取链接", "description": "登录后重新复制分享链接并重试任务。", "icon_file": "action_trace_link.png"},
-            ]
-        if "timeout" in lowered or "超时" in reason:
-            return [
-                {"title": "检查网络", "description": "确认网络连接正常，或尝试切换网络环境后重试。", "icon_file": "status_network_warning.png"},
-                {"title": "增加超时时间", "description": "在配置中心提高请求超时和重试次数。", "icon_file": "status_timeout.png"},
-            ]
-        if any(token in lowered for token in ("connection", "network", "403", "404", "forbidden")) or any(token in reason for token in ("连接", "网络", "拒绝", "失效")):
-            return [
-                {"title": "重新获取链接", "description": "请重新复制最新的分享链接并重试任务。", "icon_file": "action_trace_link.png"},
-                {"title": "检查网络", "description": "确认代理、DNS 和网络环境正常，必要时切换网络后重试。", "icon_file": "status_network_warning.png"},
-            ]
-        if any(token in lowered for token in ("permission", "occupied", "file")) or any(token in reason for token in ("占用", "权限", "文件")):
-            return [
-                {"title": "释放文件占用", "description": "关闭正在播放或占用目标文件的程序后重试。", "icon_file": "status_locked.png"},
-                {"title": "更改目录", "description": "尝试切换到有写入权限的保存目录。", "icon_file": "action_open_directory.png"},
-            ]
-        return [
-            {"title": "重新获取链接", "description": "请重新复制最新的分享链接并重试任务。", "icon_file": "action_trace_link.png"},
-            {"title": "查看 Trace ID", "description": "在日志中心按 Trace ID 过滤，定位同一任务的上下游日志。", "icon_file": "action_search.png"},
-        ]
+        return video_adapter.solutions_for_reason(reason)
 
     @staticmethod
     def _failure_category(reason: str) -> dict[str, str]:
-        lowered = str(reason or "").lower()
-        if "login" in lowered or "登录" in reason:
-            return {"key": "login", "label": "需要登录", "icon_file": "action_user.png"}
-        if "timeout" in lowered or "超时" in reason:
-            return {"key": "timeout", "label": "网络超时", "icon_file": "status_timeout.png"}
-        if any(token in lowered for token in ("connection", "network", "403", "404", "forbidden", "ssl", "proxy")) or any(
-            token in reason for token in ("连接", "网络", "拒绝", "失效", "链接")
-        ):
-            return {"key": "link", "label": "链接失败", "icon_file": "action_trace_link.png"}
-        if any(token in lowered for token in ("permission", "occupied", "file")) or any(token in reason for token in ("占用", "权限", "文件")):
-            return {"key": "file", "label": "文件占用", "icon_file": "status_locked.png"}
-        if any(token in lowered for token in ("parse", "parser", "extract", "decode")) or any(token in reason for token in ("解析", "提取")):
-            return {"key": "parse", "label": "解析失败", "icon_file": "action_code.png"}
-        if any(token in lowered for token in ("ffmpeg", "m3u8", "external", "tool")) or any(token in reason for token in ("外部工具", "合并")):
-            return {"key": "tool", "label": "工具异常", "icon_file": "action_repair.png"}
-        return {"key": "unknown", "label": "任务失败", "icon_file": "status_error_warning.png"}
+        return video_adapter.failure_category(reason)
 
     @classmethod
     def _format_failed_at_table(cls, value: str) -> str:
@@ -2315,10 +2135,15 @@ class FrontendStateService:
         image_respects_concurrency = bool(self.config.get("download", "image_respects_concurrency", False))
         if manager is not None and hasattr(manager, "image_respects_concurrency"):
             image_respects_concurrency = bool(getattr(manager, "image_respects_concurrency"))
+        video_only = bool(self.config.get("download", "video_only", False))
+        manager_video_only = getattr(manager, "video_only", None) if manager is not None else None
+        if isinstance(manager_video_only, bool):
+            video_only = manager_video_only
         return {
             "auto_retry": auto_retry,
             "max_retries": max(0, min(max_retries, 10)),
             "max_concurrent": normalize_download_concurrency(effective_concurrent),
+            "video_only": video_only,
             "image_respects_concurrency": image_respects_concurrency,
         }
 
@@ -2557,6 +2382,7 @@ class FrontendStateService:
         image_respects_concurrency = bool(
             data.get("image_respects_concurrency", self.config.get("download", "image_respects_concurrency", False))
         )
+        video_only = bool(data.get("video_only", self.config.get("download", "video_only", False)))
         self.cache_service.set("download.auto_retry", auto_retry, persist=False)
         manager = self._dl_manager()
         setter = getattr(manager, "set_max_concurrent", None)
@@ -2568,6 +2394,7 @@ class FrontendStateService:
             max_concurrent = normalize_download_concurrency(max_concurrent)
         self.config.set("download", "max_concurrent", max_concurrent)
         self.config.set("download", "max_retries", max_retries)
+        self.config.set("download", "video_only", video_only)
         self.config.set("download", "image_respects_concurrency", image_respects_concurrency)
         if callable(getattr(manager, "set_runtime_options", None)):
             try:
@@ -2580,6 +2407,7 @@ class FrontendStateService:
                     details={
                         "max_concurrent": max_concurrent,
                         "max_retries": max_retries,
+                        "video_only": video_only,
                         "image_respects_concurrency": image_respects_concurrency,
                     },
                 )
@@ -2590,6 +2418,7 @@ class FrontendStateService:
             {
                 "section": "download",
                 "max_concurrent": max_concurrent,
+                "video_only": video_only,
                 "image_respects_concurrency": image_respects_concurrency,
                 "download_options": True,
             },
@@ -2601,6 +2430,7 @@ class FrontendStateService:
                 "auto_retry": auto_retry,
                 "max_retries": max_retries,
                 "max_concurrent": max_concurrent,
+                "video_only": video_only,
                 "image_respects_concurrency": image_respects_concurrency,
             },
         )
@@ -2617,7 +2447,7 @@ class FrontendStateService:
             return FrontendActionResult("error", "setting section and key are required")
         if section == "common":
             return self._action_update_basic_setting({"key": key, "value": value})
-        if section == "download" and key in {"max_concurrent", "max_retries", "image_respects_concurrency"}:
+        if section == "download" and key in {"max_concurrent", "max_retries", "video_only", "image_respects_concurrency"}:
             options = self.download_options_snapshot()
             options[key] = value
             return self._action_update_download_options(options)
@@ -2652,6 +2482,7 @@ class FrontendStateService:
                 )
             self.config.set(section, key, value)
             current_value = self.config.get(section, key)
+            self._apply_runtime_setting(section, key, current_value)
         except ConfigValidationError as exc:
             return FrontendActionResult("error", str(exc), {"section": section, "key": key})
         except Exception as exc:
@@ -3057,6 +2888,7 @@ class FrontendStateService:
                 "auto_retry": True,
                 "max_retries": 3,
                 "max_concurrent": 3,
+                "video_only": False,
                 "image_respects_concurrency": False,
             },
             "toolbox_items": FrontendStateService.toolbox_items(),

@@ -741,6 +741,43 @@ class XiaohongshuDownloaderTests(unittest.TestCase):
         self.assertEqual(progresses[-1], 100)
 
     @patch("app.core.downloaders.xiaohongshu.XiaohongshuDownloader._download_http_file")
+    def test_gallery_download_reports_aggregate_byte_progress(self, mocked_download_http_file):
+        def fake_download_http_file(**kwargs):
+            callback = kwargs["progress_callback"]
+            callback(50, bytes_downloaded=512, bytes_total=1024)
+            callback(100, bytes_downloaded=1024, bytes_total=1024)
+
+        mocked_download_http_file.side_effect = fake_download_http_file
+        downloader = XiaohongshuDownloader()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "note.mp4")
+            from app.models import VideoItem
+
+            item = VideoItem(url="https://cdn.example.com/cover.jpg", title="gallery-byte", source="xiaohongshu")
+            item.meta.update(
+                {
+                    "is_gallery": True,
+                    "images_data": [
+                        {"image_url": "https://cdn.example.com/1.jpg"},
+                        {"image_url": "https://cdn.example.com/2.webp"},
+                    ],
+                    "cookie": "a1=demo",
+                }
+            )
+            events = []
+
+            def progress_callback(value, **kwargs):
+                events.append((value, kwargs))
+
+            downloader.download(item, save_path, progress_callback, lambda: False)
+
+        byte_events = [kwargs for _value, kwargs in events if kwargs.get("bytes_downloaded")]
+        self.assertTrue(byte_events)
+        self.assertEqual(max(event["bytes_downloaded"] for event in byte_events), 2048)
+        self.assertEqual(max(event["bytes_total"] for event in byte_events), 2048)
+        self.assertEqual(events[-1][0], 100)
+
+    @patch("app.core.downloaders.xiaohongshu.XiaohongshuDownloader._download_http_file")
     def test_gallery_progress_callback_failure_does_not_stop_downloads(self, mocked_download_http_file):
         downloader = XiaohongshuDownloader()
         with tempfile.TemporaryDirectory() as temp_dir:

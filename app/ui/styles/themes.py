@@ -364,7 +364,8 @@ QLabel#LogFilterLabel {{
     font-size: 12px;
 }}
 QComboBox#LogFilterControl,
-QLineEdit#LogFilterControl {{
+QLineEdit#LogFilterControl,
+QLineEdit#LogFilterTextInput {{
     background: {c["input"]};
     border: 1px solid {c["border"]};
     border-radius: 8px;
@@ -374,7 +375,10 @@ QLineEdit#LogFilterControl {{
     font-size: 13px;
     color: {c["text"]};
 }}
-QLineEdit#LogFilterControl:focus {{
+QLineEdit#LogFilterControl:focus,
+QLineEdit#LogFilterControl[focused="true"],
+QLineEdit#LogFilterTextInput:focus,
+QLineEdit#LogFilterTextInput[focused="true"] {{
     background: {c["input"]};
     border: 2px solid {c["accent"]};
     padding: 1px 9px;

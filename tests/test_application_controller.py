@@ -349,6 +349,21 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.window.add_video_row.assert_called_once_with(item)
         controller.dl_manager.add_task.assert_called_once_with(item, "downloads")
 
+    def test_on_spider_item_found_skips_image_when_video_only_enabled(self):
+        controller = self._make_controller()
+        controller.dl_manager.video_only = True
+        controller.window.current_save_dir = "downloads"
+        item = VideoItem(url="https://example.com/cover.jpg", title="cover", source="xiaohongshu")
+        item.meta["content_type"] = "image/jpeg"
+
+        controller._on_spider_item_found(item)
+
+        self.assertNotIn(item.id, controller.videos)
+        controller.window.add_video_row.assert_not_called()
+        controller.dl_manager.add_task.assert_not_called()
+        controller.window.append_log.assert_called_once()
+
+
     def test_on_spider_select_tasks_resumes_spider_with_dialog_selection(self):
         """验证 `test_on_spider_select_tasks_resumes_spider_with_dialog_selection` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""
         controller = self._make_controller()

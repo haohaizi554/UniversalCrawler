@@ -115,6 +115,31 @@ class DouyinDownloader(BaseDownloader):
         save_dir = os.path.dirname(save_path)
         total_files = len(images_data)
         completed = 0
+        downloaded_by_file: dict[int, int] = {}
+        total_by_file: dict[int, int] = {}
+        progress_by_file: dict[int, int] = {}
+
+        def emit_gallery_progress(
+            seq: int,
+            file_progress: int,
+            *,
+            file_bytes_downloaded: int | None = None,
+            file_bytes_total: int | None = None,
+        ) -> None:
+            if file_bytes_downloaded is not None:
+                downloaded_by_file[seq] = max(0, int(file_bytes_downloaded or 0))
+            if file_bytes_total is not None:
+                total_by_file[seq] = max(0, int(file_bytes_total or 0))
+            progress_by_file[seq] = max(0, min(100, int(file_progress or 0)))
+            aggregate_downloaded = sum(downloaded_by_file.values())
+            aggregate_total = sum(total_by_file.values())
+            aggregate_progress = int((completed + sum(progress_by_file.values()) / 100) / total_files * 100)
+            self._emit_progress(
+                progress_callback,
+                aggregate_progress,
+                bytes_downloaded=aggregate_downloaded if aggregate_downloaded > 0 else None,
+                bytes_total=aggregate_total if aggregate_total > 0 else None,
+            )
 
         for idx, image_info in enumerate(images_data):
             if check_stop_func():
@@ -123,10 +148,35 @@ class DouyinDownloader(BaseDownloader):
             live_url = image_info.get("live_video_url", "")
             seq = idx + 1
 
+            def file_progress_callback(
+                progress: int,
+                *,
+                bytes_downloaded: int | None = None,
+                bytes_total: int | None = None,
+            ) -> None:
+                emit_gallery_progress(
+                    seq,
+                    progress,
+                    file_bytes_downloaded=bytes_downloaded,
+                    file_bytes_total=bytes_total,
+                )
+
             if live_url:
-                self._download_file(live_url, os.path.join(save_dir, f"{video_item.title}_{seq}.mp4"), headers, check_stop_func)
+                self._download_file(
+                    live_url,
+                    os.path.join(save_dir, f"{video_item.title}_{seq}.mp4"),
+                    headers,
+                    check_stop_func,
+                    progress_callback=file_progress_callback,
+                )
+                progress_by_file.pop(seq, None)
                 completed += 1
-                self._emit_progress(progress_callback, int(completed / total_files * 100))
+                self._emit_progress(
+                    progress_callback,
+                    int(completed / total_files * 100),
+                    bytes_downloaded=sum(downloaded_by_file.values()) or None,
+                    bytes_total=sum(total_by_file.values()) or None,
+                )
             elif img_url:
                 img_ext = ".jpeg"
                 lowered = img_url.lower()
@@ -134,11 +184,28 @@ class DouyinDownloader(BaseDownloader):
                     img_ext = ".png"
                 elif ".webp" in lowered:
                     img_ext = ".webp"
-                self._download_file(img_url, os.path.join(save_dir, f"{video_item.title}_{seq}{img_ext}"), headers, check_stop_func)
+                self._download_file(
+                    img_url,
+                    os.path.join(save_dir, f"{video_item.title}_{seq}{img_ext}"),
+                    headers,
+                    check_stop_func,
+                    progress_callback=file_progress_callback,
+                )
+                progress_by_file.pop(seq, None)
                 completed += 1
-                self._emit_progress(progress_callback, int(completed / total_files * 100))
+                self._emit_progress(
+                    progress_callback,
+                    int(completed / total_files * 100),
+                    bytes_downloaded=sum(downloaded_by_file.values()) or None,
+                    bytes_total=sum(total_by_file.values()) or None,
+                )
 
-        self._emit_progress(progress_callback, 100)
+        self._emit_progress(
+            progress_callback,
+            100,
+            bytes_downloaded=sum(downloaded_by_file.values()) or None,
+            bytes_total=sum(total_by_file.values()) or None,
+        )
 
     def _download_file(
         self,
@@ -146,6 +213,7 @@ class DouyinDownloader(BaseDownloader):
         save_path: str,
         headers: dict[str, str],
         check_stop_func: StopCheck,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         """提供 `_download_file` 对应的内部辅助逻辑，供 `DouyinDownloader` 使用。"""
         self._download_http_file(
@@ -153,6 +221,7 @@ class DouyinDownloader(BaseDownloader):
             save_path=save_path,
             headers=headers,
             check_stop_func=check_stop_func,
+            progress_callback=progress_callback,
             max_retries=cfg.get("download", "max_retries", 3),
             timeout=cfg.get("download", "request_timeout", 60),
             chunk_size=8192,

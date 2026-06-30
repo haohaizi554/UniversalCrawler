@@ -696,6 +696,38 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(mocked_download_file.call_args_list[1].args[1], os.path.join("downloads", "图集_2.webp"))
 
     @patch.object(DouyinDownloader, "_download_file")
+    def test_douyin_gallery_reports_aggregate_byte_progress(self, mocked_download_file):
+        def fake_download_file(*_args, **kwargs):
+            callback = kwargs["progress_callback"]
+            callback(50, bytes_downloaded=512, bytes_total=1024)
+            callback(100, bytes_downloaded=1024, bytes_total=1024)
+
+        mocked_download_file.side_effect = fake_download_file
+        item = VideoItem(url="https://example.com/cover.jpg", title="gallery", source="douyin")
+        events = []
+
+        def progress_callback(value, **kwargs):
+            events.append((value, kwargs))
+
+        DouyinDownloader()._download_gallery(
+            item,
+            [
+                {"live_video_url": "", "image_url": "https://cdn.example.com/one.jpg"},
+                {"live_video_url": "", "image_url": "https://cdn.example.com/two.jpg"},
+            ],
+            os.path.join("downloads", "demo.mp4"),
+            progress_callback,
+            lambda: False,
+            {"User-Agent": "ua", "Referer": "https://www.douyin.com/"},
+        )
+
+        byte_events = [kwargs for _value, kwargs in events if kwargs.get("bytes_downloaded")]
+        self.assertTrue(byte_events)
+        self.assertEqual(max(event["bytes_downloaded"] for event in byte_events), 2048)
+        self.assertEqual(max(event["bytes_total"] for event in byte_events), 2048)
+        self.assertEqual(events[-1][0], 100)
+
+    @patch.object(DouyinDownloader, "_download_file")
     def test_douyin_gallery_progress_callback_failure_does_not_stop_downloads(self, mocked_download_file):
         item = VideoItem(url="https://example.com/cover.jpg", title="gallery", source="douyin")
 

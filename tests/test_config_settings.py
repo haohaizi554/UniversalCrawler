@@ -268,7 +268,14 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertNotIn({"value": "0", "label": "无限制（0 KB/s）"}, speed_limit_options())
             self.assertIn({"value": "1", "label": "1 天（推荐）"}, log_retention_options())
             self.assertNotIn({"value": "30", "label": "30 天（推荐）"}, log_retention_options())
-            self.assertIn({"value": "300", "label": "300 条（推荐）"}, ui_log_max_display_options())
+            self.assertEqual(
+                ui_log_max_display_options(),
+                [
+                    {"value": "100", "label": "100 条"},
+                    {"value": "300", "label": "300 条（推荐）"},
+                    {"value": "500", "label": "500 条"},
+                ],
+            )
             self.assertIn({"value": "100%", "label": "100%（推荐）"}, scale_options())
             self.assertIn({"value": "medium", "label": "中（推荐）"}, font_size_options())
             self.assertIn({"value": "zh-CN", "label": "简体中文（推荐）"}, language_options())
@@ -360,7 +367,7 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(reloaded.get("download", "max_retries"), 0)
             self.assertFalse(reloaded.get("download", "resume_enabled"))
             self.assertFalse(reloaded.get("playback", "remember_position"))
-            self.assertEqual(reloaded.get("logging", "ui_log_max_display_count"), 600)
+            self.assertEqual(reloaded.get("logging", "ui_log_max_display_count"), 300)
             self.assertEqual(reloaded.get("appearance", "scale"), "125%")
             self.assertEqual(reloaded.get("appearance", "language"), "en-US")
 

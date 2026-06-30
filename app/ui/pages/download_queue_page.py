@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.services.icon_registry import action_icon_file, ui_icon_path
-from app.ui.components.combo_popup import ThemedComboBox, fit_combo_width_to_contents
+from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.layout.island import IslandCard
 from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.ui.viewmodels.pagination_state import clamp_page, page_for_item, page_slice, total_pages
 from app.utils.qt_runtime import load_qt_icon
 
 class DownloadQueuePage(PageFrame):
@@ -71,34 +72,18 @@ class DownloadQueuePage(PageFrame):
         self.table.action_requested.connect(self._on_table_action)
         table_layout.addWidget(self.table, 1)
 
-        footer = QWidget()
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(0, 0, 0, 0)
-        footer_layout.setSpacing(10)
-        self.total_label = QLabel("共 0 项")
-        self.total_label.setObjectName("MutedLabel")
-        footer_layout.addWidget(self.total_label)
-        footer_layout.addStretch(1)
-        self.btn_prev = QPushButton("‹")
-        self.btn_prev.setObjectName("PaginationButton")
-        self.btn_prev.setToolTip("上一页")
-        self.btn_prev.setFixedSize(38, 34)
-        self.btn_next = QPushButton("›")
-        self.btn_next.setObjectName("PaginationButton")
-        self.btn_next.setToolTip("下一页")
-        self.btn_next.setFixedSize(38, 34)
-        self.page_label = QLabel("1 / 1 页")
-        self.page_label.setObjectName("MutedLabel")
-        self.page_size_combo = ThemedComboBox(row_height=32)
-        self.page_size_combo.setFixedHeight(34)
-        for option in self.PAGE_SIZE_OPTIONS:
-            self.page_size_combo.addItem(f"{option} 条/页", option)
-        self._fit_page_size_combo_width()
-        footer_layout.addWidget(self.btn_prev)
-        footer_layout.addWidget(self.page_label)
-        footer_layout.addWidget(self.btn_next)
-        footer_layout.addWidget(self.page_size_combo)
-        table_layout.addWidget(footer)
+        self.pagination_footer = PaginationFooter(
+            self.PAGE_SIZE_OPTIONS,
+            default_page_size=self._page_size,
+            combo_min_width=82,
+            combo_max_width=112,
+        )
+        self.total_label = self.pagination_footer.total_label
+        self.btn_prev = self.pagination_footer.btn_prev
+        self.btn_next = self.pagination_footer.btn_next
+        self.page_label = self.pagination_footer.page_label
+        self.page_size_combo = self.pagination_footer.page_size_combo
+        table_layout.addWidget(self.pagination_footer)
 
         self.table_island.add_widget(table_host, stretch=1)
 
@@ -117,9 +102,8 @@ class DownloadQueuePage(PageFrame):
         self.root_layout.addWidget(self.table_island, stretch=1)
         self.root_layout.addWidget(self.activity_island)
 
-        self.btn_prev.clicked.connect(lambda: self._set_page(self._page - 1))
-        self.btn_next.clicked.connect(lambda: self._set_page(self._page + 1))
-        self.page_size_combo.currentIndexChanged.connect(self._on_page_size_changed)
+        self.pagination_footer.page_requested.connect(lambda delta: self._set_page(self._page + delta))
+        self.pagination_footer.page_size_changed.connect(self._on_page_size_changed)
 
     @property
     def event_layout(self):
@@ -170,10 +154,8 @@ class DownloadQueuePage(PageFrame):
     def _render_current_page(self, *, selected_id: str | None = None) -> None:
         total = len(self.items)
         total_pages = self._total_pages()
-        self._page = max(1, min(self._page, total_pages))
-        start = (self._page - 1) * self._page_size
-        end = start + self._page_size
-        visible_items = self.items[start:end]
+        self._page = clamp_page(self._page, total, self._page_size)
+        visible_items = page_slice(self.items, self._page, self._page_size)
         self.table.setUpdatesEnabled(False)
         try:
             self.table.set_rows(visible_items)
@@ -181,42 +163,31 @@ class DownloadQueuePage(PageFrame):
                 self.table.select_id(selected_id)
         finally:
             self.table.setUpdatesEnabled(True)
-        self.total_label.setText(f"共 {total} 项")
-        self.page_label.setText(f"{self._page} / {total_pages} 页")
-        self.btn_prev.setEnabled(self._page > 1)
-        self.btn_next.setEnabled(self._page < total_pages)
-        index = self.page_size_combo.findData(self._page_size)
-        if index >= 0 and self.page_size_combo.currentIndex() != index:
-            blocked = self.page_size_combo.blockSignals(True)
-            self.page_size_combo.setCurrentIndex(index)
-            self.page_size_combo.blockSignals(blocked)
+        self.pagination_footer.sync(
+            total_items=total,
+            current_page=self._page,
+            total_pages=total_pages,
+            page_size=self._page_size,
+        )
 
     def _set_page(self, page: int) -> None:
-        self._page = max(1, min(page, self._total_pages()))
+        self._page = clamp_page(page, len(self.items), self._page_size)
         selected_id = self.table.selected_id()
         self._render_current_page(selected_id=selected_id)
 
-    def _on_page_size_changed(self) -> None:
-        self._page_size = int(self.page_size_combo.currentData() or 20)
+    def _on_page_size_changed(self, page_size: int | None = None) -> None:
+        self._page_size = int(page_size or self.page_size_combo.currentData() or 20)
         self._page = 1
         self._render_current_page()
 
     def _fit_page_size_combo_width(self) -> None:
-        fit_combo_width_to_contents(
-            self.page_size_combo,
-            min_width=82,
-            max_width=112,
-            horizontal_padding=16,
-        )
+        self.pagination_footer.fit_page_size_combo_width()
 
     def _total_pages(self) -> int:
-        return max(1, (len(self.items) + self._page_size - 1) // self._page_size)
+        return total_pages(len(self.items), self._page_size)
 
     def _page_for_item(self, item_id: str) -> int | None:
-        for index, item in enumerate(self.items):
-            if item.get("id") == item_id:
-                return index // self._page_size + 1
-        return None
+        return page_for_item(self.items, item_id, self._page_size)
 
     def _render_recent_events(self) -> None:
         recent = self.items[-3:]

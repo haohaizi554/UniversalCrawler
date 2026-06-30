@@ -20,6 +20,8 @@ from app.ui.components.combo_popup import (
     combo_widest_item_text_width,
     polish_combo_popup,
 )
+from app.ui.components.pagination_footer import PaginationFooter
+from app.ui.components.settings_controls import SettingsComboBox, SegmentedControl, UiSwitch
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.sidebar import _badge_size
@@ -169,6 +171,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertGreaterEqual(browse.iconSize().width(), 18)
         self.assertIn("QToolButton#SettingsPathBrowse", settings.styleSheet())
         self.assertIn("border-radius: 8px", settings.styleSheet())
+
+    def test_settings_page_uses_shared_control_components(self):
+        shell = self._make_shell()
+        shell.show_page("settings")
+        settings = shell.pages["settings"]
+
+        self.assertTrue(settings.findChildren(UiSwitch))
+        self.assertTrue(settings.findChildren(SettingsComboBox))
+        settings._set_current_group("外观设置")
+        self.app.processEvents()
+        self.assertTrue(settings.findChildren(SegmentedControl))
 
     def test_gui_combo_popups_expand_short_lists_without_scrollbars(self):
         shell = self._make_shell()
@@ -344,9 +357,30 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         dark_style = generate_stylesheet(True)
 
         self.assertIn("QLineEdit#LogFilterControl:focus", light_style)
+        self.assertIn('QLineEdit#LogFilterControl[focused="true"]', light_style)
+        self.assertIn("QLineEdit#LogFilterTextInput:focus", light_style)
+        self.assertIn('QLineEdit#LogFilterTextInput[focused="true"]', light_style)
         self.assertIn(f"border: 2px solid {theme_colors(False)['accent']}", light_style)
         self.assertIn("QLineEdit#LogFilterControl:focus", dark_style)
+        self.assertIn('QLineEdit#LogFilterControl[focused="true"]', dark_style)
+        self.assertIn("QLineEdit#LogFilterTextInput:focus", dark_style)
+        self.assertIn('QLineEdit#LogFilterTextInput[focused="true"]', dark_style)
         self.assertIn(f"border: 2px solid {theme_colors(True)['accent']}", dark_style)
+
+        shell = self._make_shell()
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+        accent = theme_colors(False)["accent"]
+        for name in ("trace_filter", "keyword_filter"):
+            editor = getattr(logs, name)
+            self.assertEqual(editor.objectName(), "LogFilterTextInput")
+            QApplication.sendEvent(editor, QEvent(QEvent.Type.FocusIn))
+            self.app.processEvents()
+            self.assertEqual(editor.property("focused"), "true")
+            self.assertIn(f"border: 2px solid {accent}", editor.styleSheet())
+            QApplication.sendEvent(editor, QEvent(QEvent.Type.FocusOut))
+            self.app.processEvents()
+            self.assertEqual(editor.property("focused"), "false")
 
     def test_main_window_directory_picker_uses_native_folder_picker(self):
         window = MainWindow()
@@ -859,6 +893,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(queue.table.model().rowCount(), 20)
         self.assertEqual(queue.total_label.text(), "共 25 项")
         self.assertEqual(queue.page_label.text(), "1 / 2 页")
+        self.assertIsInstance(queue.pagination_footer, PaginationFooter)
         self.assertEqual(queue.btn_prev.objectName(), "PaginationButton")
         self.assertEqual(queue.btn_next.objectName(), "PaginationButton")
         for widget in (queue.btn_prev, queue.btn_next, queue.page_size_combo):
@@ -1809,6 +1844,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertEqual(completed.btn_prev.objectName(), "PaginationButton")
         self.assertEqual(completed.btn_next.objectName(), "PaginationButton")
+        self.assertIsInstance(completed.pagination_footer, PaginationFooter)
         for widget in (completed.btn_prev, completed.btn_next, completed.page_size_combo):
             self.assertGreaterEqual(widget.height(), 34)
             self.assertLessEqual(widget.geometry().bottom(), widget.parentWidget().contentsRect().bottom())
@@ -2007,7 +2043,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("retention_days: 1", content)
         self.assertIn("uiLogDisplayLimit", content)
         self.assertIn("trimFrontendLogItems", content)
-        self.assertIn('value: "5000", label: "5000 条"', content)
+        self.assertIn('value: "100", label: "100 条"', content)
+        self.assertIn('value: "300", label: "300 条（推荐）"', content)
+        self.assertIn('value: "500", label: "500 条"', content)
+        self.assertNotIn('value: "1000", label: "1000 条"', content)
+        self.assertNotIn('value: "2000", label: "2000 条"', content)
+        self.assertNotIn('value: "5000", label: "5000 条"', content)
         self.assertIn('"1", label: "1 天（推荐）"', content)
         self.assertNotIn('level: "info"', content)
         self.assertNotIn('"cleanup_old_logs_on_start"', content)

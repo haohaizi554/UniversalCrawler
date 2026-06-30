@@ -14,6 +14,7 @@ from app.config import cfg
 from app.controllers.media_library_mixin import MediaLibraryMixin, MediaRenameOutcome
 from app.controllers.session_mixin import ControllerSessionMixin
 from app.core.download_manager import DownloadManager
+from app.core.media_filter import should_skip_for_video_only
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
 from app.exceptions import ConfigValidationError, DebugActionError, FileOperationError, MediaScanError
@@ -332,6 +333,36 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             spider = self.current_spider
         return bool(spider and spider.isRunning())
 
+    def _video_only_mode_enabled(self) -> bool:
+        manager_value = getattr(getattr(self, "_dl_manager", None), "video_only", None)
+        if isinstance(manager_value, bool):
+            return manager_value
+        return bool(cfg.get("download", "video_only", False))
+
+    def _should_skip_for_video_only(self, item: VideoItem) -> bool:
+        return self._video_only_mode_enabled() and should_skip_for_video_only(item)
+
+    def _log_video_only_skip(self, item: VideoItem) -> None:
+        debug_logger.log(
+            component="WebController",
+            action="skip_non_video_resource",
+            message="Video-only mode skipped a non-video resource",
+            status_code="WEB_SKIP_VIDEO_ONLY",
+            context=debug_logger.pick_used(
+                {"trace_id": item.meta.get("trace_id"), "video_id": item.id, "source": item.source},
+                "trace_id",
+                "video_id",
+                "source",
+            ),
+            details=debug_logger.pick_used(
+                {"title": item.title, "url": item.url, "content_type": item.meta.get("content_type")},
+                "title",
+                "url",
+                "content_type",
+            ),
+            trace_id=item.meta.get("trace_id"),
+        )
+
     # ---- 下载信号处理 ----
 
     def _after_task_started(self, video_id: str, item: VideoItem | None) -> None:
@@ -635,6 +666,9 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._spider_signal_handlers = {}
 
     def _on_spider_item_found(self, item: VideoItem):
+        if self._should_skip_for_video_only(item):
+            self._log_video_only_skip(item)
+            return
         self._prepare_pending_item(item)
         self._store_video_item(item)
         self.bridge.emit("item_found", self._video_item_to_dict(item))

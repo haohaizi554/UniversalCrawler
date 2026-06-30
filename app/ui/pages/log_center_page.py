@@ -3,10 +3,7 @@ from __future__ import annotations
 import html
 import json
 import math
-import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from app.debug_logger import debug_logger
 from pathlib import Path
 from typing import Any
 
@@ -34,15 +31,55 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.services.icon_registry import platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import (
     ThemedComboBox,
     fit_combo_width_to_contents,
     polish_combo_popup,
     refresh_themed_combo_boxes,
 )
+from app.ui.components.focus_state import bind_focus_property
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
+from app.ui.viewmodels.log_detail_payloads import (
+    extract_message_payload,
+    format_json_text,
+    parse_structured_detail_text,
+    refine_description_path,
+    strip_leading_emoji,
+)
+from app.ui.viewmodels.log_classification import (
+    classification_facts,
+    derive_result_type,
+    is_performance_log,
+    is_system_config_log,
+    normalized_event_code,
+    normalized_raw_level,
+    normalized_status_code,
+    result_display_text,
+    result_nature_text,
+)
+from app.ui.viewmodels.log_pipeline_rules import (
+    derive_event_stage,
+    derive_log_scope,
+    derive_scope_reason,
+    is_crawl_pipeline_log,
+    is_download_boundary_log,
+    is_download_component_source,
+    is_platform_root_crawl_log,
+)
+from app.ui.viewmodels.log_platforms import (
+    PlatformUiMeta,
+    builtin_platform_metas,
+    load_platform_options,
+)
+from app.ui.viewmodels.log_display import (
+    decorate_log_item,
+    format_platform_label,
+    resolve_item_platform_id,
+    scope_display_text,
+    stage_display_text,
+)
+from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, parse_page_size, total_pages
 from app.utils.safe_slot import safe_slot
 
 
@@ -54,95 +91,6 @@ LOG_CATEGORIES = {
     "performance": "性能日志",
     "error": "异常日志",
 }
-
-
-@dataclass(frozen=True)
-class PlatformUiMeta:
-    id: str
-    label: str
-    icon_path: str | None = None
-    emoji: str | None = None
-    aliases: tuple[str, ...] = ()
-
-
-def _resolve_platform_icon_path(platform_id: str) -> str | None:
-    path = Path(ui_icon_path(platform_icon_file(platform_id)))
-    return str(path) if path.is_file() else None
-
-
-_LOG_EMOJI_PREFIX_RE = re.compile(r"^[\U0001F300-\U0001FAFF\u2600-\u27BF]+")
-
-
-def _platform_icon_file_for_id(platform_id: str, meta: PlatformUiMeta | None) -> str:
-    if platform_id == "system":
-        return ""
-    if not platform_id:
-        return ""
-    icon_file = platform_icon_file(platform_id)
-    if platform_id not in _builtin_platform_metas() and icon_file == "platform_web.png":
-        return ""
-    return icon_file if Path(ui_icon_path(icon_file)).is_file() else ""
-
-
-def _builtin_platform_metas() -> dict[str, PlatformUiMeta]:
-    return {
-        "all": PlatformUiMeta("all", "全部", emoji="🌐"),
-        "system": PlatformUiMeta(
-            "system",
-            "系统",
-            icon_path=None,
-            emoji="⚙️",
-            aliases=("系统", "system", "gui", "applicationcontroller"),
-        ),
-        "douyin": PlatformUiMeta(
-            "douyin",
-            "抖音",
-            icon_path=_resolve_platform_icon_path("douyin"),
-            emoji="🎵",
-            aliases=("抖音", "douyin", "dy_", "aweme", "douyinspider", "douyindownloader"),
-        ),
-        "bilibili": PlatformUiMeta(
-            "bilibili",
-            "Bilibili",
-            icon_path=_resolve_platform_icon_path("bilibili"),
-            emoji="📺",
-            aliases=(
-                "Bilibili",
-                "bilibili",
-                "bili",
-                "biliapi",
-                "bilibilispider",
-                "bilibilidownloader",
-                "bv",
-                "bvid",
-            ),
-        ),
-        "kuaishou": PlatformUiMeta(
-            "kuaishou",
-            "快手",
-            icon_path=_resolve_platform_icon_path("kuaishou"),
-            emoji="⚡",
-            aliases=("快手", "kuaishou", "ks_", "kuaishouspider", "kuaishoudownloader"),
-        ),
-        "missav": PlatformUiMeta(
-            "missav",
-            "MissAV",
-            icon_path=_resolve_platform_icon_path("missav"),
-            emoji="🎬",
-            aliases=("MissAV", "missav", "missavspider", "missavdownloader", "surrit"),
-        ),
-        "xiaohongshu": PlatformUiMeta(
-            "xiaohongshu",
-            "小红书",
-            icon_path=_resolve_platform_icon_path("xiaohongshu"),
-            emoji="📕",
-            aliases=("小红书", "xiaohongshu", "xhs", "redbook", "xiaohongshuspider", "xiaohongshudownloader"),
-        ),
-    }
-
-
-_BUILTIN_PLATFORM_ORDER = ("douyin", "bilibili", "kuaishou", "missav", "xiaohongshu")
-
 
 class LogCenterTableDelegate(SnapshotActionDelegate):
     """日志中心表格 delegate：source_display 支持按行居中对齐。"""
@@ -192,7 +140,7 @@ class LogCenterPage(PageFrame):
         self._category = "all"
         self._tab_buttons: dict[str, QPushButton] = {}
         self._platform_options: list[PlatformUiMeta] = []
-        self._platform_meta_by_id: dict[str, PlatformUiMeta] = _builtin_platform_metas()
+        self._platform_meta_by_id: dict[str, PlatformUiMeta] = builtin_platform_metas()
         self._platform_option_ids: tuple[str, ...] = ()
         self._page_size = 20
         self._current_page = 1
@@ -227,51 +175,88 @@ class LogCenterPage(PageFrame):
         c = theme_colors(self._resolve_theme_is_dark())
 
         if active:
-            return f"""
+            return """
             QPushButton#LogTabButton {{
                 min-height: 34px;
                 max-height: 34px;
                 min-width: 92px;
-                border: 1px solid {c["accent"]};
-                border-bottom: 3px solid {c["accent"]};
+                border: 1px solid {accent};
+                border-bottom: 3px solid {accent};
                 border-radius: 8px;
-                background-color: {c["accent_soft"]};
-                color: {c["accent"]};
+                background-color: {accent_soft};
+                color: {accent};
                 font-size: 14px;
                 font-weight: 800;
                 padding: 0px 12px;
                 margin: 0px 3px 4px 0px;
             }}
             QPushButton#LogTabButton:hover {{
-                background-color: {c["accent_soft"]};
-                color: {c["accent"]};
-                border: 1px solid {c["accent"]};
-                border-bottom: 3px solid {c["accent"]};
+                background-color: {accent_soft};
+                color: {accent};
+                border: 1px solid {accent};
+                border-bottom: 3px solid {accent};
             }}
-            """
+            """.format(**c)
 
-        return f"""
+        return """
         QPushButton#LogTabButton {{
             min-height: 34px;
             max-height: 34px;
             min-width: 92px;
-            border: 1px solid {c["border"]};
+            border: 1px solid {border};
             border-bottom: 3px solid transparent;
             border-radius: 8px;
-            background-color: {c["panel"]};
-            color: {c["muted"]};
+            background-color: {panel};
+            color: {muted};
             font-size: 14px;
             font-weight: 500;
             padding: 0px 12px;
             margin: 0px 3px 4px 0px;
         }}
         QPushButton#LogTabButton:hover {{
-            background-color: {c["panel_soft"]};
-            color: {c["text"]};
-            border: 1px solid {c["border_strong"]};
-            border-bottom: 3px solid {c["border_strong"]};
+            background-color: {panel_soft};
+            color: {text};
+            border: 1px solid {border_strong};
+            border-bottom: 3px solid {border_strong};
         }}
-        """
+        """.format(**c)
+
+    def _filter_text_input_style(self, *, focused: bool = False) -> str:
+        c = theme_colors(self._resolve_theme_is_dark())
+        border_width = "2px" if focused else "1px"
+        border_color = c["accent"] if focused else c["border"]
+        padding = "1px 9px" if focused else "2px 10px"
+        return """
+        QLineEdit#LogFilterTextInput {{
+            background: {input};
+            border: {border_width} solid {border_color};
+            border-radius: 8px;
+            min-height: 32px;
+            max-height: 32px;
+            padding: {padding};
+            font-size: 13px;
+            color: {text};
+            selection-background-color: {accent};
+            selection-color: #ffffff;
+        }}
+        QLineEdit#LogFilterTextInput:focus,
+        QLineEdit#LogFilterTextInput[focused="true"] {{
+            border: 2px solid {accent};
+            padding: 1px 9px;
+        }}
+        """.format(border_width=border_width, border_color=border_color, padding=padding, **c)
+
+    def _sync_filter_text_input_style(self) -> None:
+        if not hasattr(self, "trace_filter") or not hasattr(self, "keyword_filter"):
+            return
+        for editor in (self.trace_filter, self.keyword_filter):
+            focused = bool(editor.hasFocus() or editor.property("focused") == "true")
+            style = self._filter_text_input_style(focused=focused)
+            if editor.styleSheet() != style:
+                editor.setStyleSheet(style)
+            editor.style().unpolish(editor)
+            editor.style().polish(editor)
+            editor.update()
 
     def _apply_tab_button_style(self, button: QPushButton, active: bool) -> None:
         button.setStyleSheet(self._tab_button_style(active))
@@ -293,6 +278,17 @@ class LogCenterPage(PageFrame):
             QEvent.Type.StyleChange,
         }:
             QTimer.singleShot(0, self._refresh_log_center_visual_state)
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if watched in (
+            getattr(self, "trace_filter", None),
+            getattr(self, "keyword_filter", None),
+        ) and event.type() in {QEvent.Type.FocusIn, QEvent.Type.FocusOut}:
+            QTimer.singleShot(0, self._sync_filter_text_input_style)
+        return super().eventFilter(watched, event)
+
+    def _refresh_theme_widgets(self) -> None:
+        self._refresh_log_center_visual_state()
 
     def _apply_message_box_style(self) -> None:
         c = theme_colors(self._resolve_theme_is_dark())
@@ -387,6 +383,7 @@ class LogCenterPage(PageFrame):
     def _refresh_log_center_visual_state(self) -> None:
         refresh_themed_combo_boxes(self)
         self._sync_tab_buttons()
+        self._sync_filter_text_input_style()
 
         if hasattr(self, "detail_message_value"):
             self._apply_message_box_style()
@@ -469,11 +466,16 @@ class LogCenterPage(PageFrame):
         self.platform_filter = ThemedComboBox(row_height=34)
         self.platform_filter.setObjectName("LogFilterControl")
         self.trace_filter = QLineEdit()
-        self.trace_filter.setObjectName("LogFilterControl")
+        self.trace_filter.setObjectName("LogFilterTextInput")
         self.trace_filter.setPlaceholderText("请输入 Trace ID")
         self.keyword_filter = QLineEdit()
-        self.keyword_filter.setObjectName("LogFilterControl")
+        self.keyword_filter.setObjectName("LogFilterTextInput")
         self.keyword_filter.setPlaceholderText("请输入关键词")
+        bind_focus_property(self.trace_filter)
+        bind_focus_property(self.keyword_filter)
+        self.trace_filter.installEventFilter(self)
+        self.keyword_filter.installEventFilter(self)
+        self._sync_filter_text_input_style()
 
         filters = [
             ("日志级别", self.level_filter),
@@ -899,71 +901,7 @@ class LogCenterPage(PageFrame):
         )
 
     def _load_platform_options(self, snapshot: dict | None = None) -> list[PlatformUiMeta]:
-        builtins = _builtin_platform_metas()
-        options: list[PlatformUiMeta] = [builtins["all"]]
-        seen: set[str] = {"all"}
-        entries: list[dict[str, Any]] = []
-
-        snapshot = snapshot or {}
-        for key in ("platforms", "plugins", "available_platforms"):
-            value = snapshot.get(key)
-            if isinstance(value, list) and value:
-                for item in value:
-                    if isinstance(item, dict):
-                        entries.append(item)
-                    elif isinstance(item, str) and item.strip():
-                        entries.append({"id": item.strip()})
-                break
-
-        if not entries:
-            settings = snapshot.get("settings_snapshot")
-            if isinstance(settings, dict):
-                platform_settings = settings.get("平台设置")
-                if isinstance(platform_settings, list):
-                    entries.extend(item for item in platform_settings if isinstance(item, dict))
-
-        if not entries:
-            try:
-                from app.core.plugin_registry import registry
-
-                for plugin in registry.get_all_plugins():
-                    entries.append({"id": plugin.id, "name": plugin.name})
-            except (ImportError, RuntimeError, AttributeError) as exc:
-                debug_logger.log_exception("LogCenterPage", "load_plugin_entries", exc)
-
-        for entry in entries:
-            platform_id = str(entry.get("id") or entry.get("platform_id") or "").strip().lower()
-            if not platform_id or platform_id in seen or platform_id == "all":
-                continue
-            default = builtins.get(platform_id)
-            label = str(entry.get("name") or entry.get("label") or (default.label if default else platform_id))
-            icon_path = str(entry.get("icon_path") or entry.get("icon") or "").strip() or None
-            if icon_path and not Path(icon_path).is_file():
-                icon_path = _resolve_platform_icon_path(platform_id)
-            elif not icon_path and default:
-                icon_path = default.icon_path
-            emoji = default.emoji if default else None
-            aliases = default.aliases if default else (platform_id,)
-            options.append(
-                PlatformUiMeta(
-                    id=platform_id,
-                    label=label,
-                    icon_path=icon_path,
-                    emoji=emoji,
-                    aliases=aliases,
-                )
-            )
-            seen.add(platform_id)
-
-        for platform_id in _BUILTIN_PLATFORM_ORDER:
-            if platform_id in seen:
-                continue
-            options.append(builtins[platform_id])
-            seen.add(platform_id)
-
-        if "system" not in seen:
-            options.append(builtins["system"])
-        return options
+        return load_platform_options(snapshot)
 
     def _add_platform_combo_item(self, meta: PlatformUiMeta) -> None:
         label = meta.label
@@ -1089,7 +1027,7 @@ class LogCenterPage(PageFrame):
             matrix.setdefault(scope, {})
             matrix[scope][platform_id] = matrix[scope].get(platform_id, 0) + 1
 
-            facts = self._classification_facts(item)
+            facts = classification_facts(item)
 
             if scope == "system" and (
                 facts["status_upper"].startswith(
@@ -1167,18 +1105,13 @@ class LogCenterPage(PageFrame):
         self._update_footer_stats()
 
     def _total_pages(self) -> int:
-        if self._page_size <= 0:
-            return 1
-        return max(1, math.ceil(len(self._filtered_items) / self._page_size))
+        return total_pages(len(self._filtered_items), self._page_size)
 
     @safe_slot
     def _on_page_size_changed(self) -> None:
         data = self.page_size_combo.currentData() if hasattr(self, "page_size_combo") else None
-        if data is not None:
-            self._page_size = int(data)
-        else:
-            text = self.page_size_combo.currentText() if hasattr(self, "page_size_combo") else "20 条/页"
-            self._page_size = 0 if text in {"全部", "All", "全部"} else int(text.split()[0])
+        text = self.page_size_combo.currentText() if hasattr(self, "page_size_combo") else "20 条/页"
+        self._page_size = parse_page_size(data, text, default=20, all_labels={"全部", "All"})
         self._current_page = 1
         self._refresh_paged_table()
 
@@ -1195,12 +1128,8 @@ class LogCenterPage(PageFrame):
             self._refresh_paged_table()
 
     def _refresh_paged_table(self) -> None:
-        if self._page_size <= 0:
-            page_items = list(self._filtered_items)
-        else:
-            start = (self._current_page - 1) * self._page_size
-            end = start + self._page_size
-            page_items = self._filtered_items[start:end]
+        self._current_page = clamp_page(self._current_page, len(self._filtered_items), self._page_size)
+        page_items = page_slice(self._filtered_items, self._current_page, self._page_size)
         self.items = [self._decorate_log_item(item) for item in page_items]
 
         self.table.set_rows(self.items)
@@ -1235,12 +1164,14 @@ class LogCenterPage(PageFrame):
         self._filter_signature = self._make_filter_signature()
         self._current_page = 1
         if previous_id:
-            for index, item in enumerate(self._filtered_items):
-                if self._item_id(item, index) == previous_id:
-                    if self._page_size > 0:
-                        self._current_page = index // self._page_size + 1
-                    break
-        self._current_page = min(self._current_page, self._total_pages())
+            page = page_for_match(
+                self._filtered_items,
+                lambda item, index: self._item_id(item, index) == previous_id,
+                self._page_size,
+            )
+            if page is not None:
+                self._current_page = page
+        self._current_page = clamp_page(self._current_page, len(self._filtered_items), self._page_size)
         self._refresh_paged_table()
         if previous_id and self.select_id(previous_id):
             self._render_detail()
@@ -1262,1313 +1193,52 @@ class LogCenterPage(PageFrame):
             [Qt.ItemDataRole.DecorationRole, Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
         )
 
-    def _normalized_source(self, item: dict[str, Any]) -> str:
-        value = str(
-            item.get("source")
-            or item.get("logger")
-            or item.get("module")
-            or item.get("component")
-            or ""
-        ).strip()
-
-        if "/" in value:
-            left, _right = value.split("/", 1)
-            return left.strip()
-
-        return value
-
-    def _normalized_action(self, item: dict[str, Any]) -> str:
-        value = str(
-            item.get("action")
-            or item.get("event")
-            or item.get("event_type")
-            or item.get("operation")
-            or ""
-        ).strip()
-
-        if value:
-            return value
-
-        source = str(item.get("source") or "").strip()
-        if "/" in source:
-            _left, right = source.split("/", 1)
-            return right.strip()
-
-        return ""
-
-    def _classification_facts(self, item: dict[str, Any]) -> dict[str, str]:
-        """Build one normalized text/facts object for all semantic classification.
-
-        Do not trust item['category'] as the source of truth.
-        Existing category is kept only as legacy_category fallback.
-        """
-        raw_source = str(
-            item.get("source")
-            or item.get("logger")
-            or item.get("module")
-            or item.get("component")
-            or ""
-        ).strip()
-
-        raw_action = str(
-            item.get("action")
-            or item.get("event")
-            or item.get("event_type")
-            or item.get("operation")
-            or ""
-        ).strip()
-
-        source = raw_source
-        action = raw_action
-        if "/" in raw_source:
-            left, right = raw_source.split("/", 1)
-            if left.strip():
-                source = left.strip()
-            if not action and right.strip():
-                action = right.strip()
-
-        detail = item.get("detail")
-        detail_text = ""
-        if isinstance(detail, dict):
-            try:
-                detail_text = json.dumps(detail, ensure_ascii=False, default=str)
-            except TypeError:
-                detail_text = str(detail)
-        else:
-            detail_text = str(detail or "")
-
-        status = self._normalized_status_code(item)
-        event_code = status or self._normalized_event_code(item)
-
-        message = str(
-            item.get("message")
-            or item.get("message_summary")
-            or item.get("description")
-            or ""
-        ).strip()
-
-        platform = str(item.get("platform") or item.get("platform_label") or "").strip()
-        trace_id = str(item.get("trace_id") or item.get("traceId") or "").strip()
-        raw_level = self._normalized_raw_level(item)
-        legacy_category = str(item.get("category") or "").strip().lower()
-
-        combined = " ".join(
-            [
-                raw_level,
-                source,
-                action,
-                status,
-                event_code,
-                message,
-                platform,
-                trace_id,
-                detail_text,
-                legacy_category,
-            ]
-        )
-
-        return {
-            "raw_level": raw_level,
-            "source": source,
-            "source_lower": source.lower(),
-            "action": action,
-            "action_lower": action.lower(),
-            "status": status,
-            "status_upper": status.upper(),
-            "event_code": event_code,
-            "event_code_upper": event_code.upper(),
-            "message": message,
-            "message_lower": message.lower(),
-            "platform": platform,
-            "platform_lower": platform.lower(),
-            "trace_id": trace_id,
-            "detail_text": detail_text,
-            "detail_lower": detail_text.lower(),
-            "legacy_category": legacy_category,
-            "combined": combined,
-            "combined_upper": combined.upper(),
-            "combined_lower": combined.lower(),
-        }
-
-    def _normalized_status_code(self, item: dict[str, Any]) -> str:
-        def pick_from_dict(data: dict[str, Any]) -> str:
-            keys = (
-                "status_code",
-                "状态码",
-                "code",
-                "event",
-                "event_type",
-                "status",
-                "状态",
-                "http_status",
-                "api_code",
-            )
-            for key in keys:
-                value = data.get(key)
-                text = str(value or "").strip()
-                if text:
-                    return text
-
-            nested_keys = (
-                "detail",
-                "details",
-                "extra",
-                "request",
-                "response",
-                "response_summary",
-                "响应摘要",
-                "context",
-                "上下文",
-                "payload",
-            )
-            for key in nested_keys:
-                value = data.get(key)
-                if isinstance(value, dict):
-                    nested = pick_from_dict(value)
-                    if nested:
-                        return nested
-            return ""
-
-        candidates: list[str] = []
-
-        direct = pick_from_dict(item)
-        if direct:
-            candidates.append(direct)
-
-        detail = item.get("detail")
-        if isinstance(detail, dict):
-            value = pick_from_dict(detail)
-            if value:
-                candidates.append(value)
-        elif isinstance(detail, str) and detail.strip():
-            text = detail.strip()
-            structured = self._parse_structured_detail_text(text)
-            if structured:
-                value = pick_from_dict(structured)
-                if value:
-                    candidates.append(value)
-
-            for pattern in (
-                r"状态码\s*[:：]\s*([A-Za-z0-9_./:-]+)",
-                r"status_code\s*[:：]\s*([A-Za-z0-9_./:-]+)",
-                r"状态\s*[:：]\s*([A-Za-z0-9_./:-]+)",
-            ):
-                match = re.search(pattern, text)
-                if match:
-                    candidates.append(match.group(1).strip())
-
-        for value in candidates:
-            text = str(value or "").strip()
-            if text:
-                return text
-
-        return ""
-
-    def _normalized_event_code(self, item: dict[str, Any]) -> str:
-        status = self._normalized_status_code(item)
-        if status:
-            return status
-
-        action = self._normalized_action(item)
-        if action:
-            text = action.strip()
-            text = text.replace("API::", "API_")
-            text = re.sub(r"[^A-Za-z0-9]+", "_", text)
-            text = re.sub(r"_+", "_", text).strip("_")
-            if text:
-                return text.upper()
-
-        source = self._normalized_source(item)
-        message = str(item.get("message") or item.get("message_summary") or "").strip()
-        if source or message:
-            seed = f"{source}_{message[:32]}"
-            seed = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "_", seed)
-            seed = re.sub(r"_+", "_", seed).strip("_")
-            return seed.upper() if seed else "-"
-
-        return "-"
-
-    def _normalized_raw_level(self, item: dict[str, Any]) -> str:
-        return str(item.get("level") or "").strip().upper()
-
-    def _is_performance_log(self, item: dict[str, Any]) -> bool:
-        facts = self._classification_facts(item)
-        combined = facts["combined_upper"]
-
-        tokens = (
-            "FRONTEND_RENDER_SLOW",
-            "FRONTEND RENDER SLOW",
-            "UI_RENDER_SLOW",
-            "UI_REFRESH_SLOW",
-            "SCHEDULER_SLOW",
-            "RENDER_SLOW",
-            "FLUSH_SLOW",
-            "INTERACTIVE BUDGET",
-            "RENDER EXCEEDED",
-            "REFRESH CADENCE WAS RELAXED",
-            "COALESCED_COUNT",
-            "SCHEDULED_COUNT",
-            "LAST_FLUSH_DURATION_MS",
-            "DURATION_MS",
-        )
-        return any(token in combined for token in tokens)
-
-    def _is_system_config_log(self, item: dict[str, Any]) -> bool:
-        """Only classify real UI/system configuration changes as system config.
-
-        Do not scan detail_text here. Download task detail often contains
-        save_dir / max_concurrent / options-like fields.
-        """
-        facts = self._classification_facts(item)
-
-        source = facts["source_lower"]
-        action = facts["action_lower"]
-        status = facts["status_upper"]
-        event_code = facts["event_code_upper"]
-        message = facts["message_lower"]
-
-        config_text = " ".join(
-            [
-                source,
-                action,
-                status,
-                event_code,
-                message,
-            ]
-        ).upper()
-
-        config_sources = (
-            "gui",
-            "mainwindow",
-            "applicationcontroller",
-            "system",
-        )
-
-        explicit_config_actions = {
-            "update_download_options",
-            "download_options_updated",
-            "change_download_options",
-            "set_download_options",
-            "update_settings",
-            "save_settings",
-            "change_save_dir",
-            "scan_local_dir",
-            "scan_local_dir_finished",
-        }
-
-        explicit_config_statuses = (
-            "APP_DIR_CHANGED",
-            "APP_SCAN_START",
-            "APP_SCAN_OK",
-            "APP_SETTINGS_UPDATED",
-            "APP_CONFIG_UPDATED",
-            "DOWNLOAD_OPTIONS_UPDATED",
-        )
-
-        if action in explicit_config_actions:
-            return True
-
-        if status.startswith(explicit_config_statuses):
-            return True
-
-        if event_code.startswith(explicit_config_statuses):
-            return True
-
-        if any(src in source for src in config_sources):
-            message_tokens = (
-                "DOWNLOAD OPTIONS UPDATED",
-                "CONCURRENCY=",
-                "RETRIES=",
-                "AUTO_RETRY",
-                "AUTO RETRY",
-                "修改线程",
-                "线程并发",
-                "并发数",
-                "重试次数",
-                "自动重试",
-                "更改目录",
-                "保存目录",
-                "配置已更新",
-                "设置已更新",
-            )
-            if any(token in config_text for token in message_tokens):
-                return True
-
-        return False
-
-    def _derive_result_type(self, item: dict[str, Any]) -> str:
-        facts = self._classification_facts(item)
-
-        raw_level = facts["raw_level"]
-        source = facts["source_lower"]
-        action = facts["action_lower"]
-        status = facts["status_upper"]
-        combined = facts["combined_upper"]
-
-        if raw_level in {"ERROR", "FATAL", "CRITICAL"}:
-            return "error"
-
-        if raw_level in {"WARN", "WARNING"}:
-            return "warn"
-
-        if raw_level in {"COMMAND", "CMD"}:
-            return "command"
-
-        if "FFMPEG" in combined or "COMMAND" in combined or action == "ffmpeg":
-            return "command"
-
-        if self._is_performance_log(item):
-            return "warn"
-
-        error_tokens = (
-            "ERROR",
-            "FAIL",
-            "FAILED",
-            "EXCEPTION",
-            "FATAL",
-            "TIMEOUT",
-            "ABORT",
-            "CONNECTION_RESET",
-            "PROXY_ERROR",
-            "LOCAL_HLS_PROXY_ERROR",
-            "HTTP_4",
-            "HTTP_5",
-        )
-        if any(token in combined for token in error_tokens):
-            return "error"
-
-        config_tokens = (
-            "DOWNLOAD OPTIONS UPDATED",
-            "CONCURRENCY",
-            "AUTO_RETRY",
-            "AUTO RETRY",
-            "RETRIES",
-            "THREAD",
-            "MAX_CONCURRENT",
-        )
-        if any(token in combined for token in config_tokens):
-            return "info"
-
-        warn_tokens = (
-            "WARN",
-            "WARNING",
-            "SLOW",
-            "RETRY",
-            "DEGRADED",
-            "RATE_LIMIT",
-            "SKIP",
-            "EMPTY",
-            "NOT_FOUND",
-        )
-        if any(token in combined for token in warn_tokens):
-            return "warn"
-
-        success_tokens = (
-            "_OK",
-            "_SUCCESS",
-            "_FINISH",
-            "_FINISHED",
-            "_COMPLETE",
-            "_COMPLETED",
-            "_DONE",
-            "APP_READY",
-            "APP_SCAN_OK",
-            "DL_FINISH",
-            "APP_DL_FINISH",
-            "BILI_MERGE_OK",
-            "MERGE_FINISHED",
-            "DOWNLOAD_FINISHED",
-        )
-        if any(token in combined for token in success_tokens):
-            return "success"
-
-        message = facts["message_lower"]
-        detail = facts["detail_lower"]
-
-        success_message_tokens = (
-            "下载完成",
-            "下载任务完成",
-            "合并完成",
-            "音视频合并完成",
-            "流请求建立成功",
-        )
-
-        if any(token in message for token in success_message_tokens):
-            return "success"
-
-        if any(token in detail for token in success_message_tokens):
-            return "success"
-
-        if status == "200":
-            if (
-                "api::" in action
-                or action.startswith("api_")
-                or "stream_" in action
-                or "request" in action
-                or "check_login" in action
-                or "get_video_info" in action
-                or "get_play_url" in action
-                or "api" in source
-                or "downloader" in source
-            ):
-                return "success"
-
-        return "info"
-
-    @staticmethod
-    def _result_display_text(result_type: str, raw_level: str = "") -> str:
-        return {
-            "info": "INFO",
-            "success": "SUCCESS",
-            "warn": "WARN",
-            "error": "ERROR",
-            "command": "CMD",
-        }.get(result_type, raw_level or "INFO")
-
-    @staticmethod
-    def _result_nature_text(result_type: str) -> str:
-        return {
-            "info": "过程",
-            "success": "成功",
-            "warn": "预警",
-            "error": "错误",
-            "command": "命令",
-        }.get(result_type, "过程")
-
     def _is_download_component_source(self, source: str) -> bool:
-        source = str(source or "").strip().lower()
-        if not source:
-            return False
-
-        tokens = (
-            "downloadmanager",
-            "download_manager",
-            "downloadworker",
-            "download_worker",
-            "downloadrunner",
-            "download_runner",
-            "downloadservice",
-            "download_service",
-            "downloader",
-            "bilibilidownloader",
-            "douyindownloader",
-            "kuaishoudownloader",
-            "xiaohongshudownloader",
-            "missavdownloader",
-            "n_m3u8dl",
-            "n_m3u8dl_re",
-            "ffmpeg",
-        )
-        return any(token in source for token in tokens)
+        return is_download_component_source(source)
 
     def _is_download_boundary_log(self, item: dict[str, Any]) -> bool:
-        """Return True only after the pipeline has crossed into download execution.
-
-        Must recognize both structured event codes and Chinese generated messages.
-        """
-        facts = self._classification_facts(item)
-        source = facts["source_lower"]
-        action = facts["action_lower"]
-        status = facts["status_upper"]
-        event_code = facts["event_code_upper"]
-        message = facts["message_lower"]
-        detail = facts["detail_lower"]
-        combined = facts["combined_upper"]
-
-        crawl_handoff_statuses = (
-            "BILI_TASK_EMIT",
-            "BILI_QUEUE_READY",
-            "APP_ITEM_FOUND",
-            "APP_CRAWL_START",
-            "APP_CRAWL_FINISH",
-            "XHS_TASK_EMIT",
-            "DY_TASK_EMIT",
-            "KS_TASK_EMIT",
-            "MISSAV_TASK_EMIT",
-        )
-        if status in crawl_handoff_statuses or event_code in crawl_handoff_statuses:
-            return False
-
-        crawl_handoff_actions = {
-            "emit_download_task",
-            "download_queue_ready",
-            "item_found",
-            "start_crawl",
-            "crawl_finished",
-            "run_start",
-            "run_finish",
-        }
-        if action in crawl_handoff_actions:
-            return False
-
-        download_status_prefixes = (
-            "DL_",
-            "APP_DL_",
-            "BILI_DL_",
-            "BILI_MERGE",
-            "XHS_DL_",
-            "DY_DL_",
-            "KS_DL_",
-            "MISSAV_DL_",
-        )
-        if any(status.startswith(prefix) for prefix in download_status_prefixes):
-            return True
-        if any(event_code.startswith(prefix) for prefix in download_status_prefixes):
-            return True
-
-        download_actions = {
-            "queue_task",
-            "dispatch_task",
-            "start_download",
-            "prepare_download",
-            "download_finished",
-            "normalize_extension",
-            "release_slot",
-            "merge_finished",
-            "ffmpeg",
-            "api::stream_audio",
-            "api::stream_video",
-            "stream_audio",
-            "stream_video",
-            "download_stream",
-            "download_file",
-            "download_hls",
-            "download_m3u8",
-        }
-        if action in download_actions:
-            return True
-
-        chinese_download_tokens = (
-            "下载完成",
-            "下载任务完成",
-            "下载任务已进入队列",
-            "进入队列",
-            "已进入队列",
-            "任务已从队列分发",
-            "从队列分发",
-            "分发到下载线程",
-            "下载任务开始执行",
-            "开始执行",
-            "开始下载",
-            "准备下载",
-            "下载并发槽位已释放",
-            "槽位已释放",
-            "音视频合并完成",
-            "合并完成",
-            "流请求建立成功",
-        )
-
-        generated_download_prefixes = (
-            "DOWNLOADER_",
-            "DOWNLOADMANAGER_",
-            "DOWNLOADWORKER_",
-            "DOWNLOADRUNNER_",
-            "DOWNLOADSERVICE_",
-            "BILIBILIDOWNLOADER_",
-            "DOUYINDOWNLOADER_",
-            "KUAISHOUDOWNLOADER_",
-            "XIAOHONGSHUDOWNLOADER_",
-            "MISSAVDOWNLOADER_",
-        )
-
-        generated_text = " ".join([event_code, status, message, detail]).lower()
-
-        if any(event_code.startswith(prefix) for prefix in generated_download_prefixes):
-            if any(token in generated_text for token in chinese_download_tokens):
-                return True
-
-        if self._is_download_component_source(source):
-            if any(token in message for token in chinese_download_tokens):
-                return True
-            if any(token in detail for token in chinese_download_tokens):
-                return True
-
-        strong_download_sources = (
-            "downloadmanager",
-            "download_manager",
-            "downloadworker",
-            "download_worker",
-            "downloadrunner",
-            "download_runner",
-            "downloadservice",
-            "download_service",
-            "n_m3u8dl",
-            "n_m3u8dl_re",
-            "ffmpeg",
-        )
-        if any(token in source for token in strong_download_sources):
-            return True
-
-        if "FFMPEG" in combined:
-            return True
-
-        if "MERGE" in combined:
-            return True
-
-        if "合并" in message:
-            return True
-
-        if "downloader" in source:
-            downloader_boundary_tokens = (
-                "PREPARE",
-                "STREAM_AUDIO",
-                "STREAM_VIDEO",
-                "START_DOWNLOAD",
-                "DL_START",
-                "DL_QUEUE",
-                "DL_DISPATCH",
-                "DL_FINISH",
-                "BILI_DL_PREPARE",
-                "BILI_MERGE_OK",
-                "SAVE_PATH",
-                "TARGET_PATH",
-                "LOCAL_PATH",
-                "CONTENT_LENGTH",
-                "_VIDEO.M4S",
-                "_AUDIO.M4S",
-                "M3U8",
-            )
-            boundary_text = " ".join(
-                [
-                    action.upper(),
-                    status,
-                    event_code,
-                    message.upper(),
-                    detail.upper(),
-                ]
-            )
-            if any(token in boundary_text for token in downloader_boundary_tokens):
-                return True
-
-        return False
+        return is_download_boundary_log(item)
 
     def _is_platform_root_crawl_log(self, item: dict[str, Any]) -> bool:
-        """Platform root source logs are crawl logs unless they cross download boundary."""
-        if self._is_download_boundary_log(item):
-            return False
-
-        facts = self._classification_facts(item)
-        source = facts["source_lower"]
-        message = facts["message_lower"]
-        status = facts["status_upper"]
-        event_code = facts["event_code_upper"]
-        combined = facts["combined_upper"]
-
-        platform_root_sources = {
-            "bilibili",
-            "bili",
-            "douyin",
-            "dy",
-            "kuaishou",
-            "ks",
-            "xiaohongshu",
-            "xhs",
-            "redbook",
-            "missav",
-        }
-
-        if source in platform_root_sources:
-            return True
-
-        platform_prefixes = (
-            "BILIBILI_",
-            "BILI_",
-            "DOUYIN_",
-            "DY_",
-            "KUAISHOU_",
-            "KS_",
-            "XIAOHONGSHU_",
-            "XHS_",
-            "MISSAV_",
-        )
-
-        if any(status.startswith(prefix) for prefix in platform_prefixes):
-            return True
-
-        if any(event_code.startswith(prefix) for prefix in platform_prefixes):
-            return True
-
-        crawl_message_tokens = (
-            "已聚合",
-            "聚合",
-            "扫描结束",
-            "扫描完成",
-            "正在展开",
-            "展开",
-            "最终确认",
-            "有效资源",
-            "候选资源",
-            "发现",
-            "第 ",
-            "页",
-            "route",
-            "搜索",
-            "解析",
-            "获取播放",
-            "播放地址",
-            "装配完成",
-            "提交到下载队列",
-        )
-
-        if any(token in message for token in crawl_message_tokens):
-            return True
-
-        crawl_combined_tokens = (
-            "AGGREGATE",
-            "AGGREGATED",
-            "COLLECT",
-            "COLLECTED",
-            "EXPAND",
-            "EXPANDED",
-            "SCAN",
-            "FOUND",
-            "DISCOVER",
-            "DISCOVERED",
-            "CONFIRM",
-            "CONFIRMED",
-            "ROUTE",
-            "PARSE",
-            "EXTRACT",
-            "FETCH",
-            "PLAY_URL",
-            "GET_VIDEO_INFO",
-            "GET_PLAY_URL",
-            "TASK_EMIT",
-            "QUEUE_READY",
-        )
-
-        if any(token in combined for token in crawl_combined_tokens):
-            return True
-
-        return False
+        return is_platform_root_crawl_log(item)
 
     def _is_crawl_pipeline_log(self, item: dict[str, Any]) -> bool:
-        """Return True for search/parse/extract/discovery logs before download boundary."""
-        if self._is_download_boundary_log(item):
-            return False
-
-        if self._is_platform_root_crawl_log(item):
-            return True
-
-        facts = self._classification_facts(item)
-        source = facts["source_lower"]
-        action = facts["action_lower"]
-        status = facts["status_upper"]
-        event_code = facts["event_code_upper"]
-        message = facts["message_lower"]
-        combined = facts["combined_upper"]
-
-        crawl_status_prefixes = (
-            "APP_CRAWL",
-            "APP_ITEM_FOUND",
-            "BILI_SPIDER",
-            "BILI_ROUTE",
-            "BILI_PARSE",
-            "BILI_API",
-            "BILI_QUEUE_READY",
-            "BILI_TASK_EMIT",
-            "XHS_",
-            "DY_",
-            "KS_",
-            "MISSAV_",
-        )
-
-        crawl_actions = {
-            "run_start",
-            "run_finish",
-            "start_crawl",
-            "item_found",
-            "download_queue_ready",
-            "emit_download_task",
-            "api::check_login",
-            "api::get_video_info",
-            "api::get_play_url",
-            "check_login",
-            "get_video_info",
-            "get_play_url",
-            "search",
-            "parse",
-            "fetch",
-            "extract",
-            "extract_detail",
-            "extract_items",
-            "resolve_url",
-            "resolve_play_url",
-            "parse_detail",
-            "parse_page",
-            "parse_video",
-            "parse_note",
-            "parse_aweme",
-            "parse_feed",
-            "parse_profile",
-        }
-
-        crawl_source_tokens = (
-            "spider",
-            "api",
-            "parser",
-            "extractor",
-            "crawler",
-            "scraper",
-            "resolver",
-            "route",
-            "browser",
-            "playwright",
-        )
-
-        crawl_message_tokens = (
-            "解析",
-            "获取播放流地址",
-            "获取播放地址",
-            "检查登录",
-            "搜索",
-            "发现可下载资源",
-            "提交到下载队列",
-            "下载任务已装配完成",
-            "已聚合",
-            "聚合",
-            "扫描结束",
-            "扫描完成",
-            "正在展开",
-            "最终确认",
-            "有效资源",
-            "候选资源",
-            "第 ",
-            "页",
-            "fetch video detail",
-            "get video info",
-            "get play url",
-        )
-
-        if any(status.startswith(prefix) for prefix in crawl_status_prefixes):
-            return True
-
-        if any(event_code.startswith(prefix) for prefix in crawl_status_prefixes):
-            return True
-
-        if action in crawl_actions:
-            return True
-
-        if action.startswith("api::") and not any(
-            token in action
-            for token in ("stream_audio", "stream_video", "download", "merge")
-        ):
-            return True
-
-        if any(token in source for token in crawl_source_tokens):
-            return True
-
-        if any(token in message for token in crawl_message_tokens):
-            return True
-
-        if any(token in combined for token in ("GET_VIDEO_INFO", "GET_PLAY_URL", "CHECK_LOGIN", "ITEM_FOUND", "TASK_EMIT")):
-            return True
-
-        return False
+        return is_crawl_pipeline_log(item)
 
     def _derive_scope_reason(self, item: dict[str, Any]) -> str:
-        if self._is_performance_log(item):
-            return "performance_token"
-
-        if self._is_download_boundary_log(item):
-            return "download_boundary"
-
-        if self._is_system_config_log(item):
-            return "system_config"
-
-        if self._is_platform_root_crawl_log(item):
-            return "platform_root_crawl"
-
-        if self._is_crawl_pipeline_log(item):
-            return "crawl_pipeline"
-
-        facts = self._classification_facts(item)
-        if facts["legacy_category"]:
-            return f"legacy_{facts['legacy_category']}"
-
-        return "fallback_system"
+        return derive_scope_reason(item)
 
     def _derive_log_scope(self, item: dict[str, Any]) -> str:
-        facts = self._classification_facts(item)
-
-        raw_level = facts["raw_level"]
-        source = facts["source_lower"]
-        action = facts["action_lower"]
-        status = facts["status_upper"]
-        event_code = facts["event_code_upper"]
-        combined = facts["combined_upper"]
-        legacy_category = facts["legacy_category"]
-
-        if raw_level in {"ERROR", "FATAL", "CRITICAL"}:
-            return "error"
-
-        hard_error_tokens = (
-            "LOCAL_HLS_PROXY_ERROR",
-            "PROXY_ERROR",
-            "CONNECTION_RESET",
-            "FATAL",
-            "EXCEPTION",
-            "TRACEBACK",
-        )
-        if any(token in combined for token in hard_error_tokens):
-            return "error"
-
-        if self._is_performance_log(item):
-            return "performance"
-
-        if source == "applicationcontroller":
-            if status.startswith(("APP_CRAWL", "APP_ITEM_FOUND")) or event_code.startswith(
-                ("APP_CRAWL", "APP_ITEM_FOUND")
-            ):
-                return "crawl"
-
-            if status.startswith("APP_DL_") or event_code.startswith("APP_DL_"):
-                return "download"
-
-            if action in {"start_crawl", "item_found", "crawl_finished"}:
-                return "crawl"
-
-            if action in {"download_finished"}:
-                return "download"
-
-            if self._is_system_config_log(item):
-                return "system"
-
-            if status.startswith(("APP_INIT", "APP_READY", "APP_SCAN", "APP_DIR")) or event_code.startswith(
-                ("APP_INIT", "APP_READY", "APP_SCAN", "APP_DIR")
-            ):
-                return "system"
-
-            return "system"
-
-        if self._is_download_boundary_log(item):
-            return "download"
-
-        if self._is_system_config_log(item):
-            return "system"
-
-        if self._is_platform_root_crawl_log(item):
-            return "crawl"
-
-        if self._is_crawl_pipeline_log(item):
-            return "crawl"
-
-        system_sources = (
-            "gui",
-            "mainwindow",
-            "frontendstateservice",
-            "uiupdatescheduler",
-            "system",
-        )
-        system_status_prefixes = (
-            "APP_INIT",
-            "APP_READY",
-            "APP_SCAN",
-            "APP_DIR",
-            "UI_",
-            "FRONTEND_",
-        )
-
-        if any(token in source for token in system_sources):
-            return "system"
-
-        if status.startswith(system_status_prefixes) or event_code.startswith(system_status_prefixes):
-            return "system"
-
-        if legacy_category == "download":
-            if self._is_download_boundary_log(item):
-                return "download"
-            if self._is_platform_root_crawl_log(item) or self._is_crawl_pipeline_log(item):
-                return "crawl"
-            return "system"
-
-        if legacy_category == "crawl":
-            if not self._is_download_boundary_log(item):
-                return "crawl"
-            return "download"
-
-        if legacy_category == "performance":
-            return "performance" if self._is_performance_log(item) else "system"
-
-        if legacy_category == "error":
-            return "error" if raw_level in {"ERROR", "FATAL", "CRITICAL"} else "system"
-
-        if legacy_category == "system":
-            return "system"
-
-        return "system"
+        return derive_log_scope(item)
 
     def _derive_event_stage(self, item: dict[str, Any]) -> str:
-        facts = self._classification_facts(item)
-        result_type = self._derive_result_type(item)
-
-        raw_level = facts["raw_level"]
-        action = facts["action_lower"]
-        combined = facts["combined_upper"]
-        message = facts["message_lower"]
-
-        if result_type == "error" or raw_level in {"ERROR", "FATAL", "CRITICAL"}:
-            return "error"
-
-        if self._is_performance_log(item):
-            return "performance"
-
-        if self._is_system_config_log(item):
-            return "config"
-
-        if "APP_INIT" in combined or action == "app_init":
-            return "init"
-
-        if "SCAN" in combined or "scan" in action or "扫描结束" in message or "扫描完成" in message:
-            return "scan"
-
-        if "CHECK_LOGIN" in combined or "check_login" in action or "登录状态" in message:
-            return "login"
-
-        if "最终确认" in message:
-            return "confirm"
-
-        if any(token in message for token in ("已聚合", "聚合", "有效资源", "候选资源")):
-            return "aggregate"
-
-        if any(token in message for token in ("正在展开", "展开")):
-            return "expand"
-
-        if "确认" in message:
-            return "confirm"
-
-        if "GET_VIDEO_INFO" in combined or "get_video_info" in action or "video detail" in message or "解析" in message:
-            return "parse"
-
-        if "GET_PLAY_URL" in combined or "get_play_url" in action or "播放流" in message or "获取" in message:
-            return "fetch"
-
-        if "STREAM_AUDIO" in combined or "STREAM_VIDEO" in combined or "流请求" in message:
-            return "request"
-
-        if "ITEM_FOUND" in combined or "item_found" in action or "发现可下载资源" in message:
-            return "found"
-
-        if "发现" in message and "页" in message:
-            return "found"
-
-        if "TASK_EMIT" in combined or "emit_download_task" in action or "提交到下载队列" in message:
-            return "emit"
-
-        if "QUEUE" in combined or "queue_task" in action or "进入队列" in message:
-            return "queue"
-
-        if "DISPATCH" in combined or "dispatch_task" in action or "分发" in message:
-            return "dispatch"
-
-        if "PREPARE" in combined or "prepare_download" in action or "准备下载" in message:
-            return "prepare"
-
-        if "START_DOWNLOAD" in combined or "DL_START" in combined or "下载任务开始" in message:
-            return "download"
-
-        if "MERGE" in combined or "FFMPEG" in combined or "合并" in message:
-            return "merge"
-
-        if "NORMALIZED" in combined or "normalize" in action or "修正扩展名" in message:
-            return "normalize"
-
-        if "RELEASE" in combined or "release_slot" in action or "槽位已释放" in message:
-            return "release"
-
-        if any(token in message for token in ("下载任务已进入队列", "进入队列", "已进入队列")):
-            return "queue"
-
-        if any(token in message for token in ("任务已从队列分发", "从队列分发", "分发到下载线程")):
-            return "dispatch"
-
-        if any(token in message for token in ("下载任务开始执行", "开始执行", "开始下载")):
-            return "download"
-
-        if any(token in message for token in ("准备下载", "准备下载 bilibili")):
-            return "prepare"
-
-        if any(token in message for token in ("下载完成", "下载任务完成")):
-            return "finish"
-
-        if any(token in message for token in ("下载并发槽位已释放", "槽位已释放")):
-            return "release"
-
-        if result_type == "success" or "FINISH" in combined or "完成" in message:
-            return "finish"
-
-        if "START" in combined or action.endswith("_start") or "启动" in message:
-            return "start"
-
-        return "step"
+        return derive_event_stage(item)
 
     @staticmethod
     def _stage_display_text(stage: str) -> str:
-        return {
-            "init": "初始化",
-            "config": "配置",
-            "scan": "扫描",
-            "start": "启动",
-            "login": "登录",
-            "aggregate": "聚合",
-            "expand": "展开",
-            "confirm": "确认",
-            "parse": "解析",
-            "fetch": "获取",
-            "request": "请求",
-            "found": "发现",
-            "emit": "提交",
-            "queue": "入队",
-            "dispatch": "分发",
-            "prepare": "准备",
-            "download": "下载",
-            "merge": "合并",
-            "normalize": "修正",
-            "release": "释放",
-            "finish": "完成",
-            "performance": "性能",
-            "error": "异常",
-            "step": "步骤",
-        }.get(stage, stage or "-")
+        return stage_display_text(stage)
 
     @staticmethod
     def _scope_display_text(scope: str) -> str:
-        return {
-            "system": "系统",
-            "crawl": "采集",
-            "download": "下载",
-            "performance": "性能",
-            "error": "异常",
-        }.get(scope, scope or "-")
+        return scope_display_text(scope)
 
     def _decorate_log_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        row = dict(item)
-        platform_id = self._resolve_item_platform_id(item)
-        meta = self._platform_meta_by_id.get(platform_id) or _builtin_platform_metas().get(platform_id)
-        if meta is None:
-            if platform_id:
-                meta = PlatformUiMeta(platform_id, platform_id)
-            else:
-                fallback_label = str(item.get("platform") or "未知")
-                meta = PlatformUiMeta("", fallback_label)
-
-        source = str(item.get("source") or "").strip()
-        label = meta.label
-        row["platform_id"] = platform_id or meta.id
-        row["platform_label"] = label
-        row["platform_icon_path"] = meta.icon_path
-        row["platform_emoji"] = meta.emoji
-
-        icon_file = _platform_icon_file_for_id(platform_id, meta)
-        has_icon = bool(icon_file)
-
-        if has_icon:
-            row["source_display_icon_file"] = icon_file
-            display_text = f"{label} · {source}" if source else label
-        else:
-            row.pop("source_display_icon_file", None)
-            emoji = meta.emoji or ""
-            prefix = f"{emoji} {label}".strip() if emoji else label
-            display_text = f"{prefix} · {source}" if source else prefix
-
-        row["source_display_text"] = display_text
-        row["source_display"] = display_text
-        row["source_display_full"] = display_text
-        row["source_display_align"] = "center"
-        row["message_summary_align"] = "center"
-
-        result_type = self._derive_result_type(item)
-        raw_level = self._normalized_raw_level(item)
         scope = self._derive_log_scope(item)
         stage = self._derive_event_stage(item)
-        event_code = self._normalized_event_code(item)
-
-        row["raw_level"] = raw_level
-        row["result_type"] = result_type
-        row["level_display"] = self._result_display_text(result_type, raw_level)
-        row["level_display_align"] = "center"
-        row["log_scope"] = scope
-        row["event_stage"] = stage
-        row["event_stage_display"] = self._stage_display_text(stage)
-        row["status_code"] = self._normalized_status_code(item)
-        row["event_code"] = event_code
-
-        facts = self._classification_facts(item)
-        row["_classification_source"] = facts["source"]
-        row["_classification_action"] = facts["action"]
-        row["_classification_status"] = facts["status"]
-        row["_classification_legacy_category"] = facts["legacy_category"]
-        row["_scope_reason"] = self._derive_scope_reason(item)
-        return row
+        return decorate_log_item(
+            item,
+            platform_options=self._platform_options,
+            platform_meta_by_id=self._platform_meta_by_id,
+            log_scope=scope,
+            event_stage=stage,
+            scope_reason=self._derive_scope_reason(item),
+        )
 
     def _resolve_item_platform_id(self, item: dict[str, Any]) -> str:
-        explicit = str(item.get("platform_id") or "").strip().lower()
-        if explicit and explicit not in {"", "all"}:
-            if explicit in self._platform_meta_by_id or explicit in _builtin_platform_metas():
-                return explicit
-
-        source_id = str(item.get("source_id") or "").strip().lower()
-        if source_id and (source_id in self._platform_meta_by_id or source_id in _builtin_platform_metas()):
-            return source_id
-
-        platform_text = str(item.get("platform") or "").strip()
-        lowered = platform_text.lower()
-        for meta in self._platform_options:
-            if lowered == meta.id or lowered == meta.label.lower():
-                return meta.id
-            if any(lowered == alias.lower() for alias in meta.aliases):
-                return meta.id
-
-        source_text = " ".join(
-            str(item.get(key) or "")
-            for key in (
-                "source",
-                "action",
-                "event",
-                "event_type",
-                "trace_id",
-                "traceId",
-                "message",
-                "message_summary",
-                "detail",
-                "source_id",
-                "platform_id",
-                "plugin_name",
-            )
-        ).lower()
-        facts = self._classification_facts(item)
-        source_text = " ".join(
-            [
-                source_text,
-                facts["source_lower"],
-                facts["action_lower"],
-                facts["detail_lower"],
-            ]
-        )
-        for meta in self._platform_options:
-            if meta.id in {"", "all"}:
-                continue
-            tokens = (meta.id, *meta.aliases)
-            if any(token.lower() in source_text for token in tokens if token):
-                return meta.id
-
-        if platform_text in {"系统", "system"}:
-            return "system"
-        return ""
+        return resolve_item_platform_id(item, self._platform_options, self._platform_meta_by_id)
 
     def _format_platform_label(self, item: dict[str, Any]) -> str:
-        platform_id = self._resolve_item_platform_id(item)
-        meta = self._platform_meta_by_id.get(platform_id) or _builtin_platform_metas().get(platform_id)
-        if meta is None:
-            return str(item.get("platform") or "-")
-        icon_file = _platform_icon_file_for_id(platform_id, meta)
-        has_icon = bool(icon_file)
-        if has_icon:
-            return meta.label
-        prefix = meta.emoji or ""
-        if prefix:
-            return f"{prefix} {meta.label}".strip()
-        return meta.label
+        return format_platform_label(item, self._platform_options, self._platform_meta_by_id)
 
     def _matches_non_category_filters(self, item: dict[str, Any]) -> bool:
         level = (
@@ -2577,8 +1247,8 @@ class LogCenterPage(PageFrame):
             else "全部"
         )
         if level != "全部":
-            result_type = self._derive_result_type(item)
-            display = self._result_display_text(result_type, self._normalized_raw_level(item))
+            result_type = derive_result_type(item)
+            display = result_display_text(result_type, normalized_raw_level(item))
             if display != level:
                 return False
 
@@ -2753,7 +1423,7 @@ class LogCenterPage(PageFrame):
     def _copy_current_log_json(self) -> None:
         if not self._current_log_item():
             return
-        QApplication.clipboard().setText(self._format_json_text(self._current_detail_payload()))
+        QApplication.clipboard().setText(format_json_text(self._current_detail_payload()))
         self._flash_button_text(self.json_copy_button)
 
     @safe_slot
@@ -2800,14 +1470,14 @@ class LogCenterPage(PageFrame):
         if resolved and resolved == platform_id:
             return True
 
-        meta = self._platform_meta_by_id.get(platform_id) or _builtin_platform_metas().get(platform_id)
+        meta = self._platform_meta_by_id.get(platform_id) or builtin_platform_metas().get(platform_id)
         tokens: set[str] = {platform_id.lower()}
         if meta is not None:
             tokens.add(meta.id.lower())
             tokens.add(meta.label.lower())
             tokens.update(alias.lower() for alias in meta.aliases)
 
-        facts = self._classification_facts(item)
+        facts = classification_facts(item)
         text = " ".join(
             [
                 facts["platform_lower"],
@@ -2858,7 +1528,7 @@ class LogCenterPage(PageFrame):
         return None
 
     def _searchable_text(self, item: dict[str, Any], *, include_detail: bool = False) -> str:
-        facts = self._classification_facts(item)
+        facts = classification_facts(item)
         keys = [
             "platform",
             "source",
@@ -2885,7 +1555,7 @@ class LogCenterPage(PageFrame):
                 facts["legacy_category"],
                 self._derive_log_scope(item),
                 self._derive_event_stage(item),
-                self._derive_result_type(item),
+                derive_result_type(item),
             ]
         )
         if include_detail:
@@ -2930,58 +1600,6 @@ class LogCenterPage(PageFrame):
         QTimer.singleShot(0, self._resize_json_viewer_to_content)
         self.stack_text.clear()
         self.stack_section.setVisible(False)
-
-    @staticmethod
-    def _soft_wrap_text(text: str) -> str:
-        value = str(text or "")
-        for sep in ("\\", "/", "_", "-"):
-            value = value.replace(sep, f"{sep}\u200b")
-        return value
-
-    @staticmethod
-    def _strip_leading_emoji(text: str) -> str:
-        return _LOG_EMOJI_PREFIX_RE.sub("", str(text or "").strip()).strip()
-
-    @classmethod
-    def _looks_like_path(cls, value: str) -> bool:
-        text = str(value or "").strip()
-        if not text:
-            return False
-        if ":\\" in text or text.startswith("/") or text.startswith("\\\\"):
-            return True
-        return "\\" in text and len(text) >= 8
-
-    @classmethod
-    def _extract_message_payload(cls, message: str) -> dict[str, Any] | None:
-        clean = cls._strip_leading_emoji(message)
-        if ":" not in clean:
-            return None
-        before, after = clean.split(":", 1)
-        before = before.strip()
-        after = after.strip()
-        if cls._looks_like_path(after):
-            return {"description": before, "path": after}
-        return None
-
-    @classmethod
-    def _refine_description_path(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        result = dict(payload)
-        description = str(result.get("description") or "").strip()
-        if description:
-            extracted = cls._extract_message_payload(description)
-            if extracted:
-                result["description"] = extracted["description"]
-                result.setdefault("path", extracted["path"])
-            else:
-                result["description"] = cls._strip_leading_emoji(description)
-        detail_text = str(result.get("detail") or "").strip()
-        if detail_text and "description" not in result:
-            extracted = cls._extract_message_payload(detail_text)
-            if extracted:
-                result.update(extracted)
-            else:
-                result["description"] = cls._strip_leading_emoji(detail_text)
-        return result
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -3084,7 +1702,7 @@ class LogCenterPage(PageFrame):
 
     def _format_json_html(self, payload: Any) -> str:
         colors = theme_colors(self._resolve_theme_is_dark())
-        text = self._format_json_text(payload)
+        text = format_json_text(payload)
         escaped = html.escape(text)
         return f"""
         <html>
@@ -3110,58 +1728,6 @@ class LogCenterPage(PageFrame):
         </html>
         """
 
-    @staticmethod
-    def _parse_structured_detail_text(detail: str) -> dict[str, Any] | None:
-        text = str(detail or "").strip()
-        if not text:
-            return None
-
-        result: dict[str, Any] = {}
-        in_details = False
-
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-
-            if line.startswith("说明:"):
-                result["description"] = LogCenterPage._strip_leading_emoji(line.split(":", 1)[1].strip())
-                in_details = False
-                continue
-            if line.startswith("状态码:"):
-                result["status_code"] = line.split(":", 1)[1].strip()
-                in_details = False
-                continue
-            if line.rstrip(":") in {"详情", "详细信息"}:
-                in_details = True
-                continue
-
-            bullet_match = re.match(r"^-\s*(.+)$", line)
-            if bullet_match:
-                payload = bullet_match.group(1).strip()
-                if ":" in payload:
-                    key, value = payload.split(":", 1)
-                    result[key.strip()] = value.strip()
-                continue
-
-            if in_details and ":" in line:
-                key, value = line.split(":", 1)
-                result[key.strip().lstrip("- ")] = value.strip()
-                continue
-
-            if ":" in line:
-                key, value = line.split(":", 1)
-                normalized_key = key.strip()
-                normalized_value = value.strip()
-                if normalized_key == "说明":
-                    result["description"] = LogCenterPage._strip_leading_emoji(normalized_value)
-                elif normalized_key == "状态码":
-                    result["status_code"] = normalized_value
-                elif normalized_key:
-                    result[normalized_key] = normalized_value
-
-        return result or None
-
     def _normalize_detail_payload(self, item: dict[str, Any]) -> Any:
         detail = item.get("detail")
         payload: dict[str, Any] | list[Any] | None = None
@@ -3178,26 +1744,26 @@ class LogCenterPage(PageFrame):
                         parsed = json.loads(text)
                         payload = parsed
                     except json.JSONDecodeError:
-                        structured = self._parse_structured_detail_text(text)
+                        structured = parse_structured_detail_text(text)
                         payload = structured if structured else {"detail": text}
 
         if payload is None:
             payload = {}
 
         if isinstance(payload, dict):
-            payload = self._refine_description_path(payload)
+            payload = refine_description_path(payload)
             message = str(item.get("message") or item.get("message_summary") or "").strip()
-            extracted = self._extract_message_payload(message) if message else None
+            extracted = extract_message_payload(message) if message else None
             if extracted:
                 if not payload.get("description"):
                     payload["description"] = extracted["description"]
                 payload.setdefault("path", extracted.get("path"))
             elif message and not payload.get("description"):
-                payload["description"] = self._strip_leading_emoji(message)
+                payload["description"] = strip_leading_emoji(message)
             event = item.get("event") or item.get("event_type") or item.get("status_code")
             if event and "status_code" not in payload and "event" not in payload:
                 payload["event"] = event
-            status_code = self._normalized_status_code(item)
+            status_code = normalized_status_code(item)
             if status_code and "status_code" not in payload:
                 payload["status_code"] = status_code
             for key in ("platform", "source", "trace_id"):
@@ -3207,12 +1773,6 @@ class LogCenterPage(PageFrame):
             payload = {key: value for key, value in payload.items() if value not in (None, "", [])}
 
         return payload or {}
-
-    @staticmethod
-    def _format_json_text(payload: Any) -> str:
-        if payload in (None, ""):
-            return "{}"
-        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     def _render_detail(self) -> None:
         current = self._current_log_row_item()
@@ -3235,23 +1795,23 @@ class LogCenterPage(PageFrame):
         self.detail_message_value.setToolTip(raw_message if raw_message else "")
         QTimer.singleShot(0, self._resize_detail_message_box)
 
-        raw_level = item.get("raw_level") or self._normalized_raw_level(item)
-        result_type = item.get("result_type") or self._derive_result_type(item)
+        raw_level = item.get("raw_level") or normalized_raw_level(item)
+        result_type = item.get("result_type") or derive_result_type(item)
         scope = item.get("log_scope") or self._derive_log_scope(item)
         stage = item.get("event_stage") or self._derive_event_stage(item)
-        event_code = item.get("event_code") or self._normalized_event_code(item)
+        event_code = item.get("event_code") or normalized_event_code(item)
 
         self.detail_level_badge.setText(raw_level or "-")
-        self._apply_level_badge_style(self._result_display_text(result_type, raw_level))
+        self._apply_level_badge_style(result_display_text(result_type, raw_level))
 
-        self.detail_status_value.setText(self._result_nature_text(result_type))
+        self.detail_status_value.setText(result_nature_text(result_type))
         self.detail_scope_value.setText(self._scope_display_text(scope))
         self.detail_stage_value.setText(self._stage_display_text(stage))
         self.detail_status_code_value.setText(event_code or "-")
         self.detail_status_code_value.setToolTip(event_code or "")
 
         payload = self._normalize_detail_payload(item)
-        self._last_json_text = self._format_json_text(payload)
+        self._last_json_text = format_json_text(payload)
         self.json_text.setHtml(self._format_json_html(payload))
         QTimer.singleShot(0, self._resize_json_viewer_to_content)
 

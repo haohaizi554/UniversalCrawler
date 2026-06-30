@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QPlainTextEdit
 class LogPanel(QPlainTextEdit):
     """定义 `LogPanel` 界面组件，负责对应区域的展示与交互。"""
 
-    MAX_LOG_BLOCK_COUNT = 5000
+    MAX_LOG_BLOCK_COUNT = 500
 
     def __init__(self):
         """初始化当前实例并准备运行所需的状态，供 `LogPanel` 使用。"""

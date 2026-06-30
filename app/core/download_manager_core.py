@@ -11,6 +11,7 @@ from typing import Any, Iterable
 from app.config import cfg, normalize_download_concurrency
 from app.debug_logger import debug_logger
 from app.exceptions import AppError
+from app.core.media_filter import is_image_like_resource, should_skip_for_video_only
 from app.models import VideoItem
 
 class PendingDownloadQueue:
@@ -295,16 +296,18 @@ class DownloadManagerCore:
             return len(self.workers) < self._slot_capacity()
 
     def _is_lightweight_download(self, video: VideoItem | None) -> bool:
-        if video is None:
-            return False
-        meta = getattr(video, "meta", None) or {}
-        content_type = str(meta.get("content_type", "") or "").lower()
-        if content_type in {"image", "gallery", "photo", "photos"}:
-            return True
-        if meta.get("images_data") or meta.get("image_url") or meta.get("image_index"):
-            return True
-        url = str(getattr(video, "url", "") or "").split("?", 1)[0].lower()
-        return url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"))
+        return is_image_like_resource(video)
+
+    def _should_skip_for_video_only(self, video: VideoItem | None) -> bool:
+        return bool(getattr(self, "video_only", False)) and should_skip_for_video_only(video)
+
+    @staticmethod
+    def _mark_video_only_skip(video: VideoItem) -> None:
+        if not isinstance(getattr(video, "meta", None), dict):
+            video.meta = {}
+        video.status = "已跳过"
+        video.progress = 100
+        video.meta["skipped_by_video_only"] = True
 
     def _active_heavy_worker_count(self) -> int:
         self.prune_finished_workers()
@@ -329,6 +332,28 @@ class DownloadManagerCore:
 
     def add_task(self, video: VideoItem, save_dir: str):
         """Add a video item into the download queue."""
+        if self._should_skip_for_video_only(video):
+            self._mark_video_only_skip(video)
+            debug_logger.log(
+                component="DownloadManager",
+                action="skip_non_video_resource",
+                message="Video-only mode skipped a non-video resource",
+                status_code="DL_SKIP_VIDEO_ONLY",
+                context=debug_logger.pick_used(
+                    {"trace_id": video.meta.get("trace_id"), "video_id": video.id, "source": video.source},
+                    "trace_id",
+                    "video_id",
+                    "source",
+                ),
+                details=debug_logger.pick_used(
+                    {"title": video.title, "url": video.url, "content_type": video.meta.get("content_type")},
+                    "title",
+                    "url",
+                    "content_type",
+                ),
+                trace_id=video.meta.get("trace_id"),
+            )
+            return False
         trace_id = video.meta.get("trace_id")
         debug_logger.log(
             component="DownloadManager",
@@ -347,9 +372,10 @@ class DownloadManagerCore:
         )
         with self._start_stop_guard():
             if not self.is_running:
-                raise RuntimeError("DownloadManager 已停止，无法继续添加任务")
+                raise RuntimeError("\u5df2\u505c\u6b62: DownloadManager cannot add more tasks")
             self.queue.put((video, save_dir))
             self._get_dispatch_slot_gate().set()
+        return True
 
     def cancel_task(self, video_id: str) -> str | None:
         """Cancel a queued or running task."""
@@ -475,7 +501,7 @@ class DownloadManagerCore:
                     details={"queued_tasks": self.queue.qsize(), "active_workers": active_workers},
                 )
                 if failed_video is not None:
-                    self._emit_task_error(failed_video.id, f"调度失败: {e}")
+                    self._emit_task_error(failed_video.id, f"\u8c03\u5ea6\u5931\u8d25: {e}")
             finally:
                 if slot_acquired:
                     self._release_dispatch_slot("dispatch_slot_finally")

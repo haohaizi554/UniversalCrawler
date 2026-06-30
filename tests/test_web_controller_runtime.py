@@ -53,6 +53,22 @@ class WebControllerRuntimeTests(unittest.TestCase):
         fake_manager.task_finished.connect.assert_called_once_with(controller._on_task_finished)
         fake_manager.task_error.connect.assert_called_once_with(controller._on_task_error)
 
+    def test_on_spider_item_found_skips_image_when_video_only_enabled(self):
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        controller.bridge.emit = Mock()
+        controller._dl_manager = SimpleNamespace(video_only=True, add_task=Mock())
+        item = VideoItem(url="https://example.com/cover.jpg", title="cover", source="xiaohongshu")
+        item.meta["content_type"] = "image/jpeg"
+
+        controller._on_spider_item_found(item)
+
+        self.assertEqual(controller._video_count(), 0)
+        controller.bridge.emit.assert_not_called()
+        controller._dl_manager.add_task.assert_not_called()
+
+
     def test_shutdown_does_not_create_download_manager_for_idle_session(self):
         from app.web.controller import WebController
 

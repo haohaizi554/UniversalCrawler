@@ -29,7 +29,7 @@ class DownloadProgressSnapshot:
 class DownloadTelemetryService:
     """Track per-video throughput and ETA from progress callbacks."""
 
-    MIN_SAMPLE_INTERVAL_SECONDS = 0.4
+    MIN_SAMPLE_INTERVAL_SECONDS = 0.2
 
     def __init__(self) -> None:
         self._last_sample: dict[str, tuple[int, float, int]] = {}

@@ -3,12 +3,10 @@ from __future__ import annotations
 from typing import Any
 from app.debug_logger import debug_logger
 
-from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFontMetrics, QIcon, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
-    QButtonGroup,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -24,10 +22,24 @@ from PyQt6.QtWidgets import (
 )
 
 from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
-from app.ui.components.combo_popup import ThemedComboBox, apply_themed_combo_box, polish_combo_popup, schedule_combo_popup_repolish
+from app.ui.components.combo_popup import apply_themed_combo_box, polish_combo_popup
+from app.ui.components.focus_state import bind_focus_property
+from app.ui.components.settings_controls import SettingsComboBox, SegmentedControl, UiSwitch
+from app.ui.components.settings_form import SettingsFormBuilder
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame
+from app.ui.styles.settings_page import generate_settings_page_stylesheet
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
+from app.ui.viewmodels.settings_options import (
+    compact_proxy_options,
+    current_combo_int_value,
+    current_combo_value,
+    normalize_combo_options,
+    platform_proxy_policy,
+    proxy_endpoint_from_port,
+    proxy_port_text,
+)
+from app.ui.viewmodels.settings_platform_layout import PLATFORM_DETAIL_COL_WIDTHS, platform_column_widths
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.safe_slot import safe_slot
 
@@ -80,7 +92,7 @@ SPEED_LIMIT_OPTIONS = [
 PLATFORM_COUNT_OPTIONS = ["10", "20", "30", "50", "100"]
 PROXY_OPTIONS = ["系统代理", "直连", "Clash (7890)", "Clash Verge (7897)", "v2rayN (10809)", "V2Ray / Qv2ray (10808)", "sing-box (2080)", "NekoRay (2080)", "自定义"]
 RETENTION_OPTIONS = ["1", "3", "5", "7"]
-UI_LOG_MAX_DISPLAY_OPTIONS = ["300", "500", "1000", "2000", "5000"]
+UI_LOG_MAX_DISPLAY_OPTIONS = ["100", "300", "500"]
 PLAYER_OPTIONS = ["内置播放器", "系统默认播放器"]
 ACCENT_OPTIONS = ["蓝色", "绿色", "紫色", "橙色", "红色"]
 SCALE_OPTIONS = ["90%", "100%（推荐）", "110%", "125%"]
@@ -161,178 +173,10 @@ GROUP_HINTS = {
 UI_TEXT: dict[str, dict[str, str]] = {}
 
 
-PLATFORM_DETAIL_COL_WIDTHS = {
-    "name": 122,
-    "auth": 112,
-    "count": 210,
-    "timeout": 132,
-    "proxy": 294,
-}
-
 FORM_CONTROL_WIDTH = 320
 FORM_CONTROL_WIDTH_LARGE = 520
 FORM_CONTROL_WIDTH_MEDIUM = 380
 FORM_SWITCH_WRAP_WIDTH = 96
-
-
-class UiSwitch(QCheckBox):
-    """Pill toggle switch without native checkbox chrome."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._palette = theme_colors(False)
-        self.setObjectName("SettingsUiSwitch")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-        self.setText("")
-        self.setFixedSize(48, 28)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-    def hitButton(self, pos) -> bool:  # noqa: N802
-        return self.rect().contains(pos)
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(48, 28)
-
-    def set_theme_colors(self, colors: dict[str, str]) -> None:
-        self._palette = colors
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        del event
-
-        if self.width() <= 0 or self.height() <= 0:
-            return
-
-        colors = self._palette
-        checked = self.isChecked()
-        enabled = self.isEnabled()
-
-        track_on = QColor(colors["accent"])
-        track_off = QColor("#cbd5e1" if colors["panel"].lower() == "#ffffff" else "#4b5563")
-        knob = QColor("#ffffff")
-
-        painter = QPainter(self)
-        if not painter.isActive():
-            return
-
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            if not enabled:
-                painter.setOpacity(0.45)
-
-            rect = QRectF(1, 3, 46, 22)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(track_on if checked else track_off)
-            painter.drawRoundedRect(rect, 11, 11)
-
-            knob_x = 25 if checked else 4
-            painter.setBrush(knob)
-            painter.drawEllipse(QRectF(knob_x, 5, 18, 18))
-        finally:
-            painter.end()
-
-
-class SegmentedControl(QWidget):
-  selection_changed = pyqtSignal(str)
-
-  def __init__(
-      self,
-      options: list[tuple[str, str]],
-      *,
-      parent: QWidget | None = None,
-  ) -> None:
-      super().__init__(parent)
-      self._options = list(options)
-      self._colors = theme_colors(False)
-      self.setObjectName("SettingsSegmented")
-      self.setFixedHeight(38)
-
-      layout = QHBoxLayout(self)
-      layout.setContentsMargins(0, 0, 0, 0)
-      layout.setSpacing(0)
-
-      self._group = QButtonGroup(self)
-      self._group.setExclusive(True)
-      self._buttons: dict[str, QPushButton] = {}
-
-      for index, (value, label) in enumerate(self._options):
-          button = QPushButton(label)
-          button.setObjectName("SettingsSegmentButton")
-          button.setCheckable(True)
-          button.setProperty("segment_value", value)
-          button.setCursor(Qt.CursorShape.PointingHandCursor)
-          button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-          button.setMinimumHeight(36)
-          if index == 0:
-              button.setProperty("segment_pos", "left")
-          elif index == len(self._options) - 1:
-              button.setProperty("segment_pos", "right")
-          else:
-              button.setProperty("segment_pos", "middle")
-          self._group.addButton(button)
-          self._buttons[value] = button
-          layout.addWidget(button, 1)
-          button.toggled.connect(lambda checked, key=value: self._on_toggled(key, checked))
-
-      if self._options:
-          self._buttons[self._options[0][0]].setChecked(True)
-
-  def _on_toggled(self, value: str, checked: bool) -> None:
-      if checked:
-          self.selection_changed.emit(value)
-
-  def set_theme_colors(self, colors: dict[str, str]) -> None:
-      self._colors = colors
-      self.update()
-
-  def set_value(self, value: str) -> None:
-      button = self._buttons.get(str(value))
-      if button is not None:
-          blocked = button.blockSignals(True)
-          try:
-              button.setChecked(True)
-          finally:
-              button.blockSignals(blocked)
-
-  def value(self) -> str:
-      for key, button in self._buttons.items():
-          if button.isChecked():
-              return key
-      return self._options[0][0] if self._options else ""
-
-
-class SettingsComboBox(ThemedComboBox):
-    """Stable settings combo that keeps the active accent while the popup is open."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        # The settings stylesheet owns the control chrome; the shared helper owns popup behavior.
-        self.setStyleSheet("")
-        self.setProperty("themedComboControlStyle", "false")
-        self.setProperty("comboPopupClampToControl", "true")
-        self.setProperty("popupOpen", "false")
-
-    def _set_popup_open(self, open_: bool) -> None:
-        self.setProperty("popupOpen", "true" if open_ else "false")
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
-
-    def showPopup(self) -> None:  # noqa: N802
-        self._set_popup_open(True)
-        if self.width() > 0:
-            self.setProperty("comboPopupMaxWidth", int(self.width()))
-        polish_combo_popup(self, row_height=self.property("comboPopupRowHeight") or 38)
-        QComboBox.showPopup(self)
-        if self.width() > 0:
-            self.setProperty("comboPopupMaxWidth", int(self.width()))
-        polish_combo_popup(self, row_height=self.property("comboPopupRowHeight") or 38)
-        schedule_combo_popup_repolish(self)
-
-    def hidePopup(self) -> None:  # noqa: N802
-        QComboBox.hidePopup(self)
-        self._set_popup_open(False)
 
 
 class SettingsPage(PageFrame):
@@ -543,113 +387,36 @@ class SettingsPage(PageFrame):
     def _effective_control_width(self, control_width: int) -> int:
         return min(int(control_width), max(150, self._content_card_width() - 260))
 
-    def _combo_label_min_width(self, options: list[Any], current: Any, *, floor: int) -> int:
-        font = self.font()
-        font.setPixelSize(self._scaled_px(13, minimum=12))
-        metrics = QFontMetrics(font)
-        labels = [self._t(label) for _value, label in self._normalize_combo_options(options, current)]
-        widest = max((metrics.horizontalAdvance(label) for label in labels), default=0)
-        return max(int(floor), widest + self._scaled_px(38, minimum=34))
-
-    def _platform_option_min_width(
-        self,
-        rows: list[dict[str, Any]] | None,
-        option_key: str,
-        default_options: list[Any],
-        current_key: str,
-        default_current: Any,
-        *,
-        floor: int,
-    ) -> int:
-        width = self._combo_label_min_width(default_options, default_current, floor=floor)
-        for row in rows or []:
-            width = max(
-                width,
-                self._combo_label_min_width(
-                    list(row.get(option_key) or default_options),
-                    row.get(current_key, default_current),
-                    floor=floor,
-                ),
-            )
-        return width
+    def _settings_form_builder(self) -> SettingsFormBuilder:
+        return SettingsFormBuilder(
+            translate=self._t,
+            scaled_px=self._scaled_px,
+            content_card_width=self._content_card_width,
+            effective_control_width=self._effective_control_width,
+            safe_icon_pixmap=self._safe_icon_pixmap,
+            fallback_group_icon_text=self._fallback_group_icon_text,
+            fallback_detail_icon_style=self._fallback_detail_icon_style,
+            group_icons=GROUP_ICONS,
+            group_descriptions=self._group_descriptions,
+            default_group_descriptions=GROUP_DESCRIPTIONS,
+            group_hints=GROUP_HINTS,
+            setting_short_descriptions=SETTING_SHORT_DESCRIPTIONS,
+            setting_descriptions=SETTING_DESCRIPTIONS,
+            switch_wrap_width=FORM_SWITCH_WRAP_WIDTH,
+        )
 
     def _platform_col_widths(self, rows: list[dict[str, Any]] | None = None) -> dict[str, int]:
-        base = dict(PLATFORM_DETAIL_COL_WIDTHS)
-        base["count"] = max(
-            base["count"],
-            self._platform_option_min_width(
-                rows,
-                "count_options",
-                PLATFORM_COUNT_OPTIONS,
-                "default_count",
-                20,
-                floor=180,
-            ),
+        font = self.font()
+        font.setPixelSize(self._scaled_px(13, minimum=12))
+        return platform_column_widths(
+            rows,
+            content_width=self._form_inner_width() - 28 - 40,
+            translate=self._t,
+            metrics=QFontMetrics(font),
+            count_options=PLATFORM_COUNT_OPTIONS,
+            timeout_options=TIMEOUT_OPTIONS,
+            label_padding=self._scaled_px(38, minimum=34),
         )
-        base["timeout"] = max(
-            base["timeout"],
-            self._platform_option_min_width(
-                rows,
-                "timeout_options",
-                TIMEOUT_OPTIONS,
-                "default_timeout",
-                60,
-                floor=132,
-            ),
-        )
-        content_width = max(280, self._form_inner_width() - 28 - 40)
-        base_total = sum(base.values())
-        if content_width >= base_total:
-            return base
-
-        minimums = {
-            "name": 70,
-            "auth": 78,
-            "count": min(base["count"], max(160, base["count"] - 28)),
-            "timeout": min(base["timeout"], max(132, base["timeout"] - 12)),
-            "proxy": 112,
-        }
-        min_total = sum(minimums.values())
-        if content_width <= min_total:
-            name_width = 58
-            auth_width = 64
-            proxy_floor = 72
-            count_floor = 100
-            timeout_width = min(
-                base["timeout"],
-                max(108, content_width - name_width - auth_width - proxy_floor - count_floor),
-            )
-            count_width = max(
-                count_floor,
-                min(base["count"], content_width - name_width - auth_width - proxy_floor - timeout_width),
-            )
-            proxy_width = max(
-                52,
-                content_width - name_width - auth_width - timeout_width - count_width,
-            )
-            if proxy_width < proxy_floor and count_width > count_floor:
-                borrow = min(proxy_floor - proxy_width, count_width - count_floor)
-                count_width -= borrow
-                proxy_width += borrow
-            widths = {
-                "name": name_width,
-                "auth": auth_width,
-                "count": count_width,
-                "timeout": timeout_width,
-                "proxy": proxy_width,
-            }
-        else:
-            extra = content_width - min_total
-            base_extra = base_total - min_total
-            widths = {
-                key: minimums[key] + int(extra * (base[key] - minimums[key]) / max(1, base_extra))
-                for key in base
-            }
-
-        used_without_proxy = widths["name"] + widths["auth"] + widths["count"] + widths["timeout"]
-        proxy_floor = 80 if content_width - used_without_proxy >= 80 else 52
-        widths["proxy"] = max(proxy_floor, content_width - used_without_proxy)
-        return widths
 
     def _scale_factor(self) -> float:
         app = QApplication.instance()
@@ -986,89 +753,13 @@ class SettingsPage(PageFrame):
         self._refresh_theme_widgets()
 
     def _build_form_card(self) -> tuple[QFrame, QVBoxLayout]:
-        card = QFrame()
-        card.setObjectName("SettingsFormCard")
-        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        card.setFixedWidth(self._content_card_width())
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(7)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        return card, layout
+        return self._settings_form_builder().build_form_card()
 
     def _build_group_hint_card(self, group_name: str) -> QFrame:
-        card = QFrame()
-        card.setObjectName("SettingsHintCard")
-        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        card.setFixedWidth(self._content_card_width())
-        card.setFixedHeight(40)
-
-        layout = QHBoxLayout(card)
-        layout.setContentsMargins(12, 0, 12, 0)
-        layout.setSpacing(8)
-
-        icon = QLabel("i")
-        icon.setObjectName("SettingsHintIcon")
-        icon.setFixedSize(20, 20)
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        raw_text = GROUP_HINTS.get(group_name, "")
-        text = QLabel(self._t(raw_text))
-        text.setObjectName("SettingsHintText")
-        text.setWordWrap(False)
-        text.setToolTip(self._t(raw_text))
-        text.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        layout.addWidget(icon)
-        layout.addWidget(text, 1)
-
-        return card
+        return self._settings_form_builder().build_group_hint_card(group_name)
 
     def _build_detail_header(self, group_name: str) -> QWidget:
-        row = QWidget()
-        row.setObjectName("SettingsDetailHeader")
-        row.setFixedHeight(58)
-
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        icon = QLabel()
-        icon.setObjectName("SettingsDetailIcon")
-        icon.setFixedSize(32, 32)
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        icon_file = GROUP_ICONS.get(group_name, "nav_settings.png")
-        pixmap = self._safe_icon_pixmap(icon_file, 22)
-        if pixmap is not None and not pixmap.isNull():
-            icon.setPixmap(pixmap)
-        else:
-            icon.setText(self._fallback_group_icon_text(group_name))
-            icon.setStyleSheet(self._fallback_detail_icon_style())
-
-        text_box = QWidget()
-        text_layout = QVBoxLayout(text_box)
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(2)
-
-        title = QLabel(self._t(group_name))
-        title.setObjectName("SettingsDetailTitle")
-
-        subtitle_text = self._group_descriptions.get(group_name, "") or GROUP_DESCRIPTIONS.get(group_name, "")
-        subtitle = QLabel(self._t(subtitle_text))
-        subtitle.setObjectName("SettingsDetailSubtitle")
-        subtitle.setWordWrap(False)
-        subtitle.setToolTip(self._t(subtitle_text))
-        subtitle.setMinimumWidth(0)
-
-        text_layout.addWidget(title)
-        text_layout.addWidget(subtitle)
-
-        layout.addWidget(icon)
-        layout.addWidget(text_box, 1)
-        return row
+        return self._settings_form_builder().build_detail_header(group_name)
 
     def _has_editor_focus(self) -> bool:
         focused = QApplication.focusWidget()
@@ -1082,18 +773,6 @@ class SettingsPage(PageFrame):
             if original is not None and not editor.isReadOnly() and editor.text() != str(original):
                 return True
         return False
-
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
-        if isinstance(watched, QLineEdit) and watched.objectName() == "SettingsLineEdit":
-            if event.type() in {QEvent.Type.FocusIn, QEvent.Type.FocusOut}:
-                field = watched.parentWidget()
-                if isinstance(field, QFrame) and field.objectName() == "SettingsPathField":
-                    focused = event.type() == QEvent.Type.FocusIn
-                    field.setProperty("focused", "true" if focused else "false")
-                    field.style().unpolish(field)
-                    field.style().polish(field)
-                    field.update()
-        return super().eventFilter(watched, event)
 
     @staticmethod
     def _settings_signature(settings: dict, contract: dict | None) -> tuple:
@@ -1172,72 +851,12 @@ class SettingsPage(PageFrame):
         control_width: int = FORM_CONTROL_WIDTH,
         compact: bool = False,
     ) -> QWidget:
-        row = QFrame()
-        row.setObjectName("SettingsSettingRow")
-        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        row.setFixedHeight(self._scaled_px(56 if compact else 60, minimum=56 if compact else 60))
-
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(16, 8, 16, 8)
-        layout.setSpacing(18)
-
-        text_box = QWidget()
-        text_box.setObjectName("SettingsItemTextBox")
-        text_layout = QVBoxLayout(text_box)
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(2)
-
-        title = QLabel(self._t(label))
-        title.setObjectName("SettingsItemTitle")
-        title.setWordWrap(False)
-        title.setFixedHeight(20)
-
-        short_desc = SETTING_SHORT_DESCRIPTIONS.get(label, "")
-        long_desc = SETTING_DESCRIPTIONS.get(label, short_desc)
-        title.setToolTip(self._t(long_desc))
-        row.setToolTip(self._t(long_desc))
-
-        text_layout.addWidget(title)
-        if short_desc:
-            desc = QLabel(self._t(short_desc))
-            desc.setObjectName("SettingsItemDescription")
-            desc.setWordWrap(False)
-            desc.setFixedHeight(18)
-            desc.setToolTip(self._t(long_desc))
-            text_layout.addWidget(desc)
-
-        control_wrap = QWidget()
-        control_wrap.setObjectName("SettingsControlWrap")
-        control_layout = QHBoxLayout(control_wrap)
-        control_layout.setContentsMargins(0, 0, 0, 0)
-        control_layout.setSpacing(0)
-
-        custom_control_height = control.property("settingsControlHeight")
-        try:
-            control_height = int(custom_control_height) if custom_control_height is not None else 0
-        except (TypeError, ValueError):
-            control_height = 0
-        if control_height > 0:
-            control.setMinimumHeight(control_height)
-            control.setMaximumHeight(control_height)
-        else:
-            control.setMinimumHeight(36)
-            control.setMaximumHeight(38)
-
-        if isinstance(control, UiSwitch):
-            control_layout.addStretch(1)
-            control_layout.addWidget(control)
-            control_wrap.setFixedWidth(FORM_SWITCH_WRAP_WIDTH)
-        else:
-            effective_width = self._effective_control_width(control_width)
-            control.setFixedWidth(effective_width)
-            control_layout.addWidget(control)
-            control_wrap.setFixedWidth(effective_width)
-
-        layout.addWidget(text_box, 1)
-        layout.addWidget(control_wrap, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        return row
+        return self._settings_form_builder().build_setting_row(
+            label,
+            control,
+            control_width=control_width,
+            compact=compact,
+        )
 
     def _build_combo(self, options: list[Any], current: Any, *, width: int = 0) -> QComboBox:
         combo = SettingsComboBox()
@@ -1253,7 +872,7 @@ class SettingsPage(PageFrame):
             combo.setFixedWidth(width)
             combo.setProperty("comboPopupMaxWidth", int(width))
 
-        normalized_options = self._normalize_combo_options(options, current)
+        normalized_options = normalize_combo_options(options, current)
         combo.setMaxVisibleItems(max(1, min(len(normalized_options), 12)))
         for value, label in normalized_options:
             combo.addItem(self._t(label), value)
@@ -1303,59 +922,6 @@ class SettingsPage(PageFrame):
             view.setProperty("comboPopupTargetWidth", target_width)
             view.setMinimumWidth(target_width)
             view.setMaximumWidth(target_width)
-
-    @staticmethod
-    def _normalize_combo_options(options: list[Any], current: Any = "") -> list[tuple[str, str]]:
-        normalized: list[tuple[str, str]] = []
-        for option in list(options or []):
-            if isinstance(option, dict):
-                value = str(option.get("value") or option.get("id") or option.get("label") or "")
-                label = str(option.get("label") or value)
-            elif isinstance(option, (tuple, list)) and option:
-                value = str(option[0])
-                label = str(option[1] if len(option) > 1 else option[0])
-            else:
-                value = str(option)
-                label = value
-            if value:
-                normalized.append((value, label))
-        current_text = str(current or "")
-        if current_text and not any(value == current_text for value, _label in normalized):
-            normalized.insert(0, (current_text, current_text))
-        if not normalized:
-            normalized.append((current_text, current_text))
-        return normalized
-
-    def _compact_proxy_options(self, options: list[Any], current: Any = "") -> list[dict[str, str]]:
-        compact: list[dict[str, str]] = []
-        for value, label in self._normalize_combo_options(options, current):
-            display = label
-            port = self._proxy_port_text(label)
-            if port and "(" in display:
-                display = display.rsplit("(", 1)[0].strip()
-            if "HTTP/SOCKS5" in display:
-                display = value
-            if value in {"直连", "自定义"}:
-                display = value
-            compact.append({"value": value, "label": display})
-        return compact
-
-    def _current_combo_value(self, combo: QComboBox) -> str:
-        if combo.isEditable():
-            current_index = combo.currentIndex()
-            current_text = str(combo.currentText())
-            if current_index >= 0 and current_text == str(combo.itemText(current_index)):
-                data = combo.itemData(current_index)
-                return str(data if data is not None else current_text)
-            return current_text
-        data = combo.currentData()
-        return str(data if data is not None else combo.currentText())
-
-    def _current_combo_int_value(self, combo: QComboBox, fallback: int = 0) -> int:
-        try:
-            return int(self._current_combo_value(combo))
-        except (TypeError, ValueError):
-            return int(fallback)
 
     def _emit_setting_changed(self, section: str, key: str, value: Any) -> None:
         if self._rendering:
@@ -1413,7 +979,7 @@ class SettingsPage(PageFrame):
         editor.setProperty("settingsOriginalText", path_text)
         editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         editor.setCursorPosition(0)
-        editor.installEventFilter(self)
+        bind_focus_property(editor, container)
         QTimer.singleShot(0, lambda e=editor: self._scroll_path_editor_start(e))
         if setting_key:
             editor.editingFinished.connect(lambda e=editor, key=setting_key: self._commit_path_editor(e, setting_key=key))
@@ -1509,7 +1075,7 @@ class SettingsPage(PageFrame):
         naming_combo.currentIndexChanged.connect(
             lambda *_args, combo=naming_combo: self._emit_basic_setting_changed(
                 "filename_template",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         naming_layout.addWidget(naming_combo)
@@ -1553,7 +1119,7 @@ class SettingsPage(PageFrame):
         open_mode_combo.currentIndexChanged.connect(
             lambda *_args, combo=open_mode_combo: self._emit_basic_setting_changed(
                 "default_open_mode",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         open_mode_layout.addWidget(open_mode_combo)
@@ -1574,7 +1140,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=max_concurrent: self._emit_setting_changed(
                 "download",
                 "max_concurrent",
-                self._current_combo_int_value(combo, 3),
+                current_combo_int_value(combo, 3),
             )
         )
         layout.addWidget(self._build_setting_row("并发数", max_concurrent))
@@ -1600,7 +1166,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=request_timeout: self._emit_setting_changed(
                 "download",
                 "request_timeout",
-                self._current_combo_int_value(combo, 60),
+                current_combo_int_value(combo, 60),
             )
         )
         layout.addWidget(self._build_setting_row("请求超时（秒）", request_timeout))
@@ -1614,7 +1180,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=max_retries: self._emit_setting_changed(
                 "download",
                 "max_retries",
-                self._current_combo_int_value(combo, 3),
+                current_combo_int_value(combo, 3),
             )
         )
         layout.addWidget(self._build_setting_row("重试次数", max_retries))
@@ -1634,7 +1200,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=speed_limit: self._emit_setting_changed(
                 "download",
                 "speed_limit_kb",
-                self._current_combo_int_value(combo, 0),
+                current_combo_int_value(combo, 0),
             )
         )
         layout.addWidget(self._build_setting_row("下载速度限制（KB/s）", speed_limit))
@@ -1644,15 +1210,6 @@ class SettingsPage(PageFrame):
             lambda checked: self._emit_setting_changed("download", "video_only", bool(checked))
         )
         layout.addWidget(self._build_setting_row("仅下载视频", video_only_switch))
-
-    def _platform_proxy_policy(self, platform_id: str, platform_name: str) -> dict[str, Any]:
-        pid = str(platform_id or "").strip().lower()
-        pname = str(platform_name or "").strip().lower()
-        editable = pid == "missav" or "missav" in pname
-        return {
-            "editable": editable,
-            "tooltip": "" if editable else "该平台默认使用系统代理，无需单独设置",
-        }
 
     def _platform_icon_label(self, platform_id: str, platform_name: str) -> QLabel:
         label = QLabel()
@@ -1718,7 +1275,7 @@ class SettingsPage(PageFrame):
                 lambda *_args, control=combo, pid=platform_id, key=config_key: self._emit_setting_changed(
                     pid,
                     key,
-                    int(self._current_combo_value(control)),
+                    int(current_combo_value(control)),
                 )
             )
         else:
@@ -1739,7 +1296,7 @@ class SettingsPage(PageFrame):
                 lambda *_args, control=combo, pid=platform_id, key=config_key: self._emit_setting_changed(
                     pid,
                     key,
-                    int(self._current_combo_value(control)),
+                    int(current_combo_value(control)),
                 )
             )
         else:
@@ -1758,8 +1315,8 @@ class SettingsPage(PageFrame):
         config_key = str(row.get("proxy_config_key") or "")
         editable = bool(row.get("proxy_editable", policy.get("editable")) and platform_id and config_key)
         proxy_value = str(row.get("proxy") or "系统代理")
-        options = self._compact_proxy_options(list(row.get("proxy_options") or PROXY_OPTIONS), proxy_value)
-        option_values = {value for value, _label in self._normalize_combo_options(options, proxy_value)}
+        options = compact_proxy_options(list(row.get("proxy_options") or PROXY_OPTIONS), proxy_value)
+        option_values = {value for value, _label in normalize_combo_options(options, proxy_value)}
         if editable and proxy_value not in option_values:
             proxy_value = "自定义"
         if not editable:
@@ -1800,9 +1357,9 @@ class SettingsPage(PageFrame):
         line_edit.setEnabled(False)
         existing_custom = str(row.get("proxy_custom_value") or "").strip()
         if existing_custom:
-            line_edit.setText(self._proxy_port_text(existing_custom))
+            line_edit.setText(proxy_port_text(existing_custom))
         elif proxy_value not in {"系统代理", "直连", "自定义"}:
-            line_edit.setText(self._proxy_port_text(proxy_value))
+            line_edit.setText(proxy_port_text(proxy_value))
 
         container_layout.addWidget(proxy_combo, 0)
         container_layout.addWidget(line_edit, 1)
@@ -1839,7 +1396,7 @@ class SettingsPage(PageFrame):
         _sync_custom_state(custom_active)
         if editable:
             def _on_proxy_changed(*_args, control=proxy_combo, pid=platform_id, key=config_key) -> None:
-                value = self._current_combo_value(control)
+                value = current_combo_value(control)
                 is_custom = value == "自定义"
                 _sync_custom_state(is_custom, focus=is_custom)
                 self._emit_proxy_setting_changed(pid, key, value)
@@ -1853,52 +1410,13 @@ class SettingsPage(PageFrame):
                 if not value or value in {"自定义", self._t("自定义 HTTP/SOCKS5 端点")}:
                     return
                 self._emit_proxy_setting_changed(pid, key, "自定义")
-                self._emit_proxy_setting_changed(pid, "proxy_url", self._proxy_endpoint_from_port(value))
+                self._emit_proxy_setting_changed(pid, "proxy_url", proxy_endpoint_from_port(value))
 
             line_edit.editingFinished.connect(_commit_custom_proxy)
         elif policy["tooltip"]:
             container.setToolTip(str(policy["tooltip"]))
             line_edit.setToolTip(str(policy["tooltip"]))
         return container
-
-    @staticmethod
-    def _proxy_port_text(value: str) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        lowered = text.lower()
-        if "://" in text:
-            text = text.split("://", 1)[1]
-        if "@" in text:
-            text = text.rsplit("@", 1)[-1]
-        if "/" in text:
-            text = text.split("/", 1)[0]
-        if ":" in text:
-            candidate = text.rsplit(":", 1)[-1].strip()
-            if candidate.isdigit():
-                return candidate
-        if "(" in text and ")" in text:
-            candidate = text.rsplit("(", 1)[-1].split(")", 1)[0].strip()
-            if candidate.isdigit():
-                return candidate
-        if lowered.startswith(("clash", "v2ray", "sing-box", "nekoray")):
-            digits = "".join(ch if ch.isdigit() else " " for ch in text).split()
-            return digits[-1] if digits else ""
-        return text if text.isdigit() else ""
-
-    @staticmethod
-    def _proxy_endpoint_from_port(value: str) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        lowered = text.lower()
-        if lowered.startswith(("http://", "https://", "socks5://", "socks4://")):
-            return text
-        if text.isdigit():
-            return f"http://127.0.0.1:{text}"
-        if ":" in text:
-            return f"http://{text}"
-        return text
 
     def _emit_proxy_setting_changed(self, platform_id: str, key: str, value: str) -> None:
         signature = (str(platform_id), str(key), str(value))
@@ -1946,7 +1464,7 @@ class SettingsPage(PageFrame):
         proxy_editable = sum(
             1
             for row in rows
-            if self._platform_proxy_policy(
+            if platform_proxy_policy(
                 str(row.get("id") or ""),
                 str(row.get("name") or row.get("id") or ""),
             ).get("editable")
@@ -2050,7 +1568,7 @@ class SettingsPage(PageFrame):
     def _build_platform_row(self, row: dict[str, Any], col_widths: dict[str, int] | None = None) -> QWidget:
         platform_id = str(row.get("id") or "")
         platform_name = str(row.get("name") or row.get("id") or "平台")
-        policy = self._platform_proxy_policy(platform_id, platform_name)
+        policy = platform_proxy_policy(platform_id, platform_name)
         col_widths = col_widths or self._platform_col_widths([row])
 
         line = QWidget()
@@ -2093,7 +1611,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=player_combo: self._emit_setting_changed(
                 "playback",
                 "default_player",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         layout.addWidget(self._build_setting_row("打开方式", player_combo))
@@ -2128,7 +1646,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=interval_combo: self._emit_setting_changed(
                 "playback",
                 "image_auto_advance_interval_seconds",
-                self._current_combo_int_value(combo, 5),
+                current_combo_int_value(combo, 5),
             )
         )
 
@@ -2166,7 +1684,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=retention: self._emit_setting_changed(
                 "logging",
                 "retention_days",
-                self._current_combo_int_value(combo, 1),
+                current_combo_int_value(combo, 1),
             )
         )
         layout.addWidget(self._build_setting_row("日志保留天数", retention))
@@ -2180,7 +1698,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=display_count: self._emit_setting_changed(
                 "logging",
                 "ui_log_max_display_count",
-                self._current_combo_int_value(combo, 300),
+                current_combo_int_value(combo, 300),
             )
         )
         layout.addWidget(self._build_setting_row("UI日志最大显示数量", display_count))
@@ -2203,7 +1721,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=language_combo: self._emit_setting_changed(
                 "appearance",
                 "language",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         layout.addWidget(self._build_setting_row("语言", language_combo))
@@ -2234,7 +1752,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=accent_combo: self._emit_setting_changed(
                 "appearance",
                 "accent",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         layout.addWidget(self._build_setting_row("主题色", accent_combo))
@@ -2248,7 +1766,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=scale_combo: self._emit_setting_changed(
                 "appearance",
                 "scale",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         layout.addWidget(self._build_setting_row("界面缩放", scale_combo))
@@ -2262,7 +1780,7 @@ class SettingsPage(PageFrame):
             lambda *_args, combo=font_combo: self._emit_setting_changed(
                 "appearance",
                 "font_size",
-                self._current_combo_value(combo),
+                current_combo_value(combo),
             )
         )
         layout.addWidget(self._build_setting_row("字体大小", font_combo))
@@ -2288,494 +1806,18 @@ class SettingsPage(PageFrame):
         card_title_px = self._scaled_px(16, minimum=15)
         body_px = self._scaled_px(13, minimum=12)
         small_px = self._scaled_px(12, minimum=11)
-        tiny_px = self._scaled_px(11, minimum=10)
         combo_px = self._scaled_px(13, minimum=12)
 
-        qss = f"""
-            QWidget#SettingsPage {{
-                background: transparent;
-            }}
-
-            QLabel#SettingsPageTitle {{
-                color: {c["text"]};
-                font-size: {page_title_px}px;
-                font-weight: 800;
-                padding: 0px;
-            }}
-
-            QLabel#SettingsPageSubtitle {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 500;
-            }}
-
-            QLabel#SettingsActionFeedback {{
-                color: {c["success"]};
-                background: {c["panel_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 8px;
-                padding: 3px 10px;
-                font-size: {small_px}px;
-                font-weight: 600;
-            }}
-
-            QLabel#SettingsActionFeedback[status="error"] {{
-                color: {c["danger"]};
-            }}
-
-            QFrame#SettingsMainPanel {{
-                background: transparent;
-                border: none;
-            }}
-
-            QFrame#SettingsSideNav {{
-                background: {c["panel"]};
-                border: 1px solid {c["border"]};
-                border-radius: 14px;
-            }}
-
-            QFrame#SettingsDetailPanel {{
-                background: {c["panel"]};
-                border: 1px solid {c["border"]};
-                border-radius: 14px;
-            }}
-
-            QPushButton#SettingsNavButton {{
-                text-align: left;
-                padding-left: 10px;
-                padding-right: 10px;
-                border: 1px solid transparent;
-                border-radius: 9px;
-                background: transparent;
-                color: {c["text"]};
-                font-size: {body_px}px;
-                font-weight: 600;
-            }}
-
-            QPushButton#SettingsNavButton:hover {{
-                background: {c["panel_soft"]};
-                border-color: {c["border"]};
-            }}
-
-            QPushButton#SettingsNavButton:checked,
-            QPushButton#SettingsNavButton[active="true"] {{
-                background: {c["accent_soft"]};
-                color: {c["accent"]};
-                border-left: 3px solid {c["accent"]};
-                font-weight: 800;
-            }}
-
-            QLabel#SettingsNavTitle {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 700;
-                padding-left: 8px;
-            }}
-
-            QLabel#SettingsDetailTitle {{
-                color: {c["text"]};
-                font-size: {detail_title_px}px;
-                font-weight: 800;
-            }}
-
-            QLabel#SettingsDetailSubtitle {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 500;
-            }}
-
-            QLabel#SettingsDetailIcon {{
-                background: {c["accent_soft"]};
-                border-radius: 16px;
-            }}
-
-            QFrame#SettingsFormCard {{
-                background: {c["panel_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 12px;
-            }}
-
-            QFrame#SettingsSettingRow {{
-                background: {c["panel"]};
-                border: 1px solid {c["border"]};
-                border-radius: 9px;
-            }}
-
-            QFrame#SettingsSettingRow:hover {{
-                border-color: {c["border_strong"]};
-                background: {c["input"]};
-            }}
-
-            QLabel#SettingsItemTitle {{
-                color: {c["text"]};
-                font-size: {body_px}px;
-                font-weight: 700;
-            }}
-
-            QLabel#SettingsItemDescription {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 400;
-            }}
-
-            QFrame#SettingsHintCard {{
-                background: {c["accent_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 9px;
-            }}
-
-            QLabel#SettingsHintIcon {{
-                background: {c["accent"]};
-                color: #ffffff;
-                border-radius: 10px;
-                font-size: {small_px}px;
-                font-weight: 800;
-            }}
-
-            QLabel#SettingsHintText {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 500;
-            }}
-
-            QFrame#SettingsPlatformTablePanel {{
-                background: {c["panel"]};
-                border: 1px solid {c["border"]};
-                border-radius: 11px;
-            }}
-
-            QFrame#SettingsPlatformSummaryBar {{
-                background: {c["panel_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 11px;
-            }}
-
-            QFrame#SettingsPlatformSummaryChip {{
-                background: {c["panel"]};
-                border: 1px solid {c["border"]};
-                border-radius: 15px;
-            }}
-
-            QFrame#SettingsPlatformSummaryChip[kind="success"] {{
-                background: rgba(34, 197, 94, 0.10);
-                border: 1px solid rgba(34, 197, 94, 0.24);
-            }}
-
-            QFrame#SettingsPlatformSummaryChip[kind="warning"] {{
-                background: rgba(245, 158, 11, 0.10);
-                border: 1px solid rgba(245, 158, 11, 0.24);
-            }}
-
-            QFrame#SettingsPlatformSummaryChip[kind="accent"] {{
-                background: {c["accent_soft"]};
-                border: 1px solid {c["border"]};
-            }}
-
-            QLabel#SettingsPlatformSummaryLabel {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 600;
-            }}
-
-            QLabel#SettingsPlatformSummaryValue {{
-                color: {c["text"]};
-                font-size: {body_px}px;
-                font-weight: 800;
-            }}
-
-            QLabel#SettingsPlatformSummaryValue[kind="success"] {{
-                color: {c["success"]};
-            }}
-
-            QLabel#SettingsPlatformSummaryValue[kind="warning"] {{
-                color: {c["warning"]};
-            }}
-
-            QLabel#SettingsPlatformSummaryValue[kind="accent"] {{
-                color: {c["accent"]};
-            }}
-
-            QFrame#SettingsCard {{
-                background: {c["panel"]};
-                border: 1px solid {c["border"]};
-                border-radius: 14px;
-            }}
-
-            QFrame#SettingsCardDivider {{
-                background: {c["border"]};
-                border: none;
-                margin-top: 2px;
-                margin-bottom: 8px;
-            }}
-
-            QLabel#SettingsCardTitle {{
-                color: {c["text"]};
-                font-size: {card_title_px}px;
-                font-weight: 800;
-            }}
-
-            QLabel#SettingsCardIcon {{
-                background: transparent;
-            }}
-
-            QLabel#SettingsRowLabel {{
-                color: {c["muted"]};
-                font-size: {body_px}px;
-                font-weight: 500;
-            }}
-
-            QLabel#SettingsPlatformHeaderCell {{
-                color: {c["muted"]};
-                font-size: {small_px}px;
-                font-weight: 800;
-            }}
-
-            QWidget#SettingsPlatformHeader {{
-                background: {c["panel_soft"]};
-                border-top-left-radius: 11px;
-                border-top-right-radius: 11px;
-            }}
-
-            QLabel#SettingsPlatformName {{
-                color: {c["text"]};
-                font-size: {body_px}px;
-            }}
-
-            QLabel#SettingsAuthBadge[authenticated="true"] {{
-                color: {c["success"]};
-                background: rgba(34, 197, 94, 0.14);
-                border: 1px solid rgba(34, 197, 94, 0.32);
-                border-radius: 14px;
-                font-size: {small_px}px;
-                font-weight: 800;
-                padding: 0px 8px;
-            }}
-
-            QLabel#SettingsAuthBadge[authenticated="false"] {{
-                color: {c["warning"]};
-                background: rgba(245, 158, 11, 0.14);
-                border: 1px solid rgba(245, 158, 11, 0.32);
-                border-radius: 14px;
-                font-size: {small_px}px;
-                font-weight: 800;
-                padding: 0px 8px;
-            }}
-
-            QFrame#SettingsPathField {{
-                background: {c["input"]};
-                border: 1px solid {c["border"]};
-                border-radius: 9px;
-            }}
-
-            QLineEdit#SettingsLineEdit {{
-                background: transparent;
-                border: none;
-                color: {c["text"]};
-                selection-background-color: {c["accent"]};
-                selection-color: #ffffff;
-                font-size: {body_px}px;
-                padding: 0px;
-            }}
-
-            QLineEdit#SettingsProxyCustomEdit {{
-                background: {c["input"]};
-                border: 1px solid {c["border_strong"]};
-                border-radius: 8px;
-                color: {c["text"]};
-                selection-background-color: {c["accent"]};
-                selection-color: #ffffff;
-                font-size: {combo_px}px;
-                padding: 0px 10px;
-            }}
-
-            QLineEdit#SettingsProxyCustomEdit[customProxyActive="true"] {{
-                border-color: {c["accent"]};
-                border-width: 2px;
-                background: {c["input"]};
-            }}
-
-            QLineEdit#SettingsProxyCustomEdit:disabled {{
-                color: {c["muted"]};
-                background: {c["panel_soft"]};
-                border-color: {c["border"]};
-            }}
-
-            QToolButton#SettingsPathBrowse {{
-                background: {c["panel_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 8px;
-                padding: 5px;
-            }}
-
-            QToolButton#SettingsPathBrowse:hover {{
-                background: {c["accent_soft"]};
-                border-color: {c["accent"]};
-            }}
-
-            QToolButton#SettingsPathBrowse:pressed {{
-                background: {c["row_selected"]};
-                border-color: {c["accent_hover"]};
-            }}
-
-            QToolButton#SettingsInlineButton {{
-                background: transparent;
-                border: none;
-                color: {c["muted"]};
-                font-size: {self._scaled_px(14, minimum=12)}px;
-                font-weight: 700;
-            }}
-
-            QToolButton#SettingsInlineButton:hover {{
-                color: {c["accent"]};
-            }}
-
-            QComboBox#SettingsCombo {{
-                background: {c["input"]};
-                border: 1px solid {c["border_strong"]};
-                border-radius: 8px;
-                color: {c["text"]};
-                font-size: {combo_px}px;
-                padding: 0px 10px 0px 12px;
-                min-height: 36px;
-                max-height: 38px;
-            }}
-
-            QComboBox#SettingsCombo:hover {{
-                border-color: {c["accent"]};
-                background: {c["input"]};
-            }}
-
-            QFrame#SettingsPathField:hover {{
-                border-color: {c["border_strong"]};
-            }}
-
-            QFrame#SettingsPathField[focused="true"] {{
-                border-color: {c["accent"]};
-                border-width: 2px;
-                background: {c["input"]};
-            }}
-
-            QComboBox#SettingsCombo:focus {{
-                border-color: {c["accent"]};
-                border-width: 2px;
-                background: {c["input"]};
-            }}
-
-            QComboBox#SettingsCombo:on,
-            QComboBox#SettingsCombo[popupOpen="true"],
-            QComboBox#SettingsCombo[customProxy="true"] {{
-                border-color: {c["accent"]};
-                border-width: 2px;
-                background: {c["input"]};
-                color: {c["text"]};
-            }}
-
-            QComboBox#SettingsCombo QLineEdit {{
-                background: transparent;
-                border: none;
-                color: {c["text"]};
-                selection-background-color: {c["accent"]};
-                selection-color: #ffffff;
-                padding: 0px 4px 0px 0px;
-            }}
-
-            QComboBox#SettingsCombo QLineEdit:read-only {{
-                color: {c["text"]};
-            }}
-
-            QComboBox#SettingsCombo:disabled {{
-                color: {c["muted"]};
-                background: {c["panel_soft"]};
-            }}
-
-            QComboBox#SettingsCombo::drop-down {{
-                border: none;
-                width: 0px;
-            }}
-
-            QComboBox#SettingsCombo::down-arrow {{
-                image: none;
-                width: 0px;
-                height: 0px;
-            }}
-
-            QComboBox#SettingsCombo QAbstractItemView {{
-                background: {c["panel"]};
-                color: {c["text"]};
-                border: 2px solid {c["accent"]};
-                border-radius: 8px;
-                selection-background-color: {c["accent"]};
-                selection-color: #ffffff;
-            }}
-
-            QPushButton#SettingsActionButton {{
-                background: {c["panel_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 8px;
-                color: {c["text"]};
-                font-size: {small_px}px;
-                min-height: 36px;
-                max-height: 38px;
-                padding: 0px 10px;
-            }}
-
-            QPushButton#SettingsActionButton:hover {{
-                border-color: {c["accent"]};
-                color: {c["accent"]};
-            }}
-
-            QWidget#SettingsSegmented {{
-                background: {c["panel_soft"]};
-                border: 1px solid {c["border"]};
-                border-radius: 9px;
-            }}
-
-            QPushButton#SettingsSegmentButton {{
-                background: transparent;
-                border: none;
-                color: {c["muted"]};
-                font-size: {body_px}px;
-                font-weight: 700;
-                padding: 0px;
-                min-height: 36px;
-            }}
-
-            QPushButton#SettingsSegmentButton:checked {{
-                background: {c["accent"]};
-                color: #ffffff;
-                border-radius: 8px;
-            }}
-
-            QScrollArea#SettingsPlatformScroll {{
-                background: transparent;
-                border: none;
-            }}
-
-            QScrollArea#SettingsPlatformScroll > QWidget > QWidget {{
-                background: transparent;
-            }}
-
-            QWidget#SettingsPlatformRow {{
-                border-bottom: 1px solid {c["border"]};
-                background: {c["panel"]};
-            }}
-
-            QWidget#SettingsPlatformRow:hover {{
-                background: {c["panel_soft"]};
-            }}
-
-            QCheckBox#SettingsUiSwitch {{
-                spacing: 0;
-                background: transparent;
-            }}
-
-            QCheckBox#SettingsUiSwitch::indicator {{
-                width: 0px;
-                height: 0px;
-                border: none;
-                background: transparent;
-            }}
-            """
+        qss = generate_settings_page_stylesheet(
+            c,
+            page_title_px=page_title_px,
+            detail_title_px=detail_title_px,
+            card_title_px=card_title_px,
+            body_px=body_px,
+            small_px=small_px,
+            combo_px=combo_px,
+            inline_button_px=self._scaled_px(14, minimum=12),
+        )
 
         if qss == getattr(self, "_last_settings_stylesheet", ""):
             return

@@ -89,6 +89,22 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertEqual(pending.get_nowait()[0].id, first.id)
         self.assertEqual(pending.get_nowait()[0].id, third.id)
 
+    def test_video_only_mode_skips_image_before_queue(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager.video_only = True
+        image = VideoItem(url="https://example.com/cover.jpg", title="cover", source="xiaohongshu")
+        image.meta["content_type"] = "image/jpeg"
+
+        queued = manager.add_task(image, "downloads")
+
+        self.assertFalse(queued)
+        self.assertTrue(manager.queue.empty())
+        self.assertEqual(image.status, "\u5df2\u8df3\u8fc7")
+        self.assertEqual(image.progress, 100)
+        self.assertTrue(image.meta["skipped_by_video_only"])
+
+
     def test_pending_download_queue_removes_many_items_in_one_pass(self):
         pending = PendingDownloadQueue()
         first = VideoItem(url="https://example.com/1.mp4", title="first", source="douyin")

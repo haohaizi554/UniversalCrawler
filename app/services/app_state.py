@@ -11,6 +11,7 @@ from typing import Any
 from app.core.event_bus import EventBus
 from app.debug_logger import debug_logger
 from app.models import VideoItem
+from app.config.settings import normalize_ui_log_max_display_count
 from app.services.cache_service import CacheService
 
 class AppState:
@@ -205,11 +206,7 @@ class AppState:
 
     def configure_log_buffer(self, max_entries: int) -> int:
         """Resize the UI log ring buffer without losing recent entries."""
-        try:
-            normalized = int(max_entries)
-        except (TypeError, ValueError):
-            normalized = self.LOG_BUFFER_LIMIT
-        normalized = max(100, min(normalized, 5000))
+        normalized = normalize_ui_log_max_display_count(max_entries, default=self.LOG_BUFFER_LIMIT)
         with self._lock:
             if self.log_buffer.maxlen == normalized:
                 return normalized
