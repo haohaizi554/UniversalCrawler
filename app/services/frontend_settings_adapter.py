@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +280,7 @@ def platform_settings_rows(
     data: Mapping[str, Any],
     *,
     plugins: Iterable[Any] | None = None,
+    auth_status_provider: Callable[[str, Mapping[str, Any]], Mapping[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     auth_cfg = data.get("auth", {})
     rows: list[dict[str, Any]] = []
@@ -288,7 +289,11 @@ def platform_settings_rows(
         count_contract = platform_count_contract(plugin.id, section)
         timeout_contract = platform_timeout_contract(section)
         proxy_contract = platform_proxy_contract(plugin.id, section)
-        auth_state = platform_auth_snapshot(plugin.id, auth_cfg)
+        auth_state = (
+            dict(auth_status_provider(plugin.id, auth_cfg))
+            if callable(auth_status_provider)
+            else platform_auth_snapshot(plugin.id, auth_cfg)
+        )
         rows.append(
             {
                 "id": plugin.id,
@@ -311,6 +316,7 @@ def build_settings_snapshot(
     download_options: Mapping[str, Any],
     *,
     plugins: Iterable[Any] | None = None,
+    auth_status_provider: Callable[[str, Mapping[str, Any]], Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     common = data.get("common", {})
     download = data.get("download", {})
@@ -351,7 +357,7 @@ def build_settings_snapshot(
                 "speed_limit_kb": speed_limit_options(),
             },
         },
-        "平台设置": platform_settings_rows(data, plugins=plugins),
+        "平台设置": platform_settings_rows(data, plugins=plugins, auth_status_provider=auth_status_provider),
         "播放设置": {
             "default_player": default_player,
             "default_player_label": playback_player_label(default_player),

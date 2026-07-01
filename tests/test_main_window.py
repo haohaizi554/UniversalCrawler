@@ -1,4 +1,4 @@
-"""测试模块，覆盖 `tests/test_main_window.py` 对应功能的行为与回归场景。"""
+﻿"""测试模块，覆盖 `tests/test_main_window.py` 对应功能的行为与回归场景。"""
 
 import threading
 import unittest
@@ -393,6 +393,12 @@ class MainWindowTests(unittest.TestCase):
         sections = MainWindow._sections_for_topics(self._make_window(), {"settings.update"})
 
         self.assertEqual(sections, frozenset({"settings_snapshot", "settings_contract", "download_options", "app_status"}))
+
+    def test_platform_auth_topic_refreshes_settings_sections(self):
+        sections = MainWindow._sections_for_topics(self._make_window(), {"settings.platform_auth"})
+
+        self.assertEqual(sections, frozenset({"settings_snapshot", "settings_contract"}))
+
 
     def test_metadata_topic_refreshes_completed_sections(self):
         sections = MainWindow._sections_for_topics(self._make_window(), {"videos.metadata"})

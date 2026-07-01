@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -43,6 +43,7 @@ class AppShell(QWidget):
     completed_metadata_detected = pyqtSignal(str, dict)
     file_association_requested = pyqtSignal(bool, bool)
     setting_changed = pyqtSignal(str, str, object)
+    platform_settings_visible = pyqtSignal()
     refresh_requested = pyqtSignal()
     clear_all_requested = pyqtSignal()
     active_options_changed = pyqtSignal(dict)
@@ -169,6 +170,7 @@ class AppShell(QWidget):
         settings = self.pages["settings"]
         settings.file_association_requested.connect(self.file_association_requested.emit)
         settings.setting_changed.connect(self.setting_changed.emit)
+        settings.platform_settings_visible.connect(self.platform_settings_visible.emit)
         logs = self.pages["logs"]
         logs.log_action_requested.connect(self.log_action_requested.emit)
 
@@ -559,3 +561,4 @@ class AppShell(QWidget):
             cleanup = getattr(page, "cleanup", None)
             if callable(cleanup):
                 cleanup()
+

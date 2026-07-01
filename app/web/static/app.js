@@ -1,4 +1,4 @@
-let frontendState = buildMockState();
+﻿let frontendState = buildMockState();
 let currentPage = "queue";
 let ws = null;
 let platforms = [];
@@ -1182,11 +1182,24 @@ function renderSettings(force = false) {
   setHtmlIfChanged("settingsGrid", html);
 }
 
+function isPlatformSettingsVisible() {
+  return currentPage === "settings" && currentSettingsGroup === "平台设置";
+}
+
+function maybeRefreshPlatformAuthStatus(force = false) {
+  if (!isPlatformSettingsVisible()) return;
+  frontendAction("refresh_platform_auth_status", { force: Boolean(force) });
+}
+
 function switchSettingsGroup(group) {
-  if (!group || group === currentSettingsGroup) return;
-  currentSettingsGroup = group;
-  localStorage.setItem("webui_settings_group", group);
-  renderSettings(true);
+  if (!group) return;
+  const sameGroup = group === currentSettingsGroup;
+  if (!sameGroup) {
+    currentSettingsGroup = group;
+    localStorage.setItem("webui_settings_group", group);
+    renderSettings(true);
+  }
+  maybeRefreshPlatformAuthStatus(false);
 }
 
 function settingsRenderService() {
@@ -1363,6 +1376,7 @@ function switchPage(pageId) {
   document.querySelectorAll(".nav-item").forEach(button => button.classList.toggle("active", button.dataset.page === pageId));
   document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === pageId));
   renderCurrentPage();
+  maybeRefreshPlatformAuthStatus(false);
 }
 
 function progressHtml(value) {
@@ -1835,3 +1849,4 @@ function cssEscape(value) {
   if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(String(value));
   return String(value).replace(/["\\]/g, "\\$&");
 }
+
