@@ -4,10 +4,10 @@ import html
 import json
 import math
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QEvent
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QTextOption
+from PyQt6.QtGui import QFont, QFontMetrics, QIcon, QTextOption
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -37,6 +36,16 @@ from app.ui.components.combo_popup import (
     refresh_themed_combo_boxes,
 )
 from app.ui.components.focus_state import bind_focus_property
+from app.ui.components.log_center_controls import build_log_action_bar, build_log_table_footer
+from app.ui.components.log_filter_input import LogFilterLineEdit, sync_log_filter_input_styles
+from app.ui.components.log_inspector_sections import (
+    LogInspectorRefs,
+    build_log_detail_summary_section,
+    build_log_inspector_header,
+    build_log_json_section,
+    build_log_kv_row,
+    build_log_stack_section,
+)
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
 from app.ui.viewmodels import log_filtering
@@ -125,54 +134,6 @@ class LogCenterTableDelegate(SnapshotActionDelegate):
         painter.setPen(option.palette.color(option.palette.ColorRole.Text))
         painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), display_text)
         painter.restore()
-
-
-class LogFilterLineEdit(QLineEdit):
-    """Line edit that eagerly refreshes its theme focus border."""
-
-    def __init__(self, sync_focus_style: Callable[[], None]) -> None:
-        super().__init__()
-        self._sync_focus_style = sync_focus_style
-        self.setObjectName("LogFilterTextInput")
-        self.setFrame(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setProperty("focused", "false")
-
-    def focusInEvent(self, event) -> None:  # noqa: ANN001
-        super().focusInEvent(event)
-        self._set_focused(True)
-
-    def focusOutEvent(self, event) -> None:  # noqa: ANN001
-        super().focusOutEvent(event)
-        self._set_focused(False)
-        QTimer.singleShot(0, self._sync_focus_style)
-
-    def keyPressEvent(self, event) -> None:  # noqa: ANN001
-        super().keyPressEvent(event)
-        self._set_focused(True)
-
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
-        super().mousePressEvent(event)
-        self._set_focused(True)
-
-    def inputMethodEvent(self, event) -> None:  # noqa: ANN001
-        super().inputMethodEvent(event)
-        self._set_focused(True)
-
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        super().paintEvent(event)
-        if not (self.hasFocus() or self.property("focused") == "true"):
-            return
-        colors = theme_colors(resolve_is_dark_theme(self))
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(colors["accent"]), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
-
-    def _set_focused(self, focused: bool) -> None:
-        self.setProperty("focused", "true" if focused else "false")
-        self._sync_focus_style()
 
 
 class LogCenterPage(PageFrame):
@@ -268,49 +229,13 @@ class LogCenterPage(PageFrame):
         }}
         """.format(**c)
 
-    def _filter_text_input_style(self, *, focused: bool = False) -> str:
-        c = theme_colors(self._resolve_theme_is_dark())
-        border_width = "2px" if focused else "1px"
-        border_color = c["accent"] if focused else c["border"]
-        padding = "1px 9px" if focused else "2px 10px"
-        return """
-        QLineEdit,
-        QLineEdit#LogFilterTextInput {{
-            background: {input};
-            border: {border_width} solid {border_color};
-            border-radius: 8px;
-            min-height: 32px;
-            max-height: 32px;
-            padding: {padding};
-            font-size: 13px;
-            color: {text};
-            selection-background-color: {accent};
-            selection-color: #ffffff;
-        }}
-        QLineEdit:focus,
-        QLineEdit[focused="true"],
-        QLineEdit#LogFilterTextInput:focus,
-        QLineEdit#LogFilterTextInput[focused="true"] {{
-            border: 2px solid {accent};
-            padding: 1px 9px;
-        }}
-        """.format(border_width=border_width, border_color=border_color, padding=padding, **c)
-
     def _sync_filter_text_input_style(self) -> None:
         if not hasattr(self, "trace_filter") or not hasattr(self, "keyword_filter"):
             return
-        current_focus = QApplication.focusWidget()
-        for editor in (self.trace_filter, self.keyword_filter):
-            focused = bool(editor.hasFocus() or editor is current_focus or editor.property("focused") == "true")
-            desired = "true" if focused else "false"
-            if editor.property("focused") != desired:
-                editor.setProperty("focused", desired)
-            style = self._filter_text_input_style(focused=focused)
-            if editor.styleSheet() != style:
-                editor.setStyleSheet(style)
-            editor.style().unpolish(editor)
-            editor.style().polish(editor)
-            editor.update()
+        sync_log_filter_input_styles(
+            (self.trace_filter, self.keyword_filter),
+            is_dark=self._resolve_theme_is_dark(),
+        )
 
     def _apply_tab_button_style(self, button: QPushButton, active: bool) -> None:
         button.setStyleSheet(self._tab_button_style(active))
@@ -338,7 +263,7 @@ class LogCenterPage(PageFrame):
             getattr(self, "trace_filter", None),
             getattr(self, "keyword_filter", None),
         ) and event.type() in {QEvent.Type.FocusIn, QEvent.Type.FocusOut}:
-            if isinstance(watched, QLineEdit):
+            if isinstance(watched, LogFilterLineEdit):
                 watched.setProperty("focused", "true" if event.type() == QEvent.Type.FocusIn else "false")
             self._sync_filter_text_input_style()
             QTimer.singleShot(0, self._sync_filter_text_input_style)
@@ -561,40 +486,11 @@ class LogCenterPage(PageFrame):
         self._apply_filters()
 
     def _build_action_bar(self) -> QWidget:
-        row = QWidget()
-        row.setObjectName("LogActionBar")
-        row.setFixedHeight(36)
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        actions = [
-            ("refresh", "刷新", "刷新日志缓冲", "LogPrimaryActionButton", 68),
-            ("clear", "清空", "清空当前日志缓存", "LogDangerActionButton", 68),
-            ("export", "导出", "导出日志", "LogActionButton", 68),
-            ("open_latest", "debug.log", "打开 latest_debug.log", "LogActionButton", 92),
-            ("open_error_summary", "error.md", "打开 latest_error_summary.md", "LogActionButton", 92),
-            (
-                "copy_trace_id",
-                "复制TraceID",
-                "复制当前选中日志的 Trace ID；如果当前日志没有 Trace ID，则尝试复制当前筛选结果中的第一个有效 Trace ID。",
-                "LogActionButton",
-                104,
-            ),
-        ]
-        for operation, label, tooltip, style_name, width in actions:
-            button = QPushButton(label)
-            button.setObjectName(style_name)
-            button.setToolTip(tooltip)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFixedHeight(30)
-            button.setFixedWidth(width)
-            if operation == "copy_trace_id":
-                self.copy_trace_button = button
-                button.clicked.connect(lambda _checked=False: self._copy_current_trace_id())
-            else:
-                button.clicked.connect(lambda _checked=False, key=operation: self.log_action_requested.emit(key))
-            layout.addWidget(button)
-        layout.addStretch(1)
+        row, refs = build_log_action_bar(
+            emit_action=self.log_action_requested.emit,
+            copy_trace_id=self._copy_current_trace_id,
+        )
+        self.copy_trace_button = refs.copy_trace_button
         return row
 
     def _build_log_table_area(self) -> QFrame:
@@ -629,49 +525,16 @@ class LogCenterPage(PageFrame):
         return container
 
     def _build_table_footer(self) -> QWidget:
-        row = QWidget()
-        row.setObjectName("LogTableFooter")
-        row.setFixedHeight(48)
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(14, 6, 14, 6)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        self.footer_stats = QLabel("共 0 条 / 匹配 0 条 / 当前显示 0 条")
-        self.footer_stats.setObjectName("LogFooterStats")
-        self.footer_stats.setMinimumWidth(0)
-        self.footer_stats.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.footer_stats, 1)
-
-        self.page_indicator = QLabel("第 1 / 1 页")
-        self.page_indicator.setObjectName("LogPageIndicator")
-        self.page_indicator.setFixedWidth(92)
-        self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.page_indicator.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        layout.addWidget(self.page_indicator, 0)
-        self.page_size_combo = ThemedComboBox(row_height=32)
-        self.page_size_combo.setObjectName("LogFooterPageSize")
-        for label, value in [("20 条/页", 20), ("50 条/页", 50), ("100 条/页", 100), ("全部", 0)]:
-            self.page_size_combo.addItem(label, value)
-        self.page_size_combo.setFixedHeight(30)
-        self.page_size_combo.setProperty("contentWidthPadding", 16)
-        self.page_size_combo.setProperty("contentMinWidth", 88)
-        self.page_size_combo.setProperty("contentMaxWidth", 168)
-        self._fit_page_size_combo_width()
-        polish_combo_popup(self.page_size_combo, visible_rows=self.page_size_combo.count(), row_height=32)
-        layout.addWidget(self.page_size_combo)
-        self.prev_page_button = QPushButton("上一页")
-        self.prev_page_button.setObjectName("LogFooterPageButton")
-        self.prev_page_button.setFixedHeight(30)
-        self.prev_page_button.setMinimumWidth(112)
-        self.next_page_button = QPushButton("下一页")
-        self.next_page_button.setObjectName("LogFooterPageButton")
-        self.next_page_button.setFixedHeight(30)
-        self.next_page_button.setMinimumWidth(100)
-        layout.addWidget(self.prev_page_button)
-        layout.addWidget(self.next_page_button)
-        self.page_size_combo.currentIndexChanged.connect(lambda *_args: self._on_page_size_changed())
-        self.prev_page_button.clicked.connect(lambda _checked=False: self._go_prev_page())
-        self.next_page_button.clicked.connect(lambda _checked=False: self._go_next_page())
+        row, refs = build_log_table_footer(
+            page_size_changed=self._on_page_size_changed,
+            go_prev_page=self._go_prev_page,
+            go_next_page=self._go_next_page,
+        )
+        self.footer_stats = refs.footer_stats
+        self.page_indicator = refs.page_indicator
+        self.page_size_combo = refs.page_size_combo
+        self.prev_page_button = refs.prev_page_button
+        self.next_page_button = refs.next_page_button
         return row
 
     def _fit_page_size_combo_width(self) -> None:
@@ -714,200 +577,41 @@ class LogCenterPage(PageFrame):
         layout.addWidget(self.inspector_scroll, 1)
         return panel
 
+    def _assign_inspector_refs(self, refs: LogInspectorRefs) -> None:
+        for name, value in refs.__dict__.items():
+            if value is not None:
+                setattr(self, name, value)
+
     def _build_inspector_header(self) -> QWidget:
-        header = QWidget()
-        header.setObjectName("LogInspectorHeader")
-        header.setFixedHeight(48)
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(12, 10, 12, 10)
-        title = QLabel("日志详情")
-        title.setObjectName("LogInspectorTitle")
-        layout.addWidget(title)
-        layout.addStretch(1)
-        self.detail_copy_button = QPushButton("复制")
-        self.detail_copy_button.setObjectName("LogInspectorActionButton")
-        self.detail_export_button = QPushButton("导出")
-        self.detail_export_button.setObjectName("LogInspectorActionButton")
-        self.detail_copy_button.setFixedHeight(26)
-        self.detail_copy_button.setMinimumWidth(52)
-        self.detail_export_button.setFixedHeight(26)
-        self.detail_export_button.setMinimumWidth(52)
-        self.detail_copy_button.clicked.connect(lambda _checked=False: self._copy_current_log_detail())
-        self.detail_export_button.clicked.connect(lambda _checked=False: self._export_current_log_detail())
-        layout.addWidget(self.detail_copy_button)
-        layout.addWidget(self.detail_export_button)
+        header, refs = build_log_inspector_header(
+            copy_detail=self._copy_current_log_detail,
+            export_detail=self._export_current_log_detail,
+        )
+        self._assign_inspector_refs(refs)
         return header
 
     def _build_kv_row(self, key: str, value_widget: QWidget) -> QWidget:
-        row = QWidget()
-        row.setObjectName("LogKvRow")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        key_label = QLabel(key)
-        key_label.setObjectName("LogDetailKey")
-        key_label.setFixedWidth(56)
-        key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        layout.addWidget(key_label)
-        layout.addWidget(value_widget, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        layout.addStretch(1)
-        row.setFixedHeight(26)
-        return row
+        return build_log_kv_row(key, value_widget)
 
     def _build_detail_summary_section(self) -> QFrame:
-        self.detail_summary_section = self._style_panel(QFrame())
-        self.detail_summary_section.setObjectName("LogDetailSummarySection")
-        self.detail_summary_section.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Maximum,
-        )
-        self.detail_summary_section.setMaximumHeight(360)
-        layout = QVBoxLayout(self.detail_summary_section)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(6)
-
-        self.detail_time_value = QLabel("-")
-        self.detail_level_badge = QLabel("-")
-        self.detail_level_badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.detail_status_value = QLabel("-")
-        self.detail_scope_value = QLabel("-")
-        self.detail_stage_value = QLabel("-")
-        self.detail_status_code_value = QLabel("-")
-        self.detail_source_value = QLabel("-")
-        self.detail_platform_value = QLabel("-")
-        self.detail_trace_value = QLabel("-")
-        self.detail_message_frame = QFrame()
-        self.detail_message_frame.setObjectName("LogMessageBoxFrame")
-        self.detail_message_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.detail_message_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.detail_message_frame.setMinimumHeight(56)
-        self.detail_message_frame.setMaximumHeight(190)
-
-        message_frame_layout = QVBoxLayout(self.detail_message_frame)
-        message_frame_layout.setContentsMargins(12, 10, 12, 10)
-        message_frame_layout.setSpacing(0)
-
-        self.detail_message_value = QPlainTextEdit()
-        self.detail_message_value.setObjectName("LogMessageText")
-        self.detail_message_value.setReadOnly(True)
-        self.detail_message_value.setFrameShape(QFrame.Shape.NoFrame)
-        self.detail_message_value.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.detail_message_value.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.detail_message_value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.detail_message_value.setMinimumWidth(0)
-        self.detail_message_value.setMinimumHeight(36)
-        self.detail_message_value.setPlainText("-")
-        self.detail_message_value.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-
+        section, refs = build_log_detail_summary_section(self._style_panel)
+        self._assign_inspector_refs(refs)
         self._configure_message_editor_wrap()
-
-        message_frame_layout.addWidget(self.detail_message_value)
         self._apply_message_box_style()
-
-        value_labels = (
-            self.detail_time_value,
-            self.detail_status_value,
-            self.detail_scope_value,
-            self.detail_stage_value,
-            self.detail_status_code_value,
-            self.detail_source_value,
-            self.detail_platform_value,
-            self.detail_trace_value,
-        )
-        for label in value_labels:
-            label.setObjectName("LogDetailValue")
-            label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-
-        self.detail_level_badge.setObjectName("LogLevelBadgeInfo")
-        self.detail_level_badge.setFixedHeight(22)
-        self.detail_level_badge.setMinimumWidth(46)
-        self.detail_level_badge.setMaximumWidth(76)
-        self.detail_level_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        layout.addWidget(self._build_kv_row("时间", self.detail_time_value))
-        layout.addWidget(self._build_kv_row("级别", self.detail_level_badge))
-        layout.addWidget(self._build_kv_row("性质", self.detail_status_value))
-        layout.addWidget(self._build_kv_row("范围", self.detail_scope_value))
-        layout.addWidget(self._build_kv_row("阶段", self.detail_stage_value))
-        layout.addWidget(self._build_kv_row("事件码", self.detail_status_code_value))
-        layout.addWidget(self._build_kv_row("来源", self.detail_source_value))
-        layout.addWidget(self._build_kv_row("平台", self.detail_platform_value))
-        layout.addWidget(self._build_kv_row("Trace ID", self.detail_trace_value))
-
-        message_title = QLabel("消息")
-        message_title.setObjectName("LogMessageTitle")
-        layout.addWidget(message_title)
-        layout.addWidget(self.detail_message_frame)
-        return self.detail_summary_section
+        return section
 
     def _build_json_section(self) -> QFrame:
-        section = self._style_panel(QFrame())
-        self.json_section = section
-        section.setObjectName("LogJsonSection")
-        section.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        section.setMaximumHeight(520)
-        layout = QVBoxLayout(section)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(8)
-
-        header_widget = QWidget()
-        header_widget.setObjectName("LogJsonSectionHeader")
-        header_widget.setFixedHeight(32)
-        header = QHBoxLayout(header_widget)
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
-        title = QLabel("详细信息")
-        title.setObjectName("LogSectionTitle")
-        header.addWidget(title)
-        header.addStretch(1)
-        self.json_copy_button = QPushButton("复制")
-        self.json_copy_button.setObjectName("LogInspectorActionButton")
-        self.json_copy_button.setFixedHeight(26)
-        self.json_copy_button.setMinimumWidth(52)
-        self.json_copy_button.clicked.connect(lambda _checked=False: self._copy_current_log_json())
-        header.addWidget(self.json_copy_button)
-        layout.addWidget(header_widget)
-
-        self.json_text = QTextBrowser()
-        self.json_text.setObjectName("LogJsonViewer")
-        self.json_text.setOpenExternalLinks(False)
-        self.json_text.setFrameShape(QFrame.Shape.NoFrame)
-        self.json_text.setReadOnly(True)
-        self.json_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.json_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.json_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.json_text.setContentsMargins(0, 0, 0, 0)
-        self.json_text.document().setDocumentMargin(0)
-        layout.addWidget(self.json_text, 0)
+        section, refs = build_log_json_section(
+            style_panel=self._style_panel,
+            copy_json=self._copy_current_log_json,
+        )
+        self._assign_inspector_refs(refs)
         return section
 
     def _build_stack_section(self) -> QFrame:
-        self.stack_section = self._style_panel(QFrame())
-        self.stack_section.setObjectName("LogStackSection")
-        self.stack_section.setMinimumHeight(160)
-        self.stack_section.setMaximumHeight(220)
-        layout = QVBoxLayout(self.stack_section)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(8)
-        title = QLabel("堆栈跟踪")
-        title.setObjectName("LogSectionTitle")
-        layout.addWidget(title)
-        self.stack_text = QPlainTextEdit()
-        self.stack_text.setObjectName("LogStackText")
-        self.stack_text.setReadOnly(True)
-        self.stack_text.setFrameShape(QFrame.Shape.NoFrame)
-        self.stack_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        mono = QFont("Cascadia Mono")
-        mono.setStyleHint(QFont.StyleHint.Monospace)
-        mono.setPointSize(10)
-        self.stack_text.setFont(mono)
-        layout.addWidget(self.stack_text, 1)
-        self.stack_section.setVisible(False)
-        return self.stack_section
+        section, refs = build_log_stack_section(self._style_panel)
+        self._assign_inspector_refs(refs)
+        return section
 
     def _build_empty_state(self) -> QWidget:
         panel = QWidget()

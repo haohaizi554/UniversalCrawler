@@ -18,6 +18,7 @@ from app.config.settings import (
     language_label,
     language_options,
     log_retention_options,
+    normalize_download_concurrency,
     normalize_ui_log_max_display_count,
     open_mode_label,
     open_mode_options,
@@ -189,6 +190,90 @@ def platform_timeout_contract(section: Mapping[str, Any]) -> dict[str, Any]:
         "timeout_editable": bool(key),
         "timeout_options": options if key else [],
     }
+
+
+
+def build_download_options_snapshot(
+    config_get,
+    cache_get,
+    manager: Any | None,
+) -> dict[str, Any]:
+    try:
+        configured_concurrent = int(config_get("download", "max_concurrent", 3))
+    except (TypeError, ValueError):
+        configured_concurrent = 3
+    try:
+        effective_concurrent = int(getattr(manager, "max_concurrent", configured_concurrent) or configured_concurrent)
+    except (TypeError, ValueError):
+        effective_concurrent = configured_concurrent
+    try:
+        max_retries = int(config_get("download", "max_retries", 3))
+    except (TypeError, ValueError):
+        max_retries = 3
+    auto_retry = bool(cache_get("download.auto_retry", True))
+    image_respects_concurrency = bool(config_get("download", "image_respects_concurrency", False))
+    if manager is not None and hasattr(manager, "image_respects_concurrency"):
+        image_respects_concurrency = bool(getattr(manager, "image_respects_concurrency"))
+    video_only = bool(config_get("download", "video_only", False))
+    manager_video_only = getattr(manager, "video_only", None) if manager is not None else None
+    if isinstance(manager_video_only, bool):
+        video_only = manager_video_only
+    return {
+        "auto_retry": auto_retry,
+        "max_retries": max(0, min(max_retries, 10)),
+        "max_concurrent": normalize_download_concurrency(effective_concurrent),
+        "video_only": video_only,
+        "image_respects_concurrency": image_respects_concurrency,
+    }
+
+
+def normalize_download_options_payload(
+    payload: Mapping[str, Any],
+    config_get,
+    cache_get,
+) -> dict[str, Any]:
+    data = dict(payload or {})
+    try:
+        max_concurrent = int(data.get("max_concurrent", config_get("download", "max_concurrent", 3)))
+    except (TypeError, ValueError):
+        max_concurrent = 3
+    try:
+        max_retries = int(data.get("max_retries", config_get("download", "max_retries", 3)))
+    except (TypeError, ValueError):
+        max_retries = 3
+    return {
+        "auto_retry": bool(data.get("auto_retry", cache_get("download.auto_retry", True))),
+        "max_retries": max(0, min(max_retries, 10)),
+        "max_concurrent": normalize_download_concurrency(max_concurrent),
+        "video_only": bool(data.get("video_only", config_get("download", "video_only", False))),
+        "image_respects_concurrency": bool(
+            data.get("image_respects_concurrency", config_get("download", "image_respects_concurrency", False))
+        ),
+    }
+
+
+def apply_manager_concurrency(manager: Any | None, max_concurrent: Any) -> int:
+    normalized = normalize_download_concurrency(max_concurrent)
+    setter = getattr(manager, "set_max_concurrent", None)
+    if callable(setter):
+        try:
+            normalized = int(setter(normalized))
+        except (TypeError, ValueError):
+            pass
+    return normalize_download_concurrency(normalized)
+
+
+def persist_download_options(config_set, cache_set, options: Mapping[str, Any]) -> None:
+    max_retries = options.get("max_retries", 3)
+    try:
+        max_retries = int(max_retries)
+    except (TypeError, ValueError):
+        max_retries = 3
+    cache_set("download.auto_retry", bool(options.get("auto_retry", True)), persist=False)
+    config_set("download", "max_concurrent", normalize_download_concurrency(options.get("max_concurrent")))
+    config_set("download", "max_retries", max(0, min(max_retries, 10)))
+    config_set("download", "video_only", bool(options.get("video_only", False)))
+    config_set("download", "image_respects_concurrency", bool(options.get("image_respects_concurrency", False)))
 
 
 def platform_settings_rows(

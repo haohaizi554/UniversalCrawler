@@ -1,7 +1,11 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from app.services.frontend_settings_adapter import (
+    build_download_options_snapshot,
     build_settings_snapshot,
+    normalize_download_options_payload,
+    persist_download_options,
     platform_count_contract,
     platform_proxy_contract,
 )
@@ -51,3 +55,60 @@ def test_build_settings_snapshot_matches_frontend_contract_shape():
     assert snapshot["\u64ad\u653e\u8bbe\u7f6e"]["default_player"] == "builtin_player"
     assert snapshot["\u5e73\u53f0\u8bbe\u7f6e"][0]["id"] == "bilibili"
     assert snapshot["\u5e73\u53f0\u8bbe\u7f6e"][0]["count_unit"] == "pages"
+
+
+def test_build_download_options_snapshot_prefers_runtime_manager_values():
+    data = {
+        ("download", "max_concurrent"): 3,
+        ("download", "max_retries"): 12,
+        ("download", "video_only"): False,
+        ("download", "image_respects_concurrency"): False,
+    }
+
+    def config_get(section, key, default=None):
+        return data.get((section, key), default)
+
+    cache_get = Mock(return_value=False)
+    manager = SimpleNamespace(max_concurrent=6, video_only=True, image_respects_concurrency=True)
+
+    assert build_download_options_snapshot(config_get, cache_get, manager) == {
+        "auto_retry": False,
+        "max_retries": 10,
+        "max_concurrent": 5,
+        "video_only": True,
+        "image_respects_concurrency": True,
+    }
+
+
+def test_normalize_and_persist_download_options_caps_user_values():
+    data = {
+        ("download", "max_concurrent"): 3,
+        ("download", "max_retries"): 3,
+        ("download", "video_only"): False,
+        ("download", "image_respects_concurrency"): False,
+    }
+    set_calls = []
+
+    def config_get(section, key, default=None):
+        return data.get((section, key), default)
+
+    def config_set(section, key, value):
+        set_calls.append((section, key, value))
+
+    cache_get = Mock(return_value=True)
+    cache_set = Mock()
+
+    options = normalize_download_options_payload(
+        {"max_concurrent": 24, "max_retries": 11, "video_only": True},
+        config_get,
+        cache_get,
+    )
+
+    assert options["max_concurrent"] == 5
+    assert options["max_retries"] == 10
+    assert options["video_only"] is True
+    persist_download_options(config_set, cache_set, options)
+    cache_set.assert_called_once_with("download.auto_retry", True, persist=False)
+    assert ("download", "max_concurrent", 5) in set_calls
+    assert ("download", "max_retries", 10) in set_calls
+    assert ("download", "video_only", True) in set_calls

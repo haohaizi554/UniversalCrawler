@@ -244,3 +244,44 @@ The WebUI platform count unit rules now live in `app/web/static/platform_limits.
 
 ### Lesson
 Small display policies become correctness bugs when they are duplicated across top-level controls and settings pages. Extracting the unit strategy keeps platform limits consistent while leaving page rendering and backend persistence in their own layers.
+
+## Download Options Adapter Extraction
+
+- Keep frontend download option semantics in one adapter layer: snapshot building, payload normalization, manager concurrency reconciliation, and persistence now live in `frontend_settings_adapter`.
+- Leave `FrontendStateService` responsible for orchestration only: manager lookup, runtime setting application, cache invalidation, and frontend event publication.
+- Direct adapter tests are valuable here because GUI, WebUI, settings center, and active-page queue controls all depend on the same normalized download options contract.
+## Log Filter Input Component Extraction
+
+- Keep theme-aware focus styling with the input component instead of embedding it in `log_center_page.py`.
+- The log center page should compose filter controls and delegate focus-border refresh to `log_filter_input`, which makes the same behavior reusable for future log/search filter surfaces.
+- Contract coverage should instantiate the page and verify the actual focused widget style, not only static stylesheet text.
+## Frontend Mock Snapshot Extraction
+
+- Keep large demo/mock state out of `FrontendStateService`; the real service should own transport and state orchestration, not fixture construction.
+- Preserve `FrontendStateService.mock_snapshot()` as a compatibility wrapper while moving fixture data into `frontend_mock_snapshot`.
+- Put shared page definitions in `frontend_page_definitions` so production snapshots and mock snapshots cannot drift.
+## Settings Platform Controls Extraction
+
+- Keep the settings page responsible for page flow and group rendering; move reusable platform count, timeout, and proxy control construction into `settings_platform_controls`.
+- Preserve thin `SettingsPage` wrapper methods when existing tests or callers rely on private helper names, then migrate internals behind the wrapper.
+- Extract the control cluster first instead of the entire platform table: this reduces risk while moving the most stateful UI logic out of the long page class.
+
+## Log Inspector Sections Extraction
+
+- Keep `LogCenterPage` responsible for filter state, pagination, selected log state, and copy/export actions; move only the right-side inspector widget construction into `log_inspector_sections`.
+- Return explicit `LogInspectorRefs` from the component so the page can keep its existing render/update methods without hidden mutation or brittle child lookup.
+- Style hooks such as message wrapping and theme refresh stay in the page for now because they depend on the live page theme and existing resize behavior; extracting construction first lowers risk and leaves a clear next boundary.
+
+### Lesson
+
+A reusable Qt component should not silently reach back into its owner. For incremental refactors, have the component build widgets and return typed references, then let the page decide how those widgets connect to state and actions. This keeps the extraction reversible and avoids mixing UI construction with log-center behavior.
+
+## Log Center Controls Extraction
+
+- Move the log action bar and table footer construction into `log_center_controls`, while keeping filtering, action dispatch, pagination state, and selected-log behavior inside `LogCenterPage`.
+- Return explicit refs for `copy_trace_button`, footer stats, page indicator, page-size combo, and page buttons so existing page methods keep a stable update surface without searching the widget tree.
+- Keep combo sizing and popup polish with the component because those are control-construction details, not log-center business state.
+
+### Lesson
+
+Repeated Qt control clusters should be extracted at the construction boundary first. The page should own behavior and state transitions, while the component owns object names, sizes, labels, and signal wiring into supplied callbacks. This keeps large-page refactors incremental and avoids turning a UI helper into a second controller.

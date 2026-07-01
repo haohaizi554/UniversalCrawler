@@ -25,6 +25,11 @@ from app.ui.components.combo_popup import apply_themed_combo_box, polish_combo_p
 from app.ui.components.settings_controls import SettingsComboBox, SegmentedControl, UiSwitch
 from app.ui.components.settings_form import SettingsFormBuilder
 from app.ui.components.settings_path_picker import SettingsPathPicker
+from app.ui.components.settings_platform_controls import (
+    build_platform_count_combo,
+    build_platform_proxy_widget,
+    build_platform_timeout_combo,
+)
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame
 from app.ui.styles.settings_page import generate_settings_page_stylesheet
@@ -41,7 +46,6 @@ from app.ui.viewmodels.settings_catalog import (
     PLATFORM_COUNT_OPTIONS,
     PLATFORM_FALLBACK_LETTERS,
     PLAYER_OPTIONS,
-    PROXY_OPTIONS,
     RETENTION_OPTIONS,
     RETRY_OPTIONS,
     SCALE_OPTIONS,
@@ -52,13 +56,10 @@ from app.ui.viewmodels.settings_catalog import (
     UI_LOG_MAX_DISPLAY_OPTIONS,
 )
 from app.ui.viewmodels.settings_options import (
-    compact_proxy_options,
     current_combo_int_value,
     current_combo_value,
     normalize_combo_options,
     platform_proxy_policy,
-    proxy_endpoint_from_port,
-    proxy_port_text,
 )
 from app.ui.viewmodels.settings_platform_layout import PLATFORM_DETAIL_COL_WIDTHS, platform_column_widths
 from app.utils.qt_runtime import load_qt_icon
@@ -1122,46 +1123,22 @@ class SettingsPage(PageFrame):
         return label
 
     def _platform_count_combo(self, row: dict[str, Any], *, width: int | None = None) -> QComboBox:
-        platform_id = str(row.get("id") or "")
-        config_key = str(row.get("count_config_key") or "")
-        combo = self._build_combo(
-            list(row.get("count_options") or PLATFORM_COUNT_OPTIONS),
-            str(row.get("default_count") or 20),
-            width=int(width or PLATFORM_DETAIL_COL_WIDTHS["count"]),
+        return build_platform_count_combo(
+            row,
+            build_combo=self._build_combo,
+            emit_setting_changed=self._emit_setting_changed,
+            translate=self._t,
+            width=width,
         )
-        combo.setEnabled(bool(row.get("count_editable", True) and platform_id and config_key))
-        if combo.isEnabled():
-            combo.currentIndexChanged.connect(
-                lambda *_args, control=combo, pid=platform_id, key=config_key: self._emit_setting_changed(
-                    pid,
-                    key,
-                    int(current_combo_value(control)),
-                )
-            )
-        else:
-            combo.setToolTip(self._t("该平台暂无可热加载的爬取数量配置"))
-        return combo
 
     def _platform_timeout_combo(self, row: dict[str, Any], *, width: int | None = None) -> QComboBox:
-        platform_id = str(row.get("id") or "")
-        config_key = str(row.get("timeout_config_key") or "")
-        combo = self._build_combo(
-            list(row.get("timeout_options") or TIMEOUT_OPTIONS),
-            str(row.get("default_timeout") or row.get("timeout") or 60),
-            width=int(width or PLATFORM_DETAIL_COL_WIDTHS["timeout"]),
+        return build_platform_timeout_combo(
+            row,
+            build_combo=self._build_combo,
+            emit_setting_changed=self._emit_setting_changed,
+            translate=self._t,
+            width=width,
         )
-        combo.setEnabled(bool(row.get("timeout_editable", False) and platform_id and config_key))
-        if combo.isEnabled():
-            combo.currentIndexChanged.connect(
-                lambda *_args, control=combo, pid=platform_id, key=config_key: self._emit_setting_changed(
-                    pid,
-                    key,
-                    int(current_combo_value(control)),
-                )
-            )
-        else:
-            combo.setToolTip(self._t("该平台暂无可热加载的超时配置"))
-        return combo
 
     def _platform_proxy_widget(
         self,
@@ -1171,112 +1148,16 @@ class SettingsPage(PageFrame):
         row_container: QWidget | None = None,
         width: int | None = None,
     ) -> QWidget:
-        platform_id = str(row.get("id") or "")
-        config_key = str(row.get("proxy_config_key") or "")
-        editable = bool(row.get("proxy_editable", policy.get("editable")) and platform_id and config_key)
-        proxy_value = str(row.get("proxy") or "系统代理")
-        options = compact_proxy_options(list(row.get("proxy_options") or PROXY_OPTIONS), proxy_value)
-        option_values = {value for value, _label in normalize_combo_options(options, proxy_value)}
-        if editable and proxy_value not in option_values:
-            proxy_value = "自定义"
-        if not editable:
-            proxy_value = "系统代理"
-
-        custom_allowed = bool(row.get("proxy_custom_allowed"))
-        proxy_width = int(width or PLATFORM_DETAIL_COL_WIDTHS["proxy"])
-        active_container_width = max(proxy_width, 190) if custom_allowed else proxy_width
-        collapsed_combo_width = proxy_width
-        active_combo_width = max(72, min(206, int(active_container_width * 0.48))) if custom_allowed else proxy_width
-        active_input_min_width = 0
-        if custom_allowed:
-            active_input_min_width = max(86, active_container_width - active_combo_width - 8)
-        proxy_combo = self._build_combo(options, proxy_value, width=collapsed_combo_width)
-        proxy_combo.setEnabled(editable)
-        proxy_combo.setProperty("proxyCustomAllowed", "true" if custom_allowed else "false")
-        proxy_combo.setEditable(False)
-
-        if not custom_allowed:
-            if policy["tooltip"]:
-                proxy_combo.setToolTip(str(policy["tooltip"]))
-            return proxy_combo
-
-        container = QWidget()
-        container.setObjectName("SettingsProxyControl")
-        container.setFixedWidth(proxy_width)
-        container.setFixedHeight(self._scaled_px(38, minimum=38))
-        container_layout = QHBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(8)
-
-        line_edit = QLineEdit()
-        line_edit.setObjectName("SettingsProxyCustomEdit")
-        line_edit.setFixedHeight(self._scaled_px(38, minimum=38))
-        line_edit.setMinimumWidth(active_input_min_width or 92)
-        line_edit.setPlaceholderText(self._t("端口"))
-        line_edit.setClearButtonEnabled(False)
-        line_edit.setEnabled(False)
-        existing_custom = str(row.get("proxy_custom_value") or "").strip()
-        if existing_custom:
-            line_edit.setText(proxy_port_text(existing_custom))
-        elif proxy_value not in {"系统代理", "直连", "自定义"}:
-            line_edit.setText(proxy_port_text(proxy_value))
-
-        container_layout.addWidget(proxy_combo, 0)
-        container_layout.addWidget(line_edit, 1)
-
-        def _sync_custom_state(active: bool, *, focus: bool = False) -> None:
-            proxy_combo.setProperty("customProxy", "true" if active else "false")
-            container.setFixedWidth(active_container_width if active else proxy_width)
-            proxy_combo.setFixedWidth(active_combo_width if active else collapsed_combo_width)
-            line_edit.setVisible(bool(active))
-            line_edit.setEnabled(bool(active and editable))
-            line_edit.setClearButtonEnabled(bool(active and editable))
-            line_edit.setProperty("customProxyActive", "true" if active else "false")
-            line_edit.setToolTip(existing_custom if existing_custom else line_edit.placeholderText())
-            container.setProperty("customProxyActive", "true" if active else "false")
-            if active and focus:
-                line_edit.setFocus(Qt.FocusReason.OtherFocusReason)
-                line_edit.selectAll()
-            container.updateGeometry()
-            if row_container is not None:
-                row_container.updateGeometry()
-            proxy_combo.style().unpolish(proxy_combo)
-            proxy_combo.style().polish(proxy_combo)
-            line_edit.style().unpolish(line_edit)
-            line_edit.style().polish(line_edit)
-
-        custom_active = bool(editable and (row.get("proxy_custom_active") or proxy_value == "自定义"))
-        if custom_active:
-            custom_index = proxy_combo.findData("自定义")
-            if custom_index < 0:
-                custom_index = proxy_combo.findText(self._t("自定义 HTTP/SOCKS5 端点"))
-            if custom_index >= 0:
-                proxy_combo.setCurrentIndex(custom_index)
-            proxy_combo.setToolTip(existing_custom or self._t("端口"))
-        _sync_custom_state(custom_active)
-        if editable:
-            def _on_proxy_changed(*_args, control=proxy_combo, pid=platform_id, key=config_key) -> None:
-                value = current_combo_value(control)
-                is_custom = value == "自定义"
-                _sync_custom_state(is_custom, focus=is_custom)
-                self._emit_proxy_setting_changed(pid, key, value)
-
-            proxy_combo.currentIndexChanged.connect(_on_proxy_changed)
-
-            def _commit_custom_proxy(edit=line_edit, control=proxy_combo, pid=platform_id, key=config_key) -> None:
-                if control.property("customProxy") != "true":
-                    return
-                value = edit.text().strip()
-                if not value or value in {"自定义", self._t("自定义 HTTP/SOCKS5 端点")}:
-                    return
-                self._emit_proxy_setting_changed(pid, key, "自定义")
-                self._emit_proxy_setting_changed(pid, "proxy_url", proxy_endpoint_from_port(value))
-
-            line_edit.editingFinished.connect(_commit_custom_proxy)
-        elif policy["tooltip"]:
-            container.setToolTip(str(policy["tooltip"]))
-            line_edit.setToolTip(str(policy["tooltip"]))
-        return container
+        return build_platform_proxy_widget(
+            row,
+            policy,
+            build_combo=self._build_combo,
+            emit_proxy_setting_changed=self._emit_proxy_setting_changed,
+            translate=self._t,
+            scaled_px=self._scaled_px,
+            row_container=row_container,
+            width=width,
+        )
 
     def _emit_proxy_setting_changed(self, platform_id: str, key: str, value: str) -> None:
         signature = (str(platform_id), str(key), str(value))

@@ -2029,7 +2029,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         content = _html_bundle()
         css = _css_bundle()
         failed_page = content.split('id="page-failed"', 1)[1].split('id="page-logs"', 1)[0]
-        failed_fn = content.split("function renderFailed()", 1)[1].split("function selectFailed", 1)[0]
+        failed_fn = content.split("function failedRow", 1)[1].split("function failedDetailHtml", 1)[0]
 
         self.assertNotIn('class="page-head"', failed_page)
         self.assertIn("failed-table-card", failed_page)
@@ -2162,10 +2162,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn("<th>分辨率</th>", completed_page)
         self.assertNotIn("<th>大小</th>", completed_page)
         self.assertIn("completed_at_table || item.completed_at", content)
-        detail_fn = content.split("function renderCompletedDetail()", 1)[1].split("function basenameFromPath", 1)[0]
-        for expected in ("文件名", "保存路径", "完成时间", "时长", "分辨率", "大小", "格式"):
+        detail_fn = content.split("function completedDetailHtml", 1)[1].split("function iconTextHtml", 1)[0]
+        for expected in ("\\u6587\\u4ef6\\u540d", "\\u4fdd\\u5b58\\u8def\\u5f84", "\\u5b8c\\u6210\\u65f6\\u95f4", "\\u65f6\\u957f", "\\u5206\\u8fa8\\u7387", "\\u5927\\u5c0f", "\\u683c\\u5f0f"):
             self.assertIn(expected, detail_fn)
-        for removed in ("下载速率", "完成概览", "存储占用"):
+        for removed in ("\\u4e0b\\u8f7d\\u901f\\u5ea6", "\\u5b8c\\u6210\\u6982\\u89c8", "\\u5b58\\u50a8\\u5360\\u7528"):
             self.assertNotIn(removed, detail_fn)
         self.assertIn('byId("previewPanel")', content)
         self.assertIn("panel.requestFullscreen", content)
@@ -2198,7 +2198,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("kv-value smart-wrap", content)
         self.assertIn("active-detail-fields", content)
         self.assertIn("active-detail-metrics", content)
-        active_detail_fn = content.split("function renderActiveDetail()", 1)[1].split("function activeEventTimelineHtml", 1)[0]
+        active_detail_fn = content.split("function activeDetailHtml", 1)[1].split("function completedDetailHtml", 1)[0]
         for removed in (
             "\\u7ebf\\u7a0b\\u6570",
             "\\u91cd\\u8bd5\\u6b21\\u6570",
@@ -2214,11 +2214,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("line-height: 1.18", css)
         self.assertIn("flex: 1 1 0", css)
         self.assertIn("overflow: hidden", css)
-        self.assertIn('activeTrendHtml(item.speed_trend || [], item.speed || "0 B/s")', content)
+        self.assertIn('activeTrendRenderer(item.speed_trend || [], item.speed || "0 B/s")', content)
         self.assertIn('text-anchor="end"', content)
         self.assertIn("onloadedmetadata", content)
         self.assertIn('"update_completed_metadata"', content)
-        self.assertIn("displayMetadataValue(item.duration, item.metadata_pending)", content)
+        self.assertIn("metadataValueRenderer(item.duration, item.metadata_pending)", content)
         self.assertIn("speed-label", content)
 
     def test_web_rendering_uses_stable_dom_update_guards(self):
@@ -2290,6 +2290,47 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("window.UcpSettingsRender.configure", app_js)
         self.assertIn("window.UcpSettingsRender || null", app_js)
         self.assertNotIn("const options = value && value._options ? value._options : {};", app_js)
+
+    def test_gui_settings_platform_controls_are_split_into_component(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "app" / "ui" / "pages" / "settings_page.py").read_text(encoding="utf-8")
+        controls = (root / "app" / "ui" / "components" / "settings_platform_controls.py").read_text(encoding="utf-8")
+
+        self.assertIn("from app.ui.components.settings_platform_controls import", page)
+        self.assertIn("build_platform_count_combo(", page)
+        self.assertIn("build_platform_timeout_combo(", page)
+        self.assertIn("build_platform_proxy_widget(", page)
+        self.assertIn("def build_platform_proxy_widget", controls)
+        self.assertIn("SettingsProxyControl", controls)
+        self.assertNotIn("compact_proxy_options(list(row.get(\"proxy_options\")", page)
+
+    def test_gui_log_inspector_sections_are_split_into_component(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "app" / "ui" / "pages" / "log_center_page.py").read_text(encoding="utf-8")
+        sections = (root / "app" / "ui" / "components" / "log_inspector_sections.py").read_text(encoding="utf-8")
+
+        self.assertIn("from app.ui.components.log_inspector_sections import", page)
+        self.assertIn("build_log_detail_summary_section(", page)
+        self.assertIn("build_log_json_section(", page)
+        self.assertIn("class LogInspectorRefs", sections)
+        self.assertIn("def build_log_stack_section", sections)
+        self.assertNotIn("self.detail_copy_button = QPushButton", page)
+        self.assertNotIn("self.json_copy_button = QPushButton", page)
+
+    def test_gui_log_center_controls_are_split_into_component(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "app" / "ui" / "pages" / "log_center_page.py").read_text(encoding="utf-8")
+        controls = (root / "app" / "ui" / "components" / "log_center_controls.py").read_text(encoding="utf-8")
+
+        self.assertIn("from app.ui.components.log_center_controls import", page)
+        self.assertIn("build_log_action_bar(", page)
+        self.assertIn("build_log_table_footer(", page)
+        self.assertIn("class LogTableFooterRefs", controls)
+        self.assertIn("def build_log_action_bar", controls)
+        self.assertIn("def build_log_table_footer", controls)
+        self.assertNotIn("self.copy_trace_button = button", page)
+        self.assertNotIn("self.footer_stats = QLabel", page)
+        self.assertNotIn("self.page_size_combo = ThemedComboBox", page)
 
     def test_web_task_render_logic_is_split_into_component(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
