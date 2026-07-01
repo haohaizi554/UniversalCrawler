@@ -62,7 +62,7 @@ def _static_bundle_content() -> str:
     """Read split WebUI assets as one bundle for static assertions."""
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
     parts = []
-    for name in ("index.html", "app.css", "app.js"):
+    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "app.js"):
         path = static_dir / name
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
@@ -205,6 +205,14 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
 
         self.assertIn('/static/app.css?v=20260628-settings-masterdetail', content)
+        self.assertIn('/static/i18n.js?v=20260701-i18n', content)
+        self.assertIn('/static/custom_select.js?v=20260701-custom-select', content)
+        self.assertIn('/static/media_display.js?v=20260701-media-display', content)
+        self.assertIn('/static/log_display.js?v=20260701-log-display', content)
+        self.assertIn('/static/platform_limits.js?v=20260701-platform-limits', content)
+        self.assertIn('/static/settings_render.js?v=20260701-settings-render', content)
+        self.assertIn('/static/task_render.js?v=20260701-task-render', content)
+        self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/app.js?v=20260628-settings-masterdetail', content)
 
     def test_video_end_autoplays_next_preview(self):

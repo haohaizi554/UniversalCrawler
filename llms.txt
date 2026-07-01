@@ -30,12 +30,12 @@ UniversalCrawlerProplus is a PyQt6 + FastAPI crawler and media download applicat
 
 ## Documentation index
 
-- `SIGNAL_BASELINE_REPORT.md`: baseline signal/semaphore audit report.
+- `docx/reports/signal-baseline-report-2026-06-28.md`: baseline signal/semaphore audit report.
 - `docs/adr/0001-signal-semaphore-hardening.md`: signal, semaphore, EventBus, and guardrail ADR.
 - `docs/architecture.md`: system architecture.
 - `docs/config.md`: runtime configuration behavior.
 - `docs/api.md`: HTTP/Web API notes.
-- `docs/testing.md`: testing guidance.
+- `docx/guides/testing.md`: testing guidance.
 - `docs/development.md`: development workflow.
 - `docs/cli/CLI_GUIDE.md`: CLI usage.
 - `docs/cli/API_REFERENCE.md`: CLI/API reference.

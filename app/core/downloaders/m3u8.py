@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import base64
-import http.server
 import io
 import os
 import re
 import shutil
-import socketserver
 import subprocess
 import time
 import urllib.parse
@@ -22,6 +20,9 @@ from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalTo
 from app.models import VideoItem
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
+from . import hls_proxy as hls_proxy_utils
+from .hls_proxy import _LocalHlsProxy
+from .nm3u8_progress import _Nm3u8OutputProgress
 from .external import (
     ExternalToolRunner,
     FFmpegExternalTool,
@@ -34,275 +35,6 @@ try:
     from playwright.sync_api import Error as PlaywrightError
 except ImportError:  # pragma: no cover - optional browser fallback
     PlaywrightError = RuntimeError
-
-
-class _ThreadingHlsProxyServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-
-class _HlsProxyHandler(http.server.BaseHTTPRequestHandler):
-    server: _ThreadingHlsProxyServer
-
-    def do_GET(self) -> None:
-        owner = getattr(self.server, "owner", None)
-        if owner is None:
-            self.send_error(500)
-            return
-        try:
-            upstream_url = owner.upstream_url_from_path(self.path)
-            owner.serve(self, upstream_url)
-        except Exception as exc:
-            debug_logger.log_exception(
-                "N_m3u8DL_RE_Downloader",
-                "local_hls_proxy_error",
-                exc,
-                context={"path": self.path},
-            )
-            self.send_error(502)
-            return
-
-    def log_message(self, _format: str, *args: Any) -> None:
-        return
-
-
-class _LocalHlsProxy:
-    def __init__(
-        self,
-        downloader: "N_m3u8DL_RE_Downloader",
-        root_url: str,
-        headers: dict[str, str],
-        upstream_proxy: str | None,
-    ) -> None:
-        self.downloader = downloader
-        self.root_url = root_url
-        self.headers = dict(headers)
-        self.upstream_proxy = upstream_proxy
-        self.server: _ThreadingHlsProxyServer | None = None
-        self.thread: threading.Thread | None = None
-        self.base_url = ""
-        self.url = ""
-        self._lock = threading.Lock()
-        self._segment_total = 0
-        self._segment_completed = 0
-        self._bytes_served = 0
-
-    def start(self) -> "_LocalHlsProxy":
-        self.server = _ThreadingHlsProxyServer(("127.0.0.1", 0), _HlsProxyHandler)
-        self.server.owner = self  # type: ignore[attr-defined]
-        host, port = self.server.server_address[:2]
-        self.base_url = f"http://{host}:{port}"
-        self.url = self.local_url_for(self.root_url)
-        self.thread = threading.Thread(target=self.server.serve_forever, name="ucp-hls-proxy", daemon=True)
-        self.thread.start()
-        return self
-
-    def stop(self) -> None:
-        if self.server is not None:
-            self.server.shutdown()
-            self.server.server_close()
-        if self.thread is not None:
-            self.thread.join(timeout=2)
-
-    def local_url_for(self, upstream_url: str) -> str:
-        token = base64.urlsafe_b64encode(str(upstream_url).encode("utf-8")).decode("ascii")
-        return f"{self.base_url}/hls?u={urllib.parse.quote(token)}"
-
-    def upstream_url_from_path(self, path: str) -> str:
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
-        token = (query.get("u") or [""])[0]
-        if not token:
-            return self.root_url
-        try:
-            return base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise ExternalToolError("Invalid local HLS proxy URL token") from exc
-
-    def fetch(self, upstream_url: str) -> tuple[int, str, bytes]:
-        upstream_headers = self.downloader._headers_for_hls_proxy_upstream(upstream_url, self.headers)
-        status, content_type, body = self.downloader._hls_proxy_fetch_upstream(
-            upstream_url,
-            upstream_headers,
-            self.upstream_proxy,
-        )
-        if self.downloader._looks_like_hls_playlist(upstream_url, content_type, body):
-            text = body.decode("utf-8", errors="replace")
-            self._record_playlist(text)
-            rewritten = self.downloader._rewrite_hls_playlist_for_proxy(text, upstream_url, self.local_url_for)
-            return 200, "application/vnd.apple.mpegurl; charset=utf-8", rewritten.encode("utf-8")
-        self._record_resource(upstream_url, len(body))
-        return status, content_type, body
-
-    def serve(self, handler: http.server.BaseHTTPRequestHandler, upstream_url: str) -> None:
-        upstream_headers = self.downloader._headers_for_hls_proxy_upstream(upstream_url, self.headers)
-        response = self.downloader._hls_proxy_open_upstream(
-            upstream_url,
-            upstream_headers,
-            self.upstream_proxy,
-        )
-        try:
-            status = int(getattr(response, "status_code", 0) or 0)
-            response_headers = getattr(response, "headers", {}) or {}
-            content_type = str(response_headers.get("Content-Type", "") or "")
-            if self.downloader._looks_like_hls_playlist_url(upstream_url, content_type):
-                body = self.downloader._response_content_bytes(response)
-                text = body.decode("utf-8", errors="replace")
-                self._record_playlist(text)
-                rewritten = self.downloader._rewrite_hls_playlist_for_proxy(text, upstream_url, self.local_url_for)
-                payload = rewritten.encode("utf-8")
-                handler.send_response(200)
-                handler.send_header("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
-                handler.send_header("Content-Length", str(len(payload)))
-                handler.send_header("Access-Control-Allow-Origin", "*")
-                handler.end_headers()
-                handler.wfile.write(payload)
-                return
-
-            handler.send_response(status)
-            handler.send_header("Content-Type", content_type or "application/octet-stream")
-            for header_name in (
-                "Content-Length",
-                "Content-Range",
-                "Accept-Ranges",
-                "ETag",
-                "Last-Modified",
-                "Cache-Control",
-            ):
-                header_value = str(response_headers.get(header_name) or "").strip()
-                if header_value:
-                    handler.send_header(header_name, header_value)
-            handler.send_header("Access-Control-Allow-Origin", "*")
-            handler.end_headers()
-            self._stream_response_body(handler, upstream_url, response)
-        finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except (OSError, RuntimeError, AttributeError) as exc:
-                    debug_logger.log_exception("M3U8Proxy", "close_upstream_response", exc, details={"url": upstream_url})
-
-    def _stream_response_body(
-        self,
-        handler: http.server.BaseHTTPRequestHandler,
-        upstream_url: str,
-        response,
-    ) -> None:
-        completed = False
-        for chunk in self.downloader._response_iter_bytes(response):
-            if not chunk:
-                continue
-            handler.wfile.write(chunk)
-            try:
-                handler.wfile.flush()
-            except (BrokenPipeError, OSError, RuntimeError) as exc:
-                debug_logger.log_exception("M3U8Proxy", "flush_response_body", exc, details={"url": upstream_url})
-            self._record_resource_bytes(len(chunk))
-            completed = True
-        if completed:
-            self._record_resource_complete(upstream_url)
-
-    def _record_playlist(self, playlist_text: str) -> None:
-        segment_total = self.downloader._count_hls_media_entries(playlist_text)
-        if segment_total <= 0:
-            return
-        with self._lock:
-            self._segment_total = max(self._segment_total, segment_total)
-
-    def _record_resource(self, upstream_url: str, byte_count: int) -> None:
-        self._record_resource_bytes(byte_count)
-        self._record_resource_complete(upstream_url)
-
-    def _record_resource_bytes(self, byte_count: int) -> None:
-        with self._lock:
-            self._bytes_served += max(0, int(byte_count or 0))
-
-    def _record_resource_complete(self, upstream_url: str) -> None:
-        with self._lock:
-            if self.downloader._looks_like_hls_media_resource(upstream_url) or not self.downloader._looks_like_hls_playlist_url(upstream_url, ""):
-                self._segment_completed += 1
-
-    def progress_snapshot(self) -> tuple[int, int]:
-        with self._lock:
-            segment_total = self._segment_total
-            segment_completed = self._segment_completed
-            bytes_served = self._bytes_served
-        if segment_total > 0:
-            progress = 10 + int(min(segment_completed, segment_total) * 85 / segment_total)
-            return min(95, max(10, progress)), bytes_served
-        return 50, bytes_served
-
-
-class _Nm3u8OutputProgress:
-    """Parse N_m3u8DL-RE console progress into UI-friendly telemetry."""
-
-    _PERCENT_RE = re.compile(r"(?P<percent>\d+(?:\.\d+)?)%")
-    _SPEED_RE = re.compile(
-        r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)(?:ps|/s)",
-        re.IGNORECASE,
-    )
-    _UNIT_FACTORS = {
-        "B": 1,
-        "KB": 1024,
-        "KIB": 1024,
-        "MB": 1024**2,
-        "MIB": 1024**2,
-        "GB": 1024**3,
-        "GIB": 1024**3,
-        "TB": 1024**4,
-        "TIB": 1024**4,
-    }
-
-    def __init__(self, *, default_progress: int = 50) -> None:
-        self._lock = threading.Lock()
-        self._progress = max(0, min(100, int(default_progress)))
-        self._speed_bps = 0
-        self._synthetic_bytes = 0.0
-        self._last_at = time.monotonic()
-
-    def feed(self, text: str) -> None:
-        if not text:
-            return
-        now = time.monotonic()
-        with self._lock:
-            self._advance_locked(now)
-            percent_match = None
-            for percent_match in self._PERCENT_RE.finditer(text):
-                pass
-            if percent_match is not None:
-                try:
-                    percent = float(percent_match.group("percent"))
-                except (TypeError, ValueError):
-                    percent = -1.0
-                if percent >= 0:
-                    self._progress = max(0, min(95, int(percent)))
-
-            speed_match = None
-            for speed_match in self._SPEED_RE.finditer(text):
-                pass
-            if speed_match is not None:
-                self._speed_bps = self._parse_speed_match(speed_match)
-
-    def snapshot(self) -> tuple[int, int]:
-        now = time.monotonic()
-        with self._lock:
-            self._advance_locked(now)
-            return self._progress, int(self._synthetic_bytes)
-
-    def _advance_locked(self, now: float) -> None:
-        elapsed = max(0.0, now - self._last_at)
-        if self._speed_bps > 0 and elapsed > 0:
-            self._synthetic_bytes += self._speed_bps * elapsed
-        self._last_at = now
-
-    @classmethod
-    def _parse_speed_match(cls, match: re.Match[str]) -> int:
-        try:
-            value = float(match.group("value"))
-        except (TypeError, ValueError):
-            return 0
-        unit = str(match.group("unit") or "B").upper()
-        return max(0, int(value * cls._UNIT_FACTORS.get(unit, 1)))
 
 
 class N_m3u8DL_RE_Downloader(BaseDownloader):
@@ -1022,98 +754,35 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
     @staticmethod
     def _looks_like_hls_playlist(url: str, content_type: str, body: bytes) -> bool:
-        if b"#EXTM3U" in body[:4096]:
-            return True
-        lowered_type = str(content_type or "").lower()
-        if "mpegurl" in lowered_type or "m3u8" in lowered_type:
-            return True
-        return ".m3u8" in str(url or "").lower()
+        return hls_proxy_utils.looks_like_hls_playlist(url, content_type, body)
 
     @staticmethod
     def _looks_like_hls_playlist_url(url: str, content_type: str) -> bool:
-        lowered_type = str(content_type or "").lower()
-        if "mpegurl" in lowered_type or "m3u8" in lowered_type:
-            return True
-        return ".m3u8" in str(url or "").lower()
+        return hls_proxy_utils.looks_like_hls_playlist_url(url, content_type)
 
     @staticmethod
     def _response_content_bytes(response) -> bytes:
-        content = getattr(response, "content", None)
-        if content:
-            return bytes(content or b"")
-        chunks = []
-        for chunk in N_m3u8DL_RE_Downloader._response_iter_bytes(response):
-            if chunk:
-                chunks.append(chunk)
-        return b"".join(chunks)
+        return hls_proxy_utils.response_content_bytes(response)
 
     @staticmethod
     def _response_iter_bytes(response, chunk_size: int = 256 * 1024):
-        content = getattr(response, "content", None)
-        if content:
-            payload = bytes(content)
-            chunk_size = max(1, int(chunk_size))
-            for offset in range(0, len(payload), chunk_size):
-                yield payload[offset : offset + chunk_size]
-            return
-        iter_content = getattr(response, "iter_content", None)
-        if callable(iter_content):
-            try:
-                yield from iter_content()
-                return
-            except TypeError:
-                try:
-                    yield from iter_content(chunk_size=chunk_size)
-                    return
-                except TypeError:
-                    yield from iter_content(chunk_size)
-                    return
+        yield from hls_proxy_utils.response_iter_bytes(response, chunk_size=chunk_size)
 
     @staticmethod
     def _looks_like_hls_media_resource(url: str) -> bool:
-        path = urllib.parse.urlparse(str(url or "")).path.lower()
-        return path.endswith((".ts", ".m4s", ".mp4", ".m4v", ".aac", ".mp3"))
+        return hls_proxy_utils.looks_like_hls_media_resource(url)
 
     @staticmethod
     def _count_hls_media_entries(playlist_text: str) -> int:
-        count = 0
-        for raw_line in str(playlist_text or "").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            path = urllib.parse.urlparse(line).path.lower()
-            if path.endswith(".m3u8"):
-                continue
-            count += 1
-        return count
+        return hls_proxy_utils.count_hls_media_entries(playlist_text)
 
     @classmethod
     def _rewrite_hls_playlist_for_proxy(cls, playlist_text: str, playlist_url: str, local_url_for) -> str:
-        base_url = str(playlist_url or "")
-        rewritten_lines: list[str] = []
-        for raw_line in str(playlist_text or "").splitlines():
-            line = raw_line.strip()
-            if not line:
-                rewritten_lines.append(raw_line)
-                continue
-            if line.startswith("#"):
-                rewritten_lines.append(cls._rewrite_hls_attribute_uris(raw_line, base_url, local_url_for))
-                continue
-            absolute_url = urllib.parse.urljoin(base_url, line)
-            rewritten_lines.append(local_url_for(absolute_url))
-        return "\n".join(rewritten_lines) + "\n"
+        return hls_proxy_utils.rewrite_hls_playlist_for_proxy(playlist_text, playlist_url, local_url_for)
 
     @staticmethod
     def _rewrite_hls_attribute_uris(line: str, base_url: str, local_url_for) -> str:
-        import re
-
-        def replace_uri(match):
-            quote = match.group(1)
-            uri = match.group(2)
-            absolute_url = urllib.parse.urljoin(base_url, uri)
-            return f"URI={quote}{local_url_for(absolute_url)}{quote}"
-
-        return re.sub(r"URI=([\"'])(.*?)(?:\1)", replace_uri, line)
+        return hls_proxy_utils.rewrite_hls_attribute_uris(line, base_url, local_url_for)
 
 
     def _wait_external_process_with_file_progress(

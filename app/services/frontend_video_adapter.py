@@ -149,6 +149,47 @@ def active_item(
     }
 
 
+def completed_item(
+    item: VideoItem,
+    *,
+    path: Path | None,
+    size_bytes: int,
+    completed_at: str,
+    metadata: Any,
+    metadata_pending: bool,
+    platform_label: Callable[[VideoItem], str],
+) -> dict[str, Any]:
+    meta = item.meta or {}
+    duration = display_duration(meta.get("duration") or getattr(metadata, "duration", ""))
+    resolution = display_resolution(meta.get("resolution"), meta.get("quality"), getattr(metadata, "resolution", ""))
+    pending_label = "\u68c0\u6d4b\u4e2d"
+    format_label = str(meta.get("format") or getattr(metadata, "format", "") or format_from_path(path))
+    content_type = str(meta.get("content_type") or getattr(metadata, "content_type", "") or content_type_from_path(path))
+    filename = str(meta.get("filename") or (path.name if path else "") or item.title)
+    save_dir = str(meta.get("save_dir") or (path.parent if path else ""))
+    return {
+        "id": item.id,
+        "title": item.title,
+        "thumbnail": str(meta.get("thumbnail") or ""),
+        "completed_at": completed_at,
+        "completed_at_table": format_completed_at_table(completed_at),
+        "duration": duration or (pending_label if metadata_pending else "--"),
+        "resolution": resolution if resolution != "--" else (pending_label if metadata_pending else "--"),
+        "size": format_size(size_bytes),
+        "size_bytes": size_bytes,
+        "format": format_label,
+        "filename": filename,
+        "save_dir": save_dir,
+        "download_speed": str(meta.get("speed") or "--"),
+        "download_speed_bps": int(meta.get("speed_bps") or 0),
+        "local_path": item.local_path or "",
+        "content_type": content_type,
+        "metadata_pending": metadata_pending,
+        "platform": platform_label(item),
+        "actions": ["play", "open_directory", "delete"],
+    }
+
+
 def failed_item(
     item: VideoItem,
     *,
@@ -247,6 +288,121 @@ def content_type_from_path(path: Path | None) -> str:
 def default_speed_trend(progress: int) -> list[float]:
     seed = max(0, min(100, progress)) / 100
     return [round((0.7 + ((index % 5) * 0.12)) * seed, 2) for index in range(12)]
+
+
+def active_events(
+    item: VideoItem,
+    *,
+    progress: int,
+    chunks_done: int,
+    chunks_total: int,
+    speed: str,
+    remaining_time: str,
+    write_status: str,
+    merge_status: str,
+    trace_id: str,
+    event_time_cache: dict[str, str] | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> list[dict[str, str]]:
+    existing: list[dict[str, str]] = []
+    for event in list((item.meta or {}).get("events") or [])[-6:]:
+        if not isinstance(event, Mapping):
+            continue
+        message = str(event.get("message") or "").strip()
+        if not message:
+            continue
+        existing.append({"time": str(event.get("time") or ""), "message": message})
+
+    event_time = stable_active_event_time(item, existing, event_time_cache=event_time_cache, now=now)
+    for event in existing:
+        if not event["time"]:
+            event["time"] = event_time
+    if len(existing) >= 6:
+        return existing[-6:]
+
+    chunk_text = f"{progress}%"
+    if chunks_total:
+        chunk_text = f"{progress}% ({chunks_done}/{chunks_total})"
+    derived = [
+        f"\u4efb\u52a1\u8fdb\u5165\u4e0b\u8f7d\u5668\uff1a{item.title}",
+        f"\u8fdb\u5ea6\uff1a{chunk_text}",
+        f"\u5f53\u524d\u901f\u5ea6\uff1a{speed}\uff0c\u5269\u4f59\uff1a{remaining_time}",
+    ]
+    if trace_id:
+        derived.append(f"Trace ID\uff1a{trace_id}")
+    elif item.url:
+        derived.append("\u6765\u6e90\u94fe\u63a5\u5df2\u8bb0\u5f55")
+    derived.extend(
+        [
+            f"\u5199\u5165\u72b6\u6001\uff1a{write_status}",
+            f"\u5408\u5e76\u72b6\u6001\uff1a{merge_status}",
+        ]
+    )
+
+    seen = {event["message"] for event in existing}
+    result = list(existing)
+    for message in derived:
+        if message in seen:
+            continue
+        result.append({"time": event_time, "message": message})
+        seen.add(message)
+        if len(result) >= 6:
+            break
+    return result[:6]
+
+
+def stable_active_event_time(
+    item: VideoItem,
+    existing: list[dict[str, str]],
+    *,
+    event_time_cache: dict[str, str] | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> str:
+    for event in existing:
+        value = str(event.get("time") or "").strip()
+        if value:
+            return value
+    meta = item.meta or {}
+    cache = event_time_cache if event_time_cache is not None else {}
+    for key in ("event_time", "download_started_at", "started_at", "created_at", "discovered_at", "added_at"):
+        formatted = format_event_clock(meta.get(key))
+        if formatted:
+            cache[item.id] = formatted
+            return formatted
+    cached = cache.get(item.id)
+    if cached:
+        return cached
+    clock = now or datetime.now
+    generated = clock().strftime("%H:%M:%S")
+    cache[item.id] = generated
+    return generated
+
+
+def format_event_clock(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M:%S")
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    if len(raw) >= 8 and raw[-8:].count(":") == 2:
+        return raw[-8:]
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%H:%M:%S")
+    except ValueError:
+        return raw
+
+
+def default_active_events(item: VideoItem, *, now: Callable[[], datetime] | None = None) -> list[dict[str, str]]:
+    clock = now or datetime.now
+    current = clock().strftime("%H:%M:%S")
+    return [
+        {"time": current, "message": f"\u4efb\u52a1\u8fdb\u5165\u4e0b\u8f7d\u5668\uff1a{item.title}"},
+        {"time": current, "message": "\u7b49\u5f85\u4e0b\u8f7d\u5668\u4e0a\u62a5\u8be6\u7ec6\u4e8b\u4ef6"},
+        {"time": current, "message": "\u8fdb\u5ea6\uff1a0%"},
+        {"time": current, "message": "\u5f53\u524d\u901f\u5ea6\uff1a0 B/s"},
+    ]
 
 
 def failure_category(reason: str) -> dict[str, str]:

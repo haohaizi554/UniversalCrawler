@@ -16,20 +16,41 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
+from app.services.icon_registry import platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import apply_themed_combo_box, polish_combo_popup
-from app.ui.components.focus_state import bind_focus_property
 from app.ui.components.settings_controls import SettingsComboBox, SegmentedControl, UiSwitch
 from app.ui.components.settings_form import SettingsFormBuilder
+from app.ui.components.settings_path_picker import SettingsPathPicker
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame
 from app.ui.styles.settings_page import generate_settings_page_stylesheet
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
+from app.ui.viewmodels.settings_catalog import (
+    ACCENT_OPTIONS,
+    CONCURRENCY_OPTIONS,
+    FILENAME_TEMPLATES,
+    FONT_SIZE_OPTIONS,
+    GROUP_DESCRIPTIONS,
+    GROUP_HINTS,
+    GROUP_ICONS,
+    OPEN_MODE_OPTIONS,
+    PLATFORM_COUNT_OPTIONS,
+    PLATFORM_FALLBACK_LETTERS,
+    PLAYER_OPTIONS,
+    PROXY_OPTIONS,
+    RETENTION_OPTIONS,
+    RETRY_OPTIONS,
+    SCALE_OPTIONS,
+    SETTING_DESCRIPTIONS,
+    SETTING_SHORT_DESCRIPTIONS,
+    SPEED_LIMIT_OPTIONS,
+    TIMEOUT_OPTIONS,
+    UI_LOG_MAX_DISPLAY_OPTIONS,
+)
 from app.ui.viewmodels.settings_options import (
     compact_proxy_options,
     current_combo_int_value,
@@ -42,133 +63,6 @@ from app.ui.viewmodels.settings_options import (
 from app.ui.viewmodels.settings_platform_layout import PLATFORM_DETAIL_COL_WIDTHS, platform_column_widths
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.safe_slot import safe_slot
-
-GROUP_ICONS = {
-    "基础设置": "action_open_directory.png",
-    "下载设置": "action_download.png",
-    "平台设置": "platform_web.png",
-    "播放设置": "action_play.png",
-    "日志设置": "nav_log_center.png",
-    "外观设置": "action_theme_palette.png",
-}
-
-PLATFORM_FALLBACK_LETTERS = {
-    "douyin": "D",
-    "xiaohongshu": "X",
-    "bilibili": "B",
-    "kuaishou": "K",
-    "missav": "M",
-}
-
-FILENAME_TEMPLATES = [
-    "{platform}_{title}_{date}_{index}",
-    "{platform}_{title}",
-    "{title}_{index}",
-    "{date}_{platform}_{title}",
-]
-
-OPEN_MODE_OPTIONS = [
-    "系统默认播放器",
-    "内置播放器",
-    "打开所在目录",
-    "不自动打开",
-]
-
-CONCURRENCY_OPTIONS = [
-    {"value": "1", "label": "1"},
-    {"value": "3", "label": "3（推荐）"},
-    {"value": "5", "label": "5"},
-]
-TIMEOUT_OPTIONS = ["30", "60", "90", "120", "180", "300"]
-RETRY_OPTIONS = ["0", "1", "2", "3", "5", "10"]
-SPEED_LIMIT_OPTIONS = [
-    {"value": "0", "label": "无限制"},
-    {"value": "512", "label": "512 KB/s"},
-    {"value": "1024", "label": "1 MB/s"},
-    {"value": "2048", "label": "2 MB/s"},
-    {"value": "5120", "label": "5 MB/s"},
-    {"value": "10240", "label": "10 MB/s"},
-]
-PLATFORM_COUNT_OPTIONS = ["10", "20", "30", "50", "100"]
-PROXY_OPTIONS = ["系统代理", "直连", "Clash (7890)", "Clash Verge (7897)", "v2rayN (10809)", "V2Ray / Qv2ray (10808)", "sing-box (2080)", "NekoRay (2080)", "自定义"]
-RETENTION_OPTIONS = ["1", "3", "5", "7"]
-UI_LOG_MAX_DISPLAY_OPTIONS = ["100", "300", "500"]
-PLAYER_OPTIONS = ["内置播放器", "系统默认播放器"]
-ACCENT_OPTIONS = ["蓝色", "绿色", "紫色", "橙色", "红色"]
-SCALE_OPTIONS = ["90%", "100%（推荐）", "110%", "125%"]
-FONT_SIZE_OPTIONS = ["小", "中（推荐）", "大"]
-
-SETTING_DESCRIPTIONS = {
-    "下载目录": "保存采集结果和下载文件的位置，支持粘贴路径或手动选择文件夹。",
-    "文件命名规则": "控制下载文件的命名格式，只能从预设模板中选择。",
-    "下载后自动打开": "任务完成后自动打开文件或所在位置。",
-    "默认打开方式": "设置下载完成后的默认打开行为。",
-    "并发数": "同时执行的下载任务数量，数值越高对网络和磁盘压力越大。",
-    "图片受并发数限制": "开启后图片下载也遵循普通并发数；关闭时图片批量使用轻量快速通道。",
-    "请求超时（秒）": "单次网络请求等待时间，网络较慢时可适当调大。",
-    "重试次数": "下载失败后的自动重试次数。",
-    "断点续传": "任务中断后尽量从已下载位置继续。",
-    "下载速度限制（KB/s）": "限制下载速度，选择“不限制”表示使用最大可用带宽。",
-    "仅下载视频": "开启后跳过封面、图片等非视频资源。",
-    "打开方式": "设置媒体文件使用的播放方式。",
-    "记住播放进度": "下次打开同一视频时恢复上次播放位置。",
-    "视频播放完自动下一项": "当前视频结束后自动播放列表中的下一项。",
-    "图片只手动切换": "图片预览时不自动轮播。",
-    "日志保留天数": "应用初始化时自动清理超过保留期的旧日志。",
-    "UI日志最大显示数量": "控制日志中心前端最多展示的日志条数，避免大量日志影响界面性能。",
-    "错误时自动复制 Trace": "出现异常时自动复制追踪编号，便于排查问题。",
-    "语言": "切换配置中心和 WebUI 设置页的显示语言。",
-    "跟随系统": "自动跟随操作系统的浅色或深色主题。",
-    "浅色 / 深色": "手动切换应用主题外观。",
-    "主题色": "选择应用强调色。",
-    "界面缩放": "调整界面整体缩放比例。",
-    "字体大小": "调整界面文字大小。",
-}
-
-SETTING_SHORT_DESCRIPTIONS = {
-    "下载目录": "保存下载文件的位置",
-    "文件命名规则": "从预设模板中选择",
-    "下载后自动打开": "任务完成后自动打开",
-    "默认打开方式": "下载完成后的打开行为",
-    "并发数": "同时下载的任务数",
-    "图片受并发数限制": "图片是否占用普通并发",
-    "请求超时（秒）": "单次请求等待时间",
-    "重试次数": "失败后的自动重试次数",
-    "断点续传": "从已下载位置继续",
-    "下载速度限制（KB/s）": "限制最大下载速度",
-    "仅下载视频": "跳过封面和图片资源",
-    "打开方式": "播放方式",
-    "记住播放进度": "下次恢复播放位置",
-    "视频播放完自动下一项": "结束后播放下一项",
-    "图片只手动切换": "关闭图片自动轮播",
-    "日志保留天数": "初始化时自动清理",
-    "UI日志最大显示数量": "限制日志中心展示条数",
-    "错误时自动复制 Trace": "异常时复制追踪编号",
-    "语言": "界面显示语言",
-    "跟随系统": "跟随系统外观",
-    "浅色 / 深色": "手动切换主题",
-    "主题色": "选择强调色",
-    "界面缩放": "调整界面比例",
-    "字体大小": "调整界面文字大小",
-}
-
-GROUP_DESCRIPTIONS = {
-    "基础设置": "下载目录、命名规则和打开行为",
-    "下载设置": "并发、超时、重试和限速",
-    "平台设置": "认证状态、爬取数量和代理入口",
-    "播放设置": "播放器、进度和自动播放",
-    "日志设置": "保留周期、展示数量和错误追踪",
-    "外观设置": "主题、缩放和字体",
-}
-
-GROUP_HINTS = {
-    "基础设置": "路径支持粘贴和选择；命名规则使用预设模板，避免非法文件名。",
-    "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
-    "平台设置": "认证状态自动检测；代理仅对需要的平台开放。",
-    "播放设置": "播放设置只影响本地预览，不影响下载文件。",
-    "日志设置": "UI展示数量只影响日志中心显示，不影响日志文件本身。",
-    "外观设置": "外观设置只影响界面显示，不影响下载任务。",
-}
 
 UI_TEXT: dict[str, dict[str, str]] = {}
 
@@ -957,45 +851,10 @@ class SettingsPage(PageFrame):
         return switch
 
     def _build_path_picker(self, value: Any, *, setting_key: str = "") -> QWidget:
-        container = QFrame()
-        container.setObjectName("SettingsPathField")
-        container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        container.setFixedHeight(38)
-        container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(12, 0, 4, 0)
-        layout.setSpacing(4)
-
-        path_text = str(value or "")
-        editor = QLineEdit(path_text)
-        editor.setObjectName("SettingsLineEdit")
-        editor.setFrame(False)
-        editor.setMinimumHeight(34)
-        editor.setMaximumHeight(36)
-        editor.setTextMargins(0, 0, 0, 0)
-        editor.setMinimumWidth(0)
-        editor.setPlaceholderText(self._t("选择或粘贴下载目录"))
-        editor.setToolTip(path_text)
-        editor.setProperty("settingsOriginalText", path_text)
-        editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        editor.setCursorPosition(0)
-        bind_focus_property(editor, container)
-        QTimer.singleShot(0, lambda e=editor: self._scroll_path_editor_start(e))
-        if setting_key:
-            editor.editingFinished.connect(lambda e=editor, key=setting_key: self._commit_path_editor(e, setting_key=key))
-        layout.addWidget(editor, 1)
-
-        browse = QToolButton()
-        browse.setObjectName("SettingsPathBrowse")
-        browse.setIcon(load_qt_icon([ui_icon_path(action_icon_file("open_directory"))]))
-        browse.setIconSize(QSize(18, 18))
-        browse.setToolTip(self._t("选择下载目录"))
-        browse.setAccessibleName(self._t("选择下载目录"))
-        browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse.setFixedSize(34, 30)
-        browse.clicked.connect(lambda: self._browse_download_directory(editor, setting_key=setting_key))
-        layout.addWidget(browse)
-        return container
+        picker = SettingsPathPicker(value, setting_key=setting_key, translate=self._t, parent=self)
+        picker.path_committed.connect(lambda key, text: self._emit_basic_setting_changed(key, text))
+        picker.browse_requested.connect(lambda editor, key: self._browse_download_directory(editor, setting_key=key))
+        return picker
 
     def _commit_path_editor(self, editor: QLineEdit, *, setting_key: str = "") -> None:
         text = editor.text()
@@ -1006,11 +865,7 @@ class SettingsPage(PageFrame):
 
     @staticmethod
     def _scroll_path_editor_start(editor: QLineEdit) -> None:
-        editor.setCursorPosition(0)
-        try:
-            editor.home(False)
-        except (RuntimeError, AttributeError, TypeError) as exc:
-            debug_logger.log_exception("SettingsPage", "scroll_path_editor_start", exc)
+        SettingsPathPicker.scroll_editor_start(editor)
 
     def _browse_download_directory(self, editor: QLineEdit, *, setting_key: str = "") -> None:
         self._open_download_directory_dialog(editor, setting_key=setting_key)
@@ -1033,14 +888,19 @@ class SettingsPage(PageFrame):
     def _apply_browsed_download_directory(self, editor: QLineEdit, directory: str, *, setting_key: str = "") -> None:
         if not directory:
             return
-        try:
-            editor.setText(directory)
-            editor.setToolTip(directory)
-            editor.setProperty("settingsOriginalText", directory)
-            self._scroll_path_editor_start(editor)
-        except RuntimeError as exc:
-            debug_logger.log_exception("SettingsPage", "apply_browsed_download_directory", exc)
-            return
+        picker = editor.parentWidget()
+        if isinstance(picker, SettingsPathPicker):
+            if not picker.apply_directory(directory):
+                return
+        else:
+            try:
+                editor.setText(directory)
+                editor.setToolTip(directory)
+                editor.setProperty("settingsOriginalText", directory)
+                self._scroll_path_editor_start(editor)
+            except RuntimeError as exc:
+                debug_logger.log_exception("SettingsPage", "apply_browsed_download_directory", exc)
+                return
         if setting_key:
             self._emit_basic_setting_changed(setting_key, directory)
 

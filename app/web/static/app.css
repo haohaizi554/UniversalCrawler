@@ -241,12 +241,29 @@ select option:hover {
 .filters select:focus,
 .filters select:active,
 .filters select:focus-visible,
+.filters input:focus,
+.filters input:active,
+.filters input:focus-visible,
 .setting-row select:focus,
 .setting-row select:active,
 .setting-row select:focus-visible,
 .search-input:focus,
 .search-input:focus-visible,
 .setting-row input:not([type="checkbox"]):focus {
+  border-color: var(--accent);
+  background: var(--input);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 72%);
+}
+
+#page-logs .log-filters input:focus,
+#page-logs .log-filters input:active,
+#page-logs .log-filters input:focus-visible,
+#logTraceFilter:focus,
+#logTraceFilter:active,
+#logTraceFilter:focus-visible,
+#logKeywordFilter:focus,
+#logKeywordFilter:active,
+#logKeywordFilter:focus-visible {
   border-color: var(--accent);
   background: var(--input);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 72%);

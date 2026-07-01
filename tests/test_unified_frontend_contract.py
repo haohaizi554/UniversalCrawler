@@ -22,6 +22,7 @@ from app.ui.components.combo_popup import (
 )
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.settings_controls import SettingsComboBox, SegmentedControl, UiSwitch
+from app.ui.components.settings_path_picker import SettingsPathPicker
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.sidebar import _badge_size
@@ -32,7 +33,21 @@ from app.ui.styles.themes import apply_application_theme, generate_stylesheet, t
 
 def _html_bundle() -> str:
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
-    return "\n".join((static_dir / name).read_text(encoding="utf-8") for name in ("index.html", "app.js"))
+    return "\n".join(
+        (static_dir / name).read_text(encoding="utf-8")
+        for name in (
+            "index.html",
+            "i18n.js",
+            "custom_select.js",
+            "media_display.js",
+            "log_display.js",
+            "platform_limits.js",
+            "settings_render.js",
+            "task_render.js",
+            "playback_state.js",
+            "app.js",
+        )
+    )
 
 def _css_bundle() -> str:
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -179,6 +194,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertTrue(settings.findChildren(UiSwitch))
         self.assertTrue(settings.findChildren(SettingsComboBox))
+        self.assertTrue(settings.findChildren(SettingsPathPicker))
         settings._set_current_group("外观设置")
         self.app.processEvents()
         self.assertTrue(settings.findChildren(SegmentedControl))
@@ -355,7 +371,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
     def test_log_filter_text_inputs_use_theme_focus_border(self):
         light_style = generate_stylesheet(False)
         dark_style = generate_stylesheet(True)
+        css = _css_bundle()
 
+        self.assertIn(".filters input:focus", css)
+        self.assertIn(".filters input:focus-visible", css)
+        self.assertIn("#page-logs .log-filters input:focus", css)
+        self.assertIn("#page-logs .log-filters input:focus-visible", css)
+        self.assertIn("#logTraceFilter:focus", css)
+        self.assertIn("#logKeywordFilter:focus", css)
         self.assertIn("QLineEdit#LogFilterControl:focus", light_style)
         self.assertIn('QLineEdit#LogFilterControl[focused="true"]', light_style)
         self.assertIn("QLineEdit#LogFilterTextInput:focus", light_style)
@@ -368,12 +391,16 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn(f"border: 2px solid {theme_colors(True)['accent']}", dark_style)
 
         shell = self._make_shell()
+        shell.show()
         shell.show_page("logs")
+        self.app.processEvents()
         logs = shell.pages["logs"]
         accent = theme_colors(False)["accent"]
         for name in ("trace_filter", "keyword_filter"):
             editor = getattr(logs, name)
             self.assertEqual(editor.objectName(), "LogFilterTextInput")
+            self.assertIn("QLineEdit:focus", editor.styleSheet())
+            self.assertIn('QLineEdit[focused="true"]', editor.styleSheet())
             QApplication.sendEvent(editor, QEvent(QEvent.Type.FocusIn))
             self.app.processEvents()
             self.assertEqual(editor.property("focused"), "true")
@@ -381,6 +408,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             QApplication.sendEvent(editor, QEvent(QEvent.Type.FocusOut))
             self.app.processEvents()
             self.assertEqual(editor.property("focused"), "false")
+
+            QTest.mouseClick(editor, Qt.MouseButton.LeftButton)
+            self.app.processEvents()
+            if QApplication.focusWidget() is not editor:
+                editor.setFocus(Qt.FocusReason.OtherFocusReason)
+                QApplication.sendEvent(editor, QEvent(QEvent.Type.FocusIn))
+                self.app.processEvents()
+            self.assertEqual(editor.property("focused"), "true")
+            self.assertIn(f"border: 2px solid {accent}", editor.styleSheet())
+            editor.clearFocus()
+            self.app.processEvents()
 
     def test_main_window_directory_picker_uses_native_folder_picker(self):
         window = MainWindow()
@@ -1647,6 +1685,20 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("loadUiTextCatalogs()", content)
         self.assertIn("UI_TEXT[language] = { ...(FALLBACK_UI_TEXT[language] || {}), ...catalog }", content)
 
+    def test_web_i18n_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        i18n_js = (static_dir / "i18n.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/i18n.js", index)
+        self.assertLess(index.index("/static/i18n.js"), index.index("/static/custom_select.js"))
+        self.assertIn("window.UcpI18n", i18n_js)
+        self.assertIn("const FALLBACK_UI_TEXT", i18n_js)
+        self.assertNotIn("const FALLBACK_UI_TEXT", app_js)
+        self.assertIn("window.UcpI18n || null", app_js)
+        self.assertIn("service.loadUiTextCatalogs()", app_js)
+
     def test_gui_settings_theme_segment_disables_follow_system_immediately(self):
         shell = self._make_shell()
         settings = shell.pages["settings"]
@@ -2061,7 +2113,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("handleProxySelect", content)
         self.assertIn("commitProxyCustom", content)
         self.assertIn("proxyCustomDisplayValue", content)
-        self.assertIn('placeholder="${escAttr(t("\\u7aef\\u53e3"))}"', content)
+        self.assertIn(r'placeholder="${escapeAttr(translate("\u7aef\u53e3"))}"', content)
         self.assertIn("hidden disabled", content)
         self.assertIn('row.classList.toggle("has-proxy-custom", custom)', content)
         self.assertIn("optionLabel", content)
@@ -2182,5 +2234,93 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("webui_detail_width", content)
         self.assertIn("oldRow.classList.remove(\"selected\")", content)
 
+    def test_web_custom_select_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        custom_select = (static_dir / "custom_select.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/custom_select.js", index)
+        self.assertIn("window.UcpCustomSelect", custom_select)
+        self.assertIn("window.UcpCustomSelect.enhance", app_js)
+        self.assertIn("window.UcpCustomSelect.syncForSelect", app_js)
+        self.assertNotIn("let openCustomSelect", app_js)
+
+    def test_web_media_display_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        media_display = (static_dir / "media_display.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/media_display.js", index)
+        self.assertLess(index.index("/static/media_display.js"), index.index("/static/app.js"))
+        self.assertIn("window.UcpMediaDisplay", media_display)
+        self.assertIn("activeTrendHtml(values, speedLabel", media_display)
+        self.assertIn("displayMetadataValue(value, pending", media_display)
+        self.assertIn("window.UcpMediaDisplay.activeTrendHtml", app_js)
+        self.assertIn("window.UcpMediaDisplay.displayMetadataValue", app_js)
+
+    def test_web_log_display_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        log_display = (static_dir / "log_display.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/log_display.js", index)
+        self.assertLess(index.index("/static/log_display.js"), index.index("/static/app.js"))
+        self.assertIn("window.UcpLogDisplay", log_display)
+        self.assertIn("logMatchesFilters(item, filters", log_display)
+        self.assertIn("visibleLogItems(items, rowBudget", log_display)
+        self.assertIn("window.UcpLogDisplay.filteredLogItems", app_js)
+        self.assertIn("window.UcpLogDisplay.visibleLogItems", app_js)
+        self.assertNotIn("const category = logCategory(item);", app_js)
+
+
+    def test_web_settings_render_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        settings_render = (static_dir / "settings_render.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/settings_render.js", index)
+        self.assertLess(index.index("/static/settings_render.js"), index.index("/static/app.js"))
+        self.assertIn("window.UcpSettingsRender", settings_render)
+        self.assertIn("settingsControls(group, value)", settings_render)
+        self.assertIn("platformSettingRow(row)", settings_render)
+        self.assertIn("window.UcpSettingsRender.configure", app_js)
+        self.assertIn("window.UcpSettingsRender || null", app_js)
+        self.assertNotIn("const options = value && value._options ? value._options : {};", app_js)
+
+    def test_web_task_render_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        task_render = (static_dir / "task_render.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/task_render.js", index)
+        self.assertLess(index.index("/static/task_render.js"), index.index("/static/app.js"))
+        self.assertIn("window.UcpTaskRender", task_render)
+        self.assertIn("queueRow(item)", task_render)
+        self.assertIn("activeDetailHtml(item)", task_render)
+        self.assertIn("completedDetailHtml(item)", task_render)
+        self.assertIn("failedDetailHtml(item)", task_render)
+        self.assertIn("window.UcpTaskRender.configure", app_js)
+        self.assertIn("window.UcpTaskRender || null", app_js)
+
+    def test_web_playback_state_logic_is_split_into_component(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        playback_state = (static_dir / "playback_state.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/playback_state.js", index)
+        self.assertLess(index.index("/static/playback_state.js"), index.index("/static/app.js"))
+        self.assertIn("window.UcpPlaybackState", playback_state)
+        self.assertIn("playbackSettings(state)", playback_state)
+        self.assertIn("cleanupPlaybackPositions(storage, state, items)", playback_state)
+        self.assertIn("isImageItem(item)", playback_state)
+        self.assertIn("fmtClockTime(seconds)", playback_state)
+        self.assertIn("window.UcpPlaybackState || null", app_js)
+        self.assertIn("cleanupPlaybackPositions(localStorage, frontendState, items)", app_js)
 if __name__ == "__main__":
     unittest.main()
