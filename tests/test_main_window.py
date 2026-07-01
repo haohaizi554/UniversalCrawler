@@ -1,4 +1,4 @@
-﻿"""测试模块，覆盖 `tests/test_main_window.py` 对应功能的行为与回归场景。"""
+"""测试模块，覆盖 `tests/test_main_window.py` 对应功能的行为与回归场景。"""
 
 import threading
 import unittest
@@ -710,6 +710,69 @@ class MainWindowTests(unittest.TestCase):
         roomy_minimum = MainWindow._minimum_window_size_for_available(QRect(0, 0, 2560, 1440))
         self.assertEqual(roomy_minimum, QSize(1500, 760))
 
+    def test_auto_hide_taskbar_reserves_shell_activation_edge(self):
+        monitor = SimpleNamespace(left=0, top=0, right=1920, bottom=1080)
+        work = SimpleNamespace(left=0, top=0, right=1920, bottom=1080)
+
+        self.assertEqual(
+            MainWindow._adjust_work_area_for_auto_hide_taskbar(monitor, work, MainWindow.ABE_BOTTOM),
+            (0, 0, 1920, 1078),
+        )
+        self.assertEqual(
+            MainWindow._adjust_work_area_for_auto_hide_taskbar(monitor, work, MainWindow.ABE_TOP),
+            (0, 2, 1920, 1080),
+        )
+        self.assertEqual(
+            MainWindow._adjust_work_area_for_auto_hide_taskbar(monitor, work, MainWindow.ABE_LEFT),
+            (2, 0, 1920, 1080),
+        )
+        self.assertEqual(
+            MainWindow._adjust_work_area_for_auto_hide_taskbar(monitor, work, MainWindow.ABE_RIGHT),
+            (0, 0, 1918, 1080),
+        )
+
+    def test_nc_calc_size_reserve_adjusts_native_client_rect(self):
+        rect = SimpleNamespace(left=0, top=0, right=1920, bottom=1080)
+        window = self._make_window()
+
+        MainWindow._apply_auto_hide_taskbar_reserve_to_rect(window, rect, MainWindow.ABE_BOTTOM)
+
+        self.assertEqual((rect.left, rect.top, rect.right, rect.bottom), (0, 0, 1920, 1078))
+
+    def test_resize_border_thickness_uses_frame_plus_padded_border(self):
+        window = self._make_window()
+        window._system_metric_for_hwnd = Mock(side_effect=lambda metric, hwnd: {
+            MainWindow.SM_CXSIZEFRAME: 8,
+            MainWindow.SM_CYSIZEFRAME: 9,
+            MainWindow.SM_CXPADDEDBORDER: 4,
+        }[metric])
+
+        self.assertEqual(MainWindow._resize_border_thickness_for_hwnd(window, 1001, horizontal=True), 12)
+        self.assertEqual(MainWindow._resize_border_thickness_for_hwnd(window, 1001, horizontal=False), 13)
+
+    def test_nc_calc_size_leaves_real_fullscreen_rect_unreserved(self):
+        import ctypes
+        from ctypes import wintypes
+        from app.ui import main_window as main_window_module
+
+        params = main_window_module._NCCALCSIZE_PARAMS()
+        params.rgrc[0] = wintypes.RECT(0, 0, 1920, 1080)
+        msg = SimpleNamespace(wParam=1, lParam=ctypes.addressof(params), hWnd=1001)
+        window = self._make_window()
+        window._monitor_info_for_hwnd = Mock(return_value=SimpleNamespace(rcMonitor=wintypes.RECT(0, 0, 1920, 1080)))
+        window._is_hwnd_maximized = Mock(return_value=True)
+        window._is_effectively_maximized = Mock(return_value=True)
+        window.isFullScreen = Mock(return_value=True)
+        window._resize_border_thickness_for_hwnd = Mock(return_value=8)
+        window._auto_hide_taskbar_edge_for_monitor = Mock(return_value=MainWindow.ABE_BOTTOM)
+
+        result = MainWindow._handle_nc_calc_size(window, msg)
+
+        self.assertEqual(result, MainWindow.WVR_REDRAW)
+        rect = params.rgrc[0]
+        self.assertEqual((rect.left, rect.top, rect.right, rect.bottom), (0, 0, 1920, 1080))
+        window._resize_border_thickness_for_hwnd.assert_not_called()
+        window._auto_hide_taskbar_edge_for_monitor.assert_not_called()
     def test_constrain_window_geometry_keeps_window_inside_available_screen(self):
         from PyQt6.QtCore import QRect, QSize
 
@@ -768,32 +831,53 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertIsNone(MainWindow._frameless_hit_test(window, QPoint(599, 300)))
 
-    def test_work_area_maximize_restores_saved_geometry_without_qt_maximize_state(self):
+    def test_maximize_uses_native_state_for_taskbar_auto_hide_compatibility(self):
         from PyQt6.QtCore import QRect
 
         window = self._make_window()
         window._qt_initialized = True
         window._custom_maximized = False
         normal_geometry = QRect(10, 20, 900, 600)
-        work_area = QRect(0, 0, 1440, 960)
         window.geometry = Mock(return_value=normal_geometry)
-        window._current_work_area_geometry = Mock(return_value=work_area)
         window.setGeometry = Mock()
         window.isMaximized = Mock(return_value=False)
         window.isFullScreen = Mock(return_value=False)
+        window.showMaximized = Mock()
         window.showNormal = Mock()
 
         MainWindow._maximize_to_work_area(window)
 
-        self.assertTrue(window._custom_maximized)
+        self.assertFalse(window._custom_maximized)
         self.assertEqual(window._pre_custom_maximize_geometry, normal_geometry)
-        window.setGeometry.assert_called_once_with(work_area)
+        window.showMaximized.assert_called_once()
+        window.setGeometry.assert_not_called()
 
-        window.setGeometry.reset_mock()
+        window.isMaximized.return_value = True
         MainWindow._restore_from_custom_or_native_maximized(window)
 
+        window.showNormal.assert_called_once()
         self.assertFalse(window._custom_maximized)
-        window.setGeometry.assert_called_once_with(normal_geometry)
+        self.assertIsNone(window._pre_custom_maximize_geometry)
+        window.setGeometry.assert_not_called()
+
+    @patch("app.ui.main_window.cfg.save_ui_state")
+    def test_close_event_never_persists_legacy_main_fullscreen_state(self, mock_save_ui_state):
+        window = self._make_window()
+        window._connections = Mock()
+        window._remove_frameless_resize_event_filter = Mock()
+        window.cleanup_media = Mock()
+        window._ui_update_scheduler = Mock()
+        window.event_bus = Mock()
+        window._app_state_handler = object()
+        window.saveGeometry = Mock(return_value=b"geometry")
+        window.saveState = Mock(return_value=b"state")
+        window.is_fullscreen_mode = True
+        event = Mock()
+
+        MainWindow.closeEvent(window, event)
+
+        self.assertFalse(mock_save_ui_state.call_args.kwargs["is_fs"])
+        event.accept.assert_called_once()
 
     def test_native_event_unhandled_returns_false_without_super_call(self):
         window = self._make_window()
@@ -804,61 +888,39 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(result, 0)
 
-    @patch("app.ui.main_window.cfg.get", return_value=None)
-    def test_fullscreen_mode_restores_previous_normal_geometry(self, _mock_cfg_get):
+    def test_fullscreen_mode_compatibility_forwards_to_media_panel(self):
         window = self._make_window()
         window.is_fullscreen_mode = False
-        window.saveGeometry = Mock(return_value="saved-geometry")
-        window.isMaximized = Mock(return_value=False)
+        window.isFullScreen = Mock(return_value=False)
         window.showFullScreen = Mock()
+        window.media_panel = Mock()
+
+        MainWindow.toggle_fullscreen_mode(window)
+
+        window.media_panel.toggle_media_fullscreen.assert_called_once()
+        window.showFullScreen.assert_not_called()
+
+    def test_legacy_main_fullscreen_state_exits_without_entering_media_fullscreen(self):
+        from PyQt6.QtCore import Qt
+
+        window = self._make_window()
+        window.is_fullscreen_mode = True
+        window.isFullScreen = Mock(return_value=True)
         window.showNormal = Mock()
-        window.showMaximized = Mock()
-        window.restoreGeometry = Mock()
-        window.restoreState = Mock()
         window._set_shell_widgets_visible = Mock()
+        window.windowState = Mock(return_value=Qt.WindowState.WindowNoState)
         window._sync_window_title_bar_state = Mock()
         window.btn_fullscreen = Mock()
+        window.media_panel = Mock()
 
         MainWindow.toggle_fullscreen_mode(window)
 
-        window._set_shell_widgets_visible.assert_called_once_with(False)
-        window.showFullScreen.assert_called_once()
-        self.assertTrue(window.is_fullscreen_mode)
-        self.assertEqual(window._pre_fullscreen_geometry, "saved-geometry")
-
-        window._set_shell_widgets_visible.reset_mock()
-        MainWindow.toggle_fullscreen_mode(window)
-
-        window._set_shell_widgets_visible.assert_called_once_with(True)
         window.showNormal.assert_called_once()
-        window.showMaximized.assert_not_called()
-        window.restoreGeometry.assert_called_once_with("saved-geometry")
+        window._set_shell_widgets_visible.assert_called_once_with(True)
+        window.media_panel.toggle_media_fullscreen.assert_not_called()
         self.assertFalse(window.is_fullscreen_mode)
         self.assertIsNone(window._pre_fullscreen_geometry)
-
-    @patch("app.ui.main_window.cfg.get", return_value=None)
-    def test_fullscreen_mode_restores_previous_maximized_state(self, _mock_cfg_get):
-        window = self._make_window()
-        window.is_fullscreen_mode = False
-        window.saveGeometry = Mock(return_value="saved-geometry")
-        window.isMaximized = Mock(return_value=True)
-        window.showFullScreen = Mock()
-        window.showNormal = Mock()
-        window.showMaximized = Mock()
-        window.restoreGeometry = Mock()
-        window.restoreState = Mock()
-        window._set_shell_widgets_visible = Mock()
-        window._sync_window_title_bar_state = Mock()
-        window.btn_fullscreen = Mock()
-
-        MainWindow.toggle_fullscreen_mode(window)
-        MainWindow.toggle_fullscreen_mode(window)
-
-        window.showNormal.assert_called_once()
-        window.showMaximized.assert_called_once()
-        window.restoreGeometry.assert_not_called()
-        self.assertFalse(window.is_fullscreen_mode)
-
+        self.assertFalse(window._native_maximize_requested)
     @patch("app.ui.main_window.apply_application_theme")
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.cfg.set_many")
@@ -939,28 +1001,6 @@ class MainWindowTests(unittest.TestCase):
         )
         window.setPalette.assert_called_once()
 
-    @patch("app.ui.main_window.QByteArray")
-    @patch("app.ui.main_window.cfg.get", return_value="aa55")
-    def test_toggle_fullscreen_mode_restores_state_when_exiting(self, mock_cfg_get, mock_qbytearray):
-        """验证 `test_toggle_fullscreen_mode_restores_state_when_exiting` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
-        window = self._make_window()
-        window.is_fullscreen_mode = True
-        window.top_bar = Mock()
-        window.left_panel = Mock()
-        window.log_txt = Mock()
-        window.btn_fullscreen = Mock()
-        window._set_main_margins = Mock()
-        window.showNormal = Mock()
-        window.restoreState = Mock()
-        mock_qbytearray.fromHex.return_value = "restored-state"
-
-        window.toggle_fullscreen_mode()
-
-        self.assertFalse(window.is_fullscreen_mode)
-        window.showNormal.assert_called_once()
-        window.btn_fullscreen.setText.assert_called_once_with("[ 全屏 ]")
-        window.restoreState.assert_called_once_with("restored-state")
-        mock_cfg_get.assert_called_once_with("ui", "window_state")
 
 if __name__ == "__main__":
     unittest.main()

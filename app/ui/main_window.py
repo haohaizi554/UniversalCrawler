@@ -51,18 +51,49 @@ class _MONITORINFO(ctypes.Structure):
     ]
 
 
+class _APPBARDATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("hWnd", wintypes.HWND),
+        ("uCallbackMessage", wintypes.UINT),
+        ("uEdge", wintypes.UINT),
+        ("rc", wintypes.RECT),
+        ("lParam", wintypes.LPARAM),
+    ]
+
+
+class _NCCALCSIZE_PARAMS(ctypes.Structure):
+    _fields_ = [
+        ("rgrc", wintypes.RECT * 3),
+        ("lppos", ctypes.c_void_p),
+    ]
+
+
 class MainWindow(QMainWindow):
     """Thin GUI host that forwards user actions and renders frontend snapshots."""
 
     FRONTEND_REFRESH_INTERVAL_MS = 200
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
-    FRAMELESS_RESIZE_BORDER_PX = 8
+    FRAMELESS_RESIZE_BORDER_PX = 6
+    AUTO_HIDE_TASKBAR_RESERVE_PX = 2
+    WVR_REDRAW = 0x0300
+    SM_CXSIZEFRAME = 32
+    SM_CYSIZEFRAME = 33
+    SM_CXPADDEDBORDER = 92
     DEFAULT_WINDOW_SIZE = QSize(1500, 880)
     MIN_WINDOW_SIZE = QSize(1500, 760)
     WINDOW_SCREEN_MARGIN_PX = 16
     GWL_STYLE = -16
     MONITOR_DEFAULTTONEAREST = 2
+    ABM_GETSTATE = 0x00000004
+    ABM_GETTASKBARPOS = 0x00000005
+    ABM_GETAUTOHIDEBAREX = 0x0000000B
+    ABS_AUTOHIDE = 0x00000001
+    ABE_LEFT = 0
+    ABE_TOP = 1
+    ABE_RIGHT = 2
+    ABE_BOTTOM = 3
     SWP_NOMOVE = 0x0002
     SWP_NOSIZE = 0x0001
     SWP_NOZORDER = 0x0004
@@ -133,6 +164,7 @@ class MainWindow(QMainWindow):
         self._pre_fullscreen_geometry: QByteArray | None = None
         self._pre_fullscreen_was_maximized = False
         self._custom_maximized = False
+        self._native_maximize_requested = False
         self._pre_custom_maximize_geometry: QRect | None = None
         self._windows_frameless_style_applied = False
         self._frameless_resize_override_cursor_active = False
@@ -734,8 +766,8 @@ class MainWindow(QMainWindow):
         self.refresh_frontend_state(topics={"settings.update"})
 
     def _toggle_maximized(self) -> None:
-        if self.is_fullscreen_mode:
-            self.toggle_fullscreen_mode()
+        if self.is_fullscreen_mode or self._safe_is_fullscreen():
+            self._exit_legacy_main_fullscreen()
             return
         if self._is_effectively_maximized():
             self._restore_from_custom_or_native_maximized()
@@ -749,7 +781,11 @@ class MainWindow(QMainWindow):
             native_maximized = bool(self.windowState() & Qt.WindowState.WindowMaximized) or self.isMaximized()
         except RuntimeError:
             native_maximized = bool(self.isMaximized())
-        return bool(self.__dict__.get("_custom_maximized", False)) or native_maximized
+        return (
+            bool(self.__dict__.get("_custom_maximized", False))
+            or bool(self.__dict__.get("_native_maximize_requested", False))
+            or native_maximized
+        )
 
     def _current_work_area_geometry(self) -> QRect:
         screen = QApplication.screenAt(self.frameGeometry().center()) or self.screen() or QApplication.primaryScreen()
@@ -759,22 +795,24 @@ class MainWindow(QMainWindow):
         if not self.__dict__.get("_qt_initialized", False):
             self.showMaximized()
             return
-        if not self.__dict__.get("_custom_maximized", False):
+        if not self.isMaximized() and not self.__dict__.get("_custom_maximized", False):
             self._pre_custom_maximize_geometry = QRect(self.geometry())
-        if self.isMaximized() or self.isFullScreen():
+        if self.isFullScreen():
             self.showNormal()
-        self.setGeometry(self._current_work_area_geometry())
-        self.__dict__["_custom_maximized"] = True
+        self.__dict__["_custom_maximized"] = False
+        self.__dict__["_native_maximize_requested"] = True
+        self.showMaximized()
 
     def _restore_from_custom_or_native_maximized(self) -> None:
+        custom_maximized = bool(self.__dict__.get("_custom_maximized", False))
+        geometry = self.__dict__.get("_pre_custom_maximize_geometry") if custom_maximized else None
         if self.isMaximized() or self.isFullScreen():
             self.showNormal()
-        if self.__dict__.get("_custom_maximized", False):
-            geometry = self.__dict__.get("_pre_custom_maximize_geometry")
-            self.__dict__["_custom_maximized"] = False
-            self._pre_custom_maximize_geometry = None
-            if isinstance(geometry, QRect) and geometry.isValid():
-                self.setGeometry(geometry)
+        self.__dict__["_custom_maximized"] = False
+        self.__dict__["_native_maximize_requested"] = False
+        self._pre_custom_maximize_geometry = None
+        if custom_maximized and isinstance(geometry, QRect) and geometry.isValid():
+            self.setGeometry(geometry)
 
     def _sync_window_title_bar_state(self) -> None:
         title_bar = self.__dict__.get("window_title_bar")
@@ -801,36 +839,49 @@ class MainWindow(QMainWindow):
                 widget.setVisible(visible)
 
     def toggle_fullscreen_mode(self) -> None:
-        if not self.is_fullscreen_mode:
-            self._pre_fullscreen_geometry = self.saveGeometry()
-            self._pre_fullscreen_was_maximized = self._is_effectively_maximized()
-            self._set_shell_widgets_visible(False)
-            self.showFullScreen()
-            self.is_fullscreen_mode = True
-            self.btn_fullscreen.setText("[ 退出 ]")
-            self._sync_window_title_bar_state()
+        """Compatibility entrypoint: main-window fullscreen is retired.
+
+        Fullscreen belongs to the media preview window. Keeping the main window
+        in Qt::WindowFullScreen can confuse Windows Shell auto-hide taskbar
+        activation after restore, so legacy calls are either cleaned up or
+        forwarded to the media panel.
+        """
+        if self.is_fullscreen_mode or self._safe_is_fullscreen():
+            self._exit_legacy_main_fullscreen()
             return
+        media_panel = self.__dict__.get("media_panel")
+        toggle_media = getattr(media_panel, "toggle_media_fullscreen", None)
+        if callable(toggle_media):
+            toggle_media()
+
+    def _safe_is_fullscreen(self) -> bool:
+        try:
+            return bool(self.isFullScreen())
+        except RuntimeError:
+            return bool(self.__dict__.get("is_fullscreen_mode", False))
+
+    def _safe_is_native_maximized(self) -> bool:
+        try:
+            return bool(self.windowState() & Qt.WindowState.WindowMaximized)
+        except RuntimeError:
+            return False
+
+    def _exit_legacy_main_fullscreen(self) -> None:
+        if self._safe_is_fullscreen():
+            self.showNormal()
         self._set_shell_widgets_visible(True)
-        was_maximized = bool(self.__dict__.get("_pre_fullscreen_was_maximized", False))
-        geometry = self.__dict__.get("_pre_fullscreen_geometry")
-        self.showNormal()
-        if was_maximized:
-            self._maximize_to_work_area()
-        else:
-            if geometry is not None:
-                self.restoreGeometry(geometry)
         self.is_fullscreen_mode = False
         self._pre_fullscreen_geometry = None
         self._pre_fullscreen_was_maximized = False
-        self.btn_fullscreen.setText("[ 全屏 ]")
-        state_hex = cfg.get("ui", "window_state")
-        if state_hex:
-            self.restoreState(QByteArray.fromHex(state_hex.encode()))
+        self.__dict__["_native_maximize_requested"] = self._safe_is_native_maximized()
+        btn_fullscreen = self.__dict__.get("btn_fullscreen")
+        if btn_fullscreen is not None:
+            btn_fullscreen.setText("[ 全屏 ]")
         self._sync_window_title_bar_state()
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape and self.is_fullscreen_mode:
-            self.toggle_fullscreen_mode()
+        if event.key() == Qt.Key.Key_Escape and (self.is_fullscreen_mode or self._safe_is_fullscreen()):
+            self._exit_legacy_main_fullscreen()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -838,6 +889,7 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
+            self.__dict__["_native_maximize_requested"] = bool(self.windowState() & Qt.WindowState.WindowMaximized)
             self._sync_window_title_bar_state()
 
     def load_initial_state(self) -> None:
@@ -875,7 +927,7 @@ class MainWindow(QMainWindow):
             state=self.saveState(),
             main_splitter=b"",
             right_splitter=b"",
-            is_fs=self.is_fullscreen_mode,
+            is_fs=False,
         )
         event.accept()
 
@@ -1153,7 +1205,7 @@ class MainWindow(QMainWindow):
             return None
         message_id = int(msg.message)
         if message_id == self.WM_NCCALCSIZE:
-            return 0
+            return self._handle_nc_calc_size(msg)
         if message_id == self.WM_GETMINMAXINFO:
             self._handle_get_min_max_info(msg)
             return 0
@@ -1205,6 +1257,84 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             debug_logger.log_exception("MainWindow", "apply_windows_frameless_window_style", exc)
 
+    def _handle_nc_calc_size(self, msg) -> int:
+        try:
+            if bool(msg.wParam):
+                rect = ctypes.cast(msg.lParam, ctypes.POINTER(_NCCALCSIZE_PARAMS)).contents.rgrc[0]
+            else:
+                rect = ctypes.cast(msg.lParam, ctypes.POINTER(wintypes.RECT)).contents
+
+            monitor_info = self._monitor_info_for_hwnd(msg.hWnd)
+            monitor_rect = monitor_info.rcMonitor if monitor_info is not None else None
+            is_maximized = self._is_hwnd_maximized(msg.hWnd) or self._is_effectively_maximized()
+            is_fullscreen = bool(self.isFullScreen())
+
+            if monitor_rect is not None and is_maximized and not is_fullscreen:
+                tx = self._resize_border_thickness_for_hwnd(msg.hWnd, horizontal=True)
+                ty = self._resize_border_thickness_for_hwnd(msg.hWnd, horizontal=False)
+                rect.left += tx
+                rect.right -= tx
+                rect.top += ty
+                rect.bottom -= ty
+
+            if monitor_rect is not None and is_maximized and not is_fullscreen:
+                self._apply_auto_hide_taskbar_reserve_to_rect(
+                    rect,
+                    self._auto_hide_taskbar_edge_for_monitor(monitor_rect),
+                )
+            return self.WVR_REDRAW if bool(msg.wParam) else 0
+        except Exception as exc:
+            debug_logger.log_exception("MainWindow", "handle_nc_calc_size", exc)
+            return 0
+
+    def _monitor_info_for_hwnd(self, hwnd) -> _MONITORINFO | None:
+        monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, self.MONITOR_DEFAULTTONEAREST)
+        if not monitor:
+            return None
+        monitor_info = _MONITORINFO()
+        monitor_info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
+            return None
+        return monitor_info
+
+    def _is_hwnd_maximized(self, hwnd) -> bool:
+        try:
+            return bool(ctypes.windll.user32.IsZoomed(hwnd))
+        except Exception:
+            return False
+
+    def _window_dpi(self, hwnd) -> int:
+        try:
+            get_dpi_for_window = getattr(ctypes.windll.user32, "GetDpiForWindow")
+            dpi = int(get_dpi_for_window(hwnd))
+            return dpi if dpi > 0 else 96
+        except Exception:
+            return 96
+
+    def _system_metric_for_hwnd(self, metric: int, hwnd) -> int:
+        try:
+            get_metric_for_dpi = getattr(ctypes.windll.user32, "GetSystemMetricsForDpi")
+            return int(get_metric_for_dpi(metric, self._window_dpi(hwnd)))
+        except Exception:
+            return int(ctypes.windll.user32.GetSystemMetrics(metric))
+
+    def _resize_border_thickness_for_hwnd(self, hwnd, *, horizontal: bool) -> int:
+        frame_metric = self.SM_CXSIZEFRAME if horizontal else self.SM_CYSIZEFRAME
+        frame = self._system_metric_for_hwnd(frame_metric, hwnd)
+        padded = self._system_metric_for_hwnd(self.SM_CXPADDEDBORDER, hwnd)
+        return max(0, frame + padded)
+
+    def _apply_auto_hide_taskbar_reserve_to_rect(self, rect, edge: int | None) -> None:
+        reserve = self.AUTO_HIDE_TASKBAR_RESERVE_PX
+        if edge == self.ABE_LEFT:
+            rect.left += reserve
+        elif edge == self.ABE_TOP:
+            rect.top += reserve
+        elif edge == self.ABE_RIGHT:
+            rect.right -= reserve
+        elif edge == self.ABE_BOTTOM:
+            rect.bottom -= reserve
+
     def _handle_get_min_max_info(self, msg) -> None:
         try:
             monitor = ctypes.windll.user32.MonitorFromWindow(
@@ -1220,10 +1350,16 @@ class MainWindow(QMainWindow):
             min_max_info = ctypes.cast(msg.lParam, ctypes.POINTER(_MINMAXINFO)).contents
             monitor_rect = monitor_info.rcMonitor
             work_rect = monitor_info.rcWork
-            min_max_info.ptMaxPosition.x = work_rect.left - monitor_rect.left
-            min_max_info.ptMaxPosition.y = work_rect.top - monitor_rect.top
-            max_track_width = max(1, work_rect.right - work_rect.left)
-            max_track_height = max(1, work_rect.bottom - work_rect.top)
+            taskbar_edge = self._auto_hide_taskbar_edge_for_monitor(monitor_rect)
+            work_left, work_top, work_right, work_bottom = self._adjust_work_area_for_auto_hide_taskbar(
+                monitor_rect,
+                work_rect,
+                taskbar_edge,
+            )
+            min_max_info.ptMaxPosition.x = work_left - monitor_rect.left
+            min_max_info.ptMaxPosition.y = work_top - monitor_rect.top
+            max_track_width = max(1, work_right - work_left)
+            max_track_height = max(1, work_bottom - work_top)
             min_max_info.ptMaxSize.x = max_track_width
             min_max_info.ptMaxSize.y = max_track_height
             min_max_info.ptMaxTrackSize.x = max_track_width
@@ -1241,6 +1377,73 @@ class MainWindow(QMainWindow):
                 )
         except Exception as exc:
             debug_logger.log_exception("MainWindow", "handle_get_min_max_info", exc)
+
+    @staticmethod
+    def _rect_edges(rect) -> tuple[int, int, int, int]:
+        return (
+            int(getattr(rect, "left", 0)),
+            int(getattr(rect, "top", 0)),
+            int(getattr(rect, "right", 0)),
+            int(getattr(rect, "bottom", 0)),
+        )
+
+    @classmethod
+    def _rects_intersect(cls, first, second) -> bool:
+        left1, top1, right1, bottom1 = cls._rect_edges(first)
+        left2, top2, right2, bottom2 = cls._rect_edges(second)
+        return left1 < right2 and right1 > left2 and top1 < bottom2 and bottom1 > top2
+
+    @classmethod
+    def _adjust_work_area_for_auto_hide_taskbar(cls, monitor_rect, work_rect, edge: int | None) -> tuple[int, int, int, int]:
+        left, top, right, bottom = cls._rect_edges(work_rect)
+        monitor_left, monitor_top, monitor_right, monitor_bottom = cls._rect_edges(monitor_rect)
+        reserve = cls.AUTO_HIDE_TASKBAR_RESERVE_PX
+        if edge == cls.ABE_LEFT and left <= monitor_left:
+            left += reserve
+        elif edge == cls.ABE_TOP and top <= monitor_top:
+            top += reserve
+        elif edge == cls.ABE_RIGHT and right >= monitor_right:
+            right -= reserve
+        elif edge == cls.ABE_BOTTOM and bottom >= monitor_bottom:
+            bottom -= reserve
+        return left, top, max(left + 1, right), max(top + 1, bottom)
+
+    def _copy_rect_to_appbar_data(self, data: _APPBARDATA, rect) -> None:
+        left, top, right, bottom = self._rect_edges(rect)
+        data.rc.left = left
+        data.rc.top = top
+        data.rc.right = right
+        data.rc.bottom = bottom
+
+    def _auto_hide_taskbar_edge_for_monitor(self, monitor_rect) -> int | None:
+        if not sys.platform.startswith("win"):
+            return None
+        try:
+            shell32 = ctypes.windll.shell32
+            for edge in (self.ABE_BOTTOM, self.ABE_TOP, self.ABE_LEFT, self.ABE_RIGHT):
+                data = _APPBARDATA()
+                data.cbSize = ctypes.sizeof(_APPBARDATA)
+                data.uEdge = edge
+                self._copy_rect_to_appbar_data(data, monitor_rect)
+                if shell32.SHAppBarMessage(self.ABM_GETAUTOHIDEBAREX, ctypes.byref(data)):
+                    return edge
+
+            data = _APPBARDATA()
+            data.cbSize = ctypes.sizeof(_APPBARDATA)
+            state = int(shell32.SHAppBarMessage(self.ABM_GETSTATE, ctypes.byref(data)))
+            if not state & self.ABS_AUTOHIDE:
+                return None
+
+            data = _APPBARDATA()
+            data.cbSize = ctypes.sizeof(_APPBARDATA)
+            if not shell32.SHAppBarMessage(self.ABM_GETTASKBARPOS, ctypes.byref(data)):
+                return None
+            if not self._rects_intersect(data.rc, monitor_rect):
+                return None
+            return int(data.uEdge)
+        except Exception as exc:
+            debug_logger.log_exception("MainWindow", "detect_auto_hide_taskbar", exc)
+            return None
 
     @classmethod
     def _global_pos_from_lparam(cls, lparam: int) -> QPoint:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QTextOption
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from app.ui.components.smart_wrap_label import SmartWrapLabel
 
 
 @dataclass
@@ -54,6 +56,7 @@ def _action_button(label: str) -> QPushButton:
 def build_log_kv_row(key: str, value_widget: QWidget) -> QWidget:
     row = QWidget()
     row.setObjectName("LogKvRow")
+    row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
     layout = QHBoxLayout(row)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
@@ -61,13 +64,21 @@ def build_log_kv_row(key: str, value_widget: QWidget) -> QWidget:
     key_label = QLabel(key)
     key_label.setObjectName("LogDetailKey")
     key_label.setFixedWidth(56)
-    key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
+    value_widget.setMinimumWidth(0)
     layout.addWidget(key_label)
-    layout.addWidget(value_widget, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-    layout.addStretch(1)
-    row.setFixedHeight(26)
+    layout.addWidget(value_widget, 1)
+    row.setMinimumHeight(24)
     return row
+
+
+def _detail_value_label() -> SmartWrapLabel:
+    label = SmartWrapLabel("-", compact=True)
+    label.setObjectName("LogDetailValue")
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    return label
 
 
 def build_log_inspector_header(
@@ -106,21 +117,22 @@ def build_log_detail_summary_section(
     section = style_panel(QFrame())
     section.setObjectName("LogDetailSummarySection")
     section.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-    section.setMaximumHeight(360)
+    section.setMaximumHeight(420)
+    section.setMinimumWidth(0)
     layout = QVBoxLayout(section)
     layout.setContentsMargins(14, 12, 14, 12)
     layout.setSpacing(6)
 
-    detail_time_value = QLabel("-")
+    detail_time_value = _detail_value_label()
     detail_level_badge = QLabel("-")
     detail_level_badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-    detail_status_value = QLabel("-")
-    detail_scope_value = QLabel("-")
-    detail_stage_value = QLabel("-")
-    detail_status_code_value = QLabel("-")
-    detail_source_value = QLabel("-")
-    detail_platform_value = QLabel("-")
-    detail_trace_value = QLabel("-")
+    detail_status_value = _detail_value_label()
+    detail_scope_value = _detail_value_label()
+    detail_stage_value = _detail_value_label()
+    detail_status_code_value = _detail_value_label()
+    detail_source_value = _detail_value_label()
+    detail_platform_value = _detail_value_label()
+    detail_trace_value = _detail_value_label()
 
     detail_message_frame = QFrame()
     detail_message_frame.setObjectName("LogMessageBoxFrame")
@@ -145,21 +157,6 @@ def build_log_detail_summary_section(
     detail_message_value.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     message_frame_layout.addWidget(detail_message_value)
 
-    value_labels = (
-        detail_time_value,
-        detail_status_value,
-        detail_scope_value,
-        detail_stage_value,
-        detail_status_code_value,
-        detail_source_value,
-        detail_platform_value,
-        detail_trace_value,
-    )
-    for label in value_labels:
-        label.setObjectName("LogDetailValue")
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
 
     detail_level_badge.setObjectName("LogLevelBadgeInfo")
     detail_level_badge.setFixedHeight(22)
@@ -214,16 +211,18 @@ def build_log_json_section(
     header_widget = QWidget()
     header_widget.setObjectName("LogJsonSectionHeader")
     header_widget.setFixedHeight(32)
+    header_widget.setMinimumWidth(0)
     header = QHBoxLayout(header_widget)
     header.setContentsMargins(0, 0, 0, 0)
     header.setSpacing(8)
     title = QLabel("详细信息")
     title.setObjectName("LogSectionTitle")
-    header.addWidget(title)
-    header.addStretch(1)
+    title.setMinimumWidth(0)
+    title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    header.addWidget(title, 1)
     json_copy_button = _action_button("复制")
     json_copy_button.clicked.connect(lambda _checked=False: copy_json())
-    header.addWidget(json_copy_button)
+    header.addWidget(json_copy_button, 0, Qt.AlignmentFlag.AlignRight)
     layout.addWidget(header_widget)
 
     json_text = QTextBrowser()
@@ -232,6 +231,8 @@ def build_log_json_section(
     json_text.setFrameShape(QFrame.Shape.NoFrame)
     json_text.setReadOnly(True)
     json_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    json_text.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
+    json_text.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
     json_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     json_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     json_text.setContentsMargins(0, 0, 0, 0)

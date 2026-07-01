@@ -1281,13 +1281,20 @@ class LogCenterPage(PageFrame):
         else:
             editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+        layout_hint = 0
+        if self.detail_summary_section.layout() is not None:
+            layout_hint = self.detail_summary_section.layout().sizeHint().height()
+
         kv_height = 9 * 26
         kv_spacing = 8 * 6
         margins = 12 + 12
         message_title = 22
-        section_height = kv_height + kv_spacing + message_title + frame_height + margins
+        section_height = max(
+            layout_hint,
+            kv_height + kv_spacing + message_title + frame_height + margins,
+        )
 
-        self.detail_summary_section.setMaximumHeight(min(480, max(340, section_height)))
+        self.detail_summary_section.setMaximumHeight(min(560, max(340, section_height)))
 
     @safe_slot
     def _resize_json_viewer_to_content(self) -> None:
@@ -1354,6 +1361,7 @@ class LogCenterPage(PageFrame):
             padding: 0;
             white-space: pre-wrap;
             word-break: break-word;
+            overflow-wrap: anywhere;
         }}
         </style>
         </head>

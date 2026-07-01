@@ -2350,6 +2350,21 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn("self.detail_copy_button = QPushButton", page)
         self.assertNotIn("self.json_copy_button = QPushButton", page)
 
+    def test_gui_log_detail_wraps_long_fields_without_horizontal_overflow(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "app" / "ui" / "pages" / "log_center_page.py").read_text(encoding="utf-8")
+        sections = (root / "app" / "ui" / "components" / "log_inspector_sections.py").read_text(encoding="utf-8")
+
+        self.assertIn("SmartWrapLabel", sections)
+        self.assertIn("def _detail_value_label", sections)
+        self.assertIn("layout.addWidget(value_widget, 1)", sections)
+        self.assertIn("row.setMinimumHeight(24)", sections)
+        self.assertNotIn("row.setFixedHeight(26)", sections)
+        self.assertIn("setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)", sections)
+        self.assertIn("setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)", sections)
+        self.assertIn("layout_hint = self.detail_summary_section.layout().sizeHint().height()", page)
+        self.assertIn("overflow-wrap: anywhere", page)
+
     def test_gui_log_center_controls_are_split_into_component(self):
         root = Path(__file__).resolve().parents[1]
         page = (root / "app" / "ui" / "pages" / "log_center_page.py").read_text(encoding="utf-8")
