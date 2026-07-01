@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app.services.frontend_settings_adapter import (
@@ -55,6 +55,31 @@ def test_build_settings_snapshot_matches_frontend_contract_shape():
     assert snapshot["\u64ad\u653e\u8bbe\u7f6e"]["default_player"] == "builtin_player"
     assert snapshot["\u5e73\u53f0\u8bbe\u7f6e"][0]["id"] == "bilibili"
     assert snapshot["\u5e73\u53f0\u8bbe\u7f6e"][0]["count_unit"] == "pages"
+
+
+def test_build_settings_snapshot_uses_platform_auth_provider():
+    calls = []
+
+    snapshot = build_settings_snapshot(
+        {
+            "common": {},
+            "download": {},
+            "playback": {},
+            "logging": {},
+            "appearance": {},
+            "douyin": {"max_items": 20, "timeout": 60},
+        },
+        {"max_concurrent": 3, "max_retries": 3, "image_respects_concurrency": False},
+        plugins=[SimpleNamespace(id="douyin", name="抖音")],
+        auth_status_provider=lambda plugin_id, auth_cfg: calls.append((plugin_id, dict(auth_cfg)))
+        or {"auth_status": "已认证", "auth_detail": "cached", "auth_cookie_file": "cookie.json"},
+    )
+
+    row = snapshot["平台设置"][0]
+    assert calls == [("douyin", {})]
+    assert row["auth_status"] == "已认证"
+    assert row["auth_detail"] == "cached"
+    assert row["auth_cookie_file"] == "cookie.json"
 
 
 def test_build_download_options_snapshot_prefers_runtime_manager_values():

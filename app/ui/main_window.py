@@ -1,4 +1,4 @@
-"""Main window assembly for the unified 7-page GUI."""
+﻿"""Main window assembly for the unified 7-page GUI."""
 
 from __future__ import annotations
 
@@ -296,6 +296,7 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.completed_metadata_detected, self._update_completed_metadata)
         self._connections.connect(self.app_shell.file_association_requested, lambda *_args: self.on_btn_file_association_clicked())
         self._connections.connect(self.app_shell.setting_changed, self._update_basic_setting)
+        self._connections.connect(self.app_shell.platform_settings_visible, self._refresh_platform_auth_if_needed)
         self._connections.connect(self.app_shell.page_changed, self._on_page_changed)
         self._connections.connect(self.app_shell.refresh_requested, self._on_queue_refresh_requested)
         self._connections.connect(self.app_shell.clear_all_requested, self._on_clear_queue_requested)
@@ -547,8 +548,27 @@ class MainWindow(QMainWindow):
             self.append_log(result.get("message") or "日志操作完成")
         self.refresh_frontend_state(topics={"logs.append"}, force=True)
 
+    def _refresh_platform_auth_if_needed(self) -> None:
+        service = getattr(self, "_frontend_state_service", None)
+        handler = getattr(service, "handle_action", None)
+        if not callable(handler):
+            return
+        try:
+            result = handler("refresh_platform_auth_status", {})
+        except Exception as exc:
+            debug_logger.log_exception("MainWindow", "refresh_platform_auth_status", exc)
+            return
+        data = result.get("data") if isinstance(result, dict) else {}
+        if isinstance(data, dict) and data.get("refreshed"):
+            self.refresh_frontend_state(topics={"settings.platform_auth"})
+
     def _on_page_changed(self, page_id: str) -> None:
         self.app_state.set_visible_page(page_id, list(self.app_shell.pages), emit_change=False)
+        if page_id == "settings":
+            settings_page = self.app_shell.pages.get("settings")
+            is_platform_visible = getattr(settings_page, "is_platform_settings_visible", None)
+            if callable(is_platform_visible) and is_platform_visible():
+                self._refresh_platform_auth_if_needed()
         self.refresh_frontend_state(topics={self._visibility_topic_for_page(page_id)})
 
     def bind_video_rename(self, on_rename) -> None:
@@ -1632,3 +1652,4 @@ class MainWindow(QMainWindow):
         if callable(feedback):
             feedback(message, ok=ok)
         self.refresh_frontend_state(topics={"settings.update"}, force=True)
+

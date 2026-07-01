@@ -227,12 +227,17 @@ class BilibiliSpider(BaseSpider):
             return int(default_limit)
 
     def _effective_scan_pages(self) -> int:
+        default_pages = get_setting_default("bilibili", "max_pages")
+        value = (getattr(self, "config", {}) or {}).get(
+            "max_pages",
+            cfg.get("bilibili", "max_pages", default_pages),
+        )
+        if str(value).strip().lower() in {"max", "unlimited"}:
+            return 9999
         try:
-            configured_pages = int((getattr(self, "config", {}) or {}).get("max_pages", 1) or 1)
+            return max(1, min(int(value), 9999))
         except (TypeError, ValueError):
-            configured_pages = 1
-        item_budget_pages = max(1, (self._max_items_limit() + 29) // 30)
-        return max(1, min(max(configured_pages, item_budget_pages), 9999))
+            return int(default_pages)
 
     def _collected_bvid_count(self, bv_set: set[str], excluded_bvids: set[str] | None = None) -> int:
         excluded = {self._normalize_bvid(value) for value in (excluded_bvids or set()) if value}

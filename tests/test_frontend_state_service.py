@@ -1,4 +1,4 @@
-import json
+﻿import json
 import threading
 import unittest
 from pathlib import Path
@@ -193,6 +193,21 @@ class FrontendStateServiceTests(unittest.TestCase):
 
             self.assertEqual(douyin["auth_status"], "已认证")
             self.assertIn("sessionid_ss", douyin["auth_detail"])
+
+    def test_refresh_platform_auth_status_emits_settings_delta(self):
+        service = FrontendStateService()
+        service.get_snapshot(sections={"settings_snapshot", "settings_contract"})
+        base_version = service.frontend_version
+
+        result = service.handle_action("refresh_platform_auth_status", {"force": True})
+        delta = service.get_delta(base_version, sections={"settings_snapshot", "settings_contract"})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["refreshed"])
+        self.assertIn("settings_snapshot", delta["changed_sections"])
+        self.assertIn("settings_contract", delta["changed_sections"])
+        self.assertTrue(any(event["topic"] == "settings.platform_auth" for event in delta["events"]))
+
 
     def test_update_basic_directory_accepts_quoted_file_path_and_persists_json(self):
         with TemporaryDirectory(dir=Path.cwd()) as temp_dir:

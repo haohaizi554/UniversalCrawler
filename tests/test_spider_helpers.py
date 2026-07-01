@@ -1549,11 +1549,17 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(spider._max_items_limit(), 10)
 
-    def test_bilibili_effective_scan_pages_expands_from_max_items(self):
+    def test_bilibili_effective_scan_pages_respects_page_limit_over_item_budget(self):
         spider = BilibiliSpider.__new__(BilibiliSpider)
-        spider.config = {"max_pages": 1, "max_items": 100}
+        spider.config = {"max_pages": 1, "max_items": 9999}
 
-        self.assertEqual(spider._effective_scan_pages(), 4)
+        self.assertEqual(spider._effective_scan_pages(), 1)
+
+    def test_bilibili_effective_scan_pages_supports_max_label(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.config = {"max_pages": "max", "max_items": 1}
+
+        self.assertEqual(spider._effective_scan_pages(), 9999)
 
     def test_bilibili_enqueue_new_bvids_stops_at_configured_max_items(self):
         spider = BilibiliSpider.__new__(BilibiliSpider)

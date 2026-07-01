@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 from app.debug_logger import debug_logger
@@ -79,6 +79,7 @@ class SettingsPage(PageFrame):
 
     file_association_requested = pyqtSignal(bool, bool)
     setting_changed = pyqtSignal(str, str, object)
+    platform_settings_visible = pyqtSignal()
 
     GROUP_ORDER = ("基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置")
 
@@ -509,6 +510,13 @@ class SettingsPage(PageFrame):
         button.clicked.connect(lambda _checked=False, name=group_name: self._set_current_group(name))
         return button
 
+    def is_platform_settings_visible(self) -> bool:
+        return self._current_group == self.GROUP_ORDER[2]
+
+    def _emit_platform_settings_visible_if_needed(self) -> None:
+        if self.is_platform_settings_visible():
+            self.platform_settings_visible.emit()
+
     def _set_current_group(self, group_name: str) -> None:
         if group_name not in self._group_order:
             return
@@ -516,11 +524,13 @@ class SettingsPage(PageFrame):
             self._sync_nav_buttons()
             if self._view_needs_rebuild():
                 self._render_current_group()
+            self._emit_platform_settings_visible_if_needed()
             return
 
         self._current_group = group_name
         self._sync_nav_buttons()
         self._render_current_group()
+        self._emit_platform_settings_visible_if_needed()
 
     def _update_group_contract(self, settings_snapshot: dict, settings_contract: dict) -> None:
         raw_order = settings_contract.get("group_order") if isinstance(settings_contract, dict) else None
@@ -1569,3 +1579,4 @@ class SettingsPage(PageFrame):
             self.setStyleSheet(qss)
         finally:
             self._applying_style = False
+

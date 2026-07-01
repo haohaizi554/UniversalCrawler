@@ -1,4 +1,4 @@
-"""Coalesce high-volume frontend events into versioned dirty sections."""
+﻿"""Coalesce high-volume frontend events into versioned dirty sections."""
 
 from __future__ import annotations
 
@@ -117,6 +117,8 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
         return frozenset({"app_status"})
     if normalized in {"settings.update", "config"}:
         return frozenset({"settings_snapshot", "settings_contract", "download_options", "app_status"})
+    if normalized == "settings.platform_auth":
+        return frozenset({"settings_snapshot", "settings_contract"})
     if normalized == "platforms":
         return frozenset({"settings_snapshot"})
     return None
@@ -330,3 +332,4 @@ class FrontendEventAggregator:
     def _remember_deleted_value(self, video_id: str, version: int) -> None:
         self._deleted_ids.add(str(video_id))
         self._deleted_history.append((version, str(video_id)))
+

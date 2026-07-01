@@ -93,6 +93,7 @@ class FrontendStateService:
     METADATA_EMPTY_MAX_RETRIES = 3
     FRONTEND_DELTA_EVENTS_LIMIT = 64
     FILE_LOG_BACKFILL_LIMIT = 500
+    PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
 
     def __init__(
         self,
@@ -127,6 +128,8 @@ class FrontendStateService:
         )
         self._running_state = "空闲中"
         self._static_snapshot_cache: dict[str, Any] | None = None
+        self._platform_auth_cache: dict[str, dict[str, Any]] = {}
+        self._platform_auth_force_refresh_once = False
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
         self._active_event_time_cache: dict[str, str] = {}
@@ -234,6 +237,7 @@ class FrontendStateService:
             return
         self._invalidate_file_log_cache()
         self._static_snapshot_cache = None
+        self._platform_auth_cache.clear()
         self._active_event_time_cache.clear()
         self._cancel_all_metadata_retries()
         self._cancel_metadata_probe_queue()
@@ -328,6 +332,8 @@ class FrontendStateService:
         return sections_for_topic(normalized)
 
     def _static_snapshot_parts(self) -> dict[str, Any]:
+        if self._static_snapshot_cache is not None and self._platform_auth_cache_has_expired():
+            self._static_snapshot_cache = None
         if self._static_snapshot_cache is None:
             settings_snapshot = self.settings_snapshot()
             settings_contract = self._settings_contract_payload(settings_snapshot)
@@ -528,6 +534,7 @@ class FrontendStateService:
             "update_download_options": self._action_update_download_options,
             "update_completed_metadata": self._action_update_completed_metadata,
             "log_operation": self._action_log_operation,
+            "refresh_platform_auth_status": self._action_refresh_platform_auth_status,
         }.get(action)
         if handler is None:
             return FrontendActionResult("error", f"unknown frontend action: {action}").to_dict()
@@ -679,7 +686,10 @@ class FrontendStateService:
                 exc,
                 details={"section": section, "key": key},
             )
-        self._static_snapshot_cache = None
+        if self._platform_auth_config_affects_status(section, key):
+            self._invalidate_platform_auth_cache()
+        else:
+            self._static_snapshot_cache = None
         self.record_event("settings.update", {"section": section, "key": key})
 
     def _dispatch_gui_runtime_setting(self, method_name: str, *args: Any) -> bool:
@@ -961,6 +971,24 @@ class FrontendStateService:
             dict(result.get("data") or {}),
         )
 
+    def refresh_platform_auth_status(self, *, force: bool = False) -> bool:
+        if self._destroyed:
+            return False
+        should_refresh = bool(force) or self._static_snapshot_cache is None or self._platform_auth_cache_has_expired()
+        if not should_refresh:
+            return False
+        self._platform_auth_force_refresh_once = bool(force)
+        self._static_snapshot_cache = None
+        self.record_event("settings.platform_auth", {"force": bool(force), "refreshed": True})
+        return True
+
+    def _action_refresh_platform_auth_status(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        refreshed = self.refresh_platform_auth_status(force=bool(payload.get("force", False)))
+        return FrontendActionResult(
+            "ok",
+            "平台认证状态已刷新" if refreshed else "",
+            {"refreshed": refreshed},
+        )
     def _action_log_operation(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         operation = str(payload.get("operation") or payload.get("id") or "").strip()
         try:
@@ -1260,8 +1288,66 @@ class FrontendStateService:
             trace_id_for_item=self._trace_id,
         )
 
-    def _platform_auth_snapshot(self, plugin_id: str, auth_cfg: Mapping[str, Any]) -> dict[str, str]:
-        return settings_adapter.platform_auth_snapshot(plugin_id, auth_cfg)
+    def _platform_auth_snapshot(
+        self,
+        plugin_id: str,
+        auth_cfg: Mapping[str, Any],
+        *,
+        force: bool = False,
+    ) -> dict[str, str]:
+        plugin_key = str(plugin_id or "").strip().lower()
+        signature = self._platform_auth_signature(plugin_key, auth_cfg)
+        now = time.monotonic()
+        cached = self._platform_auth_cache.get(plugin_key)
+        if (
+            not force
+            and cached
+            and cached.get("signature") == signature
+            and now < float(cached.get("expires_at") or 0)
+        ):
+            return dict(cached.get("value") or {})
+        value = settings_adapter.platform_auth_snapshot(plugin_key, auth_cfg)
+        self._platform_auth_cache[plugin_key] = {
+            "signature": signature,
+            "expires_at": now + float(self.PLATFORM_AUTH_REFRESH_TTL_SECONDS),
+            "value": dict(value),
+        }
+        return dict(value)
+
+    def _platform_auth_signature(self, plugin_id: str, auth_cfg: Mapping[str, Any]) -> tuple[Any, ...]:
+        requirement = settings_adapter.PLATFORM_AUTH_REQUIREMENTS.get(str(plugin_id or "").strip().lower())
+        if not requirement:
+            return (plugin_id, "no-rule")
+        file_key, _cookie_names = requirement
+        raw_path = str(auth_cfg.get(file_key) or "").strip()
+        if not raw_path:
+            return (plugin_id, file_key, "")
+        path = Path(raw_path).expanduser()
+        try:
+            normalized_path = str(path.resolve(strict=False)).casefold()
+        except OSError:
+            normalized_path = str(path).replace("\\", "/").casefold()
+        try:
+            stat = path.stat()
+        except OSError:
+            return (plugin_id, file_key, normalized_path, False, 0, 0)
+        return (plugin_id, file_key, normalized_path, True, int(stat.st_mtime_ns), int(stat.st_size))
+
+    def _platform_auth_cache_has_expired(self) -> bool:
+        if not self._platform_auth_cache:
+            return False
+        now = time.monotonic()
+        return any(now >= float(entry.get("expires_at") or 0) for entry in self._platform_auth_cache.values())
+
+    @staticmethod
+    def _platform_auth_config_affects_status(section: str, key: str) -> bool:
+        normalized_section = str(section or "").strip().lower()
+        normalized_key = str(key or "").strip().lower()
+        return normalized_section == "auth" or "cookie" in normalized_key
+
+    def _invalidate_platform_auth_cache(self) -> None:
+        self._platform_auth_cache.clear()
+        self._static_snapshot_cache = None
 
     @staticmethod
     def _count_label(value: Any, unit: str) -> str:
@@ -1280,10 +1366,19 @@ class FrontendStateService:
         return settings_adapter.platform_timeout_contract(section)
 
     def settings_snapshot(self) -> dict[str, Any]:
-        return settings_adapter.build_settings_snapshot(
-            self.config.data,
-            self.download_options_snapshot(),
-        )
+        force_auth = bool(self._platform_auth_force_refresh_once)
+        try:
+            return settings_adapter.build_settings_snapshot(
+                self.config.data,
+                self.download_options_snapshot(),
+                auth_status_provider=lambda plugin_id, auth_cfg: self._platform_auth_snapshot(
+                    plugin_id,
+                    auth_cfg,
+                    force=force_auth,
+                ),
+            )
+        finally:
+            self._platform_auth_force_refresh_once = False
 
     @staticmethod
     def toolbox_items() -> list[dict[str, str]]:
@@ -1575,7 +1670,10 @@ class FrontendStateService:
                 f"setting persisted but runtime apply failed: {exc}",
                 {"section": section, "key": key},
             )
-        self._static_snapshot_cache = None
+        if self._platform_auth_config_affects_status(section, key):
+            self._invalidate_platform_auth_cache()
+        else:
+            self._static_snapshot_cache = None
         self.record_event("settings.update", {"section": section, "key": key})
         return FrontendActionResult(
             "ok",
