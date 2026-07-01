@@ -199,6 +199,39 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(settings.findChildren(SegmentedControl))
 
+
+    def test_settings_catalog_keeps_real_group_icons_and_hints(self):
+        from app.ui.viewmodels.settings_catalog import GROUP_HINTS, GROUP_ICONS
+
+        groups = ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"]
+        self.assertEqual(set(groups), set(GROUP_ICONS))
+        self.assertEqual(set(groups), set(GROUP_HINTS))
+        self.assertEqual(len(set(GROUP_ICONS.values())), len(groups))
+        self.assertTrue(all("?" not in key and "?" not in value for key, value in GROUP_HINTS.items()))
+        self.assertTrue(all(value.strip() for value in GROUP_HINTS.values()))
+
+    def test_settings_page_renders_group_specific_icons_and_hint_text(self):
+        shell = self._make_shell()
+        shell.show_page("settings")
+        settings = shell.pages["settings"]
+
+        seen_icon_keys: set[str] = set()
+        for group in ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"]:
+            settings._set_current_group(group)
+            self.app.processEvents()
+            hint = settings.findChild(QLabel, "SettingsHintText")
+            detail_icon = settings.findChild(QLabel, "SettingsDetailIcon")
+            self.assertIsNotNone(hint)
+            self.assertIsNotNone(detail_icon)
+            self.assertTrue(hint.text().strip(), group)
+            self.assertNotIn("?", hint.text())
+            pixmap = detail_icon.pixmap()
+            self.assertIsNotNone(pixmap, group)
+            self.assertFalse(pixmap.isNull(), group)
+            seen_icon_keys.add(str(pixmap.cacheKey()))
+
+        self.assertGreater(len(seen_icon_keys), 1)
+
     def test_gui_combo_popups_expand_short_lists_without_scrollbars(self):
         shell = self._make_shell()
 
