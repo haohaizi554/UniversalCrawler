@@ -116,3 +116,108 @@ def format_json_text(payload: Any) -> str:
     if payload in (None, ""):
         return "{}"
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+
+def normalize_detail_payload(item: dict[str, Any] | None, *, status_code: str = "") -> Any:
+    if not item:
+        return {}
+
+    detail = item.get("detail")
+    payload: dict[str, Any] | list[Any] | None = None
+
+    if detail is not None and detail != "":
+        if isinstance(detail, dict):
+            payload = dict(detail)
+        elif isinstance(detail, list):
+            payload = list(detail)
+        else:
+            text = str(detail).strip()
+            if text:
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    structured = parse_structured_detail_text(text)
+                    payload = structured if structured else {"detail": text}
+
+    if payload is None:
+        payload = {}
+
+    if isinstance(payload, dict):
+        payload = refine_description_path(payload)
+        message = str(item.get("message") or item.get("message_summary") or "").strip()
+        extracted = extract_message_payload(message) if message else None
+        if extracted:
+            if not payload.get("description"):
+                payload["description"] = extracted["description"]
+            payload.setdefault("path", extracted.get("path"))
+        elif message and not payload.get("description"):
+            payload["description"] = strip_leading_emoji(message)
+        event = item.get("event") or item.get("event_type") or item.get("status_code")
+        if event and "status_code" not in payload and "event" not in payload:
+            payload["event"] = event
+        normalized_status = str(status_code or "").strip()
+        if normalized_status and "status_code" not in payload:
+            payload["status_code"] = normalized_status
+        for key in ("platform", "source", "trace_id"):
+            value = item.get(key)
+            if value and key not in payload:
+                payload[key] = value
+        payload = {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+    return payload or {}
+
+
+def extract_trace_id(item: dict[str, Any] | None, *, payload: Any | None = None, status_code: str = "") -> str:
+    if not item:
+        return ""
+    candidates = [
+        item.get("trace_id"),
+        item.get("traceId"),
+        item.get("trace"),
+    ]
+
+    detail = item.get("detail")
+    if isinstance(detail, dict):
+        candidates.extend(
+            [
+                detail.get("trace_id"),
+                detail.get("traceId"),
+                detail.get("trace"),
+            ]
+        )
+
+    normalized_payload = payload if payload is not None else normalize_detail_payload(item, status_code=status_code)
+    if isinstance(normalized_payload, dict):
+        candidates.extend(
+            [
+                normalized_payload.get("trace_id"),
+                normalized_payload.get("traceId"),
+                normalized_payload.get("trace"),
+            ]
+        )
+
+    for value in candidates:
+        text = str(value or "").strip()
+        if text and text != "-":
+            return text
+    return ""
+
+
+def build_log_detail_payload(
+    item: dict[str, Any],
+    *,
+    platform_label: str,
+    status_code: str = "",
+) -> dict[str, Any]:
+    detail_payload = normalize_detail_payload(item, status_code=status_code)
+    return {
+        "time": item.get("time"),
+        "level": item.get("level"),
+        "platform": platform_label,
+        "source": item.get("source"),
+        "trace_id": extract_trace_id(item, payload=detail_payload) or item.get("trace_id") or "",
+        "message": item.get("message") or item.get("message_summary") or "",
+        "detail": detail_payload,
+        "stack": item.get("stack") or "",
+    }

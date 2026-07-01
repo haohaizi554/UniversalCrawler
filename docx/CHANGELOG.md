@@ -1,37 +1,37 @@
-# Changelog
+# 更新日志
 
-All notable changes to this project are documented in this file.
+本文件记录项目的重要变更。版本号以 `pyproject.toml` 中声明的项目版本为准，格式参考 Keep a Changelog，但内容统一使用中文。
 
-The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and version numbers are aligned with the project version declared in `pyproject.toml`.
+## 未发布
 
-## [Unreleased]
+### 新增
 
-### Added
-- Added shared packaging metadata via `packaging/project_meta.py`.
-- Added maintainers' release guide in `docs/packaging.md`.
-- Added naming rules for tests in `tests/NAMING.md`.
-- Added high-value tests for Web workflows, script injection, plugin discovery, and WebSocket dispatch.
-- Added repository-level `LICENSE`, `MANIFEST.in`, and `.gitattributes`.
-- Added `README_EN.md` as the English companion to the default Chinese README.
-- Added Docker runtime helper assets such as `requirements-web.txt`, `docker/entrypoint.sh`, and `.env.docker.example`.
-- Added Docker build validation workflow in `.github/workflows/docker-build.yml`.
-- Bundled `ffprobe.exe` and explicitly packaged `shared/` in portable builds for `media_metadata_service` and cross-entry runtime helpers.
+- 新增共享打包元数据 `packaging/project_meta.py`。
+- 新增维护者发布指南，并统一迁移到 `docx/guides/packaging.md`。
+- 新增测试命名规则和高价值 Web、插件、WebSocket 测试。
+- 新增仓库级 `LICENSE`、`MANIFEST.in` 和 `.gitattributes`。
+- 新增英文 README 作为中文 README 的配套入口。
+- 新增 Docker 运行资源，包括 `requirements-web.txt`、`docker/entrypoint.sh` 和 `.env.docker.example`。
+- 新增 Docker 构建验证工作流。
+- 便携版构建显式打包 `ffprobe.exe` 和 `shared/`，支持媒体元数据服务和跨入口运行时辅助能力。
 
-### Changed
-- Unified installer version injection with `pyproject.toml`.
-- Updated README, testing docs, and packaging docs to match the current project structure.
-- Improved test auto-classification rules for newly added Web and plugin tests.
-- Replaced the previous MIT wording with a personal non-commercial license.
-- Expanded the root README with direct Docker usage guidance and language switch links.
-- Expanded packaging documentation to include `project_meta.py`, `runtime_paths.py`, and the sync contract across build scripts, docs, and tests.
-- Hardened desktop media deletion so the GUI releases the active media source before removing files.
-- Aligned `portable.spec` metadata with `project_meta.py` and updated `BUILD_INFO.txt` / packaging docs for the dual-EXE direct-launcher model.
+### 变更
 
-### Fixed
-- Fixed Douyin FFmpeg progress parsing and retry refresh behavior.
-- Fixed Web-side Douyin parameter initialization bottlenecks and packaging metadata drift.
-- Fixed Bilibili spider thread regressions and ensured single-item stream failures no longer terminate the whole task loop.
-- Removed leftover temporary debug probes from Kuaishou, Douyin, FFmpeg, and Web frontend code paths.
-- Filled missing XiaoHongShu regression coverage for route dispatch, HTML fallback, 461 cooldown, and downloader header propagation.
-- Fixed broken `ucrawl-auto` console entry to target `entry.dispatcher:run`.
+- 安装器版本注入统一读取 `pyproject.toml`。
+- README、测试文档和打包文档已按当前项目结构更新。
+- 测试自动分类规则覆盖新增 Web 和插件测试。
+- 项目许可证说明调整为个人非商业许可。
+- 根 README 增补 Docker 使用说明和语言切换链接。
+- 打包文档补充 `project_meta.py`、`runtime_paths.py` 以及构建脚本、文档和测试之间的同步契约。
+- 桌面媒体删除流程会先释放当前媒体源，避免文件占用导致删除失败。
+- 便携版 `portable.spec` 元数据与 `project_meta.py` 对齐，并更新双 EXE 直接启动模型说明。
+- `docx/` 文档已整理为长期指南、修复记录、复盘、报告、审查、提示词和 ADR 分层。
+
+### 修复
+
+- 修复抖音 FFmpeg 进度解析和重试刷新行为。
+- 修复 Web 侧抖音参数初始化瓶颈和打包元数据漂移。
+- 修复 Bilibili spider 线程回归，单个资源流失败不再终止整个任务循环。
+- 移除快手、抖音、FFmpeg 和 Web 前端路径中的临时调试探针。
+- 补齐小红书路由分发、HTML fallback、461 cooldown 和下载器 header 传递回归覆盖。
+- 修复 `ucrawl-auto` 控制台入口，指向 `entry.dispatcher:run`。

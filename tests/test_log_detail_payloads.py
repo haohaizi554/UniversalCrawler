@@ -1,46 +1,45 @@
 from app.ui.viewmodels.log_detail_payloads import (
-    extract_message_payload,
-    format_json_text,
-    parse_structured_detail_text,
-    refine_description_path,
-    soft_wrap_text,
+    build_log_detail_payload,
+    extract_trace_id,
+    normalize_detail_payload,
 )
 
 
-def test_extract_message_payload_splits_description_and_windows_path():
-    payload = extract_message_payload("📁 扫描目录: D:\\media\\Downloads")
-
-    assert payload == {"description": "扫描目录", "path": "D:\\media\\Downloads"}
-
-
-def test_refine_description_path_prefers_extracted_path():
-    payload = refine_description_path({"description": "📁 扫描目录: D:\\media\\Downloads"})
-
-    assert payload["description"] == "扫描目录"
-    assert payload["path"] == "D:\\media\\Downloads"
-
-
-def test_parse_structured_detail_text_keeps_description_status_and_details():
-    payload = parse_structured_detail_text(
-        "\n".join(
-            [
-                "说明: ✅ 下载完成",
-                "状态码: DL_FINISH",
-                "详情:",
-                "- platform: Bilibili",
-                "- file: demo.mp4",
-            ]
-        )
-    )
-
-    assert payload == {
-        "description": "下载完成",
-        "status_code": "DL_FINISH",
-        "platform": "Bilibili",
-        "file": "demo.mp4",
+def test_normalize_detail_payload_enriches_message_path_and_status_code():
+    item = {
+        "message": r"Scan complete: D:\Downloads\video.mp4",
+        "detail": '{"traceId": "trace-from-detail", "extra": "ok"}',
+        "status_code": "SCAN_DONE",
+        "platform": "system",
+        "source": "GUI",
     }
 
+    payload = normalize_detail_payload(item, status_code="SCAN_DONE")
 
-def test_json_text_and_soft_wrap_are_reusable_for_detail_views():
-    assert format_json_text({"a": 1}) == '{\n  "a": 1\n}'
-    assert "\\\u200b" in soft_wrap_text("D:\\media")
+    assert payload["description"] == "Scan complete"
+    assert payload["path"] == r"D:\Downloads\video.mp4"
+    assert payload["status_code"] == "SCAN_DONE"
+    assert payload["traceId"] == "trace-from-detail"
+
+
+def test_extract_trace_id_prefers_top_level_then_detail_payload():
+    assert extract_trace_id({"trace_id": "top", "detail": {"trace_id": "detail"}}) == "top"
+    assert extract_trace_id({"detail": {"traceId": "detail"}}) == "detail"
+    assert extract_trace_id({"detail": '{"trace": "json-trace"}'}) == "json-trace"
+
+
+def test_build_log_detail_payload_uses_normalized_detail_payload():
+    item = {
+        "time": "2026-07-01 12:00:00",
+        "level": "INFO",
+        "source": "GUI",
+        "message_summary": "Application init",
+        "detail": '{"trace_id": "trace-1"}',
+    }
+
+    payload = build_log_detail_payload(item, platform_label="system", status_code="APP_INIT")
+
+    assert payload["platform"] == "system"
+    assert payload["trace_id"] == "trace-1"
+    assert payload["message"] == "Application init"
+    assert payload["detail"]["status_code"] == "APP_INIT"

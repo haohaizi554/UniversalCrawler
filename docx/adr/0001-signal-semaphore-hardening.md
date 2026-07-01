@@ -1,24 +1,24 @@
-# ADR 0001: Signal and semaphore hardening
+# ADR 0001：信号与信号量加固
 
-## Status
+## 状态
 
-Accepted.
+已接受。
 
-## Context
+## 背景
 
-UniversalCrawlerProplus coordinates PyQt6 GUI updates, Web UI configuration writes, EventBus fan-out, crawler threads, and download workers. These boundaries must stay responsive and crash-safe under high concurrency.
+UniversalCrawlerProplus 同时协调 PyQt6 GUI 更新、WebUI 配置写入、EventBus 分发、采集线程和下载工作线程。高并发场景下，如果信号分发、线程边界或下载信号量没有明确保护，就容易出现界面卡顿、事件递归、隐藏异常或下载槽位泄漏。
 
-## Decision
+## 决策
 
-- Use a single application EventBus for runtime configuration events.
-- Dispatch GUI-facing runtime setting updates onto the Qt GUI thread.
-- Bound nested EventBus publication with a thread-local depth guard.
-- Capture uncaught Python exceptions through `sys.excepthook` and route them to `debug_logger`.
-- Protect crawler emissions with crawl budgets, per-platform rate limits, and PII sanitization.
-- Store Qt connection handles and clean them up through scoped registries.
-- Release download dispatch semaphore slots from `finally` paths.
-- Keep short `QRunnable` tasks decoupled from panels through weak references and QObject signal carriers.
+- 运行时配置事件统一通过一个应用级 EventBus 分发。
+- 面向 GUI 的运行时设置更新必须投递到 Qt GUI 线程执行。
+- EventBus 嵌套发布使用线程局部深度保护，避免递归发布失控。
+- 未捕获 Python 异常通过 `sys.excepthook` 捕获并写入 `debug_logger`。
+- 采集侧发送事件时保留采集预算、平台限速和隐私信息清洗。
+- Qt 连接句柄需要保存，并通过有作用域的注册表清理。
+- 下载派发信号量必须在 `finally` 路径释放。
+- 短生命周期 `QRunnable` 任务不要直接持有面板对象，应通过弱引用和 QObject 信号载体解耦。
 
-## Consequences
+## 后果
 
-The GUI and Web UI remain more responsive because crawler/download backpressure and config fan-out are explicit. The tradeoff is slightly more guardrail code in low-level helpers, but failures now surface as observable logs instead of silent UI stalls or process crashes.
+GUI 与 WebUI 的响应性更可控，采集和下载压力也能被显式观测。代价是底层辅助代码多了一些保护逻辑，但失败会以日志形式暴露，而不是表现为静默卡死或异常退出。

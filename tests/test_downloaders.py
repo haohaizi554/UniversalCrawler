@@ -1077,7 +1077,7 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertEqual(updates[-1][1]["bytes_downloaded"], 2048)
 
     def test_nm3u8_output_progress_parses_tool_percent_and_speed(self):
-        with patch("app.core.downloaders.m3u8.time.monotonic", side_effect=[0.0, 0.0, 1.0]):
+        with patch("app.core.downloaders.nm3u8_progress.time.monotonic", side_effect=[0.0, 0.0, 1.0]):
             progress = _Nm3u8OutputProgress(default_progress=50)
             progress.feed("Vid 1280x720 ---------------- 25/100 25.00% - 2.00MBps(16) 00:10")
             percent, bytes_downloaded = progress.snapshot()
@@ -1086,7 +1086,7 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertEqual(bytes_downloaded, 2 * 1024 * 1024)
 
     def test_nm3u8_output_progress_accepts_slash_speed_units(self):
-        with patch("app.core.downloaders.m3u8.time.monotonic", side_effect=[0.0, 0.0, 1.0]):
+        with patch("app.core.downloaders.nm3u8_progress.time.monotonic", side_effect=[0.0, 0.0, 1.0]):
             progress = _Nm3u8OutputProgress(default_progress=50)
             progress.feed("Vid 1280x720 ---------------- 12/100 12.50% - 1.50 MiB/s 00:10")
             percent, bytes_downloaded = progress.snapshot()

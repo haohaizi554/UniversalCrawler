@@ -3,12 +3,11 @@ from __future__ import annotations
 import html
 import json
 import math
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QEvent
-from PyQt6.QtGui import QFont, QFontMetrics, QIcon, QTextOption
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QTextOption
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -40,12 +39,12 @@ from app.ui.components.combo_popup import (
 from app.ui.components.focus_state import bind_focus_property
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
+from app.ui.viewmodels import log_filtering
 from app.ui.viewmodels.log_detail_payloads import (
-    extract_message_payload,
+    build_log_detail_payload,
+    extract_trace_id,
     format_json_text,
-    parse_structured_detail_text,
-    refine_description_path,
-    strip_leading_emoji,
+    normalize_detail_payload,
 )
 from app.ui.viewmodels.log_classification import (
     classification_facts,
@@ -126,6 +125,54 @@ class LogCenterTableDelegate(SnapshotActionDelegate):
         painter.setPen(option.palette.color(option.palette.ColorRole.Text))
         painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), display_text)
         painter.restore()
+
+
+class LogFilterLineEdit(QLineEdit):
+    """Line edit that eagerly refreshes its theme focus border."""
+
+    def __init__(self, sync_focus_style: Callable[[], None]) -> None:
+        super().__init__()
+        self._sync_focus_style = sync_focus_style
+        self.setObjectName("LogFilterTextInput")
+        self.setFrame(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setProperty("focused", "false")
+
+    def focusInEvent(self, event) -> None:  # noqa: ANN001
+        super().focusInEvent(event)
+        self._set_focused(True)
+
+    def focusOutEvent(self, event) -> None:  # noqa: ANN001
+        super().focusOutEvent(event)
+        self._set_focused(False)
+        QTimer.singleShot(0, self._sync_focus_style)
+
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001
+        super().keyPressEvent(event)
+        self._set_focused(True)
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        super().mousePressEvent(event)
+        self._set_focused(True)
+
+    def inputMethodEvent(self, event) -> None:  # noqa: ANN001
+        super().inputMethodEvent(event)
+        self._set_focused(True)
+
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        super().paintEvent(event)
+        if not (self.hasFocus() or self.property("focused") == "true"):
+            return
+        colors = theme_colors(resolve_is_dark_theme(self))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(colors["accent"]), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+    def _set_focused(self, focused: bool) -> None:
+        self.setProperty("focused", "true" if focused else "false")
+        self._sync_focus_style()
 
 
 class LogCenterPage(PageFrame):
@@ -227,6 +274,7 @@ class LogCenterPage(PageFrame):
         border_color = c["accent"] if focused else c["border"]
         padding = "1px 9px" if focused else "2px 10px"
         return """
+        QLineEdit,
         QLineEdit#LogFilterTextInput {{
             background: {input};
             border: {border_width} solid {border_color};
@@ -239,6 +287,8 @@ class LogCenterPage(PageFrame):
             selection-background-color: {accent};
             selection-color: #ffffff;
         }}
+        QLineEdit:focus,
+        QLineEdit[focused="true"],
         QLineEdit#LogFilterTextInput:focus,
         QLineEdit#LogFilterTextInput[focused="true"] {{
             border: 2px solid {accent};
@@ -249,8 +299,12 @@ class LogCenterPage(PageFrame):
     def _sync_filter_text_input_style(self) -> None:
         if not hasattr(self, "trace_filter") or not hasattr(self, "keyword_filter"):
             return
+        current_focus = QApplication.focusWidget()
         for editor in (self.trace_filter, self.keyword_filter):
-            focused = bool(editor.hasFocus() or editor.property("focused") == "true")
+            focused = bool(editor.hasFocus() or editor is current_focus or editor.property("focused") == "true")
+            desired = "true" if focused else "false"
+            if editor.property("focused") != desired:
+                editor.setProperty("focused", desired)
             style = self._filter_text_input_style(focused=focused)
             if editor.styleSheet() != style:
                 editor.setStyleSheet(style)
@@ -284,6 +338,9 @@ class LogCenterPage(PageFrame):
             getattr(self, "trace_filter", None),
             getattr(self, "keyword_filter", None),
         ) and event.type() in {QEvent.Type.FocusIn, QEvent.Type.FocusOut}:
+            if isinstance(watched, QLineEdit):
+                watched.setProperty("focused", "true" if event.type() == QEvent.Type.FocusIn else "false")
+            self._sync_filter_text_input_style()
             QTimer.singleShot(0, self._sync_filter_text_input_style)
         return super().eventFilter(watched, event)
 
@@ -465,11 +522,9 @@ class LogCenterPage(PageFrame):
             self.time_filter.addItem(label, label)
         self.platform_filter = ThemedComboBox(row_height=34)
         self.platform_filter.setObjectName("LogFilterControl")
-        self.trace_filter = QLineEdit()
-        self.trace_filter.setObjectName("LogFilterTextInput")
+        self.trace_filter = LogFilterLineEdit(self._sync_filter_text_input_style)
         self.trace_filter.setPlaceholderText("请输入 Trace ID")
-        self.keyword_filter = QLineEdit()
-        self.keyword_filter.setObjectName("LogFilterTextInput")
+        self.keyword_filter = LogFilterLineEdit(self._sync_filter_text_input_style)
         self.keyword_filter.setPlaceholderText("请输入关键词")
         bind_focus_property(self.trace_filter)
         bind_focus_property(self.keyword_filter)
@@ -495,11 +550,15 @@ class LogCenterPage(PageFrame):
         self.level_filter.currentTextChanged.connect(lambda *_args: self._apply_filters())
         self.time_filter.currentTextChanged.connect(lambda *_args: self._apply_filters())
         self.platform_filter.currentIndexChanged.connect(lambda *_args: self._apply_filters())
-        self.trace_filter.textChanged.connect(lambda *_args: self._apply_filters())
-        self.keyword_filter.textChanged.connect(lambda *_args: self._apply_filters())
+        self.trace_filter.textChanged.connect(lambda *_args: self._on_filter_text_changed())
+        self.keyword_filter.textChanged.connect(lambda *_args: self._on_filter_text_changed())
         for combo in (self.level_filter, self.time_filter, self.platform_filter):
             polish_combo_popup(combo, visible_rows=max(1, combo.count()), row_height=34)
         return bar
+
+    def _on_filter_text_changed(self) -> None:
+        self._sync_filter_text_input_style()
+        self._apply_filters()
 
     def _build_action_bar(self) -> QWidget:
         row = QWidget()
@@ -949,6 +1008,22 @@ class LogCenterPage(PageFrame):
             return None
         return normalized
 
+    def _selected_level_filter(self) -> str:
+        if not hasattr(self, "level_filter"):
+            return "\u5168\u90e8"
+        return str(self.level_filter.currentData() or self.level_filter.currentText())
+
+    def _selected_time_filter(self) -> str:
+        if not hasattr(self, "time_filter"):
+            return "\u5168\u90e8"
+        return str(self.time_filter.currentData() or self.time_filter.currentText())
+
+    def _trace_filter_query(self) -> str:
+        return self.trace_filter.text().strip().lower() if hasattr(self, "trace_filter") else ""
+
+    def _keyword_filter_query(self) -> str:
+        return self.keyword_filter.text().strip().lower() if hasattr(self, "keyword_filter") else ""
+
     def render(self, snapshot: dict) -> None:
         self._refresh_platform_filter(snapshot)
         incoming_items = list(snapshot.get("log_items") or [])
@@ -983,19 +1058,13 @@ class LogCenterPage(PageFrame):
         )
 
     def _make_filter_signature(self) -> tuple[Any, ...]:
-        level = self.level_filter.currentData() if hasattr(self, "level_filter") else None
-        if level is None and hasattr(self, "level_filter"):
-            level = self.level_filter.currentText()
-        time_range = self.time_filter.currentData() if hasattr(self, "time_filter") else None
-        if time_range is None and hasattr(self, "time_filter"):
-            time_range = self.time_filter.currentText()
         return (
             self._category,
-            str(level or ""),
-            str(time_range or ""),
+            self._selected_level_filter(),
+            self._selected_time_filter(),
             self._selected_platform_id() or "",
-            self.trace_filter.text().strip().lower() if hasattr(self, "trace_filter") else "",
-            self.keyword_filter.text().strip().lower() if hasattr(self, "keyword_filter") else "",
+            self._trace_filter_query(),
+            self._keyword_filter_query(),
             self._platform_option_ids,
         )
 
@@ -1070,22 +1139,21 @@ class LogCenterPage(PageFrame):
         return int(self._category_counts.get(category, 0))
 
     def _rebuild_category_counts(self, signature: tuple[Any, ...] | None = None) -> None:
-        counts = {key: 0 for key in LOG_CATEGORIES}
-        for item in self._all_items:
-            if not self._matches_non_category_filters(item):
-                continue
-            counts["all"] += 1
-            scope = self._derive_log_scope(item)
-            if scope in counts:
-                counts[scope] += 1
-        self._category_counts = counts
+        self._category_counts = log_filtering.category_counts(
+            self._all_items,
+            tuple(LOG_CATEGORIES),
+            level=self._selected_level_filter(),
+            time_range=self._selected_time_filter(),
+            platform_id=self._selected_platform_id(),
+            trace_query=self._trace_filter_query(),
+            keyword=self._keyword_filter_query(),
+            platform_options=self._platform_options,
+            platform_meta_by_id=self._platform_meta_by_id,
+        )
         self._category_count_signature = signature or self._make_category_count_signature()
 
     def _matches_category_for_count(self, item: dict[str, Any], category: str) -> bool:
-        if category == "all":
-            return True
-        scope = self._derive_log_scope(item)
-        return scope == category
+        return log_filtering.matches_category(item, category)
 
     def _update_category_tab_counts(self) -> None:
         for category, button in self._tab_buttons.items():
@@ -1241,85 +1309,35 @@ class LogCenterPage(PageFrame):
         return format_platform_label(item, self._platform_options, self._platform_meta_by_id)
 
     def _matches_non_category_filters(self, item: dict[str, Any]) -> bool:
-        level = (
-            str(self.level_filter.currentData() or self.level_filter.currentText())
-            if hasattr(self, "level_filter")
-            else "全部"
+        return log_filtering.matches_non_category_filters(
+            item,
+            level=self._selected_level_filter(),
+            time_range=self._selected_time_filter(),
+            platform_id=self._selected_platform_id(),
+            trace_query=self._trace_filter_query(),
+            keyword=self._keyword_filter_query(),
+            platform_options=self._platform_options,
+            platform_meta_by_id=self._platform_meta_by_id,
         )
-        if level != "全部":
-            result_type = derive_result_type(item)
-            display = result_display_text(result_type, normalized_raw_level(item))
-            if display != level:
-                return False
-
-        if not self._matches_time_range(item):
-            return False
-
-        platform_id = self._selected_platform_id()
-        if platform_id and not self._matches_platform(item, platform_id):
-            return False
-
-        trace_query = self.trace_filter.text().strip().lower() if hasattr(self, "trace_filter") else ""
-        if trace_query and trace_query not in str(item.get("trace_id") or "").lower():
-            return False
-
-        keyword = self.keyword_filter.text().strip().lower() if hasattr(self, "keyword_filter") else ""
-        if keyword and keyword not in self._searchable_text(item, include_detail=True).lower():
-            return False
-
-        return True
 
     def _matches_filters(self, item: dict[str, Any]) -> bool:
-        if not self._matches_category(item):
-            return False
-        return self._matches_non_category_filters(item)
+        return log_filtering.matches_filters(
+            item,
+            category=self._category,
+            level=self._selected_level_filter(),
+            time_range=self._selected_time_filter(),
+            platform_id=self._selected_platform_id(),
+            trace_query=self._trace_filter_query(),
+            keyword=self._keyword_filter_query(),
+            platform_options=self._platform_options,
+            platform_meta_by_id=self._platform_meta_by_id,
+        )
 
     def _sort_log_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        indexed = list(enumerate(items))
-
-        def sort_key(pair: tuple[int, dict[str, Any]]) -> tuple[datetime, int]:
-            index, item = pair
-            dt = self._item_datetime(item)
-            if dt is None:
-                dt = datetime.min
-            return dt, index
-
-        return [item for _, item in sorted(indexed, key=sort_key, reverse=True)]
+        return log_filtering.sort_log_items(items)
 
     def _extract_trace_id_from_item(self, item: dict[str, Any] | None) -> str:
-        if not item:
-            return ""
-        candidates = [
-            item.get("trace_id"),
-            item.get("traceId"),
-            item.get("trace"),
-        ]
-
-        detail = item.get("detail")
-        if isinstance(detail, dict):
-            candidates.extend(
-                [
-                    detail.get("trace_id"),
-                    detail.get("traceId"),
-                    detail.get("trace"),
-                ]
-            )
-
-        payload = self._normalize_detail_payload(item)
-        if isinstance(payload, dict):
-            candidates.extend(
-                [
-                    payload.get("trace_id"),
-                    payload.get("traceId"),
-                    payload.get("trace"),
-                ]
-            )
-
-        for value in candidates:
-            text = str(value or "").strip()
-            if text and text != "-":
-                return text
-        return ""
+        return extract_trace_id(item, status_code=normalized_status_code(item) if item else "")
 
     def _current_or_first_trace_id(self) -> str:
         trace_id = self._extract_trace_id_from_item(self._current_log_item())
@@ -1339,23 +1357,18 @@ class LogCenterPage(PageFrame):
     def _copy_current_trace_id(self) -> None:
         trace_id = self._current_or_first_trace_id()
         if not trace_id:
-            QMessageBox.information(self, "没有 Trace ID", "当前日志和筛选结果中没有可复制的 Trace ID。")
+            QMessageBox.information(self, "?? Trace ID", "???????????????? Trace ID?")
             return
         QApplication.clipboard().setText(trace_id)
         if hasattr(self, "copy_trace_button"):
-            self._flash_button_text(self.copy_trace_button, "已复制")
+            self._flash_button_text(self.copy_trace_button, "???")
 
     def _build_current_log_payload(self, item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "time": item.get("time"),
-            "level": item.get("level"),
-            "platform": self._format_platform_label(item),
-            "source": item.get("source"),
-            "trace_id": self._extract_trace_id_from_item(item) or item.get("trace_id") or "",
-            "message": item.get("message") or item.get("message_summary") or "",
-            "detail": self._normalize_detail_payload(item),
-            "stack": item.get("stack") or "",
-        }
+        return build_log_detail_payload(
+            item,
+            platform_label=self._format_platform_label(item),
+            status_code=normalized_status_code(item),
+        )
 
     def _current_log_row_item(self) -> tuple[int, dict[str, Any]] | None:
         if not hasattr(self, "table"):
@@ -1458,109 +1471,25 @@ class LogCenterPage(PageFrame):
         QMessageBox.information(self, "导出成功", f"日志详情已导出到：{path}")
 
     def _matches_platform(self, item: dict[str, Any], platform_id: str) -> bool:
-        if not platform_id or platform_id == "all":
-            return True
-
-        scope = self._derive_log_scope(item)
-
-        if scope in {"system", "performance"}:
-            return True
-
-        resolved = self._resolve_item_platform_id(item)
-        if resolved and resolved == platform_id:
-            return True
-
-        meta = self._platform_meta_by_id.get(platform_id) or builtin_platform_metas().get(platform_id)
-        tokens: set[str] = {platform_id.lower()}
-        if meta is not None:
-            tokens.add(meta.id.lower())
-            tokens.add(meta.label.lower())
-            tokens.update(alias.lower() for alias in meta.aliases)
-
-        facts = classification_facts(item)
-        text = " ".join(
-            [
-                facts["platform_lower"],
-                facts["source_lower"],
-                facts["action_lower"],
-                facts["message_lower"],
-                facts["detail_lower"],
-                str(item.get("source_id") or "").lower(),
-                str(item.get("platform_id") or "").lower(),
-                str(item.get("plugin_name") or "").lower(),
-                str(item.get("trace_id") or "").lower(),
-                str(item.get("traceId") or "").lower(),
-            ]
+        return log_filtering.matches_platform(
+            item,
+            platform_id,
+            platform_options=self._platform_options,
+            platform_meta_by_id=self._platform_meta_by_id,
         )
-
-        if any(token and token in text for token in tokens if len(token) > 1):
-            return True
-
-        return False
 
     def _matches_category(self, item: dict[str, Any]) -> bool:
-        if self._category == "all":
-            return True
-        scope = self._derive_log_scope(item)
-        return scope == self._category
+        return log_filtering.matches_category(item, self._category)
 
     def _matches_time_range(self, item: dict[str, Any]) -> bool:
-        label = (
-            str(self.time_filter.currentData() or self.time_filter.currentText())
-            if hasattr(self, "time_filter")
-            else "全部"
-        )
-        minutes = {"近 30 分钟": 30, "近 1 小时": 60, "近 24 小时": 24 * 60}.get(label)
-        if minutes is None:
-            return True
-        timestamp = self._item_datetime(item)
-        if timestamp is None:
-            return False
-        return timestamp >= datetime.now() - timedelta(minutes=minutes)
+        return log_filtering.matches_time_range(item, self._selected_time_filter())
 
     @staticmethod
-    def _item_datetime(item: dict[str, Any]) -> datetime | None:
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
-            try:
-                return datetime.strptime(str(item.get("time") or ""), fmt)
-            except ValueError:
-                continue
-        return None
+    def _item_datetime(item: dict[str, Any]):
+        return log_filtering.item_datetime(item)
 
     def _searchable_text(self, item: dict[str, Any], *, include_detail: bool = False) -> str:
-        facts = classification_facts(item)
-        keys = [
-            "platform",
-            "source",
-            "trace_id",
-            "traceId",
-            "level",
-            "message_summary",
-            "message",
-            "status_code",
-            "action",
-            "event",
-            "event_type",
-            "category",
-        ]
-        values = [str(item.get(key) or "") for key in keys]
-        values.extend(
-            [
-                facts["raw_level"],
-                facts["source"],
-                facts["action"],
-                facts["status"],
-                facts["event_code"],
-                facts["platform"],
-                facts["legacy_category"],
-                self._derive_log_scope(item),
-                self._derive_event_stage(item),
-                derive_result_type(item),
-            ]
-        )
-        if include_detail:
-            values.extend([facts["detail_text"], str(item.get("stack") or "")])
-        return " ".join(values)
+        return log_filtering.searchable_text(item, include_detail=include_detail)
 
     def _apply_level_badge_style(self, level: str) -> None:
         mapping = {
@@ -1729,50 +1658,7 @@ class LogCenterPage(PageFrame):
         """
 
     def _normalize_detail_payload(self, item: dict[str, Any]) -> Any:
-        detail = item.get("detail")
-        payload: dict[str, Any] | list[Any] | None = None
-
-        if detail is not None and detail != "":
-            if isinstance(detail, dict):
-                payload = dict(detail)
-            elif isinstance(detail, list):
-                payload = list(detail)
-            else:
-                text = str(detail).strip()
-                if text:
-                    try:
-                        parsed = json.loads(text)
-                        payload = parsed
-                    except json.JSONDecodeError:
-                        structured = parse_structured_detail_text(text)
-                        payload = structured if structured else {"detail": text}
-
-        if payload is None:
-            payload = {}
-
-        if isinstance(payload, dict):
-            payload = refine_description_path(payload)
-            message = str(item.get("message") or item.get("message_summary") or "").strip()
-            extracted = extract_message_payload(message) if message else None
-            if extracted:
-                if not payload.get("description"):
-                    payload["description"] = extracted["description"]
-                payload.setdefault("path", extracted.get("path"))
-            elif message and not payload.get("description"):
-                payload["description"] = strip_leading_emoji(message)
-            event = item.get("event") or item.get("event_type") or item.get("status_code")
-            if event and "status_code" not in payload and "event" not in payload:
-                payload["event"] = event
-            status_code = normalized_status_code(item)
-            if status_code and "status_code" not in payload:
-                payload["status_code"] = status_code
-            for key in ("platform", "source", "trace_id"):
-                value = item.get(key)
-                if value and key not in payload:
-                    payload[key] = value
-            payload = {key: value for key, value in payload.items() if value not in (None, "", [])}
-
-        return payload or {}
+        return normalize_detail_payload(item, status_code=normalized_status_code(item))
 
     def _render_detail(self) -> None:
         current = self._current_log_row_item()
