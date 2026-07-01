@@ -14,6 +14,8 @@ from app.spiders.missav.task_builder import MissAVTaskBuilder
 class MissAVSpider(BaseSpider):
     """MissAV 爬虫，先扫列表再进入详情页嗅探 m3u8。"""
 
+    ALLOW_SYSTEM_PROXY_FALLBACK = True
+
     GRID_READY_TIMEOUT_MS = 30000
     PLAYER_READY_TIMEOUT_MS = 30000
     M3U8_SNIFF_SECONDS = 45
@@ -613,13 +615,7 @@ class MissAVSpider(BaseSpider):
     def _effective_proxy_server(self, configured: object = None) -> str | None:
         if configured is None:
             configured = (getattr(self, "config", {}) or {}).get("proxy")
-        configured = self._normalize_proxy_server(configured)
-        if configured:
-            return configured
-        env_proxy = self._proxy_from_environment()
-        if env_proxy:
-            return env_proxy
-        return self._proxy_from_windows_settings()
+        return super()._effective_proxy_server(configured, allow_system_fallback=True)
 
     @classmethod
     def _proxy_from_environment(cls) -> str | None:

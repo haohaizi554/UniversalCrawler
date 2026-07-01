@@ -17,6 +17,8 @@ from app.utils.callback_signal import CallbackSignal
 class BaseSpider(threading.Thread):
     """Common pure-Python spider thread base with UI selection helpers."""
 
+    ALLOW_SYSTEM_PROXY_FALLBACK = False
+
     def __init__(self, keyword: str, config: dict):
         """初始化当前实例并准备运行所需的状态，供 `BaseSpider` 使用。"""
         super().__init__(daemon=True, name=self.__class__.__name__)
@@ -395,13 +397,22 @@ class BaseSpider(threading.Thread):
                 return proxy
         return None
 
-    def _effective_proxy_server(self, configured: object = None) -> str | None:
+    def _effective_proxy_server(
+        self,
+        configured: object = None,
+        *,
+        allow_system_fallback: bool | None = None,
+    ) -> str | None:
         configured_text = str(configured or "").strip()
         if configured_text.lower() in {"none", "direct"} or configured_text == "直连":
             return None
         configured_proxy = self._normalize_proxy_server(configured)
         if configured_proxy:
             return configured_proxy
+        if allow_system_fallback is None:
+            allow_system_fallback = bool(getattr(self, "ALLOW_SYSTEM_PROXY_FALLBACK", False))
+        if not allow_system_fallback:
+            return None
         env_proxy = self._proxy_from_environment()
         if env_proxy:
             return env_proxy

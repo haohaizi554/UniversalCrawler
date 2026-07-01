@@ -1470,6 +1470,25 @@ class SpiderHelperTests(unittest.TestCase):
         spider.config = {}
         with patch.dict(os.environ, {"HTTPS_PROXY": "127.0.0.1:7890"}, clear=True):
             self.assertEqual(spider._effective_proxy_server(), "http://127.0.0.1:7890")
+            self.assertIsNone(spider._effective_proxy_server("直连"))
+
+    def test_non_proxy_spiders_ignore_environment_proxy_by_default(self):
+        for spider_cls in (BaseSpider, BilibiliSpider, DouyinSpider, KuaishouSpider, XiaohongshuSpider):
+            with self.subTest(spider=spider_cls.__name__):
+                spider = spider_cls.__new__(spider_cls)
+                spider.config = {}
+                with patch.dict(os.environ, {"HTTPS_PROXY": "127.0.0.1:7890"}, clear=True):
+                    self.assertIsNone(spider._effective_proxy_server())
+                self.assertEqual(spider._effective_proxy_server("127.0.0.1:9001"), "http://127.0.0.1:9001")
+
+    def test_xiaohongshu_proxy_only_uses_explicit_config(self):
+        spider = XiaohongshuSpider.__new__(XiaohongshuSpider)
+        spider.config = {}
+        with patch.dict(os.environ, {"HTTPS_PROXY": "127.0.0.1:7890"}, clear=True):
+            self.assertIsNone(spider._proxy())
+
+        spider.config = {"proxy": "127.0.0.1:9001"}
+        self.assertEqual(spider._proxy(), "http://127.0.0.1:9001")
 
     def test_missav_scan_pages_logs_page_errors(self):
         """验证 `test_missav_scan_pages_logs_page_errors` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
