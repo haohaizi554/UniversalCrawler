@@ -338,7 +338,7 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
 
 For the full explanation, constraints, and support matrix, see:
 
-- [Containerization Guide](docs/containerization.md)
+- [Containerization Guide](docs/guides/containerization.md)
 
 ---
 
@@ -406,8 +406,8 @@ Project configuration is centrally managed by [`app/config/settings.py`](app/con
 
 For more details:
 
-- [Configuration Guide](docs/config.md)
-- [Development Guide](docs/development.md)
+- [Configuration Guide](docs/guides/config.md)
+- [Development Guide](docs/guides/development.md)
 
 ---
 
@@ -514,8 +514,8 @@ This project is already clearly trying to avoid those traps:
 
 Related documents:
 
-- [Architecture Overview](docs/architecture.md)
-- [Internal API Notes](docs/api.md)
+- [Architecture Overview](docs/guides/architecture.md)
+- [Internal API Notes](docs/guides/api.md)
 
 ---
 
@@ -591,7 +591,7 @@ python -m pytest tests
 Related references:
 
 - [Testing Overview](tests/README.md)
-- [Testing Strategy](docs/testing.md)
+- [Testing Strategy](docs/guides/testing.md)
 - [CI Workflow](.github/workflows/python-tests.yml)
 
 ---
@@ -604,16 +604,16 @@ If you want to understand the project quickly, the following reading order is re
 ### Start With The Overview
 
 - [Root README](README.md)
-- [Architecture Document](docs/architecture.md)
-- [Development Guide](docs/development.md)
+- [Architecture Document](docs/guides/architecture.md)
+- [Development Guide](docs/guides/development.md)
 
 ### Then Read Key Topics
 
-- [Interfaces And Key Objects](docs/api.md)
-- [Testing Strategy](docs/testing.md)
-- [Configuration Guide](docs/config.md)
-- [Packaging And Release Guide](docs/packaging.md)
-- [Containerization Guide](docs/containerization.md)
+- [Interfaces And Key Objects](docs/guides/api.md)
+- [Testing Strategy](docs/guides/testing.md)
+- [Configuration Guide](docs/guides/config.md)
+- [Packaging And Release Guide](docs/guides/packaging.md)
+- [Containerization Guide](docs/guides/containerization.md)
 - [Packaging Script Notes](packaging/README.md)
 - [Tests Directory Notes](tests/README.md)
 
@@ -672,7 +672,7 @@ This project is not only meant for source execution; practical delivery and dist
 - whether the full test suite has passed
 - whether user configuration and cookies are confirmed not to be bundled into outputs
 
-For details, see the [Packaging And Release Guide](docs/packaging.md) and [Packaging Script Notes](packaging/README.md).
+For details, see the [Packaging And Release Guide](docs/guides/packaging.md) and [Packaging Script Notes](packaging/README.md).
 
 ---
 

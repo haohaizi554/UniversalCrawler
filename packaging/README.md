@@ -7,7 +7,7 @@
 - 便携版目录：解压即用，适合本地验证、灰度分发、免安装交付
 - 安装包：基于 Inno Setup 的标准 Windows 安装器，适合正式发布
 
-如果你更关心“发布流程”和“人工验收清单”，请优先阅读 [docx/guides/packaging.md](../docx/guides/packaging.md)。
+如果你更关心“发布流程”和“人工验收清单”，请优先阅读 [docs/guides/packaging.md](../docs/guides/packaging.md)。
 
 当前打包链路已经适配本项目的真实入口结构：
 
@@ -49,9 +49,9 @@
 - 维护文档：
   - `README.md`
   - `README_EN.md`
-  - `docx/guides/packaging.md`
-  - `docx/guides/testing.md`
-  - `docx/CHANGELOG.md`
+  - `docs/guides/packaging.md`
+  - `docs/guides/testing.md`
+  - `docs/changelog.md`
 - 静态验证：
   - `tests/test_packaging.py`
 

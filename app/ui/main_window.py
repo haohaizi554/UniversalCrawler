@@ -1,4 +1,4 @@
-﻿"""Main window assembly for the unified 7-page GUI."""
+"""Main window assembly for the unified 7-page GUI."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import threading
 import time
 import ctypes
 import sys
+import weakref
 from ctypes import wintypes
 
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QAbstractNativeEventFilter, QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QVBoxLayout, QWidget
 
@@ -69,13 +70,41 @@ class _NCCALCSIZE_PARAMS(ctypes.Structure):
     ]
 
 
+class _MSG(ctypes.Structure):
+    _fields_ = [
+        ("hWnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt", wintypes.POINT),
+    ]
+
+
+class _WindowsFrameNativeEventFilter(QAbstractNativeEventFilter):
+    """Application-wide Windows frame hook for frameless native messages."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__()
+        self._window_ref = weakref.ref(window)
+
+    def nativeEventFilter(self, event_type, message):
+        window = self._window_ref()
+        if window is None:
+            return False, 0
+        hit_test = window._handle_frameless_native_event(event_type, message)
+        if hit_test is None:
+            return False, 0
+        return True, hit_test
+
+
 class MainWindow(QMainWindow):
     """Thin GUI host that forwards user actions and renders frontend snapshots."""
 
     FRONTEND_REFRESH_INTERVAL_MS = 200
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
-    FRAMELESS_RESIZE_BORDER_PX = 6
+    FRAMELESS_RESIZE_BORDER_PX = 8
     AUTO_HIDE_TASKBAR_RESERVE_PX = 2
     WVR_REDRAW = 0x0300
     SM_CXSIZEFRAME = 32
@@ -99,6 +128,7 @@ class MainWindow(QMainWindow):
     SWP_NOZORDER = 0x0004
     SWP_NOACTIVATE = 0x0010
     SWP_FRAMECHANGED = 0x0020
+    WS_POPUP = 0x80000000
     WS_CAPTION = 0x00C00000
     WS_MAXIMIZEBOX = 0x00010000
     WS_MINIMIZEBOX = 0x00020000
@@ -107,8 +137,13 @@ class MainWindow(QMainWindow):
     WM_GETMINMAXINFO = 0x0024
     WM_NCCALCSIZE = 0x0083
     WM_NCHITTEST = 0x0084
+    WM_NCLBUTTONDOWN = 0x00A1
+    WM_NCLBUTTONUP = 0x00A2
+    WM_NCLBUTTONDBLCLK = 0x00A3
     HTCLIENT = 1
     HTCAPTION = 2
+    HTMINBUTTON = 8
+    HTMAXBUTTON = 9
     HTLEFT = 10
     HTRIGHT = 11
     HTTOP = 12
@@ -117,6 +152,7 @@ class MainWindow(QMainWindow):
     HTBOTTOM = 15
     HTBOTTOMLEFT = 16
     HTBOTTOMRIGHT = 17
+    HTCLOSE = 20
     PAGE_SECTION_BY_ID = {
         "queue": "queue_items",
         "active": "active_downloads",
@@ -146,7 +182,10 @@ class MainWindow(QMainWindow):
         self.setAutoFillBackground(True)
         self._qt_initialized = True
         self.setWindowTitle("Universal Crawler Pro")
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        if sys.platform.startswith("win"):
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        else:
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         QApplication.setFont(QFont("Microsoft YaHei UI", 10))
         self._apply_default_window_geometry()
         configured_theme = str(cfg.get("common", "theme", "dark" if cfg.get("common", "dark_theme", False) else "light") or "light").lower()
@@ -201,6 +240,7 @@ class MainWindow(QMainWindow):
         self.load_initial_state()
         self.refresh_frontend_state(mock=True, force=True)
         self._install_frameless_resize_event_filter()
+        self._install_windows_native_frame_filter()
 
     @property
     def current_save_dir(self) -> str:
@@ -770,9 +810,11 @@ class MainWindow(QMainWindow):
             self._exit_legacy_main_fullscreen()
             return
         if self._is_effectively_maximized():
-            self._restore_from_custom_or_native_maximized()
+            self.showNormal()
         else:
-            self._maximize_to_work_area()
+            self.showMaximized()
+        self.__dict__["_custom_maximized"] = False
+        self.__dict__["_native_maximize_requested"] = self._safe_is_native_maximized()
         self._sync_window_title_bar_state()
         QTimer.singleShot(0, self._sync_window_title_bar_state)
 
@@ -919,6 +961,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._connections.disconnect_all()
         self._remove_frameless_resize_event_filter()
+        self._remove_windows_native_frame_filter()
         self.cleanup_media()
         self._ui_update_scheduler.stop()
         self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
@@ -1200,25 +1243,52 @@ class MainWindow(QMainWindow):
         if not sys.platform.startswith("win"):
             return None
         try:
-            msg = wintypes.MSG.from_address(int(message))
+            msg = _MSG.from_address(int(message))
         except (AttributeError, TypeError, ValueError):
             return None
+        if not self._native_msg_belongs_to_this_window(msg):
+            return None
         message_id = int(msg.message)
-        if message_id == self.WM_NCCALCSIZE:
+        if message_id == self.WM_NCCALCSIZE and bool(msg.wParam):
             return self._handle_nc_calc_size(msg)
         if message_id == self.WM_GETMINMAXINFO:
             self._handle_get_min_max_info(msg)
             return 0
         if message_id == self.WM_NCHITTEST:
-            return self._frameless_hit_test(self._native_hit_test_global_pos(msg))
+            return self._win32_hit_test(msg)
+        if message_id == self.WM_NCLBUTTONDOWN and int(msg.wParam) == self.HTMAXBUTTON:
+            return 0
+        if message_id == self.WM_NCLBUTTONUP:
+            if int(msg.wParam) == self.HTMAXBUTTON:
+                self._toggle_maximized()
+                return 0
+        if message_id == self.WM_NCLBUTTONDBLCLK and int(msg.wParam) == self.HTCAPTION:
+            self._toggle_maximized()
+            return 0
         return None
 
-    def _native_hit_test_global_pos(self, msg) -> QPoint:
-        native_pos = self._global_pos_from_lparam(int(msg.lParam))
-        cursor_pos = QCursor.pos()
-        if (cursor_pos - native_pos).manhattanLength() <= 24:
-            return cursor_pos
-        return native_pos
+    def _dwm_def_window_proc(self, msg) -> int | None:
+        try:
+            result_type = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
+            result = result_type()
+            handled = ctypes.windll.dwmapi.DwmDefWindowProc(
+                msg.hWnd,
+                msg.message,
+                msg.wParam,
+                msg.lParam,
+                ctypes.byref(result),
+            )
+        except Exception:
+            return None
+        return int(result.value) if handled else None
+
+    def _native_msg_belongs_to_this_window(self, msg) -> bool:
+        try:
+            hwnd = int(msg.hWnd)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
+        cached_hwnd = self.__dict__.get("_windows_hwnd")
+        return cached_hwnd is not None and hwnd == int(cached_hwnd)
 
     def _apply_windows_frameless_window_style(self) -> None:
         if self.__dict__.get("_windows_frameless_style_applied", False):
@@ -1227,11 +1297,18 @@ class MainWindow(QMainWindow):
             return
         try:
             hwnd = int(self.winId())
+            self.__dict__["_windows_hwnd"] = hwnd
             user32 = ctypes.windll.user32
+            long_ptr = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
             get_window_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
             set_window_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
-            style = int(get_window_long(hwnd, self.GWL_STYLE))
-            desired_style = style | (
+            get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_window_long.restype = long_ptr
+            set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, long_ptr]
+            set_window_long.restype = long_ptr
+            hwnd_handle = wintypes.HWND(hwnd)
+            style = int(get_window_long(hwnd_handle, self.GWL_STYLE))
+            desired_style = (style & ~self.WS_POPUP) | (
                 self.WS_CAPTION
                 | self.WS_THICKFRAME
                 | self.WS_SYSMENU
@@ -1239,9 +1316,9 @@ class MainWindow(QMainWindow):
                 | self.WS_MAXIMIZEBOX
             )
             if desired_style != style:
-                set_window_long(hwnd, self.GWL_STYLE, desired_style)
+                set_window_long(hwnd_handle, self.GWL_STYLE, long_ptr(desired_style))
             user32.SetWindowPos(
-                hwnd,
+                hwnd_handle,
                 0,
                 0,
                 0,
@@ -1259,30 +1336,7 @@ class MainWindow(QMainWindow):
 
     def _handle_nc_calc_size(self, msg) -> int:
         try:
-            if bool(msg.wParam):
-                rect = ctypes.cast(msg.lParam, ctypes.POINTER(_NCCALCSIZE_PARAMS)).contents.rgrc[0]
-            else:
-                rect = ctypes.cast(msg.lParam, ctypes.POINTER(wintypes.RECT)).contents
-
-            monitor_info = self._monitor_info_for_hwnd(msg.hWnd)
-            monitor_rect = monitor_info.rcMonitor if monitor_info is not None else None
-            is_maximized = self._is_hwnd_maximized(msg.hWnd) or self._is_effectively_maximized()
-            is_fullscreen = bool(self.isFullScreen())
-
-            if monitor_rect is not None and is_maximized and not is_fullscreen:
-                tx = self._resize_border_thickness_for_hwnd(msg.hWnd, horizontal=True)
-                ty = self._resize_border_thickness_for_hwnd(msg.hWnd, horizontal=False)
-                rect.left += tx
-                rect.right -= tx
-                rect.top += ty
-                rect.bottom -= ty
-
-            if monitor_rect is not None and is_maximized and not is_fullscreen:
-                self._apply_auto_hide_taskbar_reserve_to_rect(
-                    rect,
-                    self._auto_hide_taskbar_edge_for_monitor(monitor_rect),
-                )
-            return self.WVR_REDRAW if bool(msg.wParam) else 0
+            return 0
         except Exception as exc:
             debug_logger.log_exception("MainWindow", "handle_nc_calc_size", exc)
             return 0
@@ -1323,6 +1377,105 @@ class MainWindow(QMainWindow):
         frame = self._system_metric_for_hwnd(frame_metric, hwnd)
         padded = self._system_metric_for_hwnd(self.SM_CXPADDEDBORDER, hwnd)
         return max(0, frame + padded)
+
+    def _native_client_pos_from_lparam(self, msg) -> QPoint:
+        point = wintypes.POINT(
+            self._signed_word(int(msg.lParam)),
+            self._signed_word(int(msg.lParam) >> 16),
+        )
+        try:
+            ctypes.windll.user32.ScreenToClient(msg.hWnd, ctypes.byref(point))
+        except Exception:
+            return QPoint(int(point.x), int(point.y))
+        return QPoint(int(point.x), int(point.y))
+
+    def _native_client_size_for_hwnd(self, hwnd) -> tuple[int, int]:
+        rect = wintypes.RECT()
+        try:
+            if ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect)):
+                return max(1, int(rect.right - rect.left)), max(1, int(rect.bottom - rect.top))
+        except Exception:
+            pass
+        dpr = self._qt_dpr()
+        return max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr))
+
+    def _qt_dpr(self) -> float:
+        try:
+            handle = self.windowHandle()
+            if handle is not None:
+                dpr = float(handle.devicePixelRatio())
+                if dpr > 0:
+                    return dpr
+        except Exception:
+            pass
+        try:
+            dpr = float(self.devicePixelRatioF())
+            return dpr if dpr > 0 else 1.0
+        except Exception:
+            return 1.0
+
+    def _widget_rect_client_px(self, widget: QWidget | None) -> tuple[int, int, int, int] | None:
+        if widget is None or not widget.isVisible():
+            return None
+        dpr = self._qt_dpr()
+        pos = widget.mapTo(self, QPoint(0, 0))
+        return (
+            round(pos.x() * dpr),
+            round(pos.y() * dpr),
+            round((pos.x() + widget.width()) * dpr),
+            round((pos.y() + widget.height()) * dpr),
+        )
+
+    @staticmethod
+    def _point_in_rect_px(rect: tuple[int, int, int, int] | None, x: int, y: int) -> bool:
+        if rect is None:
+            return False
+        left, top, right, bottom = rect
+        return left <= x < right and top <= y < bottom
+
+    def _win32_hit_test(self, msg) -> int:
+        pos = self._native_client_pos_from_lparam(msg)
+        x = int(pos.x())
+        y = int(pos.y())
+        width, height = self._native_client_size_for_hwnd(msg.hWnd)
+
+        title_bar = self.__dict__.get("window_title_bar")
+        if title_bar is not None and title_bar.isVisible():
+            if self._point_in_rect_px(self._widget_rect_client_px(getattr(title_bar, "btn_maximize", None)), x, y):
+                return self.HTMAXBUTTON
+            for button in (
+                getattr(title_bar, "btn_minimize", None),
+                getattr(title_bar, "btn_close", None),
+            ):
+                if self._point_in_rect_px(self._widget_rect_client_px(button), x, y):
+                    return self.HTCLIENT
+
+        if not self._is_effectively_maximized() and not self.isFullScreen():
+            border_x, border_y = self._frameless_resize_margins()
+            left = x < border_x
+            right = x >= width - border_x
+            top = y < border_y
+            bottom = y >= height - border_y
+            if top and left:
+                return self.HTTOPLEFT
+            if top and right:
+                return self.HTTOPRIGHT
+            if bottom and left:
+                return self.HTBOTTOMLEFT
+            if bottom and right:
+                return self.HTBOTTOMRIGHT
+            if left:
+                return self.HTLEFT
+            if right:
+                return self.HTRIGHT
+            if top:
+                return self.HTTOP
+            if bottom:
+                return self.HTBOTTOM
+
+        if isinstance(title_bar, QWidget) and self._point_in_rect_px(self._widget_rect_client_px(title_bar), x, y):
+            return self.HTCAPTION
+        return self.HTCLIENT
 
     def _apply_auto_hide_taskbar_reserve_to_rect(self, rect, edge: int | None) -> None:
         reserve = self.AUTO_HIDE_TASKBAR_RESERVE_PX
@@ -1454,18 +1607,62 @@ class MainWindow(QMainWindow):
         value &= 0xFFFF
         return value - 0x10000 if value & 0x8000 else value
 
+    def _uses_windows_native_resize(self) -> bool:
+        return sys.platform.startswith("win")
+
+    def _frameless_resize_margins(self) -> tuple[int, int]:
+        fallback = int(self.FRAMELESS_RESIZE_BORDER_PX)
+        if not sys.platform.startswith("win"):
+            return fallback, fallback
+        try:
+            hwnd = int(self.winId())
+            horizontal = max(fallback, int(self._resize_border_thickness_for_hwnd(hwnd, horizontal=True)))
+            vertical = max(fallback, int(self._resize_border_thickness_for_hwnd(hwnd, horizontal=False)))
+            return horizontal, vertical
+        except Exception:
+            return fallback, fallback
+
+    @staticmethod
+    def _point_in_leading_edge(value: int, start: int, thickness: int) -> bool:
+        thickness = max(1, thickness)
+        return start - thickness <= value < start + thickness
+
+    @staticmethod
+    def _point_in_trailing_edge(value: int, end: int, thickness: int) -> bool:
+        thickness = max(1, thickness)
+        return end - thickness < value <= end + thickness
+
     def _frameless_hit_test(self, global_pos: QPoint) -> int | None:
         if self.isFullScreen():
             return None
         frame = self.frameGeometry()
-        if not frame.contains(global_pos):
+        border_x, border_y = self._frameless_resize_margins()
+        hit_frame = frame.adjusted(-border_x, -border_y, border_x, border_y)
+        if not hit_frame.contains(global_pos):
             return None
+
+        title_bar = self.__dict__.get("window_title_bar")
+        title_local_pos = None
+        title_contains_pos = False
+        if title_bar is not None and title_bar.isVisible():
+            title_local_pos = title_bar.mapFromGlobal(global_pos)
+            title_contains_pos = title_bar.rect().contains(title_local_pos)
+            if title_contains_pos and hasattr(title_bar, "chrome_button_kind_at"):
+                button_kind = title_bar.chrome_button_kind_at(title_local_pos)
+                if button_kind == "minimize":
+                    return self.HTMINBUTTON
+                if button_kind == "maximize":
+                    return self.HTMAXBUTTON
+                if button_kind == "close":
+                    return self.HTCLOSE
+
         if not self._is_effectively_maximized():
-            border = self.FRAMELESS_RESIZE_BORDER_PX
-            left = frame.left() <= global_pos.x() < frame.left() + border
-            right = frame.right() - border < global_pos.x() <= frame.right()
-            top = frame.top() <= global_pos.y() < frame.top() + border
-            bottom = frame.bottom() - border < global_pos.y() <= frame.bottom()
+            x = global_pos.x()
+            y = global_pos.y()
+            left = self._point_in_leading_edge(x, frame.left(), border_x)
+            right = self._point_in_trailing_edge(x, frame.right(), border_x)
+            top = self._point_in_leading_edge(y, frame.top(), border_y)
+            bottom = self._point_in_trailing_edge(y, frame.bottom(), border_y)
             if top and left:
                 return self.HTTOPLEFT
             if top and right:
@@ -1483,24 +1680,24 @@ class MainWindow(QMainWindow):
             if bottom:
                 return self.HTBOTTOM
 
-        title_bar = self.__dict__.get("window_title_bar")
-        if title_bar is not None and title_bar.isVisible():
-            local_pos = title_bar.mapFromGlobal(global_pos)
-            if title_bar.rect().contains(local_pos) and not title_bar.is_interactive_at(local_pos):
-                return self.HTCAPTION
+        if title_contains_pos and title_local_pos is not None and not title_bar.is_interactive_at(title_local_pos):
+            return self.HTCAPTION
         return None
 
     def _frameless_resize_edges_for_global_pos(self, global_pos: QPoint):
         if self.isFullScreen() or self._is_effectively_maximized():
             return None
         frame = self.frameGeometry()
-        if not frame.contains(global_pos):
+        border_x, border_y = self._frameless_resize_margins()
+        hit_frame = frame.adjusted(-border_x, -border_y, border_x, border_y)
+        if not hit_frame.contains(global_pos):
             return None
-        border = self.FRAMELESS_RESIZE_BORDER_PX
-        left = frame.left() <= global_pos.x() < frame.left() + border
-        right = frame.right() - border < global_pos.x() <= frame.right()
-        top = frame.top() <= global_pos.y() < frame.top() + border
-        bottom = frame.bottom() - border < global_pos.y() <= frame.bottom()
+        x = global_pos.x()
+        y = global_pos.y()
+        left = self._point_in_leading_edge(x, frame.left(), border_x)
+        right = self._point_in_trailing_edge(x, frame.right(), border_x)
+        top = self._point_in_leading_edge(y, frame.top(), border_y)
+        bottom = self._point_in_trailing_edge(y, frame.bottom(), border_y)
         edge = None
         for enabled, qt_edge in (
             (left, Qt.Edge.LeftEdge),
@@ -1569,11 +1766,38 @@ class MainWindow(QMainWindow):
             return False
 
     def _install_frameless_resize_event_filter(self) -> None:
+        if self._uses_windows_native_resize():
+            return
         app = QApplication.instance()
         if app is None or self.__dict__.get("_frameless_resize_event_filter_installed", False):
             return
         app.installEventFilter(self)
         self.__dict__["_frameless_resize_event_filter_installed"] = True
+
+    def _install_windows_native_frame_filter(self) -> None:
+        if not sys.platform.startswith("win") or self.__dict__.get("_windows_native_frame_filter_installed", False):
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        try:
+            self.__dict__["_windows_hwnd"] = int(self.winId())
+        except (RuntimeError, TypeError, ValueError):
+            return
+        native_filter = _WindowsFrameNativeEventFilter(self)
+        app.installNativeEventFilter(native_filter)
+        self.__dict__["_windows_native_frame_filter"] = native_filter
+        self.__dict__["_windows_native_frame_filter_installed"] = True
+
+    def _remove_windows_native_frame_filter(self) -> None:
+        if not self.__dict__.get("_windows_native_frame_filter_installed", False):
+            return
+        app = QApplication.instance()
+        native_filter = self.__dict__.get("_windows_native_frame_filter")
+        if app is not None and native_filter is not None:
+            app.removeNativeEventFilter(native_filter)
+        self.__dict__["_windows_native_frame_filter"] = None
+        self.__dict__["_windows_native_frame_filter_installed"] = False
 
     def _remove_frameless_resize_event_filter(self) -> None:
         if not self.__dict__.get("_frameless_resize_event_filter_installed", False):
@@ -1855,4 +2079,5 @@ class MainWindow(QMainWindow):
         if callable(feedback):
             feedback(message, ok=ok)
         self.refresh_frontend_state(topics={"settings.update"}, force=True)
+
 

@@ -352,7 +352,7 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
 
 更完整的说明、限制和支持矩阵见：
 
-- [容器化部署说明](docs/containerization.md)
+- [容器化部署说明](docs/guides/containerization.md)
 
 ---
 
@@ -420,8 +420,8 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
 
 更多配置说明可查看：
 
-- [配置文档](docs/config.md)
-- [开发文档](docs/development.md)
+- [配置文档](docs/guides/config.md)
+- [开发文档](docs/guides/development.md)
 
 ---
 
@@ -528,8 +528,8 @@ graph TD
 
 相关文档：
 
-- [架构说明](docs/architecture.md)
-- [内部接口说明](docs/api.md)
+- [架构说明](docs/guides/architecture.md)
+- [内部接口说明](docs/guides/api.md)
 
 ---
 
@@ -605,7 +605,7 @@ python -m pytest tests
 相关说明：
 
 - [测试总览](tests/README.md)
-- [测试策略文档](docs/testing.md)
+- [测试策略文档](docs/guides/testing.md)
 - [CI 工作流](.github/workflows/python-tests.yml)
 
 ---
@@ -618,16 +618,16 @@ python -m pytest tests
 ### 先看总览
 
 - [根 README](README.md)
-- [架构文档](docs/architecture.md)
-- [开发指南](docs/development.md)
+- [架构文档](docs/guides/architecture.md)
+- [开发指南](docs/guides/development.md)
 
 ### 再看关键专题
 
-- [接口与关键对象](docs/api.md)
-- [测试策略](docs/testing.md)
-- [配置说明](docs/config.md)
-- [打包与发布指南](docs/packaging.md)
-- [容器化部署说明](docs/containerization.md)
+- [接口与关键对象](docs/guides/api.md)
+- [测试策略](docs/guides/testing.md)
+- [配置说明](docs/guides/config.md)
+- [打包与发布指南](docs/guides/packaging.md)
+- [容器化部署说明](docs/guides/containerization.md)
 - [打包脚本说明](packaging/README.md)
 - [测试目录说明](tests/README.md)
 
@@ -682,7 +682,7 @@ python -m pytest tests
 - [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — 运行时初始化钩子
 - [`packaging/project_meta.py`](packaging/project_meta.py) — 打包共享元数据入口
 - [`app/utils/runtime_paths.py`](app/utils/runtime_paths.py) — 开发态 / 打包态用户数据路径规则
-- [`docs/windows-file-association.md`](docs/windows-file-association.md) — Windows 默认打开方式接入经验
+- [`docs/guides/windows-file-association.md`](docs/guides/windows-file-association.md) — Windows 默认打开方式接入经验
 
 ### 打包链路联动说明
 
@@ -690,7 +690,7 @@ python -m pytest tests
 
 - 版本与展示名需要同步 `pyproject.toml` + `packaging/project_meta.py`
 - 路径口径需要同步 `app/utils/runtime_paths.py`
-- 说明文档至少同步 `README.md`、`README_EN.md`、`docs/packaging.md`、`packaging/README.md`
+- 说明文档至少同步 `README.md`、`README_EN.md`、`docs/guides/packaging.md`、`packaging/README.md`
 - 静态验证需要同步 `tests/test_packaging.py`
 
 ### 打包前建议检查
@@ -702,7 +702,7 @@ python -m pytest tests
 - 是否确认不把用户态配置和 Cookie 打入产物
 - 是否确认开发态继续写入项目根 `user_data/`，打包态切换到 `%LOCALAPPDATA%`
 
-详细说明见：[打包与发布指南](docs/packaging.md) 与 [打包脚本说明](packaging/README.md)
+详细说明见：[打包与发布指南](docs/guides/packaging.md) 与 [打包脚本说明](packaging/README.md)
 
 ---
 

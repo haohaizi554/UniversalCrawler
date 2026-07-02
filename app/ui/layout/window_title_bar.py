@@ -153,11 +153,14 @@ class WindowTitleBar(QWidget):
         self.btn_maximize.set_maximized(self._is_maximized)
         self.btn_maximize.setToolTip("还原" if self._is_maximized else "最大化")
 
+    def chrome_button_kind_at(self, pos) -> str | None:
+        for button in (self.btn_minimize, self.btn_maximize, self.btn_close):
+            if button.isVisible() and button.geometry().contains(pos):
+                return button.kind
+        return None
+
     def is_interactive_at(self, pos) -> bool:
-        return any(
-            button.isVisible() and button.geometry().contains(pos)
-            for button in (self.btn_minimize, self.btn_maximize, self.btn_close)
-        )
+        return self.chrome_button_kind_at(pos) is not None
 
     def apply_theme(self, is_dark: bool) -> None:
         c = theme_colors(is_dark)
@@ -192,3 +195,4 @@ class WindowTitleBar(QWidget):
                     event.accept()
                     return
         super().mousePressEvent(event)
+

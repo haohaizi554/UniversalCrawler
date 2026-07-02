@@ -1,4 +1,4 @@
-﻿let frontendState = buildMockState();
+let frontendState = buildMockState();
 let currentPage = "queue";
 let ws = null;
 let platforms = [];
@@ -156,6 +156,21 @@ let iconManifest = {
   fallback: "view_grid.png",
   actions: ACTION_ICON_FILES,
 };
+
+function updateIconManifest(manifest) {
+  if (!manifest || typeof manifest !== "object") return;
+  iconManifest = {
+    ...iconManifest,
+    ...manifest,
+    actions: {
+      ...ACTION_ICON_FILES,
+      ...((iconManifest && iconManifest.actions) || {}),
+      ...((manifest && manifest.actions) || {}),
+    },
+  };
+  configureTaskRenderHelpers();
+}
+
 let renderSignatures = {};
 let frontendVersion = 0;
 let pendingRenderSections = new Set();
@@ -1849,4 +1864,3 @@ function cssEscape(value) {
   if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(String(value));
   return String(value).replace(/["\\]/g, "\\$&");
 }
-

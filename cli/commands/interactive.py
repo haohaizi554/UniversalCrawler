@@ -484,6 +484,11 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
             print(f"  {GREEN}✓ {keyword}{RESET}\n")
 
             config = get_platform_defaults(platform_id)
+            # Interactive mode uses the historical 30s request timeout unless
+            # the user overrides it with --config below. Platform crawlers may
+            # carry longer GUI defaults, but the CLI prompt contract stays
+            # snappier and stable for scripted tests.
+            config["timeout"] = 30
             print(f"{BOLD}步骤 3/5: 平台参数{RESET}")
 
             if platform_id == "douyin":

@@ -642,12 +642,78 @@ class MainWindowTests(unittest.TestCase):
         window.isFullScreen = Mock(return_value=False)
         window.isMaximized = Mock(return_value=False)
         window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        window._frameless_resize_margins = Mock(return_value=(8, 14))
         window.window_title_bar = FakeTitleBar()
 
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(100, 100)), MainWindow.HTTOPLEFT)
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(599, 499)), MainWindow.HTBOTTOMRIGHT)
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(320, 88)), MainWindow.HTTOP)
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(320, 512)), MainWindow.HTBOTTOM)
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(180, 116)), MainWindow.HTCAPTION)
         self.assertIsNone(MainWindow._frameless_hit_test(window, QPoint(250, 250)))
+
+    def test_frameless_hit_test_exposes_native_title_button_regions(self):
+        from PyQt6.QtCore import QPoint, QRect
+
+        class FakeTitleBar:
+            def __init__(self, kind):
+                self.kind = kind
+
+            def isVisible(self):
+                return True
+
+            def mapFromGlobal(self, pos):
+                return QPoint(pos.x() - 100, pos.y() - 100)
+
+            def rect(self):
+                return QRect(0, 0, 500, 28)
+
+            def chrome_button_kind_at(self, _pos):
+                return self.kind
+
+            def is_interactive_at(self, _pos):
+                return self.kind is not None
+
+        window = self._make_window()
+        window.isFullScreen = Mock(return_value=False)
+        window.isMaximized = Mock(return_value=False)
+        window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        window._frameless_resize_margins = Mock(return_value=(8, 8))
+
+        window.window_title_bar = FakeTitleBar("minimize")
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(560, 116)), MainWindow.HTMINBUTTON)
+        window.window_title_bar = FakeTitleBar("maximize")
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(560, 116)), MainWindow.HTMAXBUTTON)
+        window.window_title_bar = FakeTitleBar("close")
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(560, 116)), MainWindow.HTCLOSE)
+
+    def test_frameless_hit_test_prioritizes_title_buttons_over_top_resize_border(self):
+        from PyQt6.QtCore import QPoint, QRect
+
+        class FakeTitleBar:
+            def isVisible(self):
+                return True
+
+            def mapFromGlobal(self, pos):
+                return QPoint(pos.x() - 100, pos.y() - 100)
+
+            def rect(self):
+                return QRect(0, 0, 500, 28)
+
+            def chrome_button_kind_at(self, _pos):
+                return "maximize"
+
+            def is_interactive_at(self, _pos):
+                return True
+
+        window = self._make_window()
+        window.isFullScreen = Mock(return_value=False)
+        window.isMaximized = Mock(return_value=False)
+        window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        window._frameless_resize_margins = Mock(return_value=(8, 14))
+        window.window_title_bar = FakeTitleBar()
+
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(560, 104)), MainWindow.HTMAXBUTTON)
 
     def test_frameless_resize_fallback_uses_system_resize(self):
         from PyQt6.QtCore import QPoint, QRect
@@ -691,6 +757,7 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertEqual(WindowTitleBar.HEIGHT, 28)
         self.assertEqual(WindowChromeButton.WIDTH, 38)
+        self.assertEqual(MainWindow.FRAMELESS_RESIZE_BORDER_PX, 8)
 
     def test_default_window_size_is_bounded_by_available_screen(self):
         from PyQt6.QtCore import QRect, QSize
@@ -750,6 +817,110 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(MainWindow._resize_border_thickness_for_hwnd(window, 1001, horizontal=True), 12)
         self.assertEqual(MainWindow._resize_border_thickness_for_hwnd(window, 1001, horizontal=False), 13)
 
+    def test_frameless_resize_margins_use_windows_system_metrics(self):
+        window = self._make_window()
+        window.winId = Mock(return_value=1001)
+        window._resize_border_thickness_for_hwnd = Mock(side_effect=lambda _hwnd, *, horizontal: 12 if horizontal else 14)
+
+        self.assertEqual(MainWindow._frameless_resize_margins(window), (12, 14))
+
+    def test_windows_native_hit_test_uses_vertical_margin_for_top_and_bottom(self):
+        from PyQt6.QtCore import QPoint, QRect, Qt
+
+        window = self._make_window()
+        window.isFullScreen = Mock(return_value=False)
+        window.isMaximized = Mock(return_value=False)
+        window.windowState = Mock(return_value=Qt.WindowState.WindowNoState)
+        window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
+        window._frameless_resize_margins = Mock(return_value=(8, 14))
+        window.window_title_bar = None
+
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(320, 113)), MainWindow.HTTOP)
+        self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(320, 486)), MainWindow.HTBOTTOM)
+        self.assertIsNone(MainWindow._frameless_hit_test(window, QPoint(320, 115)))
+
+
+    def test_win32_hit_test_prioritizes_native_caption_buttons(self):
+        from types import SimpleNamespace
+        from PyQt6.QtCore import QPoint
+
+        title_bar = SimpleNamespace(
+            isVisible=Mock(return_value=True),
+            btn_close=object(),
+            btn_maximize=object(),
+            btn_minimize=object(),
+        )
+        window = self._make_window()
+        window.window_title_bar = title_bar
+        window._native_client_pos_from_lparam = Mock(return_value=QPoint(940, 14))
+        window._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
+        window._is_effectively_maximized = Mock(return_value=False)
+        window.isFullScreen = Mock(return_value=False)
+        window._frameless_resize_margins = Mock(return_value=(12, 12))
+        def rect_for(widget):
+            if widget is title_bar.btn_close:
+                return (962, 0, 1000, 28)
+            if widget is title_bar.btn_maximize:
+                return (924, 0, 962, 28)
+            if widget is title_bar.btn_minimize:
+                return (886, 0, 924, 28)
+            if widget is title_bar:
+                return (0, 0, 1000, 28)
+            return None
+
+        window._widget_rect_client_px = Mock(side_effect=rect_for)
+
+        self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTMAXBUTTON)
+
+    def test_win32_hit_test_keeps_minimize_and_close_as_qt_client_buttons(self):
+        from types import SimpleNamespace
+        from PyQt6.QtCore import QPoint
+
+        title_bar = SimpleNamespace(
+            isVisible=Mock(return_value=True),
+            btn_close=object(),
+            btn_maximize=object(),
+            btn_minimize=object(),
+        )
+        window = self._make_window()
+        window.window_title_bar = title_bar
+        window._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
+        window._is_effectively_maximized = Mock(return_value=False)
+        window.isFullScreen = Mock(return_value=False)
+        window._frameless_resize_margins = Mock(return_value=(12, 12))
+
+        def rect_for(widget):
+            if widget is title_bar.btn_close:
+                return (962, 0, 1000, 28)
+            if widget is title_bar.btn_maximize:
+                return (924, 0, 962, 28)
+            if widget is title_bar.btn_minimize:
+                return (886, 0, 924, 28)
+            if widget is title_bar:
+                return (0, 0, 1000, 28)
+            return None
+
+        window._widget_rect_client_px = Mock(side_effect=rect_for)
+        window._native_client_pos_from_lparam = Mock(return_value=QPoint(900, 14))
+        self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTCLIENT)
+
+        window._native_client_pos_from_lparam = Mock(return_value=QPoint(980, 14))
+        self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTCLIENT)
+
+    def test_win32_hit_test_uses_client_edges_for_native_resize(self):
+        from types import SimpleNamespace
+        from PyQt6.QtCore import QPoint
+
+        window = self._make_window()
+        window.window_title_bar = None
+        window._native_client_pos_from_lparam = Mock(return_value=QPoint(3, 300))
+        window._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
+        window._is_effectively_maximized = Mock(return_value=False)
+        window.isFullScreen = Mock(return_value=False)
+        window._frameless_resize_margins = Mock(return_value=(12, 12))
+
+        self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTLEFT)
+
     def test_nc_calc_size_leaves_real_fullscreen_rect_unreserved(self):
         import ctypes
         from ctypes import wintypes
@@ -768,11 +939,36 @@ class MainWindowTests(unittest.TestCase):
 
         result = MainWindow._handle_nc_calc_size(window, msg)
 
-        self.assertEqual(result, MainWindow.WVR_REDRAW)
+        self.assertEqual(result, 0)
         rect = params.rgrc[0]
         self.assertEqual((rect.left, rect.top, rect.right, rect.bottom), (0, 0, 1920, 1080))
         window._resize_border_thickness_for_hwnd.assert_not_called()
         window._auto_hide_taskbar_edge_for_monitor.assert_not_called()
+
+    def test_nc_calc_size_always_hides_native_caption_without_taskbar_adjustment(self):
+        import ctypes
+        from ctypes import wintypes
+        from app.ui import main_window as main_window_module
+
+        params = main_window_module._NCCALCSIZE_PARAMS()
+        params.rgrc[0] = wintypes.RECT(0, 0, 1920, 1080)
+        msg = SimpleNamespace(wParam=1, lParam=ctypes.addressof(params), hWnd=1001)
+        window = self._make_window()
+        window._monitor_info_for_hwnd = Mock(return_value=SimpleNamespace(rcMonitor=wintypes.RECT(0, 0, 1920, 1080)))
+        window._is_hwnd_maximized = Mock(return_value=True)
+        window._is_effectively_maximized = Mock(return_value=True)
+        window.isFullScreen = Mock(return_value=False)
+        window._resize_border_thickness_for_hwnd = Mock(return_value=12)
+        window._auto_hide_taskbar_edge_for_monitor = Mock(return_value=MainWindow.ABE_BOTTOM)
+
+        result = MainWindow._handle_nc_calc_size(window, msg)
+
+        self.assertEqual(result, 0)
+        rect = params.rgrc[0]
+        self.assertEqual((rect.left, rect.top, rect.right, rect.bottom), (0, 0, 1920, 1080))
+        window._resize_border_thickness_for_hwnd.assert_not_called()
+        window._auto_hide_taskbar_edge_for_monitor.assert_not_called()
+
     def test_constrain_window_geometry_keeps_window_inside_available_screen(self):
         from PyQt6.QtCore import QRect, QSize
 
@@ -792,7 +988,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertLessEqual(constrained.right(), 1279)
         self.assertLessEqual(constrained.bottom(), 719)
 
-    def test_mouse_press_on_frameless_edge_accepts_started_resize(self):
+    def test_mouse_press_on_frameless_edge_accepts_started_resize_for_qt_fallback(self):
         from PyQt6.QtCore import QPoint, Qt
 
         class _PointWrapper:
@@ -810,6 +1006,34 @@ class MainWindowTests(unittest.TestCase):
                 return _PointWrapper()
 
         window = self._make_window()
+        window._uses_windows_native_resize = Mock(return_value=False)
+        window._start_frameless_system_resize = Mock(return_value=True)
+        event = _MouseEvent()
+
+        MainWindow.mousePressEvent(window, event)
+
+        event.accept.assert_called_once()
+        window._start_frameless_system_resize.assert_called_once_with(QPoint(599, 300))
+
+    def test_mouse_press_uses_system_resize_fallback_on_windows_too(self):
+        from PyQt6.QtCore import QPoint, Qt
+
+        class _PointWrapper:
+            def toPoint(self):
+                return QPoint(599, 300)
+
+        class _MouseEvent:
+            def __init__(self):
+                self.accept = Mock()
+
+            def button(self):
+                return Qt.MouseButton.LeftButton
+
+            def globalPosition(self):
+                return _PointWrapper()
+
+        window = self._make_window()
+        window._uses_windows_native_resize = Mock(return_value=True)
         window._start_frameless_system_resize = Mock(return_value=True)
         event = _MouseEvent()
 
@@ -865,6 +1089,7 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window._connections = Mock()
         window._remove_frameless_resize_event_filter = Mock()
+        window._remove_windows_native_frame_filter = Mock()
         window.cleanup_media = Mock()
         window._ui_update_scheduler = Mock()
         window.event_bus = Mock()
@@ -876,6 +1101,8 @@ class MainWindowTests(unittest.TestCase):
 
         MainWindow.closeEvent(window, event)
 
+        window._remove_frameless_resize_event_filter.assert_called_once()
+        window._remove_windows_native_frame_filter.assert_called_once()
         self.assertFalse(mock_save_ui_state.call_args.kwargs["is_fs"])
         event.accept.assert_called_once()
 
@@ -887,6 +1114,45 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertFalse(handled)
         self.assertEqual(result, 0)
+
+    def test_windows_native_resize_does_not_install_qt_resize_event_filter(self):
+        window = self._make_window()
+        window._uses_windows_native_resize = Mock(return_value=True)
+
+        with patch("app.ui.main_window.QApplication.instance") as app_instance:
+            MainWindow._install_frameless_resize_event_filter(window)
+
+        app_instance.assert_not_called()
+        self.assertFalse(window.__dict__.get("_frameless_resize_event_filter_installed", False))
+
+    def test_windows_native_frame_filter_installs_application_filter(self):
+        window = self._make_window()
+        window.winId = Mock(return_value=1001)
+        app = Mock()
+
+        with patch("app.ui.main_window.sys.platform", "win32"), patch(
+            "app.ui.main_window.QApplication.instance",
+            return_value=app,
+        ):
+            MainWindow._install_windows_native_frame_filter(window)
+
+        app.installNativeEventFilter.assert_called_once()
+        self.assertEqual(window.__dict__.get("_windows_hwnd"), 1001)
+        self.assertTrue(window.__dict__.get("_windows_native_frame_filter_installed", False))
+        self.assertIsNotNone(window.__dict__.get("_windows_native_frame_filter"))
+
+    def test_windows_native_frame_filter_delegates_to_window_handler(self):
+        from app.ui.main_window import _WindowsFrameNativeEventFilter
+
+        window = self._make_window()
+        window._handle_frameless_native_event = Mock(return_value=MainWindow.HTMAXBUTTON)
+        native_filter = _WindowsFrameNativeEventFilter(window)
+
+        handled, result = native_filter.nativeEventFilter("windows_generic_MSG", object())
+
+        self.assertTrue(handled)
+        self.assertEqual(result, MainWindow.HTMAXBUTTON)
+
 
     def test_fullscreen_mode_compatibility_forwards_to_media_panel(self):
         window = self._make_window()
@@ -1004,3 +1270,4 @@ class MainWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

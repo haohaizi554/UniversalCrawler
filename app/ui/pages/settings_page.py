@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 from app.debug_logger import debug_logger
@@ -570,6 +570,7 @@ class SettingsPage(PageFrame):
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
 
         self._nav_buttons = {}
@@ -595,6 +596,7 @@ class SettingsPage(PageFrame):
             widget = item.widget()
             if widget is not None:
                 widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
 
     def _render_current_group(self) -> None:
@@ -1579,4 +1581,3 @@ class SettingsPage(PageFrame):
             self.setStyleSheet(qss)
         finally:
             self._applying_style = False
-

@@ -766,7 +766,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertEqual(violations, [], f"leftover debug probes found: {violations}")
 
     def test_packaging_docs_reference_runtime_paths_and_project_meta(self):
-        docs = (PROJECT_ROOT / "docs" / "packaging.md").read_text(encoding="utf-8")
+        docs = (PROJECT_ROOT / "docs" / "guides" / "packaging.md").read_text(encoding="utf-8")
         readme = (PROJECT_ROOT / "packaging" / "README.md").read_text(encoding="utf-8")
         self.assertIn("runtime_paths.py", docs)
         self.assertIn("project_meta.py", docs)

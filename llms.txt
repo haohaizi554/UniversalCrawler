@@ -30,15 +30,15 @@ UniversalCrawlerProplus is a PyQt6 + FastAPI crawler and media download applicat
 
 ## Documentation index
 
-- `docx/reports/signal-baseline-report-2026-06-28.md`: baseline signal/semaphore audit report.
+- `docs/reports/2026-06-28-signal-baseline.md`: baseline signal/semaphore audit report.
 - `docs/adr/0001-signal-semaphore-hardening.md`: signal, semaphore, EventBus, and guardrail ADR.
-- `docs/architecture.md`: system architecture.
-- `docs/config.md`: runtime configuration behavior.
-- `docs/api.md`: HTTP/Web API notes.
-- `docx/guides/testing.md`: testing guidance.
-- `docs/development.md`: development workflow.
-- `docs/cli/CLI_GUIDE.md`: CLI usage.
-- `docs/cli/API_REFERENCE.md`: CLI/API reference.
+- `docs/guides/architecture.md`: system architecture.
+- `docs/guides/config.md`: runtime configuration behavior.
+- `docs/guides/api.md`: HTTP/Web API notes.
+- `docs/guides/testing.md`: testing guidance.
+- `docs/guides/development.md`: development workflow.
+- `docs/cli/cli-guide.md`: CLI usage.
+- `docs/cli/rest-api-reference.md`: CLI/API reference.
 - `docs/postmortems/clear-queue-409-freeze.md`: clear-queue freeze postmortem.
 - `docs/postmortems/missav-surrit-hls-403-local-proxy.md`: MissAV HLS proxy postmortem.
 

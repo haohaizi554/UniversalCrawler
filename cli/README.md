@@ -45,9 +45,9 @@ LLM 提示中提到 "ucrawl" 即可激活。
 
 ## 完整文档
 
-- [CLI_GUIDE.md](../../docs/cli/CLI_GUIDE.md) - CLI 完整调用说明
-- [API_REFERENCE.md](../../docs/cli/API_REFERENCE.md) - REST API 参考
-- [SDK_GUIDE.md](../../docs/cli/SDK_GUIDE.md) - Python SDK 指南
+- [cli-guide.md](../../docs/cli/cli-guide.md) - CLI 完整调用说明
+- [rest-api-reference.md](../../docs/cli/rest-api-reference.md) - REST API 参考
+- [python-sdk-guide.md](../../docs/cli/python-sdk-guide.md) - Python SDK 指南
 
 ## 模块结构
 

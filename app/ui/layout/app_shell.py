@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -94,7 +94,7 @@ class AppShell(QWidget):
         self.status_island.add_widget(self.status_bar)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
         body = QHBoxLayout()

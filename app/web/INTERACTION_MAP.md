@@ -5722,9 +5722,9 @@ UniversalCrawlerProplus/
 │   └── __init__.py                  # 从 cli re-export
 ├── docs/
 │   └── cli/                          # 调用说明 md 文档
-│       ├── CLI_GUIDE.md             # CLI 完整调用说明
-│       ├── API_REFERENCE.md         # REST API 参考
-│       └── SDK_GUIDE.md             # Python SDK 指南
+│       ├── cli-guide.md             # CLI 完整调用说明
+│       ├── rest-api-reference.md         # REST API 参考
+│       └── python-sdk-guide.md             # Python SDK 指南
 ├── .trae/
 │   └── skills/
 │       └── ucrawl/
