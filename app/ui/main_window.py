@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 import ctypes
@@ -229,6 +231,7 @@ class MainWindow(QMainWindow):
         self._pending_refresh_lock = threading.RLock()
         self._pending_refresh_topics: set[str] = set()
         self._cached_snapshot: dict | None = None
+        self._frontend_section_signatures: dict[str, str] = {}
         self._active_selection_dialog: SelectionDialog | None = None
         self._directory_dialog: QFileDialog | None = None
 
@@ -459,10 +462,19 @@ class MainWindow(QMainWindow):
                 merged = dict(cached)
                 merged.update(snapshot)
                 snapshot = merged
-            changed_keys = set(snapshot.keys()) if sections else None
+                changed_keys = self._changed_frontend_sections(snapshot, sections)
+                if not changed_keys:
+                    self.__dict__["_cached_snapshot"] = snapshot
+                    self.__dict__["_cached_frontend_version"] = int(snapshot.get("version") or 0)
+                    return
+            elif sections:
+                changed_keys = {section for section in sections if section in snapshot}
+            else:
+                changed_keys = None
 
         self.__dict__["_cached_snapshot"] = snapshot
         self.__dict__["_cached_frontend_version"] = int(snapshot.get("version") or 0)
+        self._remember_frontend_section_signatures(snapshot, changed_keys)
         self.app_shell.render(snapshot, changed_sections=changed_keys)
         self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
 
@@ -474,6 +486,33 @@ class MainWindow(QMainWindow):
             snapshot.update(sections)
         snapshot["version"] = int(delta.get("version") or snapshot.get("version") or 0)
         return snapshot, changed_sections
+
+    @staticmethod
+    def _frontend_section_signature(value) -> str:
+        try:
+            payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        except (TypeError, ValueError):
+            payload = repr(value)
+        return hashlib.blake2b(payload.encode("utf-8", errors="replace"), digest_size=16).hexdigest()
+
+    def _changed_frontend_sections(self, snapshot: dict, sections: frozenset[str]) -> set[str]:
+        signatures = self.__dict__.setdefault("_frontend_section_signatures", {})
+        changed: set[str] = set()
+        for section in sections:
+            signature = self._frontend_section_signature(snapshot.get(section))
+            if signatures.get(section) != signature:
+                changed.add(section)
+            signatures[section] = signature
+        return changed
+
+    def _remember_frontend_section_signatures(self, snapshot: dict, sections: set[str] | None) -> None:
+        keys = set(snapshot.keys()) if sections is None else set(sections)
+        keys.discard("version")
+        if not keys:
+            return
+        signatures = self.__dict__.setdefault("_frontend_section_signatures", {})
+        for section in keys:
+            signatures[section] = self._frontend_section_signature(snapshot.get(section))
 
     def _record_frontend_render_duration(self, duration_ms: float) -> None:
         self.__dict__["_last_frontend_render_ms"] = duration_ms

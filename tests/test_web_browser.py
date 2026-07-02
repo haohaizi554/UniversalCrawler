@@ -284,7 +284,9 @@ class StaticAssetsTests(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn("scheduleRenderSections(changed.length ? changed : [\"all\"])", delta_block)
+        self.assertIn("if (changed.length) scheduleRenderSections(changed)", delta_block)
+        self.assertIn("frontendSectionSignature(value)", delta_block)
+        self.assertNotIn("changed.length ? changed : [\"all\"]", delta_block)
         self.assertNotIn("renderAll();", delta_block)
         self.assertIn("scheduleFrame", scheduler_block)
 

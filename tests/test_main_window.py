@@ -331,6 +331,25 @@ class MainWindowTests(unittest.TestCase):
             changed_sections={"active_downloads", "log_items", "app_status"},
         )
 
+    def test_frontend_refresh_skips_render_when_requested_sections_are_unchanged(self):
+        window = self._make_window()
+        window.app_shell = Mock()
+        window.app_shell.current_page_id = "failed"
+        window._frontend_state_service = Mock()
+        snapshot = {
+            "failed_items": [{"id": "f1", "title": "失败任务", "reason": "network"}],
+            "app_status": {"failed_count": 1},
+        }
+        window._frontend_state_service.get_snapshot.return_value = dict(snapshot)
+
+        MainWindow._render_frontend_state(window, topics={"page.visible.failed"})
+        MainWindow._render_frontend_state(window, topics={"task_error"})
+
+        window.app_shell.render.assert_called_once_with(
+            snapshot,
+            changed_sections={"failed_items", "app_status"},
+        )
+
     def test_app_state_concurrent_event_storm_keeps_pending_topics_thread_safe(self):
         class FakeScheduler:
             def __init__(self):

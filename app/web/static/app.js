@@ -172,6 +172,7 @@ function updateIconManifest(manifest) {
 }
 
 let renderSignatures = {};
+let frontendSectionSignatures = {};
 let frontendVersion = 0;
 let pendingRenderSections = new Set();
 let renderFrame = null;
@@ -244,11 +245,22 @@ function applyFrontendDelta(delta) {
     return;
   }
   const sections = delta.sections || {};
-  const changed = Array.isArray(delta.changed_sections) ? delta.changed_sections.slice() : Object.keys(sections);
+  const requestedChanged = Array.isArray(delta.changed_sections) ? delta.changed_sections.slice() : Object.keys(sections);
+  const changed = [];
   if (delta.full && sections && Object.keys(sections).length) {
     frontendState = { ...frontendState, ...sections };
+    rememberFrontendSectionSignatures(Object.keys(sections));
+    changed.push(...requestedChanged);
   } else {
-    for (const [key, value] of Object.entries(sections)) frontendState[key] = value;
+    for (const [key, value] of Object.entries(sections)) {
+      if (frontendSectionSignatures[key] === undefined) {
+        frontendSectionSignatures[key] = frontendSectionSignature(frontendState[key]);
+      }
+      const nextSignature = frontendSectionSignature(value);
+      frontendState[key] = value;
+      if (frontendSectionSignatures[key] !== nextSignature) changed.push(key);
+      frontendSectionSignatures[key] = nextSignature;
+    }
   }
   if (trimFrontendLogItems() && !changed.includes("log_items")) changed.push("log_items");
   if (sections.icon_manifest) {
@@ -262,7 +274,21 @@ function applyFrontendDelta(delta) {
     }
   }
   frontendVersion = Number(delta.version || frontendVersion || 0);
-  scheduleRenderSections(changed.length ? changed : ["all"]);
+  if (changed.length) scheduleRenderSections(changed);
+}
+
+function frontendSectionSignature(value) {
+  try {
+    return JSON.stringify(value === undefined ? null : value);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function rememberFrontendSectionSignatures(keys) {
+  for (const key of keys || []) {
+    frontendSectionSignatures[key] = frontendSectionSignature(frontendState[key]);
+  }
 }
 
 function removeDeletedFromFrontendState(ids) {
@@ -270,6 +296,7 @@ function removeDeletedFromFrontendState(ids) {
   for (const id of doomed) removePlaybackPosition(id);
   for (const section of ["queue_items", "active_downloads", "completed_items", "failed_items"]) {
     frontendState[section] = (frontendState[section] || []).filter(item => !doomed.has(String(item.id)));
+    frontendSectionSignatures[section] = frontendSectionSignature(frontendState[section]);
   }
   for (const key of ["active", "completed", "failed"]) {
     if (doomed.has(String(selected[key] || ""))) selected[key] = "";
