@@ -186,7 +186,16 @@ class BilibiliDownloader(BaseDownloader):
             percent = min(90, max(10, percent))
             if percent > last_progress[0]:
                 last_progress[0] = percent
-                self._emit_progress(progress_callback, percent, bytes_downloaded=downloaded, bytes_total=total)
+                self._emit_progress(
+                    progress_callback,
+                    percent,
+                    bytes_downloaded=downloaded,
+                    bytes_total=total,
+                    phase="downloading",
+                    phase_message="音视频流下载中",
+                    write_status="写入中",
+                    merge_status="等待合并",
+                )
 
         def download_stream(name: str, path: str) -> None:
             """下载单个流（video/audio），失败时重新获取 CDN URL 后重试。"""
@@ -263,7 +272,14 @@ class BilibiliDownloader(BaseDownloader):
                         os.remove(path)
                     break
 
-        self._emit_progress(progress_callback, 10)
+        self._emit_progress(
+            progress_callback,
+            10,
+            phase="downloading",
+            phase_message="任务进入 Bilibili 下载器",
+            write_status="写入中",
+            merge_status="等待合并",
+        )
         try:
             threads = [threading.Thread(target=download_stream, args=("video", temp_v), daemon=True)]
             if audio_url:
@@ -271,8 +287,12 @@ class BilibiliDownloader(BaseDownloader):
 
             for thread in threads:
                 thread.start()
-            for thread in threads:
-                thread.join()
+            while any(thread.is_alive() for thread in threads):
+                if check_stop_func():
+                    stop_event.set()
+                    break
+                for thread in threads:
+                    thread.join(timeout=0.2)
 
             if error_holder:
                 first_error = error_holder[0]
@@ -282,7 +302,23 @@ class BilibiliDownloader(BaseDownloader):
             if stop_event.is_set() and check_stop_func():
                 raise DownloaderStoppedError("用户停止下载")
 
-            self._emit_progress(progress_callback, 90)
+            if not os.path.exists(temp_v) or os.path.getsize(temp_v) <= 0:
+                raise StreamDownloadError("Bilibili 视频流写入失败或文件为空")
+            if audio_url and (not os.path.exists(temp_a) or os.path.getsize(temp_a) <= 0):
+                raise StreamDownloadError("Bilibili 音频流写入失败或文件为空")
+
+            total_bytes = sum(item["total"] for item in stream_stats.values() if item["total"] > 0)
+            downloaded_bytes = sum(item["downloaded"] for item in stream_stats.values())
+            self._emit_progress(
+                progress_callback,
+                90,
+                bytes_downloaded=downloaded_bytes or None,
+                bytes_total=total_bytes or None,
+                phase="writing_done",
+                phase_message="音视频流写入完成，准备合并",
+                write_status="写入完成",
+                merge_status="等待合并",
+            )
             cmd_merge = FFmpegExternalTool.build_merge_command(ffmpeg_path, temp_v, temp_a if audio_url else None, save_path)
             debug_logger.log_command(
                 component="BilibiliDownloader",
@@ -292,16 +328,40 @@ class BilibiliDownloader(BaseDownloader):
                 context={"title": video_item.title, "save_path": save_path},
                 trace_id=trace_id,
             )
-            startupinfo = build_hidden_startupinfo()
-            subprocess.run(
-                cmd_merge,
-                check=True,
-                startupinfo=startupinfo,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            self._emit_progress(
+                progress_callback,
+                91,
+                bytes_downloaded=downloaded_bytes or None,
+                bytes_total=total_bytes or None,
+                phase="merging",
+                phase_message="ffmpeg 合并音视频中",
+                write_status="写入完成",
+                merge_status="合并中",
             )
+            self._run_merge_process(
+                cmd_merge,
+                save_path=save_path,
+                temp_v=temp_v,
+                temp_a=temp_a if audio_url else None,
+                progress_callback=progress_callback,
+                check_stop_func=check_stop_func,
+                bytes_downloaded=downloaded_bytes or None,
+                bytes_total=total_bytes or None,
+                trace_id=trace_id,
+            )
+            if not os.path.exists(save_path) or os.path.getsize(save_path) <= 0:
+                raise MergeError("Bilibili 音视频合并完成后未生成有效文件")
             cleanup_temp_files()
-            self._emit_progress(progress_callback, 100)
+            self._emit_progress(
+                progress_callback,
+                100,
+                bytes_downloaded=total_bytes or downloaded_bytes or None,
+                bytes_total=total_bytes or downloaded_bytes or None,
+                phase="completed",
+                phase_message="Bilibili 音视频合并完成",
+                write_status="写入完成",
+                merge_status="合并完成",
+            )
             debug_logger.log(
                 component="BilibiliDownloader",
                 action="merge_finished",
@@ -311,6 +371,9 @@ class BilibiliDownloader(BaseDownloader):
                 trace_id=trace_id,
             )
         except DownloaderStoppedError:
+            cleanup_temp_files()
+            raise
+        except MergeError:
             cleanup_temp_files()
             raise
         except subprocess.CalledProcessError as exc:
@@ -335,3 +398,152 @@ class BilibiliDownloader(BaseDownloader):
             if isinstance(exc, MergeError):
                 raise
             raise StreamDownloadError(f"B站下载失败: {exc}") from exc
+
+    def _run_merge_process(
+        self,
+        command: list[str],
+        *,
+        save_path: str,
+        temp_v: str,
+        temp_a: str | None,
+        progress_callback: ProgressCallback,
+        check_stop_func: StopCheck,
+        bytes_downloaded: int | None,
+        bytes_total: int | None,
+        trace_id: str | None,
+    ) -> None:
+        startupinfo = build_hidden_startupinfo()
+        stderr_tail: list[str] = []
+        try:
+            process = subprocess.Popen(
+                command,
+                startupinfo=startupinfo,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as exc:
+            raise MergeError(f"启动 ffmpeg 合并失败: {exc}") from exc
+
+        def read_stderr() -> None:
+            stream = process.stderr
+            if stream is None:
+                return
+            try:
+                for line in stream:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    stderr_tail.append(text)
+                    del stderr_tail[:-20]
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "BilibiliDownloader",
+                    "merge_stderr_reader_error",
+                    exc,
+                    trace_id=trace_id,
+                )
+
+        reader = threading.Thread(target=read_stderr, daemon=True, name="BilibiliMergeStderrReader")
+        reader.start()
+        started_at = time.monotonic()
+        last_emit_at = 0.0
+        last_progress = 91
+        merge_timeout = self._merge_timeout_seconds()
+
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                reader.join(timeout=1.0)
+                if return_code != 0:
+                    tail = "\n".join(stderr_tail[-8:])
+                    debug_logger.log(
+                        component="BilibiliDownloader",
+                        action="merge_error",
+                        level="ERROR",
+                        message="ffmpeg 合并音视频失败",
+                        status_code="BILI_MERGE_ERROR",
+                        details={"return_code": return_code, "stderr_tail": tail},
+                        trace_id=trace_id,
+                    )
+                    raise MergeError(f"Bilibili 音视频合并失败 (code={return_code}){': ' + tail if tail else ''}")
+                return
+
+            if check_stop_func():
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                raise DownloaderStoppedError("用户停止下载")
+
+            elapsed = time.monotonic() - started_at
+            if elapsed > merge_timeout:
+                process.kill()
+                process.wait(timeout=2)
+                tail = "\n".join(stderr_tail[-8:])
+                debug_logger.log(
+                    component="BilibiliDownloader",
+                    action="merge_timeout",
+                    level="ERROR",
+                    message="ffmpeg 合并音视频超时",
+                    status_code="BILI_MERGE_TIMEOUT",
+                    details={"timeout_seconds": merge_timeout, "stderr_tail": tail},
+                    trace_id=trace_id,
+                )
+                raise MergeError(f"Bilibili 音视频合并超时（{merge_timeout}s）{': ' + tail if tail else ''}")
+
+            now = time.monotonic()
+            if now - last_emit_at >= 1.0:
+                last_emit_at = now
+                target_total = self._merge_target_size(temp_v, temp_a)
+                merge_progress = self._merge_progress_from_file(save_path, target_total, fallback=last_progress)
+                last_progress = max(last_progress, merge_progress)
+                self._emit_progress(
+                    progress_callback,
+                    last_progress,
+                    bytes_downloaded=bytes_downloaded,
+                    bytes_total=bytes_total,
+                    phase="merging",
+                    phase_message="ffmpeg 合并音视频中",
+                    write_status="写入完成",
+                    merge_status="合并中",
+                )
+            time.sleep(0.2)
+
+    @staticmethod
+    def _merge_timeout_seconds() -> int:
+        try:
+            timeout = int(cfg.get("download", "merge_timeout", 300) or 300)
+        except (TypeError, ValueError):
+            timeout = 300
+        return max(30, timeout)
+
+    @staticmethod
+    def _merge_target_size(temp_v: str, temp_a: str | None) -> int:
+        total = 0
+        for path in (temp_v, temp_a):
+            if not path:
+                continue
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                pass
+        return total
+
+    @staticmethod
+    def _merge_progress_from_file(save_path: str, target_total: int, *, fallback: int) -> int:
+        if target_total <= 0:
+            return min(98, max(91, fallback))
+        try:
+            output_size = os.path.getsize(save_path)
+        except OSError:
+            output_size = 0
+        ratio = max(0.0, min(1.0, output_size / target_total))
+        return min(98, max(91, 91 + int(ratio * 7)))

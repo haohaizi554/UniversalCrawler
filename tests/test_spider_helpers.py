@@ -1718,6 +1718,84 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertTrue(spider._is_bilibili_error_page(page))
 
+    def test_bilibili_page_snapshot_detects_ready_candidates(self):
+        state = BilibiliSpider._classify_bilibili_page_snapshot(
+            {
+                "ready_state": "complete",
+                "candidate_count": 2,
+                "body_text": "空间主人还没投过视频",
+            }
+        )
+
+        self.assertEqual(state.kind, "ready")
+        self.assertFalse(state.terminal)
+
+    def test_bilibili_page_snapshot_detects_loaded_empty_space(self):
+        state = BilibiliSpider._classify_bilibili_page_snapshot(
+            {
+                "ready_state": "complete",
+                "candidate_count": 0,
+                "body_text": "空间主人还没投过视频，这里什么也没有...",
+                "url": "https://space.bilibili.com/272654283/upload/video",
+            }
+        )
+
+        self.assertEqual(state.kind, "empty")
+        self.assertTrue(state.terminal)
+
+    def test_bilibili_page_snapshot_detects_risk_control(self):
+        state = BilibiliSpider._classify_bilibili_page_snapshot(
+            {
+                "ready_state": "interactive",
+                "candidate_count": 0,
+                "body_text": "系统检测到您的账号或网络环境存在异常，请完成安全验证",
+                "risk_marker_count": 1,
+            }
+        )
+
+        self.assertEqual(state.kind, "risk")
+        self.assertTrue(state.terminal)
+
+    def test_bilibili_page_snapshot_detects_contradictory_empty_with_video_count_as_risk(self):
+        state = BilibiliSpider._classify_bilibili_page_snapshot(
+            {
+                "ready_state": "complete",
+                "candidate_count": 0,
+                "body_text": "投稿 999+\n视频\n1059\n空间主人还没投过视频，这里什么也没有...",
+                "url": "https://space.bilibili.com/272654283/upload/video",
+            }
+        )
+
+        self.assertEqual(state.kind, "risk")
+        self.assertTrue(state.terminal)
+        self.assertIn("非零视频计数", state.reason)
+
+    def test_bilibili_page_snapshot_detects_not_loaded(self):
+        state = BilibiliSpider._classify_bilibili_page_snapshot(
+            {"ready_state": "loading", "candidate_count": 0, "body_text": ""}
+        )
+
+        self.assertEqual(state.kind, "not_loaded")
+        self.assertFalse(state.terminal)
+
+    def test_bilibili_wait_stops_immediately_on_terminal_empty_page(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        spider.is_running = True
+        spider._interrupt_requested = False
+
+        page = Mock()
+        page.evaluate.return_value = {
+            "ready_state": "complete",
+            "candidate_count": 0,
+            "body_text": "空间主人还没投过视频，这里什么也没有...",
+            "url": "https://space.bilibili.com/272654283/upload/video",
+        }
+
+        state = spider._wait_for_bilibili_candidates(page, timeout_ms=60000)
+
+        self.assertEqual(state.kind, "empty")
+        page.wait_for_timeout.assert_not_called()
+
     def test_bilibili_api_failure_browser_fallback_adds_new_valid_bv_to_selection(self):
         spider = BilibiliSpider.__new__(BilibiliSpider)
         spider.is_running = True

@@ -105,8 +105,8 @@ def active_item(
     speed = str(meta.get("speed") or "0 B/s")
     remaining_time = str(meta.get("remaining_time") or meta.get("eta") or "--")
     item_trace_id = trace_id(item)
-    write_status = str(meta.get("write_status") or "\u7b49\u5f85\u5199\u5165")
-    merge_status = str(meta.get("merge_status") or "\u7b49\u5f85\u5408\u5e76")
+    write_status = str(meta.get("write_status") or default_write_status(progress))
+    merge_status = str(meta.get("merge_status") or default_merge_status(item, progress))
     return {
         "id": item.id,
         "title": item.title,
@@ -288,6 +288,26 @@ def content_type_from_path(path: Path | None) -> str:
 def default_speed_trend(progress: int) -> list[float]:
     seed = max(0, min(100, progress)) / 100
     return [round((0.7 + ((index % 5) * 0.12)) * seed, 2) for index in range(12)]
+
+
+def default_write_status(progress: int) -> str:
+    if progress >= 100:
+        return "写入完成"
+    if progress > 0:
+        return "写入中"
+    return "等待写入"
+
+
+def default_merge_status(item: VideoItem, progress: int) -> str:
+    meta = item.meta or {}
+    needs_merge = bool(meta.get("audio_url") or meta.get("needs_merge") or item.source == "bilibili")
+    if not needs_merge:
+        return "不需要合并"
+    if progress >= 100:
+        return "合并完成"
+    if progress >= 91:
+        return "合并中"
+    return "等待合并"
 
 
 def active_events(

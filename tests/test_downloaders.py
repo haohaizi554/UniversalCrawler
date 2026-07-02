@@ -221,7 +221,26 @@ class DownloaderStrategyTests(unittest.TestCase):
         """验证 `test_ffmpeg_external_tool_build_merge_command_skips_audio_when_none` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         command = FFmpegExternalTool.build_merge_command("ffmpeg.exe", "video.m4s", None, "output.mp4")
 
-        self.assertEqual(command, ["ffmpeg.exe", "-y", "-i", "video.m4s", "-c", "copy", "output.mp4"])
+        self.assertEqual(
+            command,
+            [
+                "ffmpeg.exe",
+                "-y",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                "video.m4s",
+                "-map",
+                "0:v:0?",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                "output.mp4",
+            ],
+        )
 
     def test_ffmpeg_external_tool_build_download_command_contains_headers_and_target(self):
         """验证 `test_ffmpeg_external_tool_build_download_command_contains_headers_and_target` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -833,7 +852,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         with self.assertRaises(StreamDownloadError):
             ChunkedDownloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
 
-    @patch("app.core.downloaders.bilibili.subprocess.run")
+    @patch.object(BilibiliDownloader, "_run_merge_process")
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
     @patch("app.core.downloaders.bilibili.requests.get")
@@ -842,7 +861,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         mocked_get,
         _mocked_resolve,
         mocked_build_merge,
-        mocked_subprocess_run,
+        mocked_run_merge,
     ):
         """验证 `test_bilibili_downloader_downloads_video_only_streams_when_audio_missing` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         mocked_get.return_value = self._make_stream_response(
@@ -855,13 +874,14 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = os.path.join(temp_dir, "demo.mp4")
+            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(save_path).write_bytes(b"merged")
             BilibiliDownloader().download(item, save_path, progress.append, lambda: False)
 
-        self.assertEqual(progress, [10, 10, 90, 90, 100])
+        self.assertEqual(progress, [10, 10, 90, 90, 91, 100])
         self.assertEqual(mocked_get.call_count, 1)
         mocked_build_merge.assert_called_once()
         self.assertIsNone(mocked_build_merge.call_args.args[2])
-        mocked_subprocess_run.assert_called_once()
+        mocked_run_merge.assert_called_once()
 
     @patch("app.core.downloaders.bilibili.requests.get")
     def test_bilibili_play_url_refresh_forwards_proxy_settings(self, mocked_get):
@@ -922,7 +942,7 @@ class DownloaderStrategyTests(unittest.TestCase):
             {"fnval": 4048, "bvid": "BV1xx", "cid": "123"},
         )
 
-    @patch("app.core.downloaders.bilibili.subprocess.run", side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]))
+    @patch.object(BilibiliDownloader, "_run_merge_process", side_effect=MergeError("ffmpeg failed"))
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
     @patch("app.core.downloaders.bilibili.requests.get")
@@ -931,7 +951,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         mocked_get,
         _mocked_resolve,
         _mocked_build_merge,
-        _mocked_subprocess_run,
+        _mocked_run_merge,
     ):
         """验证 `test_bilibili_downloader_raises_merge_error_when_ffmpeg_fails` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         mocked_get.return_value = self._make_stream_response(

@@ -32,16 +32,29 @@ class BaseDownloader:
         *,
         bytes_downloaded: int | None = None,
         bytes_total: int | None = None,
+        phase: str | None = None,
+        phase_message: str | None = None,
+        write_status: str | None = None,
+        merge_status: str | None = None,
     ) -> None:
         if progress_callback is None:
             return
+        kwargs = {
+            "bytes_downloaded": bytes_downloaded,
+            "bytes_total": bytes_total,
+            "phase": phase,
+            "phase_message": phase_message,
+            "write_status": write_status,
+            "merge_status": merge_status,
+        }
+        kwargs = {key: value for key, value in kwargs.items() if value is not None}
         try:
-            if bytes_downloaded is None and bytes_total is None:
+            if not kwargs:
                 progress_callback(progress)
                 return
-            progress_callback(progress, bytes_downloaded=bytes_downloaded, bytes_total=bytes_total)
+            progress_callback(progress, **kwargs)
         except TypeError as exc:
-            if bytes_downloaded is None and bytes_total is None:
+            if not kwargs:
                 debug_logger.log_exception(
                     "BaseDownloader",
                     "progress_callback_error",

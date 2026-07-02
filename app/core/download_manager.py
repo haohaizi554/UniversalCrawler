@@ -222,18 +222,35 @@ class DownloadWorker(threading.Thread):
         last_progress: int | None = None
         last_speed_bps = 0
         last_emit_at = 0.0
+        last_phase_signature: tuple[str, str, str, str] | None = None
 
         def emit(
             progress: int,
             *,
             bytes_downloaded: int | None = None,
             bytes_total: int | None = None,
+            phase: str | None = None,
+            phase_message: str | None = None,
+            write_status: str | None = None,
+            merge_status: str | None = None,
         ) -> None:
-            nonlocal last_progress, last_speed_bps, last_emit_at
+            nonlocal last_progress, last_speed_bps, last_emit_at, last_phase_signature
             try:
                 normalized = max(0, min(100, int(progress)))
             except (TypeError, ValueError):
                 return
+            phase_signature = (
+                str(phase or ""),
+                str(phase_message or ""),
+                str(write_status or ""),
+                str(merge_status or ""),
+            )
+            self._apply_download_phase(
+                phase=phase,
+                phase_message=phase_message,
+                write_status=write_status,
+                merge_status=merge_status,
+            )
             snapshot = telemetry.record(
                 self.video,
                 progress=normalized,
@@ -242,16 +259,56 @@ class DownloadWorker(threading.Thread):
             )
             now = time.monotonic()
             should_emit = normalized != last_progress
+            if not should_emit and phase_signature != last_phase_signature and any(phase_signature):
+                should_emit = True
             if not should_emit and snapshot.speed_bps != last_speed_bps:
                 should_emit = now - last_emit_at >= telemetry.MIN_SAMPLE_INTERVAL_SECONDS
             if not should_emit:
                 return
             last_progress = normalized
             last_speed_bps = snapshot.speed_bps
+            last_phase_signature = phase_signature
             last_emit_at = now
             self.sig_progress.emit(self.video.id, normalized)
 
         return emit
+
+    def _apply_download_phase(
+        self,
+        *,
+        phase: str | None = None,
+        phase_message: str | None = None,
+        write_status: str | None = None,
+        merge_status: str | None = None,
+    ) -> None:
+        """Persist live downloader phase metadata for the frontend adapter."""
+        meta = self.video.meta
+        changed = False
+        updates = {
+            "download_phase": phase,
+            "phase_message": phase_message,
+            "write_status": write_status,
+            "merge_status": merge_status,
+        }
+        for key, value in updates.items():
+            if value is None:
+                continue
+            text = str(value)
+            if meta.get(key) != text:
+                meta[key] = text
+                changed = True
+        if phase_message:
+            events = list(meta.get("events") or [])
+            event = {
+                "time": time.strftime("%H:%M:%S"),
+                "message": str(phase_message),
+            }
+            if not events or events[-1].get("message") != event["message"]:
+                events.append(event)
+                meta["events"] = events[-6:]
+                changed = True
+        if changed:
+            meta["phase_updated_at"] = time.time()
 
     def stop(self):
         """通知下载器在下一次检查时尽快停止当前任务。"""

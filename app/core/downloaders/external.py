@@ -163,10 +163,13 @@ class FFmpegExternalTool:
         save_path: str,
     ) -> list[str]:
         """构造音视频合并命令，纯视频场景下不会追加音频输入。"""
-        command = [executable, "-y", "-i", video_path]
+        command = [executable, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", video_path]
         if audio_path:
             command.extend(["-i", audio_path])
-        command.extend(["-c", "copy", save_path])
+            command.extend(["-map", "0:v:0", "-map", "1:a:0?"])
+        else:
+            command.extend(["-map", "0:v:0?"])
+        command.extend(["-c", "copy", "-movflags", "+faststart", save_path])
         return command
 
 class NM3U8DLREExternalTool:

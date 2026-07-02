@@ -8,6 +8,7 @@ import requests
 import urllib.parse
 import threading
 import queue
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
 from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
@@ -32,6 +33,13 @@ HEADERS = {
     'User-Agent': DEFAULT_USER_AGENT,
     'Referer': 'https://www.bilibili.com'
 }
+
+
+@dataclass(frozen=True)
+class BilibiliBrowserPageState:
+    kind: str
+    reason: str = ""
+    terminal: bool = False
 
 class BiliAPI:
     """B 站 API 访问层，负责登录态检查、详情读取和取流。"""
@@ -205,6 +213,36 @@ class BiliAPI:
 
 class BilibiliSpider(BaseSpider):
     """Bilibili 爬虫，采用浏览器扫描和 API 解析并行的流水线模型。"""
+
+    BROWSER_EMPTY_TEXT_MARKERS = (
+        "空间主人还没投过视频",
+        "这里什么也没有",
+        "暂无视频",
+        "暂无投稿",
+        "没有相关数据",
+        "没有找到相关结果",
+        "没有更多内容",
+        "还没有发布任何视频",
+        "未找到相关内容",
+    )
+    BROWSER_RISK_TEXT_MARKERS = (
+        "安全验证",
+        "验证码",
+        "请完成验证",
+        "访问过于频繁",
+        "网络环境存在异常",
+        "账号存在风险",
+        "风控",
+        "滑块验证",
+        "人机验证",
+    )
+    BROWSER_LOGIN_TEXT_MARKERS = (
+        "扫码登录",
+        "密码登录",
+        "请先登录",
+        "登录后继续",
+        "请登录后",
+    )
 
     def __init__(self, keyword: str, config: dict):
         """初始化当前实例并准备运行所需的状态，供 `BilibiliSpider` 使用。"""
@@ -941,6 +979,111 @@ class BilibiliSpider(BaseSpider):
         except (PlaywrightError, TypeError, ValueError):
             return False
 
+    @classmethod
+    def _classify_bilibili_page_snapshot(cls, snapshot: dict | None) -> BilibiliBrowserPageState:
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        ready_state = str(snapshot.get("ready_state") or "").lower()
+        url = str(snapshot.get("url") or "")
+        title = str(snapshot.get("title") or "")
+        body_text = str(snapshot.get("body_text") or "")
+        combined_text = f"{title}\n{body_text}"
+        try:
+            candidate_count = int(snapshot.get("candidate_count") or 0)
+        except (TypeError, ValueError):
+            candidate_count = 0
+        try:
+            risk_marker_count = int(snapshot.get("risk_marker_count") or 0)
+        except (TypeError, ValueError):
+            risk_marker_count = 0
+        try:
+            login_marker_count = int(snapshot.get("login_marker_count") or 0)
+        except (TypeError, ValueError):
+            login_marker_count = 0
+
+        if ready_state not in {"interactive", "complete"}:
+            return BilibiliBrowserPageState("not_loaded", f"readyState={ready_state or 'unknown'}")
+        if candidate_count > 0:
+            return BilibiliBrowserPageState("ready", f"candidates={candidate_count}")
+        if risk_marker_count > 0 or any(marker in combined_text for marker in cls.BROWSER_RISK_TEXT_MARKERS):
+            return BilibiliBrowserPageState("risk", "检测到安全验证或风控提示", terminal=True)
+        if login_marker_count > 0 or any(marker in combined_text for marker in cls.BROWSER_LOGIN_TEXT_MARKERS):
+            return BilibiliBrowserPageState("login", "检测到登录拦截提示", terminal=True)
+        has_empty_marker = any(marker in combined_text for marker in cls.BROWSER_EMPTY_TEXT_MARKERS)
+        has_nonzero_video_counter = bool(re.search(r"(?:视频|投稿)\s*(?:999\+|[1-9]\d*)", combined_text))
+        if has_empty_marker and has_nonzero_video_counter:
+            return BilibiliBrowserPageState("risk", "页面空态与非零视频计数矛盾，疑似风控或接口拦截", terminal=True)
+        if has_empty_marker:
+            return BilibiliBrowserPageState("empty", "页面明确返回空结果", terminal=True)
+        if url and url != "about:blank" and not body_text.strip():
+            return BilibiliBrowserPageState("not_loaded", "页面主体为空")
+        return BilibiliBrowserPageState("unknown", "页面已加载但暂未发现候选视频")
+
+    def _read_bilibili_browser_page_state(self, page) -> BilibiliBrowserPageState:
+        try:
+            snapshot = page.evaluate(
+                r"""() => {
+                const riskSelector = [
+                    'iframe[src*="captcha"]',
+                    'iframe[src*="geetest"]',
+                    '[class*="captcha"]',
+                    '[class*="geetest"]',
+                    '[id*="captcha"]',
+                    '[id*="geetest"]'
+                ].join(',');
+                const loginSelector = [
+                    '.login-panel',
+                    '.bili-mini-mask',
+                    '.bili-login',
+                    '.login-scan-box',
+                    '[class*="login"] [class*="scan"]'
+                ].join(',');
+                return {
+                    ready_state: document.readyState || '',
+                    title: document.title || '',
+                    url: location.href || '',
+                    body_text: String((document.body && document.body.innerText) || '').slice(0, 3000),
+                    candidate_count: document.querySelectorAll(
+                        'a[href*="/video/BV"], [data-bvid], .bili-video-card, .video-card'
+                    ).length,
+                    risk_marker_count: document.querySelectorAll(riskSelector).length,
+                    login_marker_count: document.querySelectorAll(loginSelector).length
+                };
+            }"""
+            )
+        except (PlaywrightError, TypeError, ValueError):
+            return BilibiliBrowserPageState("unknown", "无法读取页面状态")
+        return self._classify_bilibili_page_snapshot(snapshot)
+
+    def _log_bilibili_terminal_page_state(
+        self,
+        state: BilibiliBrowserPageState,
+        *,
+        url: str,
+        page_count: int | None = None,
+    ) -> None:
+        if state.kind == "empty":
+            message = "⚠️ Bilibili 页面已加载，但当前页面明确没有可采集视频"
+            level = "WARN"
+            status_code = "BILI_PAGE_EMPTY"
+        elif state.kind == "risk":
+            message = "⛔ Bilibili 页面已加载，但疑似触发安全验证或风控"
+            level = "ERROR"
+            status_code = "BILI_RISK_CONTROL"
+        elif state.kind == "login":
+            message = "🔒 Bilibili 页面已加载，但被登录提示拦截"
+            level = "WARN"
+            status_code = "BILI_LOGIN_REQUIRED"
+        else:
+            return
+        self.log(f"{message}: {state.reason}")
+        self.debug_state(
+            "browser_page_terminal_state",
+            message=message,
+            status_code=status_code,
+            details={"url": url, "page": page_count, "state": state.kind, "reason": state.reason},
+            level=level,
+        )
+
     def _scan_with_browser_queue(
         self,
         url,
@@ -990,6 +1133,10 @@ class BilibiliSpider(BaseSpider):
                 if self._is_bilibili_error_page(page):
                     self.log(f"⚠️ Bilibili page is unavailable, skip browser candidate scan: {url}")
                     return _scan_result()
+                initial_state = self._read_bilibili_browser_page_state(page)
+                if initial_state.terminal:
+                    self._log_bilibili_terminal_page_state(initial_state, url=str(getattr(page, "url", url) or url))
+                    return _scan_result()
                 # UP 主拦截 (仅针对关键词搜索模式)
                 if is_search and "search.bilibili.com" in url:
                     try:
@@ -1014,16 +1161,30 @@ class BilibiliSpider(BaseSpider):
                                     current_url = page.url
                                     is_search = False
                                     is_space = True
+                                    redirected_state = self._read_bilibili_browser_page_state(page)
+                                    if redirected_state.terminal:
+                                        self._log_bilibili_terminal_page_state(
+                                            redirected_state,
+                                            url=str(getattr(page, "url", target_video_url) or target_video_url),
+                                        )
+                                        return _scan_result()
                     except (PlaywrightError, ValueError):
                         pass
                 page_count = 0
                 while self.is_running and page_count < max_pages:
                     page_count += 1
                     if page_count == 1:
-                        self._wait_for_bilibili_candidates(
+                        page_state = self._wait_for_bilibili_candidates(
                             page,
                             timeout_ms=self._configured_timeout_ms(default=60),
                         )
+                        if page_state.terminal:
+                            self._log_bilibili_terminal_page_state(
+                                page_state,
+                                url=str(getattr(page, "url", current_url) or current_url),
+                                page_count=page_count,
+                            )
+                            break
                     for _ in range(3):
                         page.evaluate("window.scrollBy(0, 1000)")
                         if not self.interruptible_sleep(0.3):
@@ -1192,23 +1353,17 @@ class BilibiliSpider(BaseSpider):
             values.append(f"https://www.bilibili.com/video/{bvid}")
         return values
 
-    def _wait_for_bilibili_candidates(self, page, *, timeout_ms: int = 15000) -> bool:
-        """Wait briefly for Bilibili SPA video cards before extracting links."""
+    def _wait_for_bilibili_candidates(self, page, *, timeout_ms: int = 15000) -> BilibiliBrowserPageState:
+        """Wait briefly for Bilibili SPA video cards or a clear terminal page state."""
         deadline = time.monotonic() + max(0, timeout_ms) / 1000
+        last_state = BilibiliBrowserPageState("unknown", "尚未读取页面状态")
         while self.is_running and not self.interrupt_requested and time.monotonic() < deadline:
-            try:
-                count = page.evaluate(
-                    """() => document.querySelectorAll(
-                        'a[href*="/video/BV"], [data-bvid], .bili-video-card, .video-card'
-                    ).length"""
-                )
-                if int(count or 0) > 0:
-                    return True
-            except (PlaywrightError, TypeError, ValueError):
-                return False
+            last_state = self._read_bilibili_browser_page_state(page)
+            if last_state.kind == "ready" or last_state.terminal:
+                return last_state
             if not self.interruptible_page_wait(page, 500):
-                return False
-        return False
+                return BilibiliBrowserPageState("stopped", "用户停止或页面等待被中断")
+        return last_state
 
     def _extract_video_hrefs(self, page) -> list[str]:
         """提供 `_extract_video_hrefs` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
