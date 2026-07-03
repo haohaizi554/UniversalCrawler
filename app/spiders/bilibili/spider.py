@@ -1084,6 +1084,84 @@ class BilibiliSpider(BaseSpider):
             level=level,
         )
 
+    @staticmethod
+    def _space_video_url_from_href(href: str) -> str:
+        href_text = str(href or "").strip()
+        if href_text.startswith("//"):
+            href_text = f"https:{href_text}"
+        uid_match = re.search(r"space\.bilibili\.com/(\d+)", href_text)
+        if not uid_match:
+            return ""
+        return f"https://space.bilibili.com/{uid_match.group(1)}/video"
+
+    @classmethod
+    def _should_use_static_search_shortcut(cls, url: str) -> bool:
+        parsed = urllib.parse.urlparse(str(url or ""))
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        keyword = " ".join(query.get("keyword", []))
+        decoded = urllib.parse.unquote(f"{keyword} {url}")
+        lowered = decoded.lower()
+        collection_markers = (
+            "collection",
+            "season",
+            "series",
+            "\u5408\u96c6",
+            "\u7cfb\u5217",
+            "\u5217\u8868",
+        )
+        return bool(cls._bvid_from_text(decoded) or any(marker in lowered for marker in collection_markers))
+
+    def _extract_search_up_space_video_url(self, page) -> tuple[str, str]:
+        try:
+            candidate = page.evaluate(
+                r"""() => {
+                const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+                const classChain = (node) => {
+                    const parts = [];
+                    let current = node;
+                    for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) {
+                        parts.push(`${current.id || ''} ${current.className || ''}`);
+                    }
+                    return parts.join(' ').toLowerCase();
+                };
+                const userContextRe = /(user-list|b-user-video-card|user-card|search-user|upuser|user-item|bili-user)/;
+                const videoContextRe = /(bili-video-card|video-card|video-list)/;
+                const nameOrAvatarRe = /(avatar|face|user-name|username|name|up-name|author)/;
+                const profileHintRe = /(\u7c89\u4e1d|\u6295\u7a3f|\u89c6\u9891|\u5173\u6ce8|UP\u4e3b|\u7a7a\u95f4)/;
+                const scored = [];
+                for (const anchor of document.querySelectorAll('a[href*="space.bilibili.com"]')) {
+                    const href = anchor.href || anchor.getAttribute('href') || '';
+                    if (!/space\.bilibili\.com\/\d+/.test(href)) continue;
+                    const context = anchor.closest(
+                        '.user-list, .b-user-video-card, [class*="user-card"], [class*="search-user"], ' +
+                        '[class*="upuser"], [class*="user-item"], [class*="bili-user"]'
+                    ) || anchor.parentElement;
+                    const chain = classChain(context || anchor);
+                    const anchorClass = String(anchor.className || '').toLowerCase();
+                    const contextText = clean((context && context.innerText) || '');
+                    let score = 0;
+                    if (userContextRe.test(chain)) score += 8;
+                    if (nameOrAvatarRe.test(anchorClass)) score += 3;
+                    if (profileHintRe.test(contextText)) score += 3;
+                    if (videoContextRe.test(chain) && !userContextRe.test(chain)) score -= 8;
+                    if (score >= 5) {
+                        scored.push({
+                            href,
+                            name: clean(anchor.innerText || anchor.getAttribute('title') || anchor.getAttribute('aria-label') || ''),
+                            score,
+                        });
+                    }
+                }
+                scored.sort((a, b) => b.score - a.score);
+                return scored[0] || null;
+            }"""
+            )
+        except (PlaywrightError, TypeError, ValueError):
+            return "", ""
+        if not isinstance(candidate, dict):
+            return "", ""
+        return self._space_video_url_from_href(str(candidate.get("href") or "")), str(candidate.get("name") or "").strip()
+
     def _scan_with_browser_queue(
         self,
         url,
@@ -1098,7 +1176,7 @@ class BilibiliSpider(BaseSpider):
         bv_set = set(excluded)
         def _scan_result() -> list[str]:
             return [bvid for bvid in bv_set if bvid not in excluded]
-        if is_search or "search.bilibili.com" in str(url or "").lower():
+        if (is_search or "search.bilibili.com" in str(url or "").lower()) and self._should_use_static_search_shortcut(url):
             static_count = self._scan_static_bilibili_candidates(
                 url,
                 max_pages=max_pages,
@@ -1140,34 +1218,28 @@ class BilibiliSpider(BaseSpider):
                 # UP 主拦截 (仅针对关键词搜索模式)
                 if is_search and "search.bilibili.com" in url:
                     try:
-                        up_link = page.locator(".user-list .b-user-video-card .user-name").first
-                        if up_link.is_visible():
-                            up_name = up_link.inner_text()
-                            up_href = up_link.get_attribute("href")
-                            if up_href:
-                                uid_match = re.search(r'space\.bilibili\.com/(\d+)', up_href)
-                                if uid_match:
-                                    uid = uid_match.group(1)
-                                    self.log(f"✨ 检测到 UP 主: {up_name}...")
-                                    target_video_url = f"https://space.bilibili.com/{uid}/video"
-                                    if not self.interruptible_playwright_goto(page, target_video_url, timeout=browser_timeout_ms):
-                                        return _scan_result()
-                                    if not self.interruptible_wait_for_load_state(
-                                        page,
-                                        "domcontentloaded",
-                                        timeout=browser_timeout_ms,
-                                    ):
-                                        return _scan_result()
-                                    current_url = page.url
-                                    is_search = False
-                                    is_space = True
-                                    redirected_state = self._read_bilibili_browser_page_state(page)
-                                    if redirected_state.terminal:
-                                        self._log_bilibili_terminal_page_state(
-                                            redirected_state,
-                                            url=str(getattr(page, "url", target_video_url) or target_video_url),
-                                        )
-                                        return _scan_result()
+                        target_video_url, up_name = self._extract_search_up_space_video_url(page)
+                        if target_video_url:
+                            name_suffix = f": {up_name}" if up_name else ""
+                            self.log(f"✨ 检测到 UP 主{name_suffix}")
+                            if not self.interruptible_playwright_goto(page, target_video_url, timeout=browser_timeout_ms):
+                                return _scan_result()
+                            if not self.interruptible_wait_for_load_state(
+                                page,
+                                "domcontentloaded",
+                                timeout=browser_timeout_ms,
+                            ):
+                                return _scan_result()
+                            current_url = page.url
+                            is_search = False
+                            is_space = True
+                            redirected_state = self._read_bilibili_browser_page_state(page)
+                            if redirected_state.terminal:
+                                self._log_bilibili_terminal_page_state(
+                                    redirected_state,
+                                    url=str(getattr(page, "url", target_video_url) or target_video_url),
+                                )
+                                return _scan_result()
                     except (PlaywrightError, ValueError):
                         pass
                 page_count = 0

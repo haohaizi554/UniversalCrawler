@@ -1700,6 +1700,36 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(count, 1)
         spider.raw_bv_queue.put.assert_not_called()
 
+    def test_bilibili_plain_keyword_search_does_not_use_static_shortcut(self):
+        self.assertFalse(
+            BilibiliSpider._should_use_static_search_shortcut(
+                "https://search.bilibili.com/all?keyword=SomeUploader"
+            )
+        )
+        self.assertTrue(
+            BilibiliSpider._should_use_static_search_shortcut(
+                "https://search.bilibili.com/all?keyword=BV19nRWBtEnF"
+            )
+        )
+        self.assertTrue(
+            BilibiliSpider._should_use_static_search_shortcut(
+                f"https://search.bilibili.com/all?keyword={quote('BV19nRWBtEnF 合集')}"
+            )
+        )
+
+    def test_bilibili_search_up_card_resolves_to_space_video_tab(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        page = Mock()
+        page.evaluate.return_value = {
+            "href": "//space.bilibili.com/1513751793?from=search",
+            "name": "Demo UP",
+        }
+
+        target, name = spider._extract_search_up_space_video_url(page)
+
+        self.assertEqual(target, "https://space.bilibili.com/1513751793/video")
+        self.assertEqual(name, "Demo UP")
+
     def test_bilibili_extract_video_hrefs_does_not_scan_full_html_as_plain_text(self):
         import inspect
 
