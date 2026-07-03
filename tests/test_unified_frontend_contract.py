@@ -2386,6 +2386,15 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("layout_hint = self.detail_summary_section.layout().sizeHint().height()", page)
         self.assertIn("overflow-wrap: anywhere", page)
 
+    def test_gui_log_inspector_avoids_nested_vertical_scrollbars(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "app" / "ui" / "pages" / "log_center_page.py").read_text(encoding="utf-8")
+
+        self.assertIn("self.inspector_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)", page)
+        self.assertIn("remaining_for_json", page)
+        self.assertIn("json_chrome = 76", page)
+        self.assertIn("self.json_text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)", page)
+
     def test_gui_log_center_controls_are_split_into_component(self):
         root = Path(__file__).resolve().parents[1]
         page = (root / "app" / "ui" / "pages" / "log_center_page.py").read_text(encoding="utf-8")

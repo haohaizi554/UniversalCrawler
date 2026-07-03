@@ -561,7 +561,7 @@ class LogCenterPage(PageFrame):
         self.inspector_scroll.setWidgetResizable(True)
         self.inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.inspector_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.inspector_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         body = QWidget()
         body.setObjectName("LogInspectorBody")
@@ -1294,7 +1294,11 @@ class LogCenterPage(PageFrame):
             kv_height + kv_spacing + message_title + frame_height + margins,
         )
 
-        self.detail_summary_section.setMaximumHeight(min(560, max(340, section_height)))
+        summary_cap = 420 if inspector_height >= 760 else 380
+        self.detail_summary_section.setMaximumHeight(min(summary_cap, max(360, section_height)))
+
+        if hasattr(self, "json_text"):
+            QTimer.singleShot(0, self._resize_json_viewer_to_content)
 
     @safe_slot
     def _resize_json_viewer_to_content(self) -> None:
@@ -1324,7 +1328,31 @@ class LogCenterPage(PageFrame):
             inspector_height = self.inspector_scroll.viewport().height()
 
         if inspector_height > 0:
-            max_height = max(180, min(360, int(inspector_height * 0.42)))
+            summary_height = 0
+            if hasattr(self, "detail_summary_section"):
+                summary_height = (
+                    self.detail_summary_section.height()
+                    or self.detail_summary_section.maximumHeight()
+                    or self.detail_summary_section.sizeHint().height()
+                )
+                summary_height = min(summary_height, self.detail_summary_section.maximumHeight())
+
+            stack_height = 0
+            if hasattr(self, "stack_section") and self.stack_section.isVisible():
+                stack_height = min(220, max(160, self.stack_section.sizeHint().height())) + 8
+
+            body_margins = 10 + 12
+            body_spacing = 8
+            json_chrome = 76
+            remaining_for_json = (
+                inspector_height
+                - summary_height
+                - stack_height
+                - body_margins
+                - body_spacing
+                - json_chrome
+            )
+            max_height = max(140, min(360, remaining_for_json, int(inspector_height * 0.42)))
         else:
             max_height = 300
 

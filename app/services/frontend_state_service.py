@@ -293,6 +293,7 @@ class FrontendStateService:
             return
         normalized = str(topic or "")
         payload_dict = dict(payload or {})
+        self._materialize_stage_title_for_event(normalized, payload_dict)
         if normalized == "log":
             message = str(payload_dict.get("message") or "")
             if message:
@@ -313,6 +314,7 @@ class FrontendStateService:
             self._event_aggregator.record("app_state.changed", {})
             return
         topic = str(payload.get("topic") or "app_state.changed")
+        self._materialize_stage_title_for_event(topic, payload)
         sections = self._sections_for_recorded_event(topic, payload)
         self._event_aggregator.record(topic, payload, sections=sections)
 
@@ -761,6 +763,52 @@ class FrontendStateService:
 
     def _bucket_for_item(self, item: VideoItem, *, queued_ids: set[str], active_ids: set[str]) -> str:
         return video_adapter.bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+
+    def _materialize_stage_title_for_event(self, topic: str, payload: Mapping[str, Any]) -> None:
+        if str(topic or "") not in {
+            "item_found",
+            "scan_result",
+            "task_started",
+            "task_finished",
+            "task_error",
+            "videos.upsert",
+            "videos.update",
+            "video_state_changed",
+            "task_progress",
+        }:
+            return
+        video_ids = self._event_video_ids(payload)
+        if not video_ids:
+            return
+        queued_ids = self._queued_video_ids()
+        active_ids = self._active_video_ids()
+        for video_id in video_ids:
+            item = self._video_for_update(video_id)
+            if item is None:
+                continue
+            bucket = self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+            self._ensure_stage_title_snapshot(item, bucket)
+
+    @staticmethod
+    def _event_video_ids(payload: Mapping[str, Any]) -> list[str]:
+        ids: list[str] = []
+        for key in ("video_id", "id", "entity_id"):
+            value = payload.get(key)
+            if value:
+                ids.append(str(value))
+        raw_ids = payload.get("video_ids")
+        if isinstance(raw_ids, (list, tuple, set)):
+            ids.extend(str(value) for value in raw_ids if value)
+        elif raw_ids:
+            ids.append(str(raw_ids))
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for video_id in ids:
+            if video_id in seen:
+                continue
+            seen.add(video_id)
+            ordered.append(video_id)
+        return ordered
 
     def _ensure_stage_title_snapshot(self, item: VideoItem, bucket: str) -> VideoItem:
         stage_key = video_adapter.STAGE_TITLE_KEYS.get(bucket)

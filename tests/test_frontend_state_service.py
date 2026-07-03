@@ -1413,6 +1413,49 @@ class FrontendStateServiceTests(unittest.TestCase):
         failed_after_setting_change = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
         self.assertEqual(failed_after_setting_change["title"], "Demo")
 
+    def test_stage_title_snapshots_materialize_on_status_events_before_page_render(self):
+        class MutableConfig:
+            template = "current"
+
+            def get(self, section, key, default=None):
+                if section == "common" and key == "filename_template":
+                    return self.template
+                return default
+
+        config = MutableConfig()
+        item = VideoItem(url="https://example.com/video", title="Clip", source="bilibili")
+        item.meta["index"] = 7
+        controller = SimpleNamespace(videos={item.id: item}, _dl_manager=None)
+        service = FrontendStateService(controller, config_manager=config)
+
+        queue = service.get_snapshot(sections=frozenset({"queue_items"}))["queue_items"][0]
+        self.assertEqual(queue["title"], "Clip")
+
+        config.template = "{platform}_{title}_{index}"
+        item.status = VideoStatus.DOWNLOADING.value
+        service.record_event("video_state_changed", {"video_id": item.id, "status": item.status, "progress": 0})
+
+        config.template = "{title}"
+        active = service.get_snapshot(sections=frozenset({"active_downloads"}))["active_downloads"][0]
+        self.assertEqual(active["title"], "bilibili_Clip_7")
+
+        config.template = "{platform}_{title}"
+        item.status = VideoStatus.COMPLETED.value
+        item.progress = 100
+        item.local_path = "D:/Downloads/bilibili_Clip_7.mp4"
+        service.record_event("video_state_changed", {"video_id": item.id, "status": item.status, "progress": 100})
+
+        config.template = "{title}_{index}"
+        completed = service.get_snapshot(sections=frozenset({"completed_items"}))["completed_items"][0]
+        self.assertEqual(completed["title"], "bilibili_Clip")
+
+        item.status = VideoStatus.FAILED.value
+        service.record_event("video_state_changed", {"video_id": item.id, "status": item.status, "progress": 0})
+
+        config.template = "current"
+        failed = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
+        self.assertEqual(failed["title"], "Clip_7")
+
     def test_partial_app_status_keeps_completed_count_when_bucket_not_requested(self):
         queued = VideoItem(url="https://example.com/q", title="queued", source="douyin")
         queued.status = "⏳ 等待中"
