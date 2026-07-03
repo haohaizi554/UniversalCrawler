@@ -40,7 +40,6 @@ FILENAME_TEMPLATE_OPTIONS: tuple[dict[str, str], ...] = (
 OPEN_MODE_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": DEFAULT_OPEN_MODE, "label": "\u5185\u7f6e\u64ad\u653e\u5668"},
     {"value": "system_default", "label": "\u7cfb\u7edf\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"},
-    {"value": "open_directory", "label": "\u6253\u5f00\u6240\u5728\u76ee\u5f55"},
 )
 PLAYBACK_PLAYER_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": DEFAULT_OPEN_MODE, "label": "\u5185\u7f6e\u64ad\u653e\u5668"},

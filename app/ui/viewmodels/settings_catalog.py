@@ -30,7 +30,6 @@ FILENAME_TEMPLATES = [
 OPEN_MODE_OPTIONS = [
     {"value": "builtin_player", "label": "内置播放器"},
     {"value": "system_default", "label": "系统默认打开方式"},
-    {"value": "open_folder", "label": "打开所在目录"},
 ]
 
 CONCURRENCY_OPTIONS = [
@@ -66,7 +65,6 @@ UI_LOG_MAX_DISPLAY_OPTIONS = ["100", "300", "500"]
 PLAYER_OPTIONS = [
     {"value": "builtin_player", "label": "内置播放器"},
     {"value": "system_default", "label": "系统默认播放器"},
-    {"value": "open_folder", "label": "打开所在目录"},
 ]
 ACCENT_OPTIONS = ["蓝色", "紫色", "绿色", "红色", "青色"]
 SCALE_OPTIONS = ["90%", "100%（推荐）", "110%", "125%"]

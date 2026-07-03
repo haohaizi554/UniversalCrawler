@@ -69,6 +69,9 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(basic["default_open_mode_label"], "\u5185\u7f6e\u64ad\u653e\u5668")
             self.assertIn("filename_template", basic["_options"])
             self.assertIn("default_open_mode", basic["_options"])
+            open_mode_values = {option["value"] for option in basic["_options"]["default_open_mode"]}
+            self.assertEqual(open_mode_values, {"builtin_player", "system_default"})
+            self.assertNotIn("open_directory", open_mode_values)
 
     def test_settings_snapshot_exposes_option_contracts(self):
         with TemporaryDirectory() as temp_dir:
