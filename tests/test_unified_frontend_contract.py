@@ -769,6 +769,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(trend.maximumHeight(), SpeedTrendWidget.HEIGHT)
         self.assertEqual(trend._speed_label, snapshot["active_downloads"][0]["speed"])
 
+    def test_active_downloads_trend_widget_uses_smooth_curve_path(self):
+        path = SpeedTrendWidget._smooth_curve_path([(0, 20), (20, 4), (40, 24), (60, 10)])
+
+        self.assertGreater(path.elementCount(), 4)
+
     def test_active_downloads_height_budget_keeps_fixed_regions_visible(self):
         shell = self._make_shell()
         shell.resize(1280, 720)
@@ -2310,6 +2315,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertLess(index.index("/static/media_display.js"), index.index("/static/app.js"))
         self.assertIn("window.UcpMediaDisplay", media_display)
         self.assertIn("activeTrendHtml(values, speedLabel", media_display)
+        self.assertIn("function smoothTrendPath(points)", media_display)
+        self.assertIn('<path d="${linePath}" class="line" />', media_display)
+        self.assertNotIn("<polyline", media_display)
         self.assertIn("displayMetadataValue(value, pending", media_display)
         self.assertIn("window.UcpMediaDisplay.activeTrendHtml", app_js)
         self.assertIn("window.UcpMediaDisplay.displayMetadataValue", app_js)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPalette, QPen
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -334,6 +334,31 @@ class SpeedTrendWidget(QWidget):
         self._speed_label = resolved_speed
         self.update()
 
+    @staticmethod
+    def _smooth_curve_path(points: list[tuple[int, int]]) -> QPainterPath:
+        path = QPainterPath()
+        if not points:
+            return path
+        path.moveTo(points[0][0], points[0][1])
+        if len(points) == 1:
+            return path
+
+        tension = 1 / 6
+        top = min(y for _, y in points)
+        bottom = max(y for _, y in points)
+        for index in range(len(points) - 1):
+            p0 = points[index - 1] if index > 0 else points[index]
+            p1 = points[index]
+            p2 = points[index + 1]
+            p3 = points[index + 2] if index + 2 < len(points) else p2
+
+            c1x = p1[0] + (p2[0] - p0[0]) * tension
+            c1y = p1[1] + (p2[1] - p0[1]) * tension
+            c2x = p2[0] - (p3[0] - p1[0]) * tension
+            c2y = p2[1] - (p3[1] - p1[1]) * tension
+            path.cubicTo(c1x, max(top, min(bottom, c1y)), c2x, max(top, min(bottom, c2y)), p2[0], p2[1])
+        return path
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -359,8 +384,7 @@ class SpeedTrendWidget(QWidget):
                 y = rect.bottom() - int(rect.height() * value / max_value)
                 points.append((x, y))
             painter.setPen(QPen(QColor(colors["accent"]), 2))
-            for first, second in zip(points, points[1:]):
-                painter.drawLine(first[0], first[1], second[0], second[1])
+            painter.drawPath(self._smooth_curve_path(points))
             painter.setBrush(QColor(colors["accent"]))
             painter.setPen(Qt.PenStyle.NoPen)
             for x, y in points[-10:]:
