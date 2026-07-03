@@ -45,6 +45,44 @@ def test_queue_item_preserves_frontend_contract_shape():
     assert row["actions"] == ["delete"]
 
 
+def test_stage_display_titles_prefer_locked_stage_snapshots():
+    item = _item(
+        title="Original",
+        local_path="D:/Downloads/actual.mp4",
+        meta={
+            "ui_title_queue": "Queue Snapshot",
+            "ui_title_active": "Active Snapshot",
+            "ui_title_completed": "Completed Snapshot",
+            "ui_title_failed": "Failed Snapshot",
+            "output_filename": "active-output.mp4",
+            "filename": "done-output.mp4",
+        },
+    )
+
+    assert adapter.queue_item(item, queued_ids={"v1"}, platform_label=lambda _: "Bilibili")["title"] == "Queue Snapshot"
+    assert adapter.active_item(
+        item,
+        platform_label=lambda _: "Bilibili",
+        current_save_dir="D:/Downloads",
+        active_events=lambda *_args, **_kwargs: [],
+    )["title"] == "Active Snapshot"
+    assert adapter.completed_item(
+        item,
+        path=Path("D:/Downloads/actual.mp4"),
+        size_bytes=0,
+        completed_at="2026-06-30 03:32:35",
+        metadata=MediaMetadata(),
+        metadata_pending=False,
+        platform_label=lambda _: "Bilibili",
+    )["title"] == "Completed Snapshot"
+    assert adapter.failed_item(
+        item,
+        platform_label=lambda _: "Bilibili",
+        log_excerpt_items=[],
+        failed_at_fallback="2026-06-30 03:32:35",
+    )["title"] == "Failed Snapshot"
+
+
 def test_bucket_for_item_routes_active_completed_failed_and_queue():
     assert adapter.bucket_for_item(_item(status="downloading"), queued_ids=set(), active_ids=set()) == "active"
     assert adapter.bucket_for_item(_item(status="failed"), queued_ids=set(), active_ids=set()) == "failed"

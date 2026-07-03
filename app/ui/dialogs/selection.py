@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -128,20 +128,48 @@ class SelectionDialog(QDialog):
         self.btn_cancel.setObjectName("DangerBtn")
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cancel.setFixedSize(100, 35)
+        self.btn_cancel.setAutoDefault(False)
         self.btn_cancel.clicked.connect(self.reject)
 
         self.btn_confirm = QPushButton("开始下载")
         self.btn_confirm.setObjectName("PrimaryBtn")
         self.btn_confirm.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_confirm.setFixedSize(120, 35)
+        self.btn_confirm.setDefault(True)
+        self.btn_confirm.setAutoDefault(True)
         self.btn_confirm.clicked.connect(self.confirm_selection)
         btn_layout.addWidget(self.btn_cancel)
         btn_layout.addWidget(self.btn_confirm)
         layout.addWidget(btn_box)
 
+        self._install_dialog_shortcuts()
         apply_dialog_theme(self, is_dark=self._is_dark)
         apply_themed_dialog_styles(self, self._colors)
         self._refresh_table_theme()
+
+    def _install_dialog_shortcuts(self) -> None:
+        self._dialog_shortcuts = []
+        for sequence, slot in (
+            ("Return", self.confirm_selection),
+            ("Enter", self.confirm_selection),
+            ("Esc", self.reject),
+        ):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+            self._dialog_shortcuts.append(shortcut)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.confirm_selection()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Escape:
+            self.reject()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _refresh_table_theme(self) -> None:
         palette = self.table.palette()

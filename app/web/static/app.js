@@ -1618,7 +1618,11 @@ function cancelDirDialog() {
 function showSelectionModal(items) {
   byId("selectionHeader").textContent = `共扫描到 ${items.length} 个资源，请选择下载项目`;
   byId("selectionBody").innerHTML = items.map((item, index) => `<tr><td><input type="checkbox" data-index="${index}" checked></td><td>${esc(item.title || "")}</td></tr>`).join("");
-  byId("selectionModal").style.display = "flex";
+  const modal = byId("selectionModal");
+  modal.style.display = "flex";
+  requestAnimationFrame(() => {
+    if (modal.style.display === "flex") modal.focus({ preventScroll: true });
+  });
 }
 
 function confirmSelection() {
@@ -1630,6 +1634,33 @@ function confirmSelection() {
 function cancelSelection() {
   sendWS("select_tasks", { indices: null });
   byId("selectionModal").style.display = "none";
+}
+
+function isSelectionModalOpen() {
+  const modal = byId("selectionModal");
+  return !!modal && modal.style.display === "flex";
+}
+
+function isTextEntryTarget(target) {
+  if (!target || !target.tagName) return false;
+  if (target.isContentEditable) return true;
+  const tagName = String(target.tagName).toUpperCase();
+  if (tagName === "INPUT") {
+    const inputType = String(target.type || "text").toLowerCase();
+    return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(inputType);
+  }
+  return ["SELECT", "TEXTAREA"].includes(tagName);
+}
+
+function handleSelectionModalShortcut(event) {
+  if (!isSelectionModalOpen()) return false;
+  if (!["Enter", "Escape"].includes(event.key)) return false;
+  if (event.key === "Enter" && isTextEntryTarget(event.target)) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Enter") confirmSelection();
+  else cancelSelection();
+  return true;
 }
 
 function toggleTheme() {
@@ -1843,9 +1874,9 @@ function updateSelection(oldId, newId) {
 function renderQueueCompat() { renderQueue(); }
 
 document.addEventListener("keydown", event => {
+  if (handleSelectionModalShortcut(event)) return;
   if (event.key === "Escape") {
     if (byId("dirModal").style.display === "flex") cancelDirDialog();
-    if (byId("selectionModal").style.display === "flex") cancelSelection();
     if (isFullscreenMode && document.fullscreenElement === byId("previewPanel")) {
       document.exitFullscreen().catch(() => {});
     }

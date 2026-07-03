@@ -181,6 +181,19 @@ class StaticAssetsTests(unittest.TestCase):
             self.assertIn(f"function {fn}(", content,
                          f"missing JS function: {fn}")
 
+    def test_selection_modal_keyboard_shortcuts_are_scoped(self):
+        content = _static_bundle_content()
+
+        self.assertIn('id="selectionModal" class="modal" tabindex="-1"', content)
+        self.assertIn("function handleSelectionModalShortcut(event)", content)
+        self.assertIn("function isSelectionModalOpen()", content)
+        self.assertIn("function isTextEntryTarget(target)", content)
+        self.assertIn('"checkbox"', content)
+        self.assertIn("modal.focus({ preventScroll: true })", content)
+        self.assertIn('if (event.key === "Enter") confirmSelection();', content)
+        self.assertIn("else cancelSelection();", content)
+        self.assertIn("if (handleSelectionModalShortcut(event)) return;", content)
+
     def test_preview_nav_buttons_are_visible(self):
         from pathlib import Path
         import re
@@ -615,6 +628,40 @@ class WebUIBrowserTests(unittest.TestCase):
         # modal 应隐藏
         display = self._page.evaluate("document.getElementById('selectionModal').style.display")
         self.assertIn(display, ("none", ""), f"selectionModal should be hidden, got display={display!r}")
+
+    def test_11b_enter_confirms_selection_modal(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+        self._page.evaluate(
+            """
+            () => {
+              window.__selectionShortcutMessages = [];
+              window.sendWS = (type, payload) => window.__selectionShortcutMessages.push({ type, payload });
+              sendWS = window.sendWS;
+              showSelectionModal([{title: 'first'}, {title: 'second'}]);
+            }
+            """
+        )
+        self._page.wait_for_timeout(100)
+        self._page.evaluate("document.querySelector('#selectionBody input').focus()")
+
+        self._page.keyboard.press("Enter")
+        self._page.wait_for_timeout(100)
+
+        result = self._page.evaluate(
+            """
+            () => ({
+              display: document.getElementById('selectionModal').style.display,
+              messages: window.__selectionShortcutMessages
+            })
+            """
+        )
+        self.assertIn(result["display"], ("none", ""))
+        self.assertEqual(
+            result["messages"],
+            [{"type": "select_tasks", "payload": {"indices": [0, 1]}}],
+        )
 
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""

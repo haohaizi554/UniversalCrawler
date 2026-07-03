@@ -105,6 +105,7 @@ class DownloadWorker(threading.Thread):
             # 先设置 local_path，再 emit sig_start
             # 这样 sig_start 信号携带的 local_path 是有效的（Web 端依赖此路径播放视频）
             self.video.local_path = filepath
+            self._remember_output_path(filepath)
             self._final_ext = ext
             self.sig_start.emit(self.video.id)
             downloader = self._select_downloader()
@@ -132,6 +133,7 @@ class DownloadWorker(threading.Thread):
                     try:
                         os.rename(filepath, new_filepath)
                         self.video.local_path = new_filepath
+                        self._remember_output_path(new_filepath)
                         debug_logger.log(
                             component="DownloadWorker",
                             action="normalize_extension",
@@ -402,6 +404,15 @@ class DownloadWorker(threading.Thread):
         safe_name = base_name if current_ext.lower() == ext.lower() else desc
         safe_name = safe_name[:200] or f"{self.video.source}_{self.video.id}"
         return f"{safe_name}{ext}"
+
+    def _remember_output_path(self, filepath: str) -> None:
+        """Persist the current output filename for frontend stage snapshots."""
+        if not isinstance(getattr(self.video, "meta", None), dict):
+            self.video.meta = {}
+        filename = os.path.basename(filepath)
+        self.video.meta["output_filename"] = filename
+        self.video.meta["filename"] = filename
+        self.video.meta["save_dir"] = os.path.dirname(filepath)
 
     def _ensure_unique_path(self, filepath: str) -> str:
         """若目标文件已存在，则为文件名追加递增后缀以避免覆盖。"""

@@ -7,6 +7,7 @@ downloaders, parsers, or task builders directly.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from copy import deepcopy
@@ -21,6 +22,7 @@ from PyQt6.QtCore import QCoreApplication, QObject, QThread, Qt, pyqtSignal
 
 from app.config import cfg
 from app.config.settings import (
+    CURRENT_FILENAME_TEMPLATE,
     DEFAULT_OPEN_MODE,
     open_mode_label,
     playback_player_label,
@@ -52,9 +54,12 @@ from app.services.frontend_log_cache import FrontendLogCache
 from app.services.media_metadata_service import MediaMetadata, MediaMetadataService
 from app.services.metadata_probe_queue import MetadataProbeQueue
 from app.services.metadata_retry_tracker import MetadataRetryTracker
+from app.utils.filenames import sanitize_filename
 from app.utils.safe_slot import safe_slot
 
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
+UI_TITLE_STAGE_META_KEY = "ui_title_stage"
+UI_TITLE_TEMPLATE_META_KEY = "ui_title_template"
 
 
 class _GuiRuntimeInvoker(QObject):
@@ -397,6 +402,7 @@ class FrontendStateService:
         try:
             for item in videos.values():
                 bucket = self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+                item = self._ensure_stage_title_snapshot(item, bucket)
                 if bucket in bucket_counts:
                     bucket_counts[bucket] += 1
                 if bucket == "active":
@@ -755,6 +761,92 @@ class FrontendStateService:
 
     def _bucket_for_item(self, item: VideoItem, *, queued_ids: set[str], active_ids: set[str]) -> str:
         return video_adapter.bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
+
+    def _ensure_stage_title_snapshot(self, item: VideoItem, bucket: str) -> VideoItem:
+        stage_key = video_adapter.STAGE_TITLE_KEYS.get(bucket)
+        if not stage_key:
+            return item
+        target = self._video_for_update(str(getattr(item, "id", "") or "")) or item
+        if not isinstance(getattr(target, "meta", None), dict):
+            target.meta = {}
+        meta = target.meta
+        previous_stage = str(meta.get(UI_TITLE_STAGE_META_KEY) or "")
+        current_title = str(meta.get(stage_key) or "").strip()
+        if previous_stage != bucket or not current_title:
+            meta[stage_key] = self._build_stage_display_title(target)
+            meta[UI_TITLE_STAGE_META_KEY] = bucket
+            meta[UI_TITLE_TEMPLATE_META_KEY] = self._current_filename_template()
+        if target is not item:
+            if not isinstance(getattr(item, "meta", None), dict):
+                item.meta = {}
+            for key in (stage_key, UI_TITLE_STAGE_META_KEY, UI_TITLE_TEMPLATE_META_KEY):
+                if key in meta:
+                    item.meta[key] = meta[key]
+        return item
+
+    def _build_stage_display_title(self, item: VideoItem) -> str:
+        filename = self._render_filename_for_current_template(item)
+        return video_adapter.filename_stem(filename) or str(getattr(item, "title", "") or "")
+
+    def _render_filename_for_current_template(self, item: VideoItem) -> str:
+        meta = item.meta if isinstance(getattr(item, "meta", None), dict) else {}
+        ext = self._stage_filename_extension(item)
+        preferred_name = meta.get("preferred_filename") or meta.get("file_name")
+        current_name = str(preferred_name or getattr(item, "title", "") or "").strip()
+        template = self._current_filename_template()
+        raw_name = current_name
+        if template and template != CURRENT_FILENAME_TEMPLATE:
+            now = datetime.now()
+            context = {
+                "title": current_name,
+                "platform": str(getattr(item, "source", "") or ""),
+                "source": str(getattr(item, "source", "") or ""),
+                "id": str(getattr(item, "id", "") or ""),
+                "date": now.strftime("%Y%m%d"),
+                "datetime": now.strftime("%Y%m%d_%H%M%S"),
+                "index": str(
+                    meta.get("index")
+                    or meta.get("sequence")
+                    or meta.get("part_index")
+                    or ""
+                ),
+            }
+
+            class _Missing(dict):
+                def __missing__(self, key):
+                    return ""
+
+            try:
+                raw_name = template.format_map(_Missing(context)).strip() or current_name
+            except (KeyError, ValueError, IndexError):
+                raw_name = current_name
+        desc = sanitize_filename(raw_name)
+        base_name, current_ext = os.path.splitext(desc)
+        safe_name = base_name if current_ext.lower() == ext.lower() else desc
+        safe_name = safe_name[:200] or f"{getattr(item, 'source', '')}_{getattr(item, 'id', '')}"
+        return f"{safe_name}{ext}"
+
+    def _current_filename_template(self) -> str:
+        try:
+            template = self.config.get("common", "filename_template", CURRENT_FILENAME_TEMPLATE)
+        except Exception:
+            template = CURRENT_FILENAME_TEMPLATE
+        return str(template or CURRENT_FILENAME_TEMPLATE).strip() or CURRENT_FILENAME_TEMPLATE
+
+    @staticmethod
+    def _stage_filename_extension(item: VideoItem) -> str:
+        meta = item.meta if isinstance(getattr(item, "meta", None), dict) else {}
+        for value in (
+            getattr(item, "local_path", ""),
+            meta.get("output_filename"),
+            meta.get("filename"),
+            meta.get("preferred_filename"),
+            meta.get("file_name"),
+        ):
+            _base, ext = os.path.splitext(str(value or "").strip())
+            if ext:
+                return ext
+        return ".mp4"
 
     def _platform_label(self, item: VideoItem) -> str:
         plugin = registry.get_plugin(item.source)

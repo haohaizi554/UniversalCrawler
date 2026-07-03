@@ -2112,7 +2112,8 @@ https://cdn.example.com/seg2.ts
         item.meta["preferred_filename"] = "P01_真实文件名.mp4"
         worker = DownloadWorker(item, "downloads")
 
-        filename = worker._generate_filename(".mp4")
+        with patch("app.config.cfg.get", return_value="current"):
+            filename = worker._generate_filename(".mp4")
 
         self.assertEqual(filename, "P01_真实文件名.mp4")
 
@@ -2125,6 +2126,16 @@ https://cdn.example.com/seg2.ts
             filename = worker._generate_filename(".mp4")
 
         self.assertEqual(filename, "bilibili_Demo Title_7.mp4")
+
+    def test_download_worker_remembers_output_path_for_frontend_stages(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="Demo Title", source="bilibili")
+        worker = DownloadWorker(item, "downloads")
+
+        worker._remember_output_path(os.path.join("downloads", "bilibili_Demo.mp4"))
+
+        self.assertEqual(item.meta["output_filename"], "bilibili_Demo.mp4")
+        self.assertEqual(item.meta["filename"], "bilibili_Demo.mp4")
+        self.assertEqual(item.meta["save_dir"], "downloads")
 
     def test_download_worker_resolve_save_dir_uses_subfolder_for_gallery_like_tasks(self):
         """验证 `test_download_worker_resolve_save_dir_uses_subfolder_for_gallery_like_tasks` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""

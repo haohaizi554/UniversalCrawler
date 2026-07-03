@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QEvent, QModelIndex, QPoint, QSize, Qt
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QTableView, QTableWidget, QToolButton, QWidget, QHeaderView
+from PyQt6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QTableView, QTableWidget, QToolButton, QWidget, QHeaderView
 
 from app.services.frontend_state_service import FrontendStateService
 from app.ui.components.combo_popup import (
@@ -1232,6 +1232,27 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn(theme_colors(dialog._is_dark)["accent"], dialog.styleSheet())
         self.assertIsNotNone(dialog.findChild(QTableWidget, "SelectionTable"))
         self.assertIsNotNone(dialog.findChild(QLabel, "SelectionDialogHeader"))
+        self.assertTrue(dialog.btn_confirm.isDefault())
+
+        dialog.show()
+        self.app.processEvents()
+        dialog.table.setFocus()
+        QTest.keyClick(dialog.table, Qt.Key.Key_Return)
+        self.app.processEvents()
+
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted.value)
+        self.assertEqual(dialog.selected_indices, [0])
+
+        esc_dialog = SelectionDialog(None, items=[{"title": "测试视频"}])
+        self.addCleanup(esc_dialog.deleteLater)
+        esc_dialog.show()
+        self.app.processEvents()
+        esc_dialog.table.setFocus()
+        QTest.keyClick(esc_dialog.table, Qt.Key.Key_Escape)
+        self.app.processEvents()
+
+        self.assertFalse(esc_dialog.isVisible())
+        self.assertEqual(esc_dialog.result(), QDialog.DialogCode.Rejected.value)
 
     def test_gui_platform_settings_proxy_combo_uses_boolean_enabled_state(self):
         shell = self._make_shell()

@@ -67,8 +67,19 @@ def build_log_kv_row(key: str, value_widget: QWidget) -> QWidget:
     key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
     value_widget.setMinimumWidth(0)
+    value_cell = QWidget(row)
+    value_cell.setObjectName("LogKvValueCell")
+    value_cell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    value_layout = QHBoxLayout(value_cell)
+    value_layout.setContentsMargins(0, 0, 0, 0)
+    value_layout.setSpacing(0)
+    if str(value_widget.objectName()).startswith("LogLevelBadge"):
+        value_layout.addWidget(value_widget, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        value_layout.addStretch(1)
+    else:
+        value_layout.addWidget(value_widget, 1)
     layout.addWidget(key_label)
-    layout.addWidget(value_widget, 1)
+    layout.addWidget(value_cell, 1)
     row.setMinimumHeight(24)
     return row
 

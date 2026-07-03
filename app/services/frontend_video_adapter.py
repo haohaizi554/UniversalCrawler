@@ -17,10 +17,35 @@ from app.models import VideoItem
 from app.services.media_metadata_service import MediaMetadataService
 
 QUEUE_STATUSES = ("\u5f85\u89e3\u6790", "\u89e3\u6790\u4e2d", "\u5df2\u89e3\u6790", "\u6392\u961f\u4e2d", "\u5df2\u5b58\u5728", "\u5f85\u4e0b\u8f7d")
+STAGE_TITLE_KEYS = {
+    "queue": "ui_title_queue",
+    "active": "ui_title_active",
+    "completed": "ui_title_completed",
+    "failed": "ui_title_failed",
+}
 
 
 def trace_id(item: VideoItem) -> str:
     return str((item.meta or {}).get("trace_id") or "")
+
+
+def filename_stem(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    name = text.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = re.sub(r"\.[A-Za-z0-9]{1,8}$", "", name).strip()
+    return stem or name
+
+
+def stage_display_title(item: VideoItem, stage: str, fallback_filename: Any = "") -> str:
+    meta = item.meta or {}
+    key = STAGE_TITLE_KEYS.get(stage, "")
+    title = str(meta.get(key) or "").strip() if key else ""
+    if title:
+        return title
+    fallback_title = filename_stem(fallback_filename)
+    return fallback_title or str(item.title or "")
 
 
 def queue_subtitle(meta: Mapping[str, Any]) -> str:
@@ -58,7 +83,7 @@ def queue_item(
     meta = item.meta or {}
     return {
         "id": item.id,
-        "title": item.title,
+        "title": stage_display_title(item, "queue"),
         "subtitle": queue_subtitle(meta),
         "platform": platform_label(item),
         "platform_id": item.source,
@@ -109,7 +134,7 @@ def active_item(
     merge_status = str(meta.get("merge_status") or default_merge_status(item, progress))
     return {
         "id": item.id,
-        "title": item.title,
+        "title": stage_display_title(item, "active", output_filename),
         "platform": platform_label(item),
         "platform_id": item.source,
         "progress": progress,
@@ -169,7 +194,7 @@ def completed_item(
     save_dir = str(meta.get("save_dir") or (path.parent if path else ""))
     return {
         "id": item.id,
-        "title": item.title,
+        "title": stage_display_title(item, "completed", filename),
         "thumbnail": str(meta.get("thumbnail") or ""),
         "completed_at": completed_at,
         "completed_at_table": format_completed_at_table(completed_at),
@@ -204,7 +229,11 @@ def failed_item(
     failed_at = str(meta.get("failed_at") or failed_at_fallback)
     return {
         "id": item.id,
-        "title": item.title,
+        "title": stage_display_title(
+            item,
+            "failed",
+            meta.get("output_filename") or meta.get("filename") or item.local_path,
+        ),
         "failed_at": failed_at,
         "failed_at_table": format_completed_at_table(failed_at),
         "reason": reason,

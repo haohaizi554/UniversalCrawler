@@ -31,7 +31,7 @@ from app.ui.styles.table_rows import (
     install_click_only_row_selection,
     install_stable_vertical_scrollbar,
     normalize_table_item_option,
-    paint_item_selection_background,
+    paint_item_interaction_background,
     sync_qtablewidget_row_highlights,
 )
 from app.utils.qt_runtime import load_qt_icon
@@ -316,7 +316,7 @@ class SnapshotActionDelegate(QStyledItemDelegate):
         self._missing_action_icons: set[str] = set()
 
     def paint(self, painter: QPainter, option, index) -> None:
-        paint_item_selection_background(painter, option)
+        paint_item_interaction_background(painter, option)
         if self._is_failed_status_cell(index):
             self._paint_failed_status(painter, option, index)
             return

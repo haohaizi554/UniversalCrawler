@@ -13,27 +13,59 @@ def install_stable_vertical_scrollbar(view: QAbstractItemView) -> None:
 def row_is_selected(option: QStyleOptionViewItem) -> bool:
     return bool(option.state & QStyle.StateFlag.State_Selected)
 
+def row_is_hovered(option: QStyleOptionViewItem) -> bool:
+    return bool(option.state & QStyle.StateFlag.State_MouseOver)
+
 def normalize_table_item_option(option: QStyleOptionViewItem) -> None:
-    """Keep row visuals click-driven: ignore hover/current focus tinting."""
+    """Disable native focus/hover overlays so shared row painting owns states."""
     option.state &= ~QStyle.StateFlag.State_HasFocus
-    if row_is_selected(option):
-        return
     option.state &= ~QStyle.StateFlag.State_MouseOver
 
 def selection_fill_color(option: QStyleOptionViewItem) -> QColor:
     return option.palette.color(QPalette.ColorRole.Highlight)
 
-def paint_item_selection_background(painter: QPainter, option: QStyleOptionViewItem) -> None:
-    """Paint the full cell rect with the palette highlight color when selected."""
+def hover_fill_color(option: QStyleOptionViewItem) -> QColor:
+    """Return the shared unselected-row hover fill for item views."""
+    return _blend_colors(
+        option.palette.color(QPalette.ColorRole.Base),
+        option.palette.color(QPalette.ColorRole.Highlight),
+        0.08,
+    )
+
+def row_interaction_fill_color(option: QStyleOptionViewItem) -> QColor | None:
+    """Resolve row state priority: selected wins, hover is only auxiliary."""
+    if row_is_selected(option):
+        return selection_fill_color(option)
+    if row_is_hovered(option):
+        return hover_fill_color(option)
+    return None
+
+def paint_item_interaction_background(painter: QPainter, option: QStyleOptionViewItem) -> None:
+    """Paint standardized table row hover/selection backgrounds."""
+    color = row_interaction_fill_color(option)
     normalize_table_item_option(option)
-    if not row_is_selected(option):
+    if color is None:
         return
     painter.save()
-    painter.fillRect(option.rect, selection_fill_color(option))
+    painter.fillRect(option.rect, color)
     painter.restore()
 
+def paint_item_selection_background(painter: QPainter, option: QStyleOptionViewItem) -> None:
+    """Backward-compatible alias for shared hover/selection row painting."""
+    paint_item_interaction_background(painter, option)
+
+def _blend_colors(base: QColor, overlay: QColor, alpha: float) -> QColor:
+    alpha = max(0.0, min(1.0, alpha))
+    inverse = 1.0 - alpha
+    return QColor(
+        round(base.red() * inverse + overlay.red() * alpha),
+        round(base.green() * inverse + overlay.green() * alpha),
+        round(base.blue() * inverse + overlay.blue() * alpha),
+        255,
+    )
+
 def install_click_only_row_selection(view: QAbstractItemView) -> None:
-    """Highlight rows only after click; moving the mouse must not tint the current row."""
+    """Keep row selection click-driven; moving the mouse must not change current row."""
     if getattr(view, "_click_only_rows_installed", False):
         return
     view._click_only_rows_installed = True

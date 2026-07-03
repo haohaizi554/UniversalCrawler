@@ -36,7 +36,7 @@ from app.ui.styles.table_rows import (
     install_click_only_row_selection,
     install_stable_vertical_scrollbar,
     normalize_table_item_option,
-    paint_item_selection_background,
+    paint_item_interaction_background,
 )
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
 from app.utils.qt_runtime import load_qt_icon
@@ -175,7 +175,7 @@ class ActiveDownloadsDelegate(QStyledItemDelegate):
         self._platform_icons: dict[str, Any] = {}
 
     def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
-        paint_item_selection_background(painter, option)
+        paint_item_interaction_background(painter, option)
         if index.column() == 1:
             self._paint_platform(painter, option, index)
             return

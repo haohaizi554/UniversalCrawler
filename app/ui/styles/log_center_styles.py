@@ -162,10 +162,11 @@ QTableView#LogItemsTable::item {{
     color: {c["text"]};
 }}
 QTableView#LogItemsTable::item:hover {{
-    background: {c["panel_soft"]};
+    background: transparent;
 }}
 QTableView#LogItemsTable::item:selected,
-QTableView#LogItemsTable::item:selected:active {{
+QTableView#LogItemsTable::item:selected:active,
+QTableView#LogItemsTable::item:selected:hover {{
     background: {c["row_selected"]};
     color: {c["text"]};
 }}

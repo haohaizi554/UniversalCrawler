@@ -1074,6 +1074,11 @@ QTableView::item:selected:active {{
     background-color: {c["row_selected"]};
 }}
 
+QTableView::item:selected:hover {{
+    color: {c["text"]};
+    background-color: {c["row_selected"]};
+}}
+
 QTableView#CompletedItemsTable::item:selected,
 QTableView#CompletedItemsTable::item:selected:active,
 QTableView#FailedItemsTable::item:selected,
@@ -1201,6 +1206,11 @@ QTableWidget::item:selected {{
 }}
 
 QTableWidget::item:selected:active {{
+    background-color: {c["row_selected"]};
+    color: {c["text"]};
+}}
+
+QTableWidget::item:selected:hover {{
     background-color: {c["row_selected"]};
     color: {c["text"]};
 }}

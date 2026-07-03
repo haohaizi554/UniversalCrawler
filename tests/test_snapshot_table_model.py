@@ -6,7 +6,8 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem
 
 from app.ui.pages.common import SnapshotActionDelegate
-from app.ui.styles.table_rows import normalize_table_item_option
+from app.ui.styles.table_rows import normalize_table_item_option, row_interaction_fill_color, selection_fill_color
+from app.ui.styles.themes import build_palette
 from app.ui.viewmodels.snapshot_table_model import SnapshotTableModel
 
 
@@ -82,6 +83,24 @@ class SnapshotTableModelTests(unittest.TestCase):
 
         self.assertTrue(option.state & QStyle.StateFlag.State_Selected)
         self.assertFalse(option.state & QStyle.StateFlag.State_HasFocus)
+
+    def test_table_item_option_removes_native_hover_overlay(self):
+        option = QStyleOptionViewItem()
+        option.state |= QStyle.StateFlag.State_Selected
+        option.state |= QStyle.StateFlag.State_MouseOver
+
+        normalize_table_item_option(option)
+
+        self.assertTrue(option.state & QStyle.StateFlag.State_Selected)
+        self.assertFalse(option.state & QStyle.StateFlag.State_MouseOver)
+
+    def test_table_row_interaction_selection_wins_over_hover(self):
+        option = QStyleOptionViewItem()
+        option.palette = build_palette(False)
+        option.state |= QStyle.StateFlag.State_Selected
+        option.state |= QStyle.StateFlag.State_MouseOver
+
+        self.assertEqual(row_interaction_fill_color(option), selection_fill_color(option))
 
 
 if __name__ == "__main__":
