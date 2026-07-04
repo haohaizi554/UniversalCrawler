@@ -48,8 +48,9 @@ class FailedPage(PageFrame):
 
         self.detail = QWidget()
         self.detail.setObjectName("FailedRightColumn")
-        self.detail.setMinimumWidth(380)
-        self.detail.setMaximumWidth(520)
+        self.detail.setMinimumWidth(420)
+        self.detail.setMaximumWidth(540)
+        self.detail.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.detail_layout = QVBoxLayout(self.detail)
         self.detail_layout.setContentsMargins(0, 0, 0, 0)
         self.detail_layout.setSpacing(10)
@@ -57,7 +58,7 @@ class FailedPage(PageFrame):
         self.detail_card = QFrame()
         self.detail_card.setObjectName("FailedDetailCard")
         self.detail_card_layout = QVBoxLayout(self.detail_card)
-        self.detail_card_layout.setContentsMargins(8, 12, 12, 14)
+        self.detail_card_layout.setContentsMargins(14, 12, 14, 14)
         self.detail_card_layout.setSpacing(10)
         self.detail_title = QLabel("错误详情")
         self.detail_title.setObjectName("SectionTitle")
@@ -101,7 +102,7 @@ class FailedPage(PageFrame):
         self.detail_layout.addWidget(self.solutions_card, 1)
 
         splitter.addWidget(self.detail)
-        splitter.setSizes([820, 420])
+        splitter.setSizes([800, 440])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         self.root_layout.addWidget(splitter, 1)
@@ -188,17 +189,21 @@ class FailedPage(PageFrame):
     def _detail_row(self, label: str, value: Any, *, icon_file: str = "", emphasized: bool = False) -> QWidget:
         row = QWidget()
         row.setObjectName("FailedDetailRow")
+        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(10)
         key = QLabel(label)
         key.setObjectName("FailedDetailKey")
-        key.setMinimumWidth(82)
+        key.setFixedWidth(82)
         row_layout.addWidget(key, 0, Qt.AlignmentFlag.AlignTop)
         value_widget = self._icon_text(value, icon_file=icon_file, object_name="FailedDetailValue")
+        value_widget.setMinimumWidth(0)
+        value_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         if emphasized:
             value_widget.setProperty("emphasized", True)
         row_layout.addWidget(value_widget, 1)
+        row_layout.setStretch(1, 1)
         return row
 
     def _log_row(self, entry: dict[str, Any]) -> QWidget:
@@ -221,8 +226,10 @@ class FailedPage(PageFrame):
         message.setWordWrap(True)
         message.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        message.setMinimumWidth(0)
         message.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(message, 1, Qt.AlignmentFlag.AlignTop)
+        layout.setStretch(2, 1)
         return row
 
     @classmethod
@@ -288,14 +295,20 @@ class FailedPage(PageFrame):
         layout.setSpacing(10)
         layout.addWidget(self._icon_label(str(solution.get("icon_file") or "action_help.png"), 18), 0, Qt.AlignmentFlag.AlignTop)
         text_box = QWidget()
+        text_box.setMinimumWidth(0)
+        text_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         text_layout = QVBoxLayout(text_box)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(3)
         title = QLabel(str(solution.get("title") or "建议"))
         title.setObjectName("FailedSolutionTitle")
+        title.setWordWrap(True)
+        title.setMinimumWidth(0)
         desc = QLabel(str(solution.get("description") or ""))
         desc.setObjectName("FailedSolutionDescription")
         desc.setWordWrap(True)
+        desc.setMinimumWidth(0)
+        desc.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         text_layout.addWidget(title)
         text_layout.addWidget(desc)
         layout.addWidget(text_box, 1)
@@ -304,6 +317,8 @@ class FailedPage(PageFrame):
     def _icon_text(self, value: Any, *, icon_file: str = "", object_name: str = "") -> QWidget:
         widget = QWidget()
         widget.setObjectName(object_name)
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(7)
@@ -312,8 +327,12 @@ class FailedPage(PageFrame):
         label = QLabel(str(value or ""))
         label.setObjectName(f"{object_name}Text" if object_name else "IconTextLabel")
         label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(label, 1)
+        layout.setStretch(layout.count() - 1, 1)
         return widget
 
     @staticmethod
@@ -339,6 +358,7 @@ class FailedPage(PageFrame):
             item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.setParent(None)
                 widget.deleteLater()
 
     def selected_id(self) -> str | None:

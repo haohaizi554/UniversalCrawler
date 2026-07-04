@@ -56,6 +56,7 @@ from app.services.metadata_probe_queue import MetadataProbeQueue
 from app.services.metadata_retry_tracker import MetadataRetryTracker
 from app.utils.filenames import sanitize_filename
 from app.utils.safe_slot import safe_slot
+from app.ui.viewmodels.settings_catalog import GROUP_HINTS
 
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
 UI_TITLE_STAGE_META_KEY = "ui_title_stage"
@@ -371,6 +372,10 @@ class FrontendStateService:
             "group_order": order,
             "group_descriptions": {
                 group: descriptions.get(group, "")
+                for group in order
+            },
+            "group_hints": {
+                group: GROUP_HINTS.get(group, "")
                 for group in order
             },
         }

@@ -41,9 +41,13 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertGreater(len(contract["group_order"]), 0)
         self.assertIn("group_descriptions", contract)
         self.assertIsInstance(contract["group_descriptions"], dict)
+        self.assertIn("group_hints", contract)
+        self.assertIsInstance(contract["group_hints"], dict)
         self.assertIn("\u57fa\u7840\u8bbe\u7f6e", contract["group_order"])
         self.assertIn("\u57fa\u7840\u8bbe\u7f6e", contract["group_descriptions"])
+        self.assertIn("\u57fa\u7840\u8bbe\u7f6e", contract["group_hints"])
         self.assertIsInstance(contract["group_descriptions"]["\u57fa\u7840\u8bbe\u7f6e"], str)
+        self.assertIsInstance(contract["group_hints"]["\u57fa\u7840\u8bbe\u7f6e"], str)
         self.assertIn("\u5916\u89c2\u8bbe\u7f6e", contract["group_order"])
     def test_toolbox_items_include_shared_detail_contract(self):
         snapshot = FrontendStateService().get_snapshot(mock=True)

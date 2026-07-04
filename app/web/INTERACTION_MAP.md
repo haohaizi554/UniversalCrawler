@@ -6244,8 +6244,26 @@ GUI 隐藏滚动条箭头，WebUI 已补全全局滚动条规范：
 12. “正在下载”页底部控制面板必须保留 GUI 的 `队列控制` 标题层级。WebUI 的 `.active-controls` 不能只留下开关和选择框，否则页面扫描层级与 GUI 的 `QueueControlPanel` 不一致；该标题必须参与语言切换。
 13. 工具箱 mock 数据也属于 WebUI 可见体验，必须和真实 `frontend_toolbox_adapter.toolbox_items()` 一样带独立 `icon_file`。不能让离线预览或首屏 mock 全部回退到 `nav_toolbox.png`，否则工具卡视觉和 GUI 不一致。
 14. 表格操作列必须按 GUI 的 `SnapshotActionTable` 动作列规则收敛：队列 44px、正在下载 72px、完成 100px、失败 72px。WebUI 操作图标为透明点击区，内部 18px 图标，不再显示普通按钮边框。
-15. 各任务页右侧详情栏不能共用同一个默认宽度：正在下载 360-500px，完成 430-620px，失败 380-520px，日志 400-460px；这对应各 GUI 页面 `setMinimumWidth/setMaximumWidth`。
+15. 各任务页右侧详情栏不能共用同一个默认宽度：正在下载 360-500px，完成页在窄桌面优先约 400px 并随视口用 `clamp(400px, 28vw, 620px)` 扩展，失败 380-520px，日志 400-460px；这对应各 GUI 页面 `setMinimumWidth/setMaximumWidth` 与真实截图中的表格可读宽度。
 16. 底部状态栏第一组指标不能依赖 `:first-of-type` 之类易错伪类，因为前面已有状态灯和状态文本 `span`。WebUI 使用显式 `.status-metric-main` 负责左侧弹性间隔，保证指标区与 GUI 的居中布局一致。
 17. 启动任务按钮进入运行态时，WebUI 不能只显示普通 disabled 灰态；必须保持主按钮主题色并添加运行态视觉反馈，对齐 GUI `StartTaskButton` 的运行中反馈。
 
 ---
+
+# v8 本轮截图对齐新增合同
+
+1. 日志中心标签必须对齐 GUI `LogTabButton`：WebUI 使用 92x34 连体按钮式标签，而不是普通下划线 tab；筛选区必须保留边框卡片，右侧日志详情空态也必须显示“日志详情 + 详细信息”两段结构。
+2. 日志中心底部分页页码不能换行或竖排。WebUI 的统计文案允许压缩/换行，但 `#logPageIndicator` 必须 `white-space: nowrap`，防止窄视口下出现“第 / 1 / 页”的视觉错误。
+3. 配置中心基础设置必须对齐 GUI 的行级卡片：每个设置项输出 `setting-label`（标题 + 短说明）和 `setting-control-cluster`（控件组），普通 checkbox 必须渲染成主题色开关 `.setting-switch`。
+4. “默认打开方式”设置行必须同时包含选择框与“绑定默认打开方式”按钮，不能再把绑定按钮单独渲染成下一行；这对应 GUI 同一行内的选择与动作按钮。
+5. `settings_contract` 必须携带 `group_hints`，WebUI 的底部提示卡使用与 GUI 同源的提示文案；新增设置说明文字必须同步到 `i18n.js`，避免语言切换后设置页残留中文。
+
+---
+
+# v9 队列 / 正在下载 / 失败列表截图对齐新增合同
+
+1. 下载队列、正在下载、失败列表必须保留同一份 `FrontendStateService.mock_snapshot()` 截图对比证据，最新总览图位于 `docx/visual_audit/screenshots/gui_web_contact_sheet.png`；任一端修改页面结构后必须重截对应 `gui_*.png` 与 `web_*.png`。
+2. GUI 失败列表右侧详情清理旧控件时必须先 `setParent(None)`，再 `deleteLater()`；只延迟销毁会在快速 render 或截图时产生“旧详情 + 新详情”文字重影。
+3. GUI 失败列表详情值、日志消息和解决方案文本必须允许 `minimumWidth=0` 并使用 expanding/minimum 策略；右栏最小宽度为 420px，WebUI 对应失败详情栏使用 `minmax(420px, clamp(420px, var(--detail-width, 440px), 540px))`。
+4. WebUI 正在下载页底部 `.active-controls` 必须使用页级规则覆盖通用 `.controls-panel`，保持 96px 高度、纵向“标题 + 控件行”结构、标题左对齐，`#activeSummary` 靠右显示。
+5. WebUI 失败详情键名列宽必须与 GUI 的 `FailedDetailKey` 对齐为 82px，避免同一字段在 GUI/WebUI 中产生不同的首列视觉节奏。

@@ -33,15 +33,56 @@
     return { value: String(option ?? ""), label: String(option ?? "") };
   }
 
+  const SETTING_SHORT_DESCRIPTIONS = {
+    "\u4e0b\u8f7d\u76ee\u5f55": "\u4fdd\u5b58\u4e0b\u8f7d\u6587\u4ef6\u7684\u4f4d\u7f6e",
+    "\u6587\u4ef6\u547d\u540d\u89c4\u5219": "\u4ece\u9884\u8bbe\u6a21\u677f\u4e2d\u9009\u62e9",
+    "\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f": "\u4e0b\u8f7d\u5b8c\u6210\u540e\u7684\u6253\u5f00\u884c\u4e3a",
+    "\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00": "\u4efb\u52a1\u5b8c\u6210\u540e\u81ea\u52a8\u6253\u5f00",
+    "\u5e76\u53d1\u6570": "\u6700\u5927\u540c\u65f6\u4e0b\u8f7d\u6570",
+    "\u56fe\u7247\u53d7\u5e76\u53d1\u6570\u9650\u5236": "\u63a7\u5236\u56fe\u7247\u5feb\u8f66\u9053",
+    "\u8bf7\u6c42\u8d85\u65f6": "\u7f51\u7edc\u8bf7\u6c42\u7b49\u5f85\u65f6\u95f4",
+    "\u6700\u5927\u91cd\u8bd5": "\u5931\u8d25\u540e\u91cd\u8bd5\u6b21\u6570",
+    "\u901f\u5ea6\u9650\u5236 KB/s": "\u9650\u5236\u6700\u5927\u4e0b\u8f7d\u901f\u5ea6",
+    "\u65ad\u70b9\u7eed\u4f20": "\u7ee7\u7eed\u672a\u5b8c\u6210\u4efb\u52a1",
+    "\u4ec5\u4e0b\u8f7d\u89c6\u9891": "\u8df3\u8fc7\u56fe\u7247\u8d44\u6e90",
+    "\u6253\u5f00\u65b9\u5f0f": "\u9ed8\u8ba4\u64ad\u653e\u65b9\u5f0f",
+    "\u8bb0\u4f4f\u64ad\u653e\u4f4d\u7f6e": "\u4e0b\u6b21\u6062\u590d\u64ad\u653e\u4f4d\u7f6e",
+    "\u81ea\u52a8\u64ad\u653e\u4e0b\u4e00\u9879": "\u7ed3\u675f\u540e\u64ad\u653e\u4e0b\u4e00\u9879",
+    "\u624b\u52a8\u5207\u6362\u56fe\u7247": "\u5173\u95ed\u56fe\u7247\u81ea\u52a8\u8f6e\u64ad",
+    "\u4fdd\u7559\u5929\u6570": "\u542f\u52a8\u65f6\u81ea\u52a8\u6e05\u7406",
+    "UI\u6700\u5927\u663e\u793a\u6570": "\u9650\u5236\u65e5\u5fd7\u4e2d\u5fc3\u5c55\u793a\u6761\u6570",
+    "\u9519\u8bef\u65f6\u81ea\u52a8\u590d\u5236 Trace": "\u5f02\u5e38\u65f6\u590d\u5236\u8ffd\u8e2a\u7f16\u53f7",
+    "\u8bed\u8a00": "\u754c\u9762\u8bed\u8a00",
+    "\u8ddf\u968f\u7cfb\u7edf": "\u8ddf\u968f\u7cfb\u7edf\u4e3b\u9898",
+    "\u4e3b\u9898": "\u4e3b\u9898\u6a21\u5f0f",
+    "\u4e3b\u9898\u8272": "\u754c\u9762\u5f3a\u8c03\u8272",
+    "\u754c\u9762\u7f29\u653e": "\u754c\u9762\u6bd4\u4f8b",
+    "\u5b57\u4f53\u5927\u5c0f": "\u6587\u5b57\u5927\u5c0f",
+  };
+
+  function settingLabelHtml(label) {
+    const description = SETTING_SHORT_DESCRIPTIONS[label] || "";
+    return `
+      <span class="setting-label">
+        <strong>${escapeHtml(translate(label))}</strong>
+        ${description ? `<em>${escapeHtml(translate(description))}</em>` : ""}
+      </span>
+    `;
+  }
+
+  function settingControlCluster(controlHtml, trailingHtml = "") {
+    return `<span class="setting-control-cluster">${controlHtml}${trailingHtml}</span>`;
+  }
+
   function settingsControls(group, value) {
     const options = value && value._options ? value._options : {};
     if (value && Object.prototype.hasOwnProperty.call(value, "download_directory")) {
+      const associationButton = `<button class="btn setting-action" type="button" onclick="showFileAssociationModal()">${escapeHtml(translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"))}</button>`;
       return [
         settingInput("\u4e0b\u8f7d\u76ee\u5f55", "download_directory", value && value.download_directory, "basic"),
         settingSelect("\u6587\u4ef6\u547d\u540d\u89c4\u5219", "filename_template", value && value.filename_template, options.filename_template || [], "basic"),
-        settingSelect("\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f", "default_open_mode", value && value.default_open_mode, options.default_open_mode || [], "basic"),
         settingCheckbox("\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00", "open_after_download", !!(value && value.open_after_download), "basic"),
-        `<button class="btn setting-action" type="button" onclick="showFileAssociationModal()">${escapeHtml(translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"))}</button>`,
+        settingSelect("\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f", "default_open_mode", value && value.default_open_mode, options.default_open_mode || [], "basic", "", associationButton),
       ].join("");
     }
     if (group === "\u4e0b\u8f7d\u8bbe\u7f6e") {
@@ -178,14 +219,16 @@
     const action = scope === "basic"
       ? ` onblur="updateBasicSetting('${escapeAttr(key)}', this.value)"`
       : (scope ? ` onblur="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.value)"` : "");
-    return `<label class="setting-row"><span>${escapeHtml(translate(label))}</span><input data-setting="${escapeAttr(key)}" value="${escapeAttr(value || "")}" title="${escapeAttr(value || "")}"${action} /></label>`;
+    const control = `<input data-setting="${escapeAttr(key)}" value="${escapeAttr(value || "")}" title="${escapeAttr(value || "")}"${action} />`;
+    return `<div class="setting-row">${settingLabelHtml(label)}${settingControlCluster(control)}</div>`;
   }
 
   function settingCheckbox(label, key, checked, scope = "") {
     const action = scope === "basic"
       ? ` onchange="updateBasicSetting('${escapeAttr(key)}', this.checked)"`
       : (scope ? ` onchange="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.checked)"` : "");
-    return `<label class="setting-row"><span>${escapeHtml(translate(label))}</span><input data-setting="${escapeAttr(key)}" type="checkbox" ${checked ? "checked" : ""}${action} /></label>`;
+    const control = `<input class="setting-switch" data-setting="${escapeAttr(key)}" type="checkbox" ${checked ? "checked" : ""}${action} />`;
+    return `<div class="setting-row">${settingLabelHtml(label)}${settingControlCluster(control)}</div>`;
   }
 
   function imageManualSwitchSetting(value, options) {
@@ -209,25 +252,26 @@
       </select>
     `;
     return `
-      <label class="setting-row image-manual-row">
-        <span>${escapeHtml(translate("\u624b\u52a8\u5207\u6362\u56fe\u7247"))}</span>
+      <div class="setting-row image-manual-row">
+        ${settingLabelHtml("\u624b\u52a8\u5207\u6362\u56fe\u7247")}
         <span class="image-auto-controls">
           ${intervalSelect}
-          <input data-setting="manual_image_switch" type="checkbox" ${manual ? "checked" : ""} onchange="updateSetting('playback', 'manual_image_switch', this.checked)" />
+          <input class="setting-switch" data-setting="manual_image_switch" type="checkbox" ${manual ? "checked" : ""} onchange="updateSetting('playback', 'manual_image_switch', this.checked)" />
         </span>
-      </label>
+      </div>
     `;
   }
 
-  function settingSelect(label, key, value, options, scope = "", extraAttrs = "") {
+  function settingSelect(label, key, value, options, scope = "", extraAttrs = "", trailingHtml = "") {
     let normalized = (options || []).map(normalizeSettingOption).filter(option => option.value);
     const current = String(value ?? (normalized[0] ? normalized[0].value : ""));
     if (current && !normalized.some(option => option.value === current)) normalized.unshift({ value: current, label: current });
     const action = scope === "basic"
       ? ` onchange="updateBasicSetting('${escapeAttr(key)}', this.value)"`
       : (scope ? ` onchange="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.value)"` : "");
-    const labelHtml = label ? `<span>${escapeHtml(translate(label))}</span>` : "";
-    return `<label class="setting-row">${labelHtml}<select data-setting="${escapeAttr(key)}"${action}${extraAttrs}>${normalized.map(option => `<option value="${escapeAttr(option.value)}" ${current === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select></label>`;
+    const labelHtml = label ? settingLabelHtml(label) : "";
+    const control = `<select data-setting="${escapeAttr(key)}"${action}${extraAttrs}>${normalized.map(option => `<option value="${escapeAttr(option.value)}" ${current === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>`;
+    return `<div class="setting-row">${labelHtml}${settingControlCluster(control, trailingHtml)}</div>`;
   }
 
   window.UcpSettingsRender = {

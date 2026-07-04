@@ -171,6 +171,29 @@ class StaticAssetsTests(unittest.TestCase):
             self.assertIn(f'id="{elem_id}"', content,
                          f"missing id in HTML: {elem_id}")
 
+    def test_completed_preview_controls_are_visible_not_compat_hidden(self):
+        html_path = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        bundle = _static_bundle_content()
+        completed_page = html.split('id="page-completed"', 1)[1].split('id="page-failed"', 1)[0]
+        compat_hidden = html.split('<div class="compat-hidden"', 1)[1]
+
+        self.assertIn('id="mediaViewport"', completed_page)
+        self.assertIn('id="mediaControls"', completed_page)
+        self.assertIn('id="videoPlayer"', completed_page)
+        self.assertNotIn('<video id="videoPlayer" controls', completed_page)
+        self.assertIn('ondblclick="toggleFullscreen()"', completed_page)
+        for elem_id in ("playBtn", "prevBtn", "nextBtn", "seekSlider", "timeLabel", "fullscreenBtn"):
+            self.assertIn(f'id="{elem_id}"', completed_page)
+            self.assertNotIn(f'id="{elem_id}"', compat_hidden)
+
+        self.assertIn("function installMediaControlHandlers", bundle)
+        self.assertIn("function updateMediaControls", bundle)
+        self.assertIn("function switchPreview", bundle)
+        self.assertIn("function onSeekCommit", bundle)
+        self.assertIn("player.onplay", bundle)
+        self.assertIn("document.addEventListener(\"fullscreenchange\"", bundle)
+
     def test_index_html_required_js_functions(self):
         """所有 onclick/on... 引用的函数必须存在。"""
         from pathlib import Path

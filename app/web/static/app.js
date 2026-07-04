@@ -67,12 +67,22 @@ const SETTINGS_GROUP_DESCRIPTIONS_FALLBACK = {
   "外观设置": "语言、主题色、缩放和字体",
 };
 
+const SETTINGS_GROUP_HINTS_FALLBACK = {
+  "基础设置": "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。",
+  "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
+  "平台设置": "认证状态自动检测；代理仅对需要的平台开放。",
+  "播放设置": "播放设置只影响本地预览，不影响下载文件。",
+  "日志设置": "UI 显示数量只影响日志中心显示，不影响日志文件本身。",
+  "外观设置": "外观设置会即时生效，并保存到本地配置。",
+};
+
 function settingsContract() {
   const contract = frontendState.settings_contract || {};
   const order = Array.isArray(contract.group_order) ? contract.group_order.filter(Boolean) : [];
   return {
     order,
     descriptions: contract.group_descriptions || {},
+    hints: contract.group_hints || {},
   };
 }
 
@@ -1050,6 +1060,7 @@ function renderCompleted() {
   byId("completedNextPage").disabled = completedPage >= totalPages;
   renderCompletedDetail();
   updateNavBtnsState();
+  updateMediaControls();
 }
 
 function selectCompleted(id) {
@@ -1182,6 +1193,22 @@ function logDetailSummaryHtml(item) {
     ["消息", esc(item.message || item.message_summary || "")],
   ];
   return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, value)).join("")}</div>`;
+}
+
+function emptyLogDetailSummaryHtml() {
+  const rows = [
+    ["时间", "-"],
+    ["级别", "-"],
+    ["性质", "-"],
+    ["范围", "-"],
+    ["阶段", "-"],
+    ["事件码", "-"],
+    ["来源", "-"],
+    ["平台", "-"],
+    ["Trace ID", "-"],
+    ["消息", "-"],
+  ];
+  return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, esc(value))).join("")}</div>`;
 }
 
 function renderLogs() {
@@ -1318,7 +1345,16 @@ function renderLogDetail(itemsOverride) {
           <button class="btn" type="button" disabled>${esc(t("导出"))}</button>
         </div>
       </div>
-      <div class="log-detail-card"><p>${esc(t("暂无日志"))}</p></div>
+      <div class="log-detail-card">
+        ${emptyLogDetailSummaryHtml()}
+      </div>
+      <div class="log-extra-card log-json-card">
+        <div class="log-card-head">
+          <h2>${esc(t("详细信息"))}</h2>
+          <button class="btn" type="button" disabled>${esc(t("复制"))}</button>
+        </div>
+        <pre class="log-snippet">{}</pre>
+      </div>
     `;
     return;
   }
@@ -1476,6 +1512,10 @@ function renderSettings(force = false) {
     contract.descriptions?.[currentSettingsGroup]
     || SETTINGS_GROUP_DESCRIPTIONS_FALLBACK[currentSettingsGroup]
     || "";
+  const hint =
+    contract.hints?.[currentSettingsGroup]
+    || SETTINGS_GROUP_HINTS_FALLBACK[currentSettingsGroup]
+    || "";
   const title = document.querySelector("#page-settings .page-head h1");
   if (title) title.textContent = t("配置中心");
   const subtitle = document.querySelector("#page-settings .page-head p");
@@ -1497,6 +1537,7 @@ function renderSettings(force = false) {
         <div class="settings-detail-body ${currentSettingsGroup === "\u5e73\u53f0\u8bbe\u7f6e" ? "settings-platform-body" : ""}">
           ${settingsControls(currentSettingsGroup, currentValue)}
         </div>
+        ${hint ? `<div class="settings-hint-card"><span class="settings-hint-icon">i</span><span>${esc(t(hint))}</span></div>` : ""}
       </section>
     </div>
   `;
@@ -2484,12 +2525,12 @@ function updateFullscreenButtonState() {
   const button = byId("fullscreenBtn");
   if (!button) return;
   button.textContent = isFullscreenMode ? "[ 退出 ]" : "[ 全屏 ]";
-  button.disabled = !hasPreviewContent();
 }
 function updateMediaControls(player = byId("videoPlayer")) {
   const slider = byId("seekSlider");
   const label = byId("timeLabel");
   const hasVideo = mediaHasVideoSource(player);
+  const canStartPreview = !!(currentPlayingId || selected.completed || selectedVideoId);
   const duration = hasVideo ? mediaDuration(player) : 0;
   const current = hasVideo ? mediaCurrentTime(player) : 0;
   const dragging = slider && slider.dataset.dragging === "1";
@@ -2501,7 +2542,7 @@ function updateMediaControls(player = byId("videoPlayer")) {
   if (label) {
     label.textContent = hasVideo ? `${fmtTime(current)} / ${fmtTime(duration)}` : "00:00";
   }
-  setPlayButtonState(hasVideo && !player.paused && !player.ended, !hasVideo);
+  setPlayButtonState(hasVideo && !player.paused && !player.ended, !hasVideo && !canStartPreview);
   updateNavBtnsState();
   updateFullscreenButtonState();
 }
@@ -2700,7 +2741,6 @@ function togglePlay() {
 function toggleFullscreen() {
   const panel = byId("previewPanel");
   if (!panel || !panel.requestFullscreen) return;
-  if (!hasPreviewContent()) return;
   if (document.fullscreenElement === panel) {
     document.exitFullscreen().catch(() => {});
     return;
