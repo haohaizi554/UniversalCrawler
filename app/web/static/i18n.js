@@ -770,6 +770,7 @@ function applyStaticLanguage() {
     const label = logTabLabels[button.dataset.logTab];
     if (label) button.textContent = t(label);
   });
+  if (typeof syncLogTabLabels === "function") syncLogTabLabels();
   const logFilterLabels = ["日志级别", "时间范围", "平台", "Trace ID", "关键词搜索"];
   document.querySelectorAll("#page-logs .log-filter-label").forEach((label, index) => {
     if (logFilterLabels[index]) label.textContent = t(logFilterLabels[index]);

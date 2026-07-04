@@ -43,7 +43,7 @@ function normalizeTablePageSize(value) {
 let logFilters = {
   category: "all",
   level: "全部",
-  time: "近 24 小时",
+  time: "近 30 分钟",
   platform: "全部",
   trace: "",
   keyword: "",
@@ -1175,6 +1175,53 @@ function logLevelClass(level) {
   return "info";
 }
 
+const LOG_TAB_LABELS = {
+  all: "全部日志",
+  crawl: "采集日志",
+  download: "下载日志",
+  system: "系统日志",
+  performance: "性能日志",
+  error: "错误日志",
+};
+
+function logCategoryForCount(item) {
+  if (!window.UcpLogDisplay || typeof window.UcpLogDisplay.logCategory !== "function") {
+    return String(item.category || "system");
+  }
+  return window.UcpLogDisplay.logCategory(item);
+}
+
+function nonCategoryLogFilters() {
+  return {
+    ...logFilters,
+    category: "all",
+  };
+}
+
+function logTabCounts() {
+  const counts = Object.fromEntries(Object.keys(LOG_TAB_LABELS).map(key => [key, 0]));
+  const baseFilters = nonCategoryLogFilters();
+  const rows = window.UcpLogDisplay
+    ? window.UcpLogDisplay.filteredLogItems(frontendState.log_items || [], baseFilters)
+    : (frontendState.log_items || []);
+  for (const item of rows) {
+    counts.all += 1;
+    const category = logCategoryForCount(item);
+    if (Object.prototype.hasOwnProperty.call(counts, category)) counts[category] += 1;
+    if (String(item.level || "").toUpperCase() === "ERROR" && category !== "error") counts.error += 1;
+  }
+  return counts;
+}
+
+function syncLogTabLabels() {
+  const counts = logTabCounts();
+  document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => {
+    const category = button.dataset.logTab || "all";
+    const label = LOG_TAB_LABELS[category] || category;
+    button.textContent = `${t(label)} ${counts[category] || 0}`;
+  });
+}
+
 function logLevelCellHtml(item) {
   const label = item.level_display || item.level || "INFO";
   return `<span class="log-level-badge log-level-${logLevelClass(label)}">${esc(label)}</span>`;
@@ -1222,6 +1269,7 @@ function emptyLogDetailSummaryHtml() {
 
 function renderLogs() {
   syncLogFilterControls();
+  syncLogTabLabels();
   const filteredItems = filteredLogItems();
   const boundedItems = visibleLogItems(filteredItems, uiLogDisplayLimit());
   const totalPages = logPageSize <= 0 ? 1 : Math.max(1, Math.ceil(boundedItems.length / logPageSize));
@@ -1424,7 +1472,7 @@ function setLogTab(category) {
 
 function syncLogFiltersFromDom() {
   logFilters.level = byId("logLevelFilter")?.value || "全部";
-  logFilters.time = byId("logTimeFilter")?.value || "近 24 小时";
+  logFilters.time = byId("logTimeFilter")?.value || "近 30 分钟";
   logFilters.platform = byId("logPlatformFilter")?.value || "全部";
   logFilters.trace = byId("logTraceFilter")?.value.trim() || "";
   logFilters.keyword = byId("logKeywordFilter")?.value.trim() || "";
@@ -1448,7 +1496,7 @@ function syncLogFilterControls() {
   document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => button.classList.toggle("active", button.dataset.logTab === logFilters.category));
   const selectBindings = [
     ["logLevelFilter", "level", "全部"],
-    ["logTimeFilter", "time", "近 24 小时"],
+    ["logTimeFilter", "time", "近 30 分钟"],
     ["logPlatformFilter", "platform", "全部"],
   ];
   for (const [id, key, fallback] of selectBindings) {

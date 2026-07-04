@@ -87,6 +87,34 @@
 - `python -m pytest tests/test_web_browser.py::StaticAssetsTests::test_completed_preview_controls_are_visible_not_compat_hidden -q`
 - `python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_basic_settings_use_backend_options_and_update_action -q`
 - `python -m pytest tests/test_web_browser.py::WebUIBrowserTests::test_11g_settings_nav_icons_load_from_backend_route -q`
+- `python -m pytest tests/test_web_browser.py::WebUIBrowserTests::test_11g_settings_nav_icons_load_from_backend_route tests/test_web_browser.py::WebUIBrowserTests::test_11h_platform_custom_proxy_stays_inside_settings_panel -q`
+
+## 2026-07-04 配置中心子页复核追加
+
+- 新增配置中心专用联系表：`docx/visual_audit/screenshots/settings_subpages_contact_sheet.png`，按同一份 `FrontendStateService.mock_snapshot()` 覆盖基础设置、下载设置、平台设置、播放设置、日志设置、外观设置 6 个子页。
+- 刷新全局联系表：`docx/visual_audit/screenshots/gui_web_contact_sheet.png`，新增 `Settings Platform` 行；工具箱仍标注为本轮验收范围外。
+- 平台设置页修复：WebUI 自定义代理从“第 6 列横向溢出”调整为 GUI 同款“代理选择 + 端口输入同排”；代理自定义选项显示为“自定义”，但 option value 与后端配置键保持不变。
+- 非平台设置页宽度修复：WebUI 基础/下载/播放/日志/外观设置体和提示卡从 780px 收敛到 594px，匹配 GUI 中等表单卡片宽度；平台设置继续使用宽表格，不受该规则影响。
+- 默认打开方式行修复：WebUI 对“选择框 + 绑定动作按钮”使用专用 `has-trailing-action` 控件组，选择框保持可读宽度，按钮显示短文案“绑定”，完整语义保留在 `title`/`aria-label`。
+- 配置详情头修复：WebUI 分组详情图标从 42x42 收敛到 GUI 同款 32x32，内部图标为 20x20，降低标题区视觉重量。
+- 回归验证：新增浏览器用例 `test_11h_platform_custom_proxy_stays_inside_settings_panel`，检查自定义代理输入框存在、与代理选择框同排、整行和输入框都没有越出配置面板，也不会造成文档级横向滚动。
+- 回归验证：新增浏览器用例 `test_11i_default_open_mode_row_keeps_select_readable`，检查默认打开方式行的选择框宽度、绑定按钮宽度和完整 `title`/`aria-label`。
+- 本轮复跑：`python -m pytest tests/test_web_browser.py -q` 通过 78 项；`python -m pytest tests/test_unified_frontend_contract.py -q` 通过 104 项。
+
+## 2026-07-04 日志中心页签与默认筛选追加
+
+- 刷新 `web_logs.png` 与 `gui_web_contact_sheet.png`：WebUI 日志中心现在与 GUI 一样默认选择“近 30 分钟”，页签显示“全部日志 0 / 采集日志 0 / 下载日志 0 ...”的分类数量。
+- 修复 WebUI 日志页签数量缺失：新增 `syncLogTabLabels()`，按 GUI 的统计语义忽略当前分类页签、保留级别/时间/平台/Trace/关键词过滤，再计算每个分类数量。
+- 修复语言刷新抹掉页签数量的问题：`applyStaticLanguage()` 翻译静态文案后再次同步页签标签，保证英文/繁中切换后仍保留数量。
+- 修复页签数量换行：日志页签增加 `white-space: nowrap` 并收窄左右内边距，避免“全部日志 0”被挤成两行。
+- 回归验证：`python -m pytest tests/test_web_browser.py::WebUIBrowserTests::test_09d_log_tabs_keep_gui_counts_after_language_refresh -q` 通过；`python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_log_center_matches_gui_tabs_actions_and_filters -q` 通过；`node --check app/web/static/app.js` 与 `node --check app/web/static/i18n.js` 通过。
+
+## 2026-07-04 弹窗尺寸复核追加
+
+- 刷新 `web_modal_selection.png`、`web_modal_association.png` 与全局联系表：任务清单确认弹窗从 800x600 上限调整为 GUI 同级的 `min(1200px, 94vw)` x `min(900px, 88vh)`，避免 Web 弹窗密度明显偏小。
+- 默认打开方式绑定弹窗从 520px 宽调整到 `min(690px, 94vw)`，与 GUI 弹窗正文宽度、说明文字换行和选项列表比例更接近。
+- 保持原有键盘交互不变：Enter 仍确认，Esc 仍取消；本轮只收敛尺寸，不改确认路径。
+- 回归验证：`python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_selection_modal_matches_gui_confirmation_interaction tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_file_association_modal_matches_gui_confirmation_interaction -q` 通过；`python -m pytest tests/test_web_browser.py::StaticAssetsTests::test_selection_modal_keyboard_shortcuts_are_scoped tests/test_web_browser.py::StaticAssetsTests::test_file_association_modal_shortcuts_are_bound_to_dialog_actions -q` 通过。
 
 ## 后续仍需逐页细查
 

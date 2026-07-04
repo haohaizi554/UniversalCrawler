@@ -653,6 +653,7 @@ select option:hover {
 .queue-path-row .path-text {
   flex: 1 1 auto;
   min-width: 0;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -760,8 +761,9 @@ select option:hover {
   border-radius: 0;
   background: var(--panel);
   color: var(--text);
-  padding: 0 14px;
+  padding: 0 8px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 #page-logs .log-tabs .tab:first-child {
@@ -2208,9 +2210,9 @@ tr.selected:hover td {
 
 .settings-detail-head {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   grid-template-rows: auto auto;
-  column-gap: 14px;
+  column-gap: 12px;
   row-gap: 2px;
   align-items: center;
   margin-bottom: 16px;
@@ -2218,8 +2220,8 @@ tr.selected:hover td {
 
 .settings-detail-icon {
   grid-row: 1 / span 2;
-  width: 42px;
-  height: 42px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: var(--accent-soft);
   display: inline-flex;
@@ -2228,8 +2230,8 @@ tr.selected:hover td {
 }
 
 .settings-detail-icon img {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   object-fit: contain;
 }
 
@@ -2248,7 +2250,7 @@ tr.selected:hover td {
 }
 
 .settings-detail-body {
-  max-width: 780px;
+  max-width: 594px;
   flex: 0 1 auto;
   min-height: 0;
   overflow: auto;
@@ -2339,6 +2341,11 @@ tr.selected:hover td {
   min-width: 0;
 }
 
+.setting-control-cluster.has-trailing-action > select,
+.setting-control-cluster.has-trailing-action > .custom-select {
+  flex: 1 1 150px;
+}
+
 .setting-row span:not(.setting-label):not(.setting-control-cluster) {
   color: var(--muted);
 }
@@ -2401,7 +2408,7 @@ tr.selected:hover td {
 }
 
 .settings-hint-card {
-  max-width: 780px;
+  max-width: 594px;
   min-height: 58px;
   margin-top: 22px;
   padding: 12px 16px;
@@ -2430,14 +2437,13 @@ tr.selected:hover td {
 
 .setting-platform {
   display: grid;
-  grid-template-columns: minmax(96px, 122px) minmax(92px, 112px) minmax(150px, 1fr) minmax(96px, 132px) minmax(180px, 1.05fr);
+  grid-template-columns: minmax(78px, 122px) minmax(90px, 112px) minmax(150px, 1fr) minmax(108px, 132px) minmax(180px, 1.05fr);
   gap: 10px;
   align-items: center;
 }
 
 .setting-platform.has-proxy-custom {
-  grid-template-rows: minmax(34px, auto) minmax(34px, auto);
-  row-gap: 6px;
+  grid-template-columns: minmax(78px, 122px) minmax(90px, 112px) minmax(150px, 1fr) minmax(108px, 132px) minmax(112px, 0.7fr) minmax(86px, 0.55fr);
 }
 
 .setting-platform-header {
@@ -2463,7 +2469,7 @@ tr.selected:hover td {
 .setting-platform .platform-count { grid-column: 3; grid-row: 1; }
 .setting-platform .platform-timeout { grid-column: 4; grid-row: 1; }
 .setting-platform .platform-proxy { grid-column: 5; grid-row: 1; }
-.setting-platform.has-proxy-custom .proxy-custom { grid-column: 5; grid-row: 2; }
+.setting-platform.has-proxy-custom .proxy-custom { grid-column: 6; grid-row: 1; }
 
 .setting-platform input, .setting-platform select, .setting-platform .custom-select {
   width: 100%;
@@ -2633,8 +2639,12 @@ tr.selected:hover td {
 
 .setting-action {
   height: 38px;
-  min-width: 140px;
-  width: fit-content;
+  flex: 0 0 94px;
+  min-width: 94px;
+  width: 94px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-grid {
@@ -2929,11 +2939,11 @@ tr.selected:hover td {
 }
 
 .association-modal-box {
-  width: min(520px, 92vw);
+  width: min(690px, 94vw);
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 20px;
+  padding: 22px 26px;
 }
 
 .association-modal-box h2 {
@@ -3014,8 +3024,8 @@ tr.selected:hover td {
 }
 
 .selection-modal-box {
-  width: min(800px, 94vw);
-  height: min(600px, 84vh);
+  width: min(1200px, 94vw);
+  height: min(900px, 88vh);
   display: flex;
   flex-direction: column;
   gap: 15px;

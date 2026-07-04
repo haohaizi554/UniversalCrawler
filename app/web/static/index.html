@@ -175,7 +175,7 @@
               </div>
               <div class="filters log-filters">
                 <div class="log-filter-field"><span class="log-filter-label">日志级别</span><select id="logLevelFilter" aria-label="日志级别" onchange="syncLogFiltersFromDom()"><option>全部</option><option>INFO</option><option>SUCCESS</option><option>WARN</option><option>ERROR</option><option>CMD</option></select></div>
-                <div class="log-filter-field"><span class="log-filter-label">时间范围</span><select id="logTimeFilter" aria-label="时间范围" onchange="syncLogFiltersFromDom()"><option>近 30 分钟</option><option>近 1 小时</option><option selected>近 24 小时</option><option>全部</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">时间范围</span><select id="logTimeFilter" aria-label="时间范围" onchange="syncLogFiltersFromDom()"><option selected>近 30 分钟</option><option>近 1 小时</option><option>近 24 小时</option><option>全部</option></select></div>
                 <div class="log-filter-field"><span class="log-filter-label">平台</span><select id="logPlatformFilter" aria-label="平台" onchange="syncLogFiltersFromDom()"><option>全部</option><option>抖音</option><option>Bilibili</option><option>快手</option><option>MissAV</option><option>小红书</option><option>系统</option></select></div>
                 <div class="log-filter-field"><span class="log-filter-label">Trace ID</span><input id="logTraceFilter" aria-label="Trace ID" placeholder="请输入 Trace ID" oninput="syncLogFiltersFromDom()" /></div>
                 <div class="log-filter-field"><span class="log-filter-label">关键词搜索</span><input id="logKeywordFilter" aria-label="关键词搜索" placeholder="请输入关键词..." oninput="syncLogFiltersFromDom()" /></div>

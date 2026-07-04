@@ -1025,6 +1025,78 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["logTimeFilter"], {"value": "近 24 小时", "label": "Last 24 hours"})
         self.assertEqual(result["logPlatformFilter"], {"value": "全部", "label": "All"})
 
+    def test_09d_log_tabs_keep_gui_counts_after_language_refresh(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.log_items = [
+                {
+                  id: 'log-crawl',
+                  time: new Date().toISOString(),
+                  level: 'INFO',
+                  source: 'Crawler',
+                  trace_id: 'trace-crawl',
+                  message_summary: '采集主页解析完成',
+                  message: '采集主页解析完成'
+                },
+                {
+                  id: 'log-download',
+                  time: new Date().toISOString(),
+                  level: 'INFO',
+                  source: 'BilibiliDownloader',
+                  platform: 'Bilibili',
+                  trace_id: 'trace-download',
+                  message_summary: '下载分片完成',
+                  message: '下载分片完成'
+                },
+                {
+                  id: 'log-error',
+                  time: new Date().toISOString(),
+                  level: 'ERROR',
+                  source: 'GUI',
+                  trace_id: 'trace-error',
+                  message_summary: '任务异常退出',
+                  message: '任务异常退出'
+                }
+              ];
+              logFilters = {
+                category: 'all',
+                level: '全部',
+                time: '近 30 分钟',
+                platform: '全部',
+                trace: '',
+                keyword: ''
+              };
+              switchPage('logs');
+              renderLogs();
+              const zh = Array.from(document.querySelectorAll('#logTabs [data-log-tab]')).map(button => button.textContent.trim());
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "en-US"
+              };
+              document.documentElement.dataset.language = 'en-US';
+              applyStaticLanguage();
+              const en = Array.from(document.querySelectorAll('#logTabs [data-log-tab]')).map(button => button.textContent.trim());
+              return {
+                timeValue: document.getElementById('logTimeFilter').value,
+                zh,
+                en
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["timeValue"], "近 30 分钟")
+        self.assertIn("全部日志 3", result["zh"])
+        self.assertIn("错误日志 1", result["zh"])
+        self.assertIn("All logs 3", result["en"])
+        self.assertIn("Error logs 1", result["en"])
+
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
         self._page.goto(self._server_url)
@@ -1389,15 +1461,19 @@ class WebUIBrowserTests(unittest.TestCase):
               const panel = document.querySelector('#page-settings .settings-detail-panel');
               const row = document.querySelector('#page-settings .setting-platform.has-proxy-custom');
               const input = row?.querySelector('.proxy-custom.active');
+              const proxyControl = row?.querySelector('.custom-select.platform-proxy') || row?.querySelector('select.platform-proxy');
               const panelRect = panel?.getBoundingClientRect();
               const rowRect = row?.getBoundingClientRect();
               const inputRect = input?.getBoundingClientRect();
+              const proxyRect = proxyControl?.getBoundingClientRect();
               return {
                 hasInput: Boolean(input),
                 documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
                 rowOverflow: rowRect && panelRect ? rowRect.right - panelRect.right : null,
                 inputOverflow: inputRect && panelRect ? inputRect.right - panelRect.right : null,
-                inputBelowSelect: inputRect && rowRect ? inputRect.top > rowRect.top + 20 : false
+                inputSameRow: inputRect && proxyRect
+                  ? Math.abs((inputRect.top + inputRect.height / 2) - (proxyRect.top + proxyRect.height / 2)) <= 4
+                  : false
               };
             }
             """
@@ -1407,7 +1483,40 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertLessEqual(result["documentOverflow"], 1)
         self.assertLessEqual(result["rowOverflow"], 1)
         self.assertLessEqual(result["inputOverflow"], 1)
-        self.assertTrue(result["inputBelowSelect"])
+        self.assertTrue(result["inputSameRow"])
+
+    def test_11i_default_open_mode_row_keeps_select_readable(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const cluster = document.querySelector('#page-settings .setting-control-cluster.has-trailing-action');
+              const selectBox = cluster?.querySelector('.custom-select') || cluster?.querySelector('select');
+              const action = cluster?.querySelector('.setting-action');
+              const selectRect = selectBox?.getBoundingClientRect();
+              const actionRect = action?.getBoundingClientRect();
+              return {
+                hasCluster: Boolean(cluster),
+                selectWidth: selectRect ? selectRect.width : 0,
+                actionWidth: actionRect ? actionRect.width : 0,
+                actionTitle: action?.getAttribute('title') || '',
+                actionAria: action?.getAttribute('aria-label') || ''
+              };
+            }
+            """
+        )
+
+        self.assertTrue(result["hasCluster"])
+        self.assertGreaterEqual(result["selectWidth"], 140)
+        self.assertLessEqual(result["actionWidth"], 104)
+        self.assertIn("默认打开方式", result["actionTitle"])
+        self.assertEqual(result["actionTitle"], result["actionAria"])
 
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""

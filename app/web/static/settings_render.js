@@ -71,13 +71,17 @@
   }
 
   function settingControlCluster(controlHtml, trailingHtml = "") {
-    return `<span class="setting-control-cluster">${controlHtml}${trailingHtml}</span>`;
+    return `<span class="setting-control-cluster${trailingHtml ? " has-trailing-action" : ""}">${controlHtml}${trailingHtml}</span>`;
   }
 
   function settingsControls(group, value) {
     const options = value && value._options ? value._options : {};
     if (value && Object.prototype.hasOwnProperty.call(value, "download_directory")) {
-      const associationButton = `<button class="btn setting-action" type="button" onclick="showFileAssociationModal()">${escapeHtml(translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"))}</button>`;
+      const associationLabel = translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f");
+      const associationText = escapeHtml(associationLabel);
+      const associationAttr = escapeAttr(associationLabel);
+      const associationShortText = escapeHtml(translate("\u7ed1\u5b9a"));
+      const associationButton = `<button class="btn setting-action" type="button" title="${associationAttr}" aria-label="${associationAttr}" onclick="showFileAssociationModal()">${associationShortText}</button>`;
       return [
         settingInput("\u4e0b\u8f7d\u76ee\u5f55", "download_directory", value && value.download_directory, "basic"),
         settingSelect("\u6587\u4ef6\u547d\u540d\u89c4\u5219", "filename_template", value && value.filename_template, options.filename_template || [], "basic"),
@@ -194,7 +198,7 @@
         <select class="platform-auth" disabled title="${escapeAttr(row.auth_detail || "")}"><option ${row.auth_status === "\u5df2\u8ba4\u8bc1" ? "selected" : ""}>${escapeHtml(translate("\u5df2\u8ba4\u8bc1"))}</option><option ${row.auth_status !== "\u5df2\u8ba4\u8bc1" ? "selected" : ""}>${escapeHtml(translate("\u672a\u8ba4\u8bc1"))}</option></select>
         <select class="platform-count" data-setting="${escapeAttr(countKey)}"${countDisabled} onchange="updateSetting('${escapeAttr(row.id || "")}', '${escapeAttr(countKey)}', this.value)">${countOptions.map(option => `<option value="${escapeAttr(option.value)}" ${countValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
         <select class="platform-timeout" data-setting="${escapeAttr(timeoutKey)}"${timeoutDisabled} onchange="updateSetting('${escapeAttr(row.id || "")}', '${escapeAttr(timeoutKey)}', this.value)">${timeoutOptions.map(option => `<option value="${escapeAttr(option.value)}" ${timeoutValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
-        <select class="platform-proxy" data-setting="${escapeAttr(proxyKey)}"${proxyDisabled} onchange="handleProxySelect('${escapeAttr(row.id || "")}', '${escapeAttr(proxyKey)}', this)">${proxyOptions.map(option => `<option value="${escapeAttr(option.value)}" ${proxyValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
+        <select class="platform-proxy" data-setting="${escapeAttr(proxyKey)}"${proxyDisabled} onchange="handleProxySelect('${escapeAttr(row.id || "")}', '${escapeAttr(proxyKey)}', this)">${proxyOptions.map(option => `<option value="${escapeAttr(option.value)}" ${proxyValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(proxyOptionDisplayLabel(option)))}</option>`).join("")}</select>
         ${customProxy}
       </div>
     `;
@@ -203,6 +207,13 @@
   function isCustomProxyValue(value) {
     const text = String(value || "").trim();
     return text === "\u81ea\u5b9a\u4e49" || text.includes("://") || text.includes(":");
+  }
+
+  function proxyOptionDisplayLabel(option) {
+    const value = String(option && option.value || "").trim();
+    const label = String(option && option.label || "").trim();
+    if (value === "\u81ea\u5b9a\u4e49" || label.includes("\u81ea\u5b9a\u4e49")) return "\u81ea\u5b9a\u4e49";
+    return label || value;
   }
 
   function proxyCustomDisplayValue(value) {
