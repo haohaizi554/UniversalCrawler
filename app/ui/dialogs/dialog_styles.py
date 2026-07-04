@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from PyQt6.QtWidgets import QWidget
+
+from app.services.icon_registry import resolve_ui_icon_path
+
+
+def _dialog_check_icon_url() -> str:
+    resolved = resolve_ui_icon_path("status_success.png")
+    if resolved is not None:
+        return resolved.as_posix()
+    return "UI/icon/status_success.png"
 
 
 def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
     """Scoped QSS for modal dialogs that must not fall back to native widget colors."""
-    check_icon_url = Path("UI/icon/status_success.png").resolve().as_posix()
+    check_icon_url = _dialog_check_icon_url()
     return f"""
     QDialog {{
         background-color: {colors["bg"]};

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from app.debug_logger import debug_logger
-from app.services.icon_registry import platform_icon_file, ui_icon_path
+from app.services.icon_registry import platform_icon_file, resolve_ui_icon_path
 
 
 @dataclass(frozen=True)
@@ -21,8 +21,8 @@ BUILTIN_PLATFORM_ORDER = ("douyin", "bilibili", "kuaishou", "missav", "xiaohongs
 
 
 def resolve_platform_icon_path(platform_id: str) -> str | None:
-    path = Path(ui_icon_path(platform_icon_file(platform_id)))
-    return str(path) if path.is_file() else None
+    path = resolve_ui_icon_path(platform_icon_file(platform_id))
+    return str(path) if path is not None else None
 
 
 def platform_icon_file_for_id(platform_id: str, meta: PlatformUiMeta | None) -> str:
@@ -34,7 +34,7 @@ def platform_icon_file_for_id(platform_id: str, meta: PlatformUiMeta | None) -> 
     icon_file = platform_icon_file(platform_id)
     if platform_id not in builtin_platform_metas() and icon_file == "platform_web.png":
         return ""
-    return icon_file if Path(ui_icon_path(icon_file)).is_file() else ""
+    return icon_file if resolve_ui_icon_path(icon_file) is not None else ""
 
 
 def builtin_platform_metas() -> dict[str, PlatformUiMeta]:

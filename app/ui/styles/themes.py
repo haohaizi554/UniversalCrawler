@@ -8,6 +8,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QPalette
 from PyQt6.QtWidgets import QApplication, QDialog, QMainWindow, QPlainTextEdit, QTableView, QTableWidget, QWidget
 
+from app.services.icon_registry import resolve_ui_icon_path
+
 from .log_center_styles import generate_log_center_stylesheet as _generate_log_center_stylesheet
 
 LIGHT = {
@@ -306,6 +308,12 @@ def generate_log_center_stylesheet(is_dark: bool = False) -> str:
     """Theme-aware QSS for LogCenterPage and its object-named children."""
     return _generate_log_center_stylesheet(theme_colors(is_dark))
 
+def _status_success_icon_url() -> str:
+    resolved = resolve_ui_icon_path("status_success.png")
+    if resolved is not None:
+        return resolved.as_posix()
+    return "UI/icon/status_success.png"
+
 
 def generate_stylesheet(is_dark: bool = False, *, font_size: str | None = None, scale: str | None = None) -> str:
     """Return the application stylesheet.
@@ -319,7 +327,7 @@ def generate_stylesheet(is_dark: bool = False, *, font_size: str | None = None, 
     configured_scale = str(scale or _configured_appearance_value("scale", "100%")).strip()
     base_font_px = _scaled_pixel_size(configured_font_size, configured_scale)
     nav_checked_border = c["accent"] if not is_dark else c["accent"]
-    check_icon_url = Path("UI/icon/status_success.png").resolve().as_posix()
+    check_icon_url = _status_success_icon_url()
     return f"""
 QMainWindow {{
     background-color: {c["bg"]};

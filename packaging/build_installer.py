@@ -55,6 +55,8 @@ REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: DIST_DIR / "BUILD_INFO.txt",
     lambda: DIST_DIR / "README.md",
     lambda: DIST_DIR / "README_EN.md",
+    lambda: DIST_DIR / "_internal" / "_sqlite3.pyd",
+    lambda: DIST_DIR / "_internal" / "sqlite3.dll",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "index.html",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "app.css",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "i18n.js",

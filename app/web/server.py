@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import mimetypes
 import os
-from pathlib import Path
 
 from fastapi import FastAPI, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import cfg
 from app.debug_logger import debug_logger
+from app.utils.runtime_paths import resolve_resource_file
 
 # WebController 在 create_app() 中延迟初始化
 controller = None
@@ -37,8 +37,8 @@ class NoCacheStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         return _apply_no_cache_headers(response)
 
-STATIC_DIR = Path(__file__).parent / "static"
-UI_ICON_DIR = Path(__file__).resolve().parents[2] / "UI" / "icon"
+STATIC_DIR = resolve_resource_file("app/web/static")
+UI_ICON_DIR = resolve_resource_file("UI/icon")
 SESSION_COOKIE_NAME = "ucrawl_session"
 SESSION_TOKEN_COOKIE_NAME = "ucrawl_session_token"
 CSRF_COOKIE_NAME = "ucrawl_csrf_token"

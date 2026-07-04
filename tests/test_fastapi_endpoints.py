@@ -623,10 +623,17 @@ class ServerModuleExportsTests(unittest.TestCase):
 
     def test_static_dir_exists(self):
         """STATIC_DIR 必须存在且包含 index.html。"""
-        from pathlib import Path
         from app.web.server import STATIC_DIR
         self.assertTrue(STATIC_DIR.exists(), f"STATIC_DIR {STATIC_DIR} not found")
         self.assertTrue((STATIC_DIR / "index.html").exists(), "index.html missing")
+
+    def test_web_static_dirs_use_runtime_resource_resolver(self):
+        """Web static mounts must use the same runtime resource root as PyInstaller."""
+        from app.utils.runtime_paths import resolve_resource_file
+        from app.web.server import STATIC_DIR, UI_ICON_DIR
+
+        self.assertEqual(STATIC_DIR, resolve_resource_file("app/web/static"))
+        self.assertEqual(UI_ICON_DIR, resolve_resource_file("UI/icon"))
 
     def test_controller_global_exists(self):
         """controller 必须是模块级全局变量。"""

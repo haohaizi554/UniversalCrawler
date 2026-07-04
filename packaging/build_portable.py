@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import filecmp
 import shutil
 import subprocess
 import sys
@@ -40,17 +41,20 @@ DIST_DIR = DIST_ROOT / APP_NAME
 BUILD_DIR = PROJECT_ROOT / "build"
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
 BROWSER_DIR = LOCALAPPDATA / "ms-playwright"
+PORTABLE_ROOT_DOCS = ("README.md", "README_EN.md")
+PYTHON_DLL_DIR = Path(sys.base_prefix) / "DLLs"
+PYTHON_SQLITE_RUNTIME_FILES = ("_sqlite3.pyd", "sqlite3.dll")
 # 打包产物为双 EXE 直启：UniversalCrawlerPro.exe -> gui_entry，CrawlerWebPortal.exe -> web_entry。
 # 自适应 dispatcher 仅用于源码 python main.py / ucrawl-auto，不用于冻结 EXE。
 REQUIRED_FILES = [
     PROJECT_ROOT / "main.py",
     PROJECT_ROOT / APP_ICON_NAME,  # 主图标（桌面 EXE 用）
     PROJECT_ROOT / WEBUI_ICON_NAME,  # Web 专用图标（Web EXE 用）
-    PROJECT_ROOT / "README.md",
-    PROJECT_ROOT / "README_EN.md",
+    *(PROJECT_ROOT / doc_name for doc_name in PORTABLE_ROOT_DOCS),
     PROJECT_ROOT / "ffmpeg.exe",
     PROJECT_ROOT / "ffprobe.exe",
     PROJECT_ROOT / "N_m3u8DL-RE.exe",
+    *(PYTHON_DLL_DIR / file_name for file_name in PYTHON_SQLITE_RUNTIME_FILES),
     SPEC_FILE,
     PROJECT_ROOT / "shared" / "__init__.py",
     # 入口子包必须存在，否则打包后 EXE 启动崩溃
@@ -139,6 +143,27 @@ def run_pyinstaller() -> None:
     ]
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
+def copy_python_sqlite_runtime_files() -> None:
+    """强制使用当前 Python 自带的 SQLite 运行时，避免同名 DLL 被其它组件抢先收集。"""
+    internal_dir = DIST_DIR / "_internal"
+    if not internal_dir.exists():
+        raise SystemExit(f"未找到打包内部目录: {internal_dir}")
+    for file_name in PYTHON_SQLITE_RUNTIME_FILES:
+        source = PYTHON_DLL_DIR / file_name
+        if not source.exists():
+            raise SystemExit(f"缺少 Python SQLite 运行时文件: {source}")
+        shutil.copy2(source, internal_dir / file_name)
+
+def copy_portable_root_docs() -> None:
+    """把发布说明复制到便携包根目录，方便用户解压后直接阅读。"""
+    if not DIST_DIR.exists():
+        raise SystemExit(f"未找到绿色版输出目录: {DIST_DIR}")
+    for doc_name in PORTABLE_ROOT_DOCS:
+        source = PROJECT_ROOT / doc_name
+        if not source.exists():
+            raise SystemExit(f"缺少随包说明源文件: {source}")
+        shutil.copy2(source, DIST_DIR / doc_name)
+
 def verify_output() -> None:
     """验证构建产物中入口模块必需的子包都存在，避免 EXE 启动时 ImportError。"""
     exe_path = DIST_DIR / APP_EXE_NAME
@@ -149,7 +174,7 @@ def verify_output() -> None:
     if not webui_path.exists():
         raise SystemExit(f"未找到 WebUI 入口程序: {webui_path}")
 
-    for readme_name in ("README.md", "README_EN.md"):
+    for readme_name in PORTABLE_ROOT_DOCS:
         if not (DIST_DIR / readme_name).exists():
             raise SystemExit(f"缺少随包说明文件: {readme_name}")
 
@@ -195,6 +220,17 @@ def verify_output() -> None:
     if not (shared_pkg / "__init__.py").exists():
         raise SystemExit("子包 shared 缺少关键模块: __init__.py")
 
+    for file_name in PYTHON_SQLITE_RUNTIME_FILES:
+        source = PYTHON_DLL_DIR / file_name
+        target = internal / file_name
+        if not target.exists():
+            raise SystemExit(f"缺少 Python SQLite 运行时文件: {file_name}")
+        if not filecmp.cmp(source, target, shallow=False):
+            raise SystemExit(
+                f"Python SQLite 运行时文件不匹配: {target}\n"
+                f"请重新运行 `python packaging/build_portable.py`。"
+            )
+
     for path in DIST_DIR.glob("**/*"):
         if path.is_file() and path.name.lower() in FORBIDDEN_BASENAMES:
             raise SystemExit(f"发现不应打包的用户数据文件: {path}")
@@ -232,6 +268,8 @@ def main() -> None:
     ensure_prerequisites()
     clean_previous_outputs()
     run_pyinstaller()
+    copy_python_sqlite_runtime_files()
+    copy_portable_root_docs()
     verify_output()
     write_manifest()
     print(f"绿色版构建完成: {DIST_DIR}")

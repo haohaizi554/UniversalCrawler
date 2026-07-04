@@ -1,3 +1,5 @@
+import sys
+
 from app.ui.viewmodels.log_platforms import (
     PlatformUiMeta,
     builtin_platform_metas,
@@ -15,6 +17,22 @@ def test_builtin_log_platforms_cover_supported_sources():
 
     assert "bv" in tuple(alias.lower() for alias in metas["bilibili"].aliases)
     assert platform_icon_file_for_id("system", metas["system"]) == ""
+
+
+def test_log_platform_icons_resolve_from_pyinstaller_bundle(tmp_path, monkeypatch):
+    bundle_icon = tmp_path / "bundle" / "UI" / "icon" / "platform_bilibili.png"
+    bundle_icon.parent.mkdir(parents=True)
+    bundle_icon.write_bytes(b"fake-icon")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    monkeypatch.chdir(work_dir)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
+
+    metas = builtin_platform_metas()
+
+    assert metas["bilibili"].icon_path == str(bundle_icon)
+    assert platform_icon_file_for_id("bilibili", metas["bilibili"]) == "platform_bilibili.png"
 
 
 def test_load_platform_options_prefers_snapshot_entries_and_keeps_builtins():

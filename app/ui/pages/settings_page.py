@@ -700,7 +700,6 @@ class SettingsPage(PageFrame):
         """Load icon safely. Never crash SettingsPage when icon resource is missing."""
         candidates = [
             ui_icon_path(icon_file),
-            f"UI/icon/{icon_file}",
             icon_file,
             ui_icon_path("nav_settings.png"),
         ]

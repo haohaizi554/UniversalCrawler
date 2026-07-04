@@ -233,6 +233,13 @@ class SpecDataFilesTests(unittest.TestCase):
         self.assertIn("README.md", readme_targets)
         self.assertIn("README_EN.md", readme_targets)
 
+    def test_binaries_pin_python_sqlite_runtime(self):
+        """_sqlite3.pyd 必须搭配当前 Python 自带 sqlite3.dll，不能让其它组件抢同名 DLL。"""
+        binaries = self._spec_globals["binaries"]
+        binary_names = [Path(item[0]).name for item in binaries]
+        self.assertIn("_sqlite3.pyd", binary_names)
+        self.assertIn("sqlite3.dll", binary_names)
+
 class SpecExcludesTests(unittest.TestCase):
     """excludes 配置。"""
 
@@ -362,7 +369,22 @@ class BuildScriptTests(unittest.TestCase):
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
         self.assertIn("APP_ICON_NAME", source)
         self.assertIn("WEBUI_ICON_NAME", source)
+        self.assertIn("PORTABLE_ROOT_DOCS", source)
         self.assertIn("README_EN.md", source)
+
+    def test_build_script_copies_root_docs_after_pyinstaller(self):
+        """PyInstaller datas 会进入 _internal，便携包根目录说明需构建后复制。"""
+        source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
+        self.assertIn("def copy_portable_root_docs", source)
+        self.assertIn("shutil.copy2", source)
+        self.assertIn("run_pyinstaller()\n    copy_python_sqlite_runtime_files()\n    copy_portable_root_docs()", source)
+
+    def test_build_script_overwrites_python_sqlite_runtime_after_pyinstaller(self):
+        """PyInstaller 可能收集到 Qt/Playwright 的 sqlite3.dll，构建后必须覆盖为 Python 自带版本。"""
+        source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
+        self.assertIn("PYTHON_SQLITE_RUNTIME_FILES", source)
+        self.assertIn("def copy_python_sqlite_runtime_files", source)
+        self.assertIn("filecmp.cmp", source)
 
     def test_required_files_includes_spec_file(self):
         self.assertIn("portable.spec",
@@ -557,6 +579,8 @@ class InstallerScriptTests(unittest.TestCase):
             "BUILD_INFO.txt",
             "README.md",
             "README_EN.md",
+            "_sqlite3.pyd",
+            "sqlite3.dll",
             "index.html",
             "app.css",
             "i18n.js",

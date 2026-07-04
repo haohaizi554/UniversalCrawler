@@ -19,6 +19,8 @@ main_script = project_root / "main.py"
 icon_file = project_root / APP_ICON_NAME
 webui_icon = project_root / WEBUI_ICON_NAME
 browser_root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ms-playwright"
+python_dll_dir = Path(sys.base_prefix) / "DLLs"
+python_sqlite_runtime_files = (python_dll_dir / "_sqlite3.pyd", python_dll_dir / "sqlite3.dll")
 
 
 def optional_tree(source: Path, target_dir: str) -> list[tuple[str, str]]:
@@ -99,11 +101,16 @@ datas += copy_metadata("greenlet")
 datas += copy_metadata("fastapi")
 datas += copy_metadata("pydantic")
 
+binaries = []
+for runtime_file in python_sqlite_runtime_files:
+    if runtime_file.exists():
+        binaries.append((str(runtime_file), "."))
+
 
 a = Analysis(
     [str(main_script)],
     pathex=[str(project_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
