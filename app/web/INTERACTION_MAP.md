@@ -6276,3 +6276,11 @@ GUI 隐藏滚动条箭头，WebUI 已补全全局滚动条规范：
 2. 自定义选择框必须区分“业务值”和“显示文本”：`option.dataset.originalValue` 保存真实 value，`option.dataset.originalLabel` 保存待翻译文案，语言切换只允许更新 `textContent`，不能让无显式 `value` 的 `<option>` 跟随翻译文本改变业务值。
 3. 日志中心的 `logLevelFilter`、`logTimeFilter`、`logPlatformFilter` 在程序性渲染、语言切换、状态注入后必须经过 `selectValueOrFallback()` 校正；无效值回退到真实 option，并立刻调用 `syncCustomSelectForSelect()`，避免按钮标签为空。
 4. 以后更新截图证据前，WebUI 日志页截图脚本必须等待 `#page-logs .log-filters .custom-select-label` 全部非空，防止把未同步完成的临时态误写入 `web_logs.png` 和总览图。
+
+---
+
+# v11 配置中心设置分类图标新增合同
+
+1. 配置中心设置分类导航必须和 GUI `GROUP_ICONS` 保持同一语义：基础设置、下载设置、平台设置、播放设置、日志设置、外观设置分别显示对应图标，而不是纯文字列表。
+2. WebUI 图标必须走现有后端静态资源路由 `/ui-icon/...`，不得用纯 CSS、emoji 或不可验证占位符替代；浏览器测试必须确认图片 `naturalWidth > 0`。
+3. 工具箱页当前 GUI 尚未最终定型，不作为本阶段 WebUI 同步验收项；总览截图可保留历史对照，但不得把工具箱差异计入当前完成判定。

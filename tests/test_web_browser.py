@@ -1339,25 +1339,75 @@ class WebUIBrowserTests(unittest.TestCase):
               currentSettingsGroup = '基础设置';
               switchPage('settings');
               renderSettings(true);
-              await Promise.all(Array.from(document.querySelectorAll('#page-settings .settings-nav-btn img')).map(img => {
+              const images = Array.from(document.querySelectorAll('#page-settings .settings-nav-btn img, #page-settings .settings-detail-icon img'));
+              await Promise.all(images.map(img => {
                 if (img.complete && img.naturalWidth > 0) return Promise.resolve();
                 return new Promise((resolve, reject) => {
                   img.addEventListener('load', resolve, { once: true });
                   img.addEventListener('error', () => reject(new Error(img.src)), { once: true });
                 });
               }));
-              return Array.from(document.querySelectorAll('#page-settings .settings-nav-btn')).map(button => ({
-                label: button.querySelector('span')?.textContent.trim(),
-                src: button.querySelector('img')?.getAttribute('src'),
-                loaded: (button.querySelector('img')?.naturalWidth || 0) > 0
-              }));
+              return {
+                nav: Array.from(document.querySelectorAll('#page-settings .settings-nav-btn')).map(button => ({
+                  label: button.querySelector('span')?.textContent.trim(),
+                  src: button.querySelector('img')?.getAttribute('src'),
+                  loaded: (button.querySelector('img')?.naturalWidth || 0) > 0
+                })),
+                detail: {
+                  src: document.querySelector('#page-settings .settings-detail-icon img')?.getAttribute('src'),
+                  loaded: (document.querySelector('#page-settings .settings-detail-icon img')?.naturalWidth || 0) > 0
+                }
+              };
             }
             """
         )
 
-        self.assertEqual([row["label"] for row in result], ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"])
-        self.assertTrue(all(row["src"].startswith("/ui-icon/") for row in result))
-        self.assertTrue(all(row["loaded"] for row in result))
+        self.assertEqual([row["label"] for row in result["nav"]], ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"])
+        self.assertTrue(all(row["src"].startswith("/ui-icon/") for row in result["nav"]))
+        self.assertTrue(all(row["loaded"] for row in result["nav"]))
+        self.assertTrue(result["detail"]["src"].startswith("/ui-icon/"))
+        self.assertTrue(result["detail"]["loaded"])
+
+    def test_11h_platform_custom_proxy_stays_inside_settings_panel(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u5e73\\u53f0\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const proxySelect = Array.from(document.querySelectorAll('#page-settings select.platform-proxy'))
+                .find(select => !select.disabled && Array.from(select.options).some(option => option.textContent.includes('\\u81ea\\u5b9a\\u4e49')));
+              if (proxySelect) {
+                const customOption = Array.from(proxySelect.options).find(option => option.textContent.includes('\\u81ea\\u5b9a\\u4e49'));
+                proxySelect.value = customOption.value;
+                proxySelect.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              const panel = document.querySelector('#page-settings .settings-detail-panel');
+              const row = document.querySelector('#page-settings .setting-platform.has-proxy-custom');
+              const input = row?.querySelector('.proxy-custom.active');
+              const panelRect = panel?.getBoundingClientRect();
+              const rowRect = row?.getBoundingClientRect();
+              const inputRect = input?.getBoundingClientRect();
+              return {
+                hasInput: Boolean(input),
+                documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                rowOverflow: rowRect && panelRect ? rowRect.right - panelRect.right : null,
+                inputOverflow: inputRect && panelRect ? inputRect.right - panelRect.right : null,
+                inputBelowSelect: inputRect && rowRect ? inputRect.top > rowRect.top + 20 : false
+              };
+            }
+            """
+        )
+
+        self.assertTrue(result["hasInput"])
+        self.assertLessEqual(result["documentOverflow"], 1)
+        self.assertLessEqual(result["rowOverflow"], 1)
+        self.assertLessEqual(result["inputOverflow"], 1)
+        self.assertTrue(result["inputBelowSelect"])
 
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""

@@ -2208,17 +2208,40 @@ tr.selected:hover td {
 
 .settings-detail-head {
   display: grid;
-  gap: 2px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 14px;
+  row-gap: 2px;
+  align-items: center;
   margin-bottom: 16px;
 }
 
+.settings-detail-icon {
+  grid-row: 1 / span 2;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-detail-icon img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
 .settings-detail-head h2 {
+  grid-column: 2;
   margin: 0;
   font-size: 22px;
   color: var(--text);
 }
 
 .settings-detail-head p {
+  grid-column: 2;
   margin: 0;
   color: var(--muted);
   font-size: 13px;
@@ -2407,13 +2430,14 @@ tr.selected:hover td {
 
 .setting-platform {
   display: grid;
-  grid-template-columns: 122px 112px 210px 132px minmax(224px, 1fr);
+  grid-template-columns: minmax(96px, 122px) minmax(92px, 112px) minmax(150px, 1fr) minmax(96px, 132px) minmax(180px, 1.05fr);
   gap: 10px;
   align-items: center;
 }
 
 .setting-platform.has-proxy-custom {
-  grid-template-columns: 122px 112px 180px 132px minmax(132px, 0.72fr) minmax(144px, 1fr);
+  grid-template-rows: minmax(34px, auto) minmax(34px, auto);
+  row-gap: 6px;
 }
 
 .setting-platform-header {
@@ -2439,7 +2463,7 @@ tr.selected:hover td {
 .setting-platform .platform-count { grid-column: 3; grid-row: 1; }
 .setting-platform .platform-timeout { grid-column: 4; grid-row: 1; }
 .setting-platform .platform-proxy { grid-column: 5; grid-row: 1; }
-.setting-platform.has-proxy-custom .proxy-custom { grid-column: 6; grid-row: 1; }
+.setting-platform.has-proxy-custom .proxy-custom { grid-column: 5; grid-row: 2; }
 
 .setting-platform input, .setting-platform select, .setting-platform .custom-select {
   width: 100%;
@@ -2462,7 +2486,7 @@ tr.selected:hover td {
 .proxy-custom {
   border-color: var(--accent);
   background: var(--input);
-  justify-self: start;
+  align-self: center;
   width: 100%;
 }
 

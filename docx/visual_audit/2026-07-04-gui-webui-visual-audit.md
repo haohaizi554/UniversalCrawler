@@ -62,6 +62,10 @@
    - 现象：WebUI 在过滤无结果时只剩空表格，和 GUI 的居中空态不一致；旧截图中还出现过日志级别、时间范围、平台三个自定义选择框按钮文字为空。
    - 原因：日志页没有显式空态层；同时自定义选择框翻译 option 文本时，如果原生 `<option>` 未写 `value`，浏览器会把 value 跟随显示文本变化，语言切换或程序性状态注入后容易造成 `select.value` 与业务筛选值失配。
    - 修复：日志表格增加 `logEmptyState` 居中空态；`custom_select.js` 固定 `option.dataset.originalValue`，只翻译显示文本；`syncLogFilterControls()` 对无效筛选值回退到真实 option，并立即同步自定义选择框标签。
+12. 配置中心 WebUI 设置分类缺少 GUI 同款分组图标。
+   - 现象：GUI 左侧设置分类每项都有 18px 左右的语义图标，WebUI 只有文字，扫描节奏与当前分组定位不一致。
+   - 原因：WebUI 只消费了 `group_order/group_descriptions/group_hints`，没有复用 GUI `GROUP_ICONS` 的分组图标语义。
+   - 修复：WebUI 增加 `SETTINGS_GROUP_ICONS` 与 `settingGroupIconFile()`，导航按钮输出 `/ui-icon/...` 图片和文本；CSS 固定图标尺寸与文本省略。浏览器测试验证 6 个图标均从后端 `/ui-icon/` 路由成功加载。
 
 ## 本轮验证
 
@@ -82,6 +86,7 @@
 - `node --check app/web/static/custom_select.js`
 - `python -m pytest tests/test_web_browser.py::StaticAssetsTests::test_completed_preview_controls_are_visible_not_compat_hidden -q`
 - `python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_basic_settings_use_backend_options_and_update_action -q`
+- `python -m pytest tests/test_web_browser.py::WebUIBrowserTests::test_11g_settings_nav_icons_load_from_backend_route -q`
 
 ## 后续仍需逐页细查
 

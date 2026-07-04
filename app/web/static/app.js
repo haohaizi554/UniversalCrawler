@@ -1575,6 +1575,9 @@ function renderSettings(force = false) {
       </aside>
       <section class="settings-detail-panel">
         <header class="settings-detail-head">
+          <span class="settings-detail-icon" aria-hidden="true">
+            <img src="${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(settingGroupIconFile(currentSettingsGroup))}" alt="" />
+          </span>
           <h2>${esc(t(currentSettingsGroup))}</h2>
           <p>${esc(t(description))}</p>
         </header>
