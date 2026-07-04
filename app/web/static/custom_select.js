@@ -174,6 +174,37 @@
     });
   }
 
+  function menuEstimatedHeight(select) {
+    const count = Math.max(1, select ? select.options.length : 1);
+    return Math.min(236, count * 36 + 4);
+  }
+
+  function updateMenuPlacement(wrapper) {
+    const select = wrapper && wrapper.querySelector("select");
+    const menu = wrapper && wrapper.querySelector(".custom-select-menu");
+    if (!select || !wrapper.ownerDocument) return;
+    const rect = wrapper.getBoundingClientRect();
+    const doc = wrapper.ownerDocument;
+    const viewportHeight = doc.defaultView ? doc.defaultView.innerHeight : window.innerHeight;
+    const viewportWidth = doc.defaultView ? doc.defaultView.innerWidth : window.innerWidth;
+    const menuHeight = menuEstimatedHeight(select) + 8;
+    const spaceBelow = viewportHeight - rect.bottom - 4;
+    const spaceAbove = rect.top - 4;
+    const shouldOpenUp = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+    wrapper.classList.toggle("open-up", shouldOpenUp);
+    if (!menu) return;
+    const availableHeight = Math.max(36, shouldOpenUp ? spaceAbove : spaceBelow);
+    const height = Math.min(menuHeight - 8, availableHeight);
+    const left = Math.max(4, Math.min(rect.left, viewportWidth - rect.width - 4));
+    const top = shouldOpenUp
+      ? Math.max(4, rect.top - height - 4)
+      : Math.min(viewportHeight - height - 4, rect.bottom + 4);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.width = `${rect.width}px`;
+    menu.style.maxHeight = `${height}px`;
+  }
+
   function toggle(wrapper) {
     const select = wrapper.querySelector("select");
     if (!select || select.disabled) return;
@@ -185,6 +216,7 @@
     const menu = wrapper.querySelector(".custom-select-menu");
     const button = wrapper.querySelector(".custom-select-button");
     renderMenu(select, menu);
+    updateMenuPlacement(wrapper);
     wrapper.classList.add("open");
     if (menu) menu.hidden = false;
     if (button) button.setAttribute("aria-expanded", "true");
@@ -196,7 +228,14 @@
     const menu = wrapper.querySelector(".custom-select-menu");
     const button = wrapper.querySelector(".custom-select-button");
     wrapper.classList.remove("open");
+    wrapper.classList.remove("open-up");
     if (menu) menu.hidden = true;
+    if (menu) {
+      menu.style.left = "";
+      menu.style.top = "";
+      menu.style.width = "";
+      menu.style.maxHeight = "";
+    }
     if (button) {
       button.setAttribute("aria-expanded", "false");
       if (focusButton) button.focus();
@@ -238,6 +277,14 @@
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") close();
   });
+
+  window.addEventListener("resize", () => {
+    if (openCustomSelect) updateMenuPlacement(openCustomSelect);
+  });
+
+  document.addEventListener("scroll", () => {
+    if (openCustomSelect) updateMenuPlacement(openCustomSelect);
+  }, true);
 
   window.UcpCustomSelect = {
     configure,

@@ -7,6 +7,7 @@
   let escapeAttr = value => escapeHtml(value).replace(/'/g, "&#39;");
   let translate = value => String(value || "");
   let translateOption = value => String(value || "");
+  let platformIconUrl = () => "";
   let formatCountOption = (value, unit) => {
     const text = String(value || "");
     if (!text) return "";
@@ -22,6 +23,7 @@
     if (typeof options.t === "function") translate = options.t;
     if (typeof options.optionLabel === "function") translateOption = options.optionLabel;
     if (typeof options.countOptionLabel === "function") formatCountOption = options.countOptionLabel;
+    if (typeof options.platformIconUrl === "function") platformIconUrl = options.platformIconUrl;
   }
 
   function normalizeSettingOption(option) {
@@ -80,8 +82,7 @@
       const associationLabel = translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f");
       const associationText = escapeHtml(associationLabel);
       const associationAttr = escapeAttr(associationLabel);
-      const associationShortText = escapeHtml(translate("\u7ed1\u5b9a"));
-      const associationButton = `<button class="btn setting-action" type="button" title="${associationAttr}" aria-label="${associationAttr}" onclick="showFileAssociationModal()">${associationShortText}</button>`;
+      const associationButton = `<button class="btn setting-action" type="button" title="${associationAttr}" aria-label="${associationAttr}" onclick="showFileAssociationModal()">${associationText}</button>`;
       return [
         settingInput("\u4e0b\u8f7d\u76ee\u5f55", "download_directory", value && value.download_directory, "basic"),
         settingSelect("\u6587\u4ef6\u547d\u540d\u89c4\u5219", "filename_template", value && value.filename_template, options.filename_template || [], "basic"),
@@ -95,8 +96,8 @@
         settingCheckbox("\u56fe\u7247\u53d7\u5e76\u53d1\u6570\u9650\u5236", "image_respects_concurrency", !!(value && value.image_respects_concurrency), "download"),
         settingSelect("\u8bf7\u6c42\u8d85\u65f6", "request_timeout", value && value.request_timeout, options.request_timeout || [], "download"),
         settingSelect("\u6700\u5927\u91cd\u8bd5", "max_retries", value && value.max_retries, options.max_retries || [], "download"),
-        settingSelect("\u901f\u5ea6\u9650\u5236 KB/s", "speed_limit_kb", value && value.speed_limit_kb, options.speed_limit_kb || [{ value: "0", label: "\u65e0\u9650\u5236" }], "download"),
         settingCheckbox("\u65ad\u70b9\u7eed\u4f20", "resume_enabled", !!(value && value.resume_enabled), "download"),
+        settingSelect("\u901f\u5ea6\u9650\u5236 KB/s", "speed_limit_kb", value && value.speed_limit_kb, options.speed_limit_kb || [{ value: "0", label: "\u65e0\u9650\u5236" }], "download"),
         settingCheckbox("\u4ec5\u4e0b\u8f7d\u89c6\u9891", "video_only", !!(value && value.video_only), "download"),
       ].join("");
     }
@@ -193,10 +194,14 @@
       ? `<input class="proxy-custom${proxyCustom ? " active" : ""}" data-platform="${escapeAttr(row.id || "")}" data-setting="proxy_url" value="${escapeAttr(proxyCustomDisplayValue(proxyCustomValue))}" placeholder="${escapeAttr(translate("\u7aef\u53e3"))}" ${proxyCustom ? "" : "hidden disabled"} onblur="commitProxyCustom('${escapeAttr(row.id || "")}', 'proxy_url', this)" />`
       : "";
     const proxyEntryClass = hasCustomProxy && proxyCustom ? " has-custom" : "";
+    const authAuthed = row.auth_status === "\u5df2\u8ba4\u8bc1";
+    const authLabel = authAuthed ? "\u5df2\u8ba4\u8bc1" : "\u672a\u8ba4\u8bc1";
+    const platformIcon = platformIconUrl(row.id || row.name || "", row.icon_file || "");
+    const platformName = escapeHtml(row.name || row.id || "\u5e73\u53f0");
     return `
       <div class="setting-row setting-platform${hasCustomProxy && proxyCustom ? " has-proxy-custom" : ""}">
-        <span class="platform-name">${escapeHtml(row.name || row.id || "\u5e73\u53f0")}</span>
-        <select class="platform-auth" disabled title="${escapeAttr(row.auth_detail || "")}"><option ${row.auth_status === "\u5df2\u8ba4\u8bc1" ? "selected" : ""}>${escapeHtml(translate("\u5df2\u8ba4\u8bc1"))}</option><option ${row.auth_status !== "\u5df2\u8ba4\u8bc1" ? "selected" : ""}>${escapeHtml(translate("\u672a\u8ba4\u8bc1"))}</option></select>
+        <span class="platform-name platform-name-cell">${platformIcon ? `<img src="${escapeAttr(platformIcon)}" alt="" />` : ""}<span>${platformName}</span></span>
+        <span class="platform-auth platform-auth-badge ${authAuthed ? "is-authed" : "is-unauthed"}" title="${escapeAttr(row.auth_detail || "")}">${escapeHtml(translate(authLabel))}</span>
         <select class="platform-count" data-setting="${escapeAttr(countKey)}"${countDisabled} onchange="updateSetting('${escapeAttr(row.id || "")}', '${escapeAttr(countKey)}', this.value)">${countOptions.map(option => `<option value="${escapeAttr(option.value)}" ${countValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
         <select class="platform-timeout" data-setting="${escapeAttr(timeoutKey)}"${timeoutDisabled} onchange="updateSetting('${escapeAttr(row.id || "")}', '${escapeAttr(timeoutKey)}', this.value)">${timeoutOptions.map(option => `<option value="${escapeAttr(option.value)}" ${timeoutValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
         <span class="platform-proxy-entry${proxyEntryClass}">
@@ -235,7 +240,11 @@
       : (scope ? ` onblur="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.value)"` : "");
     const rowClass = key === "download_directory" ? " setting-download-directory" : "";
     const control = `<input data-setting="${escapeAttr(key)}" value="${escapeAttr(value || "")}" title="${escapeAttr(value || "")}"${action} />`;
-    return `<div class="setting-row${rowClass}">${settingLabelHtml(label)}${settingControlCluster(control)}</div>`;
+    const browseTitle = escapeAttr(translate("\u9009\u62e9\u4fdd\u5b58\u76ee\u5f55"));
+    const trailingHtml = key === "download_directory"
+      ? `<button class="btn setting-path-browse" type="button" title="${browseTitle}" aria-label="${browseTitle}" onclick="showDirDialog()"><img src="/ui-icon/action_open_directory.png" alt="" /></button>`
+      : "";
+    return `<div class="setting-row${rowClass}">${settingLabelHtml(label)}${settingControlCluster(control, trailingHtml)}</div>`;
   }
 
   function settingCheckbox(label, key, checked, scope = "") {

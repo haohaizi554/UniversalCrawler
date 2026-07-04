@@ -1496,15 +1496,17 @@ class WebUIBrowserTests(unittest.TestCase):
               currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
               switchPage('settings');
               renderSettings(true);
-              const cluster = document.querySelector('#page-settings .setting-control-cluster.has-trailing-action');
-              const selectBox = cluster?.querySelector('.custom-select') || cluster?.querySelector('select');
+              const defaultOpen = document.querySelector('#page-settings [data-setting="default_open_mode"]');
+              const cluster = defaultOpen?.closest('.setting-control-cluster');
+              const selectBox = defaultOpen?.closest('.custom-select') || defaultOpen;
               const action = cluster?.querySelector('.setting-action');
               const selectRect = selectBox?.getBoundingClientRect();
               const actionRect = action?.getBoundingClientRect();
-              return {
+                return {
                 hasCluster: Boolean(cluster),
                 selectWidth: selectRect ? selectRect.width : 0,
                 actionWidth: actionRect ? actionRect.width : 0,
+                actionText: action?.textContent?.trim() || '',
                 actionTitle: action?.getAttribute('title') || '',
                 actionAria: action?.getAttribute('aria-label') || ''
               };
@@ -1515,8 +1517,120 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["hasCluster"])
         self.assertGreaterEqual(result["selectWidth"], 140)
         self.assertLessEqual(result["actionWidth"], 104)
+        self.assertIn("绑定默认打开方式", result["actionText"])
         self.assertIn("默认打开方式", result["actionTitle"])
         self.assertEqual(result["actionTitle"], result["actionAria"])
+
+    def test_11j_settings_select_opens_up_near_panel_bottom(self):
+        original_viewport = self._page.viewport_size
+        self._page.set_viewport_size({"width": 1280, "height": 520})
+        try:
+            self._page.goto(self._server_url)
+            self._page.wait_for_load_state("networkidle")
+            self._page.wait_for_timeout(3500)
+            result = self._page.evaluate(
+                """
+                async () => {
+                  currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
+                  switchPage('settings');
+                  renderSettings(true);
+                  await new Promise(resolve => requestAnimationFrame(resolve));
+                  const select = document.querySelector('#page-settings select[data-setting="speed_limit_kb"]');
+                  const wrapper = select?.closest('.custom-select');
+                  const button = wrapper?.querySelector('.custom-select-button');
+                  wrapper?.scrollIntoView({ block: 'end', inline: 'nearest' });
+                  await new Promise(resolve => requestAnimationFrame(resolve));
+                  button?.click();
+                  await new Promise(resolve => requestAnimationFrame(resolve));
+                  const menu = wrapper?.querySelector('.custom-select-menu');
+                  const wrapperRect = wrapper?.getBoundingClientRect();
+                  const menuRect = menu?.getBoundingClientRect();
+                  return {
+                    opened: Boolean(menu && !menu.hidden),
+                    opensUp: Boolean(wrapper?.classList.contains('open-up')),
+                    menuAboveControl: menuRect && wrapperRect ? menuRect.bottom <= wrapperRect.top + 1 : false,
+                    menuInsideViewport: menuRect
+                      ? menuRect.top >= 3 && menuRect.bottom <= window.innerHeight - 3
+                      : false
+                  };
+                }
+                """
+            )
+        finally:
+            if original_viewport:
+                self._page.set_viewport_size(original_viewport)
+
+        self.assertTrue(result["opened"])
+        self.assertTrue(result["opensUp"])
+        self.assertTrue(result["menuAboveControl"])
+        self.assertTrue(result["menuInsideViewport"])
+
+    def test_11k_download_settings_order_matches_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              return Array.from(document.querySelectorAll('#page-settings .setting-row'))
+                .map(row => row.querySelector('[data-setting]')?.dataset.setting || '')
+                .filter(Boolean);
+            }
+            """
+        )
+
+        self.assertEqual(
+            result,
+            [
+                "max_concurrent",
+                "image_respects_concurrency",
+                "request_timeout",
+                "max_retries",
+                "resume_enabled",
+                "speed_limit_kb",
+                "video_only",
+            ],
+        )
+
+    def test_11l_download_directory_browse_button_opens_dir_dialog(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const row = document.querySelector('#page-settings .setting-download-directory');
+              const button = row?.querySelector('.setting-path-browse');
+              const icon = button?.querySelector('img');
+              button?.click();
+              await new Promise(resolve => setTimeout(resolve, 120));
+              const modal = document.getElementById('dirModal');
+              const result = {
+                hasButton: Boolean(button),
+                title: button?.getAttribute('title') || '',
+                aria: button?.getAttribute('aria-label') || '',
+                iconSrc: icon?.getAttribute('src') || '',
+                display: modal?.style.display || ''
+              };
+              if (modal) modal.style.display = 'none';
+              return result;
+            }
+            """
+        )
+
+        self.assertTrue(result["hasButton"])
+        self.assertIn("选择保存目录", result["title"])
+        self.assertEqual(result["title"], result["aria"])
+        self.assertIn("action_open_directory.png", result["iconSrc"])
+        self.assertEqual(result["display"], "flex")
 
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""
@@ -1648,6 +1762,69 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("暂无匹配日志", result["text"])
         self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", result["text"])
         self.assertEqual(result["stats"], "共 1 条 / 匹配 0 条 / 当前显示 0 条")
+
+    def test_13c_log_table_summary_column_stays_visible_at_gui_width(self):
+        self._page.set_viewport_size({"width": 1270, "height": 1024})
+        try:
+            self._page.goto(self._server_url)
+            self._page.wait_for_load_state("networkidle")
+            self._page.wait_for_timeout(3500)
+
+            result = self._page.evaluate(
+                """
+                () => {
+                  currentPage = 'logs';
+                  logPage = 1;
+                  logPageSize = 20;
+                  logFilters.category = 'all';
+                  logFilters.level = '全部';
+                  logFilters.time = '全部';
+                  logFilters.platform = '全部';
+                  logFilters.trace = '';
+                  logFilters.keyword = '';
+                  frontendState.log_items = [{
+                    id: 'log-layout-a',
+                    time: '2026-07-04 22:45:00',
+                    level: 'INFO',
+                    source: 'GUI',
+                    source_display: '系统 · WebUI',
+                    source_display_icon_file: 'nav_settings.png',
+                    trace_id: 'web_scan_start_trace_20260704',
+                    message_summary: 'Web 端开始扫描本地媒体目录（异步）',
+                    message: 'Web 端开始扫描本地媒体目录（异步）',
+                    detail: '',
+                    stack: ''
+                  }];
+                  switchPage('logs');
+                  renderLogs();
+                  const shell = document.querySelector('#page-logs .logs-table-card .table-shell');
+                  const shellRect = shell.getBoundingClientRect();
+                  const headers = Array.from(document.querySelectorAll('#page-logs thead th')).map(node => node.getBoundingClientRect());
+                  const rowCells = Array.from(document.querySelectorAll('#logBody tr:first-child td')).map(node => node.getBoundingClientRect());
+                  const grid = document.querySelector('#page-logs .logs-grid');
+                  const detail = document.querySelector('#page-logs .logs-right-column');
+                  return {
+                    shellRight: shellRect.right,
+                    headerRight: headers[4].right,
+                    cellRight: rowCells[4].right,
+                    summaryHeaderWidth: headers[4].width,
+                    summaryCellWidth: rowCells[4].width,
+                    scrollOverflow: shell.scrollWidth - shell.clientWidth,
+                    gridColumns: getComputedStyle(grid).gridTemplateColumns,
+                    detailWidth: detail.getBoundingClientRect().width
+                  };
+                }
+                """
+            )
+        finally:
+            self._page.set_viewport_size({"width": 1280, "height": 720})
+
+        self.assertLessEqual(result["headerRight"], result["shellRight"] + 1)
+        self.assertLessEqual(result["cellRight"], result["shellRight"] + 1)
+        self.assertLessEqual(result["scrollOverflow"], 1)
+        self.assertGreaterEqual(result["summaryHeaderWidth"], 82)
+        self.assertGreaterEqual(result["summaryCellWidth"], 82)
+        self.assertLessEqual(result["detailWidth"], 360)
 
     def test_13c_log_detail_copy_export_actions_match_gui(self):
         self._page.goto(self._server_url)

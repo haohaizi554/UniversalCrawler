@@ -442,6 +442,10 @@ function configureSettingsRenderHelpers() {
       t,
       optionLabel,
       countOptionLabel,
+      platformIconUrl: (platformId, iconFile) => {
+        const id = String(platformId || "").toLowerCase();
+        return iconFileUrl(iconFile || (iconManifest.platforms || {})[id] || "platform_web.png");
+      },
     });
   }
 }
@@ -1339,6 +1343,31 @@ function normalizeLogDetailPayload(item) {
   }
 }
 
+function readableLogDetailValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_error) {
+      return String(value);
+    }
+  }
+  return String(value)
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[-=]{36,}/g, "----------------------------");
+}
+
+function formatLogDetailDisplayText(payload) {
+  if (!payload || typeof payload !== "object") return readableLogDetailValue(payload);
+  const entries = Object.entries(payload);
+  if (!entries.length) return "{}";
+  return entries.map(([key, value]) => {
+    const readable = readableLogDetailValue(value);
+    return readable.includes("\n") ? `${key}:\n${readable}` : `${key}: ${readable}`;
+  }).join("\n");
+}
+
 function buildLogDetailPayload(item) {
   const detailPayload = normalizeLogDetailPayload(item);
   return {
@@ -1429,6 +1458,7 @@ function renderLogDetail(itemsOverride) {
   }
   const detailPayload = normalizeLogDetailPayload(item);
   const detailJson = JSON.stringify(detailPayload, null, 2);
+  const detailDisplayText = formatLogDetailDisplayText(detailPayload);
   const stack = String(item.stack || "").trim();
   const extraBlocks = [];
   extraBlocks.push(`
@@ -1437,7 +1467,7 @@ function renderLogDetail(itemsOverride) {
         <h2>${esc(t("详细信息"))}</h2>
         <button class="btn" type="button" onclick="copyCurrentLogJson()">${esc(t("复制"))}</button>
       </div>
-      <pre class="log-snippet">${esc(detailJson)}</pre>
+      <pre class="log-snippet log-detail-readable" data-json="${escAttr(detailJson)}">${esc(detailDisplayText)}</pre>
     </div>
   `);
   if (stack && stack !== "无") {
@@ -1698,9 +1728,11 @@ function handleProxySelect(platformId, key, select) {
   const value = String(select.value || "").trim();
   const row = select.closest(".setting-platform");
   const input = row ? row.querySelector(".proxy-custom") : null;
+  const proxyEntry = row ? row.querySelector(".platform-proxy-entry") : null;
   if (input) {
     const custom = isCustomProxyValue(value);
     row.classList.toggle("has-proxy-custom", custom);
+    if (proxyEntry) proxyEntry.classList.toggle("has-custom", custom);
     input.hidden = !custom;
     input.disabled = !custom;
     input.classList.toggle("active", custom);

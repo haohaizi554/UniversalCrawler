@@ -1248,6 +1248,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn(".association-modal-box", css)
         self.assertIn("width: min(690px, 94vw);", css)
         self.assertIn(".association-option-list", css)
+        self.assertIn(".association-status", css)
+        self.assertIn("background: var(--panel-soft);", css)
+        self.assertIn(".association-actions .btn", css)
+        self.assertIn("height: 58px;", css)
+        self.assertIn("width: 24px;", css)
+        self.assertIn(".association-actions .btn:focus", css)
         self.assertIn(".association-checkbox:checked", css)
         self.assertIn(".association-checkbox:focus", css)
 
@@ -1310,7 +1316,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertIn('id="selectionModal" class="modal selection-modal"', content)
         self.assertIn('role="dialog"', content)
-        self.assertIn('id="selectionTitle">任务清单确认</h2>', content)
+        self.assertIn('id="selectionTitle" class="sr-only">任务清单确认</h2>', content)
+        self.assertIn(".sr-only", css)
         self.assertIn('id="selectionHeader" class="selection-header"', content)
         self.assertIn("<th>选择</th><th>视频标题 / 描述</th>", content)
         self.assertIn('id="selectionAllBtn"', content)
@@ -1331,16 +1338,18 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("width: min(1200px, 94vw);", css)
         self.assertIn("height: min(900px, 88vh);", css)
         self.assertIn(".selection-table-shell", css)
-        self.assertIn("width: 58px;", css)
+        self.assertIn("height: 50px;", css)
+        self.assertIn("width: 72px;", css)
+        self.assertIn("width: 22px;", css)
         self.assertIn(".selection-bulk-actions .btn", css)
-        self.assertIn("width: 80px;", css)
-        self.assertIn("height: 30px;", css)
-        self.assertIn(".selection-primary-actions .btn", css)
-        self.assertIn("height: 35px;", css)
-        self.assertIn("#selectionCancelBtn", css)
-        self.assertIn("width: 100px;", css)
-        self.assertIn("#selectionConfirmBtn", css)
         self.assertIn("width: 120px;", css)
+        self.assertIn("height: 50px;", css)
+        self.assertIn(".selection-primary-actions .btn", css)
+        self.assertIn("height: 54px;", css)
+        self.assertIn("#selectionCancelBtn", css)
+        self.assertIn("width: 150px;", css)
+        self.assertIn("#selectionConfirmBtn", css)
+        self.assertIn("width: 180px;", css)
         self.assertIn(".selection-row:focus", css)
         self.assertIn(".selection-row.unchecked td", css)
         self.assertIn("appearance: none", css)
@@ -2341,7 +2350,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             self.assertIn(expected_column, log_filters_css)
         self.assertIn("border: 1px solid var(--border)", log_filters_css)
         self.assertIn("border-radius: 8px", log_filters_css)
-        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(400px, clamp(400px, var(--detail-width, 430px), 460px));", css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(340px, clamp(340px, 26vw, 460px));", css)
+        for expected_width in (
+            "#page-logs th:nth-child(1), #page-logs td:nth-child(1) { width: 136px; }",
+            "#page-logs th:nth-child(2), #page-logs td:nth-child(2) { width: 78px; }",
+            "#page-logs th:nth-child(3), #page-logs td:nth-child(3) { width: 144px; }",
+            "#page-logs th:nth-child(4), #page-logs td:nth-child(4) { width: 88px; }",
+        ):
+            self.assertIn(expected_width, css)
         self.assertIn("#page-logs .log-filter-label", css)
         self.assertIn("#page-logs .log-filter-field input", css)
         self.assertIn("flex: 0 0 40px", css)
@@ -2377,6 +2393,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("function copySelectedLogTraceId", content)
         for detail_action in (
             "function buildLogDetailPayload",
+            "function formatLogDetailDisplayText",
+            "function readableLogDetailValue",
             "function copyCurrentLogDetail",
             "function copyCurrentLogJson",
             "function exportCurrentLogDetail",
@@ -2384,6 +2402,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             self.assertIn(detail_action, content)
         self.assertIn("log-inspector-header", content)
         self.assertIn("log-json-card", content)
+        self.assertIn("log-detail-readable", content)
+        self.assertIn('data-json="${escAttr(detailJson)}"', content)
         self.assertIn("function emptyLogDetailSummaryHtml", content)
         self.assertIn("${emptyLogDetailSummaryHtml()}", content)
         self.assertIn('<pre class="log-snippet">{}</pre>', content)
@@ -2393,6 +2413,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#page-logs .log-inspector-header", css)
         self.assertIn("#page-logs .logs-right-column", css)
         self.assertIn("#page-logs .log-json-card .log-snippet", css)
+        self.assertIn("#page-logs .log-detail-readable", css)
         self.assertIn('return "performance"', log_display)
         self.assertIn('return "crawl"', log_display)
 
@@ -2419,6 +2440,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('settingCheckbox("\\u56fe\\u7247\\u53d7\\u5e76\\u53d1\\u6570\\u9650\\u5236"', content)
         self.assertIn('label: "\\u65e0\\u9650\\u5236"', content)
         self.assertNotIn("\\u65e0\\u9650\\u5236\\uff080 KB/s\\uff09", content)
+        download_settings_fn = content.split('if (group === "\\u4e0b\\u8f7d\\u8bbe\\u7f6e")', 1)[1].split('if (group === "\\u5e73\\u53f0\\u8bbe\\u7f6e")', 1)[0]
+        ordered_download_controls = [
+            '"max_retries"',
+            '"resume_enabled"',
+            '"speed_limit_kb"',
+            '"video_only"',
+        ]
+        self.assertEqual(
+            [download_settings_fn.index(control) for control in ordered_download_controls],
+            sorted(download_settings_fn.index(control) for control in ordered_download_controls),
+        )
         self.assertIn("applyAppearance", content)
         self.assertIn('open_after_download: false', content)
         self.assertIn('filename_template: "current"', content)
@@ -2458,9 +2490,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("commitProxyCustom", content)
         self.assertIn("proxyCustomDisplayValue", content)
         self.assertIn("proxyOptionDisplayLabel", content)
+        self.assertIn("platform-proxy-entry", content)
         self.assertIn(r'placeholder="${escapeAttr(translate("\u7aef\u53e3"))}"', content)
         self.assertIn("hidden disabled", content)
         self.assertIn('row.classList.toggle("has-proxy-custom", custom)', content)
+        self.assertIn('proxyEntry.classList.toggle("has-custom", custom)', content)
         self.assertIn("optionLabel", content)
         self.assertIn("switchSettingsGroup", content)
         self.assertIn("settings-shell", content)
@@ -2475,9 +2509,13 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("SETTINGS_GROUP_HINTS_FALLBACK", content)
         self.assertIn("settings-hint-card", content)
         self.assertIn("has-trailing-action", content)
-        self.assertIn("associationShortText", content)
+        self.assertIn("associationText", content)
+        self.assertIn('>${associationText}</button>', content)
         self.assertIn("associationAttr", content)
         self.assertIn('aria-label="${associationAttr}"', content)
+        self.assertIn("setting-path-browse", content)
+        self.assertIn("选择保存目录", content)
+        self.assertIn('onclick="showDirDialog()"', content)
         self.assertIn("contract.group_hints", content)
         self.assertIn("集中管理下载行为、平台状态、播放体验、日志策略与界面外观", content)
         self.assertIn('document.querySelector("#page-settings .page-head p")', content)
@@ -2494,6 +2532,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn('item.icon_file || "nav_toolbox.png"', content.split("function buildMockState", 1)[1].split("toolbox_recent_items", 1)[0])
         self.assertIn("platformSettingsSummary", content)
         self.assertIn("setting-platform-header", content)
+        self.assertIn("platformIconUrl", content)
+        self.assertIn("platform-name-cell", content)
+        self.assertIn("platform-auth-badge", content)
         self.assertIn("platform-count", content)
         self.assertIn("platform-timeout", content)
         self.assertIn("platform-proxy", content)
@@ -2523,13 +2564,22 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn(".setting-control-cluster.has-trailing-action", css)
         self.assertIn("flex: 0 0 94px", css)
         self.assertIn(".platform-summary", css)
+        self.assertIn(".platform-name-cell", css)
+        self.assertIn(".platform-name-cell img", css)
+        self.assertIn(".platform-auth-badge", css)
+        self.assertIn(".platform-auth-badge.is-authed", css)
+        self.assertIn(".platform-auth-badge.is-unauthed", css)
         self.assertIn("has-proxy-custom", content)
-        self.assertIn("grid-column: 6; grid-row: 1", css)
-        self.assertIn("grid-template-columns: minmax(78px, 122px) minmax(90px, 112px)", css)
+        self.assertIn(".platform-proxy-entry.has-custom", css)
+        self.assertIn("grid-template-columns: minmax(102px, 1fr) minmax(72px, 86px)", css)
+        self.assertIn("grid-template-columns: minmax(64px, 86px) minmax(92px, 104px)", css)
+        self.assertIn(".setting-download-directory", css)
+        self.assertIn(".setting-path-browse", css)
+        self.assertIn(".setting-path-browse img", css)
         self.assertIn("@media (max-width: 640px)", css)
         self.assertIn(".setting-platform .platform-count", css)
         self.assertIn(".setting-platform .platform-timeout", css)
-        self.assertIn("minmax(112px, 0.7fr) minmax(86px, 0.55fr)", css)
+        self.assertIn(".setting-platform .platform-proxy-entry", css)
         self.assertNotIn("setting-card-wide", content)
         self.assertNotIn('default_player: "内置播放器"', content)
         self.assertNotIn('accent: "#0d6efd"', content)
@@ -2704,6 +2754,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("optionTextWidth", custom_select)
         self.assertIn("originalValue", custom_select)
         self.assertIn("option.value = option.dataset.originalValue", custom_select)
+        self.assertIn("updateMenuPlacement", custom_select)
+        self.assertIn('wrapper.classList.toggle("open-up", shouldOpenUp)', custom_select)
+        self.assertIn('menu.style.top = `${top}px`', custom_select)
         self.assertNotIn("let openCustomSelect", app_js)
 
     def test_web_custom_select_autofits_count_and_page_size_without_menu_gap(self):
@@ -2718,6 +2771,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn(".custom-select-page-size", css)
         self.assertIn(".custom-select-page-size .custom-select-button {\n  height: 34px;", css)
         self.assertIn(".custom-select-menu", css)
+        self.assertIn(".custom-select.open-up .custom-select-menu", css)
+        self.assertIn("position: fixed;", css)
         self.assertIn("calc(var(--option-count, 6) * 36px + 4px)", css)
         self.assertIn("padding: 0;", css)
         self.assertIn("border-radius: 0;", css)
