@@ -130,6 +130,23 @@ class DownloadManagerCore:
         self.is_running = True
         self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
         self.dispatcher_thread.start()
+        self._sweep_m3u8_orphan_workspaces_on_startup()
+
+    def _sweep_m3u8_orphan_workspaces_on_startup(self) -> None:
+        try:
+            download_dir = str(cfg.get("common", "save_directory", "") or "").strip()
+            if not download_dir:
+                return
+            from app.core.downloaders.m3u8 import N_m3u8DL_RE_Downloader
+
+            N_m3u8DL_RE_Downloader.sweep_orphaned_workspaces([download_dir])
+        except (OSError, RuntimeError, TypeError, ValueError, ImportError, AppError) as exc:
+            debug_logger.log_exception(
+                "DownloadManager",
+                "m3u8_orphan_workspace_sweep_error",
+                exc,
+                details={"download_dir": locals().get("download_dir", "")},
+            )
 
     def set_max_concurrent(self, value: int) -> int:
         try:

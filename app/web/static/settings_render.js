@@ -43,16 +43,16 @@
     "\u5e76\u53d1\u6570": "\u6700\u5927\u540c\u65f6\u4e0b\u8f7d\u6570",
     "\u56fe\u7247\u53d7\u5e76\u53d1\u6570\u9650\u5236": "\u63a7\u5236\u56fe\u7247\u5feb\u8f66\u9053",
     "\u8bf7\u6c42\u8d85\u65f6": "\u7f51\u7edc\u8bf7\u6c42\u7b49\u5f85\u65f6\u95f4",
-    "\u6700\u5927\u91cd\u8bd5": "\u5931\u8d25\u540e\u91cd\u8bd5\u6b21\u6570",
-    "\u901f\u5ea6\u9650\u5236 KB/s": "\u9650\u5236\u6700\u5927\u4e0b\u8f7d\u901f\u5ea6",
+    "\u91cd\u8bd5\u6b21\u6570": "\u5931\u8d25\u540e\u91cd\u8bd5\u6b21\u6570",
+    "\u4e0b\u8f7d\u901f\u5ea6\u9650\u5236\uff08KB/s\uff09": "\u9650\u5236\u6700\u5927\u4e0b\u8f7d\u901f\u5ea6",
     "\u65ad\u70b9\u7eed\u4f20": "\u7ee7\u7eed\u672a\u5b8c\u6210\u4efb\u52a1",
     "\u4ec5\u4e0b\u8f7d\u89c6\u9891": "\u8df3\u8fc7\u56fe\u7247\u8d44\u6e90",
     "\u6253\u5f00\u65b9\u5f0f": "\u9ed8\u8ba4\u64ad\u653e\u65b9\u5f0f",
-    "\u8bb0\u4f4f\u64ad\u653e\u4f4d\u7f6e": "\u4e0b\u6b21\u6062\u590d\u64ad\u653e\u4f4d\u7f6e",
-    "\u81ea\u52a8\u64ad\u653e\u4e0b\u4e00\u9879": "\u7ed3\u675f\u540e\u64ad\u653e\u4e0b\u4e00\u9879",
-    "\u624b\u52a8\u5207\u6362\u56fe\u7247": "\u5173\u95ed\u56fe\u7247\u81ea\u52a8\u8f6e\u64ad",
-    "\u4fdd\u7559\u5929\u6570": "\u542f\u52a8\u65f6\u81ea\u52a8\u6e05\u7406",
-    "UI\u6700\u5927\u663e\u793a\u6570": "\u9650\u5236\u65e5\u5fd7\u4e2d\u5fc3\u5c55\u793a\u6761\u6570",
+    "\u8bb0\u4f4f\u64ad\u653e\u8fdb\u5ea6": "\u4e0b\u6b21\u6062\u590d\u64ad\u653e\u4f4d\u7f6e",
+    "\u89c6\u9891\u64ad\u653e\u5b8c\u81ea\u52a8\u4e0b\u4e00\u9879": "\u7ed3\u675f\u540e\u64ad\u653e\u4e0b\u4e00\u9879",
+    "\u56fe\u7247\u53ea\u624b\u52a8\u5207\u6362": "\u5173\u95ed\u56fe\u7247\u81ea\u52a8\u8f6e\u64ad",
+    "\u65e5\u5fd7\u4fdd\u7559\u5929\u6570": "\u521d\u59cb\u5316\u65f6\u81ea\u52a8\u6e05\u7406",
+    "UI\u65e5\u5fd7\u6700\u5927\u663e\u793a\u6570\u91cf": "\u9650\u5236\u65e5\u5fd7\u4e2d\u5fc3\u5c55\u793a\u6761\u6570",
     "\u9519\u8bef\u65f6\u81ea\u52a8\u590d\u5236 Trace": "\u5f02\u5e38\u65f6\u590d\u5236\u8ffd\u8e2a\u7f16\u53f7",
     "\u8bed\u8a00": "\u754c\u9762\u8bed\u8a00",
     "\u8ddf\u968f\u7cfb\u7edf": "\u8ddf\u968f\u7cfb\u7edf\u4e3b\u9898",
@@ -76,6 +76,15 @@
     return `<span class="setting-control-cluster${trailingHtml ? " has-trailing-action" : ""}">${controlHtml}${trailingHtml}</span>`;
   }
 
+  function settingRowClassForKey(key) {
+    const classes = [];
+    if (key === "download_directory") classes.push("setting-download-directory");
+    if (["download_directory", "filename_template", "default_open_mode"].includes(key)) {
+      classes.push("setting-wide-control");
+    }
+    return classes.length ? ` ${classes.join(" ")}` : "";
+  }
+
   function settingsControls(group, value) {
     const options = value && value._options ? value._options : {};
     if (value && Object.prototype.hasOwnProperty.call(value, "download_directory")) {
@@ -95,9 +104,9 @@
         settingSelect("\u5e76\u53d1\u6570", "max_concurrent", value && value.max_concurrent, options.max_concurrent || [], "download"),
         settingCheckbox("\u56fe\u7247\u53d7\u5e76\u53d1\u6570\u9650\u5236", "image_respects_concurrency", !!(value && value.image_respects_concurrency), "download"),
         settingSelect("\u8bf7\u6c42\u8d85\u65f6", "request_timeout", value && value.request_timeout, options.request_timeout || [], "download"),
-        settingSelect("\u6700\u5927\u91cd\u8bd5", "max_retries", value && value.max_retries, options.max_retries || [], "download"),
+        settingSelect("\u91cd\u8bd5\u6b21\u6570", "max_retries", value && value.max_retries, options.max_retries || [], "download"),
         settingCheckbox("\u65ad\u70b9\u7eed\u4f20", "resume_enabled", !!(value && value.resume_enabled), "download"),
-        settingSelect("\u901f\u5ea6\u9650\u5236 KB/s", "speed_limit_kb", value && value.speed_limit_kb, options.speed_limit_kb || [{ value: "0", label: "\u65e0\u9650\u5236" }], "download"),
+        settingSelect("\u4e0b\u8f7d\u901f\u5ea6\u9650\u5236\uff08KB/s\uff09", "speed_limit_kb", value && value.speed_limit_kb, options.speed_limit_kb || [{ value: "0", label: "\u65e0\u9650\u5236" }], "download"),
         settingCheckbox("\u4ec5\u4e0b\u8f7d\u89c6\u9891", "video_only", !!(value && value.video_only), "download"),
       ].join("");
     }
@@ -108,15 +117,15 @@
     if (group === "\u64ad\u653e\u8bbe\u7f6e") {
       return [
         settingSelect("\u6253\u5f00\u65b9\u5f0f", "default_player", value && value.default_player, options.default_player || [], "playback"),
-        settingCheckbox("\u8bb0\u4f4f\u64ad\u653e\u4f4d\u7f6e", "remember_position", !!(value && value.remember_position), "playback"),
-        settingCheckbox("\u81ea\u52a8\u64ad\u653e\u4e0b\u4e00\u9879", "autoplay_next", !!(value && value.autoplay_next), "playback"),
+        settingCheckbox("\u8bb0\u4f4f\u64ad\u653e\u8fdb\u5ea6", "remember_position", !!(value && value.remember_position), "playback"),
+        settingCheckbox("\u89c6\u9891\u64ad\u653e\u5b8c\u81ea\u52a8\u4e0b\u4e00\u9879", "autoplay_next", !!(value && value.autoplay_next), "playback"),
         imageManualSwitchSetting(value || {}, options || {}),
       ].join("");
     }
     if (group === "\u65e5\u5fd7\u8bbe\u7f6e") {
       return [
-        settingSelect("\u4fdd\u7559\u5929\u6570", "retention_days", value && value.retention_days, options.retention_days || [], "logging"),
-        settingSelect("UI\u6700\u5927\u663e\u793a\u6570", "ui_log_max_display_count", value && value.ui_log_max_display_count, options.ui_log_max_display_count || [], "logging"),
+        settingSelect("\u65e5\u5fd7\u4fdd\u7559\u5929\u6570", "retention_days", value && value.retention_days, options.retention_days || [], "logging"),
+        settingSelect("UI\u65e5\u5fd7\u6700\u5927\u663e\u793a\u6570\u91cf", "ui_log_max_display_count", value && value.ui_log_max_display_count, options.ui_log_max_display_count || [], "logging"),
         settingCheckbox("\u9519\u8bef\u65f6\u81ea\u52a8\u590d\u5236 Trace", "auto_copy_trace_on_error", !!(value && value.auto_copy_trace_on_error), "logging"),
       ].join("");
     }
@@ -124,7 +133,7 @@
       return [
         settingSelect("语言", "language", value && value.language, options.language || [], "appearance"),
         settingCheckbox("\u8ddf\u968f\u7cfb\u7edf", "follow_system", !!(value && value.follow_system), "appearance"),
-        settingSelect("\u4e3b\u9898", "theme", value && value.theme, options.theme || [], "common"),
+        themeSegmentSetting(value && value.theme, options.theme || []),
         settingSelect("\u4e3b\u9898\u8272", "accent", value && value.accent, options.accent || [], "appearance"),
         settingSelect("\u754c\u9762\u7f29\u653e", "scale", value && value.scale, options.scale || [], "appearance"),
         settingSelect("\u5b57\u4f53\u5927\u5c0f", "font_size", value && value.font_size, options.font_size || [], "appearance"),
@@ -238,7 +247,7 @@
     const action = scope === "basic"
       ? ` onblur="updateBasicSetting('${escapeAttr(key)}', this.value)"`
       : (scope ? ` onblur="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.value)"` : "");
-    const rowClass = key === "download_directory" ? " setting-download-directory" : "";
+    const rowClass = settingRowClassForKey(key);
     const control = `<input data-setting="${escapeAttr(key)}" value="${escapeAttr(value || "")}" title="${escapeAttr(value || "")}"${action} />`;
     const browseTitle = escapeAttr(translate("\u9009\u62e9\u4fdd\u5b58\u76ee\u5f55"));
     const trailingHtml = key === "download_directory"
@@ -277,13 +286,37 @@
     `;
     return `
       <div class="setting-row image-manual-row">
-        ${settingLabelHtml("\u624b\u52a8\u5207\u6362\u56fe\u7247")}
+        ${settingLabelHtml("\u56fe\u7247\u53ea\u624b\u52a8\u5207\u6362")}
         <span class="image-auto-controls">
           ${intervalSelect}
           <input class="setting-switch" data-setting="manual_image_switch" type="checkbox" ${manual ? "checked" : ""} onchange="updateSetting('playback', 'manual_image_switch', this.checked)" />
         </span>
       </div>
     `;
+  }
+
+  function themeSegmentSetting(value, options) {
+    let normalized = (options && options.length ? options : [
+      { value: "light", label: "\u6d45\u8272" },
+      { value: "dark", label: "\u6df1\u8272" },
+    ]).map(normalizeSettingOption).filter(option => ["light", "dark"].includes(String(option.value).toLowerCase()));
+    if (!normalized.length) {
+      normalized = [
+        { value: "light", label: "\u6d45\u8272" },
+        { value: "dark", label: "\u6df1\u8272" },
+      ];
+    }
+    const current = String(value || "light").toLowerCase() === "dark" ? "dark" : "light";
+    const control = `
+      <span class="setting-theme-segment" role="radiogroup" aria-label="${escapeAttr(translate("\u6d45\u8272 / \u6df1\u8272"))}">
+        ${normalized.map(option => {
+          const optionValue = String(option.value).toLowerCase() === "dark" ? "dark" : "light";
+          const selected = optionValue === current;
+          return `<button class="setting-theme-segment-btn${selected ? " active" : ""}" type="button" role="radio" aria-checked="${selected ? "true" : "false"}" data-setting="theme" data-value="${escapeAttr(optionValue)}" onclick="selectAppearanceTheme('${escapeAttr(optionValue)}')">${escapeHtml(translateOption(option.label))}</button>`;
+        }).join("")}
+      </span>
+    `;
+    return `<div class="setting-row setting-theme-row">${settingLabelHtml("\u6d45\u8272 / \u6df1\u8272")}${settingControlCluster(control)}</div>`;
   }
 
   function settingSelect(label, key, value, options, scope = "", extraAttrs = "", trailingHtml = "") {
@@ -295,7 +328,7 @@
       : (scope ? ` onchange="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.value)"` : "");
     const labelHtml = label ? settingLabelHtml(label) : "";
     const control = `<select data-setting="${escapeAttr(key)}"${action}${extraAttrs}>${normalized.map(option => `<option value="${escapeAttr(option.value)}" ${current === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>`;
-    return `<div class="setting-row">${labelHtml}${settingControlCluster(control, trailingHtml)}</div>`;
+    return `<div class="setting-row${settingRowClassForKey(key)}">${labelHtml}${settingControlCluster(control, trailingHtml)}</div>`;
   }
 
   window.UcpSettingsRender = {
@@ -308,7 +341,9 @@
     proxyCustomDisplayValue,
     settingInput,
     settingCheckbox,
+    settingRowClassForKey,
     imageManualSwitchSetting,
+    themeSegmentSetting,
     normalizeSettingOption,
     settingSelect,
   };

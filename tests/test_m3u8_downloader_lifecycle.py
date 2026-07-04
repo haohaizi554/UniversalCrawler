@@ -4,14 +4,94 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
 from app.core.downloaders.m3u8 import N_m3u8DL_RE_Downloader
+from app.exceptions import ExternalToolError
 from app.models import VideoItem
 
+
 class M3u8DownloaderLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def _fake_m3u8_module():
+        fake_m3u8 = types.ModuleType("m3u8")
+
+        class FakeSegment:
+            absolute_uri = "https://example.com/segment.ts"
+            key = None
+
+        class FakePlaylist:
+            is_variant = False
+            playlists: list[object] = []
+            segments = [FakeSegment()]
+
+        fake_m3u8.loads = MagicMock(return_value=FakePlaylist())
+        return fake_m3u8
+
+    @staticmethod
+    def _fake_curl_cffi_module():
+        fake_curl_cffi = types.ModuleType("curl_cffi")
+        fake_requests = types.ModuleType("curl_cffi.requests")
+
+        class FakeResponse:
+            status_code = 200
+            text = "#EXTM3U\n"
+            content = b"segment"
+
+        class FakeSession:
+            def get(self, *_args, **_kwargs):
+                return FakeResponse()
+
+            def close(self):
+                return None
+
+        fake_requests.Session = MagicMock(return_value=FakeSession())
+        fake_curl_cffi.requests = fake_requests
+        return fake_curl_cffi, fake_requests
+
+    @staticmethod
+    def _fake_playwright_modules():
+        fake_playwright = types.ModuleType("playwright")
+        fake_sync_api = types.ModuleType("playwright.sync_api")
+
+        class FakePlaywrightError(Exception):
+            pass
+
+        class FakePage:
+            pass
+
+        class FakeContext:
+            def new_page(self):
+                return FakePage()
+
+        class FakeBrowser:
+            def new_context(self, **_kwargs):
+                return FakeContext()
+
+            def close(self):
+                return None
+
+        class FakeChromium:
+            def launch(self, **_kwargs):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        fake_sync_api.Error = FakePlaywrightError
+        fake_sync_api.sync_playwright = MagicMock(return_value=FakePlaywright())
+        return fake_playwright, fake_sync_api
+
     def test_success_with_failing_final_callback_does_not_delete_output(self):
         save_dir = tempfile.mkdtemp()
         save_path = os.path.join(save_dir, "clip.mp4")
@@ -70,6 +150,88 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
             downloader.download(video, save_path, progress_callback, lambda: False)
 
         self.assertTrue(os.path.exists(save_path))
+
+    def test_curl_cffi_fallback_cleans_temp_dir_on_failure(self):
+        fake_m3u8 = self._fake_m3u8_module()
+        fake_curl_cffi, fake_requests = self._fake_curl_cffi_module()
+
+        with tempfile.TemporaryDirectory() as save_dir:
+            save_path = os.path.join(save_dir, "clip.mp4")
+            temp_dir = os.path.join(save_dir, "clip_curl_cffi_hls")
+            video = VideoItem(url="https://example.com/stream.m3u8", title="clip", source="missav")
+
+            with patch.dict(
+                sys.modules,
+                {"m3u8": fake_m3u8, "curl_cffi": fake_curl_cffi, "curl_cffi.requests": fake_requests},
+            ), patch.object(
+                N_m3u8DL_RE_Downloader,
+                "_write_hls_segments",
+                side_effect=ExternalToolError("segment write failed"),
+            ):
+                downloader = N_m3u8DL_RE_Downloader()
+                with self.assertRaises(ExternalToolError):
+                    downloader._download_with_curl_cffi_hls(
+                        video,
+                        save_path,
+                        {"User-Agent": "test"},
+                        None,
+                        lambda *_args, **_kwargs: None,
+                        lambda: False,
+                    )
+
+            self.assertFalse(os.path.exists(temp_dir))
+            self.assertFalse(os.path.exists(save_path))
+
+    def test_playwright_fallback_cleans_temp_dir_on_failure(self):
+        fake_m3u8 = self._fake_m3u8_module()
+        fake_playwright, fake_sync_api = self._fake_playwright_modules()
+
+        with tempfile.TemporaryDirectory() as save_dir:
+            save_path = os.path.join(save_dir, "clip.mp4")
+            temp_dir = os.path.join(save_dir, "clip_playwright_hls")
+            video = VideoItem(url="https://example.com/stream.m3u8", title="clip", source="missav")
+
+            with patch.dict(
+                sys.modules,
+                {"m3u8": fake_m3u8, "playwright": fake_playwright, "playwright.sync_api": fake_sync_api},
+            ), patch.object(
+                N_m3u8DL_RE_Downloader,
+                "_playwright_fetch_or_goto_bytes",
+                return_value=b"#EXTM3U\n",
+            ), patch.object(
+                N_m3u8DL_RE_Downloader,
+                "_write_hls_segments",
+                side_effect=ExternalToolError("segment write failed"),
+            ):
+                downloader = N_m3u8DL_RE_Downloader()
+                with self.assertRaises(ExternalToolError):
+                    downloader._download_with_playwright_hls(
+                        video,
+                        save_path,
+                        {"User-Agent": "test"},
+                        None,
+                        lambda *_args, **_kwargs: None,
+                        lambda: False,
+                    )
+
+            self.assertFalse(os.path.exists(temp_dir))
+            self.assertFalse(os.path.exists(save_path))
+
+    def test_sweep_orphaned_workspaces_removes_stale_dirs(self):
+        with tempfile.TemporaryDirectory() as save_dir:
+            nm3u8_workspace = os.path.join(save_dir, N_m3u8DL_RE_Downloader.NM3U8_TEMP_ROOT_NAME, "ucp-foo")
+            curl_workspace = os.path.join(save_dir, "xxx_curl_cffi_hls")
+            playwright_workspace = os.path.join(save_dir, "yyy_playwright_hls")
+            for path in (nm3u8_workspace, curl_workspace, playwright_workspace):
+                os.makedirs(path, exist_ok=True)
+
+            cleaned = N_m3u8DL_RE_Downloader.sweep_orphaned_workspaces([save_dir])
+
+            self.assertEqual(cleaned, 3)
+            self.assertFalse(os.path.exists(os.path.join(save_dir, N_m3u8DL_RE_Downloader.NM3U8_TEMP_ROOT_NAME)))
+            self.assertFalse(os.path.exists(curl_workspace))
+            self.assertFalse(os.path.exists(playwright_workspace))
+
 
 if __name__ == "__main__":
     unittest.main()

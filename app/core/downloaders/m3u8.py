@@ -82,7 +82,6 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         download_succeeded = False
         process = None
         browser_fallback_error: Exception | None = None
-        external_first_error: Exception | None = None
 
         if self._should_try_nm3u8_first(video_item):
             executable = NM3U8DLREExternalTool.resolve_executable()
@@ -107,7 +106,6 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 except DownloaderStoppedError:
                     raise
                 except (OSError, RuntimeError, ValueError, ExternalToolError, ExternalToolNotFoundError) as external_exc:
-                    external_first_error = external_exc
                     debug_logger.log_exception(
                         "N_m3u8DL_RE_Downloader",
                         "missav_nm3u8_first_error",
@@ -479,6 +477,72 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             path.parent.rmdir()
         except OSError:
             pass
+
+    @classmethod
+    def sweep_orphaned_workspaces(cls, download_dirs: list[str | os.PathLike[str]]) -> int:
+        """Remove stale HLS workspaces once at application startup, before tasks run."""
+        cleaned_count = 0
+        errors: list[dict[str, str]] = []
+
+        for raw_dir in download_dirs:
+            try:
+                base_dir = Path(raw_dir).expanduser()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                errors.append({"path": str(raw_dir), "error": str(exc)})
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "orphan_workspace_sweep_path_error",
+                    exc,
+                    details={"path": str(raw_dir)},
+                )
+                continue
+
+            try:
+                if not base_dir.exists() or not base_dir.is_dir():
+                    continue
+                candidates = [base_dir / cls.NM3U8_TEMP_ROOT_NAME]
+                candidates.extend(
+                    child
+                    for child in base_dir.iterdir()
+                    if child.is_dir()
+                    and (child.name.endswith("_curl_cffi_hls") or child.name.endswith("_playwright_hls"))
+                )
+            except OSError as exc:
+                errors.append({"path": str(base_dir), "error": str(exc)})
+                debug_logger.log_exception(
+                    "N_m3u8DL_RE_Downloader",
+                    "orphan_workspace_sweep_scan_error",
+                    exc,
+                    details={"path": str(base_dir)},
+                )
+                continue
+
+            for path in candidates:
+                try:
+                    if not path.exists() or not path.is_dir():
+                        continue
+                    shutil.rmtree(path, ignore_errors=True)
+                    if path.exists():
+                        errors.append({"path": str(path), "error": "directory still exists after cleanup"})
+                        continue
+                    cleaned_count += 1
+                except OSError as exc:
+                    errors.append({"path": str(path), "error": str(exc)})
+                    debug_logger.log_exception(
+                        "N_m3u8DL_RE_Downloader",
+                        "orphan_workspace_sweep_remove_error",
+                        exc,
+                        details={"path": str(path)},
+                    )
+
+        debug_logger.log(
+            component="N_m3u8DL_RE_Downloader",
+            action="orphan_workspace_sweep",
+            message="Swept stale HLS workspaces at application startup",
+            status_code="M3U8_TMP_SWEEP",
+            details={"cleaned_count": cleaned_count, "errors": errors},
+        )
+        return cleaned_count
 
     def _download_with_nm3u8_external(
         self,
@@ -1075,8 +1139,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 session.close()
             except (OSError, RuntimeError, AttributeError) as exc:
                 debug_logger.log_exception("M3U8Downloader", "close_curl_cffi_session", exc)
-            if target.exists() and target.stat().st_size > 0:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _download_with_playwright_hls(
         self,
@@ -1161,8 +1224,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 try:
                     browser.close()
                 finally:
-                    if target.exists() and target.stat().st_size > 0:
-                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
 
     @classmethod
     def _playwright_capture_playlist_from_referer(cls, page, referer: str, playlist_url: str) -> dict[str, str]:
@@ -1463,7 +1525,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         try:
             from Crypto.Cipher import AES
             from Crypto.Util.Padding import unpad
-        except ImportError as crypto_exc:
+        except ImportError:
             try:
                 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
                 from cryptography.hazmat.backends import default_backend

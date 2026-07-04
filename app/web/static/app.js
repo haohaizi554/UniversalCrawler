@@ -1752,6 +1752,11 @@ function commitProxyCustom(platformId, key, input) {
   updateSetting(platformId, key, value);
 }
 
+function selectAppearanceTheme(value) {
+  const theme = String(value || "").toLowerCase() === "dark" ? "dark" : "light";
+  updateSetting("common", "theme", theme);
+}
+
 function updateBasicSetting(key, value) {
   frontendAction("update_basic_setting", { key, value });
 }
@@ -1765,6 +1770,7 @@ function updateSetting(section, key, value) {
   if (section === "common" && key === "theme") {
     const dark = String(value).toLowerCase() === "dark";
     const appearance = ((frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] ||= {});
+    appearance.follow_system = false;
     appearance.theme = dark ? "dark" : "light";
     localStorage.setItem("cached_dark_theme", String(dark));
     applyAppearance(appearance);

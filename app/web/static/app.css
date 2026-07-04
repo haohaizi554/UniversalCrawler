@@ -2171,12 +2171,12 @@ tr.selected:hover td {
 .settings-side-nav,
 .settings-detail-panel {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 14px;
   background: var(--panel);
 }
 
 .settings-side-nav {
-  padding: 12px 10px;
+  padding: 10px;
   min-height: 0;
   overflow: auto;
 }
@@ -2194,7 +2194,7 @@ tr.selected:hover td {
   height: 38px;
   margin: 2px 0;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   color: var(--text);
   display: flex;
@@ -2247,7 +2247,8 @@ tr.selected:hover td {
   column-gap: 12px;
   row-gap: 2px;
   align-items: center;
-  margin-bottom: 16px;
+  min-height: 58px;
+  margin-bottom: 12px;
 }
 
 .settings-detail-icon {
@@ -2270,8 +2271,10 @@ tr.selected:hover td {
 .settings-detail-head h2 {
   grid-column: 2;
   margin: 0;
-  font-size: 22px;
+  font-size: 19px;
+  line-height: 1.18;
   color: var(--text);
+  font-weight: 800;
 }
 
 .settings-detail-head p {
@@ -2282,20 +2285,22 @@ tr.selected:hover td {
 }
 
 .settings-detail-body {
-  max-width: 594px;
+  width: min(1080px, max(520px, 82%));
+  max-width: 100%;
   flex: 0 1 auto;
   min-height: 0;
   overflow: auto;
   display: grid;
   align-content: start;
-  gap: 10px;
-  padding: 14px;
+  gap: 7px;
+  padding: 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--panel-soft);
 }
 
 .settings-platform-body {
+  width: 100%;
   max-width: none;
   flex: 1 1 auto;
   display: block;
@@ -2328,18 +2333,22 @@ tr.selected:hover td {
 
 .setting-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 46%);
+  grid-template-columns: minmax(0, 1fr) minmax(150px, min(320px, 52%));
   align-items: center;
-  gap: 14px;
-  min-height: 72px;
-  padding: 12px 14px;
+  gap: 18px;
+  min-height: 60px;
+  padding: 8px 16px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--panel);
   min-width: 0;
 }
 
 .setting-row > * { min-width: 0; }
+
+.setting-wide-control {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, min(520px, 58%));
+}
 
 .setting-label {
   display: grid;
@@ -2379,7 +2388,7 @@ tr.selected:hover td {
 }
 
 .setting-download-directory {
-  grid-template-columns: minmax(150px, .72fr) minmax(320px, 1.28fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, min(520px, 58%));
 }
 
 .setting-download-directory .setting-control-cluster {
@@ -2418,6 +2427,13 @@ tr.selected:hover td {
 .setting-row input:not([type="checkbox"]), .setting-row select, .setting-row .custom-select {
   width: 100%;
   min-width: 0;
+}
+
+.setting-row input:not([type="checkbox"]),
+.setting-row select,
+.setting-row .custom-select,
+.setting-row .custom-select-button {
+  height: 38px;
 }
 
 .setting-row input[type="checkbox"].setting-switch {
@@ -2472,31 +2488,74 @@ tr.selected:hover td {
   display: none;
 }
 
+.setting-theme-row .setting-control-cluster {
+  justify-content: flex-end;
+}
+
+.setting-theme-segment {
+  width: min(260px, 100%);
+  height: 38px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.setting-theme-segment-btn {
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.setting-theme-segment-btn + .setting-theme-segment-btn {
+  border-left: 1px solid var(--border);
+}
+
+.setting-theme-segment-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.setting-theme-segment-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .settings-hint-card {
-  max-width: 594px;
-  min-height: 58px;
-  margin-top: 22px;
-  padding: 12px 16px;
+  width: min(1080px, max(520px, 82%));
+  max-width: 100%;
+  height: 40px;
+  min-height: 40px;
+  margin-top: 14px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  border: 1px solid color-mix(in srgb, var(--danger), transparent 72%);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger), transparent 90%);
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--accent-soft);
   color: var(--muted);
 }
 
 .settings-hint-icon {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: var(--danger);
+  background: var(--accent);
   color: #fff;
   font-weight: 800;
+  font-size: 12px;
   font-family: Consolas, "Microsoft YaHei UI", monospace;
 }
 
@@ -2747,6 +2806,17 @@ tr.selected:hover td {
 @media (max-width: 640px) {
   .settings-detail-panel {
     padding: 18px;
+  }
+
+  .setting-row,
+  .setting-wide-control,
+  .setting-download-directory {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .setting-control-cluster {
+    justify-content: stretch;
   }
 
   .setting-platform {

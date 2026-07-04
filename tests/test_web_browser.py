@@ -928,6 +928,45 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn(before, {"light", "dark"})
         self.assertEqual(after, "light" if before == "dark" else "dark")
 
+    def test_07b_appearance_theme_segment_disables_follow_system(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              const appearance = (frontendState.settings_snapshot['\\u5916\\u89c2\\u8bbe\\u7f6e'] ||= {});
+              appearance.follow_system = true;
+              appearance.theme = 'light';
+              currentSettingsGroup = '\\u5916\\u89c2\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const beforeSwitch = document.querySelector('#page-settings [data-setting="follow_system"]');
+              const darkButton = document.querySelector('#page-settings .setting-theme-segment-btn[data-value="dark"]');
+              darkButton?.click();
+              const afterSwitch = document.querySelector('#page-settings [data-setting="follow_system"]');
+              const activeButton = document.querySelector('#page-settings .setting-theme-segment-btn.active');
+              return {
+                hasSegment: Boolean(darkButton),
+                beforeFollowSystem: beforeSwitch ? beforeSwitch.checked : null,
+                afterFollowSystem: afterSwitch ? afterSwitch.checked : null,
+                activeValue: activeButton?.dataset.value || '',
+                theme: frontendState.settings_snapshot['\\u5916\\u89c2\\u8bbe\\u7f6e']?.theme || '',
+                dataTheme: document.documentElement.dataset.theme || ''
+              };
+            }
+            """
+        )
+
+        self.assertTrue(result["hasSegment"])
+        self.assertTrue(result["beforeFollowSystem"])
+        self.assertFalse(result["afterFollowSystem"])
+        self.assertEqual(result["activeValue"], "dark")
+        self.assertEqual(result["theme"], "dark")
+        self.assertEqual(result["dataTheme"], "dark")
+
     def test_08_dir_modal_opens(self):
         """点击更改目录按钮应弹出目录弹窗。"""
         self._page.goto(self._server_url)
@@ -1485,6 +1524,129 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertLessEqual(result["inputOverflow"], 1)
         self.assertTrue(result["inputSameRow"])
 
+    def test_11ha_settings_card_slicing_matches_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const body = document.querySelector('#page-settings .settings-detail-body');
+              const hint = document.querySelector('#page-settings .settings-hint-card');
+              const row = document.querySelector('#page-settings .setting-row');
+              const platformBefore = body?.getBoundingClientRect().width || 0;
+              const styles = body ? getComputedStyle(body) : null;
+              const rowStyles = row ? getComputedStyle(row) : null;
+              const hintStyles = hint ? getComputedStyle(hint) : null;
+              const basicMetrics = {
+                bodyGap: styles?.gap || '',
+                bodyPaddingLeft: styles?.paddingLeft || '',
+                bodyRadius: styles?.borderRadius || '',
+                rowMinHeight: rowStyles?.minHeight || '',
+                rowPaddingTop: rowStyles?.paddingTop || '',
+                rowRadius: rowStyles?.borderRadius || '',
+                hintHeight: hint?.getBoundingClientRect().height || 0,
+                hintRadius: hintStyles?.borderRadius || '',
+                bodyHintSameWidth: body && hint
+                  ? Math.abs(body.getBoundingClientRect().width - hint.getBoundingClientRect().width)
+                  : 999,
+                wideSettings: Array.from(document.querySelectorAll('#page-settings .setting-wide-control [data-setting]'))
+                  .map(node => node.dataset.setting),
+                platformBefore
+              };
+              currentSettingsGroup = '\\u5e73\\u53f0\\u8bbe\\u7f6e';
+              renderSettings(true);
+              const platformBody = document.querySelector('#page-settings .settings-platform-body');
+              const panel = document.querySelector('#page-settings .settings-detail-panel');
+              return {
+                ...basicMetrics,
+                platformBodyWidth: platformBody?.getBoundingClientRect().width || 0,
+                panelInnerWidth: panel
+                  ? panel.getBoundingClientRect().width
+                    - parseFloat(getComputedStyle(panel).paddingLeft)
+                    - parseFloat(getComputedStyle(panel).paddingRight)
+                  : 0
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["bodyGap"], "7px")
+        self.assertEqual(result["bodyPaddingLeft"], "10px")
+        self.assertEqual(result["bodyRadius"], "12px")
+        self.assertEqual(result["rowMinHeight"], "60px")
+        self.assertEqual(result["rowPaddingTop"], "8px")
+        self.assertEqual(result["rowRadius"], "9px")
+        self.assertAlmostEqual(result["hintHeight"], 40, delta=1)
+        self.assertEqual(result["hintRadius"], "9px")
+        self.assertLessEqual(result["bodyHintSameWidth"], 1)
+        self.assertIn("download_directory", result["wideSettings"])
+        self.assertIn("filename_template", result["wideSettings"])
+        self.assertIn("default_open_mode", result["wideSettings"])
+        self.assertGreater(result["platformBodyWidth"], result["platformBefore"])
+        self.assertLessEqual(abs(result["platformBodyWidth"] - result["panelInnerWidth"]), 2)
+
+    def test_11hb_settings_controls_expose_backend_setting_keys(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const groups = {
+                basic: '\\u57fa\\u7840\\u8bbe\\u7f6e',
+                download: '\\u4e0b\\u8f7d\\u8bbe\\u7f6e',
+                platform: '\\u5e73\\u53f0\\u8bbe\\u7f6e',
+                playback: '\\u64ad\\u653e\\u8bbe\\u7f6e',
+                logging: '\\u65e5\\u5fd7\\u8bbe\\u7f6e',
+                appearance: '\\u5916\\u89c2\\u8bbe\\u7f6e'
+              };
+              const collected = {};
+              switchPage('settings');
+              for (const [name, group] of Object.entries(groups)) {
+                currentSettingsGroup = group;
+                renderSettings(true);
+                collected[name] = Array.from(new Set(
+                  Array.from(document.querySelectorAll('#page-settings [data-setting]'))
+                    .map(node => node.dataset.setting)
+                    .filter(Boolean)
+                )).sort();
+              }
+              return collected;
+            }
+            """
+        )
+
+        expected = {
+            "basic": {"download_directory", "filename_template", "open_after_download", "default_open_mode"},
+            "download": {
+                "max_concurrent",
+                "image_respects_concurrency",
+                "request_timeout",
+                "max_retries",
+                "resume_enabled",
+                "speed_limit_kb",
+                "video_only",
+            },
+            "platform": {"max_items", "max_pages", "timeout", "proxy_app", "proxy_url"},
+            "playback": {
+                "default_player",
+                "remember_position",
+                "autoplay_next",
+                "image_auto_advance_interval_seconds",
+                "manual_image_switch",
+            },
+            "logging": {"retention_days", "ui_log_max_display_count", "auto_copy_trace_on_error"},
+            "appearance": {"language", "follow_system", "theme", "accent", "scale", "font_size"},
+        }
+        for group, keys in expected.items():
+            self.assertTrue(keys.issubset(set(result[group])), (group, result[group]))
+
     def test_11i_default_open_mode_row_keeps_select_readable(self):
         self._page.goto(self._server_url)
         self._page.wait_for_load_state("networkidle")
@@ -1596,6 +1758,64 @@ class WebUIBrowserTests(unittest.TestCase):
             ],
         )
 
+    def test_11ka_download_setting_labels_match_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const keys = ['max_retries', 'speed_limit_kb'];
+              return Object.fromEntries(keys.map(key => {
+                const control = document.querySelector(`#page-settings [data-setting="${key}"]`);
+                const row = control?.closest('.setting-row');
+                return [key, {
+                  label: row?.querySelector('.setting-label strong')?.textContent?.trim() || '',
+                  description: row?.querySelector('.setting-label em')?.textContent?.trim() || ''
+                }];
+              }));
+            }
+            """
+        )
+
+        self.assertEqual(result["max_retries"]["label"], "重试次数")
+        self.assertIn("失败后重试次数", result["max_retries"]["description"])
+        self.assertEqual(result["speed_limit_kb"]["label"], "下载速度限制（KB/s）")
+        self.assertIn("限制最大下载速度", result["speed_limit_kb"]["description"])
+
+    def test_11kb_log_setting_labels_match_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u65e5\\u5fd7\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const keys = ['retention_days', 'ui_log_max_display_count'];
+              return Object.fromEntries(keys.map(key => {
+                const control = document.querySelector(`#page-settings [data-setting="${key}"]`);
+                const row = control?.closest('.setting-row');
+                return [key, {
+                  label: row?.querySelector('.setting-label strong')?.textContent?.trim() || '',
+                  description: row?.querySelector('.setting-label em')?.textContent?.trim() || ''
+                }];
+              }));
+            }
+            """
+        )
+
+        self.assertEqual(result["retention_days"]["label"], "日志保留天数")
+        self.assertIn("初始化时自动清理", result["retention_days"]["description"])
+        self.assertEqual(result["ui_log_max_display_count"]["label"], "UI日志最大显示数量")
+        self.assertIn("限制日志中心展示条数", result["ui_log_max_display_count"]["description"])
+
     def test_11l_download_directory_browse_button_opens_dir_dialog(self):
         self._page.goto(self._server_url)
         self._page.wait_for_load_state("networkidle")
@@ -1631,6 +1851,37 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["title"], result["aria"])
         self.assertIn("action_open_directory.png", result["iconSrc"])
         self.assertEqual(result["display"], "flex")
+
+    def test_11m_playback_setting_labels_match_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentSettingsGroup = '\\u64ad\\u653e\\u8bbe\\u7f6e';
+              switchPage('settings');
+              renderSettings(true);
+              const keys = ['remember_position', 'autoplay_next', 'manual_image_switch'];
+              return Object.fromEntries(keys.map(key => {
+                const input = document.querySelector(`#page-settings [data-setting="${key}"]`);
+                const row = input?.closest('.setting-row');
+                return [key, {
+                  label: row?.querySelector('.setting-label strong')?.textContent?.trim() || '',
+                  description: row?.querySelector('.setting-label em')?.textContent?.trim() || ''
+                }];
+              }));
+            }
+            """
+        )
+
+        self.assertEqual(result["remember_position"]["label"], "记住播放进度")
+        self.assertIn("下次恢复播放位置", result["remember_position"]["description"])
+        self.assertEqual(result["autoplay_next"]["label"], "视频播放完自动下一项")
+        self.assertIn("结束后播放下一项", result["autoplay_next"]["description"])
+        self.assertEqual(result["manual_image_switch"]["label"], "图片只手动切换")
+        self.assertIn("关闭图片自动轮播", result["manual_image_switch"]["description"])
 
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""

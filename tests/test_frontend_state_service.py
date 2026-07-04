@@ -289,6 +289,151 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(reloaded.get("appearance", "language"), "zh-TW")
             self.assertEqual(reloaded.get("common", "theme"), "dark")
 
+    def test_all_settings_controls_round_trip_through_backend_contract(self):
+        with TemporaryDirectory() as temp_dir:
+            config_file = Path(temp_dir) / "config.json"
+            manager = ConfigManager(str(config_file))
+            service = FrontendStateService(config_manager=manager)
+
+            download_dir = Path(temp_dir) / "downloads-target"
+            common_updates = [
+                ("update_basic_setting", {"key": "download_directory", "value": str(download_dir)}),
+                ("update_basic_setting", {"key": "filename_template", "value": "{platform}_{title}"}),
+                ("update_basic_setting", {"key": "open_after_download", "value": True}),
+                ("update_basic_setting", {"key": "default_open_mode", "value": "system_default"}),
+                ("update_setting", {"section": "common", "key": "theme", "value": "dark"}),
+            ]
+            download_updates = [
+                {"section": "download", "key": "max_concurrent", "value": 5},
+                {"section": "download", "key": "image_respects_concurrency", "value": True},
+                {"section": "download", "key": "request_timeout", "value": 120},
+                {"section": "download", "key": "max_retries", "value": 5},
+                {"section": "download", "key": "resume_enabled", "value": False},
+                {"section": "download", "key": "speed_limit_kb", "value": "2048"},
+                {"section": "download", "key": "video_only", "value": True},
+            ]
+            playback_updates = [
+                {"section": "playback", "key": "default_player", "value": "system_default"},
+                {"section": "playback", "key": "remember_position", "value": False},
+                {"section": "playback", "key": "autoplay_next", "value": False},
+                {"section": "playback", "key": "manual_image_switch", "value": True},
+                {"section": "playback", "key": "image_auto_advance_interval_seconds", "value": 10},
+            ]
+            logging_updates = [
+                {"section": "logging", "key": "retention_days", "value": 3},
+                {"section": "logging", "key": "ui_log_max_display_count", "value": 500},
+                {"section": "logging", "key": "auto_copy_trace_on_error", "value": False},
+            ]
+            appearance_updates = [
+                {"section": "appearance", "key": "follow_system", "value": True},
+                {"section": "appearance", "key": "accent", "value": "green"},
+                {"section": "appearance", "key": "scale", "value": "110%"},
+                {"section": "appearance", "key": "font_size", "value": "large"},
+                {"section": "appearance", "key": "language", "value": "zh-TW"},
+            ]
+
+            for action, payload in common_updates:
+                result = service.handle_action(action, payload)
+                self.assertEqual(result["status"], "ok", payload)
+            for payload in download_updates + playback_updates + logging_updates + appearance_updates:
+                result = service.handle_action("update_setting", payload)
+                self.assertEqual(result["status"], "ok", payload)
+
+            platform_snapshot = service.settings_snapshot()["\u5e73\u53f0\u8bbe\u7f6e"]
+            expected_platform_values: dict[tuple[str, str], object] = {}
+            for row in platform_snapshot:
+                section = row["id"]
+                count_key = row.get("count_config_key")
+                count_options = row.get("count_options") or []
+                if count_key and count_options:
+                    current = str(row.get("default_count"))
+                    candidate = next(
+                        (str(option["value"]) for option in count_options if str(option.get("value")) != current),
+                        str(count_options[0]["value"]),
+                    )
+                    result = service.handle_action(
+                        "update_setting",
+                        {"section": section, "key": count_key, "value": candidate},
+                    )
+                    self.assertEqual(result["status"], "ok", (section, count_key, candidate))
+                    expected_platform_values[(section, count_key)] = int(candidate)
+
+                timeout_key = row.get("timeout_config_key")
+                if timeout_key:
+                    result = service.handle_action(
+                        "update_setting",
+                        {"section": section, "key": timeout_key, "value": "90"},
+                    )
+                    self.assertEqual(result["status"], "ok", (section, timeout_key))
+                    expected_platform_values[(section, timeout_key)] = 90
+
+            result = service.handle_action(
+                "update_setting",
+                {"section": "missav", "key": "proxy_app", "value": "自定义"},
+            )
+            self.assertEqual(result["status"], "ok")
+            result = service.handle_action(
+                "update_setting",
+                {"section": "missav", "key": "proxy_url", "value": "7897"},
+            )
+            self.assertEqual(result["status"], "ok")
+
+            snapshot = service.settings_snapshot()
+            basic = snapshot["\u57fa\u7840\u8bbe\u7f6e"]
+            self.assertEqual(basic["download_directory"], str(download_dir.resolve(strict=False)))
+            self.assertEqual(basic["filename_template"], "{platform}_{title}")
+            self.assertTrue(basic["open_after_download"])
+            self.assertEqual(basic["default_open_mode"], "system_default")
+
+            download = snapshot["\u4e0b\u8f7d\u8bbe\u7f6e"]
+            self.assertEqual(download["max_concurrent"], 5)
+            self.assertTrue(download["image_respects_concurrency"])
+            self.assertEqual(download["request_timeout"], 120)
+            self.assertEqual(download["max_retries"], 5)
+            self.assertFalse(download["resume_enabled"])
+            self.assertEqual(download["speed_limit_kb"], 2048)
+            self.assertTrue(download["video_only"])
+
+            playback = snapshot["\u64ad\u653e\u8bbe\u7f6e"]
+            self.assertEqual(playback["default_player"], "system_default")
+            self.assertFalse(playback["remember_position"])
+            self.assertFalse(playback["autoplay_next"])
+            self.assertTrue(playback["manual_image_switch"])
+            self.assertEqual(playback["image_auto_advance_interval_seconds"], 10)
+
+            logging_cfg = snapshot["\u65e5\u5fd7\u8bbe\u7f6e"]
+            self.assertEqual(logging_cfg["retention_days"], 3)
+            self.assertEqual(logging_cfg["ui_log_max_display_count"], 500)
+            self.assertFalse(logging_cfg["auto_copy_trace_on_error"])
+
+            appearance = snapshot["\u5916\u89c2\u8bbe\u7f6e"]
+            self.assertTrue(appearance["follow_system"])
+            self.assertEqual(appearance["theme"], "dark")
+            self.assertEqual(appearance["accent"], "green")
+            self.assertEqual(appearance["scale"], "110%")
+            self.assertEqual(appearance["font_size"], "large")
+            self.assertEqual(appearance["language"], "zh-TW")
+
+            platform_rows = {row["id"]: row for row in snapshot["\u5e73\u53f0\u8bbe\u7f6e"]}
+            for (section, key), expected in expected_platform_values.items():
+                row = platform_rows[section]
+                if key == row.get("count_config_key"):
+                    self.assertEqual(int(row["default_count"]), expected)
+                elif key == row.get("timeout_config_key"):
+                    self.assertEqual(int(row["timeout"]), expected)
+            missav = platform_rows["missav"]
+            self.assertEqual(missav["proxy"], "自定义")
+            self.assertEqual(missav["proxy_custom_value"], "http://127.0.0.1:7897")
+            self.assertTrue(missav["proxy_custom_active"])
+
+            reloaded = ConfigManager(str(config_file))
+            self.assertEqual(reloaded.get("common", "filename_template"), "{platform}_{title}")
+            self.assertEqual(reloaded.get("download", "request_timeout"), 120)
+            self.assertEqual(reloaded.get("playback", "manual_image_switch"), True)
+            self.assertEqual(reloaded.get("logging", "ui_log_max_display_count"), 500)
+            self.assertEqual(reloaded.get("appearance", "language"), "zh-TW")
+            self.assertEqual(reloaded.get("missav", "proxy_url"), "http://127.0.0.1:7897")
+
     def test_update_setting_applies_runtime_hooks(self):
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
