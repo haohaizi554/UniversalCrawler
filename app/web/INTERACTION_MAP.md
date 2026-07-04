@@ -6267,3 +6267,12 @@ GUI 隐藏滚动条箭头，WebUI 已补全全局滚动条规范：
 3. GUI 失败列表详情值、日志消息和解决方案文本必须允许 `minimumWidth=0` 并使用 expanding/minimum 策略；右栏最小宽度为 420px，WebUI 对应失败详情栏使用 `minmax(420px, clamp(420px, var(--detail-width, 440px), 540px))`。
 4. WebUI 正在下载页底部 `.active-controls` 必须使用页级规则覆盖通用 `.controls-panel`，保持 96px 高度、纵向“标题 + 控件行”结构、标题左对齐，`#activeSummary` 靠右显示。
 5. WebUI 失败详情键名列宽必须与 GUI 的 `FailedDetailKey` 对齐为 82px，避免同一字段在 GUI/WebUI 中产生不同的首列视觉节奏。
+
+---
+
+# v10 日志中心空态与自定义选择框值稳定新增合同
+
+1. 日志中心过滤结果为空时，WebUI 必须和 GUI 一样在表格区域显示居中空态；空态文案为“暂无匹配日志 / 调整筛选条件，或点击「刷新缓冲」重新加载日志”，不得只留下空白表格。
+2. 自定义选择框必须区分“业务值”和“显示文本”：`option.dataset.originalValue` 保存真实 value，`option.dataset.originalLabel` 保存待翻译文案，语言切换只允许更新 `textContent`，不能让无显式 `value` 的 `<option>` 跟随翻译文本改变业务值。
+3. 日志中心的 `logLevelFilter`、`logTimeFilter`、`logPlatformFilter` 在程序性渲染、语言切换、状态注入后必须经过 `selectValueOrFallback()` 校正；无效值回退到真实 option，并立刻调用 `syncCustomSelectForSelect()`，避免按钮标签为空。
+4. 以后更新截图证据前，WebUI 日志页截图脚本必须等待 `#page-logs .log-filters .custom-select-label` 全部非空，防止把未同步完成的临时态误写入 `web_logs.png` 和总览图。

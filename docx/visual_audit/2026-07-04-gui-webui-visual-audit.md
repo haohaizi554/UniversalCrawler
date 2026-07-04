@@ -15,7 +15,8 @@
 - `gui_logs.png` / `web_logs.png`：日志中心同一份 mock 状态对比。
 - `gui_completed.png` / `web_completed.png`：已完成页同一份 mock 状态对比。
 - `gui_settings.png` / `web_settings.png`：配置中心基础设置对比。
-- `gui_toolbox.png` / `web_toolbox.png`：工具箱对比。
+- `gui_toolbox.png` / `web_toolbox.png`：历史工具箱对比；工具箱 GUI 仍在定型，本阶段不纳入最终同步验收。
+- `gui_modal_selection.png` / `web_modal_selection.png`、`gui_modal_association.png` / `web_modal_association.png`：弹窗截图按“弹窗本体”口径对比，避免 Web 遮罩整页截图把组件比例误判为不一致。
 
 说明：GUI 离屏渲染无法加载系统字体，最初截图会出现中文方块。本轮已改用 Qt 正常 Windows 平台渲染控件自身截图；WebUI 使用 Playwright，并注入同一份 `FrontendStateService.mock_snapshot()`，避免 GUI/Web 数据状态不一致导致误判。
 
@@ -85,7 +86,7 @@
 ## 后续仍需逐页细查
 
 - 配置中心：逐组检查控件行高、右侧输入框宽度、开关和按钮位置。
-- 工具箱：检查工具卡尺寸、右侧最近使用和详情区高度。
+- 工具箱：GUI 尚未最终定型，本阶段暂不作为 WebUI 同步验收项。
 - 弹窗：任务选择、目录选择、默认打开方式绑定，需要补截图和键盘路径验证。
 - 深浅主题与主题色：逐页检查自定义选择框、表格选中态、详情卡片和滚动条。
 - 全量测试：最终收口前必须执行完整 `python -m pytest -q`。

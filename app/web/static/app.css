@@ -2163,10 +2163,27 @@ tr.selected:hover td {
   border-radius: 8px;
   background: transparent;
   color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
   text-align: left;
   padding: 0 10px;
   font-weight: 700;
   cursor: pointer;
+}
+
+.settings-nav-btn img {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  object-fit: contain;
+}
+
+.settings-nav-btn span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-nav-btn:hover {

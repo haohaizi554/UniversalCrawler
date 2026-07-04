@@ -76,6 +76,15 @@ const SETTINGS_GROUP_HINTS_FALLBACK = {
   "外观设置": "外观设置会即时生效，并保存到本地配置。",
 };
 
+const SETTINGS_GROUP_ICONS = {
+  "基础设置": "action_open_directory.png",
+  "下载设置": "action_download.png",
+  "平台设置": "platform_web.png",
+  "播放设置": "action_play.png",
+  "日志设置": "nav_log_center.png",
+  "外观设置": "action_theme_palette.png",
+};
+
 function settingsContract() {
   const contract = frontendState.settings_contract || {};
   const order = Array.isArray(contract.group_order) ? contract.group_order.filter(Boolean) : [];
@@ -1553,7 +1562,10 @@ function renderSettings(force = false) {
   const subtitle = document.querySelector("#page-settings .page-head p");
   if (subtitle) subtitle.textContent = t("集中管理下载行为、平台状态、播放体验、日志策略与界面外观");
   const navHtml = orderedGroups.map(group => `
-    <button class="settings-nav-btn ${group === currentSettingsGroup ? "active" : ""}" type="button" data-group="${escAttr(group)}" onclick="switchSettingsGroup('${escAttr(group)}')">${esc(t(group))}</button>
+    <button class="settings-nav-btn ${group === currentSettingsGroup ? "active" : ""}" type="button" data-group="${escAttr(group)}" onclick="switchSettingsGroup('${escAttr(group)}')">
+      <img src="${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(settingGroupIconFile(group))}" alt="" />
+      <span>${esc(t(group))}</span>
+    </button>
   `).join("");
   const html = `
     <div class="settings-shell">
@@ -1725,6 +1737,11 @@ function settingSelect(label, key, value, options, scope = "", extraAttrs = "") 
   const service = settingsRenderService();
   return service ? service.settingSelect(label, key, value, options, scope, extraAttrs) : "";
 }
+
+function settingGroupIconFile(group) {
+  return SETTINGS_GROUP_ICONS[group] || "nav_settings.png";
+}
+
 function renderToolbox() {
   const title = document.querySelector("#page-toolbox .page-head h1");
   if (title) title.textContent = t("工具箱");

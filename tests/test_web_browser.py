@@ -1328,6 +1328,37 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("Tool A", result["toolCards"][0])
         self.assertIn("Tool A", result["toolDetail"])
 
+    def test_11g_settings_nav_icons_load_from_backend_route(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              currentSettingsGroup = '基础设置';
+              switchPage('settings');
+              renderSettings(true);
+              await Promise.all(Array.from(document.querySelectorAll('#page-settings .settings-nav-btn img')).map(img => {
+                if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+                return new Promise((resolve, reject) => {
+                  img.addEventListener('load', resolve, { once: true });
+                  img.addEventListener('error', () => reject(new Error(img.src)), { once: true });
+                });
+              }));
+              return Array.from(document.querySelectorAll('#page-settings .settings-nav-btn')).map(button => ({
+                label: button.querySelector('span')?.textContent.trim(),
+                src: button.querySelector('img')?.getAttribute('src'),
+                loaded: (button.querySelector('img')?.naturalWidth || 0) > 0
+              }));
+            }
+            """
+        )
+
+        self.assertEqual([row["label"] for row in result], ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"])
+        self.assertTrue(all(row["src"].startswith("/ui-icon/") for row in result))
+        self.assertTrue(all(row["loaded"] for row in result))
+
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""
         errors = []
