@@ -2684,18 +2684,23 @@ function applyCompletedMetadataLocally(sourceId, metadata) {
 function hasDisplayDuration(value) { const service = playbackStateService(); if (service) return service.hasDisplayDuration(value); const text = String(value || "").trim(); return !!text && text !== "--" && text !== "\u68c0\u6d4b\u4e2d" && text !== "00:00:00"; }
 function isRealResolution(value) { return playbackStateService()?.isRealResolution(value) ?? /^\d{2,5}\s*x\s*\d{2,5}$/i.test(String(value || "").trim()); }
 function autoplayNextPreview() {
-  const order = (frontendState.completed_items || []).map(item => item.id);
-  const index = order.indexOf(currentPlayingId);
-  const nextId = index >= 0 && index < order.length - 1 ? order[index + 1] : "";
+  const nextId = adjacentCompletedId(currentPlayingId, 1, false);
   if (nextId) void playCompleted(nextId);
 }
 function togglePlay() {
   const video = byId("videoPlayer");
+  if (!mediaHasVideoSource(video)) {
+    const id = currentPlayingId || selected.completed || selectedVideoId;
+    if (id) void playCompleted(id);
+    return;
+  }
   if (video.paused) video.play().catch(error => appendPlaybackFailure(completedItemById(currentPlayingId), error)); else video.pause();
+  updateMediaControls(video);
 }
 function toggleFullscreen() {
   const panel = byId("previewPanel");
   if (!panel || !panel.requestFullscreen) return;
+  if (!hasPreviewContent()) return;
   if (document.fullscreenElement === panel) {
     document.exitFullscreen().catch(() => {});
     return;
@@ -2749,6 +2754,7 @@ document.addEventListener("fullscreenchange", () => {
   const panel = byId("previewPanel");
   isFullscreenMode = !!panel && document.fullscreenElement === panel;
   if (panel) panel.classList.toggle("is-fullscreen", isFullscreenMode);
+  updateFullscreenButtonState();
 });
 
 function byId(id) {
