@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-APP_NAME = "Universal CrawlerPro"
+APP_NAME = "Universal Crawler Pro"
 APP_REGISTRATION_PATH = r"Software\UniversalCrawlerPro\Capabilities"
 VIDEO_PROG_ID = "UniversalCrawlerPro.Video"
 IMAGE_PROG_ID = "UniversalCrawlerPro.Image"

@@ -9,15 +9,15 @@ from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 _packaging_dir = Path(SPEC).resolve().parent
 if str(_packaging_dir) not in sys.path:
     sys.path.insert(0, str(_packaging_dir))
-from project_meta import APP_DISPLAY_NAME, APP_NAME, WEBUI_DISPLAY_NAME, WEBUI_NAME
+from project_meta import APP_DISPLAY_NAME, APP_ICON_NAME, APP_NAME, WEBUI_DISPLAY_NAME, WEBUI_ICON_NAME, WEBUI_NAME
 
 project_root = Path(SPEC).resolve().parents[1]
 main_script = project_root / "main.py"
 # 关键：两个 EXE 用各自的图标
 # - 主程序（桌面 GUI 入口）用 favicon.ico（项目主品牌图标）
 # - WebUI 入口用 Web.ico（保持 Web 品牌，与 web_entry 托盘图标一致）
-icon_file = project_root / "favicon.ico"
-webui_icon = project_root / "Web.ico"
+icon_file = project_root / APP_ICON_NAME
+webui_icon = project_root / WEBUI_ICON_NAME
 browser_root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ms-playwright"
 
 
@@ -28,8 +28,8 @@ def optional_tree(source: Path, target_dir: str) -> list[tuple[str, str]]:
 
 
 datas = []
-datas += optional_tree(project_root / "favicon.ico", ".")
-datas += optional_tree(project_root / "Web.ico", ".")
+datas += optional_tree(project_root / APP_ICON_NAME, ".")
+datas += optional_tree(project_root / WEBUI_ICON_NAME, ".")
 datas += optional_tree(project_root / "ffmpeg.exe", ".")
 datas += optional_tree(project_root / "ffprobe.exe", ".")
 datas += optional_tree(project_root / "N_m3u8DL-RE.exe", ".")
@@ -38,6 +38,7 @@ datas += optional_tree(project_root / "app" / "web" / "static", "app/web/static"
 datas += optional_tree(project_root / "UI" / "icon", "UI/icon")
 # 包含 docs（用于 README / 帮助文档），但排除 INTERACTION_MAP.md（太大且非运行时所需）
 datas += optional_tree(project_root / "README.md", ".")
+datas += optional_tree(project_root / "README_EN.md", ".")
 # 注意：cli/skill/ 下的 SKILL.md 不必打包（AI 工具独立读取仓库）
 
 # 关键修复：把 entry/ 和 cli/ 整个子包作为 data 文件直接打进 _internal

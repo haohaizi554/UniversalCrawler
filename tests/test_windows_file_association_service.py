@@ -18,11 +18,11 @@ class _FakeKey:
 
 class WindowsFileAssociationServiceTests(unittest.TestCase):
     def test_default_apps_uri_targets_registered_user_app(self):
-        service = WindowsFileAssociationService(app_name="Universal CrawlerPro")
+        service = WindowsFileAssociationService(app_name="Universal Crawler Pro")
 
         self.assertEqual(
             service.default_apps_settings_uri(),
-            "ms-settings:defaultapps?registeredAppUser=Universal%20CrawlerPro",
+            "ms-settings:defaultapps?registeredAppUser=Universal%20Crawler%20Pro",
         )
 
     def test_register_current_user_writes_supported_media_capabilities(self):
@@ -46,7 +46,7 @@ class WindowsFileAssociationServiceTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             executable = Path(tmp) / "UniversalCrawlerPro.exe"
             executable.write_bytes(b"exe")
-            service = WindowsFileAssociationService(app_name="Universal CrawlerPro")
+            service = WindowsFileAssociationService(app_name="Universal Crawler Pro")
             with patch("app.services.windows_file_association_service.os.name", "nt"), \
                  patch.dict("sys.modules", {"winreg": fake_winreg}):
                 result = service.register_current_user(
@@ -57,7 +57,7 @@ class WindowsFileAssociationServiceTests(unittest.TestCase):
 
         self.assertTrue(result.registered)
         self.assertEqual(
-            writes[(r"Software\RegisteredApplications", "Universal CrawlerPro")],
+            writes[(r"Software\RegisteredApplications", "Universal Crawler Pro")],
             r"Software\UniversalCrawlerPro\Capabilities",
         )
         self.assertEqual(
@@ -112,7 +112,7 @@ class WindowsFileAssociationServiceTests(unittest.TestCase):
             DeleteKey=delete_key,
         )
 
-        service = WindowsFileAssociationService(app_name="Universal CrawlerPro")
+        service = WindowsFileAssociationService(app_name="Universal Crawler Pro")
         with patch("app.services.windows_file_association_service.os.name", "nt"), \
              patch.dict("sys.modules", {"winreg": fake_winreg}), \
              patch.object(service, "_current_user_sid", return_value="S-1-5-21-819709642-920330688-1657285119-500"), \
@@ -153,7 +153,7 @@ class WindowsFileAssociationServiceTests(unittest.TestCase):
 
     def test_diagnose_current_user_reports_pending_user_choices(self):
         registry = {
-            (r"Software\RegisteredApplications", "Universal CrawlerPro"): (
+            (r"Software\RegisteredApplications", "Universal Crawler Pro"): (
                 r"Software\UniversalCrawlerPro\Capabilities"
             ),
             (r"Software\UniversalCrawlerPro\Capabilities\FileAssociations", ".mp4"): (
@@ -188,7 +188,7 @@ class WindowsFileAssociationServiceTests(unittest.TestCase):
             QueryValueEx=query_value,
         )
 
-        service = WindowsFileAssociationService(app_name="Universal CrawlerPro")
+        service = WindowsFileAssociationService(app_name="Universal Crawler Pro")
         with patch("app.services.windows_file_association_service.os.name", "nt"), \
              patch.dict("sys.modules", {"winreg": fake_winreg}):
             diagnostics = service.diagnose_current_user(include_video=True, include_image=False)

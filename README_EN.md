@@ -6,15 +6,18 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img alt="PyQt6" src="https://img.shields.io/badge/Framework-PyQt6-41CD52?logo=qt&logoColor=white" />
   <img alt="FastAPI" src="https://img.shields.io/badge/Web_UI-FastAPI-009688?logo=fastapi&logoColor=white" />
+  <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.14-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Test-unittest-informational" />
+  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20unittest-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
 
 
 **Universal Crawler Pro** is a multi-platform media crawling and downloading tool built specifically for the **Windows desktop environment**. Based on **Python + PyQt6 + Playwright + FastAPI**, it provides a complete desktop workflow covering **site access and data sniffing**, **resource parsing and selection**, **unified download scheduling**, and **local asset management and preview**, while also supporting **remote control through Web UI**.
+
+The current source repository directory is `UniversalCrawlerProplus/`. The Python package and CLI entry name is `ucrawl`, while desktop distribution continues to expose `UniversalCrawlerPro.exe` and `CrawlerWebPortal.exe` as the two packaged entry points. The current project version is **v3.6.14**.
 
 It is neither a thin shell around a webpage nor a pile of scattered scripts. It is a desktop-grade media crawling workstation designed around **maintainability, extensibility, debuggability, and distributable packaging**.
 
@@ -53,12 +56,14 @@ It is neither a thin shell around a webpage nor a pile of scattered scripts. It 
 
 - **Pure local desktop application**: primarily targets Windows 10 / 11, with no need to deploy an extra web service or maintain a front-end/back-end split stack.
 - **Native PyQt6 interaction**: main window, download queue, log panel, media preview, theme switching, fullscreen playback, and other interactions are fully supported.
+- **Hot-loaded configuration center**: accent color, light/dark theme, font size, language, download behavior, and platform parameters are pushed into the front-end state layer immediately, and GUI / Web UI consume the same configuration snapshot.
 - **Manage after download**: supports local media scanning, renaming, deletion, image preview, and video playback directly inside the application, without switching back to file explorer.
 - **Friendly for non-technical users**: platform selection, parameter input, result picking, and progress observation all happen in a unified interface.
 
 ### 🌐 2. Web UI Remote Control
 
 - **Browser as control console**: ships with a built-in FastAPI + uvicorn service. After starting `CrawlerWebPortal.exe`, the browser opens automatically and can remotely control crawling and downloading.
+- **Experience aligned with the desktop GUI**: Web UI reuses the unified state and settings snapshots emitted by `FrontendStateService`, keeping the download queue, log center, configuration center, and media preview behavior aligned with the PyQt6 GUI.
 - **System tray residency**: in Web UI mode the app can minimize to the system tray, and the right-click menu can reopen the browser or exit cleanly.
 - **Port conflict detection**: when the default port is occupied, the application prompts the user and supports choosing a custom port.
 - **Script injection**: supports injecting custom Python scripts at startup for automation and batch operations.
@@ -100,8 +105,9 @@ The system uses a modular Spider architecture. The repository currently includes
 | Platform | Status | Auth Method | Supported Inputs | Typical Strategy |
 | :-- | :--: | :-- | :-- | :-- |
 | **Douyin** | Stable | QR login / Cookie | post links, homepage, collections, search keywords, short links, `modal_id` | built-in parameter generation and API access, supports watermark-free galleries, live photos, and normal video downloads |
+| **Xiaohongshu** | Stable | Browser Cookie / QR login | keywords, note links, author homepage links | browser Cookie warm-up + `xhshow` request signing + note detail / author note list crawling + unified image/video download |
 | **Bilibili** | Stable | QR login / Cookie | BV, full links, space links, UID, search terms | browser BV scanning + detail APIs + DASH separated audio/video download + `ffmpeg` merge |
-| **Kuaishou** | Testing | browser-assisted login | homepage links, Kuaishou IDs, search keywords | Playwright page scrolling + media request capture, automatically switching between HTTP / HLS |
+| **Kuaishou** | Stable | browser-assisted login | homepage links, Kuaishou IDs, search keywords | Playwright page scrolling + media request capture, automatically switching between HTTP / HLS |
 | **MissAV** | Stable | no site login required | video code, actress, category, list, single URL | dual-pass scanning + subtitle / uncensored priority strategy + `playlist.m3u8` sniffing + `N_m3u8DL-RE` download |
 
 ### A Key Architectural Value Here
@@ -200,7 +206,7 @@ You will probably care more about these engineering points:
 
 ```bash
 git clone <your-repository-url>
-cd UniversalCrawlerPro
+cd UniversalCrawlerProplus
 ```
 
 ### 3. Install Dependencies
@@ -220,7 +226,7 @@ To guarantee full capabilities such as Bilibili stream merging and m3u8 download
 The recommended root directory structure looks like this:
 
 ```text
-UniversalCrawlerPro/
+UniversalCrawlerProplus/
 ├── app/                    # application core code
 │   ├── config/             # configuration management
 │   ├── controllers/        # controller layer
@@ -254,7 +260,19 @@ python -m entry.web_entry --host 127.0.0.1 --port 8000
 
 On the first launch, the application will complete the necessary initialization and prepare the default runtime environment.
 
-### 6. Where Is User Data Actually Stored
+### 6. Packaged Release Usage
+
+If you use packaged artifacts instead of running from source:
+
+- `UniversalCrawlerPro.exe`: desktop GUI main program for local downloading, management, and preview.
+- `CrawlerWebPortal.exe`: Web UI entry that starts the local service and opens the browser console.
+- The installer defaults to `%LOCALAPPDATA%\Programs\UniversalCrawlerPro`.
+- The installer can register this app as the default opener for supported resources: video association is selected by default, image association is optional.
+- When file association succeeds, the installer will not jump to Windows Settings; only failed or still-pending extensions will fall back to the in-app “default opener” action.
+
+Associated videos or images can be opened by double-clicking them. The app reads the file path from startup arguments, switches to the containing directory, selects the resource, and starts playback or preview.
+
+### 7. Where Is User Data Actually Stored
 
 User runtime data is not recommended to be scattered directly in the repository. The program will prefer a user-data path under the user directory. On Windows this is usually:
 
@@ -651,8 +669,11 @@ This project is not only meant for source execution; practical delivery and dist
 ### Installer Features
 
 - installs into `%LOCALAPPDATA%\Programs\UniversalCrawlerPro`
-- creates Start Menu shortcuts for Universal CrawlerPro / Crawler WebPortal
+- creates Start Menu shortcuts for Universal Crawler Pro / Crawler Web Portal
 - optionally creates desktop shortcuts
+- optionally registers default openers: video is selected by default, image is optional
+- uses a hidden helper during installation to avoid flashing an extra command window
+- avoids opening Windows Settings after successful file association; pending extensions can still fall back to the in-app settings flow
 - supports a standard uninstall flow
 
 ### Packaging-Related Files
@@ -663,6 +684,18 @@ This project is not only meant for source execution; practical delivery and dist
 - [`packaging/portable.spec`](packaging/portable.spec) — PyInstaller spec
 - [`packaging/installer.iss`](packaging/installer.iss) — Inno Setup installer script
 - [`packaging/runtime_hook.py`](packaging/runtime_hook.py) — runtime initialization hook
+- [`packaging/project_meta.py`](packaging/project_meta.py) — shared packaging metadata entry
+- [`app/utils/runtime_paths.py`](app/utils/runtime_paths.py) — user-data path rules for development and packaged modes
+- [`docs/guides/windows-file-association.md`](docs/guides/windows-file-association.md) — Windows default-opener integration notes
+
+### Packaging Coordination Notes
+
+If you change the packaging chain, do not only edit `packaging/`:
+
+- version and display name should stay aligned across `pyproject.toml` and `packaging/project_meta.py`
+- path rules should stay aligned with `app/utils/runtime_paths.py`
+- documentation should be updated at least in `README.md`, `README_EN.md`, `docs/guides/packaging.md`, and `packaging/README.md`
+- static validation should stay aligned with `tests/test_packaging.py`
 
 ### Suggested Checks Before Packaging
 
@@ -671,6 +704,7 @@ This project is not only meant for source execution; practical delivery and dist
 - whether `N_m3u8DL-RE` / `N_m3u8DL-RE.exe` is available
 - whether the full test suite has passed
 - whether user configuration and cookies are confirmed not to be bundled into outputs
+- whether development mode still writes to project-root `user_data/`, while packaged mode writes to `%LOCALAPPDATA%`
 
 For details, see the [Packaging And Release Guide](docs/guides/packaging.md) and [Packaging Script Notes](packaging/README.md).
 

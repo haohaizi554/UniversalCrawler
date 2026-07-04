@@ -13,12 +13,9 @@
 - 不依赖已构建的 dist/ 目录（保持快速可重复）
 """
 
-import os
-import re
-import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
@@ -41,7 +38,6 @@ class SpecFileExistenceTests(unittest.TestCase):
 
     def test_spec_file_syntax_valid(self):
         """spec 文件必须能被 Python 编译。"""
-        import py_compile
         # PyInstaller spec 文件不是普通 Python 模块，是 exec'd
         # 但语法应当合法 → 用 compile 检查
         with open(SPEC_FILE, "r", encoding="utf-8") as f:
@@ -230,6 +226,13 @@ class SpecDataFilesTests(unittest.TestCase):
         else:
             self.assertIn('"shared"', SPEC_FILE.read_text(encoding="utf-8"))
 
+    def test_datas_includes_readme_files(self):
+        """中英文 README 必须随便携包交付。"""
+        datas = self._spec_globals["datas"]
+        readme_targets = [Path(d[0]).name for d in datas]
+        self.assertIn("README.md", readme_targets)
+        self.assertIn("README_EN.md", readme_targets)
+
 class SpecExcludesTests(unittest.TestCase):
     """excludes 配置。"""
 
@@ -327,10 +330,6 @@ class RuntimeHookTests(unittest.TestCase):
 
     def test_null_stream_class_behavior(self):
         """NullStream 实例可调用 .write/.flush/.isatty。"""
-        # import _NullStream（私有类）
-        import importlib.util
-        spec_mod = importlib.util.spec_from_file_location("_test_rh", RUNTIME_HOOK)
-        rh = importlib.util.module_from_spec(spec_mod)
         # 直接 exec
         ns = {"__file__": str(RUNTIME_HOOK), "__name__": "_test_rh"}
         with open(RUNTIME_HOOK, "r", encoding="utf-8") as f:
@@ -361,8 +360,9 @@ class BuildScriptTests(unittest.TestCase):
     def test_required_files_includes_both_icons(self):
         """REQUIRED_FILES 必须同时包含 favicon.ico 和 Web.ico。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
-        self.assertIn("favicon.ico", source)
-        self.assertIn("Web.ico", source)
+        self.assertIn("APP_ICON_NAME", source)
+        self.assertIn("WEBUI_ICON_NAME", source)
+        self.assertIn("README_EN.md", source)
 
     def test_required_files_includes_spec_file(self):
         self.assertIn("portable.spec",
@@ -379,8 +379,7 @@ class BuildScriptTests(unittest.TestCase):
     def test_forbidden_filenames_includes_user_data(self):
         """不应打包用户数据文件。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
-        for forbidden in ("config.json", "bili_auth.json", "ks_auth.json", "dy_auth.json"):
-            self.assertIn(forbidden, source)
+        self.assertIn("FORBIDDEN_USER_DATA_BASENAMES", source)
 
     def test_verify_output_checks_entry_package(self):
         """verify_output 必须检查 _internal/entry/ 存在。"""
@@ -395,15 +394,13 @@ class BuildScriptTests(unittest.TestCase):
     def test_verify_output_checks_both_exes(self):
         """verify_output 必须检查两个 EXE 都生成。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
-        self.assertIn("APP_NAME", source)
-        self.assertIn("WEBUI_NAME", source)
+        self.assertIn("APP_EXE_NAME", source)
+        self.assertIn("WEBUI_EXE_NAME", source)
 
     def test_kill_locking_processes_includes_both_exes(self):
         """kill_locking_processes 必须 kill 两个 EXE + ffmpeg。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
-        # 用 f-string 引用 APP_NAME/WEBUI_NAME + ".exe"
-        # 注意：Python 源文件中就是 f"{APP_NAME}.exe" 这种形式
-        for proc in ('f"{APP_NAME}.exe"', 'f"{WEBUI_NAME}.exe"', '"ffmpeg.exe"'):
+        for proc in ("APP_EXE_NAME", "WEBUI_EXE_NAME", '"ffmpeg.exe"'):
             self.assertIn(proc, source, f"missing process in kill list: {proc}")
 
     def test_pyinstaller_command_uses_noconfirm_clean(self):
@@ -428,6 +425,21 @@ class PackagingMetadataTests(unittest.TestCase):
         self.assertIn("INSTALLER_BASENAME", source)
         self.assertIn("PACKAGE_VERSION", source)
 
+    def test_project_meta_centralizes_packaging_identity(self):
+        source = PROJECT_META.read_text(encoding="utf-8")
+        self.assertIn('APP_DISPLAY_NAME = "Universal Crawler Pro"', source)
+        self.assertIn('WEBUI_DISPLAY_NAME = "Crawler Web Portal"', source)
+        self.assertIn('APP_EXE_NAME = f"{APP_NAME}.exe"', source)
+        self.assertIn('WEBUI_EXE_NAME = f"{WEBUI_NAME}.exe"', source)
+        self.assertIn("DIST_DIR_NAME", source)
+        self.assertIn("INSTALL_DIR_NAME", source)
+
+    def test_project_meta_lists_all_forbidden_user_data(self):
+        source = PROJECT_META.read_text(encoding="utf-8")
+        self.assertIn("FORBIDDEN_USER_DATA_BASENAMES", source)
+        for forbidden in ("config.json", "bili_auth.json", "ks_auth.json", "dy_auth.json", "xhs_auth.json"):
+            self.assertIn(forbidden, source)
+
 class InstallerScriptTests(unittest.TestCase):
     """安装器脚本与构建脚本的一致性。"""
 
@@ -436,8 +448,14 @@ class InstallerScriptTests(unittest.TestCase):
 
     def test_installer_script_supports_define_override(self):
         source = INSTALLER_FILE.read_text(encoding="utf-8")
+        self.assertIn("#ifndef AppName", source)
         self.assertIn("#ifndef AppVersion", source)
+        self.assertIn("#ifndef AppExeName", source)
+        self.assertIn("#ifndef WebUIDisplayName", source)
+        self.assertIn("#ifndef DistDir", source)
+        self.assertIn("#ifndef InstallDirName", source)
         self.assertIn("#ifndef OutputBaseFilename", source)
+        self.assertIn("DefaultDirName={localappdata}\\Programs\\{#InstallDirName}", source)
         self.assertIn("OutputBaseFilename={#OutputBaseFilename}", source)
 
     def test_installer_script_appusermodelid_aligned(self):
@@ -499,10 +517,18 @@ class InstallerScriptTests(unittest.TestCase):
 
     def test_build_installer_injects_version_and_ids(self):
         source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+        self.assertIn("/DAppName=", source)
         self.assertIn("/DAppVersion=", source)
+        self.assertIn("/DAppExeName=", source)
+        self.assertIn("/DWebUIDisplayName=", source)
+        self.assertIn("/DWebUIExeName=", source)
+        self.assertIn("/DAppIconName=", source)
+        self.assertIn("/DWebUIIconName=", source)
         self.assertIn("/DOutputBaseFilename=", source)
         self.assertIn("/DAppUserModelID=", source)
         self.assertIn("/DWebUIUserModelID=", source)
+        self.assertIn("/DDistDir=", source)
+        self.assertIn("/DInstallDirName=", source)
         self.assertIn("get_setup_exe_path", source)
 
     def test_installer_wizard_assets_exist_or_documented(self):
@@ -526,9 +552,11 @@ class InstallerScriptTests(unittest.TestCase):
         source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
         self.assertIn("REQUIRED_INSTALL_SOURCE_ENTRIES", source)
         for marker in (
-            "APP_NAME",
-            "WEBUI_NAME",
+            "APP_EXE_NAME",
+            "WEBUI_EXE_NAME",
             "BUILD_INFO.txt",
+            "README.md",
+            "README_EN.md",
             "index.html",
             "app.css",
             "i18n.js",
@@ -541,8 +569,8 @@ class InstallerScriptTests(unittest.TestCase):
             "playback_state.js",
             "app.js",
             "nav_settings.png",
-            "favicon.ico",
-            "Web.ico",
+            "APP_ICON_NAME",
+            "WEBUI_ICON_NAME",
             "_missing_install_source_entries",
         ):
             self.assertIn(marker, source)

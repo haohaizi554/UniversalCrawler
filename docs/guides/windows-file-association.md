@@ -21,7 +21,7 @@
 - 写入扩展名到自定义 `ProgID` 的映射。
 - 安装结束后跳转 Windows 默认应用设置页，让用户验证。
 
-结果是 Windows 设置页能看到 `Universal CrawlerPro` 这个候选应用，但 `.avi`、`.mkv`、`.mp4` 等扩展名仍然显示为系统自带“媒体播放器”。双击文件只会启动默认播放器，或者只启动 exe 而没有进入目标文件。
+结果是 Windows 设置页能看到 `Universal Crawler Pro` 这个候选应用，但 `.avi`、`.mkv`、`.mp4` 等扩展名仍然显示为系统自带“媒体播放器”。双击文件只会启动默认播放器，或者只启动 exe 而没有进入目标文件。
 
 根因是：现代 Windows 会优先读取当前用户下的 `UserChoice`：
 

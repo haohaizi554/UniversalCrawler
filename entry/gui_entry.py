@@ -74,9 +74,9 @@ def _handle_association_helper(argv: Sequence[str]) -> bool:
     if not _association_helper_requested(argv):
         return False
 
-    from app.services.windows_file_association_service import WindowsFileAssociationService
+    from app.services.windows_file_association_service import APP_NAME, WindowsFileAssociationService
 
-    service = WindowsFileAssociationService(app_name=_option_value(argv, "--app-name") or "Universal CrawlerPro")
+    service = WindowsFileAssociationService(app_name=_option_value(argv, "--app-name") or APP_NAME)
     kinds = _association_kinds(argv)
     include_video = ("video" in kinds) or not kinds
     include_image = "image" in kinds

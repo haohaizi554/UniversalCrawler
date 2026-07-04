@@ -10,39 +10,51 @@ from pathlib import Path
 if __package__ in (None, ""):
     from project_meta import (
         APP_DISPLAY_NAME,
-        APP_NAME,
+        APP_EXE_NAME,
+        APP_ICON_NAME,
         APP_PUBLISHER,
         APP_USER_MODEL_ID,
+        DIST_DIR_NAME,
+        INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
         PACKAGE_VERSION,
-        WEBUI_NAME,
+        WEBUI_DISPLAY_NAME,
+        WEBUI_EXE_NAME,
+        WEBUI_ICON_NAME,
         WEBUI_USER_MODEL_ID,
     )
 else:
     from .project_meta import (
         APP_DISPLAY_NAME,
-        APP_NAME,
+        APP_EXE_NAME,
+        APP_ICON_NAME,
         APP_PUBLISHER,
         APP_USER_MODEL_ID,
+        DIST_DIR_NAME,
+        INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
         PACKAGE_VERSION,
-        WEBUI_NAME,
+        WEBUI_DISPLAY_NAME,
+        WEBUI_EXE_NAME,
+        WEBUI_ICON_NAME,
         WEBUI_USER_MODEL_ID,
     )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DIST_DIR = PROJECT_ROOT / "dist" / "UniversalCrawlerPro"
+DIST_DIR = PROJECT_ROOT / "dist" / DIST_DIR_NAME
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
 WIZARD_IMAGE = PROJECT_ROOT / "packaging" / "wizard_image.bmp"
 WIZARD_SMALL_IMAGE = PROJECT_ROOT / "packaging" / "wizard_small_image.bmp"
-APP_ICON = PROJECT_ROOT / "favicon.ico"
-WEBUI_ICON = PROJECT_ROOT / "Web.ico"
+APP_ICON = PROJECT_ROOT / APP_ICON_NAME
+WEBUI_ICON = PROJECT_ROOT / WEBUI_ICON_NAME
 # The installer consumes the portable build; fail early if a stale dist misses shared GUI/WebUI assets.
 REQUIRED_INSTALL_SOURCE_ENTRIES = (
-    lambda: DIST_DIR / f"{APP_NAME}.exe",
-    lambda: DIST_DIR / f"{WEBUI_NAME}.exe",
+    lambda: DIST_DIR / APP_EXE_NAME,
+    lambda: DIST_DIR / WEBUI_EXE_NAME,
     lambda: DIST_DIR / "BUILD_INFO.txt",
+    lambda: DIST_DIR / "README.md",
+    lambda: DIST_DIR / "README_EN.md",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "index.html",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "app.css",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "i18n.js",
@@ -182,11 +194,19 @@ def main() -> None:
     build_started_at = time.time()
     command = [
         iscc,
+        f"/DAppName={APP_DISPLAY_NAME}",
         f"/DAppVersion={PACKAGE_VERSION}",
         f"/DAppPublisher={APP_PUBLISHER}",
         f"/DAppComments={APP_DISPLAY_NAME} Windows 安装程序",
+        f"/DAppExeName={APP_EXE_NAME}",
+        f"/DWebUIDisplayName={WEBUI_DISPLAY_NAME}",
+        f"/DWebUIExeName={WEBUI_EXE_NAME}",
+        f"/DAppIconName={APP_ICON_NAME}",
+        f"/DWebUIIconName={WEBUI_ICON_NAME}",
         f"/DAppUserModelID={APP_USER_MODEL_ID}",
         f"/DWebUIUserModelID={WEBUI_USER_MODEL_ID}",
+        f"/DDistDir=..\\dist\\{DIST_DIR_NAME}",
+        f"/DInstallDirName={INSTALL_DIR_NAME}",
         f"/DOutputBaseFilename={INSTALLER_BASENAME}",
         str(ISS_FILE),
     ]

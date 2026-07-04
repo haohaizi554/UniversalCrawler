@@ -9,11 +9,30 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    from project_meta import APP_DISPLAY_NAME, APP_NAME, PACKAGE_VERSION, WEBUI_NAME
+    from project_meta import (
+        APP_DISPLAY_NAME,
+        APP_EXE_NAME,
+        APP_ICON_NAME,
+        APP_NAME,
+        FORBIDDEN_USER_DATA_BASENAMES,
+        PACKAGE_VERSION,
+        WEBUI_DISPLAY_NAME,
+        WEBUI_EXE_NAME,
+        WEBUI_ICON_NAME,
+    )
 else:
-    from .project_meta import APP_DISPLAY_NAME, APP_NAME, PACKAGE_VERSION, WEBUI_NAME
+    from .project_meta import (
+        APP_DISPLAY_NAME,
+        APP_EXE_NAME,
+        APP_ICON_NAME,
+        APP_NAME,
+        FORBIDDEN_USER_DATA_BASENAMES,
+        PACKAGE_VERSION,
+        WEBUI_DISPLAY_NAME,
+        WEBUI_EXE_NAME,
+        WEBUI_ICON_NAME,
+    )
 
-WEBUI_DISPLAY_NAME = "Crawler WebPortal"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC_FILE = PROJECT_ROOT / "packaging" / "portable.spec"
 DIST_ROOT = PROJECT_ROOT / "dist"
@@ -25,8 +44,10 @@ BROWSER_DIR = LOCALAPPDATA / "ms-playwright"
 # 自适应 dispatcher 仅用于源码 python main.py / ucrawl-auto，不用于冻结 EXE。
 REQUIRED_FILES = [
     PROJECT_ROOT / "main.py",
-    PROJECT_ROOT / "favicon.ico",  # 主图标（桌面 EXE 用）
-    PROJECT_ROOT / "Web.ico",      # Web 专用图标（Web EXE 用）
+    PROJECT_ROOT / APP_ICON_NAME,  # 主图标（桌面 EXE 用）
+    PROJECT_ROOT / WEBUI_ICON_NAME,  # Web 专用图标（Web EXE 用）
+    PROJECT_ROOT / "README.md",
+    PROJECT_ROOT / "README_EN.md",
     PROJECT_ROOT / "ffmpeg.exe",
     PROJECT_ROOT / "ffprobe.exe",
     PROJECT_ROOT / "N_m3u8DL-RE.exe",
@@ -45,16 +66,11 @@ REQUIRED_FILES = [
     PROJECT_ROOT / "entry" / "qt_entry_utils.py",
     PROJECT_ROOT / "entry" / "web_port_dialog.py",
 ]
-FORBIDDEN_BASENAMES = {
-    "config.json",
-    "bili_auth.json",
-    "ks_auth.json",
-    "dy_auth.json",
-}
+FORBIDDEN_BASENAMES = set(FORBIDDEN_USER_DATA_BASENAMES)
 # 可能占用 dist 目录的进程名
 LOCKING_PROCESSES = [
-    f"{APP_NAME}.exe",
-    f"{WEBUI_NAME}.exe",
+    APP_EXE_NAME,
+    WEBUI_EXE_NAME,
     "ffmpeg.exe",  # ffmpeg 子进程也可能锁住 _internal 下的 dll
 ]
 
@@ -125,13 +141,17 @@ def run_pyinstaller() -> None:
 
 def verify_output() -> None:
     """验证构建产物中入口模块必需的子包都存在，避免 EXE 启动时 ImportError。"""
-    exe_path = DIST_DIR / f"{APP_NAME}.exe"
+    exe_path = DIST_DIR / APP_EXE_NAME
     if not exe_path.exists():
         raise SystemExit(f"未找到绿色版主程序: {exe_path}")
 
-    webui_path = DIST_DIR / f"{WEBUI_NAME}.exe"
+    webui_path = DIST_DIR / WEBUI_EXE_NAME
     if not webui_path.exists():
         raise SystemExit(f"未找到 WebUI 入口程序: {webui_path}")
+
+    for readme_name in ("README.md", "README_EN.md"):
+        if not (DIST_DIR / readme_name).exists():
+            raise SystemExit(f"缺少随包说明文件: {readme_name}")
 
     for required_name in ("ffmpeg.exe", "ffprobe.exe", "N_m3u8DL-RE.exe"):
         matches = list(DIST_DIR.glob(f"**/{required_name}"))
@@ -185,12 +205,12 @@ def write_manifest() -> None:
     lines = [
         f"{APP_DISPLAY_NAME} Portable Build v{PACKAGE_VERSION}",
         f"Package Version: {PACKAGE_VERSION}",
-        f"Executable: {APP_NAME}.exe",
-        f"WebUI: {WEBUI_NAME}.exe",
+        f"Executable: {APP_EXE_NAME}",
+        f"WebUI: {WEBUI_EXE_NAME}",
         "",
         "启动方式（双 EXE 直启）：",
-        f"- 双击 {APP_NAME}.exe       → 桌面 GUI",
-        f"- 双击 {WEBUI_NAME}.exe → Web UI（FastAPI + 托盘）",
+        f"- 双击 {APP_EXE_NAME}       → {APP_DISPLAY_NAME} 桌面 GUI",
+        f"- 双击 {WEBUI_EXE_NAME} → {WEBUI_DISPLAY_NAME}（FastAPI + 托盘）",
         "- CLI / 交互式模式请使用源码环境：ucrawl / ucrawl-i，或 python main.py --mode cli",
         "",
         "Bundled tools:",
@@ -200,10 +220,7 @@ def write_manifest() -> None:
         "- Playwright Chromium (ms-playwright)",
         "",
         "Excluded user data:",
-        "- config.json",
-        "- bili_auth.json",
-        "- ks_auth.json",
-        "- dy_auth.json",
+        *(f"- {name}" for name in FORBIDDEN_USER_DATA_BASENAMES),
         "",
         "Runtime user data directory:",
         rf"- %LOCALAPPDATA%\{APP_NAME}",

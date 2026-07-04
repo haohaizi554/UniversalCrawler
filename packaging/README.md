@@ -35,7 +35,7 @@
 - `runtime_hook.py`
   - 运行时环境修正，如 `PLAYWRIGHT_BROWSERS_PATH`、标准输出兜底、任务栏 AppUserModelID
 - `project_meta.py`
-  - 打包链路共享元数据，收口项目版本、发布名称和 Windows 标识
+  - 打包链路共享元数据，收口项目版本、发布名称、EXE 名称、图标名称、安装目录名和 Windows 标识
 
 ## 打包模块联动规则
 
@@ -96,6 +96,8 @@ python packaging/build_portable.py
 - `dist/UniversalCrawlerPro/CrawlerWebPortal.exe`
 - `dist/UniversalCrawlerPro/_internal/`
 - `dist/UniversalCrawlerPro/BUILD_INFO.txt`
+- `dist/UniversalCrawlerPro/README.md`
+- `dist/UniversalCrawlerPro/README_EN.md`
 - 随包携带的 `ffmpeg.exe`
 - 随包携带的 `ffprobe.exe`
 - 随包携带的 `N_m3u8DL-RE.exe`
@@ -119,7 +121,7 @@ python packaging/build_installer.py
 ### 说明
 
 - 安装器脚本位于 `packaging/installer.iss`
-- `build_installer.py` 会把项目版本、发布者、输出文件名、AppUserModelID 注入安装器
+- `build_installer.py` 会把项目版本、发布者、展示名、EXE 名称、图标名称、安装目录、输出文件名和 AppUserModelID 注入安装器
 - 安装包文件名默认形如：
 
 ```text
@@ -160,6 +162,7 @@ python packaging/build_release.py
 - `bili_auth.json`
 - `ks_auth.json`
 - `dy_auth.json`
+- `xhs_auth.json`
 
 运行时用户数据路径应走项目现有规则：
 
@@ -170,10 +173,12 @@ python packaging/build_release.py
 
 ## 安装源完整性
 
-安装包构建前会校验 `dist/UniversalCrawlerPro/` 是否同时包含双入口 EXE、`BUILD_INFO.txt`、WebUI 静态入口和 GUI/WebUI 共享图标：
+安装包构建前会校验 `dist/UniversalCrawlerPro/` 是否同时包含双入口 EXE、`BUILD_INFO.txt`、中英文说明文档、WebUI 静态入口和 GUI/WebUI 共享图标：
 
 - `UniversalCrawlerPro.exe`
 - `CrawlerWebPortal.exe`
+- `README.md`
+- `README_EN.md`
 - `_internal/app/web/static/index.html`
 - `_internal/app/web/static/app.css`
 - `_internal/app/web/static/app.js`
@@ -194,7 +199,7 @@ python packaging/build_release.py
 5. 验证 Chromium 运行时可用
 6. 验证 `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 能被找到
 7. 验证下载目录、日志目录和配置目录可正常创建
-8. 确认安装源包含 `app/web/static/index.html`、`app/web/static/app.css`、`app/web/static/app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
+8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、`app/web/static/app.css`、`app/web/static/app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
 9. 确认产物中未混入用户态配置和 Cookie
 
 ## 常见问题

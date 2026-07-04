@@ -10,11 +10,25 @@ PYPROJECT_FILE = PROJECT_ROOT / "pyproject.toml"
 
 APP_NAME = "UniversalCrawlerPro"
 WEBUI_NAME = "CrawlerWebPortal"
-APP_DISPLAY_NAME = "Universal CrawlerPro"
-WEBUI_DISPLAY_NAME = "Crawler WebPortal"
+APP_DISPLAY_NAME = "Universal Crawler Pro"
+WEBUI_DISPLAY_NAME = "Crawler Web Portal"
 APP_PUBLISHER = "UCrawl Team"
 APP_USER_MODEL_ID = "ucrawl.universalcrawlerpro.main"
 WEBUI_USER_MODEL_ID = "ucrawl.universalcrawlerpro.web"
+APP_EXE_NAME = f"{APP_NAME}.exe"
+WEBUI_EXE_NAME = f"{WEBUI_NAME}.exe"
+APP_ICON_NAME = "favicon.ico"
+WEBUI_ICON_NAME = "Web.ico"
+DIST_DIR_NAME = APP_NAME
+INSTALL_DIR_NAME = APP_NAME
+FORBIDDEN_USER_DATA_BASENAMES = (
+    "config.json",
+    "bili_auth.json",
+    "ks_auth.json",
+    "dy_auth.json",
+    "xhs_auth.json",
+)
+
 
 def _project_section_text() -> str:
     content = PYPROJECT_FILE.read_text(encoding="utf-8")

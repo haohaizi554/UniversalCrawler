@@ -1,5 +1,5 @@
 #ifndef AppName
-  #define AppName "Universal CrawlerPro"
+  #define AppName "Universal Crawler Pro"
 #endif
 #ifndef AppVersion
   #define AppVersion "3.6.14"
@@ -8,13 +8,16 @@
   #define AppPublisher "UCrawl Team"
 #endif
 #ifndef AppComments
-  #define AppComments "Universal CrawlerPro Windows 安装程序"
+  #define AppComments "Universal Crawler Pro Windows 安装程序"
 #endif
 #ifndef AppExeName
   #define AppExeName "UniversalCrawlerPro.exe"
 #endif
 #ifndef WebUIExeName
   #define WebUIExeName "CrawlerWebPortal.exe"
+#endif
+#ifndef WebUIDisplayName
+  #define WebUIDisplayName "Crawler Web Portal"
 #endif
 #ifndef AppIconName
   #define AppIconName "favicon.ico"
@@ -31,6 +34,9 @@
 #ifndef DistDir
   #define DistDir "..\dist\UniversalCrawlerPro"
 #endif
+#ifndef InstallDirName
+  #define InstallDirName "UniversalCrawlerPro"
+#endif
 #ifndef OutputBaseFilename
   #define OutputBaseFilename "UniversalCrawlerPro_Setup"
 #endif
@@ -41,7 +47,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={localappdata}\Programs\UniversalCrawlerPro
+DefaultDirName={localappdata}\Programs\{#InstallDirName}
 DefaultGroupName={#AppName}
 UsePreviousAppDir=yes
 DisableProgramGroupPage=no
@@ -56,7 +62,7 @@ OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma2/normal
 SolidCompression=no
 WizardStyle=modern
-SetupIconFile=..\favicon.ico
+SetupIconFile=..\{#AppIconName}
 WizardImageFile=wizard_image.bmp
 WizardSmallImageFile=wizard_small_image.bmp
 WizardImageStretch=yes
@@ -86,10 +92,10 @@ Source: "..\{#WebUIIconName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"
-Name: "{group}\Crawler WebPortal"; Filename: "{app}\{#WebUIExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#WebUIIconName}"; AppUserModelID: "{#WebUIUserModelID}"
+Name: "{group}\{#WebUIDisplayName}"; Filename: "{app}\{#WebUIExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#WebUIIconName}"; AppUserModelID: "{#WebUIUserModelID}"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"
-Name: "{userdesktop}\Crawler WebPortal"; Filename: "{app}\{#WebUIExeName}"; Tasks: desktopicon; WorkingDir: "{app}"; IconFilename: "{app}\{#WebUIIconName}"; AppUserModelID: "{#WebUIUserModelID}"
+Name: "{userdesktop}\{#WebUIDisplayName}"; Filename: "{app}\{#WebUIExeName}"; Tasks: desktopicon; WorkingDir: "{app}"; IconFilename: "{app}\{#WebUIIconName}"; AppUserModelID: "{#WebUIUserModelID}"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#AppExeName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName}"; Flags: uninsdeletekey

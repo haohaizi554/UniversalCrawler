@@ -6,15 +6,18 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img alt="PyQt6" src="https://img.shields.io/badge/Framework-PyQt6-41CD52?logo=qt&logoColor=white" />
   <img alt="FastAPI" src="https://img.shields.io/badge/Web_UI-FastAPI-009688?logo=fastapi&logoColor=white" />
+  <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.14-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Test-unittest-informational" />
+  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20unittest-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
 
 
 **Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
+
+当前源码仓库目录以 `UniversalCrawlerProplus/` 为准，Python 包与命令行入口名为 `ucrawl`，桌面端打包产物继续沿用 `UniversalCrawlerPro.exe` 与 `CrawlerWebPortal.exe` 两个入口。当前版本号为 **v3.6.14**。
 
 它不是一个套壳网页，也不是一堆零散脚本的堆叠，而是一个围绕 **可维护性、可扩展性、可调试性、可打包分发** 设计出来的桌面端采集工作站。
 
@@ -53,6 +56,7 @@
 
 - **纯本地桌面程序**：默认面向 Windows 10 / 11，无需额外部署 Web 服务，也不用维护前后端分离栈。
 - **PyQt6 原生交互**：主窗口、下载队列、日志面板、媒体预览、主题切换、全屏播放等体验完整。
+- **配置中心热加载**：主题色、深浅主题、字号、语言、下载行为、平台参数等设置修改后会即时推送到前端状态层，GUI 与 WebUI 使用同一套配置快照。
 - **下载后即管理**：支持本地媒体扫描、重命名、删除、图片预览与视频播放，不需要再切回文件夹手工整理。
 - **双击媒体即预览**：安装版可在安装向导中把视频/图片默认打开方式绑定到本软件；免安装版也可在应用内点击“默认打开”注册。双击已关联的媒体文件后，会自动切到文件所在目录、选中对应资源并播放或预览。
 - **对小白友好**：平台选择、参数输入、结果勾选、进度观察都在统一界面中完成。
@@ -60,6 +64,7 @@
 ### 🌐 2. Web UI 远程操控
 
 - **浏览器即控制台**：内置 FastAPI + uvicorn 服务，启动 `CrawlerWebPortal.exe` 后自动打开浏览器，即可远程操控下载。
+- **与 GUI 对齐的前端体验**：WebUI 复用 `FrontendStateService` 输出的统一状态与设置快照，下载队列、日志中心、配置中心、播放预览等核心体验持续向桌面 GUI 对齐。
 - **系统托盘驻留**：Web UI 模式下最小化到系统托盘，右键菜单可打开浏览器或退出，不会在后台无影无踪。
 - **端口冲突检测**：默认端口被占用时自动弹窗提示，支持自定义端口。
 - **脚本注入**：支持启动时注入自定义 Python 脚本，方便自动化批量任务。
@@ -202,7 +207,7 @@ ucrawl-web --host 127.0.0.1 --port 8000
 
 ```bash
 git clone <你的仓库地址>
-cd UniversalCrawlerPro
+cd UniversalCrawlerProplus
 ```
 
 ### 3. 安装依赖
@@ -222,7 +227,7 @@ playwright install chromium
 推荐的根目录结构大致如下：
 
 ```text
-UniversalCrawlerPro/
+UniversalCrawlerProplus/
 ├── app/                    # 应用核心代码
 │   ├── config/             # 配置管理
 │   ├── controllers/        # 控制器层
@@ -665,7 +670,7 @@ python -m pytest tests
 ### 安装包特性
 
 - 安装到 `%LOCALAPPDATA%\Programs\UniversalCrawlerPro`
-- 创建开始菜单快捷方式（Universal CrawlerPro / Crawler WebPortal）
+- 创建开始菜单快捷方式（Universal Crawler Pro / Crawler Web Portal）
 - 可选创建桌面快捷方式
 - 可选绑定默认打开方式：视频默认勾选，图片默认不勾选
 - 安装完成时通过隐藏 helper 配置文件关联，避免额外命令行窗口一闪而过

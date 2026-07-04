@@ -37,7 +37,7 @@
 打包链路必须复用应用本身的运行时元数据入口，避免发布脚本、PyInstaller spec 和安装器各自维护一套规则。
 
 - 运行时路径统一由 `app/utils/runtime_paths.py` 维护。
-- 项目版本、发布名称和 Windows 标识统一由 `packaging/project_meta.py` 收口。
+- 项目版本、发布名称、EXE 名称、图标名称、安装目录名和 Windows 标识统一由 `packaging/project_meta.py` 收口。
 - 不要在 `portable.spec`、`installer.iss` 或发布脚本中重复硬编码路径、版本或应用标识。
 - `packaging/README.md` 记录构建脚本职责；本文档记录发布流程和人工验收清单。
 ## 联动更新矩阵
@@ -190,6 +190,7 @@ version = "x.y.z"
 - `bili_auth.json`
 - `ks_auth.json`
 - `dy_auth.json`
+- `xhs_auth.json`
 
 原因：
 
@@ -203,6 +204,8 @@ version = "x.y.z"
 - `UniversalCrawlerPro.exe`
 - `CrawlerWebPortal.exe`
 - `BUILD_INFO.txt`
+- `README.md`
+- `README_EN.md`
 - `_internal/app/web/static/index.html`
 - `_internal/app/web/static/app.css`
 - `_internal/app/web/static/app.js`
@@ -223,7 +226,7 @@ version = "x.y.z"
 5. `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 可被发现
 6. Playwright Chromium 可用
 7. 用户数据写入位置符合当前路径规范
-8. 安装源完整性校验通过，Web 静态入口、CSS/JS、GUI/Web 图标和 UI 图标随包存在
+8. 安装源完整性校验通过，中英文说明文档、Web 静态入口、CSS/JS、GUI/Web 图标和 UI 图标随包存在
 9. 安装包开始菜单和桌面快捷方式可用
 10. 卸载流程正常
 11. 开发态落盘仍在项目根 `user_data/`，打包态落盘切到 `%LOCALAPPDATA%`
