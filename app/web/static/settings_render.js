@@ -192,14 +192,17 @@
     const customProxy = hasCustomProxy
       ? `<input class="proxy-custom${proxyCustom ? " active" : ""}" data-platform="${escapeAttr(row.id || "")}" data-setting="proxy_url" value="${escapeAttr(proxyCustomDisplayValue(proxyCustomValue))}" placeholder="${escapeAttr(translate("\u7aef\u53e3"))}" ${proxyCustom ? "" : "hidden disabled"} onblur="commitProxyCustom('${escapeAttr(row.id || "")}', 'proxy_url', this)" />`
       : "";
+    const proxyEntryClass = hasCustomProxy && proxyCustom ? " has-custom" : "";
     return `
       <div class="setting-row setting-platform${hasCustomProxy && proxyCustom ? " has-proxy-custom" : ""}">
         <span class="platform-name">${escapeHtml(row.name || row.id || "\u5e73\u53f0")}</span>
         <select class="platform-auth" disabled title="${escapeAttr(row.auth_detail || "")}"><option ${row.auth_status === "\u5df2\u8ba4\u8bc1" ? "selected" : ""}>${escapeHtml(translate("\u5df2\u8ba4\u8bc1"))}</option><option ${row.auth_status !== "\u5df2\u8ba4\u8bc1" ? "selected" : ""}>${escapeHtml(translate("\u672a\u8ba4\u8bc1"))}</option></select>
         <select class="platform-count" data-setting="${escapeAttr(countKey)}"${countDisabled} onchange="updateSetting('${escapeAttr(row.id || "")}', '${escapeAttr(countKey)}', this.value)">${countOptions.map(option => `<option value="${escapeAttr(option.value)}" ${countValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
         <select class="platform-timeout" data-setting="${escapeAttr(timeoutKey)}"${timeoutDisabled} onchange="updateSetting('${escapeAttr(row.id || "")}', '${escapeAttr(timeoutKey)}', this.value)">${timeoutOptions.map(option => `<option value="${escapeAttr(option.value)}" ${timeoutValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(option.label))}</option>`).join("")}</select>
-        <select class="platform-proxy" data-setting="${escapeAttr(proxyKey)}"${proxyDisabled} onchange="handleProxySelect('${escapeAttr(row.id || "")}', '${escapeAttr(proxyKey)}', this)">${proxyOptions.map(option => `<option value="${escapeAttr(option.value)}" ${proxyValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(proxyOptionDisplayLabel(option)))}</option>`).join("")}</select>
-        ${customProxy}
+        <span class="platform-proxy-entry${proxyEntryClass}">
+          <select class="platform-proxy" data-setting="${escapeAttr(proxyKey)}"${proxyDisabled} onchange="handleProxySelect('${escapeAttr(row.id || "")}', '${escapeAttr(proxyKey)}', this)">${proxyOptions.map(option => `<option value="${escapeAttr(option.value)}" ${proxyValue === option.value ? "selected" : ""}>${escapeHtml(translateOption(proxyOptionDisplayLabel(option)))}</option>`).join("")}</select>
+          ${customProxy}
+        </span>
       </div>
     `;
   }
@@ -230,8 +233,9 @@
     const action = scope === "basic"
       ? ` onblur="updateBasicSetting('${escapeAttr(key)}', this.value)"`
       : (scope ? ` onblur="updateSetting('${escapeAttr(scope)}', '${escapeAttr(key)}', this.value)"` : "");
+    const rowClass = key === "download_directory" ? " setting-download-directory" : "";
     const control = `<input data-setting="${escapeAttr(key)}" value="${escapeAttr(value || "")}" title="${escapeAttr(value || "")}"${action} />`;
-    return `<div class="setting-row">${settingLabelHtml(label)}${settingControlCluster(control)}</div>`;
+    return `<div class="setting-row${rowClass}">${settingLabelHtml(label)}${settingControlCluster(control)}</div>`;
   }
 
   function settingCheckbox(label, key, checked, scope = "") {

@@ -1557,6 +1557,7 @@ class WebUIBrowserTests(unittest.TestCase):
               currentPage = 'logs';
               logPage = 1;
               logPageSize = 20;
+              logFilters.time = '全部';
               frontendState.log_items = Array.from({ length: 25 }, (_, index) => ({
                 id: `log-${index + 1}`,
                 time: `2026-07-04 06:${String(index).padStart(2, '0')}:00`,
@@ -1679,6 +1680,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 currentPage = 'logs';
                 logPage = 1;
                 logPageSize = 20;
+                logFilters.time = '全部';
                 frontendState.log_items = [{
                   id: 'log-detail-a',
                   time: '2026-07-04 06:30:00',
