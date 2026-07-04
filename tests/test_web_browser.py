@@ -1375,6 +1375,52 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertFalse(result["secondPrevDisabled"])
         self.assertTrue(result["secondNextDisabled"])
 
+    def test_13c_log_center_empty_state_matches_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentPage = 'logs';
+              logPage = 1;
+              logPageSize = 20;
+              logFilters.category = 'all';
+              logFilters.level = '全部';
+              logFilters.time = '全部';
+              logFilters.platform = '全部';
+              logFilters.trace = '';
+              logFilters.keyword = '不会命中的关键字';
+              frontendState.log_items = [{
+                id: 'log-empty-a',
+                time: '2026-07-04 06:30:00',
+                level: 'INFO',
+                source: 'GUI',
+                trace_id: 'trace-log-empty-a',
+                message_summary: '可见日志',
+                message: '可见日志',
+                detail: '',
+                stack: ''
+              }];
+              renderLogs();
+              const empty = document.getElementById('logEmptyState');
+              return {
+                rowCount: document.querySelectorAll('#logBody tr').length,
+                hidden: empty.hidden,
+                text: empty.textContent.replace(/\\s+/g, ' ').trim(),
+                stats: document.getElementById('logTotal').textContent
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["rowCount"], 0)
+        self.assertFalse(result["hidden"])
+        self.assertIn("暂无匹配日志", result["text"])
+        self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", result["text"])
+        self.assertEqual(result["stats"], "共 1 条 / 匹配 0 条 / 当前显示 0 条")
+
     def test_13c_log_detail_copy_export_actions_match_gui(self):
         self._page.goto(self._server_url)
         self._page.wait_for_load_state("networkidle")

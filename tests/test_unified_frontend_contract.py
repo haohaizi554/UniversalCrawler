@@ -2305,12 +2305,19 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('id="logLevelFilter" aria-label="日志级别"', logs_page)
         self.assertIn('id="logTraceFilter" aria-label="Trace ID"', logs_page)
         self.assertIn("<option>CMD</option>", logs_page)
+        self.assertIn('id="logEmptyState" class="log-empty-state" hidden', logs_page)
+        self.assertIn("暂无匹配日志", logs_page)
+        self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", logs_page)
+        self.assertIn("function syncLogEmptyState", content)
+        self.assertIn("syncLogEmptyState(items.length === 0);", content)
         css = _css_bundle()
         self.assertIn("grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))", css)
         self.assertIn("#page-logs .log-tabs .tab", css)
         self.assertIn("min-width: 92px;", css)
         self.assertIn("height: 34px;", css)
         self.assertIn("#page-logs .log-tabs .tab.active", css)
+        self.assertIn("#page-logs .log-empty-state", css)
+        self.assertIn("inset: 56px 0 0;", css)
         log_filters_css = css.split("#page-logs .log-filters {", 1)[1].split("}", 1)[0]
         for expected_column in (
             "minmax(84px, .9fr)",

@@ -1229,6 +1229,7 @@ function renderLogs() {
       <td title="${escAttr(item.message_summary || "")}">${esc(item.message_summary || "")}</td>
     </tr>
   `);
+  syncLogEmptyState(items.length === 0);
   byId("logTotal").textContent = translateUiText(`共 ${(frontendState.log_items || []).length} 条 / 匹配 ${boundedItems.length} 条 / 当前显示 ${items.length} 条`);
   byId("logPageIndicator").textContent = translateUiText(`第 ${logPage} / ${totalPages} 页`);
   byId("logPageSize").value = String(logPageSize);
@@ -1236,6 +1237,17 @@ function renderLogs() {
   byId("logPrevPage").disabled = logPage <= 1 || logPageSize <= 0;
   byId("logNextPage").disabled = logPage >= totalPages || logPageSize <= 0;
   renderLogDetail(items);
+}
+
+function syncLogEmptyState(empty) {
+  const panel = byId("logEmptyState");
+  if (!panel) return;
+  panel.hidden = !empty;
+  if (!empty) return;
+  const title = panel.querySelector("strong");
+  const subtitle = panel.querySelector("span");
+  if (title) title.textContent = t("暂无匹配日志");
+  if (subtitle) subtitle.textContent = t("调整筛选条件，或点击「刷新缓冲」重新加载日志");
 }
 
 function logItemId(item) {
@@ -1412,16 +1424,36 @@ function syncLogFiltersFromDom() {
   renderLogs();
 }
 
+function selectValueOrFallback(select, preferredValue, fallbackValue) {
+  if (!select || select.tagName !== "SELECT") return String(preferredValue ?? "");
+  const options = Array.from(select.options);
+  const preferred = String(preferredValue ?? "");
+  if (options.some(option => String(option.value) === preferred)) return preferred;
+  const fallback = String(fallbackValue ?? "");
+  if (options.some(option => String(option.value) === fallback)) return fallback;
+  const defaultOption = options.find(option => option.defaultSelected) || options[0];
+  return defaultOption ? String(defaultOption.value) : "";
+}
+
 function syncLogFilterControls() {
   document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => button.classList.toggle("active", button.dataset.logTab === logFilters.category));
-  const bindings = [
-    ["logLevelFilter", logFilters.level],
-    ["logTimeFilter", logFilters.time],
-    ["logPlatformFilter", logFilters.platform],
+  const selectBindings = [
+    ["logLevelFilter", "level", "全部"],
+    ["logTimeFilter", "time", "近 24 小时"],
+    ["logPlatformFilter", "platform", "全部"],
+  ];
+  for (const [id, key, fallback] of selectBindings) {
+    const node = byId(id);
+    const value = selectValueOrFallback(node, logFilters[key], fallback);
+    if (node && node.value !== value) node.value = value;
+    logFilters[key] = value;
+    syncCustomSelectForSelect(node);
+  }
+  const textBindings = [
     ["logTraceFilter", logFilters.trace],
     ["logKeywordFilter", logFilters.keyword],
   ];
-  for (const [id, value] of bindings) {
+  for (const [id, value] of textBindings) {
     const node = byId(id);
     if (node && node.value !== value) node.value = value;
   }

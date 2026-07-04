@@ -60,7 +60,12 @@
 
 ## 本轮验证
 
+- `python -m pytest tests/test_unified_frontend_contract.py -q`：104 passed。
+- `python -m pytest tests/test_web_browser.py -q`：73 passed。
+- `python -m pytest tests/test_frontend_state_service.py -q`：74 passed。
+- `python -m pytest -q`：1817 passed, 1 skipped, 5 warnings。
 - `node --check app/web/static/app.js`
+- `node --check app/web/static/task_render.js`
 - `node --check app/web/static/settings_render.js`
 - `node --check app/web/static/i18n.js`
 - `python -m pytest tests/test_frontend_state_service.py -q`
