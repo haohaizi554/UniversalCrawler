@@ -159,6 +159,8 @@ class StaticAssetsTests(unittest.TestCase):
             "queueBody", "pathLabel",
             "hSplitter", "vSplitter",
             "dirModal", "dirInput", "dirList", "dirDrivesList",
+            "fileAssociationModal", "associationVideo", "associationImage",
+            "associationCancelBtn", "associationConfirmBtn",
             "selectionModal", "selectionBody", "selectionHeader",
             "playBtn", "prevBtn", "nextBtn", "seekSlider", "timeLabel",
             "fullscreenBtn", "previewArea",
@@ -184,15 +186,65 @@ class StaticAssetsTests(unittest.TestCase):
     def test_selection_modal_keyboard_shortcuts_are_scoped(self):
         content = _static_bundle_content()
 
-        self.assertIn('id="selectionModal" class="modal" tabindex="-1"', content)
+        self.assertIn('id="selectionModal" class="modal selection-modal" tabindex="-1"', content)
         self.assertIn("function handleSelectionModalShortcut(event)", content)
         self.assertIn("function isSelectionModalOpen()", content)
         self.assertIn("function isTextEntryTarget(target)", content)
+        self.assertIn("function selectAllSelectionItems()", content)
+        self.assertIn("function invertSelectionItems()", content)
         self.assertIn('"checkbox"', content)
-        self.assertIn("modal.focus({ preventScroll: true })", content)
+        self.assertIn('byId("selectionConfirmBtn").focus({ preventScroll: true })', content)
         self.assertIn('if (event.key === "Enter") confirmSelection();', content)
         self.assertIn("else cancelSelection();", content)
         self.assertIn("if (handleSelectionModalShortcut(event)) return;", content)
+        self.assertIn("}, true);", content)
+
+    def test_file_association_modal_shortcuts_are_bound_to_dialog_actions(self):
+        content = _static_bundle_content()
+
+        self.assertIn('id="fileAssociationModal" class="modal association-modal" tabindex="-1"', content)
+        self.assertIn('id="associationVideo" class="association-checkbox"', content)
+        self.assertIn('id="associationImage" class="association-checkbox"', content)
+        self.assertIn("function showFileAssociationModal()", content)
+        self.assertIn("function confirmFileAssociationModal()", content)
+        self.assertIn("function handleFileAssociationModalShortcut(event)", content)
+        self.assertIn('if (!["Enter", "Escape"].includes(event.key)) return false;', content)
+        self.assertIn('if (event.key === "Enter") confirmFileAssociationModal();', content)
+        self.assertIn("else cancelFileAssociationModal();", content)
+        self.assertIn("if (handleFileAssociationModalShortcut(event)) return;", content)
+
+    def test_directory_modal_uses_web_directory_browser_contract(self):
+        content = _static_bundle_content()
+
+        self.assertIn('id="dirModal" class="modal dir-modal" tabindex="-1"', content)
+        for elem_id in (
+            "dirTitle",
+            "dirStatus",
+            "dirGoBtn",
+            "dirParentBtn",
+            "dirRefreshBtn",
+            "dirCancelBtn",
+            "dirConfirmBtn",
+        ):
+            self.assertIn(f'id="{elem_id}"', content)
+        for fn in (
+            "installDirDialogHandlers",
+            "showDirDialog",
+            "dirLoadPath",
+            "dirBrowsePath",
+            "dirGoParent",
+            "dirRefresh",
+            "confirmDirDialog",
+        ):
+            self.assertIn(f"function {fn}", content)
+        self.assertIn('/api/dir/list', content)
+        self.assertIn('/api/dir/change', content)
+        self.assertIn('localStorage.setItem("dir_last_browsed"', content)
+        self.assertIn("await fetchFrontendState()", content)
+        self.assertIn(".dir-modal-box", content)
+        self.assertIn(".dir-entry.selected", content)
+        self.assertIn(".dir-folder-list", content)
+        self.assertIn("max-height: none", content)
 
     def test_preview_nav_buttons_are_visible(self):
         from pathlib import Path
@@ -313,7 +365,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("deltaVersion <= localVersion", delta_block)
         self.assertIn("deltaBaseVersion > localVersion", delta_block)
         self.assertIn("fetchFrontendState();", delta_block)
-        self.assertIn("\\u589e\\u91cf\\u72b6\\u6001\\u57fa\\u7ebf\\u4e0d\\u8fde\\u7eed", delta_block)
+        self.assertIn('appendUiLog("增量状态基线不连续，正在重新同步...")', delta_block)
 
     def test_frontend_delta_updates_icon_manifest_and_rerenders_current_page(self):
         content = _static_bundle_content()
@@ -349,11 +401,103 @@ class StaticAssetsTests(unittest.TestCase):
             1,
         )[0]
 
+        self.assertIn("const removesPlayingItem", remove_block)
+        self.assertIn("if (removesPlayingItem) closePreview();", remove_block)
         self.assertIn('for (const key of ["active", "completed", "failed"])', remove_block)
         self.assertIn("selected[key] = \"\"", remove_block)
         self.assertIn("selectedVideoId = null", remove_block)
         self.assertIn("currentPlayingId = null", remove_block)
         self.assertIn("removePlaybackPosition(id)", remove_block)
+
+    def test_task_pages_reconcile_stale_selection_before_render(self):
+        content = _static_bundle_content()
+        self.assertIn("function reconcileSelectedTask(key, items)", content)
+        self.assertIn("function selectedTaskItem(key, items)", content)
+
+        active_block = content.split("function renderActive()", 1)[1].split("function currentDownloadOptions()", 1)[0]
+        completed_block = content.split("function renderCompleted()", 1)[1].split("function selectCompleted", 1)[0]
+        failed_block = content.split("function renderFailed()", 1)[1].split("function selectFailed", 1)[0]
+        for block, key in ((active_block, "active"), (completed_block, "completed"), (failed_block, "failed")):
+            self.assertIn(f'reconcileSelectedTask("{key}"', block)
+        self.assertIn('selectedTaskItem("active"', content)
+        self.assertIn('selectedTaskItem("completed"', content)
+        self.assertIn('selectedTaskItem("failed"', content)
+
+    def test_toolbox_reconciles_stale_selection_before_render(self):
+        content = _static_bundle_content()
+        toolbox_block = content.split("function renderToolbox()", 1)[1].split("function selectTool", 1)[0]
+        detail_block = content.split("function renderToolDetail()", 1)[1].split("function renderStatus", 1)[0]
+
+        self.assertIn('reconcileSelectedTask("tool", items)', toolbox_block)
+        self.assertIn('selectedTaskItem("tool"', detail_block)
+        self.assertNotIn("if (!selected.tool && items.length) selected.tool = items[0].id", toolbox_block)
+
+    def test_delete_item_closes_current_preview_before_request(self):
+        content = _static_bundle_content()
+        frontend_action_block = content.split("function frontendAction(action, payload)", 1)[1].split(
+            "function mediaUrl(id)",
+            1,
+        )[0]
+        delete_block = content.split("function prepareDeleteItem(id)", 1)[1].split(
+            "async function previewVideo(id)",
+            1,
+        )[0]
+
+        self.assertIn('if (action === "delete_item") prepareDeleteItem(payload && (payload.id || payload.video_id));', frontend_action_block)
+        self.assertIn("function prepareDeleteItem(id)", content)
+        self.assertIn("String(currentPlayingId || \"\") === videoId", delete_block)
+        self.assertIn("closePreview();", delete_block)
+        self.assertIn("prepareDeleteItem(id);", delete_block)
+
+    def test_start_crawl_validates_platform_and_connection_before_running_state(self):
+        content = _static_bundle_content()
+        ui_state_block = content.split("function setCrawlUiState(isRunning)", 1)[1].split("function startCrawl()", 1)[0]
+        start_block = content.split("function startCrawl()", 1)[1].split("function stopCrawl()", 1)[0]
+        stop_block = content.split("function stopCrawl()", 1)[1].split("function sendWS", 1)[0]
+        send_block = content.split("function sendWS(type, data)", 1)[1].split("const defaultSendWS", 1)[0]
+
+        self.assertIn('const sourceSelect = byId("sourceSelect")', ui_state_block)
+        self.assertIn('const countSelect = byId("videoCountSelect")', ui_state_block)
+        self.assertIn("control.disabled = crawlRunning", ui_state_block)
+        self.assertIn('startBtn.classList.toggle("is-running", crawlRunning);', ui_state_block)
+        self.assertIn('startBtn.setAttribute("aria-busy", crawlRunning ? "true" : "false");', ui_state_block)
+        self.assertIn("syncCustomSelectForSelect(sourceSelect)", ui_state_block)
+        self.assertIn(".btn-primary.is-running:disabled", content)
+        self.assertIn("@keyframes start-button-sweep", content)
+        self.assertIn("platformKnown", start_block)
+        self.assertIn('appendUiLog("未选择有效模式", "", "❌ ")', start_block)
+        self.assertIn('if (!sendWS("start_crawl"', start_block)
+        self.assertIn('appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ")', start_block)
+        self.assertIn("setCrawlUiState(true);", start_block)
+        self.assertIn("if (sendWS(\"stop_crawl\", {}))", stop_block)
+        self.assertIn("return true;", send_block)
+        self.assertIn("return false;", send_block)
+
+    def test_web_runtime_ui_messages_use_i18n_helpers(self):
+        content = _static_bundle_content()
+
+        self.assertIn("function uiTextWithDetail(label, detail = \"\")", content)
+        self.assertIn("function appendUiLog(label, detail = \"\", prefix = \"\")", content)
+        for snippet in (
+            'appendUiLog("请输入主页链接、分享链接或合集链接")',
+            'appendUiLog("未选择有效模式", "", "❌ ")',
+            'appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ")',
+            'appendUiLog("正在绑定默认打开方式...")',
+            'appendUiLog("文件不存在或已被删除", "", "❌ ")',
+            'appendUiLog("播放前校验失败", error.message || error, "❌ ")',
+            'appendUiLog("已复制 Trace ID", traceId)',
+        ):
+            self.assertIn(snippet, content)
+        for stale in (
+            'appendLog("请输入主页链接、分享链接或合集链接")',
+            'appendLog("❌ 未选择有效模式")',
+            'appendLog("⚠️ 前端连接尚未就绪，请稍后重试")',
+            'appendLog("\\u6b63\\u5728\\u7ed1\\u5b9a\\u9ed8\\u8ba4\\u6253\\u5f00\\u65b9\\u5f0f...")',
+            'appendLog("❌ 文件不存在或已被删除")',
+        ):
+            self.assertNotIn(stale, content)
+        self.assertIn('"请输入主页链接、分享链接或合集链接": "Enter a profile, shared, or collection link"', content)
+        self.assertIn('"未选择有效模式": "No valid mode selected"', content)
 
     def test_web_playback_position_cache_uses_path_key_and_cleans_orphans(self):
         content = _static_bundle_content()
@@ -367,6 +511,85 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("cleanupWebPlaybackPositions(allItems);", content)
         self.assertIn("localStorage.removeItem(legacyPlaybackPositionKey(sourceId))", content)
 
+    def test_web_preview_validates_media_with_server_before_playback(self):
+        content = _static_bundle_content()
+        validate_block = content.split("async function validateMediaForPreview(id)", 1)[1].split(
+            "async function playCompleted(id)",
+            1,
+        )[0]
+        play_block = content.split("async function playCompleted(id)", 1)[1].split(
+            "function openDirectory(id)",
+            1,
+        )[0]
+
+        self.assertIn("previewRequestToken", content)
+        self.assertIn('headers: { Range: "bytes=0-0" }', validate_block)
+        self.assertIn("response.body.cancel()", validate_block)
+        self.assertIn("response.status === 404", validate_block)
+        self.assertIn("播放前校验失败", validate_block)
+        self.assertIn('appendUiLog(response.status === 404 ? "文件不存在或已被删除" : "播放前校验失败"', validate_block)
+        self.assertIn("if (!(await validateMediaForPreview(id)) || requestToken !== previewRequestToken) return;", play_block)
+        self.assertIn("appendPlaybackFailure", content)
+        self.assertIn("video.play().catch(error => appendPlaybackFailure(item, error))", play_block)
+
+    def test_selection_modal_shortcuts_are_bound_to_dialog_actions(self):
+        content = _static_bundle_content()
+        modal_block = content.split("function showSelectionModal(items)", 1)[1].split(
+            "function confirmSelection()",
+            1,
+        )[0]
+        shortcut_block = content.split("function handleSelectionModalShortcut(event)", 1)[1].split(
+            "function toggleTheme()",
+            1,
+        )[0]
+
+        self.assertIn('byId("selectionConfirmBtn").focus({ preventScroll: true })', modal_block)
+        self.assertIn('if (!["Enter", "Escape"].includes(event.key)) return false;', shortcut_block)
+        self.assertIn("event.preventDefault();", shortcut_block)
+        self.assertIn("event.stopPropagation();", shortcut_block)
+        self.assertIn('if (event.key === "Enter") confirmSelection();', shortcut_block)
+        self.assertIn("else cancelSelection();", shortcut_block)
+
+    def test_interaction_map_does_not_keep_stale_fixed_bug_claims(self):
+        from pathlib import Path
+
+        doc = (Path(__file__).resolve().parents[1] / "app" / "web" / "INTERACTION_MAP.md").read_text(encoding="utf-8")
+        stale_claims = [
+            "`selectedVideoId = id` — 选中行和播放共用",
+            "变量 `currentPlayingId` 已声明但未使用",
+            "cancelSelection() → sendWS('select_tasks', {indices: []})",
+            "| BUG-9 | cancelSelection None vs [] | ⚠️ 低优先级 |",
+            "| P3 | BUG-9: cancelSelection None vs [] | 实际影响极小 | 低 |",
+            '"选择视频进行预览"',
+            "Web 多了占位文字",
+            "`.op-btn:hover` 变色",
+            "`.op-btn.del:hover` 变红",
+            "Web 多了 hover 效果",
+            "| 状态列宽度 | `ResizeToContents` | `width:90px; text-align:center`",
+            "| 进度列宽度 | `ResizeToContents` | `width:120px`",
+            "| 操作列宽度 | `ResizeToContents` | `width:80px; text-align:center`",
+            "`▶` 文字",
+            "`✕` 文字",
+            "Web 多了一个顶层 content_type",
+            "themeBtn.textContent",
+            "`.op-btn { margin:0 2px }`",
+            "不保存 splitter 比例，刷新后恢复默认值",
+            "`renderQueue()` 每次重建整个表格 HTML",
+            "Web 端没检查 plugin 有效性",
+            'if not keyword: append_log("请输入搜索内容"); return',
+            "`setCrawlState(true)` 在 sendWS 之前",
+            "`dynamicArea.innerHTML = html`",
+            "`renderDynamicArea()` + `sendWS('change_source')`",
+            "`area.innerHTML = '' + renderDynamicArea()`",
+            "| **弹选择资源** | **`SelectionDialog.exec()` 模态阻塞** | **`showSelectionModal` + WebSocket 异步** | ⚠️ BUG-158 | 异步实现可能漏事件 |",
+            "`▶` / `⏸` 字符",
+            "`▶` / `⏸` Unicode",
+            "player.onended = () => playBtn.textContent = '▶'",
+            "Web 没有真正的\"系统图标\"概念，只能用 Unicode 字符近似。",
+        ]
+        for claim in stale_claims:
+            self.assertNotIn(claim, doc)
+
     def test_append_log_uses_batched_render_scheduler(self):
         content = _static_bundle_content()
         append_log_block = content.split("function appendLog(message)", 1)[1].split(
@@ -377,6 +600,16 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("trimFrontendLogItems();", append_log_block)
         self.assertIn('scheduleRenderSections(["log_items", "app_status"])', append_log_block)
         self.assertNotIn("renderLogs();", append_log_block)
+        self.assertIn("formatLocalDateTime();", append_log_block)
+        self.assertNotIn("toISOString()", append_log_block)
+
+    def test_web_runtime_log_timestamp_uses_local_time(self):
+        content = _static_bundle_content()
+        self.assertIn("function formatLocalDateTime", content)
+        self.assertIn("value.getFullYear()", content)
+        self.assertIn("value.getHours()", content)
+        self.assertIn("value.getSeconds()", content)
+        self.assertNotIn("new Date().toISOString().replace", content)
 
     def test_web_log_display_limit_is_applied_to_local_state(self):
         content = _static_bundle_content()
@@ -387,6 +620,7 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_log_rendering_is_current_page_and_budgeted(self):
         content = _static_bundle_content()
+        html = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html").read_text(encoding="utf-8")
         render_all_block = content.split("function renderAll()", 1)[1].split(
             "function renderCurrentPage()",
             1,
@@ -399,8 +633,99 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("const LOG_RENDER_ROW_BUDGET = 300;", content)
         self.assertIn("renderCurrentPage();", render_all_block)
         self.assertNotIn("renderLogs();", render_all_block)
-        self.assertIn("visibleLogItems(filteredItems)", render_logs_block)
-        self.assertIn("function visibleLogItems(items)", content)
+        self.assertIn("const boundedItems = visibleLogItems(filteredItems, uiLogDisplayLimit());", render_logs_block)
+        self.assertIn("boundedItems.slice(start, start + logPageSize)", render_logs_block)
+        self.assertIn("function visibleLogItems(items, rowBudget = LOG_RENDER_ROW_BUDGET)", content)
+        self.assertIn("function setLogPage(delta)", content)
+        self.assertIn("function setLogPageSize(value)", content)
+        self.assertIn("function normalizeLogPageSize(value)", content)
+        self.assertIn('syncCustomSelectForSelect(byId("logPageSize"))', render_logs_block)
+        for elem_id in ("logTotal", "logPrevPage", "logPageIndicator", "logPageSize", "logNextPage"):
+            self.assertIn(f'id="{elem_id}"', html)
+        self.assertIn('<option value="0">全部</option>', html)
+
+    def test_web_log_table_uses_gui_display_fields(self):
+        content = _static_bundle_content()
+        render_logs_block = content.split("function renderLogs()", 1)[1].split(
+            "function logItemId",
+            1,
+        )[0]
+
+        self.assertIn("function logLevelCellHtml(item)", content)
+        self.assertIn("function logSourceCellHtml(item)", content)
+        self.assertIn("function logDetailSummaryHtml(item)", content)
+        self.assertIn("item.level_display || item.level", content)
+        self.assertIn("item.source_display || item.source || item.platform", content)
+        self.assertIn("item.source_display_icon_file || \"\"", content)
+        self.assertIn("${logLevelCellHtml(item)}", render_logs_block)
+        self.assertIn("${logSourceCellHtml(item)}", render_logs_block)
+        self.assertIn("${logDetailSummaryHtml(item)}", content)
+        self.assertIn("[\"级别\", logLevelCellHtml(item)]", content)
+        self.assertIn("[\"来源\", logSourceCellHtml(item)]", content)
+        self.assertIn(".log-level-badge", content)
+        self.assertIn(".log-source-cell", content)
+
+    def test_web_table_page_size_matches_gui_pagination_contract(self):
+        content = _static_bundle_content()
+        render_queue_block = content.split("function renderQueue()", 1)[1].split(
+            "function queueTitleHtml",
+            1,
+        )[0]
+        render_completed_block = content.split("function renderCompleted()", 1)[1].split(
+            "function selectCompleted",
+            1,
+        )[0]
+
+        self.assertIn("function normalizeTablePageSize(value)", content)
+        self.assertIn('let queuePageSize = normalizeTablePageSize(localStorage.getItem("webui_queue_page_size") || 20);', content)
+        self.assertIn('let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);', content)
+        self.assertIn("return [20, 50, 100].includes(numeric) ? numeric : 20;", content)
+        self.assertIn("queuePageSize = normalizeTablePageSize(value);", content)
+        self.assertIn("completedPageSize = normalizeTablePageSize(value);", content)
+        self.assertIn('syncCustomSelectForSelect(byId("queuePageSize"))', render_queue_block)
+        self.assertIn('syncCustomSelectForSelect(byId("completedPageSize"))', render_completed_block)
+        self.assertIn('byId("queuePrevPage").disabled = queuePage <= 1;', render_queue_block)
+        self.assertIn('byId("queueNextPage").disabled = queuePage >= totalPages;', render_queue_block)
+        self.assertIn('byId("completedPrevPage").disabled = completedPage <= 1;', render_completed_block)
+        self.assertIn('byId("completedNextPage").disabled = completedPage >= totalPages;', render_completed_block)
+        for elem_id in ("queuePrevPage", "queueNextPage", "completedPrevPage", "completedNextPage"):
+            self.assertIn(f'id="{elem_id}"', content)
+        self.assertIn('id="queuePrevPage" class="icon-btn pagination-button" type="button"', content)
+        self.assertIn('id="completedNextPage" class="icon-btn pagination-button" type="button"', content)
+        self.assertIn(".pagination-button", content)
+        self.assertIn("width: 38px;", content)
+        self.assertIn('aria-label="上一页"', content)
+        self.assertIn('aria-label="下一页"', content)
+        self.assertIn(".icon-btn:disabled", content)
+        self.assertIn(".icon-btn:disabled:hover", content)
+        self.assertIn("const pagerIconButtons = {", content)
+        self.assertIn('queuePrevPage: "上一页"', content)
+        self.assertIn('completedNextPage: "下一页"', content)
+        self.assertIn('button.setAttribute("aria-label", t(label));', content)
+        self.assertNotIn("queuePageSize = Math.max(20, Number(value) || 20)", content)
+        self.assertNotIn("completedPageSize = Math.max(20, Number(value) || 20)", content)
+
+    def test_web_active_download_selects_sync_custom_shell_after_state_updates(self):
+        content = _static_bundle_content()
+        sync_block = content.split("function syncActiveDownloadOptions()", 1)[1].split(
+            "function updateDownloadOptions()",
+            1,
+        )[0]
+
+        self.assertIn('const retries = byId("activeMaxRetries");', sync_block)
+        self.assertIn('const concurrent = byId("activeMaxConcurrent");', sync_block)
+        self.assertIn("syncCustomSelectForSelect(retries);", sync_block)
+        self.assertIn("syncCustomSelectForSelect(concurrent);", sync_block)
+
+    def test_disabled_web_buttons_do_not_receive_hover_treatment(self):
+        content = _static_bundle_content()
+
+        self.assertIn(".btn:not(:disabled):hover", content)
+        self.assertIn(".btn-dir:not(:disabled):hover", content)
+        self.assertIn(".modal-actions .btn:not(:disabled):hover", content)
+        self.assertNotIn(".btn:hover, .nav-item:hover, .tab:hover", content)
+        self.assertNotIn(".btn-dir:hover {", content)
+        self.assertNotIn(".modal-actions .btn:hover", content)
 
     def test_websocket_endpoint_referenced(self):
         """前端必须连 /ws。"""
@@ -545,6 +870,29 @@ class WebUIBrowserTests(unittest.TestCase):
         sel = self._page.locator("#sourceSelect")
         self.assertTrue(sel.is_visible(), "sourceSelect should be visible after init")
 
+    def test_06b_source_select_uses_platform_icons_like_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const wrapper = document.querySelector('.custom-select-source');
+              const button = wrapper && wrapper.querySelector('.custom-select-button');
+              if (button) button.click();
+              const optionIcon = document.querySelector('#sourceSelect option')?.dataset.icon || '';
+              const buttonIcon = wrapper?.querySelector('.custom-select-button .custom-select-icon')?.getAttribute('src') || '';
+              const menuIconCount = wrapper ? wrapper.querySelectorAll('.custom-select-menu .custom-select-icon').length : 0;
+              return { optionIcon, buttonIcon, menuIconCount };
+            }
+            """
+        )
+
+        self.assertIn("/ui-icon/platform_", result["optionIcon"])
+        self.assertIn("/ui-icon/platform_", result["buttonIcon"])
+        self.assertGreater(result["menuIconCount"], 0)
+
     def test_07_theme_toggle_changes_data_theme(self):
         """点击主题按钮应切换 data-theme。"""
         self._page.goto(self._server_url)
@@ -584,6 +932,38 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.wait_for_timeout(500)
         header = self._page.locator("#selectionHeader").text_content()
         self.assertIn("2", header)
+
+    def test_09b_language_switch_translates_runtime_ui_messages(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "en-US"
+              };
+              document.documentElement.dataset.language = "en-US";
+              applyStaticLanguage();
+              document.getElementById("searchInput").value = "";
+              startCrawl();
+              setDirStatus("目录加载失败：boom", "error");
+              const lastLog = frontendState.log_items[frontendState.log_items.length - 1] || {};
+              return {
+                startLabel: document.getElementById("startBtn").textContent.trim(),
+                logMessage: lastLog.message,
+                dirStatus: document.getElementById("dirStatus").textContent
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["startLabel"], "Start")
+        self.assertEqual(result["logMessage"], "Enter a profile, shared, or collection link")
+        self.assertEqual(result["dirStatus"], "Failed to load folder: boom")
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
@@ -663,6 +1043,231 @@ class WebUIBrowserTests(unittest.TestCase):
             [{"type": "select_tasks", "payload": {"indices": [0, 1]}}],
         )
 
+    def test_11c_file_association_modal_esc_and_enter_match_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        esc_result = self._page.evaluate(
+            """
+            () => {
+              showFileAssociationModal();
+              return {
+                before: document.getElementById('fileAssociationModal').style.display,
+                video: document.getElementById('associationVideo').checked,
+                image: document.getElementById('associationImage').checked
+              };
+            }
+            """
+        )
+        self.assertEqual(esc_result["before"], "flex")
+        self.assertTrue(esc_result["video"])
+        self.assertTrue(esc_result["image"])
+
+        self._page.keyboard.press("Escape")
+        self._page.wait_for_timeout(100)
+        display_after_esc = self._page.evaluate("document.getElementById('fileAssociationModal').style.display")
+        self.assertIn(display_after_esc, ("none", ""))
+
+        self._page.evaluate(
+            """
+            () => {
+              window.__associationActions = [];
+              window.frontendAction = (action, payload) => window.__associationActions.push({ action, payload });
+              frontendAction = window.frontendAction;
+              showFileAssociationModal();
+              document.getElementById('associationImage').checked = false;
+              document.getElementById('associationConfirmBtn').focus();
+            }
+            """
+        )
+        self._page.keyboard.press("Enter")
+        self._page.wait_for_timeout(100)
+
+        enter_result = self._page.evaluate(
+            """
+            () => ({
+              display: document.getElementById('fileAssociationModal').style.display,
+              actions: window.__associationActions
+            })
+            """
+        )
+        self.assertIn(enter_result["display"], ("none", ""))
+        self.assertEqual(
+            enter_result["actions"],
+            [{"action": "register_file_associations", "payload": {"include_video": True, "include_image": False}}],
+        )
+
+    def test_11d_missing_media_validation_keeps_preview_closed(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = (url, options) => {
+                if (String(url).includes('/api/media/missing-media')) {
+                  return Promise.resolve(new Response('', { status: 404 }));
+                }
+                return originalFetch(url, options);
+              };
+              try {
+                frontendState.completed_items = [{
+                  id: 'missing-media',
+                  title: 'Missing Demo',
+                  filename: 'missing.mp4',
+                  local_path: 'Z:/missing.mp4',
+                  content_type: 'video',
+                  format: 'MP4'
+                }];
+                currentPage = 'completed';
+                renderCompleted();
+                await playCompleted('missing-media');
+                return {
+                  currentPlayingId,
+                  videoDisplay: document.getElementById('videoPlayer').style.display,
+                  previewDisplay: document.getElementById('previewArea').style.display,
+                  logs: (frontendState.log_items || []).slice(-4).map(item => item.message)
+                };
+              } finally {
+                window.fetch = originalFetch;
+              }
+            }
+            """
+        )
+
+        self.assertIsNone(result["currentPlayingId"])
+        self.assertNotEqual(result["videoDisplay"], "block")
+        self.assertNotEqual(result["previewDisplay"], "none")
+        self.assertTrue(
+            any("文件不存在" in message for message in result["logs"]),
+            f"expected missing-file log, got {result['logs']!r}",
+        )
+
+    def test_11e_delete_current_preview_closes_player_immediately(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = () => Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' }
+              }));
+              try {
+                ws = null;
+                frontendState.completed_items = [{
+                  id: 'playing-delete',
+                  title: 'Playing Delete',
+                  filename: 'playing-delete.mp4',
+                  local_path: 'Z:/playing-delete.mp4',
+                  content_type: 'video',
+                  format: 'MP4'
+                }];
+                currentPage = 'completed';
+                selected.completed = 'playing-delete';
+                selectedVideoId = 'playing-delete';
+                currentPlayingId = 'playing-delete';
+                const video = document.getElementById('videoPlayer');
+                const preview = document.getElementById('previewArea');
+                video.style.display = 'block';
+                preview.textContent = '';
+                preview.style.display = 'none';
+
+                frontendAction('delete_item', { id: 'playing-delete' });
+                await new Promise(resolve => setTimeout(resolve, 0));
+                return {
+                  currentPlayingId,
+                  videoDisplay: video.style.display,
+                  previewDisplay: preview.style.display,
+                  previewText: preview.textContent
+                };
+              } finally {
+                window.fetch = originalFetch;
+              }
+            }
+            """
+        )
+
+        self.assertIsNone(result["currentPlayingId"])
+        self.assertEqual(result["videoDisplay"], "none")
+        self.assertEqual(result["previewDisplay"], "flex")
+        self.assertEqual(result["previewText"], "")
+
+    def test_11f_stale_selection_reconciles_to_visible_first_row(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.active_downloads = [
+                { id: 'active-a', title: 'Active A', platform: 'Bilibili', platform_id: 'bilibili', progress: 12, speed: '1 MB/s' }
+              ];
+              selected.active = 'missing-active';
+              renderActive();
+
+              frontendState.completed_items = [
+                { id: 'completed-a', title: 'Completed A', filename: 'completed-a.mp4', completed_at: '2026-07-04 06:00:00', completed_at_table: '07-04 06:00', format: 'MP4' },
+                { id: 'completed-b', title: 'Completed B', filename: 'completed-b.mp4', completed_at: '2026-07-04 06:01:00', completed_at_table: '07-04 06:01', format: 'MP4' },
+                { id: 'completed-c', title: 'Completed C', filename: 'completed-c.mp4', completed_at: '2026-07-04 06:02:00', completed_at_table: '07-04 06:02', format: 'MP4' }
+              ];
+              completedPageSize = 2;
+              completedPage = 2;
+              selected.completed = 'missing-completed';
+              renderCompleted();
+
+              frontendState.failed_items = [
+                { id: 'failed-a', title: 'Failed A', failed_at: '2026-07-04 06:03:00', failed_at_table: '07-04 06:03', reason: '403', reason_label: '链接失败', platform: 'Bilibili', platform_id: 'bilibili', status_label: '失败' }
+              ];
+              selected.failed = 'missing-failed';
+              renderFailed();
+
+              frontendState.toolbox_items = [
+                { id: 'tool-a', title: 'Tool A', summary: 'Tool summary', input_example: 'Input A', output_example: 'Output A', icon_file: 'nav_toolbox.png' }
+              ];
+              selected.tool = 'missing-tool';
+              renderToolbox();
+
+              const selectedRows = selector => Array.from(document.querySelectorAll(selector)).map(row => row.dataset.id);
+              return {
+                activeSelected: selected.active,
+                activeRows: selectedRows('#activeBody tr.selected'),
+                activeDetail: document.getElementById('activeDetail').textContent,
+                completedSelected: selected.completed,
+                completedRows: selectedRows('#completedBody tr.selected'),
+                completedDetail: document.getElementById('completedDetail').textContent,
+                failedSelected: selected.failed,
+                failedRows: selectedRows('#failedBody tr.selected'),
+                failedDetail: document.getElementById('failedDetail').textContent,
+                toolSelected: selected.tool,
+                toolCards: Array.from(document.querySelectorAll('#toolGrid .tool-card.active')).map(button => button.textContent),
+                toolDetail: document.getElementById('toolDetail').textContent
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["activeSelected"], "active-a")
+        self.assertEqual(result["activeRows"], ["active-a"])
+        self.assertIn("Active A", result["activeDetail"])
+        self.assertEqual(result["completedSelected"], "completed-c")
+        self.assertEqual(result["completedRows"], ["completed-c"])
+        self.assertIn("completed-c.mp4", result["completedDetail"])
+        self.assertEqual(result["failedSelected"], "failed-a")
+        self.assertEqual(result["failedRows"], ["failed-a"])
+        self.assertIn("Failed A", result["failedDetail"])
+        self.assertEqual(result["toolSelected"], "tool-a")
+        self.assertEqual(len(result["toolCards"]), 1)
+        self.assertIn("Tool A", result["toolCards"][0])
+        self.assertIn("Tool A", result["toolDetail"])
+
     def test_12_console_no_errors(self):
         """主页加载应无 JS 错误。"""
         errors = []
@@ -685,9 +1290,143 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.goto(self._server_url)
         self._page.wait_for_load_state("networkidle")
         self._page.wait_for_timeout(3500)
+        timestamp = self._page.evaluate("formatLocalDateTime(new Date(2026, 6, 4, 6, 24, 9))")
+        self.assertEqual(timestamp, "2026-07-04 06:24:09")
         self._page.evaluate("appendLog('test marker 12345')")
         content = self._page.locator("#logPanel").text_content()
         self.assertIn("test marker 12345", content)
+
+    def test_13b_log_center_footer_paginates_like_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentPage = 'logs';
+              logPage = 1;
+              logPageSize = 20;
+              frontendState.log_items = Array.from({ length: 25 }, (_, index) => ({
+                id: `log-${index + 1}`,
+                time: `2026-07-04 06:${String(index).padStart(2, '0')}:00`,
+                level: 'INFO',
+                source: 'GUI',
+                trace_id: `trace-${index + 1}`,
+                message_summary: `message-${index + 1}`,
+                message: `message-${index + 1}`,
+                detail: '',
+                stack: ''
+              }));
+              renderLogs();
+              const firstPageRows = document.querySelectorAll('#logBody tr').length;
+              const firstStats = document.getElementById('logTotal').textContent;
+              const firstIndicator = document.getElementById('logPageIndicator').textContent;
+              const firstPrevDisabled = document.getElementById('logPrevPage').disabled;
+              const firstNextDisabled = document.getElementById('logNextPage').disabled;
+              setLogPage(1);
+              return {
+                firstPageRows,
+                firstStats,
+                firstIndicator,
+                firstPrevDisabled,
+                firstNextDisabled,
+                secondPageRows: document.querySelectorAll('#logBody tr').length,
+                secondStats: document.getElementById('logTotal').textContent,
+                secondIndicator: document.getElementById('logPageIndicator').textContent,
+                secondPrevDisabled: document.getElementById('logPrevPage').disabled,
+                secondNextDisabled: document.getElementById('logNextPage').disabled
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["firstPageRows"], 20)
+        self.assertEqual(result["firstStats"], "共 25 条 / 匹配 25 条 / 当前显示 20 条")
+        self.assertEqual(result["firstIndicator"], "第 1 / 2 页")
+        self.assertTrue(result["firstPrevDisabled"])
+        self.assertFalse(result["firstNextDisabled"])
+        self.assertEqual(result["secondPageRows"], 5)
+        self.assertEqual(result["secondStats"], "共 25 条 / 匹配 25 条 / 当前显示 5 条")
+        self.assertEqual(result["secondIndicator"], "第 2 / 2 页")
+        self.assertFalse(result["secondPrevDisabled"])
+        self.assertTrue(result["secondNextDisabled"])
+
+    def test_13c_log_detail_copy_export_actions_match_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalClick = HTMLAnchorElement.prototype.click;
+              const originalCreateObjectUrl = URL.createObjectURL;
+              const originalRevokeObjectUrl = URL.revokeObjectURL;
+              window.__copiedLogTexts = [];
+              window.__downloadedLogDetail = null;
+              Object.defineProperty(navigator, 'clipboard', {
+                value: {
+                  writeText: text => {
+                    window.__copiedLogTexts.push(text);
+                    return Promise.resolve();
+                  }
+                },
+                configurable: true
+              });
+              HTMLAnchorElement.prototype.click = function () {
+                window.__downloadedLogDetail = { href: this.href, download: this.download };
+              };
+              URL.createObjectURL = () => 'blob:log-detail';
+              URL.revokeObjectURL = () => {};
+              try {
+                currentPage = 'logs';
+                logPage = 1;
+                logPageSize = 20;
+                frontendState.log_items = [{
+                  id: 'log-detail-a',
+                  time: '2026-07-04 06:30:00',
+                  level: 'INFO',
+                  raw_level: 'INFO',
+                  source: 'ApplicationController',
+                  platform: '系统',
+                  trace_id: 'trace-log-detail-a',
+                  message_summary: '应用开始初始化',
+                  message: '应用开始初始化',
+                  detail: { description: '应用开始初始化', status_code: 'APP_INIT' },
+                  stack: ''
+                }];
+                selected.log = '';
+                renderLogs();
+                copyCurrentLogDetail();
+                copyCurrentLogJson();
+                exportCurrentLogDetail();
+                await new Promise(resolve => setTimeout(resolve, 0));
+                return {
+                  selectedLog: selected.log,
+                  detailText: document.getElementById('logDetail').textContent,
+                  copied: window.__copiedLogTexts,
+                  download: window.__downloadedLogDetail
+                };
+              } finally {
+                HTMLAnchorElement.prototype.click = originalClick;
+                URL.createObjectURL = originalCreateObjectUrl;
+                URL.revokeObjectURL = originalRevokeObjectUrl;
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["selectedLog"], "log-detail-a")
+        self.assertIn("日志详情", result["detailText"])
+        self.assertIn("详细信息", result["detailText"])
+        self.assertEqual(len(result["copied"]), 2)
+        self.assertIn("trace-log-detail-a", result["copied"][0])
+        self.assertIn("APP_INIT", result["copied"][0])
+        self.assertIn("description", result["copied"][1])
+        self.assertIn("APP_INIT", result["copied"][1])
+        self.assertEqual(result["download"]["href"], "blob:log-detail")
+        self.assertEqual(result["download"]["download"], "log_detail_trace-log-detail-a.json")
 
     def test_14_keyboard_arrow_navigation(self):
         """方向键应在 videoOrder 之间切换。"""

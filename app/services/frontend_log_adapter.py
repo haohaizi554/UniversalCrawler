@@ -13,6 +13,33 @@ LOG_ENTRY_RE = re.compile(
 )
 
 
+def _local_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("T", " ")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        return None
+    if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+        return parsed.astimezone()
+    return parsed
+
+
+def normalize_log_time_display(value: str) -> str:
+    text = str(value or "").strip()
+    parsed = _local_datetime(text)
+    return parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed is not None else text
+
+
 def normalize_log_level(level: str) -> str:
     normalized = str(level or "").upper()
     if normalized == "COMMAND":
@@ -98,13 +125,8 @@ def log_category(item: Mapping[str, Any]) -> str:
 
 
 def log_timestamp_ms(value: str) -> int:
-    text = str(value or "").strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
-        try:
-            return int(datetime.strptime(text, fmt).timestamp() * 1000)
-        except ValueError:
-            continue
-    return 0
+    parsed = _local_datetime(str(value or ""))
+    return int(parsed.timestamp() * 1000) if parsed is not None else 0
 
 
 def log_level_icon_file(level: str) -> str:
@@ -118,6 +140,7 @@ def log_level_icon_file(level: str) -> str:
 
 def enrich_log_item(item: Mapping[str, Any]) -> dict[str, Any]:
     enriched = dict(item or {})
+    enriched["time"] = normalize_log_time_display(str(enriched.get("time") or ""))
     enriched["level"] = normalize_log_level(str(enriched.get("level") or "INFO"))
     enriched["trace_id"] = str(enriched.get("trace_id") or trace_from_log_detail(enriched) or "")
     enriched["platform"] = str(enriched.get("platform") or platform_from_log(enriched) or "系统")
@@ -125,7 +148,27 @@ def enrich_log_item(item: Mapping[str, Any]) -> dict[str, Any]:
     enriched["timestamp_ms"] = log_timestamp_ms(str(enriched.get("time") or ""))
     if not enriched.get("message_summary"):
         enriched["message_summary"] = str(enriched.get("message") or "")[:120]
-    return enriched
+    return _decorate_log_display_fields(enriched)
+
+
+def _decorate_log_display_fields(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Reuse the GUI log table display model for WebUI snapshots when available."""
+    row = dict(item or {})
+    try:
+        from app.ui.viewmodels.log_display import decorate_log_item
+        from app.ui.viewmodels.log_platforms import builtin_platform_metas
+
+        metas = builtin_platform_metas()
+        return decorate_log_item(
+            row,
+            platform_options=list(metas.values()),
+            platform_meta_by_id=metas,
+            log_scope=str(row.get("category") or "system"),
+            event_stage=str(row.get("event_stage") or row.get("stage") or "step"),
+            scope_reason="frontend_log_adapter",
+        )
+    except Exception:
+        return row
 
 
 def parse_debug_log_file(path: Path, *, limit: int) -> list[dict[str, Any]]:

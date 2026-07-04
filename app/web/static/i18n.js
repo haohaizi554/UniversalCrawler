@@ -30,20 +30,46 @@ const FALLBACK_UI_TEXT = {
     "失败列表": "Failed",
     "日志中心": "Logs",
     "工具箱": "Toolbox",
+    "高效实用的辅助工具，提升工作效率": "Practical helpers for faster daily work",
     "配置中心": "Settings",
+    "集中管理下载行为、平台状态、播放体验、日志策略与界面外观": "Manage download behavior, platform status, playback, logs, and appearance in one place",
     "设置分类": "Categories",
     "启动任务": "Start",
     "停止": "Stop",
     "更改目录": "Change folder",
+    "选择保存目录": "Choose save folder",
+    "输入目录路径": "Enter folder path",
+    "输入或确认保存目录": "Enter or confirm a save folder",
+    "选择此目录": "Choose this folder",
+    "跳转": "Go",
+    "上一级": "Parent",
+    "无可用根目录": "No available roots",
+    "没有可进入的子目录": "No subfolders",
+    "已选择目录": "Folder selected",
+    "正在加载目录...": "Loading folder...",
+    "单击选择，双击进入子目录": "Click to select, double-click to enter",
+    "当前目录没有可访问的上一级": "No accessible parent folder",
+    "目录路径不能为空": "Folder path cannot be empty",
+    "正在切换目录...": "Changing folder...",
+    "目录已变更": "Folder changed",
+    "目录加载失败": "Failed to load folder",
+    "切换目录失败": "Failed to change folder",
     "视频数:": "Videos:",
     "笔记数:": "Notes:",
     "页数:": "Pages:",
     "输入：主页链接、分享链接或合集链接...": "Enter a profile, shared, or collection link...",
     "切换主题": "Toggle theme",
+    "打开项目主页": "Open project page",
     "空闲中": "Idle",
     "运行中": "Running",
+    "增量状态基线不连续，正在重新同步...": "State update is out of sync. Resyncing...",
+    "加载增量状态失败": "Failed to load incremental state",
+    "加载状态失败": "Failed to load state",
+    "请输入主页链接、分享链接或合集链接": "Enter a profile, shared, or collection link",
+    "未选择有效模式": "No valid mode selected",
+    "前端连接尚未就绪，请稍后重试": "Frontend connection is not ready. Try again shortly",
+    "正在绑定默认打开方式...": "Binding the default open mode...",
     "下载速度": "Download",
-    "上传速度": "Upload",
     "失败": "Failed",
     "下载目录、命名规则和打开行为": "Download folder, filename rules, and open behavior",
     "并发、超时、重试和下载策略": "Concurrency, timeout, retry, and download policy",
@@ -61,12 +87,18 @@ const FALLBACK_UI_TEXT = {
     "下载后自动打开": "Open after download",
     "默认打开方式": "Default open mode",
     "绑定默认打开方式": "Bind default app",
+    "选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页再次确认。": "Choose the resource types to register with Windows default apps. Windows may still ask for confirmation in Settings.",
+    "视频资源（mp4、mkv、avi、mov、webm 等）": "Video resources (mp4, mkv, avi, mov, webm, etc.)",
+    "图片资源（jpg、png、gif、webp、bmp 等）": "Image resources (jpg, png, gif, webp, bmp, etc.)",
+    "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "Effective after registration for future system opens. If Windows blocks it, the app opens Default Apps settings for confirmation.",
+    "绑定": "Bind",
     "并发数": "Concurrency",
     "图片受并发数限制": "Limit images by concurrency",
     "请求超时": "Request timeout",
     "最大重试": "Max retries",
     "速度限制 KB/s": "Speed limit KB/s",
     "仅下载视频": "Video only",
+    "队列控制": "Queue controls",
     "默认播放器": "Default player",
     "打开方式": "Open mode",
     "记住播放位置": "Remember position",
@@ -122,10 +154,14 @@ const FALLBACK_UI_TEXT = {
     "打开所在目录": "Open containing folder",
     "无限制": "Unlimited",
     "保存至": "Save to",
+    "保存至：": "Save to:",
+    "视频标题": "Video title",
     "标题": "Title",
     "状态": "Status",
     "进度": "Progress",
     "操作": "Actions",
+    "删除所有": "Delete all",
+    "立即刷新": "Refresh now",
     "速度": "Speed",
     "剩余时间": "Remaining",
     "完成时间": "Completed at",
@@ -138,9 +174,16 @@ const FALLBACK_UI_TEXT = {
     "失败自动重试": "Auto retry failed tasks",
     "最大重试次数": "Max retries",
     "并发数": "Concurrency",
+    "任务清单确认": "Task confirmation",
+    "共扫描到 {count} 个资源，请勾选需要下载的项目：": "{count} resources found. Select items to download:",
+    "选择": "Select",
+    "视频标题 / 描述": "Video title / description",
+    "全选": "Select all",
+    "反选": "Invert",
+    "取消任务": "Cancel task",
+    "开始下载": "Start download",
     "当前下载": "Current download",
     "暂无正在下载的任务": "No active downloads",
-    "选择已完成文件进行播放": "Select a completed file to play",
     "文件信息": "File info",
     "暂无已完成文件": "No completed files",
     "错误详情": "Error details",
@@ -148,8 +191,10 @@ const FALLBACK_UI_TEXT = {
     "可能的解决方案": "Possible solutions",
     "暂无建议": "No suggestions",
     "全部日志": "All logs",
+    "采集日志": "Crawl logs",
     "下载日志": "Download logs",
     "系统日志": "System logs",
+    "性能日志": "Performance logs",
     "错误日志": "Error logs",
     "日志级别": "Log level",
     "全部": "All",
@@ -161,6 +206,22 @@ const FALLBACK_UI_TEXT = {
     "清空日志": "Clear logs",
     "导出日志": "Export logs",
     "刷新缓冲": "Refresh buffer",
+    "刷新": "Refresh",
+    "清空": "Clear",
+    "导出": "Export",
+    "复制": "Copy",
+    "暂无日志": "No logs",
+    "堆栈跟踪": "Stack trace",
+    "已复制日志详情": "Copied log details",
+    "已复制详细信息": "Copied details",
+    "已导出日志详情": "Exported log details",
+    "复制TraceID": "Copy TraceID",
+    "上一页": "Previous page",
+    "下一页": "Next page",
+    "当前日志没有可复制的 Trace ID": "No Trace ID is available for the current log",
+    "Trace ID 已复制": "Trace ID copied",
+    "已复制 Trace ID": "Copied Trace ID",
+    "未找到 Trace ID": "No Trace ID found",
     "时间": "Time",
     "级别": "Level",
     "来源": "Source",
@@ -201,6 +262,9 @@ const FALLBACK_UI_TEXT = {
     "转换视频、音频和图片文件格式": "Convert video, audio, and image formats",
     "计算并校验文件哈希值，支持 MD5、SHA1、SHA256": "Calculate and verify file hashes including MD5, SHA1, and SHA256",
     "解析出视频、图片、作者主页等可下载资源地址": "Extract downloadable video, image, and author profile URLs",
+    "播放失败": "Playback failed",
+    "文件不存在或已被删除": "File does not exist or has been deleted",
+    "播放前校验失败": "Pre-playback check failed",
   },
   "zh-TW": {
     "基础设置": "基礎設定",
@@ -215,20 +279,46 @@ const FALLBACK_UI_TEXT = {
     "失败列表": "失敗列表",
     "日志中心": "日誌中心",
     "工具箱": "工具箱",
+    "高效实用的辅助工具，提升工作效率": "高效實用的輔助工具，提升工作效率",
     "配置中心": "配置中心",
+    "集中管理下载行为、平台状态、播放体验、日志策略与界面外观": "集中管理下載行為、平台狀態、播放體驗、日誌策略與介面外觀",
     "设置分类": "設定分類",
     "启动任务": "啟動任務",
     "停止": "停止",
     "更改目录": "變更目錄",
+    "选择保存目录": "選擇儲存目錄",
+    "输入目录路径": "輸入目錄路徑",
+    "输入或确认保存目录": "輸入或確認儲存目錄",
+    "选择此目录": "選擇此目錄",
+    "跳转": "跳轉",
+    "上一级": "上一層",
+    "无可用根目录": "無可用根目錄",
+    "没有可进入的子目录": "沒有可進入的子目錄",
+    "已选择目录": "已選擇目錄",
+    "正在加载目录...": "正在載入目錄...",
+    "单击选择，双击进入子目录": "單擊選擇，雙擊進入子目錄",
+    "当前目录没有可访问的上一级": "目前目錄沒有可存取的上一層",
+    "目录路径不能为空": "目錄路徑不能為空",
+    "正在切换目录...": "正在切換目錄...",
+    "目录已变更": "目錄已變更",
+    "目录加载失败": "目錄載入失敗",
+    "切换目录失败": "切換目錄失敗",
     "视频数:": "影片數:",
     "笔记数:": "筆記數:",
     "页数:": "頁數:",
     "输入：主页链接、分享链接或合集链接...": "輸入：主頁連結、分享連結或合集連結...",
     "切换主题": "切換主題",
+    "打开项目主页": "開啟專案首頁",
     "空闲中": "閒置中",
     "运行中": "執行中",
+    "增量状态基线不连续，正在重新同步...": "增量狀態基線不連續，正在重新同步...",
+    "加载增量状态失败": "載入增量狀態失敗",
+    "加载状态失败": "載入狀態失敗",
+    "请输入主页链接、分享链接或合集链接": "請輸入主頁連結、分享連結或合集連結",
+    "未选择有效模式": "未選擇有效模式",
+    "前端连接尚未就绪，请稍后重试": "前端連線尚未就緒，請稍後重試",
+    "正在绑定默认打开方式...": "正在綁定預設開啟方式...",
     "下载速度": "下載速度",
-    "上传速度": "上傳速度",
     "失败": "失敗",
     "下载目录、命名规则和打开行为": "下載目錄、命名規則和開啟行為",
     "并发、超时、重试和下载策略": "並發、逾時、重試和下載策略",
@@ -246,12 +336,18 @@ const FALLBACK_UI_TEXT = {
     "下载后自动打开": "下載後自動開啟",
     "默认打开方式": "預設開啟方式",
     "绑定默认打开方式": "綁定預設開啟方式",
+    "选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页再次确认。": "選擇要註冊到 Windows 預設應用程式的資源類型。Windows 可能仍會要求在系統設定頁再次確認。",
+    "视频资源（mp4、mkv、avi、mov、webm 等）": "影片資源（mp4、mkv、avi、mov、webm 等）",
+    "图片资源（jpg、png、gif、webp、bmp 等）": "圖片資源（jpg、png、gif、webp、bmp 等）",
+    "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "生效方式：註冊成功後會立即影響之後的系統開啟行為；若 Windows 攔截，程式會開啟預設應用程式設定頁供你確認。",
+    "绑定": "綁定",
     "并发数": "並發數",
     "图片受并发数限制": "圖片受並發數限制",
     "请求超时": "請求逾時",
     "最大重试": "最大重試",
     "速度限制 KB/s": "速度限制 KB/s",
     "仅下载视频": "僅下載影片",
+    "队列控制": "佇列控制",
     "默认播放器": "預設播放器",
     "打开方式": "開啟方式",
     "记住播放位置": "記住播放位置",
@@ -307,10 +403,14 @@ const FALLBACK_UI_TEXT = {
     "打开所在目录": "開啟所在目錄",
     "无限制": "無限制",
     "保存至": "儲存至",
+    "保存至：": "儲存至：",
+    "视频标题": "影片標題",
     "标题": "標題",
     "状态": "狀態",
     "进度": "進度",
     "操作": "操作",
+    "删除所有": "刪除所有",
+    "立即刷新": "立即重新整理",
     "速度": "速度",
     "剩余时间": "剩餘時間",
     "完成时间": "完成時間",
@@ -323,9 +423,16 @@ const FALLBACK_UI_TEXT = {
     "失败自动重试": "失敗自動重試",
     "最大重试次数": "最大重試次數",
     "并发数": "並發數",
+    "任务清单确认": "任務清單確認",
+    "共扫描到 {count} 个资源，请勾选需要下载的项目：": "共掃描到 {count} 個資源，請勾選需要下載的項目：",
+    "选择": "選擇",
+    "视频标题 / 描述": "影片標題 / 描述",
+    "全选": "全選",
+    "反选": "反選",
+    "取消任务": "取消任務",
+    "开始下载": "開始下載",
     "当前下载": "目前下載",
     "暂无正在下载的任务": "暫無正在下載的任務",
-    "选择已完成文件进行播放": "選擇已完成檔案進行播放",
     "文件信息": "檔案資訊",
     "暂无已完成文件": "暫無已完成檔案",
     "错误详情": "錯誤詳情",
@@ -333,8 +440,10 @@ const FALLBACK_UI_TEXT = {
     "可能的解决方案": "可能的解決方案",
     "暂无建议": "暫無建議",
     "全部日志": "全部日誌",
+    "采集日志": "採集日誌",
     "下载日志": "下載日誌",
     "系统日志": "系統日誌",
+    "性能日志": "性能日誌",
     "错误日志": "錯誤日誌",
     "日志级别": "日誌級別",
     "全部": "全部",
@@ -346,6 +455,22 @@ const FALLBACK_UI_TEXT = {
     "清空日志": "清空日誌",
     "导出日志": "匯出日誌",
     "刷新缓冲": "刷新緩衝",
+    "刷新": "刷新",
+    "清空": "清空",
+    "导出": "匯出",
+    "复制": "複製",
+    "暂无日志": "暫無日誌",
+    "堆栈跟踪": "堆疊追蹤",
+    "已复制日志详情": "已複製日誌詳情",
+    "已复制详细信息": "已複製詳細資訊",
+    "已导出日志详情": "已匯出日誌詳情",
+    "复制TraceID": "複製TraceID",
+    "上一页": "上一頁",
+    "下一页": "下一頁",
+    "当前日志没有可复制的 Trace ID": "目前日誌沒有可複製的 Trace ID",
+    "Trace ID 已复制": "Trace ID 已複製",
+    "已复制 Trace ID": "已複製 Trace ID",
+    "未找到 Trace ID": "未找到 Trace ID",
     "时间": "時間",
     "级别": "級別",
     "来源": "來源",
@@ -386,6 +511,9 @@ const FALLBACK_UI_TEXT = {
     "转换视频、音频和图片文件格式": "轉換影片、音訊和圖片檔案格式",
     "计算并校验文件哈希值，支持 MD5、SHA1、SHA256": "計算並校驗檔案雜湊值，支援 MD5、SHA1、SHA256",
     "解析出视频、图片、作者主页等可下载资源地址": "解析出影片、圖片、作者主頁等可下載資源地址",
+    "播放失败": "播放失敗",
+    "文件不存在或已被删除": "檔案不存在或已被刪除",
+    "播放前校验失败": "播放前校驗失敗",
   },
 };
 
@@ -449,6 +577,12 @@ function translateUiCore(text, lang = currentLanguage()) {
   if (match) return lang === "zh-TW" ? `儲存至：${match[1]}` : `Save to: ${match[1]}`;
   match = text.match(/^共\s*(\d+)\s*项$/);
   if (match) return lang === "zh-TW" ? `共 ${match[1]} 項` : `Total ${match[1]} items`;
+  match = text.match(/^共\s*(\d+)\s*条\s*\/\s*匹配\s*(\d+)\s*条\s*\/\s*当前显示\s*(\d+)\s*条$/);
+  if (match) return lang === "zh-TW"
+    ? `共 ${match[1]} 條 / 匹配 ${match[2]} 條 / 目前顯示 ${match[3]} 條`
+    : `Total ${match[1]} / matched ${match[2]} / showing ${match[3]}`;
+  match = text.match(/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/);
+  if (match) return lang === "zh-TW" ? `第 ${match[1]} / ${match[2]} 頁` : `Page ${match[1]} / ${match[2]}`;
   match = text.match(/^(\d+)\s*\/\s*(\d+)\s*页$/);
   if (match) return lang === "zh-TW" ? `${match[1]} / ${match[2]} 頁` : `${match[1]} / ${match[2]} pages`;
   match = text.match(/^(\d+)\s*条\/页$/);
@@ -542,8 +676,118 @@ function applyStaticLanguage() {
   setButtonContent("startBtn", "启动任务");
   setButtonContent("stopBtn", "停止");
   setButtonContent("changeDirBtn", "更改目录");
+  const queuePathLabel = document.querySelector("#page-queue .queue-path-label");
+  if (queuePathLabel) queuePathLabel.textContent = t("保存至：");
+  const queueHeaders = ["视频标题", "平台", "状态", "操作"];
+  document.querySelectorAll("#page-queue th").forEach((header, index) => {
+    if (queueHeaders[index]) header.textContent = t(queueHeaders[index]);
+  });
+  const activeControlTitle = document.querySelector("#page-active .active-control-title");
+  if (activeControlTitle) activeControlTitle.textContent = t("队列控制");
+  const clearQueueButton = document.querySelector("#page-queue [onclick=\"frontendAction('clear_queue',{})\"]");
+  if (clearQueueButton) {
+    clearQueueButton.title = t("删除所有");
+    clearQueueButton.setAttribute("aria-label", t("删除所有"));
+  }
+  const refreshQueueButton = document.querySelector("#page-queue [onclick=\"fetchFrontendState()\"]");
+  if (refreshQueueButton) {
+    refreshQueueButton.title = t("立即刷新");
+    refreshQueueButton.setAttribute("aria-label", t("立即刷新"));
+  }
+  const logTabLabels = {
+    all: "全部日志",
+    crawl: "采集日志",
+    download: "下载日志",
+    system: "系统日志",
+    performance: "性能日志",
+    error: "错误日志",
+  };
+  document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => {
+    const label = logTabLabels[button.dataset.logTab];
+    if (label) button.textContent = t(label);
+  });
+  const logFilterLabels = ["日志级别", "时间范围", "平台", "Trace ID", "关键词搜索"];
+  document.querySelectorAll("#page-logs .log-filter-label").forEach((label, index) => {
+    if (logFilterLabels[index]) label.textContent = t(logFilterLabels[index]);
+  });
+  const logActionLabels = [
+    ["runLogOperation('refresh')", "刷新"],
+    ["runLogOperation('clear')", "清空"],
+    ["runLogOperation('export')", "导出"],
+    ["runLogOperation('open_latest')", "debug.log"],
+    ["runLogOperation('open_error_summary')", "error.md"],
+    ["copySelectedLogTraceId()", "复制TraceID"],
+  ];
+  for (const [onclick, label] of logActionLabels) {
+    const button = document.querySelector(`#page-logs .log-actions [onclick="${onclick}"]`);
+    if (button) button.textContent = t(label);
+  }
+  setButtonContent("logPrevPage", "上一页");
+  setButtonContent("logNextPage", "下一页");
+  const pagerIconButtons = {
+    queuePrevPage: "上一页",
+    queueNextPage: "下一页",
+    completedPrevPage: "上一页",
+    completedNextPage: "下一页",
+  };
+  for (const [id, label] of Object.entries(pagerIconButtons)) {
+    const button = helpers.byId(id);
+    if (button) {
+      button.title = t(label);
+      button.setAttribute("aria-label", t(label));
+    }
+  }
+  const dirLabels = {
+    dirTitle: "选择保存目录",
+    dirGoBtn: "跳转",
+    dirParentBtn: "上一级",
+    dirCancelBtn: "取消",
+    dirConfirmBtn: "选择此目录",
+  };
+  for (const [id, label] of Object.entries(dirLabels)) {
+    const element = helpers.byId(id);
+    if (element) element.textContent = t(label);
+  }
+  const dirInput = helpers.byId("dirInput");
+  if (dirInput) dirInput.placeholder = t("输入目录路径");
+  const dirRefresh = helpers.byId("dirRefreshBtn");
+  if (dirRefresh) {
+    dirRefresh.title = t("刷新");
+    dirRefresh.setAttribute("aria-label", t("刷新"));
+  }
+  if (typeof window.applyFileAssociationLanguage === "function") {
+    window.applyFileAssociationLanguage();
+  }
+  const selectionTitle = helpers.byId("selectionTitle");
+  if (selectionTitle) selectionTitle.textContent = t("任务清单确认");
+  const selectionHeader = helpers.byId("selectionHeader");
+  if (selectionHeader) {
+    const count = document.querySelectorAll("#selectionBody .selection-row").length;
+    selectionHeader.textContent = t("共扫描到 {count} 个资源，请勾选需要下载的项目：").replace("{count}", String(count));
+  }
+  const selectionHeadCells = document.querySelectorAll(".selection-table thead th");
+  if (selectionHeadCells[0]) selectionHeadCells[0].textContent = t("选择");
+  if (selectionHeadCells[1]) selectionHeadCells[1].textContent = t("视频标题 / 描述");
+  const selectionButtons = {
+    selectionAllBtn: "全选",
+    selectionInvertBtn: "反选",
+    selectionCancelBtn: "取消任务",
+    selectionConfirmBtn: "开始下载",
+  };
+  for (const [id, label] of Object.entries(selectionButtons)) {
+    const button = helpers.byId(id);
+    if (button) button.textContent = t(label);
+  }
   const themeButton = byId("themeBtn");
-  if (themeButton) themeButton.title = t("切换主题");
+  if (themeButton) {
+    themeButton.title = t("切换主题");
+    themeButton.setAttribute("aria-label", t("切换主题"));
+  }
+  const helpButton = byId("statusHelpBtn");
+  if (helpButton) {
+    helpButton.title = t("打开项目主页");
+    helpButton.setAttribute("aria-label", t("打开项目主页"));
+  }
   helpers.updatePlaceholder();
   helpers.renderStatus();
   helpers.syncAllCustomSelects();

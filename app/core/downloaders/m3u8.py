@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import urllib.parse
 import threading
@@ -39,6 +40,9 @@ except ImportError:  # pragma: no cover - optional browser fallback
 
 class N_m3u8DL_RE_Downloader(BaseDownloader):
     """Download HLS streams with N_m3u8DL-RE, falling back for stricter MissAV CDNs."""
+
+    NM3U8_TEMP_ROOT_NAME = ".ucp-nm3u8-tmp"
+    NM3U8_TEMP_DIR_PREFIX = "ucp-"
 
     @classmethod
     def is_available(cls) -> bool:
@@ -243,28 +247,35 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 return
             raise ExternalToolNotFoundError("N_m3u8DL-RE executable not found")
 
-        cmd = NM3U8DLREExternalTool.build_download_command(
-            executable,
-            url,
-            save_path,
-            ua,
-            referer,
-            proxy=proxy,
-            extra_headers=headers,
-            thread_count=thread_count,
-        )
-        debug_logger.log_command(
-            component="N_m3u8DL_RE_Downloader",
-            tool_name="N_m3u8DL-RE",
-            command_args=cmd,
-            message="Preparing N_m3u8DL-RE HLS download",
-            context={"title": video_item.title, "save_path": save_path, "source_url": url},
-            trace_id=trace_id,
-        )
-
         creation_flags = build_new_console_flags()
         output_reader: threading.Thread | None = None
+        temp_workspace: Path | None = None
         try:
+            temp_workspace = self._create_nm3u8_temp_workspace(save_path)
+            cmd = NM3U8DLREExternalTool.build_download_command(
+                executable,
+                url,
+                save_path,
+                ua,
+                referer,
+                proxy=proxy,
+                extra_headers=headers,
+                thread_count=thread_count,
+                tmp_dir=str(temp_workspace),
+            )
+            debug_logger.log_command(
+                component="N_m3u8DL_RE_Downloader",
+                tool_name="N_m3u8DL-RE",
+                command_args=cmd,
+                message="Preparing N_m3u8DL-RE HLS download",
+                context={
+                    "title": video_item.title,
+                    "save_path": save_path,
+                    "source_url": url,
+                    "tmp_dir": str(temp_workspace),
+                },
+                trace_id=trace_id,
+            )
             output_progress = _Nm3u8OutputProgress(default_progress=50)
             process = self._popen_nm3u8_process(cmd, creation_flags)
             output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
@@ -275,6 +286,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 progress_callback,
                 50,
                 progress_provider=output_progress.snapshot,
+                temp_paths=[temp_workspace],
             )
 
             if process.returncode != 0:
@@ -357,6 +369,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             self._join_nm3u8_output_reader(output_reader)
             if process is not None and process.poll() is None:
                 ExternalToolRunner.terminate_process(process)
+            self._cleanup_nm3u8_temp_workspace(temp_workspace, trace_id=trace_id)
             if not download_succeeded:
                 self._cleanup_external_temp_files(save_path)
 
@@ -398,6 +411,74 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if cookie:
             clean["Cookie"] = cookie
         return clean
+
+    @classmethod
+    def _create_nm3u8_temp_workspace(cls, save_path: str) -> Path:
+        target = Path(save_path).expanduser()
+        parent = target.parent if str(target.parent) else Path.cwd()
+        root = parent.resolve(strict=False) / cls.NM3U8_TEMP_ROOT_NAME
+        root.mkdir(parents=True, exist_ok=True)
+        safe_stem = re.sub(r"[^0-9A-Za-z_.-]+", "_", target.stem).strip("._-")[:36] or "download"
+        return Path(tempfile.mkdtemp(prefix=f"{cls.NM3U8_TEMP_DIR_PREFIX}{safe_stem}-", dir=str(root))).resolve(
+            strict=False
+        )
+
+    @classmethod
+    def _is_owned_nm3u8_temp_workspace(cls, temp_dir: str | os.PathLike[str] | None) -> bool:
+        if not temp_dir:
+            return False
+        try:
+            path = Path(temp_dir).resolve(strict=False)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+        return path.parent.name == cls.NM3U8_TEMP_ROOT_NAME and path.name.startswith(cls.NM3U8_TEMP_DIR_PREFIX)
+
+    @classmethod
+    def _cleanup_nm3u8_temp_workspace(
+        cls,
+        temp_dir: str | os.PathLike[str] | None,
+        *,
+        trace_id: str | None = None,
+    ) -> None:
+        if not temp_dir:
+            return
+        if not cls._is_owned_nm3u8_temp_workspace(temp_dir):
+            debug_logger.log(
+                component="N_m3u8DL_RE_Downloader",
+                action="skip_unowned_tmp_cleanup",
+                level="WARN",
+                message="Skip N_m3u8DL-RE temp cleanup because the directory is outside the owned workspace",
+                status_code="M3U8_TMP_CLEANUP_SKIPPED",
+                details={"tmp_dir": str(temp_dir)},
+                trace_id=trace_id,
+            )
+            return
+
+        path = Path(temp_dir)
+        last_error: OSError | None = None
+        for attempt in range(3):
+            try:
+                if path.exists():
+                    shutil.rmtree(path)
+                last_error = None
+                break
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.1 * (attempt + 1))
+        if last_error is not None:
+            debug_logger.log_exception(
+                "N_m3u8DL_RE_Downloader",
+                "tmp_workspace_cleanup_error",
+                last_error,
+                details={"tmp_dir": str(temp_dir)},
+                trace_id=trace_id,
+            )
+            return
+
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
 
     def _download_with_nm3u8_external(
         self,
@@ -466,36 +547,42 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         local_proxy: bool,
         progress_provider: Callable[[], tuple[int, int]] | None = None,
     ) -> None:
-        cmd = NM3U8DLREExternalTool.build_download_command(
-            executable,
-            source_url,
-            save_path,
-            user_agent,
-            referer,
-            proxy=proxy,
-            extra_headers=headers,
-            thread_count=thread_count,
-        )
         trace_id = video_item.meta.get("trace_id")
-        debug_logger.log_command(
-            component="N_m3u8DL_RE_Downloader",
-            tool_name="N_m3u8DL-RE",
-            command_args=cmd,
-            message="Preparing N_m3u8DL-RE HLS download",
-            context={
-                "title": video_item.title,
-                "save_path": save_path,
-                "source_url": video_item.url,
-                "local_hls_proxy": local_proxy,
-                "thread_count": thread_count,
-            },
-            trace_id=trace_id,
-        )
-        output_progress = _Nm3u8OutputProgress(default_progress=50)
-        process = self._popen_nm3u8_process(cmd, build_new_console_flags())
-        output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
-        combined_provider = self._combine_progress_providers(progress_provider, output_progress.snapshot)
+        temp_workspace: Path | None = None
+        process: subprocess.Popen | None = None
+        output_reader: threading.Thread | None = None
         try:
+            temp_workspace = self._create_nm3u8_temp_workspace(save_path)
+            cmd = NM3U8DLREExternalTool.build_download_command(
+                executable,
+                source_url,
+                save_path,
+                user_agent,
+                referer,
+                proxy=proxy,
+                extra_headers=headers,
+                thread_count=thread_count,
+                tmp_dir=str(temp_workspace),
+            )
+            debug_logger.log_command(
+                component="N_m3u8DL_RE_Downloader",
+                tool_name="N_m3u8DL-RE",
+                command_args=cmd,
+                message="Preparing N_m3u8DL-RE HLS download",
+                context={
+                    "title": video_item.title,
+                    "save_path": save_path,
+                    "source_url": video_item.url,
+                    "local_hls_proxy": local_proxy,
+                    "thread_count": thread_count,
+                    "tmp_dir": str(temp_workspace),
+                },
+                trace_id=trace_id,
+            )
+            output_progress = _Nm3u8OutputProgress(default_progress=50)
+            process = self._popen_nm3u8_process(cmd, build_new_console_flags())
+            output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
+            combined_provider = self._combine_progress_providers(progress_provider, output_progress.snapshot)
             self._wait_external_process_with_file_progress(
                 process,
                 save_path,
@@ -503,13 +590,15 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 progress_callback,
                 50,
                 progress_provider=combined_provider,
+                temp_paths=[temp_workspace],
             )
             if process.returncode != 0:
                 raise ExternalToolError(f"N_m3u8DL-RE exited abnormally (Code: {process.returncode})")
         finally:
             self._join_nm3u8_output_reader(output_reader)
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 ExternalToolRunner.terminate_process(process)
+            self._cleanup_nm3u8_temp_workspace(temp_workspace, trace_id=trace_id)
 
     @staticmethod
     def _combine_progress_providers(
@@ -794,6 +883,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         progress_value: int,
         *,
         progress_provider: Callable[[], tuple[int, int]] | None = None,
+        temp_paths: list[str | os.PathLike[str]] | None = None,
     ) -> None:
         started_at = time.time()
         last_emit_at = 0.0
@@ -819,7 +909,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                         provider_progress, provider_bytes = progress_value, 0
                 bytes_downloaded = max(
                     int(provider_bytes or 0),
-                    self._downloaded_file_size_hint(save_path, since=started_at),
+                    self._downloaded_file_size_hint(save_path, since=started_at, extra_paths=temp_paths),
                 )
                 self._emit_progress(
                     progress_callback,
@@ -828,17 +918,26 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 )
 
     @staticmethod
-    def _downloaded_file_size_hint(save_path: str, *, since: float | None = None) -> int:
+    def _downloaded_file_size_hint(
+        save_path: str,
+        *,
+        since: float | None = None,
+        extra_paths: list[str | os.PathLike[str]] | None = None,
+    ) -> int:
         target = Path(save_path)
         total = 0
         candidates: list[Path] = []
         try:
             if target.exists():
                 candidates.append(target)
+            for path in extra_paths or []:
+                candidates.append(Path(path))
             candidates.extend(path for path in target.parent.glob(f"{target.stem}*") if path != target)
             if since is not None:
                 for path in target.parent.iterdir():
                     if path in candidates:
+                        continue
+                    if path.name == N_m3u8DL_RE_Downloader.NM3U8_TEMP_ROOT_NAME:
                         continue
                     try:
                         stat = path.stat()

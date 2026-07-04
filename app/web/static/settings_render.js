@@ -41,7 +41,7 @@
         settingSelect("\u6587\u4ef6\u547d\u540d\u89c4\u5219", "filename_template", value && value.filename_template, options.filename_template || [], "basic"),
         settingSelect("\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f", "default_open_mode", value && value.default_open_mode, options.default_open_mode || [], "basic"),
         settingCheckbox("\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00", "open_after_download", !!(value && value.open_after_download), "basic"),
-        `<button class="btn setting-action" type="button" onclick="frontendAction('register_file_associations',{include_video:true,include_image:true})">${escapeHtml(translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"))}</button>`,
+        `<button class="btn setting-action" type="button" onclick="showFileAssociationModal()">${escapeHtml(translate("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"))}</button>`,
       ].join("");
     }
     if (group === "\u4e0b\u8f7d\u8bbe\u7f6e") {

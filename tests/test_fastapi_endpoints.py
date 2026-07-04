@@ -42,9 +42,12 @@ class PingEndpointTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
     def test_ping_returns_version(self):
+        from cli import __version__
+
         data = self.client.get("/api/ping").json()
         self.assertIn("version", data)
         self.assertEqual(data.get("status"), "ok")
+        self.assertEqual(data["version"], __version__)
 
 class PlatformsEndpointTests(unittest.TestCase):
     """GET /api/platforms 平台列表。"""
@@ -170,6 +173,8 @@ class StateEndpointTests(unittest.TestCase):
 
         self.assertEqual(data["\u914d\u7f6e\u4e2d\u5fc3"], "Settings")
         self.assertEqual(data["\u4e0b\u8f7d\u961f\u5217"], "Queue")
+        self.assertEqual(data["请输入主页链接、分享链接或合集链接"], "Enter a profile, shared, or collection link")
+        self.assertEqual(data["播放前校验失败"], "Pre-playback check failed")
 
     def test_i18n_catalog_endpoint_returns_empty_for_source_language(self):
         response = self.client.get("/api/i18n/zh-CN")

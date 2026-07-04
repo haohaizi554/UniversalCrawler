@@ -241,6 +241,7 @@ class NM3U8DLREExternalTool:
         proxy: str | None = None,
         extra_headers: dict[str, str] | None = None,
         thread_count: str | int | None = None,
+        tmp_dir: str | None = None,
     ) -> list[str]:
         """构造 `N_m3u8DL-RE` 的下载命令，并指定输出目录与文件名。"""
         save_dir = os.path.dirname(save_path)
@@ -254,6 +255,10 @@ class NM3U8DLREExternalTool:
             save_dir,
             "--save-name",
             save_name_no_ext,
+        ]
+        if tmp_dir:
+            cmd.extend(["--tmp-dir", str(tmp_dir)])
+        cmd.extend([
             "--thread-count",
             thread_count_text,
             "--download-retry-count",
@@ -262,7 +267,7 @@ class NM3U8DLREExternalTool:
             "true",
             "--mux-after-done",
             "format=mp4",
-        ]
+        ])
         for key, value in headers.items():
             cmd.extend(["--header", f"{key}: {value}"])
         if proxy:

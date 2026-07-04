@@ -1228,8 +1228,30 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIsNotNone(dialog.findChild(QPushButton, "DialogPrimaryButton"))
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogStatus"))
 
+    def test_web_file_association_modal_matches_gui_confirmation_interaction(self):
+        content = _html_bundle()
+        css = _css_bundle()
+
+        self.assertIn('id="fileAssociationModal" class="modal association-modal"', content)
+        self.assertIn('id="associationTitle">绑定默认打开方式</h2>', content)
+        self.assertIn('id="associationVideo" class="association-checkbox"', content)
+        self.assertIn('id="associationImage" class="association-checkbox"', content)
+        self.assertIn('id="associationCancelBtn"', content)
+        self.assertIn('id="associationConfirmBtn"', content)
+        self.assertIn('onclick="showFileAssociationModal()"', content)
+        self.assertIn("function showFileAssociationModal()", content)
+        self.assertIn("function confirmFileAssociationModal()", content)
+        self.assertIn("function handleFileAssociationModalShortcut(event)", content)
+        self.assertIn('if (event.key === "Enter") confirmFileAssociationModal();', content)
+        self.assertIn("else cancelFileAssociationModal();", content)
+        self.assertIn('window.applyFileAssociationLanguage === "function"', content)
+        self.assertIn(".association-modal-box", css)
+        self.assertIn(".association-option-list", css)
+        self.assertIn(".association-checkbox:checked", css)
+        self.assertIn(".association-checkbox:focus", css)
+
     def test_gui_selection_dialog_uses_scoped_theme_styles(self):
-        from app.ui.dialogs.selection import SelectionDialog
+        from app.ui.dialogs.selection import SelectionDialog, SelectionTableDelegate
 
         dialog = SelectionDialog(None, items=[{"title": "测试视频"}])
         self.addCleanup(dialog.deleteLater)
@@ -1238,6 +1260,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIsNotNone(dialog.findChild(QTableWidget, "SelectionTable"))
         self.assertIsNotNone(dialog.findChild(QLabel, "SelectionDialogHeader"))
         self.assertTrue(dialog.btn_confirm.isDefault())
+        self.assertEqual(dialog.table.selectionMode(), QTableWidget.SelectionMode.NoSelection)
+        self.assertEqual(dialog.table.focusPolicy(), Qt.FocusPolicy.NoFocus)
+        self.assertEqual(dialog.table.viewport().focusPolicy(), Qt.FocusPolicy.NoFocus)
+        self.assertIsInstance(dialog.table.itemDelegate(), SelectionTableDelegate)
 
         dialog.show()
         self.app.processEvents()
@@ -1258,6 +1284,55 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertFalse(esc_dialog.isVisible())
         self.assertEqual(esc_dialog.result(), QDialog.DialogCode.Rejected.value)
+
+    def test_gui_selection_dialog_row_click_does_not_own_enter(self):
+        from app.ui.dialogs.selection import SelectionDialog
+
+        dialog = SelectionDialog(None, items=[{"title": "第一个"}, {"title": "第二个"}])
+        self.addCleanup(dialog.deleteLater)
+        dialog.show()
+        self.app.processEvents()
+
+        dialog.table.setCurrentCell(0, 0)
+        dialog._on_cell_clicked(0, 0)
+        self.assertFalse(dialog.table.currentIndex().isValid())
+
+        QTest.keyClick(dialog.table.viewport(), Qt.Key.Key_Return)
+        self.app.processEvents()
+
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted.value)
+        self.assertEqual(dialog.selected_indices, [1])
+
+    def test_web_selection_modal_matches_gui_confirmation_interaction(self):
+        content = _html_bundle()
+        css = _css_bundle()
+
+        self.assertIn('id="selectionModal" class="modal selection-modal"', content)
+        self.assertIn('role="dialog"', content)
+        self.assertIn('id="selectionTitle">任务清单确认</h2>', content)
+        self.assertIn('id="selectionHeader" class="selection-header"', content)
+        self.assertIn("<th>选择</th><th>视频标题 / 描述</th>", content)
+        self.assertIn('id="selectionAllBtn"', content)
+        self.assertIn('id="selectionInvertBtn"', content)
+        self.assertIn('id="selectionCancelBtn"', content)
+        self.assertIn('id="selectionConfirmBtn"', content)
+        self.assertIn("function selectAllSelectionItems", content)
+        self.assertIn("function invertSelectionItems", content)
+        self.assertIn("function toggleSelectionItem", content)
+        self.assertIn('tabindex="-1"', content)
+        self.assertIn('aria-checked="true"', content)
+        self.assertIn('onmousedown="event.preventDefault()"', content)
+        self.assertIn('byId("selectionConfirmBtn").focus', content)
+        self.assertIn("sendWS(\"select_tasks\", { indices: null })", content)
+        self.assertIn('document.addEventListener("keydown", event => {', content)
+        self.assertIn("}, true);", content)
+        self.assertIn(".selection-modal-box", css)
+        self.assertIn(".selection-table-shell", css)
+        self.assertIn(".selection-row:focus", css)
+        self.assertIn(".selection-row.unchecked td", css)
+        self.assertIn("appearance: none", css)
+        self.assertIn(".selection-checkbox:checked", css)
+        self.assertIn("checkbox.setAttribute(\"aria-checked\"", content)
 
     def test_gui_platform_settings_proxy_combo_uses_boolean_enabled_state(self):
         shell = self._make_shell()
@@ -1735,6 +1810,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertEqual(en_catalog["\u914d\u7f6e\u4e2d\u5fc3"], "Settings")
         self.assertEqual(tw_catalog["\u914d\u7f6e\u4e2d\u5fc3"], "\u8a2d\u5b9a\u4e2d\u5fc3")
+        self.assertEqual(en_catalog["请输入主页链接、分享链接或合集链接"], "Enter a profile, shared, or collection link")
+        self.assertEqual(tw_catalog["请输入主页链接、分享链接或合集链接"], "請輸入主頁連結、分享連結或合集連結")
+        self.assertEqual(en_catalog["播放前校验失败"], "Pre-playback check failed")
+        self.assertEqual(tw_catalog["播放前校验失败"], "播放前校驗失敗")
 
     def test_webui_loads_language_catalogs_from_shared_api(self):
         content = _html_bundle()
@@ -2003,6 +2082,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIsNotNone(failed.findChild(QScrollArea, "FailedLogExcerptScroll"))
         self.assertFalse(hasattr(failed, "title_label"))
         self.assertEqual(tuple(failed.table.itemDelegate()._action_ids), ("copy_diagnostics", "delete"))
+        self.assertNotIn("retry", snapshot["failed_items"][0].get("actions", []))
         self.assertIn("reason_label", failed.table.table_model._columns)
         self.assertIn("failed_at_table", failed.table.table_model._columns)
         self.assertIn("status_label", failed.table.table_model._columns)
@@ -2062,7 +2142,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         content = _html_bundle()
 
         for header in (
-            "<th>标题</th><th>平台</th><th>状态</th><th>进度</th><th>操作</th>",
+            "<th>视频标题</th><th>平台</th><th>状态</th><th>操作</th>",
             "<th>标题</th><th>平台</th><th>进度</th><th>速度</th><th>剩余时间</th><th>操作</th>",
             "<th>标题</th><th>完成时间</th><th>时长</th><th>格式</th><th>操作</th>",
             "<th>标题</th><th>失败时间</th><th>失败原因</th><th>状态</th><th>操作</th>",
@@ -2076,6 +2156,72 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         logs_page = content.split('id="page-logs"', 1)[1].split('id="page-settings"', 1)[0]
         self.assertNotIn("任务ID", logs_page)
+
+    def test_web_queue_page_matches_gui_toolbar_and_status_icons(self):
+        content = _html_bundle()
+        css = _css_bundle()
+
+        queue_page = content.split('id="page-queue"', 1)[1].split('id="page-active"', 1)[0]
+        queue_status_fn = content.split("function queueStatusHtml", 1)[1].split("function queueRow", 1)[0]
+        self.assertIn("queue-path-row", queue_page)
+        self.assertIn("frontendAction('clear_queue'", queue_page)
+        self.assertNotIn("queueComfortableBtn", queue_page)
+        self.assertNotIn("queueCompactBtn", queue_page)
+        self.assertIn("current.queue_status", queue_status_fn)
+        self.assertIn("queue-status-cell", queue_status_fn)
+        self.assertNotIn("status-pill", content)
+        self.assertIn("#page-queue th, #page-queue td { height: 52px; }", css)
+        self.assertIn("#page-queue th:nth-child(2), #page-queue td:nth-child(2) { width: 96px; }", css)
+        self.assertIn("#page-queue th:nth-child(4), #page-queue td:nth-child(4) { width: 44px; }", css)
+
+    def test_web_shell_matches_gui_island_structure(self):
+        content = _html_bundle()
+        css = _css_bundle()
+
+        sidebar = content.split('id="leftPanel"', 1)[1].split('<section class="right-column">', 1)[0]
+        top_bar = content.split('<header class="top-bar" id="topBar">', 1)[1].split("</header>", 1)[0]
+
+        self.assertIn('class="platform-island"', sidebar)
+        self.assertIn('id="sourceSelect"', sidebar)
+        self.assertIn('class="nav-island"', sidebar)
+        self.assertIn('class="nav-separator"', sidebar)
+        self.assertNotIn('id="sourceSelect"', top_bar)
+        self.assertIn('class="right-column"', content)
+        self.assertIn('id="statusIndicator" class="status-dot"', content)
+        self.assertIn('class="status-metric status-metric-main"><span class="status-caption" data-status-caption="下载速度">下载速度:</span><span id="statusDownload" class="status-value">0 B/s</span>', content)
+        self.assertIn('id="statusHelpBtn"', content)
+        self.assertNotIn('id="statusUpload"', content)
+        self.assertNotIn('byId("statusUpload")', content)
+        self.assertNotIn("upload_speed", content)
+        self.assertNotIn("#statusUpload", css)
+        self.assertIn(".platform-island", css)
+        self.assertIn(".custom-select-source {\n  min-width: 176px;", css)
+        self.assertIn(".source-select { min-width: 176px; }", css)
+        self.assertIn(".search-input { flex: 1; min-width: 220px; }", css)
+        self.assertIn("justify-content: center;", css)
+        self.assertIn("width: 176px;\n  min-width: 176px;\n  max-width: 176px;", css)
+        self.assertIn(".nav-island", css)
+        self.assertIn(".nav-item {\n  height: 40px;", css)
+        self.assertIn(".status-dot.running", css)
+        self.assertIn(".status-help-btn", css)
+        self.assertIn(".btn-theme { width: 48px; height: 36px;", css)
+        self.assertIn(".btn-primary.is-running:disabled", css)
+        self.assertIn("start-button-sweep", css)
+        self.assertIn('startBtn.classList.toggle("is-running", crawlRunning);', content)
+        self.assertIn("height: 34px;\n  flex: 0 0 34px;", css)
+        self.assertIn(".status-value", css)
+        self.assertIn(".status-metric-main", css)
+        self.assertIn("min-width: 88px;", css)
+        self.assertIn(".page-stack", css)
+        self.assertIn("background: transparent", css)
+        self.assertIn('data-icon="${escAttr(iconFileUrl(iconFile))}"', content)
+        self.assertIn("class=\"custom-select-icon\"", content)
+        self.assertIn(".custom-select-icon", css)
+        self.assertIn(".custom-select-label", css)
+        self.assertIn('themeButton.innerHTML = `<img src="/ui-icon/${iconFile}" alt="" />`', content)
+        self.assertIn('caption.textContent = `${t(caption.dataset.statusCaption || "")}:`;', content)
+        self.assertIn('byId("statusDownload").textContent = status.download_speed || "0 B/s";', content)
+        self.assertIn('statusIndicator.className = `status-dot ${indicator === "idle" ? "" : indicator}`.trim()', content)
 
     def test_web_active_actions_keep_delete_only(self):
         content = _html_bundle()
@@ -2095,6 +2241,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("failed-detail-card", failed_page)
         self.assertIn("failed-solutions-card", failed_page)
         self.assertNotIn("retry_failed", failed_fn)
+        mock_fn = content.split("function buildMockState()", 1)[1].split("function configureCustomSelectHelpers", 1)[0]
+        self.assertNotIn('actions: ["retry", "copy_diagnostics", "delete"]', mock_fn)
         self.assertIn("copyDiagnostics", failed_fn)
         self.assertIn("iconTextHtml", failed_fn)
         self.assertIn("failed_at_table || item.failed_at", failed_fn)
@@ -2103,9 +2251,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("solutionRowHtml", content)
         self.assertIn("#page-failed .failed-table-card", css)
         self.assertIn("#page-failed .failed-solutions-card", css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(380px, clamp(380px, var(--detail-width, 420px), 520px));", css)
         self.assertIn(".failed-log-row", css)
         self.assertIn(".failed-solution-row", css)
         self.assertIn(".failed-status-chip", css)
+        self.assertIn("#page-failed th:nth-child(4), #page-failed td:nth-child(4) { width: 82px; }", css)
+        self.assertIn("#page-failed th:nth-child(5), #page-failed td:nth-child(5) { width: 72px; }", css)
         failed_log_fn = content.split("function failedLogRowHtml", 1)[1].split("function solutionRowHtml", 1)[0]
         self.assertIn("log-level", failed_log_fn)
         self.assertNotIn("<img", failed_log_fn)
@@ -2117,6 +2268,70 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#page-failed tbody td:nth-child(3)", css)
         self.assertIn(".failed-log-row .log-level", css)
 
+    def test_web_log_center_matches_gui_tabs_actions_and_filters(self):
+        content = _html_bundle()
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        log_display = (static_dir / "log_display.js").read_text(encoding="utf-8")
+        i18n_js = (static_dir / "i18n.js").read_text(encoding="utf-8")
+        logs_page = content.split('id="page-logs"', 1)[1].split('id="page-settings"', 1)[0]
+
+        for tab in ("all", "crawl", "download", "system", "performance", "error"):
+            self.assertIn(f'data-log-tab="{tab}"', logs_page)
+        self.assertEqual(logs_page.count('class="log-filter-field"'), 5)
+        self.assertEqual(logs_page.count('class="log-filter-label"'), 5)
+        self.assertNotIn("<label><span>日志级别</span><select", logs_page)
+        self.assertIn('id="logLevelFilter" aria-label="日志级别"', logs_page)
+        self.assertIn('id="logTraceFilter" aria-label="Trace ID"', logs_page)
+        self.assertIn("<option>CMD</option>", logs_page)
+        css = _css_bundle()
+        self.assertIn("grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))", css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(400px, clamp(400px, var(--detail-width, 430px), 460px));", css)
+        self.assertIn("#page-logs .log-filter-label", css)
+        self.assertIn("#page-logs .log-filter-field input", css)
+        self.assertIn("flex: 0 0 40px", css)
+        self.assertIn("#page-logs th, #page-logs td {\n  height: 32px;", css)
+        self.assertIn("padding: 5px 8px;", css)
+        self.assertIn("#page-logs .log-filter-label", i18n_js)
+        for elem_id in ("logTotal", "logPrevPage", "logPageIndicator", "logPageSize", "logNextPage"):
+            self.assertIn(f'id="{elem_id}"', logs_page)
+        self.assertIn("共 0 条 / 匹配 0 条 / 当前显示 0 条", logs_page)
+        self.assertIn("<option value=\"0\">全部</option>", logs_page)
+        self.assertIn("#page-logs .log-footer {\n  min-height: 48px;", css)
+        self.assertIn("#page-logs .log-footer .btn {\n  height: 30px;", css)
+        self.assertIn("#logPrevPage {\n  min-width: 112px;", css)
+        self.assertIn("#logNextPage {\n  min-width: 100px;", css)
+        self.assertIn("#page-logs .custom-select-page-size,\n#page-logs .custom-select-page-size .custom-select-button {\n  height: 30px;", css)
+        self.assertIn("function setLogPage(delta)", content)
+        self.assertIn("function setLogPageSize(value)", content)
+        self.assertIn("boundedItems.slice(start, start + logPageSize)", content)
+        for action in (
+            "runLogOperation('refresh')",
+            "runLogOperation('clear')",
+            "runLogOperation('export')",
+            "runLogOperation('open_latest')",
+            "runLogOperation('open_error_summary')",
+            "copySelectedLogTraceId()",
+        ):
+            self.assertIn(action, logs_page)
+        self.assertIn("function currentLogTraceId", content)
+        self.assertIn("function copySelectedLogTraceId", content)
+        for detail_action in (
+            "function buildLogDetailPayload",
+            "function copyCurrentLogDetail",
+            "function copyCurrentLogJson",
+            "function exportCurrentLogDetail",
+        ):
+            self.assertIn(detail_action, content)
+        self.assertIn("log-inspector-header", content)
+        self.assertIn("log-json-card", content)
+        self.assertIn("copyCurrentLogJson()", content)
+        self.assertIn("copyCurrentLogDetail()", content)
+        self.assertIn("exportCurrentLogDetail()", content)
+        self.assertIn("#page-logs .log-inspector-header", css)
+        self.assertIn("#page-logs .log-json-card .log-snippet", css)
+        self.assertIn('return "performance"', log_display)
+        self.assertIn('return "crawl"', log_display)
+
     def test_web_basic_settings_use_backend_options_and_update_action(self):
         content = _html_bundle()
         css = _css_bundle()
@@ -2126,7 +2341,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("options.filename_template", settings_fn)
         self.assertIn("options.default_open_mode", settings_fn)
         self.assertIn("update_basic_setting", content)
-        self.assertIn("include_video:true,include_image:true", settings_fn)
+        self.assertIn("showFileAssociationModal()", settings_fn)
+        self.assertIn('frontendAction("register_file_associations", { include_video: includeVideo, include_image: includeImage })', content)
         self.assertNotIn("settingNumber", content)
         self.assertNotIn('type="number"', content)
         self.assertIn("options.speed_limit_kb", content)
@@ -2179,6 +2395,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("switchSettingsGroup", content)
         self.assertIn("settings-shell", content)
         self.assertIn("settings-nav-btn", content)
+        self.assertIn("集中管理下载行为、平台状态、播放体验、日志策略与界面外观", content)
+        self.assertIn('document.querySelector("#page-settings .page-head p")', content)
+        self.assertIn("高效实用的辅助工具，提升工作效率", content)
+        self.assertIn('document.querySelector("#page-toolbox .page-head p")', content)
+        self.assertIn('icon_file: "tool_link_parser.png"', content)
+        self.assertIn('icon_file: "tool_batch_rename.png"', content)
+        self.assertIn('icon_file: "tool_file_verify.png"', content)
+        self.assertNotIn('item.icon_file || "nav_toolbox.png"', content.split("function buildMockState", 1)[1].split("toolbox_recent_items", 1)[0])
         self.assertIn("platformSettingsSummary", content)
         self.assertIn("setting-platform-header", content)
         self.assertIn("platform-count", content)
@@ -2192,6 +2416,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn(".proxy-custom[hidden]", css)
         self.assertIn(".settings-shell", css)
         self.assertIn(".settings-side-nav", css)
+        self.assertIn("#page-settings .page-head {\n  flex-direction: column;", css)
+        self.assertIn("align-items: flex-start;", css)
         self.assertIn(".platform-summary", css)
         self.assertIn("has-proxy-custom", content)
         self.assertIn("grid-column: 6", css)
@@ -2231,17 +2457,21 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn('document.body.classList.toggle("is-fullscreen"', content)
         self.assertIn("#page-completed .completed-table-card", css)
         self.assertIn("#page-completed .completed-detail", css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(430px, clamp(430px, var(--detail-width, 520px), 620px));", css)
+        self.assertIn("flex: 2 1 260px", css)
+        self.assertIn("min-height: 260px", css)
         self.assertIn(".preview-panel:fullscreen", css)
-        self.assertIn("#page-completed th:nth-child(2), #page-completed td:nth-child(2) { width: 128px; }", css)
-        self.assertIn("#page-completed th:nth-child(3), #page-completed td:nth-child(3) { width: 104px; }", css)
-        self.assertIn("#page-completed th:nth-child(4), #page-completed td:nth-child(4) { width: 84px; }", css)
-        self.assertIn("#page-completed th:nth-child(5), #page-completed td:nth-child(5) { width: 92px; }", css)
+        self.assertIn("#page-completed th:nth-child(2), #page-completed td:nth-child(2) { width: 142px; }", css)
+        self.assertIn("#page-completed th:nth-child(3), #page-completed td:nth-child(3) { width: 108px; }", css)
+        self.assertIn("#page-completed th:nth-child(4), #page-completed td:nth-child(4) { width: 76px; }", css)
+        self.assertIn("#page-completed th:nth-child(5), #page-completed td:nth-child(5) { width: 100px; }", css)
 
     def test_web_active_controls_and_detail_values_are_wrap_ready(self):
         content = _html_bundle()
         css = _css_bundle()
         active_page = content.split('id="page-active"', 1)[1].split('id="page-completed"', 1)[0]
 
+        self.assertIn('class="active-control-title">队列控制</strong>', active_page)
         self.assertIn('class="active-toggle"', active_page)
         self.assertIn('id="activeAutoRetry"', active_page)
         self.assertIn('id="activeMaxConcurrent"', active_page)
@@ -2268,6 +2498,13 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", css)
         self.assertIn(".kv-value.smart-wrap { overflow-wrap: normal", css)
         self.assertIn("#page-active .page-grid", css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(360px, clamp(360px, var(--detail-width, 400px), 500px));", css)
+        self.assertIn(".active-control-title", css)
+        self.assertIn("#page-active td {\n  height: 74px;", css)
+        self.assertIn("#page-active th {\n  height: 40px;", css)
+        self.assertIn("#page-active th:nth-child(2), #page-active td:nth-child(2) { width: 82px; }", css)
+        self.assertIn("#page-active th:nth-child(3), #page-active td:nth-child(3) { width: 118px; }", css)
+        self.assertIn("#page-active th:nth-child(6), #page-active td:nth-child(6) { width: 72px; }", css)
         self.assertIn("#activeDetail .active-detail-card", css)
         self.assertIn("#activeDetail .active-detail-fields .kv", css)
         self.assertIn("line-height: 1.18", css)
@@ -2279,9 +2516,13 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('"update_completed_metadata"', content)
         self.assertIn("metadataValueRenderer(item.duration, item.metadata_pending)", content)
         self.assertIn("speed-label", content)
+        self.assertIn("stroke-linecap: round", css)
+        self.assertIn('"队列控制": "Queue controls"', content)
+        self.assertIn("stroke-linejoin: round", css)
 
     def test_web_rendering_uses_stable_dom_update_guards(self):
         content = _html_bundle()
+        css = _css_bundle()
 
         self.assertIn("function setHtmlIfChanged", content)
         self.assertIn("function patchTableRows", content)
@@ -2292,6 +2533,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("hasFocusedDescendant(\"settingsGrid\")", content)
         self.assertIn("webui_detail_width", content)
         self.assertIn("oldRow.classList.remove(\"selected\")", content)
+        self.assertIn("--row-hover", css)
+        self.assertIn("tbody tr:hover:not(.selected) td", css)
+        self.assertIn("tr.selected:hover td", css)
+        self.assertIn("background: var(--row-selected)", css)
+        self.assertIn(".op.icon {\n  width: 24px;\n  height: 28px;", css)
+        self.assertIn("border-color: transparent", css)
+        self.assertIn("#page-active td:nth-child(6)", css)
+        self.assertIn("scrollbar-color: var(--border-strong) transparent", css)
+        self.assertIn("*::-webkit-scrollbar-button", css)
+        self.assertIn("background-clip: content-box", css)
+        self.assertIn("margin: 0 4px;", css)
 
     def test_web_custom_select_logic_is_split_into_component(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -2303,7 +2555,36 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("window.UcpCustomSelect", custom_select)
         self.assertIn("window.UcpCustomSelect.enhance", app_js)
         self.assertIn("window.UcpCustomSelect.syncForSelect", app_js)
+        self.assertIn("fitWidthToContent", custom_select)
+        self.assertIn("custom-select-page-size", custom_select)
+        self.assertIn("optionTextWidth", custom_select)
         self.assertNotIn("let openCustomSelect", app_js)
+
+    def test_web_custom_select_autofits_count_and_page_size_without_menu_gap(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        css = (static_dir / "app.css").read_text(encoding="utf-8")
+        custom_select = (static_dir / "custom_select.js").read_text(encoding="utf-8")
+
+        self.assertIn('wrapper.classList.contains("custom-select-count")', custom_select)
+        self.assertIn('wrapper.classList.contains("custom-select-page-size")', custom_select)
+        self.assertIn("Math.ceil(widest + 48)", custom_select)
+        self.assertIn(".custom-select-count {\n  width: auto;", css)
+        self.assertIn(".custom-select-page-size", css)
+        self.assertIn(".custom-select-page-size .custom-select-button {\n  height: 34px;", css)
+        self.assertIn(".custom-select-menu", css)
+        self.assertIn("calc(var(--option-count, 6) * 36px + 4px)", css)
+        self.assertIn("padding: 0;", css)
+        self.assertIn("border-radius: 0;", css)
+
+    def test_web_top_bar_wraps_on_narrow_desktop_without_squashing_buttons(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        css = (static_dir / "app.css").read_text(encoding="utf-8")
+
+        self.assertIn("flex: 0 0 auto;", css)
+        self.assertIn("@media (max-width: 1120px) and (min-width: 981px)", css)
+        self.assertIn(".top-bar .search-input", css)
+        self.assertIn("flex: 1 1 100%;", css)
+        self.assertIn("min-width: 0;", css)
 
     def test_web_media_display_logic_is_split_into_component(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"

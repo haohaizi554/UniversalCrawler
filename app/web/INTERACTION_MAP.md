@@ -49,7 +49,7 @@ GUI 和 WebUI 的配置中心统一读取 `FrontendStateService.settings_snapsho
 
 关键约束：允许为 `0` 的字段必须保留零值语义，例如 `download.max_retries=0` 表示不重试，不能被默认值覆盖。
 
-显示一致性约束：主题色必须覆盖 GUI/WebUI 的下拉框 focus/open 状态和选中行背景；顶部主题按钮必须同步外观页 Light/Dark 控件；语言切换保留中文分组键作为数据契约，只在展示层翻译顶栏、侧栏、状态栏和设置项标签。
+显示一致性约束：主题色必须覆盖 GUI/WebUI 的下拉框 focus/open 状态和选中行背景；顶部主题按钮必须同步外观页 Light/Dark 控件；语言切换保留中文分组键作为数据契约，只在展示层翻译顶栏、侧栏、状态栏、设置项标签、弹窗按钮、自定义选择框文本和前端运行时 UI 提示。后端真实日志内容保持原文，避免排障证据被翻译后失真。
 
 WebUI 状态刷新约束：`/api/frontend/state` 和 `/api/frontend/delta` 必须在所有 FastAPI 启动路径中同时存在；`app.web.server.create_app()` 与 `app.web.rest_router.build_rest_router()` 的返回结构要保持一致。首屏静态资源使用带版本参数的 `/static/app.css?v=...` 和 `/static/app.js?v=...`，并且真实 `create_app()` 路径必须对首页、`app.css`、`app.js` 返回禁缓存头，避免升级后浏览器继续使用旧 CSS/JS。
 
@@ -138,23 +138,24 @@ GUI:  play_btn.clicked → on_play(video_item.id)
                   → player.play()
                   → btn_play.setIcon(SP_MediaPause)
 
-Web:  op-btn onclick → previewVideo(id)
-      → v = videos[id]
-      → if (!v.local_path): appendLog("❌ 文件不存在"); return
-      → selectedVideoId = id; renderQueue()
-      → area.innerHTML = '<video src="/api/media/{id}">'
-      → player.play().catch(()=>{})
+Web:  action button onclick → playCompleted(id)
+      → selectCompleted(id) / selectedVideoId = id
+      → validateMediaForPreview(id) 轻量 Range 预检
+      → currentPlayingId = id
+      → image: previewArea 渲染 <img>
+        video: videoPlayer.src = "/api/media/{id}"
+      → video.play().catch(appendPlaybackFailure)
       → setupPlayerEvents(player)
       → appendLog("▶️ 播放: {title}")
 ```
 
 | 差异点 | GUI | Web | 状态 |
 |---|---|---|---|
-| 文件存在检查 | `os.path.exists(local_path)` 服务端检查 | 前端只检查 `v.local_path` 非空，服务端 `/api/media/` 返回 404 时 `onerror` 处理 | ✅ 最佳替代 |
+| 文件存在检查 | `os.path.exists(local_path)` 服务端检查 | `validateMediaForPreview()` 先用 `/api/media/{id}` + `Range: bytes=0-0` 轻量校验，成功后才进入预览 | ✅ 已对齐 |
 | 图片预览 | `show_image(local_path)` → QLabel + QPixmap | `<img src="/api/media/{id}">` | ✅ |
 | 视频播放 | QMediaPlayer + QVideoWidget | HTML5 `<video>` | ✅ |
-| 播放按钮图标 | `SP_MediaPause` / `SP_MediaPlay` | `⏸` / `▶` 文字 | ✅ |
-| **current_playing_id** | `controller.current_playing_id = vid` | 前端 `selectedVideoId = id` | ❌ **BUG-11: 语义混淆** |
+| 播放按钮图标 | `SP_MediaPause` / `SP_MediaPlay` | icon manifest 播放/暂停资源 | ✅ |
+| **current_playing_id** | `controller.current_playing_id = vid` | 前端 `currentPlayingId = id`，`selectedVideoId` 仅表示表格选中行 | ✅ **BUG-11 已修复** |
 | **播放失败提示** | `QMediaPlayer.errorOccurred` → 日志 | `onerror` → 日志 + `closePreview()` | ✅ |
 
 ### 流程4: 删除视频
@@ -172,23 +173,23 @@ GUI:  delete_btn.clicked → on_delete(video_id)
           → window.remove_video_row(row_idx)
           → window.refresh_table_bindings()
 
-Web:  op-btn.del onclick → deleteVideo(id)
-      → if selectedVideoId === id: closePreview(); selectedVideoId = null
-      → sendWS('delete_video', {video_id: id})
+Web:  danger action button onclick / frontendAction('delete_item') → prepareDeleteItem(id)
+      → if currentPlayingId === id: closePreview()
+      → frontendAction('delete_item', {id})
       → controller.delete_video(video_id)
           → cancel_result = dl_manager.cancel_task(video_id)
           → file_service.delete_media(video)
           → del self.videos[video_id]
           → bridge.emit("video_removed", {video_id})
-      → 前端收到 video_removed → delete videos[id]; videoOrder.filter(); renderQueue()
+      → 前端收到 video_removed / deleted_ids → removeDeletedFromFrontendState()
 ```
 
 | 差异点 | GUI | Web | 状态 |
 |---|---|---|---|
 | 传参 | `sig_delete_video(row_idx, video_id)` | `delete_video({video_id})` 无 row_idx | ✅ Web 不需要 row_idx |
 | 停止播放 | `window.stop_media_playback()` → `player.stop()` | `closePreview()` → 清空 HTML | ✅ |
-| 清除 playing_id | `current_playing_id = None` | `selectedVideoId = null` | ❌ **BUG-11: 应检查 currentPlayingId** |
-| 刷新绑定 | `window.refresh_table_bindings()` | 不需要（Web 每次渲染重建 DOM） | ✅ |
+| 清除 playing_id | `current_playing_id = None` | `currentPlayingId = null`，必要时先 `closePreview()` | ✅ |
+| 刷新绑定 | `window.refresh_table_bindings()` | 不需要；Web 用 keyed patch 更新 DOM | ✅ |
 
 ### 流程5: 重命名
 
@@ -228,29 +229,29 @@ Web:  双击标题 → startRename(id, td)
 
 ```
 GUI:  btn_start.clicked → on_btn_start_clicked()
-      → if not current_plugin: append_log("❌ 未选择有效模式"); return
+      → if not current_plugin: append_log("未选择有效平台"); return
       → keyword = inp_search.text().strip()
-      → if not keyword: append_log("⚠️ 请输入搜索内容！"); return
-      → run_options = current_plugin.get_run_options(plugin_widget)
+      → if not keyword: append_log("请输入主页链接、分享链接或合集链接"); return
+      → run_options = read_plugin_run_options(current_plugin.id, plugin_widget)
       → sig_start_crawl.emit(keyword, source_id, run_options)
-      → set_crawl_running_state(True)  ← 立即设置 UI 状态
       → controller.on_start_crawl(keyword, source_id, config)
           → if _has_active_spider(): append_log("⚠️ 当前已有任务在运行"); return
           → _create_spider() → _bind_spider_signals() → spider.start()
 
 Web:  startBtn.onclick → startCrawl()
-      → if !keyword: appendLog("⚠️ 请输入搜索内容！"); return
-      → setCrawlState(true)  ← 立即设置 UI 状态
+      → if !keyword: appendUiLog("请输入主页链接、分享链接或合集链接"); return
+      → if !platformKnown: appendUiLog("未选择有效模式", "", "❌ "); return
       → sendWS('start_crawl', {source, keyword, config})
+      → setCrawlUiState(true)  ← WebSocket 投递成功后才进入运行态
       → controller.start_crawl(source, keyword, config)
           → 同上逻辑
 ```
 
 | 差异点 | GUI | Web | 状态 |
 |---|---|---|---|
-| 检查 current_plugin | `if not current_plugin` | 前端不检查（source 总有值） | ✅ |
-| get_run_options | `current_plugin.get_run_options(plugin_widget)` | `getRunConfig()` 从 DOM 读取 | ✅ |
-| 立即设置 UI | `set_crawl_running_state(True)` | `setCrawlState(true)` | ✅ |
+| 检查 current_plugin / platform | `if not current_plugin` | 检查 `platformKnown`（平台列表或设置快照存在） | ✅ |
+| 读取 run_options | `read_plugin_run_options()` + 顶部爬取数量 | `startCrawl()` 读取顶部爬取数量和平台配置键 | ✅ |
+| 切换运行态 | 控制器任务进入运行后广播状态 | `sendWS()` 成功后 `setCrawlUiState(true)`，失败时不禁用 | ✅ |
 | 活跃爬虫检查 | 服务端 `_has_active_spider()` | 服务端检查 | ✅ |
 
 ### 流程7: 选择对话框
@@ -268,13 +269,13 @@ GUI:  spider.sig_select_tasks(items)
 Web:  select_tasks 事件
       → showSelectionModal(data.items)
       → confirmSelection() → sendWS('select_tasks', {indices: [0,2,5]})
-      → cancelSelection() → sendWS('select_tasks', {indices: []})
+      → cancelSelection() → sendWS('select_tasks', {indices: null})
       → controller.resume_spider_selection(indices)
 ```
 
 | 差异点 | GUI | Web | 状态 |
 |---|---|---|---|
-| 取消返回值 | `None` | `[]` | ⚠️ **需确认 spider 对 None vs [] 的处理** |
+| 取消返回值 | `None` | `null` → 后端恢复为 `None` | ✅ |
 | 对话框尺寸 | `resize(800, 600)` | CSS `width:800px; height:600px` | ✅ |
 | 全选/反选 | 有 | 有 | ✅ |
 | 默认全选 | 有 | 有 | ✅ |
@@ -293,7 +294,7 @@ GUI:  btn_theme.clicked → toggle_theme()
 Web:  themeBtn.onclick → toggleTheme()
       → isDarkTheme = !isDarkTheme
       → document.documentElement.setAttribute('data-theme', ...)
-      → themeBtn.textContent = isDarkTheme ? '🌙' : '☀️'
+      → themeBtn.innerHTML = 主题图标 `<img>`
       → appendLog("🎨 已切换到深色/浅色主题")
       → sendWS('change_theme', {dark_theme: isDarkTheme})
 ```
@@ -301,7 +302,7 @@ Web:  themeBtn.onclick → toggleTheme()
 | 差异点 | GUI | Web | 状态 |
 |---|---|---|---|
 | 应用方式 | `setStyleSheet()` 全局替换 | CSS 变量切换 | ✅ |
-| 图标更新 | `set_theme_icon()` → 🌙/☀️ | `textContent` 切换 | ✅ |
+| 图标更新 | `set_theme_icon()` → 主题图标 | `themeBtn.innerHTML` → 同组主题图标 | ✅ |
 | 保存到配置 | `cfg.set_many()` 批量写 `theme/dark_theme` | `sendWS('change_theme')` → 服务端 `cfg.set_many()` | ✅ |
 | 启动恢复 | `cfg.get("common","dark_theme",True)` | `applyConfig()` 中恢复 | ✅ |
 
@@ -374,21 +375,21 @@ Web:  copyTraceId()
 
 | 属性 | GUI (TopBarWidget) | Web (.top-bar) | 差异 | 状态 |
 |---|---|---|---|---|
-| 高度 | `setFixedHeight(50)` | `height:50px` | 一致 | ✅ |
-| 内边距 | `setContentsMargins(10,5,10,5)` | `padding:5px 10px` | 一致 | ✅ |
+| 高度 | 搜索/数量/操作按钮 40px，主题按钮 36px | `.btn`/搜索/选择框 40px，主题按钮 36px | 一致 | ✅ |
+| 内边距 | 顶栏控件行由 shell 岛布局承载，内部 margin 为 0 | `.top-bar` 由右侧栏承载，控件间距由 gap 控制 | 一致 | ✅ |
 | 间距 | `setSpacing(10)` | `gap:10px` | 一致 | ✅ |
 | 背景 | `QFrame#TopBar { background: panel }` | `background:var(--panel)` | 一致 | ✅ |
 | 下边框 | `border-bottom: 1px solid border` | `border-bottom:1px solid var(--border)` | 一致 | ✅ |
-| 来源选择器 | `QComboBox` + `SizeAdjustPolicy.AdjustToContents` | `<select>` + `source-select` | Web 下拉宽度不自适应内容 | ❌ **BUG-13** |
+| 来源选择器 | 已移入侧栏 `PlatformSourceCombo`，固定 176px 并显示平台图标 | 侧栏自定义选择框固定 176px 并显示平台图标 | 已对齐 | ✅ **BUG-13** |
 | 搜索框 | `QLineEdit` + `SizePolicy.Expanding` | `<input>` + `flex:1` | 一致 | ✅ |
 | 搜索框聚焦 | `QLineEdit:focus { border: 1px solid accent }` | `.search-input:focus { border:1px solid var(--accent) }` | 一致 | ✅ |
 | 搜索框占位符 | `setPlaceholderText(placeholder)` 由插件提供 | `placeholder` 由 `renderPlatformSelect()` 设置 | 一致 | ✅ |
-| 启动按钮 | `QPushButton#PrimaryBtn` + `setFixedHeight(30)` | `.btn-primary` + `height:30px` | 一致 | ✅ |
-| 停止按钮 | `QPushButton#DangerBtn` + `setEnabled(False)` | `.btn-danger` + `disabled` | 一致 | ✅ |
-| 目录按钮 | `QPushButton#DirBtn` 虚线边框 | `.btn-dir` 虚线边框 | 一致 | ✅ |
-| 主题按钮宽度 | `setFixedWidth(40)` | `min-width:40px` | Web 用 min-width，实际可能更宽 | ❌ **BUG-14** |
-| 主题按钮圆角 | `border-radius: 15px` | `border-radius:15px` | 一致 | ✅ |
-| 主题按钮内边距 | `padding: 5px 12px` | `padding:5px 12px` | 一致 | ✅ |
+| 启动按钮 | `StartTaskButton` 40px 高，运行中保持主题色反馈 | `.btn-primary` 40px 高，`.is-running` 保持主题色并显示 sweep 动画 | 一致 | ✅ |
+| 停止按钮 | `StopTaskBtn` 40px 高，未运行禁用 | `.btn-danger` 40px 高，未运行禁用 | 一致 | ✅ |
+| 目录按钮 | `DirBtn` 40px 高，最大宽 116 | `.btn-dir` 40px 高 | 一致 | ✅ |
+| 主题按钮宽度 | `setFixedWidth(48)` / `setFixedHeight(36)` | `.btn-theme { width:48px; height:36px }` | 一致 | ✅ **BUG-14 已修复** |
+| 主题按钮圆角 | 18px 胶囊 | 18px 胶囊 | 一致 | ✅ |
+| 主题按钮内边距 | 图标居中，无文本内边距 | `padding:0`，图标居中 | 一致 | ✅ |
 | 动态配置区 | `QHBoxLayout` + `setSpacing(8)` | `.dynamic-area` + `gap:8px` | 一致 | ✅ |
 
 ### 3.2 DownloadQueuePanel（左侧下载队列）
@@ -405,28 +406,28 @@ Web:  copyTraceId()
 | 路径标签颜色 | `QLabel#PathLabel { color: accent; font-family: Consolas; font-weight: bold }` | `.path { color:var(--accent); font-family:Consolas; font-weight:bold }` | 一致 | ✅ |
 | 路径标签溢出 | `QSizePolicy.Expanding` → Qt 自动省略 | `overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1` | 一致 | ✅ |
 | 路径标签 tooltip | `setToolTip(save_dir)` | `title=currentSaveDir` | 一致 | ✅ |
-| 表格行高 | `verticalHeader.setDefaultSectionSize(36)` | `td { height:36px }` | 一致 | ✅ |
+| 表格行高 | 队列 52；正在下载 74；完成/失败 56；日志 32 | Web 使用页面级 `th/td` 高度复刻 | 一致 | ✅ |
 | 表格无网格线 | `setShowGrid(False)` | `td { border-left:none; border-right:none; border-top:none }` | 一致 | ✅ |
-| 交替行色 | `setAlternatingRowColors(True)` | `tr:nth-child(even) { background:var(--alt-row) }` | 一致 | ✅ |
-| 选中行高亮 | `selection-background-color: accent; selection-color: white` | `tr.selected { background:var(--accent); color:#fff }` | 一致 | ✅ |
+| 交替行色 | `setAlternatingRowColors(False)` | 不使用斑马纹 | 一致 | ✅ |
+| 选中行高亮 | `selection-background-color: row_selected`，hover 不覆盖 selected | `tbody tr:hover:not(.selected)` + `tr.selected:hover td { background:var(--row-selected) }` | 一致 | ✅ |
 | 表头固定 | `QHeaderView` 自带 sticky | `th { position:sticky; top:0; z-index:1 }` | 一致 | ✅ |
 | 表头背景 | `QHeaderView::section { background: input }` | `th { background:var(--input) }` | 一致 | ✅ |
 | 标题列宽度 | `Stretch` | `style="width:100%"` | 一致 | ✅ |
-| 状态列宽度 | `ResizeToContents` | `width:90px; text-align:center` | 固定宽度 vs 自适应 | ⚠️ 次要差异 |
-| 进度列宽度 | `ResizeToContents` | `width:120px` | 固定宽度 vs 自适应 | ⚠️ 次要差异 |
-| 操作列宽度 | `ResizeToContents` | `width:80px; text-align:center` | 固定宽度 vs 自适应 | ⚠️ 次要差异 |
+| 状态列宽度 | 队列状态 112；失败状态 82；其他状态随页面列定义 | Web 使用同样页面级固定宽度，避免状态刷新抖动 | 一致 | ✅ |
+| 进度列宽度 | 正在下载进度 118 | Web `#page-active` 进度列 118px | 一致 | ✅ |
+| 操作列宽度 | `SnapshotActionTable` 按动作数计算：队列 44、正在下载 72、完成 100、失败 72 | Web 使用同样页面级固定列宽，操作单元格去除左右 padding | 一致 | ✅ |
 | 进度条样式 | `QProgressBar { text-align:center; font-size:11px }` | `.progress-wrap { text-align:center; font-size:11px }` | 一致 | ✅ |
 | 进度条圆角 | `border-radius:3px` | `border-radius:3px` | 一致 | ✅ |
-| 播放按钮图标 | `SP_MediaPlay` 系统图标 | `▶` 文字 | 视觉差异 | ✅ 最佳替代 |
-| 删除按钮图标 | `SP_TrashIcon` 系统图标 | `✕` 文字 | 视觉差异 | ✅ 最佳替代 |
-| 播放按钮尺寸 | `setFixedSize(28, 26)` | `width:28px; height:26px` | 一致 | ✅ |
-| 操作按钮间距 | `setSpacing(8)` | `margin:0 2px` | 间距不同 | ❌ **BUG-15** |
+| 播放按钮图标 | `SP_MediaPlay` 系统图标 | icon manifest `action_play.png` | 图标资源对齐 | ✅ |
+| 删除按钮图标 | `SP_TrashIcon` 系统图标 | icon manifest `action_delete.png` | 图标资源对齐 | ✅ |
+| 播放/删除图标尺寸 | `SnapshotActionTableDelegate` 在操作列绘制 18px 图标 | `.op.icon` 为 24x28 透明点击区，内部图标 18px | 视觉等价 | ✅ |
+| 操作按钮间距 | `setSpacing(8)` | `.op { margin:0 4px }`，相邻按钮间距 8px | 一致 | ✅ **BUG-15 已修复** |
 | 标题 tooltip | `title_item.setToolTip(video_item.title)` | `title="${esc(v.title)}"` | 一致 | ✅ 已修复 |
 | 标题双击编辑 | QTableWidget 内置编辑 | JS `ondblclick="startRename()"` | 一致 | ✅ |
 | 标题溢出省略 | Qt 自动省略 | `overflow:hidden; text-overflow:ellipsis; white-space:nowrap` | 一致 | ✅ |
 | 滚动条始终显示 | `ScrollBarAlwaysOn` | `overflow-y:scroll` | 一致 | ✅ |
 | **选中行方式** | `SelectRows` 点击任意列选中整行 | `onclick="selectVideo()"` 只在 `<tr>` 上 | 一致 | ✅ |
-| **选中行后播放** | 点击播放按钮 → `on_play(video_id)` → `sig_play_video.emit()` | 点击播放按钮 → `previewVideo(id)` 直接播放 | GUI 走控制器，Web 前端直接播放 | ❌ **BUG-16** |
+| **选中行后播放** | 点击播放按钮 → `on_play(video_id)` → `sig_play_video.emit()` → 控制器校验文件 | 点击播放按钮 → `playCompleted(id)` → 服务端 Range 校验 → 预览 | 服务端存在性校验已对齐 | ✅ **BUG-16** |
 | **选中行后删除** | 点击删除按钮 → `on_delete(video_id)` → `sig_delete_video.emit()` | 点击删除按钮 → `deleteVideo(id)` → `sendWS('delete_video')` | 一致 | ✅ |
 
 ### 3.3 MediaPreviewPanel（右侧媒体预览）
@@ -453,23 +454,27 @@ Web:  copyTraceId()
 | **图片切换到视频** | `img_lbl.hide(); vid_w.show(); player.stop()` | 替换 `area.innerHTML` 为 `<video>` | 一致 | ✅ |
 | **视频切换到图片** | `vid_w.hide(); img_lbl.show(); player.stop()` | 替换 `area.innerHTML` 为 `<img>` | 一致 | ✅ |
 | **播放/暂停切换** | `toggle_play()` → 检查 `PlaybackState` | `togglePlay()` → 检查 `player.paused` | 一致 | ✅ |
-| **播放按钮状态** | `_set_play_button_paused()` → `SP_MediaPause` | `player.onplay` → `⏸` | 一致 | ✅ |
-| **暂停按钮状态** | `_set_play_button_stopped()` → `SP_MediaPlay` | `player.onpause` → `▶` | 一致 | ✅ |
-| **预览区占位文字** | 无（默认空白） | `"选择视频进行预览"` | Web 多了占位文字 | ⚠️ 次要差异 |
+| **播放按钮状态** | `_set_play_button_paused()` → `SP_MediaPause` | `player.onplay` → 暂停态图标 | 一致 | ✅ |
+| **暂停按钮状态** | `_set_play_button_stopped()` → `SP_MediaPlay` | `player.onpause` → 播放态图标 | 一致 | ✅ |
+| **预览区占位文字** | 无（默认媒体画布） | 无（默认媒体画布） | 一致 | ✅ |
 | **关闭预览** | `stop_playback()` → `player.stop()` + `setSource(QUrl())` | `closePreview()` → 清空 HTML | 一致 | ✅ |
 
-### 3.4 LogPanel（日志面板）
+### 3.4 LogCenterPage（日志中心）
 
-| 属性 | GUI (LogPanel) | Web (.log-panel) | 差异 | 状态 |
+当前用户可见入口是 GUI `LogCenterPage` 与 Web `#page-logs`。旧 `LogPanel` / `#logPanel` 仅作为隐藏兼容节点保留，不再作为主体验对齐目标。
+
+| 属性 | GUI (LogCenterPage) | Web (#page-logs) | 差异 | 状态 |
 |---|---|---|---|---|
-| 类型 | `QPlainTextEdit` | `<div>` | 不同实现 | ✅ 最佳替代 |
-| 只读 | `setReadOnly(True)` | 无输入控件 | 一致 | ✅ |
-| 背景 | `QPlainTextEdit#LogText { background: log_bg }` | `background:var(--log-bg)` | 一致 | ✅ |
-| 边框 | `border: 1px solid border` | `border:1px solid var(--border)` | 一致 | ✅ |
-| 字体 | 默认（继承全局 `font-size:13px`） | `font-family:Consolas; font-size:13px` | Web 用等宽字体 | ⚠️ 次要差异 |
-| 自动滚动 | `moveCursor(End)` | `el.scrollTop = el.scrollHeight` | 一致 | ✅ |
-| 滚动条始终显示 | `ScrollBarAlwaysOn` | `overflow-y:scroll` | 一致 | ✅ |
-| **日志条目上限** | 无限制（QPlainTextEdit 自带优化） | `while (el.children.length > 500) el.removeChild(el.firstChild)` | Web 限制 500 条 | ⚠️ 次要差异 |
+| 类型 | `SnapshotActionTable` + 右侧 inspector | 表格 + `#logDetail` 详情栏 | 不同实现 | ✅ 最佳替代 |
+| 分类页签 | 全部/采集/下载/系统/性能/异常 | 全部/采集/下载/系统/性能/错误 | 文案按端侧约定 | ✅ |
+| 过滤项 | 日志级别、时间范围、平台、Trace ID、关键词 | 同项过滤 | 一致 | ✅ |
+| 操作按钮 | 刷新、清空、导出、debug.log、error.md、复制 TraceID | 同项操作 | 一致 | ✅ |
+| 级别/来源展示 | 列表与详情均使用 `level_display` 徽标 + `source_display`/平台图标 | 同源字段渲染 `.log-level-badge` + `.log-source-cell` | 一致 | ✅ |
+| 分页统计 | `共 N 条 / 匹配 M 条 / 当前显示 K 条` | `#logTotal` 同步显示 | 一致 | ✅ |
+| 每页条数 | `20/50/100/全部` | `logPageSize`：`20/50/100/全部` | 一致 | ✅ |
+| 翻页按钮 | `上一页` / `下一页` | `logPrevPage` / `logNextPage` | 一致 | ✅ |
+| 运行时日志时间 | `time.strftime("%Y-%m-%d %H:%M:%S")` 本地时间 | `formatLocalDateTime()` 本地时间 | 一致 | ✅ |
+| 隐藏兼容日志节点 | 旧 `LogPanel` 固定 500 block | `#logPanel` 位于 `.compat-hidden`，仅供旧接口镜像 | 不进入主视觉 | ✅ |
 
 ### 3.5 QSplitter（分割线）
 
@@ -481,26 +486,27 @@ Web:  copyTraceId()
 | 拖拽光标 | Qt 内置 `SplitHCursor` / `SplitVCursor` | `cursor:col-resize` / `cursor:row-resize` | 一致 | ✅ |
 | **拖拽时高亮** | Qt 内置 | `.h-splitter.active { background:var(--accent) }` | 一致 | ✅ |
 | **拖拽时禁止选择** | Qt 内置 | `document.body.style.userSelect='none'` | 一致 | ✅ |
-| **保存/恢复比例** | `saveState()` / `restoreState()` | 不保存（刷新后恢复默认） | ❌ **BUG-17** |
+| **详情栏宽度记忆** | 当前 AppShell 不再使用主 splitter | Web 记忆 `webui_detail_width`，兼容节点隐藏 | ✅ |
 
 ### 3.6 SelectionDialog（选择对话框）
 
-| 属性 | GUI (SelectionDialog) | Web (.modal-overlay) | 差异 | 状态 |
+| 属性 | GUI (SelectionDialog) | Web (`.selection-modal`) | 差异 | 状态 |
 |---|---|---|---|---|
-| 尺寸 | `resize(800, 600)` | `width:800px; height:600px` | 一致 | ✅ |
+| 尺寸 | `resize(800, 600)` | `.selection-modal-box { width:min(800px,94vw); height:min(600px,84vh) }` | 桌面一致，小屏自适应 | ✅ |
 | 标题 | `"共扫描到 N 个资源，请勾选需要下载的项目："` | 同上 | 一致 | ✅ |
 | 表格列 | `["选择", "视频标题 / 描述"]` | 同上 | 一致 | ✅ |
-| 复选框列宽 | `setColumnWidth(0, 60)` | `style="width:60px"` | 一致 | ✅ |
+| 复选框列宽 | `setColumnWidth(0, 48)` | `.selection-table td:first-child { width:58px }` | 视觉接近，保留 Web 命中面积 | ✅ |
 | 默认全选 | `chk.setChecked(True)` | `checked` | 一致 | ✅ |
-| 全选按钮 | `"全选"` + `setFixedSize(80, 30)` | `"全选"` + `style="width:80px;height:30px"` | 一致 | ✅ |
-| 反选按钮 | `"反选"` + `setFixedSize(80, 30)` | `"反选"` + `style="width:80px;height:30px"` | 一致 | ✅ |
-| 取消按钮 | `"取消任务"` + `DangerBtn` + `setFixedSize(100, 35)` | `"取消任务"` + `.btn-danger` + `style="width:100px;height:35px"` | 一致 | ✅ |
-| 确认按钮 | `"开始下载"` + `PrimaryBtn` + `setFixedSize(120, 35)` | `"开始下载"` + `.btn-primary` + `style="width:120px;height:35px"` | 一致 | ✅ |
-| 交替行色 | `setAlternatingRowColors(True)` | `tr:nth-child(even) { background:var(--alt-row) }` | 一致 | ✅ |
+| 全选按钮 | `"全选"` + `select_all()` | `selectAllSelectionItems()` | 一致 | ✅ |
+| 反选按钮 | `"反选"` + `select_invert()` | `invertSelectionItems()` | 一致 | ✅ |
+| 取消按钮 | `"取消任务"` + `reject()` | `cancelSelection()` → `sendWS("select_tasks", {indices:null})` | 一致 | ✅ |
+| 确认按钮 | `"开始下载"` + 默认按钮 | `selectionConfirmBtn.focus()` + `confirmSelection()` | 一致 | ✅ |
+| 行点击 | 点击任意单元格切换勾选，并清理当前行焦点 | `toggleSelectionItem(index,event)`，行本身不持有焦点 | 一致 | ✅ |
+| 快捷键 | Return/Enter 确认，Esc 取消 | `keydown` 捕获阶段优先处理 Enter/Escape | 一致 | ✅ |
 | 标题列不可编辑 | `setFlags(flags ^ ItemIsEditable)` | 无编辑功能 | 一致 | ✅ |
 | 按钮布局 | 全选/反选左对齐 + stretch + 取消/确认右对齐 | 同上 | 一致 | ✅ |
 | **继承父窗口主题** | `setStyleSheet(parent.styleSheet())` | 自动继承 CSS 变量 | 一致 | ✅ |
-| **模态** | `dialog.exec()` 阻塞 | CSS overlay + `display:flex` | 一致 | ✅ |
+| **模态** | `dialog.exec()` 阻塞 | CSS overlay + `display:flex`，后端用 selection wait 事件阻塞 spider | 一致 | ✅ |
 
 ---
 
@@ -517,15 +523,15 @@ GUI:  VideoItem (Python dataclass) → 直接在内存中引用
 
 Web:  VideoItem (Python) → _video_item_to_dict() → JSON → WebSocket → JS object
       → videos[id] = data → 访问 v.title / v.status / v.progress
-      → video_state_changed 事件 → 更新 videos[id].status / .progress → renderQueue()
+      → video_state_changed 事件 → 更新状态快照 → `patchTableRows()` 只替换变化行
 ```
 
 | 差异点 | GUI | Web | 状态 |
 |---|---|---|---|
 | 数据传递 | 直接内存引用 | JSON 序列化/反序列化 | ✅ |
-| 状态更新 | `update_video_status()` 只更新单行 | `renderQueue()` 重建整个表格 | ❌ **BUG-10** |
+| 状态更新 | `update_video_status()` 只更新单行 | `patchTableRows()` 按 key 复用/替换变化行 | ✅ **BUG-10 已修复** |
 | meta 字段 | `item.meta.get("trace_id")` | `v.meta && v.meta.trace_id` | ✅ |
-| content_type | `item.meta.get("content_type")` | `v.content_type` (顶层字段) | ⚠️ Web 多了一个顶层 content_type |
+| content_type | `item.meta.get("content_type")` | 服务端适配为 `v.content_type` 顶层字段供渲染快速判断 | Web 展示层标准化字段，不改变源数据语义 |
 | local_path | `item.local_path` | `v.local_path` | ✅ |
 
 ### 4.2 _video_item_to_dict 序列化字段
@@ -597,18 +603,18 @@ Web:  file_service.scan_directory() → ScanResult
 | 点击行 | 整行高亮（accent 背景 + 白色文字） | 整行高亮 | 一致 | ✅ |
 | 点击行后播放按钮 | 播放按钮可点击 | 播放按钮可点击 | 一致 | ✅ |
 | 点击行后删除按钮 | 删除按钮可点击 | 删除按钮可点击 | 一致 | ✅ |
-| **选中行播放按钮 hover** | 无特殊效果 | `.op-btn:hover` 变色 | Web 多了 hover 效果 | ⚠️ 次要差异 |
-| **选中行删除按钮 hover** | 无特殊效果 | `.op-btn.del:hover` 变红 | Web 多了 hover 效果 | ⚠️ 次要差异 |
-| **选中行操作按钮** | 白色图标（系统主题） | `.queue-table tr.selected .op-btn { color:#fff }` | 一致 | ✅ |
+| **选中行播放按钮 hover** | `QPushButton#TableActionButton:hover` 使用主题浅色背景和主题色边框 | `.op:hover` 使用 `var(--panel-soft)` 与 `var(--accent)` | 一致 | ✅ |
+| **选中行删除按钮 hover** | `QPushButton#TableActionButton:hover` 使用主题浅色背景和主题色边框 | `.op:hover` 使用 `var(--panel-soft)` 与 `var(--accent)` | 一致 | ✅ |
+| **选中行操作按钮** | 主题化图标按钮，selected 行背景不叠加 hover | `.op` 图标按钮，selected 行背景不叠加 hover | 一致 | ✅ |
 
 ### 5.2 播放操作反馈
 
 | 操作 | GUI 反馈 | Web 反馈 | 差异 | 状态 |
 |---|---|---|---|---|
-| 点击播放按钮 | `sig_play_video.emit()` → 控制器播放 | `previewVideo(id)` 前端直接播放 | ❌ **BUG-16: GUI 走控制器** |
-| 播放成功 | 播放按钮变暂停图标 + 日志 | 播放按钮变 ⏸ + 日志 | 一致 | ✅ |
+| 点击播放按钮 | `sig_play_video.emit()` → 控制器播放 | `playCompleted(id)` → 服务端 Range 校验后播放 | ✅ **BUG-16** |
+| 播放成功 | 播放按钮变暂停图标 + 日志 | 播放按钮变暂停态图标 + 日志 | 一致 | ✅ |
 | 播放失败 | `errorOccurred` 信号 → 日志 | `onerror` → 日志 + `closePreview()` | 一致 | ✅ |
-| 文件不存在 | `append_log("❌ 文件不存在或已被删除")` | `appendLog("❌ 文件不存在或已被删除")` | 一致 | ✅ |
+| 文件不存在 | `append_log("❌ 文件不存在或已被删除")` | `appendUiLog("文件不存在或已被删除", "", "❌ ")` | 一致，且跟随 WebUI 语言 | ✅ |
 | **切换播放视频** | 新视频替换旧视频 | 新视频替换旧视频 | 一致 | ✅ |
 | **播放中点击另一行** | 不影响播放 | 不影响播放 | 一致 | ✅ |
 
@@ -621,7 +627,8 @@ Web:  file_service.scan_directory() → ScanResult
 | 删除失败 | `append_log("❌ 删除文件失败: exc")` | 同上 | 一致 | ✅ |
 | 取消队列任务 | `append_log("🛑 已取消队列任务: title")` | 同上 | 一致 | ✅ |
 | 停止下载中任务 | `append_log("🛑 已请求停止下载: title")` | 同上 | 一致 | ✅ |
-| **删除正在播放的视频** | `stop_media_playback()` + `current_playing_id = None` | `closePreview()` + `selectedVideoId = null` | ❌ **BUG-11** |
+| **删除正在播放的视频** | `stop_media_playback()` + `current_playing_id = None` | `prepareDeleteItem()` / `deleted_ids` 兜底 `closePreview()` + `currentPlayingId = null` | ✅ **BUG-11 已修复** |
+| **前端运行时日志时间** | `time.strftime("%Y-%m-%d %H:%M:%S")` 本地时间 | `formatLocalDateTime()` 本地时间 | 一致 | ✅ |
 
 ### 5.4 爬虫操作反馈
 
@@ -629,12 +636,12 @@ Web:  file_service.scan_directory() → ScanResult
 |---|---|---|---|---|
 | 启动成功 | `append_log("🟢 启动任务 \| 模式: name")` | 同上 | 一致 | ✅ |
 | 已有任务运行 | `append_log("⚠️ 当前已有任务在运行")` | 同上 | 一致 | ✅ |
-| 空关键词 | `append_log("⚠️ 请输入搜索内容！")` | 同上 | 一致 | ✅ |
+| 空关键词 | `append_log("请输入主页链接、分享链接或合集链接")` | `appendUiLog("请输入主页链接、分享链接或合集链接")` | 一致，且 WebUI 跟随语言 | ✅ |
 | 停止任务 | `append_log("🛑 正在停止任务...")` | 同上 | 一致 | ✅ |
 | 任务结束 | `append_log("✅ 爬虫任务结束")` | 同上 | 一致 | ✅ |
-| **启动时 UI 禁用** | `set_crawl_running_state(True)` → 禁用按钮/输入/下拉 | `setCrawlState(true)` → 同上 | 一致 | ✅ |
-| **结束时 UI 恢复** | `set_crawl_running_state(False)` → 恢复按钮/输入/下拉 | `setCrawlState(false)` → 同上 | 一致 | ✅ |
-| **动态配置区禁用** | `plugin_widget.setEnabled(not is_running)` | `querySelectorAll('#dynamicArea select, #dynamicArea input').forEach(el => el.disabled = running)` | 一致 | ✅ |
+| **启动时 UI 禁用** | 控制器进入运行态后禁用按钮/输入/下拉 | `setCrawlUiState(true)` → 禁用按钮/输入/平台和数量下拉 | 一致 | ✅ |
+| **结束时 UI 恢复** | `set_crawl_running_state(False)` → 恢复按钮/输入/下拉 | `crawl_state:false` → `setCrawlUiState(false)` | 一致 | ✅ |
+| **数量下拉禁用** | 运行中不可修改顶部爬取数量 | `videoCountSelect.disabled = crawlRunning` | 一致 | ✅ |
 
 ### 5.5 目录操作反馈
 
@@ -692,38 +699,37 @@ Web:  file_service.scan_directory() → ScanResult
 
 ### BUG-8: on_btn_start_clicked 检查 current_plugin
 
-**GUI 行为**：`if not self.current_plugin: self.append_log("❌ 未选择有效模式"); return`
+**GUI 行为**：`if not self.current_plugin: self.append_log("未选择有效平台"); return`
 
-**Web 行为**：不检查，直接发送。
+**Web 行为**：检查 `platformKnown`，失败时 `appendUiLog("未选择有效模式", "", "❌ ")`。
 
-**修复**：在 `startCrawl()` 中添加检查（虽然不太可能触发）。
+**修复**：在 `startCrawl()` 中添加平台有效性检查，且提示走 `appendUiLog()` 跟随语言。
 
-### BUG-9: 选择对话框取消传 None vs []
+### BUG-9: 选择对话框取消传 None vs [] ✅ 已修复
 
 **GUI 行为**：`show_selection_dialog()` 返回 `None`，`spider.resume_from_ui(None)`
 
-**Web 行为**：发送 `{indices: []}`，`controller.resume_spider_selection([])`
+**Web 行为**：发送 `{indices: null}`，`controller.resume_spider_selection(None)`
 
-**影响**：`BaseSpider.resume_from_ui(selected_indices)` 将 `_selection_result = selected_indices`。GUI 取消时 `_selection_result = None`，Web 取消时 `_selection_result = []`。爬虫代码中 `ask_user_selection()` 返回 `_selection_result`，下游代码如果对 `None` 和 `[]` 有不同处理，行为会不一致。但实际上大多数爬虫只检查 `if selected_indices` 或 `if not selected_indices`，`None` 和 `[]` 在布尔上下文中都是 falsy，所以行为一致。
+**影响**：`BaseSpider.resume_from_ui(selected_indices)` 将 `_selection_result = selected_indices`。当前 GUI 与 Web 取消语义均为 `None`，下游爬虫可以区分“用户取消”和“确认但未勾选任何项”。
 
-**结论**：实际影响极小，可忽略。
+**结论**：已统一为取消语义 `None/null`，可与“确认但未勾选任何项”的空列表明确区分。
 
-### BUG-10: renderQueue 性能问题
+### BUG-10: renderQueue 性能问题 ✅ 已修复
 
 **GUI 行为**：`update_video_status()` 只更新单行（`table.item(row, 1).setText()`）
 
-**Web 行为**：`renderQueue()` 每次重建整个表格 HTML
+**Web 行为**：当前使用 `patchTableRows()`，按行 key 复用已有 DOM，只替换签名变化的行。
 
-**影响**：当有大量视频时（如扫描到 1000 个本地文件），每次进度更新都会重建 1000 行 DOM，导致卡顿。
+**影响**：早期整表重建会在大量视频时造成卡顿；当前高频事件已经改为增量状态和分段渲染。
 
-**修复方案**：
+**当前策略**：
 1. `video_state_changed` / `task_progress` 事件只更新对应行的 DOM，而非调用 `renderQueue()`
-2. `item_found` 事件追加一行到 tbody 末尾，而非重建
-3. `video_removed` 事件删除对应行，而非重建
-4. `clear_videos` 事件清空 tbody，而非重建
-5. 只在 `selectVideo()` 切换选中行时才需要更新两行（旧选中行 + 新选中行）
+2. `item_found` / `video_removed` / `clear_videos` 先进入统一前端状态快照，再按当前页局部渲染
+3. `patchTableRows()` 只移动、替换、删除变化行，避免整表白屏式重绘
+4. `renderSignatures` 防止相同 HTML 重复写入
 
-### BUG-11: currentPlayingId 语义混淆
+### BUG-11: currentPlayingId 语义混淆 ✅ 已修复
 
 **GUI 行为**：
 - `controller.current_playing_id = vid` — 播放时设置
@@ -731,18 +737,15 @@ Web:  file_service.scan_directory() → ScanResult
 - `current_playing_id` 和"选中行"是完全独立的概念
 
 **Web 行为**：
-- `selectedVideoId = id` — 选中行和播放共用
-- 变量 `currentPlayingId` 已声明但未使用
+- `selectedVideoId` / `selected.completed` 只表达当前表格选中行
+- `currentPlayingId` 只表达当前预览中的文件
+- 删除入口和服务端删除推送都会通过 `prepareDeleteItem()` / `removeDeletedFromFrontendState()` 关闭正在播放的预览
 
-**影响**：
-1. 选中一行但不播放时，`selectedVideoId` 有值，删除该行会调用 `closePreview()`，但此时没有播放器需要关闭
-2. 播放视频 A 后选中视频 B（不播放），删除视频 A 时不会停止播放
-
-**修复方案**：
+**修复内容**：
 1. `previewVideo(id)` 中设置 `currentPlayingId = id`
 2. `deleteVideo(id)` 中检查 `if (currentPlayingId === id)` 而非 `if (selectedVideoId === id)`
 3. `closePreview()` 中清除 `currentPlayingId = null`
-4. `video_removed` 事件处理中检查 `if (currentPlayingId === data.video_id) currentPlayingId = null`
+4. `video_removed` / `deleted_ids` 事件处理兜底关闭预览并清理播放位置缓存
 
 ### BUG-12: tooltip 应显示 title 而非 local_path ✅ 已修复
 
@@ -750,13 +753,13 @@ Web:  file_service.scan_directory() → ScanResult
 
 **Web 行为**：`title="${esc(v.title)}"` — 已修复为显示标题
 
-### BUG-13: 来源选择器宽度不自适应内容
+### BUG-13: 来源选择器宽度不自适应内容 ✅ 已修复
 
 **GUI 行为**：`QComboBox.SizeAdjustPolicy.AdjustToContents` — 下拉框宽度随内容变化
 
-**Web 行为**：`<select class="source-select">` — 固定宽度
+**Web 行为**：自定义选择框按最长选项测量宽度，顶部数量选择和侧栏平台选择均使用统一策略。
 
-**修复方案**：给 `.source-select` 添加 `min-width` 或动态计算宽度。
+**修复状态**：已通过 `custom_select.js` 的宽度测量和主题化弹层实现。
 
 ### BUG-14: ThemeBtn 宽度应为 min-width:60px ✅ 已修复
 
@@ -764,13 +767,13 @@ Web:  file_service.scan_directory() → ScanResult
 
 **Web 行为**：`min-width:60px` — 已修复（原为 `width:40px`）
 
-### BUG-15: 操作按钮间距不一致
+### BUG-15: 操作按钮间距不一致 ✅ 已修复
 
 **GUI 行为**：`operation_layout.setSpacing(8)` — 按钮间距 8px
 
-**Web 行为**：`.op-btn { margin:0 2px }` — 按钮间距 4px（左右各 2px）
+**Web 行为**：`.op { margin:0 4px }` — 相邻按钮视觉间距 8px。
 
-**修复方案**：将 `.op-btn` 的 `margin` 改为 `margin:0 4px`（总间距 8px）。
+**修复状态**：已对齐。
 
 ### BUG-16: 播放视频应走服务端文件存在性检查
 
@@ -794,17 +797,15 @@ previewVideo(id) → 前端直接创建 <video src="/api/media/{id}">
 2. Web 先尝试加载，失败后才提示
 3. GUI 的 `current_playing_id` 在服务端设置，Web 的 `currentPlayingId` 在前端设置
 
-**修复方案**：在 `previewVideo()` 中先通过 API 检查文件是否存在，或接受当前行为（onerror 处理已足够）。
+**状态**：✅ 已修复。`playCompleted()` 会先通过 `/api/media/{id}` + `Range: bytes=0-0` 做服务端校验，失败时不进入预览态。
 
-### BUG-17: Splitter 比例不保存
+### BUG-17: Splitter 比例不保存 ✅ 已修正为新布局说明
 
-**GUI 行为**：
-- `closeEvent()` → `cfg.save_ui_state(main_splitter=self.main_split.saveState(), ...)`
-- `load_initial_state()` → `main_split.restoreState(QByteArray.fromHex(...))`
+**GUI 行为**：当前统一 AppShell 已不再使用主界面 `QSplitter`，左侧导航与右侧页面区采用固定导航宽度 + 页面内部详情区布局。
 
-**Web 行为**：不保存 splitter 比例，刷新后恢复默认值
+**Web 行为**：当前 WebUI 同样不暴露主 splitter；已完成/正在下载/工具箱等详情区用 `--detail-width` 和 `webui_detail_width` 记忆右侧详情栏宽度。
 
-**修复方案**：将 splitter 比例保存到 localStorage，页面加载时恢复。
+**结论**：旧 splitter 条目属于历史结构，当前应按详情栏宽度记忆来审查。
 
 ---
 
@@ -812,15 +813,15 @@ previewVideo(id) → 前端直接创建 <video src="/api/media/{id}">
 
 | 优先级 | BUG | 影响 | 修复难度 |
 |---|---|---|---|
-| P0 | BUG-10: renderQueue 性能 | 大列表时严重卡顿 | 中 |
-| P1 | BUG-11: currentPlayingId 语义混淆 | 删除/播放逻辑错误 | 低 |
-| P1 | BUG-16: 播放应走服务端检查 | 文件不存在时体验差 | 低 |
-| P2 | BUG-15: 操作按钮间距 | 视觉差异 | 低 |
-| P2 | BUG-14: ThemeBtn 宽度 | 视觉差异 | 低 |
-| P2 | BUG-13: 来源选择器宽度 | 视觉差异 | 低 |
-| P2 | BUG-17: Splitter 比例不保存 | 刷新后布局重置 | 中 |
+| P0 | BUG-10: renderQueue 性能 | 已修复（keyed row patch） | 中 |
+| P1 | BUG-11: currentPlayingId 语义混淆 | 已修复（选中态/播放态分离） | 低 |
+| P1 | BUG-16: 播放应走服务端检查 | 已修复 | 低 |
+| P2 | BUG-15: 操作按钮间距 | 已修复 | 低 |
+| P2 | BUG-14: ThemeBtn 宽度 | 已修复 | 低 |
+| P2 | BUG-13: 来源选择器宽度 | 已修复 | 低 |
+| P2 | BUG-17: Splitter 比例不保存 | 已修正为新 AppShell 详情栏宽度记忆 | 中 |
 | P3 | BUG-8: startCrawl 缺少检查 | 极少触发 | 低 |
-| P3 | BUG-9: cancelSelection None vs [] | 实际影响极小 | 低 |
+| P3 | BUG-9: cancelSelection None vs [] | 已修复：取消统一为 None/null，空选择保留为空列表 | 已关闭 |
 
 ---
 
@@ -911,35 +912,35 @@ previewVideo(id) → 前端直接创建 <video src="/api/media/{id}">
 ```python
 def on_btn_start_clicked(self):
     if not self.current_plugin:
-        self.append_log("❌ 未选择有效模式")
+        self.append_log("未选择有效平台")
         return
     keyword = self.inp_search.text().strip()
     if not keyword:
-        self.append_log("⚠️ 请输入搜索内容！")
+        self.append_log("请输入主页链接、分享链接或合集链接")
         return
-    # ... 获取 run_options ...
+    # ... read_plugin_run_options + 顶部爬取数量 ...
     self.sig_start_crawl.emit(keyword, self.current_plugin.id, run_options)
-    self.set_crawl_running_state(True)  # 只有成功后才切换
 ```
 
 **Web 行为**：
 ```javascript
 function startCrawl() {
     const keyword = document.getElementById('searchInput').value.trim();
-    if (!keyword) { appendLog('⚠️ 请输入搜索内容！'); return; }
-    setCrawlState(true);  // 立即切换，不检查 source 是否有效
-    sendWS('start_crawl', { source: currentSource, keyword, config: getRunConfig() });
+    if (!keyword) { appendUiLog("请输入主页链接、分享链接或合集链接"); return; }
+    if (!platformKnown) { appendUiLog("未选择有效模式", "", "❌ "); return; }
+    sendWS('start_crawl', { source: currentSource, keyword, config });
+    setCrawlUiState(true);
 }
 ```
 
 **差异**：
-1. GUI 先检查 `current_plugin` 是否存在，Web 不检查
-2. GUI 在 `sig_start_crawl.emit()` 之后才切换 UI 状态，Web 在发送 WS 之前就切换了
-3. GUI 如果 `get_run_options()` 出错，不会切换 UI 状态，Web 无法捕获这种错误
+1. GUI 先检查 `current_plugin` 是否存在，Web 检查 `platformKnown`
+2. Web 只在 `sendWS("start_crawl", ...)` 成功后切换入口运行态，连接未就绪时直接给出可翻译提示
+3. GUI 如果 `read_plugin_run_options()` 出错，不会发出启动信号；Web 当前读取顶部数量和平台配置键，不再依赖旧 `getRunConfig()` 动态区
 
-**影响**：如果服务端返回错误（如未知爬虫源），Web UI 已经切换到"运行中"状态，但实际没有任务在运行
+**影响**：旧版如果服务端返回错误（如未知爬虫源），Web UI 会提前切换到“运行中”；当前实现已经在前端校验平台并在 WebSocket 不可用时保持原态。
 
-**修复方案**：在 `startCrawl()` 中添加 source 检查，或等服务端 `crawl_state` 事件再切换 UI
+**修复状态**：`startCrawl()` 已添加平台有效性检查、连接失败保护和 `appendUiLog()` 运行时翻译。
 
 ### BUG-23: GUI 的 on_source_changed 保存 last_source 到配置
 
@@ -1108,12 +1109,12 @@ def closeEvent(self, event):
 | BUG-19 | appendRow 创建无用的 tr 元素 | ✅ 已修复 |
 | BUG-20 | startRename 完成后调用 renderQueue | ✅ 已修复 |
 | BUG-21 | previewVideo 中 updateSelection 不取消旧选中行 | ✅ 已修复 |
-| BUG-8 | startCrawl 缺少 current_plugin 检查 | ⚠️ 低优先级 |
-| BUG-9 | cancelSelection None vs [] | ⚠️ 低优先级 |
-| BUG-13 | 来源选择器宽度不自适应 | ⚠️ 低优先级 |
-| BUG-16 | 播放应走服务端文件检查 | ⚠️ 低优先级 |
-| BUG-22 | startCrawl 应先检查再切换 UI | ⚠️ 低优先级 |
-| BUG-24 | previewVideo 不检查文件是否存在 | ⚠️ 低优先级 |
+| BUG-8 | startCrawl 缺少 current_plugin 检查 | ✅ 已修复（校验当前平台有效性） |
+| BUG-9 | cancelSelection None vs [] | ✅ 已修复 |
+| BUG-13 | 来源选择器宽度不自适应 | ✅ 已修复 |
+| BUG-16 | 播放应走服务端文件检查 | ✅ 已修复（Range 预检） |
+| BUG-22 | startCrawl 应先检查再切换 UI | ✅ 已修复（WebSocket 发出成功后才进入运行态） |
+| BUG-24 | previewVideo 不检查文件是否存在 | ✅ 已修复（Range 预检） |
 | BUG-26 | splitter 拖拽时不触发图片缩放 | ✅ 已修复 |
 | BUG-27 | 窗口 resize 时不触发媒体缩放 | ✅ 已修复 |
 | BUG-34 | 动态配置区缺少标签 | ✅ 已修复 |
@@ -1413,7 +1414,7 @@ QPushButton#PrimaryBtn { background: accent; border: none; font-weight: bold; co
 ```
 或用 JS 动态计算宽度。
 
-**状态**：❌ 未修复
+**状态**：✅ 已修复（v22/v23：自定义选择框按最长选项自适应宽度）
 
 ---
 
@@ -1426,7 +1427,7 @@ QPushButton#PrimaryBtn { background: accent; border: none; font-weight: bold; co
 | 步骤 | GUI (ApplicationController) | Web (WebController) | 差异 |
 |---|---|---|---|
 | 获取 video | `self.videos.get(vid)` | 前端 `videos[id]` | ✅ |
-| 文件存在检查 | `os.path.exists(video.local_path)` | 前端只检查 `v.local_path` 非空 | ⚠️ |
+| 文件存在检查 | `os.path.exists(video.local_path)` | `/api/media/{id}` Range 预检成功后才播放 | ✅ |
 | 设置 current_playing_id | `self.current_playing_id = vid` | 前端 `currentPlayingId = id` | ✅ |
 | 日志 | `window.append_log(f"▶️ 播放: {video.title}")` | 前端 `appendLog("▶️ 播放: " + v.title)` | ✅ |
 | 判断图片/视频 | `_is_image_file(video.local_path)` | 前端 `imgExts.includes(ext)` | ✅ |
@@ -1513,6 +1514,7 @@ QPushButton#PrimaryBtn { background: accent; border: none; font-weight: bold; co
 | Enter 搜索 | 无（需要点击按钮） | `if e.key === 'Enter' && activeElement === searchInput: startCrawl()` | Web 多了快捷键 ✅ |
 | Escape 退出全屏 | `keyPressEvent` → `if Key_Escape && is_fullscreen: toggle_fullscreen()` | `if e.key === 'Escape' && isFullscreenMode: toggleFullscreen()` | ✅ |
 | Escape 关闭对话框 | Qt 对话框内置 | `if e.key === 'Escape': cancelDirDialog() / cancelSelection()` | ✅ |
+| Enter 确认选择弹窗 | `SelectionDialog` 的 Return/Enter shortcut → `confirm_selection()` | `handleSelectionModalShortcut()` 捕获阶段 → `confirmSelection()` | ✅ |
 | Enter 目录跳转 | 无 | `if e.key === 'Enter' && activeElement === dirInput: dirBrowsePath()` | Web 多了快捷键 ✅ |
 
 ### 17.2 鼠标事件
@@ -1547,19 +1549,19 @@ QPushButton#PrimaryBtn { background: accent; border: none; font-weight: bold; co
 
 | 属性 | GUI | Web | 差异 |
 |---|---|---|---|
-| 操作列左右内边距 | `setContentsMargins(5,2,5,2)` → 5px | 无内边距 | ❌ **BUG-67** |
+| 操作列左右内边距 | `setContentsMargins(5,2,5,2)` → 5px | `.op { margin: 0 4px; }` 保证动作间距，表格单元格保留内边距 | ✅ **BUG-67** |
 
 ### 18.2 滚动条箭头
 
 | 属性 | GUI | Web | 差异 |
 |---|---|---|---|
-| 隐藏滚动条箭头 | `add-line/sub-line { height: 0px }` | 无隐藏 | ❌ **BUG-63** |
+| 隐藏滚动条箭头 | `add-line/sub-line { height: 0px }` | `*::-webkit-scrollbar-button { display: none; }` | ✅ **BUG-63** |
 
 ### 18.3 来源选择器宽度
 
 | 属性 | GUI | Web | 差异 |
 |---|---|---|---|
-| 宽度自适应 | `AdjustToContents` | 固定宽度 | ❌ **BUG-50** |
+| 宽度自适应 | `AdjustToContents` | 自定义选择框按最长选项测量宽度 | ✅ **BUG-50** |
 
 ---
 
@@ -1603,38 +1605,37 @@ QPushButton#PrimaryBtn { background: accent; border: none; font-weight: bold; co
 | BUG-75 | timeLabel 初始值和重置值缺少 "/ 00:00" | ✅ 已修复 |
 | BUG-76 | 主题按钮宽度 60px 应为 40px（与 GUI setFixedWidth(40) 一致） | ✅ 已修复 |
 | BUG-77 | 日志面板字体大小 13px 应为 12px（与 GUI font-size:12px 一致） | ✅ 已修复 |
-| BUG-8 | startCrawl 缺少 current_plugin 检查 | ⚠️ 低优先级 |
-| BUG-9 | cancelSelection None vs [] | ⚠️ 低优先级 |
-| BUG-13 | 来源选择器宽度不自适应（同 BUG-50） | ⚠️ 低优先级 |
-| BUG-16 | 播放应走服务端文件检查 | ⚠️ 低优先级 |
-| BUG-22 | startCrawl 应先检查再切换 UI | ⚠️ 低优先级 |
-| BUG-24 | previewVideo 不检查文件是否存在 | ⚠️ 低优先级 |
+| BUG-8 | startCrawl 缺少 current_plugin 检查 | ✅ 已修复（校验当前平台有效性） |
+| BUG-9 | cancelSelection None vs [] | ✅ 已修复 |
+| BUG-13 | 来源选择器宽度不自适应（同 BUG-50） | ✅ 已修复 |
+| BUG-16 | 播放应走服务端文件检查 | ✅ 已修复（Range 预检） |
+| BUG-22 | startCrawl 应先检查再切换 UI | ✅ 已修复（WebSocket 发出成功后才进入运行态） |
+| BUG-24 | previewVideo 不检查文件是否存在 | ✅ 已修复（Range 预检） |
 
 ### 操作3: 启动爬虫
 
 ```
 GUI:
   btn_start.clicked → on_btn_start_clicked()
-      → if not current_plugin: append_log("❌ 未选择有效模式"); return
+      → if not current_plugin: append_log("未选择有效平台"); return
       → keyword = inp_search.text().strip()
-      → if not keyword: append_log("⚠️ 请输入搜索内容！"); return
-      → run_options = current_plugin.get_run_options(plugin_widget)  ← 读取配置 + cfg.set()
+      → if not keyword: append_log("请输入主页链接、分享链接或合集链接"); return
+      → run_options = read_plugin_run_options(...) + 顶部爬取数量
       → sig_start_crawl.emit(keyword, source_id, run_options)
-      → set_crawl_running_state(True)  ← 禁用按钮/输入/下拉/plugin_widget
 
 Web:
   startBtn.onclick → startCrawl()
       → keyword = searchInput.value.trim()
-      → if !keyword: appendLog("⚠️ 请输入搜索内容！"); return
-      → setCrawlState(true)  ← 禁用按钮/输入/下拉/dynamicArea
-      → sendWS('start_crawl', { source, keyword, config: getRunConfig() })
-          → getRunConfig() 读取配置 + sendWS('save_config') 保存
+      → if !keyword: appendUiLog("请输入主页链接、分享链接或合集链接"); return
+      → if !platformKnown: appendUiLog("未选择有效模式", "", "❌ "); return
+      → sendWS('start_crawl', { source, keyword, config })
+      → setCrawlUiState(true)  ← WebSocket 投递成功后禁用按钮/输入/下拉
 ```
 
 **差异**：
-1. GUI 先检查 `current_plugin`，Web 不检查 — ⚠️ 低优先级（不太可能触发）
-2. GUI 在 `sig_start_crawl.emit()` 之后才切换 UI，Web 在 `sendWS()` 之前切换 — ⚠️ 低优先级
-3. GUI 的 `get_run_options()` 保存配置，Web 的 `getRunConfig()` 也保存 — ✅ 一致
+1. GUI 先检查 `current_plugin`；Web 现在检查当前平台是否存在于平台列表或平台设置快照中 — ✅ 已对齐
+2. GUI 在发出启动信号后切换 UI；Web 现在仅在 `sendWS("start_crawl", ...)` 成功后切换入口运行态 — ✅ 已对齐
+3. GUI 通过 `read_plugin_run_options()` 读取设置并叠加顶部爬取数量；Web 通过 `platformSettingsRow()` 读取平台配置键并叠加顶部爬取数量 — ✅ 一致
 4. ✅ 最终效果基本一致
 
 ### 操作4: 点击播放
@@ -1655,7 +1656,7 @@ GUI:
               window.play_video(video.local_path)
 
 Web:
-  op-btn onclick → previewVideo(id)
+  action button onclick → previewVideo(id)
       → v = videos[id]
       → if !v.local_path: appendLog("❌ 文件不存在"); return
       → oldId = selectedVideoId; selectedVideoId = id; currentPlayingId = id
@@ -1666,7 +1667,7 @@ Web:
 ```
 
 **差异**：
-1. GUI 在服务端检查 `os.path.exists()`，Web 只检查 `v.local_path` 非空 — ⚠️ 低优先级
+1. GUI 在服务端检查 `os.path.exists()`；Web 通过 `/api/media/{id}` Range 预检由服务端确认文件存在 — ✅ 已对齐
 2. GUI 的 `current_playing_id` 在服务端设置，Web 的 `currentPlayingId` 在前端设置 — ✅ 效果一致
 3. ✅ 最终效果基本一致
 
@@ -1726,7 +1727,7 @@ GUI:
           → window.refresh_table_bindings()
 
 Web:
-  op-btn.del onclick → deleteVideo(id)
+  danger action button onclick → deleteVideo(id)
       → if currentPlayingId === id: closePreview()
       → if selectedVideoId === id: selectedVideoId = null
       → sendWS('delete_video', {video_id: id})
@@ -1938,14 +1939,14 @@ def on_player_position_changed(self, pos):
 | 步骤 | GUI 交互 | Web 交互 | 适配性 |
 |---|---|---|---|
 | 1. 点击播放按钮 | `sig_play_video.emit(vid)` | `previewVideo(id)` 前端直接播放 | ⚠️ 路径不同 |
-| 2. 文件存在检查 | `os.path.exists()` 服务端检查 | `v.local_path` 非空检查 + onerror | ⚠️ 时机不同 |
+| 2. 文件存在检查 | `os.path.exists()` 服务端检查 | `validateMediaForPreview()` 通过 `/api/media/{id}` Range 预检 | ✅ |
 | 3. 设置 current_playing_id | 服务端 `controller.current_playing_id` | 前端 `currentPlayingId` | ✅ 效果一致 |
 | 4. 播放视频 | `QMediaPlayer.play()` | `HTMLVideoElement.play()` | ✅ |
 | 5. 播放失败 | `errorOccurred` 信号 | `onerror` 事件 | ✅ |
 
 **关键差异**：GUI 走控制器（服务端检查文件存在性），Web 前端直接播放（依赖 onerror 处理失败）。
 
-**适配策略**：Web 的 `onerror` 处理已足够，不需要额外的 API 调用检查文件存在性。
+**适配策略**：Web 先做 `/api/media/{id}` Range 预检，再进入 `<video>` / `<img>` 预览；`onerror` 只作为运行期兜底。
 
 ### 21.4 删除视频 — 交互性分析
 
@@ -2208,9 +2209,9 @@ def on_player_position_changed(self, pos):
 
 **Web 修复前**：显示 ▶ + ✕（X 符号）。
 
-**Web 修复后**：▶ + 🗑（垃圾箱符号），更接近 GUI 的 `QStyle.StandardPixmap.SP_TrashIcon`。
+**Web 修复后**：通过 icon manifest 使用 `action_play.png` / `action_delete.png`，所有操作按钮从同一 `/ui-icon` 路由取资源。
 
-**适配性分析**：Web 没有真正的"系统图标"概念，只能用 Unicode 字符近似。🗑 是最接近的视觉效果。
+**适配性分析**：Web 不再使用 Unicode 字符近似；按钮视觉由项目图标资源统一管理，和 GUI 的系统图标语义对齐。
 
 ### 25.5 BUG-135: 控制面板 flex 布局，时间标签/全屏按钮被挤压 ✅ 已修复
 
@@ -2352,7 +2353,7 @@ self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMo
 /* 进度条文字在选中行时保持白色可读 */
 .queue-table tr.selected .progress-text { color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.5); }
 /* 操作按钮在选中行时保持可见 */
-.queue-table tr.selected .op-btn { color: #fff; border-color: rgba(255,255,255,.3); }
+.queue-table tr.selected .op { color: #fff; border-color: rgba(255,255,255,.3); }
 ```
 
 ### 26.5 全屏模式的视觉处理
@@ -2391,7 +2392,7 @@ body.is-fullscreen .log-panel {
 
 ### 27.1 致命 BUG-139: local_path 从未推送到 Web 前端 ✅ 已修复
 
-**症状**：用户点击表格行的播放按钮，预览区完全不变（依然显示"选择视频进行预览"），感觉是"无响应"。
+**症状**：用户点击表格行的播放按钮，预览区完全不变（停留在旧版占位提示），感觉是"无响应"。
 
 **根本原因链**：
 1. `BaseSpider.emit_video()` 创建 `VideoItem(url, title, source)`，`local_path=""`（默认值）
@@ -3165,7 +3166,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { height: 0px; 
 ::-webkit-scrollbar-button { display: none; }
 ```
 
-**状态**：❌ 未修复
+**状态**：✅ 已修复（v23：Web 全局隐藏滚动条箭头，并统一主题化滚动条）
 
 ### BUG-64: GUI 的 `QPlainTextEdit#LogText` 有 `border-top:1px solid border`（重复），Web 的 `.log-panel` 没有
 
@@ -3202,7 +3203,7 @@ player.ontimeupdate = () => {
 
 **结论**：一致。
 
-### BUG-66: GUI 的 `MediaPreviewPanel` 播放按钮图标是系统标准图标，Web 用文字
+### BUG-66: GUI 的 `MediaPreviewPanel` 播放按钮图标与 Web 资源图标对齐
 
 **GUI 行为**：
 - 播放：`SP_MediaPlay`（▶ 三角形图标）
@@ -3210,12 +3211,12 @@ player.ontimeupdate = () => {
 - 停止：`SP_MediaStop`（⏹ 方形图标）
 
 **Web 行为**：
-- 播放：`▶` 文字
-- 暂停：`⏸` 文字
+- 播放/暂停：通过 icon manifest 使用对应图片资源
+- 顶部与表格操作按钮同源走 `/ui-icon` 图标路由
 
-**差异**：视觉上有细微差异，但功能一致。
+**差异**：历史版本曾使用文字符号；当前版本已改为图标资源，视觉层面与 GUI 的标准图标语义对齐。
 
-**结论**：✅ 最佳替代。
+**结论**：✅ 已对齐。
 
 ### BUG-67: GUI 的 `DownloadQueuePanel` 操作按钮布局 `setContentsMargins(5,2,5,2)` + `setSpacing(8)`
 
@@ -3229,7 +3230,7 @@ operation_layout.setSpacing(8)
 
 **Web 行为**：
 ```css
-.op-btn { margin:0 4px; }  /* 总间距 8px */
+.op { margin:0 4px; }  /* 总间距 8px */
 ```
 - 没有模拟 `setContentsMargins(5,2,5,2)` 的左右 5px 边距
 - 按钮间距 8px ✅
@@ -3238,7 +3239,7 @@ operation_layout.setSpacing(8)
 
 **修复**：给 `.col-actions` 添加 `padding: 2px 5px`
 
-**状态**：❌ 未修复
+**状态**：✅ 已修复（v23：`.op` 左右 4px margin，动作按钮间距稳定为 8px）
 
 ---
 
@@ -3716,20 +3717,20 @@ def emit(self, event_type: str, data: Any = None):
 |---|---|---|---|---|
 | 启动应用 | `app.exec()` 启动 Qt 事件循环 | `uvicorn.run()` 启动 FastAPI | ✅ | 入口不同 |
 | 自动扫描目录 | `QTimer.singleShot(200, scan_local_dir)` | WebSocket connect 后 `run_in_executor(scan_local_dir)` | ✅ | 触发时机一致 |
-| 选择平台 | `combo_source.currentIndexChanged → on_source_changed` | `<select onchange>` 调 `renderDynamicArea` | ✅ | 行为一致 |
-| 动态配置 | `get_settings_widget` 创建新 widget | `dynamicArea.innerHTML = html` | ✅ | 等价 |
+| 选择平台 | `combo_source.currentIndexChanged → on_source_changed` | `sourceSelect` 变化后 `configureTopCountForSource()` 同步顶部数量 | ✅ | 行为一致 |
+| 平台配置 | `SettingsPage` 基于 `settings_snapshot` 渲染平台表 | `renderSettings()` / `settingsControls()` 基于同一快照渲染平台表 | ✅ | 同源配置中心 |
 | 输入搜索 | `inp_search.text()` | `searchInput.value` | ✅ | 等价 |
 | 启动任务 | `btn_start.clicked → on_btn_start_clicked` | `startBtn.onclick → startCrawl` | ✅ | 行为一致 |
-| 检查 current_plugin | `if not self.current_plugin: append_log("未选择有效模式"); return` | `if not keyword: append_log("请输入搜索内容"); return` | ⚠️ | Web 端没检查 plugin 有效性 |
-| 切换 UI 状态 | `set_crawl_running_state(True)` 在 emit 之后 | `setCrawlState(true)` 在 sendWS 之前 | ✅ | 时机略不同但效果一致 |
+| 检查 current_plugin / platform | `if not self.current_plugin: append_log("未选择有效平台"); return` | `if (!platformKnown) { appendUiLog("未选择有效模式", "", "❌ "); return; }` | ✅ | Web 已校验平台来源有效性 |
+| 切换 UI 状态 | 由控制器任务状态驱动恢复/禁用 | `setCrawlUiState(true)` 在 `sendWS("start_crawl", ...)` 成功之后 | ✅ | 连接未就绪时保持原态 |
 | 显示资源 | `add_video_row` → `QTableWidget.insertRow` | `appendRow` → `tr.insertAdjacentHTML` | ✅ | 等价 |
-| **弹选择资源** | **`SelectionDialog.exec()` 模态阻塞** | **`showSelectionModal` + WebSocket 异步** | ⚠️ BUG-158 | 异步实现可能漏事件 |
+| **弹选择资源** | **`SelectionDialog.exec()` 模态阻塞** | **`showSelectionModal` + WebSocket 异步等待** | ✅ | 异步架构不同，但 BaseSpider wait、Enter/Esc、取消 None/null 已对齐并有浏览器测试 |
 | spider 等待 | `wait(timeout=1.0)` | `wait(timeout=1.0)` | ✅ | **完全相同！** BaseSpider 复用 |
 | spider 唤醒 | `resume_from_ui` 调 `_resume_event.set()` | `resume_from_ui` 调 `_resume_event.set()` | ✅ | **完全相同！** |
 | 取消任务发送 | `dialog.reject()` 返回 None | `sendWS('select_tasks', {indices: null})` | ✅ | GUI None, Web null |
 | 下载任务 | `dl_manager.add_task(item, save_dir)` | `dl_manager.add_task(item, save_dir)` | ✅ | **完全相同！** |
 | 进度更新 | `update_video_status` → `QProgressBar.setValue` | `updateRow` → `progress-fill.width` | ✅ | 等价 |
-| 播放按钮图标 | `QStyle.StandardPixmap.SP_MediaPlay/pause` | `▶` / `⏸` 字符 | ⚠️ | 图标风格略不同 |
+| 播放按钮图标 | `QStyle.StandardPixmap.SP_MediaPlay/pause` | icon manifest 播放/暂停资源 | ✅ | 图标语义与资源路径对齐 |
 | 媒体预览 | `QMediaPlayer.setSource(QUrl.fromLocalFile)` | `<video src="/api/media/${id}">` | ✅ | 等价 |
 | 拖动进度条 | `sliderPressed` + `sliderReleased` | `mousedown` + `mouseup` + `input` | ✅ | BUG-142 已修复丝滑度 |
 | 时间标签 | `QSlider.positionChanged → lbl_time.setText` | `player.ontimeupdate → timeLabel.textContent` | ✅ | 等价 |
@@ -4005,10 +4006,10 @@ def run(self):
 | 用户操作 | GUI 实现 | Web UI 实现 | 状态 | 备注 |
 |---|---|---|---|---|
 | 启动任务 | `btn_start.clicked` → `on_btn_start_clicked` | `startBtn.onclick` → `startCrawl` + WS | ✅ | |
-| 检查 plugin 有效性 | `if not self.current_plugin: append_log("❌ 未选择有效模式"); return` | `if (!currentSource) { appendLog('❌ 未选择有效模式'); return; }` | ✅ | BUG-162 修复后 |
-| 检查 keyword | `if not keyword: append_log("⚠️ 请输入搜索内容！"); return` | `if (!keyword) { appendLog('⚠️ 请输入搜索内容！'); return; }` | ✅ | |
-| 读取 run_options | `self.current_plugin.get_run_options(self.plugin_widget)` | `getRunConfig()` | ✅ | |
-| 切换 UI 状态 | `set_crawl_running_state(True)` 在 `sig_start_crawl.emit` 之后 | `setCrawlState(true)` 在 `sendWS` 之后 | ✅ | 时机略不同 |
+| 检查 plugin 有效性 | `if not self.current_plugin: append_log("未选择有效平台"); return` | `if (!platformKnown) { appendUiLog("未选择有效模式", "", "❌ "); return; }` | ✅ | BUG-162 修复后 |
+| 检查 keyword | `if not keyword: append_log("请输入主页链接、分享链接或合集链接"); return` | `if (!keyword) { appendUiLog("请输入主页链接、分享链接或合集链接"); return; }` | ✅ | |
+| 读取 run_options | `read_plugin_run_options(...)` + 顶部爬取数量 | `startCrawl()` 读取顶部爬取数量和平台配置键 | ✅ | |
+| 切换 UI 状态 | 控制器任务状态驱动入口可用性 | `setCrawlUiState(true)` 在 `sendWS("start_crawl", ...)` 成功之后 | ✅ | 连接未就绪时保持原态 |
 | 启动 spider | `self.current_spider.start()` | `spider.start()` | ✅ | **完全相同** |
 | **spider 卡在 Playwright** | **spider 线程被阻塞** | **spider 线程被阻塞** | ⚠️ | **两端都无法中断** |
 | 爬到资源发信号 | `spider.sig_item_found.emit(item)` | `spider.sig_item_found.emit(item)` | ✅ | **完全相同** |
@@ -4021,7 +4022,7 @@ def run(self):
 | **停止时发 log** | **重复两次 (BUG)** | **重复两次 (BUG-160 修复后)** | ✅ | |
 | spider 退出 | `browser.close(); return` | `browser.close(); return` | ✅ | **完全相同** |
 | spider.finished 信号 | `QThread.finished` 自动发出 | `QThread.finished` 自动发出 | ✅ | **完全相同** |
-| 恢复 UI 状态 | `set_crawl_running_state(False)` | `setCrawlState(false)` (前端 WS 收到 crawl_state) | ✅ | |
+| 恢复 UI 状态 | `set_crawl_running_state(False)` | `setCrawlUiState(false)`（前端收到 `crawl_state:false`） | ✅ | |
 
 ### 31.5 关键经验教训
 
@@ -4679,9 +4680,9 @@ function onChangeDirClicked() {
 
 | # | GUI 操作 | GUI 信号/方法 | Web 对应 | 状态 |
 |---|---|---|---|---|
-| 1 | 选择平台 | `combo_source.currentIndexChanged` → `on_source_changed` | `sourceSelect.onchange` → `renderDynamicArea()` + `sendWS('change_source')` | ✅ |
+| 1 | 选择平台 | `combo_source.currentIndexChanged` → `on_source_changed` | `sourceSelect.onchange` → `configureTopCountForSource()` 并保持顶部数量单位 | ✅ |
 | 2 | 输入关键词 | `inp_search` QLineEdit | `searchInput` input | ✅ |
-| 3 | 动态配置区 | `plugin_widget` 由各插件 `get_settings_widget()` 创建 | `renderDynamicArea()` 按 source 渲染对应 HTML | ✅ |
+| 3 | 配置中心平台区 | `SettingsPage` 使用平台快照和同源 options 渲染 | `settingsControls("平台设置", ...)` 使用同源 options 渲染 | ✅ |
 | 4 | 启动任务 | `btn_start.clicked` → `on_btn_start_clicked` → `sig_start_crawl.emit` | `startCrawl()` → `sendWS('start_crawl')` | ✅ |
 | 5 | 停止任务 | `btn_stop.clicked` → `sig_stop_crawl.emit` → `on_stop_crawl` | `stopCrawl()` → `sendWS('stop_crawl')` | ✅ |
 | 6 | 更改目录 | `btn_dir.clicked` → 非原生非模态 `DirectoryPickerDialog` | `onChangeDirClicked()` → `showDirDialog()` (Web 目录浏览器) | ✅ v16修 |
@@ -4689,7 +4690,7 @@ function onChangeDirClicked() {
 | 8 | 错误摘要 | `btn_error_summary.clicked` → `sig_open_error_summary` → `open_latest_error_summary` | `window.open('/api/debug/error-summary')` | ✅ |
 | 9 | 复制Trace | `btn_copy_trace.clicked` → `sig_copy_trace_id` → `copy_trace_id_for_video` | `copyTraceId()` → `sendWS('copy_trace_id')` | ✅ |
 | 10 | 切换主题 | `btn_theme.clicked` → `toggle_theme` → `setStyleSheet(generate_stylesheet())` | `toggleTheme()` → `sendWS('change_theme')` + CSS 变量切换 | ✅ |
-| 11 | 启动时禁用控件 | `set_crawl_running_state(True)` 禁用 start/search/combo/plugin_widget | `setCrawlState(True)` 禁用 startBtn/searchInput/sourceSelect/dynamicArea | ✅ |
+| 11 | 启动时禁用控件 | 控制器任务状态驱动 start/search/source 可用性 | `setCrawlUiState(true)` 禁用 startBtn/searchInput/sourceSelect/videoCountSelect | ✅ |
 
 #### B. 下载队列（DownloadQueuePanel）
 
@@ -4700,8 +4701,8 @@ function onChangeDirClicked() {
 | 14 | 更新状态/进度 | `update_video_status(vid, status, progress)` | `updateRow(id)` → 增量更新单行 | ✅ |
 | 15 | 删除行 | `remove_row(row_idx)` | `removeRow(id)` → `tr.remove()` | ✅ |
 | 16 | 清空所有行 | `clear_rows()` → `table.setRowCount(0)` | `clear_videos` 事件 → `queueBody.innerHTML = ''` | ✅ |
-| 17 | 播放按钮 | `play_btn.clicked` → `on_play(video_id)` | `.op-btn.play` onclick → `previewVideo(id)` | ✅ |
-| 18 | 删除按钮 | `delete_btn.clicked` → `on_delete(video_id)` | `.op-btn.delete` onclick → `deleteVideo(id)` | ✅ |
+| 17 | 播放按钮 | `play_btn.clicked` → `on_play(video_id)` | `.op` action onclick → `previewVideo(id)` | ✅ |
+| 18 | 删除按钮 | `delete_btn.clicked` → `on_delete(video_id)` | `.op.danger` action onclick → `deleteVideo(id)` | ✅ |
 | 19 | 双击标题重命名 | `table.itemChanged.connect(on_rename)` | `td.ondblclick` → `startRename(id, td)` → `sendWS('rename_video')` | ✅ |
 | 20 | 进度条 | `QProgressBar` | `<div class="progress-bar">` + CSS gradient | ✅ |
 | 21 | 选中行高亮 | `table.setSelectionBehavior(SelectRows)` | `selectVideo(id)` → `tr.classList.add('selected')` | ✅ |
@@ -4736,12 +4737,12 @@ function onChangeDirClicked() {
 | 40 | 开始下载 | `btn_confirm.clicked` → `confirm_selection()` → `dialog.accept()` | `confirmSelection()` → `sendWS('select_tasks', {indices: selected})` | ✅ |
 | 41 | 默认全选 | `chk.setChecked(True)` | 所有 checkbox 默认 checked | ✅ |
 
-#### E. 日志面板（LogPanel）
+#### E. 日志中心（LogCenterPage / #page-logs）
 
 | # | GUI 操作 | GUI 信号/方法 | Web 对应 | 状态 |
 |---|---|---|---|---|
-| 42 | 追加日志 | `appendPlainText(msg)` + `moveCursor(End)` | `appendLog(msg)` → `div.innerHTML += '<div>'` + `scrollTop = scrollHeight` | ✅ |
-| 43 | 自动滚动 | `moveCursor(QTextCursor.MoveOperation.End)` | `logPanel.scrollTop = logPanel.scrollHeight` | ✅ |
+| 42 | 展示日志列表 | `LogCenterPage.set_snapshot()` → 过滤、分页、装饰行 | `renderLogs()` → 过滤、分页、patch 行 | ✅ |
+| 43 | 分页与每页条数 | `LogTableFooter`：20/50/100/全部 | `log-footer`：20/50/100/全部 | ✅ |
 
 #### F. 分割器（QSplitter）
 
@@ -4915,16 +4916,18 @@ function confirmDirDialog() {
 | 行为 | GUI QFileDialog | Web 目录浏览器 | 状态 |
 |---|---|---|---|
 | 弹窗显示 | 模态阻塞 | CSS position:fixed 浮层 | ✅ |
-| 置于最上层 | 系统原生保证 | z-index:99999 | ✅ |
-| 单击选中 | 高亮文件夹 | `.dir-item.selected` 高亮 | ✅ |
+| 置于最上层 | 系统原生保证 | `.modal { z-index:20 }` 位于主界面之上，且脱离文档流 | ✅ |
+| 单击选中 | 高亮文件夹 | `.dir-entry.selected` 高亮并同步 `dirInput` | ✅ |
 | 双击进入 | 进入子目录 | `dirLoadPath(subdir)` | ✅ |
-| 上一级 | 导航栏 ↑ 按钮 | "⬆ 上一级" 按钮 | ✅ |
+| 上一级 | 导航栏上一级按钮 | `dirGoParent()` | ✅ |
 | 手动输入路径 | 地址栏 | `dirInput` + "跳转" 按钮 | ✅ |
 | 确认选择 | "选择文件夹" 按钮 | "选择此目录" 按钮 | ✅ |
 | 取消 | "取消" 按钮 | "取消" 按钮 | ✅ |
 | 记忆上次位置 | 系统记忆 | `localStorage` | ✅ |
-| 驱动器列表 | 左侧导航 | 底部驱动器按钮 | ✅ |
-| 刷新 | F5 | "🔄 刷新" 按钮 | ✅ |
+| 驱动器列表 | 左侧导航 | 路径行下方的根目录按钮 | ✅ |
+| 刷新 | F5 | `dirRefresh()` 图标按钮 | ✅ |
+| 高度自适应 | 系统原生列表填满窗口 | `.dir-folder-list { flex:1; max-height:none }` | ✅ |
+| 确认后刷新数据 | `sig_change_dir` → `scan_local_dir()` | `/api/dir/change` → `fetchFrontendState()` | ✅ |
 
 ---
 
@@ -4941,7 +4944,7 @@ function confirmDirDialog() {
 #### 排查过程
 
 1. **GUI 端流程**（[app/controllers/application_controller.py](../controllers/application_controller.py)）：
-   - `on_btn_dir_clicked()` → 非原生非模态 `DirectoryPickerDialog` → `_on_directory_selected()` → `self.current_save_dir = dir` → `cfg.set(...)` → `sig_change_dir.emit()`
+   - `on_btn_dir_clicked()` → `QFileDialog.getExistingDirectory()` → `_on_directory_selected()` → `set_current_save_dir(..., persist=True)` → `sig_change_dir.emit()`
    - `on_dir_changed()` → `append_log("📂 目录已变更")` → `scan_local_dir()`
    - `scan_local_dir()` → `bridge.emit("clear_videos")` → `file_service.scan_directory()` → `bridge.emit("item_found")` × N
 
@@ -5525,9 +5528,9 @@ async def change_dir(request: Request):
 
 | 序号 | 交互细节 | GUI 实现 | Web 实现 | 对齐 | 差异/备注 |
 |---|---|---|---|---|---|
-| 1 | 启动任务时检查 plugin 有效性 | `if not self.current_plugin: append_log("❌ 未选择有效模式"); return` | `if (!currentSource) { appendLog('❌ 未选择有效模式'); return; }` | ✅ | 完全一致 |
-| 2 | 启动任务时检查搜索关键词 | `if not keyword: append_log("⚠️ 请输入搜索内容！"); return` | `if (!keyword) { appendLog('⚠️ 请输入搜索内容！'); return; }` | ✅ | 完全一致 |
-| 3 | 启动后 UI 状态切换 | `set_crawl_running_state(True)` 禁用 startBtn/inp_search/combo_source/plugin_widget | `setCrawlState(true)` 禁用 startBtn/stopBtn 反向 + searchInput/sourceSelect/dynamicArea | ✅ | 完全一致 |
+| 1 | 启动任务时检查 plugin / platform 有效性 | `if not self.current_plugin: append_log("未选择有效平台"); return` | `if (!platformKnown) { appendUiLog("未选择有效模式", "", "❌ "); return; }` | ✅ | 语义一致，展示文案按端侧约定 |
+| 2 | 启动任务时检查搜索关键词 | `if not keyword: append_log("请输入主页链接、分享链接或合集链接"); return` | `if (!keyword) { appendUiLog("请输入主页链接、分享链接或合集链接"); return; }` | ✅ | WebUI 运行时提示跟随语言 |
+| 3 | 启动后 UI 状态切换 | 控制器任务状态驱动 startBtn/inp_search/combo_source 可用性 | `setCrawlUiState(true)` 禁用 startBtn/searchInput/sourceSelect/videoCountSelect，并启用 stopBtn | ✅ | 完全一致 |
 | 4 | 启动失败时恢复 UI | `if not plugin or not spider: return`（不调用 set_running_state）| 后端发 `crawl_state: {is_running: false}` | ✅ | 通过 crawl_state 事件恢复 |
 | 5 | 停止任务 | `if self.current_spider: self.current_spider.stop(); append_log("🛑 正在停止任务...")` | `if self.current_spider: self.current_spider.stop()` | ✅ | spider.stop() 内部 emit 日志，避免重复 |
 | 6 | 爬虫任务结束恢复 UI | `_on_spider_finished` → `set_crawl_running_state(False)` | `_on_spider_finished` → `crawl_state: false` | ✅ | 一致 |
@@ -5544,9 +5547,9 @@ async def change_dir(request: Request):
 | 17 | 删除后刷新按钮绑定 | `self.window.refresh_table_bindings()` | — | ✅ | Web 端无 lambda 闭包陷阱，不需要刷新 |
 | 18 | 进度条拖动 jitter 防护 | `is_slider_pressed=True` 时不更新 slider | `seeking=true` 时不更新 slider | ✅ | 完全一致 |
 | 19 | 进度条精度 | QSlider.setMinimum(0) + setMaximum(duration) 默认精度 1ms | `step="0.01"` 精度 0.01 秒 | ✅ | v19 BUG-183 修复后对齐 |
-| 20 | 播放按钮图标 | `SP_MediaPlay` / `SP_MediaPause` | `▶` / `⏸` Unicode | ✅ | 视觉对等 |
+| 20 | 播放按钮图标 | `SP_MediaPlay` / `SP_MediaPause` | icon manifest 播放/暂停资源 | ✅ | 图标语义对齐 |
 | 21 | 暂停/恢复点击 | `toggle_play` 检查 playbackState | `if (player.paused) play(); else pause();` | ✅ | 完全一致 |
-| 22 | 视频结束后图标恢复 | `player.onended → ▶` | `player.onended = () => playBtn.textContent = '▶'` | ✅ | 完全一致 |
+| 22 | 视频结束后图标恢复 | `player.onended` 恢复播放态图标 | Web 播放结束后恢复播放态图标 | ✅ | 完全一致 |
 | 23 | 双击画面进入全屏 | `vid_w.sig_double_click → toggle_fullscreen_mode` | `video.ondblclick = () => toggleFullscreen()` + `img.ondblclick` | ✅ | 完全一致（Web 端图片也支持） |
 | 24 | 全屏隐藏顶栏/左面板/日志 | `top_bar.hide(); left_panel.hide(); log_txt.hide()` | `body.is-fullscreen .top-bar/.left-panel/.log-panel { display:none }` | ✅ | 完全一致 |
 | 25 | 全屏设置 0 边距 | `_set_main_margins(0)` | `body.is-fullscreen { padding:0 !important; gap:0 !important; }` | ✅ | 完全一致 |
@@ -5557,24 +5560,24 @@ async def change_dir(request: Request):
 | 30 | Enter 在搜索框启动 | — | `if (e.key === 'Enter' && activeElement === searchInput) startCrawl()` | ✅ | Web 端增强 |
 | 31 | 上下箭头选择队列行 | QTableWidget 原生支持 | `if (e.key === 'ArrowUp'/'ArrowDown') selectVideo(...) + scrollIntoView` | ✅ | Web 端实现 + 自动滚动 |
 | 32 | Delete 键删除选中行 | — | `if (e.key === 'Delete' && selectedVideoId && activeElement === body) deleteVideo(...)` | ✅ | Web 端增强 |
-| 33 | 主题切换按钮图标 | `🌙` / `☀️` | `🌙` / `☀️` | ✅ | 完全一致 |
+| 33 | 主题切换按钮图标 | `theme_dark/theme_light` 图标资源 | `/ui-icon/theme_dark/theme_light` 图标资源 | ✅ | 图标资源统一 |
 | 34 | 主题切换后写 cfg | `cfg.set_many("common", {"theme": ..., "dark_theme": ...})` | 后端 `change_theme` 消息处理同样批量写 | ✅ | 完全一致 |
 | 35 | 主题切换日志 | `append_log(f"🎨 已切换到{'深色' if is_dark_theme else '浅色'}主题")` | `appendLog(\`🎨 已切换到${isDarkTheme ? '深色' : '浅色'}主题\`)` | ✅ | 完全一致 |
 | 36 | splitter 拖动时缩放图片 | `splitterMoved → scale_image_to_fit()` | `splitter mousemove → resizePreviewImage()` | ✅ | 完全一致 |
 | 37 | splitter 比例保存 | `cfg.save_ui_state(main_splitter, right_splitter)` | `localStorage.setItem('splitter_left_width', ...)` + `splitter_log_height` | ✅ | 存储位置不同（GUI 走 cfg，Web 走 localStorage） |
-| 38 | 行高 36px | `verticalHeader().setDefaultSectionSize(36)` | `td { height:36px; }` | ✅ | 完全一致 |
+| 38 | 行高 | 队列 52、正在下载 74、完成/失败 56、日志 32 | 页面级 `th/td` 高度 | ✅ | 完全一致 |
 | 39 | 列宽：标题 Stretch | `header.setSectionResizeMode(0, Stretch)` | `.col-title-col { width: auto; }` | ✅ | 完全一致 |
-| 40 | 列宽：状态/进度/操作 ResizeToContents | `setSectionResizeMode(1/2/3, ResizeToContents)` | `<col style="width:90px">` + 120px + 80px | ✅ | 固定宽度（GUI 端 ResizeToContents 由内容决定，Web 端固定合理值） |
-| 41 | 表格交替行色 | `setAlternatingRowColors(True)` | `tr:nth-child(even) { background:var(--alt-row); }` | ✅ | 完全一致 |
+| 40 | 列宽：状态/进度/操作 | `COLUMN_WIDTHS` + `SnapshotActionTable` 动作数宽度 | 页面级固定宽度：队列 96/112/44，正在下载 82/118/92/100/72，完成 142/108/76/100，失败 112/150/82/72 | ✅ | 完全一致 |
+| 41 | 表格交替行色 | `setAlternatingRowColors(False)` | 不使用斑马纹 | ✅ | 完全一致 |
 | 42 | 表格无网格 | `setShowGrid(False)` | `border:none; border-bottom:1px solid var(--border)` | ✅ | 完全一致 |
-| 43 | 表格整行选中 | `setSelectionBehavior(SelectRows)` | `tr { cursor:pointer } + tr.selected { background:var(--accent) }` | ✅ | 完全一致 |
-| 44 | 表格 hover 高亮 | QTableWidget 默认 | `tbody tr:hover { background:var(--hover-row) }` | ✅ | 完全一致 |
-| 45 | 操作按钮图标 | `SP_MediaPlay` / `SP_TrashIcon` | `▶` / `🗑` Unicode | ✅ | 视觉对等 |
-| 46 | 操作按钮大小 28x26 | `setFixedSize(28, 26)` | `.op-btn { width:28px; height:26px; }` | ✅ | 完全一致 |
+| 43 | 表格整行选中 | `setSelectionBehavior(SelectRows)` + 选中态背景 | `tr.selected td { background:var(--row-selected) }` | ✅ | 完全一致 |
+| 44 | 表格 hover 高亮 | hover 不覆盖 selected | `tbody tr:hover:not(.selected)` + `tr.selected:hover td` | ✅ | 完全一致 |
+| 45 | 操作按钮图标 | `icon_registry` / 18px 图标绘制 | `/ui-icon` manifest / 18px 图标 | ✅ | 完全一致 |
+| 46 | 操作按钮大小 | 操作列内绘制 18px 图标 | `.op.icon` 24x28 透明点击区，内部 18px 图标 | ✅ | 视觉等价 |
 | 47 | 播放按钮 32x32 圆形 | `setFixedSize(32, 32)` + 系统图标 | `.play-btn { width:32px; height:32px; border-radius:16px; }` | ✅ | 完全一致 |
 | 48 | 全屏按钮 32 高 | `setFixedHeight(32)` | `.fullscreen-btn { height:32px; }` | ✅ | 完全一致 |
-| 49 | 主题按钮 40 宽圆角 | `setFixedWidth(40)` | `.btn-theme { width:40px; border-radius:15px; }` | ✅ | 完全一致 |
-| 50 | 顶栏 50px 高 | `setFixedHeight(50)` | `.top-bar { height:50px; }` | ✅ | 完全一致 |
+| 49 | 主题按钮 48 宽圆角 | `setFixedWidth(48)` | `.btn-theme { width:48px; height:36px; }` | ✅ | 完全一致 |
+| 50 | 顶栏高度 | top bar 岛内控件 40px，主题按钮 36px | Web 顶栏同控件高度，外层由 shell gap 控制 | ✅ | 完全一致 |
 | 51 | 顶栏 5px 上下 padding | `setContentsMargins(10, 5, 10, 5)` | `.top-bar { padding:5px 10px; }` | ✅ | 完全一致 |
 | 52 | 队列标题栏 35px | `header_bar.setFixedHeight(35)` | `.queue-header { height:35px; }` | ✅ | 完全一致 |
 | 53 | 控制面板 50px | `ctrls.setFixedHeight(50)` | `.control-panel { height:50px; }` | ✅ | 完全一致 |
@@ -5597,14 +5600,14 @@ async def change_dir(request: Request):
 | 70 | 关闭应用清理 | `closeEvent → cfg.save_ui_state + cleanup_media + spider.stop + dl_manager.stop_all` | 浏览器关闭时自动清理 video/websocket | ✅ | 关闭模型不同但行为对等 |
 | 71 | 日志文本可选中复制 | QPlainTextEdit 默认支持 | `user-select:text; -webkit-user-select:text; cursor:text;` | ✅ | v20 BUG-188 修复后对齐 |
 | 72 | 应用启动立即扫描 | `QTimer.singleShot(200, scan_local_dir)` | WebSocket 连接后服务端 `await controller.async_scan_local_dir()` | ✅ | 完全一致（GUI 200ms 延迟避免初始化阻塞） |
-| 73 | 启动失败时恢复 | — | 前端 `try { setCrawlState(true) } catch { setCrawlState(false) }` | ✅ | Web 端显式 try/catch |
+| 73 | 启动失败时恢复 | 控制器未进入运行态则不禁用入口 | `sendWS()` 失败直接 `appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ")`，不切换运行态 | ✅ | Web 端显式连接保护 |
 | 74 | item_found 立即入队下载 | `_on_spider_item_found → dl_manager.add_task` | `_on_spider_item_found → dl_manager.add_task` | ✅ | 完全一致 |
 | 75 | task_started 状态"⏳ 下载中..." | `self._update_video_status(vid, "⏳ 下载中...", 0)` | `task_started` 事件 status='⏳ 下载中...', progress=0 | ✅ | 完全一致 |
 | 76 | task_progress 只更新 progress | `self._update_video_progress(vid, progress)` | `task_progress` 事件只更新 progress | ✅ | 完全一致 |
 | 77 | task_finished "✅ 完成" + 100% | `status="✅ 完成", progress=100` | `status='✅ 完成', progress=100` | ✅ | 完全一致 |
 | 78 | task_error "❌ 失败" | `status="❌ 失败"` | `status='❌ 失败'` | ✅ | 完全一致 |
 | 79 | 选 platform 写 last_source | `on_source_changed → cfg.set("common", "last_source", plugin_id)` | 后端 `change_source` 消息处理 cfg.set | ✅ | 完全一致 |
-| 80 | 动态配置区随平台切换 | `takeAt(0) + get_settings_widget(container_dynamic)` | `area.innerHTML = '' + renderDynamicArea()` | ✅ | 完全一致 |
+| 80 | 平台设置随快照热加载 | `SettingsPage.render(snapshot)` 重绘当前平台表 | `renderSettings()` 使用 `settings_snapshot`/`settings_contract` 重绘当前分组 | ✅ | 完全一致 |
 
 ### 39.3 关键修复
 
@@ -5666,7 +5669,7 @@ document.getElementById('queueBody').innerHTML = '';
 taskkill /F /IM python.exe /T  # 杀掉旧 3 个 Python 进程
 Start-Process -FilePath "python" -ArgumentList "web_main.py" -WorkingDirectory "<项目根目录>" -WindowStyle Hidden
 curl.exe -s http://localhost:8000/api/ping
-# 返回: {"status":"ok","version":"v19-fix"} ✅
+# 返回: {"status":"ok","version":"3.6.14"} ✅
 ```
 
 11. **CORS `allow_origins=["*"]` + `allow_credentials=True` 是非法组合**——必须 `allow_credentials=False`
@@ -5874,7 +5877,7 @@ pip install .
 
 | 测试 | 命令 | 结果 |
 |---|---|---|
-| CLI 启动 | `python -m cli --version` | `ucrawl 1.0.0` ✅ |
+| CLI 启动 | `python -m cli --version` | `ucrawl 3.6.14` ✅ |
 | 列出平台 | `python -m cli platforms --pretty` | 4 个平台 ✅ |
 | 搜索帮助 | `python -m cli search --help` | 完整参数列表 ✅ |
 | 扫描目录 | `python -m cli scan "./sample-dir" --limit 5 --pretty` | 成功返回 1 个文件 ✅ |
@@ -5903,6 +5906,78 @@ pip install .
 - **分布式**：CLI 调度多个 worker 进程并发搜索
 
 ---
+
+## v7.1 四态任务页选中态补充（2026-07-04）
+
+GUI 的下载中、已完成、失败列表在刷新或删除后，如果原选中行不存在，会由 Qt 表格重新落到当前可见第一行，详情卡片也随当前有效选中行更新。WebUI 必须保持同一语义：
+
+1. `active_downloads`、`completed_items`、`failed_items` 每次渲染前都要校验 `selected.active / selected.completed / selected.failed` 是否仍在当前可见数据内。
+2. 已完成页有分页时，失效选中态必须落到当前页第一条，而不是全局第一条，避免表格选中行与右侧文件信息错位。
+3. 详情卡片只能读取有效选中项；如果没有有效项，显示空态，不允许偷偷 fallback 到全局首项。
+4. 删除事件仍由 `removeDeletedFromFrontendState()` 清理播放态和显式删除态；普通快照刷新则由 `reconcileSelectedTask()` 在渲染层兜底，防止漏发 `deleted_ids` 时出现幽灵选中态。
+
+覆盖测试：
+
+- `tests/test_web_browser.py::StaticAssetsTests::test_task_pages_reconcile_stale_selection_before_render`
+- `tests/test_web_browser.py::WebUIBrowserTests::test_11f_stale_selection_reconciles_to_visible_first_row`
+
+## v7.2 工具箱选中态补充（2026-07-04）
+
+GUI 的工具箱每次收到工具列表快照后会默认选中第一张工具卡，并同步右侧“最近使用 / 工具详情 / 打开工具”区域。WebUI 必须复用同一条选中态归一规则：
+
+1. `toolbox_items` 渲染前校验 `selected.tool` 是否仍在当前工具列表内。
+2. 如果原工具已不存在，WebUI 选中当前列表第一项，并让 `.tool-card.active` 与右侧详情同步。
+3. 工具详情只读取有效选中项，避免工具卡无高亮但右侧显示空详情或旧详情。
+
+覆盖测试：
+
+- `tests/test_web_browser.py::StaticAssetsTests::test_toolbox_reconciles_stale_selection_before_render`
+- `tests/test_web_browser.py::WebUIBrowserTests::test_11f_stale_selection_reconciles_to_visible_first_row`
+
+## v7.3 日志详情动作补充（2026-07-04）
+
+GUI 的日志中心右侧 Inspector 由“详情头 / 摘要卡 / 详细 JSON 卡 / 堆栈卡”组成，详情头提供“复制 / 导出”，JSON 卡提供单独“复制”。WebUI 必须保持同等交互能力：
+
+1. 右侧详情顶部显示“日志详情”标题与“复制 / 导出”按钮；无选中日志时按钮禁用并显示空态。
+2. “复制”复制完整日志详情负载：时间、级别、平台、来源、Trace ID、消息、detail、stack。
+3. “详细信息”卡片始终展示 JSON 化 detail，并提供单独复制入口。
+4. “导出”在浏览器端生成 `log_detail_<trace_or_id>.json`，等价于 GUI 的保存 JSON。
+5. 右侧列仍保持外层不滚动，只允许详情内容卡片内部按需滚动，避免状态栏被顶出。
+
+覆盖测试：
+
+- `tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_log_center_matches_gui_tabs_actions_and_filters`
+- `tests/test_web_browser.py::WebUIBrowserTests::test_13c_log_detail_copy_export_actions_match_gui`
+
+## v7.4 状态栏指标对齐（2026-07-04）
+
+GUI 底部状态栏只展示运行态、下载速度、已完成数量、失败数量、版本号和帮助入口。WebUI 之前额外展示“上传速度”，会让底部栏信息密度、宽度分配和 GUI 不一致。
+
+当前合同：
+
+1. WebUI 底部状态栏不得包含 `statusUpload`。
+2. `renderStatus()` 只更新下载速度、已完成、失败、版本号和状态灯。
+3. WebUI 本地 `buildMockState()` 不再携带旧的 `upload_speed` 字段。
+4. 语言表不再保留 WebUI 专用的“上传速度”入口，避免产生不可见死文案。
+
+覆盖测试：
+
+- `tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_shell_matches_gui_island_structure`
+
+## v7.5 失败页模拟态动作对齐（2026-07-04）
+
+GUI 与 WebUI 的失败列表当前可见动作只保留“复制 Trace ID”和“删除”。真实快照由 `frontend_video_adapter` 输出 `["copy_diagnostics", "delete"]`，WebUI 的 `failedRow()` 也只渲染这两个动作。
+
+模拟态不能保留旧动作，否则开发预览或初始 mock 会给出“失败页仍支持重试”的错误信号：
+
+1. `app/services/frontend_mock_snapshot.py` 的 `failed_items[].actions` 不得包含 `retry`。
+2. `app/web/static/app.js` 的 `buildMockState()` 同样不得包含 `actions: ["retry", "copy_diagnostics", "delete"]`。
+3. 底层 `retry_failed` 动作可以作为服务能力保留，但不可作为失败列表默认可见入口。
+
+覆盖测试：
+
+- `tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_failed_page_uses_split_cards_without_retry`
+- `tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_failed_page_uses_cards_and_removes_retry`
 
 ## 四十一、v22 阶段：CLI/API/Skill 与桌面 GUI 完全对齐（2026-06-05）
 
@@ -6092,3 +6167,85 @@ def ask_user_selection_sync(spider_self, items):
 36. **复杂参数转换必须 100% 复用 GUI 代码**：如 MissAV 代理，复制粘贴 GUI 的代码最保险
 37. **配置合并顺序要明确**：平台默认 → SDK 全局默认 → 用户覆盖，确保逻辑清晰
 38. **二次选择是最复杂的流程**：需要反复对照 GUI 代码确保没有遗漏任何细节
+
+---
+
+## 四十三、v24 GUI/WebUI 细节对齐补充（2026-07-04）
+
+### 43.1 入口运行态锁定
+
+GUI 在任务运行中会禁用 `btn_start`、搜索框、平台选择框、数量选择框和插件配置区，只保留停止入口。WebUI 现在通过 `setCrawlUiState(isRunning)` 统一管理入口态：
+
+- `startBtn`：运行中禁用
+- `stopBtn`：运行中启用，空闲中禁用
+- `searchInput` / `sourceSelect` / `videoCountSelect`：运行中禁用
+- 自定义选择框同步原生 `select.disabled`，避免视觉上仍可点击
+
+启动任务前先校验关键词和当前平台；WebSocket 消息确实发出后才进入运行态。连接未就绪时只写日志，不制造“看起来已启动”的假状态。
+
+### 43.2 选择弹窗键盘与勾选框
+
+GUI 的 `SelectionDialog` 使用主题化 `ThemeCheckBox`，表格不接管 Enter。WebUI 对齐为：
+
+- 弹窗打开后焦点默认落到“开始下载”
+- 捕获阶段处理 Enter/Escape，Enter 确认，Escape 取消
+- 行点击切换勾选，但 checkbox 本身 `tabindex="-1"`，不抢默认确认焦点
+- checkbox 使用主题色绘制，去除浏览器原生黑色边框
+
+### 43.3 滚动条与动作按钮
+
+GUI 隐藏滚动条箭头，WebUI 已补全全局滚动条规范：
+
+- `*::-webkit-scrollbar-button { display: none; }`
+- 滚动条轨道透明，滑块跟随主题边框色
+- hover 使用 muted 色，避免浅/深主题下突兀白块
+
+动作列按钮间距对齐 GUI 的 `setSpacing(8)`：`.op { margin: 0 4px; }`，相邻按钮稳定为 8px。
+
+### 43.4 回归验证
+
+- `tests/test_web_browser.py::StaticAssetsTests`：28 passed
+- `tests/test_web_browser.py::WebUIBrowserTests`：17 passed
+- `tests/test_unified_frontend_contract.py` 相关合同：选择弹窗、运行态锁定、滚动条、行 hover/selected 规则均覆盖
+
+### 43.5 播放前服务端存在性校验（BUG-16 / BUG-24 更正）
+
+旧文档中曾将 WebUI 播放链路描述为“只检查 `local_path` 非空，然后依赖 `<video onerror>`”。该描述已过期。
+
+当前 WebUI 与 GUI 的对齐策略：
+
+- GUI：`controller.play_video()` 中通过 `os.path.exists(video.local_path)` 做本地同步校验。
+- WebUI：`playCompleted(id)` 先调用 `validateMediaForPreview(id)`。
+- `validateMediaForPreview(id)` 请求 `/api/media/{id}`，并带 `Range: bytes=0-0`，只取 1 字节用于存在性校验，避免整文件下载。
+- 校验失败时写入 `❌ 文件不存在或已被删除` 或 `❌ 播放前校验失败`，且不设置 `currentPlayingId`，不切换到视频播放态。
+- 增加 `previewRequestToken`，避免快速点击 A/B 时旧校验结果晚返回覆盖新预览。
+- `video.play()` 与 `video.onerror` 不再静默吞错，统一走 `appendPlaybackFailure()` 写入用户可见日志。
+
+状态：✅ BUG-16 / BUG-24 已修复。测试覆盖：
+
+- `tests/test_web_browser.py::StaticAssetsTests::test_web_preview_validates_media_with_server_before_playback`
+- `tests/test_web_browser.py::WebUIBrowserTests::test_11d_missing_media_validation_keeps_preview_closed`
+
+---
+
+# v7 本轮巡检新增合同
+
+1. 配置中心 WebUI 必须继承 `.page-stack` 已分配的高度：`#page-settings.active` 使用 flex 列布局，`.settings-grid` 填满剩余空间，`.settings-detail-body` 才允许内部滚动。禁止再用 `calc(100vh - ...)` 推高设置页，避免状态栏被顶出视口。
+2. 自定义选择框必须由组件统一管理宽度。顶部视频数与分页条数选择框按最长选项测量宽度，上框与下拉菜单等宽；菜单项行高为 36px，菜单最大高度必须按 `option-count * 36px + 4px` 计算，避免无意义内部滚动条造成右侧白边。
+3. 队列页、完成页和日志页的分页条数必须走白名单：队列/完成页为 `20/50/100`，日志页为 `20/50/100/全部`。程序性改值后必须调用自定义选择框同步函数，避免原生 select 值和外层显示框不一致。
+4. 队列页、完成页和日志页的上一页/下一页按钮必须在边界页禁用，并提供跟随语言切换的 title / aria-label；不能只靠点击后无变化来模拟禁用。
+5. WebUI 的按钮 hover 必须排除 `:disabled`，禁用态不能出现 hover 高亮；GUI/WebUI 都以“不可点击且视觉稳定”为准。
+6. 981-1120px 窄桌面仍保留桌面侧栏，但顶部栏允许换行：搜索框独占一行，操作按钮固定尺寸，不得被 flex 压缩。验收点是 1000x700 下所有页面 `docOverflowX == 0`，主题按钮宽度保持 48px。
+7. WebUI 状态栏与 GUI 一样使用值/标题分离结构，标题随语言切换，分隔符统一为 ASCII 冒号 `:`；不要拼接整句，避免语言切换和数值更新互相重绘。
+8. 日志中心只允许表格列表和详情内容卡片按内容滚动；`.page-logs`、`.logs-grid`、`.logs-right-column` 不再产生外层嵌套滚动，确保状态栏稳定停留在主视口内。
+9. “绑定默认打开方式”必须和 GUI 一样先进入确认弹窗，用户明确选择视频/图片资源类型后再提交 `register_file_associations`。WebUI 弹窗必须跟随主题色、深浅主题和语言切换，Enter 绑定、Escape 取消；不得从设置页按钮直接写死 `include_video/include_image` 参数。
+10. 侧栏平台选择器必须和 GUI 的 `PlatformSourceCombo` 一样显示平台图标。WebUI 原生 `select` 只保存值，自定义选择器负责读取 option 的 `data-icon`，并在按钮和下拉菜单项中渲染 `.custom-select-icon`；图标文件来自统一 `icon_manifest.platforms`，不得硬编码到 CSS。
+11. 下载队列“状态”列必须复刻 GUI 的 `SnapshotActionTable(icon_columns={"status"})`：用 `queue_status_icon_file()` 对应的图标加状态文本展示。WebUI 不允许再用 `.status-pill` 小圆点胶囊替代，否则和 GUI 的状态图标列语义不一致。
+12. “正在下载”页底部控制面板必须保留 GUI 的 `队列控制` 标题层级。WebUI 的 `.active-controls` 不能只留下开关和选择框，否则页面扫描层级与 GUI 的 `QueueControlPanel` 不一致；该标题必须参与语言切换。
+13. 工具箱 mock 数据也属于 WebUI 可见体验，必须和真实 `frontend_toolbox_adapter.toolbox_items()` 一样带独立 `icon_file`。不能让离线预览或首屏 mock 全部回退到 `nav_toolbox.png`，否则工具卡视觉和 GUI 不一致。
+14. 表格操作列必须按 GUI 的 `SnapshotActionTable` 动作列规则收敛：队列 44px、正在下载 72px、完成 100px、失败 72px。WebUI 操作图标为透明点击区，内部 18px 图标，不再显示普通按钮边框。
+15. 各任务页右侧详情栏不能共用同一个默认宽度：正在下载 360-500px，完成 430-620px，失败 380-520px，日志 400-460px；这对应各 GUI 页面 `setMinimumWidth/setMaximumWidth`。
+16. 底部状态栏第一组指标不能依赖 `:first-of-type` 之类易错伪类，因为前面已有状态灯和状态文本 `span`。WebUI 使用显式 `.status-metric-main` 负责左侧弹性间隔，保证指标区与 GUI 的居中布局一致。
+17. 启动任务按钮进入运行态时，WebUI 不能只显示普通 disabled 灰态；必须保持主按钮主题色并添加运行态视觉反馈，对齐 GUI `StartTaskButton` 的运行中反馈。
+
+---

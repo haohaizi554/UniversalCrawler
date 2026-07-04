@@ -30,7 +30,7 @@ python web_main.py --no-qt
 
 **响应**：
 ```json
-{"status": "ok", "version": "v19-fix"}
+{"status": "ok", "version": "3.6.14"}
 ```
 
 ### 平台

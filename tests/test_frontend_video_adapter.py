@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.models import VideoItem
@@ -43,6 +43,15 @@ def test_queue_item_preserves_frontend_contract_shape():
     assert row["subtitle"] == "2026-06-30 03:32:35"
     assert row["trace_id"] == "trace-1"
     assert row["actions"] == ["delete"]
+
+
+def test_frontend_time_formatters_convert_utc_iso_to_local_display():
+    raw = "2026-06-29T19:32:35Z"
+    expected = datetime(2026, 6, 29, 19, 32, 35, tzinfo=timezone.utc).astimezone()
+
+    assert adapter.queue_subtitle({"created_at": raw}) == expected.strftime("%Y-%m-%d %H:%M:%S")
+    assert adapter.format_event_clock(raw) == expected.strftime("%H:%M:%S")
+    assert adapter.format_completed_at_table(raw) == expected.strftime("%m-%d %H:%M")
 
 
 def test_stage_display_titles_prefer_locked_stage_snapshots():
@@ -193,6 +202,26 @@ def test_active_events_preserve_existing_times_and_cap_at_six():
 
     assert [event["message"] for event in events] == [f"event-{index}" for index in range(1, 7)]
     assert events[0]["time"] == "12:00:01"
+
+
+def test_active_events_normalize_existing_utc_event_times():
+    raw = "2026-06-29T19:32:35Z"
+    expected = datetime(2026, 6, 29, 19, 32, 35, tzinfo=timezone.utc).astimezone().strftime("%H:%M:%S")
+    item = _item(meta={"events": [{"time": raw, "message": "event-utc"}]})
+
+    events = adapter.active_events(
+        item,
+        progress=1,
+        chunks_done=1,
+        chunks_total=100,
+        speed="1 MB/s",
+        remaining_time="00:59",
+        write_status="writing",
+        merge_status="merging",
+        trace_id="trace",
+    )
+
+    assert events[0] == {"time": expected, "message": "event-utc"}
 
 
 def test_completed_formatters_are_stable():

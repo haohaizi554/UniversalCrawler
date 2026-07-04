@@ -38,6 +38,7 @@
       wrapper.className = "custom-select";
       if (select.classList.contains("source-select")) wrapper.classList.add("custom-select-source");
       if (select.classList.contains("count-select")) wrapper.classList.add("custom-select-count");
+      if (/PageSize$/.test(select.id || "")) wrapper.classList.add("custom-select-page-size");
       for (const className of ["platform-auth", "platform-count", "platform-proxy"]) {
         if (select.classList.contains(className)) wrapper.classList.add(className);
       }
@@ -84,23 +85,79 @@
     const menu = wrapper.querySelector(".custom-select-menu");
     const selected = select.selectedOptions && select.selectedOptions[0] ? select.selectedOptions[0] : select.options[select.selectedIndex];
     const text = selected ? selected.textContent : "";
+    const selectedIcon = optionIcon(selected);
     wrapper.classList.toggle("is-disabled", select.disabled);
+    wrapper.classList.toggle("has-option-icons", !!selectedIcon || Array.from(select.options).some(option => !!optionIcon(option)));
     if (button) {
       const fallbackLabel = select.getAttribute("aria-label") || select.dataset.setting || "Select";
       button.disabled = select.disabled;
-      button.textContent = text;
+      button.innerHTML = optionContentHtml(selected);
       button.title = text || fallbackLabel;
       button.setAttribute("aria-label", text || fallbackLabel);
       button.setAttribute("aria-expanded", String(!menu?.hidden));
     }
+    fitWidthToContent(select, wrapper, button);
     if (menu) renderMenu(select, menu);
+  }
+
+  function optionIcon(option) {
+    return option && option.dataset ? String(option.dataset.icon || "") : "";
+  }
+
+  function optionContentHtml(option) {
+    const text = helpers.esc(option ? option.textContent || "" : "");
+    const icon = optionIcon(option);
+    return `${icon ? `<img class="custom-select-icon" src="${helpers.escAttr(icon)}" alt="" />` : ""}<span class="custom-select-label">${text}</span>`;
+  }
+
+  function shouldAutoFit(select, wrapper) {
+    if (!select || !wrapper) return false;
+    return wrapper.classList.contains("custom-select-count")
+      || wrapper.classList.contains("custom-select-page-size");
+  }
+
+  function optionTextWidth(select, button) {
+    if (!select || !select.ownerDocument || !select.ownerDocument.body) return 0;
+    const doc = select.ownerDocument;
+    const probe = doc.createElement("span");
+    const styleSource = button || select;
+    const computed = styleSource ? doc.defaultView.getComputedStyle(styleSource) : null;
+    probe.style.cssText = [
+      "position:absolute",
+      "left:-10000px",
+      "top:-10000px",
+      "visibility:hidden",
+      "white-space:nowrap",
+      computed ? `font:${computed.font}` : "",
+      computed ? `letter-spacing:${computed.letterSpacing}` : "",
+    ].filter(Boolean).join(";");
+    doc.body.appendChild(probe);
+    let widest = 0;
+    Array.from(select.options).forEach(option => {
+      probe.textContent = option.textContent || "";
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    });
+    probe.remove();
+    return widest;
+  }
+
+  function fitWidthToContent(select, wrapper, button) {
+    if (!shouldAutoFit(select, wrapper)) return;
+    const widest = optionTextWidth(select, button);
+    if (!widest) return;
+    const width = Math.max(108, Math.min(260, Math.ceil(widest + 48)));
+    wrapper.style.width = `${width}px`;
+    wrapper.style.minWidth = `${width}px`;
+    if (wrapper.classList.contains("custom-select-count")) {
+      wrapper.style.flexBasis = `${width}px`;
+    }
   }
 
   function renderMenu(select, menu) {
     const current = String(select.value ?? "");
     menu.innerHTML = Array.from(select.options).map(option => {
       const selected = String(option.value) === current;
-      return `<button type="button" role="option" class="custom-select-option${selected ? " selected" : ""}" data-value="${helpers.escAttr(option.value)}" aria-selected="${selected ? "true" : "false"}">${helpers.esc(option.textContent || "")}</button>`;
+      return `<button type="button" role="option" class="custom-select-option${selected ? " selected" : ""}" data-value="${helpers.escAttr(option.value)}" aria-selected="${selected ? "true" : "false"}">${optionContentHtml(option)}</button>`;
     }).join("");
     menu.querySelectorAll(".custom-select-option").forEach(optionButton => {
       optionButton.addEventListener("click", event => {
@@ -186,5 +243,6 @@
     close,
     choose,
     handleKeydown,
+    fitWidthToContent,
   };
 }());

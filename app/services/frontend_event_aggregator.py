@@ -53,6 +53,7 @@ CRITICAL_TOPICS = frozenset(
         "frontend_action_result",
         "videos.remove",
         "videos.remove_many",
+        "videos.clear_queue",
         "videos.clear",
     }
 )

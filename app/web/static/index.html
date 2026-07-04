@@ -16,58 +16,63 @@
   <script src="/static/app.js?v=20260628-settings-masterdetail" defer></script>
 </head>
 <body>
-  <header class="top-bar" id="topBar">
-    <select id="sourceSelect" class="source-select" aria-label="平台选择"></select>
-    <input id="searchInput" class="search-input" placeholder="输入：主页链接、分享链接或合集链接..." />
-    <label class="count-label" for="videoCountSelect">视频数:</label>
-    <select id="videoCountSelect" class="count-select" aria-label="视频数">
-      <option value="10">10 个视频</option><option value="20" selected>20 个视频（推荐）</option><option value="30">30 个视频</option><option value="50">50 个视频</option><option value="9999">max</option>
-    </select>
-    <button id="startBtn" class="btn btn-primary" onclick="startCrawl()"><img src="/ui-icon/action_play.png" alt="" />启动任务</button>
-    <button id="stopBtn" class="btn btn-danger" onclick="stopCrawl()" disabled><img src="/ui-icon/action_stop.png" alt="" />停止</button>
-    <button id="changeDirBtn" class="btn btn-dir" onclick="onChangeDirClicked()"><img src="/ui-icon/action_open_directory.png" alt="" />更改目录</button>
-    <button id="themeBtn" class="btn btn-theme" onclick="toggleTheme()" title="切换主题"></button>
-  </header>
-
   <main class="app-body">
-    <nav id="leftPanel" class="sidebar" aria-label="页面导航">
-      <button class="nav-item active" data-page="queue" onclick="switchPage('queue')"><img src="/ui-icon/nav_download_queue.png" alt="" /><b>下载队列</b><span id="countQueue">0</span></button>
-      <button class="nav-item" data-page="active" onclick="switchPage('active')"><img src="/ui-icon/nav_downloading.png" alt="" /><b>正在下载</b><span id="countActive">0</span></button>
-      <button class="nav-item" data-page="completed" onclick="switchPage('completed')"><img src="/ui-icon/nav_completed.png" alt="" /><b>已完成</b><span id="countCompleted">0</span></button>
-      <button class="nav-item" data-page="failed" onclick="switchPage('failed')"><img src="/ui-icon/nav_failed.png" alt="" /><b>失败列表</b><span id="countFailed">0</span></button>
-      <button class="nav-item" data-page="logs" onclick="switchPage('logs')"><img src="/ui-icon/nav_log_center.png" alt="" /><b>日志中心</b></button>
-      <button class="nav-item" data-page="settings" onclick="switchPage('settings')"><img src="/ui-icon/nav_settings.png" alt="" /><b>配置中心</b></button>
-      <button class="nav-item" data-page="toolbox" onclick="switchPage('toolbox')"><img src="/ui-icon/nav_toolbox.png" alt="" /><b>工具箱</b></button>
-    </nav>
+    <aside id="leftPanel" class="sidebar" aria-label="页面导航">
+      <section class="platform-island" aria-label="平台选择">
+        <select id="sourceSelect" class="source-select" aria-label="平台选择"></select>
+      </section>
+      <nav class="nav-island" aria-label="页面导航">
+        <button class="nav-item active" data-page="queue" onclick="switchPage('queue')"><img src="/ui-icon/nav_download_queue.png" alt="" /><b>下载队列</b><span id="countQueue">0</span></button>
+        <button class="nav-item" data-page="active" onclick="switchPage('active')"><img src="/ui-icon/nav_downloading.png" alt="" /><b>正在下载</b><span id="countActive">0</span></button>
+        <button class="nav-item" data-page="completed" onclick="switchPage('completed')"><img src="/ui-icon/nav_completed.png" alt="" /><b>已完成</b><span id="countCompleted">0</span></button>
+        <button class="nav-item" data-page="failed" onclick="switchPage('failed')"><img src="/ui-icon/nav_failed.png" alt="" /><b>失败列表</b><span id="countFailed">0</span></button>
+        <div class="nav-separator" aria-hidden="true"></div>
+        <button class="nav-item" data-page="logs" onclick="switchPage('logs')"><img src="/ui-icon/nav_log_center.png" alt="" /><b>日志中心</b></button>
+        <button class="nav-item" data-page="settings" onclick="switchPage('settings')"><img src="/ui-icon/nav_settings.png" alt="" /><b>配置中心</b></button>
+        <button class="nav-item" data-page="toolbox" onclick="switchPage('toolbox')"><img src="/ui-icon/nav_toolbox.png" alt="" /><b>工具箱</b></button>
+      </nav>
+    </aside>
 
-    <section class="page-stack" id="rightPanel">
+    <section class="right-column">
+      <header class="top-bar" id="topBar">
+        <input id="searchInput" class="search-input" placeholder="输入：主页链接、分享链接或合集链接..." />
+        <label class="count-label" for="videoCountSelect">视频数:</label>
+        <select id="videoCountSelect" class="count-select" aria-label="视频数">
+          <option value="10">10 个视频</option><option value="20" selected>20 个视频（推荐）</option><option value="30">30 个视频</option><option value="50">50 个视频</option><option value="9999">max</option>
+        </select>
+        <button id="startBtn" class="btn btn-primary" onclick="startCrawl()"><img src="/ui-icon/action_play.png" alt="" />启动任务</button>
+        <button id="stopBtn" class="btn btn-danger" onclick="stopCrawl()" disabled><img src="/ui-icon/action_stop.png" alt="" />停止</button>
+        <button id="changeDirBtn" class="btn btn-dir" onclick="onChangeDirClicked()"><img src="/ui-icon/action_open_directory.png" alt="" />更改目录</button>
+        <button id="themeBtn" class="btn btn-theme" onclick="toggleTheme()" title="切换主题"></button>
+      </header>
+
+      <section class="page-stack" id="rightPanel">
       <section class="page active" id="page-queue" data-page="queue">
-        <div class="page-head queue-head">
-          <h1>下载队列</h1>
-          <p>保存至：<span id="queuePath" class="path-text"></span></p>
-          <div class="queue-toolbar" aria-label="下载队列工具">
-            <button class="icon-btn active" id="queueComfortableBtn" onclick="setQueueDensity('comfortable')" title="宽松行距"><img src="/ui-icon/view_grid.png" alt="" /></button>
-            <button class="icon-btn" id="queueCompactBtn" onclick="setQueueDensity('compact')" title="紧凑行距"><img src="/ui-icon/action_view_details.png" alt="" /></button>
-            <button class="icon-btn" onclick="fetchFrontendState()" title="刷新"><img src="/ui-icon/action_refresh.png" alt="" /></button>
-          </div>
-        </div>
         <div class="table-shell queue-table-shell">
-          <table>
-            <thead><tr><th>标题</th><th>平台</th><th>状态</th><th>进度</th><th>操作</th></tr></thead>
-            <tbody id="queueBody"></tbody>
-          </table>
-        </div>
-        <div class="queue-footer">
-          <span id="queueTotal">共 0 项</span>
-          <div class="pager" aria-label="下载队列分页">
-            <button class="icon-btn" onclick="setQueuePage(-1)" title="上一页">‹</button>
-            <span><b id="queuePageNow">1</b> / <span id="queueTotalPages">1</span> 页</span>
-            <button class="icon-btn" onclick="setQueuePage(1)" title="下一页">›</button>
-            <select id="queuePageSize" onchange="setQueuePageSize(this.value)" aria-label="每页条数">
-              <option value="20">20 条/页</option>
-              <option value="50">50 条/页</option>
-              <option value="100">100 条/页</option>
-            </select>
+          <div class="queue-path-row" aria-label="下载队列工具">
+            <span class="queue-path-label">保存至：</span>
+            <span id="queuePath" class="path-text"></span>
+            <button class="icon-btn" onclick="frontendAction('clear_queue',{})" title="删除所有"><img src="/ui-icon/action_clear-all.png" alt="" /></button>
+            <button class="icon-btn" onclick="fetchFrontendState()" title="立即刷新"><img src="/ui-icon/action_refresh.png" alt="" /></button>
+          </div>
+          <div class="queue-table-scroll">
+            <table>
+              <thead><tr><th>视频标题</th><th>平台</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="queueBody"></tbody>
+            </table>
+          </div>
+          <div class="queue-footer">
+            <span id="queueTotal">共 0 项</span>
+            <div class="pager" aria-label="下载队列分页">
+              <button id="queuePrevPage" class="icon-btn pagination-button" type="button" onclick="setQueuePage(-1)" title="上一页" aria-label="上一页">‹</button>
+              <span><b id="queuePageNow">1</b> / <span id="queueTotalPages">1</span> 页</span>
+              <button id="queueNextPage" class="icon-btn pagination-button" type="button" onclick="setQueuePage(1)" title="下一页" aria-label="下一页">›</button>
+              <select id="queuePageSize" onchange="setQueuePageSize(this.value)" aria-label="每页条数">
+                <option value="20">20 条/页</option>
+                <option value="50">50 条/页</option>
+                <option value="100">100 条/页</option>
+              </select>
+            </div>
           </div>
         </div>
         <div class="event-strip" id="queueEvents"></div>
@@ -83,6 +88,7 @@
               </table>
             </div>
             <div class="controls-panel active-controls">
+              <strong class="active-control-title">队列控制</strong>
               <div class="active-control-row compact">
                 <label class="active-toggle"><input id="activeAutoRetry" type="checkbox" checked onchange="updateDownloadOptions()" /><span>失败自动重试</span></label>
                 <label>最大重试次数 <select id="activeMaxRetries" onchange="updateDownloadOptions()"><option value="1">1次</option><option value="2">2次</option><option value="3" selected>3次</option><option value="4">4次</option><option value="5">5次</option><option value="6">6次</option><option value="7">7次</option><option value="8">8次</option><option value="9">9次</option><option value="10">10次</option></select></label>
@@ -108,9 +114,9 @@
             <div class="queue-footer completed-footer">
               <span id="completedTotal">共 0 项</span>
               <div class="pager">
-                <button class="icon-btn" onclick="setCompletedPage(-1)" title="上一页">‹</button>
+                <button id="completedPrevPage" class="icon-btn pagination-button" type="button" onclick="setCompletedPage(-1)" title="上一页" aria-label="上一页">‹</button>
                 <span><b id="completedPageNow">1</b> / <span id="completedTotalPages">1</span> 页</span>
-                <button class="icon-btn" onclick="setCompletedPage(1)" title="下一页">›</button>
+                <button id="completedNextPage" class="icon-btn pagination-button" type="button" onclick="setCompletedPage(1)" title="下一页" aria-label="下一页">›</button>
                 <select id="completedPageSize" onchange="setCompletedPageSize(this.value)" aria-label="每页条数">
                   <option value="20">20 条/页</option>
                   <option value="50">50 条/页</option>
@@ -121,8 +127,18 @@
           </div>
           <aside class="detail-panel completed-detail">
             <div id="previewPanel" class="preview-panel completed-preview-card">
-              <video id="videoPlayer" controls></video>
-              <div id="previewArea" class="preview-placeholder">选择已完成文件进行播放</div>
+              <div id="mediaViewport" class="media-viewport" ondblclick="toggleFullscreen()">
+                <video id="videoPlayer" preload="metadata"></video>
+                <div id="previewArea" class="preview-placeholder"></div>
+              </div>
+              <div id="mediaControls" class="media-controls" aria-label="媒体播放控制">
+                <button id="playBtn" class="media-control-btn" type="button" onclick="togglePlay()" title="播放/暂停" aria-label="播放/暂停"><img src="/ui-icon/action_play.png" alt="" /></button>
+                <button id="prevBtn" class="media-control-btn media-control-text" type="button" onclick="switchPreview(-1)" title="上一个资源" aria-label="上一个资源">‹‹</button>
+                <button id="nextBtn" class="media-control-btn media-control-text" type="button" onclick="switchPreview(1)" title="下一个资源" aria-label="下一个资源">››</button>
+                <input id="seekSlider" class="media-seek" type="range" min="0" max="0" value="0" step="1" oninput="onSeekInput(this.value)" onchange="onSeekCommit(this.value)" aria-label="播放进度" />
+                <span id="timeLabel" class="media-time">00:00</span>
+                <button id="fullscreenBtn" class="media-fullscreen-btn" type="button" onclick="toggleFullscreen()" title="媒体全屏（双击画面）" aria-label="媒体全屏">[ 全屏 ]</button>
+              </div>
             </div>
             <div id="completedDetail" class="completed-info-card"></div>
           </aside>
@@ -151,23 +167,26 @@
             <div class="logs-table-card">
               <div class="tabs log-tabs" id="logTabs">
                 <button class="tab active" data-log-tab="all" onclick="setLogTab('all')">全部日志</button>
+                <button class="tab" data-log-tab="crawl" onclick="setLogTab('crawl')">采集日志</button>
                 <button class="tab" data-log-tab="download" onclick="setLogTab('download')">下载日志</button>
                 <button class="tab" data-log-tab="system" onclick="setLogTab('system')">系统日志</button>
+                <button class="tab" data-log-tab="performance" onclick="setLogTab('performance')">性能日志</button>
                 <button class="tab" data-log-tab="error" onclick="setLogTab('error')">错误日志</button>
               </div>
               <div class="filters log-filters">
-                <label><span>日志级别</span><select id="logLevelFilter" onchange="syncLogFiltersFromDom()"><option>全部</option><option>INFO</option><option>SUCCESS</option><option>WARN</option><option>ERROR</option></select></label>
-                <label><span>时间范围</span><select id="logTimeFilter" onchange="syncLogFiltersFromDom()"><option>近 30 分钟</option><option>近 1 小时</option><option selected>近 24 小时</option><option>全部</option></select></label>
-                <label><span>平台</span><select id="logPlatformFilter" onchange="syncLogFiltersFromDom()"><option>全部</option><option>抖音</option><option>Bilibili</option><option>快手</option><option>MissAV</option><option>小红书</option><option>系统</option></select></label>
-                <label><span>Trace ID</span><input id="logTraceFilter" placeholder="请输入 Trace ID" oninput="syncLogFiltersFromDom()" /></label>
-                <label><span>关键词搜索</span><input id="logKeywordFilter" placeholder="请输入关键词..." oninput="syncLogFiltersFromDom()" /></label>
+                <div class="log-filter-field"><span class="log-filter-label">日志级别</span><select id="logLevelFilter" aria-label="日志级别" onchange="syncLogFiltersFromDom()"><option>全部</option><option>INFO</option><option>SUCCESS</option><option>WARN</option><option>ERROR</option><option>CMD</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">时间范围</span><select id="logTimeFilter" aria-label="时间范围" onchange="syncLogFiltersFromDom()"><option>近 30 分钟</option><option>近 1 小时</option><option selected>近 24 小时</option><option>全部</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">平台</span><select id="logPlatformFilter" aria-label="平台" onchange="syncLogFiltersFromDom()"><option>全部</option><option>抖音</option><option>Bilibili</option><option>快手</option><option>MissAV</option><option>小红书</option><option>系统</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">Trace ID</span><input id="logTraceFilter" aria-label="Trace ID" placeholder="请输入 Trace ID" oninput="syncLogFiltersFromDom()" /></div>
+                <div class="log-filter-field"><span class="log-filter-label">关键词搜索</span><input id="logKeywordFilter" aria-label="关键词搜索" placeholder="请输入关键词..." oninput="syncLogFiltersFromDom()" /></div>
               </div>
               <div class="log-actions">
-                <button class="btn btn-danger" onclick="runLogOperation('clear')">清空日志</button>
-                <button class="btn" onclick="runLogOperation('export')">导出日志</button>
-                <button class="btn" onclick="runLogOperation('refresh')">刷新缓冲</button>
-                <button class="btn" onclick="runLogOperation('open_latest')">打开 latest_debug.log</button>
-                <button class="btn" onclick="runLogOperation('open_error_summary')">打开 latest_error_summary.md</button>
+                <button class="btn btn-primary" onclick="runLogOperation('refresh')">刷新</button>
+                <button class="btn btn-danger" onclick="runLogOperation('clear')">清空</button>
+                <button class="btn" onclick="runLogOperation('export')">导出</button>
+                <button class="btn" onclick="runLogOperation('open_latest')">debug.log</button>
+                <button class="btn" onclick="runLogOperation('open_error_summary')">error.md</button>
+                <button class="btn" onclick="copySelectedLogTraceId()">复制TraceID</button>
               </div>
               <div class="table-shell">
                 <table>
@@ -175,52 +194,113 @@
                   <tbody id="logBody"></tbody>
                 </table>
               </div>
+              <div class="queue-footer log-footer">
+                <span id="logTotal">共 0 条 / 匹配 0 条 / 当前显示 0 条</span>
+                <div class="pager">
+                  <button id="logPrevPage" class="btn" type="button" onclick="setLogPage(-1)">上一页</button>
+                  <span id="logPageIndicator">第 1 / 1 页</span>
+                  <select id="logPageSize" onchange="setLogPageSize(this.value)" aria-label="每页条数">
+                    <option value="20">20 条/页</option>
+                    <option value="50">50 条/页</option>
+                    <option value="100">100 条/页</option>
+                    <option value="0">全部</option>
+                  </select>
+                  <button id="logNextPage" class="btn" type="button" onclick="setLogPage(1)">下一页</button>
+                </div>
+              </div>
             </div>
             <aside class="logs-right-column" id="logDetail"></aside>
           </div>
         </section>
 
       <section class="page" id="page-settings" data-page="settings">
-        <div class="page-head"><h1>配置中心</h1></div>
+        <div class="page-head"><h1>配置中心</h1><p>集中管理下载行为、平台状态、播放体验、日志策略与界面外观</p></div>
         <div class="settings-grid" id="settingsGrid"></div>
       </section>
 
       <section class="page" id="page-toolbox" data-page="toolbox">
         <div class="page-grid">
           <div>
-            <div class="page-head"><h1>工具箱</h1></div>
+            <div class="page-head"><h1>工具箱</h1><p>高效实用的辅助工具，提升工作效率</p></div>
             <div class="tool-grid" id="toolGrid"></div>
           </div>
           <aside class="detail-panel" id="toolDetail"></aside>
         </div>
       </section>
+      </section>
     </section>
   </main>
 
   <footer class="status-bar">
+    <span id="statusIndicator" class="status-dot" aria-hidden="true"></span>
     <span id="statusState">空闲中</span>
-    <span id="statusDownload">下载速度：0 B/s</span>
-    <span id="statusUpload">上传速度：0 B/s</span>
-    <span id="statusCompleted">已完成：0</span>
-    <span id="statusFailed">失败：0</span>
-    <span id="statusVersion">v1.0.0</span>
+    <span class="status-metric status-metric-main"><span class="status-caption" data-status-caption="下载速度">下载速度:</span><span id="statusDownload" class="status-value">0 B/s</span></span>
+    <span class="status-metric"><span class="status-caption" data-status-caption="已完成">已完成:</span><span id="statusCompleted" class="status-value">0</span></span>
+    <span class="status-metric"><span class="status-caption" data-status-caption="失败">失败:</span><span id="statusFailed" class="status-value">0</span></span>
+    <span id="statusVersion">v3.6.14</span>
+    <button id="statusHelpBtn" class="status-help-btn" type="button" title="打开项目主页" aria-label="打开项目主页" onclick="window.open('https://github.com/haohaizi554/UniversalCrawler', '_blank', 'noopener')"><img src="/ui-icon/action_help.png" alt="" /></button>
   </footer>
 
-  <div id="dirModal" class="modal">
-    <div class="modal-box">
-      <h2>选择保存目录</h2>
-      <input id="dirInput" placeholder="输入目录路径" />
-      <div id="dirDrivesList" class="dir-list"></div>
-      <div id="dirList" class="dir-list"></div>
-      <div class="modal-actions"><button class="btn" onclick="cancelDirDialog()">取消</button><button class="btn btn-primary" onclick="confirmDirDialog()">选择此目录</button></div>
+  <div id="dirModal" class="modal dir-modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dirTitle" aria-describedby="dirStatus">
+    <div class="modal-box dir-modal-box">
+      <div class="dir-modal-head">
+        <h2 id="dirTitle">选择保存目录</h2>
+        <span id="dirStatus" class="dir-status">输入或确认保存目录</span>
+      </div>
+      <div class="dir-path-row">
+        <input id="dirInput" placeholder="输入目录路径" />
+        <button id="dirGoBtn" class="btn" type="button" onclick="dirBrowsePath()">跳转</button>
+        <button id="dirParentBtn" class="btn" type="button" onclick="dirGoParent()">上一级</button>
+        <button id="dirRefreshBtn" class="icon-btn" type="button" onclick="dirRefresh()" title="刷新" aria-label="刷新"><img src="/ui-icon/action_refresh.png" alt="" /></button>
+      </div>
+      <div id="dirDrivesList" class="dir-drives-list" aria-label="可用根目录"></div>
+      <div id="dirList" class="dir-list dir-folder-list" aria-label="子目录列表"></div>
+      <div class="modal-actions dir-actions"><button id="dirCancelBtn" class="btn" onclick="cancelDirDialog()">取消</button><button id="dirConfirmBtn" class="btn btn-primary" onclick="confirmDirDialog()">选择此目录</button></div>
     </div>
   </div>
 
-  <div id="selectionModal" class="modal" tabindex="-1">
-    <div class="modal-box">
-      <h2 id="selectionHeader">选择任务</h2>
-      <table><tbody id="selectionBody"></tbody></table>
-      <div class="modal-actions"><button class="btn" onclick="cancelSelection()">取消</button><button class="btn btn-primary" onclick="confirmSelection()">开始下载</button></div>
+  <div id="fileAssociationModal" class="modal association-modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="associationTitle" aria-describedby="associationDescription">
+    <div class="modal-box association-modal-box">
+      <h2 id="associationTitle">绑定默认打开方式</h2>
+      <p id="associationDescription" class="association-description">选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页再次确认。</p>
+      <div class="association-option-list">
+        <label class="association-option" for="associationVideo">
+          <input id="associationVideo" class="association-checkbox" type="checkbox" checked />
+          <span>视频资源（mp4、mkv、avi、mov、webm 等）</span>
+        </label>
+        <label class="association-option" for="associationImage">
+          <input id="associationImage" class="association-checkbox" type="checkbox" checked />
+          <span>图片资源（jpg、png、gif、webp、bmp 等）</span>
+        </label>
+      </div>
+      <p id="associationStatus" class="association-status">生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。</p>
+      <div class="modal-actions association-actions">
+        <button id="associationCancelBtn" class="btn" type="button" onclick="cancelFileAssociationModal()">取消</button>
+        <button id="associationConfirmBtn" class="btn btn-primary" type="button" onclick="confirmFileAssociationModal()">绑定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="selectionModal" class="modal selection-modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="selectionTitle" aria-describedby="selectionHeader">
+    <div class="modal-box selection-modal-box">
+      <h2 id="selectionTitle">任务清单确认</h2>
+      <p id="selectionHeader" class="selection-header">共扫描到 0 个资源，请勾选需要下载的项目：</p>
+      <div class="selection-table-shell">
+        <table class="selection-table">
+          <thead><tr><th>选择</th><th>视频标题 / 描述</th></tr></thead>
+          <tbody id="selectionBody"></tbody>
+        </table>
+      </div>
+      <div class="modal-actions selection-actions">
+        <div class="selection-bulk-actions">
+          <button id="selectionAllBtn" class="btn" type="button" onclick="selectAllSelectionItems()">全选</button>
+          <button id="selectionInvertBtn" class="btn" type="button" onclick="invertSelectionItems()">反选</button>
+        </div>
+        <div class="selection-primary-actions">
+          <button id="selectionCancelBtn" class="btn" type="button" onclick="cancelSelection()">取消任务</button>
+          <button id="selectionConfirmBtn" class="btn btn-primary" type="button" onclick="confirmSelection()">开始下载</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -229,8 +309,6 @@
     <div id="tableWrap"></div>
     <div id="hSplitter"></div>
     <div id="vSplitter"></div>
-    <button id="playBtn" title="Play"></button><button id="prevBtn" title="Previous"></button><button id="nextBtn" title="Next"></button>
-    <input id="seekSlider" /><span id="timeLabel"></span><button id="fullscreenBtn" title="Fullscreen"></button>
     <div id="logPanel"></div><span id="pathLabel"></span>
   </div>
 </body>

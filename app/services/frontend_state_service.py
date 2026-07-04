@@ -529,6 +529,7 @@ class FrontendStateService:
         payload = payload or {}
         handler = {
             "delete_item": self._action_delete_item,
+            "clear_queue": self._action_clear_queue,
             "pause_download": self._action_pause_download,
             "retry_failed": self._action_retry_failed,
             "copy_diagnostics": self._action_copy_diagnostics,
@@ -1547,7 +1548,7 @@ class FrontendStateService:
         try:
             from cli import __version__
         except Exception:
-            __version__ = "1.0.0"
+            __version__ = "3.6.14"
 
         if any(value is None for value in (queue_count, active_count, completed_count, failed_count)):
             counts = self._video_bucket_counts()
@@ -1678,6 +1679,26 @@ class FrontendStateService:
         if status == "ok":
             return FrontendActionResult("ok", message or "deleted", data or {"video_id": video_id})
         return FrontendActionResult("error", message or f"delete failed: {status}", data or {"video_id": video_id})
+
+    def _action_clear_queue(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        del payload
+        queue_ids = sorted(self.queue_item_ids())
+        clear_queue = getattr(self.controller, "on_clear_queue", None)
+        if callable(clear_queue):
+            clear_queue()
+        else:
+            controller_videos = getattr(self.controller, "videos", None)
+            if isinstance(controller_videos, dict):
+                for video_id in queue_ids:
+                    controller_videos.pop(video_id, None)
+            for video_id in queue_ids:
+                self.remove_video(video_id)
+        if queue_ids:
+            self._emit_frontend_event(
+                "videos.clear_queue",
+                {"video_ids": queue_ids, "count": len(queue_ids)},
+            )
+        return FrontendActionResult("ok", "queue cleared", {"count": len(queue_ids), "video_ids": queue_ids})
 
     def _action_pause_download(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         video_id = str(payload.get("id") or payload.get("video_id") or "")

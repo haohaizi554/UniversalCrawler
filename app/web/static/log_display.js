@@ -43,7 +43,9 @@
     if (level === "ERROR") return "error";
     if (item.category) return String(item.category);
     const text = logSearchText(item).toLowerCase();
-    if (/(download|\u4e0b\u8f7d|bilibili|douyin|kuaishou|missav|\u5c0f\u7ea2\u4e66|\u6296\u97f3|\u5feb\u624b)/.test(text)) return "download";
+    if (/(performance|perf|\u6027\u80fd|\u8017\u65f6|latency|duration|speed_trend)/.test(text)) return "performance";
+    if (/(crawl|crawler|spider|parse|scan|\u91c7\u96c6|\u722c\u53d6|\u722c\u866b|\u626b\u63cf|\u89e3\u6790|\u4e3b\u9875)/.test(text)) return "crawl";
+    if (/(download|\u4e0b\u8f7d|\u6d41\u8bf7\u6c42|\u5206\u7247|\u5408\u5e76|bilibili|douyin|kuaishou|missav|\u5c0f\u7ea2\u4e66|\u6296\u97f3|\u5feb\u624b)/.test(text)) return "download";
     return "system";
   }
 

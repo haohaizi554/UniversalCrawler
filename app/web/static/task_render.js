@@ -90,10 +90,15 @@
 
   function queueStatusHtml(status) {
     const label = status || "\u5f85\u4e0b\u8f7d";
-    const kind = label.includes("\u89e3\u6790") || label.includes("\u5b58\u5728") ? "success"
-      : label.includes("\u6392\u961f") ? "warning"
-        : "pending";
-    return `<span class="status-pill ${kind}"><i></i>${escapeHtml(label)}</span>`;
+    const current = manifest();
+    const queueStatus = current.queue_status || {};
+    const statusIcons = current.status || {};
+    let iconFile = queueStatus[label] || "";
+    if (!iconFile && (label.includes("\u5931\u8d25") || label.includes("\u9519\u8bef"))) iconFile = statusIcons.failed || "status_failed.png";
+    if (!iconFile && (label.includes("\u5b8c\u6210") || label.includes("\u5df2\u89e3\u6790") || label.includes("\u5b58\u5728"))) iconFile = statusIcons.success || "status_success.png";
+    if (!iconFile && (label.includes("\u4e0b\u8f7d") || label.includes("\u8fd0\u884c") || label.includes("\u89e3\u6790\u4e2d"))) iconFile = statusIcons.running || "status_running.png";
+    iconFile = iconFile || statusIcons.pending || "status_pending.png";
+    return `<span class="icon-text queue-status-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${escapeHtml(label)}</span>`;
   }
 
   function queueRow(item) {
@@ -103,7 +108,6 @@
         <td title="${escapeAttr(item.title)}">${queueTitleHtml(item)}</td>
         <td>${platformHtml(item.platform, item.platform_id)}</td>
         <td>${queueStatusHtml(item.status)}</td>
-        <td>${progressHtml(item.progress)}</td>
         <td>${actionButton("delete", "\u5220\u9664", `event.stopPropagation();frontendAction('delete_item',{id:'${id}'})`, true)}</td>
       </tr>
     `;

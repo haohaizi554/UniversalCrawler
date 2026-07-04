@@ -356,7 +356,14 @@ class SpeedTrendWidget(QWidget):
             c1y = p1[1] + (p2[1] - p0[1]) * tension
             c2x = p2[0] - (p3[0] - p1[0]) * tension
             c2y = p2[1] - (p3[1] - p1[1]) * tension
-            path.cubicTo(c1x, max(top, min(bottom, c1y)), c2x, max(top, min(bottom, c2y)), p2[0], p2[1])
+            path.cubicTo(
+                c1x,
+                max(top, min(bottom, c1y)),
+                c2x,
+                max(top, min(bottom, c2y)),
+                p2[0],
+                p2[1],
+            )
         return path
 
     def paintEvent(self, _event) -> None:
@@ -383,7 +390,10 @@ class SpeedTrendWidget(QWidget):
                 x = rect.left() + int(rect.width() * index / count)
                 y = rect.bottom() - int(rect.height() * value / max_value)
                 points.append((x, y))
-            painter.setPen(QPen(QColor(colors["accent"]), 2))
+            line_pen = QPen(QColor(colors["accent"]), 2)
+            line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            line_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(line_pen)
             painter.drawPath(self._smooth_curve_path(points))
             painter.setBrush(QColor(colors["accent"]))
             painter.setPen(Qt.PenStyle.NoPen)

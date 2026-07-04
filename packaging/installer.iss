@@ -2,7 +2,7 @@
   #define AppName "Universal CrawlerPro"
 #endif
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "3.6.14"
 #endif
 #ifndef AppPublisher
   #define AppPublisher "UCrawl Team"

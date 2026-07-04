@@ -920,6 +920,9 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(item["message_summary"], "解析完成")
         self.assertEqual(item["trace_id"], "bilibili-crawl-1")
         self.assertEqual(item["source"], "bilibili")
+        self.assertEqual(item["platform_id"], "bilibili")
+        self.assertEqual(item["level_display"], "INFO")
+        self.assertIn("source_display", item)
 
     def test_log_items_respect_ui_max_display_count_for_memory_buffer(self):
         with TemporaryDirectory() as temp_dir:
@@ -1093,6 +1096,46 @@ class FrontendStateServiceTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["data"]["missing"])
+
+    def test_clear_queue_action_uses_controller_queue_handler(self):
+        queued = VideoItem(url="https://example.com/q", title="queued", source="douyin")
+        queued.status = VideoStatus.PENDING.label
+        completed = VideoItem(url="https://example.com/done", title="done", source="douyin")
+        completed.status = VideoStatus.COMPLETED.label
+        controller = SimpleNamespace(
+            videos={queued.id: queued, completed.id: completed},
+            _dl_manager=None,
+            on_clear_queue=Mock(),
+        )
+        service = FrontendStateService(controller)
+
+        result = service.handle_action("clear_queue", {})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["count"], 1)
+        self.assertEqual(result["data"]["video_ids"], [queued.id])
+        controller.on_clear_queue.assert_called_once_with()
+
+    def test_clear_queue_action_fallback_removes_only_queue_items(self):
+        queued = VideoItem(url="https://example.com/q", title="queued", source="douyin")
+        queued.status = VideoStatus.PENDING.label
+        active = VideoItem(url="https://example.com/a", title="active", source="douyin")
+        active.status = VideoStatus.DOWNLOADING.label
+        completed = VideoItem(url="https://example.com/done", title="done", source="douyin")
+        completed.status = VideoStatus.COMPLETED.label
+        controller = SimpleNamespace(
+            videos={queued.id: queued, active.id: active, completed.id: completed},
+            _dl_manager=None,
+        )
+        service = FrontendStateService(controller)
+
+        result = service.handle_action("clear_queue", {})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["count"], 1)
+        self.assertNotIn(queued.id, controller.videos)
+        self.assertIn(active.id, controller.videos)
+        self.assertIn(completed.id, controller.videos)
 
     def test_open_directory_action_uses_injected_service_boundary(self):
         with TemporaryDirectory() as temp_dir:

@@ -132,6 +132,7 @@ def icon_manifest() -> dict[str, Mapping[str, str] | str]:
         "actions": dict(ACTION_ICON_FILES),
         "nav": dict(NAV_ICON_FILES),
         "platforms": dict(PLATFORM_ICON_FILES),
+        "queue_status": dict(QUEUE_STATUS_ICON_FILES),
         "tools": dict(TOOL_ICON_FILES),
         "status": dict(STATUS_ICON_FILES),
         "log_levels": dict(LOG_LEVEL_ICON_FILES),

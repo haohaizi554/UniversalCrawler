@@ -162,7 +162,7 @@ def build_mock_snapshot(
                     {"title": '\u786e\u8ba4\u767b\u5f55\u6001', "description": '\u90e8\u5206\u5185\u5bb9\u9700\u8981\u767b\u5f55\u540e\u624d\u80fd\u8bbf\u95ee\uff0c\u8bf7\u68c0\u67e5\u767b\u5f55\u72b6\u6001\u3002', "icon_file": "action_user.png"},
                     {"title": '\u91cd\u65b0\u83b7\u53d6\u94fe\u63a5', "description": '\u767b\u5f55\u540e\u91cd\u65b0\u590d\u5236\u5206\u4eab\u94fe\u63a5\u5e76\u91cd\u8bd5\u3002', "icon_file": "action_trace_link.png"},
                 ],
-                "actions": ["retry", "copy_diagnostics", "delete"],
+                "actions": ["copy_diagnostics", "delete"],
             }
         ] + [
             {
@@ -191,7 +191,7 @@ def build_mock_snapshot(
                     {"title": '\u91cd\u8bd5\u4efb\u52a1', "description": '\u7f51\u7edc\u6296\u52a8\u65f6\u53ef\u7a0d\u540e\u91cd\u8bd5\u3002', "icon_file": "action_refresh.png"},
                     {"title": '\u68c0\u67e5\u94fe\u63a5', "description": '\u786e\u8ba4\u5206\u4eab\u94fe\u63a5\u4ecd\u53ef\u8bbf\u95ee\u3002', "icon_file": "action_trace_link.png"},
                 ],
-                "actions": ["retry", "copy_diagnostics", "delete"],
+                "actions": ["copy_diagnostics", "delete"],
             }
             for index in range(2, 8)
         ],
@@ -218,6 +218,6 @@ def build_mock_snapshot(
             "download_speed_bps": 10_905_190,
             "completed_count": 128,
             "failed_count": 7,
-            "version": "v2.3.0",
+            "version": "v3.6.14",
         },
     }

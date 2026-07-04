@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.models import VideoItem
@@ -68,6 +69,20 @@ def test_enrich_log_item_adds_frontend_fields():
     assert item["category"] == "download"
     assert item["timestamp_ms"] > 0
     assert item["message_summary"] == "download ok"
+    assert item["level_display"] == "SUCCESS"
+    assert item["source_display"]
+    assert item["source_display_align"] == "center"
+    assert item["message_summary_align"] == "center"
+
+
+def test_enrich_log_item_converts_utc_iso_time_to_local_display():
+    raw = "2026-06-29T19:32:35Z"
+    expected = datetime(2026, 6, 29, 19, 32, 35, tzinfo=timezone.utc).astimezone()
+
+    item = enrich_log_item({"time": raw, "level": "INFO", "source": "Bilibili", "message": "ok"})
+
+    assert item["time"] == expected.strftime("%Y-%m-%d %H:%M:%S")
+    assert item["timestamp_ms"] == int(expected.timestamp() * 1000)
 
 
 def test_platform_and_category_helpers_are_stable_for_known_inputs():

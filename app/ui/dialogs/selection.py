@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QModelIndex, Qt
 from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -14,6 +14,9 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -26,6 +29,14 @@ from app.ui.styles import apply_dialog_theme, theme_colors
 from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
 _ROW_HEIGHT = 34
+
+class SelectionTableDelegate(QStyledItemDelegate):
+    """Paint selection-dialog rows without Qt's native current-cell focus frame."""
+
+    def paint(self, painter, option, index) -> None:  # noqa: ANN001
+        clean_option = QStyleOptionViewItem(option)
+        clean_option.state &= ~QStyle.StateFlag.State_HasFocus
+        super().paint(painter, clean_option, index)
 
 def normalize_selection_items(items: list[Any] | None) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
@@ -95,9 +106,13 @@ class SelectionDialog(QDialog):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.table.viewport().setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.table.setItemDelegate(SelectionTableDelegate(self.table))
+        self.table.installEventFilter(self)
+        self.table.viewport().installEventFilter(self)
         self.table.cellClicked.connect(self._on_cell_clicked)
         install_click_only_row_selection(self.table)
         install_stable_vertical_scrollbar(self.table)
@@ -118,6 +133,8 @@ class SelectionDialog(QDialog):
         self.btn_invert.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all.setFixedSize(80, 30)
         self.btn_invert.setFixedSize(80, 30)
+        self.btn_all.setAutoDefault(False)
+        self.btn_invert.setAutoDefault(False)
         self.btn_all.clicked.connect(self.select_all)
         self.btn_invert.clicked.connect(self.select_invert)
         btn_layout.addWidget(self.btn_all)
@@ -155,9 +172,22 @@ class SelectionDialog(QDialog):
             ("Esc", self.reject),
         ):
             shortcut = QShortcut(QKeySequence(sequence), self)
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(slot)
             self._dialog_shortcuts.append(shortcut)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
+        if watched in (self.table, self.table.viewport()) and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.confirm_selection()
+                event.accept()
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.reject()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key = event.key()
@@ -265,10 +295,11 @@ class SelectionDialog(QDialog):
             self._sync_row_style(row)
 
     def _on_cell_clicked(self, row: int, column: int) -> None:
-        self.table.selectRow(row)
         checkbox = self._checkbox_at(row)
         if checkbox is not None:
             checkbox.setChecked(not checkbox.isChecked())
+        self.table.clearSelection()
+        self.table.setCurrentIndex(QModelIndex())
 
     def select_all(self) -> None:
         self._apply_bulk_check(select_all=True)

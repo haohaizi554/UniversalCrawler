@@ -88,6 +88,29 @@ class DownloaderStrategyTests(unittest.TestCase):
             self.assertFalse(os.path.exists(temp_file))
             self.assertFalse(os.path.exists(temp_dir_path))
 
+    def test_m3u8_cleanup_skips_unowned_tmp_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            user_dir = Path(temp_dir) / "not-owned"
+            user_dir.mkdir()
+            marker = user_dir / "keep.txt"
+            marker.write_text("keep", encoding="utf-8")
+
+            N_m3u8DL_RE_Downloader._cleanup_nm3u8_temp_workspace(user_dir)
+
+            self.assertTrue(marker.exists())
+
+    def test_m3u8_cleanup_removes_owned_tmp_workspace_and_empty_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            workspace = N_m3u8DL_RE_Downloader._create_nm3u8_temp_workspace(save_path)
+            (workspace / "segment.ts").write_bytes(b"data")
+            root = workspace.parent
+
+            N_m3u8DL_RE_Downloader._cleanup_nm3u8_temp_workspace(workspace)
+
+            self.assertFalse(workspace.exists())
+            self.assertFalse(root.exists())
+
     def test_bili_api_close_closes_requests_session(self):
         from app.spiders.bilibili.spider import BiliAPI
 
@@ -429,6 +452,19 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIn("Referer: https://www.douyin.com/", command)
         auto_select_index = command.index("--auto-select")
         self.assertEqual(command[auto_select_index + 1], "true")
+
+    def test_nm3u8_external_tool_build_download_command_accepts_tmp_dir(self):
+        tmp_dir = os.path.join("downloads", ".ucp-nm3u8-tmp", "ucp-demo")
+        command = NM3U8DLREExternalTool.build_download_command(
+            "N_m3u8DL-RE.exe",
+            "https://cdn.example.com/live/index.m3u8",
+            os.path.join("downloads", "demo.mp4"),
+            "ua-demo",
+            "https://www.douyin.com/",
+            tmp_dir=tmp_dir,
+        )
+
+        self.assertEqual(command[command.index("--tmp-dir") + 1], tmp_dir)
 
     def test_nm3u8_external_tool_build_download_command_includes_extra_headers(self):
         command = NM3U8DLREExternalTool.build_download_command(
@@ -979,6 +1015,40 @@ class DownloaderStrategyTests(unittest.TestCase):
         with self.assertRaises(ExternalToolError):
             N_m3u8DL_RE_Downloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
 
+    @patch.object(N_m3u8DL_RE_Downloader, "_wait_external_process_with_file_progress")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
+    def test_m3u8_downloader_cleans_owned_tmp_workspace_on_external_failure(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        mocked_wait_progress,
+    ):
+        process = Mock()
+        process.returncode = 3
+        process.poll.return_value = 0
+        created_tmp_dirs = []
+
+        def fake_popen(cmd, *args, **kwargs):
+            del args, kwargs
+            tmp_dir = Path(cmd[cmd.index("--tmp-dir") + 1])
+            created_tmp_dirs.append(tmp_dir)
+            (tmp_dir / "segment.ts").write_bytes(b"data")
+            return process
+
+        mocked_popen.side_effect = fake_popen
+        mocked_wait_progress.return_value = None
+        item = VideoItem(url="https://cdn.example.com/live/index.m3u8", title="live", source="douyin")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+
+            with self.assertRaises(ExternalToolError):
+                N_m3u8DL_RE_Downloader().download(item, save_path, lambda _value: None, lambda: False)
+
+            self.assertEqual(len(created_tmp_dirs), 1)
+            self.assertFalse(created_tmp_dirs[0].exists())
+            self.assertFalse((Path(temp_dir) / N_m3u8DL_RE_Downloader.NM3U8_TEMP_ROOT_NAME).exists())
+
     @patch.object(N_m3u8DL_RE_Downloader, "_download_with_curl_cffi_hls")
     @patch.object(N_m3u8DL_RE_Downloader, "_download_with_nm3u8_external")
     @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
@@ -1031,6 +1101,47 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(args[8], 16)
         self.assertTrue(mocked_run.call_args.kwargs["local_proxy"])
         self.assertTrue(callable(mocked_run.call_args.kwargs["progress_provider"]))
+
+    def test_run_nm3u8_external_command_cleans_owned_tmp_workspace_on_failure(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+        process = Mock()
+        process.returncode = 7
+        process.poll.return_value = 0
+        created_tmp_dirs = []
+
+        def fake_popen(cmd, _creation_flags):
+            tmp_dir = Path(cmd[cmd.index("--tmp-dir") + 1])
+            created_tmp_dirs.append(tmp_dir)
+            (tmp_dir / "segment.ts").write_bytes(b"data")
+            return process
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            downloader,
+            "_popen_nm3u8_process",
+            side_effect=fake_popen,
+        ), patch.object(downloader, "_wait_external_process_with_file_progress", return_value=None):
+            save_path = os.path.join(temp_dir, "demo.mp4")
+
+            with self.assertRaises(ExternalToolError):
+                downloader._run_nm3u8_external_command(
+                    item,
+                    save_path,
+                    "N_m3u8DL-RE.exe",
+                    item.url,
+                    "ua-demo",
+                    "https://missav.ai/cn/demo",
+                    None,
+                    {"Referer": "https://missav.ai/cn/demo"},
+                    16,
+                    lambda _value: None,
+                    lambda: False,
+                    local_proxy=False,
+                )
+
+            self.assertEqual(len(created_tmp_dirs), 1)
+            self.assertFalse(created_tmp_dirs[0].exists())
+            self.assertFalse((Path(temp_dir) / N_m3u8DL_RE_Downloader.NM3U8_TEMP_ROOT_NAME).exists())
 
     def test_hls_proxy_rewrites_playlist_urls_to_local_proxy_urls(self):
         playlist = """#EXTM3U

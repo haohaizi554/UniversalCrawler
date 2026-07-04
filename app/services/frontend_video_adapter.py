@@ -25,6 +25,34 @@ STAGE_TITLE_KEYS = {
 }
 
 
+def _local_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value or "").strip()
+        if not raw or raw == "--":
+            return None
+        normalized = raw.replace("T", " ")
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        parsed = None
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    parsed = datetime.strptime(normalized[:19], fmt)
+                    break
+                except ValueError:
+                    continue
+        if parsed is None:
+            return None
+
+    if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+        return parsed.astimezone()
+    return parsed
+
+
 def trace_id(item: VideoItem) -> str:
     return str((item.meta or {}).get("trace_id") or "")
 
@@ -52,7 +80,8 @@ def queue_subtitle(meta: Mapping[str, Any]) -> str:
     raw = str(meta.get("created_at") or meta.get("discovered_at") or meta.get("added_at") or "").strip()
     if not raw:
         return ""
-    return raw.replace("T", " ")[:19]
+    parsed = _local_datetime(raw)
+    return parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed is not None else raw.replace("T", " ")[:19]
 
 
 def queue_status(item: VideoItem, queued_ids: set[str]) -> str:
@@ -280,14 +309,13 @@ def display_duration(value: Any) -> str:
 
 
 def format_completed_at_table(value: str) -> str:
-    text = str(value or "").strip().replace("T", " ")
+    text = str(value or "").strip()
     if not text or text == "--":
         return text or "--"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S"):
-        try:
-            return datetime.strptime(text[:19], fmt).strftime("%m-%d %H:%M")
-        except ValueError:
-            pass
+    parsed = _local_datetime(text)
+    if parsed is not None:
+        return parsed.strftime("%m-%d %H:%M")
+    text = text.replace("T", " ")
     if len(text) >= 16 and text[4:5] in {"-", "/"}:
         return text[5:16]
     return text
@@ -360,7 +388,7 @@ def active_events(
         message = str(event.get("message") or "").strip()
         if not message:
             continue
-        existing.append({"time": str(event.get("time") or ""), "message": message})
+        existing.append({"time": format_event_clock(event.get("time")), "message": message})
 
     event_time = stable_active_event_time(item, existing, event_time_cache=event_time_cache, now=now)
     for event in existing:
@@ -428,19 +456,17 @@ def stable_active_event_time(
 
 
 def format_event_clock(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        return value.strftime("%H:%M:%S")
     raw = str(value).strip()
-    if not raw:
+    if value is None or not raw:
         return ""
+    if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", raw):
+        return raw[-8:]
+    parsed = _local_datetime(value)
+    if parsed is not None:
+        return parsed.strftime("%H:%M:%S")
     if len(raw) >= 8 and raw[-8:].count(":") == 2:
         return raw[-8:]
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%H:%M:%S")
-    except ValueError:
-        return raw
+    return raw
 
 
 def default_active_events(item: VideoItem, *, now: Callable[[], datetime] | None = None) -> list[dict[str, str]]:

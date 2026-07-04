@@ -10,11 +10,36 @@ let selected = {
   tool: "link_parser",
 };
 let queuePage = 1;
-let queuePageSize = Number(localStorage.getItem("webui_queue_page_size") || 20);
+let queuePageSize = normalizeTablePageSize(localStorage.getItem("webui_queue_page_size") || 20);
 let completedPage = 1;
-let completedPageSize = Number(localStorage.getItem("webui_completed_page_size") || 20);
-let queueDensity = localStorage.getItem("webui_queue_density") || "comfortable";
+let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);
+let logPage = 1;
+let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size") || 20);
 const LOG_RENDER_ROW_BUDGET = 300;
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalDateTime(date = new Date()) {
+  const value = date instanceof Date ? date : new Date(date);
+  return [
+    `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`,
+    `${pad2(value.getHours())}:${pad2(value.getMinutes())}:${pad2(value.getSeconds())}`,
+  ].join(" ");
+}
+
+function normalizeLogPageSize(value) {
+  const numeric = Number(value);
+  if (numeric === 0) return 0;
+  return [20, 50, 100].includes(numeric) ? numeric : 20;
+}
+
+function normalizeTablePageSize(value) {
+  const numeric = Number(value);
+  return [20, 50, 100].includes(numeric) ? numeric : 20;
+}
+
 let logFilters = {
   category: "all",
   level: "全部",
@@ -25,6 +50,10 @@ let logFilters = {
 };
 let currentSettingsGroup = localStorage.getItem("webui_settings_group") || "基础设置";
 let imageAutoAdvanceTimer = null;
+let selectionItems = [];
+let dirCurrentPath = "";
+let dirSelectedPath = "";
+let dirParentPath = "";
 
 const PLAYBACK_POSITION_PREFIX = "ucp_playback_position_";
 
@@ -113,6 +142,17 @@ function translateUiCore(text, lang = currentLanguage()) {
   return service ? service.translateUiCore(text, lang) : String(text || "");
 }
 
+function uiTextWithDetail(label, detail = "") {
+  const base = t(label);
+  const extra = String(detail || "").trim();
+  if (!extra) return base;
+  return `${base}${currentLanguage() === "en-US" ? ": " : "："}${extra}`;
+}
+
+function appendUiLog(label, detail = "", prefix = "") {
+  appendLog(`${prefix}${uiTextWithDetail(label, detail)}`);
+}
+
 function translateVisibleText(root = document.body) {
   const service = i18nService();
   if (service) service.translateVisibleText(root);
@@ -141,6 +181,8 @@ let videoOrder = [];
 let selectedVideoId = null;
 let currentPlayingId = null;
 let isFullscreenMode = false;
+let crawlRunning = false;
+let previewRequestToken = 0;
 
 const ACTION_ICON_FILES = {
   delete: "action_delete.png",
@@ -169,6 +211,7 @@ function updateIconManifest(manifest) {
     },
   };
   configureTaskRenderHelpers();
+  updateMediaControls();
 }
 
 let renderSignatures = {};
@@ -240,7 +283,7 @@ function applyFrontendDelta(delta) {
   if (!delta.full && deltaVersion && deltaVersion <= localVersion) return;
   const deltaBaseVersion = Number(delta.base_version || 0);
   if (!delta.full && deltaBaseVersion > localVersion) {
-    appendLog("\u589e\u91cf\u72b6\u6001\u57fa\u7ebf\u4e0d\u8fde\u7eed\uff0c\u6b63\u5728\u91cd\u65b0\u540c\u6b65...");
+    appendUiLog("增量状态基线不连续，正在重新同步...");
     fetchFrontendState();
     return;
   }
@@ -293,7 +336,10 @@ function rememberFrontendSectionSignatures(keys) {
 
 function removeDeletedFromFrontendState(ids) {
   const doomed = new Set(ids.map(id => String(id)));
+  const playingId = String(currentPlayingId || "");
+  const removesPlayingItem = !!playingId && doomed.has(playingId);
   for (const id of doomed) removePlaybackPosition(id);
+  if (removesPlayingItem) closePreview();
   for (const section of ["queue_items", "active_downloads", "completed_items", "failed_items"]) {
     frontendState[section] = (frontendState[section] || []).filter(item => !doomed.has(String(item.id)));
     frontendSectionSignatures[section] = frontendSectionSignature(frontendState[section]);
@@ -349,7 +395,7 @@ async function fetchFrontendDelta() {
     if (!response.ok) return;
     applyFrontendDelta(await response.json());
   } catch (error) {
-    appendLog(`\u52a0\u8f7d\u589e\u91cf\u72b6\u6001\u5931\u8d25: ${error.message || error}`);
+    appendUiLog("加载增量状态失败", error.message || error);
   }
 }
 
@@ -509,6 +555,9 @@ document.addEventListener("DOMContentLoaded", () => {
   loadPlatforms();
   fetchFrontendState();
   connectWS();
+  installDirDialogHandlers();
+  installMediaControlHandlers();
+  updateMediaControls();
   document.getElementById("sourceSelect").addEventListener("change", cacheSource);
   document.getElementById("searchInput").addEventListener("keydown", event => {
     if (event.key === "Enter") startCrawl();
@@ -538,7 +587,7 @@ function buildMockState() {
       { id: "c1", title: "川西雪山之旅 | 云海翻涌的一天", completed_at: "2026-04-12 18:24:35", completed_at_table: "04-12 18:24", duration: "00:00:24", resolution: "1920 x 1080", size: "24.6 MB", format: "MP4", filename: "川西雪山之旅_20260412.mp4", save_dir: "D:\\desktop\\视频", download_speed: "4.2 MB/s", download_speed_bps: 4404019, local_path: "D:\\desktop\\视频\\川西雪山之旅_20260412.mp4", content_type: "video", metadata_pending: false, actions: ["play", "open_directory", "delete"] },
     ],
     failed_items: [
-      { id: "f1", title: "南岳山间的清晨", failed_at: "2026-04-12 07:31:12", reason: "需要登录", status: "失败", trace_id: "dy_failed_001", platform: "抖音", log_excerpt: ["请求视频链接", "接口返回需要登录", "任务标记为失败"], solutions: [{ title: "确认登录态", description: "检查平台认证状态。" }, { title: "重新获取链接", description: "登录后重新复制分享链接并重试。" }], actions: ["retry", "copy_diagnostics", "delete"] },
+      { id: "f1", title: "南岳山间的清晨", failed_at: "2026-04-12 07:31:12", reason: "需要登录", status: "失败", trace_id: "dy_failed_001", platform: "抖音", log_excerpt: ["请求视频链接", "接口返回需要登录", "任务标记为失败"], solutions: [{ title: "确认登录态", description: "检查平台认证状态。" }, { title: "重新获取链接", description: "登录后重新复制分享链接并重试。" }], actions: ["copy_diagnostics", "delete"] },
     ],
     log_items: [
       { time: "2026-04-12 18:24:35", level: "INFO", source: "下载器", thread: "download-worker-1", trace_id: "dy_log_001", message_summary: "开始下载视频", message: "开始下载视频", detail: "{}", stack: "" },
@@ -587,21 +636,21 @@ function buildMockState() {
     },
     download_options: { auto_retry: true, max_retries: 3, max_concurrent: 3, image_respects_concurrency: false },
     toolbox_items: [
-      { id: "link_parser", title: "链接解析", summary: "解析网页或文本中的链接，提取视频、图片等资源地址", input_example: "https://www.douyin.com/user/MS4wLjABAAAA...", output_example: "解析出视频、图片、作者主页等可下载资源地址" },
-      { id: "batch_rename", title: "批量重命名", summary: "批量重命名文件，支持规则、序号和预览", input_example: "D:\\Videos\\*.mp4 + {platform}_{title}_{index}", output_example: "生成可预览、可回滚的批量重命名方案" },
-      { id: "cover_extract", title: "封面提取", summary: "提取视频封面图片，支持单个或批量提取", input_example: "选择本地视频文件或下载完成列表", output_example: "导出 JPG/PNG 封面图并写入文件信息" },
-      { id: "video_to_audio", title: "视频转音频", summary: "将视频文件转换为音频", input_example: "MP4/MKV/WebM 视频文件", output_example: "输出 MP3/AAC/WAV 音频文件" },
-      { id: "dedupe_scan", title: "本地去重扫描", summary: "扫描并查找重复文件", input_example: "选择下载目录或任意本地目录", output_example: "生成重复文件分组和可清理建议" },
-      { id: "metadata_viewer", title: "元数据查看", summary: "查看视频、音频和图片元数据", input_example: "本地视频、音频、图片文件", output_example: "展示编码、分辨率、时长、码率和容器信息" },
-      { id: "format_convert", title: "格式转换", summary: "转换视频、音频和图片格式", input_example: "选择源文件和目标格式", output_example: "输出转换后的媒体文件并保留来源记录" },
-      { id: "file_verify", title: "文件校验", summary: "计算并校验文件哈希值", input_example: "选择一个或多个本地文件", output_example: "输出 MD5、SHA1、SHA256 校验值" },
+      { id: "link_parser", title: "链接解析", summary: "解析网页或文本中的链接，提取视频、图片等资源地址", input_example: "https://www.douyin.com/user/MS4wLjABAAAA...", output_example: "解析出视频、图片、作者主页等可下载资源地址", icon_file: "tool_link_parser.png" },
+      { id: "batch_rename", title: "批量重命名", summary: "按规则、序号和预览结果批量重命名本地文件", input_example: "D:\\Videos\\*.mp4 + {platform}_{title}_{index}", output_example: "生成可预览、可回滚的批量重命名方案", icon_file: "tool_batch_rename.png" },
+      { id: "cover_extract", title: "封面提取", summary: "从视频文件中提取封面图片，支持单个或批量提取", input_example: "选择本地视频文件或下载完成列表", output_example: "导出 JPG/PNG 封面图并写入文件信息", icon_file: "tool_cover_extract.png" },
+      { id: "video_to_audio", title: "视频转音频", summary: "将视频文件转换为音频，支持多种格式和质量设置", input_example: "MP4/MKV/WebM 视频文件", output_example: "输出 MP3/AAC/WAV 音频文件", icon_file: "tool_video_to_audio.png" },
+      { id: "dedupe_scan", title: "本地去重扫描", summary: "扫描并查找重复文件，支持按内容或文件名去重", input_example: "选择下载目录或任意本地目录", output_example: "生成重复文件分组和可清理建议", icon_file: "tool_duplicate_scan.png" },
+      { id: "metadata_viewer", title: "元数据查看", summary: "查看视频、音频和图片文件的详细元数据", input_example: "本地视频、音频、图片文件", output_example: "展示编码、分辨率、时长、码率和容器信息", icon_file: "tool_metadata_view.png" },
+      { id: "format_convert", title: "格式转换", summary: "转换视频、音频和图片文件格式", input_example: "选择源文件和目标格式", output_example: "输出转换后的媒体文件并保留来源记录", icon_file: "tool_format_convert.png" },
+      { id: "file_verify", title: "文件校验", summary: "计算并校验文件哈希值，支持 MD5、SHA1、SHA256", input_example: "选择一个或多个本地文件", output_example: "输出 MD5、SHA1、SHA256 校验值", icon_file: "tool_file_verify.png" },
     ],
     toolbox_recent_items: [
       { id: "link_parser", title: "链接解析", last_used: "今天 18:24" },
       { id: "video_to_audio", title: "视频转音频", last_used: "今天 17:35" },
       { id: "metadata_viewer", title: "元数据查看", last_used: "今天 14:10" },
     ],
-    app_status: { running_state: "空闲中", download_speed: "0 B/s", upload_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v1.0.0" },
+    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.14" },
   };
 }
 
@@ -618,7 +667,7 @@ async function fetchFrontendState() {
       renderAll();
     }
   } catch (error) {
-    appendLog(`加载状态失败: ${error.message || error}`);
+    appendUiLog("加载状态失败", error.message || error);
   }
 }
 
@@ -639,11 +688,17 @@ async function loadPlatforms() {
 function renderPlatforms() {
   const select = document.getElementById("sourceSelect");
   const cached = localStorage.getItem("cached_last_source") || "";
-  select.innerHTML = platforms.map(platform => `<option value="${esc(platform.id)}">${esc(platform.name)}</option>`).join("");
-  if (cached) select.value = cached;
+  select.innerHTML = platforms.map(platform => {
+    const id = String(platform.id || "");
+    const iconFile = platform.icon_file || (iconManifest.platforms || {})[id.toLowerCase()] || "platform_web.png";
+    return `<option value="${escAttr(id)}" data-icon="${escAttr(iconFileUrl(iconFile))}">${esc(platform.name)}</option>`;
+  }).join("");
+  if (cached && platforms.some(platform => String(platform.id) === cached)) select.value = cached;
+  if (!select.value && platforms.length) select.value = String(platforms[0].id || "");
   enhanceSelects(select.parentElement || document);
   syncCustomSelectForSelect(select);
   updatePlaceholder();
+  setCrawlUiState(crawlRunning);
 }
 
 function platformSettingsRow(platformId) {
@@ -677,6 +732,7 @@ function configureTopCountForSource(sourceId) {
   select.setAttribute("aria-label", t(labelText));
   enhanceSelects(select.parentElement || document);
   syncCustomSelectForSelect(select);
+  setCrawlUiState(crawlRunning);
 }
 
 function connectWS() {
@@ -696,8 +752,7 @@ function handleServerMessage(message) {
   switch (type) {
     case "init_state":
       if (data && typeof data.is_crawling === "boolean") {
-        byId("startBtn").disabled = data.is_crawling;
-        byId("stopBtn").disabled = !data.is_crawling;
+        setCrawlUiState(data.is_crawling);
       }
       break;
     case "frontend_state":
@@ -718,8 +773,7 @@ function handleServerMessage(message) {
       restoreTheme();
       break;
     case "crawl_state":
-      document.getElementById("startBtn").disabled = !!data.is_running;
-      document.getElementById("stopBtn").disabled = !data.is_running;
+      setCrawlUiState(!!data.is_running);
       scheduleFrontendDeltaFetch(200);
       break;
     case "log":
@@ -745,7 +799,7 @@ function handleServerMessage(message) {
       if (data.frontend_delta) {
         applyFrontendDelta(data.frontend_delta);
       }
-      if (data.message) appendLog(data.message);
+      if (data.message) appendLog(translateUiText(data.message));
       break;
     default:
       break;
@@ -813,6 +867,21 @@ function renderCounts() {
   byId("countFailed").textContent = String(countFor("failed_count", "failed_items"));
 }
 
+function reconcileSelectedTask(key, items) {
+  const rows = Array.isArray(items) ? items : [];
+  const current = String((selected && selected[key]) || "");
+  const currentStillVisible = current && rows.some(item => String(item.id || "") === current);
+  if (currentStillVisible) return current;
+  selected[key] = rows.length ? String(rows[0].id || "") : "";
+  return selected[key];
+}
+
+function selectedTaskItem(key, items) {
+  const rows = Array.isArray(items) ? items : [];
+  const id = String((selected && selected[key]) || "");
+  return rows.find(row => String(row.id || "") === id) || null;
+}
+
 function renderQueue() {
   byId("queuePath").textContent = (((frontendState.settings_snapshot || {})["基础设置"] || {}).download_directory || "");
   const allItems = frontendState.queue_items || [];
@@ -821,10 +890,13 @@ function renderQueue() {
   const start = (queuePage - 1) * queuePageSize;
   const items = allItems.slice(start, start + queuePageSize);
   patchTableRows("queueBody", items, item => item.id, item => taskRenderService().queueRow(item));
-  byId("queueTotal").textContent = `\u5171 ${allItems.length} \u9879`;
+  byId("queueTotal").textContent = translateUiText(`\u5171 ${allItems.length} \u9879`);
   byId("queuePageNow").textContent = String(queuePage);
   byId("queueTotalPages").textContent = String(totalPages);
   byId("queuePageSize").value = String(queuePageSize);
+  syncCustomSelectForSelect(byId("queuePageSize"));
+  byId("queuePrevPage").disabled = queuePage <= 1;
+  byId("queueNextPage").disabled = queuePage >= totalPages;
   setHtmlIfChanged("queueEvents", taskRenderService().queueEventsHtml(frontendState.queue_items || []));
 }
 
@@ -844,9 +916,7 @@ function queueStatusHtml(status) {
   return taskRenderService().queueStatusHtml(status);
 }
 function restoreQueueControls() {
-  document.body.classList.toggle("queue-compact", queueDensity === "compact");
-  byId("queueComfortableBtn").classList.toggle("active", queueDensity !== "compact");
-  byId("queueCompactBtn").classList.toggle("active", queueDensity === "compact");
+  document.body.classList.remove("queue-compact");
 }
 
 function setQueuePage(delta) {
@@ -855,27 +925,24 @@ function setQueuePage(delta) {
 }
 
 function setQueuePageSize(value) {
-  queuePageSize = Math.max(20, Number(value) || 20);
+  queuePageSize = normalizeTablePageSize(value);
   queuePage = 1;
   localStorage.setItem("webui_queue_page_size", String(queuePageSize));
   renderQueue();
 }
 
-function setQueueDensity(mode) {
-  queueDensity = mode === "compact" ? "compact" : "comfortable";
-  localStorage.setItem("webui_queue_density", queueDensity);
-  document.body.classList.toggle("queue-compact", queueDensity === "compact");
-  byId("queueComfortableBtn").classList.toggle("active", queueDensity !== "compact");
-  byId("queueCompactBtn").classList.toggle("active", queueDensity === "compact");
+function setQueueDensity(_mode) {
+  localStorage.removeItem("webui_queue_density");
+  document.body.classList.remove("queue-compact");
   renderQueue();
 }
 
 function renderActive() {
   syncActiveDownloadOptions();
   const items = frontendState.active_downloads || [];
-  if (!selected.active && items.length) selected.active = items[0].id;
+  reconcileSelectedTask("active", items);
   patchTableRows("activeBody", items, item => item.id, item => taskRenderService().activeRow(item, selected.active));
-  byId("activeSummary").textContent = `\u5f53\u524d\u8fd0\u884c\uff1a${items.length} \u4e2a\u4efb\u52a1`;
+  byId("activeSummary").textContent = translateUiText(`\u5f53\u524d\u8fd0\u884c\uff1a${items.length} \u4e2a\u4efb\u52a1`);
   renderActiveDetail();
 }
 
@@ -921,10 +988,12 @@ function syncActiveDownloadOptions() {
   if (retries) {
     ensureSelectOption(retries, options.max_retries, `${options.max_retries}\u6b21`);
     retries.value = String(options.max_retries);
+    syncCustomSelectForSelect(retries);
   }
   if (concurrent) {
     const maxConcurrent = normalizeDownloadConcurrency(options.max_concurrent);
     concurrent.value = String(maxConcurrent);
+    syncCustomSelectForSelect(concurrent);
   }
 }
 
@@ -945,7 +1014,7 @@ function selectActive(id) {
 }
 
 function renderActiveDetail() {
-  const item = (frontendState.active_downloads || []).find(row => row.id === selected.active) || (frontendState.active_downloads || [])[0];
+  const item = selectedTaskItem("active", frontendState.active_downloads || []);
   setHtmlIfChanged("activeDetail", taskRenderService().activeDetailHtml(item));
 }
 
@@ -970,13 +1039,17 @@ function renderCompleted() {
   }
   const start = (completedPage - 1) * completedPageSize;
   const items = allItems.slice(start, start + completedPageSize);
-  if (!selected.completed && items.length) selected.completed = items[0].id;
+  reconcileSelectedTask("completed", items);
   patchTableRows("completedBody", items, item => item.id, item => taskRenderService().completedRow(item, selected.completed));
-  byId("completedTotal").textContent = `\u5171 ${allItems.length} \u9879`;
+  byId("completedTotal").textContent = translateUiText(`\u5171 ${allItems.length} \u9879`);
   byId("completedPageNow").textContent = String(completedPage);
   byId("completedTotalPages").textContent = String(totalPages);
   byId("completedPageSize").value = String(completedPageSize);
+  syncCustomSelectForSelect(byId("completedPageSize"));
+  byId("completedPrevPage").disabled = completedPage <= 1;
+  byId("completedNextPage").disabled = completedPage >= totalPages;
   renderCompletedDetail();
+  updateNavBtnsState();
 }
 
 function selectCompleted(id) {
@@ -992,7 +1065,7 @@ function setCompletedPage(delta) {
 }
 
 function setCompletedPageSize(value) {
-  completedPageSize = Math.max(20, Number(value) || 20);
+  completedPageSize = normalizeTablePageSize(value);
   completedPage = 1;
   selected.completed = "";
   localStorage.setItem("webui_completed_page_size", String(completedPageSize));
@@ -1000,7 +1073,7 @@ function setCompletedPageSize(value) {
 }
 
 function renderCompletedDetail() {
-  const item = (frontendState.completed_items || []).find(row => row.id === selected.completed) || (frontendState.completed_items || [])[0];
+  const item = selectedTaskItem("completed", frontendState.completed_items || []);
   setHtmlIfChanged("completedDetail", taskRenderService().completedDetailHtml(item));
 }
 
@@ -1021,7 +1094,7 @@ function dirnameFromPath(path) {
 
 function renderFailed() {
   const items = frontendState.failed_items || [];
-  if (!selected.failed && items.length) selected.failed = items[0].id;
+  reconcileSelectedTask("failed", items);
   patchTableRows("failedBody", items, item => item.id, item => taskRenderService().failedRow(item, selected.failed));
   renderFailedDetail();
 }
@@ -1032,7 +1105,7 @@ function selectFailed(id) {
 }
 
 function renderFailedDetail() {
-  const item = (frontendState.failed_items || []).find(row => row.id === selected.failed) || (frontendState.failed_items || [])[0];
+  const item = selectedTaskItem("failed", frontendState.failed_items || []);
   setHtmlIfChanged("failedDetail", taskRenderService().failedDetailHtml(item));
   setHtmlIfChanged("failedSolutions", taskRenderService().failedSolutionsHtml(item));
 }
@@ -1072,20 +1145,69 @@ function failedLogTime(value) {
 function solutionRowHtml(solution) {
   return taskRenderService().solutionRowHtml(solution);
 }
+
+function logLevelClass(level) {
+  const normalized = String(level || "").toUpperCase();
+  if (["SUCCESS", "OK"].includes(normalized)) return "success";
+  if (["WARN", "WARNING"].includes(normalized)) return "warn";
+  if (normalized === "ERROR") return "error";
+  if (["CMD", "COMMAND"].includes(normalized)) return "cmd";
+  return "info";
+}
+
+function logLevelCellHtml(item) {
+  const label = item.level_display || item.level || "INFO";
+  return `<span class="log-level-badge log-level-${logLevelClass(label)}">${esc(label)}</span>`;
+}
+
+function logSourceCellHtml(item) {
+  const label = item.source_display || item.source || item.platform || "";
+  const iconFile = item.source_display_icon_file || "";
+  if (!iconFile) return esc(label);
+  return `<span class="platform-cell log-source-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${esc(label)}</span>`;
+}
+
+function logDetailRowHtml(label, valueHtml) {
+  return `<span>${esc(t(label))}</span><span class="kv-value">${valueHtml}</span>`;
+}
+
+function logDetailSummaryHtml(item) {
+  const rows = [
+    ["时间", esc(item.time || "")],
+    ["级别", logLevelCellHtml(item)],
+    ["来源", logSourceCellHtml(item)],
+    ["平台", esc(item.platform || "")],
+    ["线程", esc(item.thread || "")],
+    ["Trace ID", esc(item.trace_id || "")],
+    ["消息", esc(item.message || item.message_summary || "")],
+  ];
+  return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, value)).join("")}</div>`;
+}
+
 function renderLogs() {
   syncLogFilterControls();
   const filteredItems = filteredLogItems();
-  const items = visibleLogItems(filteredItems);
+  const boundedItems = visibleLogItems(filteredItems, uiLogDisplayLimit());
+  const totalPages = logPageSize <= 0 ? 1 : Math.max(1, Math.ceil(boundedItems.length / logPageSize));
+  logPage = Math.max(1, Math.min(logPage, totalPages));
+  const start = logPageSize <= 0 ? 0 : (logPage - 1) * logPageSize;
+  const items = logPageSize <= 0 ? boundedItems : boundedItems.slice(start, start + logPageSize);
   if (!items.some(item => logItemId(item) === selected.log)) selected.log = items.length ? logItemId(items[0]) : "";
   patchTableRows("logBody", items, item => logItemId(item), item => `
     <tr class="${selected.log === logItemId(item) ? "selected" : ""}" onclick="selectLog('${escAttr(logItemId(item))}')">
       <td>${esc(item.time)}</td>
-      <td>${esc(item.level)}</td>
-      <td>${esc(item.source)}</td>
+      <td>${logLevelCellHtml(item)}</td>
+      <td>${logSourceCellHtml(item)}</td>
       <td>${esc(item.trace_id || "")}</td>
       <td title="${escAttr(item.message_summary || "")}">${esc(item.message_summary || "")}</td>
     </tr>
   `);
+  byId("logTotal").textContent = translateUiText(`共 ${(frontendState.log_items || []).length} 条 / 匹配 ${boundedItems.length} 条 / 当前显示 ${items.length} 条`);
+  byId("logPageIndicator").textContent = translateUiText(`第 ${logPage} / ${totalPages} 页`);
+  byId("logPageSize").value = String(logPageSize);
+  syncCustomSelectForSelect(byId("logPageSize"));
+  byId("logPrevPage").disabled = logPage <= 1 || logPageSize <= 0;
+  byId("logNextPage").disabled = logPage >= totalPages || logPageSize <= 0;
   renderLogDetail(items);
 }
 
@@ -1098,22 +1220,139 @@ function selectLog(id) {
   renderLogs();
 }
 
-function renderLogDetail(itemsOverride) {
-  const items = Array.isArray(itemsOverride) ? itemsOverride : visibleLogItems(filteredLogItems());
-  const item = items.find(row => logItemId(row) === selected.log) || items[0];
-  if (!item) {
-    byId("logDetail").innerHTML = `<div class="log-detail-card"><h2>日志详情</h2><p>暂无日志</p></div>`;
+function currentLogDetailItem(itemsOverride) {
+  const items = Array.isArray(itemsOverride)
+    ? itemsOverride
+    : visibleLogItems(filteredLogItems(), uiLogDisplayLimit());
+  return items.find(row => logItemId(row) === selected.log) || null;
+}
+
+function normalizeLogDetailPayload(item) {
+  if (!item) return {};
+  const detail = item.detail;
+  if (detail && typeof detail === "object") return detail;
+  const text = String(detail || "").trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return {
+      description: text,
+      status_code: item.event_code || item.status_code || "",
+    };
+  }
+}
+
+function buildLogDetailPayload(item) {
+  const detailPayload = normalizeLogDetailPayload(item);
+  return {
+    time: item.time || "",
+    level: item.level || item.raw_level || "",
+    platform: item.platform_display || item.platform || "",
+    source: item.source || "",
+    trace_id: item.trace_id || "",
+    message: item.message || item.message_summary || "",
+    detail: detailPayload,
+    stack: item.stack || "",
+  };
+}
+
+function writeTextToClipboard(text, successMessage) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => appendUiLog(successMessage))
+      .catch(() => appendLog(text));
     return;
   }
-  const detail = String(item.detail || "").trim();
+  appendLog(text);
+}
+
+function copyCurrentLogDetail() {
+  const item = currentLogDetailItem();
+  if (!item) {
+    appendLog(t("暂无日志"));
+    return;
+  }
+  writeTextToClipboard(JSON.stringify(buildLogDetailPayload(item), null, 2), t("已复制日志详情"));
+}
+
+function copyCurrentLogJson() {
+  const item = currentLogDetailItem();
+  if (!item) {
+    appendLog(t("暂无日志"));
+    return;
+  }
+  writeTextToClipboard(JSON.stringify(normalizeLogDetailPayload(item), null, 2), t("已复制详细信息"));
+}
+
+function exportCurrentLogDetail() {
+  const item = currentLogDetailItem();
+  if (!item) {
+    appendLog(t("暂无日志"));
+    return;
+  }
+  const text = JSON.stringify(buildLogDetailPayload(item), null, 2);
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const suffix = String(item.trace_id || logItemId(item) || "current").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 80);
+  const filename = `log_detail_${suffix || "current"}.json`;
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  appendUiLog(t("已导出日志详情"), filename);
+}
+
+function renderLogDetail(itemsOverride) {
+  const items = Array.isArray(itemsOverride) ? itemsOverride : visibleLogItems(filteredLogItems(), uiLogDisplayLimit());
+  const item = currentLogDetailItem(items);
+  if (!item) {
+    byId("logDetail").innerHTML = `
+      <div class="log-inspector-header">
+        <h2>${esc(t("日志详情"))}</h2>
+        <div class="log-inspector-actions">
+          <button class="btn" type="button" disabled>${esc(t("复制"))}</button>
+          <button class="btn" type="button" disabled>${esc(t("导出"))}</button>
+        </div>
+      </div>
+      <div class="log-detail-card"><p>${esc(t("暂无日志"))}</p></div>
+    `;
+    return;
+  }
+  const detailPayload = normalizeLogDetailPayload(item);
+  const detailJson = JSON.stringify(detailPayload, null, 2);
   const stack = String(item.stack || "").trim();
   const extraBlocks = [];
-  if (detail) extraBlocks.push(`<div class="log-extra-card"><h2>详细信息</h2><pre class="log-snippet">${esc(detail)}</pre></div>`);
-  if (stack && stack !== "无") extraBlocks.push(`<div class="log-extra-card"><h2>堆栈跟踪</h2><pre class="log-snippet">${esc(stack)}</pre></div>`);
+  extraBlocks.push(`
+    <div class="log-extra-card log-json-card">
+      <div class="log-card-head">
+        <h2>${esc(t("详细信息"))}</h2>
+        <button class="btn" type="button" onclick="copyCurrentLogJson()">${esc(t("复制"))}</button>
+      </div>
+      <pre class="log-snippet">${esc(detailJson)}</pre>
+    </div>
+  `);
+  if (stack && stack !== "无") {
+    extraBlocks.push(`
+      <div class="log-extra-card">
+        <h2>${esc(t("堆栈跟踪"))}</h2>
+        <pre class="log-snippet">${esc(stack)}</pre>
+      </div>
+    `);
+  }
   byId("logDetail").innerHTML = `
+    <div class="log-inspector-header">
+      <h2>${esc(t("日志详情"))}</h2>
+      <div class="log-inspector-actions">
+        <button class="btn" type="button" onclick="copyCurrentLogDetail()">${esc(t("复制"))}</button>
+        <button class="btn" type="button" onclick="exportCurrentLogDetail()">${esc(t("导出"))}</button>
+      </div>
+    </div>
     <div class="log-detail-card">
-      <h2>日志详情</h2>
-      ${kvHtml([["时间", item.time], ["级别", item.level], ["来源", item.source], ["平台", item.platform || ""], ["线程", item.thread || ""], ["Trace ID", item.trace_id || ""], ["消息", item.message || item.message_summary]])}
+      ${logDetailSummaryHtml(item)}
     </div>
     ${extraBlocks.join("")}
   `;
@@ -1122,6 +1361,7 @@ function renderLogDetail(itemsOverride) {
 function setLogTab(category) {
   logFilters.category = category || "all";
   selected.log = "";
+  logPage = 1;
   renderLogs();
 }
 
@@ -1132,6 +1372,7 @@ function syncLogFiltersFromDom() {
   logFilters.trace = byId("logTraceFilter")?.value.trim() || "";
   logFilters.keyword = byId("logKeywordFilter")?.value.trim() || "";
   selected.log = "";
+  logPage = 1;
   renderLogs();
 }
 
@@ -1157,8 +1398,21 @@ function filteredLogItems() {
     : (frontendState.log_items || []).filter(logMatchesFilters);
 }
 
-function visibleLogItems(items) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.visibleLogItems(items, LOG_RENDER_ROW_BUDGET) : [];
+function visibleLogItems(items, rowBudget = LOG_RENDER_ROW_BUDGET) {
+  return window.UcpLogDisplay ? window.UcpLogDisplay.visibleLogItems(items, rowBudget) : [];
+}
+
+function setLogPage(delta) {
+  logPage += Number(delta) || 0;
+  renderLogs();
+}
+
+function setLogPageSize(value) {
+  logPageSize = normalizeLogPageSize(value);
+  logPage = 1;
+  localStorage.setItem("webui_log_page_size", String(logPageSize));
+  renderLogs();
+  syncCustomSelectForSelect(byId("logPageSize"));
 }
 
 function logMatchesFilters(item) {
@@ -1175,6 +1429,30 @@ function logSearchText(item) {
 
 function logMatchesTime(item) {
   return window.UcpLogDisplay ? window.UcpLogDisplay.logMatchesTime(item, logFilters.time) : true;
+}
+
+function currentLogTraceId() {
+  const items = visibleLogItems(filteredLogItems());
+  const current = items.find(row => logItemId(row) === selected.log);
+  const trace = String((current && current.trace_id) || "").trim();
+  if (trace) return trace;
+  const fallback = items.find(row => String(row.trace_id || "").trim());
+  return String((fallback && fallback.trace_id) || "").trim();
+}
+
+function copySelectedLogTraceId() {
+  const traceId = currentLogTraceId();
+  if (!traceId) {
+    appendLog(t("当前日志没有可复制的 Trace ID"));
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(traceId)
+      .then(() => appendUiLog("已复制 Trace ID", traceId))
+      .catch(() => appendLog(traceId));
+    return;
+  }
+  appendLog(traceId);
 }
 
 function runLogOperation(operation) {
@@ -1200,6 +1478,8 @@ function renderSettings(force = false) {
     || "";
   const title = document.querySelector("#page-settings .page-head h1");
   if (title) title.textContent = t("配置中心");
+  const subtitle = document.querySelector("#page-settings .page-head p");
+  if (subtitle) subtitle.textContent = t("集中管理下载行为、平台状态、播放体验、日志策略与界面外观");
   const navHtml = orderedGroups.map(group => `
     <button class="settings-nav-btn ${group === currentSettingsGroup ? "active" : ""}" type="button" data-group="${escAttr(group)}" onclick="switchSettingsGroup('${escAttr(group)}')">${esc(t(group))}</button>
   `).join("");
@@ -1373,13 +1653,17 @@ function settingSelect(label, key, value, options, scope = "", extraAttrs = "") 
   return service ? service.settingSelect(label, key, value, options, scope, extraAttrs) : "";
 }
 function renderToolbox() {
+  const title = document.querySelector("#page-toolbox .page-head h1");
+  if (title) title.textContent = t("工具箱");
+  const subtitle = document.querySelector("#page-toolbox .page-head p");
+  if (subtitle) subtitle.textContent = t("高效实用的辅助工具，提升工作效率");
   const items = frontendState.toolbox_items || [];
-  if (!selected.tool && items.length) selected.tool = items[0].id;
+  reconcileSelectedTask("tool", items);
   byId("toolGrid").innerHTML = items.map(item => `
     <button class="tool-card ${selected.tool === item.id ? "active" : ""}" onclick="selectTool('${escAttr(item.id)}')">
       <img src="${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(item.icon_file || "nav_toolbox.png")}" alt="" />
-      <h2>${esc(item.title)}</h2>
-      <p>${esc(item.summary)}</p>
+      <h2>${esc(t(item.title))}</h2>
+      <p>${esc(t(item.summary))}</p>
     </button>
   `).join("");
   renderToolDetail();
@@ -1391,26 +1675,37 @@ function selectTool(id) {
 }
 
 function renderToolDetail() {
-  const item = (frontendState.toolbox_items || []).find(row => row.id === selected.tool) || {};
+  const item = selectedTaskItem("tool", frontendState.toolbox_items || []) || {};
   const recent = frontendState.toolbox_recent_items || [];
   byId("toolDetail").innerHTML = `
-    <h2>最近使用</h2>
-    <div class="recent-list">${recent.length ? recent.map(row => `${esc(row.title || "")}  ${esc(row.last_used || "")}`).join("\n") : "暂无最近使用记录"}</div>
-    <h2>工具详情</h2>
-    ${kvHtml([["工具", item.title || ""], ["说明", item.summary || ""], ["输入示例", item.input_example || ""], ["输出示例", item.output_example || ""]])}
-    <button class="btn btn-primary" onclick="frontendAction('run_tool',{tool_id:'${escAttr(item.id || "")}'})">打开工具</button>
+    <h2>${esc(t("最近使用"))}</h2>
+    <div class="recent-list">${recent.length ? recent.map(row => `${esc(t(row.title || ""))}  ${esc(t(row.last_used || ""))}`).join("\n") : esc(t("暂无最近使用记录"))}</div>
+    <h2>${esc(t("工具详情"))}</h2>
+    ${kvHtml([["工具", t(item.title || "")], ["说明", t(item.summary || "")], ["输入示例", t(item.input_example || "")], ["输出示例", t(item.output_example || "")]])}
+    <button class="btn btn-primary" onclick="frontendAction('run_tool',{tool_id:'${escAttr(item.id || "")}'})">${esc(t("打开工具"))}</button>
   `;
 }
 
 function renderStatus() {
   const status = frontendState.app_status || {};
   renderCounts();
+  const failedCount = Number(status.failed_count || 0) || 0;
+  let indicator = String(status.status_indicator || "").trim().toLowerCase();
+  if (!["idle", "running", "error"].includes(indicator)) {
+    if (String(status.running_state || "") === "运行中") indicator = "running";
+    else if (failedCount > 0) indicator = "error";
+    else indicator = "idle";
+  }
+  const statusIndicator = byId("statusIndicator");
+  if (statusIndicator) statusIndicator.className = `status-dot ${indicator === "idle" ? "" : indicator}`.trim();
+  document.querySelectorAll("[data-status-caption]").forEach(caption => {
+    caption.textContent = `${t(caption.dataset.statusCaption || "")}:`;
+  });
   byId("statusState").textContent = t(status.running_state || "空闲中");
-  byId("statusDownload").textContent = `${t("下载速度")}：${status.download_speed || "0 B/s"}`;
-  byId("statusUpload").textContent = `${t("上传速度")}：${status.upload_speed || "0 B/s"}`;
-  byId("statusCompleted").textContent = `${t("已完成")}：${status.completed_count || 0}`;
-  byId("statusFailed").textContent = `${t("失败")}：${status.failed_count || 0}`;
-  byId("statusVersion").textContent = status.version || "v1.0.0";
+  byId("statusDownload").textContent = status.download_speed || "0 B/s";
+  byId("statusCompleted").textContent = String(status.completed_count || 0);
+  byId("statusFailed").textContent = String(failedCount);
+  byId("statusVersion").textContent = status.version || "v3.6.14";
 }
 
 function switchPage(pageId) {
@@ -1436,14 +1731,41 @@ function smartWrapText(value) {
 function kvHtml(pairs, wrapKeys = new Set()) {
   return taskRenderService().kvHtml(pairs, wrapKeys);
 }
+
+function setCrawlUiState(isRunning) {
+  crawlRunning = !!isRunning;
+  const startBtn = byId("startBtn");
+  const stopBtn = byId("stopBtn");
+  const searchInput = byId("searchInput");
+  const sourceSelect = byId("sourceSelect");
+  const countSelect = byId("videoCountSelect");
+  if (startBtn) {
+    startBtn.disabled = crawlRunning;
+    startBtn.classList.toggle("is-running", crawlRunning);
+    startBtn.setAttribute("aria-busy", crawlRunning ? "true" : "false");
+  }
+  if (stopBtn) stopBtn.disabled = !crawlRunning;
+  [searchInput, sourceSelect, countSelect].forEach(control => {
+    if (control) control.disabled = crawlRunning;
+  });
+  syncCustomSelectForSelect(sourceSelect);
+  syncCustomSelectForSelect(countSelect);
+}
+
 function startCrawl() {
   const keyword = byId("searchInput").value.trim();
   if (!keyword) {
-    appendLog("请输入主页链接、分享链接或合集链接");
+    appendUiLog("请输入主页链接、分享链接或合集链接");
     return;
   }
-  const source = byId("sourceSelect").value || "douyin";
-  const platformRow = platformSettingsRow(source) || {};
+  const source = byId("sourceSelect").value || "";
+  const settingsRow = platformSettingsRow(source);
+  const platformKnown = !!settingsRow || platforms.some(platform => String(platform.id) === source);
+  if (!source || !platformKnown) {
+    appendUiLog("未选择有效模式", "", "❌ ");
+    return;
+  }
+  const platformRow = settingsRow || {};
   const countUnit = platformRow.count_unit || "videos";
   const count = Number(byId("videoCountSelect").value) || (countUnit === "pages" ? 1 : 20);
   const countKey = platformRow.count_config_key || "max_items";
@@ -1454,20 +1776,24 @@ function startCrawl() {
   if (timeoutKey && timeoutValue > 0) {
     config[timeoutKey] = timeoutValue;
   }
-  sendWS("start_crawl", { source_id: source, source, keyword, config });
-  byId("startBtn").disabled = true;
-  byId("stopBtn").disabled = false;
+  if (!sendWS("start_crawl", { source_id: source, source, keyword, config })) {
+    appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ");
+    return;
+  }
+  setCrawlUiState(true);
 }
 
 function stopCrawl() {
-  sendWS("stop_crawl", {});
-  byId("stopBtn").disabled = true;
+  if (sendWS("stop_crawl", {})) byId("stopBtn").disabled = true;
+  else appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ");
 }
 
 function sendWS(type, data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type, data }));
+    return true;
   }
+  return false;
 }
 
 const defaultSendWS = sendWS;
@@ -1503,13 +1829,14 @@ function scheduleImageAutoAdvance(id) {
 }
 
 function frontendAction(action, payload) {
+  if (action === "delete_item") prepareDeleteItem(payload && (payload.id || payload.video_id));
   if (ws && ws.readyState === WebSocket.OPEN) {
     sendWS("frontend_action", {
       action,
       payload,
       frontend_version: Number(frontendVersion || 0),
     });
-    if (action === "register_file_associations") appendLog("\u6b63\u5728\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f...");
+    if (action === "register_file_associations") appendUiLog("正在绑定默认打开方式...");
     return;
   }
   fetch("/api/frontend/action", {
@@ -1531,42 +1858,81 @@ function frontendAction(action, payload) {
       return result;
     })
     .then(result => {
-      if (result && result.message) appendLog(result.message);
+      if (result && result.message) appendLog(translateUiText(result.message));
     })
-    .catch(error => appendLog(error.message || String(error)));
+    .catch(error => appendLog(translateUiText(error.message || String(error))));
 }
 
-function playCompleted(id) {
+function mediaUrl(id) {
+  return `/api/media/${encodeURIComponent(id)}`;
+}
+
+function playbackItemLabel(item, fallback = "") {
+  return String((item && (item.title || item.filename || item.local_path)) || fallback || "").trim();
+}
+
+function appendPlaybackFailure(item, error) {
+  const label = playbackItemLabel(item);
+  const detail = error && (error.message || String(error)) ? `: ${error.message || String(error)}` : "";
+  appendLog(`❌ ${t("播放失败")}${label ? ` [${label}]` : ""}${detail}`);
+}
+
+async function validateMediaForPreview(id) {
+  try {
+    const response = await fetch(mediaUrl(id), {
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+      cache: "no-store",
+    });
+    if (response.body && typeof response.body.cancel === "function") {
+      response.body.cancel().catch(() => {});
+    }
+    if (response.ok) return true;
+    appendUiLog(response.status === 404 ? "文件不存在或已被删除" : "播放前校验失败", response.status === 404 ? "" : `HTTP ${response.status}`, "❌ ");
+    return false;
+  } catch (error) {
+    appendUiLog("播放前校验失败", error.message || error, "❌ ");
+    return false;
+  }
+}
+
+async function playCompleted(id) {
   selectCompleted(id);
   const item = (frontendState.completed_items || []).find(row => row.id === id);
-  if (!item) return;
+  const requestToken = ++previewRequestToken;
+  if (!item || !item.local_path) {
+    appendUiLog("文件不存在或已被删除", "", "❌ ");
+    return;
+  }
+  if (!(await validateMediaForPreview(id)) || requestToken !== previewRequestToken) return;
   if (!shouldUseBuiltinPlayer()) {
     currentPlayingId = id;
     clearImageAutoAdvanceTimer();
+    updateMediaControls();
     frontendAction("open_file", { id });
     return;
   }
   currentPlayingId = id;
   const video = byId("videoPlayer");
   const placeholder = byId("previewArea");
-  if (item.local_path) {
-    if (isImageItem(item)) {
-      video.pause();
-      video.removeAttribute("src");
-      video.style.display = "none";
-      placeholder.innerHTML = `<img class="preview-image" src="/api/media/${encodeURIComponent(id)}" alt="${escAttr(item.title || item.filename || "")}" />`;
-      placeholder.style.display = "flex";
-      scheduleImageAutoAdvance(id);
-      return;
-    }
-    clearImageAutoAdvanceTimer();
-    placeholder.textContent = "";
-    video.src = `/api/media/${encodeURIComponent(id)}`;
-    setupPlayerEvents(video, id);
-    video.style.display = "block";
-    placeholder.style.display = "none";
-    video.play().catch(() => {});
+  if (isImageItem(item)) {
+    video.pause();
+    video.removeAttribute("src");
+    video.style.display = "none";
+    placeholder.innerHTML = `<img class="preview-image" src="${mediaUrl(id)}" alt="${escAttr(item.title || item.filename || "")}" />`;
+    placeholder.style.display = "flex";
+    scheduleImageAutoAdvance(id);
+    updateMediaControls(video);
+    return;
   }
+  clearImageAutoAdvanceTimer();
+  placeholder.textContent = "";
+  video.src = mediaUrl(id);
+  setupPlayerEvents(video, id);
+  video.style.display = "block";
+  placeholder.style.display = "none";
+  updateMediaControls(video);
+  video.play().catch(error => appendPlaybackFailure(item, error));
 }
 
 function openDirectory(id) {
@@ -1581,12 +1947,12 @@ function copyDiagnostics(id) {
   }).then(response => response.json()).then(result => {
     const text = result.data && result.data.text ? result.data.text : "";
     if (text && navigator.clipboard) navigator.clipboard.writeText(text);
-    appendLog(text ? "Trace ID 已复制" : "未找到 Trace ID");
+    appendUiLog(text ? "Trace ID 已复制" : "未找到 Trace ID");
   });
 }
 
 function appendLog(message) {
-  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const now = formatLocalDateTime();
   frontendState.log_items = frontendState.log_items || [];
   frontendState.log_items.push({ time: now, level: "INFO", source: "WebUI", thread: "browser", trace_id: "", message_summary: String(message), message: String(message), detail: "", stack: "" });
   trimFrontendLogItems();
@@ -1599,29 +1965,354 @@ function appendLog(message) {
   scheduleRenderSections(["log_items", "app_status"]);
 }
 
-function onChangeDirClicked() {
-  byId("dirModal").style.display = "flex";
-  byId("dirInput").value = (((frontendState.settings_snapshot || {})["基础设置"] || {}).download_directory || "");
-  byId("dirList").textContent = "输入或确认保存目录";
+function currentDownloadDirectory() {
+  const basic = (frontendState.settings_snapshot || {})["基础设置"] || {};
+  return String(basic.download_directory || basic.save_directory || "");
 }
 
-function confirmDirDialog() {
-  const directory = byId("dirInput").value.trim();
-  if (directory) frontendAction("update_basic_setting", { key: "download_directory", value: directory });
-  byId("dirModal").style.display = "none";
+function setDirStatus(message, tone = "") {
+  const status = byId("dirStatus");
+  if (!status) return;
+  status.textContent = translateUiText(message || "");
+  status.dataset.tone = tone || "";
+}
+
+function setDirBusy(busy) {
+  ["dirGoBtn", "dirParentBtn", "dirRefreshBtn", "dirConfirmBtn"].forEach(id => {
+    const button = byId(id);
+    if (button) button.disabled = !!busy;
+  });
+}
+
+function installDirDialogHandlers() {
+  const input = byId("dirInput");
+  if (input && !input.dataset.bound) {
+    input.dataset.bound = "true";
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        dirBrowsePath();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelDirDialog();
+      }
+    });
+  }
+  for (const id of ["dirList", "dirDrivesList"]) {
+    const list = byId(id);
+    if (!list || list.dataset.bound) continue;
+    list.dataset.bound = "true";
+    list.addEventListener("click", event => {
+      const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
+      if (!button) return;
+      selectDirPath(button.dataset.dirPath || "");
+    });
+    list.addEventListener("dblclick", event => {
+      const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
+      if (!button) return;
+      dirLoadPath(button.dataset.dirPath || "");
+    });
+  }
+}
+
+function updateDirStaticText() {
+  const textMap = {
+    dirTitle: "选择保存目录",
+    dirGoBtn: "跳转",
+    dirParentBtn: "上一级",
+    dirCancelBtn: "取消",
+    dirConfirmBtn: "选择此目录",
+  };
+  for (const [id, label] of Object.entries(textMap)) {
+    const element = byId(id);
+    if (element) element.textContent = t(label);
+  }
+  const refresh = byId("dirRefreshBtn");
+  if (refresh) {
+    refresh.title = t("刷新");
+    refresh.setAttribute("aria-label", t("刷新"));
+  }
+  const input = byId("dirInput");
+  if (input) input.placeholder = t("输入目录路径");
+}
+
+function dirEntryHtml(entry, kind = "folder") {
+  const path = String(entry && entry.path || "");
+  const name = String(entry && entry.name || path || "");
+  return `
+    <button class="dir-entry" type="button" data-dir-path="${escAttr(path)}" data-dir-kind="${escAttr(kind)}" title="${escAttr(path)}">
+      <img src="/ui-icon/action_open_directory.png" alt="" />
+      <span>${esc(name)}</span>
+    </button>
+  `;
+}
+
+function renderDirEntries(data) {
+  const drives = Array.isArray(data.drives) ? data.drives : [];
+  const subdirs = Array.isArray(data.subdirs) ? data.subdirs : [];
+  const drivesList = byId("dirDrivesList");
+  const dirList = byId("dirList");
+  if (drivesList) {
+    drivesList.innerHTML = drives.length
+      ? drives.map(entry => dirEntryHtml(entry, "root")).join("")
+      : `<div class="dir-empty">${esc(t("无可用根目录"))}</div>`;
+  }
+  if (dirList) {
+    dirList.innerHTML = subdirs.length
+      ? subdirs.map(entry => dirEntryHtml(entry, "folder")).join("")
+      : `<div class="dir-empty">${esc(t("没有可进入的子目录"))}</div>`;
+  }
+}
+
+function selectDirPath(path) {
+  dirSelectedPath = String(path || "");
+  const input = byId("dirInput");
+  if (input && dirSelectedPath) input.value = dirSelectedPath;
+  document.querySelectorAll(".dir-entry.selected").forEach(item => item.classList.remove("selected"));
+  const selectedEntry = dirSelectedPath
+    ? Array.from(document.querySelectorAll(".dir-entry")).find(item => item.dataset.dirPath === dirSelectedPath)
+    : null;
+  if (selectedEntry) selectedEntry.classList.add("selected");
+  if (dirSelectedPath) setDirStatus("已选择目录", "ok");
+}
+
+async function onChangeDirClicked() {
+  await showDirDialog();
+}
+
+async function showDirDialog() {
+  updateDirStaticText();
+  installDirDialogHandlers();
+  const modal = byId("dirModal");
+  const input = byId("dirInput");
+  const startPath = localStorage.getItem("dir_last_browsed") || currentDownloadDirectory();
+  if (input) input.value = startPath;
+  modal.style.display = "flex";
+  requestAnimationFrame(() => input && input.focus({ preventScroll: true }));
+  await dirLoadPath(startPath);
+}
+
+async function dirLoadPath(path = "") {
+  const target = String(path || byId("dirInput")?.value || "").trim();
+  setDirBusy(true);
+  setDirStatus("正在加载目录...", "loading");
+  try {
+    const query = target ? `?path=${encodeURIComponent(target)}` : "";
+    const response = await fetch(`/api/dir/list${query}`, { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error || data.status === "error") {
+      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    }
+    dirCurrentPath = String(data.current || target || "");
+    dirSelectedPath = dirCurrentPath;
+    dirParentPath = String(data.parent || "");
+    if (dirCurrentPath) localStorage.setItem("dir_last_browsed", dirCurrentPath);
+    const input = byId("dirInput");
+    if (input) input.value = dirCurrentPath;
+    renderDirEntries(data);
+    setDirStatus("单击选择，双击进入子目录", "ok");
+  } catch (error) {
+    renderDirEntries({ drives: [], subdirs: [] });
+    setDirStatus(`目录加载失败：${error.message || error}`, "error");
+  } finally {
+    setDirBusy(false);
+  }
+}
+
+function dirBrowsePath() {
+  return dirLoadPath(byId("dirInput")?.value || "");
+}
+
+function dirGoParent() {
+  if (!dirParentPath) {
+    setDirStatus("当前目录没有可访问的上一级", "error");
+    return Promise.resolve();
+  }
+  return dirLoadPath(dirParentPath);
+}
+
+function dirRefresh() {
+  return dirLoadPath(dirCurrentPath || byId("dirInput")?.value || "");
+}
+
+async function confirmDirDialog() {
+  const directory = String(dirSelectedPath || byId("dirInput")?.value || "").trim();
+  if (!directory) {
+    setDirStatus("目录路径不能为空", "error");
+    return;
+  }
+  setDirBusy(true);
+  setDirStatus("正在切换目录...", "loading");
+  try {
+    const response = await fetch("/api/dir/change", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error || data.status === "error") {
+      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    }
+    closePreview();
+    const basic = ((frontendState.settings_snapshot ||= {})["基础设置"] ||= {});
+    basic.download_directory = String(data.directory || directory);
+    localStorage.setItem("dir_last_browsed", basic.download_directory);
+    byId("dirModal").style.display = "none";
+    appendLog(translateUiText(data.message || "目录已变更"));
+    await fetchFrontendState();
+  } catch (error) {
+    setDirStatus(`切换目录失败：${error.message || error}`, "error");
+  } finally {
+    setDirBusy(false);
+  }
 }
 
 function cancelDirDialog() {
   byId("dirModal").style.display = "none";
 }
 
+function fileAssociationLabels() {
+  return {
+    title: "绑定默认打开方式",
+    description: "选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页再次确认。",
+    video: "视频资源（mp4、mkv、avi、mov、webm 等）",
+    image: "图片资源（jpg、png、gif、webp、bmp 等）",
+    status: "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。",
+    cancel: "取消",
+    confirm: "绑定",
+  };
+}
+
+function applyFileAssociationLanguage() {
+  const labels = fileAssociationLabels();
+  const title = byId("associationTitle");
+  const description = byId("associationDescription");
+  const status = byId("associationStatus");
+  const videoLabel = document.querySelector("#fileAssociationModal label[for='associationVideo'] span")
+    || document.querySelector("#associationVideo + span");
+  const imageLabel = document.querySelector("#fileAssociationModal label[for='associationImage'] span")
+    || document.querySelector("#associationImage + span");
+  if (title) title.textContent = t(labels.title);
+  if (description) description.textContent = t(labels.description);
+  if (status) status.textContent = t(labels.status);
+  if (videoLabel) videoLabel.textContent = t(labels.video);
+  if (imageLabel) imageLabel.textContent = t(labels.image);
+  const cancel = byId("associationCancelBtn");
+  const confirm = byId("associationConfirmBtn");
+  if (cancel) cancel.textContent = t(labels.cancel);
+  if (confirm) confirm.textContent = t(labels.confirm);
+}
+
+function showFileAssociationModal() {
+  applyFileAssociationLanguage();
+  const modal = byId("fileAssociationModal");
+  const video = byId("associationVideo");
+  const image = byId("associationImage");
+  if (video) video.checked = true;
+  if (image) image.checked = true;
+  modal.style.display = "flex";
+  requestAnimationFrame(() => {
+    if (modal.style.display === "flex") byId("associationConfirmBtn").focus({ preventScroll: true });
+  });
+}
+
+function cancelFileAssociationModal() {
+  byId("fileAssociationModal").style.display = "none";
+}
+
+function confirmFileAssociationModal() {
+  const includeVideo = !!(byId("associationVideo") && byId("associationVideo").checked);
+  const includeImage = !!(byId("associationImage") && byId("associationImage").checked);
+  byId("fileAssociationModal").style.display = "none";
+  frontendAction("register_file_associations", { include_video: includeVideo, include_image: includeImage });
+}
+
+function isFileAssociationModalOpen() {
+  const modal = byId("fileAssociationModal");
+  return !!modal && modal.style.display === "flex";
+}
+
+function handleFileAssociationModalShortcut(event) {
+  if (!isFileAssociationModalOpen()) return false;
+  if (!["Enter", "Escape"].includes(event.key)) return false;
+  if (event.key === "Enter" && isTextEntryTarget(event.target)) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Enter") confirmFileAssociationModal();
+  else cancelFileAssociationModal();
+  return true;
+}
+
+function selectionHeaderText(count) {
+  return t("共扫描到 {count} 个资源，请勾选需要下载的项目：").replace("{count}", String(count));
+}
+
+function selectionItemTitle(item, index) {
+  if (item && typeof item === "object") return String(item.title || item.name || `项目 ${index + 1}`);
+  const text = String(item ?? "").trim();
+  return text || `项目 ${index + 1}`;
+}
+
+function selectionRowHtml(item, index) {
+  const rawTitle = selectionItemTitle(item, index);
+  const title = esc(rawTitle);
+  return `
+    <tr class="selection-row" data-index="${index}" onclick="toggleSelectionItem(${index}, event)">
+      <td><input class="selection-checkbox" type="checkbox" data-index="${index}" checked tabindex="-1" aria-checked="true" aria-label="${escAttr(t("选择"))} ${index + 1}" onmousedown="event.preventDefault()" onclick="event.preventDefault();event.stopPropagation();toggleSelectionItem(${index})"></td>
+      <td class="selection-title-cell" title="${escAttr(rawTitle)}">${title}</td>
+    </tr>
+  `;
+}
+
+function syncSelectionRowState(index) {
+  const checkbox = document.querySelector(`#selectionBody input[data-index="${index}"]`);
+  const row = document.querySelector(`#selectionBody tr[data-index="${index}"]`);
+  if (!checkbox || !row) return;
+  row.classList.toggle("unchecked", !checkbox.checked);
+  checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
+}
+
+function toggleSelectionItem(index, event) {
+  const checkbox = document.querySelector(`#selectionBody input[data-index="${index}"]`);
+  if (!checkbox) return;
+  if (event && event.target === checkbox) {
+    syncSelectionRowState(index);
+    return;
+  }
+  checkbox.checked = !checkbox.checked;
+  syncSelectionRowState(index);
+}
+
+function selectAllSelectionItems() {
+  document.querySelectorAll("#selectionBody input[type='checkbox']").forEach(input => {
+    input.checked = true;
+    syncSelectionRowState(Number(input.dataset.index));
+  });
+}
+
+function invertSelectionItems() {
+  document.querySelectorAll("#selectionBody input[type='checkbox']").forEach(input => {
+    input.checked = !input.checked;
+    syncSelectionRowState(Number(input.dataset.index));
+  });
+}
+
 function showSelectionModal(items) {
-  byId("selectionHeader").textContent = `共扫描到 ${items.length} 个资源，请选择下载项目`;
-  byId("selectionBody").innerHTML = items.map((item, index) => `<tr><td><input type="checkbox" data-index="${index}" checked></td><td>${esc(item.title || "")}</td></tr>`).join("");
+  selectionItems = Array.isArray(items) ? items : [];
+  byId("selectionTitle").textContent = t("任务清单确认");
+  byId("selectionHeader").textContent = selectionHeaderText(selectionItems.length);
+  const selectionHeadCells = document.querySelectorAll(".selection-table thead th");
+  if (selectionHeadCells[0]) selectionHeadCells[0].textContent = t("选择");
+  if (selectionHeadCells[1]) selectionHeadCells[1].textContent = t("视频标题 / 描述");
+  byId("selectionAllBtn").textContent = t("全选");
+  byId("selectionInvertBtn").textContent = t("反选");
+  byId("selectionCancelBtn").textContent = t("取消任务");
+  byId("selectionConfirmBtn").textContent = t("开始下载");
+  byId("selectionBody").innerHTML = selectionItems.map(selectionRowHtml).join("");
   const modal = byId("selectionModal");
   modal.style.display = "flex";
   requestAnimationFrame(() => {
-    if (modal.style.display === "flex") modal.focus({ preventScroll: true });
+    if (modal.style.display === "flex") byId("selectionConfirmBtn").focus({ preventScroll: true });
   });
 }
 
@@ -1713,7 +2404,11 @@ function applyTheme(dark) {
     document.documentElement.dataset.theme = theme;
   }
   const themeButton = byId("themeBtn");
-  if (themeButton) themeButton.textContent = dark ? "☀" : "☾";
+  if (themeButton) {
+    const iconFile = dark ? "action_theme_night.png" : "action_theme_light.png";
+    themeButton.innerHTML = `<img src="/ui-icon/${iconFile}" alt="" />`;
+    themeButton.setAttribute("aria-label", t("切换主题"));
+  }
 }
 
 function cacheSource() {
@@ -1738,41 +2433,194 @@ function updatePlaceholder() {
 }
 
 function resizePreviewImage() {}
+function mediaActionIconSrc(action) {
+  const manifest = iconManifest || {};
+  const actions = manifest.actions || ACTION_ICON_FILES;
+  const file = actions[action] || ACTION_ICON_FILES[action] || manifest.fallback || "view_grid.png";
+  const route = String(manifest.route || "/ui-icon").replace(/\/+$/, "");
+  return `${route}/${String(file).replace(/^\/+/, "")}`;
+}
+function setPlayButtonState(playing, disabled = false) {
+  const button = byId("playBtn");
+  if (!button) return;
+  button.disabled = !!disabled;
+  const action = playing ? "pause" : "play";
+  const label = playing ? t("暂停") : t("播放");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = `<img src="${escAttr(mediaActionIconSrc(action))}" alt="" />`;
+}
+function mediaHasVideoSource(player) {
+  return !!(player && (player.currentSrc || player.getAttribute("src")));
+}
+function mediaDuration(player) {
+  const duration = Number(player && player.duration);
+  return Number.isFinite(duration) && duration > 0 ? duration : 0;
+}
+function mediaCurrentTime(player) {
+  const current = Number(player && player.currentTime);
+  return Number.isFinite(current) && current > 0 ? current : 0;
+}
+function hasPreviewContent() {
+  const player = byId("videoPlayer");
+  const placeholder = byId("previewArea");
+  return mediaHasVideoSource(player) || !!(placeholder && placeholder.querySelector(".preview-image"));
+}
+function completedPreviewOrder() {
+  return (frontendState.completed_items || []).map(item => item.id).filter(id => id !== undefined && id !== null && String(id));
+}
+function adjacentCompletedId(currentId, direction, wrap = true) {
+  const order = completedPreviewOrder();
+  if (!order.length) return "";
+  const normalized = String(currentId || "");
+  const index = order.findIndex(id => String(id) === normalized);
+  if (index < 0) return direction >= 0 ? order[0] : order[order.length - 1];
+  let nextIndex = index + (direction >= 0 ? 1 : -1);
+  if (wrap) nextIndex = (nextIndex + order.length) % order.length;
+  if (nextIndex < 0 || nextIndex >= order.length) return "";
+  return order[nextIndex];
+}
+function updateFullscreenButtonState() {
+  const button = byId("fullscreenBtn");
+  if (!button) return;
+  button.textContent = isFullscreenMode ? "[ 退出 ]" : "[ 全屏 ]";
+  button.disabled = !hasPreviewContent();
+}
+function updateMediaControls(player = byId("videoPlayer")) {
+  const slider = byId("seekSlider");
+  const label = byId("timeLabel");
+  const hasVideo = mediaHasVideoSource(player);
+  const duration = hasVideo ? mediaDuration(player) : 0;
+  const current = hasVideo ? mediaCurrentTime(player) : 0;
+  const dragging = slider && slider.dataset.dragging === "1";
+  if (slider) {
+    slider.disabled = !hasVideo || duration <= 0;
+    slider.max = String(Math.max(0, Math.floor(duration)));
+    if (!dragging) slider.value = String(Math.min(Math.floor(current), Math.floor(duration || current)));
+  }
+  if (label) {
+    label.textContent = hasVideo ? `${fmtTime(current)} / ${fmtTime(duration)}` : "00:00";
+  }
+  setPlayButtonState(hasVideo && !player.paused && !player.ended, !hasVideo);
+  updateNavBtnsState();
+  updateFullscreenButtonState();
+}
+function installMediaControlHandlers() {
+  const slider = byId("seekSlider");
+  if (slider && slider.dataset.mediaHandlers !== "1") {
+    slider.dataset.mediaHandlers = "1";
+    const beginDrag = () => { slider.dataset.dragging = "1"; };
+    const finishDrag = () => {
+      if (slider.dataset.dragging === "1") onSeekCommit(slider.value);
+      slider.dataset.dragging = "";
+    };
+    slider.addEventListener("pointerdown", beginDrag);
+    slider.addEventListener("touchstart", beginDrag, { passive: true });
+    slider.addEventListener("pointerup", finishDrag);
+    slider.addEventListener("pointercancel", finishDrag);
+    slider.addEventListener("touchend", finishDrag);
+  }
+  const player = byId("videoPlayer");
+  if (player && player.dataset.mediaHandlers !== "1") {
+    player.dataset.mediaHandlers = "1";
+    player.addEventListener("play", () => updateMediaControls(player));
+    player.addEventListener("pause", () => updateMediaControls(player));
+    player.addEventListener("durationchange", () => updateMediaControls(player));
+  }
+}
 function closePreview() {
+  previewRequestToken += 1;
   clearImageAutoAdvanceTimer();
   const video = byId("videoPlayer");
   video.pause();
   video.removeAttribute("src");
+  video.load();
   video.style.display = "none";
   const placeholder = byId("previewArea");
-  placeholder.textContent = "选择已完成文件进行播放";
+  placeholder.textContent = "";
   placeholder.style.display = "flex";
   currentPlayingId = null;
+  updateMediaControls(video);
 }
-function updateNavBtnsState() {}
+function updateNavBtnsState() {
+  const order = completedPreviewOrder();
+  const disabled = order.length <= 1;
+  const prev = byId("prevBtn");
+  const next = byId("nextBtn");
+  if (prev) prev.disabled = disabled;
+  if (next) next.disabled = disabled;
+}
+function switchPreview(direction) {
+  const current = currentPlayingId || selected.completed || selectedVideoId;
+  const nextId = adjacentCompletedId(current, Number(direction) || 1, true);
+  if (nextId) void playCompleted(nextId);
+}
+function onSeekInput(value) {
+  const player = byId("videoPlayer");
+  if (!mediaHasVideoSource(player)) {
+    updateMediaControls(player);
+    return;
+  }
+  const duration = mediaDuration(player);
+  const nextTime = Math.max(0, Math.min(Number(value) || 0, duration || Number(value) || 0));
+  const label = byId("timeLabel");
+  if (label) label.textContent = `${fmtTime(nextTime)} / ${fmtTime(duration)}`;
+}
+function onSeekCommit(value) {
+  const player = byId("videoPlayer");
+  if (!mediaHasVideoSource(player)) {
+    updateMediaControls(player);
+    return;
+  }
+  const duration = mediaDuration(player);
+  const nextTime = Math.max(0, Math.min(Number(value) || 0, duration || Number(value) || 0));
+  if (Number.isFinite(nextTime)) player.currentTime = nextTime;
+  const slider = byId("seekSlider");
+  if (slider) slider.dataset.dragging = "";
+  updateMediaControls(player);
+}
+function prepareDeleteItem(id) {
+  const videoId = String(id || "");
+  if (videoId && String(currentPlayingId || "") === videoId) closePreview();
+}
 function deleteVideo(id) {
+  prepareDeleteItem(id);
   if (typeof window !== "undefined" && window.sendWS !== defaultSendWS && typeof window.sendWS === "function") {
     window.sendWS("delete_video", { video_id: id });
     return;
   }
   frontendAction("delete_item", { id });
 }
-function previewVideo(id) {
+async function previewVideo(id) {
   const oldId = selectedVideoId;
-  playCompleted(id);
+  await playCompleted(id);
   updateSelection(oldId, id);
   const player = byId("videoPlayer");
   setupPlayerEvents(player, id);
 }
 function setupPlayerEvents(player, sourceId) {
   if (!player) return;
+  const item = completedItemById(sourceId) || {};
   player.onloadedmetadata = () => {
     reportCompletedPlayerMetadata(sourceId, player);
     restoreWebPlaybackPosition(sourceId, player);
+    updateMediaControls(player);
   };
-  player.ontimeupdate = () => rememberWebPlaybackPosition(sourceId, player);
+  player.ondurationchange = () => updateMediaControls(player);
+  player.onplay = () => updateMediaControls(player);
+  player.onpause = () => updateMediaControls(player);
+  player.ontimeupdate = () => {
+    rememberWebPlaybackPosition(sourceId, player);
+    updateMediaControls(player);
+  };
+  player.onseeked = () => updateMediaControls(player);
+  player.onerror = () => {
+    updateMediaControls(player);
+    if (currentPlayingId === sourceId) appendPlaybackFailure(item, player.error || "media error");
+  };
   player.onended = () => {
     removePlaybackPosition(sourceId);
+    updateMediaControls(player);
     if (currentPlayingId === sourceId && shouldAutoplayNext()) autoplayNextPreview();
   };
 }
@@ -1839,11 +2687,11 @@ function autoplayNextPreview() {
   const order = (frontendState.completed_items || []).map(item => item.id);
   const index = order.indexOf(currentPlayingId);
   const nextId = index >= 0 && index < order.length - 1 ? order[index + 1] : "";
-  if (nextId) playCompleted(nextId);
+  if (nextId) void playCompleted(nextId);
 }
 function togglePlay() {
   const video = byId("videoPlayer");
-  if (video.paused) video.play().catch(() => {}); else video.pause();
+  if (video.paused) video.play().catch(error => appendPlaybackFailure(completedItemById(currentPlayingId), error)); else video.pause();
 }
 function toggleFullscreen() {
   const panel = byId("previewPanel");
@@ -1875,6 +2723,7 @@ function renderQueueCompat() { renderQueue(); }
 
 document.addEventListener("keydown", event => {
   if (handleSelectionModalShortcut(event)) return;
+  if (handleFileAssociationModalShortcut(event)) return;
   if (event.key === "Escape") {
     if (byId("dirModal").style.display === "flex") cancelDirDialog();
     if (isFullscreenMode && document.fullscreenElement === byId("previewPanel")) {
@@ -1894,7 +2743,7 @@ document.addEventListener("keydown", event => {
   if (event.key === "Delete" && selectedVideoId && document.activeElement === document.body) {
     deleteVideo(selectedVideoId);
   }
-});
+}, true);
 
 document.addEventListener("fullscreenchange", () => {
   const panel = byId("previewPanel");

@@ -27,7 +27,7 @@ def test_icon_manifest_files_exist():
     manifest = icon_manifest()
     icon_dir = PROJECT_ROOT / "UI" / "icon"
     files: set[str] = {str(manifest["fallback"])}
-    for section in ("actions", "nav", "platforms", "tools", "status", "log_levels"):
+    for section in ("actions", "nav", "platforms", "queue_status", "tools", "status", "log_levels"):
         files.update(str(value) for value in manifest[section].values())
 
     missing = sorted(file_name for file_name in files if not (icon_dir / file_name).is_file())
