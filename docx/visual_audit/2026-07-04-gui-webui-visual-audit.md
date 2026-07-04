@@ -57,16 +57,28 @@
    - 现象：WebUI 的“队列控制”标题和控件行更像横向居中面板，不像 GUI 的 96px“标题 + 一行控件”结构。
    - 原因：后置通用 `.controls-panel` 规则覆盖了 `.active-controls` 的纵向结构。
    - 修复：增加 `#page-active .controls-panel.active-controls` 页级规则，固定 96px 高度、纵向布局、左对齐标题，并让“当前运行”统计靠右。
+11. 日志中心空态与自定义选择框语言切换存在截图级风险。
+   - 现象：WebUI 在过滤无结果时只剩空表格，和 GUI 的居中空态不一致；旧截图中还出现过日志级别、时间范围、平台三个自定义选择框按钮文字为空。
+   - 原因：日志页没有显式空态层；同时自定义选择框翻译 option 文本时，如果原生 `<option>` 未写 `value`，浏览器会把 value 跟随显示文本变化，语言切换或程序性状态注入后容易造成 `select.value` 与业务筛选值失配。
+   - 修复：日志表格增加 `logEmptyState` 居中空态；`custom_select.js` 固定 `option.dataset.originalValue`，只翻译显示文本；`syncLogFilterControls()` 对无效筛选值回退到真实 option，并立即同步自定义选择框标签。
 
 ## 本轮验证
 
+- `python -m pytest tests/test_unified_frontend_contract.py -q`：104 passed。
+- `python -m pytest tests/test_web_browser.py -q`：73 passed。
+- `python -m pytest tests/test_frontend_state_service.py -q`：74 passed。
+- `python -m pytest -q`：1817 passed, 1 skipped, 5 warnings。
 - `node --check app/web/static/app.js`
+- `node --check app/web/static/task_render.js`
 - `node --check app/web/static/settings_render.js`
 - `node --check app/web/static/i18n.js`
 - `python -m pytest tests/test_frontend_state_service.py -q`
 - `python -m pytest tests/test_unified_frontend_contract.py -q`
 - `python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_completed_page_uses_three_cards_short_time_and_media_fullscreen -q`
 - `python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_log_center_matches_gui_tabs_actions_and_filters -q`
+- `python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_custom_select_logic_is_split_into_component tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_log_center_matches_gui_tabs_actions_and_filters -q`
+- `python -m pytest tests/test_web_browser.py::WebUIBrowserTests::test_09c_language_switch_keeps_log_filter_values_and_labels tests/test_web_browser.py::WebUIBrowserTests::test_13c_log_center_empty_state_matches_gui -q`
+- `node --check app/web/static/custom_select.js`
 - `python -m pytest tests/test_web_browser.py::StaticAssetsTests::test_completed_preview_controls_are_visible_not_compat_hidden -q`
 - `python -m pytest tests/test_unified_frontend_contract.py::UnifiedFrontendContractTests::test_web_basic_settings_use_backend_options_and_update_action -q`
 

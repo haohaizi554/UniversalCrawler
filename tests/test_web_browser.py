@@ -988,6 +988,43 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["logMessage"], "Enter a profile, shared, or collection link")
         self.assertEqual(result["dirStatus"], "Failed to load folder: boom")
 
+    def test_09c_language_switch_keeps_log_filter_values_and_labels(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "en-US"
+              };
+              document.documentElement.dataset.language = "en-US";
+              logFilters.level = "全部";
+              logFilters.time = "近 24 小时";
+              logFilters.platform = "全部";
+              applyStaticLanguage();
+              switchPage("logs");
+              renderLogs();
+              const ids = ["logLevelFilter", "logTimeFilter", "logPlatformFilter"];
+              return Object.fromEntries(ids.map(id => {
+                const select = document.getElementById(id);
+                const wrapper = select.closest(".custom-select");
+                return [id, {
+                  value: select.value,
+                  label: wrapper.querySelector(".custom-select-label").textContent.trim()
+                }];
+              }));
+            }
+            """
+        )
+
+        self.assertEqual(result["logLevelFilter"], {"value": "全部", "label": "All"})
+        self.assertEqual(result["logTimeFilter"], {"value": "近 24 小时", "label": "Last 24 hours"})
+        self.assertEqual(result["logPlatformFilter"], {"value": "全部", "label": "All"})
+
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
         self._page.goto(self._server_url)
@@ -1374,6 +1411,52 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["secondIndicator"], "第 2 / 2 页")
         self.assertFalse(result["secondPrevDisabled"])
         self.assertTrue(result["secondNextDisabled"])
+
+    def test_13c_log_center_empty_state_matches_gui(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              currentPage = 'logs';
+              logPage = 1;
+              logPageSize = 20;
+              logFilters.category = 'all';
+              logFilters.level = '全部';
+              logFilters.time = '全部';
+              logFilters.platform = '全部';
+              logFilters.trace = '';
+              logFilters.keyword = '不会命中的关键字';
+              frontendState.log_items = [{
+                id: 'log-empty-a',
+                time: '2026-07-04 06:30:00',
+                level: 'INFO',
+                source: 'GUI',
+                trace_id: 'trace-log-empty-a',
+                message_summary: '可见日志',
+                message: '可见日志',
+                detail: '',
+                stack: ''
+              }];
+              renderLogs();
+              const empty = document.getElementById('logEmptyState');
+              return {
+                rowCount: document.querySelectorAll('#logBody tr').length,
+                hidden: empty.hidden,
+                text: empty.textContent.replace(/\\s+/g, ' ').trim(),
+                stats: document.getElementById('logTotal').textContent
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["rowCount"], 0)
+        self.assertFalse(result["hidden"])
+        self.assertIn("暂无匹配日志", result["text"])
+        self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", result["text"])
+        self.assertEqual(result["stats"], "共 1 条 / 匹配 0 条 / 当前显示 0 条")
 
     def test_13c_log_detail_copy_export_actions_match_gui(self):
         self._page.goto(self._server_url)

@@ -78,7 +78,13 @@
     if (!wrapper) return;
     wrapper.style.setProperty("--option-count", String(Math.max(1, select.options.length)));
     Array.from(select.options).forEach(option => {
-      if (!option.dataset.originalLabel) option.dataset.originalLabel = option.textContent || "";
+      if (!("originalLabel" in option.dataset)) option.dataset.originalLabel = option.textContent || "";
+      if (!("originalValue" in option.dataset)) {
+        option.dataset.originalValue = option.hasAttribute("value")
+          ? option.getAttribute("value")
+          : option.dataset.originalLabel;
+      }
+      option.value = option.dataset.originalValue;
       option.textContent = helpers.translate(option.dataset.originalLabel);
     });
     const button = wrapper.querySelector(".custom-select-button");
