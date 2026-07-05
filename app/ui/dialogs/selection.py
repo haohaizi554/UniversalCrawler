@@ -75,7 +75,7 @@ class SelectionDialog(ChromedDialog):
         self._language = normalize_language(language)
         super().__init__(
             parent,
-            title=self._tr(title),
+            title=self._dialog_title(title),
             object_name="SelectionDialog",
             body_margins=(20, 20, 20, 20),
             body_spacing=15,
@@ -167,6 +167,16 @@ class SelectionDialog(ChromedDialog):
 
     def _tr(self, text: str) -> str:
         return tr(text, self._language)
+
+    def _dialog_title(self, title: str) -> str:
+        base_title = "任务清单确认"
+        text = str(title or base_title)
+        if text == base_title:
+            return self._tr(base_title)
+        if text.startswith(f"{base_title} - "):
+            suffix = text[len(base_title) + 3 :]
+            return f"{self._tr(base_title)} - {suffix}"
+        return self._tr(text)
 
     def _header_text(self) -> str:
         count = len(self.items)

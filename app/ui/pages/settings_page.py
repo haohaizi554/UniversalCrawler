@@ -4,7 +4,7 @@ from typing import Any
 from app.debug_logger import debug_logger
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFontMetrics, QIcon, QPalette, QPixmap
+from PyQt6.QtGui import QFontMetrics, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -30,25 +30,19 @@ from app.ui.components.settings_platform_controls import (
     build_platform_proxy_widget,
     build_platform_timeout_combo,
 )
-from app.ui.localization import normalize_language, tr
+from app.ui.localization import normalize_language, platform_display_name, tr
 from app.ui.pages.common import PageFrame
 from app.ui.styles.settings_page import generate_settings_page_stylesheet
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
 from app.ui.viewmodels.settings_catalog import (
-    ACCENT_OPTIONS,
     CONCURRENCY_OPTIONS,
-    FILENAME_TEMPLATES,
-    FONT_SIZE_OPTIONS,
     GROUP_DESCRIPTIONS,
     GROUP_HINTS,
     GROUP_ICONS,
-    OPEN_MODE_OPTIONS,
     PLATFORM_COUNT_OPTIONS,
     PLATFORM_FALLBACK_LETTERS,
-    PLAYER_OPTIONS,
     RETENTION_OPTIONS,
     RETRY_OPTIONS,
-    SCALE_OPTIONS,
     SETTING_DESCRIPTIONS,
     SETTING_SHORT_DESCRIPTIONS,
     SPEED_LIMIT_OPTIONS,
@@ -61,7 +55,7 @@ from app.ui.viewmodels.settings_options import (
     normalize_combo_options,
     platform_proxy_policy,
 )
-from app.ui.viewmodels.settings_platform_layout import PLATFORM_DETAIL_COL_WIDTHS, platform_column_widths
+from app.ui.viewmodels.settings_platform_layout import platform_column_widths
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.safe_slot import safe_slot
 
@@ -1337,8 +1331,9 @@ class SettingsPage(PageFrame):
 
     def _build_platform_row(self, row: dict[str, Any], col_widths: dict[str, int] | None = None) -> QWidget:
         platform_id = str(row.get("id") or "")
-        platform_name = str(row.get("name") or row.get("id") or "平台")
-        policy = platform_proxy_policy(platform_id, platform_name)
+        raw_platform_name = str(row.get("name") or row.get("id") or "平台")
+        platform_name = platform_display_name(platform_id, self._language(), fallback=raw_platform_name)
+        policy = platform_proxy_policy(platform_id, raw_platform_name)
         col_widths = col_widths or self._platform_col_widths([row])
 
         line = QWidget()

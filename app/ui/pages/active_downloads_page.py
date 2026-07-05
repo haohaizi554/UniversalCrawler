@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QRect, Qt, pyqtSignal
@@ -28,7 +29,7 @@ from PyQt6.QtWidgets import (
 from app.config.settings import download_concurrency_options, normalize_download_concurrency
 from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import ThemedComboBox
-from app.ui.localization import normalize_language, tr
+from app.ui.localization import normalize_language, platform_display_name, tr
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
 from app.ui.styles.table_rows import (
@@ -117,7 +118,7 @@ class ActiveDownloadsModel(QAbstractTableModel):
         if index.column() == self.ACTION_COLUMN:
             return tr(TEXT["delete"], self._language)
         if column == "platform":
-            return tr(str(row.get(column, "")), self._language)
+            return platform_display_name(row.get("platform_id"), self._language, fallback=row.get(column, ""))
         return str(row.get(column, ""))
 
     def set_language(self, language: str | None) -> None:
@@ -231,7 +232,9 @@ class ActiveDownloadsDelegate(QStyledItemDelegate):
     def _paint_platform(self, painter: QPainter, option, index: QModelIndex) -> None:
         row = index.data(ActiveDownloadsModel.ROW_ROLE) or {}
         platform_id = str(row.get("platform_id") or "web")
-        platform = str(row.get("platform") or "")
+        model = index.model()
+        language = getattr(model, "_language", "zh-CN")
+        platform = platform_display_name(platform_id, language, fallback=row.get("platform") or "")
         colors = theme_colors(option.palette.color(QPalette.ColorRole.Base).lightness() < 128)
         painter.save()
         icon_rect = QRect(option.rect.x() + 10, option.rect.y() + (option.rect.height() - 20) // 2, 20, 20)
@@ -475,6 +478,63 @@ class EventTimelineWidget(QWidget):
             events.append({"time": time, "message": message or time})
         self.set_events(events)
 
+    def _localized_message(self, message: object) -> str:
+        text = str(message or "")
+        language = self._language
+        if language == "en-US":
+            replacements = (
+                (r"^\u4efb\u52a1\u8fdb\u5165\s*(.*?)\s*\u4e0b\u8f7d\u5668$", "Task entered {value} downloader"),
+                (r"^\u4efb\u52a1\u8fdb\u5165\u4e0b\u8f7d\u5668[:\uff1a]\s*(.*)$", "Task entered downloader: {value}"),
+                (r"^\u8fdb\u5ea6[:\uff1a]\s*(.*)$", "Progress: {value}"),
+                (
+                    r"^\u5f53\u524d\u901f\u5ea6[:\uff1a]\s*(.*?)\s*[\uff0c,]\s*\u5269\u4f59[:\uff1a]\s*(.*)$",
+                    "Current speed: {value}, remaining: {extra}",
+                ),
+                (r"^\u5f53\u524d\u901f\u5ea6[:\uff1a]\s*(.*)$", "Current speed: {value}"),
+                (r"^\u5199\u5165\u72b6\u6001[:\uff1a]\s*(.*)$", "Write status: {value}"),
+                (r"^\u5408\u5e76\u72b6\u6001[:\uff1a]\s*(.*)$", "Merge status: {value}"),
+            )
+            for pattern, template in replacements:
+                match = re.match(pattern, text)
+                if match:
+                    value = platform_display_name("", language, fallback=match.group(1))
+                    if len(match.groups()) > 1:
+                        return template.format(value=value, extra=tr(match.group(2), language))
+                    return template.format(value=value)
+            exact = {
+                "\u97f3\u89c6\u9891\u6d41\u4e0b\u8f7d\u4e2d": "Audio/video stream downloading",
+                "\u6765\u6e90\u94fe\u63a5\u5df2\u8bb0\u5f55": "Source link recorded",
+                "\u7b49\u5f85\u4e0b\u8f7d\u5668\u4e0a\u62a5\u8be6\u7ec6\u4e8b\u4ef6": "Waiting for downloader events",
+            }
+            return exact.get(text, tr(text, language))
+        if language == "zh-TW":
+            replacements = (
+                (r"^\u4efb\u52a1\u8fdb\u5165\s*(.*?)\s*\u4e0b\u8f7d\u5668$", "\u4efb\u52d9\u9032\u5165 {value} \u4e0b\u8f09\u5668"),
+                (r"^\u4efb\u52a1\u8fdb\u5165\u4e0b\u8f7d\u5668[:\uff1a]\s*(.*)$", "\u4efb\u52d9\u9032\u5165\u4e0b\u8f09\u5668\uff1a{value}"),
+                (r"^\u8fdb\u5ea6[:\uff1a]\s*(.*)$", "\u9032\u5ea6\uff1a{value}"),
+                (
+                    r"^\u5f53\u524d\u901f\u5ea6[:\uff1a]\s*(.*?)\s*[\uff0c,]\s*\u5269\u4f59[:\uff1a]\s*(.*)$",
+                    "\u76ee\u524d\u901f\u5ea6\uff1a{value}\uff0c\u5269\u9918\uff1a{extra}",
+                ),
+                (r"^\u5f53\u524d\u901f\u5ea6[:\uff1a]\s*(.*)$", "\u76ee\u524d\u901f\u5ea6\uff1a{value}"),
+                (r"^\u5199\u5165\u72b6\u6001[:\uff1a]\s*(.*)$", "\u5beb\u5165\u72c0\u614b\uff1a{value}"),
+                (r"^\u5408\u5e76\u72b6\u6001[:\uff1a]\s*(.*)$", "\u5408\u4f75\u72c0\u614b\uff1a{value}"),
+            )
+            for pattern, template in replacements:
+                match = re.match(pattern, text)
+                if match:
+                    value = platform_display_name("", language, fallback=match.group(1))
+                    if len(match.groups()) > 1:
+                        return template.format(value=value, extra=tr(match.group(2), language))
+                    return template.format(value=value)
+            exact = {
+                "\u97f3\u89c6\u9891\u6d41\u4e0b\u8f7d\u4e2d": "\u97f3\u8996\u983b\u6d41\u4e0b\u8f09\u4e2d",
+                "\u6765\u6e90\u94fe\u63a5\u5df2\u8bb0\u5f55": "\u4f86\u6e90\u9023\u7d50\u5df2\u8a18\u9304",
+                "\u7b49\u5f85\u4e0b\u8f7d\u5668\u4e0a\u62a5\u8be6\u7ec6\u4e8b\u4ef6": "\u7b49\u5f85\u4e0b\u8f09\u5668\u56de\u5831\u8a73\u7d30\u4e8b\u4ef6",
+            }
+            return exact.get(text, tr(text, language))
+        return tr(text, language)
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -505,7 +565,7 @@ class EventTimelineWidget(QWidget):
             painter.drawText(QRect(x + 18, text_top, time_width, line_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, str(event.get("time", "")))
             painter.setPen(QColor(colors["text"]))
             message_width = max(80, self.width() - message_x - 8)
-            message = metrics.elidedText(tr(str(event.get("message", "")), self._language), Qt.TextElideMode.ElideRight, message_width)
+            message = metrics.elidedText(self._localized_message(event.get("message", "")), Qt.TextElideMode.ElideRight, message_width)
             painter.drawText(QRect(message_x, text_top, message_width, line_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, message)
         painter.end()
 

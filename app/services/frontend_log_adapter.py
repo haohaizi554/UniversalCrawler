@@ -207,6 +207,8 @@ def parse_debug_log_file(path: Path, *, limit: int) -> list[dict[str, Any]]:
         if stripped.startswith("说明:"):
             current["message"] = stripped.replace("说明:", "", 1).strip()
             current["message_summary"] = current["message"][:120]
+        elif stripped.startswith("状态码:"):
+            current["status_code"] = stripped.replace("状态码:", "", 1).strip()
         elif looks_like_trace_line(stripped):
             current["trace_id"] = parse_trace_line(stripped)
         detail_lines.append(line)

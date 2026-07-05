@@ -26,6 +26,32 @@ def _load_translation_catalogs() -> dict[str, dict[str, str]]:
 
 TRANSLATIONS: dict[str, dict[str, str]] = _load_translation_catalogs()
 
+_PLATFORM_DISPLAY_NAMES: dict[str, dict[str, str]] = {
+    "douyin": {"zh-CN": "\u6296\u97f3", "en-US": "Douyin", "zh-TW": "\u6296\u97f3"},
+    "xiaohongshu": {"zh-CN": "\u5c0f\u7ea2\u4e66", "en-US": "Xiaohongshu", "zh-TW": "\u5c0f\u7d05\u66f8"},
+    "xhs": {"zh-CN": "\u5c0f\u7ea2\u4e66", "en-US": "Xiaohongshu", "zh-TW": "\u5c0f\u7d05\u66f8"},
+    "kuaishou": {"zh-CN": "\u5feb\u624b", "en-US": "Kuaishou", "zh-TW": "\u5feb\u624b"},
+    "bilibili": {"zh-CN": "Bilibili", "en-US": "Bilibili", "zh-TW": "Bilibili"},
+    "missav": {"zh-CN": "MissAV", "en-US": "MissAV", "zh-TW": "MissAV"},
+    "system": {"zh-CN": "\u7cfb\u7edf", "en-US": "System", "zh-TW": "\u7cfb\u7d71"},
+}
+
+_PLATFORM_NAME_ALIASES: dict[str, str] = {
+    "\u6296\u97f3": "douyin",
+    "douyin": "douyin",
+    "\u5c0f\u7ea2\u4e66": "xiaohongshu",
+    "\u5c0f\u7d05\u66f8": "xiaohongshu",
+    "xiaohongshu": "xiaohongshu",
+    "xhs": "xiaohongshu",
+    "\u5feb\u624b": "kuaishou",
+    "kuaishou": "kuaishou",
+    "bilibili": "bilibili",
+    "missav": "missav",
+    "\u7cfb\u7edf": "system",
+    "\u7cfb\u7d71": "system",
+    "system": "system",
+}
+
 
 def normalize_language(language: str | None) -> str:
     value = str(language or "zh-CN")
@@ -129,3 +155,18 @@ def tr(text: str, language: str | None) -> str:
             if value.startswith(prefix):
                 return replacement + value[len(prefix):]
     return value
+
+
+def platform_display_name(platform_id: object = "", language: str | None = None, *, fallback: object = "") -> str:
+    """Return the translated display label for a platform without changing its business id."""
+    normalized_language = normalize_language(language)
+    key = str(platform_id or "").strip().lower()
+    fallback_text = str(fallback or "").strip()
+    if key not in _PLATFORM_DISPLAY_NAMES and fallback_text:
+        key = _PLATFORM_NAME_ALIASES.get(fallback_text, _PLATFORM_NAME_ALIASES.get(fallback_text.lower(), key))
+    names = _PLATFORM_DISPLAY_NAMES.get(key)
+    if names:
+        return names.get(normalized_language) or names["zh-CN"]
+    if fallback_text:
+        return tr(fallback_text, normalized_language)
+    return tr(str(platform_id or ""), normalized_language)

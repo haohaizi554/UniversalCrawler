@@ -216,3 +216,28 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertIn("OK", buttons)
         for unexpected in ("检查更新失败", "暂时无法", "当前版本", "错误详情", "确定"):
             self.assertNotIn(unexpected, labels + buttons)
+
+    def test_update_check_dialog_translates_local_newer_detail_with_prefix(self):
+        from PyQt6.QtWidgets import QLabel
+
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="\u68c0\u67e5\u66f4\u65b0",
+            message="\u5f53\u524d\u7248\u672c v3.6.17 \u9ad8\u4e8e\u6700\u65b0 Release v3.6.14\u3002",
+            details="\u8fd9\u901a\u5e38\u8868\u793a\u4f60\u6b63\u5728\u4f7f\u7528\u672c\u5730\u6784\u5efa\u6216\u9884\u53d1\u5e03\u6784\u5efa\uff0c\u65e0\u9700\u66f4\u65b0\u3002",
+            status=UPDATE_STATUS_LOCAL_NEWER,
+            local_version="v3.6.17",
+            latest_version="v3.6.14",
+            language="en-US",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+
+        self.assertIn(
+            "This usually means you are using a local or pre-release build, so no update is needed.",
+            labels,
+        )
+        self.assertNotIn("\u8fd9\u901a\u5e38\u8868\u793a", labels)

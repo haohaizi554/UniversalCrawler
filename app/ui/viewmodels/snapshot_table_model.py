@@ -8,7 +8,7 @@ from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt6.QtGui import QIcon
 
 from app.services.icon_registry import platform_icon_file, queue_status_icon_file, ui_icon_path
-from app.ui.localization import normalize_language, tr
+from app.ui.localization import normalize_language, platform_display_name, tr
 from app.utils.qt_runtime import load_qt_icon
 
 SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -54,6 +54,8 @@ class SnapshotTableModel(QAbstractTableModel):
                 return str(row.get("message") or row.get("message_summary") or value)
             if key in {"status", "status_label", "level", "level_display", "reason_label"}:
                 return tr(str(value), self._language)
+            if key == "platform":
+                return platform_display_name(row.get("platform_id"), self._language, fallback=value)
             return str(value)
         if key == "title" and role == SUBTITLE_ROLE:
             return str(row.get("subtitle") or "")

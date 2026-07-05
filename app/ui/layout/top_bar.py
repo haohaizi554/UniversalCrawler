@@ -6,6 +6,7 @@ from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QWidget
 
 from app.config import platform_count_options, platform_note_count_options, platform_page_count_options
+from app.core.plugin_registry import registry
 from app.services.icon_registry import action_icon_file, ui_icon_path
 from app.ui.components.combo_popup import PolishedComboBox, fit_combo_width_to_contents, polish_combo_popup
 from app.ui.components.start_task_button import StartTaskButton
@@ -31,6 +32,8 @@ class TopBarWidget(QFrame):
         self._quantity_mode = "videos"
         self._quantity_options: list[dict[str, str]] = []
         self._language = "zh-CN"
+        self._platform_id = ""
+        self._search_placeholder_source = "输入：主页链接、分享链接或合集链接..."
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(10)
@@ -39,7 +42,7 @@ class TopBarWidget(QFrame):
         self.inp_search = QLineEdit()
         self.inp_search.setObjectName("TopSearchInput")
         self.inp_search.setFixedHeight(40)
-        self.inp_search.setPlaceholderText("输入：主页链接、分享链接或合集链接...")
+        self._apply_search_placeholder()
         self.inp_search.setMinimumWidth(220)
         self.inp_search.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.layout.addWidget(self.inp_search, 1)
@@ -169,6 +172,9 @@ class TopBarWidget(QFrame):
         count_unit: str | None = None,
     ) -> None:
         defaults = defaults or {}
+        self._platform_id = str(plugin_id or "")
+        self._search_placeholder_source = self._placeholder_for_platform(self._platform_id)
+        self._apply_search_placeholder()
         inferred_unit = self._infer_count_unit(plugin_id, defaults, count_unit)
         self._quantity_mode = inferred_unit
         self.video_count_label.setText(tr(COUNT_LABELS[inferred_unit], self._language))
@@ -204,7 +210,7 @@ class TopBarWidget(QFrame):
 
     def set_language(self, language: str | None) -> None:
         self._language = normalize_language(language)
-        self.inp_search.setPlaceholderText(tr("输入：主页链接、分享链接或合集链接...", self._language))
+        self._apply_search_placeholder()
         self.video_count_label.setText(tr(COUNT_LABELS.get(self._quantity_mode, "视频数:"), self._language))
         self.quantity_unit_label.hide()
         current_value = self.current_video_count()
@@ -218,6 +224,16 @@ class TopBarWidget(QFrame):
         self.btn_stop.setText(tr("停止", self._language))
         self.btn_dir.setText(tr("更改目录", self._language))
         self.btn_theme.setToolTip(tr("切换主题", self._language))
+
+    @staticmethod
+    def _placeholder_for_platform(plugin_id: str) -> str:
+        plugin = registry.get_plugin(str(plugin_id or ""))
+        if plugin is None:
+            return "输入：主页链接、分享链接或合集链接..."
+        return str(plugin.get_search_placeholder() or "输入：主页链接、分享链接或合集链接...")
+
+    def _apply_search_placeholder(self) -> None:
+        self.inp_search.setPlaceholderText(tr(self._search_placeholder_source, self._language))
 
     def set_theme_icon(self, is_dark_theme: bool) -> None:
         self._is_dark_theme = bool(is_dark_theme)

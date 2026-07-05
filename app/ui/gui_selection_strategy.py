@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 import threading
 
+from app.config import cfg
+from app.ui.localization import normalize_language
 from shared.interactive_selection import InteractiveTTYSelection
 
 class _QtMainThreadInvoker:
@@ -98,7 +100,20 @@ class GUISelection:
                     break
 
             title = f"任务清单确认 - {prompt}" if prompt else "任务清单确认"
-            return exec_selection_dialog(parent, items, title=title)
+            return exec_selection_dialog(parent, items, title=title, language=self._dialog_language(parent))
         except Exception as exc:
             sys.stderr.write(f"[GUISelection] dialog error: {exc}\n")
             return list(range(fallback_count))
+
+    @staticmethod
+    def _dialog_language(parent) -> str:
+        getter = getattr(parent, "_current_ui_language", None)
+        if callable(getter):
+            try:
+                return normalize_language(getter())
+            except (RuntimeError, TypeError, ValueError, AttributeError):
+                pass
+        try:
+            return normalize_language(cfg.get("appearance", "language", "zh-CN"))
+        except (RuntimeError, TypeError, ValueError, AttributeError):
+            return "zh-CN"

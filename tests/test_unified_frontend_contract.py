@@ -1318,6 +1318,24 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted.value)
         self.assertEqual(dialog.selected_indices, [1])
 
+    def test_gui_selection_dialog_translates_dynamic_title_and_actions(self):
+        from app.ui.dialogs.selection import SelectionDialog
+
+        dialog = SelectionDialog(
+            None,
+            title="\u4efb\u52a1\u6e05\u5355\u786e\u8ba4 - Bilibili",
+            items=[{"title": "video"}],
+            language="en-US",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        self.assertEqual(dialog.windowTitle(), "Task selection - Bilibili")
+        self.assertIn("Scanned 1 resource", dialog.findChild(QLabel, "SelectionDialogHeader").text())
+        self.assertEqual(dialog.btn_all.text(), "Select all")
+        self.assertEqual(dialog.btn_invert.text(), "Invert")
+        self.assertEqual(dialog.btn_cancel.text(), "Cancel task")
+        self.assertEqual(dialog.btn_confirm.text(), "Start download")
+
     def test_web_selection_modal_matches_gui_confirmation_interaction(self):
         content = _html_bundle()
         css = _css_bundle()
@@ -1666,6 +1684,59 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("English", combo_texts)
         self.assertIn("Red", combo_texts)
         self.assertIn("Large", combo_texts)
+        label_texts = {label.text() for label in settings.findChildren(QLabel)}
+        self.assertIn("Interface language", label_texts)
+        self.assertIn("Appearance changes apply immediately and are saved locally.", label_texts)
+
+        settings._set_current_group("\u5e73\u53f0\u8bbe\u7f6e")
+        self.app.processEvents()
+        platform_names = {
+            label.toolTip()
+            for label in settings.findChildren(QLabel, "SettingsPlatformName")
+        }
+        self.assertIn("Douyin", platform_names)
+        self.assertIn("Xiaohongshu", platform_names)
+        self.assertIn("Kuaishou", platform_names)
+        self.assertNotIn("\u6296\u97f3", platform_names)
+        self.assertNotIn("\u5c0f\u7ea2\u4e66", platform_names)
+        self.assertNotIn("\u5feb\u624b", platform_names)
+        combo_texts = {combo.currentText() for combo in settings.findChildren(QComboBox)}
+        self.assertIn("Custom", combo_texts)
+
+    def test_gui_language_switch_translates_sidebar_platform_combo(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        self.app.processEvents()
+
+        combo = shell.sidebar.combo_source
+        texts = {combo.itemText(index) for index in range(combo.count())}
+        self.assertIn("Douyin", texts)
+        self.assertIn("Xiaohongshu", texts)
+        self.assertIn("Kuaishou", texts)
+        self.assertNotIn("\u6296\u97f3", texts)
+        self.assertNotIn("\u5c0f\u7ea2\u4e66", texts)
+        self.assertNotIn("\u5feb\u624b", texts)
+
+    def test_gui_active_timeline_translates_dynamic_event_messages(self):
+        timeline = EventTimelineWidget()
+        self.addCleanup(timeline.deleteLater)
+        timeline.set_language("en-US")
+
+        self.assertEqual(
+            timeline._localized_message("\u4efb\u52a1\u8fdb\u5165 \u6296\u97f3 \u4e0b\u8f7d\u5668"),
+            "Task entered Douyin downloader",
+        )
+        self.assertEqual(
+            timeline._localized_message("\u97f3\u89c6\u9891\u6d41\u4e0b\u8f7d\u4e2d"),
+            "Audio/video stream downloading",
+        )
+        self.assertEqual(
+            timeline._localized_message("\u5f53\u524d\u901f\u5ea6\uff1a1.0 MB/s\uff0c\u5269\u4f59\uff1a00:47"),
+            "Current speed: 1.0 MB/s, remaining: 00:47",
+        )
 
     def test_gui_settings_language_rebuild_closes_open_combo_popup(self):
         shell = self._make_shell()

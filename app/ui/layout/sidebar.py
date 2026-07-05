@@ -8,13 +8,14 @@ from app.core.plugin_registry import registry
 from app.services.frontend_state_service import PAGE_DEFINITIONS
 from app.services.icon_registry import nav_icon_file, platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import PolishedComboBox, polish_combo_popup
-from app.ui.localization import normalize_language, tr
+from app.ui.localization import normalize_language, platform_display_name, tr
 from app.ui.layout.island import IslandCard
 from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon
 
 _PRIMARY_PAGE_IDS = ("queue", "active", "completed", "failed")
 _SECONDARY_PAGE_IDS = ("logs", "settings", "toolbox")
+_PLATFORM_RAW_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 41
 
 def _badge_size(text: str) -> QSize:
     height = 24
@@ -300,11 +301,13 @@ class SidebarWidget(QWidget):
         combo = PolishedComboBox()
         combo.setObjectName("PlatformSourceCombo")
         for plugin in registry.get_all_plugins():
+            label = platform_display_name(plugin.id, self._language, fallback=plugin.name)
             icon = load_qt_icon([ui_icon_path(platform_icon_file(plugin.id))])
             if icon is None:
-                combo.addItem(plugin.name, plugin.id)
+                combo.addItem(label, plugin.id)
             else:
-                combo.addItem(icon, plugin.name, plugin.id)
+                combo.addItem(icon, label, plugin.id)
+            combo.setItemData(combo.count() - 1, plugin.name, _PLATFORM_RAW_NAME_ROLE)
         combo.setFixedHeight(40)
         combo.setFixedWidth(176)
         combo.setProperty("comboPopupMaxWidth", 176)
@@ -383,6 +386,20 @@ class SidebarWidget(QWidget):
         )
         polish_combo_popup(target, visible_rows=target.count(), row_height=36)
 
+    def _sync_platform_combo_language(self) -> None:
+        combo = getattr(self, "combo_source", None)
+        if combo is None:
+            return
+        blocked = combo.blockSignals(True)
+        try:
+            for index in range(combo.count()):
+                platform_id = combo.itemData(index)
+                raw_name = combo.itemData(index, _PLATFORM_RAW_NAME_ROLE) or combo.itemText(index)
+                combo.setItemText(index, platform_display_name(platform_id, self._language, fallback=raw_name))
+        finally:
+            combo.blockSignals(blocked)
+        polish_combo_popup(combo, visible_rows=combo.count(), row_height=36)
+
     def set_active(self, page_id: str) -> None:
         for key, item in self._items.items():
             item.set_active(key == page_id)
@@ -410,3 +427,4 @@ class SidebarWidget(QWidget):
         self._language = normalize_language(language)
         for page_id, item in self._items.items():
             item.set_title(tr(self._page_titles.get(page_id, ""), self._language))
+        self._sync_platform_combo_language()

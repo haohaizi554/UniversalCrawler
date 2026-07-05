@@ -85,6 +85,7 @@ from app.ui.viewmodels.log_display import (
     scope_display_text,
     stage_display_text,
 )
+from app.ui.viewmodels.log_i18n import localize_log_event_code, localize_log_payload, localize_log_text
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, parse_page_size, total_pages
 from app.utils.safe_slot import safe_slot
 
@@ -1124,8 +1125,14 @@ class LogCenterPage(PageFrame):
             row["event_stage_display"] = self._t(row["event_stage_display"])
         for key in ("message", "message_summary"):
             if row.get(key):
-                row[key] = self._t(row[key])
+                row[key] = self._localize_log_text(row[key])
         return row
+
+    def _localize_log_text(self, text: object) -> str:
+        return localize_log_text(text, self._language)
+
+    def _localize_log_payload(self, payload: Any) -> Any:
+        return localize_log_payload(payload, self._language)
 
     def _resolve_item_platform_id(self, item: dict[str, Any]) -> str:
         return resolve_item_platform_id(item, self._platform_options, self._platform_meta_by_id)
@@ -1200,11 +1207,11 @@ class LogCenterPage(PageFrame):
             self._flash_button_text(self.copy_trace_button, self._t("已复制"))
 
     def _build_current_log_payload(self, item: dict[str, Any]) -> dict[str, Any]:
-        return build_log_detail_payload(
+        return self._localize_log_payload(build_log_detail_payload(
             item,
             platform_label=self._format_platform_label(item),
             status_code=normalized_status_code(item),
-        )
+        ))
 
     def _current_log_row_item(self) -> tuple[int, dict[str, Any]] | None:
         if not hasattr(self, "table"):
@@ -1254,7 +1261,7 @@ class LogCenterPage(PageFrame):
 
     def _current_detail_payload(self) -> Any:
         item = self._current_log_item()
-        return self._normalize_detail_payload(item) if item else {}
+        return self._localize_log_payload(self._normalize_detail_payload(item)) if item else {}
 
     def _sync_inspector_action_buttons(self, enabled: bool) -> None:
         for name in ("detail_copy_button", "detail_export_button", "json_copy_button"):
@@ -1546,7 +1553,7 @@ class LogCenterPage(PageFrame):
         self.detail_platform_value.setText(self._format_platform_label(item))
         trace_id = self._extract_trace_id_from_item(item)
         self.detail_trace_value.setText(trace_id if trace_id else "-")
-        message = self._t(str(item.get("message") or item.get("message_summary") or "-"))
+        message = self._localize_log_text(str(item.get("message") or item.get("message_summary") or "-"))
         raw_message = str(item.get("message") or item.get("message_summary") or "")
         self.detail_message_value.setPlainText(message)
         self._configure_message_editor_wrap()
@@ -1558,6 +1565,7 @@ class LogCenterPage(PageFrame):
         scope = item.get("log_scope") or self._derive_log_scope(item)
         stage = item.get("event_stage") or self._derive_event_stage(item)
         event_code = item.get("event_code") or normalized_event_code(item)
+        display_event_code = localize_log_event_code(event_code, self._language)
 
         self.detail_level_badge.setText(raw_level or "-")
         self._apply_level_badge_style(result_display_text(result_type, raw_level))
@@ -1565,10 +1573,10 @@ class LogCenterPage(PageFrame):
         self.detail_status_value.setText(self._t(result_nature_text(result_type)))
         self.detail_scope_value.setText(self._t(self._scope_display_text(scope)))
         self.detail_stage_value.setText(self._t(self._stage_display_text(stage)))
-        self.detail_status_code_value.setText(event_code or "-")
+        self.detail_status_code_value.setText(display_event_code or "-")
         self.detail_status_code_value.setToolTip(event_code or "")
 
-        payload = self._normalize_detail_payload(item)
+        payload = self._localize_log_payload(self._normalize_detail_payload(item))
         self._last_json_text = format_json_text(payload)
         self.json_text.setHtml(self._format_json_html(payload))
         QTimer.singleShot(0, self._resize_json_viewer_to_content)
