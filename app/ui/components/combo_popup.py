@@ -212,8 +212,6 @@ def refresh_themed_combo_boxes(root: QWidget | QComboBox | None) -> None:
             continue
         seen.add(id(combo))
         try:
-            if not combo.isVisible() or not combo.window().isVisible():
-                continue
             view = combo.view()
             popup = view.window() if _qt_object_alive(view) else None
             if _qt_object_alive(popup) and popup.isVisible():
@@ -741,6 +739,8 @@ def schedule_combo_popup_repolish(combo: QComboBox) -> None:
 def _repolish_combo_popup_later(combo_ref: weakref.ReferenceType[QComboBox]) -> None:
     combo = combo_ref()
     if not _qt_object_alive(combo) or not isinstance(combo, QComboBox):
+        return
+    if combo.property("popupOpen") == "false":
         return
     try:
         if not combo.isVisible() or not combo.window().isVisible():

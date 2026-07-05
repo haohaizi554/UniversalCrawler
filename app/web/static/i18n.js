@@ -69,6 +69,7 @@ const FALLBACK_UI_TEXT = {
     "增量状态基线不连续，正在重新同步...": "State update is out of sync. Resyncing...",
     "加载增量状态失败": "Failed to load incremental state",
     "加载状态失败": "Failed to load state",
+    "检测中": "Checking",
     "请输入主页链接、分享链接或合集链接": "Enter a profile, shared, or collection link",
     "未选择有效模式": "No valid mode selected",
     "前端连接尚未就绪，请稍后重试": "Frontend connection is not ready. Try again shortly",
@@ -468,6 +469,7 @@ const FALLBACK_UI_TEXT = {
     "增量状态基线不连续，正在重新同步...": "增量狀態基線不連續，正在重新同步...",
     "加载增量状态失败": "載入增量狀態失敗",
     "加载状态失败": "載入狀態失敗",
+    "检测中": "檢測中",
     "请输入主页链接、分享链接或合集链接": "請輸入主頁連結、分享連結或合集連結",
     "未选择有效模式": "未選擇有效模式",
     "前端连接尚未就绪，请稍后重试": "前端連線尚未就緒，請稍後重試",
@@ -987,6 +989,29 @@ function translateUiCore(text, lang = currentLanguage()) {
     : (lang === "zh-CN" ? `已加载 ${match[1]} 个本地文件（视频：${match[2]}，图片：${match[3]}）` : `Loaded ${match[1]} local files (videos: ${match[2]}, images: ${match[3]})`);
   match = text.match(/^Loaded\s*(\d+)\s*local files$/i);
   if (match) return lang === "zh-TW" ? `已載入 ${match[1]} 個本機檔案` : (lang === "zh-CN" ? `已加载 ${match[1]} 个本地文件` : `Loaded ${match[1]} local files`);
+  match = text.match(/^任务进入\s*(.*?)\s*下载器$/);
+  if (match) {
+    const platform = translateUiCore(match[1].trim(), lang);
+    return lang === "zh-TW" ? `任務進入 ${platform} 下載器` : (lang === "zh-CN" ? `任务进入 ${platform} 下载器` : `Task entered ${platform} downloader`);
+  }
+  match = text.match(/^任务进入下载器[:：]\s*(.*)$/);
+  if (match) {
+    const platform = translateUiCore(match[1].trim(), lang);
+    return lang === "zh-TW" ? `任務進入下載器：${platform}` : (lang === "zh-CN" ? `任务进入下载器：${platform}` : `Task entered downloader: ${platform}`);
+  }
+  match = text.match(/^进度[:：]\s*(.*)$/);
+  if (match) return lang === "zh-TW" ? `進度：${match[1]}` : (lang === "zh-CN" ? `进度：${match[1]}` : `Progress: ${match[1]}`);
+  match = text.match(/^当前速度[:：]\s*(.*?)\s*[,，]\s*剩余[:：]\s*(.*)$/);
+  if (match) return lang === "zh-TW" ? `目前速度：${match[1]}，剩餘：${match[2]}` : (lang === "zh-CN" ? `当前速度：${match[1]}，剩余：${match[2]}` : `Current speed: ${match[1]}, remaining: ${match[2]}`);
+  match = text.match(/^当前速度[:：]\s*(.*)$/);
+  if (match) return lang === "zh-TW" ? `目前速度：${match[1]}` : (lang === "zh-CN" ? `当前速度：${match[1]}` : `Current speed: ${match[1]}`);
+  match = text.match(/^写入状态[:：]\s*(.*)$/);
+  if (match) return lang === "zh-TW" ? `寫入狀態：${match[1]}` : (lang === "zh-CN" ? `写入状态：${match[1]}` : `Write status: ${match[1]}`);
+  match = text.match(/^合并状态[:：]\s*(.*)$/);
+  if (match) return lang === "zh-TW" ? `合併狀態：${match[1]}` : (lang === "zh-CN" ? `合并状态：${match[1]}` : `Merge status: ${match[1]}`);
+  if (text === "音视频流下载中") return lang === "zh-TW" ? "音視訊流下載中" : (lang === "zh-CN" ? text : "Audio/video stream downloading");
+  if (text === "来源链接已记录") return lang === "zh-TW" ? "來源連結已記錄" : (lang === "zh-CN" ? text : "Source link recorded");
+  if (text === "等待下载器上报详细事件") return lang === "zh-TW" ? "等待下載器回報詳細事件" : (lang === "zh-CN" ? text : "Waiting for downloader events");
   match = text.match(/^保存至：(.*)$/);
   if (match) return lang === "zh-TW" ? `儲存至：${match[1]}` : (lang === "zh-CN" ? `保存至：${match[1]}` : `Save to: ${match[1]}`);
   match = text.match(/^共\s*(\d+)\s*项$/);

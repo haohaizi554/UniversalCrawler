@@ -214,14 +214,18 @@ class CompletedPage(PageFrame):
             [
                 ("文件名", self._filename_for(item)),
                 ("保存路径", self._save_dir_for(item)),
-                ("完成时间", item.get("completed_at", "")),
-                ("时长", item.get("duration", "")),
-                ("分辨率", item.get("resolution", "")),
-                ("大小", item.get("size", "")),
-                ("格式", item.get("format", "")),
+                ("完成时间", self._display_value(item.get("completed_at", ""))),
+                ("时长", self._display_value(item.get("duration", ""))),
+                ("分辨率", self._display_value(item.get("resolution", ""))),
+                ("大小", self._display_value(item.get("size", ""))),
+                ("格式", self._display_value(item.get("format", ""))),
             ]
         )
         self.info_scroll.setWidget(self.info_body)
+
+    def _display_value(self, value: object) -> str:
+        text = str(value or "")
+        return self._t(text) if text else ""
 
     def _file_info_panel(self, pairs: list[tuple[str, object]]) -> QWidget:
         panel = QWidget()

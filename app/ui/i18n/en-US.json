@@ -481,5 +481,6 @@
   "文字大小": "Font size",
   "外观设置会即时生效，并保存到本地配置。": "Appearance changes apply immediately and are saved locally.",
   "自定义": "Custom",
+  "检测中": "Checking",
   "这通常表示你正在使用本地构建或预发布构建，无需更新。": "This usually means you are using a local or pre-release build, so no update is needed."
 }

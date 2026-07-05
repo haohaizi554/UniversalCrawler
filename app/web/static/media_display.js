@@ -14,8 +14,8 @@
 
   function displayMetadataValue(value, pending = false) {
     const text = String(value || "").trim();
-    if (text && text !== "--") return text;
-    return pending ? "\u68c0\u6d4b\u4e2d" : "--";
+    if (text && text !== "--") return translate(text);
+    return pending ? translate("\u68c0\u6d4b\u4e2d") : "--";
   }
 
   function basenameFromPath(path) {

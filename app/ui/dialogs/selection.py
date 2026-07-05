@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -28,6 +29,7 @@ from app.ui.localization import normalize_language, tr
 from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
 _ROW_HEIGHT = 34
+_BUTTON_HORIZONTAL_PADDING = 42
 
 class SelectionTableDelegate(QStyledItemDelegate):
     """Paint selection-dialog rows without Qt's native current-cell focus frame."""
@@ -133,8 +135,8 @@ class SelectionDialog(ChromedDialog):
         self.btn_invert.setObjectName("SelectionActionBtn")
         self.btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_invert.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_all.setFixedSize(80, 30)
-        self.btn_invert.setFixedSize(80, 30)
+        self._fit_action_button(self.btn_all, min_width=96, height=34)
+        self._fit_action_button(self.btn_invert, min_width=96, height=34)
         self.btn_all.setAutoDefault(False)
         self.btn_invert.setAutoDefault(False)
         self.btn_all.clicked.connect(self.select_all)
@@ -146,14 +148,14 @@ class SelectionDialog(ChromedDialog):
         self.btn_cancel = QPushButton(self._tr("取消任务"))
         self.btn_cancel.setObjectName("DangerBtn")
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_cancel.setFixedSize(100, 35)
+        self._fit_action_button(self.btn_cancel, min_width=128, height=40)
         self.btn_cancel.setAutoDefault(False)
         self.btn_cancel.clicked.connect(self.reject)
 
         self.btn_confirm = QPushButton(self._tr("开始下载"))
         self.btn_confirm.setObjectName("PrimaryBtn")
         self.btn_confirm.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_confirm.setFixedSize(120, 35)
+        self._fit_action_button(self.btn_confirm, min_width=148, height=40)
         self.btn_confirm.setDefault(True)
         self.btn_confirm.setAutoDefault(True)
         self.btn_confirm.clicked.connect(self.confirm_selection)
@@ -164,6 +166,13 @@ class SelectionDialog(ChromedDialog):
         self._install_dialog_shortcuts()
         self.apply_chrome_theme(self._is_dark)
         self._refresh_table_theme()
+
+    def _fit_action_button(self, button: QPushButton, *, min_width: int, height: int) -> None:
+        text_width = button.fontMetrics().horizontalAdvance(button.text())
+        width = max(min_width, text_width + _BUTTON_HORIZONTAL_PADDING)
+        button.setMinimumWidth(width)
+        button.setMinimumHeight(height)
+        button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
     def _tr(self, text: str) -> str:
         return tr(text, self._language)

@@ -536,6 +536,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         window = QMainWindow()
         orphan = QPushButton("orphan")
         orphan.setObjectName("SettingsNavButton")
+        self.addCleanup(lambda: apply_application_theme(False))
         self.addCleanup(window.deleteLater)
         self.addCleanup(orphan.deleteLater)
         window.show()

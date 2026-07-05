@@ -20,6 +20,43 @@ _DOWNLOAD_FAILED_RE = re.compile(
     r"^(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
     r"下载失败\s*\[(?P<title>.+?)\][：:]\s*(?P<error>.+)$"
 )
+_DYNAMIC_PREFIX = r"(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
+_CRAWL_CONFIRM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}用户确认了\s*(?P<count>\d+)\s*个任务$")
+_CRAWL_FINAL_CONFIRM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}最终确认\s*(?P<count>\d+)\s*个.*$")
+_CRAWL_START_RE = re.compile(rf"^{_DYNAMIC_PREFIX}启动\s*(?P<platform>.*?)\s*爬虫任务$")
+_TASK_START_MODE_RE = re.compile(rf"^{_DYNAMIC_PREFIX}启动任务\s*\|\s*模式[:：]\s*(?P<mode>.*)$")
+_SCAN_FINISH_RE = re.compile(rf"^{_DYNAMIC_PREFIX}扫描结束[，,]\s*共\s*(?P<count>\d+)(?P<tail>.*)$")
+_FETCH_OK_RE = re.compile(rf"^{_DYNAMIC_PREFIX}获取成功\s*(?P<detail>.*)$")
+_PARSE_STREAM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}解析流[:：]\s*(?P<detail>.*)$")
+_EXPANDING_RE = re.compile(rf"^{_DYNAMIC_PREFIX}正在展开[:：]\s*(?P<detail>.*)$")
+_PIPELINE_RE = re.compile(rf"^{_DYNAMIC_PREFIX}流水线已建立[:：]\s*(?P<detail>.*)$")
+
+_EN_DYNAMIC_REPLACEMENTS = (
+    ("已刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL successfully"),
+    ("重新刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"),
+    ("重刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"),
+    ("B站 audio 流连接断开", "B-site audio stream disconnected"),
+    ("B站 video 流连接断开", "B-site video stream disconnected"),
+    ("爬虫任务结束", "Crawl task finished"),
+    ("Bilibili 爬虫任务结束", "Bilibili crawl task finished"),
+    ("爬虫发现可下载资源", "Crawler found downloadable resources"),
+    ("检查 Bilibili 登录状态", "Checking Bilibili login status"),
+    ("已登录，Cookie", "Logged in; Cookie"),
+    ("下载任务开始执行", "Download task started"),
+    ("下载任务完成", "Download task completed"),
+    ("准备下载 Bilibili 音", "Preparing Bilibili audio download"),
+    ("准备合并 Bilibili 音", "Preparing to merge Bilibili audio"),
+    ("Bilibili 音视频合并", "Bilibili audio/video merge"),
+    ("分发队列", "Dispatched queue"),
+    ("释放下载", "Released download"),
+)
+
+_EVENT_CODE_SEGMENT_ALIASES = {
+    "GUI": "图形界面",
+    "WebUI": "网页端",
+    "MainWindow": "主窗口",
+    "ApplicationContext": "应用上下文",
+}
 
 
 def _plural(value: str, singular: str, plural: str) -> str:
@@ -48,7 +85,47 @@ def _localize_english_dynamic(text: str) -> str:
     if match:
         return f"{match.group('prefix') or ''}Download failed [{match.group('title')}]: {match.group('error')}"
 
-    return text
+    match = _CRAWL_CONFIRM_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}User confirmed {match.group('count')} tasks"
+
+    match = _CRAWL_FINAL_CONFIRM_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Final confirmation: {match.group('count')} tasks"
+
+    match = _CRAWL_START_RE.match(text)
+    if match:
+        platform = match.group("platform").strip()
+        return f"{match.group('prefix') or ''}Started {platform} crawl task"
+
+    match = _TASK_START_MODE_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Started task | mode: {match.group('mode')}"
+
+    match = _SCAN_FINISH_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Scan finished, total {match.group('count')}{match.group('tail')}"
+
+    match = _FETCH_OK_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Fetched successfully {match.group('detail')}".rstrip()
+
+    match = _PARSE_STREAM_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Parsed stream: {match.group('detail')}"
+
+    match = _EXPANDING_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Expanding: {match.group('detail')}"
+
+    match = _PIPELINE_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Pipeline established: {match.group('detail')}"
+
+    result = text
+    for source, target in _EN_DYNAMIC_REPLACEMENTS:
+        result = result.replace(source, target)
+    return result
 
 
 def localize_log_text(text: object, language: str | None) -> str:
@@ -66,8 +143,16 @@ def localize_log_text(text: object, language: str | None) -> str:
 
 def localize_log_event_code(code: object, language: str | None) -> str:
     value = str(code or "")
-    if normalize_language(language) != "en-US" or not value or value == "-":
+    normalized = normalize_language(language)
+    if not value or value == "-":
         return value
+    if normalized != "en-US":
+        if normalized == "zh-TW" and "_" in value:
+            return "_".join(
+                localize_log_text(_EVENT_CODE_SEGMENT_ALIASES.get(part, part), normalized)
+                for part in value.split("_")
+            )
+        return localize_log_text(value, normalized)
 
     loaded = re.match(
         r"^(?P<prefix>[A-Z0-9_]+)_已加载_(?P<count>\d+)_个本地文件_视频_(?P<videos>\d+)_图片_(?P<images>\d+)$",

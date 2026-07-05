@@ -1273,6 +1273,36 @@ function syncLogTabLabels() {
   });
 }
 
+function syncLogStaticLanguage() {
+  syncLogTabLabels();
+  const logFilterLabels = ["日志级别", "时间范围", "平台", "Trace ID", "关键词搜索"];
+  document.querySelectorAll("#page-logs .log-filter-label").forEach((label, index) => {
+    if (logFilterLabels[index]) label.textContent = t(logFilterLabels[index]);
+  });
+  const logTraceFilter = byId("logTraceFilter");
+  if (logTraceFilter) logTraceFilter.placeholder = t("请输入 Trace ID");
+  const logKeywordFilter = byId("logKeywordFilter");
+  if (logKeywordFilter) logKeywordFilter.placeholder = t("请输入关键词...");
+  const logHeaders = ["时间", "级别", "来源", "Trace ID", "消息摘要"];
+  document.querySelectorAll("#page-logs th").forEach((header, index) => {
+    if (logHeaders[index]) header.textContent = t(logHeaders[index]);
+  });
+  const logActionLabels = [
+    ["runLogOperation('refresh')", "刷新"],
+    ["runLogOperation('clear')", "清空"],
+    ["runLogOperation('export')", "导出"],
+    ["runLogOperation('open_latest')", "debug.log"],
+    ["runLogOperation('open_error_summary')", "error.md"],
+    ["copySelectedLogTraceId()", "复制TraceID"],
+  ];
+  for (const [onclick, label] of logActionLabels) {
+    const button = document.querySelector(`#page-logs .log-actions [onclick="${onclick}"]`);
+    if (button) button.textContent = t(label);
+  }
+  setButtonContent("logPrevPage", "上一页");
+  setButtonContent("logNextPage", "下一页");
+}
+
 function logLevelCellHtml(item) {
   const label = item.level_display || item.level || "INFO";
   return `<span class="log-level-badge log-level-${logLevelClass(label)}">${esc(label)}</span>`;
@@ -1307,12 +1337,58 @@ function localizeEnglishDynamicLogText(text) {
   if (done) return `${done[1] || ""}Download completed: ${done[2]}`;
   const failed = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?下载失败\s*\[(.+?)\][：:]\s*(.+)$/u);
   if (failed) return `${failed[1] || ""}Download failed [${failed[2]}]: ${failed[3]}`;
-  return text;
+  const patterns = [
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?用户确认了\s*(\d+)\s*个任务$/u, match => `${match[1] || ""}User confirmed ${match[2]} tasks`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?最终确认\s*(\d+)\s*个.*$/u, match => `${match[1] || ""}Final confirmation: ${match[2]} tasks`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动\s*(.*?)\s*爬虫任务$/u, match => `${match[1] || ""}Started ${match[2]} crawl task`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动任务\s*\|\s*模式[:：]\s*(.*)$/u, match => `${match[1] || ""}Started task | mode: ${match[2]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?扫描结束[，,]\s*共\s*(\d+)(.*)$/u, match => `${match[1] || ""}Scan finished, total ${match[2]}${match[3]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?获取成功\s*(.*)$/u, match => `${match[1] || ""}Fetched successfully ${match[2]}`.trimEnd()],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?解析流[:：]\s*(.*)$/u, match => `${match[1] || ""}Parsed stream: ${match[2]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?正在展开[:：]\s*(.*)$/u, match => `${match[1] || ""}Expanding: ${match[2]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?流水线已建立[:：]\s*(.*)$/u, match => `${match[1] || ""}Pipeline established: ${match[2]}`],
+  ];
+  for (const [pattern, formatter] of patterns) {
+    const match = text.match(pattern);
+    if (match) return formatter(match);
+  }
+  const replacements = [
+    ["已刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL successfully"],
+    ["重新刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"],
+    ["重刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"],
+    ["B站 audio 流连接断开", "B-site audio stream disconnected"],
+    ["B站 video 流连接断开", "B-site video stream disconnected"],
+    ["Bilibili 爬虫任务结束", "Bilibili crawl task finished"],
+    ["爬虫任务结束", "Crawl task finished"],
+    ["爬虫发现可下载资源", "Crawler found downloadable resources"],
+    ["检查 Bilibili 登录状态", "Checking Bilibili login status"],
+    ["已登录，Cookie", "Logged in; Cookie"],
+    ["下载任务开始执行", "Download task started"],
+    ["下载任务完成", "Download task completed"],
+    ["准备下载 Bilibili 音", "Preparing Bilibili audio download"],
+    ["准备合并 Bilibili 音", "Preparing to merge Bilibili audio"],
+    ["Bilibili 音视频合并", "Bilibili audio/video merge"],
+    ["分发队列", "Dispatched queue"],
+    ["释放下载", "Released download"],
+  ];
+  let result = text;
+  for (const [source, target] of replacements) result = result.split(source).join(target);
+  return result;
 }
 
 function localizeLogEventCode(value) {
   const text = String(value || "-");
-  if (!text || text === "-" || currentLanguage() !== "en-US") return text;
+  const language = currentLanguage();
+  if (!text || text === "-") return text;
+  if (language !== "en-US") {
+    if (language === "zh-TW" && text.includes("_")) {
+      return text
+        .split("_")
+        .map(part => translateRuntimeLogText(part))
+        .join("_");
+    }
+    return translateRuntimeLogText(text);
+  }
   const loaded = text.match(/^([A-Za-z0-9_]+)_已加载_(\d+)_个本地文件_视频_(\d+)_图片_(\d+)$/u);
   if (loaded) return `${loaded[1]}_LOADED_${loaded[2]}_LOCAL_FILES_VIDEOS_${loaded[3]}_IMAGES_${loaded[4]}`;
   const replacements = {
@@ -1451,8 +1527,8 @@ function emptyLogDetailSummaryHtml() {
 }
 
 function renderLogs() {
+  syncLogStaticLanguage();
   syncLogFilterControls();
-  syncLogTabLabels();
   const filteredItems = filteredLogItems();
   const boundedItems = visibleLogItems(filteredItems, uiLogDisplayLimit());
   const totalPages = logPageSize <= 0 ? 1 : Math.max(1, Math.ceil(boundedItems.length / logPageSize));

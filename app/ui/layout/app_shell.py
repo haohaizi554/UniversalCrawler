@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -396,6 +397,8 @@ class AppShell(QWidget):
     def _apply_language_to_widget_tree(self, root: QWidget, language: str) -> None:
         seen: set[int] = set()
         for widget in (root, *self._safe_find_children(root, QWidget)):
+            if not self._qt_widget_alive(widget):
+                continue
             marker = id(widget)
             if marker in seen:
                 continue
@@ -408,10 +411,21 @@ class AppShell(QWidget):
                     continue
 
     def _safe_find_children(self, root: QWidget, widget_type):
+        if not self._qt_widget_alive(root):
+            return []
         try:
-            return list(root.findChildren(widget_type))
+            return [child for child in root.findChildren(widget_type) if self._qt_widget_alive(child)]
         except RuntimeError:
             return []
+
+    @staticmethod
+    def _qt_widget_alive(widget: QWidget | None) -> bool:
+        if widget is None:
+            return False
+        try:
+            return not sip.isdeleted(widget)
+        except (AttributeError, RuntimeError, TypeError):
+            return False
 
     def _close_combo_popups(self, root: QWidget | None) -> None:
         if root is None:

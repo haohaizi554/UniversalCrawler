@@ -401,7 +401,8 @@ class StaticAssetsTests(unittest.TestCase):
         )[0]
 
         self.assertIn('sections.has("settings_snapshot") && currentPage === "queue"', flush_block)
-        self.assertIn('configureTopCountForSource(byId("sourceSelect")?.value || "douyin")', flush_block)
+        self.assertIn('if (sections.has("settings_snapshot")) updatePlaceholder();', flush_block)
+        self.assertIn("configureTopCountForSource(source);", content)
         self.assertNotIn('sections.has("settings_snapshot") && currentPage !== "settings"', flush_block)
 
     def test_deleted_delta_clears_stale_selection_state(self):
@@ -1194,7 +1195,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
         self.assertIn("System · GUI", result["logText"])
         self.assertIn("Log cache refreshed", result["logText"])
-        self.assertIn("GUI_Log cache refreshed", result["logText"])
+        self.assertIn("GUI_LOG_CACHE_REFRESHED", result["logText"])
         self.assertIn("Process", result["logText"])
         self.assertIn("Step", result["logText"])
         self.assertNotIn("日志缓存已刷新", result["logText"])
