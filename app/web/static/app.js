@@ -673,7 +673,7 @@ function buildMockState() {
       { id: "video_to_audio", title: "视频转音频", last_used: "今天 17:35" },
       { id: "metadata_viewer", title: "元数据查看", last_used: "今天 14:10" },
     ],
-    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.14" },
+    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.15" },
   };
 }
 
@@ -1231,11 +1231,77 @@ function logLevelCellHtml(item) {
   return `<span class="log-level-badge log-level-${logLevelClass(label)}">${esc(label)}</span>`;
 }
 
+function translateStructuredLogText(value) {
+  const text = String(value ?? "");
+  if (!text.trim()) return text;
+  return text
+    .split(/(\s+·\s+|\s+\/\s+)/)
+    .map(part => (/^\s*(?:·|\/)\s*$/.test(part) ? part : translateUiText(part)))
+    .join("");
+}
+
+function logResultNatureText(item) {
+  const resultType = String(item.result_type || "").toLowerCase();
+  if (resultType === "success") return "成功";
+  if (resultType === "warn") return "预警";
+  if (resultType === "error") return "错误";
+  if (resultType === "command") return "命令";
+  return "过程";
+}
+
+function logScopeDisplayText(item) {
+  const display = item.log_scope_display || item.scope_display || "";
+  if (display) return display;
+  return {
+    system: "系统",
+    crawl: "采集",
+    download: "下载",
+    performance: "性能",
+    error: "异常",
+  }[String(item.log_scope || item.category || "").toLowerCase()] || item.log_scope || item.category || "-";
+}
+
+function logStageDisplayText(item) {
+  const display = item.event_stage_display || item.stage_display || "";
+  if (display) return display;
+  return {
+    init: "初始化",
+    config: "配置",
+    scan: "扫描",
+    start: "启动",
+    login: "登录",
+    aggregate: "聚合",
+    expand: "展开",
+    confirm: "确认",
+    parse: "解析",
+    fetch: "获取",
+    request: "请求",
+    found: "发现",
+    emit: "提交",
+    queue: "入队",
+    dispatch: "分发",
+    prepare: "准备",
+    download: "下载",
+    merge: "合并",
+    normalize: "修正",
+    release: "释放",
+    finish: "完成",
+    performance: "性能",
+    error: "异常",
+    step: "步骤",
+  }[String(item.event_stage || item.stage || "").toLowerCase()] || item.event_stage || item.stage || "-";
+}
+
+function logValueHtml(value) {
+  return esc(translateStructuredLogText(value));
+}
+
 function logSourceCellHtml(item) {
   const label = item.source_display || item.source || item.platform || "";
   const iconFile = item.source_display_icon_file || "";
-  if (!iconFile) return esc(label);
-  return `<span class="platform-cell log-source-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${esc(label)}</span>`;
+  const translated = translateStructuredLogText(label);
+  if (!iconFile) return esc(translated);
+  return `<span class="platform-cell log-source-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${esc(translated)}</span>`;
 }
 
 function logDetailRowHtml(label, valueHtml) {
@@ -1243,14 +1309,18 @@ function logDetailRowHtml(label, valueHtml) {
 }
 
 function logDetailSummaryHtml(item) {
+  const platformLabel = item.platform_display || item.platform_label || item.platform || "";
   const rows = [
     ["时间", esc(item.time || "")],
     ["级别", logLevelCellHtml(item)],
+    ["性质", logValueHtml(logResultNatureText(item))],
+    ["范围", logValueHtml(logScopeDisplayText(item))],
+    ["阶段", logValueHtml(logStageDisplayText(item))],
+    ["事件码", esc(item.event_code || item.status_code || "-")],
     ["来源", logSourceCellHtml(item)],
-    ["平台", esc(item.platform || "")],
-    ["线程", esc(item.thread || "")],
-    ["Trace ID", esc(item.trace_id || "")],
-    ["消息", esc(item.message || item.message_summary || "")],
+    ["平台", logValueHtml(platformLabel || "-")],
+    ["Trace ID", esc(item.trace_id || "-")],
+    ["消息", logValueHtml(item.message || item.message_summary || "-")],
   ];
   return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, value)).join("")}</div>`;
 }
@@ -1287,7 +1357,7 @@ function renderLogs() {
       <td>${logLevelCellHtml(item)}</td>
       <td>${logSourceCellHtml(item)}</td>
       <td>${esc(item.trace_id || "")}</td>
-      <td title="${escAttr(item.message_summary || "")}">${esc(item.message_summary || "")}</td>
+      <td title="${escAttr(translateStructuredLogText(item.message_summary || ""))}">${logValueHtml(item.message_summary || "")}</td>
     </tr>
   `);
   syncLogEmptyState(items.length === 0);
@@ -1306,9 +1376,13 @@ function syncLogEmptyState(empty) {
   panel.hidden = !empty;
   if (!empty) return;
   const title = panel.querySelector("strong");
-  const subtitle = panel.querySelector("span");
+  const subtitle = panel.querySelector(".log-empty-subtitle");
+  const subtitlePrimary = panel.querySelector("[data-log-empty-primary]");
+  const subtitleSecondary = panel.querySelector("[data-log-empty-secondary]");
   if (title) title.textContent = t("暂无匹配日志");
-  if (subtitle) subtitle.textContent = t("调整筛选条件，或点击「刷新缓冲」重新加载日志");
+  if (subtitle) subtitle.setAttribute("aria-label", t("调整筛选条件，或点击「刷新缓冲」重新加载日志"));
+  if (subtitlePrimary) subtitlePrimary.textContent = t("调整筛选条件，");
+  if (subtitleSecondary) subtitleSecondary.textContent = t("或点击「刷新缓冲」重新加载日志");
 }
 
 function logItemId(item) {
@@ -1358,9 +1432,18 @@ function readableLogDetailValue(value) {
     .replace(/[-=]{36,}/g, "----------------------------");
 }
 
+function localizedLogDetailValue(value) {
+  if (Array.isArray(value)) return value.map(localizedLogDetailValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, localizedLogDetailValue(item)]));
+  }
+  if (typeof value === "string") return translateStructuredLogText(readableLogDetailValue(value));
+  return value;
+}
+
 function formatLogDetailDisplayText(payload) {
   if (!payload || typeof payload !== "object") return readableLogDetailValue(payload);
-  const entries = Object.entries(payload);
+  const entries = Object.entries(localizedLogDetailValue(payload));
   if (!entries.length) return "{}";
   return entries.map(([key, value]) => {
     const readable = readableLogDetailValue(value);
@@ -1884,7 +1967,7 @@ function renderStatus() {
   byId("statusDownload").textContent = status.download_speed || "0 B/s";
   byId("statusCompleted").textContent = String(status.completed_count || 0);
   byId("statusFailed").textContent = String(failedCount);
-  byId("statusVersion").textContent = status.version || "v3.6.14";
+  byId("statusVersion").textContent = status.version || "v3.6.15";
 }
 
 function switchPage(pageId) {
@@ -2138,7 +2221,7 @@ function appendLog(message) {
   const legacyPanel = byId("logPanel");
   if (legacyPanel) {
     const line = document.createElement("div");
-    line.textContent = String(message);
+    line.textContent = translateStructuredLogText(message);
     legacyPanel.appendChild(line);
   }
   scheduleRenderSections(["log_items", "app_status"]);

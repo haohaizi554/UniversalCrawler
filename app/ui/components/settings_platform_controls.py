@@ -119,17 +119,19 @@ def build_platform_proxy_widget(
             proxy_combo.setToolTip(str(policy["tooltip"]))
         return proxy_combo
 
+    control_height = scaled_px(40, minimum=40)
+
     container = QWidget()
     container.setObjectName("SettingsProxyControl")
     container.setFixedWidth(proxy_width)
-    container.setFixedHeight(scaled_px(38, minimum=38))
+    container.setFixedHeight(control_height)
     container_layout = QHBoxLayout(container)
     container_layout.setContentsMargins(0, 0, 0, 0)
     container_layout.setSpacing(8)
 
     line_edit = QLineEdit()
     line_edit.setObjectName("SettingsProxyCustomEdit")
-    line_edit.setFixedHeight(scaled_px(38, minimum=38))
+    line_edit.setFixedHeight(control_height)
     line_edit.setMinimumWidth(active_input_min_width or 92)
     line_edit.setPlaceholderText(translate("端口"))
     line_edit.setClearButtonEnabled(False)
@@ -142,6 +144,7 @@ def build_platform_proxy_widget(
 
     container_layout.addWidget(proxy_combo, 0)
     container_layout.addWidget(line_edit, 1)
+    proxy_combo.setFixedHeight(control_height)
 
     def sync_custom_state(active: bool, *, focus: bool = False) -> None:
         proxy_combo.setProperty("customProxy", "true" if active else "false")

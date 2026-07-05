@@ -1505,11 +1505,16 @@ class WebUIBrowserTests(unittest.TestCase):
               const rowRect = row?.getBoundingClientRect();
               const inputRect = input?.getBoundingClientRect();
               const proxyRect = proxyControl?.getBoundingClientRect();
+              const inputTopInset = inputRect && rowRect ? inputRect.top - rowRect.top : null;
+              const inputBottomInset = inputRect && rowRect ? rowRect.bottom - inputRect.bottom : null;
               return {
                 hasInput: Boolean(input),
                 documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
                 rowOverflow: rowRect && panelRect ? rowRect.right - panelRect.right : null,
                 inputOverflow: inputRect && panelRect ? inputRect.right - panelRect.right : null,
+                inputTopInset,
+                inputBottomInset,
+                inputHeightDelta: inputRect && proxyRect ? Math.abs(inputRect.height - proxyRect.height) : null,
                 inputSameRow: inputRect && proxyRect
                   ? Math.abs((inputRect.top + inputRect.height / 2) - (proxyRect.top + proxyRect.height / 2)) <= 4
                   : false
@@ -1522,6 +1527,9 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertLessEqual(result["documentOverflow"], 1)
         self.assertLessEqual(result["rowOverflow"], 1)
         self.assertLessEqual(result["inputOverflow"], 1)
+        self.assertGreaterEqual(result["inputTopInset"], 1)
+        self.assertGreaterEqual(result["inputBottomInset"], 1)
+        self.assertLessEqual(result["inputHeightDelta"], 1)
         self.assertTrue(result["inputSameRow"])
 
     def test_11ha_settings_card_slicing_matches_gui(self):

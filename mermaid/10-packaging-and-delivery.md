@@ -42,7 +42,7 @@ mindmap
 ```mermaid
 flowchart LR
     subgraph Source["源码"]
-        PyProject["pyproject.toml<br/>version=3.6.14"]
+        PyProject["pyproject.toml<br/>version=3.6.15"]
         Meta["project_meta.py<br/>版本/名称/描述"]
     end
 
@@ -163,7 +163,7 @@ sequenceDiagram
     Build->>Build: Inno Setup 生成安装包
     Build-->>Artifact: 便携包 + 安装包
     
-    Dev->>CI: git tag v3.6.14
+    Dev->>CI: git tag v3.6.15
     CI->>CI: 触发 docker-build.yml
     CI->>Artifact: 构建 Docker 镜像
     

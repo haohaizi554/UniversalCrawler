@@ -756,10 +756,19 @@ select option:hover {
   font-weight: 700;
 }
 
-#page-logs .log-empty-state span {
-  max-width: 320px;
+#page-logs .log-empty-state .log-empty-subtitle {
+  width: min(100%, 520px);
   color: var(--text);
   line-height: 1.35;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  text-wrap: balance;
+}
+
+#page-logs .log-empty-state .log-empty-subtitle span {
+  display: block;
+  max-width: 100%;
+  white-space: normal;
 }
 
 #page-logs .log-tabs {
@@ -2622,10 +2631,13 @@ tr.selected:hover td {
 
 .platform-proxy-entry {
   min-width: 0;
+  min-height: 44px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   align-items: center;
+  padding-block: 2px;
+  overflow: visible;
 }
 
 .platform-proxy-entry.has-custom {
@@ -2679,12 +2691,18 @@ tr.selected:hover td {
 .setting-row.setting-platform .custom-select {
   width: 100%;
   min-width: 0;
+  height: 40px;
+  min-height: 40px;
 }
 
 .setting-row.setting-platform input,
 .setting-row.setting-platform select {
-  padding-left: 8px;
-  padding-right: 8px;
+  padding: 0 8px;
+  line-height: 38px;
+}
+
+.setting-row.setting-platform .custom-select-button {
+  height: 40px;
 }
 
 .proxy-custom {
@@ -2692,6 +2710,7 @@ tr.selected:hover td {
   background: var(--input);
   align-self: center;
   width: 100%;
+  box-shadow: none;
 }
 
 .proxy-custom[hidden],
@@ -2708,7 +2727,7 @@ tr.selected:hover td {
 .proxy-custom.active {
   border-color: var(--accent);
   background: var(--row-selected);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 78%);
+  box-shadow: inset 0 0 0 1px var(--accent);
   z-index: 2;
 }
 

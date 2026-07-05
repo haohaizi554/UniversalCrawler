@@ -4,7 +4,7 @@
 > 开发向的分层说明见 [../guides/architecture.md](../guides/architecture.md)；图示索引见 [../../mermaid/README.md](../../mermaid/README.md)。
 
 **审查日期**：2026-06-22  
-**包名 / 版本**：`ucrawl` 3.6.14（[pyproject.toml](../../pyproject.toml)）
+**包名 / 版本**：`ucrawl` 3.6.15（[pyproject.toml](../../pyproject.toml)）
 
 ---
 

@@ -309,6 +309,8 @@ def generate_settings_page_stylesheet(
                 selection-background-color: {c["accent"]};
                 selection-color: #ffffff;
                 font-size: {combo_px}px;
+                min-height: 40px;
+                max-height: 40px;
                 padding: 0px 10px;
             }}
 
@@ -360,8 +362,8 @@ def generate_settings_page_stylesheet(
                 color: {c["text"]};
                 font-size: {combo_px}px;
                 padding: 0px 10px 0px 12px;
-                min-height: 36px;
-                max-height: 38px;
+                min-height: 38px;
+                max-height: 40px;
             }}
 
             QComboBox#SettingsCombo:hover {{

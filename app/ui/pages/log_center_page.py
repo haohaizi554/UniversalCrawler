@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QEvent
-from PyQt6.QtGui import QFont, QFontMetrics, QIcon, QTextOption
+from PyQt6.QtGui import QIcon, QTextOption
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -58,8 +57,6 @@ from app.ui.viewmodels.log_detail_payloads import (
 from app.ui.viewmodels.log_classification import (
     classification_facts,
     derive_result_type,
-    is_performance_log,
-    is_system_config_log,
     normalized_event_code,
     normalized_raw_level,
     normalized_status_code,
@@ -623,12 +620,13 @@ class LogCenterPage(PageFrame):
         title = QLabel("暂无匹配日志")
         title.setObjectName("LogEmptyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle = QLabel("调整筛选条件，或点击「刷新缓冲」重新加载日志")
-        subtitle.setObjectName("LogEmptySubtitle")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setWordWrap(True)
         layout.addWidget(title)
-        layout.addWidget(subtitle)
+        for line in ("调整筛选条件，", "或点击「刷新缓冲」重新加载日志"):
+            subtitle = QLabel(line)
+            subtitle.setObjectName("LogEmptySubtitle")
+            subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            subtitle.setWordWrap(False)
+            layout.addWidget(subtitle)
         return panel
 
     def _configure_table_columns(self) -> None:

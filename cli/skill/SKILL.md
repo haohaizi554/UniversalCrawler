@@ -1,7 +1,7 @@
 ---
 name: "ucrawl"
 description: "通用视频爬虫工具 (CLI / SDK / REST API / AI Skill)。支持抖音/B站/快手/MissAV 四平台，可通过 CLI 命令、Python SDK、REST API 三种方式调用，并能处理合集/多用户的二次选择场景。Invoke when user wants to search/download videos from these platforms, batch crawl, integrate crawler into existing service, or call crawler from LLM/script."
-version: 3.6.14
+version: 3.6.15
 author: UCrawl Team
 ---
 

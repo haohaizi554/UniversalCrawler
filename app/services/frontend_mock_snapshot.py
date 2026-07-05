@@ -218,6 +218,6 @@ def build_mock_snapshot(
             "download_speed_bps": 10_905_190,
             "completed_count": 128,
             "failed_count": 7,
-            "version": "v3.6.14",
+            "version": "v3.6.15",
         },
     }

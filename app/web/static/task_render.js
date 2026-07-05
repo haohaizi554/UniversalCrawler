@@ -52,7 +52,7 @@
 
   function platformHtml(platform, platformId) {
     const icon = platformId ? platformIcon(platformId) : "";
-    return `<span class="platform-cell">${icon ? `<img src="${escapeAttr(icon)}" alt="" />` : ""}${escapeHtml(platform || "\u672c\u5730")}</span>`;
+    return `<span class="platform-cell">${icon ? `<img src="${escapeAttr(icon)}" alt="" />` : ""}${escapeHtml(translate(platform || "\u672c\u5730"))}</span>`;
   }
 
   function progressHtml(value) {
@@ -65,7 +65,8 @@
     const icon = (current.actions || {})[actionId] || current.fallback || "view_grid.png";
     const dangerClass = danger ? " danger" : "";
     const clickAttr = onclick ? ` onclick="${escapeAttr(onclick)}"` : "";
-    return `<button class="op icon${dangerClass}" type="button" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}"${clickAttr}><img src="${escapeAttr(current.route || "/ui-icon")}/${escapeAttr(icon)}" alt="" /></button>`;
+    const translated = translate(label);
+    return `<button class="op icon${dangerClass}" type="button" title="${escapeAttr(translated)}" aria-label="${escapeAttr(translated)}"${clickAttr}><img src="${escapeAttr(current.route || "/ui-icon")}/${escapeAttr(icon)}" alt="" /></button>`;
   }
 
   function smartWrapText(value) {
@@ -98,7 +99,7 @@
     if (!iconFile && (label.includes("\u5b8c\u6210") || label.includes("\u5df2\u89e3\u6790") || label.includes("\u5b58\u5728"))) iconFile = statusIcons.success || "status_success.png";
     if (!iconFile && (label.includes("\u4e0b\u8f7d") || label.includes("\u8fd0\u884c") || label.includes("\u89e3\u6790\u4e2d"))) iconFile = statusIcons.running || "status_running.png";
     iconFile = iconFile || statusIcons.pending || "status_pending.png";
-    return `<span class="icon-text queue-status-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${escapeHtml(label)}</span>`;
+    return `<span class="icon-text queue-status-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${escapeHtml(translate(label))}</span>`;
   }
 
   function queueRow(item) {
@@ -118,7 +119,7 @@
     return `
       <strong>${escapeHtml(translate("\u4efb\u52a1\u52a8\u6001\uff08\u6700\u8fd1 3 \u6761\uff09"))}</strong>
       ${recent.length
-        ? recent.map(item => `<span title="${escapeAttr(item.title)}">${escapeHtml(item.status || "\u5f85\u4e0b\u8f7d")}\uff1a${escapeHtml(item.title || "")}</span>`).join("")
+        ? recent.map(item => `<span title="${escapeAttr(item.title)}">${escapeHtml(translate(item.status || "\u5f85\u4e0b\u8f7d"))}\uff1a${escapeHtml(item.title || "")}</span>`).join("")
         : `<span>${escapeHtml(translate("\u6682\u65e0\u961f\u5217\u4efb\u52a1"))}</span>`}
     `;
   }
@@ -193,16 +194,16 @@
   }
 
   function failedStatusHtml(text) {
-    return `<span class="failed-status-chip"><i aria-hidden="true">\u00d7</i>${escapeHtml(text || "\u5931\u8d25")}</span>`;
+    return `<span class="failed-status-chip"><i aria-hidden="true">\u00d7</i>${escapeHtml(translate(text || "\u5931\u8d25"))}</span>`;
   }
 
   function iconTextHtml(text, iconFile) {
-    return `<span class="icon-text"><img src="${iconFileUrl(iconFile)}" alt="" />${escapeHtml(text || "")}</span>`;
+    return `<span class="icon-text"><img src="${iconFileUrl(iconFile)}" alt="" />${escapeHtml(translate(text || ""))}</span>`;
   }
 
   function detailRowHtml(label, value, iconFile = "") {
     const icon = iconFile ? `<img src="${iconFileUrl(iconFile)}" alt="" />` : "";
-    return `<div class="failed-detail-row"><span>${escapeHtml(label)}</span><strong>${icon}${escapeHtml(value || "")}</strong></div>`;
+    return `<div class="failed-detail-row"><span>${escapeHtml(translate(label))}</span><strong>${icon}${escapeHtml(translate(value || ""))}</strong></div>`;
   }
 
   function failedLogLevel(entry) {
@@ -245,7 +246,7 @@
       <div class="failed-log-row">
         <span class="log-time">${escapeHtml(failedLogTime(entry.time))}</span>
         <span class="log-level log-level-${failedLogLevelClass(level)}">${escapeHtml(level)}</span>
-        <span class="log-message">${escapeHtml(entry.message || "")}</span>
+        <span class="log-message">${escapeHtml(translate(entry.message || ""))}</span>
       </div>
     `;
   }
@@ -254,7 +255,7 @@
     return `
       <div class="failed-solution-row">
         <img src="${iconFileUrl(solution.icon_file || "action_help.png")}" alt="" />
-        <span><strong>${escapeHtml(solution.title || "\u5efa\u8bae")}</strong><small>${escapeHtml(solution.description || "")}</small></span>
+        <span><strong>${escapeHtml(translate(solution.title || "\u5efa\u8bae"))}</strong><small>${escapeHtml(translate(solution.description || ""))}</small></span>
       </div>
     `;
   }

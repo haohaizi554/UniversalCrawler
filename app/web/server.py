@@ -81,7 +81,7 @@ def _store_controller_video(active_controller, item) -> None:
 
 def create_app(lifespan=None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
-    app = FastAPI(title="Universal Crawler Pro", version="3.6.14", lifespan=lifespan)
+    app = FastAPI(title="Universal Crawler Pro", version="3.6.15", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,

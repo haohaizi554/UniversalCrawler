@@ -25,7 +25,7 @@ from cli import (
     is_selection_strategy,
 )
 
-__version__ = "3.6.14"
+__version__ = "3.6.15"
 
 __all__ = [
     "UcrawlSDK",
