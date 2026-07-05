@@ -1186,12 +1186,20 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             for combo in settings.findChildren(QComboBox)
             if combo.objectName() == "SettingsCombo" and combo.currentData() == "builtin_player"
         )
+        path_picker = next(iter(settings.findChildren(SettingsPathPicker)))
+        naming_control = filename_combo.parentWidget()
+        open_mode_row = open_mode_combo.parentWidget()
+        self.assertEqual(path_picker.width(), naming_control.width())
+        self.assertEqual(naming_control.width(), open_mode_row.width())
+        self.assertGreaterEqual(path_picker.height(), 40)
+        self.assertGreaterEqual(naming_control.height(), filename_combo.height())
+        self.assertLessEqual(filename_combo.geometry().bottom(), naming_control.height())
+
         bind_button = next(
             button
             for button in settings.findChildren(QPushButton)
             if button.objectName() == "SettingsActionButton"
         )
-        open_mode_row = open_mode_combo.parentWidget()
         self.assertIs(bind_button.parentWidget(), open_mode_row)
         self.assertEqual(open_mode_row.objectName(), "SettingsOpenBehaviorControl")
         self.assertGreaterEqual(open_mode_row.height(), bind_button.height() + 4)

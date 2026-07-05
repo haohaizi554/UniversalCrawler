@@ -377,13 +377,11 @@ def generate_settings_page_stylesheet(
 
             QFrame#SettingsPathField[focused="true"] {{
                 border-color: {c["accent"]};
-                border-width: 2px;
                 background: {c["input"]};
             }}
 
             QComboBox#SettingsCombo:focus {{
                 border-color: {c["accent"]};
-                border-width: 2px;
                 background: {c["input"]};
             }}
 
@@ -391,7 +389,6 @@ def generate_settings_page_stylesheet(
             QComboBox#SettingsCombo[popupOpen="true"],
             QComboBox#SettingsCombo[customProxy="true"] {{
                 border-color: {c["accent"]};
-                border-width: 2px;
                 background: {c["input"]};
                 color: {c["text"]};
             }}

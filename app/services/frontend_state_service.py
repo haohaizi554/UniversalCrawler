@@ -1140,7 +1140,6 @@ class FrontendStateService:
         try:
             if operation == "refresh":
                 self.invalidate_refresh_caches()
-                self.record_event("logs.append", {"operation": operation})
                 return FrontendActionResult("ok", "日志缓存已刷新")
             if operation == "clear":
                 self.app_state.clear_logs()

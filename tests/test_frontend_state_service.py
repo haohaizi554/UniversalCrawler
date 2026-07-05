@@ -1804,5 +1804,16 @@ class FrontendStateServiceTests(unittest.TestCase):
 
         self.assertEqual(delta["deleted_ids"], [])
 
+    def test_log_refresh_action_does_not_publish_log_append_event(self):
+        service = FrontendStateService()
+        service.record_log("existing", source="Test")
+        before = service.app_state.get_log_buffer()
+
+        result = service.handle_action("log_operation", {"operation": "refresh"})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["message"], "日志缓存已刷新")
+        self.assertEqual(service.app_state.get_log_buffer(), before)
+
 if __name__ == "__main__":
     unittest.main()

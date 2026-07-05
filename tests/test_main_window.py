@@ -244,6 +244,21 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_state_service.get_snapshot.assert_called_once_with(mock=False, sections=None)
         window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
+    def test_frontend_slow_render_warning_is_rate_limited(self):
+        window = self._make_window()
+        window._ui_update_scheduler = Mock()
+        window._ui_update_scheduler.metrics.return_value = {"interval_ms": MainWindow.FRONTEND_REFRESH_INTERVAL_MS}
+
+        with patch("app.ui.main_window.time.monotonic", side_effect=[100.0, 100.1, 111.0]), patch(
+            "app.ui.main_window.debug_logger.log"
+        ) as log:
+            MainWindow._record_frontend_render_duration(window, MainWindow.FRONTEND_RENDER_WARN_MS + 1)
+            MainWindow._record_frontend_render_duration(window, MainWindow.FRONTEND_RENDER_WARN_MS + 2)
+            MainWindow._record_frontend_render_duration(window, MainWindow.FRONTEND_RENDER_WARN_MS + 3)
+
+        self.assertEqual(log.call_count, 2)
+        self.assertEqual(window._last_frontend_render_warn_ms, 111000)
+
     def test_page_changed_updates_visibility_and_requests_visible_page_section(self):
         window = self._make_window()
         window.app_state = Mock()
@@ -569,6 +584,43 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._update_basic_setting(window, "logging", "retention_days", 3)
 
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update", "logs.append"})
+
+    def test_log_refresh_action_coalesces_without_writing_a_new_log(self):
+        window = self._make_window()
+        window._pending_refresh_topics = set()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "日志缓存已刷新"}
+        window._ui_update_scheduler = Mock()
+
+        MainWindow._handle_log_action(window, "refresh")
+
+        window._frontend_state_service.handle_action.assert_called_once_with(
+            "log_operation",
+            {"operation": "refresh"},
+        )
+        window.append_log.assert_not_called()
+        self.assertEqual(window._pending_refresh_topics, {"logs.append"})
+        window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
+
+    def test_log_refresh_action_throttles_rapid_repeated_clicks(self):
+        window = self._make_window()
+        window._pending_refresh_topics = set()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "日志缓存已刷新"}
+        window._ui_update_scheduler = Mock()
+
+        with patch("app.ui.main_window.time.monotonic", side_effect=[100.0, 100.1]):
+            MainWindow._handle_log_action(window, "refresh")
+            MainWindow._handle_log_action(window, "refresh")
+
+        window._frontend_state_service.handle_action.assert_called_once_with(
+            "log_operation",
+            {"operation": "refresh"},
+        )
+        window.append_log.assert_not_called()
+        self.assertEqual(window._pending_refresh_topics, {"logs.append"})
+        self.assertEqual(window._ui_update_scheduler.schedule.call_count, 2)
+        window._ui_update_scheduler.schedule.assert_called_with("logs.append", force=False)
 
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.cfg.get", return_value=True)

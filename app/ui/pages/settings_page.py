@@ -71,6 +71,7 @@ UI_TEXT: dict[str, dict[str, str]] = {}
 FORM_CONTROL_WIDTH = 320
 FORM_CONTROL_WIDTH_LARGE = 520
 FORM_CONTROL_WIDTH_MEDIUM = 380
+FORM_CONTROL_HEIGHT = 40
 FORM_SWITCH_WRAP_WIDTH = 96
 
 
@@ -769,7 +770,9 @@ class SettingsPage(PageFrame):
         combo.setObjectName("SettingsCombo")
         combo.setEditable(False)
         combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        combo.setFixedHeight(self._scaled_px(38, minimum=38))
+        combo_height = self._scaled_px(FORM_CONTROL_HEIGHT, minimum=FORM_CONTROL_HEIGHT)
+        combo.setFixedHeight(combo_height)
+        combo.setProperty("settingsControlHeight", combo_height)
         combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         combo.setMinimumWidth(160)
         combo.setMaximumWidth(520)
@@ -934,8 +937,11 @@ class SettingsPage(PageFrame):
         )
 
         naming_row = QWidget()
+        naming_row.setObjectName("SettingsNamingControl")
         naming_row.setFixedWidth(large_w)
-        naming_row.setFixedHeight(38)
+        naming_height = self._scaled_px(FORM_CONTROL_HEIGHT, minimum=FORM_CONTROL_HEIGHT)
+        naming_row.setFixedHeight(naming_height)
+        naming_row.setProperty("settingsControlHeight", naming_height)
         naming_layout = QHBoxLayout(naming_row)
         naming_layout.setContentsMargins(0, 0, 0, 0)
         naming_layout.setSpacing(6)

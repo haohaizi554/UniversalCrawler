@@ -47,6 +47,8 @@ class MainWindow(QMainWindow):
     FRONTEND_REFRESH_INTERVAL_MS = 200
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
     FRONTEND_RENDER_WARN_MS = 50
+    FRONTEND_RENDER_WARN_MIN_INTERVAL_MS = 10_000
+    LOG_REFRESH_THROTTLE_MS = 350
     FRAMELESS_RESIZE_BORDER_PX = 8
     AUTO_HIDE_TASKBAR_RESERVE_PX = 2
     WVR_REDRAW = 0x0300
@@ -656,6 +658,11 @@ class MainWindow(QMainWindow):
         interval = int(metrics.get("interval_ms") or self.FRONTEND_REFRESH_INTERVAL_MS)
         if hasattr(scheduler, "set_interval_ms") and interval < self.FRONTEND_REFRESH_MAX_INTERVAL_MS:
             scheduler.set_interval_ms(min(self.FRONTEND_REFRESH_MAX_INTERVAL_MS, interval + 50))
+        now_ms = int(time.monotonic() * 1000)
+        last_warn_ms = int(self.__dict__.get("_last_frontend_render_warn_ms", 0) or 0)
+        if now_ms - last_warn_ms < self.FRONTEND_RENDER_WARN_MIN_INTERVAL_MS:
+            return
+        self.__dict__["_last_frontend_render_warn_ms"] = now_ms
         debug_logger.log(
             component="MainWindow",
             action="frontend_render_slow",
@@ -742,8 +749,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _flush_log_refresh(self) -> None:
-        self._add_pending_refresh_topic("logs.append")
-        self._ui_update_scheduler.schedule("logs.append", force=True)
+        self._request_log_refresh()
 
     @safe_slot
     def _on_app_state_changed(self, payload) -> None:
@@ -781,16 +787,32 @@ class MainWindow(QMainWindow):
         self.sig_clear_queue.emit()
 
     def _handle_log_action(self, operation: str) -> None:
+        operation = str(operation or "").strip()
         if operation == "open_latest":
             self.sig_open_latest_log.emit()
             return
         if operation == "open_error_summary":
             self.sig_open_error_summary.emit()
             return
+        if operation == "refresh" and self._should_throttle_log_refresh():
+            return
         result = self._frontend_state_service.handle_action("log_operation", {"operation": operation})
-        if operation != "clear":
+        if operation not in {"clear", "refresh"} and result.get("message"):
             self.append_log(result.get("message") or "日志操作完成")
-        self.refresh_frontend_state(topics={"logs.append"}, force=True)
+        self._request_log_refresh(force=operation == "clear")
+
+    def _should_throttle_log_refresh(self) -> bool:
+        now_ms = int(time.monotonic() * 1000)
+        last_ms = int(self.__dict__.get("_last_manual_log_refresh_ms", 0) or 0)
+        if now_ms - last_ms < self.LOG_REFRESH_THROTTLE_MS:
+            self._request_log_refresh()
+            return True
+        self.__dict__["_last_manual_log_refresh_ms"] = now_ms
+        return False
+
+    def _request_log_refresh(self, *, force: bool = False) -> None:
+        self._add_pending_refresh_topic("logs.append")
+        self._ui_update_scheduler.schedule("logs.append", force=force)
 
     def _refresh_platform_auth_if_needed(self) -> None:
         service = getattr(self, "_frontend_state_service", None)
