@@ -1150,7 +1150,10 @@ function renderCompletedDetail() {
 
 function displayMetadataValue(value, pending = false) {
   configureMediaDisplayHelpers();
-  return window.UcpMediaDisplay ? window.UcpMediaDisplay.displayMetadataValue(value, pending) : (String(value || "").trim() || "--");
+  if (window.UcpMediaDisplay) return window.UcpMediaDisplay.displayMetadataValue(value, pending);
+  const text = String(value || "").trim();
+  if (text && text !== "--") return translateUiText(text);
+  return pending ? translateUiText("\u68c0\u6d4b\u4e2d") : "--";
 }
 
 function basenameFromPath(path) {
@@ -1235,6 +1238,40 @@ const LOG_TAB_LABELS = {
   error: "错误日志",
 };
 
+const LOG_TAB_TRANSLATIONS = {
+  "zh-CN": {
+    all: "全部日志",
+    crawl: "采集日志",
+    download: "下载日志",
+    system: "系统日志",
+    performance: "性能日志",
+    error: "错误日志",
+  },
+  "en-US": {
+    all: "All logs",
+    crawl: "Crawl logs",
+    download: "Download logs",
+    system: "System logs",
+    performance: "Performance logs",
+    error: "Error logs",
+  },
+  "zh-TW": {
+    all: "全部日誌",
+    crawl: "採集日誌",
+    download: "下載日誌",
+    system: "系統日誌",
+    performance: "性能日誌",
+    error: "錯誤日誌",
+  },
+};
+
+function localizedLogTabLabel(category) {
+  const key = String(category || "all");
+  const language = currentLanguage();
+  const table = LOG_TAB_TRANSLATIONS[language] || LOG_TAB_TRANSLATIONS["zh-CN"];
+  return table[key] || t(LOG_TAB_LABELS[key] || key);
+}
+
 function logCategoryForCount(item) {
   if (!window.UcpLogDisplay || typeof window.UcpLogDisplay.logCategory !== "function") {
     return String(item.category || "system");
@@ -1268,8 +1305,7 @@ function syncLogTabLabels() {
   const counts = logTabCounts();
   document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => {
     const category = button.dataset.logTab || "all";
-    const label = LOG_TAB_LABELS[category] || category;
-    button.textContent = `${t(label)} ${counts[category] || 0}`;
+    button.textContent = `${localizedLogTabLabel(category)} ${counts[category] || 0}`;
   });
 }
 
@@ -1327,6 +1363,94 @@ function translateRuntimeLogText(value) {
   return localizeEnglishDynamicLogText(text);
 }
 
+const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
+  { zh: "Bilibili 流请求建立成功", en: "Bilibili stream request established", tw: "Bilibili 串流請求建立成功" },
+  { zh: "Bilibili 下载任务已提交到下载队列", en: "Bilibili download task submitted to the queue", tw: "Bilibili 下載任務已提交到下載佇列" },
+  { zh: "Bilibili 下载任务已装配完成", en: "Bilibili download task assembled", tw: "Bilibili 下載任務已組裝完成" },
+  { zh: "Bilibili 音视频合并完成", en: "Bilibili audio/video merge completed", tw: "Bilibili 音視訊合併完成" },
+  { zh: "Bilibili 音视频合并", en: "Bilibili audio/video merge", tw: "Bilibili 音視訊合併" },
+  { zh: "Bilibili 爬虫任务结束", en: "Bilibili crawl task finished", tw: "Bilibili 爬蟲任務結束" },
+  { zh: "Bilibili 获取播放流失败", en: "Bilibili playback stream fetch failed", tw: "Bilibili 播放串流取得失敗" },
+  { zh: "Bilibili 播放流响应为空", en: "Bilibili playback stream response is empty", tw: "Bilibili 播放串流回應為空" },
+  { zh: "检查 Bilibili 登录状态", en: "Checking Bilibili login status", tw: "檢查 Bilibili 登入狀態" },
+  { zh: "获取播放流地址", en: "Fetching playback stream URL", tw: "取得播放串流位址" },
+  { zh: "启动 Bilibili 爬虫任务", en: "Started Bilibili crawl task", tw: "啟動 Bilibili 爬蟲任務" },
+  { zh: "准备下载 Bilibili 音视频流", en: "Preparing Bilibili audio/video stream download", tw: "準備下載 Bilibili 音視訊流" },
+  { zh: "准备合并 Bilibili 音视频流", en: "Preparing to merge Bilibili audio/video stream", tw: "準備合併 Bilibili 音視訊流" },
+  { zh: "音视频流写入完成，准备合并", en: "Audio/video stream written; preparing to merge", tw: "音視訊流寫入完成，準備合併" },
+  { zh: "音视频流下载中", en: "Audio/video stream downloading", tw: "音視訊流下載中" },
+  { zh: "任务进入 Bilibili 下载器", en: "Task entered Bilibili downloader", tw: "任務進入 Bilibili 下載器" },
+  { zh: "ffmpeg 合并音视频中", en: "ffmpeg merging audio/video", tw: "ffmpeg 合併音視訊中" },
+  { zh: "ffmpeg 合并音视频失败", en: "ffmpeg audio/video merge failed", tw: "ffmpeg 音視訊合併失敗" },
+  { zh: "ffmpeg 合并音视频超时", en: "ffmpeg audio/video merge timed out", tw: "ffmpeg 音視訊合併逾時" },
+  { zh: "已刷新 B站 CDN URL，使用新地址重试", en: "Refreshed B-site CDN URL; retrying with new URL", tw: "已刷新 B 站 CDN URL，使用新位址重試" },
+  { zh: "已刷新 B站 CDN URL 成功", en: "Refreshed B-site CDN URL successfully", tw: "已刷新 B 站 CDN URL 成功" },
+  { zh: "重新刷新 B站 CDN URL 成功", en: "Refreshed B-site CDN URL again successfully", tw: "重新刷新 B 站 CDN URL 成功" },
+  { zh: "重刷新 B站 CDN URL 成功", en: "Refreshed B-site CDN URL again successfully", tw: "重刷新 B 站 CDN URL 成功" },
+  { zh: "爬虫发现可下载资源", en: "Crawler found downloadable resources", tw: "爬蟲發現可下載資源" },
+  { zh: "爬虫任务结束", en: "Crawl task finished", tw: "爬蟲任務結束" },
+  { zh: "下载任务已进入队列", en: "Download task has been queued", tw: "下載任務已入隊" },
+  { zh: "下载任务已加入执行队列", en: "Download task has been queued for execution", tw: "下載任務已加入執行隊列" },
+  { zh: "下载任务开始执行", en: "Download task started", tw: "下載任務開始執行" },
+  { zh: "下载任务完成", en: "Download task completed", tw: "下載任務完成" },
+  { zh: "下载任务被用户停止", en: "Download task stopped by user", tw: "下載任務被使用者停止" },
+  { zh: "下载完成后已按文件签名修正扩展名", en: "Fixed extension after download by file signature", tw: "下載完成後已依檔案簽章修正副檔名" },
+  { zh: "分块下载不可用，回退到后续下载策略", en: "Chunked download unavailable; falling back to later download strategy", tw: "分塊下載不可用，回退到後續下載策略" },
+  { zh: "下载策略执行失败，回退到后续策略", en: "Download strategy failed; falling back to later strategy", tw: "下載策略執行失敗，回退到後續策略" },
+  { zh: "抖音下载任务已提交到下载队列", en: "Douyin download task submitted to the queue", tw: "抖音下載任務已提交到下載佇列" },
+  { zh: "启动抖音爬虫任务", en: "Started Douyin crawl task", tw: "啟動抖音爬蟲任務" },
+  { zh: "抖音爬虫任务结束", en: "Douyin crawl task finished", tw: "抖音爬蟲任務結束" },
+  { zh: "抖音爬虫运行异常", en: "Douyin crawl runtime error", tw: "抖音爬蟲執行異常" },
+  { zh: "进入抖音任务提交阶段", en: "Entered Douyin task submit stage", tw: "進入抖音任務提交階段" },
+  { zh: "Douyin 参数初始化完成", en: "Douyin parameters initialized", tw: "Douyin 參數初始化完成" },
+  { zh: "抖音作品详情返回", en: "Douyin work detail returned", tw: "抖音作品詳情返回" },
+  { zh: "抖音用户作品分页返回", en: "Douyin user works page returned", tw: "抖音使用者作品分頁返回" },
+  { zh: "抖音合集分页返回", en: "Douyin collection page returned", tw: "抖音合集分頁返回" },
+  { zh: "抖音搜索分页返回", en: "Douyin search page returned", tw: "抖音搜尋分頁返回" },
+  { zh: "抖音用户搜索返回", en: "Douyin user search returned", tw: "抖音使用者搜尋返回" },
+  { zh: "记录抖音用户搜索返回结构", en: "Recorded Douyin user search response shape", tw: "記錄抖音使用者搜尋返回結構" },
+  { zh: "准备下载抖音资源", en: "Preparing Douyin resource download", tw: "準備下載抖音資源" },
+  { zh: "快手分享链接已通过 HTTP 直连解析并提交到下载队列", en: "Kuaishou share link parsed through direct HTTP and submitted to the queue", tw: "快手分享連結已透過 HTTP 直連解析並提交到下載佇列" },
+  { zh: "快手分享链接已解析并提交到下载队列", en: "Kuaishou share link parsed and submitted to the queue", tw: "快手分享連結已解析並提交到下載佇列" },
+  { zh: "快手任务选择已确认", en: "Kuaishou task selection confirmed", tw: "快手任務選擇已確認" },
+  { zh: "快手视频流已捕获并提交到下载队列", en: "Kuaishou video stream captured and submitted to the queue", tw: "快手影片串流已捕獲並提交到下載佇列" },
+  { zh: "快手流捕获流水线结束", en: "Kuaishou stream capture pipeline finished", tw: "快手串流捕獲流水線結束" },
+  { zh: "准备下载快手视频流", en: "Preparing Kuaishou video stream download", tw: "準備下載快手影片串流" },
+  { zh: "快手视频下载完成", en: "Kuaishou video download completed", tw: "快手影片下載完成" },
+  { zh: "启动小红书爬虫任务", en: "Started Xiaohongshu crawl task", tw: "啟動小紅書爬蟲任務" },
+  { zh: "小红书爬虫运行异常", en: "Xiaohongshu crawl runtime error", tw: "小紅書爬蟲執行異常" },
+  { zh: "小红书爬虫任务结束", en: "Xiaohongshu crawl task finished", tw: "小紅書爬蟲任務結束" },
+  { zh: "小红书视频下载失败", en: "Xiaohongshu video download failed", tw: "小紅書影片下載失敗" },
+  { zh: "MissAV m3u8 嗅探成功并提交下载", en: "MissAV m3u8 sniffed successfully and submitted for download", tw: "MissAV m3u8 嗅探成功並提交下載" },
+  { zh: "MissAV 详情页嗅探超时，未发现 playlist.m3u8", en: "MissAV detail page sniff timed out; playlist.m3u8 was not found", tw: "MissAV 詳情頁嗅探逾時，未發現 playlist.m3u8" },
+  { zh: "MissAV 详情页加载失败", en: "MissAV detail page failed to load", tw: "MissAV 詳情頁載入失敗" },
+  { zh: "准备下载 MissAV HLS 流", en: "Preparing MissAV HLS stream download", tw: "準備下載 MissAV HLS 串流" },
+  { zh: "正在尝试以 curl_cffi 浏览器模拟方式下载 MissAV HLS", en: "Trying curl_cffi browser-impersonated HLS download for MissAV", tw: "正在嘗試以 curl_cffi 瀏覽器模擬方式下載 MissAV HLS" },
+  { zh: "正在尝试以 Playwright 浏览器上下文下载 MissAV HLS", en: "Trying Playwright browser-context HLS download for MissAV", tw: "正在嘗試以 Playwright 瀏覽器上下文下載 MissAV HLS" },
+  { zh: "准备 N_m3u8DL-RE HLS 下载", en: "Preparing N_m3u8DL-RE HLS download", tw: "準備 N_m3u8DL-RE HLS 下載" },
+  { zh: "N_m3u8DL-RE 下载完成", en: "N_m3u8DL-RE download finished", tw: "N_m3u8DL-RE 下載完成" },
+  { zh: "已为受保护的 MissAV 流启动本地 HLS 代理", en: "Started local HLS proxy for protected MissAV stream", tw: "已為受保護的 MissAV 串流啟動本機 HLS 代理" },
+  { zh: "应用启动时已清理过期 HLS 工作区", en: "Swept stale HLS workspaces at application startup", tw: "應用啟動時已清理過期 HLS 工作區" },
+  { zh: "yt-dlp 回退在无模拟模式下成功", en: "yt-dlp fallback succeeded without impersonation", tw: "yt-dlp 回退在無模擬模式下成功" },
+  { zh: "ffmpeg 下载前检查真实地址", en: "ffmpeg checked real URL before download", tw: "ffmpeg 下載前檢查真實位址" },
+  { zh: "准备调用 ffmpeg 执行下载", en: "Preparing to call ffmpeg for download", tw: "準備呼叫 ffmpeg 執行下載" },
+  { zh: "ffmpeg 下载完成", en: "ffmpeg download completed", tw: "ffmpeg 下載完成" },
+];
+
+function applyRuntimePhraseTranslations(text, language) {
+  const replacements = [];
+  for (const entry of RUNTIME_LOG_PHRASE_TRANSLATIONS) {
+    const target = language === "en-US" ? entry.en : language === "zh-TW" ? (entry.tw || entry.zh) : entry.zh;
+    for (const source of [entry.zh, entry.en, entry.tw]) {
+      if (source && source !== target) replacements.push([source, target]);
+    }
+  }
+  replacements.sort((left, right) => right[0].length - left[0].length);
+  let result = text;
+  for (const [source, target] of replacements) result = result.split(source).join(target);
+  return result;
+}
+
 function localizeEnglishDynamicLogText(text) {
   const loaded = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?已加载\s*(\d+)\s*个本地文件\s*\(视频[:：]\s*(\d+)\s*,\s*图片[:：]\s*(\d+)\)$/u);
   if (loaded) {
@@ -1342,19 +1466,30 @@ function localizeEnglishDynamicLogText(text) {
   const patterns = [
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?用户确认了\s*(\d+)\s*个任务$/u, match => `${match[1] || ""}User confirmed ${match[2]} tasks`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?最终确认\s*(\d+)\s*个.*$/u, match => `${match[1] || ""}Final confirmation: ${match[2]} tasks`],
-    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动\s*(.*?)\s*爬虫任务$/u, match => `${match[1] || ""}Started ${match[2]} crawl task`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动\s*(.*?)\s*爬虫任务$/u, match => `${match[1] || ""}Started ${localizedRuntimePlatformName(match[2], "en-US")} crawl task`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动\s*(.*?)\s*任务\s*\|\s*目标[:：]\s*(.*)$/u, match => `${match[1] || ""}Started ${localizedRuntimePlatformName(match[2], "en-US")} task | target: ${match[3]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动任务\s*\|\s*模式[:：]\s*(.*?)\s*\|\s*关键词[:：]\s*(.*)$/u, match => `${match[1] || ""}Started task | mode: ${match[2]} | keyword: ${match[3]}`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?启动任务\s*\|\s*模式[:：]\s*(.*)$/u, match => `${match[1] || ""}Started task | mode: ${match[2]}`],
-    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?扫描结束[，,]\s*共\s*(\d+)(.*)$/u, match => `${match[1] || ""}Scan finished, total ${match[2]}${match[3]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?扫描(?:结束|完成)[，,]\s*共\s*(\d+)(.*)$/u, match => `${match[1] || ""}Scan finished, total ${match[2]}${match[3]}`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?获取成功\s*(.*)$/u, match => `${match[1] || ""}Fetched successfully ${match[2]}`.trimEnd()],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?解析流[:：]\s*(.*)$/u, match => `${match[1] || ""}Parsed stream: ${match[2]}`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?正在展开[:：]\s*(.*)$/u, match => `${match[1] || ""}Expanding: ${match[2]}`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?流水线已建立[:：]\s*(.*)$/u, match => `${match[1] || ""}Pipeline established: ${match[2]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?全部完成[:：]\s*成功\s*(\d+)\s*\/\s*(\d+)\s*\|\s*失败\s*(\d+)$/u, match => `${match[1] || ""}All completed: success ${match[2]}/${match[3]} | failed ${match[4]}`],
   ];
   for (const [pattern, formatter] of patterns) {
     const match = text.match(pattern);
     if (match) return formatter(match);
   }
+  const phraseResult = applyRuntimePhraseTranslations(text, "en-US");
+  if (phraseResult !== text) return phraseResult;
   const replacements = [
+    ["Bilibili 流请求建立成功", "Bilibili stream request established"],
+    ["Bilibili 下载任务已提交到下载队列", "Bilibili download task submitted to the queue"],
+    ["Bilibili 下载任务已装配完成", "Bilibili download task assembled"],
+    ["准备下载 Bilibili 音视频流", "Preparing Bilibili audio/video stream download"],
+    ["准备合并 Bilibili 音视频流", "Preparing to merge Bilibili audio/video stream"],
+    ["音视频流写入完成，准备合并", "Audio/video stream written; preparing to merge"],
     ["已刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL successfully"],
     ["重新刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"],
     ["重刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"],
@@ -1367,6 +1502,8 @@ function localizeEnglishDynamicLogText(text) {
     ["已登录，Cookie", "Logged in; Cookie"],
     ["下载任务开始执行", "Download task started"],
     ["下载任务完成", "Download task completed"],
+    ["下载任务已进入队列", "Download task has been queued"],
+    ["下载任务已加入执行队列", "Download task has been queued for execution"],
     ["准备下载 Bilibili 音", "Preparing Bilibili audio download"],
     ["准备合并 Bilibili 音", "Preparing to merge Bilibili audio"],
     ["Bilibili 音视频合并", "Bilibili audio/video merge"],
@@ -1451,6 +1588,46 @@ const NON_EN_DYNAMIC_LOG_TEXT = {
     "zh-CN": "下载已暂停",
     "zh-TW": "下載已暫停",
   },
+  "Bilibili stream request established": {
+    "zh-CN": "Bilibili 流请求建立成功",
+    "zh-TW": "Bilibili 串流請求建立成功",
+  },
+  "Bilibili download task submitted to the queue": {
+    "zh-CN": "Bilibili 下载任务已提交到下载队列",
+    "zh-TW": "Bilibili 下載任務已提交到下載佇列",
+  },
+  "Bilibili download task assembled": {
+    "zh-CN": "Bilibili 下载任务已装配完成",
+    "zh-TW": "Bilibili 下載任務已組裝完成",
+  },
+  "Preparing Bilibili audio/video stream download": {
+    "zh-CN": "准备下载 Bilibili 音视频流",
+    "zh-TW": "準備下載 Bilibili 音視訊流",
+  },
+  "Preparing to merge Bilibili audio/video stream": {
+    "zh-CN": "准备合并 Bilibili 音视频流",
+    "zh-TW": "準備合併 Bilibili 音視訊流",
+  },
+  "Audio/video stream written; preparing to merge": {
+    "zh-CN": "音视频流写入完成，准备合并",
+    "zh-TW": "音視訊流寫入完成，準備合併",
+  },
+  "Bilibili audio/video merge": {
+    "zh-CN": "Bilibili 音视频合并",
+    "zh-TW": "Bilibili 音視訊合併",
+  },
+  "Bilibili crawl task finished": {
+    "zh-CN": "Bilibili 爬虫任务结束",
+    "zh-TW": "Bilibili 爬蟲任務結束",
+  },
+  "Crawl task finished": {
+    "zh-CN": "爬虫任务结束",
+    "zh-TW": "爬蟲任務結束",
+  },
+  "Crawler found downloadable resources": {
+    "zh-CN": "爬虫发现可下载资源",
+    "zh-TW": "爬蟲發現可下載資源",
+  },
 };
 
 const BILIBILI_ROUTE_ALIASES = {
@@ -1476,9 +1653,52 @@ function localizedDynamicValue(map, language) {
   return (map && (map[language] || map["zh-CN"])) || "";
 }
 
+function localizedRuntimePlatformName(value, language) {
+  const text = String(value || "").trim();
+  const aliases = {
+    Douyin: { "zh-CN": "抖音", "zh-TW": "抖音", "en-US": "Douyin" },
+    抖音: { "zh-CN": "抖音", "zh-TW": "抖音", "en-US": "Douyin" },
+    Xiaohongshu: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
+    XiaoHongShu: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
+    小红书: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
+    小紅書: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
+    Kuaishou: { "zh-CN": "快手", "zh-TW": "快手", "en-US": "Kuaishou" },
+    快手: { "zh-CN": "快手", "zh-TW": "快手", "en-US": "Kuaishou" },
+    Bilibili: { "zh-CN": "Bilibili", "zh-TW": "Bilibili", "en-US": "Bilibili" },
+    MissAV: { "zh-CN": "MissAV", "zh-TW": "MissAV", "en-US": "MissAV" },
+  };
+  return localizedDynamicValue(aliases[text] || null, language) || text;
+}
+
+function localizedRuntimeSubject(prefix, platform, suffix) {
+  const padded = /^[A-Za-z0-9]/.test(platform) || /[A-Za-z0-9]$/.test(platform);
+  return padded ? `${prefix} ${platform} ${suffix}` : `${prefix}${platform}${suffix}`;
+}
+
+function localizedMediaTerm(value, language) {
+  const text = String(value || "").trim();
+  const terms = {
+    "audio/video stream": {
+      "zh-CN": "音视频流",
+      "zh-TW": "音視訊流",
+    },
+    "audio": {
+      "zh-CN": "音频",
+      "zh-TW": "音訊",
+    },
+    "video": {
+      "zh-CN": "视频",
+      "zh-TW": "影片",
+    },
+  };
+  return localizedDynamicValue(terms[text] || null, language) || text;
+}
+
 function localizeNonEnglishDynamicLogText(text, language) {
   const exact = NON_EN_DYNAMIC_LOG_TEXT[text];
   if (exact) return localizedDynamicValue(exact, language);
+  const phraseResult = applyRuntimePhraseTranslations(text, language);
+  if (phraseResult !== text) return phraseResult;
 
   let match = text.match(/^Bilibili route:\s*(.+)$/);
   if (match) {
@@ -1496,6 +1716,91 @@ function localizeNonEnglishDynamicLogText(text, language) {
   if (match) {
     const prefix = language === "zh-TW" ? "Bilibili 瀏覽器生產執行緒異常" : "Bilibili 浏览器生产线程异常";
     return `${prefix}：${match[1]}`;
+  }
+
+  match = text.match(/^Download completed:\s*(.+)$/);
+  if (match) {
+    const prefix = language === "zh-TW" ? "下載完成" : "下载完成";
+    return `${prefix}：${match[1]}`;
+  }
+
+  match = text.match(/^Download failed\s*\[(.+?)\]:\s*(.+)$/);
+  if (match) {
+    const prefix = language === "zh-TW" ? "下載失敗" : "下载失败";
+    return `${prefix} [${match[1]}]：${match[2]}`;
+  }
+
+  match = text.match(/^Started\s*(.*?)\s*crawl task$/);
+  if (match) {
+    const prefix = language === "zh-TW" ? "啟動" : "启动";
+    const suffix = language === "zh-TW" ? "爬蟲任務" : "爬虫任务";
+    return localizedRuntimeSubject(prefix, localizedRuntimePlatformName(match[1], language), suffix);
+  }
+
+  match = text.match(/^Started\s*(.*?)\s*task\s*\|\s*target:\s*(.*)$/);
+  if (match) {
+    const prefix = language === "zh-TW" ? "啟動" : "启动";
+    const task = language === "zh-TW" ? "任務" : "任务";
+    const target = language === "zh-TW" ? "目標" : "目标";
+    return `${localizedRuntimeSubject(prefix, localizedRuntimePlatformName(match[1], language), task)} | ${target}：${match[2]}`;
+  }
+
+  match = text.match(/^Started task\s*\|\s*mode:\s*(.*?)\s*\|\s*keyword:\s*(.*)$/);
+  if (match) {
+    const start = language === "zh-TW" ? "啟動任務" : "启动任务";
+    const mode = language === "zh-TW" ? "模式" : "模式";
+    const keyword = language === "zh-TW" ? "關鍵字" : "关键词";
+    return `${start} | ${mode}：${match[1]} | ${keyword}：${match[2]}`;
+  }
+
+  match = text.match(/^Final confirmation:\s*(\d+)\s*tasks?$/);
+  if (match) {
+    const label = language === "zh-TW" ? "最終確認" : "最终确认";
+    const unit = language === "zh-TW" ? "個任務" : "个任务";
+    return `${label} ${match[1]} ${unit}`;
+  }
+
+  match = text.match(/^Fetched successfully\s*(.*)$/);
+  if (match) {
+    const label = language === "zh-TW" ? "取得成功" : "获取成功";
+    return `${label} ${match[1]}`.trimEnd();
+  }
+
+  match = text.match(/^Parsed stream:\s*(.*)$/);
+  if (match) {
+    const label = language === "zh-TW" ? "解析串流" : "解析流";
+    return `${label}：${match[1]}`;
+  }
+
+  match = text.match(/^Pipeline established:\s*(.*)$/);
+  if (match) {
+    const label = language === "zh-TW" ? "流水線已建立" : "流水线已建立";
+    return `${label}：${match[1]}`;
+  }
+
+  match = text.match(/^Scan finished,\s*total\s*(\d+)(.*)$/);
+  if (match) {
+    const label = language === "zh-TW" ? "掃描結束，共" : "扫描结束，共";
+    return `${label} ${match[1]}${match[2]}`;
+  }
+
+  match = text.match(/^All completed:\s*success\s*(\d+)\s*\/\s*(\d+)\s*\|\s*failed\s*(\d+)$/i);
+  if (match) {
+    const ok = language === "zh-TW" ? "全部完成：成功" : "全部完成：成功";
+    const failed = language === "zh-TW" ? "失敗" : "失败";
+    return `${ok} ${match[1]}/${match[2]} | ${failed} ${match[3]}`;
+  }
+
+  match = text.match(/^Preparing Bilibili\s*(.*?)\s*download$/);
+  if (match) {
+    const label = language === "zh-TW" ? "準備下載" : "准备下载";
+    return `${label} Bilibili ${localizedMediaTerm(match[1], language)}`;
+  }
+
+  match = text.match(/^Preparing to merge Bilibili\s*(.*)$/);
+  if (match) {
+    const label = language === "zh-TW" ? "準備合併" : "准备合并";
+    return `${label} Bilibili ${localizedMediaTerm(match[1], language)}`;
   }
 
   match = text.match(/^XiaoHongShu user confirmed\s*(\d+)\s*candidates; starting parse-to-download pipeline\.$/);

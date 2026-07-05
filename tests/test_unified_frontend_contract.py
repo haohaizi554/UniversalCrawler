@@ -3154,6 +3154,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         index = (static_dir / "index.html").read_text(encoding="utf-8")
         app_js = (static_dir / "app.js").read_text(encoding="utf-8")
         media_display = (static_dir / "media_display.js").read_text(encoding="utf-8")
+        task_render = (static_dir / "task_render.js").read_text(encoding="utf-8")
 
         self.assertIn("/static/media_display.js", index)
         self.assertLess(index.index("/static/media_display.js"), index.index("/static/app.js"))
@@ -3167,6 +3168,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('return pending ? translate("\\u68c0\\u6d4b\\u4e2d") : "--";', media_display)
         self.assertIn("window.UcpMediaDisplay.activeTrendHtml", app_js)
         self.assertIn("window.UcpMediaDisplay.displayMetadataValue", app_js)
+        self.assertIn("let metadataValueRenderer = (value, pending = false) => {", task_render)
+        self.assertIn('return pending ? translate("\\u68c0\\u6d4b\\u4e2d") : "--";', task_render)
 
     def test_web_log_display_logic_is_split_into_component(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"

@@ -279,6 +279,7 @@ const FALLBACK_UI_TEXT = {
     "系统日志": "System logs",
     "性能日志": "Performance logs",
     "错误日志": "Error logs",
+    "异常日志": "Error logs",
     "日志级别": "Log level",
     "全部": "All",
     "时间范围": "Time range",
@@ -679,6 +680,7 @@ const FALLBACK_UI_TEXT = {
     "系统日志": "系統日誌",
     "性能日志": "性能日誌",
     "错误日志": "錯誤日誌",
+    "异常日志": "異常日誌",
     "日志级别": "日誌級別",
     "全部": "全部",
     "时间范围": "時間範圍",
@@ -836,6 +838,8 @@ const CANONICAL_UI_TEXT_ALIASES = {
   "WebUI": "网页端",
   "Frontend render exceeded the interactive budget; refresh cadence was relaxed": "前端渲染超过交互预算，已降低刷新频率",
   "Frontend render e...": "前端渲染超过交互预算，已降低刷新频率",
+  "Error logs": "错误日志",
+  "異常日誌": "异常日志",
 };
 
 function rebuildReverseTextIndex() {

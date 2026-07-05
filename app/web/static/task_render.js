@@ -9,7 +9,11 @@
   let getIconManifest = () => ({ route: "/ui-icon", fallback: "view_grid.png", actions: {}, platforms: {} });
   let activeTrendRenderer = () => "";
   let activeEventTimelineRenderer = () => "";
-  let metadataValueRenderer = value => (String(value || "").trim() || "--");
+  let metadataValueRenderer = (value, pending = false) => {
+    const text = String(value || "").trim();
+    if (text && text !== "--") return translate(text);
+    return pending ? translate("\u68c0\u6d4b\u4e2d") : "--";
+  };
   let basenameResolver = () => "";
   let dirnameResolver = () => "";
 

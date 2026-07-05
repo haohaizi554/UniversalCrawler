@@ -1118,6 +1118,10 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("全部日志 3", result["zh"])
         self.assertIn("错误日志 1", result["zh"])
         self.assertIn("All logs 3", result["en"])
+        self.assertIn("Crawl logs 1", result["en"])
+        self.assertIn("Download logs 1", result["en"])
+        self.assertIn("System logs 0", result["en"])
+        self.assertIn("Performance logs 0", result["en"])
         self.assertIn("Error logs 1", result["en"])
 
     def test_09e_language_switch_translates_log_values_and_completed_detail_labels(self):
@@ -1729,16 +1733,37 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("Bilibili route: direct BV video"),
                 translateRuntimeLogText("Download task has been queued"),
                 translateRuntimeLogText("Released download concurrency slot"),
-                translateRuntimeLogText("Frontend render exceeded the interactive budget; refresh cadence was relaxed")
+                translateRuntimeLogText("Frontend render exceeded the interactive budget; refresh cadence was relaxed"),
+                translateRuntimeLogText("Download completed: 小伙拉货挣到钱了"),
+                translateRuntimeLogText("Bilibili stream request established"),
+                translateRuntimeLogText("Preparing to merge Bilibili audio/video stream"),
+                translateRuntimeLogText("Douyin download task submitted to the queue"),
+                translateRuntimeLogText("Kuaishou video stream captured and submitted to the queue"),
+                translateRuntimeLogText("MissAV detail page sniff timed out; playlist.m3u8 was not found"),
+                translateRuntimeLogText("Xiaohongshu crawl task finished")
               ];
               document.documentElement.dataset.language = "zh-TW";
               const tw = [
                 translateRuntimeLogText("fetch video detail"),
                 translateRuntimeLogText("Bilibili route: browser scan search"),
-                translateRuntimeLogText("Dispatched queued task to a download worker")
+                translateRuntimeLogText("Dispatched queued task to a download worker"),
+                translateRuntimeLogText("Download completed: demo.mp4"),
+                translateRuntimeLogText("Started Douyin task | target: demo"),
+                translateRuntimeLogText("Preparing Kuaishou video stream download")
               ];
               document.documentElement.dataset.language = "en-US";
-              const en = translateRuntimeLogText("用户确认了 45 个任务");
+              const en = [
+                translateRuntimeLogText("用户确认了 45 个任务"),
+                translateRuntimeLogText("Bilibili 流请求建立成功"),
+                translateRuntimeLogText("准备下载 Bilibili 音视频流"),
+                translateRuntimeLogText("准备合并 Bilibili 音视频流"),
+                translateRuntimeLogText("Bilibili 下载任务已提交到下载队列"),
+                translateRuntimeLogText("🎉 全部完成: 成功 45/45 | 失败 0"),
+                translateRuntimeLogText("启动抖音任务 | 目标: demo"),
+                translateRuntimeLogText("快手分享链接已解析并提交到下载队列"),
+                translateRuntimeLogText("MissAV m3u8 嗅探成功并提交下载"),
+                translateRuntimeLogText("小红书爬虫任务结束")
+              ];
               return { cn, tw, en };
             }
             """
@@ -1752,6 +1777,13 @@ class WebUIBrowserTests(unittest.TestCase):
                 "下载任务已入队",
                 "已释放下载并发槽位",
                 "前端渲染超过交互预算，已降低刷新频率",
+                "下载完成：小伙拉货挣到钱了",
+                "Bilibili 流请求建立成功",
+                "准备合并 Bilibili 音视频流",
+                "抖音下载任务已提交到下载队列",
+                "快手视频流已捕获并提交到下载队列",
+                "MissAV 详情页嗅探超时，未发现 playlist.m3u8",
+                "小红书爬虫任务结束",
             ],
         )
         self.assertEqual(
@@ -1760,9 +1792,69 @@ class WebUIBrowserTests(unittest.TestCase):
                 "取得影片詳情",
                 "Bilibili 路由：瀏覽器掃描 search",
                 "已將排隊任務分發給下載執行緒",
+                "下載完成：demo.mp4",
+                "啟動抖音任務 | 目標：demo",
+                "準備下載快手影片串流",
             ],
         )
-        self.assertEqual(result["en"], "User confirmed 45 tasks")
+        self.assertEqual(
+            result["en"],
+            [
+                "User confirmed 45 tasks",
+                "Bilibili stream request established",
+                "Preparing Bilibili audio/video stream download",
+                "Preparing to merge Bilibili audio/video stream",
+                "Bilibili download task submitted to the queue",
+                "🎉 All completed: success 45/45 | failed 0",
+                "Started Douyin task | target: demo",
+                "Kuaishou share link parsed and submitted to the queue",
+                "MissAV m3u8 sniffed successfully and submitted for download",
+                "Xiaohongshu crawl task finished",
+            ],
+        )
+
+    def test_09j_completed_pending_metadata_fallback_respects_language(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              document.documentElement.dataset.language = "en-US";
+              const pendingText = String.fromCharCode(0x68c0, 0x6d4b, 0x4e2d);
+              const originalMediaDisplay = window.UcpMediaDisplay;
+              const taskRenderScript = await fetch("/static/task_render.js").then(response => response.text());
+              const frame = document.createElement("iframe");
+              document.body.appendChild(frame);
+              try {
+                window.UcpMediaDisplay = null;
+                frame.contentWindow.eval(taskRenderScript);
+                frame.contentWindow.UcpTaskRender.configure({ t: translateUiText });
+                return {
+                  direct: displayMetadataValue(pendingText, true),
+                  emptyPending: displayMetadataValue("", true),
+                  rowHtml: frame.contentWindow.UcpTaskRender.completedRow({
+                    id: "pending-row",
+                    title: "demo",
+                    completed_at_table: "07-05 22:44",
+                    duration: pendingText,
+                    metadata_pending: true,
+                    format: "MP4"
+                  }, "")
+                };
+              } finally {
+                window.UcpMediaDisplay = originalMediaDisplay;
+                frame.remove();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["direct"], "Checking")
+        self.assertEqual(result["emptyPending"], "Checking")
+        self.assertIn("Checking", result["rowHtml"])
+        self.assertNotIn("检测中", result["rowHtml"])
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
