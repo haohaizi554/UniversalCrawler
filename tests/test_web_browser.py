@@ -292,7 +292,7 @@ class StaticAssetsTests(unittest.TestCase):
     def test_static_assets_are_cache_busted(self):
         content = _static_bundle_content()
 
-        self.assertIn('/static/app.css?v=20260628-settings-masterdetail', content)
+        self.assertIn('/static/app.css?v=20260705-settings-control-surface', content)
         self.assertIn('/static/i18n.js?v=20260705-i18n-values', content)
         self.assertIn('/static/custom_select.js?v=20260701-custom-select', content)
         self.assertIn('/static/media_display.js?v=20260701-media-display', content)
@@ -1599,6 +1599,10 @@ class WebUIBrowserTests(unittest.TestCase):
               const rowRect = row?.getBoundingClientRect();
               const inputRect = input?.getBoundingClientRect();
               const proxyRect = proxyControl?.getBoundingClientRect();
+              const gap = inputRect && proxyRect ? Math.round(inputRect.left - proxyRect.right) : null;
+              const inputWidthRatio = inputRect && proxyRect
+                ? inputRect.width / Math.max(1, inputRect.width + proxyRect.width)
+                : 0;
               const inputTopInset = inputRect && rowRect ? inputRect.top - rowRect.top : null;
               const inputBottomInset = inputRect && rowRect ? rowRect.bottom - inputRect.bottom : null;
               return {
@@ -1606,6 +1610,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
                 rowOverflow: rowRect && panelRect ? rowRect.right - panelRect.right : null,
                 inputOverflow: inputRect && panelRect ? inputRect.right - panelRect.right : null,
+                inputWidth: inputRect ? inputRect.width : 0,
+                proxyWidth: proxyRect ? proxyRect.width : 0,
+                gap,
+                inputWidthRatio,
                 inputTopInset,
                 inputBottomInset,
                 inputHeightDelta: inputRect && proxyRect ? Math.abs(inputRect.height - proxyRect.height) : null,
@@ -1621,6 +1629,11 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertLessEqual(result["documentOverflow"], 1)
         self.assertLessEqual(result["rowOverflow"], 1)
         self.assertLessEqual(result["inputOverflow"], 1)
+        self.assertGreaterEqual(result["proxyWidth"], 72)
+        self.assertGreaterEqual(result["inputWidth"], 86)
+        self.assertGreaterEqual(result["inputWidthRatio"], 0.45)
+        self.assertLessEqual(result["inputWidthRatio"], 0.62)
+        self.assertGreaterEqual(result["gap"], 7)
         self.assertGreaterEqual(result["inputTopInset"], 1)
         self.assertGreaterEqual(result["inputBottomInset"], 1)
         self.assertLessEqual(result["inputHeightDelta"], 1)

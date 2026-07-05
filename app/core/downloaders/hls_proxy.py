@@ -301,5 +301,4 @@ class _LocalHlsProxy:
         if segment_total > 0:
             progress = 10 + int(min(segment_completed, segment_total) * 85 / segment_total)
             return min(95, max(10, progress)), bytes_served
-        return 50, bytes_served
-
+        return 0, bytes_served

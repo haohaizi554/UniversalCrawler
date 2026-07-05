@@ -673,7 +673,7 @@ function buildMockState() {
       { id: "video_to_audio", title: "视频转音频", last_used: "今天 17:35" },
       { id: "metadata_viewer", title: "元数据查看", last_used: "今天 14:10" },
     ],
-    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.16" },
+    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.17" },
   };
 }
 
@@ -1973,7 +1973,7 @@ function renderStatus() {
   byId("statusDownload").textContent = status.download_speed || "0 B/s";
   byId("statusCompleted").textContent = String(status.completed_count || 0);
   byId("statusFailed").textContent = String(failedCount);
-  byId("statusVersion").textContent = status.version || "v3.6.16";
+  byId("statusVersion").textContent = status.version || "v3.6.17";
 }
 
 function switchPage(pageId) {

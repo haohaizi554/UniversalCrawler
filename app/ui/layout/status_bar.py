@@ -89,7 +89,7 @@ class StatusBarWidget(QFrame):
 
         layout.addStretch(1)
 
-        self.lbl_version = QLabel("v3.6.16")
+        self.lbl_version = QLabel("v3.6.17")
         self.lbl_version.setObjectName("MutedLabel")
         self.lbl_version.setFixedWidth(52)
         self.lbl_version.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -171,4 +171,4 @@ class StatusBarWidget(QFrame):
         self.lbl_download.setText(str(merged.get("download_speed") or "0 B/s"))
         self.lbl_completed.setText(str(int(merged.get("completed_count", 0) or 0)))
         self.lbl_failed.setText(str(failed_count))
-        self.lbl_version.setText(str(merged.get("version") or "v3.6.16"))
+        self.lbl_version.setText(str(merged.get("version") or "v3.6.17"))

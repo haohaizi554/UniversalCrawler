@@ -78,7 +78,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if str(video_item.source or "").lower() == "missav" and not thread_count:
             thread_count = 16
 
-        self._emit_progress(progress_callback, 10)
+        self._emit_progress(progress_callback, 0)
         download_succeeded = False
         process = None
         browser_fallback_error: Exception | None = None
@@ -274,7 +274,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 },
                 trace_id=trace_id,
             )
-            output_progress = _Nm3u8OutputProgress(default_progress=50)
+            output_progress = _Nm3u8OutputProgress(default_progress=0)
             process = self._popen_nm3u8_process(cmd, creation_flags)
             output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
             self._wait_external_process_with_file_progress(
@@ -282,7 +282,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 save_path,
                 check_stop_func,
                 progress_callback,
-                50,
+                0,
                 progress_provider=output_progress.snapshot,
                 temp_paths=[temp_workspace],
             )
@@ -643,7 +643,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 },
                 trace_id=trace_id,
             )
-            output_progress = _Nm3u8OutputProgress(default_progress=50)
+            output_progress = _Nm3u8OutputProgress(default_progress=0)
             process = self._popen_nm3u8_process(cmd, build_no_window_flags())
             output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
             combined_provider = self._combine_progress_providers(progress_provider, output_progress.snapshot)
@@ -652,7 +652,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 save_path,
                 check_stop_func,
                 progress_callback,
-                50,
+                0,
                 progress_provider=combined_provider,
                 temp_paths=[temp_workspace],
             )
@@ -688,7 +688,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                     continue
                 progress_values.append(int(progress or 0))
                 byte_values.append(int(byte_count or 0))
-            return max(progress_values or [50]), max(byte_values or [0])
+            return max(progress_values or [0]), max(byte_values or [0])
 
         return combined
 

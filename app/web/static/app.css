@@ -2377,23 +2377,34 @@ tr.selected:hover td {
 }
 
 .setting-control-cluster {
+  width: 100%;
   min-width: 0;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  justify-content: flex-end;
+  justify-content: stretch;
   gap: 10px;
+}
+
+.setting-control-cluster.has-trailing-action {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .setting-control-cluster > input:not([type="checkbox"]),
 .setting-control-cluster > select,
 .setting-control-cluster > .custom-select {
-  flex: 1 1 180px;
+  width: 100%;
   min-width: 0;
 }
 
 .setting-control-cluster.has-trailing-action > select,
 .setting-control-cluster.has-trailing-action > .custom-select {
-  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.setting-control-cluster > .setting-switch,
+.setting-control-cluster > .setting-theme-segment {
+  justify-self: end;
 }
 
 .setting-download-directory {
@@ -2443,6 +2454,7 @@ tr.selected:hover td {
 .setting-row .custom-select,
 .setting-row .custom-select-button {
   height: 38px;
+  min-height: 38px;
 }
 
 .setting-row input[type="checkbox"].setting-switch {
@@ -2641,8 +2653,8 @@ tr.selected:hover td {
 }
 
 .platform-proxy-entry.has-custom {
-  grid-template-columns: minmax(102px, 1fr) minmax(72px, 86px);
-  gap: 6px;
+  grid-template-columns: minmax(72px, 48fr) minmax(86px, 52fr);
+  gap: 8px;
 }
 
 .platform-proxy-entry .platform-proxy,
@@ -2654,8 +2666,13 @@ tr.selected:hover td {
   grid-column: 1;
 }
 
+.platform-proxy-entry .custom-select.platform-proxy {
+  min-width: 0;
+}
+
 .platform-proxy-entry .proxy-custom {
   grid-column: 2;
+  min-width: 0;
 }
 
 .platform-auth-badge {
@@ -2812,7 +2829,7 @@ tr.selected:hover td {
   }
 
   .platform-proxy-entry.has-custom {
-    grid-template-columns: minmax(160px, 1fr) minmax(100px, 140px);
+    grid-template-columns: minmax(120px, 48fr) minmax(112px, 52fr);
   }
 
   .platform-proxy-entry .proxy-custom,

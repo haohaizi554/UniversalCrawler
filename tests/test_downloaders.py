@@ -1246,6 +1246,11 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertIsNotNone(combined)
         self.assertEqual(combined(), (42, 4096))
 
+    def test_nm3u8_combined_progress_provider_uses_startup_progress_when_unknown(self):
+        combined = N_m3u8DL_RE_Downloader._combine_progress_providers(None, None)
+
+        self.assertIsNone(combined)
+
     @patch("app.core.downloaders.m3u8.build_hidden_startupinfo", return_value="hidden-startupinfo")
     @patch("app.core.downloaders.m3u8.subprocess.Popen")
     def test_nm3u8_process_captures_output_without_visible_console(self, mocked_popen, _mocked_startupinfo):
@@ -1279,11 +1284,17 @@ https://cdn.example.com/seg2.m4s?token=1
         mocked_wait_progress.assert_called_once()
         self.assertIs(mocked_wait_progress.call_args.args[0], process)
         self.assertEqual(mocked_wait_progress.call_args.args[1], "demo.mp4")
-        self.assertEqual(mocked_wait_progress.call_args.args[4], 50)
+        self.assertEqual(mocked_wait_progress.call_args.args[4], 0)
         self.assertEqual(mocked_popen.call_args.kwargs["creationflags"], 321)
         self.assertEqual(mocked_popen.call_args.kwargs["stdout"], subprocess.PIPE)
         self.assertEqual(mocked_popen.call_args.kwargs["stderr"], subprocess.STDOUT)
         self.assertIsNotNone(mocked_wait_progress.call_args.kwargs["progress_provider"])
+
+    def test_local_hls_proxy_unknown_playlist_keeps_startup_progress(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        proxy = _LocalHlsProxy(downloader, "https://surrit.com/demo/playlist.m3u8", {}, None)
+
+        self.assertEqual(proxy.progress_snapshot(), (0, 0))
 
     def test_local_hls_proxy_streams_segment_bytes_for_live_speed(self):
         downloader = N_m3u8DL_RE_Downloader()

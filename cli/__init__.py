@@ -64,4 +64,4 @@ __all__ = [
     "is_selection_strategy",
 ]
 
-__version__ = "3.6.16"
+__version__ = "3.6.17"
