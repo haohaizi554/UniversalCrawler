@@ -2164,6 +2164,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(localize_log_text("Download task has been queued", "zh-CN"), "下载任务已入队")
         self.assertEqual(localize_log_text("Released download concurrency slot", "zh-CN"), "已释放下载并发槽位")
         self.assertEqual(localize_log_text("System · MainWindow", "zh-CN"), "系统 · 主窗口")
+        self.assertEqual(localize_log_text("系统 · MainWindow", "en-US"), "System · MainWindow")
+        self.assertEqual(localize_log_text("系统 · ApplicationContext", "en-US"), "System · ApplicationContext")
+        self.assertEqual(localize_log_text("Bilibili · BilibiliDownloader", "zh-CN"), "Bilibili · Bilibili 下载器")
+        self.assertEqual(localize_log_text("DownloadManager", "zh-CN"), "下载管理器")
         self.assertEqual(localize_log_text("系统 · GUI", "en-US"), "System · GUI")
         self.assertEqual(localize_log_text("Bilibili stream request established", "zh-CN"), "Bilibili 流请求建立成功")
         self.assertEqual(
@@ -2198,6 +2202,68 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             localize_log_text("🎉 全部完成: 成功 45/45 | 失败 0", "en-US"),
             "🎉 All completed: success 45/45 | failed 0",
         )
+        self.assertEqual(
+            localize_log_text("Increased concurrency by rebuilding dispatch semaphore capacity.", "zh-CN"),
+            "已通过重建分发信号量提高并发容量",
+        )
+        self.assertEqual(
+            localize_log_text("Video-only mode skipped a non-video resource", "zh-CN"),
+            "仅下载视频模式已跳过非视频资源",
+        )
+        self.assertEqual(
+            localize_log_text("Completed media metadata probe finished without usable duration or resolution", "zh-TW"),
+            "媒體中繼資料探測已完成，但未取得可用時長或解析度",
+        )
+
+    def test_gui_log_center_localizes_source_components_after_language_switch(self):
+        shell = self._make_shell()
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "en-US"
+        snapshot["log_items"] = [
+            {
+                "id": "gui-i18n-source",
+                "time": "2026-07-06 03:31:00",
+                "level": "WARN",
+                "raw_level": "WARN",
+                "result_type": "warning",
+                "category": "performance",
+                "log_scope": "performance",
+                "event_stage": "step",
+                "event_code": "FRONTEND_RENDER_SLOW",
+                "source": "MainWindow",
+                "platform": "系统",
+                "platform_id": "system",
+                "trace_id": "",
+                "message": "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                "message_summary": "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                "detail": {
+                    "description": "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                    "platform": "系统",
+                    "source": "MainWindow",
+                },
+            }
+        ]
+
+        shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
+        all_time_index = logs.time_filter.findData("全部")
+        self.assertGreaterEqual(all_time_index, 0)
+        logs.time_filter.setCurrentIndex(all_time_index)
+        self.app.processEvents()
+
+        source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
+        self.assertTrue(str(source).endswith("System · MainWindow"))
+        self.assertEqual(logs.detail_source_value.text(), "MainWindow")
+
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        self.app.processEvents()
+
+        source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
+        self.assertTrue(str(source).endswith("系统 · 主窗口"))
+        self.assertNotIn("MainWindow", str(source))
+        self.assertEqual(logs.detail_source_value.text(), "主窗口")
 
     def test_gui_platform_custom_proxy_field_displays_port_and_commits_endpoint(self):
         shell = self._make_shell()

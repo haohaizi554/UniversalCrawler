@@ -1121,7 +1121,8 @@ class LogCenterPage(PageFrame):
         )
         for key in ("platform_label", "source_display", "source_display_text", "source_display_full"):
             if row.get(key):
-                row[key] = self._translate_platform_display(str(row[key]))
+                translated = self._translate_platform_display(str(row[key]))
+                row[key] = self._localize_log_text(translated)
         if row.get("event_stage_display"):
             row["event_stage_display"] = self._t(row["event_stage_display"])
         for key in ("message", "message_summary"):
@@ -1550,7 +1551,7 @@ class LogCenterPage(PageFrame):
         self._sync_inspector_action_buttons(True)
 
         self.detail_time_value.setText(str(item.get("time") or "-"))
-        self.detail_source_value.setText(self._t(str(item.get("source") or "-")))
+        self.detail_source_value.setText(self._localize_log_text(str(item.get("source") or "-")))
         self.detail_platform_value.setText(self._format_platform_label(item))
         trace_id = self._extract_trace_id_from_item(item)
         self.detail_trace_value.setText(trace_id if trace_id else "-")
