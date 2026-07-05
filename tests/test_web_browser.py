@@ -293,15 +293,15 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
 
         self.assertIn('/static/app.css?v=20260705-settings-control-surface', content)
-        self.assertIn('/static/i18n.js?v=20260705-i18n-values', content)
+        self.assertIn('/static/i18n.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/custom_select.js?v=20260701-custom-select', content)
-        self.assertIn('/static/media_display.js?v=20260701-media-display', content)
+        self.assertIn('/static/media_display.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/log_display.js?v=20260701-log-display', content)
         self.assertIn('/static/platform_limits.js?v=20260701-platform-limits', content)
-        self.assertIn('/static/settings_render.js?v=20260701-settings-render', content)
+        self.assertIn('/static/settings_render.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/task_render.js?v=20260705-i18n-values', content)
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
-        self.assertIn('/static/app.js?v=20260705-i18n-values', content)
+        self.assertIn('/static/app.js?v=20260705-i18n-surface', content)
 
     def test_video_end_autoplays_next_preview(self):
         from pathlib import Path
@@ -1229,6 +1229,178 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertNotIn("日志缓存已刷新", result["twLogText"])
         for label in ("檔案名稱", "儲存路徑", "完成時間", "時長", "解析度", "大小", "格式"):
             self.assertIn(label, result["twCompletedText"])
+
+    def test_09f_language_switch_translates_settings_logs_active_and_platforms(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.settings_snapshot = {
+                "基础设置": {
+                  download_directory: "D:\\\\Downloads",
+                  filename_template: "默认",
+                  open_after_download: false,
+                  default_open_mode: "内置播放器",
+                  _options: {
+                    filename_template: [{ value: "默认", label: "默认" }],
+                    default_open_mode: [{ value: "内置播放器", label: "内置播放器" }, { value: "打开所在目录", label: "打开所在目录" }]
+                  }
+                },
+                "下载设置": {
+                  max_concurrent: 3,
+                  image_respects_concurrency: true,
+                  request_timeout: 60,
+                  max_retries: 3,
+                  resume_enabled: true,
+                  speed_limit_kb: 0,
+                  video_only: false,
+                  _options: {
+                    max_concurrent: [{ value: "3", label: "3（推荐）" }],
+                    request_timeout: [{ value: "60", label: "60 秒（推荐）" }],
+                    max_retries: [{ value: "3", label: "3（推荐）" }],
+                    speed_limit_kb: [{ value: "0", label: "无限制" }]
+                  }
+                },
+                "平台设置": [
+                  { id: "douyin", name: "抖音", auth_status: "已认证", default_count: 50, count_unit: "videos", count_config_key: "max_items", count_editable: true, count_options: [{ value: "50", label: "50 个视频" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理", "直连"], proxy_editable: false },
+                  { id: "missav", name: "MissAV", auth_status: "未认证", default_count: 20, count_unit: "videos", count_config_key: "max_items", count_editable: true, count_options: [{ value: "20", label: "20 个视频（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "自定义", proxy_config_key: "proxy", proxy_editable: true, proxy_custom_allowed: true, proxy_custom_active: true, proxy_custom_value: "http://127.0.0.1:7890", proxy_options: ["系统代理", "直连", "自定义"] },
+                  { id: "xiaohongshu", name: "小红书", auth_status: "已认证", default_count: 20, count_unit: "notes", count_config_key: "max_notes", count_editable: true, count_options: [{ value: "20", label: "20 篇笔记（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理"], proxy_editable: false }
+                ],
+                "播放设置": {
+                  default_player: "内置播放器",
+                  remember_position: true,
+                  autoplay_next: true,
+                  manual_image_switch: true,
+                  _options: { default_player: [{ value: "内置播放器", label: "内置播放器" }] }
+                },
+                "日志设置": {
+                  retention_days: 1,
+                  ui_log_max_display_count: 300,
+                  auto_copy_trace_on_error: true,
+                  _options: {
+                    retention_days: [{ value: "1", label: "1 天（推荐）" }, { value: "3", label: "3 天" }, { value: "5", label: "5 天" }, { value: "7", label: "7 天" }],
+                    ui_log_max_display_count: [{ value: "300", label: "300 条（推荐）" }]
+                  }
+                },
+                "外观设置": { language: "en-US", theme: "light", accent: "red", scale: "100%", font_size: "medium" }
+              };
+              frontendState.settings_contract = {
+                group_order: ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"],
+                group_descriptions: {
+                  "基础设置": "下载目录、文件命名和打开行为",
+                  "下载设置": "并发、超时、重试和下载策略",
+                  "平台设置": "认证状态、爬取数量和代理入口",
+                  "播放设置": "播放器、断点续播和预览行为",
+                  "日志设置": "保留策略、显示上限和错误追踪",
+                  "外观设置": "语言、主题、界面缩放和字体"
+                },
+                group_hints: {
+                  "基础设置": "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。",
+                  "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
+                  "日志设置": "UI 显示数量只影响日志中心显示，不影响日志文件本身。"
+                }
+              };
+              frontendState.download_options = { auto_retry: true, max_retries: 3, max_concurrent: 3 };
+              frontendState.active_downloads = [];
+              frontendState.log_items = [{
+                id: "log-i18n-surface",
+                time: "2026-07-05 09:55:36",
+                level: "WARN",
+                raw_level: "WARN",
+                result_type: "warn",
+                category: "performance",
+                log_scope: "performance",
+                event_stage: "performance",
+                event_code: "FRONTEND_RENDER_SLOW",
+                source: "MainWindow",
+                source_display: "系统 · MainWindow",
+                source_display_icon_file: "nav_settings.png",
+                platform: "系统",
+                trace_id: "",
+                message_summary: "📂 正在扫描目录: D:\\\\Downloads",
+                message: "📂 正在扫描目录: D:\\\\Downloads",
+                detail: { description: "说明：应用开始初始化", type: "预警", scope: "性能", stage: "性能", platform: "系统", source: "MainWindow" },
+                stack: ""
+              }];
+              platforms = [
+                { id: "missav", name: "MissAV" },
+                { id: "douyin", name: "抖音" },
+                { id: "xiaohongshu", name: "小红书" },
+                { id: "kuaishou", name: "快手" },
+                { id: "bilibili", name: "Bilibili" }
+              ];
+              document.documentElement.dataset.language = "en-US";
+              renderSignatures = {};
+              applyStaticLanguage();
+              renderPlatforms();
+              const sourceOptions = Array.from(document.querySelectorAll("#sourceSelect option")).map(option => option.textContent.trim());
+
+              currentPage = "settings";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "settings"));
+              const settingsTexts = {};
+              for (const group of ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置"]) {
+                currentSettingsGroup = group;
+                renderSettings(true);
+                settingsTexts[group] = document.getElementById("page-settings").textContent;
+              }
+
+              logFilters = { category: "all", level: "全部", time: "近 30 分钟", platform: "全部", trace: "", keyword: "" };
+              currentPage = "logs";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
+              selected.log = "";
+              renderLogs();
+              const logsText = document.getElementById("page-logs").textContent;
+              const logPlatformLabel = document.querySelector("#logPlatformFilter").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
+
+              currentPage = "active";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "active"));
+              renderActive();
+              const activeText = document.getElementById("page-active").textContent;
+              const retryLabel = document.querySelector("#activeMaxRetries").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
+              return { sourceOptions, settingsTexts, logsText, logPlatformLabel, activeText, retryLabel };
+            }
+            """
+        )
+
+        joined_settings = "\n".join(result["settingsTexts"].values())
+        for expected in (
+            "Download folder, filename rules, and open behavior",
+            "Concurrency, timeout, retry, and download policy",
+            "Player, resume playback, and preview behavior",
+            "Retention policy, display limits, and error tracing",
+            "Maximum simultaneous downloads",
+            "Control the image fast lane",
+            "1 day (Recommended)",
+            "Custom",
+            "Timeout",
+            "Douyin",
+            "Xiaohongshu",
+        ):
+            self.assertIn(expected, joined_settings)
+        for unexpected in ("下载目录、文件命名", "播放器、断点续播", "保留策略、显示上限", "最大同时下载数", "自定义", "超时"):
+            self.assertNotIn(unexpected, joined_settings)
+
+        self.assertIn("Douyin", result["sourceOptions"])
+        self.assertIn("Xiaohongshu", result["sourceOptions"])
+        self.assertIn("Kuaishou", result["sourceOptions"])
+        self.assertEqual(result["logPlatformLabel"], "All")
+        self.assertIn("All logs 1", result["logsText"])
+        self.assertIn("System · MainWindow", result["logsText"])
+        self.assertIn("Scanning folder: D:\\Downloads", result["logsText"])
+        self.assertIn("Warning", result["logsText"])
+        self.assertIn("Performance", result["logsText"])
+        self.assertIn("Total 1 / matched 1 / showing 1", result["logsText"])
+        for unexpected in ("全部日志", "系统 · MainWindow", "正在扫描目录", "预警", "性能", "共 1 条"):
+            self.assertNotIn(unexpected, result["logsText"])
+        self.assertIn("Queue controls", result["activeText"])
+        self.assertIn("Auto retry failed tasks", result["activeText"])
+        self.assertIn("Current task events", result["activeText"])
+        self.assertIn("No events", result["activeText"])
+        self.assertIn("Running: 0 tasks", result["activeText"])
+        self.assertEqual(result["retryLabel"], "3 times")
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""

@@ -36,6 +36,11 @@ def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
         color: {colors["muted"]};
         background: transparent;
     }}
+    QLabel#DialogBody {{
+        color: {colors["text"]};
+        background: transparent;
+        font-weight: 600;
+    }}
     QLabel#DialogStatus {{
         color: {colors["muted"]};
         background: {colors["panel_soft"]};

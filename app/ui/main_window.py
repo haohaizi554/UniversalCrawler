@@ -13,7 +13,7 @@ from ctypes import wintypes
 
 from PyQt6.QtCore import QAbstractNativeEventFilter, QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
-from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QMessageBox, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QVBoxLayout, QWidget
 
 from app.config import cfg, get_platform_runtime_defaults
 from app.debug_logger import debug_logger
@@ -32,10 +32,11 @@ from app.services.update_check_service import (
 from app.ui.connection_registry import ConnectionRegistry
 from app.ui.dialogs import FileAssociationDialog
 from app.ui.dialogs.selection import SelectionDialog
+from app.ui.dialogs.update_check import UpdateCheckDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_title_bar import WindowTitleBar
 from app.ui.plugin_settings import read_plugin_run_options
-from app.ui.styles import apply_application_theme, apply_dialog_theme, build_palette, polish_data_views
+from app.ui.styles import apply_application_theme, build_palette, polish_data_views
 from app.ui.ui_update_scheduler import UiUpdateScheduler
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
@@ -405,7 +406,6 @@ class MainWindow(QMainWindow):
     def _on_update_check_requested(self, version_text: str = "") -> None:
         if not self._try_begin_update_check():
             self._show_basic_message(
-                QMessageBox.Icon.Information,
                 "检查更新",
                 "正在检查更新，请稍候。",
             )
@@ -467,9 +467,9 @@ class MainWindow(QMainWindow):
 
     def _show_update_check_error(self, message: str) -> None:
         self._show_basic_message(
-            QMessageBox.Icon.Warning,
             "检查更新失败",
-            f"暂时无法检查最新版本。\n\n{message}",
+            "暂时无法检查最新版本。",
+            message,
         )
 
     def _show_update_check_result(self, result: UpdateCheckResult) -> None:
@@ -477,14 +477,12 @@ class MainWindow(QMainWindow):
         latest_version = self._display_version(result.latest_version)
         if result.status == UPDATE_STATUS_CURRENT:
             self._show_basic_message(
-                QMessageBox.Icon.Information,
                 "检查更新",
                 f"当前版本 {local_version} 已经是最新版本。",
             )
             return
         if result.status == UPDATE_STATUS_LOCAL_NEWER:
             self._show_basic_message(
-                QMessageBox.Icon.Information,
                 "检查更新",
                 f"当前版本 {local_version} 高于最新 Release {latest_version}。",
                 "这通常表示你正在使用本地构建或预发布构建，无需更新。",
@@ -501,20 +499,17 @@ class MainWindow(QMainWindow):
         latest_version: str,
         result: UpdateCheckResult,
     ) -> None:
-        box = QMessageBox(self)
-        apply_dialog_theme(box, parent=self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle("检测到新版本")
-        box.setText(f"检测到最新版本 {latest_version}。")
         release_hint = f"\nRelease：{result.html_url}" if result.html_url else ""
-        box.setInformativeText(f"当前版本：{local_version}\n最新版本：{latest_version}{release_hint}\n\n是否要更新？")
-        update_button = box.addButton("更新", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(update_button)
-        box.exec()
-        if box.clickedButton() is update_button:
+        box = UpdateCheckDialog(
+            self,
+            title="检测到新版本",
+            message=f"检测到最新版本 {latest_version}，是否要更新？",
+            details=f"当前版本：{local_version}\n最新版本：{latest_version}{release_hint}",
+            primary_text="更新",
+            secondary_text="稍后",
+        )
+        if box.exec() == QDialog.DialogCode.Accepted:
             self._show_basic_message(
-                QMessageBox.Icon.Information,
                 "更新暂未接入",
                 "自动下载和安装流程尚未接入。",
                 "当前只完成了版本检测与更新确认弹窗。",
@@ -522,19 +517,17 @@ class MainWindow(QMainWindow):
 
     def _show_basic_message(
         self,
-        icon: QMessageBox.Icon,
         title: str,
         text: str,
         informative_text: str = "",
     ) -> int:
-        box = QMessageBox(self)
-        apply_dialog_theme(box, parent=self)
-        box.setIcon(icon)
-        box.setWindowTitle(title)
-        box.setText(text)
-        if informative_text:
-            box.setInformativeText(informative_text)
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box = UpdateCheckDialog(
+            self,
+            title=title,
+            message=text,
+            details=informative_text,
+            primary_text="确定",
+        )
         return int(box.exec())
 
     @staticmethod

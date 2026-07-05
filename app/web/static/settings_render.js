@@ -206,7 +206,7 @@
     const authAuthed = row.auth_status === "\u5df2\u8ba4\u8bc1";
     const authLabel = authAuthed ? "\u5df2\u8ba4\u8bc1" : "\u672a\u8ba4\u8bc1";
     const platformIcon = platformIconUrl(row.id || row.name || "", row.icon_file || "");
-    const platformName = escapeHtml(row.name || row.id || "\u5e73\u53f0");
+    const platformName = escapeHtml(translate(row.name || row.id || "\u5e73\u53f0"));
     return `
       <div class="setting-row setting-platform${hasCustomProxy && proxyCustom ? " has-proxy-custom" : ""}">
         <span class="platform-name platform-name-cell">${platformIcon ? `<img src="${escapeAttr(platformIcon)}" alt="" />` : ""}<span>${platformName}</span></span>

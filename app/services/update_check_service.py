@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
 LATEST_RELEASE_API_URL = "https://api.github.com/repos/haohaizi554/UniversalCrawler/releases/latest"
+LATEST_RELEASE_PAGE_URL = "https://github.com/haohaizi554/UniversalCrawler/releases/latest"
 UPDATE_STATUS_CURRENT = "current"
 UPDATE_STATUS_AVAILABLE = "available"
 UPDATE_STATUS_LOCAL_NEWER = "local_newer"
@@ -84,6 +86,8 @@ def fetch_latest_release_payload(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
+        if exc.code in {403, 429} and api_url == LATEST_RELEASE_API_URL:
+            return fetch_latest_release_page_payload(timeout=timeout)
         raise UpdateCheckError(f"GitHub release request failed with HTTP {exc.code}") from exc
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         raise UpdateCheckError(f"GitHub release request failed: {exc}") from exc
@@ -94,6 +98,61 @@ def fetch_latest_release_payload(
     if not isinstance(data, dict):
         raise UpdateCheckError("GitHub release response had an unexpected shape")
     return data
+
+
+def fetch_latest_release_page_payload(
+    *,
+    page_url: str = LATEST_RELEASE_PAGE_URL,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    request = urllib.request.Request(
+        page_url,
+        headers={"User-Agent": "UniversalCrawlerPro/update-check"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            final_url = response.geturl()
+            body = response.read(256_000).decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        raise UpdateCheckError(f"GitHub release page request failed with HTTP {exc.code}") from exc
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        raise UpdateCheckError(f"GitHub release page request failed: {exc}") from exc
+
+    tag_name = _release_tag_from_url(final_url) or _release_tag_from_html(body)
+    if not tag_name:
+        raise UpdateCheckError("Latest release page did not expose a release tag")
+    html_url = _release_html_url(tag_name, page_url)
+    return {
+        "tag_name": tag_name,
+        "name": tag_name,
+        "html_url": html_url,
+    }
+
+
+def _release_tag_from_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    match = re.search(r"/releases/tag/([^/?#]+)", parsed.path)
+    if not match:
+        return ""
+    return urllib.parse.unquote(match.group(1))
+
+
+def _release_tag_from_html(html: str) -> str:
+    match = re.search(r'href="[^"]*/releases/tag/([^"/?#]+)', html)
+    if not match:
+        return ""
+    return urllib.parse.unquote(match.group(1))
+
+
+def _release_html_url(tag_name: str, page_url: str) -> str:
+    parsed = urllib.parse.urlparse(page_url)
+    path = parsed.path.strip("/")
+    parts = path.split("/")
+    if len(parts) >= 2:
+        owner, repo = parts[0], parts[1]
+    else:
+        owner, repo = "haohaizi554", "UniversalCrawler"
+    return f"{parsed.scheme or 'https'}://{parsed.netloc or 'github.com'}/{owner}/{repo}/releases/tag/{urllib.parse.quote(tag_name)}"
 
 
 def check_for_update(

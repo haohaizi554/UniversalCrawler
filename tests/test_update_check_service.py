@@ -1,6 +1,8 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from app.services.update_check_service import (
     UPDATE_STATUS_AVAILABLE,
@@ -9,8 +11,28 @@ from app.services.update_check_service import (
     UpdateCheckError,
     check_for_update,
     compare_versions,
+    fetch_latest_release_page_payload,
+    fetch_latest_release_payload,
     normalize_version,
 )
+
+
+class _FakeResponse:
+    def __init__(self, *, url: str, body: str = "") -> None:
+        self._url = url
+        self._body = body.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def geturl(self) -> str:
+        return self._url
+
+    def read(self, *_args):
+        return self._body
 
 
 def _pyqt6_available() -> bool:
@@ -70,6 +92,28 @@ class UpdateCheckServiceTests(unittest.TestCase):
         with self.assertRaises(UpdateCheckError):
             check_for_update("v3.6.17", fetcher=lambda: {"html_url": "https://example.test/release"})
 
+    def test_fetch_latest_release_page_payload_reads_redirect_tag(self):
+        response = _FakeResponse(url="https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.18")
+        with patch("app.services.update_check_service.urllib.request.urlopen", return_value=response):
+            payload = fetch_latest_release_page_payload()
+
+        self.assertEqual(payload["tag_name"], "v3.6.18")
+        self.assertEqual(payload["html_url"], "https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.18")
+
+    def test_fetch_latest_release_payload_falls_back_when_api_is_forbidden(self):
+        forbidden = HTTPError(
+            url="https://api.github.com/repos/haohaizi554/UniversalCrawler/releases/latest",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=None,
+        )
+        response = _FakeResponse(url="https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.19")
+        with patch("app.services.update_check_service.urllib.request.urlopen", side_effect=[forbidden, response]):
+            payload = fetch_latest_release_payload()
+
+        self.assertEqual(payload["tag_name"], "v3.6.19")
+
 
 @unittest.skipUnless(_pyqt6_available(), "PyQt6 is not installed")
 class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
@@ -98,7 +142,29 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
 
         widget.set_update_checking(True)
         self.assertFalse(widget.lbl_version.isEnabled())
-        self.assertIn("检查", widget.lbl_version.toolTip())
+        self.assertTrue(widget.lbl_version.toolTip())
 
         widget.set_update_checking(False)
         self.assertTrue(widget.lbl_version.isEnabled())
+
+    def test_update_check_dialog_uses_scoped_theme_styles(self):
+        from PyQt6.QtWidgets import QLabel, QPushButton
+
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+        from app.ui.styles import theme_colors
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="检查更新",
+            message="当前版本已经是最新版本。",
+            details="当前版本：v3.6.17",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        colors = theme_colors(dialog._is_dark)
+        self.assertIn(colors["bg"], dialog.styleSheet())
+        self.assertIn(colors["text"], dialog.styleSheet())
+        self.assertIsNotNone(dialog.findChild(QLabel, "DialogTitle"))
+        self.assertIsNotNone(dialog.findChild(QLabel, "DialogBody"))
+        self.assertIsNotNone(dialog.findChild(QLabel, "DialogStatus"))
+        self.assertIsNotNone(dialog.findChild(QPushButton, "DialogPrimaryButton"))

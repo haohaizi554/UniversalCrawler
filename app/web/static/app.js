@@ -431,7 +431,7 @@ function configureCustomSelectHelpers() {
 }
 
 function configureMediaDisplayHelpers() {
-  if (window.UcpMediaDisplay) window.UcpMediaDisplay.configure({ esc });
+  if (window.UcpMediaDisplay) window.UcpMediaDisplay.configure({ esc, translate: translateUiText });
 }
 
 function configureSettingsRenderHelpers() {
@@ -714,7 +714,7 @@ function renderPlatforms() {
   select.innerHTML = platforms.map(platform => {
     const id = String(platform.id || "");
     const iconFile = platform.icon_file || (iconManifest.platforms || {})[id.toLowerCase()] || "platform_web.png";
-    return `<option value="${escAttr(id)}" data-icon="${escAttr(iconFileUrl(iconFile))}">${esc(platform.name)}</option>`;
+    return `<option value="${escAttr(id)}" data-icon="${escAttr(iconFileUrl(iconFile))}" data-original-label="${escAttr(platform.name)}">${esc(platform.name)}</option>`;
   }).join("");
   if (cached && platforms.some(platform => String(platform.id) === cached)) select.value = cached;
   if (!select.value && platforms.length) select.value = String(platforms[0].id || "");

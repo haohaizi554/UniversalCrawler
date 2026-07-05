@@ -72,11 +72,19 @@ const FALLBACK_UI_TEXT = {
     "下载速度": "Download",
     "失败": "Failed",
     "下载目录、命名规则和打开行为": "Download folder, filename rules, and open behavior",
+    "下载目录、文件命名和打开行为": "Download folder, filename rules, and open behavior",
+    "下载目录、命名规则、打开行为": "Download folder, filename rules, and open behavior",
     "并发、超时、重试和下载策略": "Concurrency, timeout, retry, and download policy",
+    "下载并发、超时、重试、下载策略": "Concurrency, timeout, retry, and download policy",
     "认证状态、默认数量和代理入口": "Auth status, default count, and proxy entry",
     "认证状态、爬取数量和代理入口": "Auth status, crawl quantity, and proxy entry",
+    "账号验证、爬取数量和代理入口": "Account auth, crawl quantity, and proxy entry",
     "播放器、进度记忆和预览行为": "Player, progress memory, and preview behavior",
+    "播放器、断点续播和预览行为": "Player, resume playback, and preview behavior",
+    "播放器、进度记录和预览行为": "Player, progress memory, and preview behavior",
     "保留策略、展示数量和错误追踪": "Retention policy, display limits, and error tracing",
+    "保留策略、显示上限和错误追踪": "Retention policy, display limits, and error tracing",
+    "日志留存、显示条数与错误追踪": "Log retention, display count, and error tracing",
     "语言、主题色、缩放和字体": "Language, accent, scale, and font",
     "语言、主题、配色和字体": "Language, theme, accent, and font",
     "语言、主题、界面缩放和字体": "Language, theme, scale, and font",
@@ -112,6 +120,7 @@ const FALLBACK_UI_TEXT = {
     "界面比例": "Interface scale",
     "文字大小": "Text size",
     "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。": "Paths support paste and browse. Filename rules use preset templates to avoid illegal names.",
+    "路径支持粘贴和选择；命名规则使用预设模板，避免非法文件名。": "Paths support paste and browse. Filename rules use preset templates to avoid illegal names.",
     "并发越高不一定越快，建议根据网络和磁盘性能调整。": "Higher concurrency is not always faster. Tune it for your network and disk.",
     "认证状态自动检测；代理仅对需要的平台开放。": "Authentication is detected automatically. Proxy controls are shown only where needed.",
     "播放设置只影响本地预览，不影响下载文件。": "Playback settings affect local preview only, not downloaded files.",
@@ -166,6 +175,9 @@ const FALLBACK_UI_TEXT = {
     "简体中文（推荐）": "Simplified Chinese (Recommended)",
     "繁體中文": "Traditional Chinese",
     "平台": "Platform",
+    "抖音": "Douyin",
+    "小红书": "Xiaohongshu",
+    "快手": "Kuaishou",
     "认证状态": "Auth status",
     "默认数量": "Default count",
     "爬取数量": "Crawl quantity",
@@ -198,6 +210,13 @@ const FALLBACK_UI_TEXT = {
     "进度": "Progress",
     "操作": "Actions",
     "播放": "Play",
+    "暂停": "Pause",
+    "播放/暂停": "Play/Pause",
+    "上一个资源": "Previous item",
+    "下一个资源": "Next item",
+    "媒体全屏": "Fullscreen",
+    "媒体全屏（双击画面）": "Fullscreen media (double-click video)",
+    "全屏": "Fullscreen",
     "打开目录": "Open folder",
     "删除": "Delete",
     "复制 Trace ID": "Copy Trace ID",
@@ -230,7 +249,10 @@ const FALLBACK_UI_TEXT = {
     "来源链接": "Source URL",
     "分片进度": "Segment progress",
     "速度趋势（近60秒）": "Speed trend (last 60s)",
+    "速度趋势": "Speed trend",
+    "现在": "Now",
     "当前任务事件": "Current task events",
+    "暂无事件": "No events",
     "文件信息": "File info",
     "文件名": "Filename",
     "保存路径": "Save path",
@@ -254,6 +276,8 @@ const FALLBACK_UI_TEXT = {
     "近 1 小时": "Last 1 hour",
     "近 24 小时": "Last 24 hours",
     "关键词搜索": "Keyword search",
+    "请输入 Trace ID": "Enter Trace ID",
+    "请输入关键词...": "Enter keyword...",
     "清空日志": "Clear logs",
     "导出日志": "Export logs",
     "刷新缓冲": "Refresh buffer",
@@ -332,7 +356,11 @@ const FALLBACK_UI_TEXT = {
     "日志缓存已刷新": "Log cache refreshed",
     "Web 端开始扫描本地媒体目录": "Web started scanning local media folder",
     "Web 端开始扫描本地媒体目录（异步）": "Web started scanning local media folder (async)",
+    "开始扫描本地媒体目录": "Started scanning local media folder",
     "应用开始初始化": "App initialization started",
+    "主窗口初始化完成": "Main window initialized",
+    "正在扫描目录": "Scanning folder",
+    "本地媒体目录扫描完成": "Local media folder scan completed",
     "开始下载视频": "Started downloading video",
     "下载失败：无法解析视频播放地址": "Download failed: could not parse video URL",
     "采集主页解析完成": "Profile parsing completed",
@@ -429,11 +457,19 @@ const FALLBACK_UI_TEXT = {
     "下载速度": "下載速度",
     "失败": "失敗",
     "下载目录、命名规则和打开行为": "下載目錄、命名規則和開啟行為",
+    "下载目录、文件命名和打开行为": "下載目錄、檔案命名和開啟行為",
+    "下载目录、命名规则、打开行为": "下載目錄、命名規則、開啟行為",
     "并发、超时、重试和下载策略": "並發、逾時、重試和下載策略",
+    "下载并发、超时、重试、下载策略": "下載並發、逾時、重試、下載策略",
     "认证状态、默认数量和代理入口": "認證狀態、預設數量和代理入口",
     "认证状态、爬取数量和代理入口": "認證狀態、爬取數量和代理入口",
+    "账号验证、爬取数量和代理入口": "帳號驗證、爬取數量和代理入口",
     "播放器、进度记忆和预览行为": "播放器、進度記憶和預覽行為",
+    "播放器、断点续播和预览行为": "播放器、斷點續播和預覽行為",
+    "播放器、进度记录和预览行为": "播放器、進度記錄和預覽行為",
     "保留策略、展示数量和错误追踪": "保留策略、展示數量和錯誤追蹤",
+    "保留策略、显示上限和错误追踪": "保留策略、顯示上限和錯誤追蹤",
+    "日志留存、显示条数与错误追踪": "日誌留存、顯示條數與錯誤追蹤",
     "语言、主题色、缩放和字体": "語言、主題色、縮放和字體",
     "语言、主题、配色和字体": "語言、主題、配色和字體",
     "语言、主题、界面缩放和字体": "語言、主題、介面縮放和字體",
@@ -469,6 +505,7 @@ const FALLBACK_UI_TEXT = {
     "界面比例": "介面比例",
     "文字大小": "文字大小",
     "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。": "路徑支援貼上和選擇，命名規則使用預設範本，避免非法檔名。",
+    "路径支持粘贴和选择；命名规则使用预设模板，避免非法文件名。": "路徑支援貼上和選擇；命名規則使用預設範本，避免非法檔名。",
     "并发越高不一定越快，建议根据网络和磁盘性能调整。": "並發越高不一定越快，建議依網路和磁碟效能調整。",
     "认证状态自动检测；代理仅对需要的平台开放。": "認證狀態會自動偵測；代理只對需要的平台開放。",
     "播放设置只影响本地预览，不影响下载文件。": "播放設定只影響本機預覽，不影響下載檔案。",
@@ -523,6 +560,9 @@ const FALLBACK_UI_TEXT = {
     "简体中文（推荐）": "簡體中文（推薦）",
     "繁體中文": "繁體中文",
     "平台": "平台",
+    "抖音": "抖音",
+    "小红书": "小紅書",
+    "快手": "快手",
     "认证状态": "認證狀態",
     "默认数量": "預設數量",
     "爬取数量": "爬取數量",
@@ -555,6 +595,13 @@ const FALLBACK_UI_TEXT = {
     "进度": "進度",
     "操作": "操作",
     "播放": "播放",
+    "暂停": "暫停",
+    "播放/暂停": "播放/暫停",
+    "上一个资源": "上一個資源",
+    "下一个资源": "下一個資源",
+    "媒体全屏": "媒體全螢幕",
+    "媒体全屏（双击画面）": "媒體全螢幕（雙擊畫面）",
+    "全屏": "全螢幕",
     "打开目录": "開啟目錄",
     "删除": "刪除",
     "复制 Trace ID": "複製 Trace ID",
@@ -587,7 +634,10 @@ const FALLBACK_UI_TEXT = {
     "来源链接": "來源連結",
     "分片进度": "分片進度",
     "速度趋势（近60秒）": "速度趨勢（近60秒）",
+    "速度趋势": "速度趨勢",
+    "现在": "現在",
     "当前任务事件": "目前任務事件",
+    "暂无事件": "暫無事件",
     "文件信息": "檔案資訊",
     "文件名": "檔案名稱",
     "保存路径": "儲存路徑",
@@ -611,6 +661,8 @@ const FALLBACK_UI_TEXT = {
     "近 1 小时": "近 1 小時",
     "近 24 小时": "近 24 小時",
     "关键词搜索": "關鍵字搜尋",
+    "请输入 Trace ID": "請輸入 Trace ID",
+    "请输入关键词...": "請輸入關鍵字...",
     "清空日志": "清空日誌",
     "导出日志": "匯出日誌",
     "刷新缓冲": "刷新緩衝",
@@ -689,7 +741,11 @@ const FALLBACK_UI_TEXT = {
     "日志缓存已刷新": "日誌快取已刷新",
     "Web 端开始扫描本地媒体目录": "Web 端開始掃描本機媒體目錄",
     "Web 端开始扫描本地媒体目录（异步）": "Web 端開始掃描本機媒體目錄（非同步）",
+    "开始扫描本地媒体目录": "開始掃描本機媒體目錄",
     "应用开始初始化": "應用開始初始化",
+    "主窗口初始化完成": "主視窗初始化完成",
+    "正在扫描目录": "正在掃描目錄",
+    "本地媒体目录扫描完成": "本機媒體目錄掃描完成",
     "开始下载视频": "開始下載影片",
     "下载失败：无法解析视频播放地址": "下載失敗：無法解析影片播放位址",
     "采集主页解析完成": "採集主頁解析完成",
@@ -783,6 +839,8 @@ function translateUiText(text) {
 function translateUiCore(text, lang = currentLanguage()) {
   const dict = UI_TEXT[lang] || {};
   if (dict[text]) return dict[text];
+  const iconPrefix = text.match(/^([\p{Extended_Pictographic}✅⚠️❌ℹ️🔗📂]+\s+)(.+)$/u);
+  if (iconPrefix) return `${iconPrefix[1]}${translateUiCore(iconPrefix[2].trim(), lang)}`;
   if (text.includes(" · ")) {
     return text.split(" · ").map(part => translateUiCore(part.trim(), lang)).join(" · ");
   }
@@ -806,16 +864,47 @@ function translateUiCore(text, lang = currentLanguage()) {
   if (match) return lang === "zh-TW" ? `${match[1]} / ${match[2]} 頁` : `${match[1]} / ${match[2]} pages`;
   match = text.match(/^(\d+)\s*条\/页$/);
   if (match) return lang === "zh-TW" ? `${match[1]} 條/頁` : `${match[1]} / page`;
+  match = text.match(/^(\d+)\s*条(（推荐）)?$/);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 條${match[2] ? "（推薦）" : ""}`
+    : `${match[1]} rows${match[2] ? " (Recommended)" : ""}`;
+  match = text.match(/^(\d+)\s*天(（推荐）)?$/);
+  if (match) {
+    const noun = Number(match[1]) === 1 ? "day" : "days";
+    return lang === "zh-TW"
+      ? `${match[1]} 天${match[2] ? "（推薦）" : ""}`
+      : `${match[1]} ${noun}${match[2] ? " (Recommended)" : ""}`;
+  }
+  match = text.match(/^(\d+)\s*秒(（推荐）)?$/);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 秒${match[2] ? "（推薦）" : ""}`
+    : `${match[1]} sec${match[2] ? " (Recommended)" : ""}`;
   match = text.match(/^(\d+)次$/);
   if (match) return lang === "zh-TW" ? `${match[1]} 次` : `${match[1]} times`;
+  match = text.match(/^(\d+)\s*次(（推荐）)?$/);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 次${match[2] ? "（推薦）" : ""}`
+    : `${match[1]} times${match[2] ? " (Recommended)" : ""}`;
+  match = text.match(/^(\d+)（推荐）$/);
+  if (match) return lang === "zh-TW" ? `${match[1]}（推薦）` : `${match[1]} (Recommended)`;
   match = text.match(/^当前运行：(\d+)\s*个任务$/);
   if (match) return lang === "zh-TW" ? `目前執行：${match[1]} 個任務` : `Running: ${match[1]} tasks`;
+  match = text.match(/^正在扫描目录[:：]\s*(.*)$/);
+  if (match) return lang === "zh-TW" ? `正在掃描目錄：${match[1]}` : `Scanning folder: ${match[1]}`;
+  match = text.match(/^已加载\s*(\d+)\s*个本地文件\s*\(视频:\s*(\d+),\s*图片:\s*(\d+)\)$/);
+  if (match) return lang === "zh-TW"
+    ? `已載入 ${match[1]} 個本機檔案（影片：${match[2]}，圖片：${match[3]}）`
+    : `Loaded ${match[1]} local files (videos: ${match[2]}, images: ${match[3]})`;
+  match = text.match(/^已加载\s*(\d+)\s*个本地文件$/);
+  if (match) return lang === "zh-TW" ? `已載入 ${match[1]} 個本機檔案` : `Loaded ${match[1]} local files`;
   match = text.match(/^打开\s+(.+)$/);
   if (match) return lang === "zh-TW" ? `開啟 ${match[1]}` : `Open ${match[1]}`;
   match = text.match(/^(.+?)[:：]\s*(.*)$/);
   if (match && dict[match[1].trim()]) {
     const label = translateUiCore(match[1].trim(), lang);
-    return `${label}: ${match[2]}`;
+    const detail = translateUiCore(match[2].trim(), lang);
+    if (lang === "zh-TW") return detail ? `${label}：${detail}` : label;
+    return detail ? `${label}: ${detail}` : label;
   }
   match = text.match(/^(.+)\s+今天\s+(.+)$/);
   if (match) return `${translateUiCore(match[1].trim(), lang)}  ${translateUiCore("今天", lang)} ${match[2]}`;
@@ -867,7 +956,7 @@ function optionLabel(label) {
   if (pageMatch && currentLanguage() === "zh-TW") {
     return `${pageMatch[1]} 頁${pageMatch[2] ? "（推薦）" : ""}`;
   }
-  return t(text);
+  return translateUiCore(text);
 }
 
 function setButtonContent(buttonId, label) {
@@ -875,6 +964,18 @@ function setButtonContent(buttonId, label) {
   if (!button) return;
   const icon = button.querySelector("img");
   button.innerHTML = `${icon ? icon.outerHTML : ""}${helpers.esc(t(label))}`;
+}
+
+function setLeadingText(selector, label) {
+  const element = document.querySelector(selector);
+  if (!element) return;
+  const translated = `${t(label)} `;
+  const textNode = Array.from(element.childNodes).find(node => node.nodeType === Node.TEXT_NODE && node.nodeValue.trim());
+  if (textNode) {
+    textNode.nodeValue = translated;
+    return;
+  }
+  element.insertBefore(document.createTextNode(translated), element.firstChild);
 }
 
 function applyStaticLanguage() {
@@ -901,8 +1002,24 @@ function applyStaticLanguage() {
   document.querySelectorAll("#page-queue th").forEach((header, index) => {
     if (queueHeaders[index]) header.textContent = t(queueHeaders[index]);
   });
+  const activeHeaders = ["标题", "平台", "进度", "速度", "剩余时间", "操作"];
+  document.querySelectorAll("#page-active th").forEach((header, index) => {
+    if (activeHeaders[index]) header.textContent = t(activeHeaders[index]);
+  });
   const activeControlTitle = document.querySelector("#page-active .active-control-title");
   if (activeControlTitle) activeControlTitle.textContent = t("队列控制");
+  const activeRetryLabel = document.querySelector("#page-active .active-toggle span");
+  if (activeRetryLabel) activeRetryLabel.textContent = t("失败自动重试");
+  setLeadingText("#page-active .active-control-row label:nth-of-type(2)", "最大重试次数");
+  setLeadingText("#page-active .active-control-row label:nth-of-type(3)", "并发数");
+  const completedHeaders = ["标题", "完成时间", "时长", "格式", "操作"];
+  document.querySelectorAll("#page-completed th").forEach((header, index) => {
+    if (completedHeaders[index]) header.textContent = t(completedHeaders[index]);
+  });
+  const failedHeaders = ["标题", "失败时间", "失败原因", "状态", "操作"];
+  document.querySelectorAll("#page-failed th").forEach((header, index) => {
+    if (failedHeaders[index]) header.textContent = t(failedHeaders[index]);
+  });
   const clearQueueButton = document.querySelector("#page-queue [onclick=\"frontendAction('clear_queue',{})\"]");
   if (clearQueueButton) {
     clearQueueButton.title = t("删除所有");
@@ -929,6 +1046,14 @@ function applyStaticLanguage() {
   const logFilterLabels = ["日志级别", "时间范围", "平台", "Trace ID", "关键词搜索"];
   document.querySelectorAll("#page-logs .log-filter-label").forEach((label, index) => {
     if (logFilterLabels[index]) label.textContent = t(logFilterLabels[index]);
+  });
+  const logTraceFilter = helpers.byId("logTraceFilter");
+  if (logTraceFilter) logTraceFilter.placeholder = t("请输入 Trace ID");
+  const logKeywordFilter = helpers.byId("logKeywordFilter");
+  if (logKeywordFilter) logKeywordFilter.placeholder = t("请输入关键词...");
+  const logHeaders = ["时间", "级别", "来源", "Trace ID", "消息摘要"];
+  document.querySelectorAll("#page-logs th").forEach((header, index) => {
+    if (logHeaders[index]) header.textContent = t(logHeaders[index]);
   });
   const logActionLabels = [
     ["runLogOperation('refresh')", "刷新"],
