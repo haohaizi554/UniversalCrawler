@@ -1110,10 +1110,15 @@ class WebUIBrowserTests(unittest.TestCase):
                 trace: '',
                 keyword: ''
               };
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "zh-CN"
+              };
+              document.documentElement.dataset.language = 'zh-CN';
               switchPage('logs');
               renderLogs();
               const zh = Array.from(document.querySelectorAll('#logTabs [data-log-tab]')).map(button => button.textContent.trim());
-              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),
                 language: "en-US"
@@ -1192,7 +1197,19 @@ class WebUIBrowserTests(unittest.TestCase):
               selected.completed = "completed-i18n-a";
               renderCompleted();
               const completedText = document.getElementById("completedDetail").textContent;
-              return { logText, completedText };
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "zh-TW"
+              };
+              document.documentElement.dataset.language = "zh-TW";
+              currentPage = "logs";
+              applyStaticLanguage();
+              renderLogs();
+              const twLogText = document.getElementById("page-logs").textContent;
+              currentPage = "completed";
+              renderCompleted();
+              const twCompletedText = document.getElementById("completedDetail").textContent;
+              return { logText, completedText, twLogText, twCompletedText };
             }
             """
         )
@@ -1206,6 +1223,12 @@ class WebUIBrowserTests(unittest.TestCase):
         for label in ("Filename", "Save path", "Completed at", "Duration", "Resolution", "Size", "Format"):
             self.assertIn(label, result["completedText"])
         self.assertNotIn("文件名", result["completedText"])
+        self.assertIn("系統 · GUI", result["twLogText"])
+        self.assertIn("日誌快取已刷新", result["twLogText"])
+        self.assertIn("GUI_日誌快取已刷新", result["twLogText"])
+        self.assertNotIn("日志缓存已刷新", result["twLogText"])
+        for label in ("檔案名稱", "儲存路徑", "完成時間", "時長", "解析度", "大小", "格式"):
+            self.assertIn(label, result["twCompletedText"])
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""

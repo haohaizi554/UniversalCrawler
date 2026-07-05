@@ -29,7 +29,7 @@ from .external import (
     FFmpegExternalTool,
     NM3U8DLREExternalTool,
     build_hidden_startupinfo,
-    build_new_console_flags,
+    build_no_window_flags,
 )
 
 try:
@@ -245,7 +245,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 return
             raise ExternalToolNotFoundError("N_m3u8DL-RE executable not found")
 
-        creation_flags = build_new_console_flags()
+        creation_flags = build_no_window_flags()
         output_reader: threading.Thread | None = None
         temp_workspace: Path | None = None
         try:
@@ -644,7 +644,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 trace_id=trace_id,
             )
             output_progress = _Nm3u8OutputProgress(default_progress=50)
-            process = self._popen_nm3u8_process(cmd, build_new_console_flags())
+            process = self._popen_nm3u8_process(cmd, build_no_window_flags())
             output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
             combined_provider = self._combine_progress_providers(progress_provider, output_progress.snapshot)
             self._wait_external_process_with_file_progress(
@@ -699,6 +699,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             creationflags=creation_flags,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            startupinfo=build_hidden_startupinfo(),
             text=True,
             encoding="utf-8",
             errors="replace",

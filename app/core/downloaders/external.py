@@ -28,6 +28,12 @@ def build_new_console_flags() -> int:
         return 0
     return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
+def build_no_window_flags() -> int:
+    """Return Windows flags for captured child processes that must not open a console."""
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 class ExternalToolRunner:
     """封装外部工具查找、等待和停止控制的公共逻辑。"""
 

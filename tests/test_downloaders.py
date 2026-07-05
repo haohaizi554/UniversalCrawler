@@ -1246,12 +1246,26 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertIsNotNone(combined)
         self.assertEqual(combined(), (42, 4096))
 
+    @patch("app.core.downloaders.m3u8.build_hidden_startupinfo", return_value="hidden-startupinfo")
+    @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    def test_nm3u8_process_captures_output_without_visible_console(self, mocked_popen, _mocked_startupinfo):
+        N_m3u8DL_RE_Downloader._popen_nm3u8_process(["N_m3u8DL-RE.exe", "demo.m3u8"], 123)
+
+        kwargs = mocked_popen.call_args.kwargs
+        self.assertEqual(kwargs["creationflags"], 123)
+        self.assertEqual(kwargs["startupinfo"], "hidden-startupinfo")
+        self.assertEqual(kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+        self.assertTrue(kwargs["text"])
+
     @patch.object(N_m3u8DL_RE_Downloader, "_wait_external_process_with_file_progress")
     @patch("app.core.downloaders.m3u8.subprocess.Popen")
+    @patch("app.core.downloaders.m3u8.build_no_window_flags", return_value=321)
     @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.resolve_executable", return_value="N_m3u8DL-RE.exe")
     def test_m3u8_downloader_uses_file_progress_for_external_tool(
         self,
         _mocked_resolve,
+        _mocked_no_window_flags,
         mocked_popen,
         mocked_wait_progress,
     ):
@@ -1266,6 +1280,7 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertIs(mocked_wait_progress.call_args.args[0], process)
         self.assertEqual(mocked_wait_progress.call_args.args[1], "demo.mp4")
         self.assertEqual(mocked_wait_progress.call_args.args[4], 50)
+        self.assertEqual(mocked_popen.call_args.kwargs["creationflags"], 321)
         self.assertEqual(mocked_popen.call_args.kwargs["stdout"], subprocess.PIPE)
         self.assertEqual(mocked_popen.call_args.kwargs["stderr"], subprocess.STDOUT)
         self.assertIsNotNone(mocked_wait_progress.call_args.kwargs["progress_provider"])
