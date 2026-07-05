@@ -48,6 +48,7 @@ class AppShell(QWidget):
     clear_all_requested = pyqtSignal()
     active_options_changed = pyqtSignal(dict)
     log_action_requested = pyqtSignal(str)
+    update_check_requested = pyqtSignal(str)
 
     def __init__(self, *, is_dark_theme: bool, style_provider) -> None:
         super().__init__()
@@ -173,6 +174,7 @@ class AppShell(QWidget):
         settings.platform_settings_visible.connect(self.platform_settings_visible.emit)
         logs = self.pages["logs"]
         logs.log_action_requested.connect(self.log_action_requested.emit)
+        self.status_bar.update_check_requested.connect(self.update_check_requested.emit)
 
     def show_page(self, page_id: str, *, emit_change: bool = True, render_page: bool = True) -> None:
         page = self.pages.get(page_id)

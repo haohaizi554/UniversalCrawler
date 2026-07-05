@@ -13,7 +13,7 @@ from ctypes import wintypes
 
 from PyQt6.QtCore import QAbstractNativeEventFilter, QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
-from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QMessageBox, QVBoxLayout, QWidget
 
 from app.config import cfg, get_platform_runtime_defaults
 from app.debug_logger import debug_logger
@@ -22,13 +22,20 @@ from app.core.plugin_registry import registry
 from app.services.app_state import AppState
 from app.services.frontend_event_aggregator import sections_for_topic
 from app.services.frontend_state_service import FrontendStateService
+from app.services.update_check_service import (
+    UPDATE_STATUS_AVAILABLE,
+    UPDATE_STATUS_CURRENT,
+    UPDATE_STATUS_LOCAL_NEWER,
+    UpdateCheckResult,
+    check_for_update,
+)
 from app.ui.connection_registry import ConnectionRegistry
 from app.ui.dialogs import FileAssociationDialog
 from app.ui.dialogs.selection import SelectionDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_title_bar import WindowTitleBar
 from app.ui.plugin_settings import read_plugin_run_options
-from app.ui.styles import apply_application_theme, build_palette, polish_data_views
+from app.ui.styles import apply_application_theme, apply_dialog_theme, build_palette, polish_data_views
 from app.ui.ui_update_scheduler import UiUpdateScheduler
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
@@ -177,6 +184,8 @@ class MainWindow(QMainWindow):
     sig_switch_preview = pyqtSignal(int)
     sig_auto_next_preview = pyqtSignal()
     _clipboard_copy_requested = pyqtSignal(str)
+    _update_check_finished = pyqtSignal(object)
+    _update_check_failed = pyqtSignal(str)
 
     def __init__(self, *, app_state: AppState | None = None, event_bus: EventBus | None = None) -> None:
         super().__init__()
@@ -224,6 +233,16 @@ class MainWindow(QMainWindow):
             self._copy_text_to_clipboard,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._connections.connect(
+            self._update_check_finished,
+            self._on_update_check_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
+            self._update_check_failed,
+            self._on_update_check_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
         self._pending_delete_video_ids: list[str] = []
         self._title_rename_handler = None
@@ -234,6 +253,8 @@ class MainWindow(QMainWindow):
         self._frontend_section_signatures: dict[str, str] = {}
         self._active_selection_dialog: SelectionDialog | None = None
         self._directory_dialog: QFileDialog | None = None
+        self._update_check_running = False
+        self._update_check_lock = threading.RLock()
 
         self._build_ui()
         self._expose_component_refs()
@@ -377,8 +398,151 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.clear_all_requested, self._on_clear_queue_requested)
         self._connections.connect(self.app_shell.active_options_changed, self._update_download_options)
         self._connections.connect(self.app_shell.log_action_requested, self._handle_log_action)
+        self._connections.connect(self.app_shell.update_check_requested, self._on_update_check_requested)
         self._connections.connect(self.media_panel.sig_switch_preview, self.sig_switch_preview.emit)
         self._connections.connect(self.media_panel.sig_auto_next_preview, self.sig_auto_next_preview.emit)
+
+    def _on_update_check_requested(self, version_text: str = "") -> None:
+        if not self._try_begin_update_check():
+            self._show_basic_message(
+                QMessageBox.Icon.Information,
+                "检查更新",
+                "正在检查更新，请稍候。",
+            )
+            return
+        self._set_status_bar_update_checking(True)
+        local_version = version_text or self._current_status_version()
+        worker = threading.Thread(
+            target=self._run_update_check,
+            args=(local_version,),
+            daemon=True,
+            name="ucp-update-check",
+        )
+        worker.start()
+
+    def _try_begin_update_check(self) -> bool:
+        with self._update_check_lock:
+            if self._update_check_running:
+                return False
+            self._update_check_running = True
+            return True
+
+    def _finish_update_check(self) -> None:
+        with self._update_check_lock:
+            self._update_check_running = False
+        self._set_status_bar_update_checking(False)
+
+    def _set_status_bar_update_checking(self, checking: bool) -> None:
+        status_bar = getattr(getattr(self, "app_shell", None), "status_bar", None)
+        setter = getattr(status_bar, "set_update_checking", None)
+        if callable(setter):
+            setter(checking)
+
+    def _current_status_version(self) -> str:
+        status_bar = getattr(getattr(self, "app_shell", None), "status_bar", None)
+        label = getattr(status_bar, "lbl_version", None)
+        text = getattr(label, "text", None)
+        if callable(text):
+            return str(text())
+        return "v3.6.17"
+
+    def _run_update_check(self, local_version: str) -> None:
+        try:
+            result = check_for_update(local_version)
+        except Exception as exc:
+            self._update_check_failed.emit(str(exc))
+            return
+        self._update_check_finished.emit(result)
+
+    def _on_update_check_finished(self, result: object) -> None:
+        self._finish_update_check()
+        if not isinstance(result, UpdateCheckResult):
+            self._show_update_check_error("更新检测返回了无法识别的结果。")
+            return
+        self._show_update_check_result(result)
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self._finish_update_check()
+        self._show_update_check_error(message)
+
+    def _show_update_check_error(self, message: str) -> None:
+        self._show_basic_message(
+            QMessageBox.Icon.Warning,
+            "检查更新失败",
+            f"暂时无法检查最新版本。\n\n{message}",
+        )
+
+    def _show_update_check_result(self, result: UpdateCheckResult) -> None:
+        local_version = self._display_version(result.local_version)
+        latest_version = self._display_version(result.latest_version)
+        if result.status == UPDATE_STATUS_CURRENT:
+            self._show_basic_message(
+                QMessageBox.Icon.Information,
+                "检查更新",
+                f"当前版本 {local_version} 已经是最新版本。",
+            )
+            return
+        if result.status == UPDATE_STATUS_LOCAL_NEWER:
+            self._show_basic_message(
+                QMessageBox.Icon.Information,
+                "检查更新",
+                f"当前版本 {local_version} 高于最新 Release {latest_version}。",
+                "这通常表示你正在使用本地构建或预发布构建，无需更新。",
+            )
+            return
+        if result.status == UPDATE_STATUS_AVAILABLE:
+            self._show_update_available_message(local_version, latest_version, result)
+            return
+        self._show_update_check_error(f"未知更新状态：{result.status}")
+
+    def _show_update_available_message(
+        self,
+        local_version: str,
+        latest_version: str,
+        result: UpdateCheckResult,
+    ) -> None:
+        box = QMessageBox(self)
+        apply_dialog_theme(box, parent=self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("检测到新版本")
+        box.setText(f"检测到最新版本 {latest_version}。")
+        release_hint = f"\nRelease：{result.html_url}" if result.html_url else ""
+        box.setInformativeText(f"当前版本：{local_version}\n最新版本：{latest_version}{release_hint}\n\n是否要更新？")
+        update_button = box.addButton("更新", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(update_button)
+        box.exec()
+        if box.clickedButton() is update_button:
+            self._show_basic_message(
+                QMessageBox.Icon.Information,
+                "更新暂未接入",
+                "自动下载和安装流程尚未接入。",
+                "当前只完成了版本检测与更新确认弹窗。",
+            )
+
+    def _show_basic_message(
+        self,
+        icon: QMessageBox.Icon,
+        title: str,
+        text: str,
+        informative_text: str = "",
+    ) -> int:
+        box = QMessageBox(self)
+        apply_dialog_theme(box, parent=self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        if informative_text:
+            box.setInformativeText(informative_text)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        return int(box.exec())
+
+    @staticmethod
+    def _display_version(version: str) -> str:
+        value = str(version or "").strip()
+        if not value:
+            return "v?"
+        return value if value.lower().startswith("v") else f"v{value}"
 
     def set_frontend_state_service(self, service: FrontendStateService) -> None:
         new_event_bus = service.app_state.event_bus

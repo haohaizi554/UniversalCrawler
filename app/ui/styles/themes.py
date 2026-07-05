@@ -1003,6 +1003,23 @@ QLabel#StatusMetric {{
     background: transparent;
 }}
 
+QPushButton#StatusVersionButton {{
+    background-color: transparent;
+    border: none;
+    color: {c["muted"]};
+    padding: 0px;
+    text-align: right;
+}}
+
+QPushButton#StatusVersionButton:hover,
+QPushButton#StatusVersionButton:focus {{
+    color: {c["accent"]};
+}}
+
+QPushButton#StatusVersionButton:disabled {{
+    color: {c["muted"]};
+}}
+
 QPushButton#StatusHelpBtn {{
     border: none;
     background: transparent;

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QPainter
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
@@ -51,6 +51,7 @@ class StatusBarWidget(QFrame):
 
     PROJECT_URL = "https://github.com/haohaizi554/UniversalCrawler"
     METRIC_VALUE_WIDTH = 88
+    update_check_requested = pyqtSignal(str)
 
     def __init__(self, *, is_dark: bool = False) -> None:
         super().__init__()
@@ -60,6 +61,7 @@ class StatusBarWidget(QFrame):
         self._status_cache: dict = {}
         self._language = "zh-CN"
         self._metric_captions: dict[str, QLabel] = {}
+        self._update_checking = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
@@ -89,10 +91,13 @@ class StatusBarWidget(QFrame):
 
         layout.addStretch(1)
 
-        self.lbl_version = QLabel("v3.6.17")
-        self.lbl_version.setObjectName("MutedLabel")
-        self.lbl_version.setFixedWidth(52)
-        self.lbl_version.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_version = QPushButton("v3.6.17")
+        self.lbl_version.setObjectName("StatusVersionButton")
+        self.lbl_version.setToolTip("检查更新")
+        self.lbl_version.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_version.setFixedWidth(70)
+        self.lbl_version.setFlat(True)
+        self.lbl_version.clicked.connect(self._emit_update_check_requested)
         layout.addWidget(self.lbl_version, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.btn_help = QPushButton()
@@ -110,6 +115,9 @@ class StatusBarWidget(QFrame):
         layout.addWidget(self.btn_help, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.status_dot.set_state("idle")
+
+    def _emit_update_check_requested(self) -> None:
+        self.update_check_requested.emit(self.lbl_version.text())
 
     def _metric_label(self, parent_layout: QHBoxLayout, key: str, title: str) -> QLabel:
         row = QHBoxLayout()
@@ -135,6 +143,7 @@ class StatusBarWidget(QFrame):
 
     def set_language(self, language: str | None) -> None:
         self._language = normalize_language(language)
+        self._refresh_version_tooltip()
         self.btn_help.setToolTip(tr("打开项目主页", self._language))
         caption_titles = {
             "download": "下载速度",
@@ -146,6 +155,15 @@ class StatusBarWidget(QFrame):
             if caption is not None:
                 caption.setText(f"{tr(title, self._language)}:")
         self.render(self._status_cache or {"running_state": "空闲中"})
+
+    def set_update_checking(self, checking: bool) -> None:
+        self._update_checking = bool(checking)
+        self.lbl_version.setEnabled(not self._update_checking)
+        self._refresh_version_tooltip()
+
+    def _refresh_version_tooltip(self) -> None:
+        tooltip = "正在检查更新..." if self._update_checking else "检查更新"
+        self.lbl_version.setToolTip(tr(tooltip, self._language))
 
     def render(self, status: dict) -> None:
         if not status:
