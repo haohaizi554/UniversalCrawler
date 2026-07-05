@@ -673,7 +673,7 @@ function buildMockState() {
       { id: "video_to_audio", title: "视频转音频", last_used: "今天 17:35" },
       { id: "metadata_viewer", title: "元数据查看", last_used: "今天 14:10" },
     ],
-    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.15" },
+    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.16" },
   };
 }
 
@@ -1296,6 +1296,12 @@ function logValueHtml(value) {
   return esc(translateStructuredLogText(value));
 }
 
+function logEventCodeText(value) {
+  const text = String(value || "-");
+  if (!text || text === "-") return "-";
+  return text.split("_").map(part => translateStructuredLogText(part)).join("_");
+}
+
 function logSourceCellHtml(item) {
   const label = item.source_display || item.source || item.platform || "";
   const iconFile = item.source_display_icon_file || "";
@@ -1316,7 +1322,7 @@ function logDetailSummaryHtml(item) {
     ["性质", logValueHtml(logResultNatureText(item))],
     ["范围", logValueHtml(logScopeDisplayText(item))],
     ["阶段", logValueHtml(logStageDisplayText(item))],
-    ["事件码", esc(item.event_code || item.status_code || "-")],
+    ["事件码", esc(logEventCodeText(item.event_code || item.status_code || "-"))],
     ["来源", logSourceCellHtml(item)],
     ["平台", logValueHtml(platformLabel || "-")],
     ["Trace ID", esc(item.trace_id || "-")],
@@ -1967,7 +1973,7 @@ function renderStatus() {
   byId("statusDownload").textContent = status.download_speed || "0 B/s";
   byId("statusCompleted").textContent = String(status.completed_count || 0);
   byId("statusFailed").textContent = String(failedCount);
-  byId("statusVersion").textContent = status.version || "v3.6.15";
+  byId("statusVersion").textContent = status.version || "v3.6.16";
 }
 
 function switchPage(pageId) {

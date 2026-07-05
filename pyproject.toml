@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ucrawl"
-version = "3.6.15"
+version = "3.6.16"
 description = "UCrawl - 通用爬虫 (CLI / SDK / REST API / AI Skill)"
 readme = "README.md"
 requires-python = ">=3.10"

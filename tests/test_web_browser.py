@@ -293,15 +293,15 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
 
         self.assertIn('/static/app.css?v=20260628-settings-masterdetail', content)
-        self.assertIn('/static/i18n.js?v=20260701-i18n', content)
+        self.assertIn('/static/i18n.js?v=20260705-i18n-values', content)
         self.assertIn('/static/custom_select.js?v=20260701-custom-select', content)
         self.assertIn('/static/media_display.js?v=20260701-media-display', content)
         self.assertIn('/static/log_display.js?v=20260701-log-display', content)
         self.assertIn('/static/platform_limits.js?v=20260701-platform-limits', content)
         self.assertIn('/static/settings_render.js?v=20260701-settings-render', content)
-        self.assertIn('/static/task_render.js?v=20260701-task-render', content)
+        self.assertIn('/static/task_render.js?v=20260705-i18n-values', content)
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
-        self.assertIn('/static/app.js?v=20260628-settings-masterdetail', content)
+        self.assertIn('/static/app.js?v=20260705-i18n-values', content)
 
     def test_video_end_autoplays_next_preview(self):
         from pathlib import Path
@@ -1135,6 +1135,77 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("错误日志 1", result["zh"])
         self.assertIn("All logs 3", result["en"])
         self.assertIn("Error logs 1", result["en"])
+
+    def test_09e_language_switch_translates_log_values_and_completed_detail_labels(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "en-US"
+              };
+              document.documentElement.dataset.language = "en-US";
+              frontendState.log_items = [{
+                id: "log-i18n-a",
+                time: "2026-07-05 09:04:22",
+                level: "INFO",
+                raw_level: "INFO",
+                result_type: "info",
+                category: "system",
+                log_scope: "system",
+                event_stage: "step",
+                event_stage_display: "步骤",
+                event_code: "GUI_日志缓存已刷新",
+                source: "GUI",
+                source_display: "系统 · GUI",
+                source_display_icon_file: "nav_settings.png",
+                platform: "系统",
+                trace_id: "",
+                message_summary: "日志缓存已刷新",
+                message: "日志缓存已刷新",
+                detail: { description: "日志缓存已刷新", platform: "系统", source: "GUI" },
+                stack: ""
+              }];
+              frontendState.completed_items = [{
+                id: "completed-i18n-a",
+                title: "demo",
+                filename: "demo.mp4",
+                save_dir: "D:\\\\Downloads",
+                completed_at: "2026-07-05 09:14:13",
+                duration: "00:01:00",
+                resolution: "1280 x 720",
+                size: "1.3 GB",
+                format: "MP4"
+              }];
+              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
+              currentPage = "logs";
+              selected.log = "";
+              applyStaticLanguage();
+              renderLogs();
+              const logText = document.getElementById("page-logs").textContent;
+              currentPage = "completed";
+              selected.completed = "completed-i18n-a";
+              renderCompleted();
+              const completedText = document.getElementById("completedDetail").textContent;
+              return { logText, completedText };
+            }
+            """
+        )
+
+        self.assertIn("System · GUI", result["logText"])
+        self.assertIn("Log cache refreshed", result["logText"])
+        self.assertIn("GUI_Log cache refreshed", result["logText"])
+        self.assertIn("Process", result["logText"])
+        self.assertIn("Step", result["logText"])
+        self.assertNotIn("日志缓存已刷新", result["logText"])
+        for label in ("Filename", "Save path", "Completed at", "Duration", "Resolution", "Size", "Format"):
+            self.assertIn(label, result["completedText"])
+        self.assertNotIn("文件名", result["completedText"])
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""

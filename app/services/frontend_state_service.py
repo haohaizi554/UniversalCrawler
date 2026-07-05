@@ -1553,7 +1553,7 @@ class FrontendStateService:
         try:
             from cli import __version__
         except Exception:
-            __version__ = "3.6.15"
+            __version__ = "3.6.16"
 
         if any(value is None for value in (queue_count, active_count, completed_count, failed_count)):
             counts = self._video_bucket_counts()
