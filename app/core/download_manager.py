@@ -10,7 +10,7 @@ from collections.abc import Callable
 from app.core.download_manager_core import DownloadManagerCore
 from app.core.downloaders import BaseDownloader
 from app.core.downloaders.registry import downloader_registry
-from app.exceptions import AppError, DownloaderStoppedError
+from app.exceptions import DownloaderStoppedError
 from app.models import VideoItem
 from app.utils import sanitize_filename
 from app.utils.callback_signal import CallbackSignal
@@ -26,7 +26,6 @@ class DownloadWorker(threading.Thread):
         b'GIF89a': '.gif',
         b'GIF87a': '.gif',
         b'RIFF': '.webp',  # webp 以 RIFF 开头
-        b'\x00\x00\x00 ftyp': '.mp4',
         b'\x00\x00\x00\x1cftyp': '.mp4',
         b'\x00\x00\x00\x20ftyp': '.mp4',
         b'ID3': '.mp3',
@@ -237,6 +236,8 @@ class DownloadWorker(threading.Thread):
             merge_status: str | None = None,
         ) -> None:
             nonlocal last_progress, last_speed_bps, last_emit_at, last_phase_signature
+            if not self.is_running:
+                return
             try:
                 normalized = max(0, min(100, int(progress)))
             except (TypeError, ValueError):
@@ -271,6 +272,8 @@ class DownloadWorker(threading.Thread):
             last_speed_bps = snapshot.speed_bps
             last_phase_signature = phase_signature
             last_emit_at = now
+            if not self.is_running:
+                return
             self.sig_progress.emit(self.video.id, normalized)
 
         return emit

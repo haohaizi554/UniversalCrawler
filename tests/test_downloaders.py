@@ -631,6 +631,18 @@ class DownloaderStrategyTests(unittest.TestCase):
             [(item.id, 0), (item.id, 1), (item.id, 2), (item.id, 100)],
         )
 
+    def test_download_worker_ignores_progress_after_stop(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+        emitted: list[tuple[str, int]] = []
+        worker.sig_progress.connect(lambda video_id, progress: emitted.append((video_id, progress)))
+        progress = worker._emit_progress_if_changed()
+
+        worker.stop()
+        progress(50, bytes_downloaded=512, bytes_total=1024)
+
+        self.assertEqual(emitted, [])
+
     def test_download_worker_records_byte_progress_and_refreshes_speed(self):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         worker = DownloadWorker(item, "downloads")

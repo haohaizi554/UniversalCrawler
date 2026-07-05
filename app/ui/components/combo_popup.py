@@ -206,9 +206,22 @@ def refresh_themed_combo_boxes(root: QWidget | QComboBox | None) -> None:
 
     seen: set[int] = set()
     for combo in combos:
+        if not _qt_object_alive(combo):
+            continue
         if id(combo) in seen or combo.property("themedComboManaged") != "true":
             continue
         seen.add(id(combo))
+        try:
+            if not combo.isVisible() or not combo.window().isVisible():
+                continue
+            view = combo.view()
+            popup = view.window() if _qt_object_alive(view) else None
+            if _qt_object_alive(popup) and popup.isVisible():
+                combo.hidePopup()
+                combo.setProperty("popupOpen", "false")
+                continue
+        except RuntimeError:
+            continue
         row_height = _int_property(combo, "comboPopupRowHeight") or DEFAULT_ROW_HEIGHT
         visible_rows = _int_property(combo, "comboPopupVisibleRows") or None
         control_style = combo.property("themedComboControlStyle") != "false"
@@ -556,8 +569,6 @@ def polish_combo_popup(combo: QComboBox, *, visible_rows: int | None = None, row
     for popup in _combo_popup_windows(view):
         try:
             popup.setObjectName("PolishedComboPopupWindow")
-            popup.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-            popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
             popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             popup.setAutoFillBackground(True)
             popup.setContentsMargins(0, 0, 0, 0)
@@ -731,11 +742,23 @@ def _repolish_combo_popup_later(combo_ref: weakref.ReferenceType[QComboBox]) -> 
     combo = combo_ref()
     if not _qt_object_alive(combo) or not isinstance(combo, QComboBox):
         return
+    try:
+        if not combo.isVisible() or not combo.window().isVisible():
+            return
+    except RuntimeError:
+        return
     view = combo.view()
     if not _qt_object_alive(view):
         return
     popup = view.window()
-    if _qt_object_alive(popup) and not popup.isVisible():
+    if not _qt_object_alive(popup) or not popup.isVisible():
+        return
+    try:
+        if not (popup.windowFlags() & Qt.WindowType.Popup):
+            popup.hide()
+            combo.setProperty("popupOpen", "false")
+            return
+    except RuntimeError:
         return
     visible_rows = _int_property(combo, "comboPopupVisibleRows") or max(1, min(combo.count() or 1, FULL_EXPAND_ROW_LIMIT))
     row_height = _int_property(combo, "comboPopupRowHeight") or _int_property(view, "comboPopupRowHeight") or DEFAULT_ROW_HEIGHT

@@ -100,7 +100,13 @@ def localize_log_event_code(code: object, language: str | None) -> str:
 
 def localize_log_payload(payload: Any, language: str | None) -> Any:
     if isinstance(payload, dict):
-        return {key: localize_log_payload(value, language) for key, value in payload.items()}
+        localized: dict[Any, Any] = {}
+        for key, value in payload.items():
+            if str(key) in {"status_code", "event_code"}:
+                localized[key] = localize_log_event_code(value, language)
+            else:
+                localized[key] = localize_log_payload(value, language)
+        return localized
     if isinstance(payload, list):
         return [localize_log_payload(value, language) for value in payload]
     if isinstance(payload, tuple):

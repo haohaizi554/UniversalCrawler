@@ -20,6 +20,7 @@ def test_parse_debug_log_file_reads_entries_trace_and_message(tmp_path):
             [
                 "[2026-06-30 10:00:00] [COMMAND] ApplicationController / app init",
                 "说明: 应用开始初始化",
+                "状态码: APP_INIT",
                 "Trace ID: trace-app",
                 "[2026-06-30 10:00:01] [ERROR] Downloader / failed",
                 "说明: download failed with 403",
@@ -34,6 +35,7 @@ def test_parse_debug_log_file_reads_entries_trace_and_message(tmp_path):
     assert len(items) == 2
     assert items[0]["level"] == "INFO"
     assert items[0]["message_summary"] == "应用开始初始化"
+    assert items[0]["status_code"] == "APP_INIT"
     assert items[0]["trace_id"] == "trace-app"
     assert items[1]["level"] == "ERROR"
     assert items[1]["message"] == "download failed with 403"

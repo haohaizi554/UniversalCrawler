@@ -135,6 +135,21 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("active", calls)
         self.assertNotIn("completed", calls)
 
+    def test_gui_top_bar_uses_current_platform_placeholder_on_initial_language_render(self):
+        shell = self._make_shell()
+        snapshot = FrontendStateService.mock_snapshot()
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "en-US"
+        bilibili_index = shell.sidebar.combo_source.findData("bilibili")
+        self.assertGreaterEqual(bilibili_index, 0)
+
+        shell.sidebar.combo_source.setCurrentIndex(bilibili_index)
+        shell.render(snapshot)
+        self.app.processEvents()
+
+        placeholder = shell.top_bar.inp_search.placeholderText()
+        self.assertIn("BV ID", placeholder)
+        self.assertNotEqual("Enter a profile, shared, or collection link...", placeholder)
+
     def test_global_stylesheet_applies_without_qss_parse_warnings(self):
         from PyQt6.QtCore import qInstallMessageHandler
 
@@ -1765,6 +1780,25 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertGreaterEqual(close_popups.call_count, 1)
         self.assertEqual(settings._language(), "en-US")
 
+    def test_gui_page_switch_closes_combo_popups_and_leaked_popup_windows(self):
+        shell = self._make_shell()
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+
+        logs.level_filter.showPopup()
+        leaked_popup = QWidget()
+        self.addCleanup(leaked_popup.deleteLater)
+        leaked_popup.setObjectName("PolishedComboPopupWindow")
+        leaked_popup.setWindowFlag(Qt.WindowType.Window, True)
+        leaked_popup.show()
+        self.app.processEvents()
+
+        shell.show_page("queue", emit_change=False)
+        self.app.processEvents()
+
+        self.assertFalse(leaked_popup.isVisible())
+        self.assertEqual(logs.level_filter.property("popupOpen"), "false")
+
     def test_gui_language_switch_restores_shell_and_page_texts(self):
         shell = self._make_shell()
         shell.show_page("logs")
@@ -1988,6 +2022,55 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(failed.detail_title.text(), "Error details")
         self.assertEqual(failed.solutions_title.text(), "Possible fixes")
         self.assertIn("No failed tasks", failed_labels)
+
+    def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
+        shell = self._make_shell()
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+        snapshot["log_items"] = [
+            {
+                "id": "gui-i18n-local-scan",
+                "time": "2026-07-05 22:15:58",
+                "level": "INFO",
+                "raw_level": "INFO",
+                "result_type": "info",
+                "category": "system",
+                "log_scope": "system",
+                "event_stage": "step",
+                "event_code": "GUI_\u5df2\u52a0\u8f7d_1_\u4e2a\u672c\u5730\u6587\u4ef6_\u89c6\u9891_1_\u56fe\u7247_0",
+                "source": "GUI",
+                "platform": "\u7cfb\u7edf",
+                "platform_id": "system",
+                "trace_id": "",
+                "message": "\u2705 \u5df2\u52a0\u8f7d 1 \u4e2a\u672c\u5730\u6587\u4ef6 (\u89c6\u9891: 1, \u56fe\u7247: 0)",
+                "message_summary": "\u2705 \u5df2\u52a0\u8f7d 1 \u4e2a\u672c\u5730\u6587\u4ef6 (\u89c6\u9891: 1, \u56fe\u7247: 0)",
+                "detail": {
+                    "description": "\u2705 \u5df2\u52a0\u8f7d 1 \u4e2a\u672c\u5730\u6587\u4ef6 (\u89c6\u9891: 1, \u56fe\u7247: 0)",
+                    "status_code": "GUI_\u5df2\u52a0\u8f7d_1_\u4e2a\u672c\u5730\u6587\u4ef6_\u89c6\u9891_1_\u56fe\u7247_0",
+                    "platform": "\u7cfb\u7edf",
+                    "source": "GUI",
+                },
+            }
+        ]
+
+        shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
+        all_time_index = logs.time_filter.findData("\u5168\u90e8")
+        self.assertGreaterEqual(all_time_index, 0)
+        logs.time_filter.setCurrentIndex(all_time_index)
+        self.app.processEvents()
+
+        message = logs.table.model().index(0, 4).data(Qt.ItemDataRole.DisplayRole)
+        self.assertIn("Loaded 1 local file", message)
+        self.assertIn("videos: 1, images: 0", message)
+        self.assertIn("Loaded 1 local file", logs.detail_message_value.toPlainText())
+        self.assertEqual(
+            logs.detail_status_code_value.text().replace("\n", ""),
+            "GUI_LOADED_1_LOCAL_FILES_VIDEOS_1_IMAGES_0",
+        )
+        self.assertIn("Loaded 1 local file", logs._last_json_text)
+        self.assertNotIn("\u5df2\u52a0\u8f7d", logs._last_json_text)
 
     def test_gui_platform_custom_proxy_field_displays_port_and_commits_endpoint(self):
         shell = self._make_shell()
@@ -2595,6 +2678,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "function exportCurrentLogDetail",
         ):
             self.assertIn(detail_action, content)
+        self.assertIn("function translateRuntimeLogText", content)
+        self.assertIn("function localizeEnglishDynamicLogText", content)
+        self.assertIn("function localizeLogEventCode", content)
+        self.assertIn("localizeLogEventCode(readable)", content)
+        self.assertIn('if (sections.has("settings_snapshot")) updatePlaceholder();', content)
+        self.assertIn("trimFrontendLogItems();\n  updatePlaceholder();", content)
         self.assertIn("log-inspector-header", content)
         self.assertIn("log-json-card", content)
         self.assertIn("log-detail-readable", content)

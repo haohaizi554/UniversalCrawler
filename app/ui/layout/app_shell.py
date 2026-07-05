@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractButton,
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -181,6 +182,7 @@ class AppShell(QWidget):
         page = self.pages.get(page_id)
         if page is None:
             return
+        self._close_combo_popups(self)
         if self.current_page_id == "completed" and page_id != "completed":
             self.release_media()
         self.current_page_id = page_id
@@ -420,6 +422,15 @@ class AppShell(QWidget):
                 if view is not None and (view.isVisible() or view.window().isVisible()):
                     combo.hidePopup()
                 combo.setProperty("popupOpen", "false")
+            except RuntimeError:
+                continue
+        for popup in QApplication.topLevelWidgets():
+            try:
+                if popup is self.window():
+                    continue
+                if popup.objectName() == "PolishedComboPopupWindow":
+                    popup.hide()
+                    popup.setProperty("popupOpen", "false")
             except RuntimeError:
                 continue
 

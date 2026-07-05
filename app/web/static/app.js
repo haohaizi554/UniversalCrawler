@@ -336,7 +336,7 @@ function flushRenderSections() {
   if ((sections.has("settings_snapshot") || sections.has("settings_contract")) && currentPage === "settings") {
     renderSettings();
   }
-  if (sections.has("settings_snapshot")) configureTopCountForSource(byId("sourceSelect")?.value || "douyin");
+  if (sections.has("settings_snapshot")) updatePlaceholder();
   if ((sections.has("toolbox_items") || sections.has("toolbox_recent_items")) && currentPage === "toolbox") renderToolbox();
   if (sections.has("icon_manifest")) renderCurrentPage();
   if (sections.has("app_status")) renderStatus();
@@ -879,7 +879,7 @@ function handleServerMessage(message) {
 function renderAll() {
   syncAppearanceFromSettings();
   trimFrontendLogItems();
-  configureTopCountForSource(byId("sourceSelect")?.value || "douyin");
+  updatePlaceholder();
   rebuildCompatibilityState();
   renderCounts();
   renderCurrentPage();
@@ -1287,6 +1287,56 @@ function translateStructuredLogText(value) {
     .join("");
 }
 
+function translateRuntimeLogText(value) {
+  const text = String(value ?? "");
+  if (!text.trim()) return text;
+  const translated = translateStructuredLogText(text);
+  if (translated !== text || currentLanguage() !== "en-US") return translated;
+  return localizeEnglishDynamicLogText(text);
+}
+
+function localizeEnglishDynamicLogText(text) {
+  const loaded = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?已加载\s*(\d+)\s*个本地文件\s*\(视频[:：]\s*(\d+)\s*,\s*图片[:：]\s*(\d+)\)$/u);
+  if (loaded) {
+    const noun = loaded[2] === "1" ? "file" : "files";
+    return `${loaded[1] || ""}Loaded ${loaded[2]} local ${noun} (videos: ${loaded[3]}, images: ${loaded[4]})`;
+  }
+  const scanning = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?正在扫描目录[:：]\s*(.+)$/u);
+  if (scanning) return `${scanning[1] || ""}Scanning directory: ${scanning[2]}`;
+  const done = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?下载完成[:：]\s*(.+)$/u);
+  if (done) return `${done[1] || ""}Download completed: ${done[2]}`;
+  const failed = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?下载失败\s*\[(.+?)\][：:]\s*(.+)$/u);
+  if (failed) return `${failed[1] || ""}Download failed [${failed[2]}]: ${failed[3]}`;
+  return text;
+}
+
+function localizeLogEventCode(value) {
+  const text = String(value || "-");
+  if (!text || text === "-" || currentLanguage() !== "en-US") return text;
+  const loaded = text.match(/^([A-Za-z0-9_]+)_已加载_(\d+)_个本地文件_视频_(\d+)_图片_(\d+)$/u);
+  if (loaded) return `${loaded[1]}_LOADED_${loaded[2]}_LOCAL_FILES_VIDEOS_${loaded[3]}_IMAGES_${loaded[4]}`;
+  const replacements = {
+    日志缓存已刷新: "LOG_CACHE_REFRESHED",
+    正在扫描目录: "SCANNING_DIRECTORY",
+    开始扫描本地媒体目录: "LOCAL_MEDIA_SCAN_START",
+    本地媒体目录扫描完成: "LOCAL_MEDIA_SCAN_OK",
+    主窗口初始化完成: "MAIN_WINDOW_READY",
+    应用开始初始化: "APP_INIT",
+    已切换到浅色主题: "THEME_LIGHT",
+    已切换到深色主题: "THEME_DARK",
+    爬虫任务结束: "CRAWL_FINISH",
+  };
+  let result = text;
+  for (const [source, target] of Object.entries(replacements)) {
+    result = result.split(source).join(target);
+  }
+  if (result !== text || /[\u4e00-\u9fff]/u.test(result)) {
+    const translated = result.split("_").map(part => translateRuntimeLogText(part)).join("_");
+    return translated.replace(/[^A-Za-z0-9_]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "").toUpperCase() || text;
+  }
+  return result;
+}
+
 function logResultNatureText(item) {
   const display = item.result_type_display || item.type_display || item.nature_display || "";
   if (display) return display;
@@ -1348,19 +1398,17 @@ function logStageDisplayText(item) {
 }
 
 function logValueHtml(value) {
-  return esc(translateStructuredLogText(value));
+  return esc(translateRuntimeLogText(value));
 }
 
 function logEventCodeText(value) {
-  const text = String(value || "-");
-  if (!text || text === "-") return "-";
-  return text.split("_").map(part => translateStructuredLogText(part)).join("_");
+  return localizeLogEventCode(value);
 }
 
 function logSourceCellHtml(item) {
   const label = item.source_display || item.source || item.platform || "";
   const iconFile = item.source_display_icon_file || "";
-  const translated = translateStructuredLogText(label);
+  const translated = translateRuntimeLogText(label);
   if (!iconFile) return esc(translated);
   return `<span class="platform-cell log-source-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${esc(translated)}</span>`;
 }
@@ -1418,7 +1466,7 @@ function renderLogs() {
       <td>${logLevelCellHtml(item)}</td>
       <td>${logSourceCellHtml(item)}</td>
       <td>${esc(item.trace_id || "")}</td>
-      <td title="${escAttr(translateStructuredLogText(item.message_summary || ""))}">${logValueHtml(item.message_summary || "")}</td>
+      <td title="${escAttr(translateRuntimeLogText(item.message_summary || ""))}">${logValueHtml(item.message_summary || "")}</td>
     </tr>
   `);
   syncLogEmptyState(items.length === 0);
@@ -1493,12 +1541,15 @@ function readableLogDetailValue(value) {
     .replace(/[-=]{36,}/g, "----------------------------");
 }
 
-function localizedLogDetailValue(value) {
-  if (Array.isArray(value)) return value.map(localizedLogDetailValue);
+function localizedLogDetailValue(value, key = "") {
+  if (Array.isArray(value)) return value.map(item => localizedLogDetailValue(item, key));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, localizedLogDetailValue(item)]));
+    return Object.fromEntries(Object.entries(value).map(([childKey, item]) => [childKey, localizedLogDetailValue(item, childKey)]));
   }
-  if (typeof value === "string") return translateStructuredLogText(readableLogDetailValue(value));
+  if (typeof value === "string") {
+    const readable = readableLogDetailValue(value);
+    return ["status_code", "event_code"].includes(String(key)) ? localizeLogEventCode(readable) : translateRuntimeLogText(readable);
+  }
   return value;
 }
 
