@@ -140,7 +140,13 @@
 
   function activeDetailHtml(item) {
     if (!item) {
-      return `<div class="active-detail-card"><h2>${escapeHtml(translate("\u5f53\u524d\u4e0b\u8f7d"))}</h2><div class="active-detail-fields"><p>${escapeHtml(translate("\u6682\u65e0\u6b63\u5728\u4e0b\u8f7d\u7684\u4efb\u52a1"))}</p></div></div>`;
+      return `
+        <div class="active-detail-card"><h2>${escapeHtml(translate("\u5f53\u524d\u4e0b\u8f7d"))}</h2><div class="active-detail-fields"><p>${escapeHtml(translate("\u6682\u65e0\u6b63\u5728\u4e0b\u8f7d\u7684\u4efb\u52a1"))}</p></div></div>
+        <div class="active-events-card">
+          <h2>${escapeHtml(translate("\u5f53\u524d\u4efb\u52a1\u4e8b\u4ef6"))}</h2>
+          ${activeEventTimelineRenderer([])}
+        </div>
+      `;
     }
     const chunk = item.chunk_progress || {};
     const chunkPercent = Number(chunk.percent ?? item.progress ?? 0);

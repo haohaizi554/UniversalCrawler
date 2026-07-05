@@ -148,9 +148,12 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertTrue(widget.lbl_version.isEnabled())
 
     def test_update_check_dialog_uses_scoped_theme_styles(self):
+        from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QLabel, QPushButton
 
+        from app.ui.dialogs.chromed_dialog import ChromedDialog
         from app.ui.dialogs.update_check import UpdateCheckDialog
+        from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
         from app.ui.styles import theme_colors
 
         dialog = UpdateCheckDialog(
@@ -162,6 +165,10 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.addCleanup(dialog.deleteLater)
 
         colors = theme_colors(dialog._is_dark)
+        self.assertIsInstance(dialog, ChromedDialog)
+        self.assertIs(dialog.window_title_bar, dialog.chrome_frame.title_bar)
+        self.assertIsInstance(dialog._window_chrome_controller, FramelessWindowChromeController)
+        self.assertTrue(bool(dialog.windowFlags() & Qt.WindowType.FramelessWindowHint))
         self.assertIn(colors["bg"], dialog.styleSheet())
         self.assertIn(colors["text"], dialog.styleSheet())
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogTitle"))

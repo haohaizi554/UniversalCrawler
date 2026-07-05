@@ -661,8 +661,9 @@ class MainWindowTests(unittest.TestCase):
         window.isFullScreen = Mock(return_value=False)
         window.isMaximized = Mock(return_value=False)
         window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
-        window._frameless_resize_margins = Mock(return_value=(8, 14))
         window.window_title_bar = FakeTitleBar()
+        controller = MainWindow._chrome_controller(window)
+        controller.frameless_resize_margins = Mock(return_value=(8, 14))
 
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(100, 100)), MainWindow.HTTOPLEFT)
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(599, 499)), MainWindow.HTBOTTOMRIGHT)
@@ -697,7 +698,8 @@ class MainWindowTests(unittest.TestCase):
         window.isFullScreen = Mock(return_value=False)
         window.isMaximized = Mock(return_value=False)
         window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
-        window._frameless_resize_margins = Mock(return_value=(8, 8))
+        controller = MainWindow._chrome_controller(window)
+        controller.frameless_resize_margins = Mock(return_value=(8, 8))
 
         window.window_title_bar = FakeTitleBar("minimize")
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(560, 116)), MainWindow.HTMINBUTTON)
@@ -729,8 +731,9 @@ class MainWindowTests(unittest.TestCase):
         window.isFullScreen = Mock(return_value=False)
         window.isMaximized = Mock(return_value=False)
         window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
-        window._frameless_resize_margins = Mock(return_value=(8, 14))
         window.window_title_bar = FakeTitleBar()
+        controller = MainWindow._chrome_controller(window)
+        controller.frameless_resize_margins = Mock(return_value=(8, 14))
 
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(560, 104)), MainWindow.HTMAXBUTTON)
 
@@ -827,7 +830,8 @@ class MainWindowTests(unittest.TestCase):
 
     def test_resize_border_thickness_uses_frame_plus_padded_border(self):
         window = self._make_window()
-        window._system_metric_for_hwnd = Mock(side_effect=lambda metric, hwnd: {
+        controller = MainWindow._chrome_controller(window)
+        controller._system_metric_for_hwnd = Mock(side_effect=lambda metric, hwnd: {
             MainWindow.SM_CXSIZEFRAME: 8,
             MainWindow.SM_CYSIZEFRAME: 9,
             MainWindow.SM_CXPADDEDBORDER: 4,
@@ -839,9 +843,11 @@ class MainWindowTests(unittest.TestCase):
     def test_frameless_resize_margins_use_windows_system_metrics(self):
         window = self._make_window()
         window.winId = Mock(return_value=1001)
-        window._resize_border_thickness_for_hwnd = Mock(side_effect=lambda _hwnd, *, horizontal: 12 if horizontal else 14)
+        controller = MainWindow._chrome_controller(window)
+        controller._resize_border_thickness_for_hwnd = Mock(side_effect=lambda _hwnd, *, horizontal: 12 if horizontal else 14)
 
-        self.assertEqual(MainWindow._frameless_resize_margins(window), (12, 14))
+        with patch("app.ui.layout.window_chrome_controller.sys.platform", "win32"):
+            self.assertEqual(MainWindow._frameless_resize_margins(window), (12, 14))
 
     def test_windows_native_hit_test_uses_vertical_margin_for_top_and_bottom(self):
         from PyQt6.QtCore import QPoint, QRect, Qt
@@ -851,8 +857,9 @@ class MainWindowTests(unittest.TestCase):
         window.isMaximized = Mock(return_value=False)
         window.windowState = Mock(return_value=Qt.WindowState.WindowNoState)
         window.frameGeometry = Mock(return_value=QRect(100, 100, 500, 400))
-        window._frameless_resize_margins = Mock(return_value=(8, 14))
         window.window_title_bar = None
+        controller = MainWindow._chrome_controller(window)
+        controller.frameless_resize_margins = Mock(return_value=(8, 14))
 
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(320, 113)), MainWindow.HTTOP)
         self.assertEqual(MainWindow._frameless_hit_test(window, QPoint(320, 486)), MainWindow.HTBOTTOM)
@@ -875,7 +882,10 @@ class MainWindowTests(unittest.TestCase):
         window._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
         window._is_effectively_maximized = Mock(return_value=False)
         window.isFullScreen = Mock(return_value=False)
-        window._frameless_resize_margins = Mock(return_value=(12, 12))
+        controller = MainWindow._chrome_controller(window)
+        controller._native_client_pos_from_lparam = Mock(return_value=QPoint(940, 14))
+        controller._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
+        controller.frameless_resize_margins = Mock(return_value=(12, 12))
         def rect_for(widget):
             if widget is title_bar.btn_close:
                 return (962, 0, 1000, 28)
@@ -887,7 +897,7 @@ class MainWindowTests(unittest.TestCase):
                 return (0, 0, 1000, 28)
             return None
 
-        window._widget_rect_client_px = Mock(side_effect=rect_for)
+        controller._widget_rect_client_px = Mock(side_effect=rect_for)
 
         self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTMAXBUTTON)
 
@@ -906,7 +916,9 @@ class MainWindowTests(unittest.TestCase):
         window._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
         window._is_effectively_maximized = Mock(return_value=False)
         window.isFullScreen = Mock(return_value=False)
-        window._frameless_resize_margins = Mock(return_value=(12, 12))
+        controller = MainWindow._chrome_controller(window)
+        controller._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
+        controller.frameless_resize_margins = Mock(return_value=(12, 12))
 
         def rect_for(widget):
             if widget is title_bar.btn_close:
@@ -919,11 +931,11 @@ class MainWindowTests(unittest.TestCase):
                 return (0, 0, 1000, 28)
             return None
 
-        window._widget_rect_client_px = Mock(side_effect=rect_for)
-        window._native_client_pos_from_lparam = Mock(return_value=QPoint(900, 14))
+        controller._widget_rect_client_px = Mock(side_effect=rect_for)
+        controller._native_client_pos_from_lparam = Mock(return_value=QPoint(900, 14))
         self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTCLIENT)
 
-        window._native_client_pos_from_lparam = Mock(return_value=QPoint(980, 14))
+        controller._native_client_pos_from_lparam = Mock(return_value=QPoint(980, 14))
         self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTCLIENT)
 
     def test_win32_hit_test_uses_client_edges_for_native_resize(self):
@@ -936,7 +948,10 @@ class MainWindowTests(unittest.TestCase):
         window._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
         window._is_effectively_maximized = Mock(return_value=False)
         window.isFullScreen = Mock(return_value=False)
-        window._frameless_resize_margins = Mock(return_value=(12, 12))
+        controller = MainWindow._chrome_controller(window)
+        controller._native_client_pos_from_lparam = Mock(return_value=QPoint(3, 300))
+        controller._native_client_size_for_hwnd = Mock(return_value=(1000, 760))
+        controller.frameless_resize_margins = Mock(return_value=(12, 12))
 
         self.assertEqual(MainWindow._win32_hit_test(window, SimpleNamespace(hWnd=1001, lParam=0)), MainWindow.HTLEFT)
 
@@ -1026,13 +1041,14 @@ class MainWindowTests(unittest.TestCase):
 
         window = self._make_window()
         window._uses_windows_native_resize = Mock(return_value=False)
-        window._start_frameless_system_resize = Mock(return_value=True)
+        controller = MainWindow._chrome_controller(window)
+        controller._start_frameless_system_resize = Mock(return_value=True)
         event = _MouseEvent()
 
         MainWindow.mousePressEvent(window, event)
 
         event.accept.assert_called_once()
-        window._start_frameless_system_resize.assert_called_once_with(QPoint(599, 300))
+        controller._start_frameless_system_resize.assert_called_once_with(QPoint(599, 300))
 
     def test_mouse_press_uses_system_resize_fallback_on_windows_too(self):
         from PyQt6.QtCore import QPoint, Qt
@@ -1053,13 +1069,14 @@ class MainWindowTests(unittest.TestCase):
 
         window = self._make_window()
         window._uses_windows_native_resize = Mock(return_value=True)
-        window._start_frameless_system_resize = Mock(return_value=True)
+        controller = MainWindow._chrome_controller(window)
+        controller._start_frameless_system_resize = Mock(return_value=True)
         event = _MouseEvent()
 
         MainWindow.mousePressEvent(window, event)
 
         event.accept.assert_called_once()
-        window._start_frameless_system_resize.assert_called_once_with(QPoint(599, 300))
+        controller._start_frameless_system_resize.assert_called_once_with(QPoint(599, 300))
 
     def test_custom_maximized_window_does_not_expose_resize_edges(self):
         from PyQt6.QtCore import QPoint, QRect, Qt
@@ -1148,24 +1165,26 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window.winId = Mock(return_value=1001)
         app = Mock()
+        controller = MainWindow._chrome_controller(window)
 
-        with patch("app.ui.main_window.sys.platform", "win32"), patch(
-            "app.ui.main_window.QApplication.instance",
+        with patch("app.ui.layout.window_chrome_controller.sys.platform", "win32"), patch(
+            "app.ui.layout.window_chrome_controller.QApplication.instance",
             return_value=app,
         ):
             MainWindow._install_windows_native_frame_filter(window)
 
         app.installNativeEventFilter.assert_called_once()
-        self.assertEqual(window.__dict__.get("_windows_hwnd"), 1001)
-        self.assertTrue(window.__dict__.get("_windows_native_frame_filter_installed", False))
-        self.assertIsNotNone(window.__dict__.get("_windows_native_frame_filter"))
+        self.assertEqual(controller._windows_hwnd, 1001)
+        self.assertTrue(controller._windows_native_frame_filter_installed)
+        self.assertIsNotNone(controller._windows_native_frame_filter)
 
     def test_windows_native_frame_filter_delegates_to_window_handler(self):
-        from app.ui.main_window import _WindowsFrameNativeEventFilter
+        from app.ui.layout.window_chrome_controller import _ChromeNativeEventFilter
 
         window = self._make_window()
-        window._handle_frameless_native_event = Mock(return_value=MainWindow.HTMAXBUTTON)
-        native_filter = _WindowsFrameNativeEventFilter(window)
+        controller = MainWindow._chrome_controller(window)
+        controller.handle_native_event = Mock(return_value=MainWindow.HTMAXBUTTON)
+        native_filter = _ChromeNativeEventFilter(controller)
 
         handled, result = native_filter.nativeEventFilter("windows_generic_MSG", object())
 

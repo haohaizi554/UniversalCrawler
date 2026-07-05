@@ -2751,7 +2751,7 @@ function adjacentCompletedId(currentId, direction, wrap = true) {
 function updateFullscreenButtonState() {
   const button = byId("fullscreenBtn");
   if (!button) return;
-  button.textContent = isFullscreenMode ? "[ 退出 ]" : "[ 全屏 ]";
+  button.textContent = `[ ${t(isFullscreenMode ? "退出" : "全屏")} ]`;
 }
 function updateMediaControls(player = byId("videoPlayer")) {
   const slider = byId("seekSlider");

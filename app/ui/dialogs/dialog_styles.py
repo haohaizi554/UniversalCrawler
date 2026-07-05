@@ -48,6 +48,94 @@ def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
         border-radius: 7px;
         padding: 8px 10px;
     }}
+    QFrame#UpdateHero {{
+        background: transparent;
+        border: none;
+    }}
+    QLabel#UpdateStatusBadge {{
+        min-height: 24px;
+        border-radius: 12px;
+        padding: 0 10px;
+        font-size: 12px;
+        font-weight: 700;
+        background: {colors["panel_soft"]};
+        color: {colors["muted"]};
+        border: 1px solid {colors["border"]};
+    }}
+    QLabel#UpdateStatusBadge[tone="success"] {{
+        color: {colors["success"]};
+        background: {colors["panel_soft"]};
+        border-color: {colors["success"]};
+    }}
+    QLabel#UpdateStatusBadge[tone="accent"] {{
+        color: {colors["accent"]};
+        background: {colors["accent_soft"]};
+        border-color: {colors["accent"]};
+    }}
+    QLabel#UpdateStatusBadge[tone="warning"] {{
+        color: {colors["warning"]};
+        background: {colors["panel_soft"]};
+        border-color: {colors["warning"]};
+    }}
+    QLabel#UpdateStatusBadge[tone="danger"] {{
+        color: {colors["danger"]};
+        background: {colors["panel_soft"]};
+        border-color: {colors["danger"]};
+    }}
+    QFrame#UpdateVersionPanel {{
+        background: {colors["panel"]};
+        border: 1px solid {colors["border"]};
+        border-radius: 10px;
+    }}
+    QLabel#UpdateVersionLabel {{
+        color: {colors["muted"]};
+        background: transparent;
+        font-size: 12px;
+        font-weight: 600;
+    }}
+    QLabel#UpdateVersionValue {{
+        color: {colors["text"]};
+        background: transparent;
+        font-size: 16px;
+        font-weight: 800;
+    }}
+    QLabel#UpdateVersionValue[tone="success"] {{
+        color: {colors["success"]};
+    }}
+    QLabel#UpdateVersionValue[tone="accent"] {{
+        color: {colors["accent"]};
+    }}
+    QLabel#UpdateVersionValue[tone="warning"] {{
+        color: {colors["warning"]};
+    }}
+    QLabel#UpdateVersionValue[tone="danger"] {{
+        color: {colors["danger"]};
+    }}
+    QLabel#UpdateVersionArrow {{
+        color: {colors["muted"]};
+        background: transparent;
+        font-size: 18px;
+        font-weight: 700;
+    }}
+    QFrame#UpdateDetailCard {{
+        background: {colors["panel_soft"]};
+        border: 1px solid {colors["border"]};
+        border-radius: 10px;
+    }}
+    QLabel#UpdateDetailTitle {{
+        color: {colors["text"]};
+        background: transparent;
+        font-weight: 700;
+        font-size: 13px;
+    }}
+    QLabel#UpdateReleaseLink {{
+        color: {colors["accent"]};
+        background: transparent;
+        font-weight: 700;
+    }}
+    QLabel#UpdateReleaseLink:hover {{
+        color: {colors["accent_hover"]};
+    }}
     QTableWidget#SelectionTable {{
         background-color: {colors["panel"]};
         alternate-background-color: {colors["panel"]};

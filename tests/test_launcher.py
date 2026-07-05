@@ -45,6 +45,9 @@ try:
         QWidget,
     )
 
+    from app.ui.layout.window_chrome import WindowChromeFrame
+    from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
+
     _PYQT6_AVAILABLE = True
 except ImportError:
     _PYQT6_AVAILABLE = False
@@ -665,6 +668,7 @@ if _PYQT6_AVAILABLE:
         def __init__(self, parent=None):
             super().__init__(parent)
             self.setWindowTitle("UCrawl 测试套件")
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
             self.resize(1220, 760)
             self.setMinimumSize(980, 640)
             self.setStyleSheet(QSS)
@@ -694,9 +698,25 @@ if _PYQT6_AVAILABLE:
             self._set_run_status("待命中", "default")
 
         def _build(self):
-            root_widget = QWidget()
-            self.setCentralWidget(root_widget)
-            root = QVBoxLayout(root_widget)
+            self.window_chrome = WindowChromeFrame(
+                title=self.windowTitle(),
+                icon=self.windowIcon(),
+                is_dark_theme=True,
+            )
+            self.window_title_bar = self.window_chrome.title_bar
+            self.window_title_bar.minimize_requested.connect(self.showMinimized)
+            self.window_title_bar.maximize_restore_requested.connect(self._toggle_maximized)
+            self.window_title_bar.close_requested.connect(self.close)
+            self._window_chrome_controller = FramelessWindowChromeController(
+                self,
+                title_bar_getter=lambda: self.window_title_bar,
+                resizable=True,
+                minimizable=True,
+                maximizable=True,
+            )
+            self._window_chrome_controller.set_window_flags()
+            self.setCentralWidget(self.window_chrome)
+            root = self.window_chrome.body_layout
             root.setContentsMargins(18, 18, 18, 12)
             root.setSpacing(14)
 
@@ -943,6 +963,38 @@ if _PYQT6_AVAILABLE:
             QShortcut(QKeySequence("Ctrl+1"), self, activated=lambda: self._select_only("all"))
             QShortcut(QKeySequence("Ctrl+R"), self, activated=self._select_recommended)
             QShortcut(QKeySequence("Escape"), self, activated=self._clear_selection)
+
+        def _toggle_maximized(self):
+            if self.isMaximized():
+                self.showNormal()
+            else:
+                self.showMaximized()
+            self._window_chrome_controller.sync_title_bar_state()
+
+        def showEvent(self, event):
+            super().showEvent(event)
+            self._window_chrome_controller.install()
+            self._window_chrome_controller.on_show_event()
+
+        def closeEvent(self, event):
+            self._window_chrome_controller.uninstall()
+            super().closeEvent(event)
+
+        def nativeEvent(self, event_type, message):
+            hit_test = self._window_chrome_controller.handle_native_event(event_type, message)
+            if hit_test is not None:
+                return True, hit_test
+            return False, 0
+
+        def mousePressEvent(self, event):
+            if self._window_chrome_controller.mouse_press_event(event):
+                return
+            super().mousePressEvent(event)
+
+        def eventFilter(self, watched, event):
+            if self._window_chrome_controller.event_filter(watched, event):
+                return True
+            return super().eventFilter(watched, event)
 
         def _make_stats_card(self, parent_layout, value, label, hint: str = "实时更新"):
             card = QFrame()

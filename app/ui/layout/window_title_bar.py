@@ -95,13 +95,23 @@ class WindowTitleBar(QWidget):
 
     HEIGHT = 28
 
-    def __init__(self, *, title: str, icon: QIcon | None = None, is_dark_theme: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        title: str,
+        icon: QIcon | None = None,
+        is_dark_theme: bool = False,
+        show_minimize: bool = True,
+        show_maximize: bool = True,
+        show_close: bool = True,
+    ) -> None:
         super().__init__()
         self.setObjectName("WindowTitleBar")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._is_maximized = False
+        self._show_maximize = bool(show_maximize)
 
         self.icon_label = QLabel()
         self.icon_label.setObjectName("WindowTitleIcon")
@@ -117,6 +127,10 @@ class WindowTitleBar(QWidget):
         self.btn_minimize = self._make_button("minimize", "最小化")
         self.btn_maximize = self._make_button("maximize", "最大化")
         self.btn_close = self._make_button("close", "关闭")
+
+        self.btn_minimize.setVisible(bool(show_minimize))
+        self.btn_maximize.setVisible(bool(show_maximize))
+        self.btn_close.setVisible(bool(show_close))
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(9, 0, 0, 0)
@@ -181,7 +195,11 @@ class WindowTitleBar(QWidget):
         )
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and not self.is_interactive_at(event.position().toPoint()):
+        if (
+            self._show_maximize
+            and event.button() == Qt.MouseButton.LeftButton
+            and not self.is_interactive_at(event.position().toPoint())
+        ):
             self.maximize_restore_requested.emit()
             event.accept()
             return

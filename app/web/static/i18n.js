@@ -58,6 +58,10 @@ const FALLBACK_UI_TEXT = {
     "笔记数:": "Notes:",
     "页数:": "Pages:",
     "输入：主页链接、分享链接或合集链接...": "Enter a profile, shared, or collection link...",
+    "输入：快手主页链接、分享链接、快手号或关键词...": "Enter a Kuaishou profile link, share link, Kuaishou ID, or keyword...",
+    "输入：番号或老师名...": "Enter an ID or performer name...",
+    "输入：BV号、UP主ID、合集链接、主页链接、视频链接、分享链接或关键词...": "Enter a BV ID, creator ID, collection link, profile link, video link, share link, or keyword...",
+    "输入：关键词、分享链接、视频/笔记链接、主页链接，或小红书号...": "Enter a keyword, share link, video/note link, profile link, or Xiaohongshu ID...",
     "切换主题": "Toggle theme",
     "打开项目主页": "Open project page",
     "空闲中": "Idle",
@@ -181,6 +185,7 @@ const FALLBACK_UI_TEXT = {
     "认证状态": "Auth status",
     "默认数量": "Default count",
     "爬取数量": "Crawl quantity",
+    "超时": "Timeout",
     "代理入口": "Proxy",
     "已认证": "Authed",
     "未认证": "Unauthed",
@@ -217,6 +222,8 @@ const FALLBACK_UI_TEXT = {
     "媒体全屏": "Fullscreen",
     "媒体全屏（双击画面）": "Fullscreen media (double-click video)",
     "全屏": "Fullscreen",
+    "退出": "Exit",
+    "播放进度": "Playback progress",
     "打开目录": "Open folder",
     "删除": "Delete",
     "复制 Trace ID": "Copy Trace ID",
@@ -362,6 +369,11 @@ const FALLBACK_UI_TEXT = {
     "正在扫描目录": "Scanning folder",
     "本地媒体目录扫描完成": "Local media folder scan completed",
     "开始下载视频": "Started downloading video",
+    "主窗口": "Main window",
+    "应用上下文": "Application context",
+    "图形界面": "GUI",
+    "网页端": "WebUI",
+    "前端渲染超过交互预算，已降低刷新频率": "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
     "下载失败：无法解析视频播放地址": "Download failed: could not parse video URL",
     "采集主页解析完成": "Profile parsing completed",
     "下载分片完成": "Segment download completed",
@@ -443,6 +455,10 @@ const FALLBACK_UI_TEXT = {
     "笔记数:": "筆記數:",
     "页数:": "頁數:",
     "输入：主页链接、分享链接或合集链接...": "輸入：主頁連結、分享連結或合集連結...",
+    "输入：快手主页链接、分享链接、快手号或关键词...": "輸入：快手主頁連結、分享連結、快手號或關鍵字...",
+    "输入：番号或老师名...": "輸入：番號或老師名...",
+    "输入：BV号、UP主ID、合集链接、主页链接、视频链接、分享链接或关键词...": "輸入：BV 號、UP 主 ID、合集連結、主頁連結、影片連結、分享連結或關鍵字...",
+    "输入：关键词、分享链接、视频/笔记链接、主页链接，或小红书号...": "輸入：關鍵字、分享連結、影片/筆記連結、主頁連結，或小紅書號...",
     "切换主题": "切換主題",
     "打开项目主页": "開啟專案首頁",
     "空闲中": "閒置中",
@@ -566,6 +582,7 @@ const FALLBACK_UI_TEXT = {
     "认证状态": "認證狀態",
     "默认数量": "預設數量",
     "爬取数量": "爬取數量",
+    "超时": "逾時",
     "代理入口": "代理入口",
     "已认证": "已認證",
     "未认证": "未認證",
@@ -602,6 +619,8 @@ const FALLBACK_UI_TEXT = {
     "媒体全屏": "媒體全螢幕",
     "媒体全屏（双击画面）": "媒體全螢幕（雙擊畫面）",
     "全屏": "全螢幕",
+    "退出": "退出",
+    "播放进度": "播放進度",
     "打开目录": "開啟目錄",
     "删除": "刪除",
     "复制 Trace ID": "複製 Trace ID",
@@ -747,6 +766,11 @@ const FALLBACK_UI_TEXT = {
     "正在扫描目录": "正在掃描目錄",
     "本地媒体目录扫描完成": "本機媒體目錄掃描完成",
     "开始下载视频": "開始下載影片",
+    "主窗口": "主視窗",
+    "应用上下文": "應用程式上下文",
+    "图形界面": "圖形介面",
+    "网页端": "網頁端",
+    "前端渲染超过交互预算，已降低刷新频率": "前端渲染超過互動預算，已降低刷新頻率",
     "下载失败：无法解析视频播放地址": "下載失敗：無法解析影片播放位址",
     "采集主页解析完成": "採集主頁解析完成",
     "下载分片完成": "下載分片完成",
@@ -791,6 +815,46 @@ const FALLBACK_UI_TEXT = {
 
 let UI_TEXT = FALLBACK_UI_TEXT;
 let i18nCatalogLoadStarted = false;
+let REVERSE_UI_TEXT = Object.create(null);
+
+const CANONICAL_UI_TEXT_ALIASES = {
+  "Last 30 minutes": "近 30 分钟",
+  "Last 30 min": "近 30 分钟",
+  "Last 1 hour": "近 1 小时",
+  "Last 24 hours": "近 24 小时",
+  "MainWindow": "主窗口",
+  "Main window": "主窗口",
+  "ApplicationContext": "应用上下文",
+  "Application context": "应用上下文",
+  "GUI": "图形界面",
+  "WebUI": "网页端",
+  "Frontend render exceeded the interactive budget; refresh cadence was relaxed": "前端渲染超过交互预算，已降低刷新频率",
+  "Frontend render e...": "前端渲染超过交互预算，已降低刷新频率",
+};
+
+function rebuildReverseTextIndex() {
+  const reverse = Object.create(null);
+  for (const catalog of Object.values(UI_TEXT || {})) {
+    if (!catalog || typeof catalog !== "object") continue;
+    for (const [source, translated] of Object.entries(catalog)) {
+      const sourceText = String(source || "").trim();
+      const translatedText = String(translated || "").trim();
+      if (!sourceText || !translatedText || sourceText === translatedText) continue;
+      if (!reverse[translatedText]) reverse[translatedText] = sourceText;
+    }
+  }
+  for (const [translated, source] of Object.entries(CANONICAL_UI_TEXT_ALIASES)) {
+    reverse[translated] = source;
+  }
+  REVERSE_UI_TEXT = reverse;
+}
+
+function canonicalUiText(text) {
+  const value = String(text ?? "").trim();
+  return REVERSE_UI_TEXT[value] || value;
+}
+
+rebuildReverseTextIndex();
 
 async function loadUiTextCatalogs() {
   if (i18nCatalogLoadStarted) return;
@@ -806,6 +870,7 @@ async function loadUiTextCatalogs() {
     for (const [language, catalog] of entries) {
       UI_TEXT[language] = { ...(FALLBACK_UI_TEXT[language] || {}), ...catalog };
     }
+    rebuildReverseTextIndex();
     applyStaticLanguage();
     helpers.renderCurrentPage();
   } catch (error) {
@@ -822,13 +887,18 @@ function currentLanguage() {
 
 function t(text) {
   const value = String(text || "");
-  return (UI_TEXT[currentLanguage()] || {})[value] || value;
+  if (!value) return value;
+  const lang = currentLanguage();
+  const dict = UI_TEXT[lang] || {};
+  const canonical = canonicalUiText(value);
+  if (lang === "zh-CN") return canonical;
+  return dict[value] || dict[canonical] || canonical;
 }
 
 function translateUiText(text) {
   const lang = currentLanguage();
   const value = String(text || "");
-  if (lang === "zh-CN" || !value.trim()) return value;
+  if (!value.trim()) return value;
   const leading = value.match(/^\s*/)?.[0] || "";
   const trailing = value.match(/\s*$/)?.[0] || "";
   const core = value.trim();
@@ -838,7 +908,11 @@ function translateUiText(text) {
 
 function translateUiCore(text, lang = currentLanguage()) {
   const dict = UI_TEXT[lang] || {};
+  const canonical = canonicalUiText(text);
+  if (lang === "zh-CN" && canonical !== text) return canonical;
   if (dict[text]) return dict[text];
+  if (dict[canonical]) return dict[canonical];
+  if (canonical !== text) return canonical;
   const iconPrefix = text.match(/^([\p{Extended_Pictographic}✅⚠️❌ℹ️🔗📂]+\s+)(.+)$/u);
   if (iconPrefix) return `${iconPrefix[1]}${translateUiCore(iconPrefix[2].trim(), lang)}`;
   if (text.includes(" · ")) {
@@ -850,60 +924,114 @@ function translateUiCore(text, lang = currentLanguage()) {
   if (text.includes("\t")) {
     return text.split("\t").map(part => translateUiCore(part.trim(), lang)).join("\t");
   }
-  let match = text.match(/^保存至：(.*)$/);
-  if (match) return lang === "zh-TW" ? `儲存至：${match[1]}` : `Save to: ${match[1]}`;
+  let match = text.match(/^\[\s*(.+?)\s*\]$/);
+  if (match) return `[ ${translateUiCore(match[1].trim(), lang)} ]`;
+  match = text.match(/^(.+?)\s+(\d+)$/);
+  if (match) {
+    const label = translateUiCore(match[1].trim(), lang);
+    if (label !== match[1].trim()) return `${label} ${match[2]}`;
+  }
+  match = text.match(/^(\d+)\s+videos?(\s*\(Recommended\))?$/i);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 個影片${match[2] ? "（推薦）" : ""}`
+    : (lang === "zh-CN" ? `${match[1]} 个视频${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "video" : "videos"}${match[2] ? " (Recommended)" : ""}`);
+  match = text.match(/^(\d+)\s+notes?(\s*\(Recommended\))?$/i);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 篇筆記${match[2] ? "（推薦）" : ""}`
+    : (lang === "zh-CN" ? `${match[1]} 篇笔记${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "note" : "notes"}${match[2] ? " (Recommended)" : ""}`);
+  match = text.match(/^(\d+)\s+pages?(\s*\(Recommended\))?$/i);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 頁${match[2] ? "（推薦）" : ""}`
+    : (lang === "zh-CN" ? `${match[1]} 页${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "page" : "pages"}${match[2] ? " (Recommended)" : ""}`);
+  match = text.match(/^(\d+)\s+rows?(\s*\(Recommended\))?$/i);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 條${match[2] ? "（推薦）" : ""}`
+    : (lang === "zh-CN" ? `${match[1]} 条${match[2] ? "（推荐）" : ""}` : `${match[1]} rows${match[2] ? " (Recommended)" : ""}`);
+  match = text.match(/^(\d+)\s+days?(\s*\(Recommended\))?$/i);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 天${match[2] ? "（推薦）" : ""}`
+    : (lang === "zh-CN" ? `${match[1]} 天${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "day" : "days"}${match[2] ? " (Recommended)" : ""}`);
+  match = text.match(/^(\d+)\s+sec(?:onds?)?(\s*\(Recommended\))?$/i);
+  if (match) return lang === "zh-TW"
+    ? `${match[1]} 秒${match[2] ? "（推薦）" : ""}`
+    : (lang === "zh-CN" ? `${match[1]} 秒${match[2] ? "（推荐）" : ""}` : `${match[1]} sec${match[2] ? " (Recommended)" : ""}`);
+  match = text.match(/^(\d+)\s+times?$/i);
+  if (match) return lang === "zh-TW" ? `${match[1]} 次` : (lang === "zh-CN" ? `${match[1]}次` : `${match[1]} times`);
+  match = text.match(/^(\d+)\s*\(Recommended\)$/i);
+  if (match) return lang === "zh-TW" ? `${match[1]}（推薦）` : (lang === "zh-CN" ? `${match[1]}（推荐）` : `${match[1]} (Recommended)`);
+  match = text.match(/^(\d+)\s*\/\s*page$/i);
+  if (match) return lang === "zh-TW" ? `${match[1]} 條/頁` : (lang === "zh-CN" ? `${match[1]} 条/页` : `${match[1]} / page`);
+  match = text.match(/^Page\s*(\d+)\s*\/\s*(\d+)$/i);
+  if (match) return lang === "zh-TW" ? `第 ${match[1]} / ${match[2]} 頁` : (lang === "zh-CN" ? `第 ${match[1]} / ${match[2]} 页` : `Page ${match[1]} / ${match[2]}`);
+  match = text.match(/^Total\s*(\d+)\s*\/\s*matched\s*(\d+)\s*\/\s*showing\s*(\d+)$/i);
+  if (match) return lang === "zh-TW"
+    ? `共 ${match[1]} 條 / 匹配 ${match[2]} 條 / 目前顯示 ${match[3]} 條`
+    : (lang === "zh-CN" ? `共 ${match[1]} 条 / 匹配 ${match[2]} 条 / 当前显示 ${match[3]} 条` : `Total ${match[1]} / matched ${match[2]} / showing ${match[3]}`);
+  match = text.match(/^Running:\s*(\d+)\s*tasks?$/i);
+  if (match) return lang === "zh-TW" ? `目前執行：${match[1]} 個任務` : (lang === "zh-CN" ? `当前运行：${match[1]} 个任务` : `Running: ${match[1]} tasks`);
+  match = text.match(/^Scanning folder[:：]\s*(.*)$/i);
+  if (match) return lang === "zh-TW" ? `正在掃描目錄：${match[1]}` : (lang === "zh-CN" ? `正在扫描目录：${match[1]}` : `Scanning folder: ${match[1]}`);
+  match = text.match(/^Loaded\s*(\d+)\s*local files\s*\(videos:\s*(\d+),\s*images:\s*(\d+)\)$/i);
+  if (match) return lang === "zh-TW"
+    ? `已載入 ${match[1]} 個本機檔案（影片：${match[2]}，圖片：${match[3]}）`
+    : (lang === "zh-CN" ? `已加载 ${match[1]} 个本地文件（视频：${match[2]}，图片：${match[3]}）` : `Loaded ${match[1]} local files (videos: ${match[2]}, images: ${match[3]})`);
+  match = text.match(/^Loaded\s*(\d+)\s*local files$/i);
+  if (match) return lang === "zh-TW" ? `已載入 ${match[1]} 個本機檔案` : (lang === "zh-CN" ? `已加载 ${match[1]} 个本地文件` : `Loaded ${match[1]} local files`);
+  match = text.match(/^保存至：(.*)$/);
+  if (match) return lang === "zh-TW" ? `儲存至：${match[1]}` : (lang === "zh-CN" ? `保存至：${match[1]}` : `Save to: ${match[1]}`);
   match = text.match(/^共\s*(\d+)\s*项$/);
-  if (match) return lang === "zh-TW" ? `共 ${match[1]} 項` : `Total ${match[1]} items`;
+  if (match) return lang === "zh-TW" ? `共 ${match[1]} 項` : (lang === "zh-CN" ? `共 ${match[1]} 项` : `Total ${match[1]} items`);
   match = text.match(/^共\s*(\d+)\s*条\s*\/\s*匹配\s*(\d+)\s*条\s*\/\s*当前显示\s*(\d+)\s*条$/);
   if (match) return lang === "zh-TW"
     ? `共 ${match[1]} 條 / 匹配 ${match[2]} 條 / 目前顯示 ${match[3]} 條`
-    : `Total ${match[1]} / matched ${match[2]} / showing ${match[3]}`;
+    : (lang === "zh-CN" ? `共 ${match[1]} 条 / 匹配 ${match[2]} 条 / 当前显示 ${match[3]} 条` : `Total ${match[1]} / matched ${match[2]} / showing ${match[3]}`);
   match = text.match(/^第\s*(\d+)\s*\/\s*(\d+)\s*页$/);
-  if (match) return lang === "zh-TW" ? `第 ${match[1]} / ${match[2]} 頁` : `Page ${match[1]} / ${match[2]}`;
+  if (match) return lang === "zh-TW" ? `第 ${match[1]} / ${match[2]} 頁` : (lang === "zh-CN" ? `第 ${match[1]} / ${match[2]} 页` : `Page ${match[1]} / ${match[2]}`);
   match = text.match(/^(\d+)\s*\/\s*(\d+)\s*页$/);
-  if (match) return lang === "zh-TW" ? `${match[1]} / ${match[2]} 頁` : `${match[1]} / ${match[2]} pages`;
+  if (match) return lang === "zh-TW" ? `${match[1]} / ${match[2]} 頁` : (lang === "zh-CN" ? `${match[1]} / ${match[2]} 页` : `${match[1]} / ${match[2]} pages`);
   match = text.match(/^(\d+)\s*条\/页$/);
-  if (match) return lang === "zh-TW" ? `${match[1]} 條/頁` : `${match[1]} / page`;
+  if (match) return lang === "zh-TW" ? `${match[1]} 條/頁` : (lang === "zh-CN" ? `${match[1]} 条/页` : `${match[1]} / page`);
   match = text.match(/^(\d+)\s*条(（推荐）)?$/);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 條${match[2] ? "（推薦）" : ""}`
-    : `${match[1]} rows${match[2] ? " (Recommended)" : ""}`;
+    : (lang === "zh-CN" ? `${match[1]} 条${match[2] ? "（推荐）" : ""}` : `${match[1]} rows${match[2] ? " (Recommended)" : ""}`);
   match = text.match(/^(\d+)\s*天(（推荐）)?$/);
   if (match) {
     const noun = Number(match[1]) === 1 ? "day" : "days";
     return lang === "zh-TW"
       ? `${match[1]} 天${match[2] ? "（推薦）" : ""}`
-      : `${match[1]} ${noun}${match[2] ? " (Recommended)" : ""}`;
+      : (lang === "zh-CN" ? `${match[1]} 天${match[2] ? "（推荐）" : ""}` : `${match[1]} ${noun}${match[2] ? " (Recommended)" : ""}`);
   }
   match = text.match(/^(\d+)\s*秒(（推荐）)?$/);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 秒${match[2] ? "（推薦）" : ""}`
-    : `${match[1]} sec${match[2] ? " (Recommended)" : ""}`;
+    : (lang === "zh-CN" ? `${match[1]} 秒${match[2] ? "（推荐）" : ""}` : `${match[1]} sec${match[2] ? " (Recommended)" : ""}`);
   match = text.match(/^(\d+)次$/);
-  if (match) return lang === "zh-TW" ? `${match[1]} 次` : `${match[1]} times`;
+  if (match) return lang === "zh-TW" ? `${match[1]} 次` : (lang === "zh-CN" ? `${match[1]}次` : `${match[1]} times`);
   match = text.match(/^(\d+)\s*次(（推荐）)?$/);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 次${match[2] ? "（推薦）" : ""}`
-    : `${match[1]} times${match[2] ? " (Recommended)" : ""}`;
+    : (lang === "zh-CN" ? `${match[1]}次${match[2] ? "（推荐）" : ""}` : `${match[1]} times${match[2] ? " (Recommended)" : ""}`);
   match = text.match(/^(\d+)（推荐）$/);
-  if (match) return lang === "zh-TW" ? `${match[1]}（推薦）` : `${match[1]} (Recommended)`;
+  if (match) return lang === "zh-TW" ? `${match[1]}（推薦）` : (lang === "zh-CN" ? `${match[1]}（推荐）` : `${match[1]} (Recommended)`);
   match = text.match(/^当前运行：(\d+)\s*个任务$/);
-  if (match) return lang === "zh-TW" ? `目前執行：${match[1]} 個任務` : `Running: ${match[1]} tasks`;
+  if (match) return lang === "zh-TW" ? `目前執行：${match[1]} 個任務` : (lang === "zh-CN" ? `当前运行：${match[1]} 个任务` : `Running: ${match[1]} tasks`);
   match = text.match(/^正在扫描目录[:：]\s*(.*)$/);
-  if (match) return lang === "zh-TW" ? `正在掃描目錄：${match[1]}` : `Scanning folder: ${match[1]}`;
+  if (match) return lang === "zh-TW" ? `正在掃描目錄：${match[1]}` : (lang === "zh-CN" ? `正在扫描目录：${match[1]}` : `Scanning folder: ${match[1]}`);
   match = text.match(/^已加载\s*(\d+)\s*个本地文件\s*\(视频:\s*(\d+),\s*图片:\s*(\d+)\)$/);
   if (match) return lang === "zh-TW"
     ? `已載入 ${match[1]} 個本機檔案（影片：${match[2]}，圖片：${match[3]}）`
-    : `Loaded ${match[1]} local files (videos: ${match[2]}, images: ${match[3]})`;
+    : (lang === "zh-CN" ? `已加载 ${match[1]} 个本地文件（视频：${match[2]}，图片：${match[3]}）` : `Loaded ${match[1]} local files (videos: ${match[2]}, images: ${match[3]})`);
   match = text.match(/^已加载\s*(\d+)\s*个本地文件$/);
-  if (match) return lang === "zh-TW" ? `已載入 ${match[1]} 個本機檔案` : `Loaded ${match[1]} local files`;
+  if (match) return lang === "zh-TW" ? `已載入 ${match[1]} 個本機檔案` : (lang === "zh-CN" ? `已加载 ${match[1]} 个本地文件` : `Loaded ${match[1]} local files`);
   match = text.match(/^打开\s+(.+)$/);
-  if (match) return lang === "zh-TW" ? `開啟 ${match[1]}` : `Open ${match[1]}`;
+  if (match) return lang === "zh-TW" ? `開啟 ${match[1]}` : (lang === "zh-CN" ? `打开 ${match[1]}` : `Open ${match[1]}`);
   match = text.match(/^(.+?)[:：]\s*(.*)$/);
   if (match && dict[match[1].trim()]) {
     const label = translateUiCore(match[1].trim(), lang);
     const detail = translateUiCore(match[2].trim(), lang);
     if (lang === "zh-TW") return detail ? `${label}：${detail}` : label;
+    if (lang === "zh-CN") return detail ? `${label}：${detail}` : label;
     return detail ? `${label}: ${detail}` : label;
   }
   match = text.match(/^(.+)\s+今天\s+(.+)$/);
@@ -912,7 +1040,7 @@ function translateUiCore(text, lang = currentLanguage()) {
 }
 
 function translateVisibleText(root = document.body) {
-  if (currentLanguage() === "zh-CN" || !root) return;
+  if (!root) return;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement;
@@ -1133,6 +1261,26 @@ function applyStaticLanguage() {
     helpButton.title = t("打开项目主页");
     helpButton.setAttribute("aria-label", t("打开项目主页"));
   }
+  const mediaButtons = {
+    playBtn: "播放/暂停",
+    prevBtn: "上一个资源",
+    nextBtn: "下一个资源",
+    fullscreenBtn: "媒体全屏（双击画面）",
+  };
+  for (const [id, label] of Object.entries(mediaButtons)) {
+    const button = helpers.byId(id);
+    if (button) {
+      button.title = t(label);
+      button.setAttribute("aria-label", id === "fullscreenBtn" ? t("媒体全屏") : t(label));
+    }
+  }
+  const fullscreenButton = helpers.byId("fullscreenBtn");
+  if (fullscreenButton) {
+    const isExit = /\bexit\b|退出/.test(String(fullscreenButton.textContent || "").toLowerCase());
+    fullscreenButton.textContent = `[ ${t(isExit ? "退出" : "全屏")} ]`;
+  }
+  const seekSlider = helpers.byId("seekSlider");
+  if (seekSlider) seekSlider.setAttribute("aria-label", t("播放进度"));
   helpers.updatePlaceholder();
   helpers.renderStatus();
   helpers.syncAllCustomSelects();

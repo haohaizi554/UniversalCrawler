@@ -19,13 +19,11 @@ from PyQt6.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 
 from app.ui.components.theme_checkbox import ThemeCheckBox
-from app.ui.dialogs.dialog_styles import apply_themed_dialog_styles
-from app.ui.styles import apply_dialog_theme, theme_colors
+from app.ui.dialogs.chromed_dialog import ChromedDialog
 from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
 _ROW_HEIGHT = 34
@@ -63,20 +61,20 @@ def exec_selection_dialog(parent, items: list[Any] | None, *, title: str = "任�
         return dialog.selected_indices
     return None
 
-class SelectionDialog(QDialog):
+class SelectionDialog(ChromedDialog):
     """Lets the user choose which scanned items should enter the queue."""
 
     def __init__(self, parent, title="任务清单确认", items=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setObjectName("SelectionDialog")
-        self.setModal(True)
+        super().__init__(
+            parent,
+            title=title,
+            object_name="SelectionDialog",
+            body_margins=(20, 20, 20, 20),
+            body_spacing=15,
+        )
         self.resize(800, 600)
         self.selected_indices: list[int] = []
         self.items = normalize_selection_items(items)
-        self._is_dark = apply_dialog_theme(self, parent=parent)
-        self._colors = theme_colors(self._is_dark)
-        apply_themed_dialog_styles(self, self._colors)
         self.init_ui()
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -85,9 +83,7 @@ class SelectionDialog(QDialog):
         self.activateWindow()
 
     def init_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout = self.content_layout
 
         header = QLabel(
             f"共扫描到 {len(self.items)} 个资源，请勾选需要下载的项目："
@@ -160,8 +156,7 @@ class SelectionDialog(QDialog):
         layout.addWidget(btn_box)
 
         self._install_dialog_shortcuts()
-        apply_dialog_theme(self, is_dark=self._is_dark)
-        apply_themed_dialog_styles(self, self._colors)
+        self.apply_chrome_theme(self._is_dark)
         self._refresh_table_theme()
 
     def _install_dialog_shortcuts(self) -> None:

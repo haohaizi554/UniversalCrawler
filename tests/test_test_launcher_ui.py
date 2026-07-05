@@ -25,10 +25,17 @@ class TestLauncherWindowUITests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication(sys.argv)
 
     def test_build_gui_exposes_core_controls(self):
+        from PyQt6.QtCore import Qt
+        from app.ui.layout.window_chrome import WindowChromeFrame
+        from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
         from tests import test_launcher as launcher
 
         window = launcher._build_gui()
         try:
+            self.assertIsInstance(window.window_chrome, WindowChromeFrame)
+            self.assertIs(window.window_title_bar, window.window_chrome.title_bar)
+            self.assertIsInstance(window._window_chrome_controller, FramelessWindowChromeController)
+            self.assertTrue(bool(window.windowFlags() & Qt.WindowType.FramelessWindowHint))
             self.assertEqual(window.windowTitle(), "UCrawl 测试套件")
             self.assertEqual(window.btn_run.text(), "运行测试")
             self.assertEqual(window.run_status.text(), "待命中")

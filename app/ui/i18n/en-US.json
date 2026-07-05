@@ -385,6 +385,7 @@
   "失败后重试次数": "Retry attempts after failure",
   "继续未完成任务": "Continue unfinished tasks",
   "跳过图片资源": "Skip image resources",
+  "超时": "Timeout",
   "初始化时自动清理": "Clean automatically at startup",
   "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。": "Paths support paste and browse. Filename rules use preset templates to avoid illegal names.",
   "UI 显示数量只影响日志中心显示，不影响日志文件本身。": "The UI display limit affects Log Center only, not the log files.",
@@ -405,5 +406,10 @@
   "主窗口初始化完成": "Main window initialized",
   "正在扫描目录": "Scanning folder",
   "开始扫描本地媒体目录": "Started scanning local media folder",
-  "本地媒体目录扫描完成": "Local media folder scan completed"
+  "本地媒体目录扫描完成": "Local media folder scan completed",
+  "主窗口": "Main window",
+  "应用上下文": "Application context",
+  "图形界面": "GUI",
+  "网页端": "WebUI",
+  "前端渲染超过交互预算，已降低刷新频率": "Frontend render exceeded the interactive budget; refresh cadence was relaxed"
 }

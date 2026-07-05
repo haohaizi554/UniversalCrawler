@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.ui.components.theme_checkbox import ThemeCheckBox
-from app.ui.dialogs.dialog_styles import apply_themed_dialog_styles
-from app.ui.styles import apply_dialog_theme, theme_colors
+from app.ui.dialogs.chromed_dialog import ChromedDialog
+
 
 @dataclass(frozen=True, slots=True)
 class FileAssociationChoice:
@@ -45,29 +45,26 @@ class FileAssociationOption(QWidget):
         super().mousePressEvent(event)
 
 
-class FileAssociationDialog(QDialog):
+class FileAssociationDialog(ChromedDialog):
     """Ask which media groups should be registered for Windows default apps."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("默认打开方式")
-        self.setObjectName("FileAssociationDialog")
-        self.setModal(True)
-        self._is_dark = apply_dialog_theme(self, parent=parent)
-        self._colors = theme_colors(self._is_dark)
-        apply_themed_dialog_styles(self, self._colors)
+        super().__init__(
+            parent,
+            title="默认打开方式",
+            object_name="FileAssociationDialog",
+            body_margins=(18, 18, 18, 18),
+            body_spacing=12,
+        )
         self.setMinimumWidth(460)
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout = self.content_layout
 
         title = QLabel("绑定默认打开方式")
         title.setObjectName("DialogTitle")
         layout.addWidget(title)
 
-        label = QLabel("选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页再次确认。")
+        label = QLabel("选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页面再次确认。")
         label.setObjectName("DialogDescription")
         label.setWordWrap(True)
         layout.addWidget(label)

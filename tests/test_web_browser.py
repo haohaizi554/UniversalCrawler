@@ -299,7 +299,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/log_display.js?v=20260701-log-display', content)
         self.assertIn('/static/platform_limits.js?v=20260701-platform-limits', content)
         self.assertIn('/static/settings_render.js?v=20260705-i18n-surface', content)
-        self.assertIn('/static/task_render.js?v=20260705-i18n-values', content)
+        self.assertIn('/static/task_render.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/app.js?v=20260705-i18n-surface', content)
 
@@ -1223,9 +1223,9 @@ class WebUIBrowserTests(unittest.TestCase):
         for label in ("Filename", "Save path", "Completed at", "Duration", "Resolution", "Size", "Format"):
             self.assertIn(label, result["completedText"])
         self.assertNotIn("文件名", result["completedText"])
-        self.assertIn("系統 · GUI", result["twLogText"])
+        self.assertIn("系統 · 圖形介面", result["twLogText"])
         self.assertIn("日誌快取已刷新", result["twLogText"])
-        self.assertIn("GUI_日誌快取已刷新", result["twLogText"])
+        self.assertIn("圖形介面_日誌快取已刷新", result["twLogText"])
         self.assertNotIn("日志缓存已刷新", result["twLogText"])
         for label in ("檔案名稱", "儲存路徑", "完成時間", "時長", "解析度", "大小", "格式"):
             self.assertIn(label, result["twCompletedText"])
@@ -1347,7 +1347,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 settingsTexts[group] = document.getElementById("page-settings").textContent;
               }
 
-              logFilters = { category: "all", level: "全部", time: "近 30 分钟", platform: "全部", trace: "", keyword: "" };
+              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
               currentPage = "logs";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
               selected.log = "";
@@ -1360,7 +1360,42 @@ class WebUIBrowserTests(unittest.TestCase):
               renderActive();
               const activeText = document.getElementById("page-active").textContent;
               const retryLabel = document.querySelector("#activeMaxRetries").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
-              return { sourceOptions, settingsTexts, logsText, logPlatformLabel, activeText, retryLabel };
+
+              frontendState.settings_snapshot["外观设置"].language = "zh-CN";
+              frontendState.settings_contract.group_descriptions["平台设置"] = "Auth status, crawl quantity, and proxy entry";
+              frontendState.settings_snapshot["平台设置"][0].count_options = [{ value: "50", label: "50 videos" }];
+              frontendState.settings_snapshot["平台设置"][0].timeout_options = [{ value: "60", label: "60 sec (Recommended)" }];
+              frontendState.settings_snapshot["平台设置"][0].proxy_options = [{ value: "系统代理", label: "System proxy" }];
+              frontendState.settings_snapshot["日志设置"]._options.retention_days = [{ value: "1", label: "1 day (Recommended)" }];
+              frontendState.log_items[0].source_display = "System · MainWindow";
+              frontendState.log_items[0].platform = "System";
+              frontendState.log_items[0].message_summary = "📂 Scanning folder: D:\\\\Downloads";
+              frontendState.log_items[0].message = "Frontend render exceeded the interactive budget; refresh cadence was relaxed";
+              frontendState.log_items[0].detail = { description: "Frontend render exceeded the interactive budget; refresh cadence was relaxed", type: "Warning", scope: "Performance", stage: "Performance", platform: "System", source: "MainWindow" };
+              document.documentElement.dataset.language = "zh-CN";
+              applyStaticLanguage();
+              renderPlatforms();
+              const zhSourceOptions = Array.from(document.querySelectorAll("#sourceSelect option")).map(option => option.textContent.trim());
+
+              currentPage = "settings";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "settings"));
+              currentSettingsGroup = "平台设置";
+              renderSettings(true);
+              const zhSettingsText = document.getElementById("page-settings").textContent;
+
+              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
+              currentPage = "logs";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
+              selected.log = "";
+              renderLogs();
+              const zhLogsText = document.getElementById("page-logs").textContent;
+
+              currentPage = "active";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "active"));
+              renderActive();
+              const zhActiveText = document.getElementById("page-active").textContent;
+              const zhRetryLabel = document.querySelector("#activeMaxRetries").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
+              return { sourceOptions, settingsTexts, logsText, logPlatformLabel, activeText, retryLabel, zhSourceOptions, zhSettingsText, zhLogsText, zhActiveText, zhRetryLabel };
             }
             """
         )
@@ -1388,7 +1423,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("Kuaishou", result["sourceOptions"])
         self.assertEqual(result["logPlatformLabel"], "All")
         self.assertIn("All logs 1", result["logsText"])
-        self.assertIn("System · MainWindow", result["logsText"])
+        self.assertIn("System · Main window", result["logsText"])
         self.assertIn("Scanning folder: D:\\Downloads", result["logsText"])
         self.assertIn("Warning", result["logsText"])
         self.assertIn("Performance", result["logsText"])
@@ -1396,11 +1431,34 @@ class WebUIBrowserTests(unittest.TestCase):
         for unexpected in ("全部日志", "系统 · MainWindow", "正在扫描目录", "预警", "性能", "共 1 条"):
             self.assertNotIn(unexpected, result["logsText"])
         self.assertIn("Queue controls", result["activeText"])
-        self.assertIn("Auto retry failed tasks", result["activeText"])
+        self.assertIn("Auto retry failures", result["activeText"])
         self.assertIn("Current task events", result["activeText"])
         self.assertIn("No events", result["activeText"])
         self.assertIn("Running: 0 tasks", result["activeText"])
         self.assertEqual(result["retryLabel"], "3 times")
+        self.assertIn("抖音", result["zhSourceOptions"])
+        self.assertIn("小红书", result["zhSourceOptions"])
+        self.assertIn("认证状态、爬取数量和代理入口", result["zhSettingsText"])
+        self.assertIn("50 个视频", result["zhSettingsText"])
+        self.assertIn("60 秒（推荐）", result["zhSettingsText"])
+        self.assertIn("系统代理", result["zhSettingsText"])
+        self.assertIn("全部日志 1", result["zhLogsText"])
+        self.assertIn("系统 · 主窗口", result["zhLogsText"])
+        self.assertIn("正在扫描目录：D:\\Downloads", result["zhLogsText"])
+        self.assertIn("前端渲染超过交互预算", result["zhLogsText"])
+        self.assertIn("预警", result["zhLogsText"])
+        self.assertIn("性能", result["zhLogsText"])
+        self.assertIn("共 1 条 / 匹配 1 条 / 当前显示 1 条", result["zhLogsText"])
+        self.assertIn("队列控制", result["zhActiveText"])
+        self.assertIn("暂无事件", result["zhActiveText"])
+        self.assertIn("当前运行：0 个任务", result["zhActiveText"])
+        self.assertEqual(result["zhRetryLabel"], "3次")
+        for unexpected in ("Douyin", "Xiaohongshu", "Auth status", "50 videos", "System proxy"):
+            self.assertNotIn(unexpected, result["zhSettingsText"] + "\n".join(result["zhSourceOptions"]))
+        for unexpected in ("All logs", "System · MainWindow", "Scanning folder", "Warning", "Performance", "Total 1 / matched 1 / showing 1"):
+            self.assertNotIn(unexpected, result["zhLogsText"])
+        for unexpected in ("Queue controls", "No events", "Running: 0 tasks"):
+            self.assertNotIn(unexpected, result["zhActiveText"])
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
