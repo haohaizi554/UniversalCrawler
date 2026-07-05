@@ -32,9 +32,10 @@ from app.ui.dialogs.selection import SelectionDialog
 from app.ui.dialogs.update_check import UpdateCheckDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_chrome import WindowChromeFrame
-from app.ui.layout.window_chrome_controller import FramelessWindowChromeController, _NCCALCSIZE_PARAMS
+from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
+from app.ui.localization import normalize_language, tr
 from app.ui.plugin_settings import read_plugin_run_options
-from app.ui.styles import apply_application_theme, build_palette, polish_data_views
+from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
@@ -401,6 +402,15 @@ class MainWindow(QMainWindow):
             return str(text())
         return "v3.6.17"
 
+    def _current_ui_language(self) -> str:
+        shell_language = getattr(getattr(self, "app_shell", None), "_language", "")
+        if shell_language:
+            return normalize_language(str(shell_language))
+        return normalize_language(str(cfg.get("appearance", "language", "zh-CN") or "zh-CN"))
+
+    def _tr(self, text: str) -> str:
+        return tr(text, self._current_ui_language())
+
     def _run_update_check(self, local_version: str) -> None:
         try:
             result = check_for_update(local_version)
@@ -434,7 +444,7 @@ class MainWindow(QMainWindow):
         if result.status == UPDATE_STATUS_CURRENT:
             self._show_basic_message(
                 "检查更新",
-                f"当前版本 {local_version} 已经是最新版本。",
+                self._tr("当前版本 {version} 已经是最新版本。").format(version=local_version),
                 "本地版本与 GitHub 最新 Release 一致，无需更新。",
                 status=UPDATE_STATUS_CURRENT,
                 local_version=local_version,
@@ -445,7 +455,10 @@ class MainWindow(QMainWindow):
         if result.status == UPDATE_STATUS_LOCAL_NEWER:
             self._show_basic_message(
                 "检查更新",
-                f"当前版本 {local_version} 高于最新 Release {latest_version}。",
+                self._tr("当前版本 {local_version} 高于最新 Release {latest_version}。").format(
+                    local_version=local_version,
+                    latest_version=latest_version,
+                ),
                 "这通常表示你正在使用本地构建或预发布构建，无需更新。",
                 status=UPDATE_STATUS_LOCAL_NEWER,
                 local_version=local_version,
@@ -467,7 +480,7 @@ class MainWindow(QMainWindow):
         box = UpdateCheckDialog(
             self,
             title="检测到新版本",
-            message=f"检测到最新版本 {latest_version}，是否要更新？",
+            message=self._tr("检测到最新版本 {version}，是否要更新？").format(version=latest_version),
             details="更新前建议关闭正在运行的采集任务。当前只完成确认流程，下载和安装稍后接入。",
             primary_text="更新",
             secondary_text="稍后",
@@ -475,6 +488,7 @@ class MainWindow(QMainWindow):
             local_version=local_version,
             latest_version=latest_version,
             release_url=result.html_url,
+            language=self._current_ui_language(),
         )
         if box.exec() == QDialog.DialogCode.Accepted:
             self._show_basic_message(
@@ -505,6 +519,7 @@ class MainWindow(QMainWindow):
             local_version=local_version,
             latest_version=latest_version,
             release_url=release_url,
+            language=self._current_ui_language(),
         )
         return int(box.exec())
 

@@ -134,6 +134,8 @@ const FALLBACK_UI_TEXT = {
     "视频资源（mp4、mkv、avi、mov、webm 等）": "Video resources (mp4, mkv, avi, mov, webm, etc.)",
     "图片资源（jpg、png、gif、webp、bmp 等）": "Image resources (jpg, png, gif, webp, bmp, etc.)",
     "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "Effective after registration for future system opens. If Windows blocks it, the app opens Default Apps settings for confirmation.",
+    "确定": "OK",
+    "取消": "Cancel",
     "绑定": "Bind",
     "并发数": "Concurrency",
     "图片受并发数限制": "Limit images by concurrency",
@@ -531,6 +533,8 @@ const FALLBACK_UI_TEXT = {
     "视频资源（mp4、mkv、avi、mov、webm 等）": "影片資源（mp4、mkv、avi、mov、webm 等）",
     "图片资源（jpg、png、gif、webp、bmp 等）": "圖片資源（jpg、png、gif、webp、bmp 等）",
     "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "生效方式：註冊成功後會立即影響之後的系統開啟行為；若 Windows 攔截，程式會開啟預設應用程式設定頁供你確認。",
+    "确定": "確定",
+    "取消": "取消",
     "绑定": "綁定",
     "并发数": "並發數",
     "图片受并发数限制": "圖片受並發數限制",
@@ -878,11 +882,17 @@ async function loadUiTextCatalogs() {
   }
 }
 
+function normalizeUiLanguage(value) {
+  const language = String(value || "").trim();
+  return ["zh-CN", "en-US", "zh-TW"].includes(language) ? language : "";
+}
+
 function currentLanguage() {
+  const domLanguage = normalizeUiLanguage(document.documentElement?.dataset?.language);
+  if (domLanguage) return domLanguage;
   const state = helpers.getState() || {};
   const appearance = (state.settings_snapshot || {})["外观设置"] || {};
-  const value = String(appearance.language || "zh-CN");
-  return ["zh-CN", "en-US", "zh-TW"].includes(value) ? value : "zh-CN";
+  return normalizeUiLanguage(appearance.language) || "zh-CN";
 }
 
 function t(text) {
@@ -931,33 +941,33 @@ function translateUiCore(text, lang = currentLanguage()) {
     const label = translateUiCore(match[1].trim(), lang);
     if (label !== match[1].trim()) return `${label} ${match[2]}`;
   }
-  match = text.match(/^(\d+)\s+videos?(\s*\(Recommended\))?$/i);
+  match = text.match(/^(\d+)\s+videos?(\s*\((?:Recommended|Rec\.)\))?$/i);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 個影片${match[2] ? "（推薦）" : ""}`
     : (lang === "zh-CN" ? `${match[1]} 个视频${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "video" : "videos"}${match[2] ? " (Recommended)" : ""}`);
-  match = text.match(/^(\d+)\s+notes?(\s*\(Recommended\))?$/i);
+  match = text.match(/^(\d+)\s+notes?(\s*\((?:Recommended|Rec\.)\))?$/i);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 篇筆記${match[2] ? "（推薦）" : ""}`
     : (lang === "zh-CN" ? `${match[1]} 篇笔记${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "note" : "notes"}${match[2] ? " (Recommended)" : ""}`);
-  match = text.match(/^(\d+)\s+pages?(\s*\(Recommended\))?$/i);
+  match = text.match(/^(\d+)\s+pages?(\s*\((?:Recommended|Rec\.)\))?$/i);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 頁${match[2] ? "（推薦）" : ""}`
     : (lang === "zh-CN" ? `${match[1]} 页${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "page" : "pages"}${match[2] ? " (Recommended)" : ""}`);
-  match = text.match(/^(\d+)\s+rows?(\s*\(Recommended\))?$/i);
+  match = text.match(/^(\d+)\s+rows?(\s*\((?:Recommended|Rec\.)\))?$/i);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 條${match[2] ? "（推薦）" : ""}`
     : (lang === "zh-CN" ? `${match[1]} 条${match[2] ? "（推荐）" : ""}` : `${match[1]} rows${match[2] ? " (Recommended)" : ""}`);
-  match = text.match(/^(\d+)\s+days?(\s*\(Recommended\))?$/i);
+  match = text.match(/^(\d+)\s+days?(\s*\((?:Recommended|Rec\.)\))?$/i);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 天${match[2] ? "（推薦）" : ""}`
     : (lang === "zh-CN" ? `${match[1]} 天${match[2] ? "（推荐）" : ""}` : `${match[1]} ${Number(match[1]) === 1 ? "day" : "days"}${match[2] ? " (Recommended)" : ""}`);
-  match = text.match(/^(\d+)\s+sec(?:onds?)?(\s*\(Recommended\))?$/i);
+  match = text.match(/^(\d+)\s+sec(?:onds?)?(\s*\((?:Recommended|Rec\.)\))?$/i);
   if (match) return lang === "zh-TW"
     ? `${match[1]} 秒${match[2] ? "（推薦）" : ""}`
     : (lang === "zh-CN" ? `${match[1]} 秒${match[2] ? "（推荐）" : ""}` : `${match[1]} sec${match[2] ? " (Recommended)" : ""}`);
   match = text.match(/^(\d+)\s+times?$/i);
   if (match) return lang === "zh-TW" ? `${match[1]} 次` : (lang === "zh-CN" ? `${match[1]}次` : `${match[1]} times`);
-  match = text.match(/^(\d+)\s*\(Recommended\)$/i);
+  match = text.match(/^(\d+)\s*\((?:Recommended|Rec\.)\)$/i);
   if (match) return lang === "zh-TW" ? `${match[1]}（推薦）` : (lang === "zh-CN" ? `${match[1]}（推荐）` : `${match[1]} (Recommended)`);
   match = text.match(/^(\d+)\s*\/\s*page$/i);
   if (match) return lang === "zh-TW" ? `${match[1]} 條/頁` : (lang === "zh-CN" ? `${match[1]} 条/页` : `${match[1]} / page`);

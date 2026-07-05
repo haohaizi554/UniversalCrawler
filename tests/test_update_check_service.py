@@ -183,3 +183,36 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertIsNotNone(dialog.findChild(QFrame, "UpdateVersionPanel"))
         self.assertIsNotNone(dialog.findChild(QLabel, "UpdateReleaseLink"))
         self.assertIsNotNone(dialog.findChild(QPushButton, "DialogPrimaryButton"))
+
+    def test_update_check_dialog_uses_current_language(self):
+        from PyQt6.QtWidgets import QLabel, QPushButton
+
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="检查更新失败",
+            message="暂时无法检查最新版本。",
+            details="本地版本与 GitHub 最新 Release 一致，无需更新。",
+            primary_text="确定",
+            status="error",
+            local_version="v3.6.17",
+            latest_version="v3.6.17",
+            language="en-US",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        buttons = "\n".join(button.text() for button in dialog.findChildren(QPushButton))
+
+        self.assertEqual(dialog.windowTitle(), "Update check failed")
+        self.assertIn("Update check failed", labels)
+        self.assertIn("Could not check the latest version right now.", labels)
+        self.assertIn("Current version", labels)
+        self.assertIn("Release version", labels)
+        self.assertIn("Check failed", labels)
+        self.assertIn("Error details", labels)
+        self.assertIn("The local version matches the latest GitHub Release. No update is needed.", labels)
+        self.assertIn("OK", buttons)
+        for unexpected in ("检查更新失败", "暂时无法", "当前版本", "错误详情", "确定"):
+            self.assertNotIn(unexpected, labels + buttons)

@@ -1460,6 +1460,57 @@ class WebUIBrowserTests(unittest.TestCase):
         for unexpected in ("Queue controls", "No events", "Running: 0 tasks"):
             self.assertNotIn(unexpected, result["zhActiveText"])
 
+    def test_09g_current_page_language_controls_runtime_dialogs_and_dynamic_text(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: "zh-CN",
+                theme: "light",
+                accent: "purple",
+                scale: "100%",
+                font_size: "medium"
+              };
+              document.documentElement.dataset.language = "en-US";
+              frontendState.active_downloads = [];
+              frontendState.download_options = { auto_retry: true, max_retries: 3, max_concurrent: 3 };
+              currentPage = "active";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "active"));
+              renderActive();
+              showFileAssociationModal();
+              const modalText = document.getElementById("fileAssociationModal").textContent;
+              const activeText = document.getElementById("page-active").textContent;
+              const languageBeforeApply = currentLanguage();
+              const recLabel = optionLabel("20 videos (Rec.)");
+              const runningLabel = translateUiText("当前运行：0 个任务");
+              applyAppearance(frontendState.settings_snapshot["外观设置"]);
+              const languageAfterApply = currentLanguage();
+              cancelFileAssociationModal();
+              return { languageBeforeApply, languageAfterApply, modalText, activeText, recLabel, runningLabel };
+            }
+            """
+        )
+
+        self.assertEqual(result["languageBeforeApply"], "en-US")
+        self.assertEqual(result["languageAfterApply"], "zh-CN")
+        self.assertIn("Current task events", result["activeText"])
+        self.assertIn("No events", result["activeText"])
+        self.assertIn("Running: 0 tasks", result["activeText"])
+        self.assertIn("Bind default app", result["modalText"])
+        self.assertIn("Video resources", result["modalText"])
+        self.assertIn("Cancel", result["modalText"])
+        self.assertIn("Bind", result["modalText"])
+        self.assertEqual(result["recLabel"], "20 videos (Recommended)")
+        self.assertEqual(result["runningLabel"], "Running: 0 tasks")
+        for unexpected in ("当前任务事件", "暂无事件", "当前运行", "绑定默认打开方式", "取消"):
+            self.assertNotIn(unexpected, result["activeText"] + result["modalText"])
+
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
         self._page.goto(self._server_url)

@@ -9,6 +9,7 @@ from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.ui.dialogs.chromed_dialog import ChromedDialog
+from app.ui.localization import normalize_language, tr
 
 
 class UpdateStatusIcon(QWidget):
@@ -89,10 +90,12 @@ class UpdateCheckDialog(ChromedDialog):
         local_version: str = "",
         latest_version: str = "",
         release_url: str = "",
+        language: str = "zh-CN",
     ) -> None:
+        self._language = normalize_language(language)
         super().__init__(
             parent,
-            title=title,
+            title=self._tr(title),
             object_name="UpdateCheckDialog",
             body_margins=(24, 22, 24, 20),
             body_spacing=16,
@@ -103,7 +106,7 @@ class UpdateCheckDialog(ChromedDialog):
         self._release_url = str(release_url or "").strip()
 
         layout = self.content_layout
-        layout.addWidget(self._build_header(title, message))
+        layout.addWidget(self._build_header(self._tr(title), self._tr(message)))
         layout.addWidget(self._build_version_panel(local_version, latest_version))
         if details or self._release_url:
             layout.addWidget(self._build_detail_card(details))
@@ -152,9 +155,9 @@ class UpdateCheckDialog(ChromedDialog):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(8)
 
-        self.local_version_label = self._make_version_label("当前版本")
+        self.local_version_label = self._make_version_label(self._tr("当前版本"))
         self.local_version_value = self._make_version_value(local_version or "-")
-        self.remote_version_label = self._make_version_label("Release 版本")
+        self.remote_version_label = self._make_version_label(self._tr("Release 版本"))
         self.remote_version_value = self._make_version_value(latest_version or "-")
         self.remote_version_value.setProperty("tone", self._status_tone())
         arrow = QLabel("→")
@@ -188,8 +191,9 @@ class UpdateCheckDialog(ChromedDialog):
         card_layout.addWidget(details_label)
 
         if self._release_url:
+            link_text = self._tr("打开 GitHub Release 页面")
             link = QLabel(
-                f'<a href="{escape(self._release_url, quote=True)}">打开 GitHub Release 页面</a>'
+                f'<a href="{escape(self._release_url, quote=True)}">{escape(link_text)}</a>'
             )
             link.setObjectName("UpdateReleaseLink")
             link.setOpenExternalLinks(True)
@@ -204,7 +208,7 @@ class UpdateCheckDialog(ChromedDialog):
         button_row.addStretch(1)
 
         if secondary_text:
-            self.secondary_button = QPushButton(secondary_text)
+            self.secondary_button = QPushButton(self._tr(secondary_text))
             self.secondary_button.setObjectName("DialogNeutralButton")
             self.secondary_button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.secondary_button.clicked.connect(self.reject)
@@ -212,7 +216,7 @@ class UpdateCheckDialog(ChromedDialog):
         else:
             self.secondary_button = None
 
-        self.primary_button = QPushButton(primary_text)
+        self.primary_button = QPushButton(self._tr(primary_text))
         self.primary_button.setObjectName("DialogPrimaryButton")
         self.primary_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.primary_button.clicked.connect(self.accept)
@@ -249,30 +253,33 @@ class UpdateCheckDialog(ChromedDialog):
             return "danger"
         return "muted"
 
+    def _tr(self, text: str) -> str:
+        return tr(text, self._language)
+
     def _status_badge_text(self) -> str:
-        return {
+        return self._tr({
             "current": "已是最新",
             "available": "发现更新",
             "local_newer": "本地构建",
             "error": "检测失败",
-        }.get(self._status, "提示")
+        }.get(self._status, "提示"))
 
     def _detail_title(self) -> str:
-        return {
+        return self._tr({
             "current": "检查结果",
             "available": "更新说明",
             "local_newer": "为什么会这样",
             "error": "错误详情",
-        }.get(self._status, "补充信息")
+        }.get(self._status, "补充信息"))
 
     def _detail_text(self, details: str) -> str:
         text = str(details or "").strip()
         if text:
-            return text
+            return self._tr(text)
         if self._status == "available":
-            return "当前只完成版本检测与更新确认，下载和安装流程尚未接入。"
+            return self._tr("当前只完成版本检测与更新确认，下载和安装流程尚未接入。")
         if self._status == "current":
-            return "本地版本与 GitHub 最新 Release 一致，无需更新。"
+            return self._tr("本地版本与 GitHub 最新 Release 一致，无需更新。")
         if self._status == "local_newer":
-            return "通常表示你正在使用本地构建或预发布构建，无需更新。"
-        return "暂无更多信息。"
+            return self._tr("通常表示你正在使用本地构建或预发布构建，无需更新。")
+        return self._tr("暂无更多信息。")

@@ -2660,7 +2660,10 @@ function applyAppearance(appearance = {}) {
   document.documentElement.style.setProperty("--accent", accent[mode][0]);
   document.documentElement.style.setProperty("--accent-soft", accent[mode][1]);
   document.documentElement.style.setProperty("--row-selected", accent[mode][1]);
-  const language = currentLanguage();
+  const configuredLanguage = String(appearance.language || "").trim();
+  const language = ["zh-CN", "en-US", "zh-TW"].includes(configuredLanguage)
+    ? configuredLanguage
+    : currentLanguage();
   document.documentElement.dataset.language = language;
   document.documentElement.lang = { "en-US": "en", "zh-TW": "zh" }[language] || language;
   applyStaticLanguage();
