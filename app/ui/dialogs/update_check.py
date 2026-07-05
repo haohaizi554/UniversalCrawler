@@ -18,6 +18,7 @@ class UpdateStatusIcon(QWidget):
         super().__init__(parent)
         self._status = status
         self._colors = dict(colors)
+        self.setObjectName("UpdateStatusIcon")
         self.setFixedSize(46, 46)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 

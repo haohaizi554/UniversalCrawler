@@ -423,6 +423,7 @@ class MainWindow(QMainWindow):
             "检查更新失败",
             "暂时无法检查最新版本。",
             message,
+            status="error",
         )
 
     def _show_update_check_result(self, result: UpdateCheckResult) -> None:
@@ -461,12 +462,11 @@ class MainWindow(QMainWindow):
         latest_version: str,
         result: UpdateCheckResult,
     ) -> None:
-        release_hint = f"\nRelease：{result.html_url}" if result.html_url else ""
         box = UpdateCheckDialog(
             self,
             title="检测到新版本",
             message=f"检测到最新版本 {latest_version}，是否要更新？",
-            details=f"更新前建议关闭正在运行的采集任务。{release_hint}",
+            details="更新前建议关闭正在运行的采集任务。当前只完成确认流程，下载和安装稍后接入。",
             primary_text="更新",
             secondary_text="稍后",
             status=UPDATE_STATUS_AVAILABLE,

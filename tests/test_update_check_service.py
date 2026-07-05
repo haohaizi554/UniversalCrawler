@@ -149,10 +149,10 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
 
     def test_update_check_dialog_uses_scoped_theme_styles(self):
         from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QLabel, QPushButton
+        from PyQt6.QtWidgets import QLabel, QPushButton, QFrame
 
         from app.ui.dialogs.chromed_dialog import ChromedDialog
-        from app.ui.dialogs.update_check import UpdateCheckDialog
+        from app.ui.dialogs.update_check import UpdateCheckDialog, UpdateStatusIcon
         from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
         from app.ui.styles import theme_colors
 
@@ -161,6 +161,10 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
             title="检查更新",
             message="当前版本已经是最新版本。",
             details="当前版本：v3.6.17",
+            status=UPDATE_STATUS_CURRENT,
+            local_version="v3.6.17",
+            latest_version="v3.6.17",
+            release_url="https://example.test/release",
         )
         self.addCleanup(dialog.deleteLater)
 
@@ -174,4 +178,8 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogTitle"))
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogBody"))
         self.assertIsNotNone(dialog.findChild(QLabel, "DialogStatus"))
+        self.assertIsNotNone(dialog.findChild(UpdateStatusIcon, "UpdateStatusIcon"))
+        self.assertIsNotNone(dialog.findChild(QLabel, "UpdateStatusBadge"))
+        self.assertIsNotNone(dialog.findChild(QFrame, "UpdateVersionPanel"))
+        self.assertIsNotNone(dialog.findChild(QLabel, "UpdateReleaseLink"))
         self.assertIsNotNone(dialog.findChild(QPushButton, "DialogPrimaryButton"))

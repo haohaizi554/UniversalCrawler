@@ -52,6 +52,10 @@ def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
         background: transparent;
         border: none;
     }}
+    QFrame#UpdateHero QLabel#DialogBody {{
+        font-size: 14px;
+        font-weight: 700;
+    }}
     QLabel#UpdateStatusBadge {{
         min-height: 24px;
         border-radius: 12px;
@@ -121,6 +125,12 @@ def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
         background: {colors["panel_soft"]};
         border: 1px solid {colors["border"]};
         border-radius: 10px;
+    }}
+    QFrame#UpdateDetailCard QLabel#DialogStatus {{
+        color: {colors["muted"]};
+        background: transparent;
+        border: none;
+        padding: 0;
     }}
     QLabel#UpdateDetailTitle {{
         color: {colors["text"]};
