@@ -1221,11 +1221,12 @@ class MainWindow(QMainWindow):
         self.current_plugin = registry.get_plugin(plugin_id)
         if not self.current_plugin:
             return
-        self.inp_search.setPlaceholderText(self.current_plugin.get_search_placeholder())
         defaults = get_platform_runtime_defaults(plugin_id)
         top_bar = getattr(self, "top_bar", None)
         if top_bar is not None:
             top_bar.configure_for_platform(plugin_id, defaults)
+        else:
+            self.inp_search.setPlaceholderText(self.current_plugin.get_search_placeholder())
         cfg.set("common", "last_source", plugin_id)
 
     def set_crawl_running_state(self, is_running: bool) -> None:

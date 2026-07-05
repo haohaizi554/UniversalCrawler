@@ -1534,27 +1534,71 @@ class WebUIBrowserTests(unittest.TestCase):
                   { id: "bilibili", name: "Bilibili", auth_status: "已认证", default_count: 1, count_unit: "pages", count_config_key: "max_pages", count_editable: true, count_options: [{ value: "1", label: "1 页（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理"], proxy_editable: false }
                 ]
               };
-              frontendState.log_items = [{
-                id: "log-runtime-language",
-                time: "2026-07-05 11:33:04",
-                level: "WARN",
-                type: "预警",
-                scope: "性能",
-                stage: "性能",
-                source: "系统 · MainWindow",
-                platform: "系统",
-                trace_id: "-",
-                message_summary: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
-                message: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
-                detail: {
-                  description: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+              frontendState.log_items = [
+                {
+                  id: "log-runtime-language",
+                  time: "2026-07-05 11:33:04",
+                  level: "WARN",
                   type: "预警",
                   scope: "性能",
                   stage: "性能",
-                  source: "MainWindow",
-                  platform: "系统"
+                  source: "系统 · MainWindow",
+                  platform: "系统",
+                  trace_id: "-",
+                  message_summary: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                  message: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                  detail: {
+                    description: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                    type: "预警",
+                    scope: "性能",
+                    stage: "性能",
+                    source: "MainWindow",
+                    platform: "系统"
+                  }
+                },
+                {
+                  id: "log-bilibili-start",
+                  time: "2026-07-05 11:33:03",
+                  level: "INFO",
+                  type: "过程",
+                  scope: "采集",
+                  stage: "启动",
+                  source: "Bilibili · BilibiliSpider",
+                  platform: "Bilibili",
+                  trace_id: "bilibili_crawl_1",
+                  message_summary: "启动 Bilibili 爬虫任务",
+                  message: "启动 Bilibili 爬虫任务",
+                  detail: { description: "启动 Bilibili 爬虫任务", source: "BilibiliSpider", platform: "Bilibili" }
+                },
+                {
+                  id: "log-bilibili-confirm",
+                  time: "2026-07-05 11:33:02",
+                  level: "INFO",
+                  type: "过程",
+                  scope: "系统",
+                  stage: "确认",
+                  source: "系统 · GUI",
+                  platform: "系统",
+                  trace_id: "-",
+                  message_summary: "用户确认了 45 个任务",
+                  message: "用户确认了 45 个任务",
+                  detail: { description: "用户确认了 45 个任务", source: "GUI", platform: "系统" }
+                },
+                {
+                  id: "log-bilibili-finish",
+                  time: "2026-07-05 11:33:01",
+                  level: "INFO",
+                  type: "成功",
+                  scope: "下载",
+                  stage: "完成",
+                  source: "Bilibili · Downloader",
+                  platform: "Bilibili",
+                  trace_id: "bilibili_BV1",
+                  message_summary: "下载任务完成",
+                  message: "下载任务完成",
+                  detail: { description: "下载任务完成", source: "Downloader", platform: "Bilibili" }
                 }
-              }];
+              ];
               document.documentElement.dataset.language = "zh-CN";
               renderPlatforms();
               currentPage = "settings";
@@ -1578,8 +1622,42 @@ class WebUIBrowserTests(unittest.TestCase):
               const logPlatformButton = document.querySelector("#logPlatformFilter").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
               const logPlatformOriginal = document.querySelector("#logPlatformFilter option[value='all']").dataset.originalLabel;
 
-              frontendState.active_downloads = [];
+              frontendState.completed_items = [{
+                id: "completed-pending",
+                title: "pending metadata",
+                filename: "pending.mp4",
+                local_path: "D:/Downloads/pending.mp4",
+                completed_at: "2026-07-05 11:32:00",
+                completed_at_table: "11:32:00",
+                duration: "检测中",
+                resolution: "检测中",
+                metadata_pending: true,
+                size: "1 MB",
+                format: "MP4"
+              }];
+              selected.completed = "completed-pending";
+              currentPage = "completed";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "completed"));
+              renderCompleted();
+              const completedText = document.getElementById("page-completed").textContent;
+
+              frontendState.active_downloads = [{
+                id: "active-language",
+                title: "demo",
+                platform: "Bilibili",
+                platform_id: "bilibili",
+                progress: 25,
+                speed: "1.0 MB/s",
+                remaining_time: "00:47",
+                chunk_progress: { percent: 25, completed: 25, total: 100 },
+                events: [
+                  { time: "20:20:48", message: "任务进入 Bilibili 下载器" },
+                  { time: "20:20:49", message: "音视频流下载中" },
+                  { time: "20:20:50", message: "当前速度：1.0 MB/s，剩余：00:47" }
+                ]
+              }];
               frontendState.download_options = { auto_retry: true, max_retries: 3, max_concurrent: 3 };
+              selected.active = "active-language";
               currentPage = "active";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "active"));
               renderActive();
@@ -1589,7 +1667,7 @@ class WebUIBrowserTests(unittest.TestCase):
               const modalText = document.getElementById("fileAssociationModal").textContent;
               cancelFileAssociationModal();
 
-              return { sourceOptions, settingsText, customProxyPlaceholder, logsText, logPlatformButton, logPlatformOriginal, activeText, modalText };
+              return { sourceOptions, settingsText, customProxyPlaceholder, logsText, logPlatformButton, logPlatformOriginal, completedText, activeText, modalText };
             }
             """
         )
@@ -1605,9 +1683,15 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("Warning", result["logsText"])
         self.assertIn("Performance", result["logsText"])
         self.assertIn("System", result["logsText"])
+        self.assertIn("Started Bilibili crawl task", result["logsText"])
+        self.assertIn("User confirmed 45 tasks", result["logsText"])
+        self.assertIn("Download task completed", result["logsText"])
+        self.assertIn("Checking", result["completedText"])
         self.assertIn("Current task events", result["activeText"])
-        self.assertIn("No events", result["activeText"])
-        self.assertIn("Running: 0 tasks", result["activeText"])
+        self.assertIn("Task entered Bilibili downloader", result["activeText"])
+        self.assertIn("Audio/video stream downloading", result["activeText"])
+        self.assertIn("Current speed: 1.0 MB/s, remaining: 00:47", result["activeText"])
+        self.assertIn("Running: 1 tasks", result["activeText"])
         self.assertIn("Bind default app", result["modalText"])
         self.assertIn("Video resources", result["modalText"])
         for unexpected in (
@@ -1620,11 +1704,65 @@ class WebUIBrowserTests(unittest.TestCase):
             "预警",
             "性能",
             "系统",
+            "启动 Bilibili 爬虫任务",
+            "用户确认了 45 个任务",
+            "下载任务完成",
+            "检测中",
             "暂无事件",
             "当前运行",
+            "音视频流下载中",
             "绑定默认打开方式",
         ):
-            self.assertNotIn(unexpected, "\n".join(result["sourceOptions"]) + result["settingsText"] + result["logsText"] + result["activeText"] + result["modalText"])
+            self.assertNotIn(unexpected, "\n".join(result["sourceOptions"]) + result["settingsText"] + result["logsText"] + result["completedText"] + result["activeText"] + result["modalText"])
+
+    def test_09i_runtime_log_translation_handles_raw_english_sources(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              document.documentElement.dataset.language = "zh-CN";
+              const cn = [
+                translateRuntimeLogText("fetch video detail"),
+                translateRuntimeLogText("Bilibili route: direct BV video"),
+                translateRuntimeLogText("Download task has been queued"),
+                translateRuntimeLogText("Released download concurrency slot"),
+                translateRuntimeLogText("Frontend render exceeded the interactive budget; refresh cadence was relaxed")
+              ];
+              document.documentElement.dataset.language = "zh-TW";
+              const tw = [
+                translateRuntimeLogText("fetch video detail"),
+                translateRuntimeLogText("Bilibili route: browser scan search"),
+                translateRuntimeLogText("Dispatched queued task to a download worker")
+              ];
+              document.documentElement.dataset.language = "en-US";
+              const en = translateRuntimeLogText("用户确认了 45 个任务");
+              return { cn, tw, en };
+            }
+            """
+        )
+
+        self.assertEqual(
+            result["cn"],
+            [
+                "获取视频详情",
+                "Bilibili 路由：直接 BV 视频",
+                "下载任务已入队",
+                "已释放下载并发槽位",
+                "前端渲染超过交互预算，已降低刷新频率",
+            ],
+        )
+        self.assertEqual(
+            result["tw"],
+            [
+                "取得影片詳情",
+                "Bilibili 路由：瀏覽器掃描 search",
+                "已將排隊任務分發給下載執行緒",
+            ],
+        )
+        self.assertEqual(result["en"], "User confirmed 45 tasks")
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""

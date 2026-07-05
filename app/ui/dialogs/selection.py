@@ -29,7 +29,8 @@ from app.ui.localization import normalize_language, tr
 from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
 _ROW_HEIGHT = 34
-_BUTTON_HORIZONTAL_PADDING = 42
+_BUTTON_HORIZONTAL_PADDING = 56
+_SELECTION_COLUMN_MIN_WIDTH = 72
 
 class SelectionTableDelegate(QStyledItemDelegate):
     """Paint selection-dialog rows without Qt's native current-cell focus frame."""
@@ -104,7 +105,7 @@ class SelectionDialog(ChromedDialog):
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels([self._tr("选择"), self._tr("视频标题 / 描述")])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 48)
+        self.table.setColumnWidth(0, self._selection_column_width())
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         self.table.setShowGrid(False)
@@ -165,13 +166,27 @@ class SelectionDialog(ChromedDialog):
 
         self._install_dialog_shortcuts()
         self.apply_chrome_theme(self._is_dark)
+        self._fit_action_buttons()
         self._refresh_table_theme()
 
+    def _selection_column_width(self) -> int:
+        header_width = self.table.horizontalHeader().fontMetrics().horizontalAdvance(self._tr("选择")) + 30
+        return max(_SELECTION_COLUMN_MIN_WIDTH, header_width)
+
+    def _fit_action_buttons(self) -> None:
+        for button, min_width, height in (
+            (self.btn_all, 96, 34),
+            (self.btn_invert, 96, 34),
+            (self.btn_cancel, 128, 40),
+            (self.btn_confirm, 148, 40),
+        ):
+            self._fit_action_button(button, min_width=min_width, height=height)
+
     def _fit_action_button(self, button: QPushButton, *, min_width: int, height: int) -> None:
+        button.ensurePolished()
         text_width = button.fontMetrics().horizontalAdvance(button.text())
-        width = max(min_width, text_width + _BUTTON_HORIZONTAL_PADDING)
-        button.setMinimumWidth(width)
-        button.setMinimumHeight(height)
+        width = max(min_width, button.sizeHint().width(), text_width + _BUTTON_HORIZONTAL_PADDING)
+        button.setMinimumSize(width, height)
         button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
     def _tr(self, text: str) -> str:

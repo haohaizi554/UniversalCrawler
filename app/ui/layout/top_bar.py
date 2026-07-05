@@ -172,9 +172,7 @@ class TopBarWidget(QFrame):
         count_unit: str | None = None,
     ) -> None:
         defaults = defaults or {}
-        self._platform_id = str(plugin_id or "")
-        self._search_placeholder_source = self._placeholder_for_platform(self._platform_id)
-        self._apply_search_placeholder()
+        self.set_platform_placeholder(plugin_id)
         inferred_unit = self._infer_count_unit(plugin_id, defaults, count_unit)
         self._quantity_mode = inferred_unit
         self.video_count_label.setText(tr(COUNT_LABELS[inferred_unit], self._language))
@@ -231,6 +229,11 @@ class TopBarWidget(QFrame):
         if plugin is None:
             return "输入：主页链接、分享链接或合集链接..."
         return str(plugin.get_search_placeholder() or "输入：主页链接、分享链接或合集链接...")
+
+    def set_platform_placeholder(self, plugin_id: str) -> None:
+        self._platform_id = str(plugin_id or "")
+        self._search_placeholder_source = self._placeholder_for_platform(self._platform_id)
+        self._apply_search_placeholder()
 
     def _apply_search_placeholder(self) -> None:
         self.inp_search.setPlaceholderText(tr(self._search_placeholder_source, self._language))

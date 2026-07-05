@@ -143,9 +143,12 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         widget.set_update_checking(True)
         self.assertFalse(widget.lbl_version.isEnabled())
         self.assertTrue(widget.lbl_version.toolTip())
+        widget.set_language("en-US")
+        self.assertEqual(widget.lbl_version.toolTip(), "Checking for updates...")
 
         widget.set_update_checking(False)
         self.assertTrue(widget.lbl_version.isEnabled())
+        self.assertEqual(widget.lbl_version.toolTip(), "Check for updates")
 
     def test_update_check_dialog_uses_scoped_theme_styles(self):
         from PyQt6.QtCore import Qt

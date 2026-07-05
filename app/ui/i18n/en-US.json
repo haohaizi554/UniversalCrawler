@@ -424,6 +424,7 @@
   "图片资源（jpg、png、gif、webp、bmp 等）": "Image resources (jpg, png, gif, webp, bmp, etc.)",
   "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "Effective after registration for future system opens. If Windows blocks it, the app opens Default Apps settings for confirmation.",
   "检查更新": "Check for updates",
+  "正在检查更新...": "Checking for updates...",
   "正在检查更新，请稍候。": "Checking for updates. Please wait.",
   "检查更新失败": "Update check failed",
   "暂时无法检查最新版本。": "Could not check the latest version right now.",

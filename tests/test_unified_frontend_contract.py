@@ -1351,6 +1351,29 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(dialog.btn_invert.text(), "Invert")
         self.assertEqual(dialog.btn_cancel.text(), "Cancel task")
         self.assertEqual(dialog.btn_confirm.text(), "Start download")
+        for button in (dialog.btn_all, dialog.btn_invert, dialog.btn_cancel, dialog.btn_confirm):
+            self.assertGreaterEqual(button.minimumWidth(), button.sizeHint().width())
+            self.assertGreater(button.minimumWidth(), button.fontMetrics().horizontalAdvance(button.text()) + 40)
+        self.assertGreaterEqual(
+            dialog.table.columnWidth(0),
+            dialog.table.horizontalHeader().fontMetrics().horizontalAdvance("Select") + 30,
+        )
+
+    def test_gui_top_bar_platform_placeholder_uses_language_contract(self):
+        from app.ui.layout.top_bar import TopBarWidget
+
+        top_bar = TopBarWidget(is_dark_theme=False)
+        self.addCleanup(top_bar.deleteLater)
+
+        top_bar.set_language("zh-CN")
+        top_bar.set_platform_placeholder("bilibili")
+        self.assertIn("BV号", top_bar.inp_search.placeholderText())
+
+        top_bar.set_language("en-US")
+        self.assertIn("BV ID", top_bar.inp_search.placeholderText())
+
+        top_bar.set_platform_placeholder("xiaohongshu")
+        self.assertIn("Xiaohongshu ID", top_bar.inp_search.placeholderText())
 
     def test_web_selection_modal_matches_gui_confirmation_interaction(self):
         content = _html_bundle()
@@ -1384,14 +1407,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("width: 72px;", css)
         self.assertIn("width: 22px;", css)
         self.assertIn(".selection-bulk-actions .btn", css)
-        self.assertIn("width: 120px;", css)
+        self.assertIn("min-width: 120px;", css)
         self.assertIn("height: 50px;", css)
         self.assertIn(".selection-primary-actions .btn", css)
         self.assertIn("height: 54px;", css)
         self.assertIn("#selectionCancelBtn", css)
-        self.assertIn("width: 150px;", css)
+        self.assertIn("min-width: 150px;", css)
         self.assertIn("#selectionConfirmBtn", css)
-        self.assertIn("width: 180px;", css)
+        self.assertIn("min-width: 180px;", css)
         self.assertIn(".selection-row:focus", css)
         self.assertIn(".selection-row.unchecked td", css)
         self.assertIn("appearance: none", css)
@@ -1746,6 +1769,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "Task entered Douyin downloader",
         )
         self.assertEqual(
+            timeline._localized_message("\u4efb\u52a1\u8fdb\u5165 Bilibili \u4e0b\u8f7d\u5668"),
+            "Task entered Bilibili downloader",
+        )
+        self.assertEqual(
             timeline._localized_message("\u97f3\u89c6\u9891\u6d41\u4e0b\u8f7d\u4e2d"),
             "Audio/video stream downloading",
         )
@@ -2006,6 +2033,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(active.detail_events_title.text(), "Current task events")
         self.assertEqual(active.running_count_label.text(), "Running: 0 tasks")
 
+        snapshot["completed_items"][0]["duration"] = "检测中"
+        snapshot["completed_items"][0]["resolution"] = "检测中"
         shell.show_page("completed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "completed_items"})
         self.app.processEvents()
@@ -2014,6 +2043,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(completed.info_title.text(), "File info")
         self.assertIn("Filename", completed_labels)
         self.assertIn("Save path", completed_labels)
+        self.assertIn("Checking", completed_labels)
+        self.assertNotIn("检测中", completed_labels)
 
         shell.show_page("failed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
@@ -2025,6 +2056,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("No failed tasks", failed_labels)
 
     def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
+        from app.ui.viewmodels.log_i18n import localize_log_text
+
         shell = self._make_shell()
         shell.show_page("logs")
         logs = shell.pages["logs"]
@@ -2072,6 +2105,16 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         )
         self.assertIn("Loaded 1 local file", logs._last_json_text)
         self.assertNotIn("\u5df2\u52a0\u8f7d", logs._last_json_text)
+        self.assertEqual(localize_log_text("用户确认了 45 个任务", "en-US"), "User confirmed 45 tasks")
+        self.assertEqual(localize_log_text("启动 Bilibili 爬虫任务", "en-US"), "Started Bilibili crawl task")
+        self.assertEqual(localize_log_text("Bilibili 爬虫任务结束", "en-US"), "Bilibili crawl task finished")
+        self.assertEqual(localize_log_text("fetch video detail", "zh-CN"), "获取视频详情")
+        self.assertEqual(localize_log_text("fetch video detail", "zh-TW"), "取得影片詳情")
+        self.assertEqual(localize_log_text("Bilibili route: direct BV video", "zh-CN"), "Bilibili 路由：直接 BV 视频")
+        self.assertEqual(localize_log_text("Download task has been queued", "zh-CN"), "下载任务已入队")
+        self.assertEqual(localize_log_text("Released download concurrency slot", "zh-CN"), "已释放下载并发槽位")
+        self.assertEqual(localize_log_text("System · MainWindow", "zh-CN"), "系统 · 主窗口")
+        self.assertEqual(localize_log_text("系统 · GUI", "en-US"), "System · GUI")
 
     def test_gui_platform_custom_proxy_field_displays_port_and_commits_endpoint(self):
         shell = self._make_shell()
@@ -2116,6 +2159,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(tw_catalog["请输入主页链接、分享链接或合集链接"], "請輸入主頁連結、分享連結或合集連結")
         self.assertEqual(en_catalog["播放前校验失败"], "Pre-playback check failed")
         self.assertEqual(tw_catalog["播放前校验失败"], "播放前校驗失敗")
+        self.assertEqual(en_catalog["检测中"], "Checking")
+        self.assertEqual(tw_catalog["检测中"], "檢測中")
 
     def test_webui_loads_language_catalogs_from_shared_api(self):
         content = _html_bundle()
@@ -3118,6 +3163,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('<path d="${linePath}" class="line" />', media_display)
         self.assertNotIn("<polyline", media_display)
         self.assertIn("displayMetadataValue(value, pending", media_display)
+        self.assertIn("return translate(text);", media_display)
+        self.assertIn('return pending ? translate("\\u68c0\\u6d4b\\u4e2d") : "--";', media_display)
         self.assertIn("window.UcpMediaDisplay.activeTrendHtml", app_js)
         self.assertIn("window.UcpMediaDisplay.displayMetadataValue", app_js)
 
@@ -3134,6 +3181,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("visibleLogItems(items, rowBudget", log_display)
         self.assertIn("window.UcpLogDisplay.filteredLogItems", app_js)
         self.assertIn("window.UcpLogDisplay.visibleLogItems", app_js)
+        self.assertIn("function syncLogStaticLanguage()", app_js)
+        self.assertIn("syncLogStaticLanguage();", app_js)
         self.assertNotIn("const category = logCategory(item);", app_js)
 
 

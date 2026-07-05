@@ -187,7 +187,7 @@ class MainWindowTests(unittest.TestCase):
 
         window.on_source_changed(0)
 
-        window.inp_search.setPlaceholderText.assert_called_once_with("输入分享链接")
+        window.inp_search.setPlaceholderText.assert_not_called()
         window.top_bar.configure_for_platform.assert_called_once()
         mock_defaults.assert_called_once_with("douyin")
         mock_cfg_set.assert_called_once_with("common", "last_source", "douyin")
@@ -1056,7 +1056,7 @@ class MainWindowTests(unittest.TestCase):
         window._auto_hide_taskbar_edge_for_monitor.assert_not_called()
 
     def test_constrain_window_geometry_keeps_window_inside_available_screen(self):
-        from PyQt6.QtCore import QRect, QSize
+        from PyQt6.QtCore import QRect
 
         window = self._make_window()
         window._available_geometry_for_rect = Mock(return_value=QRect(0, 0, 1280, 720))

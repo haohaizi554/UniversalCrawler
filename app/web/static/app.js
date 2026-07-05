@@ -1320,8 +1320,10 @@ function translateStructuredLogText(value) {
 function translateRuntimeLogText(value) {
   const text = String(value ?? "");
   if (!text.trim()) return text;
+  const language = currentLanguage();
   const translated = translateStructuredLogText(text);
-  if (translated !== text || currentLanguage() !== "en-US") return translated;
+  if (translated !== text) return translated;
+  if (language !== "en-US") return localizeNonEnglishDynamicLogText(text, language);
   return localizeEnglishDynamicLogText(text);
 }
 
@@ -1374,6 +1376,144 @@ function localizeEnglishDynamicLogText(text) {
   let result = text;
   for (const [source, target] of replacements) result = result.split(source).join(target);
   return result;
+}
+
+const NON_EN_DYNAMIC_LOG_TEXT = {
+  "fetch video detail": {
+    "zh-CN": "获取视频详情",
+    "zh-TW": "取得影片詳情",
+  },
+  "Download task has been queued": {
+    "zh-CN": "下载任务已入队",
+    "zh-TW": "下載任務已入隊",
+  },
+  "Dispatched queued task to a download worker": {
+    "zh-CN": "已将排队任务分发给下载线程",
+    "zh-TW": "已將排隊任務分發給下載執行緒",
+  },
+  "Released download concurrency slot": {
+    "zh-CN": "已释放下载并发槽位",
+    "zh-TW": "已釋放下載並發槽位",
+  },
+  "Download task started": {
+    "zh-CN": "下载任务开始执行",
+    "zh-TW": "下載任務開始執行",
+  },
+  "Download task completed": {
+    "zh-CN": "下载任务完成",
+    "zh-TW": "下載任務完成",
+  },
+  "Download task has been queued for execution": {
+    "zh-CN": "下载任务已加入执行队列",
+    "zh-TW": "下載任務已加入執行隊列",
+  },
+  "Frontend render exceeded the interactive budget; refresh cadence was relaxed": {
+    "zh-CN": "前端渲染超过交互预算，已降低刷新频率",
+    "zh-TW": "前端渲染超出互動預算；已降低刷新頻率",
+  },
+  "App initialization started": {
+    "zh-CN": "应用开始初始化",
+    "zh-TW": "應用開始初始化",
+  },
+  "Main window initialized": {
+    "zh-CN": "主窗口初始化完成",
+    "zh-TW": "主視窗初始化完成",
+  },
+  "Local media folder scan completed": {
+    "zh-CN": "本地媒体目录扫描完成",
+    "zh-TW": "本機媒體目錄掃描完成",
+  },
+  "Started scanning local media folder": {
+    "zh-CN": "开始扫描本地媒体目录",
+    "zh-TW": "開始掃描本機媒體目錄",
+  },
+  "Web started scanning local media folder": {
+    "zh-CN": "Web 端开始扫描本地媒体目录",
+    "zh-TW": "Web 端開始掃描本機媒體目錄",
+  },
+  "Web started scanning local media folder (async)": {
+    "zh-CN": "Web 端开始扫描本地媒体目录（异步）",
+    "zh-TW": "Web 端開始掃描本機媒體目錄（非同步）",
+  },
+  "Clear queue failed": {
+    "zh-CN": "清空队列失败",
+    "zh-TW": "清空隊列失敗",
+  },
+  "setting update failed": {
+    "zh-CN": "设置更新失败",
+    "zh-TW": "設定更新失敗",
+  },
+  "download options update failed": {
+    "zh-CN": "下载选项更新失败",
+    "zh-TW": "下載選項更新失敗",
+  },
+  "download paused": {
+    "zh-CN": "下载已暂停",
+    "zh-TW": "下載已暫停",
+  },
+};
+
+const BILIBILI_ROUTE_ALIASES = {
+  "direct BV video": {
+    "zh-CN": "直接 BV 视频",
+    "zh-TW": "直接 BV 影片",
+  },
+  "direct BV video with search fallback": {
+    "zh-CN": "直接 BV 视频，失败后回退搜索",
+    "zh-TW": "直接 BV 影片，失敗後回退搜尋",
+  },
+  "direct av video": {
+    "zh-CN": "直接 av 视频",
+    "zh-TW": "直接 av 影片",
+  },
+  "keyword search": {
+    "zh-CN": "关键词搜索",
+    "zh-TW": "關鍵字搜尋",
+  },
+};
+
+function localizedDynamicValue(map, language) {
+  return (map && (map[language] || map["zh-CN"])) || "";
+}
+
+function localizeNonEnglishDynamicLogText(text, language) {
+  const exact = NON_EN_DYNAMIC_LOG_TEXT[text];
+  if (exact) return localizedDynamicValue(exact, language);
+
+  let match = text.match(/^Bilibili route:\s*(.+)$/);
+  if (match) {
+    const route = match[1].trim();
+    const browserScan = route.match(/^browser scan\s*(.*)$/);
+    if (browserScan) {
+      const prefix = language === "zh-TW" ? "Bilibili 路由：瀏覽器掃描" : "Bilibili 路由：浏览器扫描";
+      return `${prefix} ${browserScan[1].trim()}`.trimEnd();
+    }
+    const routeLabel = BILIBILI_ROUTE_ALIASES[route];
+    if (routeLabel) return `Bilibili 路由：${localizedDynamicValue(routeLabel, language)}`;
+  }
+
+  match = text.match(/^Bilibili browser producer error:\s*(.+)$/);
+  if (match) {
+    const prefix = language === "zh-TW" ? "Bilibili 瀏覽器生產執行緒異常" : "Bilibili 浏览器生产线程异常";
+    return `${prefix}：${match[1]}`;
+  }
+
+  match = text.match(/^XiaoHongShu user confirmed\s*(\d+)\s*candidates; starting parse-to-download pipeline\.$/);
+  if (match) return language === "zh-TW"
+    ? `小紅書使用者已確認 ${match[1]} 個候選，開始解析到下載流水線。`
+    : `小红书用户已确认 ${match[1]} 个候选，开始解析到下载流水线。`;
+
+  match = text.match(/^XiaoHongShu found\s*(\d+)\s*candidates; waiting for user confirmation before parsing details\.$/);
+  if (match) return language === "zh-TW"
+    ? `小紅書發現 ${match[1]} 個候選，等待使用者確認後解析詳情。`
+    : `小红书发现 ${match[1]} 个候选，等待用户确认后解析详情。`;
+
+  match = text.match(/^XiaoHongShu confirmed pipeline is active:\s*(\d+)\s*selected candidates\.$/);
+  if (match) return language === "zh-TW"
+    ? `小紅書流水線已啟用：${match[1]} 個已選候選。`
+    : `小红书流水线已激活：${match[1]} 个已选候选。`;
+
+  return text;
 }
 
 function localizeLogEventCode(value) {

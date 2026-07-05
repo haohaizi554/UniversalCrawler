@@ -37,8 +37,8 @@ _EN_DYNAMIC_REPLACEMENTS = (
     ("重刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully"),
     ("B站 audio 流连接断开", "B-site audio stream disconnected"),
     ("B站 video 流连接断开", "B-site video stream disconnected"),
-    ("爬虫任务结束", "Crawl task finished"),
     ("Bilibili 爬虫任务结束", "Bilibili crawl task finished"),
+    ("爬虫任务结束", "Crawl task finished"),
     ("爬虫发现可下载资源", "Crawler found downloadable resources"),
     ("检查 Bilibili 登录状态", "Checking Bilibili login status"),
     ("已登录，Cookie", "Logged in; Cookie"),
@@ -50,6 +50,115 @@ _EN_DYNAMIC_REPLACEMENTS = (
     ("分发队列", "Dispatched queue"),
     ("释放下载", "Released download"),
 )
+
+_NON_EN_DYNAMIC_EXACT = {
+    "fetch video detail": {
+        "zh-CN": "获取视频详情",
+        "zh-TW": "取得影片詳情",
+    },
+    "Download task has been queued": {
+        "zh-CN": "下载任务已入队",
+        "zh-TW": "下載任務已入隊",
+    },
+    "Dispatched queued task to a download worker": {
+        "zh-CN": "已将排队任务分发给下载线程",
+        "zh-TW": "已將排隊任務分發給下載執行緒",
+    },
+    "Released download concurrency slot": {
+        "zh-CN": "已释放下载并发槽位",
+        "zh-TW": "已釋放下載並發槽位",
+    },
+    "Download task started": {
+        "zh-CN": "下载任务开始执行",
+        "zh-TW": "下載任務開始執行",
+    },
+    "Download task completed": {
+        "zh-CN": "下载任务完成",
+        "zh-TW": "下載任務完成",
+    },
+    "Download task has been queued for execution": {
+        "zh-CN": "下载任务已加入执行队列",
+        "zh-TW": "下載任務已加入執行隊列",
+    },
+    "Frontend render exceeded the interactive budget; refresh cadence was relaxed": {
+        "zh-CN": "前端渲染超过交互预算，已降低刷新频率",
+        "zh-TW": "前端渲染超出互動預算；已降低刷新頻率",
+    },
+    "App initialization started": {
+        "zh-CN": "应用开始初始化",
+        "zh-TW": "應用開始初始化",
+    },
+    "Main window initialized": {
+        "zh-CN": "主窗口初始化完成",
+        "zh-TW": "主視窗初始化完成",
+    },
+    "Local media folder scan completed": {
+        "zh-CN": "本地媒体目录扫描完成",
+        "zh-TW": "本機媒體目錄掃描完成",
+    },
+    "Started scanning local media folder": {
+        "zh-CN": "开始扫描本地媒体目录",
+        "zh-TW": "開始掃描本機媒體目錄",
+    },
+    "Web started scanning local media folder": {
+        "zh-CN": "Web 端开始扫描本地媒体目录",
+        "zh-TW": "Web 端開始掃描本機媒體目錄",
+    },
+    "Web started scanning local media folder (async)": {
+        "zh-CN": "Web 端开始扫描本地媒体目录（异步）",
+        "zh-TW": "Web 端開始掃描本機媒體目錄（非同步）",
+    },
+    "Clear queue failed": {
+        "zh-CN": "清空队列失败",
+        "zh-TW": "清空隊列失敗",
+    },
+    "setting update failed": {
+        "zh-CN": "设置更新失败",
+        "zh-TW": "設定更新失敗",
+    },
+    "download options update failed": {
+        "zh-CN": "下载选项更新失败",
+        "zh-TW": "下載選項更新失敗",
+    },
+    "download paused": {
+        "zh-CN": "下载已暂停",
+        "zh-TW": "下載已暫停",
+    },
+}
+
+_BILIBILI_ROUTE_ALIASES = {
+    "direct BV video": {
+        "zh-CN": "直接 BV 视频",
+        "zh-TW": "直接 BV 影片",
+    },
+    "direct BV video with search fallback": {
+        "zh-CN": "直接 BV 视频，失败后回退搜索",
+        "zh-TW": "直接 BV 影片，失敗後回退搜尋",
+    },
+    "direct av video": {
+        "zh-CN": "直接 av 视频",
+        "zh-TW": "直接 av 影片",
+    },
+    "keyword search": {
+        "zh-CN": "关键词搜索",
+        "zh-TW": "關鍵字搜尋",
+    },
+}
+
+_STRUCTURED_SEGMENT_ALIASES = {
+    "System": {"zh-CN": "系统", "zh-TW": "系統"},
+    "系统": {"en-US": "System", "zh-TW": "系統"},
+    "系統": {"zh-CN": "系统", "en-US": "System"},
+    "MainWindow": {"zh-CN": "主窗口", "zh-TW": "主視窗"},
+    "主窗口": {"en-US": "MainWindow", "zh-TW": "主視窗"},
+    "主視窗": {"zh-CN": "主窗口", "en-US": "MainWindow"},
+    "ApplicationContext": {"zh-CN": "应用上下文", "zh-TW": "應用上下文"},
+    "应用上下文": {"en-US": "ApplicationContext", "zh-TW": "應用上下文"},
+    "應用上下文": {"zh-CN": "应用上下文", "en-US": "ApplicationContext"},
+    "WebUI": {"zh-CN": "网页端", "zh-TW": "網頁端"},
+    "网页端": {"en-US": "WebUI", "zh-TW": "網頁端"},
+    "網頁端": {"zh-CN": "网页端", "en-US": "WebUI"},
+}
 
 _EVENT_CODE_SEGMENT_ALIASES = {
     "GUI": "图形界面",
@@ -128,6 +237,84 @@ def _localize_english_dynamic(text: str) -> str:
     return result
 
 
+def _localized(language_map: dict[str, str], language: str) -> str:
+    return language_map.get(language) or language_map.get("zh-CN") or ""
+
+
+def _localize_structured_segments(text: str, language: str) -> str:
+    if " · " not in text and " / " not in text:
+        mapped = _STRUCTURED_SEGMENT_ALIASES.get(text)
+        if mapped:
+            return _localized(mapped, language) or text
+        return text
+    parts = re.split(r"(\s+·\s+|\s+/\s+)", text)
+    changed = False
+    translated_parts: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"\s*(?:·|/)\s*", part):
+            translated_parts.append(part)
+            continue
+        translated = tr(part, language)
+        mapped = _STRUCTURED_SEGMENT_ALIASES.get(part)
+        if mapped:
+            translated = _localized(mapped, language) or translated
+        changed = changed or translated != part
+        translated_parts.append(translated)
+    return "".join(translated_parts) if changed else text
+
+
+def _localize_non_english_dynamic(text: str, language: str) -> str:
+    mapped = _NON_EN_DYNAMIC_EXACT.get(text)
+    if mapped:
+        return _localized(mapped, language)
+
+    match = re.match(r"^Bilibili route:\s*(?P<route>.+)$", text)
+    if match:
+        route = match.group("route").strip()
+        browser_scan = re.match(r"^browser scan\s*(?P<target>.*)$", route)
+        if browser_scan:
+            target = browser_scan.group("target").strip()
+            prefix = "Bilibili 路由：浏览器扫描" if language == "zh-CN" else "Bilibili 路由：瀏覽器掃描"
+            return f"{prefix} {target}".rstrip()
+        route_label = _BILIBILI_ROUTE_ALIASES.get(route)
+        if route_label:
+            return f"Bilibili 路由：{_localized(route_label, language)}"
+
+    match = re.match(r"^Bilibili browser producer error:\s*(?P<error>.+)$", text)
+    if match:
+        prefix = "Bilibili 浏览器生产线程异常" if language == "zh-CN" else "Bilibili 瀏覽器生產執行緒異常"
+        return f"{prefix}：{match.group('error')}"
+
+    match = re.match(r"^XiaoHongShu user confirmed\s*(?P<count>\d+)\s*candidates; starting parse-to-download pipeline\.$", text)
+    if match:
+        count = match.group("count")
+        return (
+            f"小红书用户已确认 {count} 个候选，开始解析到下载流水线。"
+            if language == "zh-CN"
+            else f"小紅書使用者已確認 {count} 個候選，開始解析到下載流水線。"
+        )
+
+    match = re.match(r"^XiaoHongShu found\s*(?P<count>\d+)\s*candidates; waiting for user confirmation before parsing details\.$", text)
+    if match:
+        count = match.group("count")
+        return (
+            f"小红书发现 {count} 个候选，等待用户确认后解析详情。"
+            if language == "zh-CN"
+            else f"小紅書發現 {count} 個候選，等待使用者確認後解析詳情。"
+        )
+
+    match = re.match(r"^XiaoHongShu confirmed pipeline is active:\s*(?P<count>\d+)\s*selected candidates\.$", text)
+    if match:
+        count = match.group("count")
+        return (
+            f"小红书流水线已激活：{count} 个已选候选。"
+            if language == "zh-CN"
+            else f"小紅書流水線已啟用：{count} 個已選候選。"
+        )
+
+    return text
+
+
 def localize_log_text(text: object, language: str | None) -> str:
     value = str(text or "")
     if not value:
@@ -136,9 +323,12 @@ def localize_log_text(text: object, language: str | None) -> str:
     translated = tr(value, normalized)
     if translated != value:
         return translated
+    structured = _localize_structured_segments(value, normalized)
+    if structured != value:
+        return structured
     if normalized == "en-US":
         return _localize_english_dynamic(value)
-    return translated
+    return _localize_non_english_dynamic(value, normalized)
 
 
 def localize_log_event_code(code: object, language: str | None) -> str:
