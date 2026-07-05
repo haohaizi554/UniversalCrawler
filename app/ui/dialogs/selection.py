@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from app.ui.components.theme_checkbox import ThemeCheckBox
 from app.ui.dialogs.chromed_dialog import ChromedDialog
+from app.ui.localization import normalize_language, tr
 from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
 _ROW_HEIGHT = 34
@@ -46,13 +47,19 @@ def normalize_selection_items(items: list[Any] | None) -> list[dict[str, Any]]:
         normalized.append({"title": str(title), "index": index})
     return normalized
 
-def exec_selection_dialog(parent, items: list[Any] | None, *, title: str = "任务清单确认") -> list[int] | None:
+def exec_selection_dialog(
+    parent,
+    items: list[Any] | None,
+    *,
+    title: str = "任务清单确认",
+    language: str = "zh-CN",
+) -> list[int] | None:
     """Show the modal selection dialog and return chosen row indexes."""
     normalized = normalize_selection_items(items)
     if not normalized:
         return []
 
-    dialog = SelectionDialog(parent, title=title, items=normalized)
+    dialog = SelectionDialog(parent, title=title, items=normalized, language=language)
     dialog.setModal(True)
     dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
     dialog.raise_()
@@ -64,10 +71,11 @@ def exec_selection_dialog(parent, items: list[Any] | None, *, title: str = "任�
 class SelectionDialog(ChromedDialog):
     """Lets the user choose which scanned items should enter the queue."""
 
-    def __init__(self, parent, title="任务清单确认", items=None):
+    def __init__(self, parent, title="任务清单确认", items=None, *, language: str = "zh-CN"):
+        self._language = normalize_language(language)
         super().__init__(
             parent,
-            title=title,
+            title=self._tr(title),
             object_name="SelectionDialog",
             body_margins=(20, 20, 20, 20),
             body_spacing=15,
@@ -85,16 +93,14 @@ class SelectionDialog(ChromedDialog):
     def init_ui(self) -> None:
         layout = self.content_layout
 
-        header = QLabel(
-            f"共扫描到 {len(self.items)} 个资源，请勾选需要下载的项目："
-        )
+        header = QLabel(self._header_text())
         header.setObjectName("SelectionDialogHeader")
         layout.addWidget(header)
 
         self.table = QTableWidget()
         self.table.setObjectName("SelectionTable")
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["选择", "视频标题 / 描述"])
+        self.table.setHorizontalHeaderLabels([self._tr("选择"), self._tr("视频标题 / 描述")])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 48)
         self.table.verticalHeader().setVisible(False)
@@ -121,8 +127,8 @@ class SelectionDialog(ChromedDialog):
         btn_layout = QHBoxLayout(btn_box)
         btn_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_all = QPushButton("全选")
-        self.btn_invert = QPushButton("反选")
+        self.btn_all = QPushButton(self._tr("全选"))
+        self.btn_invert = QPushButton(self._tr("反选"))
         self.btn_all.setObjectName("SelectionActionBtn")
         self.btn_invert.setObjectName("SelectionActionBtn")
         self.btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -137,14 +143,14 @@ class SelectionDialog(ChromedDialog):
         btn_layout.addWidget(self.btn_invert)
         btn_layout.addStretch()
 
-        self.btn_cancel = QPushButton("取消任务")
+        self.btn_cancel = QPushButton(self._tr("取消任务"))
         self.btn_cancel.setObjectName("DangerBtn")
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cancel.setFixedSize(100, 35)
         self.btn_cancel.setAutoDefault(False)
         self.btn_cancel.clicked.connect(self.reject)
 
-        self.btn_confirm = QPushButton("开始下载")
+        self.btn_confirm = QPushButton(self._tr("开始下载"))
         self.btn_confirm.setObjectName("PrimaryBtn")
         self.btn_confirm.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_confirm.setFixedSize(120, 35)
@@ -158,6 +164,18 @@ class SelectionDialog(ChromedDialog):
         self._install_dialog_shortcuts()
         self.apply_chrome_theme(self._is_dark)
         self._refresh_table_theme()
+
+    def _tr(self, text: str) -> str:
+        return tr(text, self._language)
+
+    def _header_text(self) -> str:
+        count = len(self.items)
+        if self._language == "en-US":
+            noun = "resource" if count == 1 else "resources"
+            return f"Scanned {count} {noun}; select the items to download:"
+        if self._language == "zh-TW":
+            return f"共掃描到 {count} 個資源，請勾選需要下載的項目："
+        return f"共扫描到 {count} 个资源，请勾选需要下载的项目："
 
     def _install_dialog_shortcuts(self) -> None:
         self._dialog_shortcuts = []

@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 
 from app.services.mkv_repair_service import MkvPlaybackRepairService
 from app.services.playback_position_service import PlaybackPositionService
+from app.ui.localization import normalize_language, tr
 from app.ui.task_runtime import LongTaskRunner, ShortTaskRunner, TaskCancelToken
 
 @dataclass(slots=True)
@@ -154,6 +155,7 @@ class MediaPreviewPanel(QFrame):
         self._image_auto_advance_interval_ms = 5000
         self._saved_positions: dict[str, int] = {}
         self._last_position_flush_at: dict[str, float] = {}
+        self._language = "zh-CN"
 
         self.setObjectName("ContentPanel")
         layout = QVBoxLayout(self)
@@ -196,7 +198,7 @@ class MediaPreviewPanel(QFrame):
         repair_layout.setContentsMargins(12, 4, 12, 4)
         repair_layout.setSpacing(10)
 
-        self.lbl_repair = QLabel("正在修复播放进度，不影响当前播放")
+        self.lbl_repair = QLabel(self._t("正在修复播放进度，不影响当前播放"))
         self.lbl_repair.setObjectName("RepairLabel")
         self.repair_progress = QProgressBar()
         self.repair_progress.setRange(0, 100)
@@ -222,14 +224,14 @@ class MediaPreviewPanel(QFrame):
         self.btn_prev.setFixedSize(32, 32)
         self.btn_prev.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         self.btn_prev.setObjectName("PrevBtn")
-        self.btn_prev.setToolTip("上一个资源")
+        self.btn_prev.setToolTip(self._t("上一个资源"))
         self.btn_prev.clicked.connect(lambda: self.sig_switch_preview.emit(-1))
 
         self.btn_next = QPushButton()
         self.btn_next.setFixedSize(32, 32)
         self.btn_next.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
         self.btn_next.setObjectName("NextBtn")
-        self.btn_next.setToolTip("下一个资源")
+        self.btn_next.setToolTip(self._t("下一个资源"))
         self.btn_next.clicked.connect(lambda: self.sig_switch_preview.emit(1))
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -257,10 +259,10 @@ class MediaPreviewPanel(QFrame):
         self.lbl_time = QLabel("00:00")
         self.lbl_time.setObjectName("TimeLabel")
 
-        self.btn_fullscreen = QPushButton("[ 全屏 ]")
+        self.btn_fullscreen = QPushButton(self._fullscreen_button_text(False))
         self.btn_fullscreen.setFixedHeight(32)
         self.btn_fullscreen.setObjectName("FullscreenBtn")
-        self.btn_fullscreen.setToolTip("媒体全屏 (双击画面)")
+        self.btn_fullscreen.setToolTip(self._t("媒体全屏（双击画面）"))
         self.btn_fullscreen.clicked.connect(self.toggle_media_fullscreen)
 
         controls_layout.addWidget(self.btn_play)
@@ -279,6 +281,25 @@ class MediaPreviewPanel(QFrame):
         self.sig_repair_finished.connect(self._on_repair_finished, Qt.ConnectionType.QueuedConnection)
         self.sig_repair_commit_progress.connect(self._on_repair_commit_progress, Qt.ConnectionType.QueuedConnection)
         self.sig_repair_commit_finished.connect(self._on_repair_commit_finished, Qt.ConnectionType.QueuedConnection)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.btn_prev.setToolTip(self._t("上一个资源"))
+        self.btn_next.setToolTip(self._t("下一个资源"))
+        self.btn_fullscreen.setToolTip(self._t("媒体全屏（双击画面）"))
+        self.btn_fullscreen.setText(self._fullscreen_button_text(self._fullscreen_window is not None))
+        if not self.repair_panel.isVisible():
+            self.lbl_repair.setText(self._t("正在修复播放进度，不影响当前播放"))
+
+    def _t(self, text: object) -> str:
+        return tr(str(text or ""), self._language)
+
+    def _fullscreen_button_text(self, active: bool) -> str:
+        label = self._t("退出") if active else self._t("全屏")
+        return f"[ {label} ]"
 
     def _on_slider_pressed(self) -> None:
         self.is_slider_pressed = True
@@ -394,7 +415,7 @@ class MediaPreviewPanel(QFrame):
         window.layout().addWidget(self)
         self._fullscreen_restore = (parent, parent_layout if isinstance(parent_layout, QVBoxLayout) else None, index, stretch)
         self._fullscreen_window = window
-        self.btn_fullscreen.setText("[ 退出 ]")
+        self.btn_fullscreen.setText(self._fullscreen_button_text(True))
         window.showFullScreen()
         self.resize_media()
         self._resize_video_surface()
@@ -415,7 +436,7 @@ class MediaPreviewPanel(QFrame):
         self.show()
         self._fullscreen_window = None
         self._fullscreen_restore = None
-        self.btn_fullscreen.setText("[ 全屏 ]")
+        self.btn_fullscreen.setText(self._fullscreen_button_text(False))
         window.allow_close()
         window.close()
         window.deleteLater()
@@ -854,7 +875,7 @@ class MediaPreviewPanel(QFrame):
     def _hide_repair_status(self) -> None:
         self._repair_hide_timer.stop()
         self.repair_progress.setValue(0)
-        self.lbl_repair.setText("正在修复播放进度，不影响当前播放")
+        self.lbl_repair.setText(self._t("正在修复播放进度，不影响当前播放"))
         self.repair_panel.hide()
 
     def _cleanup_committed_cache(self, source_key: str, repaired_path: str) -> None:

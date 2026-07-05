@@ -1,8 +1,15 @@
 (function () {
   const TIME_FILTER_MINUTES = {
+    "30m": 30,
+    "1h": 60,
+    "24h": 24 * 60,
     "\u8fd1 30 \u5206\u949f": 30,
     "\u8fd1 1 \u5c0f\u65f6": 60,
     "\u8fd1 24 \u5c0f\u65f6": 24 * 60,
+    "Last 30 minutes": 30,
+    "Last 30 min": 30,
+    "Last 1 hour": 60,
+    "Last 24 hours": 24 * 60,
   };
 
   function logItemId(item) {

@@ -455,6 +455,7 @@ class SettingsPage(PageFrame):
             updates_enabled = self.updatesEnabled()
             self.setUpdatesEnabled(False)
             try:
+                self._close_combo_popups()
                 self._settings_snapshot = settings
                 if self._current_group not in self._group_order and self._group_order:
                     self._current_group = self._group_order[0]
@@ -592,6 +593,7 @@ class SettingsPage(PageFrame):
             button.update()
 
     def _clear_detail_panel(self) -> None:
+        self._close_combo_popups()
         while self.detail_layout.count():
             item = self.detail_layout.takeAt(0)
             widget = item.widget()
@@ -599,6 +601,16 @@ class SettingsPage(PageFrame):
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
+
+    def _close_combo_popups(self) -> None:
+        for combo in self.findChildren(QComboBox):
+            try:
+                view = combo.view()
+                if view is not None and (view.isVisible() or view.window().isVisible()):
+                    combo.hidePopup()
+                combo.setProperty("popupOpen", "false")
+            except RuntimeError:
+                continue
 
     def _render_current_group(self) -> None:
         if not hasattr(self, "detail_layout"):

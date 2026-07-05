@@ -15,14 +15,12 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLayout,
     QProgressBar,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
     QStyleOptionViewItem,
     QStyledItemDelegate,
     QTableView,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +28,7 @@ from PyQt6.QtWidgets import (
 from app.config.settings import download_concurrency_options, normalize_download_concurrency
 from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import ThemedComboBox
+from app.ui.localization import normalize_language, tr
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
 from app.ui.styles.table_rows import (
@@ -78,6 +77,7 @@ class ActiveDownloadsModel(QAbstractTableModel):
         super().__init__(parent)
         self._rows: list[dict[str, Any]] = []
         self._row_signatures: list[tuple] = []
+        self._language = "zh-CN"
 
     def rowCount(self, _parent: QModelIndex = QModelIndex()) -> int:
         return len(self._rows)
@@ -87,7 +87,7 @@ class ActiveDownloadsModel(QAbstractTableModel):
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return self.HEADERS[section]
+            return tr(self.HEADERS[section], self._language)
         return super().headerData(section, orientation, role)
 
     def set_headers(self, headers: list[str]) -> None:
@@ -115,8 +115,24 @@ class ActiveDownloadsModel(QAbstractTableModel):
         if index.column() == self.PROGRESS_COLUMN:
             return int(row.get("progress") or 0)
         if index.column() == self.ACTION_COLUMN:
-            return TEXT["delete"]
+            return tr(TEXT["delete"], self._language)
+        if column == "platform":
+            return tr(str(row.get(column, "")), self._language)
         return str(row.get(column, ""))
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        if self.HEADERS:
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self.HEADERS) - 1)
+        if self._rows:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._rows) - 1, max(0, self.columnCount() - 1)),
+                [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
+            )
 
     def set_rows(self, rows: list[dict[str, Any]]) -> bool:
         rows = list(rows)
@@ -319,9 +335,17 @@ class SpeedTrendWidget(QWidget):
         super().__init__()
         self._values: list[float] = []
         self._speed_label = "0 B/s"
+        self._language = "zh-CN"
         self.setMinimumHeight(self.HEIGHT)
         self.setMaximumHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.update()
 
     def set_values(self, values: list[int | float], speed_label: str = "") -> None:
         raw = [max(0.0, float(value or 0)) for value in values[-60:]]
@@ -406,20 +430,36 @@ class SpeedTrendWidget(QWidget):
         painter.drawText(QRect(rect.left(), 4, rect.width(), 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, speed_text)
         label_top = self.height() - 27
         label_height = 22
-        painter.drawText(QRect(rect.left(), label_top, 36, label_height), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "60秒")
-        painter.drawText(QRect(rect.left() + rect.width() // 4 - 10, label_top, 36, label_height), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "45秒")
-        painter.drawText(QRect(rect.left() + rect.width() // 2 - 10, label_top, 36, label_height), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "30秒")
-        painter.drawText(QRect(rect.left() + rect.width() * 3 // 4 - 10, label_top, 36, label_height), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "15秒")
-        painter.drawText(QRect(rect.right() - 36, label_top, 36, label_height), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "现在")
+        painter.drawText(QRect(rect.left(), label_top, 42, label_height), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._time_label(60))
+        painter.drawText(QRect(rect.left() + rect.width() // 4 - 12, label_top, 42, label_height), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, self._time_label(45))
+        painter.drawText(QRect(rect.left() + rect.width() // 2 - 12, label_top, 42, label_height), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, self._time_label(30))
+        painter.drawText(QRect(rect.left() + rect.width() * 3 // 4 - 12, label_top, 42, label_height), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, self._time_label(15))
+        painter.drawText(QRect(rect.right() - 42, label_top, 42, label_height), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._now_label())
         painter.end()
+
+    def _time_label(self, seconds: int) -> str:
+        if self._language == "en-US":
+            return f"{seconds}s"
+        return f"{seconds}秒"
+
+    def _now_label(self) -> str:
+        return tr("现在", self._language)
 
 
 class EventTimelineWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._events: list[dict[str, Any]] = []
+        self._language = "zh-CN"
         self.setMinimumHeight(214)
         self.setMaximumHeight(260)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.update()
 
     def set_events(self, events: list[dict[str, Any]]) -> None:
         normalized = [dict(event) for event in events[-6:]]
@@ -442,7 +482,7 @@ class EventTimelineWidget(QWidget):
         painter.fillRect(self.rect(), QColor(colors["panel"]))
         if not self._events:
             painter.setPen(QColor(colors["muted"]))
-            painter.drawText(self.rect().adjusted(10, 10, -10, -10), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "\u6682\u65e0\u4e8b\u4ef6")
+            painter.drawText(self.rect().adjusted(10, 10, -10, -10), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, tr("\u6682\u65e0\u4e8b\u4ef6", self._language))
             return
         x = 14
         top = 20
@@ -465,7 +505,7 @@ class EventTimelineWidget(QWidget):
             painter.drawText(QRect(x + 18, text_top, time_width, line_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, str(event.get("time", "")))
             painter.setPen(QColor(colors["text"]))
             message_width = max(80, self.width() - message_x - 8)
-            message = metrics.elidedText(str(event.get("message", "")), Qt.TextElideMode.ElideRight, message_width)
+            message = metrics.elidedText(tr(str(event.get("message", "")), self._language), Qt.TextElideMode.ElideRight, message_width)
             painter.drawText(QRect(message_x, text_top, message_width, line_height), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, message)
         painter.end()
 
@@ -523,6 +563,7 @@ class ActiveDownloadsPage(PageFrame):
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
+        self._language = "zh-CN"
         self.setMinimumHeight(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -564,7 +605,7 @@ class ActiveDownloadsPage(PageFrame):
         self.detail_card_layout = QVBoxLayout(self.detail_card)
         self.detail_card_layout.setContentsMargins(12, 10, 12, 10)
         self.detail_card_layout.setSpacing(6)
-        self.detail_title = QLabel(TEXT["current_download"])
+        self.detail_title = QLabel(self._t(TEXT["current_download"]))
         self.detail_title.setObjectName("SectionTitle")
         self.detail_card_layout.addWidget(self.detail_title)
 
@@ -597,7 +638,7 @@ class ActiveDownloadsPage(PageFrame):
         self.events_card_layout = QVBoxLayout(self.events_card)
         self.events_card_layout.setContentsMargins(12, 10, 12, 10)
         self.events_card_layout.setSpacing(6)
-        self.detail_events_title = QLabel(TEXT["event_title"])
+        self.detail_events_title = QLabel(self._t(TEXT["event_title"]))
         self.detail_events_title.setObjectName("SectionTitle")
         self.events_card_layout.addWidget(self.detail_events_title)
         self.events_scroll = QScrollArea()
@@ -634,6 +675,80 @@ class ActiveDownloadsPage(PageFrame):
         self._translation_dirty = False
         return dirty
 
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        changed = normalized != self._language
+        self._language = normalized
+        self.table.model().set_language(normalized)
+        self.events.set_language(normalized)
+        if self._trend_widget is not None:
+            self._trend_widget.set_language(normalized)
+        self.detail_title.setText(self._t(TEXT["current_download"]))
+        self.detail_events_title.setText(self._t(TEXT["event_title"]))
+        if hasattr(self, "queue_control_title"):
+            self.queue_control_title.setText(self._t(TEXT["queue_control"]))
+        if hasattr(self, "max_retry_label"):
+            self.max_retry_label.setText(self._t(TEXT["max_retry"]))
+        if hasattr(self, "threads_label"):
+            self.threads_label.setText(self._t(TEXT["threads"]))
+        self.auto_retry.setText(self._t(TEXT["auto_retry"]))
+        self._sync_retry_combo_labels()
+        self._sync_thread_combo_labels()
+        self._update_running_count_label()
+        if changed:
+            self._detail_signature = None
+            self._render_selected_detail(force=True)
+        self._translation_dirty = False
+
+    def _t(self, text: str) -> str:
+        return tr(text, self._language)
+
+    def _running_count_text(self, count: int) -> str:
+        if self._language == "en-US":
+            noun = "task" if int(count) == 1 else "tasks"
+            return f"Running: {int(count)} {noun}"
+        if self._language == "zh-TW":
+            return f"目前執行：{int(count)} 個任務"
+        return TEXT["running_count"].format(count=int(count))
+
+    def _update_running_count_label(self) -> None:
+        count = int(self._running_count_value or 0)
+        self.running_count_label.setText(self._running_count_text(count))
+
+    def _retry_count_label(self, value: int) -> str:
+        if self._language == "en-US":
+            return f"{int(value)}x"
+        if self._language == "zh-TW":
+            return f"{int(value)} 次"
+        return f"{int(value)}次"
+
+    def _sync_retry_combo_labels(self) -> None:
+        blocked = self.retry_combo.blockSignals(True)
+        try:
+            for index in range(self.retry_combo.count()):
+                value = int(self.retry_combo.itemData(index) or 0)
+                if value:
+                    self.retry_combo.setItemText(index, self._retry_count_label(value))
+        finally:
+            self.retry_combo.blockSignals(blocked)
+
+    def _sync_thread_combo_labels(self) -> None:
+        value_to_label: dict[int, str] = {}
+        for option in download_concurrency_options():
+            try:
+                value = int(option["value"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            value_to_label[value] = self._t(str(option.get("label") or value))
+        blocked = self.thread_combo.blockSignals(True)
+        try:
+            for index in range(self.thread_combo.count()):
+                value = int(self.thread_combo.itemData(index) or 0)
+                if value:
+                    self.thread_combo.setItemText(index, value_to_label.get(value, str(value)))
+        finally:
+            self.thread_combo.blockSignals(blocked)
+
     def _build_queue_controls(self, parent_layout: QVBoxLayout) -> None:
         panel = QFrame()
         panel.setObjectName("QueueControlPanel")
@@ -641,37 +756,39 @@ class ActiveDownloadsPage(PageFrame):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 9, 12, 9)
         layout.setSpacing(7)
-        title = QLabel(TEXT["queue_control"])
-        title.setObjectName("SectionTitle")
-        layout.addWidget(title)
+        self.queue_control_title = QLabel(self._t(TEXT["queue_control"]))
+        self.queue_control_title.setObjectName("SectionTitle")
+        layout.addWidget(self.queue_control_title)
         settings_row = QHBoxLayout()
         settings_row.setSpacing(10)
-        self.auto_retry = WideHitCheckBox(TEXT["auto_retry"])
+        self.auto_retry = WideHitCheckBox(self._t(TEXT["auto_retry"]))
         self.auto_retry.setObjectName("ActiveAutoRetryCheck")
         self.auto_retry.setCursor(Qt.CursorShape.PointingHandCursor)
         self.auto_retry.setMinimumHeight(34)
         self.auto_retry.setChecked(True)
         self.auto_retry.stateChanged.connect(self._emit_options_changed)
         settings_row.addWidget(self.auto_retry)
-        settings_row.addWidget(QLabel(TEXT["max_retry"]))
+        self.max_retry_label = QLabel(self._t(TEXT["max_retry"]))
+        settings_row.addWidget(self.max_retry_label)
         self.retry_combo = ThemedComboBox(row_height=32)
         for value in range(1, 11):
-            self.retry_combo.addItem(f"{value}次", value)
+            self.retry_combo.addItem(self._retry_count_label(value), value)
         self.retry_combo.setCurrentIndex(2)
         self.retry_combo.currentIndexChanged.connect(self._emit_options_changed)
         settings_row.addWidget(self.retry_combo)
-        settings_row.addWidget(QLabel(TEXT["threads"]))
+        self.threads_label = QLabel(self._t(TEXT["threads"]))
+        settings_row.addWidget(self.threads_label)
         self.thread_combo = ThemedComboBox(row_height=32)
         for option in download_concurrency_options():
             try:
                 value = int(option["value"])
             except (TypeError, ValueError):
                 continue
-            self.thread_combo.addItem(str(option["label"]), value)
+            self.thread_combo.addItem(self._t(str(option["label"])), value)
         self.thread_combo.setCurrentIndex(self.thread_combo.findData(3))
         self.thread_combo.currentIndexChanged.connect(self._emit_options_changed)
         settings_row.addWidget(self.thread_combo)
-        self.running_count_label = QLabel(TEXT["running_count"].format(count=0))
+        self.running_count_label = QLabel(self._running_count_text(0))
         settings_row.addStretch(1)
         settings_row.addWidget(self.running_count_label)
         layout.addLayout(settings_row)
@@ -702,7 +819,7 @@ class ActiveDownloadsPage(PageFrame):
         running_count = len(self.items)
         if running_count != self._running_count_value:
             self._running_count_value = running_count
-            self.running_count_label.setText(TEXT["running_count"].format(count=running_count))
+            self._update_running_count_label()
             self._translation_dirty = True
         selected_id = self.table.selected_id()
         table_changed = self.table.set_rows(self.items)
@@ -731,7 +848,7 @@ class ActiveDownloadsPage(PageFrame):
         self._syncing_download_options = True
         try:
             self.auto_retry.setChecked(bool(options.get("auto_retry", True)))
-            self._set_combo_value(self.retry_combo, int(options.get("max_retries") or 3), suffix="次")
+            self._set_combo_value(self.retry_combo, int(options.get("max_retries") or 3), suffix=self._retry_count_label(0).replace("0", ""))
             self._set_combo_value(
                 self.thread_combo,
                 normalize_download_concurrency(options.get("max_concurrent") or 3),
@@ -837,7 +954,7 @@ class ActiveDownloadsPage(PageFrame):
         host_layout.addStretch(1)
         self.detail_fields_scroll.setWidget(self.detail_fields_host)
         if not pairs:
-            body_layout.addWidget(QLabel(TEXT["no_selection"]), 0, 0, 1, 2)
+            body_layout.addWidget(QLabel(self._t(TEXT["no_selection"])), 0, 0, 1, 2)
             self.detail_fixed.setVisible(False)
             return
         self.detail_fixed.setVisible(True)
@@ -857,6 +974,7 @@ class ActiveDownloadsPage(PageFrame):
 
     def _add_value_row(self, body_layout: QGridLayout, row: int, label: str, value: Any) -> None:
         label_widget = QLabel(label)
+        label_widget.setText(self._t(label))
         label_widget.setFixedWidth(82)
         label_widget.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         label_widget.setContentsMargins(0, 0, 0, 0)
@@ -882,6 +1000,7 @@ class ActiveDownloadsPage(PageFrame):
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(8)
         label_widget = QLabel(label)
+        label_widget.setText(self._t(label))
         label_widget.setMinimumWidth(88)
         row_layout.addWidget(label_widget)
         self._chunk_bar = QProgressBar()
@@ -896,10 +1015,11 @@ class ActiveDownloadsPage(PageFrame):
         body_layout.addWidget(row)
 
     def _add_trend_row(self, body_layout: QVBoxLayout, values: list[int], speed_label: str) -> None:
-        trend_title = QLabel(TEXT["trend_title"])
+        trend_title = QLabel(self._t(TEXT["trend_title"]))
         trend_title.setObjectName("SectionTitle")
         body_layout.addWidget(trend_title)
         self._trend_widget = SpeedTrendWidget()
+        self._trend_widget.set_language(self._language)
         self._trend_widget.set_values(values, speed_label)
         body_layout.addWidget(self._trend_widget)
 

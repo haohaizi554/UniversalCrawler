@@ -14,17 +14,13 @@
 import os
 import sys
 import unittest
-import unittest.mock as mock
-from unittest.mock import patch, MagicMock
+from importlib.util import find_spec
+from unittest.mock import patch
 
 # ---- Helper ----
 
 def _pyqt6_available():
-    try:
-        import PyQt6
-        return True
-    except ImportError:
-        return False
+    return find_spec("PyQt6") is not None
 
 def _qt_app():
     """获取或创建 QApplication（单例模式）。"""
@@ -439,3 +435,62 @@ class FileAssociationDialogTests(unittest.TestCase):
 
         self.assertTrue(choice.include_video)
         self.assertTrue(choice.include_image)
+
+    def test_english_language_translates_visible_copy(self):
+        from PyQt6.QtWidgets import QLabel, QPushButton
+
+        from app.ui.dialogs.file_association import FileAssociationDialog
+
+        dialog = FileAssociationDialog(language="en-US")
+        self.addCleanup(dialog.deleteLater)
+
+        visible_text = "\n".join(
+            widget.text()
+            for widget in [*dialog.findChildren(QLabel), *dialog.findChildren(QPushButton)]
+            if hasattr(widget, "text")
+        )
+
+        self.assertEqual(dialog.windowTitle(), "Default open mode")
+        self.assertIn("Bind default app", visible_text)
+        self.assertIn("Video resources", visible_text)
+        self.assertIn("Image resources", visible_text)
+        self.assertIn("Cancel", visible_text)
+        self.assertIn("Bind", visible_text)
+        for unexpected in ("绑定默认打开方式", "视频资源", "图片资源", "生效方式", "取消"):
+            self.assertNotIn(unexpected, visible_text)
+
+
+@unittest.skipUnless(_pyqt6_available(), "PyQt6 not available")
+class SelectionDialogLanguageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _qt_app()
+
+    def test_english_language_translates_task_selection_dialog(self):
+        from PyQt6.QtWidgets import QLabel, QPushButton
+
+        from app.ui.dialogs.selection import SelectionDialog
+
+        dialog = SelectionDialog(
+            None,
+            items=[{"title": "Demo task", "index": 0}],
+            language="en-US",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        visible_text = "\n".join(
+            widget.text()
+            for widget in [*dialog.findChildren(QLabel), *dialog.findChildren(QPushButton)]
+            if hasattr(widget, "text")
+        )
+
+        self.assertEqual(dialog.windowTitle(), "Task selection")
+        self.assertIn("Scanned 1 resource; select the items to download:", visible_text)
+        self.assertIn("Select all", visible_text)
+        self.assertIn("Invert", visible_text)
+        self.assertIn("Cancel task", visible_text)
+        self.assertIn("Start download", visible_text)
+        self.assertEqual(dialog.table.horizontalHeaderItem(0).text(), "Select")
+        self.assertEqual(dialog.table.horizontalHeaderItem(1).text(), "Video title / description")
+        for unexpected in ("任务清单确认", "全选", "反选", "取消任务", "开始下载"):
+            self.assertNotIn(unexpected, visible_text)

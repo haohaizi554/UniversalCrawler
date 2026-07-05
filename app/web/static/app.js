@@ -42,9 +42,9 @@ function normalizeTablePageSize(value) {
 
 let logFilters = {
   category: "all",
-  level: "全部",
-  time: "近 30 分钟",
-  platform: "全部",
+  level: "all",
+  time: "30m",
+  platform: "all",
   trace: "",
   keyword: "",
 };
@@ -84,6 +84,11 @@ const SETTINGS_GROUP_ICONS = {
   "日志设置": "nav_log_center.png",
   "外观设置": "action_theme_palette.png",
 };
+
+function normalizeSettingsGroupName(group) {
+  const canonical = canonicalUiText(group);
+  return SETTINGS_GROUP_ORDER_FALLBACK.includes(canonical) ? canonical : String(group || "");
+}
 
 function settingsContract() {
   const contract = frontendState.settings_contract || {};
@@ -159,6 +164,48 @@ function translateUiText(text) {
 function translateUiCore(text, lang = currentLanguage()) {
   const service = i18nService();
   return service ? service.translateUiCore(text, lang) : String(text || "");
+}
+
+function canonicalUiText(text) {
+  const service = i18nService();
+  return service && typeof service.canonicalUiText === "function"
+    ? service.canonicalUiText(text)
+    : String(text || "");
+}
+
+function isAllLogFilterText(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return !text || text === "all" || text === "全部" || text === "所有";
+}
+
+function normalizeLogFilterValue(key, value) {
+  const raw = String(value || "").trim();
+  const canonical = canonicalUiText(raw);
+  if (key === "level") {
+    if (isAllLogFilterText(raw) || isAllLogFilterText(canonical)) return "all";
+    return raw.toUpperCase();
+  }
+  if (key === "time") {
+    if (isAllLogFilterText(raw) || isAllLogFilterText(canonical)) return "all";
+    const aliases = {
+      "30m": "30m",
+      "1h": "1h",
+      "24h": "24h",
+      "近 30 分钟": "30m",
+      "近 1 小时": "1h",
+      "近 24 小时": "24h",
+      "Last 30 minutes": "30m",
+      "Last 30 min": "30m",
+      "Last 1 hour": "1h",
+      "Last 24 hours": "24h",
+    };
+    return aliases[raw] || aliases[canonical] || raw || "30m";
+  }
+  if (key === "platform") {
+    if (isAllLogFilterText(raw) || isAllLogFilterText(canonical)) return "all";
+    return canonical || raw;
+  }
+  return raw;
 }
 
 function uiTextWithDetail(label, detail = "") {
@@ -427,7 +474,7 @@ function setHtmlIfChanged(id, html, key = id) {
 }
 
 function configureCustomSelectHelpers() {
-  if (window.UcpCustomSelect) window.UcpCustomSelect.configure({ translate: translateUiText, esc, escAttr });
+  if (window.UcpCustomSelect) window.UcpCustomSelect.configure({ translate: translateUiText, canonical: canonicalUiText, esc, escAttr });
 }
 
 function configureMediaDisplayHelpers() {
@@ -1241,29 +1288,37 @@ function translateStructuredLogText(value) {
 }
 
 function logResultNatureText(item) {
-  const resultType = String(item.result_type || "").toLowerCase();
+  const display = item.result_type_display || item.type_display || item.nature_display || "";
+  if (display) return display;
+  const rawType = String(item.result_type || item.type || item.nature || "").trim();
+  const resultType = rawType.toLowerCase();
+  if (resultType === "info") return "过程";
   if (resultType === "success") return "成功";
   if (resultType === "warn") return "预警";
+  if (resultType === "warning") return "预警";
   if (resultType === "error") return "错误";
   if (resultType === "command") return "命令";
+  if (rawType) return rawType;
   return "过程";
 }
 
 function logScopeDisplayText(item) {
   const display = item.log_scope_display || item.scope_display || "";
   if (display) return display;
+  const rawScope = item.log_scope || item.scope || item.category || "";
   return {
     system: "系统",
     crawl: "采集",
     download: "下载",
     performance: "性能",
     error: "异常",
-  }[String(item.log_scope || item.category || "").toLowerCase()] || item.log_scope || item.category || "-";
+  }[String(rawScope).toLowerCase()] || rawScope || "-";
 }
 
 function logStageDisplayText(item) {
   const display = item.event_stage_display || item.stage_display || "";
   if (display) return display;
+  const rawStage = item.event_stage || item.stage || "";
   return {
     init: "初始化",
     config: "配置",
@@ -1289,7 +1344,7 @@ function logStageDisplayText(item) {
     performance: "性能",
     error: "异常",
     step: "步骤",
-  }[String(item.event_stage || item.stage || "").toLowerCase()] || item.event_stage || item.stage || "-";
+  }[String(rawStage).toLowerCase()] || rawStage || "-";
 }
 
 function logValueHtml(value) {
@@ -1590,9 +1645,9 @@ function setLogTab(category) {
 }
 
 function syncLogFiltersFromDom() {
-  logFilters.level = byId("logLevelFilter")?.value || "全部";
-  logFilters.time = byId("logTimeFilter")?.value || "近 30 分钟";
-  logFilters.platform = byId("logPlatformFilter")?.value || "全部";
+  logFilters.level = normalizeLogFilterValue("level", byId("logLevelFilter")?.value || "all");
+  logFilters.time = normalizeLogFilterValue("time", byId("logTimeFilter")?.value || "30m");
+  logFilters.platform = normalizeLogFilterValue("platform", byId("logPlatformFilter")?.value || "all");
   logFilters.trace = byId("logTraceFilter")?.value.trim() || "";
   logFilters.keyword = byId("logKeywordFilter")?.value.trim() || "";
   selected.log = "";
@@ -1614,15 +1669,15 @@ function selectValueOrFallback(select, preferredValue, fallbackValue) {
 function syncLogFilterControls() {
   document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => button.classList.toggle("active", button.dataset.logTab === logFilters.category));
   const selectBindings = [
-    ["logLevelFilter", "level", "全部"],
-    ["logTimeFilter", "time", "近 30 分钟"],
-    ["logPlatformFilter", "platform", "全部"],
+    ["logLevelFilter", "level", "all"],
+    ["logTimeFilter", "time", "30m"],
+    ["logPlatformFilter", "platform", "all"],
   ];
   for (const [id, key, fallback] of selectBindings) {
     const node = byId(id);
-    const value = selectValueOrFallback(node, logFilters[key], fallback);
+    const value = selectValueOrFallback(node, normalizeLogFilterValue(key, logFilters[key]), fallback);
     if (node && node.value !== value) node.value = value;
-    logFilters[key] = value;
+    logFilters[key] = normalizeLogFilterValue(key, value);
     syncCustomSelectForSelect(node);
   }
   const textBindings = [
@@ -1714,6 +1769,7 @@ function renderSettings(force = false) {
   for (const group of Object.keys(settings)) {
     if (!orderedGroups.includes(group)) orderedGroups.push(group);
   }
+  currentSettingsGroup = normalizeSettingsGroupName(currentSettingsGroup);
   if (!orderedGroups.includes(currentSettingsGroup)) currentSettingsGroup = orderedGroups[0] || "基础设置";
   const currentValue = settings[currentSettingsGroup] || {};
   const description =
@@ -1760,7 +1816,7 @@ function renderSettings(force = false) {
 }
 
 function isPlatformSettingsVisible() {
-  return currentPage === "settings" && currentSettingsGroup === "平台设置";
+  return currentPage === "settings" && normalizeSettingsGroupName(currentSettingsGroup) === "平台设置";
 }
 
 function maybeRefreshPlatformAuthStatus(force = false) {
@@ -1770,10 +1826,11 @@ function maybeRefreshPlatformAuthStatus(force = false) {
 
 function switchSettingsGroup(group) {
   if (!group) return;
-  const sameGroup = group === currentSettingsGroup;
+  const nextGroup = normalizeSettingsGroupName(group);
+  const sameGroup = nextGroup === normalizeSettingsGroupName(currentSettingsGroup);
   if (!sameGroup) {
-    currentSettingsGroup = group;
-    localStorage.setItem("webui_settings_group", group);
+    currentSettingsGroup = nextGroup;
+    localStorage.setItem("webui_settings_group", nextGroup);
     renderSettings(true);
   }
   maybeRefreshPlatformAuthStatus(false);
@@ -1863,7 +1920,7 @@ function updateSetting(section, key, value) {
     appearance.theme = dark ? "dark" : "light";
     localStorage.setItem("cached_dark_theme", String(dark));
     applyAppearance(appearance);
-    if (currentPage === "settings" && currentSettingsGroup === "外观设置") renderSettings(true);
+    if (currentPage === "settings" && normalizeSettingsGroupName(currentSettingsGroup) === "外观设置") renderSettings(true);
   }
   if (section === "appearance" && ["scale", "font_size", "accent", "language"].includes(key)) {
     const appearance = ((frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] ||= {});
@@ -1878,7 +1935,7 @@ function updateSetting(section, key, value) {
   if (section === "playback") {
     const playback = ((frontendState.settings_snapshot || {})["\u64ad\u653e\u8bbe\u7f6e"] ||= {});
     playback[key] = key === "image_auto_advance_interval_seconds" ? Number(value || 5) : value;
-    if (currentPage === "settings" && currentSettingsGroup === "\u64ad\u653e\u8bbe\u7f6e") renderSettings(true);
+    if (currentPage === "settings" && normalizeSettingsGroupName(currentSettingsGroup) === "\u64ad\u653e\u8bbe\u7f6e") renderSettings(true);
     const currentItem = completedItemById(currentPlayingId);
     if (currentItem && isImageItem(currentItem)) scheduleImageAutoAdvance(currentPlayingId);
   }

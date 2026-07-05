@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.services.icon_registry import platform_icon_file, ui_icon_path
+from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.utils.qt_runtime import load_qt_icon
 
@@ -26,6 +27,7 @@ class FailedPage(PageFrame):
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
+        self._language = "zh-CN"
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("FailedPageSplitter")
 
@@ -60,7 +62,7 @@ class FailedPage(PageFrame):
         self.detail_card_layout = QVBoxLayout(self.detail_card)
         self.detail_card_layout.setContentsMargins(14, 12, 14, 14)
         self.detail_card_layout.setSpacing(10)
-        self.detail_title = QLabel("错误详情")
+        self.detail_title = QLabel(self._t("错误详情"))
         self.detail_title.setObjectName("SectionTitle")
         self.detail_card_layout.addWidget(self.detail_title)
 
@@ -71,7 +73,7 @@ class FailedPage(PageFrame):
         self.summary_layout.setSpacing(7)
         self.detail_card_layout.addWidget(self.summary_body)
 
-        self.log_title = QLabel("Trace / 日志片段")
+        self.log_title = QLabel(self._t("Trace / 日志片段"))
         self.log_title.setObjectName("SectionTitle")
         self.detail_card_layout.addWidget(self.log_title)
         self.log_scroll = self._scroll_container("FailedLogExcerptScroll")
@@ -90,7 +92,7 @@ class FailedPage(PageFrame):
         self.solutions_layout = QVBoxLayout(self.solutions_card)
         self.solutions_layout.setContentsMargins(14, 12, 14, 14)
         self.solutions_layout.setSpacing(8)
-        self.solutions_title = QLabel("可能的解决方案")
+        self.solutions_title = QLabel(self._t("可能的解决方案"))
         self.solutions_title.setObjectName("SectionTitle")
         self.solutions_layout.addWidget(self.solutions_title)
         self.solutions_list = QWidget()
@@ -110,6 +112,21 @@ class FailedPage(PageFrame):
         self.items: list[dict[str, Any]] = []
         self.table.selectionModel().currentChanged.connect(lambda *_args: self._render_selected_detail())
         self.table.action_requested.connect(self._on_table_action)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.detail_title.setText(self._t("错误详情"))
+        self.log_title.setText(self._t("Trace / 日志片段"))
+        self.solutions_title.setText(self._t("可能的解决方案"))
+        if hasattr(self.table, "table_model"):
+            self.table.table_model.set_language(normalized)
+        self._render_selected_detail()
+
+    def _t(self, text: object) -> str:
+        return tr(str(text or ""), self._language)
 
     @staticmethod
     def _scroll_container(object_name: str) -> QScrollArea:
@@ -193,7 +210,7 @@ class FailedPage(PageFrame):
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(10)
-        key = QLabel(label)
+        key = QLabel(self._t(label))
         key.setObjectName("FailedDetailKey")
         key.setFixedWidth(82)
         row_layout.addWidget(key, 0, Qt.AlignmentFlag.AlignTop)
@@ -221,7 +238,7 @@ class FailedPage(PageFrame):
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         level_badge = self._log_level_badge(entry)
         layout.addWidget(level_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        message = QLabel(str(entry.get("message") or ""))
+        message = QLabel(self._t(entry.get("message") or ""))
         message.setObjectName("FailedLogMessage")
         message.setWordWrap(True)
         message.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -300,11 +317,11 @@ class FailedPage(PageFrame):
         text_layout = QVBoxLayout(text_box)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(3)
-        title = QLabel(str(solution.get("title") or "建议"))
+        title = QLabel(self._t(solution.get("title") or "建议"))
         title.setObjectName("FailedSolutionTitle")
         title.setWordWrap(True)
         title.setMinimumWidth(0)
-        desc = QLabel(str(solution.get("description") or ""))
+        desc = QLabel(self._t(solution.get("description") or ""))
         desc.setObjectName("FailedSolutionDescription")
         desc.setWordWrap(True)
         desc.setMinimumWidth(0)
@@ -324,7 +341,7 @@ class FailedPage(PageFrame):
         layout.setSpacing(7)
         if icon_file:
             layout.addWidget(self._icon_label(icon_file, 18), 0, Qt.AlignmentFlag.AlignTop)
-        label = QLabel(str(value or ""))
+        label = QLabel(self._t(value or ""))
         label.setObjectName(f"{object_name}Text" if object_name else "IconTextLabel")
         label.setWordWrap(True)
         label.setMinimumWidth(0)
@@ -345,9 +362,8 @@ class FailedPage(PageFrame):
             label.setPixmap(icon.pixmap(size, size))
         return label
 
-    @staticmethod
-    def _empty_label(text: str) -> QLabel:
-        label = QLabel(text)
+    def _empty_label(self, text: str) -> QLabel:
+        label = QLabel(self._t(text))
         label.setObjectName("MutedLabel")
         label.setWordWrap(True)
         return label

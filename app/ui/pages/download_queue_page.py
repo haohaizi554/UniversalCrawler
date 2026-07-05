@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidg
 from app.services.icon_registry import action_icon_file, ui_icon_path
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.layout.island import IslandCard
+from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_item, page_slice, total_pages
 from app.utils.qt_runtime import load_qt_icon
@@ -25,6 +26,7 @@ class DownloadQueuePage(PageFrame):
         self._events_signature: tuple | None = None
         self._page = 1
         self._page_size = 20
+        self._language = "zh-CN"
 
         self.table_island = IslandCard(object_name="QueueTableIsland")
         self.table_island.content_layout.setContentsMargins(10, 10, 10, 10)
@@ -37,13 +39,14 @@ class DownloadQueuePage(PageFrame):
         path_layout = QHBoxLayout(path_row)
         path_layout.setContentsMargins(0, 0, 0, 0)
         path_layout.setSpacing(10)
-        path_layout.addWidget(QLabel("保存至:"))
+        self.path_prefix_label = QLabel("保存至:")
+        path_layout.addWidget(self.path_prefix_label)
         self.path_label = QLabel("")
         self.path_label.setObjectName("PathLabel")
         path_layout.addWidget(self.path_label, 1)
         self.btn_clear_all = QPushButton()
         self.btn_clear_all.setObjectName("ToolbarIconBtn")
-        self.btn_clear_all.setToolTip("删除所有")
+        self.btn_clear_all.setToolTip(self._t("删除所有"))
         clear_icon = load_qt_icon([ui_icon_path(action_icon_file("clear_all"))])
         if clear_icon is not None:
             self.btn_clear_all.setIcon(clear_icon)
@@ -52,7 +55,7 @@ class DownloadQueuePage(PageFrame):
         path_layout.addWidget(self.btn_clear_all)
         self.btn_refresh = QPushButton()
         self.btn_refresh.setObjectName("ToolbarIconBtn")
-        self.btn_refresh.setToolTip("立即刷新")
+        self.btn_refresh.setToolTip(self._t("立即刷新"))
         refresh_icon = load_qt_icon([ui_icon_path(action_icon_file("refresh"))])
         if refresh_icon is not None:
             self.btn_refresh.setIcon(refresh_icon)
@@ -89,7 +92,7 @@ class DownloadQueuePage(PageFrame):
 
         self.activity_island = IslandCard(object_name="ActivityIsland")
         self.activity_island.content_layout.setContentsMargins(12, 10, 12, 10)
-        self.event_title = QLabel("任务动态（最近 3 条）")
+        self.event_title = QLabel(self._t("任务动态（最近 3 条）"))
         self.event_title.setObjectName("MutedLabel")
         self.event_body = QLabel()
         self.event_body.setObjectName("EventFeedBody")
@@ -104,6 +107,24 @@ class DownloadQueuePage(PageFrame):
 
         self.pagination_footer.page_requested.connect(lambda delta: self._set_page(self._page + delta))
         self.pagination_footer.page_size_changed.connect(self._on_page_size_changed)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.path_prefix_label.setText(self._t("保存至:"))
+        self.btn_clear_all.setToolTip(self._t("删除所有"))
+        self.btn_refresh.setToolTip(self._t("立即刷新"))
+        self.event_title.setText(self._t("任务动态（最近 3 条）"))
+        self.pagination_footer.set_language(normalized)
+        if hasattr(self.table, "table_model"):
+            self.table.table_model.set_language(normalized)
+        self._events_signature = None
+        self._render_recent_events()
+
+    def _t(self, text: object) -> str:
+        return tr(str(text or ""), self._language)
 
     @property
     def event_layout(self):
@@ -196,7 +217,7 @@ class DownloadQueuePage(PageFrame):
             return
         self._events_signature = signature
         if not recent:
-            self.event_body.setText("暂无队列任务")
+            self.event_body.setText(self._t("暂无队列任务"))
             return
-        lines = [f"{item.get('status', '待下载')}：{item.get('title', '')}" for item in reversed(recent)]
+        lines = [f"{self._t(item.get('status', '待下载'))}: {item.get('title', '')}" for item in reversed(recent)]
         self.event_body.setText("\n".join(lines))

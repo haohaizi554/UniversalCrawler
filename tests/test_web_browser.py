@@ -32,7 +32,7 @@ import time
 import unittest
 import socket
 import subprocess
-import threading
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -90,43 +90,45 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
         "--no-access-log",
         "--log-level", "warning",
     ]
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(_PROJECT_ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    # 等服务器起来（最多 30s）
-    deadline = time.time() + 30
-    url = f"http://{host}:{port}"
-    server_output: list[str] = []
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=1):
-                break
-        except (OSError, ConnectionRefusedError):
-            time.sleep(0.2)
-    else:
-        # 失败时打印 stderr 便于排查
-        try:
-            stderr_data = proc.stderr.read() if proc.stderr else b""
-            server_output.append(stderr_data.decode("utf-8", errors="replace")[-2000:])
-        except Exception:
-            pass
-        proc.terminate()
-        raise RuntimeError(
-            f"Server failed to start on {url}\n"
-            f"stderr: {''.join(server_output)[:1500]}"
+    with tempfile.TemporaryDirectory(prefix="ucrawl-web-test-") as user_data_root:
+        env["UCRAWL_USER_DATA_ROOT"] = user_data_root
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(_PROJECT_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-    try:
-        yield url
-    finally:
-        proc.terminate()
+        # 等服务器起来（最多 30s）
+        deadline = time.time() + 30
+        url = f"http://{host}:{port}"
+        server_output: list[str] = []
+        while time.time() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=1):
+                    break
+            except (OSError, ConnectionRefusedError):
+                time.sleep(0.2)
+        else:
+            # 失败时打印 stderr 便于排查
+            try:
+                stderr_data = proc.stderr.read() if proc.stderr else b""
+                server_output.append(stderr_data.decode("utf-8", errors="replace")[-2000:])
+            except Exception:
+                pass
+            proc.terminate()
+            raise RuntimeError(
+                f"Server failed to start on {url}\n"
+                f"stderr: {''.join(server_output)[:1500]}"
+            )
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            yield url
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 # ============================================================
 # 静态资源测试（不需要 Playwright）
@@ -141,16 +143,11 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertTrue(p.exists())
 
     def test_index_html_has_doctype(self):
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         self.assertTrue(content.lower().startswith("<!doctype html>"))
 
     def test_index_html_required_ids(self):
         """所有 JS 引用的 id 必须在 HTML 中存在。"""
-        from pathlib import Path
-        import re
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         required_ids = [
             "sourceSelect", "searchInput", "dynamicArea",
@@ -196,9 +193,7 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_index_html_required_js_functions(self):
         """所有 onclick/on... 引用的函数必须存在。"""
-        from pathlib import Path
         import re
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 从 onclick="..." 提取函数名
         onclicks = re.findall(r'onclick="(\w+)\(', content)
@@ -270,9 +265,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("max-height: none", content)
 
     def test_preview_nav_buttons_are_visible(self):
-        from pathlib import Path
         import re
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
 
         block = re.search(r"\.(?:nav-btn|nav-item)\s*\{(?P<body>.*?)\}", content, re.S)
@@ -294,18 +287,16 @@ class StaticAssetsTests(unittest.TestCase):
 
         self.assertIn('/static/app.css?v=20260705-settings-control-surface', content)
         self.assertIn('/static/i18n.js?v=20260705-i18n-surface', content)
-        self.assertIn('/static/custom_select.js?v=20260701-custom-select', content)
         self.assertIn('/static/media_display.js?v=20260705-i18n-surface', content)
-        self.assertIn('/static/log_display.js?v=20260701-log-display', content)
         self.assertIn('/static/platform_limits.js?v=20260701-platform-limits', content)
         self.assertIn('/static/settings_render.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/task_render.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
-        self.assertIn('/static/app.js?v=20260705-i18n-surface', content)
+        self.assertIn('/static/custom_select.js?v=20260705-i18n-state-boundary', content)
+        self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
+        self.assertIn('/static/app.js?v=20260705-i18n-state-boundary', content)
 
     def test_video_end_autoplays_next_preview(self):
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
 
         self.assertIn("function autoplayNextPreview(", content)
@@ -316,8 +307,6 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_css_variables_defined(self):
         """深色/浅色主题 CSS 变量必须定义。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 关键 CSS 变量
         for var in ("--bg", "--panel", "--accent", "--text", "--border"):
@@ -343,8 +332,6 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_no_console_error_patterns(self):
         """不应有明显错误模式。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 不应出现 TODO/FIXME 标记
         self.assertNotIn("TODO", content)
@@ -752,16 +739,11 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_websocket_endpoint_referenced(self):
         """前端必须连 /ws。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         self.assertIn("/ws", content)
 
     def test_no_xss_vulnerability(self):
         """关键位置必须用 esc() 函数。"""
-        from pathlib import Path
-        import re
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 必须定义 esc 函数
         self.assertIn("function esc(", content)
@@ -789,9 +771,7 @@ class WebSocketMessageTypesTests(unittest.TestCase):
 
     def test_all_message_types_have_handlers(self):
         """前端所有 handleServerMessage switch case 必须定义。"""
-        from pathlib import Path
         import re
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 提取所有 case
         cases = re.findall(r"case [\"'](\w+)[\"']:", content)
@@ -975,8 +955,6 @@ class WebUIBrowserTests(unittest.TestCase):
         # 找到更改目录按钮
         # HTML 里 onclick="onChangeDirClicked()"
         self._page.evaluate("onChangeDirClicked()")
-        # 等待弹窗出现
-        modal = self._page.locator("#dirModal")
         # 不一定立即可见（要先 fetch /api/dir/list）
         self._page.wait_for_timeout(2000)
         # 检查 modal.style.display 变成了 flex
@@ -1060,9 +1038,9 @@ class WebUIBrowserTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(result["logLevelFilter"], {"value": "全部", "label": "All"})
-        self.assertEqual(result["logTimeFilter"], {"value": "近 24 小时", "label": "Last 24 hours"})
-        self.assertEqual(result["logPlatformFilter"], {"value": "全部", "label": "All"})
+        self.assertEqual(result["logLevelFilter"], {"value": "all", "label": "All"})
+        self.assertEqual(result["logTimeFilter"], {"value": "24h", "label": "Last 24 hours"})
+        self.assertEqual(result["logPlatformFilter"], {"value": "all", "label": "All"})
 
     def test_09d_log_tabs_keep_gui_counts_after_language_refresh(self):
         self._page.goto(self._server_url)
@@ -1135,7 +1113,7 @@ class WebUIBrowserTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(result["timeValue"], "近 30 分钟")
+        self.assertEqual(result["timeValue"], "30m")
         self.assertIn("全部日志 3", result["zh"])
         self.assertIn("错误日志 1", result["zh"])
         self.assertIn("All logs 3", result["en"])
@@ -1510,6 +1488,142 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["runningLabel"], "Running: 0 tasks")
         for unexpected in ("当前任务事件", "暂无事件", "当前运行", "绑定默认打开方式", "取消"):
             self.assertNotIn(unexpected, result["activeText"] + result["modalText"])
+
+    def test_09h_runtime_language_update_translates_dropdowns_logs_active_and_dialogs(self):
+        self._page.goto(self._server_url)
+        self._page.wait_for_load_state("networkidle")
+        self._page.wait_for_timeout(3500)
+
+        result = self._page.evaluate(
+            """
+            () => {
+              window.__languageActions = [];
+              window.frontendAction = (action, payload) => window.__languageActions.push({ action, payload });
+              frontendAction = window.frontendAction;
+              platforms = [
+                { id: "douyin", name: "抖音" },
+                { id: "xiaohongshu", name: "小红书" },
+                { id: "kuaishou", name: "快手" },
+                { id: "missav", name: "MissAV" },
+                { id: "bilibili", name: "Bilibili" }
+              ];
+              frontendState.settings_snapshot = {
+                "外观设置": {
+                  language: "zh-CN",
+                  theme: "light",
+                  accent: "purple",
+                  scale: "100%",
+                  font_size: "medium",
+                  _options: {
+                    language: [
+                      { value: "zh-CN", label: "简体中文（推荐）" },
+                      { value: "en-US", label: "English" }
+                    ],
+                    accent: [{ value: "purple", label: "紫色" }],
+                    scale: [{ value: "100%", label: "100%（推荐）" }],
+                    font_size: [{ value: "medium", label: "中（推荐）" }],
+                    theme: [{ value: "light", label: "浅色" }, { value: "dark", label: "深色" }]
+                  }
+                },
+                "平台设置": [
+                  { id: "douyin", name: "抖音", auth_status: "已认证", default_count: 50, count_unit: "videos", count_config_key: "max_items", count_editable: true, count_options: [{ value: "50", label: "50 个视频" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理"], proxy_editable: false },
+                  { id: "xiaohongshu", name: "小红书", auth_status: "已认证", default_count: 20, count_unit: "notes", count_config_key: "max_notes", count_editable: true, count_options: [{ value: "20", label: "20 篇笔记（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理"], proxy_editable: false },
+                  { id: "kuaishou", name: "快手", auth_status: "已认证", default_count: 20, count_unit: "videos", count_config_key: "max_items", count_editable: true, count_options: [{ value: "20", label: "20 个视频（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理"], proxy_editable: false },
+                  { id: "missav", name: "MissAV", auth_status: "未认证", default_count: 20, count_unit: "videos", count_config_key: "max_items", count_editable: true, count_options: [{ value: "20", label: "20 个视频（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "自定义", proxy_config_key: "proxy", proxy_editable: true, proxy_custom_allowed: true, proxy_custom_active: true, proxy_custom_value: "7890", proxy_options: ["系统代理", "直连", "自定义"] },
+                  { id: "bilibili", name: "Bilibili", auth_status: "已认证", default_count: 1, count_unit: "pages", count_config_key: "max_pages", count_editable: true, count_options: [{ value: "1", label: "1 页（推荐）" }], default_timeout: 60, timeout_config_key: "timeout", timeout_editable: true, timeout_options: [{ value: "60", label: "60 秒（推荐）" }], proxy: "系统代理", proxy_options: ["系统代理"], proxy_editable: false }
+                ]
+              };
+              frontendState.log_items = [{
+                id: "log-runtime-language",
+                time: "2026-07-05 11:33:04",
+                level: "WARN",
+                type: "预警",
+                scope: "性能",
+                stage: "性能",
+                source: "系统 · MainWindow",
+                platform: "系统",
+                trace_id: "-",
+                message_summary: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                message: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                detail: {
+                  description: "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                  type: "预警",
+                  scope: "性能",
+                  stage: "性能",
+                  source: "MainWindow",
+                  platform: "系统"
+                }
+              }];
+              document.documentElement.dataset.language = "zh-CN";
+              renderPlatforms();
+              currentPage = "settings";
+              currentSettingsGroup = "外观设置";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "settings"));
+              renderSettings(true);
+              updateSetting("appearance", "language", "en-US");
+
+              const sourceOptions = Array.from(document.querySelectorAll("#sourceSelect option")).map(option => option.textContent.trim());
+              currentSettingsGroup = "平台设置";
+              renderSettings(true);
+              const settingsText = document.getElementById("page-settings").textContent;
+              const customProxyPlaceholder = document.querySelector(".proxy-custom")?.getAttribute("placeholder") || "";
+
+              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
+              currentPage = "logs";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
+              selected.log = "";
+              renderLogs();
+              const logsText = document.getElementById("page-logs").textContent;
+              const logPlatformButton = document.querySelector("#logPlatformFilter").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
+              const logPlatformOriginal = document.querySelector("#logPlatformFilter option[value='all']").dataset.originalLabel;
+
+              frontendState.active_downloads = [];
+              frontendState.download_options = { auto_retry: true, max_retries: 3, max_concurrent: 3 };
+              currentPage = "active";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "active"));
+              renderActive();
+              const activeText = document.getElementById("page-active").textContent;
+
+              showFileAssociationModal();
+              const modalText = document.getElementById("fileAssociationModal").textContent;
+              cancelFileAssociationModal();
+
+              return { sourceOptions, settingsText, customProxyPlaceholder, logsText, logPlatformButton, logPlatformOriginal, activeText, modalText };
+            }
+            """
+        )
+
+        for expected in ("Douyin", "Xiaohongshu", "Kuaishou"):
+            self.assertIn(expected, result["sourceOptions"])
+            self.assertIn(expected, result["settingsText"])
+        self.assertIn("Custom", result["settingsText"])
+        self.assertEqual(result["customProxyPlaceholder"], "Port")
+        self.assertEqual(result["logPlatformButton"], "All")
+        self.assertEqual(result["logPlatformOriginal"], "全部")
+        self.assertIn("All logs", result["logsText"])
+        self.assertIn("Warning", result["logsText"])
+        self.assertIn("Performance", result["logsText"])
+        self.assertIn("System", result["logsText"])
+        self.assertIn("Current task events", result["activeText"])
+        self.assertIn("No events", result["activeText"])
+        self.assertIn("Running: 0 tasks", result["activeText"])
+        self.assertIn("Bind default app", result["modalText"])
+        self.assertIn("Video resources", result["modalText"])
+        for unexpected in (
+            "抖音",
+            "小红书",
+            "快手",
+            "自定义",
+            "全部日志",
+            "全部",
+            "预警",
+            "性能",
+            "系统",
+            "暂无事件",
+            "当前运行",
+            "绑定默认打开方式",
+        ):
+            self.assertNotIn(unexpected, "\n".join(result["sourceOptions"]) + result["settingsText"] + result["logsText"] + result["activeText"] + result["modalText"])
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
@@ -2674,8 +2788,6 @@ class WebDesignGuidelinesTests(unittest.TestCase):
 
     def test_focus_visible_css_exists(self):
         """必须有 focus 样式（键盘可达性）。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 至少有几个 :focus 规则
         self.assertIn(":focus", content)
@@ -2683,24 +2795,18 @@ class WebDesignGuidelinesTests(unittest.TestCase):
 
     def test_buttons_have_hover_state(self):
         """按钮必须有 hover 样式。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         self.assertIn(":hover", content)
         self.assertGreater(content.count(":hover"), 5)
 
     def test_error_messages_have_log(self):
         """错误消息应写入日志（用户可见）。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         # 至少有几个 ❌ 错误日志
         self.assertGreaterEqual(content.count("失败"), 3)
 
     def test_disabled_state_styled(self):
         """disabled 状态应有样式。"""
-        from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
         content = _static_bundle_content()
         self.assertIn(":disabled", content)
 

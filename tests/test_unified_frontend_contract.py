@@ -1443,6 +1443,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         missav["proxy_custom_active"] = False
         missav["proxy_custom_value"] = ""
 
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
         shell.show_page("settings")
         settings.render(snapshot)
         settings._set_current_group("\u5e73\u53f0\u8bbe\u7f6e")
@@ -1666,6 +1667,33 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("Red", combo_texts)
         self.assertIn("Large", combo_texts)
 
+    def test_gui_settings_language_rebuild_closes_open_combo_popup(self):
+        shell = self._make_shell()
+        settings = shell.pages["settings"]
+        shell.show_page("settings")
+        snapshot = FrontendStateService.mock_snapshot()
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
+        settings.render(snapshot)
+        settings._set_current_group("外观设置")
+        self.app.processEvents()
+
+        language_combo = next(
+            combo
+            for combo in settings.findChildren(QComboBox)
+            if combo.findData("en-US") >= 0 and combo.findData("zh-CN") >= 0
+        )
+        language_combo.showPopup()
+        self.app.processEvents()
+
+        changed_snapshot = deepcopy(snapshot)
+        changed_snapshot["settings_snapshot"]["外观设置"]["language"] = "en-US"
+        with patch.object(settings, "_close_combo_popups", wraps=settings._close_combo_popups) as close_popups:
+            settings.render(changed_snapshot)
+            self.app.processEvents()
+
+        self.assertGreaterEqual(close_popups.call_count, 1)
+        self.assertEqual(settings._language(), "en-US")
+
     def test_gui_language_switch_restores_shell_and_page_texts(self):
         shell = self._make_shell()
         shell.show_page("logs")
@@ -1800,6 +1828,95 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         shell.render(snapshot, changed_sections={"settings_snapshot"})
         self.app.processEvents()
         self.assertEqual(model.headerData(0, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole), "\u6807\u9898")
+
+    def test_gui_language_switch_translates_dynamic_runtime_surfaces(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+        snapshot["log_items"] = [
+            {
+                "id": "gui-i18n-log",
+                "time": "2026-07-05 12:00:00",
+                "level": "INFO",
+                "raw_level": "INFO",
+                "source": "GUI",
+                "platform": "\u7cfb\u7edf",
+                "platform_id": "system",
+                "trace_id": "trace-gui-i18n",
+                "message": "\u5e94\u7528\u5f00\u59cb\u521d\u59cb\u5316",
+                "message_summary": "\u5e94\u7528\u5f00\u59cb\u521d\u59cb\u5316",
+            }
+        ]
+        snapshot["queue_items"] = []
+        snapshot["active_downloads"] = []
+        snapshot["completed_items"] = [
+            {
+                "id": "done-gui-i18n",
+                "title": "Demo",
+                "filename": "demo.mp4",
+                "local_path": "D:/Downloads/demo.mp4",
+                "completed_at": "2026-07-05 12:00:00",
+                "completed_at_table": "12:00:00",
+                "duration": "00:01:00",
+                "resolution": "1280 x 720",
+                "size": "1 MB",
+                "format": "MP4",
+                "platform": "\u7cfb\u7edf",
+                "platform_id": "system",
+            }
+        ]
+        snapshot["failed_items"] = []
+
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+        all_time_index = logs.time_filter.findData("\u5168\u90e8")
+        self.assertGreaterEqual(all_time_index, 0)
+        logs.time_filter.setCurrentIndex(all_time_index)
+        shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
+        self.app.processEvents()
+
+        self.assertTrue(logs._tab_buttons["all"].text().startswith("All logs"))
+        self.assertTrue(logs.footer_stats.text().startswith("Total 1 / matched 1 / showing 1"))
+        self.assertEqual(logs.page_indicator.text(), "Page 1 / 1")
+        self.assertTrue(logs.platform_filter.currentText().endswith("All"))
+        self.assertEqual(logs.detail_platform_value.text(), "\u2699\ufe0f System")
+        self.assertEqual(logs.detail_status_value.text(), "Process")
+        self.assertEqual(logs.detail_scope_value.text(), "System")
+        self.assertEqual(logs.detail_stage_value.text(), "Step")
+
+        shell.show_page("queue")
+        shell.render(snapshot, changed_sections={"settings_snapshot", "queue_items"})
+        self.app.processEvents()
+        queue = shell.pages["queue"]
+        self.assertEqual(queue.path_prefix_label.text(), "Save to:")
+        self.assertEqual(queue.event_title.text(), "Activity (latest 3)")
+        self.assertEqual(queue.event_body.text(), "No queued tasks")
+        self.assertEqual(queue.table.model().headerData(0, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole), "Title")
+
+        shell.show_page("active")
+        shell.render(snapshot, changed_sections={"settings_snapshot", "active_downloads", "app_status"})
+        self.app.processEvents()
+        active = shell.pages["active"]
+        self.assertEqual(active.detail_events_title.text(), "Current task events")
+        self.assertEqual(active.running_count_label.text(), "Running: 0 tasks")
+
+        shell.show_page("completed")
+        shell.render(snapshot, changed_sections={"settings_snapshot", "completed_items"})
+        self.app.processEvents()
+        completed = shell.pages["completed"]
+        completed_labels = {label.text() for label in completed.info_body.findChildren(QLabel)}
+        self.assertEqual(completed.info_title.text(), "File info")
+        self.assertIn("Filename", completed_labels)
+        self.assertIn("Save path", completed_labels)
+
+        shell.show_page("failed")
+        shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
+        self.app.processEvents()
+        failed = shell.pages["failed"]
+        failed_labels = {label.text() for label in failed.findChildren(QLabel)}
+        self.assertEqual(failed.detail_title.text(), "Error details")
+        self.assertEqual(failed.solutions_title.text(), "Possible fixes")
+        self.assertIn("No failed tasks", failed_labels)
 
     def test_gui_platform_custom_proxy_field_displays_port_and_commits_endpoint(self):
         shell = self._make_shell()
@@ -2160,7 +2277,6 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             layout = widget.layout()
             time_widget = layout.itemAt(0).widget()
             badge = layout.itemAt(1).widget()
-            message = layout.itemAt(2).widget()
             self.assertRegex(time_widget.text(), r"^\d{2}:\d{2}:\d{2}$")
             self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 4)
             self.assertEqual(badge.width(), 74)
@@ -2326,8 +2442,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn("<label><span>日志级别</span><select", logs_page)
         self.assertIn('id="logLevelFilter" aria-label="日志级别"', logs_page)
         self.assertIn('id="logTraceFilter" aria-label="Trace ID"', logs_page)
-        self.assertIn("<option>CMD</option>", logs_page)
-        self.assertIn("<option selected>近 30 分钟</option>", logs_page)
+        self.assertIn('<option value="CMD">CMD</option>', logs_page)
+        self.assertIn('<option value="30m" selected>近 30 分钟</option>', logs_page)
         self.assertIn('id="logEmptyState" class="log-empty-state" hidden', logs_page)
         self.assertIn("暂无匹配日志", logs_page)
         self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", logs_page)
@@ -2336,8 +2452,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("function syncLogTabLabels", content)
         self.assertIn("syncLogTabLabels();", content)
         self.assertIn("function selectValueOrFallback", content)
-        self.assertIn('["logLevelFilter", "level", "全部"]', content)
-        self.assertIn('["logTimeFilter", "time", "近 30 分钟"]', content)
+        self.assertIn('["logLevelFilter", "level", "all"]', content)
+        self.assertIn('["logTimeFilter", "time", "30m"]', content)
         self.assertIn("syncCustomSelectForSelect(node);", content)
         css = _css_bundle()
         self.assertIn("grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))", css)

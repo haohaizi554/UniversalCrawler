@@ -114,7 +114,7 @@ class SnapshotTableModel(QAbstractTableModel):
         if role != Qt.ItemDataRole.DisplayRole:
             return None
         if orientation == Qt.Orientation.Horizontal and 0 <= section < len(self._headers):
-            return self._headers[section]
+            return tr(self._headers[section], self._language)
         return super().headerData(section, orientation, role)
 
     def set_headers(self, headers: list[str]) -> None:
@@ -130,6 +130,8 @@ class SnapshotTableModel(QAbstractTableModel):
         if normalized == self._language:
             return
         self._language = normalized
+        if self._headers:
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self._headers) - 1)
         if self._rows:
             self.dataChanged.emit(
                 self.index(0, 0),

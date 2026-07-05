@@ -16,6 +16,7 @@
       '"': "&quot;",
       "'": "&#39;",
     }[char] || char)),
+    canonical: value => String(value ?? ""),
   };
 
   function configure(nextHelpers = {}) {
@@ -24,6 +25,7 @@
       ...(typeof nextHelpers.translate === "function" ? { translate: nextHelpers.translate } : {}),
       ...(typeof nextHelpers.esc === "function" ? { esc: nextHelpers.esc } : {}),
       ...(typeof nextHelpers.escAttr === "function" ? { escAttr: nextHelpers.escAttr } : {}),
+      ...(typeof nextHelpers.canonical === "function" ? { canonical: nextHelpers.canonical } : {}),
     };
   }
 
@@ -78,7 +80,8 @@
     if (!wrapper) return;
     wrapper.style.setProperty("--option-count", String(Math.max(1, select.options.length)));
     Array.from(select.options).forEach(option => {
-      if (!("originalLabel" in option.dataset)) option.dataset.originalLabel = option.textContent || "";
+      const rawLabel = "originalLabel" in option.dataset ? option.dataset.originalLabel : option.textContent || "";
+      option.dataset.originalLabel = helpers.canonical(rawLabel);
       if (!("originalValue" in option.dataset)) {
         option.dataset.originalValue = option.hasAttribute("value")
           ? option.getAttribute("value")

@@ -45,6 +45,7 @@ from app.ui.components.log_inspector_sections import (
     build_log_kv_row,
     build_log_stack_section,
 )
+from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
 from app.ui.viewmodels import log_filtering
@@ -156,6 +157,7 @@ class LogCenterPage(PageFrame):
         self._category_counts: dict[str, int] = {key: 0 for key in LOG_CATEGORIES}
         self._last_json_text = "{}"
         self._inspector_item_id = ""
+        self._language = "zh-CN"
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("LogCenterSplitter")
@@ -169,6 +171,28 @@ class LogCenterPage(PageFrame):
         self._sync_inspector_action_buttons(False)
         self._refresh_platform_filter()
         self._sync_table_presentation()
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self._sync_filter_labels()
+        self._sync_filter_combo_labels()
+        self._sync_platform_combo_labels()
+        self._sync_log_page_size_combo_labels()
+        self._sync_empty_state_text()
+        if hasattr(self, "table") and hasattr(self.table, "table_model"):
+            self.table.table_model.set_language(normalized)
+        self._sync_tab_buttons()
+        self._sync_table_presentation()
+        if self._filtered_items:
+            self._refresh_paged_table()
+        else:
+            self._render_detail()
+
+    def _t(self, text: object) -> str:
+        return tr(str(text or ""), self._language)
 
     def _resolve_theme_is_dark(self) -> bool:
         window = self.window()
@@ -454,6 +478,7 @@ class LogCenterPage(PageFrame):
         self.keyword_filter.installEventFilter(self)
         self._sync_filter_text_input_style()
 
+        self._filter_label_widgets: dict[str, QLabel] = {}
         filters = [
             ("日志级别", self.level_filter),
             ("时间范围", self.time_filter),
@@ -464,6 +489,7 @@ class LogCenterPage(PageFrame):
         for index, (label, widget) in enumerate(filters):
             label_widget = QLabel(label)
             label_widget.setObjectName("LogFilterLabel")
+            self._filter_label_widgets[label] = label_widget
             widget.setFixedHeight(32)
             layout.addWidget(label_widget, 0, index)
             layout.addWidget(widget, 1, index)
@@ -477,6 +503,54 @@ class LogCenterPage(PageFrame):
         for combo in (self.level_filter, self.time_filter, self.platform_filter):
             polish_combo_popup(combo, visible_rows=max(1, combo.count()), row_height=34)
         return bar
+
+    def _sync_filter_labels(self) -> None:
+        for source_text, label in getattr(self, "_filter_label_widgets", {}).items():
+            label.setText(self._t(source_text))
+        if hasattr(self, "trace_filter"):
+            self.trace_filter.setPlaceholderText(self._t("请输入 Trace ID"))
+        if hasattr(self, "keyword_filter"):
+            self.keyword_filter.setPlaceholderText(self._t("请输入关键词"))
+
+    def _sync_filter_combo_labels(self) -> None:
+        for combo in (getattr(self, "level_filter", None), getattr(self, "time_filter", None)):
+            if combo is None:
+                continue
+            blocked = combo.blockSignals(True)
+            try:
+                for index in range(combo.count()):
+                    source_text = str(combo.itemData(index) or combo.itemText(index))
+                    combo.setItemText(index, self._t(source_text))
+            finally:
+                combo.blockSignals(blocked)
+            polish_combo_popup(combo, visible_rows=max(1, combo.count()), row_height=34)
+
+    def _log_page_size_label(self, value: int) -> str:
+        if self._language == "en-US":
+            return f"{value} / page"
+        if self._language == "zh-TW":
+            return f"{value} 條/頁"
+        return f"{value} 条/页"
+
+    def _sync_log_page_size_combo_labels(self) -> None:
+        combo = getattr(self, "page_size_combo", None)
+        if combo is None:
+            return
+        blocked = combo.blockSignals(True)
+        try:
+            for index in range(combo.count()):
+                value = int(combo.itemData(index) or 0)
+                if value > 0:
+                    combo.setItemText(index, self._log_page_size_label(value))
+                else:
+                    combo.setItemText(index, self._t("全部"))
+        finally:
+            combo.blockSignals(blocked)
+        self._fit_page_size_combo_width()
+        if hasattr(self, "prev_page_button"):
+            self.prev_page_button.setText(self._t("上一页"))
+        if hasattr(self, "next_page_button"):
+            self.next_page_button.setText(self._t("下一页"))
 
     def _on_filter_text_changed(self) -> None:
         self._sync_filter_text_input_style()
@@ -621,13 +695,25 @@ class LogCenterPage(PageFrame):
         title.setObjectName("LogEmptyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
+        self._empty_state_title = title
+        self._empty_state_subtitles: list[QLabel] = []
         for line in ("调整筛选条件，", "或点击「刷新缓冲」重新加载日志"):
             subtitle = QLabel(line)
             subtitle.setObjectName("LogEmptySubtitle")
             subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
             subtitle.setWordWrap(False)
             layout.addWidget(subtitle)
+            self._empty_state_subtitles.append(subtitle)
+        self._sync_empty_state_text()
         return panel
+
+    def _sync_empty_state_text(self) -> None:
+        if hasattr(self, "_empty_state_title"):
+            self._empty_state_title.setText(self._t("暂无匹配日志"))
+        subtitles = getattr(self, "_empty_state_subtitles", [])
+        source_lines = ("调整筛选条件，", "或点击「刷新缓冲」重新加载日志")
+        for label, source_text in zip(subtitles, source_lines, strict=False):
+            label.setText(self._t(source_text))
 
     def _configure_table_columns(self) -> None:
         header = self.table.horizontalHeader()
@@ -664,14 +750,32 @@ class LogCenterPage(PageFrame):
     def _load_platform_options(self, snapshot: dict | None = None) -> list[PlatformUiMeta]:
         return load_platform_options(snapshot)
 
-    def _add_platform_combo_item(self, meta: PlatformUiMeta) -> None:
-        label = meta.label
+    def _platform_combo_label(self, meta: PlatformUiMeta) -> str:
+        label = self._t(meta.label)
         if meta.emoji and not (meta.icon_path and Path(meta.icon_path).is_file()):
-            label = f"{meta.emoji} {label}"
+            return f"{meta.emoji} {label}"
+        return label
+
+    def _add_platform_combo_item(self, meta: PlatformUiMeta) -> None:
         icon = QIcon()
         if meta.icon_path and Path(meta.icon_path).is_file():
             icon = QIcon(meta.icon_path)
-        self.platform_filter.addItem(icon, label, meta.id)
+        self.platform_filter.addItem(icon, self._platform_combo_label(meta), meta.id)
+
+    def _sync_platform_combo_labels(self) -> None:
+        combo = getattr(self, "platform_filter", None)
+        if combo is None:
+            return
+        blocked = combo.blockSignals(True)
+        try:
+            for index in range(combo.count()):
+                platform_id = str(combo.itemData(index) or "")
+                meta = self._platform_meta_by_id.get(platform_id)
+                if meta is not None:
+                    combo.setItemText(index, self._platform_combo_label(meta))
+        finally:
+            combo.blockSignals(blocked)
+        polish_combo_popup(combo, visible_rows=max(1, combo.count()), row_height=34)
 
     def _refresh_platform_filter(self, snapshot: dict | None = None) -> None:
         if not hasattr(self, "platform_filter"):
@@ -859,7 +963,7 @@ class LogCenterPage(PageFrame):
 
     def _update_category_tab_counts(self) -> None:
         for category, button in self._tab_buttons.items():
-            label = LOG_CATEGORIES[category]
+            label = self._t(LOG_CATEGORIES[category])
             count = self._category_count(category)
             button.setText(f"{label} {count}")
 
@@ -915,11 +1019,21 @@ class LogCenterPage(PageFrame):
         if not hasattr(self, "footer_stats"):
             return
         total_pages = self._total_pages()
-        self.footer_stats.setText(
-            f"共 {len(self._all_items)} 条 / 匹配 {len(self._filtered_items)} 条 / 当前显示 {len(self.items)} 条"
-        )
+        total = len(self._all_items)
+        matched = len(self._filtered_items)
+        visible = len(self.items)
+        if self._language == "en-US":
+            stats_text = f"Total {total} / matched {matched} / showing {visible}"
+            page_text = f"Page {self._current_page} / {total_pages}"
+        elif self._language == "zh-TW":
+            stats_text = f"共 {total} 條 / 符合 {matched} 條 / 目前顯示 {visible} 條"
+            page_text = f"第 {self._current_page} / {total_pages} 頁"
+        else:
+            stats_text = f"共 {total} 条 / 匹配 {matched} 条 / 当前显示 {visible} 条"
+            page_text = f"第 {self._current_page} / {total_pages} 页"
+        self.footer_stats.setText(stats_text)
         if hasattr(self, "page_indicator"):
-            self.page_indicator.setText(f"第 {self._current_page} / {total_pages} 页")
+            self.page_indicator.setText(page_text)
         if hasattr(self, "prev_page_button"):
             self.prev_page_button.setEnabled(self._current_page > 1 and bool(self._filtered_items))
         if hasattr(self, "next_page_button"):
@@ -995,7 +1109,7 @@ class LogCenterPage(PageFrame):
     def _decorate_log_item(self, item: dict[str, Any]) -> dict[str, Any]:
         scope = self._derive_log_scope(item)
         stage = self._derive_event_stage(item)
-        return decorate_log_item(
+        row = decorate_log_item(
             item,
             platform_options=self._platform_options,
             platform_meta_by_id=self._platform_meta_by_id,
@@ -1003,12 +1117,28 @@ class LogCenterPage(PageFrame):
             event_stage=stage,
             scope_reason=self._derive_scope_reason(item),
         )
+        for key in ("platform_label", "source_display", "source_display_text", "source_display_full"):
+            if row.get(key):
+                row[key] = self._translate_platform_display(str(row[key]))
+        if row.get("event_stage_display"):
+            row["event_stage_display"] = self._t(row["event_stage_display"])
+        for key in ("message", "message_summary"):
+            if row.get(key):
+                row[key] = self._t(row[key])
+        return row
 
     def _resolve_item_platform_id(self, item: dict[str, Any]) -> str:
         return resolve_item_platform_id(item, self._platform_options, self._platform_meta_by_id)
 
     def _format_platform_label(self, item: dict[str, Any]) -> str:
-        return format_platform_label(item, self._platform_options, self._platform_meta_by_id)
+        return self._translate_platform_display(format_platform_label(item, self._platform_options, self._platform_meta_by_id))
+
+    def _translate_platform_display(self, text: str) -> str:
+        translated = str(text or "")
+        for meta in self._platform_meta_by_id.values():
+            if meta.label:
+                translated = translated.replace(meta.label, self._t(meta.label))
+        return self._t(translated)
 
     def _matches_non_category_filters(self, item: dict[str, Any]) -> bool:
         return log_filtering.matches_non_category_filters(
@@ -1059,11 +1189,15 @@ class LogCenterPage(PageFrame):
     def _copy_current_trace_id(self) -> None:
         trace_id = self._current_or_first_trace_id()
         if not trace_id:
-            QMessageBox.information(self, "?? Trace ID", "???????????????? Trace ID?")
+            QMessageBox.information(
+                self,
+                self._t("复制 Trace ID"),
+                self._t("当前筛选结果中没有可复制的 Trace ID。"),
+            )
             return
         QApplication.clipboard().setText(trace_id)
         if hasattr(self, "copy_trace_button"):
-            self._flash_button_text(self.copy_trace_button, "???")
+            self._flash_button_text(self.copy_trace_button, self._t("已复制"))
 
     def _build_current_log_payload(self, item: dict[str, Any]) -> dict[str, Any]:
         return build_log_detail_payload(
@@ -1139,7 +1273,7 @@ class LogCenterPage(PageFrame):
         if not self._current_log_item():
             return
         QApplication.clipboard().setText(format_json_text(self._current_detail_payload()))
-        self._flash_button_text(self.json_copy_button)
+        self._flash_button_text(self.json_copy_button, self._t("已复制"))
 
     @safe_slot
     def _copy_current_log_detail(self) -> None:
@@ -1148,29 +1282,29 @@ class LogCenterPage(PageFrame):
             return
         payload = self._build_current_log_payload(item)
         QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False, indent=2))
-        self._flash_button_text(self.detail_copy_button)
+        self._flash_button_text(self.detail_copy_button, self._t("已复制"))
 
     @safe_slot
     def _export_current_log_detail(self) -> None:
         item = self._current_log_item()
         if not item:
-            QMessageBox.warning(self, "导出失败", "当前没有可导出的日志。")
+            QMessageBox.warning(self, self._t("导出失败"), self._t("当前没有可导出的日志。"))
             return
         payload = self._build_current_log_payload(item)
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "导出日志详情",
+            self._t("导出日志详情"),
             "log_detail.json",
-            "JSON 文件 (*.json);;文本文件 (*.txt)",
+            self._t("JSON 文件 (*.json);;文本文件 (*.txt)"),
         )
         if not path:
             return
         try:
             Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
-            QMessageBox.warning(self, "导出失败", f"无法写入文件：{exc}")
+            QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{exc}")
             return
-        QMessageBox.information(self, "导出成功", f"日志详情已导出到：{path}")
+        QMessageBox.information(self, self._t("导出成功"), f"{self._t('日志详情已导出到：')}{path}")
 
     def _matches_platform(self, item: dict[str, Any], platform_id: str) -> bool:
         return log_filtering.matches_platform(
@@ -1408,11 +1542,11 @@ class LogCenterPage(PageFrame):
         self._sync_inspector_action_buttons(True)
 
         self.detail_time_value.setText(str(item.get("time") or "-"))
-        self.detail_source_value.setText(str(item.get("source") or "-"))
+        self.detail_source_value.setText(self._t(str(item.get("source") or "-")))
         self.detail_platform_value.setText(self._format_platform_label(item))
         trace_id = self._extract_trace_id_from_item(item)
         self.detail_trace_value.setText(trace_id if trace_id else "-")
-        message = str(item.get("message") or item.get("message_summary") or "-")
+        message = self._t(str(item.get("message") or item.get("message_summary") or "-"))
         raw_message = str(item.get("message") or item.get("message_summary") or "")
         self.detail_message_value.setPlainText(message)
         self._configure_message_editor_wrap()
@@ -1428,9 +1562,9 @@ class LogCenterPage(PageFrame):
         self.detail_level_badge.setText(raw_level or "-")
         self._apply_level_badge_style(result_display_text(result_type, raw_level))
 
-        self.detail_status_value.setText(result_nature_text(result_type))
-        self.detail_scope_value.setText(self._scope_display_text(scope))
-        self.detail_stage_value.setText(self._stage_display_text(stage))
+        self.detail_status_value.setText(self._t(result_nature_text(result_type)))
+        self.detail_scope_value.setText(self._t(self._scope_display_text(scope)))
+        self.detail_stage_value.setText(self._t(self._stage_display_text(stage)))
         self.detail_status_code_value.setText(event_code or "-")
         self.detail_status_code_value.setToolTip(event_code or "")
 

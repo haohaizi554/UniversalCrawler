@@ -1303,6 +1303,7 @@ function applyStaticLanguage() {
     t,
     translateUiText,
     translateUiCore,
+    canonicalUiText,
     translateVisibleText,
     optionLabel,
     setButtonContent,

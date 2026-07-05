@@ -6,14 +6,14 @@
   <title>Universal Crawler Pro</title>
   <link rel="stylesheet" href="/static/app.css?v=20260705-settings-control-surface" />
   <script src="/static/i18n.js?v=20260705-i18n-surface" defer></script>
-  <script src="/static/custom_select.js?v=20260701-custom-select" defer></script>
+  <script src="/static/custom_select.js?v=20260705-i18n-state-boundary" defer></script>
   <script src="/static/media_display.js?v=20260705-i18n-surface" defer></script>
-  <script src="/static/log_display.js?v=20260701-log-display" defer></script>
+  <script src="/static/log_display.js?v=20260705-i18n-state-boundary" defer></script>
   <script src="/static/platform_limits.js?v=20260701-platform-limits" defer></script>
   <script src="/static/settings_render.js?v=20260705-i18n-surface" defer></script>
   <script src="/static/task_render.js?v=20260705-i18n-surface" defer></script>
   <script src="/static/playback_state.js?v=20260701-playback-state" defer></script>
-  <script src="/static/app.js?v=20260705-i18n-surface" defer></script>
+  <script src="/static/app.js?v=20260705-i18n-state-boundary" defer></script>
 </head>
 <body>
   <main class="app-body">
@@ -174,9 +174,9 @@
                 <button class="tab" data-log-tab="error" onclick="setLogTab('error')">错误日志</button>
               </div>
               <div class="filters log-filters">
-                <div class="log-filter-field"><span class="log-filter-label">日志级别</span><select id="logLevelFilter" aria-label="日志级别" onchange="syncLogFiltersFromDom()"><option>全部</option><option>INFO</option><option>SUCCESS</option><option>WARN</option><option>ERROR</option><option>CMD</option></select></div>
-                <div class="log-filter-field"><span class="log-filter-label">时间范围</span><select id="logTimeFilter" aria-label="时间范围" onchange="syncLogFiltersFromDom()"><option selected>近 30 分钟</option><option>近 1 小时</option><option>近 24 小时</option><option>全部</option></select></div>
-                <div class="log-filter-field"><span class="log-filter-label">平台</span><select id="logPlatformFilter" aria-label="平台" onchange="syncLogFiltersFromDom()"><option>全部</option><option>抖音</option><option>Bilibili</option><option>快手</option><option>MissAV</option><option>小红书</option><option>系统</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">日志级别</span><select id="logLevelFilter" aria-label="日志级别" onchange="syncLogFiltersFromDom()"><option value="all">全部</option><option value="INFO">INFO</option><option value="SUCCESS">SUCCESS</option><option value="WARN">WARN</option><option value="ERROR">ERROR</option><option value="CMD">CMD</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">时间范围</span><select id="logTimeFilter" aria-label="时间范围" onchange="syncLogFiltersFromDom()"><option value="30m" selected>近 30 分钟</option><option value="1h">近 1 小时</option><option value="24h">近 24 小时</option><option value="all">全部</option></select></div>
+                <div class="log-filter-field"><span class="log-filter-label">平台</span><select id="logPlatformFilter" aria-label="平台" onchange="syncLogFiltersFromDom()"><option value="all">全部</option><option value="抖音">抖音</option><option value="Bilibili">Bilibili</option><option value="快手">快手</option><option value="MissAV">MissAV</option><option value="小红书">小红书</option><option value="系统">系统</option></select></div>
                 <div class="log-filter-field"><span class="log-filter-label">Trace ID</span><input id="logTraceFilter" aria-label="Trace ID" placeholder="请输入 Trace ID" oninput="syncLogFiltersFromDom()" /></div>
                 <div class="log-filter-field"><span class="log-filter-label">关键词搜索</span><input id="logKeywordFilter" aria-label="关键词搜索" placeholder="请输入关键词..." oninput="syncLogFiltersFromDom()" /></div>
               </div>

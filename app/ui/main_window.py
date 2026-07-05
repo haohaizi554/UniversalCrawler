@@ -32,7 +32,7 @@ from app.ui.dialogs.selection import SelectionDialog
 from app.ui.dialogs.update_check import UpdateCheckDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_chrome import WindowChromeFrame
-from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
+from app.ui.layout.window_chrome_controller import FramelessWindowChromeController, _NCCALCSIZE_PARAMS  # noqa: F401
 from app.ui.localization import normalize_language, tr
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
@@ -1314,7 +1314,7 @@ class MainWindow(QMainWindow):
             normalized_items = items or []
             if not normalized_items:
                 return []
-            dialog = SelectionDialog(self, items=normalized_items)
+            dialog = SelectionDialog(self, items=normalized_items, language=self._current_ui_language())
             self._active_selection_dialog = dialog
             dialog.setModal(True)
             dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -1432,7 +1432,7 @@ class MainWindow(QMainWindow):
         self.sig_register_file_associations.emit(choice.include_video, choice.include_image)
 
     def show_file_association_dialog(self):
-        dialog = FileAssociationDialog(self)
+        dialog = FileAssociationDialog(self, language=self._current_ui_language())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return dialog.choice()

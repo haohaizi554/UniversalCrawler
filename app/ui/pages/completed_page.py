@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 from app.ui.components.media_preview_panel import MediaPreviewPanel
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.smart_wrap_label import SmartWrapLabel
+from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_item, page_slice, total_pages
 
@@ -34,6 +35,7 @@ class CompletedPage(PageFrame):
         super().__init__("", use_island=False)
         self._page = 1
         self._page_size = 20
+        self._language = "zh-CN"
         self.setMinimumHeight(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -102,7 +104,7 @@ class CompletedPage(PageFrame):
         self.info_card_layout = QVBoxLayout(self.info_card)
         self.info_card_layout.setContentsMargins(12, 10, 12, 12)
         self.info_card_layout.setSpacing(8)
-        self.info_title = QLabel("文件信息")
+        self.info_title = QLabel(self._t("文件信息"))
         self.info_title.setObjectName("SectionTitle")
         self.info_card_layout.addWidget(self.info_title)
         self.info_body = QWidget()
@@ -132,6 +134,23 @@ class CompletedPage(PageFrame):
         self.media_panel.sig_media_metadata_detected.connect(self._on_media_metadata_detected)
         self.pagination_footer.page_requested.connect(lambda delta: self._set_page(self._page + delta))
         self.pagination_footer.page_size_changed.connect(self._on_page_size_changed)
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.info_title.setText(self._t("文件信息"))
+        self.pagination_footer.set_language(normalized)
+        if hasattr(self.table, "table_model"):
+            self.table.table_model.set_language(normalized)
+        if hasattr(self.media_panel, "set_language"):
+            self.media_panel.set_language(normalized)
+        self._detail_signature = None
+        self._render_selected_detail()
+
+    def _t(self, text: object) -> str:
+        return tr(str(text or ""), self._language)
 
     def render(self, snapshot: dict) -> None:
         self.items = list(snapshot.get("completed_items") or [])
@@ -217,7 +236,7 @@ class CompletedPage(PageFrame):
         layout.setColumnStretch(1, 1)
         row = 0
         for index, (key, value) in enumerate(pairs):
-            key_label = QLabel(str(key), panel)
+            key_label = QLabel(self._t(key), panel)
             key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             key_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
 
