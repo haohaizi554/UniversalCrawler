@@ -436,6 +436,7 @@ class LogCenterPage(PageFrame):
         for category, label in LOG_CATEGORIES.items():
             button = QPushButton(label)
             button.setObjectName("LogTabButton")
+            button.setProperty("i18nSkipText", "true")
             button.setCheckable(True)
             button.setAutoExclusive(True)
             button.setFlat(True)

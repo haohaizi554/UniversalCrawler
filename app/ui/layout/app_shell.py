@@ -365,7 +365,7 @@ class AppShell(QWidget):
                 continue
         for button in self._safe_find_children(page, QAbstractButton):
             try:
-                if button.text():
+                if button.property("i18nSkipText") != "true" and button.text():
                     self._translate_text_widget(button, button.text, button.setText)
                 self._translate_tooltip(button)
             except RuntimeError:

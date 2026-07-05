@@ -2055,6 +2055,56 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(failed.solutions_title.text(), "Possible fixes")
         self.assertIn("No failed tasks", failed_labels)
 
+    def test_gui_log_tabs_are_language_keyed_after_runtime_switch(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["log_items"] = [
+            {
+                "id": "gui-log-tab-i18n",
+                "time": "2026-07-06 03:30:00",
+                "level": "WARN",
+                "raw_level": "WARN",
+                "source": "MainWindow",
+                "platform": "\u7cfb\u7edf",
+                "platform_id": "system",
+                "status_code": "FRONTEND_RENDER_SLOW",
+                "trace_id": "trace-gui-log-tab-i18n",
+                "message": "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+                "message_summary": "Frontend render exceeded the interactive budget; refresh cadence was relaxed",
+            }
+        ]
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+        all_time_index = logs.time_filter.findData("\u5168\u90e8")
+        self.assertGreaterEqual(all_time_index, 0)
+        logs.time_filter.setCurrentIndex(all_time_index)
+
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+        shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
+        self.app.processEvents()
+
+        self.assertEqual(logs._tab_buttons["all"].text(), "All logs 1")
+        self.assertEqual(logs._tab_buttons["crawl"].text(), "Crawl logs 0")
+        self.assertEqual(logs._tab_buttons["download"].text(), "Download logs 0")
+        self.assertEqual(logs._tab_buttons["system"].text(), "System logs 0")
+        self.assertEqual(logs._tab_buttons["performance"].text(), "Performance logs 1")
+        self.assertEqual(logs._tab_buttons["error"].text(), "Error logs 0")
+
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "zh-CN"
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        self.app.processEvents()
+
+        tab_text = " ".join(button.text() for button in logs._tab_buttons.values())
+        self.assertEqual(logs._tab_buttons["all"].text(), "\u5168\u90e8\u65e5\u5fd7 1")
+        self.assertEqual(logs._tab_buttons["crawl"].text(), "\u91c7\u96c6\u65e5\u5fd7 0")
+        self.assertEqual(logs._tab_buttons["download"].text(), "\u4e0b\u8f7d\u65e5\u5fd7 0")
+        self.assertEqual(logs._tab_buttons["system"].text(), "\u7cfb\u7edf\u65e5\u5fd7 0")
+        self.assertEqual(logs._tab_buttons["performance"].text(), "\u6027\u80fd\u65e5\u5fd7 1")
+        self.assertEqual(logs._tab_buttons["error"].text(), "\u5f02\u5e38\u65e5\u5fd7 0")
+        self.assertNotIn("All logs", tab_text)
+        self.assertNotIn("Download logs", tab_text)
+        self.assertNotIn("System logs", tab_text)
+
     def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
         from app.ui.viewmodels.log_i18n import localize_log_text
 
@@ -2115,6 +2165,39 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(localize_log_text("Released download concurrency slot", "zh-CN"), "已释放下载并发槽位")
         self.assertEqual(localize_log_text("System · MainWindow", "zh-CN"), "系统 · 主窗口")
         self.assertEqual(localize_log_text("系统 · GUI", "en-US"), "System · GUI")
+        self.assertEqual(localize_log_text("Bilibili stream request established", "zh-CN"), "Bilibili 流请求建立成功")
+        self.assertEqual(
+            localize_log_text("Preparing to merge Bilibili audio/video stream", "zh-CN"),
+            "准备合并 Bilibili 音视频流",
+        )
+        self.assertEqual(
+            localize_log_text("Douyin download task submitted to the queue", "zh-CN"),
+            "抖音下载任务已提交到下载队列",
+        )
+        self.assertEqual(
+            localize_log_text("Kuaishou video stream captured and submitted to the queue", "zh-CN"),
+            "快手视频流已捕获并提交到下载队列",
+        )
+        self.assertEqual(
+            localize_log_text("MissAV detail page sniff timed out; playlist.m3u8 was not found", "zh-CN"),
+            "MissAV 详情页嗅探超时，未发现 playlist.m3u8",
+        )
+        self.assertEqual(localize_log_text("Xiaohongshu crawl task finished", "zh-CN"), "小红书爬虫任务结束")
+        self.assertEqual(
+            localize_log_text("Preparing Kuaishou video stream download", "zh-TW"),
+            "準備下載快手影片串流",
+        )
+        self.assertEqual(localize_log_text("Download completed: demo.mp4", "zh-CN"), "下载完成：demo.mp4")
+        self.assertEqual(localize_log_text("Started Douyin task | target: demo", "zh-CN"), "启动抖音任务 | 目标：demo")
+        self.assertEqual(
+            localize_log_text("准备下载 Bilibili 音视频流", "en-US"),
+            "Preparing Bilibili audio/video stream download",
+        )
+        self.assertEqual(localize_log_text("启动抖音任务 | 目标: demo", "en-US"), "Started Douyin task | target: demo")
+        self.assertEqual(
+            localize_log_text("🎉 全部完成: 成功 45/45 | 失败 0", "en-US"),
+            "🎉 All completed: success 45/45 | failed 0",
+        )
 
     def test_gui_platform_custom_proxy_field_displays_port_and_commits_endpoint(self):
         shell = self._make_shell()
