@@ -42,6 +42,7 @@
   "下次恢复播放位置": "Resume position next time",
   "下次打开同一视频时恢复上次播放位置。": "Restores the previous position when reopening the same video.",
   "下载后自动打开": "Open after download",
+  "显示浏览器内核": "Show browser engine",
   "下载失败后的自动重试次数。": "Automatic retry count after a download fails.",
   "下载完成后的打开行为": "Open behavior after download",
   "下载日志": "Download logs",

@@ -432,6 +432,38 @@ class BaseSpider(threading.Thread):
     def _configured_timeout_ms(self, *, default: int = 60, key: str = "timeout") -> int:
         return self._configured_timeout_seconds(default=default, key=key) * 1000
 
+    @staticmethod
+    def _coerce_bool_setting(value: object, *, default: bool = True) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "on", "show", "visible"}:
+                return True
+            if text in {"0", "false", "no", "off", "hide", "silent", "headless"}:
+                return False
+        return bool(value)
+
+    def _should_show_browser_window(self) -> bool:
+        config = getattr(self, "config", {}) or {}
+        if isinstance(config, dict):
+            for key in ("show_browser_window", "browser_visible", "visible_browser"):
+                if key in config:
+                    return self._coerce_bool_setting(config.get(key), default=True)
+        try:
+            from app.config import cfg
+
+            return self._coerce_bool_setting(cfg.get("common", "show_browser_window", True), default=True)
+        except Exception:
+            return True
+
+    def _browser_headless(self, *, login_window: bool = False) -> bool:
+        if login_window:
+            return False
+        return not self._should_show_browser_window()
+
     def _playwright_launch_kwargs(
         self,
         *,

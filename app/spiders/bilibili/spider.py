@@ -1191,7 +1191,7 @@ class BilibiliSpider(BaseSpider):
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     **self._playwright_launch_kwargs(
-                        headless=False,
+                        headless=self._browser_headless(),
                         proxy=(getattr(self, "config", {}) or {}).get("proxy"),
                     )
                 )
@@ -1556,7 +1556,7 @@ class BilibiliSpider(BaseSpider):
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     **self._playwright_launch_kwargs(
-                        headless=False,
+                        headless=self._browser_headless(login_window=True),
                         proxy=(getattr(self, "config", {}) or {}).get("proxy"),
                     )
                 )

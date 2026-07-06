@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from app.config import DEFAULT_USER_AGENT
+from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
@@ -1074,8 +1074,9 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
     @classmethod
     def _playwright_launch_kwargs(cls, video_item: VideoItem, proxy: str | None) -> dict[str, Any]:
+        show_browser_window = bool(cfg.get("common", "show_browser_window", True))
         kwargs: dict[str, Any] = {
-            "headless": not cls._should_try_curl_cffi_first(video_item),
+            "headless": not (show_browser_window and cls._should_try_curl_cffi_first(video_item)),
             "args": ["--disable-blink-features=AutomationControlled"],
         }
         if proxy:

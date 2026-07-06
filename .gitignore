@@ -55,6 +55,7 @@ tmp/
 data/
 dataset/
 user_data/
+output/
 
 # Local Config / Auth
 config.json

@@ -76,7 +76,7 @@ class MissAVSpider(BaseSpider):
                 self._track_playwright_instance(p)
                 browser = p.chromium.launch(
                     **self._playwright_launch_kwargs(
-                        headless=False,
+                        headless=self._browser_headless(),
                         proxy=(getattr(self, "config", {}) or {}).get("proxy"),
                         args=['--disable-blink-features=AutomationControlled'],
                     )

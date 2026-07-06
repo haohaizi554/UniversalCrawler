@@ -323,7 +323,7 @@ class XiaohongshuSpider(BaseSpider):
     def _bootstrap_cookie_string(self, entry_url: str) -> str:
         self.log("🔐 未找到可用的小红书 Cookie，启动浏览器采集会话...")
         proxy = self._proxy()
-        launch_kwargs: dict[str, Any] = {"headless": False}
+        launch_kwargs: dict[str, Any] = {"headless": self._browser_headless(login_window=True)}
         if proxy:
             launch_kwargs["proxy"] = {"server": proxy}
             self.log(f"🌍 使用代理: {proxy}")
@@ -696,7 +696,7 @@ class XiaohongshuSpider(BaseSpider):
     def _lookup_creator_by_browser_search(self, lookup: CreatorLookupInfo) -> CreatorUrlInfo | None:
         self.log(f"🌐 正在通过网页搜索小红书号: {lookup.keyword}")
         proxy = self._proxy()
-        launch_kwargs: dict[str, Any] = {"headless": True}
+        launch_kwargs: dict[str, Any] = {"headless": self._browser_headless()}
         if proxy:
             launch_kwargs["proxy"] = {"server": proxy}
 

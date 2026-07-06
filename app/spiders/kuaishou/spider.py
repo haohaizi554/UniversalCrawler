@@ -311,7 +311,15 @@ class KuaishouSpider(BaseSpider):
             self.interruptible_page_wait(page, 1000)
         return False
 
-    def _ensure_login(self, page, context, auth_file: str, entry_url: str | None = None) -> bool:
+    def _ensure_login(
+        self,
+        page,
+        context,
+        auth_file: str,
+        entry_url: str | None = None,
+        *,
+        allow_manual_login: bool = True,
+    ) -> bool:
         """提供 `_ensure_login` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
         target_url = entry_url.strip().strip("`") if entry_url else "https://www.kuaishou.com/"
         self.log("🔗 访问快手首页..." if target_url == "https://www.kuaishou.com/" else f"🔗 访问快手页面: {target_url}")
@@ -332,6 +340,9 @@ class KuaishouSpider(BaseSpider):
             self.log("⚠️ 首页访问或登录态检查失败，继续尝试在当前页面恢复登录")
             if os.path.exists(auth_file):
                 self.log("⚠️ 本地 Cookie 已加载，但当前页面未识别为已登录，可能已失效")
+            if not allow_manual_login:
+                self.log("🔑 静默模式检测到快手登录态不可用，将打开登录窗口；登录后会重新静默执行当前任务")
+                return False
             self.log("🔑 请在当前快手页面手动登录或扫码，登录成功后程序会自动继续")
             self._open_login_entry(page)
 
@@ -986,6 +997,87 @@ class KuaishouSpider(BaseSpider):
         else:
             self.log("✅ 全部任务完成！")
 
+    def _entry_url_for_login(self) -> str | None:
+        return self.keyword if self._is_kuaishou_url(self.keyword) and not self._is_detail_url(self.keyword) else None
+
+    def _run_login_window_session(self, playwright, auth_file: str, entry_url: str | None) -> bool:
+        self.log("🔓 正在打开快手登录窗口...")
+        browser = playwright.chromium.launch(
+            **self._playwright_launch_kwargs(
+                headless=self._browser_headless(login_window=True),
+                proxy=(getattr(self, "config", {}) or {}).get("proxy"),
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        )
+        self._track_playwright_browser(browser)
+        try:
+            context = browser.new_context(
+                user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+                viewport={"width": 1280, "height": 800},
+            )
+            self._load_saved_cookies(context, auth_file)
+            page = context.new_page()
+            return self._ensure_login(page, context, auth_file, entry_url=entry_url, allow_manual_login=True)
+        finally:
+            self._close_tracked_playwright_browser(browser)
+
+    def _run_browser_session(
+        self,
+        playwright,
+        auth_file: str,
+        *,
+        headless: bool,
+        allow_manual_login: bool,
+    ) -> str:
+        browser = playwright.chromium.launch(
+            **self._playwright_launch_kwargs(
+                headless=headless,
+                proxy=(getattr(self, "config", {}) or {}).get("proxy"),
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        )
+        self._track_playwright_browser(browser)
+        try:
+            context = browser.new_context(
+                # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
+                user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+                viewport={"width": 1280, "height": 800},
+            )
+            self._load_saved_cookies(context, auth_file)
+            page = context.new_page()
+            if not self._ensure_login(
+                page,
+                context,
+                auth_file,
+                entry_url=self._entry_url_for_login(),
+                allow_manual_login=allow_manual_login,
+            ):
+                return "login_required" if self.is_running and not allow_manual_login else "stopped"
+
+            page = self._navigate_to_target_page(page, context)
+            if not page:
+                return "stopped"
+            if self._capture_single_detail_page(page):
+                return "completed"
+            if not self._wait_for_video_list(page):
+                return "stopped"
+
+            last_card_count = self._scan_video_cards(page)
+            if not self.revive_for_partial_selection(last_card_count, "个候选作品"):
+                return "stopped"
+
+            items_for_dialog, target_fingerprints_map = self._extract_items_for_dialog(page)
+            selected_indices = self._collect_selected_indices(items_for_dialog)
+            if not selected_indices:
+                return "stopped"
+            self.is_running = True
+            self._selected_indices = selected_indices
+            self.log(f"✅ 选中 {len(selected_indices)} 个任务，流水线启动...")
+            self._run_capture_pipeline(page, items_for_dialog, target_fingerprints_map)
+            return "completed"
+        finally:
+            self._close_tracked_playwright_browser(browser)
+
     def run(self):
         """执行当前对象或脚本的主流程，供 `KuaishouSpider` 使用。"""
         auth_file = cfg.get("auth", "kuaishou_cookie_file", "ks_auth.json")
@@ -996,48 +1088,23 @@ class KuaishouSpider(BaseSpider):
             return
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    **self._playwright_launch_kwargs(
-                        headless=False,
-                        proxy=(getattr(self, "config", {}) or {}).get("proxy"),
-                        args=["--disable-blink-features=AutomationControlled"],
-                    )
+                headless = self._browser_headless()
+                result = self._run_browser_session(
+                    p,
+                    auth_file,
+                    headless=headless,
+                    allow_manual_login=not headless,
                 )
-                self._track_playwright_browser(browser)
-                context = browser.new_context(
-                    # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
-                    user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
-                    viewport={"width": 1280, "height": 800},
-                )
-                self._load_saved_cookies(context, auth_file)
-                page = context.new_page()
-                entry_url = self.keyword if self._is_kuaishou_url(self.keyword) and not self._is_detail_url(self.keyword) else None
-                if not self._ensure_login(page, context, auth_file, entry_url=entry_url):
-                    return
-
-                page = self._navigate_to_target_page(page, context)
-                if not page:
-                    return
-                if self._capture_single_detail_page(page):
-                    self._close_tracked_playwright_browser(browser)
-                    return
-                if not self._wait_for_video_list(page):
-                    return
-
-                last_card_count = self._scan_video_cards(page)
-                if not self.revive_for_partial_selection(last_card_count, "个候选作品"):
-                    self._close_tracked_playwright_browser(browser)
-                    return
-
-                items_for_dialog, target_fingerprints_map = self._extract_items_for_dialog(page)
-                selected_indices = self._collect_selected_indices(items_for_dialog)
-                if not selected_indices:
-                    return
-                self.is_running = True
-                self._selected_indices = selected_indices
-                self.log(f"✅ 选中 {len(selected_indices)} 个任务，流水线启动...")
-                self._run_capture_pipeline(page, items_for_dialog, target_fingerprints_map)
-                self._close_tracked_playwright_browser(browser)
+                if result == "login_required" and headless and self.is_running:
+                    login_ok = self._run_login_window_session(p, auth_file, self._entry_url_for_login())
+                    if login_ok and self.is_running:
+                        self.log("✅ 快手登录完成，重新以静默模式执行当前任务")
+                        self._run_browser_session(
+                            p,
+                            auth_file,
+                            headless=True,
+                            allow_manual_login=False,
+                        )
         except (PlaywrightError, OSError, ValueError, RuntimeError) as e:
             self.log(f"💥 爬虫错误: {e}")
         finally:
