@@ -261,11 +261,37 @@ class MainWindowTests(unittest.TestCase):
         self.assertIs(worker.requests[0].service, window._frontend_state_service)
         self.assertFalse(worker.requests[0].mock)
         self.assertIsNone(worker.requests[0].sections)
+        self.assertFalse(worker.requests[0].use_delta)
         MainWindow._on_frontend_snapshot_finished(
             window,
             self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None),
         )
         window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
+
+    def test_cached_frontend_refresh_submits_delta_request(self):
+        class FakeScheduler:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def schedule(self, topic):
+                self.calls.append(topic)
+
+        window = self._make_window()
+        window.app_shell = Mock()
+        window._frontend_state_service = Mock()
+        window._ui_update_scheduler = FakeScheduler()
+        window._frontend_refresh_pending_mock = False
+        window._cached_snapshot = {"version": 0, "queue_items": [], "app_status": {}}
+        worker = self._install_snapshot_worker(window)
+
+        MainWindow.refresh_frontend_state(window)
+        MainWindow._flush_frontend_state(window)
+
+        self.assertEqual(len(worker.requests), 1)
+        self.assertTrue(worker.requests[0].use_delta)
+        self.assertEqual(worker.requests[0].base_version, 0)
+        self.assertIsNone(worker.requests[0].sections)
+        window._frontend_state_service.get_snapshot.assert_not_called()
 
     def test_frontend_refresh_force_submits_snapshot_without_scheduler(self):
         window = self._make_window()
@@ -281,6 +307,7 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_state_service.get_snapshot.assert_not_called()
         self.assertEqual(len(worker.requests), 1)
         self.assertIsNone(worker.requests[0].sections)
+        self.assertFalse(worker.requests[0].use_delta)
         MainWindow._on_frontend_snapshot_finished(
             window,
             self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None),
@@ -594,6 +621,8 @@ class MainWindowTests(unittest.TestCase):
         service.get_delta.assert_not_called()
         service.get_snapshot.assert_not_called()
         self.assertEqual(worker.requests[0].sections, frozenset({"active_downloads", "app_status"}))
+        self.assertTrue(worker.requests[0].use_delta)
+        self.assertEqual(worker.requests[0].base_version, 1)
         MainWindow._on_frontend_snapshot_finished(
             window,
             self._snapshot_result(

@@ -2601,6 +2601,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         message = logs.table.model().index(0, 4).data(Qt.ItemDataRole.DisplayRole)
         self.assertIn("Loaded 1 local file", message)
         self.assertIn("videos: 1, images: 0", message)
+        for _ in range(250):
+            self.app.processEvents()
+            if "Loaded 1 local file" in logs.detail_message_value.toPlainText():
+                break
+            QTest.qWait(20)
         self.assertIn("Loaded 1 local file", logs.detail_message_value.toPlainText())
         self.assertEqual(
             logs.detail_status_code_value.text().replace("\n", ""),
@@ -2683,9 +2688,45 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "仅下载视频模式已跳过非视频资源",
         )
         self.assertEqual(
+            localize_log_text("Video-only mode skipped non-video resource: demo", "zh-CN"),
+            "仅下载视频模式已跳过非视频资源: demo",
+        )
+        self.assertEqual(localize_log_text("默认打开方式已生效", "en-US"), "Default open mode is active")
+        self.assertEqual(localize_log_text("Default open mode is active", "zh-CN"), "默认打开方式已生效")
+        self.assertEqual(localize_log_text("❌ save_dir 必须是字符串", "en-US"), "❌ save_dir must be a string")
+        self.assertEqual(localize_log_text("Clear queue failed: busy", "zh-CN"), "清空队列失败: busy")
+        self.assertEqual(
+            localize_log_text("Download options updated: concurrency=3", "zh-CN"),
+            "下载选项已更新: concurrency=3",
+        )
+        self.assertEqual(
             localize_log_text("Completed media metadata probe finished without usable duration or resolution", "zh-TW"),
             "媒體中繼資料探測已完成，但未取得可用時長或解析度",
         )
+
+    def test_web_runtime_log_phrase_translations_match_gui_table(self):
+        import ast
+        import re
+
+        from app.ui.viewmodels import log_i18n
+
+        gui_source = Path(log_i18n.__file__).read_text(encoding="utf-8")
+        gui_tree = ast.parse(gui_source)
+        gui_entries = []
+        for node in ast.walk(gui_tree):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "_RUNTIME_LOG_PHRASE_TRANSLATIONS"
+                for target in node.targets
+            ):
+                gui_entries = ast.literal_eval(node.value)
+                break
+
+        web_bundle = _html_bundle()
+        web_block = web_bundle.split("const RUNTIME_LOG_PHRASE_TRANSLATIONS = [", 1)[1].split("];", 1)[0]
+        web_entries = re.findall(r'\{ zh: "(.*?)", en: "(.*?)", tw: "(.*?)" \}', web_block)
+
+        self.assertEqual(set(gui_entries), set(web_entries))
+        self.assertIn(("默认打开方式已生效", "Default open mode is active", "預設開啟方式已生效"), gui_entries)
 
     def test_gui_log_center_localizes_source_components_after_language_switch(self):
         shell = self._make_shell()

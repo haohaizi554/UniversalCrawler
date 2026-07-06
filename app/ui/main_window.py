@@ -562,7 +562,7 @@ class MainWindow(QMainWindow):
         if topics:
             self._add_pending_refresh_topics(topics)
         if force:
-            self._render_frontend_state(mock=mock, topics=None)
+            self._render_frontend_state(mock=mock, topics=None, force=True)
             return
         self._frontend_refresh_pending_mock = bool(self.__dict__.get("_frontend_refresh_pending_mock", False) or mock)
         self._ui_update_scheduler.schedule("frontend")
@@ -597,10 +597,12 @@ class MainWindow(QMainWindow):
             self.__dict__["_pending_refresh_topics"] = set()
         return pending
 
-    def _render_frontend_state(self, *, mock: bool = False, topics: set[str] | None = None) -> None:
+    def _render_frontend_state(self, *, mock: bool = False, topics: set[str] | None = None, force: bool = False) -> None:
         sections = self._sections_for_topics(topics)
         service = self._frontend_state_service
         cached = self.__dict__.get("_cached_snapshot")
+        cached_version = self._snapshot_frontend_version(cached)
+        use_delta = bool(cached is not None and not force and not mock)
         self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
         request = FrontendSnapshotRequest(
             sequence=self._frontend_snapshot_sequence,
@@ -610,11 +612,22 @@ class MainWindow(QMainWindow):
             sections=sections,
             cached_snapshot=cached,
             section_signatures=dict(self.__dict__.get("_frontend_section_signatures") or {}),
+            use_delta=use_delta,
+            base_version=cached_version,
         )
         worker = self.__dict__.get("_frontend_snapshot_worker")
         if worker is None:
             raise RuntimeError("frontend snapshot worker is not initialized")
         worker.submit(request)
+
+    @staticmethod
+    def _snapshot_frontend_version(cached_snapshot) -> int:
+        if not isinstance(cached_snapshot, dict):
+            return 0
+        try:
+            return int(cached_snapshot.get("version") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _on_frontend_snapshot_finished(self, result: FrontendSnapshotResult) -> None:
         current_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0)

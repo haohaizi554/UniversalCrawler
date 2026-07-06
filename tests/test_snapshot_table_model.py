@@ -12,6 +12,80 @@ from app.ui.viewmodels.snapshot_table_model import SnapshotTableModel
 
 
 class SnapshotTableModelTests(unittest.TestCase):
+    def test_set_rows_appends_tail_without_model_reset(self):
+        model = SnapshotTableModel(headers=["Title"], columns=["title"])
+        model.set_rows([{"id": "v1", "title": "one"}])
+        resets: list[bool] = []
+        inserted: list[tuple[int, int]] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.rowsInserted.connect(lambda _parent, first, last: inserted.append((first, last)))
+
+        changed = model.set_rows(
+            [
+                {"id": "v1", "title": "one"},
+                {"id": "v2", "title": "two"},
+                {"id": "v3", "title": "three"},
+            ]
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [])
+        self.assertEqual(inserted, [(1, 2)])
+        self.assertEqual(model.id_order(), ["v1", "v2", "v3"])
+
+    def test_set_rows_removes_tail_without_model_reset(self):
+        model = SnapshotTableModel(headers=["Title"], columns=["title"])
+        model.set_rows(
+            [
+                {"id": "v1", "title": "one"},
+                {"id": "v2", "title": "two"},
+                {"id": "v3", "title": "three"},
+            ]
+        )
+        resets: list[bool] = []
+        removed: list[tuple[int, int]] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.rowsRemoved.connect(lambda _parent, first, last: removed.append((first, last)))
+
+        changed = model.set_rows([{"id": "v1", "title": "one"}])
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [])
+        self.assertEqual(removed, [(1, 2)])
+        self.assertEqual(model.id_order(), ["v1"])
+
+    def test_set_rows_patches_existing_rows_without_model_reset(self):
+        model = SnapshotTableModel(headers=["Title"], columns=["title"])
+        model.set_rows([{"id": "v1", "title": "old"}])
+        resets: list[bool] = []
+        changed_rows: list[tuple[int, int]] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.dataChanged.connect(lambda first, last, _roles: changed_rows.append((first.row(), last.row())))
+
+        changed = model.set_rows([{"id": "v1", "title": "new"}])
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [])
+        self.assertEqual(changed_rows, [(0, 0)])
+        self.assertEqual(model.row_at(0), {"id": "v1", "title": "new"})
+
+    def test_force_reset_prevents_duplicate_append_after_signature_clear(self):
+        model = SnapshotTableModel(headers=["Title"], columns=["title"])
+        rows = [{"id": "v1", "title": "one"}]
+        model.set_rows(rows)
+        model.force_reset()
+        resets: list[bool] = []
+        inserted: list[tuple[int, int]] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.rowsInserted.connect(lambda _parent, first, last: inserted.append((first, last)))
+
+        changed = model.set_rows(rows)
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [True])
+        self.assertEqual(inserted, [])
+        self.assertEqual(model.id_order(), ["v1"])
+
     def test_decoration_role_caches_loaded_icons(self):
         model = SnapshotTableModel(
             headers=["Platform"],

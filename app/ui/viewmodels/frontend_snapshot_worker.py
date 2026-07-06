@@ -20,6 +20,8 @@ class FrontendSnapshotRequest:
     sections: frozenset[str] | None
     cached_snapshot: Mapping[str, Any] | None
     section_signatures: Mapping[str, str]
+    use_delta: bool = False
+    base_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,9 @@ class FrontendSnapshotResult:
 
 def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapshotResult:
     started = time.perf_counter()
+    if request.use_delta and request.cached_snapshot:
+        return _build_delta_snapshot(request, started)
+
     sections = request.sections
     cached = dict(request.cached_snapshot or {}) if request.cached_snapshot and sections else None
     snapshot = request.service.get_snapshot(mock=request.mock, sections=sections)
@@ -69,6 +74,92 @@ def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapsho
         skip_render=skip_render,
         build_duration_ms=(time.perf_counter() - started) * 1000,
     )
+
+
+def _build_delta_snapshot(request: FrontendSnapshotRequest, started: float) -> FrontendSnapshotResult:
+    sections = request.sections
+    cached = dict(request.cached_snapshot or {})
+    base_version = _request_base_version(request, cached)
+    delta = request.service.get_delta(base_version, sections=sections)
+    version = _coerce_int(delta.get("version"), fallback=base_version)
+    delta_sections = delta.get("sections") if isinstance(delta, Mapping) else {}
+    if not isinstance(delta_sections, Mapping):
+        delta_sections = {}
+
+    if bool(delta.get("full")):
+        snapshot = dict(delta_sections)
+        if not snapshot:
+            snapshot = request.service.get_snapshot(mock=request.mock, sections=None)
+        snapshot["version"] = version
+        signatures = _remember_section_signatures(snapshot, None, dict(request.section_signatures or {}))
+        return FrontendSnapshotResult(
+            sequence=request.sequence,
+            service_token=request.service_token,
+            snapshot=snapshot,
+            changed_sections=None,
+            section_signatures=signatures,
+            skip_render=False,
+            build_duration_ms=(time.perf_counter() - started) * 1000,
+        )
+
+    snapshot = dict(cached)
+    snapshot.update(dict(delta_sections))
+    missing_explicit_sections = _missing_explicit_sections(sections, delta_sections)
+    if missing_explicit_sections:
+        explicit_snapshot = request.service.get_snapshot(mock=request.mock, sections=frozenset(missing_explicit_sections))
+        snapshot.update({key: value for key, value in explicit_snapshot.items() if key in missing_explicit_sections})
+
+    snapshot["version"] = version
+    requested = _changed_section_candidates(delta, delta_sections, missing_explicit_sections)
+    signatures = dict(request.section_signatures or {})
+    changed_sections = _changed_sections(snapshot, frozenset(requested), signatures) if requested else set()
+    return FrontendSnapshotResult(
+        sequence=request.sequence,
+        service_token=request.service_token,
+        snapshot=snapshot,
+        changed_sections=changed_sections,
+        section_signatures=signatures,
+        skip_render=not changed_sections,
+        build_duration_ms=(time.perf_counter() - started) * 1000,
+    )
+
+
+def _request_base_version(request: FrontendSnapshotRequest, cached_snapshot: Mapping[str, Any]) -> int:
+    explicit = _coerce_int(request.base_version, fallback=0)
+    if explicit > 0:
+        return explicit
+    return _coerce_int(cached_snapshot.get("version"), fallback=0)
+
+
+def _coerce_int(value: Any, *, fallback: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _missing_explicit_sections(
+    sections: frozenset[str] | None,
+    delta_sections: Mapping[str, Any],
+) -> set[str]:
+    if not sections:
+        return set()
+    return {section for section in sections if section not in delta_sections}
+
+
+def _changed_section_candidates(
+    delta: Mapping[str, Any],
+    delta_sections: Mapping[str, Any],
+    missing_explicit_sections: set[str],
+) -> set[str]:
+    changed = {
+        str(section)
+        for section in (delta.get("changed_sections") or [])
+        if section
+    }
+    changed.update(str(section) for section in delta_sections.keys() if section)
+    changed.update(missing_explicit_sections)
+    return changed
 
 
 def _section_signature(value: Any) -> str:

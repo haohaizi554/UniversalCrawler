@@ -162,30 +162,81 @@ class SnapshotTableModel(QAbstractTableModel):
         signature = self._build_signature(rows)
         if signature == self._signature:
             return False
-        old_signature = self._signature or ()
+
+        if self._signature is None:
+            return self._set_rows_without_signature(rows, signature)
+
+        old_signature = self._signature
+        old_ids = [item[0] for item in old_signature]
+        new_ids = [item[0] for item in signature]
         same_ids = [item[0] for item in signature] == [item[0] for item in old_signature]
         if same_ids and len(rows) == len(self._rows):
-            self._rows = rows
-            for row_index, (old, new) in enumerate(zip(old_signature, signature)):
-                if old == new:
-                    continue
-                self.dataChanged.emit(
-                    self.index(row_index, 0),
-                    self.index(row_index, self.columnCount() - 1),
-                    [
-                        Qt.ItemDataRole.DisplayRole,
-                        Qt.ItemDataRole.ToolTipRole,
-                        Qt.ItemDataRole.UserRole,
-                        Qt.ItemDataRole.DecorationRole,
-                        Qt.ItemDataRole.TextAlignmentRole,
-                    ],
-                )
+            self._replace_existing_rows(rows, old_signature, signature, len(rows))
+        elif old_ids == new_ids[: len(old_ids)]:
+            self._replace_existing_rows(rows, old_signature, signature, len(old_ids))
+            first = len(old_ids)
+            last = len(new_ids) - 1
+            if first <= last:
+                self.beginInsertRows(QModelIndex(), first, last)
+                self._rows.extend(rows[first : last + 1])
+                self.endInsertRows()
+        elif new_ids == old_ids[: len(new_ids)]:
+            self._replace_existing_rows(rows, old_signature, signature, len(new_ids))
+            first = len(new_ids)
+            last = len(old_ids) - 1
+            if first <= last:
+                self.beginRemoveRows(QModelIndex(), first, last)
+                del self._rows[first:]
+                self.endRemoveRows()
         else:
             self.beginResetModel()
             self._rows = rows
             self.endResetModel()
         self._signature = signature
         return True
+
+    def _set_rows_without_signature(self, rows: list[dict[str, Any]], signature: tuple[Any, ...]) -> bool:
+        if self._rows:
+            self.beginResetModel()
+            self._rows = rows
+            self.endResetModel()
+            self._signature = signature
+            return True
+        if rows:
+            self.beginInsertRows(QModelIndex(), 0, len(rows) - 1)
+            self._rows = rows
+            self.endInsertRows()
+            self._signature = signature
+            return True
+        self._signature = signature
+        return False
+
+    def _replace_existing_rows(
+        self,
+        rows: list[dict[str, Any]],
+        old_signature: tuple[Any, ...],
+        new_signature: tuple[Any, ...],
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        for row_index in range(count):
+            old = old_signature[row_index]
+            new = new_signature[row_index]
+            self._rows[row_index] = rows[row_index]
+            if old == new:
+                continue
+            self.dataChanged.emit(
+                self.index(row_index, 0),
+                self.index(row_index, self.columnCount() - 1),
+                [
+                    Qt.ItemDataRole.DisplayRole,
+                    Qt.ItemDataRole.ToolTipRole,
+                    Qt.ItemDataRole.UserRole,
+                    Qt.ItemDataRole.DecorationRole,
+                    Qt.ItemDataRole.TextAlignmentRole,
+                ],
+            )
 
     def force_reset(self) -> None:
         self._signature = None
