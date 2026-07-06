@@ -35,7 +35,8 @@ _PARSE_STREAM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}解析流[:：]\s*(?P<detail>
 _EXPANDING_RE = re.compile(rf"^{_DYNAMIC_PREFIX}正在展开[:：]\s*(?P<detail>.*)$")
 _PIPELINE_RE = re.compile(rf"^{_DYNAMIC_PREFIX}流水线已建立[:：]\s*(?P<detail>.*)$")
 _ALL_COMPLETED_RE = re.compile(
-    rf"^{_DYNAMIC_PREFIX}全部完成[:：]\s*成功\s*(?P<success>\d+)\s*/\s*(?P<total>\d+)\s*\|\s*失败\s*(?P<failed>\d+)$"
+    rf"^{_DYNAMIC_PREFIX}全部完成[:：]\s*(?:成功|success)\s*(?P<success>\d+)\s*/\s*(?P<total>\d+)\s*\|\s*(?:失败|failed)\s*(?P<failed>\d+)$",
+    re.IGNORECASE,
 )
 
 _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
@@ -516,6 +517,24 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("小红书笔记详情线程失败", "Xiaohongshu note detail thread failed", "小紅書筆記詳情執行緒失敗"),
     ("本地小红书 Cookie 恢复失败，继续使用新会话", "Failed to restore local Xiaohongshu Cookie; continuing with new session", "本機小紅書 Cookie 恢復失敗，繼續使用新會話"),
     ("小红书号未命中主页结果，回退为关键词搜索", "Xiaohongshu ID did not match homepage results; falling back to keyword search", "小紅書號未命中主頁結果，回退為關鍵字搜尋"),
+    ("下载已暂停", "download paused", "下載已暫停"),
+    ("Web 端启动爬虫任务", "Web started crawl task", "Web 端啟動爬蟲任務"),
+    ("Web 端发现可下载资源", "Web found downloadable resources", "Web 端發現可下載資源"),
+    ("_on_spider_finished 被调用", "_on_spider_finished was called", "_on_spider_finished 被呼叫"),
+    ("CLI 发现可下载资源", "CLI found downloadable resources", "CLI 發現可下載資源"),
+    ("CLI 启动爬虫任务", "CLI started crawl task", "CLI 啟動爬蟲任務"),
+    ("CLI 下载任务失败", "CLI download task failed", "CLI 下載任務失敗"),
+    ("用户取消操作", "User cancelled operation", "使用者取消操作"),
+    ("选择策略异常", "Selection strategy error", "選擇策略異常"),
+    ("默认全选", "defaulting to select all", "預設全選"),
+    ("返回空选择", "returning an empty selection", "返回空選擇"),
+    ("用户已取消，跳过后续选择", "User cancelled; skipping subsequent selections", "使用者已取消，略過後續選擇"),
+    ("spider 超过", "spider exceeded", "spider 超過"),
+    ("未完成，强制停止", "without finishing; force stopping", "未完成，強制停止"),
+    ("item 转换失败", "item conversion failed", "item 轉換失敗"),
+    ("防护规则已停止页面跳转", "Guardrail stopped navigation", "防護規則已停止頁面跳轉"),
+    ("防护规则已停止页面刷新", "Guardrail stopped reload", "防護規則已停止頁面重新整理"),
+    ("失败", "failed", "失敗"),
 )
 
 _EN_DYNAMIC_REPLACEMENTS = (
@@ -704,10 +723,39 @@ def _runtime_subject(prefix: str, platform: str, suffix: str) -> str:
 
 def _localized_media_term(value: str, language: str) -> str:
     text = str(value or "").strip()
+    if language == "en-US" and text in _MEDIA_TERM_ALIASES:
+        return text
     return _localized(_MEDIA_TERM_ALIASES.get(text, {}), language) or text
 
 
 def _localize_english_dynamic(text: str) -> str:
+    bilibili_stream_retry = re.match(
+        r"^(?P<prefix>.*?)(?:B站|Bilibili)\s+(?P<media>.*?)\s+流连接断开，"
+        r"(?P<delay>\d+)s\s+后重试\s+\((?P<attempt>\d+)/(?:\s*)?(?P<total>\d+)\):\s*(?P<error>.+)$",
+        text,
+    )
+    if bilibili_stream_retry:
+        media = _localized_media_term(bilibili_stream_retry.group("media"), "en-US")
+        return (
+            f"{bilibili_stream_retry.group('prefix') or ''}B-site {media} stream disconnected; "
+            f"retrying in {bilibili_stream_retry.group('delay')}s "
+            f"({bilibili_stream_retry.group('attempt')}/{bilibili_stream_retry.group('total')}): "
+            f"{bilibili_stream_retry.group('error')}"
+        )
+
+    spider_summary = re.match(
+        r"^(?P<prefix>.*?)(?:spider|爬虫)\s*已结束,\s*耗时\s*(?P<elapsed>[^,]+?)s,\s*"
+        r"收集到\s*(?P<count>\d+)\s*个项目,\s*二次选择\s*(?P<selection>\d+)\s*次$",
+        text,
+    )
+    if spider_summary:
+        return (
+            f"{spider_summary.group('prefix') or ''}spider finished, "
+            f"elapsed {spider_summary.group('elapsed')}s, "
+            f"collected {spider_summary.group('count')} items, "
+            f"secondary selections {spider_summary.group('selection')}"
+        )
+
     match = _LOCAL_FILE_LOADED_RE.match(text)
     if match:
         count = match.group("count")

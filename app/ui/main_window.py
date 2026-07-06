@@ -1275,11 +1275,11 @@ class MainWindow(QMainWindow):
         return
 
     def refresh_table_bindings(self) -> None:
-        self.refresh_frontend_state()
+        self.refresh_frontend_state(topics={"videos.replace"})
 
     def reorder_video_row(self, video_item) -> int:
         self._frontend_state_service.upsert_video(video_item)
-        self.refresh_frontend_state(force=True)
+        self.refresh_frontend_state(topics={"videos.replace"})
         return self.app_shell.row_for_video_id(video_item.id)
 
     def clear_video_rows(self) -> None:
@@ -1295,7 +1295,7 @@ class MainWindow(QMainWindow):
             self._frontend_state_service.remove_video(target_id)
         elif pending_ids:
             self._frontend_state_service.remove_video(pending_ids.pop(0))
-        self.refresh_frontend_state(force=True)
+        self.refresh_frontend_state(topics={"videos.remove"})
 
     def show_selection_dialog(self, items):
         selected = None
@@ -1628,7 +1628,7 @@ class MainWindow(QMainWindow):
         result = self._frontend_state_service.handle_action("retry_failed", {"video_id": video_id})
         if result.get("status") != "ok":
             self.append_log(result.get("message") or "重试失败")
-        self.refresh_frontend_state()
+        self.refresh_frontend_state(topics={"videos.replace"})
 
     def _copy_item_diagnostics(self, video_id: str) -> None:
         result = self._frontend_state_service.handle_action("copy_diagnostics", {"video_id": video_id})
@@ -1797,7 +1797,7 @@ class MainWindow(QMainWindow):
     def _pause_download_item(self, video_id: str) -> None:
         result = self._frontend_state_service.handle_action("pause_download", {"video_id": video_id})
         self.append_log(result.get("message") or "download paused")
-        self.refresh_frontend_state()
+        self.refresh_frontend_state(topics={"videos.update"})
 
     def _run_tool(self, tool_id: str) -> None:
         result = self._frontend_state_service.handle_action("run_tool", {"tool_id": tool_id})
@@ -1815,4 +1815,4 @@ class MainWindow(QMainWindow):
         feedback = getattr(settings_page, "show_action_feedback", None)
         if callable(feedback):
             feedback(message, ok=ok)
-        self.refresh_frontend_state(topics={"settings.update"}, force=True)
+        self.refresh_frontend_state(topics={"settings.update"})

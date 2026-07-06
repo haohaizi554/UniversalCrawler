@@ -27,6 +27,7 @@
 - GUI delta 路径先调用 `FrontendStateService.get_delta(base_version)`，只把返回的 `sections` 合并进缓存；只有服务端返回 `full=True` 时才允许退回全量 snapshot。
 - 页面切换等显式可见页请求如果版本未变化，只允许补拉目标 section，不能因为 `changed_sections` 为空退回全量刷新。
 - 下载队列、正在下载、已完成、失败列表只按 section delta 刷新。
+- 视频普通操作（重排、删除、失败重试、暂停、元数据更新）必须传入 `videos.*` topic 触发局部刷新；不得使用 `force=True` 绕过 delta，除非是初始化、切换 `FrontendStateService`、主动清缓存或错误恢复。
 - 大表格优先按 id 更新行，避免单个进度变化 reset 整表。
 - 通用 snapshot 表格使用稳定 `id` 做行级 patch；尾部追加/移除必须使用 `rowsInserted` / `rowsRemoved`，只有乱序或中间结构变化才允许 `modelReset`。
 - 日志中心使用有界缓存和增量 append；调整“UI 最大显示日志数量”时：

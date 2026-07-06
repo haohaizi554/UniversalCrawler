@@ -179,6 +179,16 @@ def _new_webui_page(context):
     page.add_init_script("localStorage.clear(); sessionStorage.clear();")
     return page
 
+def _webui_server_responds(server_url: str, timeout: float = 3.0) -> bool:
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{server_url}/api/ping", timeout=timeout) as response:
+            return response.status == 200
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return False
+
 @contextmanager
 def _running_server(host: str = "127.0.0.1", port: int = 0):
     """在后台启动 web_entry 服务器，测试结束后关闭。
@@ -965,20 +975,38 @@ class WebUIBrowserTests(unittest.TestCase):
         # local/session storage is cleared by the page init script before each navigation.
         pass
 
+    @classmethod
+    def _reset_page(cls):
+        try:
+            cls._page.close()
+        except Exception:
+            pass
+        cls._page = _new_webui_page(cls._context)
+
+    @classmethod
+    def _restart_server(cls):
+        try:
+            cls._server_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
+        cls._server_ctx = _running_server()
+        cls._server_url = cls._server_ctx.__enter__()
+
     def _goto_ready(self):
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        try:
-            _wait_for_webui_ready(self._page, self._server_url)
-        except PlaywrightTimeoutError:
-            # Long browser runs can leave a page-level websocket/worker/nav state dirty.
-            # Recreate only the Page; if the server is unhealthy the retry still fails.
+        last_error = None
+        for _attempt in range(3):
             try:
-                self._page.close()
-            except Exception:
-                pass
-            self.__class__._page = _new_webui_page(self._context)
-            _wait_for_webui_ready(self._page, self._server_url)
+                _wait_for_webui_ready(self._page, self._server_url)
+                return
+            except PlaywrightTimeoutError as exc:
+                last_error = exc
+                if not _webui_server_responds(self._server_url):
+                    self.__class__._restart_server()
+                self.__class__._reset_page()
+        if last_error is not None:
+            raise last_error
 
     def _wait_for_platform_options(self):
         self._page.wait_for_function(

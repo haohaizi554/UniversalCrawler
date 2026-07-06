@@ -1818,6 +1818,24 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "小红书笔记详情线程失败", en: "Xiaohongshu note detail thread failed", tw: "小紅書筆記詳情執行緒失敗" },
   { zh: "本地小红书 Cookie 恢复失败，继续使用新会话", en: "Failed to restore local Xiaohongshu Cookie; continuing with new session", tw: "本機小紅書 Cookie 恢復失敗，繼續使用新會話" },
   { zh: "小红书号未命中主页结果，回退为关键词搜索", en: "Xiaohongshu ID did not match homepage results; falling back to keyword search", tw: "小紅書號未命中主頁結果，回退為關鍵字搜尋" },
+  { zh: "下载已暂停", en: "download paused", tw: "下載已暫停" },
+  { zh: "Web 端启动爬虫任务", en: "Web started crawl task", tw: "Web 端啟動爬蟲任務" },
+  { zh: "Web 端发现可下载资源", en: "Web found downloadable resources", tw: "Web 端發現可下載資源" },
+  { zh: "_on_spider_finished 被调用", en: "_on_spider_finished was called", tw: "_on_spider_finished 被呼叫" },
+  { zh: "CLI 发现可下载资源", en: "CLI found downloadable resources", tw: "CLI 發現可下載資源" },
+  { zh: "CLI 启动爬虫任务", en: "CLI started crawl task", tw: "CLI 啟動爬蟲任務" },
+  { zh: "CLI 下载任务失败", en: "CLI download task failed", tw: "CLI 下載任務失敗" },
+  { zh: "用户取消操作", en: "User cancelled operation", tw: "使用者取消操作" },
+  { zh: "选择策略异常", en: "Selection strategy error", tw: "選擇策略異常" },
+  { zh: "默认全选", en: "defaulting to select all", tw: "預設全選" },
+  { zh: "返回空选择", en: "returning an empty selection", tw: "返回空選擇" },
+  { zh: "用户已取消，跳过后续选择", en: "User cancelled; skipping subsequent selections", tw: "使用者已取消，略過後續選擇" },
+  { zh: "spider 超过", en: "spider exceeded", tw: "spider 超過" },
+  { zh: "未完成，强制停止", en: "without finishing; force stopping", tw: "未完成，強制停止" },
+  { zh: "item 转换失败", en: "item conversion failed", tw: "item 轉換失敗" },
+  { zh: "防护规则已停止页面跳转", en: "Guardrail stopped navigation", tw: "防護規則已停止頁面跳轉" },
+  { zh: "防护规则已停止页面刷新", en: "Guardrail stopped reload", tw: "防護規則已停止頁面重新整理" },
+  { zh: "失败", en: "failed", tw: "失敗" },
 ];
 
 function applyRuntimePhraseTranslations(text, language) {
@@ -1835,6 +1853,15 @@ function applyRuntimePhraseTranslations(text, language) {
 }
 
 function localizeEnglishDynamicLogText(text) {
+  const bilibiliStreamRetry = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?(?:B站|Bilibili)\s+(.*?)\s+流连接断开，(\d+)s\s+后重试\s+\((\d+)\/\s*(\d+)\):\s*(.+)$/u);
+  if (bilibiliStreamRetry) {
+    const media = localizedMediaTerm(bilibiliStreamRetry[2], "en-US");
+    return `${bilibiliStreamRetry[1] || ""}B-site ${media} stream disconnected; retrying in ${bilibiliStreamRetry[3]}s (${bilibiliStreamRetry[4]}/${bilibiliStreamRetry[5]}): ${bilibiliStreamRetry[6]}`;
+  }
+  const spiderSummary = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?(?:spider|爬虫)\s*已结束,\s*耗时\s*([^,]+?)s,\s*收集到\s*(\d+)\s*个项目,\s*二次选择\s*(\d+)\s*次$/u);
+  if (spiderSummary) {
+    return `${spiderSummary[1] || ""}spider finished, elapsed ${spiderSummary[2]}s, collected ${spiderSummary[3]} items, secondary selections ${spiderSummary[4]}`;
+  }
   const loaded = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?已加载\s*(\d+)\s*个本地文件\s*\(视频[:：]\s*(\d+)\s*,\s*图片[:：]\s*(\d+)\)$/u);
   if (loaded) {
     const noun = loaded[2] === "1" ? "file" : "files";
@@ -1858,7 +1885,7 @@ function localizeEnglishDynamicLogText(text) {
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?解析流[:：]\s*(.*)$/u, match => `${match[1] || ""}Parsed stream: ${match[2]}`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?正在展开[:：]\s*(.*)$/u, match => `${match[1] || ""}Expanding: ${match[2]}`],
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?流水线已建立[:：]\s*(.*)$/u, match => `${match[1] || ""}Pipeline established: ${match[2]}`],
-    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?全部完成[:：]\s*成功\s*(\d+)\s*\/\s*(\d+)\s*\|\s*失败\s*(\d+)$/u, match => `${match[1] || ""}All completed: success ${match[2]}/${match[3]} | failed ${match[4]}`],
+    [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?全部完成[:：]\s*(?:成功|success)\s*(\d+)\s*\/\s*(\d+)\s*\|\s*(?:失败|failed)\s*(\d+)$/iu, match => `${match[1] || ""}All completed: success ${match[2]}/${match[3]} | failed ${match[4]}`],
   ];
   for (const [pattern, formatter] of patterns) {
     const match = text.match(pattern);
@@ -2074,6 +2101,7 @@ function localizedMediaTerm(value, language) {
       "zh-TW": "影片",
     },
   };
+  if (language === "en-US" && Object.prototype.hasOwnProperty.call(terms, text)) return text;
   return localizedDynamicValue(terms[text] || null, language) || text;
 }
 

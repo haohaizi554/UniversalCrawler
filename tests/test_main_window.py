@@ -147,7 +147,52 @@ class MainWindowTests(unittest.TestCase):
 
         window._frontend_state_service.remove_video.assert_called_once_with("video-2")
         self.assertEqual(window._pending_delete_video_ids, ["video-1", "video-3"])
-        window.refresh_frontend_state.assert_called_once_with(force=True)
+        window.refresh_frontend_state.assert_called_once_with(topics={"videos.remove"})
+
+    def test_video_operation_refreshes_are_topic_scoped(self):
+        window = self._make_window()
+        window.refresh_frontend_state = Mock()
+        window._frontend_state_service = Mock()
+
+        MainWindow.refresh_table_bindings(window)
+
+        window.refresh_frontend_state.assert_called_once_with(topics={"videos.replace"})
+
+    def test_reorder_video_row_refreshes_without_force_full_snapshot(self):
+        window = self._make_window()
+        window.refresh_frontend_state = Mock()
+        window._frontend_state_service = Mock()
+        window.app_shell = Mock()
+        window.app_shell.row_for_video_id.return_value = 4
+        video_item = SimpleNamespace(id="video-1")
+
+        row = MainWindow.reorder_video_row(window, video_item)
+
+        window._frontend_state_service.upsert_video.assert_called_once_with(video_item)
+        window.refresh_frontend_state.assert_called_once_with(topics={"videos.replace"})
+        self.assertEqual(row, 4)
+
+    def test_retry_failed_item_refreshes_without_force_full_snapshot(self):
+        window = self._make_window()
+        window.refresh_frontend_state = Mock()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "retry queued"}
+
+        MainWindow._retry_failed_item(window, "video-1")
+
+        window._frontend_state_service.handle_action.assert_called_once_with("retry_failed", {"video_id": "video-1"})
+        window.refresh_frontend_state.assert_called_once_with(topics={"videos.replace"})
+
+    def test_pause_download_item_refreshes_without_force_full_snapshot(self):
+        window = self._make_window()
+        window.refresh_frontend_state = Mock()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "paused"}
+
+        MainWindow._pause_download_item(window, "video-1")
+
+        window._frontend_state_service.handle_action.assert_called_once_with("pause_download", {"video_id": "video-1"})
+        window.refresh_frontend_state.assert_called_once_with(topics={"videos.update"})
 
     def test_copy_trace_click_requires_selected_video(self):
         """验证 `test_copy_trace_click_requires_selected_video` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""

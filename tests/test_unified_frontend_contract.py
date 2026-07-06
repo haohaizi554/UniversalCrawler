@@ -2699,6 +2699,25 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             localize_log_text("Download options updated: concurrency=3", "zh-CN"),
             "下载选项已更新: concurrency=3",
         )
+        self.assertEqual(localize_log_text("download paused: demo", "zh-CN"), "下载已暂停: demo")
+        self.assertEqual(localize_log_text("Web 端启动爬虫任务", "en-US"), "Web started crawl task")
+        self.assertEqual(localize_log_text("CLI 下载任务失败", "en-US"), "CLI download task failed")
+        self.assertEqual(
+            localize_log_text("spider 已结束, 耗时 12s, 收集到 3 个项目, 二次选择 1 次", "en-US"),
+            "spider finished, elapsed 12s, collected 3 items, secondary selections 1",
+        )
+        self.assertEqual(
+            localize_log_text("B站 audio 流连接断开，5s 后重试 (1/3): timeout", "en-US"),
+            "B-site audio stream disconnected; retrying in 5s (1/3): timeout",
+        )
+        self.assertEqual(
+            localize_log_text("Guardrail stopped navigation: budget exhausted", "zh-CN"),
+            "防护规则已停止页面跳转: budget exhausted",
+        )
+        self.assertEqual(
+            localize_log_text("Guardrail stopped reload: budget exhausted", "zh-CN"),
+            "防护规则已停止页面刷新: budget exhausted",
+        )
         self.assertEqual(
             localize_log_text("Completed media metadata probe finished without usable duration or resolution", "zh-TW"),
             "媒體中繼資料探測已完成，但未取得可用時長或解析度",
