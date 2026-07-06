@@ -21,6 +21,9 @@ COUNT_LABELS = {
     "notes": "笔记数:",
     "pages": "页数:",
 }
+STOP_BUTTON_MIN_WIDTH = 86
+DIR_BUTTON_MIN_WIDTH = 116
+
 
 class TopBarWidget(QFrame):
     """Unified top control row (platform selector lives in the sidebar)."""
@@ -72,14 +75,16 @@ class TopBarWidget(QFrame):
         self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_stop.setEnabled(False)
         self.btn_stop.setFixedHeight(40)
-        self.btn_stop.setMaximumWidth(86)
+        self.btn_stop.setMinimumWidth(STOP_BUTTON_MIN_WIDTH)
+        self.btn_stop.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self._set_button_icon(self.btn_stop, action_icon_file("stop"))
         self.layout.addWidget(self.btn_stop)
 
         self.btn_dir = QPushButton("更改目录")
         self.btn_dir.setObjectName("DirBtn")
         self.btn_dir.setFixedHeight(40)
-        self.btn_dir.setMaximumWidth(116)
+        self.btn_dir.setMinimumWidth(DIR_BUTTON_MIN_WIDTH)
+        self.btn_dir.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self._set_button_icon(self.btn_dir, action_icon_file("change_directory"))
         self.layout.addWidget(self.btn_dir)
 
@@ -222,6 +227,7 @@ class TopBarWidget(QFrame):
         self.btn_stop.setText(tr("停止", self._language))
         self.btn_dir.setText(tr("更改目录", self._language))
         self.btn_theme.setToolTip(tr("切换主题", self._language))
+        self._fit_action_buttons()
 
     @staticmethod
     def _placeholder_for_platform(plugin_id: str) -> str:
@@ -307,6 +313,19 @@ class TopBarWidget(QFrame):
         self.btn_dir.setStyleSheet(neutral_style)
         self.btn_theme.setStyleSheet(theme_style)
         self._apply_control_styles(colors)
+        self._fit_action_buttons()
+
+    @staticmethod
+    def _fit_text_button(button: QPushButton, base_width: int) -> None:
+        button.setMinimumWidth(base_width)
+        button.ensurePolished()
+        button.setMinimumWidth(max(base_width, button.sizeHint().width()))
+        button.updateGeometry()
+
+    def _fit_action_buttons(self) -> None:
+        self._fit_text_button(self.btn_stop, STOP_BUTTON_MIN_WIDTH)
+        self._fit_text_button(self.btn_dir, DIR_BUTTON_MIN_WIDTH)
+        self.layout.invalidate()
 
     def _apply_control_styles(self, colors: dict[str, str]) -> None:
         search_style = f"""

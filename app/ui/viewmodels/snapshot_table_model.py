@@ -8,7 +8,7 @@ from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt6.QtGui import QIcon
 
 from app.services.icon_registry import platform_icon_file, queue_status_icon_file, ui_icon_path
-from app.ui.localization import normalize_language, platform_display_name, tr
+from app.ui.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
 from app.utils.qt_runtime import load_qt_icon
 
 SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -125,12 +125,23 @@ class SnapshotTableModel(QAbstractTableModel):
         return super().headerData(section, orientation, role)
 
     def set_headers(self, headers: list[str]) -> None:
-        headers = list(headers)
+        headers = self._source_headers_from_display(headers)
         if headers == self._headers:
             return
         self._headers = headers
         if headers:
             self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(headers) - 1)
+
+    def _source_headers_from_display(self, headers: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for index, header in enumerate(headers):
+            text = str(header or "")
+            current_source = self._headers[index] if index < len(self._headers) else ""
+            if current_source and is_translation_of(text, current_source):
+                normalized.append(current_source)
+            else:
+                normalized.append(source_text_for_translation(text))
+        return normalized
 
     def set_language(self, language: str | None) -> None:
         normalized = normalize_language(language)

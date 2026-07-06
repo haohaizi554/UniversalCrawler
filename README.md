@@ -593,6 +593,7 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 - 已覆盖 CLI / SDK / Web API / 打包配置 / 桌面 UI / 浏览器 E2E 等多个层面。
 - 已接入自动分类测试套件，新增测试可按命名规则自动归类。
 - GitHub Actions 已接入基础自动化检查。
+- 浏览器 E2E 不使用固定 3.5 秒硬等，当前 `tests/test_web_browser.py` 本地最新实测为 `97 passed in 247.64s (0:04:07)`，早前热运行曾到 `97 passed in 185.66s`（外部秒表约 `187.9s`），较历史 7-8 分钟约快 41%-61%。
 
 ### 本地执行命令
 

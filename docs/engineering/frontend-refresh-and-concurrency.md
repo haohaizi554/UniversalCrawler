@@ -40,6 +40,55 @@
 - 非当前页不重建 DOM，只更新必要角标和底部状态。
 - WebSocket 每连接使用有界队列；noisy 消息可以合并或丢弃旧值，critical 消息不能被丢弃。
 
+## UI / Worker / Cache / DB 职责边界
+
+日志中心、失败列表和大表格遵循三层边界。后续改动如果跨过这些边界，必须同时补回归测试。
+
+### UI Thread
+
+UI 线程只负责显示和轻量交互：
+
+- 接收后端或 worker 发来的当前页 batch。
+- 批量 append / patch 到 Qt model 或 Web DOM。
+- 更新选中态、按钮状态、分页状态和详情面板。
+- 不读取日志文件。
+- 不解析日志文本。
+- 不执行大列表过滤、排序、分页。
+- 不同步构建完整 frontend snapshot，不做大段 JSON 签名 diff。
+- 不直接查询 SQLite、diskcache 或大体量本地缓存。
+
+GUI 主窗口刷新时只向 `FrontendSnapshotWorker` 提交目标 section、当前快照引用和签名表，snapshot 构建、局部合并和 section diff 在 worker 中完成；GUI 日志页提交查询时只传递当前快照引用，行复制、筛选、排序和分页由 `LogQueryWorker` 完成；WebUI 大批日志由 `log_query_worker.js` 完成，主线程只接收 `pageItems` 并 patch 当前页。
+
+### Worker Thread
+
+Worker 线程负责所有可能卡住 UI 的工作：
+
+- 日志文件 tail 增量读取。
+- 日志文本解析和字段规整。
+- 过滤、排序、分页和选中项定位。
+- 读写本地缓存。
+- 写入 SQLite / diskcache。
+- 构建 frontend snapshot，合并局部 section，并计算 section 签名差异。
+- 生成 UI 可直接渲染的当前页 batch。
+
+当前落地组件：
+
+- `FrontendLogCache`：后台 tail 最新 debug 日志，增量解析，避免 snapshot 热路径直接读文件。
+- `FrontendSnapshotWorker`：GUI snapshot 构建、局部合并和 section diff。
+- `LogQueryWorker`：GUI 日志中心筛选、排序、分页。
+- `log_query_worker.js`：WebUI 大批日志查询。
+- `FailedRecordStore`：失败记录后台写 SQLite，并刷新内存快照。
+
+### Cache / DB
+
+缓存和结构化存储按数据热度分工：
+
+- `cachetools`：短 TTL 热数据，只放 UI 高频读取的小体量结果。
+- `diskcache`：解析结果、本地 key-value 缓存和可重用中间结果。
+- SQLite：失败记录、结构化查询、可分页和可索引的数据。
+
+UI 热路径只能读取已经准备好的内存快照。维护脚本、测试或显式管理动作可以调用同步查询接口，但 GUI/WebUI 页面渲染链路不得直接查 SQLite 或重扫日志文件。
+
 ## 下载并发规则
 
 - 普通并发默认 3，推荐选项为 1、3、5。

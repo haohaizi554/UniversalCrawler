@@ -21,7 +21,16 @@ class WebControllerConfigService:
         self._action_handler = action_handler
 
     WEB_CONFIG_ALLOWLIST = {
-        "common": {"dark_theme", "theme", "last_source", "save_directory", "filename_template", "open_after_download", "default_open_mode"},
+        "common": {
+            "dark_theme",
+            "theme",
+            "last_source",
+            "save_directory",
+            "filename_template",
+            "open_after_download",
+            "default_open_mode",
+            "show_browser_window",
+        },
         "download": {
             "local_scan_limit",
             "max_concurrent",

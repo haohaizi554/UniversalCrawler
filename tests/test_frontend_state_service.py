@@ -11,6 +11,7 @@ from app.core.state import VideoStatus
 from app.debug_logger import debug_logger
 from app.models import VideoItem
 from app.services.app_state import AppState
+from app.services.failed_record_store import FailedRecordStore
 from app.services.frontend_state_service import FrontendStateService, QUEUE_STATUSES
 from app.services.media_metadata_service import MediaMetadata
 
@@ -1122,6 +1123,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             debug_logger.latest_file = latest_file
             try:
                 service = FrontendStateService(config_manager=manager)
+                service.refresh_file_log_cache()
                 items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
             finally:
                 debug_logger.latest_file = original_latest_file
@@ -1146,6 +1148,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             debug_logger.latest_file = latest_file
             try:
                 service = FrontendStateService(config_manager=manager)
+                service.refresh_file_log_cache()
                 items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
             finally:
                 debug_logger.latest_file = original_latest_file
@@ -1170,6 +1173,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             debug_logger.latest_file = latest_file
             try:
                 service = FrontendStateService(config_manager=manager)
+                service.refresh_file_log_cache()
                 initial_items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
                 service.handle_action(
                     "update_setting",
@@ -1223,6 +1227,57 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(failed["log_excerpt"], ["download failed with 403"])
         self.assertEqual(failed["log_excerpt_items"][0]["icon_file"], "log_level_error.png")
         self.assertTrue(all(solution.get("icon_file") for solution in failed["solutions"]))
+
+    def test_failed_snapshot_queues_structured_sqlite_record(self):
+        with TemporaryDirectory() as temp_dir:
+            store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+            item.status = VideoStatus.FAILED.label
+            item.meta["error"] = "403"
+            item.meta["trace_id"] = "trace-failed"
+            service = FrontendStateService(
+                SimpleNamespace(videos={item.id: item}),
+                failed_record_store=store,
+            )
+            try:
+                failed = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
+                self.assertTrue(store.flush(timeout=2))
+                rows = store.query(limit=10)
+            finally:
+                service.destroy()
+
+        self.assertEqual(rows[0]["id"], failed["id"])
+        self.assertEqual(rows[0]["title"], failed["title"])
+        self.assertEqual(rows[0]["trace_id"], "trace-failed")
+
+    def test_failed_snapshot_reads_failed_record_memory_snapshot_without_sqlite_query(self):
+        with TemporaryDirectory() as temp_dir:
+            store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            store.queue_upsert(
+                [
+                    {
+                        "id": "persisted-failed",
+                        "title": "persisted failed",
+                        "reason": "network",
+                        "failed_at": "2026-07-06 12:00:00",
+                        "status": "Failed",
+                        "platform": "Bilibili",
+                        "trace_id": "trace-persisted",
+                    }
+                ]
+            )
+            self.assertTrue(store.flush(timeout=2))
+            self.assertEqual(store.records_snapshot()[0]["id"], "persisted-failed")
+            service = FrontendStateService(SimpleNamespace(videos={}), failed_record_store=store)
+            try:
+                with patch.object(store, "query", side_effect=AssertionError("UI must not query SQLite")) as query_mock:
+                    snapshot = service.get_snapshot(sections=frozenset({"failed_items", "app_status"}))
+            finally:
+                service.destroy()
+
+        query_mock.assert_not_called()
+        self.assertEqual(snapshot["failed_items"][0]["id"], "persisted-failed")
+        self.assertEqual(snapshot["app_status"]["failed_count"], 1)
 
     def test_copy_diagnostics_action_returns_trace_id_only(self):
         item = VideoItem(url="https://example.com", title="failed", source="douyin")

@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLineEdit, QWidget
+from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLineEdit, QSizePolicy, QWidget
 
 from app.ui.viewmodels.settings_catalog import PLATFORM_COUNT_OPTIONS, PROXY_OPTIONS, TIMEOUT_OPTIONS
 from app.ui.viewmodels.settings_options import (
@@ -105,10 +105,19 @@ def build_platform_proxy_widget(
 
     custom_allowed = bool(row.get("proxy_custom_allowed"))
     proxy_width = int(width or PLATFORM_DETAIL_COL_WIDTHS["proxy"])
-    active_container_width = max(proxy_width, 190) if custom_allowed else proxy_width
+    active_container_width = proxy_width
     collapsed_combo_width = proxy_width
-    active_combo_width = max(72, min(206, int(active_container_width * 0.48))) if custom_allowed else proxy_width
-    active_input_min_width = max(86, active_container_width - active_combo_width - 8) if custom_allowed else 0
+    if custom_allowed:
+        active_spacing = 6
+        active_usable_width = max(0, active_container_width - active_spacing)
+        input_floor = min(80, max(1, active_usable_width - 52))
+        active_combo_width = max(52, min(104, active_usable_width - input_floor))
+        active_combo_width = max(1, min(active_combo_width, active_usable_width or active_container_width))
+        active_input_width = max(input_floor, active_usable_width - active_combo_width)
+    else:
+        active_combo_width = proxy_width
+        active_input_width = 0
+        active_spacing = 0
     proxy_combo = build_combo(options, proxy_value, width=collapsed_combo_width)
     proxy_combo.setEnabled(editable)
     proxy_combo.setProperty("proxyCustomAllowed", "true" if custom_allowed else "false")
@@ -123,16 +132,19 @@ def build_platform_proxy_widget(
 
     container = QWidget()
     container.setObjectName("SettingsProxyControl")
+    container.setProperty("customProxySurface", "split")
     container.setFixedWidth(proxy_width)
     container.setFixedHeight(control_height)
     container_layout = QHBoxLayout(container)
     container_layout.setContentsMargins(0, 0, 0, 0)
-    container_layout.setSpacing(8)
+    container_layout.setSpacing(0)
 
     line_edit = QLineEdit()
     line_edit.setObjectName("SettingsProxyCustomEdit")
     line_edit.setFixedHeight(control_height)
-    line_edit.setMinimumWidth(active_input_min_width or 92)
+    line_edit.setMinimumWidth(0)
+    line_edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    line_edit.setProperty("proxyEmbedded", "false")
     line_edit.setPlaceholderText(translate("端口"))
     line_edit.setClearButtonEnabled(False)
     line_edit.setEnabled(False)
@@ -143,16 +155,22 @@ def build_platform_proxy_widget(
         line_edit.setText(proxy_port_text(proxy_value))
 
     container_layout.addWidget(proxy_combo, 0)
-    container_layout.addWidget(line_edit, 1)
+    container_layout.addWidget(line_edit, 0)
     proxy_combo.setFixedHeight(control_height)
 
     def sync_custom_state(active: bool, *, focus: bool = False) -> None:
         proxy_combo.setProperty("customProxy", "true" if active else "false")
+        proxy_combo.setProperty("proxyEmbedded", "false")
+        line_edit.setProperty("proxyEmbedded", "false")
+        container_layout.setSpacing(active_spacing if active else 0)
         container.setFixedWidth(active_container_width if active else proxy_width)
         proxy_combo.setFixedWidth(active_combo_width if active else collapsed_combo_width)
+        proxy_combo.setFixedHeight(control_height)
+        line_edit.setFixedWidth(active_input_width if active else 0)
+        line_edit.setFixedHeight(control_height)
         line_edit.setVisible(bool(active))
         line_edit.setEnabled(bool(active and editable))
-        line_edit.setClearButtonEnabled(bool(active and editable))
+        line_edit.setClearButtonEnabled(False)
         line_edit.setProperty("customProxyActive", "true" if active else "false")
         line_edit.setToolTip(existing_custom if existing_custom else line_edit.placeholderText())
         container.setProperty("customProxyActive", "true" if active else "false")
@@ -166,6 +184,8 @@ def build_platform_proxy_widget(
         proxy_combo.style().polish(proxy_combo)
         line_edit.style().unpolish(line_edit)
         line_edit.style().polish(line_edit)
+        container.style().unpolish(container)
+        container.style().polish(container)
 
     custom_active = bool(editable and (row.get("proxy_custom_active") or proxy_value == "自定义"))
     if custom_active:

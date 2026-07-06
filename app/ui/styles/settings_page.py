@@ -309,8 +309,6 @@ def generate_settings_page_stylesheet(
                 selection-background-color: {c["accent"]};
                 selection-color: #ffffff;
                 font-size: {combo_px}px;
-                min-height: 40px;
-                max-height: 40px;
                 padding: 0px 10px;
             }}
 

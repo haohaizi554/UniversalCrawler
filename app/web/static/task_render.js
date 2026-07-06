@@ -9,10 +9,35 @@
   let getIconManifest = () => ({ route: "/ui-icon", fallback: "view_grid.png", actions: {}, platforms: {} });
   let activeTrendRenderer = () => "";
   let activeEventTimelineRenderer = () => "";
+  const pendingMetadataTexts = ["\u68c0\u6d4b\u4e2d", "Checking", "\u6aa2\u6e2c\u4e2d"];
+
+  function activeLanguage() {
+    let root = document.documentElement;
+    try {
+      if (globalThis.parent && globalThis.parent !== globalThis && globalThis.parent.document) {
+        root = globalThis.parent.document.documentElement;
+      }
+    } catch (_error) {
+      root = document.documentElement;
+    }
+    const language = String(root?.dataset?.language || "").trim();
+    return ["zh-CN", "en-US", "zh-TW"].includes(language) ? language : "zh-CN";
+  }
+
+  function pendingMetadataLabel() {
+    const language = activeLanguage();
+    if (language === "en-US") return "Checking";
+    if (language === "zh-TW") return "\u6aa2\u6e2c\u4e2d";
+    return "\u68c0\u6d4b\u4e2d";
+  }
+
   let metadataValueRenderer = (value, pending = false) => {
     const text = String(value || "").trim();
+    if (pending && (!text || text === "--" || pendingMetadataTexts.includes(text))) {
+      return pendingMetadataLabel();
+    }
     if (text && text !== "--") return translate(text);
-    return pending ? translate("\u68c0\u6d4b\u4e2d") : "--";
+    return pending ? pendingMetadataLabel() : "--";
   };
   let basenameResolver = () => "";
   let dirnameResolver = () => "";

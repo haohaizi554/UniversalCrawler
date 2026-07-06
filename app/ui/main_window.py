@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 import time
 import sys
@@ -37,6 +35,11 @@ from app.ui.localization import normalize_language, tr
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
+from app.ui.viewmodels.frontend_snapshot_worker import (
+    FrontendSnapshotRequest,
+    FrontendSnapshotResult,
+    FrontendSnapshotWorker,
+)
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
 from app.utils.safe_slot import safe_slot
@@ -123,6 +126,7 @@ class MainWindow(QMainWindow):
     _clipboard_copy_requested = pyqtSignal(str)
     _update_check_finished = pyqtSignal(object)
     _update_check_failed = pyqtSignal(str)
+    _frontend_snapshot_finished = pyqtSignal(object)
 
     def __init__(self, *, app_state: AppState | None = None, event_bus: EventBus | None = None) -> None:
         super().__init__()
@@ -160,6 +164,10 @@ class MainWindow(QMainWindow):
         self._frontend_state_service = FrontendStateService(app_state=self.app_state)
         self._connections = ConnectionRegistry()
         self._frontend_refresh_pending_mock = False
+        self._frontend_snapshot_sequence = 0
+        self._frontend_snapshot_worker = FrontendSnapshotWorker(
+            lambda result: self._frontend_snapshot_finished.emit(result)
+        )
         self._ui_update_scheduler = UiUpdateScheduler(
             interval_ms=self.FRONTEND_REFRESH_INTERVAL_MS,
             on_flush=self._flush_frontend_state,
@@ -178,6 +186,11 @@ class MainWindow(QMainWindow):
         self._connections.connect(
             self._update_check_failed,
             self._on_update_check_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
+            self._frontend_snapshot_finished,
+            self._on_frontend_snapshot_finished,
             Qt.ConnectionType.QueuedConnection,
         )
         self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
@@ -538,6 +551,9 @@ class MainWindow(QMainWindow):
             self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
         self._frontend_state_service = service
         self.app_state = service.app_state
+        self._cached_snapshot = None
+        self._frontend_section_signatures = {}
+        self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
         self.refresh_frontend_state(force=True)
 
     def refresh_frontend_state(self, *, mock: bool = False, force: bool = False, topics: set[str] | None = None) -> None:
@@ -582,87 +598,43 @@ class MainWindow(QMainWindow):
         return pending
 
     def _render_frontend_state(self, *, mock: bool = False, topics: set[str] | None = None) -> None:
-        started = time.perf_counter()
         sections = self._sections_for_topics(topics)
         service = self._frontend_state_service
         cached = self.__dict__.get("_cached_snapshot")
-        changed_keys: set[str] | None = None
-        # GUI refreshes ask for exactly the sections that can be painted now.
-        # `get_delta()` intentionally unions retained dirty history for WebSocket
-        # recovery, which would re-expand hidden pages during event storms.
-        use_delta = False
+        self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
+        request = FrontendSnapshotRequest(
+            sequence=self._frontend_snapshot_sequence,
+            service=service,
+            service_token=id(service),
+            mock=mock,
+            sections=sections,
+            cached_snapshot=cached,
+            section_signatures=dict(self.__dict__.get("_frontend_section_signatures") or {}),
+        )
+        worker = self.__dict__.get("_frontend_snapshot_worker")
+        if worker is None:
+            raise RuntimeError("frontend snapshot worker is not initialized")
+        worker.submit(request)
 
-        if (
-            use_delta
-            and
-            not mock
-            and sections
-            and cached
-            and isinstance(service, FrontendStateService)
-            and hasattr(service, "get_delta")
-        ):
-            base_version = int(cached.get("version") or self.__dict__.get("_cached_frontend_version", 0) or 0)
-            delta = service.get_delta(base_version, sections=sections)
-            snapshot, changed_keys = self._merge_frontend_delta(cached, delta)
-            if not changed_keys:
-                return
-        else:
-            snapshot = service.get_snapshot(mock=mock, sections=sections)
-            if cached and sections:
-                merged = dict(cached)
-                merged.update(snapshot)
-                snapshot = merged
-                changed_keys = self._changed_frontend_sections(snapshot, sections)
-                if not changed_keys:
-                    self.__dict__["_cached_snapshot"] = snapshot
-                    self.__dict__["_cached_frontend_version"] = int(snapshot.get("version") or 0)
-                    return
-            elif sections:
-                changed_keys = {section for section in sections if section in snapshot}
-            else:
-                changed_keys = None
+    def _on_frontend_snapshot_finished(self, result: FrontendSnapshotResult) -> None:
+        current_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0)
+        if result.sequence != current_sequence:
+            return
+        service = self.__dict__.get("_frontend_state_service")
+        if result.service_token != id(service):
+            return
 
+        snapshot = result.snapshot
         self.__dict__["_cached_snapshot"] = snapshot
         self.__dict__["_cached_frontend_version"] = int(snapshot.get("version") or 0)
-        self._remember_frontend_section_signatures(snapshot, changed_keys)
-        self.app_shell.render(snapshot, changed_sections=changed_keys)
-        self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
-
-    def _merge_frontend_delta(self, cached: dict, delta: dict) -> tuple[dict, set[str]]:
-        changed_sections = set(delta.get("changed_sections") or [])
-        sections = delta.get("sections") or {}
-        snapshot = dict(cached)
-        if isinstance(sections, dict):
-            snapshot.update(sections)
-        snapshot["version"] = int(delta.get("version") or snapshot.get("version") or 0)
-        return snapshot, changed_sections
-
-    @staticmethod
-    def _frontend_section_signature(value) -> str:
-        try:
-            payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-        except (TypeError, ValueError):
-            payload = repr(value)
-        return hashlib.blake2b(payload.encode("utf-8", errors="replace"), digest_size=16).hexdigest()
-
-    def _changed_frontend_sections(self, snapshot: dict, sections: frozenset[str]) -> set[str]:
-        signatures = self.__dict__.setdefault("_frontend_section_signatures", {})
-        changed: set[str] = set()
-        for section in sections:
-            signature = self._frontend_section_signature(snapshot.get(section))
-            if signatures.get(section) != signature:
-                changed.add(section)
-            signatures[section] = signature
-        return changed
-
-    def _remember_frontend_section_signatures(self, snapshot: dict, sections: set[str] | None) -> None:
-        keys = set(snapshot.keys()) if sections is None else set(sections)
-        keys.discard("version")
-        if not keys:
+        self.__dict__["_frontend_section_signatures"] = dict(result.section_signatures)
+        self.__dict__["_last_frontend_snapshot_build_ms"] = float(result.build_duration_ms)
+        if result.skip_render:
             return
-        signatures = self.__dict__.setdefault("_frontend_section_signatures", {})
-        for section in keys:
-            signatures[section] = self._frontend_section_signature(snapshot.get(section))
+
+        started = time.perf_counter()
+        self.app_shell.render(snapshot, changed_sections=result.changed_sections)
+        self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
 
     def _record_frontend_render_duration(self, duration_ms: float) -> None:
         self.__dict__["_last_frontend_render_ms"] = duration_ms
@@ -1171,11 +1143,14 @@ class MainWindow(QMainWindow):
 
     @safe_slot
     def closeEvent(self, event) -> None:
+        self._ui_update_scheduler.stop()
+        snapshot_worker = self.__dict__.get("_frontend_snapshot_worker")
+        if snapshot_worker is not None:
+            snapshot_worker.shutdown()
         self._connections.disconnect_all()
         self._remove_frameless_resize_event_filter()
         self._remove_windows_native_frame_filter()
         self.cleanup_media()
-        self._ui_update_scheduler.stop()
         self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
         cfg.save_ui_state(
             geometry=self.saveGeometry(),
@@ -1828,5 +1803,3 @@ class MainWindow(QMainWindow):
         if callable(feedback):
             feedback(message, ok=ok)
         self.refresh_frontend_state(topics={"settings.update"}, force=True)
-
-

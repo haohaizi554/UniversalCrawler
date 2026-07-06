@@ -571,6 +571,10 @@ class AppShell(QWidget):
         model = table.model()
         if model is None:
             return
+        set_language = getattr(model, "set_language", None)
+        if callable(set_language):
+            set_language(self._language)
+            return
         column_count = model.columnCount()
         current = [
             str(model.headerData(index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) or "")
@@ -592,9 +596,6 @@ class AppShell(QWidget):
         set_headers = getattr(model, "set_headers", None)
         if callable(set_headers):
             set_headers(translated)
-        set_language = getattr(model, "set_language", None)
-        if callable(set_language):
-            set_language(self._language)
 
     def selected_video_id(self) -> str | None:
         page = self.pages.get(self.current_page_id)

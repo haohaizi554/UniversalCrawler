@@ -16,7 +16,7 @@
   <script src="/static/app.js?v=20260705-i18n-state-boundary" defer></script>
 </head>
 <body>
-  <main class="app-body">
+  <main id="app-shell" class="app-body">
     <aside id="leftPanel" class="sidebar" aria-label="页面导航">
       <section class="platform-island" aria-label="平台选择">
         <select id="sourceSelect" class="source-select" aria-label="平台选择"></select>
@@ -195,7 +195,7 @@
                 </table>
                 <div id="logEmptyState" class="log-empty-state" hidden>
                   <strong>暂无匹配日志</strong>
-                  <span class="log-empty-subtitle" aria-label="调整筛选条件，或点击「刷新缓冲」重新加载日志"><span data-log-empty-primary>调整筛选条件，</span><span data-log-empty-secondary>或点击「刷新缓冲」重新加载日志</span></span>
+                  <span class="log-empty-subtitle" aria-label="调整筛选条件 或点击「刷新缓冲」重新加载日志"><span data-log-empty-primary>调整筛选条件</span><span data-log-empty-secondary>或点击「刷新缓冲」重新加载日志</span></span>
                 </div>
               </div>
               <div class="queue-footer log-footer">

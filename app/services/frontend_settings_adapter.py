@@ -337,6 +337,7 @@ def build_settings_snapshot(
             "open_after_download": bool(common.get("open_after_download", False)),
             "default_open_mode": default_open_mode,
             "default_open_mode_label": open_mode_label(default_open_mode),
+            "show_browser_window": bool(common.get("show_browser_window", True)),
             "_options": {
                 "filename_template": filename_template_options(),
                 "default_open_mode": open_mode_options(),

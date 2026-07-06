@@ -12,10 +12,27 @@
     if (typeof options.translate === "function") translate = options.translate;
   }
 
+  function isPendingMetadataText(text) {
+    return ["\u68c0\u6d4b\u4e2d", "Checking", "\u6aa2\u6e2c\u4e2d"].includes(String(text || "").trim());
+  }
+
+  function activeLanguage() {
+    const language = String(document.documentElement?.dataset?.language || "").trim();
+    return ["zh-CN", "en-US", "zh-TW"].includes(language) ? language : "zh-CN";
+  }
+
+  function pendingMetadataLabel() {
+    const language = activeLanguage();
+    if (language === "en-US") return "Checking";
+    if (language === "zh-TW") return "\u6aa2\u6e2c\u4e2d";
+    return "\u68c0\u6d4b\u4e2d";
+  }
+
   function displayMetadataValue(value, pending = false) {
     const text = String(value || "").trim();
+    if (pending && (!text || text === "--" || isPendingMetadataText(text))) return pendingMetadataLabel();
     if (text && text !== "--") return translate(text);
-    return pending ? translate("\u68c0\u6d4b\u4e2d") : "--";
+    return pending ? pendingMetadataLabel() : "--";
   }
 
   function basenameFromPath(path) {

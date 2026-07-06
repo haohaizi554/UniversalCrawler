@@ -114,6 +114,8 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
         return VIDEO_SECTIONS
     if normalized in {"logs.append", "log"}:
         return frozenset({"log_items", "app_status"})
+    if normalized == "failed_records.refresh":
+        return frozenset({"failed_items", "app_status"})
     if normalized in {"app.running_state", "crawl_state", "crawl_state_changed", "page.visibility"}:
         return frozenset({"app_status"})
     if normalized in {"settings.update", "config"}:

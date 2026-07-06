@@ -182,6 +182,34 @@
     return Math.min(236, count * 36 + 4);
   }
 
+  function menuBoundary(wrapper, viewportWidth, viewportHeight) {
+    const boundary = { top: 4, right: viewportWidth - 4, bottom: viewportHeight - 4, left: 4 };
+    let node = wrapper ? wrapper.parentElement : null;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const style = node.ownerDocument.defaultView.getComputedStyle(node);
+      const clipsY = /(auto|scroll|overlay|hidden)/.test(`${style.overflowY} ${style.overflow}`);
+      const clipsX = /(auto|scroll|overlay|hidden)/.test(`${style.overflowX} ${style.overflow}`);
+      if ((clipsY && node.clientHeight > 0 && node.scrollHeight > node.clientHeight + 1)
+          || (clipsX && node.clientWidth > 0 && node.scrollWidth > node.clientWidth + 1)) {
+        const rect = node.getBoundingClientRect();
+        boundary.top = Math.max(boundary.top, rect.top + 4);
+        boundary.right = Math.min(boundary.right, rect.right - 4);
+        boundary.bottom = Math.min(boundary.bottom, rect.bottom - 4);
+        boundary.left = Math.max(boundary.left, rect.left + 4);
+      }
+      node = node.parentElement;
+    }
+    if (boundary.bottom <= boundary.top) {
+      boundary.top = 4;
+      boundary.bottom = viewportHeight - 4;
+    }
+    if (boundary.right <= boundary.left) {
+      boundary.left = 4;
+      boundary.right = viewportWidth - 4;
+    }
+    return boundary;
+  }
+
   function updateMenuPlacement(wrapper) {
     const select = wrapper && wrapper.querySelector("select");
     const menu = wrapper && wrapper.querySelector(".custom-select-menu");
@@ -190,18 +218,19 @@
     const doc = wrapper.ownerDocument;
     const viewportHeight = doc.defaultView ? doc.defaultView.innerHeight : window.innerHeight;
     const viewportWidth = doc.defaultView ? doc.defaultView.innerWidth : window.innerWidth;
+    const boundary = menuBoundary(wrapper, viewportWidth, viewportHeight);
     const menuHeight = menuEstimatedHeight(select) + 8;
-    const spaceBelow = viewportHeight - rect.bottom - 4;
-    const spaceAbove = rect.top - 4;
+    const spaceBelow = boundary.bottom - rect.bottom;
+    const spaceAbove = rect.top - boundary.top;
     const shouldOpenUp = spaceBelow < menuHeight && spaceAbove > spaceBelow;
     wrapper.classList.toggle("open-up", shouldOpenUp);
     if (!menu) return;
     const availableHeight = Math.max(36, shouldOpenUp ? spaceAbove : spaceBelow);
     const height = Math.min(menuHeight - 8, availableHeight);
-    const left = Math.max(4, Math.min(rect.left, viewportWidth - rect.width - 4));
+    const left = Math.max(boundary.left, Math.min(rect.left, boundary.right - rect.width));
     const top = shouldOpenUp
-      ? Math.max(4, rect.top - height - 4)
-      : Math.min(viewportHeight - height - 4, rect.bottom + 4);
+      ? Math.max(boundary.top, rect.top - height - 4)
+      : Math.min(boundary.bottom - height, rect.bottom + 4);
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
     menu.style.width = `${rect.width}px`;

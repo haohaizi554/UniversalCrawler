@@ -36,6 +36,8 @@ RECOMMENDED_CATEGORY_IDS = (
     "app_flows",
     "pipeline",
     "core_services",
+    "architecture",
+    "benchmark",
 )
 
 @dataclass
@@ -553,12 +555,16 @@ def _bootstrap_registry() -> None:
             "tests/test_event_*.py",
             "tests/test_frontend_event_*.py",
             "tests/test_frontend_*.py",
+            "tests/test_failed_record_store.py",
             "tests/test_metadata_*.py",
             "tests/test_completed_metadata_*.py",
             "tests/test_pagination_*.py",
             "tests/test_m3u8_*.py",
             "tests/test_task_runtime_*.py",
             "tests/test_ws_transport_*.py",
+            "tests/test_guardrails.py",
+            "tests/test_event_bus_extended.py",
+            "tests/test_proxy_manager.py",
         ],
         exclude=["tests/test_download_queue_panel.py"],
         icon_color="#22C55E",
@@ -566,6 +572,28 @@ def _bootstrap_registry() -> None:
         priority=80,
         section="保障层",
         badges=["推荐"],
+    )
+    register_category_rule(
+        id="architecture",
+        name="架构适应度",
+        description="依赖方向、Spider 协议和文件大小等架构适应度函数。",
+        include=["tests/architecture/test_*.py"],
+        icon_color="#0F766E",
+        icon_letter="ARCH",
+        priority=85,
+        section="保障层",
+        badges=["架构"],
+    )
+    register_category_rule(
+        id="benchmark",
+        name="性能基准",
+        description="显式运行的轻量性能基准测试。",
+        include=["tests/test_performance_benchmarks.py"],
+        icon_color="#B45309",
+        icon_letter="BENCH",
+        priority=86,
+        section="保障层",
+        badges=["显式运行"],
     )
     # ── 套件自身 ────────────────────────────────────────────
     register_category_rule(

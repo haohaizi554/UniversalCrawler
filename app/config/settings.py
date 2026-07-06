@@ -377,6 +377,7 @@ class CommonSettings:   #默认设置
     filename_template: str = CURRENT_FILENAME_TEMPLATE
     open_after_download: bool = False
     default_open_mode: str = DEFAULT_OPEN_MODE
+    show_browser_window: bool = True
     theme: str = "light"
     dark_theme: bool = False
     theme_schema_version: int = 2
@@ -396,6 +397,7 @@ class CommonSettings:   #默认设置
         valid_open_modes = {option["value"] for option in OPEN_MODE_OPTIONS}
         if self.default_open_mode not in valid_open_modes:
             self.default_open_mode = DEFAULT_OPEN_MODE
+        self.show_browser_window = bool(self.show_browser_window)
         if self.theme not in SUPPORTED_THEMES:
             self.theme = "dark" if self.dark_theme else "light"
         self.dark_theme = self.theme != "light" if isinstance(self.dark_theme, bool) else False

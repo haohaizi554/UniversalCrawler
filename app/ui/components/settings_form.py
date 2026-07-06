@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app.ui.components.settings_controls import UiSwitch
 
@@ -130,6 +130,8 @@ class SettingsFormBuilder:
 
         text_box = QWidget()
         text_box.setObjectName("SettingsItemTextBox")
+        text_box.setMinimumWidth(0)
+        text_box.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         text_layout = QVBoxLayout(text_box)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
@@ -138,6 +140,8 @@ class SettingsFormBuilder:
         title.setObjectName("SettingsItemTitle")
         title.setWordWrap(False)
         title.setFixedHeight(20)
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
         short_desc = self.setting_short_descriptions.get(label, "")
         long_desc = self.setting_descriptions.get(label, short_desc)
@@ -150,6 +154,8 @@ class SettingsFormBuilder:
             desc.setObjectName("SettingsItemDescription")
             desc.setWordWrap(False)
             desc.setFixedHeight(18)
+            desc.setMinimumWidth(0)
+            desc.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             desc.setToolTip(self.translate(long_desc))
             text_layout.addWidget(desc)
 

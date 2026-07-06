@@ -1,4 +1,4 @@
-(function () {
+(function (root) {
   const TIME_FILTER_MINUTES = {
     "30m": 30,
     "1h": 60,
@@ -25,6 +25,55 @@
 
   function filteredLogItems(items, filters = {}, nowMs = Date.now()) {
     return (items || []).filter(item => logMatchesFilters(item, filters, nowMs));
+  }
+
+  function logTabCounts(items, filters = {}, nowMs = Date.now()) {
+    const counts = {
+      all: 0,
+      crawl: 0,
+      download: 0,
+      system: 0,
+      performance: 0,
+      error: 0,
+    };
+    const baseFilters = { ...filters, category: "all" };
+    const rows = filteredLogItems(items || [], baseFilters, nowMs);
+    for (const item of rows) {
+      counts.all += 1;
+      const category = logCategory(item);
+      if (Object.prototype.hasOwnProperty.call(counts, category)) counts[category] += 1;
+      if (String(item.level || "").toUpperCase() === "ERROR" && category !== "error") counts.error += 1;
+    }
+    return counts;
+  }
+
+  function queryLogItems(request = {}) {
+    const allItems = Array.isArray(request.items) ? request.items : [];
+    const filters = request.filters || {};
+    const rowBudget = Math.max(1, Number(request.rowBudget) || 300);
+    const pageSize = Number(request.pageSize) || 20;
+    const nowMs = Number(request.nowMs) || Date.now();
+    const filteredItems = filteredLogItems(allItems, filters, nowMs);
+    const boundedItems = visibleLogItems(filteredItems, rowBudget);
+    const totalPages = pageSize <= 0 ? 1 : Math.max(1, Math.ceil(boundedItems.length / pageSize));
+    const page = Math.max(1, Math.min(Number(request.page) || 1, totalPages));
+    const start = pageSize <= 0 ? 0 : (page - 1) * pageSize;
+    const pageItems = pageSize <= 0 ? boundedItems : boundedItems.slice(start, start + pageSize);
+    let selectedId = String(request.selectedId || "");
+    if (!pageItems.some(item => logItemId(item) === selectedId)) {
+      selectedId = pageItems.length ? logItemId(pageItems[0]) : "";
+    }
+    return {
+      sequence: Number(request.sequence) || 0,
+      pageItems,
+      tabCounts: logTabCounts(allItems, filters, nowMs),
+      totalCount: allItems.length,
+      matchedCount: boundedItems.length,
+      visibleCount: pageItems.length,
+      currentPage: page,
+      totalPages,
+      selectedId,
+    };
   }
 
   function logMatchesFilters(item, filters = {}, nowMs = Date.now()) {
@@ -83,13 +132,15 @@
     return !text || text === "all" || text === "\u5168\u90e8";
   }
 
-  window.UcpLogDisplay = {
+  root.UcpLogDisplay = {
     logItemId,
     visibleLogItems,
     filteredLogItems,
+    queryLogItems,
+    logTabCounts,
     logMatchesFilters,
     logCategory,
     logSearchText,
     logMatchesTime,
   };
-})();
+})(typeof window !== "undefined" ? window : self);

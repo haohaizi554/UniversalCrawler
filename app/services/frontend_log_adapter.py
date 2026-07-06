@@ -171,14 +171,8 @@ def _decorate_log_display_fields(item: Mapping[str, Any]) -> dict[str, Any]:
         return row
 
 
-def parse_debug_log_file(path: Path, *, limit: int) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-
+def parse_debug_log_text(text: str, *, limit: int) -> list[dict[str, Any]]:
+    lines = str(text or "").splitlines()
     items: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     detail_lines: list[str] = []
@@ -217,6 +211,16 @@ def parse_debug_log_file(path: Path, *, limit: int) -> list[dict[str, Any]]:
         current["detail"] = "\n".join(detail_lines).strip()
         items.append(current)
     return items[-int(limit):]
+
+
+def parse_debug_log_file(path: Path, *, limit: int) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return parse_debug_log_text(text, limit=limit)
 
 
 def build_log_excerpt_index(log_items: list[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:

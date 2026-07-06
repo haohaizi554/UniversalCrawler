@@ -40,6 +40,7 @@
     "\u6587\u4ef6\u547d\u540d\u89c4\u5219": "\u4ece\u9884\u8bbe\u6a21\u677f\u4e2d\u9009\u62e9",
     "\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f": "\u4e0b\u8f7d\u5b8c\u6210\u540e\u7684\u6253\u5f00\u884c\u4e3a",
     "\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00": "\u4efb\u52a1\u5b8c\u6210\u540e\u81ea\u52a8\u6253\u5f00",
+    "\u663e\u793a\u6d4f\u89c8\u5668\u5185\u6838": "\u975e\u767b\u5f55\u6d41\u7a0b\u662f\u5426\u5f39\u51fa\u6d4f\u89c8\u5668\u7a97\u53e3",
     "\u5e76\u53d1\u6570": "\u6700\u5927\u540c\u65f6\u4e0b\u8f7d\u6570",
     "\u56fe\u7247\u53d7\u5e76\u53d1\u6570\u9650\u5236": "\u63a7\u5236\u56fe\u7247\u5feb\u8f66\u9053",
     "\u8bf7\u6c42\u8d85\u65f6": "\u7f51\u7edc\u8bf7\u6c42\u7b49\u5f85\u65f6\u95f4",
@@ -96,6 +97,7 @@
         settingInput("\u4e0b\u8f7d\u76ee\u5f55", "download_directory", value && value.download_directory, "basic"),
         settingSelect("\u6587\u4ef6\u547d\u540d\u89c4\u5219", "filename_template", value && value.filename_template, options.filename_template || [], "basic"),
         settingCheckbox("\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00", "open_after_download", !!(value && value.open_after_download), "basic"),
+        settingCheckbox("\u663e\u793a\u6d4f\u89c8\u5668\u5185\u6838", "show_browser_window", value ? value.show_browser_window !== false : true, "basic"),
         settingSelect("\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f", "default_open_mode", value && value.default_open_mode, options.default_open_mode || [], "basic", "", associationButton),
       ].join("");
     }

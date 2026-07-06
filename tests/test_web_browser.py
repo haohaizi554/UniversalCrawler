@@ -1,4 +1,4 @@
-"""Web 浏览器测试 (Playwright)。
+﻿"""Web 浏览器测试 (Playwright)。
 
 用真实 Chromium 浏览器对 web UI 进行：
 - 静态资源检查（HTML/CSS/JS 语法）
@@ -62,11 +62,122 @@ def _static_bundle_content() -> str:
     """Read split WebUI assets as one bundle for static assertions."""
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
     parts = []
-    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "app.js"):
+    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "log_query_worker.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "app.js"):
         path = static_dir / name
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
     return "\n".join(parts)
+
+def _stable_platform_settings_snapshot_js() -> str:
+    """Deterministic platform rows for browser layout/contract tests.
+
+    The running test server intentionally reuses the real settings renderer, while
+    individual tests before it may mutate user-data-backed platform settings.
+    Seed the UI with stable rows when the assertion is about rendering behavior,
+    not the machine's current crawler configuration.
+    """
+    return r"""
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot['\u5e73\u53f0\u8bbe\u7f6e'] = [
+                {
+                  id: 'douyin',
+                  name: '\u6296\u97f3',
+                  auth_status: '\u5df2\u8ba4\u8bc1',
+                  default_count: 50,
+                  count_config_key: 'max_items',
+                  count_unit: 'videos',
+                  count_editable: true,
+                  count_options: [{ value: '50', label: '50 \u4e2a\u89c6\u9891' }],
+                  default_timeout: 60,
+                  timeout_config_key: 'timeout',
+                  timeout_editable: true,
+                  timeout_options: [{ value: '60', label: '60 \u79d2\uff08\u63a8\u8350\uff09' }],
+                  proxy: '\u7cfb\u7edf\u4ee3\u7406',
+                  proxy_config_key: '',
+                  proxy_editable: false,
+                  proxy_options: ['\u7cfb\u7edf\u4ee3\u7406', '\u76f4\u8fde']
+                },
+                {
+                  id: 'bilibili',
+                  name: 'Bilibili',
+                  auth_status: '\u5df2\u8ba4\u8bc1',
+                  default_count: 1,
+                  count_config_key: 'max_pages',
+                  count_unit: 'pages',
+                  count_editable: true,
+                  count_options: [{ value: '1', label: '1 \u9875\uff08\u63a8\u8350\uff09' }],
+                  default_timeout: 60,
+                  timeout_config_key: 'timeout',
+                  timeout_editable: true,
+                  timeout_options: [{ value: '60', label: '60 \u79d2\uff08\u63a8\u8350\uff09' }],
+                  proxy: '\u7cfb\u7edf\u4ee3\u7406',
+                  proxy_config_key: '',
+                  proxy_editable: false,
+                  proxy_options: ['\u7cfb\u7edf\u4ee3\u7406']
+                },
+                {
+                  id: 'kuaishou',
+                  name: '\u5feb\u624b',
+                  auth_status: '\u5df2\u8ba4\u8bc1',
+                  default_count: 20,
+                  count_config_key: 'max_items',
+                  count_unit: 'videos',
+                  count_editable: true,
+                  count_options: [{ value: '20', label: '20 \u4e2a\u89c6\u9891\uff08\u63a8\u8350\uff09' }],
+                  default_timeout: 60,
+                  timeout_config_key: 'timeout',
+                  timeout_editable: true,
+                  timeout_options: [{ value: '60', label: '60 \u79d2\uff08\u63a8\u8350\uff09' }],
+                  proxy: '\u7cfb\u7edf\u4ee3\u7406',
+                  proxy_config_key: 'proxy_app',
+                  proxy_editable: true,
+                  proxy_custom_allowed: false,
+                  proxy_options: ['\u7cfb\u7edf\u4ee3\u7406', '\u76f4\u8fde', 'Clash']
+                },
+                {
+                  id: 'missav',
+                  name: 'MissAV',
+                  auth_status: '\u672a\u8ba4\u8bc1',
+                  default_count: 20,
+                  count_config_key: 'max_items',
+                  count_unit: 'videos',
+                  count_editable: true,
+                  count_options: [{ value: '20', label: '20 \u4e2a\u89c6\u9891\uff08\u63a8\u8350\uff09' }],
+                  default_timeout: 60,
+                  timeout_config_key: 'timeout',
+                  timeout_editable: true,
+                  timeout_options: [{ value: '60', label: '60 \u79d2\uff08\u63a8\u8350\uff09' }],
+                  proxy: '\u81ea\u5b9a\u4e49',
+                  proxy_config_key: 'proxy_url',
+                  proxy_editable: true,
+                  proxy_custom_allowed: true,
+                  proxy_custom_active: true,
+                  proxy_custom_value: '7890',
+                  proxy_options: ['\u7cfb\u7edf\u4ee3\u7406', '\u76f4\u8fde', 'Clash (7890)', '\u81ea\u5b9a\u4e49']
+                }
+              ];
+"""
+
+def _wait_for_webui_ready(page, server_url: str) -> None:
+    page.goto(server_url, wait_until="domcontentloaded")
+    page.wait_for_selector("#app-shell", state="visible", timeout=5000)
+    page.wait_for_function(
+        """
+        () => (
+          typeof renderAll === 'function' &&
+          typeof switchPage === 'function' &&
+          Boolean(document.querySelector('#topBar')) &&
+          Boolean(document.querySelector('#rightPanel')) &&
+          Boolean(document.querySelector('#sourceSelect'))
+        )
+        """,
+        timeout=5000,
+    )
+
+def _new_webui_page(context):
+    page = context.new_page()
+    page.add_init_script("localStorage.clear(); sessionStorage.clear();")
+    return page
 
 @contextmanager
 def _running_server(host: str = "127.0.0.1", port: int = 0):
@@ -92,12 +203,16 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
     ]
     with tempfile.TemporaryDirectory(prefix="ucrawl-web-test-") as user_data_root:
         env["UCRAWL_USER_DATA_ROOT"] = user_data_root
+        stdout_path = Path(user_data_root) / "uvicorn.stdout.log"
+        stderr_path = Path(user_data_root) / "uvicorn.stderr.log"
+        stdout_handle = stdout_path.open("wb")
+        stderr_handle = stderr_path.open("wb")
         proc = subprocess.Popen(
             cmd,
             cwd=str(_PROJECT_ROOT),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
         )
         # 等服务器起来（最多 30s）
         deadline = time.time() + 30
@@ -112,11 +227,13 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
         else:
             # 失败时打印 stderr 便于排查
             try:
-                stderr_data = proc.stderr.read() if proc.stderr else b""
-                server_output.append(stderr_data.decode("utf-8", errors="replace")[-2000:])
+                stderr_handle.flush()
+                server_output.append(stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:])
             except Exception:
                 pass
             proc.terminate()
+            stdout_handle.close()
+            stderr_handle.close()
             raise RuntimeError(
                 f"Server failed to start on {url}\n"
                 f"stderr: {''.join(server_output)[:1500]}"
@@ -129,6 +246,8 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            stdout_handle.close()
+            stderr_handle.close()
 
 # ============================================================
 # 静态资源测试（不需要 Playwright）
@@ -393,6 +512,17 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('sections.has("icon_manifest")', flush_block)
         self.assertIn("renderCurrentPage()", flush_block)
 
+    def test_web_page_teardown_closes_ws_and_log_worker(self):
+        content = _static_bundle_content()
+
+        self.assertIn("let wsReconnectTimer = null;", content)
+        self.assertIn("function cleanupPageResources()", content)
+        self.assertIn("clearTimeout(wsReconnectTimer);", content)
+        self.assertIn("socket.onclose = null;", content)
+        self.assertIn("closeLogQueryWorker();", content)
+        self.assertIn('window.addEventListener("pagehide", cleanupPageResources', content)
+        self.assertIn('window.addEventListener("beforeunload", cleanupPageResources', content)
+
     def test_settings_snapshot_delta_does_not_rerender_non_settings_page(self):
         content = _static_bundle_content()
         flush_block = content.split("function flushRenderSections()", 1)[1].split(
@@ -637,20 +767,31 @@ class StaticAssetsTests(unittest.TestCase):
             1,
         )[0]
         render_logs_block = content.split("function renderLogs()", 1)[1].split(
-            "function logItemId",
+            "function renderLogQueryResult",
+            1,
+        )[0]
+        query_result_block = content.split("function renderLogQueryResult", 1)[1].split(
+            "function syncLogEmptyState",
             1,
         )[0]
 
         self.assertIn("const LOG_RENDER_ROW_BUDGET = 300;", content)
+        self.assertIn("const LOG_QUERY_WORKER_THRESHOLD = 80;", content)
         self.assertIn("renderCurrentPage();", render_all_block)
         self.assertNotIn("renderLogs();", render_all_block)
-        self.assertIn("const boundedItems = visibleLogItems(filteredItems, uiLogDisplayLimit());", render_logs_block)
-        self.assertIn("boundedItems.slice(start, start + logPageSize)", render_logs_block)
-        self.assertIn("function visibleLogItems(items, rowBudget = LOG_RENDER_ROW_BUDGET)", content)
+        self.assertIn("submitLogQuery(allItems, signature);", render_logs_block)
+        self.assertIn("queryLogsSync(allItems, sequence);", render_logs_block)
+        self.assertIn('new Worker("/static/log_query_worker.js?v=20260707-log-worker")', content)
+        self.assertIn("const items = Array.isArray(result.pageItems)", query_result_block)
+        self.assertIn('patchTableRows("logBody", items', query_result_block)
+        self.assertIn("boundedItems.slice(start, start + pageSize)", content)
+        self.assertIn("queryLogItems(request", content)
+        self.assertIn("function visibleLogItems(items, rowBudget = 300)", content)
+        self.assertIn("rowBudget: uiLogDisplayLimit()", content)
         self.assertIn("function setLogPage(delta)", content)
         self.assertIn("function setLogPageSize(value)", content)
         self.assertIn("function normalizeLogPageSize(value)", content)
-        self.assertIn('syncCustomSelectForSelect(byId("logPageSize"))', render_logs_block)
+        self.assertIn('syncCustomSelectForSelect(byId("logPageSize"))', query_result_block)
         for elem_id in ("logTotal", "logPrevPage", "logPageIndicator", "logPageSize", "logNextPage"):
             self.assertIn(f'id="{elem_id}"', html)
         self.assertIn('<option value="0">全部</option>', html)
@@ -804,7 +945,7 @@ class WebUIBrowserTests(unittest.TestCase):
         cls._playwright = sync_playwright().start()
         cls._browser = cls._playwright.chromium.launch(headless=True)
         cls._context = cls._browser.new_context(viewport={"width": 1280, "height": 720})
-        cls._page = cls._context.new_page()
+        cls._page = _new_webui_page(cls._context)
 
     @classmethod
     def tearDownClass(cls):
@@ -821,19 +962,33 @@ class WebUIBrowserTests(unittest.TestCase):
             pass
 
     def setUp(self):
-        # 每个测试前清 localStorage
-        self._page.goto(self._server_url)
+        # local/session storage is cleared by the page init script before each navigation.
+        pass
+
+    def _goto_ready(self):
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
         try:
-            self._page.evaluate("localStorage.clear()")
-        except Exception:
-            pass
+            _wait_for_webui_ready(self._page, self._server_url)
+        except PlaywrightTimeoutError:
+            # Long browser runs can leave a page-level websocket/worker/nav state dirty.
+            # Recreate only the Page; if the server is unhealthy the retry still fails.
+            try:
+                self._page.close()
+            except Exception:
+                pass
+            self.__class__._page = _new_webui_page(self._context)
+            _wait_for_webui_ready(self._page, self._server_url)
+
+    def _wait_for_platform_options(self):
+        self._page.wait_for_function(
+            "(document.querySelector('#sourceSelect')?.options.length || 0) > 0",
+            timeout=5000,
+        )
 
     def test_01_index_loads(self):
         """主页加载成功。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        # 3 秒解锁超时后应能看到 body
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         title = self._page.title()
         self.assertIn("Universal", title)
 
@@ -867,17 +1022,14 @@ class WebUIBrowserTests(unittest.TestCase):
 
     def test_06_source_select_visible(self):
         """sourceSelect 应可见。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 等待 select 可见
         sel = self._page.locator("#sourceSelect")
         self.assertTrue(sel.is_visible(), "sourceSelect should be visible after init")
 
     def test_06b_source_select_uses_platform_icons_like_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
+        self._wait_for_platform_options()
 
         result = self._page.evaluate(
             """
@@ -899,20 +1051,20 @@ class WebUIBrowserTests(unittest.TestCase):
 
     def test_07_theme_toggle_changes_data_theme(self):
         """点击主题按钮应切换 data-theme。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         before = self._page.evaluate("document.documentElement.getAttribute('data-theme')")
         self._page.locator("#themeBtn").click()
-        self._page.wait_for_timeout(200)
+        self._page.wait_for_function(
+            "expected => document.documentElement.getAttribute('data-theme') === expected",
+            arg="light" if before == "dark" else "dark",
+            timeout=5000,
+        )
         after = self._page.evaluate("document.documentElement.getAttribute('data-theme')")
         self.assertIn(before, {"light", "dark"})
         self.assertEqual(after, "light" if before == "dark" else "dark")
 
     def test_07b_appearance_theme_segment_disables_follow_system(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -950,34 +1102,32 @@ class WebUIBrowserTests(unittest.TestCase):
 
     def test_08_dir_modal_opens(self):
         """点击更改目录按钮应弹出目录弹窗。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 找到更改目录按钮
         # HTML 里 onclick="onChangeDirClicked()"
         self._page.evaluate("onChangeDirClicked()")
-        # 不一定立即可见（要先 fetch /api/dir/list）
-        self._page.wait_for_timeout(2000)
+        self._page.wait_for_function(
+            "() => ['flex', 'block'].includes(document.getElementById('dirModal')?.style.display)",
+            timeout=5000,
+        )
         # 检查 modal.style.display 变成了 flex
         display = self._page.evaluate("document.getElementById('dirModal').style.display")
         self.assertIn(display, ("flex", "block"))
 
     def test_09_selection_modal_can_be_called(self):
         """showSelectionModal 函数可以调用。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 直接调用 showSelectionModal
         self._page.evaluate("showSelectionModal([{title: 'test'},{title: 'demo'}])")
-        # 弹窗应出现
-        self._page.wait_for_timeout(500)
+        self._page.wait_for_function(
+            "() => ['flex', 'block'].includes(document.getElementById('selectionModal')?.style.display) && document.getElementById('selectionHeader')?.textContent.includes('2')",
+            timeout=5000,
+        )
         header = self._page.locator("#selectionHeader").text_content()
         self.assertIn("2", header)
 
     def test_09b_language_switch_translates_runtime_ui_messages(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1007,9 +1157,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["dirStatus"], "Failed to load folder: boom")
 
     def test_09c_language_switch_keeps_log_filter_values_and_labels(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1044,9 +1192,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["logPlatformFilter"], {"value": "all", "label": "All"})
 
     def test_09d_log_tabs_keep_gui_counts_after_language_refresh(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1124,10 +1270,67 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("Performance logs 0", result["en"])
         self.assertIn("Error logs 1", result["en"])
 
+    def test_09da_large_log_query_uses_worker_and_renders_current_page(self):
+        self._goto_ready()
+        self._page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              if (ws) {
+                try { ws.close(); } catch (_error) {}
+                ws = null;
+              }
+              frontendState.log_items = Array.from({ length: 120 }, (_, index) => ({
+                id: `worker-log-${index}`,
+                time: '2026-07-06 03:30:' + String(index % 60).padStart(2, '0'),
+                level: index % 10 === 0 ? 'ERROR' : 'INFO',
+                source: index % 2 === 0 ? 'BilibiliDownloader' : 'GUI',
+                platform: index % 2 === 0 ? 'Bilibili' : '系统',
+                trace_id: `trace-${index}`,
+                message_summary: index % 2 === 0 ? '下载任务完成' : '系统状态刷新',
+                message: index % 2 === 0 ? '下载任务完成' : '系统状态刷新'
+              }));
+              logFilters = {
+                category: 'all',
+                level: 'all',
+                time: 'all',
+                platform: 'all',
+                trace: '',
+                keyword: ''
+              };
+              logPage = 1;
+              logPageSize = 20;
+              logQueryState = { signature: '', result: null, pending: false };
+              switchPage('logs');
+              renderLogs();
+              const deadline = Date.now() + 4000;
+              while ((!logQueryState.result || logQueryState.pending) && Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+              }
+              return {
+                workerCreated: Boolean(logQueryWorker),
+                pending: logQueryState.pending,
+                rows: document.querySelectorAll('#logBody tr').length,
+                total: logQueryState.result?.totalCount || 0,
+                matched: logQueryState.result?.matchedCount || 0,
+                visible: logQueryState.result?.visibleCount || 0,
+                allTab: document.querySelector('#logTabs [data-log-tab="all"]')?.textContent.trim() || ''
+              };
+            }
+            """
+        )
+
+        self.assertTrue(result["workerCreated"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["rows"], 20)
+        self.assertEqual(result["total"], 120)
+        self.assertEqual(result["matched"], 120)
+        self.assertEqual(result["visible"], 20)
+        self.assertIn("120", result["allTab"])
+
     def test_09e_language_switch_translates_log_values_and_completed_detail_labels(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1214,9 +1417,7 @@ class WebUIBrowserTests(unittest.TestCase):
             self.assertIn(label, result["twCompletedText"])
 
     def test_09f_language_switch_translates_settings_logs_active_and_platforms(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1444,9 +1645,7 @@ class WebUIBrowserTests(unittest.TestCase):
             self.assertNotIn(unexpected, result["zhActiveText"])
 
     def test_09g_current_page_language_controls_runtime_dialogs_and_dynamic_text(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1495,9 +1694,7 @@ class WebUIBrowserTests(unittest.TestCase):
             self.assertNotIn(unexpected, result["activeText"] + result["modalText"])
 
     def test_09h_runtime_language_update_translates_dropdowns_logs_active_and_dialogs(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1720,9 +1917,7 @@ class WebUIBrowserTests(unittest.TestCase):
             self.assertNotIn(unexpected, "\n".join(result["sourceOptions"]) + result["settingsText"] + result["logsText"] + result["completedText"] + result["activeText"] + result["modalText"])
 
     def test_09i_runtime_log_translation_handles_raw_english_sources(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -1814,17 +2009,15 @@ class WebUIBrowserTests(unittest.TestCase):
         )
 
     def test_09j_completed_pending_metadata_fallback_respects_language(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
             async () => {
-              document.documentElement.dataset.language = "en-US";
               const pendingText = String.fromCharCode(0x68c0, 0x6d4b, 0x4e2d);
               const originalMediaDisplay = window.UcpMediaDisplay;
               const taskRenderScript = await fetch("/static/task_render.js").then(response => response.text());
+              document.documentElement.dataset.language = "en-US";
               const frame = document.createElement("iframe");
               document.body.appendChild(frame);
               try {
@@ -1858,9 +2051,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         result = self._page.evaluate(
             """
             () => {
@@ -1881,29 +2072,30 @@ class WebUIBrowserTests(unittest.TestCase):
             }
             """
         )
-        self._page.wait_for_timeout(200)
         self.assertTrue(result["called"])
         self.assertFalse(result["bodyFullscreen"])
 
     def test_11_esc_closes_modals(self):
         """Esc 键应关闭弹窗。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 打开 selection modal
         self._page.evaluate("showSelectionModal([{title: 'x'}])")
-        self._page.wait_for_timeout(300)
+        self._page.wait_for_function(
+            "() => ['flex', 'block'].includes(document.getElementById('selectionModal')?.style.display)",
+            timeout=5000,
+        )
         # 按 Esc
         self._page.keyboard.press("Escape")
-        self._page.wait_for_timeout(200)
+        self._page.wait_for_function(
+            "() => ['', 'none'].includes(document.getElementById('selectionModal')?.style.display)",
+            timeout=5000,
+        )
         # modal 应隐藏
         display = self._page.evaluate("document.getElementById('selectionModal').style.display")
         self.assertIn(display, ("none", ""), f"selectionModal should be hidden, got display={display!r}")
 
     def test_11b_enter_confirms_selection_modal(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         self._page.evaluate(
             """
             () => {
@@ -1914,11 +2106,17 @@ class WebUIBrowserTests(unittest.TestCase):
             }
             """
         )
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function(
+            "() => ['flex', 'block'].includes(document.getElementById('selectionModal')?.style.display)",
+            timeout=5000,
+        )
         self._page.evaluate("document.querySelector('#selectionBody input').focus()")
 
         self._page.keyboard.press("Enter")
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function(
+            "() => ['', 'none'].includes(document.getElementById('selectionModal')?.style.display) && window.__selectionShortcutMessages?.length === 1",
+            timeout=5000,
+        )
 
         result = self._page.evaluate(
             """
@@ -1935,9 +2133,7 @@ class WebUIBrowserTests(unittest.TestCase):
         )
 
     def test_11c_file_association_modal_esc_and_enter_match_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         esc_result = self._page.evaluate(
             """
@@ -1956,7 +2152,10 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(esc_result["image"])
 
         self._page.keyboard.press("Escape")
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function(
+            "() => ['', 'none'].includes(document.getElementById('fileAssociationModal')?.style.display)",
+            timeout=5000,
+        )
         display_after_esc = self._page.evaluate("document.getElementById('fileAssociationModal').style.display")
         self.assertIn(display_after_esc, ("none", ""))
 
@@ -1973,7 +2172,10 @@ class WebUIBrowserTests(unittest.TestCase):
             """
         )
         self._page.keyboard.press("Enter")
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function(
+            "() => ['', 'none'].includes(document.getElementById('fileAssociationModal')?.style.display) && window.__associationActions?.length === 1",
+            timeout=5000,
+        )
 
         enter_result = self._page.evaluate(
             """
@@ -1990,9 +2192,7 @@ class WebUIBrowserTests(unittest.TestCase):
         )
 
     def test_11d_missing_media_validation_keeps_preview_closed(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2038,9 +2238,7 @@ class WebUIBrowserTests(unittest.TestCase):
         )
 
     def test_11e_delete_current_preview_closes_player_immediately(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2091,9 +2289,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["previewText"], "")
 
     def test_11f_stale_selection_reconciles_to_visible_first_row(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2160,9 +2356,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("Tool A", result["toolDetail"])
 
     def test_11g_settings_nav_icons_load_from_backend_route(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2200,20 +2394,19 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["detail"]["loaded"])
 
     def test_11h_platform_custom_proxy_stays_inside_settings_panel(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
             () => {
+              __STABLE_PLATFORM_SETTINGS__
               currentSettingsGroup = '\\u5e73\\u53f0\\u8bbe\\u7f6e';
               switchPage('settings');
               renderSettings(true);
               const proxySelect = Array.from(document.querySelectorAll('#page-settings select.platform-proxy'))
-                .find(select => !select.disabled && Array.from(select.options).some(option => option.textContent.includes('\\u81ea\\u5b9a\\u4e49')));
+                .find(select => !select.disabled && Array.from(select.options).some(option => option.value === '\\u81ea\\u5b9a\\u4e49'));
               if (proxySelect) {
-                const customOption = Array.from(proxySelect.options).find(option => option.textContent.includes('\\u81ea\\u5b9a\\u4e49'));
+                const customOption = Array.from(proxySelect.options).find(option => option.value === '\\u81ea\\u5b9a\\u4e49');
                 proxySelect.value = customOption.value;
                 proxySelect.dispatchEvent(new Event('change', { bubbles: true }));
               }
@@ -2248,7 +2441,7 @@ class WebUIBrowserTests(unittest.TestCase):
                   : false
               };
             }
-            """
+            """.replace("__STABLE_PLATFORM_SETTINGS__", _stable_platform_settings_snapshot_js())
         )
 
         self.assertTrue(result["hasInput"])
@@ -2266,9 +2459,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["inputSameRow"])
 
     def test_11ha_settings_card_slicing_matches_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2332,13 +2523,12 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertLessEqual(abs(result["platformBodyWidth"] - result["panelInnerWidth"]), 2)
 
     def test_11hb_settings_controls_expose_backend_setting_keys(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
             () => {
+              __STABLE_PLATFORM_SETTINGS__
               const groups = {
                 basic: '\\u57fa\\u7840\\u8bbe\\u7f6e',
                 download: '\\u4e0b\\u8f7d\\u8bbe\\u7f6e',
@@ -2360,7 +2550,7 @@ class WebUIBrowserTests(unittest.TestCase):
               }
               return collected;
             }
-            """
+            """.replace("__STABLE_PLATFORM_SETTINGS__", _stable_platform_settings_snapshot_js())
         )
 
         expected = {
@@ -2389,9 +2579,7 @@ class WebUIBrowserTests(unittest.TestCase):
             self.assertTrue(keys.issubset(set(result[group])), (group, result[group]))
 
     def test_11i_default_open_mode_row_keeps_select_readable(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2424,13 +2612,91 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("默认打开方式", result["actionTitle"])
         self.assertEqual(result["actionTitle"], result["actionAria"])
 
+    def test_11ia_settings_custom_select_selected_option_keeps_theme_contrast(self):
+        self._goto_ready()
+
+        samples = self._page.evaluate(
+            """
+            async () => {
+              const accents = ["blue", "green", "purple", "orange", "red"];
+              const themes = ["light", "dark"];
+              const waitFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
+              const rgb = value => {
+                const raw = String(value || "");
+                const nums = raw.match(/[\\d.]+/g);
+                if (!nums || nums.length < 3) return null;
+                if (raw.startsWith("color(")) {
+                  return nums.slice(0, 3).map(Number).map(component => component <= 1 ? component * 255 : component);
+                }
+                return nums.slice(0, 3).map(Number);
+              };
+              const luminance = color => {
+                if (!color) return 0;
+                const channels = color.map(component => {
+                  const normalized = component / 255;
+                  return normalized <= 0.03928
+                    ? normalized / 12.92
+                    : Math.pow((normalized + 0.055) / 1.055, 2.4);
+                });
+                return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+              };
+              const contrast = (front, back) => {
+                const a = luminance(front);
+                const b = luminance(back);
+                const light = Math.max(a, b);
+                const dark = Math.min(a, b);
+                return (light + 0.05) / (dark + 0.05);
+              };
+              const sample = async (theme, accent) => {
+                applyAppearance({ theme, accent, scale: "100%", font_size: "medium", language: "zh-CN" });
+                currentSettingsGroup = "\\u57fa\\u7840\\u8bbe\\u7f6e";
+                switchPage("settings");
+                renderSettings(true);
+                await waitFrame();
+                const select = document.querySelector('#page-settings select[data-setting="filename_template"]');
+                const wrapper = select?.closest(".custom-select");
+                const button = wrapper?.querySelector(".custom-select-button");
+                button?.click();
+                await waitFrame();
+                const option = wrapper?.querySelector(".custom-select-option.selected");
+                const label = option?.querySelector(".custom-select-label");
+                const optionStyle = option ? getComputedStyle(option) : null;
+                const labelStyle = label ? getComputedStyle(label) : null;
+                const optionColor = optionStyle?.color || "";
+                const labelColor = labelStyle?.color || "";
+                const backgroundColor = optionStyle?.backgroundColor || "";
+                button?.click();
+                return {
+                  theme,
+                  accent,
+                  hasOption: Boolean(option && label),
+                  optionColor,
+                  labelColor,
+                  backgroundColor,
+                  contrast: contrast(rgb(labelColor), rgb(backgroundColor)),
+                };
+              };
+              const results = [];
+              for (const theme of themes) {
+                for (const accent of accents) {
+                  results.push(await sample(theme, accent));
+                }
+              }
+              return results;
+            }
+            """
+        )
+
+        for sample in samples:
+            self.assertTrue(sample["hasOption"], sample)
+            self.assertEqual(sample["labelColor"], sample["optionColor"], sample)
+            self.assertGreaterEqual(sample["contrast"], 4.5, sample)
+
     def test_11j_settings_select_opens_up_near_panel_bottom(self):
         original_viewport = self._page.viewport_size
         self._page.set_viewport_size({"width": 1280, "height": 520})
         try:
-            self._page.goto(self._server_url)
-            self._page.wait_for_load_state("networkidle")
-            self._page.wait_for_timeout(3500)
+            self._goto_ready()
             result = self._page.evaluate(
                 """
                 async () => {
@@ -2469,9 +2735,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["menuInsideViewport"])
 
     def test_11k_download_settings_order_matches_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2500,9 +2764,7 @@ class WebUIBrowserTests(unittest.TestCase):
         )
 
     def test_11ka_download_setting_labels_match_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2529,9 +2791,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("限制最大下载速度", result["speed_limit_kb"]["description"])
 
     def test_11kb_log_setting_labels_match_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2558,9 +2818,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("限制日志中心展示条数", result["ui_log_max_display_count"]["description"])
 
     def test_11l_download_directory_browse_button_opens_dir_dialog(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2594,9 +2852,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["display"], "flex")
 
     def test_11m_playback_setting_labels_match_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2630,9 +2886,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.on("pageerror", lambda e: errors.append(str(e)))
         self._page.on("console", lambda msg: errors.append(f"console.{msg.type}: {msg.text}")
                       if msg.type == "error" else None)
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 过滤已知的非关键错误
         critical_errors = [e for e in errors
                            if "favicon" not in e.lower()
@@ -2643,9 +2897,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
     def test_13_log_panel_writes(self):
         """appendLog 应在 logPanel 写入内容。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         timestamp = self._page.evaluate("formatLocalDateTime(new Date(2026, 6, 4, 6, 24, 9))")
         self.assertEqual(timestamp, "2026-07-04 06:24:09")
         self._page.evaluate("appendLog('test marker 12345')")
@@ -2653,13 +2905,12 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("test marker 12345", content)
 
     def test_13b_log_center_footer_paginates_like_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
             () => {
+              switchPage('logs');
               currentPage = 'logs';
               logPage = 1;
               logPageSize = 20;
@@ -2710,13 +2961,12 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["secondNextDisabled"])
 
     def test_13c_log_center_empty_state_matches_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
             () => {
+              switchPage('logs');
               currentPage = 'logs';
               logPage = 1;
               logPageSize = 20;
@@ -2739,10 +2989,20 @@ class WebUIBrowserTests(unittest.TestCase):
               }];
               renderLogs();
               const empty = document.getElementById('logEmptyState');
+              const subtitle = empty.querySelector('.log-empty-subtitle');
+              const primaryNode = empty.querySelector('[data-log-empty-primary]');
+              const secondaryNode = empty.querySelector('[data-log-empty-secondary]');
               return {
                 rowCount: document.querySelectorAll('#logBody tr').length,
                 hidden: empty.hidden,
                 text: empty.textContent.replace(/\\s+/g, ' ').trim(),
+                ariaLabel: subtitle?.getAttribute('aria-label') || '',
+                primary: primaryNode?.textContent || '',
+                secondary: secondaryNode?.textContent || '',
+                primaryTop: primaryNode?.getBoundingClientRect().top || 0,
+                secondaryTop: secondaryNode?.getBoundingClientRect().top || 0,
+                subtitleDisplay: getComputedStyle(subtitle).display,
+                subtitleDirection: getComputedStyle(subtitle).flexDirection,
                 stats: document.getElementById('logTotal').textContent
               };
             }
@@ -2752,15 +3012,19 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["rowCount"], 0)
         self.assertFalse(result["hidden"])
         self.assertIn("暂无匹配日志", result["text"])
-        self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", result["text"])
+        self.assertEqual(result["ariaLabel"], "调整筛选条件 或点击「刷新缓冲」重新加载日志")
+        self.assertNotIn("调整筛选条件，", result["text"])
+        self.assertEqual(result["primary"], "调整筛选条件")
+        self.assertEqual(result["secondary"], "或点击「刷新缓冲」重新加载日志")
+        self.assertGreater(result["secondaryTop"], result["primaryTop"])
+        self.assertEqual(result["subtitleDisplay"], "flex")
+        self.assertEqual(result["subtitleDirection"], "column")
         self.assertEqual(result["stats"], "共 1 条 / 匹配 0 条 / 当前显示 0 条")
 
     def test_13c_log_table_summary_column_stays_visible_at_gui_width(self):
         self._page.set_viewport_size({"width": 1270, "height": 1024})
         try:
-            self._page.goto(self._server_url)
-            self._page.wait_for_load_state("networkidle")
-            self._page.wait_for_timeout(3500)
+            self._goto_ready()
 
             result = self._page.evaluate(
                 """
@@ -2819,9 +3083,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertLessEqual(result["detailWidth"], 360)
 
     def test_13c_log_detail_copy_export_actions_match_gui(self):
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
 
         result = self._page.evaluate(
             """
@@ -2897,9 +3159,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
     def test_14_keyboard_arrow_navigation(self):
         """方向键应在 videoOrder 之间切换。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 注入测试数据
         self._page.evaluate("""
             videoOrder = ['a', 'b', 'c'];
@@ -2912,20 +3172,18 @@ class WebUIBrowserTests(unittest.TestCase):
         """)
         # 第一次按 ArrowDown → 选中 a
         self._page.keyboard.press("ArrowDown")
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function("() => selectedVideoId === 'a'", timeout=5000)
         sel = self._page.evaluate("selectedVideoId")
         self.assertEqual(sel, "a")
         # 再按 ArrowDown → 选中 b
         self._page.keyboard.press("ArrowDown")
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function("() => selectedVideoId === 'b'", timeout=5000)
         sel = self._page.evaluate("selectedVideoId")
         self.assertEqual(sel, "b")
 
     def test_15_delete_key_removes(self):
         """Delete 键应触发删除。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # Mock sendWS 来拦截 delete_video
         self._page.evaluate("""
             window._deletedIds = [];
@@ -2941,7 +3199,7 @@ class WebUIBrowserTests(unittest.TestCase):
         # 焦点不在输入框
         self._page.evaluate("document.body.focus()")
         self._page.keyboard.press("Delete")
-        self._page.wait_for_timeout(100)
+        self._page.wait_for_function("() => window._deletedIds?.length === 1", timeout=5000)
         deleted = self._page.evaluate("window._deletedIds")
         self.assertEqual(deleted, ["x1"])
 
@@ -2958,6 +3216,7 @@ class WebUIAccessibilityTests(unittest.TestCase):
         cls._browser = cls._playwright.chromium.launch(headless=True)
         cls._context = cls._browser.new_context()
         cls._page = cls._context.new_page()
+        cls._page.add_init_script("localStorage.clear(); sessionStorage.clear();")
 
     @classmethod
     def tearDownClass(cls):
@@ -2973,11 +3232,12 @@ class WebUIAccessibilityTests(unittest.TestCase):
         except Exception:
             pass
 
+    def _goto_ready(self):
+        _wait_for_webui_ready(self._page, self._server_url)
+
     def test_buttons_have_text_or_title(self):
         """所有按钮必须有可读文本或 title。"""
-        self._page.goto(self._server_url)
-        self._page.wait_for_load_state("networkidle")
-        self._page.wait_for_timeout(3500)
+        self._goto_ready()
         # 检查所有 .btn / button 元素
         buttons = self._page.locator("button").all()
         for b in buttons:
@@ -2992,13 +3252,13 @@ class WebUIAccessibilityTests(unittest.TestCase):
 
     def test_html_has_lang(self):
         """html 必须有 lang 属性。"""
-        self._page.goto(self._server_url)
+        self._page.goto(self._server_url, wait_until="domcontentloaded")
         lang = self._page.evaluate("document.documentElement.getAttribute('lang')")
         self.assertIn(lang, ("zh-CN", "zh", "en"), f"html lang={lang!r}")
 
     def test_viewport_meta(self):
         """必须有 viewport meta 标签。"""
-        self._page.goto(self._server_url)
+        self._page.goto(self._server_url, wait_until="domcontentloaded")
         viewport = self._page.locator("meta[name=viewport]").get_attribute("content")
         self.assertIsNotNone(viewport)
         self.assertIn("width=device-width", viewport)
@@ -3043,3 +3303,6 @@ class WebDesignGuidelinesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
