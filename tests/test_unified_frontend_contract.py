@@ -116,6 +116,20 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             ["queue", "active", "completed", "failed", "logs", "settings", "toolbox"],
         )
 
+    def test_reselecting_current_sidebar_page_does_not_rerender_body(self):
+        shell = self._make_shell()
+        shell.show_page("failed")
+        emitted: list[str] = []
+        shell.page_changed.connect(emitted.append)
+        failed = shell.pages["failed"]
+
+        with patch.object(failed, "render", wraps=failed.render) as failed_render:
+            shell.show_page("failed")
+
+        self.assertEqual(emitted, [])
+        failed_render.assert_not_called()
+        self.assertEqual(shell.current_page_id, "failed")
+
     def test_sidebar_count_badge_uses_compact_mainstream_size(self):
         self.assertEqual(_badge_size("3"), QSize(24, 24))
         self.assertEqual(_badge_size("20").height(), 24)
@@ -2033,12 +2047,18 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(active.detail_events_title.text(), "Current task events")
         self.assertEqual(active.running_count_label.text(), "Running: 0 tasks")
 
-        snapshot["completed_items"][0]["duration"] = "检测中"
-        snapshot["completed_items"][0]["resolution"] = "检测中"
+        snapshot["completed_items"][0]["duration"] = "--"
+        snapshot["completed_items"][0]["resolution"] = "--"
+        snapshot["completed_items"][0]["metadata_pending"] = True
         shell.show_page("completed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "completed_items"})
         self.app.processEvents()
         completed = shell.pages["completed"]
+        completed_model = completed.table.model()
+        self.assertEqual(
+            completed_model.data(completed_model.index(0, 2), Qt.ItemDataRole.DisplayRole),
+            "Checking",
+        )
         completed_labels = {label.text() for label in completed.info_body.findChildren(QLabel)}
         self.assertEqual(completed.info_title.text(), "File info")
         self.assertIn("Filename", completed_labels)
@@ -2054,6 +2074,163 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(failed.detail_title.text(), "Error details")
         self.assertEqual(failed.solutions_title.text(), "Possible fixes")
         self.assertIn("No failed tasks", failed_labels)
+
+    def test_failed_page_localizes_dynamic_error_details_and_solutions(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "en-US"
+        title = "P05_末日废土生存指南"
+        error = (
+            "B站下载失败: B站流下载失败: "
+            "('Connection aborted.', ConnectionResetError(10054, "
+            "'远程主机强迫关闭了一个现有的连接。', None, 10054, None))"
+        )
+        snapshot["failed_items"] = [
+            {
+                "id": "failed-gui-i18n",
+                "title": title,
+                "failed_at": "2026-07-06 18:38:14",
+                "failed_at_table": "07-06 18:38",
+                "reason": error,
+                "reason_detail": error,
+                "reason_label": "链接失败",
+                "reason_icon_file": "action_trace_link.png",
+                "platform": "Bilibili",
+                "platform_id": "bilibili",
+                "trace_id": "bilibili_BV1Zj421D7xG_1445597741",
+                "status_label": "失败",
+                "log_excerpt_items": [
+                    {
+                        "time": "2026-07-06 18:34:48",
+                        "level": "ERROR",
+                        "message": f"下载失败 [{title}]: {error}",
+                        "icon_file": "log_level_error.png",
+                    },
+                    {
+                        "time": "2026-07-06 18:36:12",
+                        "level": "ERROR",
+                        "message": (
+                            "('Connection aborted.', ConnectionResetError(10054, "
+                            "'远程主机强迫关闭了一个现有的连接。', None, 10054, None))"
+                        ),
+                        "icon_file": "log_level_error.png",
+                    },
+                    {
+                        "time": "2026-07-06 18:36:25",
+                        "level": "INFO",
+                        "message": "Bilibili 流请求建立成功",
+                        "icon_file": "log_level_info.png",
+                    },
+                    {
+                        "time": "2026-07-06 18:36:59",
+                        "level": "ERROR",
+                        "message": (
+                            "B站流下载失败: ('Connection broken: "
+                            "IncompleteRead(19528595 bytes read, 1597253 more expected)', "
+                            "IncompleteRead(19528595 bytes read, 1597253 more expected))"
+                        ),
+                        "icon_file": "log_level_error.png",
+                    }
+                ],
+                "solutions": [
+                    {
+                        "title": "重新获取链接",
+                        "description": "请重新复制最新的分享链接并重试任务。",
+                        "icon_file": "action_trace_link.png",
+                    },
+                    {
+                        "title": "检查网络",
+                        "description": "确认代理、DNS 和网络环境正常，必要时切换网络后重试。",
+                        "icon_file": "status_network_warning.png",
+                    },
+                ],
+            }
+        ]
+
+        shell.show_page("failed")
+        shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
+        self.app.processEvents()
+
+        failed = shell.pages["failed"]
+        model = failed.table.model()
+        self.assertEqual(model.index(0, 2).data(Qt.ItemDataRole.DisplayRole), "Link failed")
+
+        visible_text = "\n".join(label.text() for label in failed.findChildren(QLabel))
+        self.assertIn("B-site download failed", visible_text)
+        self.assertIn("B-site stream download failed", visible_text)
+        self.assertIn("The remote host forcibly closed an existing connection.", visible_text)
+        self.assertIn("Bilibili stream request established", visible_text)
+        self.assertIn("Connection broken: IncompleteRead", visible_text)
+        self.assertIn("Download failed", visible_text)
+        self.assertIn("Refresh link", visible_text)
+        self.assertIn("Check network", visible_text)
+        self.assertIn("Copy the latest share link again and retry the task.", visible_text)
+        self.assertIn("Confirm proxy, DNS, and network settings are working", visible_text)
+        self.assertNotIn("链接失败", visible_text)
+        self.assertNotIn("B站下载失败", visible_text)
+        self.assertNotIn("B站流下载失败", visible_text)
+        self.assertNotIn("远程主机强迫关闭", visible_text)
+        self.assertNotIn("Bilibili 流请求建立成功", visible_text)
+        self.assertNotIn("重新获取链接", visible_text)
+        self.assertNotIn("检查网络", visible_text)
+
+    def test_failed_page_preserves_selected_item_id_after_list_refresh_reorders_rows(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "en-US"
+
+        def failed_row(item_id: str, title: str) -> dict:
+            return {
+                "id": item_id,
+                "title": title,
+                "failed_at": "2026-07-06 18:49:04",
+                "failed_at_table": "07-06 18:49",
+                "reason": "B站下载失败",
+                "reason_detail": "B站下载失败",
+                "reason_label": "链接失败",
+                "reason_icon_file": "action_trace_link.png",
+                "platform": "Bilibili",
+                "platform_id": "bilibili",
+                "trace_id": item_id,
+                "status_label": "失败",
+                "log_excerpt_items": [],
+                "solutions": [],
+            }
+
+        snapshot["failed_items"] = [
+            failed_row("p16", "P16_生物为什么要进化出性别?"),
+            failed_row("p18", "P18_如果月球突然消失了会发生什么?"),
+            failed_row("p19", "P19_地球内部有没有高等文明存在?"),
+        ]
+        shell.show_page("failed")
+        shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
+        self.app.processEvents()
+
+        failed = shell.pages["failed"]
+        self.assertTrue(failed.select_id("p16"))
+        self.app.processEvents()
+        self.assertEqual(failed.selected_id(), "p16")
+
+        snapshot["failed_items"] = [
+            snapshot["failed_items"][1],
+            snapshot["failed_items"][0],
+            snapshot["failed_items"][2],
+        ]
+        shell.render(snapshot, changed_sections={"failed_items"})
+        self.app.processEvents()
+
+        title_row = failed.summary_layout.itemAt(0).widget()
+        title_value = title_row.layout().itemAt(1).widget().findChild(QLabel).text()
+        self.assertEqual(failed.selected_id(), "p16")
+        self.assertEqual(failed.table.selected_id(), "p16")
+        self.assertEqual(title_value, "P16_生物为什么要进化出性别?")
+
+        self.assertTrue(failed.table.select_id("p18"))
+        self.app.processEvents()
+        title_row = failed.summary_layout.itemAt(0).widget()
+        title_value = title_row.layout().itemAt(1).widget().findChild(QLabel).text()
+        self.assertEqual(failed.selected_id(), "p18")
+        self.assertEqual(title_value, "P18_如果月球突然消失了会发生什么?")
 
     def test_gui_log_tabs_are_language_keyed_after_runtime_switch(self):
         shell = self._make_shell()
@@ -2089,6 +2266,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(logs._tab_buttons["system"].text(), "System logs 0")
         self.assertEqual(logs._tab_buttons["performance"].text(), "Performance logs 1")
         self.assertEqual(logs._tab_buttons["error"].text(), "Error logs 0")
+        for button in logs._tab_buttons.values():
+            text_width = button.fontMetrics().horizontalAdvance(button.text())
+            self.assertGreaterEqual(button.minimumWidth(), text_width + 28)
 
         snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "zh-CN"
         shell.render(snapshot, changed_sections={"settings_snapshot"})
@@ -2196,6 +2376,25 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(
             localize_log_text("准备下载 Bilibili 音视频流", "en-US"),
             "Preparing Bilibili audio/video stream download",
+        )
+        self.assertEqual(
+            localize_log_text("B站下载失败: B站流下载失败: 远程主机强迫关闭了一个现有的连接。", "en-US"),
+            "B-site download failed: B-site stream download failed: The remote host forcibly closed an existing connection.",
+        )
+        self.assertEqual(
+            localize_log_text(
+                "('Connection aborted.', ConnectionResetError(10054, '远程主机强迫关闭了一个现有的连接。', None, 10054, None))",
+                "en-US",
+            ),
+            "('Connection aborted.', ConnectionResetError(10054, 'The remote host forcibly closed an existing connection.', None, 10054, None))",
+        )
+        self.assertEqual(localize_log_text("Bilibili 流请求建立成功", "en-US"), "Bilibili stream request established")
+        self.assertEqual(
+            localize_log_text(
+                "下载失败 [demo]: B站下载失败: B站流下载失败: 远程主机强迫关闭了一个现有的连接。",
+                "en-US",
+            ),
+            "Download failed [demo]: B-site download failed: B-site stream download failed: The remote host forcibly closed an existing connection.",
         )
         self.assertEqual(localize_log_text("启动抖音任务 | 目标: demo", "en-US"), "Started Douyin task | target: demo")
         self.assertEqual(
@@ -2310,6 +2509,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(tw_catalog["播放前校验失败"], "播放前校驗失敗")
         self.assertEqual(en_catalog["检测中"], "Checking")
         self.assertEqual(tw_catalog["检测中"], "檢測中")
+        self.assertEqual(en_catalog["链接失败"], "Link failed")
+        self.assertEqual(tw_catalog["链接失败"], "連結失敗")
+        self.assertEqual(en_catalog["重新获取链接"], "Refresh link")
+        self.assertEqual(tw_catalog["重新获取链接"], "重新取得連結")
+        self.assertEqual(en_catalog["检查网络"], "Check network")
+        self.assertEqual(tw_catalog["检查网络"], "檢查網路")
 
     def test_webui_loads_language_catalogs_from_shared_api(self):
         content = _html_bundle()
@@ -2607,8 +2812,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIsNotNone(first_summary_row)
         value_widget = first_summary_row.layout().itemAt(1).widget()
         self.assertEqual(value_widget.minimumWidth(), 0)
+        failed.render(snapshot)
+        self.app.processEvents()
+        self.assertIs(failed.summary_layout.itemAt(0).widget(), first_summary_row)
         failed._clear_layout(failed.summary_layout)
-        self.assertIsNone(first_summary_row.parent())
+        self.assertIs(first_summary_row.parent(), failed.summary_body)
+        self.assertTrue(first_summary_row.isHidden())
 
     def test_failed_log_rows_keep_full_time_and_aligned_messages(self):
         shell = self._make_shell()

@@ -12,6 +12,9 @@ from app.ui.localization import normalize_language, platform_display_name, tr
 from app.utils.qt_runtime import load_qt_icon
 
 SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 2
+PENDING_METADATA_LABEL = "\u68c0\u6d4b\u4e2d"
+PENDING_METADATA_COLUMNS = {"duration", "resolution"}
+PENDING_METADATA_EMPTY_VALUES = {"", "--", PENDING_METADATA_LABEL}
 
 class SnapshotTableModel(QAbstractTableModel):
     """Simple QAbstractTableModel for frontend snapshot rows."""
@@ -52,6 +55,8 @@ class SnapshotTableModel(QAbstractTableModel):
                 return str(row.get("source_display_full") or value)
             if key == "message_summary" and role == Qt.ItemDataRole.ToolTipRole:
                 return str(row.get("message") or row.get("message_summary") or value)
+            if key in PENDING_METADATA_COLUMNS and self._is_metadata_pending(row, value):
+                return tr(PENDING_METADATA_LABEL, self._language)
             if key in {"status", "status_label", "level", "level_display", "reason_label"}:
                 return tr(str(value), self._language)
             if key == "platform":
@@ -196,9 +201,19 @@ class SnapshotTableModel(QAbstractTableModel):
                 tuple(str(row.get(f"{column}_icon_file") or row.get(f"{column[:-6]}_icon_file" if column.endswith("_label") else "") or "") for column in self._columns),
                 str(row.get("platform_id", "")),
                 str(row.get("subtitle", "")),
+                bool(row.get("metadata_pending")),
             )
             for row in rows
         )
+
+    @staticmethod
+    def _is_metadata_pending(row: dict[str, Any], value: Any) -> bool:
+        text = str(value or "").strip()
+        if text == PENDING_METADATA_LABEL:
+            return True
+        if not row.get("metadata_pending"):
+            return False
+        return text in PENDING_METADATA_EMPTY_VALUES
 
     def _cached_icon(self, icon_file: str) -> QIcon | None:
         normalized = str(icon_file or "").strip()

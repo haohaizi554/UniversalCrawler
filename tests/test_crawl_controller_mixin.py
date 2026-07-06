@@ -178,7 +178,7 @@ class CrawlControllerMixinTests(unittest.TestCase):
         controller = _DummyCrawlController()
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         controller._on_spider_item_found = Mock()
-        controller._on_spider_select_tasks = Mock()
+        controller._schedule_spider_selection = Mock()
         controller._on_spider_finished = Mock()
 
         controller._dispatch_spider_event(build_item_found_event(item))
@@ -187,8 +187,33 @@ class CrawlControllerMixinTests(unittest.TestCase):
         controller._dispatch_spider_event(build_crawl_state_event(CrawlStatus.RUNNING, is_running=True))
 
         controller._on_spider_item_found.assert_called_once_with(item)
-        controller._on_spider_select_tasks.assert_called_once_with([item])
+        controller._schedule_spider_selection.assert_called_once_with([item])
         controller._on_spider_finished.assert_called_once()
+
+    def test_selection_event_is_deferred_on_qt_gui_thread(self):
+        try:
+            from PyQt6.QtCore import QCoreApplication, QThread, QTimer
+        except ImportError:
+            self.skipTest("PyQt6 not available")
+
+        controller = _DummyCrawlController()
+        controller._on_spider_select_tasks = Mock()
+        gui_thread = object()
+        app = Mock()
+        app.thread.return_value = gui_thread
+
+        with patch.object(QCoreApplication, "instance", return_value=app), patch.object(
+            QThread,
+            "currentThread",
+            return_value=gui_thread,
+        ), patch.object(QTimer, "singleShot") as single_shot:
+            controller._dispatch_spider_event(build_selection_required_event([{"title": "A"}]))
+
+        controller._on_spider_select_tasks.assert_not_called()
+        single_shot.assert_called_once()
+        callback = single_shot.call_args.args[1]
+        callback()
+        controller._on_spider_select_tasks.assert_called_once_with([{"title": "A"}])
 
 if __name__ == "__main__":
     unittest.main()

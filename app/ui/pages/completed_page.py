@@ -21,6 +21,7 @@ from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.ui.viewmodels.snapshot_table_model import PENDING_METADATA_EMPTY_VALUES, PENDING_METADATA_LABEL
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_item, page_slice, total_pages
 
 class CompletedPage(PageFrame):
@@ -215,8 +216,8 @@ class CompletedPage(PageFrame):
                 ("文件名", self._filename_for(item)),
                 ("保存路径", self._save_dir_for(item)),
                 ("完成时间", self._display_value(item.get("completed_at", ""))),
-                ("时长", self._display_value(item.get("duration", ""))),
-                ("分辨率", self._display_value(item.get("resolution", ""))),
+                ("时长", self._metadata_display_value(item, "duration")),
+                ("分辨率", self._metadata_display_value(item, "resolution")),
                 ("大小", self._display_value(item.get("size", ""))),
                 ("格式", self._display_value(item.get("format", ""))),
             ]
@@ -226,6 +227,19 @@ class CompletedPage(PageFrame):
     def _display_value(self, value: object) -> str:
         text = str(value or "")
         return self._t(text) if text else ""
+
+    def _metadata_display_value(self, item: dict, key: str) -> str:
+        value = item.get(key, "")
+        if self._is_metadata_pending_value(item, value):
+            return self._t(PENDING_METADATA_LABEL)
+        return self._display_value(value)
+
+    @staticmethod
+    def _is_metadata_pending_value(item: dict, value: object) -> bool:
+        if not item.get("metadata_pending"):
+            return False
+        text = str(value or "").strip()
+        return text in PENDING_METADATA_EMPTY_VALUES
 
     def _file_info_panel(self, pairs: list[tuple[str, object]]) -> QWidget:
         panel = QWidget()
@@ -294,6 +308,7 @@ class CompletedPage(PageFrame):
             item.get("size", ""),
             item.get("filename", ""),
             item.get("save_dir", ""),
+            bool(item.get("metadata_pending")),
         )
 
     def selected_id(self) -> str | None:

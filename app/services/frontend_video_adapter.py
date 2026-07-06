@@ -216,7 +216,6 @@ def completed_item(
     meta = item.meta or {}
     duration = display_duration(meta.get("duration") or getattr(metadata, "duration", ""))
     resolution = display_resolution(meta.get("resolution"), meta.get("quality"), getattr(metadata, "resolution", ""))
-    pending_label = "\u68c0\u6d4b\u4e2d"
     format_label = str(meta.get("format") or getattr(metadata, "format", "") or format_from_path(path))
     content_type = str(meta.get("content_type") or getattr(metadata, "content_type", "") or content_type_from_path(path))
     filename = str(meta.get("filename") or (path.name if path else "") or item.title)
@@ -227,8 +226,8 @@ def completed_item(
         "thumbnail": str(meta.get("thumbnail") or ""),
         "completed_at": completed_at,
         "completed_at_table": format_completed_at_table(completed_at),
-        "duration": duration or (pending_label if metadata_pending else "--"),
-        "resolution": resolution if resolution != "--" else (pending_label if metadata_pending else "--"),
+        "duration": duration or "--",
+        "resolution": resolution if resolution != "--" else "--",
         "size": format_size(size_bytes),
         "size_bytes": size_bytes,
         "format": format_label,

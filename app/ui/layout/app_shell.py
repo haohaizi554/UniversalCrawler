@@ -184,6 +184,13 @@ class AppShell(QWidget):
         if page is None:
             return
         self._close_combo_popups(self)
+        already_current = self.current_page_id == page_id and self.stack.currentWidget() is page
+        if already_current:
+            self.sidebar.set_active(page_id)
+            if render_page and page_id in self._translation_dirty_pages:
+                self._render_page(page_id)
+                self._translation_dirty_pages.discard(page_id)
+            return
         if self.current_page_id == "completed" and page_id != "completed":
             self.release_media()
         self.current_page_id = page_id
@@ -659,4 +666,3 @@ class AppShell(QWidget):
             cleanup = getattr(page, "cleanup", None)
             if callable(cleanup):
                 cleanup()
-

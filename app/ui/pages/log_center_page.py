@@ -98,6 +98,10 @@ LOG_CATEGORIES = {
     "performance": "性能日志",
     "error": "异常日志",
 }
+LOG_TAB_HEIGHT = 34
+LOG_TAB_MIN_WIDTH = 92
+LOG_TAB_TEXT_PADDING = 34
+LOG_TAB_ROW_HEIGHT = 48
 
 class LogCenterTableDelegate(SnapshotActionDelegate):
     """日志中心表格 delegate：source_display 支持按行居中对齐。"""
@@ -425,9 +429,19 @@ class LogCenterPage(PageFrame):
         return panel
 
     def _build_log_tabs(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setObjectName("LogTabs")
+        scroll.setFixedHeight(LOG_TAB_ROW_HEIGHT)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.viewport().setAutoFillBackground(False)
+
         row = QWidget()
-        row.setObjectName("LogTabs")
+        row.setObjectName("LogTabsContent")
         row.setFixedHeight(44)
+        row.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -440,8 +454,9 @@ class LogCenterPage(PageFrame):
             button.setCheckable(True)
             button.setAutoExclusive(True)
             button.setFlat(True)
-            button.setFixedHeight(34)
-            button.setMinimumWidth(92)
+            button.setFixedHeight(LOG_TAB_HEIGHT)
+            button.setMinimumWidth(LOG_TAB_MIN_WIDTH)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             button.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _checked=False, key=category: self._set_category(key))
@@ -449,8 +464,10 @@ class LogCenterPage(PageFrame):
             self._tab_buttons[category] = button
 
         layout.addStretch(1)
+        scroll.setWidget(row)
+        self._tab_content = row
         self._sync_tab_buttons()
-        return row
+        return scroll
 
     def _build_filter_bar(self) -> QFrame:
         bar = self._style_panel(QFrame())
@@ -975,6 +992,32 @@ class LogCenterPage(PageFrame):
         for category, button in self._tab_buttons.items():
             active = category == self._category
             self._apply_tab_button_style(button, active)
+            self._fit_tab_button_width(button)
+        self._sync_tab_content_width()
+
+    def _fit_tab_button_width(self, button: QPushButton) -> None:
+        width = max(
+            LOG_TAB_MIN_WIDTH,
+            button.fontMetrics().horizontalAdvance(button.text()) + LOG_TAB_TEXT_PADDING,
+        )
+        button.setFixedWidth(width)
+        button.setToolTip(button.text())
+        button.updateGeometry()
+
+    def _sync_tab_content_width(self) -> None:
+        content = getattr(self, "_tab_content", None)
+        if content is None:
+            return
+        layout = content.layout()
+        if layout is None:
+            return
+        margins = layout.contentsMargins()
+        buttons = list(self._tab_buttons.values())
+        width = margins.left() + margins.right() + sum(button.minimumWidth() for button in buttons)
+        if buttons:
+            width += max(0, len(buttons) - 1) * layout.spacing()
+        content.setMinimumWidth(width)
+        content.updateGeometry()
 
     def _sync_table_presentation(self) -> None:
         self.table_stack.setCurrentIndex(0 if self.items else 1)

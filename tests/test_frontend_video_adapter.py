@@ -272,8 +272,8 @@ def test_completed_item_marks_missing_metadata_as_pending():
         platform_label=lambda _: "Bilibili",
     )
 
-    assert row["duration"] == "\u68c0\u6d4b\u4e2d"
-    assert row["resolution"] == "\u68c0\u6d4b\u4e2d"
+    assert row["duration"] == "--"
+    assert row["resolution"] == "--"
     assert row["metadata_pending"] is True
 
 

@@ -15,7 +15,7 @@ import os
 import sys
 import unittest
 from importlib.util import find_spec
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 # ---- Helper ----
 
@@ -494,3 +494,17 @@ class SelectionDialogLanguageTests(unittest.TestCase):
         self.assertEqual(dialog.table.horizontalHeaderItem(1).text(), "Video title / description")
         for unexpected in ("任务清单确认", "全选", "反选", "取消任务", "开始下载"):
             self.assertNotIn(unexpected, visible_text)
+
+    def test_done_uninstalls_chrome_controller(self):
+        from PyQt6.QtWidgets import QDialog
+
+        from app.ui.dialogs.selection import SelectionDialog
+
+        dialog = SelectionDialog(None, items=[{"title": "Demo task", "index": 0}])
+        self.addCleanup(dialog.deleteLater)
+        controller = Mock()
+        dialog._window_chrome_controller = controller
+
+        dialog.done(QDialog.DialogCode.Accepted)
+
+        controller.uninstall.assert_called_once()

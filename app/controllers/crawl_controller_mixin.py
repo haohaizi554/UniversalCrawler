@@ -79,7 +79,7 @@ class CrawlControllerMixin:
     def _handle_spider_selection_event(self, event: DomainEvent) -> None:
         items = self._event_payload(event).get("items")
         if items is not None:
-            self._on_spider_select_tasks(items)
+            self._schedule_spider_selection(items)
 
     def _handle_spider_crawl_state_event(self, event: DomainEvent) -> None:
         if self._event_payload(event).get("status") == CrawlStatus.FINISHED.value:
@@ -97,6 +97,19 @@ class CrawlControllerMixin:
         handler = self._spider_event_handlers().get(event.event_type)
         if handler:
             handler(event)
+
+    def _schedule_spider_selection(self, items: list) -> None:
+        """Open the modal selection dialog outside the EventBus publish stack."""
+        try:
+            from PyQt6.QtCore import QCoreApplication, QThread, QTimer
+        except ImportError:
+            self._on_spider_select_tasks(items)
+            return
+        app = QCoreApplication.instance()
+        if app is None or QThread.currentThread() != app.thread():
+            self._on_spider_select_tasks(items)
+            return
+        QTimer.singleShot(0, lambda selected_items=items: self._on_spider_select_tasks(selected_items))
 
     def _create_spider(self, source_id: str, keyword: str, config: dict):
         """Create a spider via shared session runtime and surface host-visible failures."""

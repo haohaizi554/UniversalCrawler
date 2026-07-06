@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 from app.services.icon_registry import platform_icon_file, ui_icon_path
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.ui.viewmodels.log_i18n import localize_log_text
 from app.utils.qt_runtime import load_qt_icon
 
 
@@ -110,7 +111,11 @@ class FailedPage(PageFrame):
         self.root_layout.addWidget(splitter, 1)
 
         self.items: list[dict[str, Any]] = []
-        self.table.selectionModel().currentChanged.connect(lambda *_args: self._render_selected_detail())
+        self._detail_signature: tuple[Any, ...] | None = None
+        self._selected_item_id: str | None = None
+        self._syncing_selection = False
+        self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
+        self.table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
 
     def set_language(self, language: str | None) -> None:
@@ -128,6 +133,9 @@ class FailedPage(PageFrame):
     def _t(self, text: object) -> str:
         return tr(str(text or ""), self._language)
 
+    def _runtime_text(self, text: object) -> str:
+        return localize_log_text(text, self._language)
+
     @staticmethod
     def _scroll_container(object_name: str) -> QScrollArea:
         scroll = QScrollArea()
@@ -138,17 +146,56 @@ class FailedPage(PageFrame):
         return scroll
 
     def render(self, snapshot: dict) -> None:
+        previous_id = self._selected_item_id or self.table.selected_id()
         self.items = list(snapshot.get("failed_items") or [])
-        self.table.set_rows(self.items)
-        if self.items and not self.table.selectionModel().selectedRows():
-            self.table.selectRow(0)
+        self._selected_item_id = self._valid_item_id(previous_id) or self._first_item_id()
+        self._syncing_selection = True
+        try:
+            self.table.set_rows(self.items)
+            self._sync_table_selection()
+        finally:
+            self._syncing_selection = False
         self._render_selected_detail()
 
     def _selected_item(self) -> dict[str, Any] | None:
-        selected = self.table.selected_id()
-        if not selected and self.items:
-            selected = self.items[0].get("id")
-        return next((item for item in self.items if item.get("id") == selected), None)
+        selected = self._valid_item_id(self._selected_item_id)
+        if not selected:
+            selected = self._valid_item_id(self.table.selected_id()) or self._first_item_id()
+            self._selected_item_id = selected
+        return next((item for item in self.items if str(item.get("id") or "") == selected), None)
+
+    def _on_table_selection_changed(self, *_args: Any) -> None:
+        if self._syncing_selection:
+            return
+        selected = self._valid_item_id(self.table.selected_id())
+        if not selected:
+            if self.items:
+                return
+            self._selected_item_id = None
+        elif selected != self._selected_item_id:
+            self._selected_item_id = selected
+        self._render_selected_detail()
+
+    def _valid_item_id(self, item_id: object) -> str | None:
+        value = str(item_id or "")
+        if not value:
+            return None
+        return value if any(str(item.get("id") or "") == value for item in self.items) else None
+
+    def _first_item_id(self) -> str | None:
+        if not self.items:
+            return None
+        return str(self.items[0].get("id") or "") or None
+
+    def _sync_table_selection(self) -> None:
+        selection_model = self.table.selectionModel()
+        if selection_model is None:
+            return
+        if not self._selected_item_id:
+            selection_model.clearSelection()
+            return
+        if self.table.selected_id() != self._selected_item_id:
+            self.table.select_id(self._selected_item_id)
 
     def _on_table_action(self, action: str, item_id: str) -> None:
         if action == "retry":
@@ -160,6 +207,10 @@ class FailedPage(PageFrame):
 
     def _render_selected_detail(self) -> None:
         item = self._selected_item()
+        signature = self._detail_signature_for(item)
+        if signature == self._detail_signature:
+            return
+        self._detail_signature = signature
         self._clear_layout(self.summary_layout)
         self._clear_layout(self.log_layout)
         self._clear_layout(self.solutions_list_layout)
@@ -174,7 +225,7 @@ class FailedPage(PageFrame):
         self.summary_layout.addWidget(
             self._detail_row(
                 "失败原因",
-                item.get("reason_detail") or item.get("reason") or "",
+                self._runtime_text(item.get("reason_detail") or item.get("reason") or ""),
                 icon_file=str(item.get("reason_icon_file") or ""),
                 emphasized=True,
             )
@@ -202,6 +253,49 @@ class FailedPage(PageFrame):
         if self.solutions_list_layout.count() == 0:
             self.solutions_list_layout.addWidget(self._empty_label("暂无建议"))
         self.solutions_list_layout.addStretch(1)
+
+    def _detail_signature_for(self, item: dict[str, Any] | None) -> tuple[Any, ...]:
+        if not item:
+            return ("empty", self._language)
+        return (
+            self._language,
+            item.get("id", ""),
+            item.get("title", ""),
+            item.get("failed_at", ""),
+            item.get("reason_detail") or item.get("reason") or "",
+            item.get("reason_icon_file", ""),
+            item.get("platform", ""),
+            item.get("platform_id", ""),
+            item.get("trace_id", ""),
+            self._log_entries_signature(item.get("log_excerpt_items") or []),
+            tuple(str(message) for message in (item.get("log_excerpt") or [])),
+            self._solutions_signature(item.get("solutions") or []),
+        )
+
+    @staticmethod
+    def _log_entries_signature(entries: Any) -> tuple[tuple[str, str, str, str], ...]:
+        return tuple(
+            (
+                str(entry.get("time") or ""),
+                str(entry.get("level") or entry.get("raw_level") or ""),
+                str(entry.get("message") or ""),
+                str(entry.get("icon_file") or ""),
+            )
+            for entry in list(entries or [])
+            if isinstance(entry, dict)
+        )
+
+    @staticmethod
+    def _solutions_signature(solutions: Any) -> tuple[tuple[str, str, str], ...]:
+        return tuple(
+            (
+                str(solution.get("title") or ""),
+                str(solution.get("description") or ""),
+                str(solution.get("icon_file") or ""),
+            )
+            for solution in list(solutions or [])
+            if isinstance(solution, dict)
+        )
 
     def _detail_row(self, label: str, value: Any, *, icon_file: str = "", emphasized: bool = False) -> QWidget:
         row = QWidget()
@@ -238,7 +332,7 @@ class FailedPage(PageFrame):
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         level_badge = self._log_level_badge(entry)
         layout.addWidget(level_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        message = QLabel(self._t(entry.get("message") or ""))
+        message = QLabel(self._runtime_text(entry.get("message") or ""))
         message.setObjectName("FailedLogMessage")
         message.setWordWrap(True)
         message.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -317,11 +411,11 @@ class FailedPage(PageFrame):
         text_layout = QVBoxLayout(text_box)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(3)
-        title = QLabel(self._t(solution.get("title") or "建议"))
+        title = QLabel(self._runtime_text(solution.get("title") or "建议"))
         title.setObjectName("FailedSolutionTitle")
         title.setWordWrap(True)
         title.setMinimumWidth(0)
-        desc = QLabel(self._t(solution.get("description") or ""))
+        desc = QLabel(self._runtime_text(solution.get("description") or ""))
         desc.setObjectName("FailedSolutionDescription")
         desc.setWordWrap(True)
         desc.setMinimumWidth(0)
@@ -374,14 +468,29 @@ class FailedPage(PageFrame):
             item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
-                widget.setParent(None)
+                widget.hide()
                 widget.deleteLater()
+                continue
+            child_layout = item.layout()
+            if child_layout is not None:
+                FailedPage._clear_layout(child_layout)
 
     def selected_id(self) -> str | None:
-        return self.table.selected_id()
+        return self._selected_item_id or self.table.selected_id()
 
     def row_for_id(self, item_id: str) -> int:
         return self.table.row_for_id(item_id)
 
     def select_id(self, item_id: str) -> bool:
-        return self.table.select_id(item_id)
+        selected = self._valid_item_id(item_id)
+        if not selected:
+            return False
+        self._selected_item_id = selected
+        self._syncing_selection = True
+        try:
+            ok = self.table.select_id(selected)
+        finally:
+            self._syncing_selection = False
+        if ok:
+            self._render_selected_detail()
+        return ok

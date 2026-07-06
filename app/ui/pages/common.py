@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from PyQt6.QtCore import QRect, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -599,7 +599,19 @@ class SnapshotActionTable(QTableView):
         row = self.row_for_id(item_id)
         if row < 0:
             return False
-        self.selectRow(row)
+        index = self.table_model.index(row, 0)
+        if not index.isValid():
+            return False
+        selection_model = self.selectionModel()
+        if selection_model is not None:
+            selection_model.setCurrentIndex(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+        else:
+            self.selectRow(row)
+        self.scrollTo(index, QAbstractItemView.ScrollHint.EnsureVisible)
         return True
 
 def key_value_panel(pairs: Iterable[tuple[str, Any]]) -> QWidget:

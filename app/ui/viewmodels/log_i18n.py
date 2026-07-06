@@ -47,6 +47,8 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("Bilibili 爬虫任务结束", "Bilibili crawl task finished", "Bilibili 爬蟲任務結束"),
     ("Bilibili 获取播放流失败", "Bilibili playback stream fetch failed", "Bilibili 播放串流取得失敗"),
     ("Bilibili 播放流响应为空", "Bilibili playback stream response is empty", "Bilibili 播放串流回應為空"),
+    ("B站流下载失败", "B-site stream download failed", "B 站串流下載失敗"),
+    ("B站下载失败", "B-site download failed", "B 站下載失敗"),
     ("检查 Bilibili 登录状态", "Checking Bilibili login status", "檢查 Bilibili 登入狀態"),
     ("获取播放流地址", "Fetching playback stream URL", "取得播放串流位址"),
     ("启动 Bilibili 爬虫任务", "Started Bilibili crawl task", "啟動 Bilibili 爬蟲任務"),
@@ -64,6 +66,7 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("重刷新 B站 CDN URL 成功", "Refreshed B-site CDN URL again successfully", "重刷新 B 站 CDN URL 成功"),
     ("爬虫发现可下载资源", "Crawler found downloadable resources", "爬蟲發現可下載資源"),
     ("爬虫任务结束", "Crawl task finished", "爬蟲任務結束"),
+    ("下载失败", "Download failed", "下載失敗"),
     ("下载任务已入队", "Download task has been queued", "下載任務已入隊"),
     ("下载任务已加入执行队列", "Download task has been queued for execution", "下載任務已加入執行隊列"),
     ("下载任务开始执行", "Download task started", "下載任務開始執行"),
@@ -117,6 +120,8 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("用户取消任务选择，停止爬虫任务", "User cancelled task selection; crawl task stopped", "使用者取消任務選擇，已停止爬蟲任務"),
     ("用户请求停止爬虫任务", "User requested to stop the crawl task", "使用者要求停止爬蟲任務"),
     ("用户取消下载", "User cancelled download", "使用者取消下載"),
+    ("远程主机强迫关闭了一个现有的连接。", "The remote host forcibly closed an existing connection.", "遠端主機強制關閉了一個現有連線。"),
+    ("远程主机强迫关闭了一个现有的连接", "The remote host forcibly closed an existing connection", "遠端主機強制關閉了一個現有連線"),
     ("保存目录已变更", "Save directory changed", "儲存目錄已變更"),
     ("仅下载视频模式已跳过非视频资源", "Video-only mode skipped a non-video resource", "僅下載影片模式已略過非影片資源"),
     (
@@ -417,7 +422,9 @@ def _localize_english_dynamic(text: str) -> str:
 
     match = _DOWNLOAD_FAILED_RE.match(text)
     if match:
-        return f"{match.group('prefix') or ''}Download failed [{match.group('title')}]: {match.group('error')}"
+        error = _apply_runtime_phrase_translations(match.group("error"), "en-US")
+        error = _localize_english_dynamic(error)
+        return f"{match.group('prefix') or ''}Download failed [{match.group('title')}]: {error}"
 
     match = _CRAWL_CONFIRM_RE.match(text)
     if match:
@@ -659,7 +666,10 @@ def localize_log_text(text: object, language: str | None) -> str:
         return structured
     phrase = _apply_runtime_phrase_translations(value, normalized)
     if phrase != value:
-        return phrase
+        if normalized == "en-US":
+            return _localize_english_dynamic(phrase)
+        dynamic = _localize_non_english_dynamic(phrase, normalized)
+        return dynamic
     if normalized == "en-US":
         return _localize_english_dynamic(value)
     return _localize_non_english_dynamic(value, normalized)

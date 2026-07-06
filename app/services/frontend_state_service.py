@@ -1186,14 +1186,18 @@ class FrontendStateService:
         if self._destroyed:
             return
         emitter = self._frontend_event_emitter
+        emitted = False
         if callable(emitter):
             emitter(topic, payload)
+            emitted = True
+        if emitted and self._owns_app_state:
             return
         publisher = getattr(self.app_state, "_publish_change", None)
         if callable(publisher):
             publisher(topic, payload)
             return
-        self.record_event(topic, payload)
+        if not emitted or not self._owns_app_state:
+            self.record_event(topic, payload)
 
     def _schedule_metadata_retry(self, video_id: str, source_path: str) -> None:
         if self._destroyed:

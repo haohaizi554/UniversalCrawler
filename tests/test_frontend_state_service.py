@@ -10,6 +10,7 @@ from app.config import ConfigManager
 from app.core.state import VideoStatus
 from app.debug_logger import debug_logger
 from app.models import VideoItem
+from app.services.app_state import AppState
 from app.services.frontend_state_service import FrontendStateService, QUEUE_STATUSES
 from app.services.media_metadata_service import MediaMetadata
 
@@ -644,8 +645,8 @@ class FrontendStateServiceTests(unittest.TestCase):
 
             payload = service._completed_item(item)
 
-        self.assertEqual(payload["duration"], "检测中")
-        self.assertEqual(payload["resolution"], "检测中")
+        self.assertEqual(payload["duration"], "--")
+        self.assertEqual(payload["resolution"], "--")
         self.assertTrue(payload["metadata_pending"])
 
     def test_completed_item_keeps_metadata_pending_during_probe_cooldown(self):
@@ -670,8 +671,8 @@ class FrontendStateServiceTests(unittest.TestCase):
 
             payload = service._completed_item(item)
 
-        self.assertEqual(payload["duration"], "检测中")
-        self.assertEqual(payload["resolution"], "检测中")
+        self.assertEqual(payload["duration"], "--")
+        self.assertEqual(payload["resolution"], "--")
         self.assertTrue(payload["metadata_pending"])
 
     def test_completed_snapshot_limits_metadata_probe_fanout(self):
@@ -832,6 +833,23 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(events, [])
         retry.assert_not_called()
 
+    def test_frontend_event_emitter_keeps_shared_app_state_refresh(self):
+        app_state = AppState()
+        local_events: list[dict] = []
+        app_state.event_bus.subscribe("app_state.changed", lambda payload: local_events.append(payload))
+        emitted: list[tuple[str, dict]] = []
+        service = FrontendStateService(
+            app_state=app_state,
+            frontend_event_emitter=lambda topic, payload: emitted.append((topic, dict(payload))),
+        )
+
+        service._emit_frontend_event("videos.metadata", {"video_id": "video-1", "metadata": True})
+        delta = service.get_delta(0)
+
+        self.assertEqual(emitted, [("videos.metadata", {"video_id": "video-1", "metadata": True})])
+        self.assertIn({"topic": "videos.metadata", "video_id": "video-1", "metadata": True}, local_events)
+        self.assertIn("completed_items", delta["changed_sections"])
+
     def test_destroy_cancels_owned_app_state_log_timer(self):
         class FakeTimer:
             def __init__(self, _delay, callback):
@@ -900,7 +918,7 @@ class FrontendStateServiceTests(unittest.TestCase):
 
             payload = service._completed_item(item)
 
-        self.assertEqual(payload["resolution"], "检测中")
+        self.assertEqual(payload["resolution"], "--")
         self.assertTrue(payload["metadata_pending"])
 
     def test_completed_metadata_probe_emits_completed_refresh_event(self):
@@ -961,8 +979,8 @@ class FrontendStateServiceTests(unittest.TestCase):
             payload = service._completed_item(item)
             service.invalidate_refresh_caches()
 
-        self.assertEqual(payload["duration"], "\u68c0\u6d4b\u4e2d")
-        self.assertEqual(payload["resolution"], "\u68c0\u6d4b\u4e2d")
+        self.assertEqual(payload["duration"], "--")
+        self.assertEqual(payload["resolution"], "--")
         self.assertEqual(events, [("videos.metadata", {"video_id": item.id, "metadata": False})])
 
     def test_empty_completed_metadata_probe_eventually_stops_pending_state(self):

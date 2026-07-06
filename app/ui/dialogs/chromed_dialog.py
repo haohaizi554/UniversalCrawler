@@ -78,6 +78,10 @@ class ChromedDialog(QDialog):
         self.raise_()
         self.activateWindow()
 
+    def done(self, result: int) -> None:
+        self._window_chrome_controller.uninstall()
+        super().done(result)
+
     def closeEvent(self, event) -> None:  # noqa: N802
         self._window_chrome_controller.uninstall()
         super().closeEvent(event)
