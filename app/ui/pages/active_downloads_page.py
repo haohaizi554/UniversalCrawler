@@ -153,22 +153,49 @@ class ActiveDownloadsModel(QAbstractTableModel):
         signatures = [self._row_signature(row) for row in rows]
         if signatures == self._row_signatures:
             return False
-        same_shape = [signature[0] for signature in signatures] == [signature[0] for signature in self._row_signatures]
+        new_ids = [signature[0] for signature in signatures]
+        old_ids = [signature[0] for signature in self._row_signatures]
+        same_shape = new_ids == old_ids
         if same_shape and len(rows) == len(self._rows):
-            self._rows = rows
-            changed_roles = [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole, self.ROW_ROLE]
-            for row_index, (old, new) in enumerate(zip(self._row_signatures, signatures)):
-                if old == new:
-                    continue
-                start = self.index(row_index, 0)
-                end = self.index(row_index, self.columnCount() - 1)
-                self.dataChanged.emit(start, end, changed_roles)
+            self._replace_existing_rows(rows, signatures)
+        elif len(rows) > len(self._rows) and new_ids[: len(old_ids)] == old_ids:
+            self._replace_existing_rows(rows[: len(self._rows)], signatures[: len(self._rows)])
+            first = len(self._rows)
+            last = len(rows) - 1
+            self.beginInsertRows(QModelIndex(), first, last)
+            self._rows.extend(rows[first:])
+            self._row_signatures.extend(signatures[first:])
+            self.endInsertRows()
+            return True
+        elif len(rows) < len(self._rows) and old_ids[: len(new_ids)] == new_ids:
+            self._replace_existing_rows(rows, signatures)
+            first = len(rows)
+            last = len(self._rows) - 1
+            self.beginRemoveRows(QModelIndex(), first, last)
+            del self._rows[first:]
+            del self._row_signatures[first:]
+            self.endRemoveRows()
+            return True
         else:
             self.beginResetModel()
             self._rows = rows
+            self._row_signatures = signatures
             self.endResetModel()
-        self._row_signatures = signatures
         return True
+
+    def _replace_existing_rows(self, rows: list[dict[str, Any]], signatures: list[tuple]) -> None:
+        changed_roles = [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole, self.ROW_ROLE]
+        for row_index, (row, signature) in enumerate(zip(rows, signatures, strict=False)):
+            if row_index >= len(self._rows):
+                return
+            old = self._row_signatures[row_index]
+            self._rows[row_index] = row
+            self._row_signatures[row_index] = signature
+            if old == signature:
+                continue
+            start = self.index(row_index, 0)
+            end = self.index(row_index, self.columnCount() - 1)
+            self.dataChanged.emit(start, end, changed_roles)
 
     def row_at(self, row: int) -> dict[str, Any] | None:
         if 0 <= row < len(self._rows):

@@ -38,5 +38,6 @@ def test_settings_page_stylesheet_contains_core_selectors_and_theme_values():
     assert "QComboBox#SettingsCombo" in qss
     assert "QLineEdit#SettingsProxyCustomEdit[customProxyActive=\"true\"]" in qss
     assert "QToolButton#SettingsPathBrowse:hover" in qss
+    assert "border: 1px solid #7c3aed" in qss
     assert "border-color: #7c3aed" in qss
     assert "font-size: 22px" in qss

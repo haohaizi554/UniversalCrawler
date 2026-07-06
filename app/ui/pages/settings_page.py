@@ -1005,20 +1005,22 @@ class SettingsPage(PageFrame):
         open_mode_row.setFixedHeight(open_mode_height)
         open_mode_row.setProperty("settingsControlHeight", open_mode_height)
         open_mode_layout = QHBoxLayout(open_mode_row)
-        open_mode_layout.setContentsMargins(0, 3, 0, 3)
+        open_mode_h_inset = self._scaled_px(4, minimum=4)
+        open_mode_layout.setContentsMargins(open_mode_h_inset, 2, open_mode_h_inset, 2)
         open_mode_spacing = 8
         open_mode_layout.setSpacing(open_mode_spacing)
+        open_mode_content_width = max(0, large_w - (open_mode_h_inset * 2))
         bind_button = QPushButton(self._t("\u7ed1\u5b9a\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f"))
         bind_button.setObjectName("SettingsActionButton")
         bind_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        bind_width = min(self._scaled_px(118, minimum=108), max(96, large_w - 180))
+        bind_width = min(self._scaled_px(118, minimum=108), max(96, open_mode_content_width - 180))
         bind_button.setFixedWidth(bind_width)
         bind_button.setFixedHeight(self._scaled_px(38, minimum=38))
         bind_button.clicked.connect(lambda: self.file_association_requested.emit(True, True))
         open_mode_combo = self._build_combo(
             open_mode_options,
             self._dict_value(value, "default_open_mode", "builtin_player"),
-            width=max(96, large_w - bind_width - open_mode_spacing),
+            width=max(96, open_mode_content_width - bind_width - open_mode_spacing),
         )
         open_mode_combo.currentIndexChanged.connect(
             lambda *_args, combo=open_mode_combo: self._emit_basic_setting_changed(

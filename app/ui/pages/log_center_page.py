@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 import math
 from pathlib import Path
 from collections.abc import Mapping, Sequence
@@ -49,21 +48,7 @@ from app.ui.components.log_inspector_sections import (
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
-from app.ui.viewmodels.log_detail_payloads import (
-    build_log_detail_payload,
-    extract_trace_id,
-    format_json_text,
-    normalize_detail_payload,
-)
-from app.ui.viewmodels.log_classification import (
-    classification_facts,
-    derive_result_type,
-    normalized_event_code,
-    normalized_raw_level,
-    normalized_status_code,
-    result_display_text,
-    result_nature_text,
-)
+from app.ui.viewmodels.log_classification import classification_facts
 from app.ui.viewmodels.log_pipeline_rules import (
     derive_event_stage,
     derive_log_scope,
@@ -85,12 +70,17 @@ from app.ui.viewmodels.log_display import (
     scope_display_text,
     stage_display_text,
 )
-from app.ui.viewmodels.log_i18n import localize_log_event_code, localize_log_payload, localize_log_text
+from app.ui.viewmodels.log_i18n import localize_log_text
 from app.ui.viewmodels.log_query_worker import (
     LogQueryRequest,
     LogQueryResult,
     LogQueryWorker,
     stable_log_item_id,
+)
+from app.ui.viewmodels.log_detail_worker import (
+    LogDetailRequest,
+    LogDetailResult,
+    LogDetailWorker,
 )
 from app.ui.viewmodels.pagination_state import parse_page_size
 from app.utils.safe_slot import safe_slot
@@ -148,6 +138,7 @@ class LogCenterTableDelegate(SnapshotActionDelegate):
 class LogCenterPage(PageFrame):
     log_action_requested = pyqtSignal(str)
     _log_query_finished = pyqtSignal(object)
+    _log_detail_finished = pyqtSignal(object)
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
@@ -174,6 +165,8 @@ class LogCenterPage(PageFrame):
         self._query_page_items: list[dict[str, Any]] = []
         self._last_json_text = "{}"
         self._inspector_item_id = ""
+        self._detail_sequence = 0
+        self._current_detail_result: LogDetailResult | None = None
         self._language = "zh-CN"
         self._filter_query_timer = QTimer(self)
         self._filter_query_timer.setSingleShot(True)
@@ -181,7 +174,10 @@ class LogCenterPage(PageFrame):
         self._filter_query_timer.timeout.connect(lambda: self._submit_log_query(reset_page=True))
         self._log_query_finished.connect(self._on_log_query_result)
         self._log_query_worker = LogQueryWorker(lambda result: self._log_query_finished.emit(result))
+        self._log_detail_finished.connect(self._on_log_detail_result)
+        self._log_detail_worker = LogDetailWorker(lambda result: self._log_detail_finished.emit(result))
         self.destroyed.connect(lambda *_args: self._log_query_worker.shutdown())
+        self.destroyed.connect(lambda *_args: self._log_detail_worker.shutdown())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("LogCenterSplitter")
@@ -423,7 +419,11 @@ class LogCenterPage(PageFrame):
             self.table.horizontalHeader().viewport().update()
 
         if hasattr(self, "json_text"):
-            self.json_text.setHtml(self._format_json_html(self._current_detail_payload()))
+            current_result = self._current_detail_result_for_selection()
+            if current_result is not None:
+                self.json_text.setHtml(self._format_json_text_html(current_result.detail_json_escaped, escaped=True))
+            else:
+                self.json_text.setHtml(self._format_json_text_html(self._last_json_text or "{}"))
             self.json_text.viewport().update()
 
         if self._current_log_item():
@@ -735,7 +735,7 @@ class LogCenterPage(PageFrame):
         layout.addWidget(title)
         self._empty_state_title = title
         self._empty_state_subtitles: list[QLabel] = []
-        for line in ("调整筛选条件，", "或点击「刷新缓冲」重新加载日志"):
+        for line in ("调整筛选条件", "或点击「刷新缓冲」重新加载日志"):
             subtitle = QLabel(line)
             subtitle.setObjectName("LogEmptySubtitle")
             subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -749,7 +749,7 @@ class LogCenterPage(PageFrame):
         if hasattr(self, "_empty_state_title"):
             self._empty_state_title.setText(self._t("暂无匹配日志"))
         subtitles = getattr(self, "_empty_state_subtitles", [])
-        source_lines = ("调整筛选条件，", "或点击「刷新缓冲」重新加载日志")
+        source_lines = ("调整筛选条件", "或点击「刷新缓冲」重新加载日志")
         for label, source_text in zip(subtitles, source_lines, strict=False):
             label.setText(self._t(source_text))
 
@@ -1207,9 +1207,6 @@ class LogCenterPage(PageFrame):
     def _localize_log_text(self, text: object) -> str:
         return localize_log_text(text, self._language)
 
-    def _localize_log_payload(self, payload: Any) -> Any:
-        return localize_log_payload(payload, self._language)
-
     def _resolve_item_platform_id(self, item: dict[str, Any]) -> str:
         return resolve_item_platform_id(item, self._platform_options, self._platform_meta_by_id)
 
@@ -1223,15 +1220,25 @@ class LogCenterPage(PageFrame):
                 translated = translated.replace(meta.label, self._t(meta.label))
         return self._t(translated)
 
-    def _extract_trace_id_from_item(self, item: dict[str, Any] | None) -> str:
-        return extract_trace_id(item, status_code=normalized_status_code(item) if item else "")
+    @staticmethod
+    def _direct_trace_id_from_item(item: dict[str, Any] | None) -> str:
+        if not item:
+            return ""
+        for key in ("trace_id", "traceId", "trace"):
+            text = str(item.get(key) or "").strip()
+            if text and text != "-":
+                return text
+        return ""
 
     def _current_or_first_trace_id(self) -> str:
-        trace_id = self._extract_trace_id_from_item(self._current_log_item())
+        current_result = self._current_detail_result_for_selection()
+        if current_result is not None and current_result.trace_id:
+            return current_result.trace_id
+        trace_id = self._direct_trace_id_from_item(self._current_log_item())
         if trace_id:
             return trace_id
         for item in self.items:
-            trace_id = self._extract_trace_id_from_item(item)
+            trace_id = self._direct_trace_id_from_item(item)
             if trace_id:
                 return trace_id
         return self._query_first_trace_id
@@ -1250,12 +1257,12 @@ class LogCenterPage(PageFrame):
         if hasattr(self, "copy_trace_button"):
             self._flash_button_text(self.copy_trace_button, self._t("已复制"))
 
-    def _build_current_log_payload(self, item: dict[str, Any]) -> dict[str, Any]:
-        return self._localize_log_payload(build_log_detail_payload(
-            item,
-            platform_label=self._format_platform_label(item),
-            status_code=normalized_status_code(item),
-        ))
+    def _current_detail_result_for_selection(self) -> LogDetailResult | None:
+        current_result = self._current_detail_result
+        selected_id = self.selected_id()
+        if current_result is not None and selected_id and current_result.item_id == selected_id:
+            return current_result
+        return None
 
     def _current_log_row_item(self) -> tuple[int, dict[str, Any]] | None:
         if not hasattr(self, "table"):
@@ -1303,10 +1310,6 @@ class LogCenterPage(PageFrame):
         current = self._current_log_row_item()
         return current[1] if current else None
 
-    def _current_detail_payload(self) -> Any:
-        item = self._current_log_item()
-        return self._localize_log_payload(self._normalize_detail_payload(item)) if item else {}
-
     def _sync_inspector_action_buttons(self, enabled: bool) -> None:
         for name in ("detail_copy_button", "detail_export_button", "json_copy_button"):
             button = getattr(self, name, None)
@@ -1323,7 +1326,10 @@ class LogCenterPage(PageFrame):
     def _copy_current_log_json(self) -> None:
         if not self._current_log_item():
             return
-        QApplication.clipboard().setText(format_json_text(self._current_detail_payload()))
+        current_result = self._current_detail_result_for_selection()
+        if current_result is None:
+            return
+        QApplication.clipboard().setText(current_result.detail_json_text)
         self._flash_button_text(self.json_copy_button, self._t("已复制"))
 
     @safe_slot
@@ -1331,8 +1337,10 @@ class LogCenterPage(PageFrame):
         item = self._current_log_item()
         if not item:
             return
-        payload = self._build_current_log_payload(item)
-        QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False, indent=2))
+        current_result = self._current_detail_result_for_selection()
+        if current_result is None:
+            return
+        QApplication.clipboard().setText(current_result.full_payload_text)
         self._flash_button_text(self.detail_copy_button, self._t("已复制"))
 
     @safe_slot
@@ -1341,7 +1349,6 @@ class LogCenterPage(PageFrame):
         if not item:
             QMessageBox.warning(self, self._t("导出失败"), self._t("当前没有可导出的日志。"))
             return
-        payload = self._build_current_log_payload(item)
         path, _ = QFileDialog.getSaveFileName(
             self,
             self._t("导出日志详情"),
@@ -1350,8 +1357,12 @@ class LogCenterPage(PageFrame):
         )
         if not path:
             return
+        current_result = self._current_detail_result_for_selection()
+        if current_result is None:
+            QMessageBox.warning(self, self._t("导出失败"), self._t("当前没有可导出的日志。"))
+            return
         try:
-            Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            Path(path).write_text(current_result.full_payload_text, encoding="utf-8")
         except OSError as exc:
             QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{exc}")
             return
@@ -1374,6 +1385,8 @@ class LogCenterPage(PageFrame):
         self.detail_level_badge.style().polish(self.detail_level_badge)
 
     def _clear_detail_panel(self) -> None:
+        self._detail_sequence += 1
+        self._current_detail_result = None
         self._inspector_item_id = ""
         self._sync_inspector_action_buttons(False)
         self.detail_time_value.setText("-")
@@ -1391,7 +1404,7 @@ class LogCenterPage(PageFrame):
         self.detail_message_value.setToolTip("")
         QTimer.singleShot(0, self._resize_detail_message_box)
         self._last_json_text = "{}"
-        self.json_text.setHtml(self._format_json_html({}))
+        self.json_text.setHtml(self._format_json_text_html("{}"))
         QTimer.singleShot(0, self._resize_json_viewer_to_content)
         self.stack_text.clear()
         self.stack_section.setVisible(False)
@@ -1530,10 +1543,9 @@ class LogCenterPage(PageFrame):
         if hasattr(self, "json_section"):
             self.json_section.setMaximumHeight(height + 76)
 
-    def _format_json_html(self, payload: Any) -> str:
+    def _format_json_text_html(self, text: str, *, escaped: bool = False) -> str:
         colors = theme_colors(self._resolve_theme_is_dark())
-        text = format_json_text(payload)
-        escaped = html.escape(text)
+        escaped_text = str(text or "{}") if escaped else html.escape(str(text or "{}"))
         return f"""
         <html>
         <head>
@@ -1555,12 +1567,9 @@ class LogCenterPage(PageFrame):
         }}
         </style>
         </head>
-        <body><pre>{escaped}</pre></body>
+        <body><pre>{escaped_text}</pre></body>
         </html>
         """
-
-    def _normalize_detail_payload(self, item: dict[str, Any]) -> Any:
-        return normalize_detail_payload(item, status_code=normalized_status_code(item))
 
     def _render_detail(self) -> None:
         current = self._current_log_row_item()
@@ -1568,47 +1577,70 @@ class LogCenterPage(PageFrame):
             self._clear_detail_panel()
             return
         row, item = current
-        self._inspector_item_id = self._item_id(item, row)
+        item_id = self._item_id(item, row)
+        self._inspector_item_id = item_id
+        current_result = self._current_detail_result
+        if (
+            current_result is not None
+            and current_result.item_id == item_id
+            and current_result.language == self._language
+        ):
+            self._sync_inspector_action_buttons(True)
+            return
+        self._current_detail_result = None
+        self._last_json_text = "{}"
+        self._sync_inspector_action_buttons(False)
+        self.json_text.setHtml(self._format_json_text_html("{}"))
+        self.stack_text.clear()
+        self.stack_section.setVisible(False)
+        self._detail_sequence += 1
+        self._log_detail_worker.submit(
+            LogDetailRequest(
+                sequence=self._detail_sequence,
+                item_id=item_id,
+                item=dict(item),
+                language=self._language,
+                platform_options=tuple(self._platform_options),
+                platform_meta_by_id=dict(self._platform_meta_by_id),
+            )
+        )
+
+    @safe_slot
+    def _on_log_detail_result(self, result: object) -> None:
+        if not isinstance(result, LogDetailResult):
+            return
+        if result.sequence != self._detail_sequence or result.item_id != self._inspector_item_id:
+            return
+        self._current_detail_result = result
         self._sync_inspector_action_buttons(True)
 
-        self.detail_time_value.setText(str(item.get("time") or "-"))
-        self.detail_source_value.setText(self._localize_log_text(str(item.get("source") or "-")))
-        self.detail_platform_value.setText(self._format_platform_label(item))
-        trace_id = self._extract_trace_id_from_item(item)
-        self.detail_trace_value.setText(trace_id if trace_id else "-")
-        message = self._localize_log_text(str(item.get("message") or item.get("message_summary") or "-"))
-        raw_message = str(item.get("message") or item.get("message_summary") or "")
-        self.detail_message_value.setPlainText(message)
+        self.detail_time_value.setText(result.time_text)
+        self.detail_source_value.setText(result.source_text)
+        self.detail_platform_value.setText(result.platform_text)
+        self.detail_trace_value.setText(result.trace_id if result.trace_id else "-")
+        self.detail_message_value.setPlainText(result.message_text)
         self._configure_message_editor_wrap()
-        self.detail_message_value.setToolTip(raw_message if raw_message else "")
+        self.detail_message_value.setToolTip(result.raw_message if result.raw_message else "")
         QTimer.singleShot(0, self._resize_detail_message_box)
 
-        raw_level = item.get("raw_level") or normalized_raw_level(item)
-        result_type = item.get("result_type") or derive_result_type(item)
-        scope = item.get("log_scope") or self._derive_log_scope(item)
-        stage = item.get("event_stage") or self._derive_event_stage(item)
-        event_code = item.get("event_code") or normalized_event_code(item)
-        display_event_code = localize_log_event_code(event_code, self._language)
+        self.detail_level_badge.setText(result.raw_level)
+        self._apply_level_badge_style(result.level_style_key)
 
-        self.detail_level_badge.setText(raw_level or "-")
-        self._apply_level_badge_style(result_display_text(result_type, raw_level))
+        self.detail_status_value.setText(result.status_text)
+        self.detail_scope_value.setText(result.scope_text)
+        self.detail_stage_value.setText(result.stage_text)
+        self.detail_status_code_value.setText(result.event_code_text)
+        self.detail_status_code_value.setToolTip(result.event_code_tooltip)
 
-        self.detail_status_value.setText(self._t(result_nature_text(result_type)))
-        self.detail_scope_value.setText(self._t(self._scope_display_text(scope)))
-        self.detail_stage_value.setText(self._t(self._stage_display_text(stage)))
-        self.detail_status_code_value.setText(display_event_code or "-")
-        self.detail_status_code_value.setToolTip(event_code or "")
-
-        payload = self._localize_log_payload(self._normalize_detail_payload(item))
-        self._last_json_text = format_json_text(payload)
-        self.json_text.setHtml(self._format_json_html(payload))
+        self._last_json_text = result.detail_json_text
+        self.json_text.setHtml(self._format_json_text_html(result.detail_json_escaped, escaped=True))
         QTimer.singleShot(0, self._resize_json_viewer_to_content)
 
-        stack = str(item.get("stack") or "").strip()
-        has_stack = bool(stack and stack != "无")
-        self.stack_section.setVisible(has_stack)
-        if has_stack:
-            self.stack_text.setPlainText(stack)
+        self.stack_section.setVisible(result.has_stack)
+        if result.has_stack:
+            self.stack_text.setPlainText(result.stack_text)
+        else:
+            self.stack_text.clear()
 
     def selected_id(self) -> str | None:
         current = self._current_log_row_item()

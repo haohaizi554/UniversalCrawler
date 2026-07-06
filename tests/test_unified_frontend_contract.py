@@ -78,6 +78,24 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         self.assertGreaterEqual(logs.table.model().rowCount(), expected_rows)
 
+    def _wait_for_log_detail_source(self, logs, expected_text: str) -> None:
+        for _ in range(250):
+            self.app.processEvents()
+            if logs.detail_source_value.text() == expected_text:
+                return
+            QTest.qWait(20)
+        self.app.processEvents()
+        self.assertEqual(logs.detail_source_value.text(), expected_text)
+
+    def _wait_for_log_detail_status_code(self, logs, expected_text: str) -> None:
+        for _ in range(250):
+            self.app.processEvents()
+            if expected_text in logs.detail_status_code_value.text():
+                return
+            QTest.qWait(20)
+        self.app.processEvents()
+        self.assertIn(expected_text, logs.detail_status_code_value.text())
+
     def _assert_combo_selected_row_paints_to_right_edge(self, combo: QComboBox) -> None:
         view = combo.view()
         popup = view.window()
@@ -184,6 +202,15 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         request = submit.call_args.args[0]
         self.assertIs(request.items[0], row)
+
+    def test_gui_log_empty_state_subtitle_uses_two_comma_free_lines(self):
+        shell = self._make_shell()
+        logs = shell.pages["logs"]
+
+        subtitles = [label.text() for label in logs._empty_state_subtitles]
+
+        self.assertEqual(subtitles, ["调整筛选条件", "或点击「刷新缓冲」重新加载日志"])
+        self.assertNotIn("调整筛选条件，", subtitles)
 
     def test_global_stylesheet_applies_without_qss_parse_warnings(self):
         from PyQt6.QtCore import qInstallMessageHandler
@@ -1175,11 +1202,39 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(open_mode_combo.currentData(), "builtin_player")
         self.assertEqual(open_mode_combo.currentText(), "\u5185\u7f6e\u64ad\u653e\u5668")
         self.assertTrue(any(not checkbox.isChecked() for checkbox in settings.findChildren(QCheckBox)))
+        self.assertTrue(
+            any(
+                label.text() == "MissAV 有 5 秒盾，建议显式运行并手动过盾"
+                for label in settings.findChildren(QLabel)
+            )
+        )
 
         changes = []
         associations = []
         settings.setting_changed.connect(lambda section, key, value: changes.append((section, key, value)))
         settings.file_association_requested.connect(lambda video, image: associations.append((video, image)))
+
+        browser_title = None
+        for _ in range(250):
+            self.app.processEvents()
+            browser_title = next(
+                (label for label in settings.findChildren(QLabel) if label.text() == "显示浏览器内核"),
+                None,
+            )
+            if browser_title is not None:
+                break
+            QTest.qWait(20)
+        self.assertIsNotNone(browser_title)
+        browser_row = browser_title
+        while browser_row is not None and browser_row.objectName() != "SettingsSettingRow":
+            browser_row = browser_row.parentWidget()
+        self.assertIsNotNone(browser_row)
+        browser_switch = browser_row.findChild(QCheckBox)
+        self.assertIsNotNone(browser_switch)
+        browser_target = not browser_switch.isChecked()
+        browser_switch.setChecked(browser_target)
+        self.app.processEvents()
+        self.assertIn(("common", "show_browser_window", browser_target), changes)
 
         if filename_combo.count() > 1:
             filename_combo.setCurrentIndex(1)
@@ -1253,11 +1308,15 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         )
         self.assertIs(bind_button.parentWidget(), open_mode_row)
         self.assertEqual(open_mode_row.objectName(), "SettingsOpenBehaviorControl")
+        self.assertGreaterEqual(open_mode_row.layout().contentsRect().height(), open_mode_combo.height())
+        self.assertGreaterEqual(open_mode_combo.geometry().top(), 2)
+        self.assertLessEqual(open_mode_combo.geometry().bottom(), open_mode_row.height() - 2)
         self.assertGreaterEqual(open_mode_row.height(), bind_button.height() + 4)
         self.assertGreaterEqual(bind_button.geometry().top(), 2)
         self.assertLessEqual(bind_button.geometry().bottom(), open_mode_row.height() - 3)
+        self.assertGreaterEqual(open_mode_combo.geometry().left(), 4)
         self.assertLess(open_mode_combo.geometry().right(), bind_button.geometry().left())
-        self.assertLessEqual(bind_button.geometry().right(), open_mode_row.width())
+        self.assertGreaterEqual(open_mode_row.width() - bind_button.geometry().right() - 1, 4)
 
         open_mode_combo.showPopup()
         self.app.processEvents()
@@ -2089,6 +2148,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertTrue(logs.detail_copy_button.isEnabled())
         self.assertTrue(logs.detail_export_button.isEnabled())
         self.assertTrue(logs.json_copy_button.isEnabled())
+        self._wait_for_log_detail_status_code(logs, "APP_INIT")
 
         logs.table.clearSelection()
         logs.table.setCurrentIndex(QModelIndex())
@@ -2666,7 +2726,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
         self.assertTrue(str(source).endswith("System · MainWindow"))
-        self.assertEqual(logs.detail_source_value.text(), "MainWindow")
+        self._wait_for_log_detail_source(logs, "MainWindow")
 
         snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
         shell.render(snapshot, changed_sections={"settings_snapshot"})
@@ -2675,7 +2735,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
         self.assertTrue(str(source).endswith("系统 · 主窗口"))
         self.assertNotIn("MainWindow", str(source))
-        self.assertEqual(logs.detail_source_value.text(), "主窗口")
+        self._wait_for_log_detail_source(logs, "主窗口")
 
     def test_gui_platform_custom_proxy_field_displays_port_and_commits_endpoint(self):
         shell = self._make_shell()
@@ -3336,6 +3396,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("update_basic_setting", content)
         self.assertIn("showFileAssociationModal()", settings_fn)
         self.assertIn("const associationButton", settings_fn)
+        self.assertIn('settingCheckbox("\\u663e\\u793a\\u6d4f\\u89c8\\u5668\\u5185\\u6838", "show_browser_window"', settings_fn)
+        self.assertIn("MissAV \\u6709 5 \\u79d2\\u76fe", content)
         self.assertIn('settingSelect("\\u9ed8\\u8ba4\\u6253\\u5f00\\u65b9\\u5f0f", "default_open_mode"', settings_fn)
         self.assertIn('frontendAction("register_file_associations", { include_video: includeVideo, include_image: includeImage })', content)
         self.assertNotIn("settingNumber", content)
@@ -3358,6 +3420,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         )
         self.assertIn("applyAppearance", content)
         self.assertIn('open_after_download: false', content)
+        self.assertIn('show_browser_window: true', content)
         self.assertIn('filename_template: "current"', content)
         self.assertIn('default_open_mode: "builtin_player"', content)
         self.assertIn('default_player: "builtin_player"', content)

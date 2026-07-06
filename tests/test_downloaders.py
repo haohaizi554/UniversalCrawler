@@ -1538,12 +1538,23 @@ https://cdn.example.com/seg2.m4s?token=1
 
         self.assertEqual(result, "#EXTM3U")
 
-    def test_playwright_launch_kwargs_use_visible_browser_for_missav_surrit(self):
+    @patch("app.core.downloaders.m3u8.cfg.get", return_value=True)
+    def test_playwright_launch_kwargs_use_visible_browser_for_missav_surrit(self, _mocked_cfg_get):
         item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
 
         kwargs = N_m3u8DL_RE_Downloader._playwright_launch_kwargs(item, "http://127.0.0.1:7890")
 
         self.assertFalse(kwargs["headless"])
+        self.assertEqual(kwargs["proxy"], {"server": "http://127.0.0.1:7890"})
+        self.assertIn("--disable-blink-features=AutomationControlled", kwargs["args"])
+
+    @patch("app.core.downloaders.m3u8.cfg.get", return_value=False)
+    def test_playwright_launch_kwargs_can_hide_browser_for_missav_surrit(self, _mocked_cfg_get):
+        item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
+
+        kwargs = N_m3u8DL_RE_Downloader._playwright_launch_kwargs(item, "http://127.0.0.1:7890")
+
+        self.assertTrue(kwargs["headless"])
         self.assertEqual(kwargs["proxy"], {"server": "http://127.0.0.1:7890"})
         self.assertIn("--disable-blink-features=AutomationControlled", kwargs["args"])
 

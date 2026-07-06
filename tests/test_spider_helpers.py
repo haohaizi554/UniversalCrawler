@@ -1003,6 +1003,46 @@ class SpiderHelperTests(unittest.TestCase):
         spider._open_login_entry.assert_called_once_with(page)
         spider.log.assert_any_call("⚠️ 本地 Cookie 已加载，但当前页面未识别为已登录，可能已失效")
 
+    def test_kuaishou_silent_login_check_defers_manual_login_until_visible_session(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.is_running = True
+        spider.auth_service = Mock(spec=AuthService)
+        spider._wait_for_manual_login = Mock(return_value=False)
+        spider._open_login_entry = Mock()
+        spider._is_logged_in = Mock(return_value=False)
+        spider._goto_with_retry = Mock(return_value=False)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value=set())
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+
+        result = spider._ensure_login(page, context, "ks_auth.json", allow_manual_login=False)
+
+        self.assertFalse(result)
+        spider._open_login_entry.assert_not_called()
+        spider._wait_for_manual_login.assert_not_called()
+
+    def test_kuaishou_manual_login_timeout_returns_false_even_when_running(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.is_running = True
+        spider.auth_service = Mock(spec=AuthService)
+        spider._wait_for_manual_login = Mock(return_value=False)
+        spider._open_login_entry = Mock()
+        spider._is_logged_in = Mock(return_value=False)
+        spider._goto_with_retry = Mock(return_value=False)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value=set())
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+
+        result = spider._ensure_login(page, context, "ks_auth.json")
+
+        self.assertFalse(result)
+        spider._open_login_entry.assert_called_once_with(page)
+        spider._wait_for_manual_login.assert_called_once_with(page, context, "ks_auth.json")
+
     def test_kuaishou_open_login_entry_stays_on_current_site_when_button_missing(self):
         """验证 `test_kuaishou_open_login_entry_stays_on_current_site_when_button_missing` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         spider = KuaishouSpider.__new__(KuaishouSpider)
@@ -1134,6 +1174,38 @@ class SpiderHelperTests(unittest.TestCase):
             source="kuaishou",
             meta={"trace_id": "ks-trace-1"},
         )
+
+    def test_kuaishou_silent_run_opens_login_then_retries_headless(self):
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "demo"
+        spider._normalize_keyword = Mock(side_effect=lambda value: value)
+        spider._try_direct_share_download = Mock(return_value=False)
+        spider._browser_headless = Mock(return_value=True)
+        spider._run_browser_session = Mock(side_effect=["login_required", "completed"])
+        spider._run_login_window_session = Mock(return_value=True)
+        spider._entry_url_for_login = Mock(return_value=None)
+        spider._tracked_playwright_browser = Mock(return_value=None)
+        spider._clear_playwright_browser = Mock()
+        spider._emit_finished = Mock()
+        playwright = Mock()
+
+        with patch("app.spiders.kuaishou.spider.sync_playwright") as mocked_playwright:
+            mocked_playwright.return_value.__enter__.return_value = playwright
+            spider.run()
+
+        self.assertEqual(spider._run_browser_session.call_count, 2)
+        first_session = spider._run_browser_session.call_args_list[0]
+        retry_session = spider._run_browser_session.call_args_list[1]
+        login_session = spider._run_login_window_session.call_args
+        self.assertIs(first_session.args[0], playwright)
+        self.assertIs(retry_session.args[0], playwright)
+        self.assertIs(login_session.args[0], playwright)
+        self.assertEqual(first_session.args[1], login_session.args[1])
+        self.assertEqual(retry_session.args[1], first_session.args[1])
+        self.assertEqual(login_session.args[2], None)
+        self.assertEqual(first_session.kwargs, {"headless": True, "allow_manual_login": False})
+        self.assertEqual(retry_session.kwargs, {"headless": True, "allow_manual_login": False})
+        spider._emit_finished.assert_called_once()
 
     def test_kuaishou_capture_single_detail_page_returns_false_when_not_detail_url(self):
         """非单条详情页不应误走分享直下逻辑。"""

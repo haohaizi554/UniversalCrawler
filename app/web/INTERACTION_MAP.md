@@ -6272,7 +6272,7 @@ GUI 隐藏滚动条箭头，WebUI 已补全全局滚动条规范：
 
 # v10 日志中心空态与自定义选择框值稳定新增合同
 
-1. 日志中心过滤结果为空时，WebUI 必须和 GUI 一样在表格区域显示居中空态；空态文案为“暂无匹配日志 / 调整筛选条件，或点击「刷新缓冲」重新加载日志”，不得只留下空白表格。
+1. 日志中心过滤结果为空时，WebUI 必须和 GUI 一样在表格区域显示居中空态；空态文案为“暂无匹配日志 / 调整筛选条件 / 或点击「刷新缓冲」重新加载日志”，不得只留下空白表格。
 2. 自定义选择框必须区分“业务值”和“显示文本”：`option.dataset.originalValue` 保存真实 value，`option.dataset.originalLabel` 保存待翻译文案，语言切换只允许更新 `textContent`，不能让无显式 `value` 的 `<option>` 跟随翻译文本改变业务值。
 3. 日志中心的 `logLevelFilter`、`logTimeFilter`、`logPlatformFilter` 在程序性渲染、语言切换、状态注入后必须经过 `selectValueOrFallback()` 校正；无效值回退到真实 option，并立刻调用 `syncCustomSelectForSelect()`，避免按钮标签为空。
 4. 以后更新截图证据前，WebUI 日志页截图脚本必须等待 `#page-logs .log-filters .custom-select-label` 全部非空，防止把未同步完成的临时态误写入 `web_logs.png` 和总览图。

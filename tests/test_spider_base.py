@@ -121,6 +121,18 @@ class BaseSpiderTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertFalse(spider.is_running)
 
+    def test_browser_headless_follows_visibility_setting_except_login(self):
+        spider = _DummySpider(keyword="demo", config={"show_browser_window": False})
+
+        self.assertTrue(spider._browser_headless())
+        self.assertFalse(spider._browser_headless(login_window=True))
+
+        spider.config = {"show_browser_window": "visible"}
+        self.assertFalse(spider._browser_headless())
+
+        spider.config = {"show_browser_window": "headless"}
+        self.assertTrue(spider._browser_headless())
+
     def test_stop_closes_tracked_playwright_browser_from_control_thread(self):
         spider = _DummySpider(keyword="demo", config={})
 

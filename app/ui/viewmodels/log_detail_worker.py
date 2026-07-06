@@ -42,6 +42,7 @@ class LogDetailRequest:
 class LogDetailResult:
     sequence: int
     item_id: str
+    language: str
     time_text: str
     source_text: str
     platform_text: str
@@ -109,6 +110,7 @@ def build_log_detail_result(request: LogDetailRequest) -> LogDetailResult:
     return LogDetailResult(
         sequence=request.sequence,
         item_id=request.item_id,
+        language=language,
         time_text=str(item.get("time") or "-"),
         source_text=localize_log_text(str(item.get("source") or "-"), language),
         platform_text=platform_text,
@@ -180,6 +182,7 @@ class LogDetailWorker:
                 result = LogDetailResult(
                     sequence=request.sequence,
                     item_id=request.item_id,
+                    language=normalize_language(request.language),
                     time_text="-",
                     source_text="-",
                     platform_text="-",

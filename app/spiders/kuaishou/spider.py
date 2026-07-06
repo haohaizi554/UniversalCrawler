@@ -359,7 +359,7 @@ class KuaishouSpider(BaseSpider):
                 except PlaywrightError:
                     pass
                 return True
-        return self.is_running
+        return False
 
     def _open_login_entry(self, page) -> None:
         """提供 `_open_login_entry` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""

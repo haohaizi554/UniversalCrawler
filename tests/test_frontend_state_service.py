@@ -71,6 +71,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(basic["filename_template"], "current")
             self.assertEqual(basic["filename_template_label"], "\u9ed8\u8ba4")
             self.assertFalse(basic["open_after_download"])
+            self.assertTrue(basic["show_browser_window"])
             self.assertEqual(basic["default_open_mode"], "builtin_player")
             self.assertEqual(basic["default_open_mode_label"], "\u5185\u7f6e\u64ad\u653e\u5668")
             self.assertIn("filename_template", basic["_options"])
@@ -302,6 +303,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 ("update_basic_setting", {"key": "download_directory", "value": str(download_dir)}),
                 ("update_basic_setting", {"key": "filename_template", "value": "{platform}_{title}"}),
                 ("update_basic_setting", {"key": "open_after_download", "value": True}),
+                ("update_basic_setting", {"key": "show_browser_window", "value": False}),
                 ("update_basic_setting", {"key": "default_open_mode", "value": "system_default"}),
                 ("update_setting", {"section": "common", "key": "theme", "value": "dark"}),
             ]
@@ -385,6 +387,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(basic["download_directory"], str(download_dir.resolve(strict=False)))
             self.assertEqual(basic["filename_template"], "{platform}_{title}")
             self.assertTrue(basic["open_after_download"])
+            self.assertFalse(basic["show_browser_window"])
             self.assertEqual(basic["default_open_mode"], "system_default")
 
             download = snapshot["\u4e0b\u8f7d\u8bbe\u7f6e"]
@@ -430,6 +433,7 @@ class FrontendStateServiceTests(unittest.TestCase):
 
             reloaded = ConfigManager(str(config_file))
             self.assertEqual(reloaded.get("common", "filename_template"), "{platform}_{title}")
+            self.assertFalse(reloaded.get("common", "show_browser_window"))
             self.assertEqual(reloaded.get("download", "request_timeout"), 120)
             self.assertEqual(reloaded.get("playback", "manual_image_switch"), True)
             self.assertEqual(reloaded.get("logging", "ui_log_max_display_count"), 500)

@@ -2554,7 +2554,13 @@ class WebUIBrowserTests(unittest.TestCase):
         )
 
         expected = {
-            "basic": {"download_directory", "filename_template", "open_after_download", "default_open_mode"},
+            "basic": {
+                "download_directory",
+                "filename_template",
+                "open_after_download",
+                "show_browser_window",
+                "default_open_mode",
+            },
             "download": {
                 "max_concurrent",
                 "image_respects_concurrency",

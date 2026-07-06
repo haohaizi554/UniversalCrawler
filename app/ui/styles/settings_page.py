@@ -379,14 +379,14 @@ def generate_settings_page_stylesheet(
             }}
 
             QComboBox#SettingsCombo:focus {{
-                border-color: {c["accent"]};
+                border: 1px solid {c["accent"]};
                 background: {c["input"]};
             }}
 
             QComboBox#SettingsCombo:on,
             QComboBox#SettingsCombo[popupOpen="true"],
             QComboBox#SettingsCombo[customProxy="true"] {{
-                border-color: {c["accent"]};
+                border: 1px solid {c["accent"]};
                 background: {c["input"]};
                 color: {c["text"]};
             }}
