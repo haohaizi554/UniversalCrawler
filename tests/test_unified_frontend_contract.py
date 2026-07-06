@@ -69,6 +69,15 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         return shell
 
+    def _wait_for_log_rows(self, logs, expected_rows: int = 1) -> None:
+        for _ in range(100):
+            self.app.processEvents()
+            if logs.table.model().rowCount() >= expected_rows:
+                return
+            QTest.qWait(20)
+        self.app.processEvents()
+        self.assertGreaterEqual(logs.table.model().rowCount(), expected_rows)
+
     def _assert_combo_selected_row_paints_to_right_edge(self, combo: QComboBox) -> None:
         view = combo.view()
         popup = view.window()
@@ -163,6 +172,18 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         placeholder = shell.top_bar.inp_search.placeholderText()
         self.assertIn("BV ID", placeholder)
         self.assertNotEqual("Enter a profile, shared, or collection link...", placeholder)
+
+    def test_gui_log_query_submission_hands_batch_to_worker_without_row_clone(self):
+        shell = self._make_shell()
+        logs = shell.pages["logs"]
+        row = {"id": "log-a", "time": "2026-07-06 10:00:00", "level": "INFO", "message": "hello"}
+        logs._all_items = (row,)
+
+        with patch.object(logs._log_query_worker, "submit") as submit:
+            logs._submit_log_query(reset_page=True)
+
+        request = submit.call_args.args[0]
+        self.assertIs(request.items[0], row)
 
     def test_global_stylesheet_applies_without_qss_parse_warnings(self):
         from PyQt6.QtCore import qInstallMessageHandler
@@ -1252,6 +1273,36 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             open_mode_combo.hidePopup()
             open_mode_combo.view().window().hide()
 
+    def test_gui_basic_settings_keep_control_column_aligned_in_english(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        shell.show_page("settings")
+        shell.show()
+        self.app.processEvents()
+
+        settings = shell.pages["settings"]
+        path_picker = next(iter(settings.findChildren(SettingsPathPicker)))
+        filename_combo = next(
+            combo
+            for combo in settings.findChildren(QComboBox)
+            if combo.objectName() == "SettingsCombo" and combo.itemData(0) == "current"
+        )
+        open_mode_combo = next(
+            combo
+            for combo in settings.findChildren(QComboBox)
+            if combo.objectName() == "SettingsCombo" and combo.currentData() == "builtin_player"
+        )
+
+        controls = [path_picker, filename_combo.parentWidget(), open_mode_combo.parentWidget()]
+        left_edges = [control.mapTo(settings, control.rect().topLeft()).x() for control in controls]
+        widths = [control.width() for control in controls]
+
+        self.assertEqual(left_edges, [left_edges[0]] * len(left_edges))
+        self.assertEqual(widths, [widths[0]] * len(widths))
+
     def test_file_association_dialog_defaults_to_video_and_image(self):
         from app.ui.dialogs.file_association import FileAssociationDialog
 
@@ -1388,6 +1439,19 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         top_bar.set_platform_placeholder("xiaohongshu")
         self.assertIn("Xiaohongshu ID", top_bar.inp_search.placeholderText())
+
+    def test_gui_top_bar_directory_button_resizes_for_translations(self):
+        from app.ui.layout.top_bar import TopBarWidget
+
+        top_bar = TopBarWidget(is_dark_theme=False)
+        self.addCleanup(top_bar.deleteLater)
+
+        for language in ("zh-CN", "en-US", "zh-TW"):
+            top_bar.set_language(language)
+            self.app.processEvents()
+            button = top_bar.btn_dir
+            self.assertGreaterEqual(button.minimumWidth(), button.sizeHint().width())
+            self.assertGreaterEqual(button.maximumWidth(), button.sizeHint().width())
 
     def test_web_selection_modal_matches_gui_confirmation_interaction(self):
         content = _html_bundle()
@@ -1544,6 +1608,107 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertFalse(proxy_input.isHidden())
         self.assertTrue(proxy_input.isEnabled())
         self.assertLess(proxy_combo.width(), container.width())
+
+    def test_gui_platform_custom_proxy_field_stays_inside_scrolled_viewport(self):
+        shell = self._make_shell()
+        shell.resize(760, 520)
+        settings = shell.pages["settings"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+        base_rows = snapshot["settings_snapshot"]["\u5e73\u53f0\u8bbe\u7f6e"]
+        rows = []
+        for index in range(8):
+            row = deepcopy(base_rows[index % len(base_rows)])
+            row["id"] = f"{row['id']}_{index}"
+            row["name"] = f"{row['name']} {index}"
+            if index == 3:
+                row.update(
+                    {
+                        "id": "missav",
+                        "name": "MissAV",
+                        "proxy": "\u81ea\u5b9a\u4e49",
+                        "proxy_config_key": "proxy_app",
+                        "proxy_editable": True,
+                        "proxy_custom_allowed": True,
+                        "proxy_custom_active": True,
+                        "proxy_custom_value": "http://127.0.0.1:7890",
+                    }
+                )
+            rows.append(row)
+        snapshot["settings_snapshot"]["\u5e73\u53f0\u8bbe\u7f6e"] = rows
+
+        shell.show_page("settings")
+        shell.show()
+        settings.render(snapshot)
+        settings._set_current_group("\u5e73\u53f0\u8bbe\u7f6e")
+        self.app.processEvents()
+
+        scroll = settings.findChild(QScrollArea, "SettingsPlatformScroll")
+        self.assertIsNotNone(scroll)
+        proxy_input = next(
+            edit
+            for edit in settings.findChildren(QLineEdit)
+            if edit.objectName() == "SettingsProxyCustomEdit" and edit.isEnabled()
+        )
+        container = proxy_input.parentWidget()
+        input_right = proxy_input.mapTo(scroll.viewport(), proxy_input.rect().topRight()).x()
+        container_right = container.mapTo(scroll.viewport(), container.rect().topRight()).x()
+        col_widths = settings._platform_col_widths(rows, reserve_vertical_scrollbar=True)
+
+        self.assertEqual(container.width(), col_widths["proxy"])
+        self.assertEqual(container.property("customProxySurface"), "split")
+        self.assertGreaterEqual(proxy_input.width(), 80)
+        self.assertLessEqual(proxy_input.height(), container.height())
+        self.assertFalse(proxy_input.isClearButtonEnabled())
+        self.assertLessEqual(input_right, scroll.viewport().width())
+        self.assertLessEqual(container_right, scroll.viewport().width())
+
+    def test_gui_platform_custom_proxy_splits_into_two_bounded_fields_in_compact_layout(self):
+        shell = self._make_shell()
+        shell.resize(760, 520)
+        settings = shell.pages["settings"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "zh-CN"
+        missav = next(
+            row for row in snapshot["settings_snapshot"]["\u5e73\u53f0\u8bbe\u7f6e"] if row["id"] == "missav"
+        )
+        missav["proxy"] = "\u81ea\u5b9a\u4e49"
+        missav["proxy_config_key"] = "proxy_app"
+        missav["proxy_editable"] = True
+        missav["proxy_custom_allowed"] = True
+        missav["proxy_custom_active"] = True
+        missav["proxy_custom_value"] = "7890"
+
+        shell.show_page("settings")
+        shell.show()
+        settings.render(snapshot)
+        settings._set_current_group("\u5e73\u53f0\u8bbe\u7f6e")
+        self.app.processEvents()
+
+        proxy_input = next(
+            edit
+            for edit in settings.findChildren(QLineEdit)
+            if edit.objectName() == "SettingsProxyCustomEdit" and edit.isEnabled()
+        )
+        container = proxy_input.parentWidget()
+        proxy_combo = next(combo for combo in settings.findChildren(QComboBox) if combo.parentWidget() is container)
+        container_right = container.mapTo(container, container.rect().topRight()).x()
+        input_right = proxy_input.mapTo(container, proxy_input.rect().topRight()).x()
+        input_top = proxy_input.mapTo(container, proxy_input.rect().topLeft()).y()
+        input_bottom = proxy_input.mapTo(container, proxy_input.rect().bottomRight()).y()
+        combo_bottom = proxy_combo.mapTo(container, proxy_combo.rect().bottomRight()).y()
+        spacing = container.layout().spacing()
+
+        self.assertEqual(container.property("customProxySurface"), "split")
+        self.assertEqual(container.property("customProxyActive"), "true")
+        self.assertEqual(proxy_combo.property("proxyEmbedded"), "false")
+        self.assertEqual(proxy_input.property("proxyEmbedded"), "false")
+        self.assertEqual(proxy_combo.width() + spacing + proxy_input.width(), container.width())
+        self.assertGreaterEqual(proxy_input.width(), 80)
+        self.assertGreaterEqual(input_top, 0)
+        self.assertLessEqual(input_bottom, container.height() - 1)
+        self.assertLessEqual(combo_bottom, container.height() - 1)
+        self.assertLessEqual(input_right, container_right)
 
     def test_gui_top_quantity_hotloads_from_platform_settings_snapshot(self):
         shell = self._make_shell()
@@ -1915,7 +2080,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         ]
 
         shell.render(snapshot, changed_sections={"log_items"})
-        self.app.processEvents()
+        self._wait_for_log_rows(logs, 1)
         message_index = logs.table.model().index(0, 4)
         self.assertEqual(
             message_index.data(Qt.ItemDataRole.TextAlignmentRole),
@@ -1976,6 +2141,54 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(model.headerData(0, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole), "\u6807\u9898")
 
+    def test_gui_language_switch_restores_ambiguous_table_headers_after_english_first_render(self):
+        shell = self._make_shell()
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        self.app.processEvents()
+
+        expected_en = {
+            "queue": ["Title", "Platform", "Status", "Actions"],
+            "active": ["Title", "Platform", "Progress", "Speed", "Remaining", "Actions"],
+            "completed": ["Title", "Completed at", "Duration", "Format", "Actions"],
+            "failed": ["Title", "Failed at", "Reason", "Status", "Actions"],
+            "logs": ["Time", "Level", "Source", "Trace ID", "Summary"],
+        }
+        expected_zh = {
+            "queue": ["\u89c6\u9891\u6807\u9898", "\u5e73\u53f0", "\u72b6\u6001", "\u64cd\u4f5c"],
+            "active": ["\u6807\u9898", "\u5e73\u53f0", "\u8fdb\u5ea6", "\u901f\u5ea6", "\u5269\u4f59\u65f6\u95f4", "\u64cd\u4f5c"],
+            "completed": ["\u6807\u9898", "\u5b8c\u6210\u65f6\u95f4", "\u65f6\u957f", "\u683c\u5f0f", "\u64cd\u4f5c"],
+            "failed": ["\u6807\u9898", "\u5931\u8d25\u65f6\u95f4", "\u5931\u8d25\u539f\u56e0", "\u72b6\u6001", "\u64cd\u4f5c"],
+            "logs": ["\u65f6\u95f4", "\u7ea7\u522b", "\u6765\u6e90", "Trace ID", "\u6d88\u606f\u6458\u8981"],
+        }
+
+        for page_id, headers in expected_en.items():
+            shell.show_page(page_id)
+            self.app.processEvents()
+            model = shell.pages[page_id].table.model()
+            actual = [
+                str(model.headerData(index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole))
+                for index in range(model.columnCount())
+            ]
+            self.assertEqual(actual, headers, page_id)
+            self.assertEqual(getattr(model, "_headers", None), expected_zh[page_id], page_id)
+
+        snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "zh-CN"
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        self.app.processEvents()
+
+        for page_id, headers in expected_zh.items():
+            shell.show_page(page_id)
+            self.app.processEvents()
+            model = shell.pages[page_id].table.model()
+            actual = [
+                str(model.headerData(index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole))
+                for index in range(model.columnCount())
+            ]
+            self.assertEqual(actual, headers, page_id)
+
     def test_gui_language_switch_translates_dynamic_runtime_surfaces(self):
         shell = self._make_shell()
         snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
@@ -2020,7 +2233,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertGreaterEqual(all_time_index, 0)
         logs.time_filter.setCurrentIndex(all_time_index)
         shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
-        self.app.processEvents()
+        self._wait_for_log_rows(logs, 1)
 
         self.assertTrue(logs._tab_buttons["all"].text().startswith("All logs"))
         self.assertTrue(logs.footer_stats.text().startswith("Total 1 / matched 1 / showing 1"))
@@ -2258,7 +2471,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         snapshot["settings_snapshot"]["\u5916\u89c2\u8bbe\u7f6e"]["language"] = "en-US"
         shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
-        self.app.processEvents()
+        self._wait_for_log_rows(logs, 1)
 
         self.assertEqual(logs._tab_buttons["all"].text(), "All logs 1")
         self.assertEqual(logs._tab_buttons["crawl"].text(), "Crawl logs 0")
@@ -2323,7 +2536,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         all_time_index = logs.time_filter.findData("\u5168\u90e8")
         self.assertGreaterEqual(all_time_index, 0)
         logs.time_filter.setCurrentIndex(all_time_index)
-        self.app.processEvents()
+        self._wait_for_log_rows(logs, 1)
 
         message = logs.table.model().index(0, 4).data(Qt.ItemDataRole.DisplayRole)
         self.assertIn("Loaded 1 local file", message)
@@ -2449,7 +2662,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         all_time_index = logs.time_filter.findData("全部")
         self.assertGreaterEqual(all_time_index, 0)
         logs.time_filter.setCurrentIndex(all_time_index)
-        self.app.processEvents()
+        self._wait_for_log_rows(logs, 1)
 
         source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
         self.assertTrue(str(source).endswith("System · MainWindow"))
@@ -3004,7 +3217,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('<option value="30m" selected>近 30 分钟</option>', logs_page)
         self.assertIn('id="logEmptyState" class="log-empty-state" hidden', logs_page)
         self.assertIn("暂无匹配日志", logs_page)
-        self.assertIn("调整筛选条件，或点击「刷新缓冲」重新加载日志", logs_page)
+        self.assertIn("调整筛选条件 或点击「刷新缓冲」重新加载日志", logs_page)
+        self.assertIn("<span data-log-empty-primary>调整筛选条件</span>", logs_page)
+        self.assertIn("<span data-log-empty-secondary>或点击「刷新缓冲」重新加载日志</span>", logs_page)
+        self.assertNotIn("调整筛选条件，", logs_page)
         self.assertIn("function syncLogEmptyState", content)
         self.assertIn("syncLogEmptyState(items.length === 0);", content)
         self.assertIn("function syncLogTabLabels", content)
@@ -3022,6 +3238,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#page-logs .log-tabs .tab.active", css)
         self.assertIn("#page-logs .log-empty-state", css)
         self.assertIn("inset: 56px 0 0;", css)
+        self.assertIn("flex-direction: column;", css.split("#page-logs .log-empty-state .log-empty-subtitle", 1)[1].split("}", 1)[0])
         log_filters_css = css.split("#page-logs .log-filters {", 1)[1].split("}", 1)[0]
         for expected_column in (
             "minmax(84px, .9fr)",
@@ -3061,7 +3278,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#page-logs .custom-select-page-size,\n#page-logs .custom-select-page-size .custom-select-button {\n  height: 30px;", css)
         self.assertIn("function setLogPage(delta)", content)
         self.assertIn("function setLogPageSize(value)", content)
-        self.assertIn("boundedItems.slice(start, start + logPageSize)", content)
+        self.assertIn("boundedItems.slice(start, start + pageSize)", content)
         for action in (
             "runLogOperation('refresh')",
             "runLogOperation('clear')",
@@ -3479,6 +3696,29 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn('menu.style.top = `${top}px`', custom_select)
         self.assertNotIn("let openCustomSelect", app_js)
 
+    def test_web_custom_select_theme_states_keep_labels_readable(self):
+        css = _css_bundle()
+        dark_theme = css.split('[data-theme="dark"]', 1)[1].split("}", 1)[0]
+        selected_block = css.split(
+            '.custom-select-option.selected,\n.custom-select-option[aria-selected="true"]',
+            1,
+        )[1].split("}", 1)[0]
+        label_inherit_block = css.split(
+            ".setting-row .custom-select .custom-select-button .custom-select-label",
+            1,
+        )[1].split("}", 1)[0]
+
+        self.assertIn("--select-menu-bg: var(--panel);", css)
+        self.assertIn("--select-menu-bg: var(--input);", dark_theme)
+        self.assertIn("--select-option-selected-text: var(--on-accent);", css)
+        self.assertIn("--select-option-selected-text: #111827;", dark_theme)
+        self.assertIn("color: var(--select-option-selected-text);", selected_block)
+        self.assertIn(".custom-select-option[aria-selected=\"true\"]", css)
+        self.assertIn(".setting-row .custom-select .custom-select-menu .custom-select-label", css)
+        self.assertIn(".setting-platform .custom-select .custom-select-menu .custom-select-label", css)
+        self.assertIn("color: inherit;", label_inherit_block)
+        self.assertIn("font-weight: inherit;", label_inherit_block)
+
     def test_web_custom_select_autofits_count_and_page_size_without_menu_gap(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
         css = (static_dir / "app.css").read_text(encoding="utf-8")
@@ -3523,11 +3763,13 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn("<polyline", media_display)
         self.assertIn("displayMetadataValue(value, pending", media_display)
         self.assertIn("return translate(text);", media_display)
-        self.assertIn('return pending ? translate("\\u68c0\\u6d4b\\u4e2d") : "--";', media_display)
+        self.assertIn("function pendingMetadataLabel()", media_display)
+        self.assertIn('return pending ? pendingMetadataLabel() : "--";', media_display)
         self.assertIn("window.UcpMediaDisplay.activeTrendHtml", app_js)
         self.assertIn("window.UcpMediaDisplay.displayMetadataValue", app_js)
         self.assertIn("let metadataValueRenderer = (value, pending = false) => {", task_render)
-        self.assertIn('return pending ? translate("\\u68c0\\u6d4b\\u4e2d") : "--";', task_render)
+        self.assertIn("function pendingMetadataLabel()", task_render)
+        self.assertIn('return pending ? pendingMetadataLabel() : "--";', task_render)
 
     def test_web_log_display_logic_is_split_into_component(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -3537,7 +3779,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertIn("/static/log_display.js", index)
         self.assertLess(index.index("/static/log_display.js"), index.index("/static/app.js"))
-        self.assertIn("window.UcpLogDisplay", log_display)
+        self.assertIn("root.UcpLogDisplay", log_display)
         self.assertIn("logMatchesFilters(item, filters", log_display)
         self.assertIn("visibleLogItems(items, rowBudget", log_display)
         self.assertIn("window.UcpLogDisplay.filteredLogItems", app_js)

@@ -261,9 +261,14 @@ class StateAndEventTests(unittest.TestCase):
             cache = CacheService(namespace="test-cache-consistency", cache_dir=temp_dir)
             cache.set("key", "old")
 
-            with patch("app.services.cache_service.sqlite3.connect", side_effect=RuntimeError("disk full")):
-                with self.assertRaises(RuntimeError):
-                    cache.set("key", "new", persist=True)
+            if cache._disk_cache is not None:
+                with patch.object(cache._disk_cache, "set", side_effect=RuntimeError("disk full")):
+                    with self.assertRaises(RuntimeError):
+                        cache.set("key", "new", persist=True)
+            else:
+                with patch("app.services.cache_service.sqlite3.connect", side_effect=RuntimeError("disk full")):
+                    with self.assertRaises(RuntimeError):
+                        cache.set("key", "new", persist=True)
 
             self.assertEqual(cache.get("key"), "old")
 

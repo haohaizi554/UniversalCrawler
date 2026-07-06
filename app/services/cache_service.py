@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import pickle
 import sqlite3
 import threading
@@ -18,6 +17,11 @@ try:
     from cachetools import TTLCache as CachetoolsTTLCache
 except Exception:  # pragma: no cover - fallback keeps runtime optional
     CachetoolsTTLCache = None
+
+try:
+    from diskcache import Cache as DiskCache
+except Exception:  # pragma: no cover - SQLite fallback keeps runtime optional
+    DiskCache = None
 
 class _FallbackTTLCache(dict):
     def __init__(self, maxsize: int, ttl: float) -> None:
@@ -75,11 +79,14 @@ class CacheService:
         cache_root = Path(cache_dir or (Path(user_data_root()) / "cache"))
         cache_root.mkdir(parents=True, exist_ok=True)
         self._db_path = cache_root / f"{namespace}.sqlite3"
+        self._disk_cache_path = cache_root / f"{namespace}.diskcache"
         self._operation_lock = threading.RLock()
         self._memory_lock = threading.RLock()
         cache_cls = CachetoolsTTLCache or _FallbackTTLCache
         self._memory_cache = cache_cls(maxsize=memory_maxsize, ttl=memory_ttl_seconds)
         self._db_lock = threading.RLock()
+        self._disk_lock = threading.RLock()
+        self._disk_cache = DiskCache(str(self._disk_cache_path)) if DiskCache is not None else None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -103,7 +110,7 @@ class CacheService:
                     return self._clone_value(self._memory_cache[key])
                 except KeyError:
                     pass
-            record = self._read_persistent(key)
+            record = self._read_local_persistent(key)
             if record is None:
                 return default
             value, expires_at = record
@@ -122,19 +129,8 @@ class CacheService:
                     self._memory_cache[key] = value_snapshot
             return
         expires_at = None if ttl_seconds is None else time.time() + ttl_seconds
-        payload = pickle.dumps(value_snapshot, protocol=pickle.HIGHEST_PROTOCOL)
         with self._operation_lock:
-            with self._db_lock:
-                with sqlite3.connect(self._db_path) as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO cache_entries(key, value, expires_at)
-                        VALUES(?, ?, ?)
-                        ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at
-                        """,
-                        (key, payload, expires_at),
-                    )
-                    conn.commit()
+            self._write_persistent(key, value_snapshot, ttl_seconds=ttl_seconds, expires_at=expires_at)
             with self._memory_lock:
                 self._memory_cache[key] = value_snapshot
 
@@ -142,10 +138,63 @@ class CacheService:
         with self._operation_lock:
             with self._memory_lock:
                 self._memory_cache.pop(key, None)
+            if self._disk_cache is not None:
+                with self._disk_lock:
+                    self._disk_cache.delete(key)
             with self._db_lock:
                 with sqlite3.connect(self._db_path) as conn:
                     conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
                     conn.commit()
+
+    def close(self) -> None:
+        if self._disk_cache is not None:
+            with self._disk_lock:
+                self._disk_cache.close()
+
+    def _read_local_persistent(self, key: str) -> tuple[Any, float | None] | None:
+        if self._disk_cache is not None:
+            sentinel = object()
+            try:
+                with self._disk_lock:
+                    value = self._disk_cache.get(key, default=sentinel)
+                if value is not sentinel:
+                    return value, None
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "CacheService",
+                    "read_diskcache",
+                    exc,
+                    details={"key": key, "cache_path": str(self._disk_cache_path)},
+                )
+        return self._read_persistent(key)
+
+    def _write_persistent(
+        self,
+        key: str,
+        value: Any,
+        *,
+        ttl_seconds: float | None,
+        expires_at: float | None,
+    ) -> None:
+        if self._disk_cache is not None:
+            with self._disk_lock:
+                self._disk_cache.set(key, value, expire=ttl_seconds)
+            return
+        self._write_sqlite_persistent(key, value, expires_at=expires_at)
+
+    def _write_sqlite_persistent(self, key: str, value: Any, *, expires_at: float | None) -> None:
+        payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        with self._db_lock:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO cache_entries(key, value, expires_at)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at
+                    """,
+                    (key, payload, expires_at),
+                )
+                conn.commit()
 
     def _read_persistent(self, key: str) -> tuple[Any, float | None] | None:
         with self._db_lock:

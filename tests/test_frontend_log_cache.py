@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from pathlib import Path
+
 from app.services.frontend_log_cache import FrontendLogCache
 
 
@@ -101,3 +104,65 @@ def test_log_cache_invalidate_deletes_legacy_and_limit_cache_keys():
 
     assert "frontend.file_log_cache" in cache_service.deleted
     assert "frontend.file_log_cache.500" in cache_service.deleted
+
+
+def test_worker_log_cache_does_not_read_synchronously_from_snapshot_path():
+    cache_service = FakeCacheService()
+    calls = []
+    reader_started = threading.Event()
+    release_reader = threading.Event()
+
+    def reader(*, limit):
+        reader_started.set()
+        release_reader.wait(timeout=2)
+        calls.append(limit)
+        return [{"message": f"file-{index}"} for index in range(limit)]
+
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        reader=reader,
+        limit_provider=lambda: 100,
+        worker_enabled=True,
+        ttl_seconds=60,
+    )
+    try:
+        assert cache.merged_items([]) == []
+        assert calls == []
+        assert reader_started.wait(timeout=2)
+        assert calls == []
+        release_reader.set()
+        assert cache.wait_for_idle(timeout=2)
+
+        items = cache.merged_items([])
+    finally:
+        cache.shutdown()
+
+    assert calls == [100]
+    assert len(items) == 100
+
+
+def test_tail_log_reader_refreshes_appended_entries(tmp_path):
+    cache_service = FakeCacheService()
+    log_file = Path(tmp_path) / "latest_debug.log"
+    log_file.write_text(
+        "\n".join(
+            [
+                "[2026-06-30 10:00:00] [INFO] Test / old-0",
+                "[2026-06-30 10:00:01] [INFO] Test / old-1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        log_path_provider=lambda: log_file,
+        limit_provider=lambda: 100,
+    )
+
+    initial = cache.refresh_now()
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write("\n[2026-06-30 10:00:02] [ERROR] Test / new-2\n")
+    updated = cache.refresh_now()
+
+    assert [item["message_summary"] for item in initial] == ["old-0", "old-1"]
+    assert [item["message_summary"] for item in updated] == ["old-0", "old-1", "new-2"]

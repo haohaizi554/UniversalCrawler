@@ -92,6 +92,19 @@ def _detail_value_label() -> SmartWrapLabel:
     return label
 
 
+def _plain_detail_value_label() -> QLabel:
+    label = QLabel("-")
+    label.setObjectName("LogDetailValue")
+    label.setWordWrap(False)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    label.setMinimumWidth(0)
+    label.setProperty("i18nSkipText", "true")
+    return label
+
+
 def build_log_inspector_header(
     *,
     copy_detail: Callable[[], None],
@@ -134,15 +147,15 @@ def build_log_detail_summary_section(
     layout.setContentsMargins(14, 12, 14, 12)
     layout.setSpacing(6)
 
-    detail_time_value = _detail_value_label()
+    detail_time_value = _plain_detail_value_label()
     detail_level_badge = QLabel("-")
     detail_level_badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-    detail_status_value = _detail_value_label()
-    detail_scope_value = _detail_value_label()
-    detail_stage_value = _detail_value_label()
+    detail_status_value = _plain_detail_value_label()
+    detail_scope_value = _plain_detail_value_label()
+    detail_stage_value = _plain_detail_value_label()
     detail_status_code_value = _detail_value_label()
-    detail_source_value = _detail_value_label()
-    detail_platform_value = _detail_value_label()
+    detail_source_value = _plain_detail_value_label()
+    detail_platform_value = _plain_detail_value_label()
     detail_trace_value = _detail_value_label()
 
     detail_message_frame = QFrame()

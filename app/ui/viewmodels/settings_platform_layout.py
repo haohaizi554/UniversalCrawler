@@ -14,6 +14,7 @@ PLATFORM_DETAIL_COL_WIDTHS: dict[str, int] = {
     "timeout": 132,
     "proxy": 294,
 }
+CUSTOM_PROXY_CONTROL_MIN_WIDTH = 230
 
 
 def combo_label_min_width(
@@ -105,6 +106,7 @@ def platform_column_widths(
             label_padding=label_padding,
         ),
     )
+    has_custom_proxy = any(bool(row.get("proxy_custom_allowed")) for row in rows or [])
 
     content_width = max(280, int(content_width))
     base_total = sum(base.values())
@@ -116,30 +118,55 @@ def platform_column_widths(
         "auth": 78,
         "count": min(base["count"], max(160, base["count"] - 28)),
         "timeout": min(base["timeout"], max(132, base["timeout"] - 12)),
-        "proxy": 112,
+        "proxy": CUSTOM_PROXY_CONTROL_MIN_WIDTH if has_custom_proxy else 112,
     }
     min_total = sum(minimums.values())
     if content_width <= min_total:
-        name_width = 58
-        auth_width = 64
-        proxy_floor = 72
-        count_floor = 100
-        timeout_width = min(
-            base["timeout"],
-            max(108, content_width - name_width - auth_width - proxy_floor - count_floor),
-        )
-        count_width = max(
-            count_floor,
-            min(base["count"], content_width - name_width - auth_width - proxy_floor - timeout_width),
-        )
-        proxy_width = max(
-            52,
-            content_width - name_width - auth_width - timeout_width - count_width,
-        )
-        if proxy_width < proxy_floor and count_width > count_floor:
-            borrow = min(proxy_floor - proxy_width, count_width - count_floor)
-            count_width -= borrow
-            proxy_width += borrow
+        if has_custom_proxy:
+            proxy_width = min(CUSTOM_PROXY_CONTROL_MIN_WIDTH, max(150, int(content_width * 0.30)))
+            name_width = 48
+            auth_width = 54
+            timeout_width = min(base["timeout"], 132)
+            count_width = content_width - name_width - auth_width - timeout_width - proxy_width
+            if count_width < 72:
+                shortage = 72 - count_width
+                borrow = min(shortage, max(0, timeout_width - 104))
+                timeout_width -= borrow
+                count_width += borrow
+            if count_width < 72:
+                shortage = 72 - count_width
+                borrow = min(shortage, max(0, proxy_width - 140))
+                proxy_width -= borrow
+                count_width += borrow
+            if count_width < 72:
+                shortage = 72 - count_width
+                borrow = min(shortage, max(0, auth_width - 48))
+                auth_width -= borrow
+                count_width += borrow
+            if count_width < 72:
+                shortage = 72 - count_width
+                borrow = min(shortage, max(0, name_width - 44))
+                name_width -= borrow
+                count_width += borrow
+            count_width = max(52, count_width)
+        else:
+            name_width = 58
+            auth_width = 64
+            proxy_floor = 72
+            count_floor = 100
+            timeout_floor = 132
+            timeout_width = min(
+                base["timeout"],
+                max(timeout_floor, content_width - name_width - auth_width - proxy_floor - count_floor),
+            )
+            count_width = max(
+                count_floor,
+                min(base["count"], content_width - name_width - auth_width - proxy_floor - timeout_width),
+            )
+            proxy_width = max(
+                52,
+                content_width - name_width - auth_width - timeout_width - count_width,
+            )
         widths = {
             "name": name_width,
             "auth": auth_width,
@@ -156,6 +183,10 @@ def platform_column_widths(
         }
 
     used_without_proxy = widths["name"] + widths["auth"] + widths["count"] + widths["timeout"]
-    proxy_floor = 80 if content_width - used_without_proxy >= 80 else 52
+    remaining_proxy_width = content_width - used_without_proxy
+    if has_custom_proxy:
+        proxy_floor = min(CUSTOM_PROXY_CONTROL_MIN_WIDTH, max(52, remaining_proxy_width))
+    else:
+        proxy_floor = 80 if remaining_proxy_width >= 80 else 52
     widths["proxy"] = max(proxy_floor, content_width - used_without_proxy)
     return widths

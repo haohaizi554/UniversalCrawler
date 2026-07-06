@@ -7,8 +7,16 @@ from unittest.mock import Mock, patch
 
 from app.services.frontend_state_service import FrontendStateService
 from app.ui.main_window import MainWindow
+from app.ui.viewmodels.frontend_snapshot_worker import FrontendSnapshotResult
 
 class MainWindowTests(unittest.TestCase):
+
+    class CapturingSnapshotWorker:
+        def __init__(self):
+            self.requests = []
+
+        def submit(self, request):
+            self.requests.append(request)
     
     def _make_window(self) -> MainWindow:
         """提供 `_make_window` 对应的内部辅助逻辑，供 `MainWindowTests` 使用。"""
@@ -24,6 +32,25 @@ class MainWindowTests(unittest.TestCase):
         window.plugin_widget = None
         window._pending_delete_video_ids = []
         return window
+
+    def _install_snapshot_worker(self, window: MainWindow) -> "MainWindowTests.CapturingSnapshotWorker":
+        worker = self.CapturingSnapshotWorker()
+        window._frontend_snapshot_worker = worker
+        window._frontend_snapshot_sequence = 0
+        window._frontend_section_signatures = {}
+        return worker
+
+    @staticmethod
+    def _snapshot_result(request, snapshot, *, changed_sections=None, skip_render=False, signatures=None):
+        return FrontendSnapshotResult(
+            sequence=request.sequence,
+            service_token=request.service_token,
+            snapshot=snapshot,
+            changed_sections=changed_sections,
+            section_signatures=signatures or {},
+            skip_render=skip_render,
+            build_duration_ms=1.0,
+        )
 
     def test_start_click_emits_crawl_request(self):
         """验证 `test_start_click_emits_crawl_request` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
@@ -219,6 +246,7 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_state_service.get_snapshot.return_value = {"app_status": {}}
         window._ui_update_scheduler = FakeScheduler()
         window._frontend_refresh_pending_mock = False
+        worker = self._install_snapshot_worker(window)
 
         MainWindow.refresh_frontend_state(window)
         MainWindow.refresh_frontend_state(window)
@@ -228,20 +256,35 @@ class MainWindowTests(unittest.TestCase):
 
         MainWindow._flush_frontend_state(window)
 
-        window._frontend_state_service.get_snapshot.assert_called_once_with(mock=False, sections=None)
+        window._frontend_state_service.get_snapshot.assert_not_called()
+        self.assertEqual(len(worker.requests), 1)
+        self.assertIs(worker.requests[0].service, window._frontend_state_service)
+        self.assertFalse(worker.requests[0].mock)
+        self.assertIsNone(worker.requests[0].sections)
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None),
+        )
         window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
-    def test_frontend_refresh_force_renders_immediately(self):
+    def test_frontend_refresh_force_submits_snapshot_without_scheduler(self):
         window = self._make_window()
         window.app_shell = Mock()
         window._frontend_state_service = Mock()
         window._frontend_state_service.get_snapshot.return_value = {"app_status": {}}
         window._ui_update_scheduler = Mock()
+        worker = self._install_snapshot_worker(window)
 
         MainWindow.refresh_frontend_state(window, force=True)
 
         window._ui_update_scheduler.schedule.assert_not_called()
-        window._frontend_state_service.get_snapshot.assert_called_once_with(mock=False, sections=None)
+        window._frontend_state_service.get_snapshot.assert_not_called()
+        self.assertEqual(len(worker.requests), 1)
+        self.assertIsNone(worker.requests[0].sections)
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None),
+        )
         window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
     def test_frontend_slow_render_warning_is_rate_limited(self):
@@ -321,6 +364,7 @@ class MainWindowTests(unittest.TestCase):
             "app_status": {},
         }
         window.app_shell = Mock()
+        worker = self._install_snapshot_worker(window)
 
         for index in range(500):
             MainWindow._on_app_state_changed(
@@ -337,9 +381,16 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._flush_frontend_state(window)
 
         expected_sections = frozenset({"active_downloads", "log_items", "app_status"})
-        window._frontend_state_service.get_snapshot.assert_called_once_with(
-            mock=False,
-            sections=expected_sections,
+        window._frontend_state_service.get_snapshot.assert_not_called()
+        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(worker.requests[0].sections, expected_sections)
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[0],
+                {"active_downloads": [], "log_items": [], "app_status": {}},
+                changed_sections={"active_downloads", "log_items", "app_status"},
+            ),
         )
         window.app_shell.render.assert_called_once_with(
             {"active_downloads": [], "log_items": [], "app_status": {}},
@@ -356,9 +407,29 @@ class MainWindowTests(unittest.TestCase):
             "app_status": {"failed_count": 1},
         }
         window._frontend_state_service.get_snapshot.return_value = dict(snapshot)
+        worker = self._install_snapshot_worker(window)
 
         MainWindow._render_frontend_state(window, topics={"page.visible.failed"})
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[-1],
+                snapshot,
+                changed_sections={"failed_items", "app_status"},
+                signatures={"failed_items": "a", "app_status": "b"},
+            ),
+        )
         MainWindow._render_frontend_state(window, topics={"task_error"})
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[-1],
+                snapshot,
+                changed_sections=set(),
+                skip_render=True,
+                signatures={"failed_items": "a", "app_status": "b"},
+            ),
+        )
 
         window.app_shell.render.assert_called_once_with(
             snapshot,
@@ -386,6 +457,7 @@ class MainWindowTests(unittest.TestCase):
             "app_status": {},
         }
         window.app_shell = Mock()
+        worker = self._install_snapshot_worker(window)
         errors: list[BaseException] = []
 
         def publish_many(thread_index: int) -> None:
@@ -417,9 +489,16 @@ class MainWindowTests(unittest.TestCase):
         MainWindow._flush_frontend_state(window)
 
         expected_sections = frozenset({"active_downloads", "log_items", "app_status"})
-        window._frontend_state_service.get_snapshot.assert_called_once_with(
-            mock=False,
-            sections=expected_sections,
+        window._frontend_state_service.get_snapshot.assert_not_called()
+        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(worker.requests[0].sections, expected_sections)
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[0],
+                {"active_downloads": [], "log_items": [], "app_status": {}},
+                changed_sections={"active_downloads", "log_items", "app_status"},
+            ),
         )
         window.app_shell.render.assert_called_once()
 
@@ -508,13 +587,20 @@ class MainWindowTests(unittest.TestCase):
         service.get_delta = Mock()
         window._frontend_state_service = service
         window._cached_snapshot = {"version": 1, "active_downloads": [], "app_status": {}}
+        worker = self._install_snapshot_worker(window)
 
         MainWindow._render_frontend_state(window, topics={"videos.terminal"})
 
         service.get_delta.assert_not_called()
-        service.get_snapshot.assert_called_once_with(
-            mock=False,
-            sections=frozenset({"active_downloads", "app_status"}),
+        service.get_snapshot.assert_not_called()
+        self.assertEqual(worker.requests[0].sections, frozenset({"active_downloads", "app_status"}))
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[0],
+                {"active_downloads": [], "app_status": {}, "version": 2},
+                changed_sections={"active_downloads", "app_status"},
+            ),
         )
         window.app_shell.render.assert_called_once()
 

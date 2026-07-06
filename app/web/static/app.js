@@ -1,6 +1,8 @@
 let frontendState = buildMockState();
 let currentPage = "queue";
 let ws = null;
+let wsReconnectTimer = null;
+let pageIsUnloading = false;
 let platforms = [];
 let selected = {
   active: "",
@@ -16,6 +18,50 @@ let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_compl
 let logPage = 1;
 let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size") || 20);
 const LOG_RENDER_ROW_BUDGET = 300;
+const LOG_QUERY_WORKER_THRESHOLD = 80;
+let logQueryWorker = null;
+let logQueryWorkerAvailable = typeof Worker !== "undefined";
+let logQuerySequence = 0;
+let logQueryState = {
+  signature: "",
+  result: null,
+  pending: false,
+};
+window.__ucrawlFrontendStateLoaded = false;
+window.__ucrawlFrontendStateSettled = false;
+
+function closeLogQueryWorker() {
+  if (!logQueryWorker) return;
+  try {
+    logQueryWorker.terminate();
+  } catch (_error) {
+    // Browser teardown is best-effort; stale workers must not block navigation.
+  }
+  logQueryWorker = null;
+  logQueryState.pending = false;
+}
+
+function cleanupPageResources() {
+  pageIsUnloading = true;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  if (ws) {
+    const socket = ws;
+    ws = null;
+    try {
+      socket.onclose = null;
+      socket.close();
+    } catch (_error) {
+      // The page is leaving; close failures are intentionally ignored.
+    }
+  }
+  closeLogQueryWorker();
+}
+
+window.addEventListener("pagehide", cleanupPageResources, { once: true });
+window.addEventListener("beforeunload", cleanupPageResources, { once: true });
 
 function pad2(value) {
   return String(value).padStart(2, "0");
@@ -734,10 +780,13 @@ async function fetchFrontendState() {
       trimFrontendLogItems();
       frontendVersion = Number(data.version || frontendVersion || 0);
       updateIconManifest(data.icon_manifest);
+      window.__ucrawlFrontendStateLoaded = true;
       renderAll();
     }
   } catch (error) {
     appendUiLog("加载状态失败", error.message || error);
+  } finally {
+    window.__ucrawlFrontendStateSettled = true;
   }
 }
 
@@ -806,11 +855,25 @@ function configureTopCountForSource(sourceId) {
 }
 
 function connectWS() {
+  if (pageIsUnloading) return;
+  if (ws && [WebSocket.CONNECTING, WebSocket.OPEN].includes(ws.readyState)) return;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
   try {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${protocol}//${location.host}/ws`);
-    ws.onmessage = event => handleServerMessage(JSON.parse(event.data));
-    ws.onclose = () => setTimeout(connectWS, 2000);
+    const socket = new WebSocket(`${protocol}//${location.host}/ws`);
+    ws = socket;
+    socket.onmessage = event => handleServerMessage(JSON.parse(event.data));
+    socket.onclose = () => {
+      if (ws === socket) ws = null;
+      if (pageIsUnloading) return;
+      wsReconnectTimer = setTimeout(() => {
+        wsReconnectTimer = null;
+        connectWS();
+      }, 2000);
+    };
   } catch (_error) {
     ws = null;
   }
@@ -1152,8 +1215,18 @@ function displayMetadataValue(value, pending = false) {
   configureMediaDisplayHelpers();
   if (window.UcpMediaDisplay) return window.UcpMediaDisplay.displayMetadataValue(value, pending);
   const text = String(value || "").trim();
+  if (pending && (!text || text === "--" || ["检测中", "Checking", "檢測中"].includes(text))) {
+    return pendingMetadataLabel();
+  }
   if (text && text !== "--") return translateUiText(text);
-  return pending ? translateUiText("\u68c0\u6d4b\u4e2d") : "--";
+  return pending ? pendingMetadataLabel() : "--";
+}
+
+function pendingMetadataLabel() {
+  const language = String(document.documentElement?.dataset?.language || currentLanguage() || "zh-CN").trim();
+  if (language === "en-US") return "Checking";
+  if (language === "zh-TW") return "檢測中";
+  return "检测中";
 }
 
 function basenameFromPath(path) {
@@ -1272,37 +1345,17 @@ function localizedLogTabLabel(category) {
   return table[key] || t(LOG_TAB_LABELS[key] || key);
 }
 
-function logCategoryForCount(item) {
-  if (!window.UcpLogDisplay || typeof window.UcpLogDisplay.logCategory !== "function") {
-    return String(item.category || "system");
-  }
-  return window.UcpLogDisplay.logCategory(item);
-}
-
-function nonCategoryLogFilters() {
-  return {
-    ...logFilters,
-    category: "all",
-  };
-}
-
-function logTabCounts() {
+function emptyLogTabCounts() {
   const counts = Object.fromEntries(Object.keys(LOG_TAB_LABELS).map(key => [key, 0]));
-  const baseFilters = nonCategoryLogFilters();
-  const rows = window.UcpLogDisplay
-    ? window.UcpLogDisplay.filteredLogItems(frontendState.log_items || [], baseFilters)
-    : (frontendState.log_items || []);
-  for (const item of rows) {
-    counts.all += 1;
-    const category = logCategoryForCount(item);
-    if (Object.prototype.hasOwnProperty.call(counts, category)) counts[category] += 1;
-    if (String(item.level || "").toUpperCase() === "ERROR" && category !== "error") counts.error += 1;
-  }
   return counts;
 }
 
-function syncLogTabLabels() {
-  const counts = logTabCounts();
+function currentLogTabCounts() {
+  return (logQueryState.result && logQueryState.result.tabCounts) || emptyLogTabCounts();
+}
+
+function syncLogTabLabels(countsOverride) {
+  const counts = countsOverride || currentLogTabCounts();
   document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => {
     const category = button.dataset.logTab || "all";
     button.textContent = `${localizedLogTabLabel(category)} ${counts[category] || 0}`;
@@ -1971,15 +2024,151 @@ function emptyLogDetailSummaryHtml() {
   return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, esc(value))).join("")}</div>`;
 }
 
+function logQueryItems() {
+  trimFrontendLogItems();
+  return Array.isArray(frontendState.log_items) ? frontendState.log_items : [];
+}
+
+function logQuerySignature(items) {
+  const first = items[0] || {};
+  const last = items[items.length - 1] || {};
+  return JSON.stringify({
+    count: items.length,
+    first: logItemId(first),
+    last: logItemId(last),
+    firstTime: first.time || "",
+    lastTime: last.time || "",
+    filters: logFilters,
+    page: logPage,
+    pageSize: logPageSize,
+    limit: uiLogDisplayLimit(),
+  });
+}
+
+function buildLogQueryRequest(items, sequence) {
+  return {
+    sequence,
+    items,
+    filters: { ...logFilters },
+    page: logPage,
+    pageSize: logPageSize,
+    rowBudget: uiLogDisplayLimit(),
+    selectedId: selected.log,
+    nowMs: Date.now(),
+  };
+}
+
+function queryLogsSync(items, sequence) {
+  if (
+    !window.UcpLogDisplay ||
+    typeof window.UcpLogDisplay.queryLogItems !== "function" ||
+    typeof window.UcpLogDisplay.filteredLogItems !== "function" ||
+    typeof window.UcpLogDisplay.visibleLogItems !== "function"
+  ) {
+    return {
+      sequence,
+      pageItems: [],
+      tabCounts: emptyLogTabCounts(),
+      totalCount: items.length,
+      matchedCount: 0,
+      visibleCount: 0,
+      currentPage: 1,
+      totalPages: 1,
+      selectedId: "",
+    };
+  }
+  return window.UcpLogDisplay.queryLogItems(buildLogQueryRequest(items, sequence));
+}
+
+function ensureLogQueryWorker() {
+  if (!logQueryWorkerAvailable) return null;
+  if (logQueryWorker) return logQueryWorker;
+  try {
+    logQueryWorker = new Worker("/static/log_query_worker.js?v=20260707-log-worker");
+    logQueryWorker.onmessage = event => {
+      const payload = event && event.data ? event.data : {};
+      if (payload.type === "result") {
+        receiveLogQueryResult(payload.result);
+      } else if (payload.type === "error") {
+        logQueryWorkerAvailable = false;
+        logQueryState.pending = false;
+        appendLog(payload.message || "log query worker failed");
+        renderLogs();
+      }
+    };
+    logQueryWorker.onerror = () => {
+      logQueryWorkerAvailable = false;
+      logQueryState.pending = false;
+      if (logQueryWorker) {
+        logQueryWorker.terminate();
+        logQueryWorker = null;
+      }
+      renderLogs();
+    };
+  } catch (_error) {
+    logQueryWorkerAvailable = false;
+    logQueryWorker = null;
+  }
+  return logQueryWorker;
+}
+
+function shouldUseLogQueryWorker(items) {
+  return items.length > LOG_QUERY_WORKER_THRESHOLD && Boolean(ensureLogQueryWorker());
+}
+
+function receiveLogQueryResult(result) {
+  if (!result || Number(result.sequence) !== logQuerySequence) return;
+  logQueryState = {
+    signature: logQueryState.signature,
+    result,
+    pending: false,
+  };
+  if (currentPage === "logs") renderLogQueryResult(result);
+}
+
+function submitLogQuery(items, signature) {
+  const sequence = ++logQuerySequence;
+  logQueryState = {
+    signature,
+    result: logQueryState.result,
+    pending: true,
+  };
+  const worker = ensureLogQueryWorker();
+  if (!worker) {
+    receiveLogQueryResult(queryLogsSync(items, sequence));
+    return;
+  }
+  worker.postMessage(buildLogQueryRequest(items, sequence));
+}
+
 function renderLogs() {
   syncLogStaticLanguage();
   syncLogFilterControls();
-  const filteredItems = filteredLogItems();
-  const boundedItems = visibleLogItems(filteredItems, uiLogDisplayLimit());
-  const totalPages = logPageSize <= 0 ? 1 : Math.max(1, Math.ceil(boundedItems.length / logPageSize));
-  logPage = Math.max(1, Math.min(logPage, totalPages));
-  const start = logPageSize <= 0 ? 0 : (logPage - 1) * logPageSize;
-  const items = logPageSize <= 0 ? boundedItems : boundedItems.slice(start, start + logPageSize);
+  const allItems = logQueryItems();
+  const signature = logQuerySignature(allItems);
+  if (logQueryState.signature === signature && logQueryState.result && !logQueryState.pending) {
+    renderLogQueryResult(logQueryState.result);
+    return;
+  }
+  if (shouldUseLogQueryWorker(allItems)) {
+    submitLogQuery(allItems, signature);
+    if (logQueryState.result) renderLogQueryResult(logQueryState.result);
+    return;
+  }
+  const sequence = ++logQuerySequence;
+  const result = queryLogsSync(allItems, sequence);
+  logQueryState = { signature, result, pending: false };
+  renderLogQueryResult(result);
+}
+
+function renderLogQueryResult(result) {
+  syncLogStaticLanguage();
+  syncLogFilterControls();
+  const items = Array.isArray(result.pageItems) ? result.pageItems : [];
+  const boundedItems = { length: Number(result.matchedCount) || 0 };
+  const totalPages = Number(result.totalPages) || 1;
+  logPage = Number(result.currentPage) || 1;
+  syncLogTabLabels(result.tabCounts || emptyLogTabCounts());
   if (!items.some(item => logItemId(item) === selected.log)) selected.log = items.length ? logItemId(items[0]) : "";
   patchTableRows("logBody", items, item => logItemId(item), item => `
     <tr class="${selected.log === logItemId(item) ? "selected" : ""}" onclick="selectLog('${escAttr(logItemId(item))}')">
@@ -2010,8 +2199,8 @@ function syncLogEmptyState(empty) {
   const subtitlePrimary = panel.querySelector("[data-log-empty-primary]");
   const subtitleSecondary = panel.querySelector("[data-log-empty-secondary]");
   if (title) title.textContent = t("暂无匹配日志");
-  if (subtitle) subtitle.setAttribute("aria-label", t("调整筛选条件，或点击「刷新缓冲」重新加载日志"));
-  if (subtitlePrimary) subtitlePrimary.textContent = t("调整筛选条件，");
+  if (subtitle) subtitle.setAttribute("aria-label", t("调整筛选条件 或点击「刷新缓冲」重新加载日志"));
+  if (subtitlePrimary) subtitlePrimary.textContent = t("调整筛选条件");
   if (subtitleSecondary) subtitleSecondary.textContent = t("或点击「刷新缓冲」重新加载日志");
 }
 
@@ -2027,7 +2216,7 @@ function selectLog(id) {
 function currentLogDetailItem(itemsOverride) {
   const items = Array.isArray(itemsOverride)
     ? itemsOverride
-    : visibleLogItems(filteredLogItems(), uiLogDisplayLimit());
+    : ((logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : []);
   return items.find(row => logItemId(row) === selected.log) || null;
 }
 
@@ -2148,7 +2337,9 @@ function exportCurrentLogDetail() {
 }
 
 function renderLogDetail(itemsOverride) {
-  const items = Array.isArray(itemsOverride) ? itemsOverride : visibleLogItems(filteredLogItems(), uiLogDisplayLimit());
+  const items = Array.isArray(itemsOverride)
+    ? itemsOverride
+    : ((logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : []);
   const item = currentLogDetailItem(items);
   if (!item) {
     byId("logDetail").innerHTML = `
@@ -2262,17 +2453,6 @@ function syncLogFilterControls() {
   }
 }
 
-function filteredLogItems() {
-  trimFrontendLogItems();
-  return window.UcpLogDisplay
-    ? window.UcpLogDisplay.filteredLogItems(frontendState.log_items || [], logFilters)
-    : (frontendState.log_items || []).filter(logMatchesFilters);
-}
-
-function visibleLogItems(items, rowBudget = LOG_RENDER_ROW_BUDGET) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.visibleLogItems(items, rowBudget) : [];
-}
-
 function setLogPage(delta) {
   logPage += Number(delta) || 0;
   renderLogs();
@@ -2286,24 +2466,8 @@ function setLogPageSize(value) {
   syncCustomSelectForSelect(byId("logPageSize"));
 }
 
-function logMatchesFilters(item) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.logMatchesFilters(item, logFilters) : true;
-}
-
-function logCategory(item) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.logCategory(item) : "system";
-}
-
-function logSearchText(item) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.logSearchText(item) : "";
-}
-
-function logMatchesTime(item) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.logMatchesTime(item, logFilters.time) : true;
-}
-
 function currentLogTraceId() {
-  const items = visibleLogItems(filteredLogItems());
+  const items = (logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : [];
   const current = items.find(row => logItemId(row) === selected.log);
   const trace = String((current && current.trace_id) || "").trim();
   if (trace) return trace;
@@ -2442,6 +2606,34 @@ function proxyCustomDisplayValue(value) {
   const service = settingsRenderService();
   return service ? service.proxyCustomDisplayValue(value) : String(value || "");
 }
+
+function updatePlatformSettingSnapshot(platformId, key, value) {
+  const rows = (frontendState.settings_snapshot || {})["\u5e73\u53f0\u8bbe\u7f6e"];
+  if (!Array.isArray(rows)) return false;
+  const row = rows.find(item => String(item.id || "") === String(platformId || ""));
+  if (!row) return false;
+  const text = String(value ?? "").trim();
+  if (key === row.proxy_config_key || key === "proxy" || key === "proxy_url") {
+    const proxyOptions = row.proxy_options || ["\u7cfb\u7edf\u4ee3\u7406", "\u76f4\u8fde", "Clash (7890)", "v2rayN (10809)", "\u81ea\u5b9a\u4e49"];
+    const options = proxyOptions.map(normalizeSettingOption).filter(option => option.value);
+    const optionKnown = options.some(option => String(option.value) === text);
+    row.proxy = text || "\u7cfb\u7edf\u4ee3\u7406";
+    row.proxy_custom_active = text === "\u81ea\u5b9a\u4e49" || (!!text && !optionKnown);
+    if (text && text !== "\u81ea\u5b9a\u4e49" && !optionKnown) row.proxy_custom_value = text;
+    return true;
+  }
+  if (key === row.count_config_key || key === "default_count" || key === "max_items") {
+    row.default_count = Number.isFinite(Number(text)) ? Number(text) : text;
+    return true;
+  }
+  if (key === row.timeout_config_key || key === "timeout" || key === "default_timeout") {
+    row.default_timeout = Number.isFinite(Number(text)) ? Number(text) : text;
+    return true;
+  }
+  row[key] = value;
+  return true;
+}
+
 function handleProxySelect(platformId, key, select) {
   const value = String(select.value || "").trim();
   const row = select.closest(".setting-platform");
@@ -2511,6 +2703,7 @@ function updateSetting(section, key, value) {
     const currentItem = completedItemById(currentPlayingId);
     if (currentItem && isImageItem(currentItem)) scheduleImageAutoAdvance(currentPlayingId);
   }
+  updatePlatformSettingSnapshot(section, key, value);
   frontendAction("update_setting", { section, key, value });
 }
 

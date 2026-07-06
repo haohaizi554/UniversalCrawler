@@ -116,6 +116,30 @@ python tests/test_launcher.py --gui
 
 **启动方式**：用 [web_test_app.py](../../tests/web_test_app.py) 作为 uvicorn shim 暴露 `app`。
 
+#### 浏览器 E2E 等待与性能约束
+
+浏览器测试不得使用固定时长硬等来“赌页面加载完成”。尤其禁止用 `page.wait_for_timeout(3500)`、`time.sleep(3.5)` 这类无条件等待替代可观测状态。新增或修改 WebUI 用例时，优先等待稳定的页面条件：
+
+- 页面壳层：`#app-shell`
+- 前端核心函数：`window.renderAll`、`window.switchPage`
+- 具体控件：例如 `#topBar`、`#rightPanel`、`#sourceSelect`
+- 异步初始状态：只有当用例会预置或覆盖前端状态时，才额外等待 `window.__ucrawlFrontendStateSettled === true`
+- 页面特定数据：例如平台下拉框需要等待 `#sourceSelect.options.length > 0`，不要塞进通用导航 helper
+
+除非测试目标本身就是防抖、节流或定时器窗口，否则不得用 `page.wait_for_timeout(...)` 等固定超时等待 UI 稳定；弹窗、按钮状态、列表刷新、语言切换和主题切换都应等待对应 DOM 状态或前端状态标记。
+
+测试服务的 `stdout` / `stderr` 也不能挂在无人消费的 `subprocess.PIPE` 上。长时间运行的浏览器套件会持续输出服务日志，管道填满后可能把 uvicorn 或测试进程拖住；应重定向到临时文件或显式消费输出。
+
+2026-07 本地基线：用户原先观测 `tests/test_web_browser.py` 约需 7 到 8 分钟。移除 3.5 秒硬等并修正测试服务输出后，当前实测：
+
+```bash
+python -m pytest tests/test_web_browser.py -q
+# 2026-07-07 最新实测：97 passed in 247.64s (0:04:07)
+# 2026-07 早前热运行：97 passed in 185.66s (外部秒表约 187.9s)
+```
+
+即浏览器 E2E 从约 420-480 秒降至约 188-248 秒，节省约 172-292 秒，约快 41%-61%。该数字受机器负载、Playwright 首次启动状态和浏览器缓存影响；后续变更若显著回退，应优先检查是否重新引入了固定等待、整页重绘或服务输出阻塞。
+
 ## 测试分层
 
 ### CLI / SDK（cli_sdk）

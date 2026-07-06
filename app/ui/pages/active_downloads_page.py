@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 from app.config.settings import download_concurrency_options, normalize_download_concurrency
 from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
 from app.ui.components.combo_popup import ThemedComboBox
-from app.ui.localization import normalize_language, platform_display_name, tr
+from app.ui.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
 from app.ui.styles.table_rows import (
@@ -79,6 +79,7 @@ class ActiveDownloadsModel(QAbstractTableModel):
         self._rows: list[dict[str, Any]] = []
         self._row_signatures: list[tuple] = []
         self._language = "zh-CN"
+        self._headers = list(self.HEADERS)
 
     def rowCount(self, _parent: QModelIndex = QModelIndex()) -> int:
         return len(self._rows)
@@ -88,16 +89,28 @@ class ActiveDownloadsModel(QAbstractTableModel):
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return tr(self.HEADERS[section], self._language)
+            return tr(self._headers[section], self._language)
         return super().headerData(section, orientation, role)
 
     def set_headers(self, headers: list[str]) -> None:
-        if len(headers) != len(self.HEADERS):
+        if len(headers) != len(self._headers):
             return
-        if list(headers) == self.HEADERS:
+        headers = self._source_headers_from_display(headers)
+        if headers == self._headers:
             return
-        self.HEADERS = list(headers)
-        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self.HEADERS) - 1)
+        self._headers = headers
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self._headers) - 1)
+
+    def _source_headers_from_display(self, headers: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for index, header in enumerate(headers):
+            text = str(header or "")
+            current_source = self._headers[index] if index < len(self._headers) else ""
+            if current_source and is_translation_of(text, current_source):
+                normalized.append(current_source)
+            else:
+                normalized.append(source_text_for_translation(text))
+        return normalized
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or index.row() >= len(self._rows):
@@ -126,8 +139,8 @@ class ActiveDownloadsModel(QAbstractTableModel):
         if normalized == self._language:
             return
         self._language = normalized
-        if self.HEADERS:
-            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self.HEADERS) - 1)
+        if self._headers:
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self._headers) - 1)
         if self._rows:
             self.dataChanged.emit(
                 self.index(0, 0),

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -296,12 +297,20 @@ class SettingsPage(PageFrame):
             switch_wrap_width=FORM_SWITCH_WRAP_WIDTH,
         )
 
-    def _platform_col_widths(self, rows: list[dict[str, Any]] | None = None) -> dict[str, int]:
+    def _platform_col_widths(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        *,
+        reserve_vertical_scrollbar: bool = False,
+    ) -> dict[str, int]:
         font = self.font()
         font.setPixelSize(self._scaled_px(13, minimum=12))
+        scrollbar_reserve = 0
+        if reserve_vertical_scrollbar:
+            scrollbar_reserve = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent) + 2
         return platform_column_widths(
             rows,
-            content_width=self._form_inner_width() - 28 - 40,
+            content_width=self._form_inner_width() - 28 - 40 - scrollbar_reserve,
             translate=self._t,
             metrics=QFontMetrics(font),
             count_options=PLATFORM_COUNT_OPTIONS,
@@ -978,6 +987,17 @@ class SettingsPage(PageFrame):
             )
         )
 
+        show_browser_switch = self._build_switch(bool(self._dict_value(value, "show_browser_window", True)))
+        show_browser_switch.toggled.connect(
+            lambda checked: self._emit_basic_setting_changed("show_browser_window", bool(checked))
+        )
+        layout.addWidget(
+            self._build_setting_row(
+                "\u663e\u793a\u6d4f\u89c8\u5668\u5185\u6838",
+                show_browser_switch,
+            )
+        )
+
         open_mode_row = QWidget()
         open_mode_row.setObjectName("SettingsOpenBehaviorControl")
         open_mode_row.setFixedWidth(large_w)
@@ -1252,9 +1272,12 @@ class SettingsPage(PageFrame):
 
         return bar
 
-    def _build_platform_table_header(self, rows: list[dict[str, Any]]) -> QWidget:
-        col_widths = self._platform_col_widths(rows)
-
+    def _build_platform_table_header(
+        self,
+        rows: list[dict[str, Any]],
+        col_widths: dict[str, int] | None = None,
+    ) -> QWidget:
+        col_widths = col_widths or self._platform_col_widths(rows)
         header = QWidget()
         header.setObjectName("SettingsPlatformHeader")
         header.setFixedHeight(38)
@@ -1301,8 +1324,10 @@ class SettingsPage(PageFrame):
         table_layout.setContentsMargins(0, 0, 0, 0)
         table_layout.setSpacing(0)
 
-        col_widths = self._platform_col_widths(rows)
-        table_layout.addWidget(self._build_platform_table_header(rows))
+        body_height = sum(self._platform_row_height(row) for row in rows) or 48
+        uses_scroll_area = len(rows) > 6 or body_height > 340
+        col_widths = self._platform_col_widths(rows, reserve_vertical_scrollbar=uses_scroll_area)
+        table_layout.addWidget(self._build_platform_table_header(rows, col_widths=col_widths))
 
         header_divider = QFrame()
         header_divider.setObjectName("SettingsCardDivider")
@@ -1310,9 +1335,8 @@ class SettingsPage(PageFrame):
         table_layout.addWidget(header_divider)
 
         table_body = self._build_platform_table_body(rows, col_widths)
-        body_height = sum(self._platform_row_height(row) for row in rows) or 48
 
-        if len(rows) > 6 or body_height > 340:
+        if uses_scroll_area:
             scroll = QScrollArea()
             scroll.setObjectName("SettingsPlatformScroll")
             scroll.setWidgetResizable(True)

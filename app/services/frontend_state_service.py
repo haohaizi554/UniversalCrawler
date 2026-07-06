@@ -21,12 +21,7 @@ from typing import Any
 from PyQt6.QtCore import QCoreApplication, QObject, QThread, Qt, pyqtSignal
 
 from app.config import cfg
-from app.config.settings import (
-    CURRENT_FILENAME_TEMPLATE,
-    DEFAULT_OPEN_MODE,
-    open_mode_label,
-    playback_player_label,
-)
+from app.config.settings import CURRENT_FILENAME_TEMPLATE
 from app.core.plugins.run_options import build_missav_proxy_url
 from app.exceptions import ConfigValidationError
 from app.debug_logger import debug_logger
@@ -42,6 +37,7 @@ from app.services.frontend_event_aggregator import (
     FrontendEventAggregator,
     sections_for_topic,
 )
+from app.services.failed_record_store import FailedRecordStore
 from app.services import completed_metadata_rules as metadata_rules
 from app.services import frontend_file_actions as file_actions
 from app.services import frontend_log_adapter as log_adapter
@@ -99,6 +95,7 @@ class FrontendStateService:
     METADATA_EMPTY_MAX_RETRIES = 3
     FRONTEND_DELTA_EVENTS_LIMIT = 64
     FILE_LOG_BACKFILL_LIMIT = 500
+    FAILED_RECORD_SNAPSHOT_LIMIT = 500
     PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
 
     def __init__(
@@ -113,6 +110,7 @@ class FrontendStateService:
         executable_path_provider: Callable[[], str] | None = None,
         media_metadata_service: MediaMetadataService | None = None,
         frontend_event_emitter: Callable[[str, dict[str, Any]], None] | None = None,
+        failed_record_store: FailedRecordStore | None = None,
     ) -> None:
         self.controller = controller
         self.config = config_manager
@@ -124,13 +122,17 @@ class FrontendStateService:
         self._executable_path_provider = executable_path_provider or self._current_executable_path
         self.media_metadata_service = media_metadata_service or MediaMetadataService()
         self._frontend_event_emitter = frontend_event_emitter
+        self._destroyed = False
+        self.failed_record_store = failed_record_store or FailedRecordStore()
         self._gui_runtime_invoker = self._create_gui_runtime_invoker()
         self._file_log_cache_store = FrontendLogCache(
             cache_service=self.cache_service,
-            reader=self._read_log_items,
+            log_path_provider=self._latest_debug_log_path,
             limit_provider=self._ui_log_display_limit,
             ttl_seconds=1.0,
             backfill_limit=self.FILE_LOG_BACKFILL_LIMIT,
+            worker_enabled=True,
+            on_refresh=self._on_file_log_cache_refreshed,
         )
         self._running_state = "空闲中"
         self._static_snapshot_cache: dict[str, Any] | None = None
@@ -138,6 +140,8 @@ class FrontendStateService:
         self._platform_auth_force_refresh_once = False
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
+        self._failed_records_snapshot_exposed = False
+        self._configure_failed_record_store()
         self._active_event_time_cache: dict[str, str] = {}
         self._metadata_retry_tracker = MetadataRetryTracker(
             retry_callback=lambda video_id, source_path: self._retry_completed_metadata_probe(video_id, source_path),
@@ -155,7 +159,6 @@ class FrontendStateService:
             timer_factory=threading.Timer,
         )
         self._metadata_probe_budget_remaining: int | None = None
-        self._destroyed = False
         self._app_state_event_handler = self.app_state.event_bus.subscribe(
             "app_state.changed",
             self._record_app_state_change,
@@ -250,6 +253,18 @@ class FrontendStateService:
         self._clear_metadata_empty_failures()
         self._event_aggregator.reset()
 
+    def _configure_failed_record_store(self) -> None:
+        callback_setter = getattr(self.failed_record_store, "set_refresh_callback", None)
+        if callable(callback_setter):
+            callback_setter(self._on_failed_records_refreshed)
+
+    def _on_failed_records_refreshed(self, count: int) -> None:
+        if self._destroyed:
+            return
+        if not self._failed_records_snapshot_exposed:
+            return
+        self._event_aggregator.record("failed_records.refresh", {"count": int(count or 0)})
+
     def destroy(self) -> None:
         """退订所有 EventBus 订阅，释放资源。应在 FSS 不再使用时调用。"""
         self._destroyed = True
@@ -277,6 +292,8 @@ class FrontendStateService:
             self._config_event_handler = None
         self._metadata_retry_tracker.cancel_all(clear_failures=True)
         self._cancel_metadata_probe_queue(close=True)
+        self._file_log_cache_store.shutdown()
+        self.failed_record_store.shutdown()
         if self._owns_app_state:
             shutdown = getattr(self.app_state, "shutdown", None)
             if callable(shutdown):
@@ -427,6 +444,11 @@ class FrontendStateService:
         finally:
             self._metadata_probe_budget_remaining = previous_probe_budget
 
+        if want_failed and failed_items:
+            self._queue_failed_records(failed_items)
+        if want_failed:
+            failed_items = self._merge_failed_record_snapshot(failed_items)
+
         sections: dict[str, Any] = {}
         if only is None or "queue_items" in only:
             sections["queue_items"] = queue_items
@@ -442,7 +464,7 @@ class FrontendStateService:
                 queue_count=bucket_counts["queue"],
                 active_count=bucket_counts["active"],
                 completed_count=bucket_counts["completed"],
-                failed_count=bucket_counts["failed"],
+                failed_count=max(bucket_counts["failed"], len(failed_items)) if want_failed else bucket_counts["failed"],
                 active_downloads=active_downloads if (include_active or want_active_for_status) else None,
             )
         return sections
@@ -1002,7 +1024,7 @@ class FrontendStateService:
                 "content_type": metadata.content_type,
             }
             has_useful_metadata = bool(metadata.duration or metadata.resolution)
-            changed = self._apply_completed_metadata(target, metadata_payload)
+            self._apply_completed_metadata(target, metadata_payload)
             if has_useful_metadata:
                 self._clear_metadata_empty_failures(video_id, source_path)
                 self._cancel_metadata_retry(video_id)
@@ -1384,20 +1406,33 @@ class FrontendStateService:
     def _file_log_cache_key(limit: int) -> str:
         return FrontendLogCache.cache_key(limit)
 
+    @staticmethod
+    def _latest_debug_log_path() -> Path:
+        try:
+            from app.debug_logger import debug_logger
+
+            return Path(debug_logger.latest_file)
+        except Exception:
+            return Path("__missing_latest_debug_log__")
+
+    def _on_file_log_cache_refreshed(self, count: int) -> None:
+        self._emit_frontend_event(
+            "logs.append",
+            {"count": int(count), "source": "frontend_log_worker", "batched": True},
+        )
+
+    def refresh_file_log_cache(self, *, timeout: float | None = None) -> list[dict[str, Any]]:
+        """Synchronously refresh parsed file logs for tests and maintenance tasks."""
+        items = self._file_log_cache_store.refresh_now(self._ui_log_display_limit())
+        if timeout is not None:
+            self._file_log_cache_store.wait_for_idle(timeout)
+        return items
+
     def _invalidate_file_log_cache(self, *, limit: Any | None = None) -> None:
         self._file_log_cache_store.invalidate(limit=limit)
 
     def _resize_file_log_cache_limit(self, limit: Any) -> None:
         self._file_log_cache_store.resize_limit(limit)
-
-    def _read_log_items(self, *, limit: int) -> list[dict[str, Any]]:
-        try:
-            from app.debug_logger import debug_logger
-
-            latest_file = Path(debug_logger.latest_file)
-        except Exception:
-            return []
-        return log_adapter.parse_debug_log_file(latest_file, limit=limit)
 
     def _enrich_log_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
         return log_adapter.enrich_log_item(item)
@@ -1424,6 +1459,49 @@ class FrontendStateService:
             platform_label=self._platform_label,
             trace_id_for_item=self._trace_id,
         )
+
+    def _queue_failed_records(self, failed_items: list[Mapping[str, Any]]) -> None:
+        try:
+            self.failed_record_store.queue_upsert(failed_items)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "queue_failed_records",
+                exc,
+                details={"count": len(failed_items)},
+            )
+
+    def _merge_failed_record_snapshot(self, failed_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self._failed_records_snapshot_exposed = True
+        snapshot_getter = getattr(self.failed_record_store, "records_snapshot", None)
+        if not callable(snapshot_getter):
+            return failed_items
+        try:
+            stored_items = snapshot_getter(limit=self.FAILED_RECORD_SNAPSHOT_LIMIT)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "failed_records_snapshot",
+                exc,
+            )
+            return failed_items
+        if not stored_items:
+            return failed_items
+        merged = list(failed_items)
+        seen_ids = {
+            str(item.get("id") or item.get("video_id") or "")
+            for item in merged
+            if isinstance(item, Mapping)
+        }
+        for item in stored_items:
+            if not isinstance(item, Mapping):
+                continue
+            item_id = str(item.get("id") or item.get("video_id") or "")
+            if not item_id or item_id in seen_ids:
+                continue
+            merged.append(dict(item))
+            seen_ids.add(item_id)
+        return merged
 
     def _fallback_failed_log_entries(
         self,
@@ -1876,7 +1954,14 @@ class FrontendStateService:
         value = payload.get("value")
         aliases = {"download_directory": "save_directory", "save_directory": "save_directory"}
         config_key = aliases.get(key, key)
-        allowed = {"save_directory", "filename_template", "open_after_download", "default_open_mode", "theme"}
+        allowed = {
+            "save_directory",
+            "filename_template",
+            "open_after_download",
+            "default_open_mode",
+            "show_browser_window",
+            "theme",
+        }
         if config_key not in allowed:
             return FrontendActionResult("error", f"unknown basic setting: {key}")
         if config_key == "save_directory" and value is None:

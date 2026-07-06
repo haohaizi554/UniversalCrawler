@@ -12,6 +12,14 @@
   --accent-soft: #eaf3ff;
   --row-selected: #dbeafe;
   --row-hover: color-mix(in srgb, var(--accent-soft), transparent 52%);
+  --on-accent: #ffffff;
+  --select-menu-bg: var(--panel);
+  --select-menu-text: var(--text);
+  --select-option-hover-bg: var(--row-hover);
+  --select-option-hover-text: var(--text);
+  --select-option-selected-bg: color-mix(in srgb, var(--accent), #000000 18%);
+  --select-option-selected-text: var(--on-accent);
+  --select-option-selected-hover-bg: color-mix(in srgb, var(--accent), #000000 24%);
   --danger: #ef4444;
   --success: #22c55e;
   --warning: #f59e0b;
@@ -31,6 +39,14 @@
   --accent-soft: #1f2d46;
   --row-selected: #1e3a5f;
   --row-hover: color-mix(in srgb, var(--accent-soft), transparent 38%);
+  --on-accent: #ffffff;
+  --select-menu-bg: var(--input);
+  --select-menu-text: var(--text);
+  --select-option-hover-bg: color-mix(in srgb, var(--accent-soft), transparent 12%);
+  --select-option-hover-text: var(--text);
+  --select-option-selected-bg: color-mix(in srgb, var(--accent), #ffffff 18%);
+  --select-option-selected-text: #111827;
+  --select-option-selected-hover-bg: color-mix(in srgb, var(--accent), #ffffff 26%);
   --danger: #f87171;
   --success: #22c55e;
   --warning: #fbbf24;
@@ -267,7 +283,8 @@ select option:hover {
   padding: 0;
   border: 2px solid var(--accent);
   border-radius: 7px;
-  background: var(--panel);
+  background: var(--select-menu-bg);
+  color: var(--select-menu-text);
   box-shadow: 0 14px 34px rgba(15, 23, 42, .18);
 }
 
@@ -276,7 +293,6 @@ select option:hover {
 }
 
 [data-theme="dark"] .custom-select-menu {
-  background: var(--input);
   box-shadow: 0 18px 42px rgba(0, 0, 0, .48);
 }
 
@@ -289,7 +305,7 @@ select option:hover {
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--text);
+  color: var(--select-menu-text);
   padding: 0 12px;
   text-align: left;
   cursor: pointer;
@@ -310,10 +326,22 @@ select option:hover {
   white-space: nowrap;
 }
 
-.custom-select-option:hover,
-.custom-select-option.selected {
-  background: var(--accent);
-  color: #fff;
+.custom-select-option:hover {
+  background: var(--select-option-hover-bg);
+  color: var(--select-option-hover-text);
+}
+
+.custom-select-option.selected,
+.custom-select-option[aria-selected="true"] {
+  background: var(--select-option-selected-bg);
+  color: var(--select-option-selected-text);
+  font-weight: 700;
+}
+
+.custom-select-option.selected:hover,
+.custom-select-option[aria-selected="true"]:hover {
+  background: var(--select-option-selected-hover-bg);
+  color: var(--select-option-selected-text);
 }
 
 .source-select:focus,
@@ -758,6 +786,10 @@ select option:hover {
 
 #page-logs .log-empty-state .log-empty-subtitle {
   width: min(100%, 520px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   color: var(--text);
   line-height: 1.35;
   word-break: keep-all;
@@ -2607,6 +2639,14 @@ tr.selected:hover td {
   min-width: 0;
   color: var(--text);
   font-weight: 600;
+}
+
+.setting-row .custom-select .custom-select-button .custom-select-label,
+.setting-row .custom-select .custom-select-menu .custom-select-label,
+.setting-platform .custom-select .custom-select-button .custom-select-label,
+.setting-platform .custom-select .custom-select-menu .custom-select-label {
+  color: inherit;
+  font-weight: inherit;
 }
 
 .setting-platform .platform-name { grid-column: 1; grid-row: 1; }

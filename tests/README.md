@@ -142,6 +142,10 @@ python tests/run_all_tests.py --no-failfast           # 不遇失败停止
   - WebDesignGuidelinesTests（focus 样式、hover、disabled、错误日志）
 - [web_test_app.py](web_test_app.py) - uvicorn 启动 shim（暴露 `app` 给 `tests.web_test_app:app`）
 
+浏览器 E2E 用例必须等待可观测状态，不得用固定 3.5 秒硬等兜底。通用导航 helper 应等待 `#app-shell`、核心 JS 函数和必要基础控件；具体页面的数据加载、下拉选项、弹窗内容由对应用例自己等待。除非测试对象本身是防抖、节流或定时器窗口，否则不要用 `page.wait_for_timeout(...)` 等固定超时等待 UI 稳定。测试服务输出不得长期挂在无人消费的 `PIPE` 上，避免日志管道填满导致套件假性变慢或卡住。
+
+当前本地基线：`python -m pytest tests/test_web_browser.py -q` 最新实测为 `97 passed in 247.64s (0:04:07)`，早前热运行曾到 `97 passed in 185.66s`（外部秒表约 `187.9s`）。历史硬等版本约 7-8 分钟，当前约节省 172-292 秒；新增浏览器用例必须等待可观测状态，不得重新引入固定 3.5 秒硬等。
+
 ### 核心组件（core_services 类别）
 - test_application_controller.py - 控制器
 - test_downloaders.py / test_download_manager_dispatch.py - 下载器

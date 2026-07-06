@@ -1,4 +1,4 @@
-"""Bounded frontend log cache used by GUI and WebUI snapshots."""
+"""Bounded frontend log repository used by GUI and WebUI snapshots."""
 
 from __future__ import annotations
 
@@ -6,24 +6,97 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
+
+from app.services import frontend_log_adapter as log_adapter
+
+
+class _TailLogFileReader:
+    """Incrementally read the active debug log without scanning it on every refresh."""
+
+    INITIAL_WINDOW_BYTES = 1024 * 1024
+    MAX_WINDOW_BYTES = 8 * 1024 * 1024
+
+    def __init__(self, path_provider: Callable[[], str | Path]) -> None:
+        self._path_provider = path_provider
+        self._path_key = ""
+        self._offset = 0
+        self._items: list[dict[str, Any]] = []
+        self._initialized = False
+
+    def reset(self) -> None:
+        self._path_key = ""
+        self._offset = 0
+        self._items = []
+        self._initialized = False
+
+    def read(self, *, limit: int) -> list[dict[str, Any]]:
+        path = Path(self._path_provider())
+        try:
+            stat = path.stat()
+        except OSError:
+            self.reset()
+            return []
+        size = max(0, int(stat.st_size))
+        path_key = str(path.resolve())
+        if not self._initialized or path_key != self._path_key or size < self._offset:
+            return self._read_tail_window(path, path_key, size, limit=limit)
+        if size == self._offset:
+            return deepcopy(self._items[-limit:])
+        text = self._read_range(path, self._offset, size - self._offset)
+        self._offset = size
+        parsed = log_adapter.parse_debug_log_text(text, limit=limit)
+        if parsed:
+            self._items = [*self._items, *parsed][-limit:]
+        return deepcopy(self._items[-limit:])
+
+    def _read_tail_window(self, path: Path, path_key: str, size: int, *, limit: int) -> list[dict[str, Any]]:
+        window = min(size, self.INITIAL_WINDOW_BYTES)
+        items: list[dict[str, Any]] = []
+        while True:
+            start = max(0, size - window)
+            text = self._read_range(path, start, size - start)
+            items = log_adapter.parse_debug_log_text(text, limit=limit)
+            if len(items) >= limit or start == 0 or window >= self.MAX_WINDOW_BYTES:
+                break
+            window = min(size, window * 2)
+        self._path_key = path_key
+        self._offset = size
+        self._items = deepcopy(items[-limit:])
+        self._initialized = True
+        return deepcopy(self._items)
+
+    @staticmethod
+    def _read_range(path: Path, offset: int, size: int) -> str:
+        if size <= 0:
+            return ""
+        try:
+            with path.open("rb") as handle:
+                handle.seek(max(0, offset))
+                data = handle.read(max(0, size))
+        except OSError:
+            return ""
+        return data.decode("utf-8", errors="replace")
 
 
 class FrontendLogCache:
-    """Cache tail log rows without rereading large files on UI limit changes."""
+    """Cache tail log rows without doing disk IO in the snapshot hot path."""
 
     def __init__(
         self,
         *,
         cache_service: Any,
-        reader: Callable[..., list[dict[str, Any]]],
         limit_provider: Callable[[], int],
+        reader: Callable[..., list[dict[str, Any]]] | None = None,
+        log_path_provider: Callable[[], str | Path] | None = None,
         ttl_seconds: float = 1.0,
         backfill_limit: int = 500,
         clock: Callable[[], float] = time.monotonic,
+        worker_enabled: bool = False,
+        on_refresh: Callable[[int], None] | None = None,
     ) -> None:
         self._cache_service = cache_service
-        self._reader = reader
         self._limit_provider = limit_provider
         self._ttl_seconds = float(ttl_seconds)
         self._backfill_limit = int(backfill_limit)
@@ -32,6 +105,18 @@ class FrontendLogCache:
         self._at = 0.0
         self._limit = 0
         self._lock = threading.RLock()
+        self._reader = reader
+        self._tail_reader = _TailLogFileReader(log_path_provider) if log_path_provider is not None else None
+        if self._reader is None and self._tail_reader is None:
+            self._reader = lambda *, limit: []
+        self._worker_enabled = bool(worker_enabled)
+        self._on_refresh = on_refresh
+        self._worker_event = threading.Event()
+        self._worker_lock = threading.RLock()
+        self._worker_thread: threading.Thread | None = None
+        self._pending_read_limit = 0
+        self._refresh_in_flight = False
+        self._shutdown = False
 
     @staticmethod
     def normalize_limit(value: Any, *, default: int = 300) -> int:
@@ -66,6 +151,8 @@ class FrontendLogCache:
             self._items = []
             self._at = 0.0
             self._limit = 0
+        if self._tail_reader is not None:
+            self._tail_reader.reset()
         self._delete_cache_key("frontend.file_log_cache")
         self._delete_cache_key(self.cache_key(normalized_limit))
 
@@ -84,10 +171,47 @@ class FrontendLogCache:
         limit = self._current_limit()
         read_limit = self._next_read_limit(limit)
         if read_limit > 0:
-            self._refresh_from_file(read_limit)
+            if self._worker_enabled:
+                self.request_refresh(read_limit)
+            else:
+                self._refresh_from_source(read_limit)
         file_items = self.items_snapshot
         merged = [*file_items, *[dict(item) for item in buffer]][-limit:]
         return merged
+
+    def request_refresh(self, limit: Any | None = None) -> None:
+        read_limit = self.normalize_limit(limit if limit is not None else self._current_limit())
+        with self._worker_lock:
+            if self._shutdown:
+                return
+            self._pending_read_limit = max(self._pending_read_limit, read_limit)
+            self._ensure_worker_locked()
+            self._refresh_in_flight = True
+            self._worker_event.set()
+
+    def refresh_now(self, limit: Any | None = None) -> list[dict[str, Any]]:
+        read_limit = self.normalize_limit(limit if limit is not None else self._current_limit())
+        self._refresh_from_source(read_limit)
+        return self.items_snapshot
+
+    def wait_for_idle(self, timeout: float = 2.0) -> bool:
+        deadline = self._clock() + max(0.0, float(timeout))
+        while self._clock() < deadline:
+            with self._worker_lock:
+                idle = not self._refresh_in_flight and self._pending_read_limit <= 0
+            if idle:
+                return True
+            time.sleep(0.01)
+        with self._worker_lock:
+            return not self._refresh_in_flight and self._pending_read_limit <= 0
+
+    def shutdown(self) -> None:
+        with self._worker_lock:
+            self._shutdown = True
+            self._worker_event.set()
+            thread = self._worker_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
 
     def _current_limit(self) -> int:
         try:
@@ -109,11 +233,13 @@ class FrontendLogCache:
                 return min(limit, max(1, self._limit, len(self._items)))
         return 0
 
-    def _refresh_from_file(self, read_limit: int) -> None:
+    def _refresh_from_source(self, read_limit: int) -> None:
         cache_key = self.cache_key(read_limit)
-        cached = self._cache_service.get(cache_key)
+        cached = None
+        if self._tail_reader is None:
+            cached = self._cache_service.get(cache_key)
         if cached is None:
-            cached = self._reader(limit=read_limit)
+            cached = self._source_read(limit=read_limit)
             self._cache_service.set(
                 cache_key,
                 cached,
@@ -124,6 +250,44 @@ class FrontendLogCache:
             self._items = deepcopy(cached)[-read_limit:]
             self._limit = read_limit
             self._at = self._clock()
+        if self._on_refresh is not None:
+            self._on_refresh(len(self._items))
+
+    def _source_read(self, *, limit: int) -> list[dict[str, Any]]:
+        if self._tail_reader is not None:
+            return self._tail_reader.read(limit=limit)
+        if self._reader is None:
+            return []
+        return self._reader(limit=limit)
+
+    def _ensure_worker_locked(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="frontend-log-tail-worker",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _worker_loop(self) -> None:
+        while True:
+            self._worker_event.wait()
+            with self._worker_lock:
+                if self._shutdown:
+                    return
+                read_limit = self._pending_read_limit
+                self._pending_read_limit = 0
+                self._worker_event.clear()
+            if read_limit > 0:
+                try:
+                    self._refresh_from_source(read_limit)
+                finally:
+                    with self._worker_lock:
+                        if self._pending_read_limit > 0:
+                            self._worker_event.set()
+                        else:
+                            self._refresh_in_flight = False
 
     def _delete_cache_key(self, key: str) -> None:
         delete = getattr(self._cache_service, "delete", None)

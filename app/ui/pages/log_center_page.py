@@ -4,6 +4,7 @@ import html
 import json
 import math
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QEvent
@@ -48,7 +49,6 @@ from app.ui.components.log_inspector_sections import (
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
-from app.ui.viewmodels import log_filtering
 from app.ui.viewmodels.log_detail_payloads import (
     build_log_detail_payload,
     extract_trace_id,
@@ -86,7 +86,13 @@ from app.ui.viewmodels.log_display import (
     stage_display_text,
 )
 from app.ui.viewmodels.log_i18n import localize_log_event_code, localize_log_payload, localize_log_text
-from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, parse_page_size, total_pages
+from app.ui.viewmodels.log_query_worker import (
+    LogQueryRequest,
+    LogQueryResult,
+    LogQueryWorker,
+    stable_log_item_id,
+)
+from app.ui.viewmodels.pagination_state import parse_page_size
 from app.utils.safe_slot import safe_slot
 
 
@@ -141,12 +147,13 @@ class LogCenterTableDelegate(SnapshotActionDelegate):
 
 class LogCenterPage(PageFrame):
     log_action_requested = pyqtSignal(str)
+    _log_query_finished = pyqtSignal(object)
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
         self.setObjectName("LogCenterPage")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._all_items: list[dict[str, Any]] = []
+        self._all_items: tuple[Mapping[str, Any], ...] = ()
         self.items: list[dict[str, Any]] = []
         self._category = "all"
         self._tab_buttons: dict[str, QPushButton] = {}
@@ -155,14 +162,26 @@ class LogCenterPage(PageFrame):
         self._platform_option_ids: tuple[str, ...] = ()
         self._page_size = 20
         self._current_page = 1
-        self._filtered_items: list[dict[str, Any]] = []
         self._log_items_signature: tuple[Any, ...] | None = None
         self._filter_signature: tuple[Any, ...] | None = None
         self._category_count_signature: tuple[Any, ...] | None = None
         self._category_counts: dict[str, int] = {key: 0 for key in LOG_CATEGORIES}
+        self._query_sequence = 0
+        self._query_total_count = 0
+        self._query_matched_count = 0
+        self._query_total_pages = 1
+        self._query_first_trace_id = ""
+        self._query_page_items: list[dict[str, Any]] = []
         self._last_json_text = "{}"
         self._inspector_item_id = ""
         self._language = "zh-CN"
+        self._filter_query_timer = QTimer(self)
+        self._filter_query_timer.setSingleShot(True)
+        self._filter_query_timer.setInterval(120)
+        self._filter_query_timer.timeout.connect(lambda: self._submit_log_query(reset_page=True))
+        self._log_query_finished.connect(self._on_log_query_result)
+        self._log_query_worker = LogQueryWorker(lambda result: self._log_query_finished.emit(result))
+        self.destroyed.connect(lambda *_args: self._log_query_worker.shutdown())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("LogCenterSplitter")
@@ -191,8 +210,8 @@ class LogCenterPage(PageFrame):
             self.table.table_model.set_language(normalized)
         self._sync_tab_buttons()
         self._sync_table_presentation()
-        if self._filtered_items:
-            self._refresh_paged_table()
+        if self._query_page_items:
+            self._refresh_paged_table(selected_id=self.selected_id() or "")
         else:
             self._render_detail()
 
@@ -573,7 +592,7 @@ class LogCenterPage(PageFrame):
 
     def _on_filter_text_changed(self) -> None:
         self._sync_filter_text_input_style()
-        self._apply_filters()
+        self._filter_query_timer.start()
 
     def _build_action_bar(self) -> QWidget:
         row, refs = build_log_action_bar(
@@ -851,7 +870,7 @@ class LogCenterPage(PageFrame):
 
     def render(self, snapshot: dict) -> None:
         self._refresh_platform_filter(snapshot)
-        incoming_items = list(snapshot.get("log_items") or [])
+        incoming_items = self._snapshot_log_items(snapshot)
         incoming_signature = self._make_log_items_signature(incoming_items)
         filter_signature = self._make_filter_signature()
         if incoming_signature == self._log_items_signature and filter_signature == self._filter_signature:
@@ -860,10 +879,16 @@ class LogCenterPage(PageFrame):
         self._all_items = incoming_items
         self._log_items_signature = incoming_signature
         self._category_count_signature = None
-        self._sync_tab_buttons()
-        self._apply_filters()
+        self._submit_log_query(reset_page=False)
 
-    def _make_log_items_signature(self, items: list[dict[str, Any]]) -> tuple[Any, ...]:
+    @staticmethod
+    def _snapshot_log_items(snapshot: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+        rows = snapshot.get("log_items") or ()
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
+            return ()
+        return tuple(item for item in rows if isinstance(item, Mapping))
+
+    def _make_log_items_signature(self, items: Sequence[Mapping[str, Any]]) -> tuple[Any, ...]:
         if not items:
             return (0, "", "")
         return (
@@ -873,7 +898,7 @@ class LogCenterPage(PageFrame):
         )
 
     @staticmethod
-    def _stable_log_item_signature(item: dict[str, Any], index: int) -> tuple[Any, ...]:
+    def _stable_log_item_signature(item: Mapping[str, Any], index: int) -> tuple[Any, ...]:
         return (
             item.get("id"),
             item.get("time"),
@@ -958,27 +983,7 @@ class LogCenterPage(PageFrame):
         self._apply_filters()
 
     def _category_count(self, category: str) -> int:
-        signature = self._make_category_count_signature()
-        if signature != self._category_count_signature:
-            self._rebuild_category_counts(signature)
         return int(self._category_counts.get(category, 0))
-
-    def _rebuild_category_counts(self, signature: tuple[Any, ...] | None = None) -> None:
-        self._category_counts = log_filtering.category_counts(
-            self._all_items,
-            tuple(LOG_CATEGORIES),
-            level=self._selected_level_filter(),
-            time_range=self._selected_time_filter(),
-            platform_id=self._selected_platform_id(),
-            trace_query=self._trace_filter_query(),
-            keyword=self._keyword_filter_query(),
-            platform_options=self._platform_options,
-            platform_meta_by_id=self._platform_meta_by_id,
-        )
-        self._category_count_signature = signature or self._make_category_count_signature()
-
-    def _matches_category_for_count(self, item: dict[str, Any], category: str) -> bool:
-        return log_filtering.matches_category(item, category)
 
     def _update_category_tab_counts(self) -> None:
         for category, button in self._tab_buttons.items():
@@ -1001,6 +1006,8 @@ class LogCenterPage(PageFrame):
             button.fontMetrics().horizontalAdvance(button.text()) + LOG_TAB_TEXT_PADDING,
         )
         button.setFixedWidth(width)
+        button.setMinimumWidth(width)
+        button.setMaximumWidth(width)
         button.setToolTip(button.text())
         button.updateGeometry()
 
@@ -1013,7 +1020,7 @@ class LogCenterPage(PageFrame):
             return
         margins = layout.contentsMargins()
         buttons = list(self._tab_buttons.values())
-        width = margins.left() + margins.right() + sum(button.minimumWidth() for button in buttons)
+        width = margins.left() + margins.right() + sum(max(button.width(), button.minimumWidth()) for button in buttons)
         if buttons:
             width += max(0, len(buttons) - 1) * layout.spacing()
         content.setMinimumWidth(width)
@@ -1024,7 +1031,7 @@ class LogCenterPage(PageFrame):
         self._update_footer_stats()
 
     def _total_pages(self) -> int:
-        return total_pages(len(self._filtered_items), self._page_size)
+        return max(1, int(self._query_total_pages or 1))
 
     @safe_slot
     def _on_page_size_changed(self) -> None:
@@ -1032,30 +1039,31 @@ class LogCenterPage(PageFrame):
         text = self.page_size_combo.currentText() if hasattr(self, "page_size_combo") else "20 条/页"
         self._page_size = parse_page_size(data, text, default=20, all_labels={"全部", "All"})
         self._current_page = 1
-        self._refresh_paged_table()
+        self._submit_log_query(reset_page=True)
 
     @safe_slot
     def _go_prev_page(self) -> None:
         if self._current_page > 1:
             self._current_page -= 1
-            self._refresh_paged_table()
+            self._submit_log_query(reset_page=False, selected_id="")
 
     @safe_slot
     def _go_next_page(self) -> None:
         if self._current_page < self._total_pages():
             self._current_page += 1
-            self._refresh_paged_table()
+            self._submit_log_query(reset_page=False, selected_id="")
 
-    def _refresh_paged_table(self) -> None:
-        self._current_page = clamp_page(self._current_page, len(self._filtered_items), self._page_size)
-        page_items = page_slice(self._filtered_items, self._current_page, self._page_size)
-        self.items = [self._decorate_log_item(item) for item in page_items]
+    def _refresh_paged_table(self, *, selected_id: str = "") -> None:
+        self.items = [self._decorate_log_item(item) for item in self._query_page_items]
 
         self.table.set_rows(self.items)
         self._configure_table_columns()
         self._apply_platform_icons_to_table()
         self._sync_table_presentation()
 
+        if selected_id and self.select_id(selected_id):
+            self._render_detail()
+            return
         if self.items:
             self.table.selectRow(0)
         self._render_detail()
@@ -1064,8 +1072,8 @@ class LogCenterPage(PageFrame):
         if not hasattr(self, "footer_stats"):
             return
         total_pages = self._total_pages()
-        total = len(self._all_items)
-        matched = len(self._filtered_items)
+        total = self._query_total_count
+        matched = self._query_matched_count
         visible = len(self.items)
         if self._language == "en-US":
             stats_text = f"Total {total} / matched {matched} / showing {visible}"
@@ -1080,34 +1088,57 @@ class LogCenterPage(PageFrame):
         if hasattr(self, "page_indicator"):
             self.page_indicator.setText(page_text)
         if hasattr(self, "prev_page_button"):
-            self.prev_page_button.setEnabled(self._current_page > 1 and bool(self._filtered_items))
+            self.prev_page_button.setEnabled(self._current_page > 1 and self._query_matched_count > 0)
         if hasattr(self, "next_page_button"):
             self.next_page_button.setEnabled(
-                self._current_page < total_pages and bool(self._filtered_items) and self._page_size > 0
+                self._current_page < total_pages and self._query_matched_count > 0 and self._page_size > 0
             )
 
     def _apply_filters(self) -> None:
         previous_id = self.selected_id()
-        raw_items = [item for item in self._all_items if self._matches_filters(item)]
-        self._filtered_items = self._sort_log_items(raw_items)
         self._filter_signature = self._make_filter_signature()
         self._current_page = 1
-        if previous_id:
-            page = page_for_match(
-                self._filtered_items,
-                lambda item, index: self._item_id(item, index) == previous_id,
-                self._page_size,
-            )
-            if page is not None:
-                self._current_page = page
-        self._current_page = clamp_page(self._current_page, len(self._filtered_items), self._page_size)
-        self._refresh_paged_table()
-        if previous_id and self.select_id(previous_id):
-            self._render_detail()
+        self._submit_log_query(reset_page=True, selected_id=previous_id or "")
+
+    def _submit_log_query(self, *, reset_page: bool, selected_id: str | None = None) -> None:
+        if reset_page:
+            self._current_page = 1
+        self._filter_signature = self._make_filter_signature()
+        self._query_sequence += 1
+        request = LogQueryRequest(
+            sequence=self._query_sequence,
+            items=self._all_items,
+            categories=tuple(LOG_CATEGORIES),
+            category=self._category,
+            level=self._selected_level_filter(),
+            time_range=self._selected_time_filter(),
+            platform_id=self._selected_platform_id(),
+            trace_query=self._trace_filter_query(),
+            keyword=self._keyword_filter_query(),
+            platform_options=tuple(self._platform_options),
+            platform_meta_by_id=dict(self._platform_meta_by_id),
+            page=self._current_page,
+            page_size=self._page_size,
+            selected_id=self.selected_id() if selected_id is None else str(selected_id or ""),
+        )
+        self._log_query_worker.submit(request)
+
+    @safe_slot
+    def _on_log_query_result(self, result: object) -> None:
+        if not isinstance(result, LogQueryResult):
             return
-        if self.items:
-            self.table.selectRow(0)
-        self._render_detail()
+        if result.sequence != self._query_sequence:
+            return
+        self._query_page_items = list(result.page_items)
+        self._category_counts = dict(result.category_counts)
+        self._category_count_signature = self._make_category_count_signature()
+        self._query_total_count = int(result.total_count)
+        self._query_matched_count = int(result.matched_count)
+        self._query_total_pages = int(result.total_pages)
+        self._query_first_trace_id = str(result.first_trace_id or "")
+        self._current_page = int(result.current_page)
+        self._sync_tab_buttons()
+        self._refresh_paged_table(selected_id=result.selected_id)
 
     def _apply_platform_icons_to_table(self) -> None:
         model = self.table.table_model
@@ -1192,34 +1223,6 @@ class LogCenterPage(PageFrame):
                 translated = translated.replace(meta.label, self._t(meta.label))
         return self._t(translated)
 
-    def _matches_non_category_filters(self, item: dict[str, Any]) -> bool:
-        return log_filtering.matches_non_category_filters(
-            item,
-            level=self._selected_level_filter(),
-            time_range=self._selected_time_filter(),
-            platform_id=self._selected_platform_id(),
-            trace_query=self._trace_filter_query(),
-            keyword=self._keyword_filter_query(),
-            platform_options=self._platform_options,
-            platform_meta_by_id=self._platform_meta_by_id,
-        )
-
-    def _matches_filters(self, item: dict[str, Any]) -> bool:
-        return log_filtering.matches_filters(
-            item,
-            category=self._category,
-            level=self._selected_level_filter(),
-            time_range=self._selected_time_filter(),
-            platform_id=self._selected_platform_id(),
-            trace_query=self._trace_filter_query(),
-            keyword=self._keyword_filter_query(),
-            platform_options=self._platform_options,
-            platform_meta_by_id=self._platform_meta_by_id,
-        )
-
-    def _sort_log_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return log_filtering.sort_log_items(items)
-
     def _extract_trace_id_from_item(self, item: dict[str, Any] | None) -> str:
         return extract_trace_id(item, status_code=normalized_status_code(item) if item else "")
 
@@ -1231,11 +1234,7 @@ class LogCenterPage(PageFrame):
             trace_id = self._extract_trace_id_from_item(item)
             if trace_id:
                 return trace_id
-        for item in self._filtered_items:
-            trace_id = self._extract_trace_id_from_item(item)
-            if trace_id:
-                return trace_id
-        return ""
+        return self._query_first_trace_id
 
     @safe_slot
     def _copy_current_trace_id(self) -> None:
@@ -1357,27 +1356,6 @@ class LogCenterPage(PageFrame):
             QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{exc}")
             return
         QMessageBox.information(self, self._t("导出成功"), f"{self._t('日志详情已导出到：')}{path}")
-
-    def _matches_platform(self, item: dict[str, Any], platform_id: str) -> bool:
-        return log_filtering.matches_platform(
-            item,
-            platform_id,
-            platform_options=self._platform_options,
-            platform_meta_by_id=self._platform_meta_by_id,
-        )
-
-    def _matches_category(self, item: dict[str, Any]) -> bool:
-        return log_filtering.matches_category(item, self._category)
-
-    def _matches_time_range(self, item: dict[str, Any]) -> bool:
-        return log_filtering.matches_time_range(item, self._selected_time_filter())
-
-    @staticmethod
-    def _item_datetime(item: dict[str, Any]):
-        return log_filtering.item_datetime(item)
-
-    def _searchable_text(self, item: dict[str, Any], *, include_detail: bool = False) -> str:
-        return log_filtering.searchable_text(item, include_detail=include_detail)
 
     def _apply_level_badge_style(self, level: str) -> None:
         mapping = {
@@ -1654,4 +1632,4 @@ class LogCenterPage(PageFrame):
 
     @staticmethod
     def _item_id(item: dict[str, Any], row: int) -> str:
-        return str(item.get("id") or f"{item.get('time', '')}|{item.get('trace_id', '')}|{row}")
+        return stable_log_item_id(item, row)
