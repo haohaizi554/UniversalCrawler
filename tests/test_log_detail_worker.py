@@ -3,7 +3,13 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from app.ui.viewmodels.log_detail_worker import LogDetailRequest, LogDetailWorker, build_log_detail_result
+from app.ui.viewmodels.log_detail_worker import (
+    LogDetailExportRequest,
+    LogDetailExportWorker,
+    LogDetailRequest,
+    LogDetailWorker,
+    build_log_detail_result,
+)
 from app.ui.viewmodels.log_platforms import builtin_platform_metas
 
 
@@ -67,10 +73,40 @@ def test_log_detail_worker_delivers_latest_result_after_rapid_submits():
     assert received[-1] == 2
 
 
+def test_log_detail_export_worker_writes_payload_off_ui_thread(tmp_path):
+    target = tmp_path / "log_detail.json"
+    received = []
+    ready = threading.Event()
+
+    def on_result(result):
+        received.append(result)
+        ready.set()
+
+    worker = LogDetailExportWorker(on_result)
+    try:
+        worker.submit(
+            LogDetailExportRequest(
+                sequence=7,
+                item_id="row-1",
+                path=str(target),
+                text='{"message": "ok"}',
+            )
+        )
+        assert ready.wait(timeout=2)
+    finally:
+        worker.shutdown()
+
+    assert target.read_text(encoding="utf-8") == '{"message": "ok"}'
+    assert received[-1].sequence == 7
+    assert received[-1].ok is True
+
+
 def test_log_center_page_does_not_reintroduce_detail_formatting_fallbacks():
     page_source = Path("app/ui/pages/log_center_page.py").read_text(encoding="utf-8")
 
     assert "LogDetailWorker" in page_source
+    assert "LogDetailExportWorker" in page_source
+    assert "write_text(" not in page_source
     for forbidden in (
         "json.dumps(",
         "normalize_detail_payload(",

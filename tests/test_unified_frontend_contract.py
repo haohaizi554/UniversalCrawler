@@ -58,10 +58,23 @@ class UnifiedFrontendContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def _cleanup_shell(self, shell: AppShell) -> None:
+        logs = getattr(shell, "pages", {}).get("logs")
+        for worker_name in (
+            "_log_query_worker",
+            "_log_detail_worker",
+            "_log_detail_export_worker",
+        ):
+            worker = getattr(logs, worker_name, None)
+            shutdown = getattr(worker, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        shell.deleteLater()
+        self.app.processEvents()
+
     def _make_shell(self) -> AppShell:
         shell = AppShell(is_dark_theme=False, style_provider=self.app)
-        self.addCleanup(shell.deleteLater)
-        self.addCleanup(self.app.processEvents)
+        self.addCleanup(self._cleanup_shell, shell)
         shell.resize(1280, 720)
         snapshot = FrontendStateService.mock_snapshot()
         snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
@@ -633,8 +646,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
     def test_gui_shell_renders_only_visible_page_until_navigation(self):
         shell = AppShell(is_dark_theme=False, style_provider=self.app)
-        self.addCleanup(shell.deleteLater)
-        self.addCleanup(self.app.processEvents)
+        self.addCleanup(self._cleanup_shell, shell)
         snapshot = FrontendStateService.mock_snapshot()
 
         with (
@@ -2145,10 +2157,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             message_index.data(Qt.ItemDataRole.TextAlignmentRole),
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter),
         )
+        self._wait_for_log_detail_status_code(logs, "APP_INIT")
         self.assertTrue(logs.detail_copy_button.isEnabled())
         self.assertTrue(logs.detail_export_button.isEnabled())
         self.assertTrue(logs.json_copy_button.isEnabled())
-        self._wait_for_log_detail_status_code(logs, "APP_INIT")
 
         logs.table.clearSelection()
         logs.table.setCurrentIndex(QModelIndex())
@@ -2178,7 +2190,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
                 patch("app.ui.pages.log_center_page.QMessageBox.information"),
             ):
                 logs.detail_export_button.click()
-                self.app.processEvents()
+                for _ in range(100):
+                    self.app.processEvents()
+                    if export_path.exists():
+                        break
+                    QTest.qWait(20)
             self.assertTrue(export_path.exists())
             exported = export_path.read_text(encoding="utf-8")
             self.assertIn("APP_INIT", exported)

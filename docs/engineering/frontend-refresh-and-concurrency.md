@@ -62,6 +62,7 @@ UI 线程只负责显示和轻量交互：
 - 不在选中行时同步规整日志详情、递归本地化或格式化大段 JSON。
 - 不同步构建完整 frontend snapshot，不做大段 JSON 签名 diff。
 - 不直接查询 SQLite、diskcache 或大体量本地缓存。
+- 不直接写出日志详情等大 payload 文件；页面只选择路径和显示结果，文件写出交给 worker。
 
 GUI 主窗口刷新时只向 `FrontendSnapshotWorker` 提交目标 section、当前快照引用和签名表，snapshot 构建、局部合并和 section diff 在 worker 中完成；GUI 日志页提交查询时只传递当前快照引用，行复制、筛选、排序和分页由 `LogQueryWorker` 完成；GUI 日志详情选中行后只提交当前行快照，字段派生、本地化、详情 JSON 格式化和 HTML 转义由 `LogDetailWorker` 完成，详情动作按钮必须等 worker 结果回来后再启用，不允许用 UI 线程 fallback 重新构建详情 payload；WebUI 大批日志由 `log_query_worker.js` 完成，主线程只接收 `pageItems` 并 patch 当前页。
 
@@ -77,6 +78,7 @@ Worker 线程负责所有可能卡住 UI 的工作：
 - 构建 frontend snapshot，合并局部 section，并计算 section 签名差异。
 - 生成 UI 可直接渲染的当前页 batch。
 - 生成日志详情面板可直接渲染的字段、已格式化 JSON 文本和已转义 JSON 片段。
+- 后台写出日志详情导出文件，并把成功/失败结果回传 UI。
 
 当前落地组件：
 
@@ -84,6 +86,7 @@ Worker 线程负责所有可能卡住 UI 的工作：
 - `FrontendSnapshotWorker`：GUI snapshot 构建、局部合并和 section diff。
 - `LogQueryWorker`：GUI 日志中心筛选、排序、分页。
 - `LogDetailWorker`：GUI 日志详情字段派生、本地化、JSON 格式化和 latest-state-wins 防抖。
+- `LogDetailExportWorker`：GUI 日志详情文件导出，避免页面线程写大 payload。
 - `log_query_worker.js`：WebUI 大批日志查询。
 - `FailedRecordStore`：失败记录后台写 SQLite，并刷新内存快照。
 

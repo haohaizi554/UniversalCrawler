@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import html
 import threading
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from app.debug_logger import debug_logger
@@ -63,6 +65,23 @@ class LogDetailResult:
     full_payload_text: str
     stack_text: str
     has_stack: bool
+
+
+@dataclass(frozen=True)
+class LogDetailExportRequest:
+    sequence: int
+    item_id: str
+    path: str
+    text: str
+
+
+@dataclass(frozen=True)
+class LogDetailExportResult:
+    sequence: int
+    item_id: str
+    path: str
+    ok: bool
+    error: str = ""
 
 
 def _translate_platform_display(
@@ -208,3 +227,66 @@ class LogDetailWorker:
                 self._on_result(result)
             except RuntimeError:
                 return
+
+
+class LogDetailExportWorker:
+    """Sequential file writer for log detail exports.
+
+    The GUI thread owns only the file dialog and feedback. Potentially large
+    payload writes stay in this worker so log inspection remains responsive.
+    """
+
+    def __init__(self, on_result: Callable[[LogDetailExportResult], None]) -> None:
+        self._on_result = on_result
+        self._condition = threading.Condition()
+        self._pending: deque[LogDetailExportRequest] = deque()
+        self._shutdown = False
+        self._thread = threading.Thread(target=self._run, name="log-detail-export-worker", daemon=True)
+        self._thread.start()
+
+    def submit(self, request: LogDetailExportRequest) -> None:
+        with self._condition:
+            if self._shutdown:
+                return
+            self._pending.append(request)
+            self._condition.notify()
+
+    def shutdown(self) -> None:
+        with self._condition:
+            self._shutdown = True
+            self._condition.notify()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending and not self._shutdown:
+                    self._condition.wait()
+                if self._shutdown:
+                    return
+                request = self._pending.popleft()
+            result = self._write(request)
+            try:
+                self._on_result(result)
+            except RuntimeError:
+                return
+
+    @staticmethod
+    def _write(request: LogDetailExportRequest) -> LogDetailExportResult:
+        try:
+            Path(request.path).write_text(request.text, encoding="utf-8")
+        except OSError as exc:
+            return LogDetailExportResult(
+                sequence=request.sequence,
+                item_id=request.item_id,
+                path=request.path,
+                ok=False,
+                error=str(exc),
+            )
+        return LogDetailExportResult(
+            sequence=request.sequence,
+            item_id=request.item_id,
+            path=request.path,
+            ok=True,
+        )

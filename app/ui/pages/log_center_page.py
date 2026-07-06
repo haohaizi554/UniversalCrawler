@@ -78,6 +78,9 @@ from app.ui.viewmodels.log_query_worker import (
     stable_log_item_id,
 )
 from app.ui.viewmodels.log_detail_worker import (
+    LogDetailExportRequest,
+    LogDetailExportResult,
+    LogDetailExportWorker,
     LogDetailRequest,
     LogDetailResult,
     LogDetailWorker,
@@ -139,6 +142,7 @@ class LogCenterPage(PageFrame):
     log_action_requested = pyqtSignal(str)
     _log_query_finished = pyqtSignal(object)
     _log_detail_finished = pyqtSignal(object)
+    _log_detail_export_finished = pyqtSignal(object)
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
@@ -166,6 +170,7 @@ class LogCenterPage(PageFrame):
         self._last_json_text = "{}"
         self._inspector_item_id = ""
         self._detail_sequence = 0
+        self._detail_export_sequence = 0
         self._current_detail_result: LogDetailResult | None = None
         self._language = "zh-CN"
         self._filter_query_timer = QTimer(self)
@@ -176,8 +181,13 @@ class LogCenterPage(PageFrame):
         self._log_query_worker = LogQueryWorker(lambda result: self._log_query_finished.emit(result))
         self._log_detail_finished.connect(self._on_log_detail_result)
         self._log_detail_worker = LogDetailWorker(lambda result: self._log_detail_finished.emit(result))
+        self._log_detail_export_finished.connect(self._on_log_detail_export_result)
+        self._log_detail_export_worker = LogDetailExportWorker(
+            lambda result: self._log_detail_export_finished.emit(result)
+        )
         self.destroyed.connect(lambda *_args: self._log_query_worker.shutdown())
         self.destroyed.connect(lambda *_args: self._log_detail_worker.shutdown())
+        self.destroyed.connect(lambda *_args: self._log_detail_export_worker.shutdown())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("LogCenterSplitter")
@@ -1362,11 +1372,33 @@ class LogCenterPage(PageFrame):
             QMessageBox.warning(self, self._t("导出失败"), self._t("当前没有可导出的日志。"))
             return
         try:
-            Path(path).write_text(current_result.full_payload_text, encoding="utf-8")
-        except OSError as exc:
+            self._detail_export_sequence += 1
+            sequence = self._detail_export_sequence
+            self.detail_export_button.setEnabled(False)
+            self._log_detail_export_worker.submit(
+                LogDetailExportRequest(
+                    sequence=sequence,
+                    item_id=current_result.item_id,
+                    path=str(path),
+                    text=current_result.full_payload_text,
+                )
+            )
+        except RuntimeError as exc:
+            self.detail_export_button.setEnabled(True)
             QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{exc}")
+
+    @safe_slot
+    def _on_log_detail_export_result(self, result: object) -> None:
+        if not isinstance(result, LogDetailExportResult):
             return
-        QMessageBox.information(self, self._t("导出成功"), f"{self._t('日志详情已导出到：')}{path}")
+        if result.sequence != self._detail_export_sequence:
+            return
+        current_result = self._current_detail_result
+        self.detail_export_button.setEnabled(current_result is not None)
+        if not result.ok:
+            QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{result.error}")
+            return
+        QMessageBox.information(self, self._t("导出成功"), f"{self._t('日志详情已导出到：')}{result.path}")
 
     def _apply_level_badge_style(self, level: str) -> None:
         mapping = {
