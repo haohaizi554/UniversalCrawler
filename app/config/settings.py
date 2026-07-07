@@ -719,6 +719,10 @@ class ConfigManager:
     def subscribe(self, topic: str, handler: Callable[[Any], None]) -> Callable[[Any], None]:
         return self.event_bus.subscribe(topic, handler)
 
+    def subscribe_async(self, topic: str, handler: Callable[[Any], None]) -> Callable[[Any], None]:
+        """Subscribe a config listener without running it on the config writer thread."""
+        return self.event_bus.subscribe_async(topic, handler)
+
     def unsubscribe(self, topic: str, handler: Callable[[Any], None] | None = None) -> None:
         self.event_bus.unsubscribe(topic, handler)
 

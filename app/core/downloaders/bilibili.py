@@ -111,6 +111,7 @@ class BilibiliDownloader(BaseDownloader):
         base_name = os.path.splitext(os.path.basename(save_path))[0]
         temp_v = os.path.join(save_dir, f"{base_name}_video.m4s")
         temp_a = os.path.join(save_dir, f"{base_name}_audio.m4s")
+        video_item.meta["download_temp_files"] = [temp_v, temp_a] if audio_url else [temp_v]
         chunk_size = max(cfg.get("download", "chunk_size", 65536), 256 * 1024)
         debug_logger.log(
             component="BilibiliDownloader",
@@ -141,8 +142,33 @@ class BilibiliDownloader(BaseDownloader):
         def cleanup_temp_files() -> None:
             
             for temp_path in (temp_v, temp_a):
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                last_error: OSError | None = None
+                for attempt in range(3):
+                    try:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                        break
+                    except PermissionError as exc:
+                        last_error = exc
+                        if attempt < 2:
+                            time.sleep(0.1)
+                            continue
+                        debug_logger.log_exception(
+                            "BilibiliDownloader",
+                            "cleanup_temp_file",
+                            last_error,
+                            details={"path": temp_path},
+                            trace_id=trace_id,
+                        )
+                    except OSError as exc:
+                        debug_logger.log_exception(
+                            "BilibiliDownloader",
+                            "cleanup_temp_file",
+                            exc,
+                            details={"path": temp_path},
+                            trace_id=trace_id,
+                        )
+                        break
 
         stream_stats = {
             "video": {"downloaded": 0, "total": 0},

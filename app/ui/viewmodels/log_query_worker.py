@@ -7,6 +7,7 @@ from typing import Any
 from app.debug_logger import debug_logger
 from app.ui.viewmodels.latest_worker import LatestRequestWorker
 from app.ui.viewmodels import log_filtering
+from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope, derive_scope_reason
 from app.ui.viewmodels.log_platforms import PlatformUiMeta
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, total_pages
 
@@ -85,7 +86,7 @@ def query_log_items(request: LogQueryRequest) -> LogQueryResult:
         if selected_page is not None:
             current_page = selected_page
     current_page = clamp_page(current_page, len(sorted_items), request.page_size)
-    page_items = page_slice(sorted_items, current_page, request.page_size)
+    page_items = [_with_log_pipeline_fields(item) for item in page_slice(sorted_items, current_page, request.page_size)]
     selected_id = ""
     if request.selected_id and any(
         stable_log_item_id(item, index) == request.selected_id for index, item in enumerate(sorted_items)
@@ -126,6 +127,16 @@ def _first_trace_id(items: Sequence[Mapping[str, Any]]) -> str:
         if trace_id:
             return trace_id
     return ""
+
+
+def _with_log_pipeline_fields(item: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(item)
+    scope = str(row.get("log_scope") or derive_log_scope(row) or "")
+    stage = str(row.get("event_stage") or derive_event_stage(row) or "")
+    row["log_scope"] = scope
+    row["event_stage"] = stage
+    row["_scope_reason"] = str(row.get("_scope_reason") or derive_scope_reason(row) or "")
+    return row
 
 
 class LogQueryWorker:

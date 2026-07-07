@@ -160,9 +160,12 @@ class FrontendStateService:
             "app_state.changed",
             self._record_app_state_change,
         )
+        subscribe_async = getattr(self.config, "subscribe_async", None)
         subscribe = getattr(self.config, "subscribe", None)
         self._config_event_handler = (
-            subscribe("config.changed", self._on_config_changed)
+            subscribe_async("config.changed", self._on_config_changed)
+            if callable(subscribe_async)
+            else subscribe("config.changed", self._on_config_changed)
             if callable(subscribe)
             else None
         )

@@ -23,11 +23,82 @@ class ScanResult:
 class MediaLibraryService:
     """本地媒体库服务，负责扫描、重命名、删除。"""
 
+    TEMP_FILE_META_KEYS = ("download_temp_files", "temporary_files")
+    BILIBILI_TEMP_SUFFIXES = ("_video.m4s", "_audio.m4s")
+
     def __init__(self, video_extensions: tuple[str, ...], image_extensions: tuple[str, ...]):
         """初始化当前实例并准备运行所需的状态，供 `MediaLibraryService` 使用。"""
         self.video_extensions = tuple(ext.lower() for ext in video_extensions)
         self.image_extensions = tuple(ext.lower() for ext in image_extensions)
         self.all_media_extensions = self.video_extensions + self.image_extensions
+
+    def _delete_file(self, file_path: str, *, required: bool) -> bool:
+        if not file_path or not os.path.exists(file_path):
+            return False
+        last_error: OSError | None = None
+        for attempt in range(3):
+            try:
+                os.remove(file_path)
+                return True
+            except FileNotFoundError:
+                return False
+            except PermissionError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                break
+            except OSError as exc:
+                if required:
+                    raise FileOperationError(str(exc)) from exc
+                return False
+        if required:
+            raise FileOperationError(str(last_error) if last_error else "Failed to delete file")
+        return False
+
+    def _iter_bilibili_temp_paths(self, video: VideoItem, file_path: str) -> list[str]:
+        if not file_path:
+            return []
+        final_dir = os.path.abspath(os.path.dirname(file_path) or os.curdir)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        expected_paths = {
+            os.path.normcase(os.path.abspath(os.path.join(final_dir, f"{base_name}{suffix}"))): os.path.join(
+                final_dir,
+                f"{base_name}{suffix}",
+            )
+            for suffix in self.BILIBILI_TEMP_SUFFIXES
+        }
+        meta = video.meta if isinstance(video.meta, dict) else {}
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add_if_owned(path: object) -> None:
+            if not isinstance(path, str) or not path:
+                return
+            normalized = os.path.normcase(os.path.abspath(path))
+            owned_path = expected_paths.get(normalized)
+            if owned_path and normalized not in seen:
+                seen.add(normalized)
+                candidates.append(owned_path)
+
+        for key in self.TEMP_FILE_META_KEYS:
+            raw_paths = meta.get(key)
+            if isinstance(raw_paths, str):
+                iterable = [raw_paths]
+            elif isinstance(raw_paths, (list, tuple, set)):
+                iterable = raw_paths
+            else:
+                continue
+            for raw_path in iterable:
+                add_if_owned(raw_path)
+
+        source = str(getattr(video, "source", "") or "").lower()
+        has_bilibili_context = source == "bilibili" or any(meta.get(key) for key in ("bvid", "cid", "audio_url"))
+        if has_bilibili_context:
+            for owned_path in expected_paths.values():
+                add_if_owned(owned_path)
+
+        return candidates
 
     def scan_directory(self, directory: str, max_scan_count: int = 1000) -> ScanResult:
         """扫描目录并按最近修改时间返回媒体文件。"""
@@ -120,19 +191,8 @@ class MediaLibraryService:
     def delete_media(self, video: VideoItem) -> bool:
         """删除 `media` 对应的对象、文件或记录，供 `MediaLibraryService` 使用。"""
         file_path = video.local_path
-        if not file_path or not os.path.exists(file_path):
-            return False
-        last_error: OSError | None = None
-        for attempt in range(3):
-            try:
-                os.remove(file_path)
-                return True
-            except PermissionError as exc:
-                last_error = exc
-                if attempt < 2:
-                    time.sleep(0.1)
-                    continue
-                break
-            except OSError as exc:
-                raise FileOperationError(str(exc)) from exc
-        raise FileOperationError(str(last_error) if last_error else "删除文件失败")
+        temp_paths = self._iter_bilibili_temp_paths(video, file_path)
+        deleted = self._delete_file(file_path, required=True)
+        for temp_path in temp_paths:
+            deleted = self._delete_file(temp_path, required=False) or deleted
+        return deleted

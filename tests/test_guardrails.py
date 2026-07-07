@@ -361,6 +361,96 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
+    def test_main_window_app_state_event_bus_handler_uses_qt_queue(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "main_window.py").read_text(encoding="utf-8", errors="ignore")
+
+        self.assertIn("_app_state_changed_queued = pyqtSignal(object)", text)
+        self.assertIn('self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)', text)
+        self.assertNotIn('self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)', text)
+
+    def test_frontend_state_service_config_listener_prefers_async_event_bus_subscription(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "frontend_state_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn('subscribe_async = getattr(self.config, "subscribe_async", None)', text)
+        self.assertIn('subscribe_async("config.changed", self._on_config_changed)', text)
+
+    def test_cache_service_sqlite_connections_are_context_managed(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "cache_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        sqlite_lines = [line.strip() for line in text.splitlines() if "sqlite3.connect(" in line]
+
+        self.assertTrue(sqlite_lines)
+        self.assertNotIn("self._conn", text)
+        self.assertNotIn("self._connection", text)
+        self.assertIn("from contextlib import closing", text)
+        self.assertTrue(all(line.startswith("with closing(sqlite3.connect(") for line in sqlite_lines))
+
+    def test_failed_record_store_sqlite_connections_are_context_managed(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "failed_record_store.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        sqlite_lines = [line.strip() for line in text.splitlines() if "sqlite3.connect(" in line]
+
+        self.assertTrue(sqlite_lines)
+        self.assertNotIn("self._conn", text)
+        self.assertNotIn("self._connection", text)
+        self.assertIn("from contextlib import closing", text)
+        self.assertTrue(all(line.startswith("with closing(sqlite3.connect(") for line in sqlite_lines))
+
+    def test_log_center_page_does_not_classify_logs_on_ui_thread(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "pages" / "log_center_page.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        forbidden = (
+            "classification_facts",
+            "derive_log_scope",
+            "derive_event_stage",
+            "derive_scope_reason",
+            "_debug_classification",
+            "_derive_log_scope",
+            "_derive_event_stage",
+        )
+
+        for token in forbidden:
+            with self.subTest(token=token):
+                self.assertNotIn(token, text)
+
+    def test_start_task_marquee_uses_low_frequency_timer(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "components" / "start_task_button.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn("_MARQUEE_INTERVAL_MS = 120", text)
+        self.assertIn("_MARQUEE_DEGREES_PER_TICK = 12.0", text)
+        self.assertNotIn("setInterval(45)", text)
+
+    def test_domain_event_bus_handlers_only_queue_dispatch(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "controllers" / "application_controller.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn("self._spider_domain_event_handler = self._queue_spider_domain_event", text)
+        self.assertIn("self._download_domain_event_handler = self._queue_download_domain_event", text)
+        self.assertIn("QTimer.singleShot(0, lambda: dispatcher(event))", text)
+        self.assertNotIn('self.event_bus.subscribe("spider.domain_event", self._dispatch_spider_event)', text)
+        self.assertNotIn('self.event_bus.subscribe("download.domain_event", self._dispatch_download_event)', text)
+
     def test_gui_hot_widgets_do_not_touch_files_cache_or_sqlite(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         forbidden = (

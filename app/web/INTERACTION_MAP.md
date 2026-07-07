@@ -3473,6 +3473,7 @@ async def pick_native_folder():
            qt_app.processEvents()
            await asyncio.sleep(0.05)  # ← asyncio 事件循环
    ```
+   Note 2026-07-08: this is a historical anti-pattern example. Production code must not reintroduce a timed `processEvents()` pump; see `docs/engineering/frontend-refresh-and-concurrency.md`.
 4. 当主线程被 `QFileDialog.getExistingDirectory` 同步阻塞时，asyncio 调度器**不会**被调用
 5. 所以 `qt_app.processEvents()` 也不会被调用
 6. QFileDialog 内部的事件循环**跑不起来** → 对话框不显示

@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -157,8 +158,7 @@ class FailedRecordStore:
             if self._initialized:
                 return
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(self._db_path)
-            try:
+            with closing(sqlite3.connect(self._db_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS failed_records (
@@ -177,15 +177,12 @@ class FailedRecordStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_failed_records_failed_at ON failed_records(failed_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_failed_records_trace_id ON failed_records(trace_id)")
                 conn.commit()
-            finally:
-                conn.close()
             self._initialized = True
 
     def _query_rows(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         self._init_db()
         rows: list[sqlite3.Row]
-        conn = sqlite3.connect(self._db_path)
-        try:
+        with closing(sqlite3.connect(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = list(
                 conn.execute(
@@ -198,8 +195,6 @@ class FailedRecordStore:
                     (max(1, int(limit)), max(0, int(offset))),
                 )
             )
-        finally:
-            conn.close()
         return [self._row_to_record(row) for row in rows]
 
     def _refresh_snapshot(self, request: tuple[int, int]) -> None:
@@ -252,8 +247,7 @@ class FailedRecordStore:
         ]
         if not payloads:
             return
-        conn = sqlite3.connect(self._db_path)
-        try:
+        with closing(sqlite3.connect(self._db_path)) as conn:
             conn.executemany(
                 """
                 INSERT INTO failed_records(
@@ -273,8 +267,6 @@ class FailedRecordStore:
                 payloads,
             )
             conn.commit()
-        finally:
-            conn.close()
 
     @staticmethod
     def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:

@@ -126,6 +126,63 @@ class MediaLibraryServiceTests(unittest.TestCase):
 
         self.assertFalse(self.service.delete_media(item))
 
+    def test_delete_media_removes_bilibili_temp_sidecars(self):
+        base = self.temp_dir.name
+        file_path = os.path.join(base, "demo.mp4")
+        video_temp = os.path.join(base, "demo_video.m4s")
+        audio_temp = os.path.join(base, "demo_audio.m4s")
+        unrelated = os.path.join(base, "demo_cover.m4s")
+        for path in (file_path, video_temp, audio_temp, unrelated):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+        item = VideoItem(url="", title="demo", source="bilibili")
+        item.local_path = file_path
+        item.meta["download_temp_files"] = [video_temp, audio_temp]
+
+        deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(file_path))
+        self.assertFalse(os.path.exists(video_temp))
+        self.assertFalse(os.path.exists(audio_temp))
+        self.assertTrue(os.path.exists(unrelated))
+
+    def test_delete_media_removes_bilibili_temp_sidecars_when_final_missing(self):
+        base = self.temp_dir.name
+        file_path = os.path.join(base, "demo.mp4")
+        video_temp = os.path.join(base, "demo_video.m4s")
+        audio_temp = os.path.join(base, "demo_audio.m4s")
+        for path in (video_temp, audio_temp):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+        item = VideoItem(url="", title="demo", source="bilibili")
+        item.local_path = file_path
+
+        deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(video_temp))
+        self.assertFalse(os.path.exists(audio_temp))
+
+    def test_delete_media_ignores_unowned_temp_sidecar_path(self):
+        base = self.temp_dir.name
+        outside_dir = os.path.join(base, "outside")
+        os.mkdir(outside_dir)
+        file_path = os.path.join(base, "demo.mp4")
+        outside_temp = os.path.join(outside_dir, "demo_video.m4s")
+        for path in (file_path, outside_temp):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+        item = VideoItem(url="", title="demo", source="bilibili")
+        item.local_path = file_path
+        item.meta["download_temp_files"] = [outside_temp]
+
+        deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(file_path))
+        self.assertTrue(os.path.exists(outside_temp))
+
     @patch("app.services.file_service.time.sleep", return_value=None)
     def test_delete_media_retries_briefly_after_permission_error(self, _mock_sleep):
         """Windows 释放播放器句柄存在瞬时延迟时，删除应进行短暂重试。"""

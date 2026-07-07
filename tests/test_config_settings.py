@@ -87,6 +87,30 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertTrue(reloaded.get("common", "dark_theme"))
             self.assertEqual("douyin", reloaded.get("common", "last_source"))
 
+    def test_subscribe_async_does_not_block_config_writer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+            started = threading.Event()
+            release = threading.Event()
+            seen: list[str] = []
+
+            def slow_handler(payload):
+                started.set()
+                release.wait(timeout=2)
+                seen.append(str(payload.get("key") or ""))
+
+            manager.subscribe_async("config.changed", slow_handler)
+            try:
+                manager.set("common", "last_source", "douyin")
+                self.assertTrue(started.wait(timeout=2))
+                self.assertEqual(seen, [])
+            finally:
+                release.set()
+                manager.event_bus.shutdown()
+
+        self.assertEqual(seen, ["last_source"])
+
     def test_set_many_rolls_back_memory_when_later_value_is_invalid(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = f"{temp_dir}/config.json"
@@ -338,11 +362,7 @@ class ConfigManagerTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             polluted_save_dir = Path(temp_dir) / "tmp-persisted-downloads"
             config_path.write_text(
-                (
-                    "{"
-                    f"\"common\":{{\"save_directory\":\"{str(polluted_save_dir).replace('\\', '\\\\')}\"}}"
-                    "}"
-                ),
+                json.dumps({"common": {"save_directory": str(polluted_save_dir)}}),
                 encoding="utf-8",
             )
 

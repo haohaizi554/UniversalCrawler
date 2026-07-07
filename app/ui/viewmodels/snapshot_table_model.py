@@ -188,6 +188,10 @@ class SnapshotTableModel(QAbstractTableModel):
                 self.beginRemoveRows(QModelIndex(), first, last)
                 del self._rows[first:]
                 self.endRemoveRows()
+        elif self._has_same_unique_ids(old_ids, new_ids):
+            self.layoutAboutToBeChanged.emit()
+            self._rows = rows
+            self.layoutChanged.emit()
         else:
             self.beginResetModel()
             self._rows = rows
@@ -267,6 +271,14 @@ class SnapshotTableModel(QAbstractTableModel):
             )
             for row in rows
         )
+
+    @staticmethod
+    def _has_same_unique_ids(old_ids: list[Any], new_ids: list[Any]) -> bool:
+        if len(old_ids) != len(new_ids) or not old_ids:
+            return False
+        if any(not item_id for item_id in old_ids) or any(not item_id for item_id in new_ids):
+            return False
+        return len(set(old_ids)) == len(old_ids) and set(old_ids) == set(new_ids)
 
     @staticmethod
     def _is_metadata_pending(row: dict[str, Any], value: Any) -> bool:

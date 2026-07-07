@@ -6,6 +6,7 @@ import pickle
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -91,7 +92,7 @@ class CacheService:
 
     def _init_db(self) -> None:
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with closing(sqlite3.connect(self._db_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS cache_entries (
@@ -142,7 +143,7 @@ class CacheService:
                 with self._disk_lock:
                     self._disk_cache.delete(key)
             with self._db_lock:
-                with sqlite3.connect(self._db_path) as conn:
+                with closing(sqlite3.connect(self._db_path)) as conn:
                     conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
                     conn.commit()
 
@@ -197,7 +198,7 @@ class CacheService:
     def _write_sqlite_persistent(self, key: str, value: Any, *, expires_at: float | None) -> None:
         payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with closing(sqlite3.connect(self._db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO cache_entries(key, value, expires_at)
@@ -210,7 +211,7 @@ class CacheService:
 
     def _read_persistent(self, key: str) -> tuple[Any, float | None] | None:
         with self._db_lock:
-            with sqlite3.connect(self._db_path) as conn:
+            with closing(sqlite3.connect(self._db_path)) as conn:
                 row = conn.execute("SELECT value, expires_at FROM cache_entries WHERE key = ?", (key,)).fetchone()
         if row is None:
             return None
@@ -229,7 +230,7 @@ class CacheService:
     def _delete_persistent_corrupt_entry(self, key: str) -> None:
         try:
             with self._db_lock:
-                with sqlite3.connect(self._db_path) as conn:
+                with closing(sqlite3.connect(self._db_path)) as conn:
                     conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
                     conn.commit()
         except sqlite3.Error as exc:

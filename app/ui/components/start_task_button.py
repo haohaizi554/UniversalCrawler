@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QConicalGradient, QLinearGradient, QPainter, QPen
-from PyQt6.QtWidgets import QPushButton, QSizePolicy, QStyle, QStyleOptionButton
+from PyQt6.QtWidgets import QPushButton, QSizePolicy, QStyleOptionButton
 
 from app.ui.styles.themes import theme_colors
 
@@ -16,6 +16,8 @@ class StartTaskButton(QPushButton):
     _ICON_SIZE = 18
     _ICON_GAP = 6
     _RADIUS = 7
+    _MARQUEE_INTERVAL_MS = 120
+    _MARQUEE_DEGREES_PER_TICK = 12.0
 
     def __init__(self, parent=None) -> None:
         super().__init__("启动任务", parent)
@@ -28,7 +30,7 @@ class StartTaskButton(QPushButton):
         self._fixed_size = self._measure_size()
         self.setFixedSize(self._fixed_size)
         self._marquee_timer = QTimer(self)
-        self._marquee_timer.setInterval(45)
+        self._marquee_timer.setInterval(self._MARQUEE_INTERVAL_MS)
         self._marquee_timer.timeout.connect(self._tick_marquee)
 
     def _measure_size(self) -> QSize:
@@ -74,7 +76,7 @@ class StartTaskButton(QPushButton):
     def _tick_marquee(self) -> None:
         if not self._crawl_running:
             return
-        self._marquee_angle = (self._marquee_angle + 4.5) % 360.0
+        self._marquee_angle = (self._marquee_angle + self._MARQUEE_DEGREES_PER_TICK) % 360.0
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802

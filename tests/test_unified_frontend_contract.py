@@ -735,6 +735,40 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(calls, ["row-1"])
         table.deleteLater()
 
+    def test_action_table_patches_stable_rows_without_full_clear(self):
+        class RecordingActionTable(ActionTable):
+            def __init__(self, headers):
+                self.row_count_calls: list[int] = []
+                super().__init__(headers)
+
+            def setRowCount(self, count):  # noqa: N802
+                self.row_count_calls.append(count)
+                return super().setRowCount(count)
+
+        table = RecordingActionTable(["Title", "Progress", "Actions"])
+        calls: list[str] = []
+        rows = [{"id": "row-1", "title": "Demo", "progress": 10}]
+        if table.set_rows(rows, ["title", "progress"], actions={"delete": "Delete"}):
+            connect_table_actions(table, {"delete": calls.append})
+
+        table.row_count_calls.clear()
+        updated_rows = [
+            {"id": "row-1", "title": "Demo updated", "progress": 44},
+            {"id": "row-2", "title": "Second", "progress": 1},
+        ]
+        if table.set_rows(updated_rows, ["title", "progress"], actions={"delete": "Delete"}):
+            connect_table_actions(table, {"delete": calls.append})
+
+        self.assertNotIn(0, table.row_count_calls)
+        self.assertEqual(table.item(0, 0).text(), "Demo updated")
+        self.assertEqual(table.cellWidget(0, 1).value(), 44)
+        self.assertEqual(table.id_order(), ["row-1", "row-2"])
+
+        row_one_button = next(button for button in table.findChildren(QPushButton) if button.item_id == "row-1")
+        row_one_button.click()
+        self.assertEqual(calls, ["row-1"])
+        table.deleteLater()
+
     def test_active_downloads_page_uses_model_view_and_stable_updates(self):
         shell = self._make_shell()
         active = shell.pages["active"]

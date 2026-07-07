@@ -57,6 +57,26 @@ def test_query_log_items_filters_counts_sorts_and_paginates():
     assert result.category_counts["download"] == 1
 
 
+def test_query_log_items_attaches_pipeline_fields_for_page_rows():
+    rows = [
+        {
+            "id": "download",
+            "time": "2026-06-30 10:01:00",
+            "level": "INFO",
+            "source": "DownloadWorker",
+            "status_code": "DL_START",
+            "message": "download task",
+        }
+    ]
+
+    result = query_log_items(_request(rows))
+
+    row = result.page_items[0]
+    assert row["log_scope"] == "download"
+    assert row["event_stage"]
+    assert row["_scope_reason"]
+
+
 def test_query_log_items_moves_to_selected_item_page():
     rows = [
         {"id": "a", "time": "2026-06-30 10:00:00", "level": "INFO"},

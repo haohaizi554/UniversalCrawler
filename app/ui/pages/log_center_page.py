@@ -47,11 +47,7 @@ from app.ui.components.log_inspector_sections import (
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
-from app.ui.viewmodels.log_classification import classification_facts
 from app.ui.viewmodels.log_pipeline_rules import (
-    derive_event_stage,
-    derive_log_scope,
-    derive_scope_reason,
     is_crawl_pipeline_log,
     is_download_boundary_log,
     is_download_component_source,
@@ -66,8 +62,6 @@ from app.ui.viewmodels.log_display import (
     decorate_log_item,
     format_platform_label,
     resolve_item_platform_id,
-    scope_display_text,
-    stage_display_text,
 )
 from app.ui.viewmodels.log_i18n import localize_log_text
 from app.ui.viewmodels.log_query_worker import (
@@ -936,58 +930,6 @@ class LogCenterPage(PageFrame):
             signature[1:],
         )
 
-    def _debug_classification_counts(self) -> dict[str, int]:
-        counts = {key: 0 for key in LOG_CATEGORIES}
-        for item in self._all_items:
-            counts["all"] += 1
-            scope = self._derive_log_scope(item)
-            if scope in counts:
-                counts[scope] += 1
-        return counts
-
-    def _debug_classification_matrix(self) -> dict[str, Any]:
-        """Debug helper only. Do not render in UI."""
-        matrix: dict[str, dict[str, int]] = {}
-        suspicious_system_downloads: list[dict[str, str]] = []
-
-        for item in self._all_items:
-            scope = self._derive_log_scope(item)
-            platform_id = self._resolve_item_platform_id(item) or "unresolved"
-
-            matrix.setdefault(scope, {})
-            matrix[scope][platform_id] = matrix[scope].get(platform_id, 0) + 1
-
-            facts = classification_facts(item)
-
-            if scope == "system" and (
-                facts["status_upper"].startswith(
-                    ("DL_", "APP_DL_", "BILI_DL_", "XHS_DL_", "DY_DL_", "KS_DL_", "MISSAV_DL_")
-                )
-                or facts["event_code_upper"].startswith(
-                    ("DL_", "APP_DL_", "BILI_DL_", "XHS_DL_", "DY_DL_", "KS_DL_", "MISSAV_DL_")
-                )
-                or "downloadmanager" in facts["source_lower"]
-                or "downloadworker" in facts["source_lower"]
-                or "downloader" in facts["source_lower"]
-                or "下载任务" in facts["message_lower"]
-                or "下载完成" in facts["message_lower"]
-            ):
-                suspicious_system_downloads.append(
-                    {
-                        "source": facts["source"],
-                        "action": facts["action"],
-                        "status": facts["status"],
-                        "event_code": facts["event_code"],
-                        "message": facts["message"][:100],
-                        "reason": self._derive_scope_reason(item),
-                    }
-                )
-
-        return {
-            "matrix": matrix,
-            "suspicious_system_downloads": suspicious_system_downloads[:50],
-        }
-
     def _set_category(self, category: str) -> None:
         self._category = category if category in LOG_CATEGORIES else "all"
         self._sync_tab_buttons()
@@ -1176,33 +1118,14 @@ class LogCenterPage(PageFrame):
     def _is_crawl_pipeline_log(self, item: dict[str, Any]) -> bool:
         return is_crawl_pipeline_log(item)
 
-    def _derive_scope_reason(self, item: dict[str, Any]) -> str:
-        return derive_scope_reason(item)
-
-    def _derive_log_scope(self, item: dict[str, Any]) -> str:
-        return derive_log_scope(item)
-
-    def _derive_event_stage(self, item: dict[str, Any]) -> str:
-        return derive_event_stage(item)
-
-    @staticmethod
-    def _stage_display_text(stage: str) -> str:
-        return stage_display_text(stage)
-
-    @staticmethod
-    def _scope_display_text(scope: str) -> str:
-        return scope_display_text(scope)
-
     def _decorate_log_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        scope = self._derive_log_scope(item)
-        stage = self._derive_event_stage(item)
         row = decorate_log_item(
             item,
             platform_options=self._platform_options,
             platform_meta_by_id=self._platform_meta_by_id,
-            log_scope=scope,
-            event_stage=stage,
-            scope_reason=self._derive_scope_reason(item),
+            log_scope=str(item.get("log_scope") or ""),
+            event_stage=str(item.get("event_stage") or ""),
+            scope_reason=str(item.get("_scope_reason") or ""),
         )
         for key in ("platform_label", "source_display", "source_display_text", "source_display_full"):
             if row.get(key):

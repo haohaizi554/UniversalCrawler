@@ -147,26 +147,10 @@ class ActionTable(QTableWidget):
         signals_blocked = self.blockSignals(True)
         self.setUpdatesEnabled(False)
         try:
-            self.setRowCount(0)
-            for row_data in rows:
-                row = self.rowCount()
-                self.insertRow(row)
-                for col, key in enumerate(columns):
-                    if key == "progress":
-                        progress = QProgressBar()
-                        progress.setRange(0, 100)
-                        progress.setValue(int(row_data.get(key) or 0))
-                        self.setCellWidget(row, col, progress)
-                        continue
-                    value = row_data.get(key, "")
-                    item = QTableWidgetItem(str(value))
-                    item.setToolTip(str(value))
-                    if col == 0:
-                        item.setData(Qt.ItemDataRole.UserRole, row_data.get("id", ""))
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if col == 0 else Qt.AlignmentFlag.AlignCenter))
-                    self.setItem(row, col, item)
-                if actions:
-                    self.setCellWidget(row, len(columns), build_action_widget(row_data.get("id", ""), actions))
+            if self._can_patch_rows(self._rows_signature, signature):
+                self._patch_rows(rows, columns, actions)
+            else:
+                self._rebuild_rows(rows, columns, actions)
             self._apply_column_widths(columns, actions, stretch_key=stretch_key or columns[0])
             if selected_id:
                 row = self.row_for_id(selected_id)
@@ -198,6 +182,85 @@ class ActionTable(QTableWidget):
                 )
                 for row_data in rows
             ),
+        )
+
+    @staticmethod
+    def _can_patch_rows(old_signature: tuple | None, new_signature: tuple) -> bool:
+        if old_signature is None or old_signature[:3] != new_signature[:3]:
+            return False
+        old_ids = tuple(row_signature[0] for row_signature in old_signature[3])
+        new_ids = tuple(row_signature[0] for row_signature in new_signature[3])
+        common_count = min(len(old_ids), len(new_ids))
+        return old_ids[:common_count] == new_ids[:common_count]
+
+    def _rebuild_rows(self, rows: list[dict[str, Any]], columns: list[str], actions: dict[str, str]) -> None:
+        self.setRowCount(0)
+        for row_data in rows:
+            row = self.rowCount()
+            self.insertRow(row)
+            self._populate_row(row, row_data, columns, actions)
+
+    def _patch_rows(self, rows: list[dict[str, Any]], columns: list[str], actions: dict[str, str]) -> None:
+        while self.rowCount() > len(rows):
+            self.removeRow(self.rowCount() - 1)
+        while self.rowCount() < len(rows):
+            self.insertRow(self.rowCount())
+        for row, row_data in enumerate(rows):
+            self._populate_row(row, row_data, columns, actions)
+
+    def _populate_row(
+        self,
+        row: int,
+        row_data: dict[str, Any],
+        columns: list[str],
+        actions: dict[str, str],
+    ) -> None:
+        raw_item_id = row_data.get("id", "")
+        action_item_id = str(raw_item_id)
+        for col, key in enumerate(columns):
+            if key == "progress":
+                self._set_progress_cell(row, col, row_data.get(key))
+                continue
+            self._set_text_cell(row, col, row_data.get(key, ""), item_id=raw_item_id if col == 0 else None)
+        if actions:
+            widget = self.cellWidget(row, len(columns))
+            if not self._action_widget_matches(widget, actions, action_item_id):
+                self.setCellWidget(row, len(columns), build_action_widget(action_item_id, actions))
+
+    def _set_text_cell(self, row: int, col: int, value: Any, *, item_id: Any | None) -> None:
+        text = str(value)
+        item = self.item(row, col)
+        if item is None:
+            item = QTableWidgetItem()
+            self.setItem(row, col, item)
+        if item.text() != text:
+            item.setText(text)
+        item.setToolTip(text)
+        if item_id is not None:
+            item.setData(Qt.ItemDataRole.UserRole, item_id)
+        alignment = Qt.AlignmentFlag.AlignLeft if col == 0 else Qt.AlignmentFlag.AlignCenter
+        item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | alignment)
+
+    def _set_progress_cell(self, row: int, col: int, value: Any) -> None:
+        progress = self.cellWidget(row, col)
+        if not isinstance(progress, QProgressBar):
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            self.setCellWidget(row, col, progress)
+        progress.setValue(int(value or 0))
+
+    @staticmethod
+    def _action_widget_matches(widget: QWidget | None, actions: dict[str, str], item_id: str) -> bool:
+        if widget is None or widget.layout() is None:
+            return False
+        buttons: list[ActionButton] = []
+        for index in range(widget.layout().count()):
+            button = widget.layout().itemAt(index).widget()
+            if isinstance(button, ActionButton):
+                buttons.append(button)
+        return (
+            tuple(button.property("action_id") for button in buttons) == tuple(actions)
+            and all(button.item_id == item_id for button in buttons)
         )
 
     def _apply_column_widths(self, columns: list[str], actions: dict[str, str], *, stretch_key: str) -> None:
@@ -288,6 +351,10 @@ def connect_table_actions(table: ActionTable, handlers: dict[str, Any]) -> None:
                 continue
             action_id = button.property("action_id")
             handler = handlers.get(action_id)
+            try:
+                button.clicked_with_id.disconnect()
+            except (TypeError, RuntimeError):
+                pass
             if callable(handler):
                 button.clicked_with_id.connect(handler)
 

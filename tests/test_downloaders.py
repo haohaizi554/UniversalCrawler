@@ -931,6 +931,40 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIsNone(mocked_build_merge.call_args.args[2])
         mocked_run_merge.assert_called_once()
 
+    @patch.object(BilibiliDownloader, "_run_merge_process")
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    @patch("app.core.downloaders.bilibili.requests.get")
+    def test_bilibili_downloader_records_temp_sidecars_for_delete_cleanup(
+        self,
+        mocked_get,
+        _mocked_resolve,
+        mocked_build_merge,
+        mocked_run_merge,
+    ):
+        mocked_get.side_effect = [
+            self._make_stream_response([b"video"], headers={"content-length": "5"}),
+            self._make_stream_response([b"audio"], headers={"content-length": "5"}),
+        ]
+        item = VideoItem(url="https://cdn.example.com/video.m4s", title="Bili", source="bilibili")
+        item.meta["audio_url"] = "https://cdn.example.com/audio.m4s"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            temp_v = os.path.join(temp_dir, "demo_video.m4s")
+            temp_a = os.path.join(temp_dir, "demo_audio.m4s")
+            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(save_path).write_bytes(b"merged")
+
+            BilibiliDownloader().download(item, save_path, lambda *_args, **_kwargs: None, lambda: False)
+
+            self.assertEqual(item.meta["download_temp_files"], [temp_v, temp_a])
+            self.assertFalse(os.path.exists(temp_v))
+            self.assertFalse(os.path.exists(temp_a))
+            self.assertEqual(mocked_build_merge.call_args.args[1:3], (temp_v, temp_a))
+
+        self.assertEqual(mocked_get.call_count, 2)
+        mocked_run_merge.assert_called_once()
+
     @patch("app.core.downloaders.bilibili.requests.get")
     def test_bilibili_play_url_refresh_forwards_proxy_settings(self, mocked_get):
         """B站刷新 play_url 时必须沿用代理配置，否则 Web/CLI 网络路径会出现分叉。"""

@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
     _clipboard_copy_requested = pyqtSignal(str)
     _update_check_finished = pyqtSignal(object)
     _update_check_failed = pyqtSignal(str)
+    _app_state_changed_queued = pyqtSignal(object)
     _frontend_snapshot_finished = pyqtSignal(object)
     _frontend_action_finished = pyqtSignal(object)
 
@@ -202,6 +203,11 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
         self._connections.connect(
+            self._app_state_changed_queued,
+            self._on_app_state_changed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
             self._frontend_snapshot_finished,
             self._on_frontend_snapshot_finished,
             Qt.ConnectionType.QueuedConnection,
@@ -211,7 +217,7 @@ class MainWindow(QMainWindow):
             self._on_frontend_action_finished,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
+        self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)
         self._pending_delete_video_ids: list[str] = []
         self._title_rename_handler = None
         self._applying_appearance = False
@@ -572,7 +578,7 @@ class MainWindow(QMainWindow):
             self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
             self.event_bus = new_event_bus
             self._owns_event_bus = False
-            self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
+            self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)
         self._frontend_state_service = service
         self._owns_frontend_state_service = False
         self.app_state = service.app_state
@@ -900,6 +906,9 @@ class MainWindow(QMainWindow):
 
     def _flush_log_refresh(self) -> None:
         self._request_log_refresh()
+
+    def _queue_app_state_changed(self, payload) -> None:
+        self._app_state_changed_queued.emit(payload)
 
     @safe_slot
     def _on_app_state_changed(self, payload) -> None:

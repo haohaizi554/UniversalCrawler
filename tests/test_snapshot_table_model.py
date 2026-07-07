@@ -6,6 +6,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem
 
 from app.ui.pages.common import SnapshotActionDelegate
+from app.ui.pages.active_downloads_page import ActiveDownloadsModel
 from app.ui.styles.table_rows import normalize_table_item_option, row_interaction_fill_color, selection_fill_color
 from app.ui.styles.themes import build_palette
 from app.ui.viewmodels.snapshot_table_model import SnapshotTableModel
@@ -68,6 +69,59 @@ class SnapshotTableModelTests(unittest.TestCase):
         self.assertEqual(resets, [])
         self.assertEqual(changed_rows, [(0, 0)])
         self.assertEqual(model.row_at(0), {"id": "v1", "title": "new"})
+
+    def test_set_rows_reorders_same_ids_without_model_reset(self):
+        model = SnapshotTableModel(headers=["Title"], columns=["title"])
+        model.set_rows(
+            [
+                {"id": "v1", "title": "one"},
+                {"id": "v2", "title": "two"},
+                {"id": "v3", "title": "three"},
+            ]
+        )
+        resets: list[bool] = []
+        layouts: list[bool] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.layoutChanged.connect(lambda: layouts.append(True))
+
+        changed = model.set_rows(
+            [
+                {"id": "v3", "title": "three"},
+                {"id": "v1", "title": "one"},
+                {"id": "v2", "title": "two"},
+            ]
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [])
+        self.assertEqual(layouts, [True])
+        self.assertEqual(model.id_order(), ["v3", "v1", "v2"])
+
+    def test_active_downloads_model_reorders_same_ids_without_model_reset(self):
+        model = ActiveDownloadsModel()
+        model.set_rows(
+            [
+                {"id": "v1", "title": "one", "platform": "Bilibili", "progress": 10},
+                {"id": "v2", "title": "two", "platform": "Bilibili", "progress": 20},
+            ]
+        )
+        resets: list[bool] = []
+        layouts: list[bool] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.layoutChanged.connect(lambda: layouts.append(True))
+
+        changed = model.set_rows(
+            [
+                {"id": "v2", "title": "two", "platform": "Bilibili", "progress": 20},
+                {"id": "v1", "title": "one", "platform": "Bilibili", "progress": 10},
+            ]
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [])
+        self.assertEqual(layouts, [True])
+        self.assertEqual(model.item_id_at(0), "v2")
+        self.assertEqual(model.item_id_at(1), "v1")
 
     def test_force_reset_prevents_duplicate_append_after_signature_clear(self):
         model = SnapshotTableModel(headers=["Title"], columns=["title"])
