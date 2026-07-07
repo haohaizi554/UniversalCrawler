@@ -33,6 +33,7 @@ ALL_FRONTEND_SECTIONS = VIDEO_SECTIONS | STATIC_SECTIONS | frozenset({"log_items
 NOISY_TOPICS = frozenset(
     {
         "videos.update",
+        "videos.metadata",
         "video_state_changed",
         "task_progress",
         "logs.append",

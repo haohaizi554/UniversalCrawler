@@ -497,7 +497,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("_async_pending_latest", text)
         self.assertIn("_AsyncTaskKey", text)
         self.assertIn("_enqueue_latest_async_handler", text)
-        for topic in ("videos.update", "video_state_changed", "task_progress", "logs.append", "log"):
+        for topic in ("videos.update", "videos.metadata", "video_state_changed", "task_progress", "logs.append", "log"):
             with self.subTest(topic=topic):
                 self.assertIn(topic, text)
 

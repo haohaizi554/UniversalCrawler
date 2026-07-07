@@ -57,7 +57,7 @@
 - GUI domain event 进入 EventBus 后不得直接执行可能触发弹窗、表格更新或状态重排的慢 handler；GUI 控制器应把实际派发推迟到下一轮 Qt 事件循环，EventBus 发布栈只负责接收与排队。
 - EventBus 提供 `subscribe_async()` 给不参与刷新版本时序的慢 handler 使用；涉及 `FrontendStateService` delta 版本记录和 MainWindow 刷新调度的 handler 不得为了“异步化”直接迁移，否则会造成刷新先于 dirty version 记录的 race。
 - `FrontendStateService` 订阅 `app_state.changed` 时只能做有界入队；标题物化、section 推导、dirty version 记录必须在 `get_snapshot()` / `get_delta()` 入口统一 `flush_pending_app_state_events()` 后执行。初始化阶段产生的 AppState 事件需要在构造结束时合入基线版本，避免第一帧普通 delta 被误判成全量刷新。
-- EventBus 的高频异步 topic（如 `videos.update`、`video_state_changed`、`task_progress`、`logs.append`、`log`）必须按 handler/topic/实体 ID 合并为 latest-state-wins；普通异步 topic 和 critical 事件仍保持 FIFO，不得为降压丢失完成、失败、删除、停止等关键状态。
+- EventBus 的高频异步 topic（如 `videos.update`、`videos.metadata`、`video_state_changed`、`task_progress`、`logs.append`、`log`）必须按 handler/topic/实体 ID 合并为 latest-state-wins；普通异步 topic 和 critical 事件仍保持 FIFO，不得为降压丢失完成、失败、删除、停止等关键状态。
 - 生产代码不得引入定时 `processEvents()` pump；浏览器 E2E 不得用 3.5 秒固定等待兜底，必须等待 `#app-shell` 或页面可观测状态。
 - 运行态纯视觉反馈定时器不得使用 45ms 级高频刷新；如启动按钮跑马灯这类非关键帧动画，默认周期为 120ms，并通过单次步进保持视觉速度。
 - 应用退出必须按顺序释放 frontend state service、AppState 延迟通知和 CacheService/diskcache 句柄；GUI 控制器和 Web 会话控制器都必须执行这条链路，关闭失败只能降级记录调试日志，不得中断退出流程。AppState 只关闭自己创建的 CacheService，外部注入的缓存由组合根关闭。

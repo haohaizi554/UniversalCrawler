@@ -78,7 +78,21 @@ def test_metadata_event_refreshes_completed_section_only():
 
     assert sections_for_topic("videos.metadata") == frozenset({"completed_items", "app_status"})
     assert state.changed_sections == frozenset({"completed_items", "app_status"})
-    assert state.priority == FrontendEventPriority.NORMAL
+    assert state.priority == FrontendEventPriority.NOISY
+
+
+def test_metadata_events_coalesce_by_video_id():
+    aggregator = FrontendEventAggregator()
+
+    aggregator.record("videos.metadata", {"video_id": "done", "metadata": False})
+    aggregator.record("videos.metadata", {"video_id": "done", "metadata": True})
+
+    state = aggregator.peek()
+
+    assert state.coalesced_count == 1
+    assert len(state.pending_events) == 1
+    assert state.pending_events[0]["topic"] == "videos.metadata"
+    assert state.pending_events[0]["payload"]["metadata"] is True
 
 def test_sections_since_returns_only_changes_after_base_version():
     aggregator = FrontendEventAggregator()

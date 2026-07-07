@@ -185,6 +185,35 @@ class EventBusAsyncBackpressureTests(unittest.TestCase):
 
         self.assertEqual(seen, [0, 49])
 
+    def test_async_metadata_events_are_latest_state_wins_per_video(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        finished = threading.Event()
+        release = threading.Event()
+        seen: list[bool] = []
+
+        def handler(payload: dict[str, Any]) -> None:
+            if not started.is_set():
+                started.set()
+                release.wait(timeout=2)
+            seen.append(bool(payload["metadata"]))
+            if len(seen) >= 2:
+                finished.set()
+
+        bus.subscribe_async("videos.metadata", handler)
+        try:
+            bus.publish("videos.metadata", {"video_id": "done", "metadata": False})
+            self.assertTrue(started.wait(timeout=2))
+            bus.publish("videos.metadata", {"video_id": "done", "metadata": False})
+            bus.publish("videos.metadata", {"video_id": "done", "metadata": True})
+            release.set()
+            self.assertTrue(finished.wait(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertEqual(seen, [False, True])
+
     def test_async_non_noisy_events_keep_fifo_order(self) -> None:
         bus = EventBus()
         finished = threading.Event()
