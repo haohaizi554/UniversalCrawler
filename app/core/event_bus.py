@@ -10,11 +10,28 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 MAX_PUBLISH_DEPTH = 16
 LOCK_WARN_SECONDS = 1.0
 HANDLER_WARN_SECONDS = 0.2
+ASYNC_NOISY_TOPICS = frozenset(
+    {"videos.update", "video_state_changed", "task_progress", "logs.append", "log"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AsyncTask:
+    topic: str
+    payload: Any
+    handler: Callable[[Any], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _AsyncTaskKey:
+    key: tuple[int, str, str, str]
+
 
 class EventBus:
     """Small publish/subscribe bus used to decouple workers, reducers and UI."""
@@ -29,7 +46,9 @@ class EventBus:
         self._publish_depth = contextvars.ContextVar("publish_depth", default=0)
         self._history: deque[dict[str, Any]] = deque(maxlen=100)
         self._topic_publish_times: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
-        self._async_queue: queue.Queue[tuple[str, Any, Callable[[Any], None]] | None] = queue.Queue(maxsize=1024)
+        self._async_queue: queue.Queue[_AsyncTask | _AsyncTaskKey | None] = queue.Queue(maxsize=1024)
+        self._async_pending_latest: dict[tuple[int, str, str, str], _AsyncTask] = {}
+        self._async_enqueued_latest_keys: set[tuple[int, str, str, str]] = set()
         self._async_thread: threading.Thread | None = None
         self._async_shutdown = False
 
@@ -175,36 +194,93 @@ class EventBus:
         handlers: tuple[Callable[[Any], None], ...],
     ) -> None:
         for handler in handlers:
+            if self._enqueue_latest_async_handler(topic, payload, handler):
+                continue
             try:
-                self._async_queue.put_nowait((topic, payload, handler))
+                self._async_queue.put_nowait(_AsyncTask(topic, payload, handler))
             except queue.Full:
                 self._logger.warning("EventBus async handler queue full for topic %s", topic)
                 return
+
+    def _enqueue_latest_async_handler(
+        self,
+        topic: str,
+        payload: Any,
+        handler: Callable[[Any], None],
+    ) -> bool:
+        key = self._async_latest_key(topic, payload, handler)
+        if key is None:
+            return False
+        task = _AsyncTask(topic, payload, handler)
+        with self._locked("async.latest"):
+            self._async_pending_latest[key] = task
+            if key in self._async_enqueued_latest_keys:
+                return True
+            self._async_enqueued_latest_keys.add(key)
+        try:
+            self._async_queue.put_nowait(_AsyncTaskKey(key))
+        except queue.Full:
+            with self._locked("async.latest.full"):
+                self._async_pending_latest.pop(key, None)
+                self._async_enqueued_latest_keys.discard(key)
+            self._logger.warning("EventBus async handler queue full for topic %s", topic)
+        return True
+
+    @staticmethod
+    def _async_latest_key(
+        topic: str,
+        payload: Any,
+        handler: Callable[[Any], None],
+    ) -> tuple[int, str, str, str] | None:
+        normalized = str(topic or "")
+        if normalized not in ASYNC_NOISY_TOPICS or not isinstance(payload, dict):
+            return None
+        entity_id = (
+            payload.get("video_id")
+            or payload.get("id")
+            or payload.get("entity_id")
+            or payload.get("trace_id")
+        )
+        if not entity_id:
+            return None
+        return (id(handler), normalized, type(entity_id).__name__, str(entity_id))
 
     def _run_async_handlers(self) -> None:
         while True:
             item = self._async_queue.get()
             if item is None:
                 return
-            topic, payload, handler = item
+            task = self._resolve_async_task(item)
+            if task is None:
+                continue
             if self._async_shutdown:
                 return
             started = time.monotonic()
             try:
-                handler(payload)
+                task.handler(task.payload)
             except Exception:  # pragma: no cover - defensive isolation
-                self._logger.exception("EventBus async handler failed for topic %s", topic)
+                self._logger.exception("EventBus async handler failed for topic %s", task.topic)
             finally:
                 elapsed = time.monotonic() - started
                 if elapsed > HANDLER_WARN_SECONDS:
                     self._logger.warning(
                         "EventBus slow async handler %.3fs for topic %s: %r",
                         elapsed,
-                        topic,
-                        handler,
+                        task.topic,
+                        task.handler,
                     )
 
+    def _resolve_async_task(self, item: _AsyncTask | _AsyncTaskKey) -> _AsyncTask | None:
+        if isinstance(item, _AsyncTask):
+            return item
+        with self._locked("async.latest.resolve"):
+            self._async_enqueued_latest_keys.discard(item.key)
+            return self._async_pending_latest.pop(item.key, None)
+
     def _drain_async_queue(self) -> None:
+        with self._locked("async.drain"):
+            self._async_pending_latest.clear()
+            self._async_enqueued_latest_keys.clear()
         while True:
             try:
                 self._async_queue.get_nowait()

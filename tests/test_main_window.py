@@ -294,6 +294,9 @@ class MainWindowTests(unittest.TestCase):
         plugin = Mock()
         plugin.id = "douyin"
         plugin.get_search_placeholder.return_value = "输入分享链接"
+        window._frontend_state_service = Mock()
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
         mock_get_plugin.return_value = plugin
 
         window.combo_source = Mock()
@@ -305,7 +308,11 @@ class MainWindowTests(unittest.TestCase):
         window.inp_search.setPlaceholderText.assert_not_called()
         window.top_bar.configure_for_platform.assert_called_once()
         mock_defaults.assert_called_once_with("douyin")
-        mock_cfg_set.assert_called_once_with("common", "last_source", "douyin")
+        mock_cfg_set.assert_not_called()
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "update_basic_setting")
+        self.assertEqual(request.payload, {"key": "last_source", "value": "douyin"})
 
     @patch("app.ui.main_window.registry.get_plugin", return_value=None)
     def test_source_changed_ignores_unknown_plugin(self, _mock_get_plugin):
@@ -882,14 +889,8 @@ class MainWindowTests(unittest.TestCase):
         window.is_dark_theme = False
         window.sig_theme_changed = Mock()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {
-            "status": "ok",
-            "data": {
-                "config_key": "save_directory",
-                "directory": "D:\\Videos\\Downloads",
-                "value": "D:\\Videos\\Downloads",
-            },
-        }
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
 
         def _get_dir(obj):
             return obj.__dict__.get("_test_current_save_dir", "")
@@ -901,12 +902,33 @@ class MainWindowTests(unittest.TestCase):
             window.current_save_dir = "D:/old"
             MainWindow._update_basic_setting(window, "common", "download_directory", '"D:/Videos/Downloads/file.mp4"')
 
+            window._frontend_state_service.handle_action.assert_not_called()
+            request = window._frontend_action_worker.requests[0]
+            self.assertEqual(request.action, "update_basic_setting")
+            self.assertEqual(request.payload, {"key": "download_directory", "value": '"D:/Videos/Downloads/file.mp4"'})
+            window.refresh_frontend_state.assert_not_called()
+
+            MainWindow._on_frontend_action_finished(
+                window,
+                FrontendActionResult(
+                    sequence=request.sequence,
+                    service_token=id(window._frontend_state_service),
+                    action="update_basic_setting",
+                    payload=dict(request.payload),
+                    result={
+                        "status": "ok",
+                        "data": {
+                            "section": "common",
+                            "config_key": "save_directory",
+                            "directory": "D:\\Videos\\Downloads",
+                            "value": "D:\\Videos\\Downloads",
+                        },
+                    },
+                ),
+            )
+
             self.assertEqual(window.current_save_dir, "D:\\Videos\\Downloads")
 
-        window._frontend_state_service.handle_action.assert_called_once_with(
-            "update_basic_setting",
-            {"key": "download_directory", "value": '"D:/Videos/Downloads/file.mp4"'},
-        )
         window.sig_change_dir.emit.assert_called_once()
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
 
@@ -915,16 +937,25 @@ class MainWindowTests(unittest.TestCase):
         window.refresh_frontend_state = Mock()
         window.app_shell = SimpleNamespace(apply_playback_settings=Mock())
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {
-            "status": "ok",
-            "data": {"section": "playback", "key": "autoplay_next", "value": False},
-        }
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
 
         MainWindow._update_basic_setting(window, "playback", "autoplay_next", False)
 
-        window._frontend_state_service.handle_action.assert_called_once_with(
-            "update_setting",
-            {"key": "autoplay_next", "value": False, "section": "playback"},
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "update_setting")
+        self.assertEqual(request.payload, {"key": "autoplay_next", "value": False, "section": "playback"})
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="update_setting",
+                payload=dict(request.payload),
+                result={"status": "ok", "data": {"section": "playback", "key": "autoplay_next", "value": False}},
+            ),
         )
         window.app_shell.apply_playback_settings.assert_called_once()
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
@@ -933,12 +964,24 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window.refresh_frontend_state = Mock()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {
-            "status": "ok",
-            "data": {"section": "logging", "key": "retention_days", "value": 3},
-        }
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
 
         MainWindow._update_basic_setting(window, "logging", "retention_days", 3)
+
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "update_setting")
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="update_setting",
+                payload=dict(request.payload),
+                result={"status": "ok", "data": {"section": "logging", "key": "retention_days", "value": 3}},
+            ),
+        )
 
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update", "logs.append"})
 
@@ -1018,27 +1061,35 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window._pending_refresh_topics, {"logs.append"})
         window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
 
-    @patch("app.ui.main_window.cfg.set")
-    @patch("app.ui.main_window.cfg.get", return_value=True)
-    def test_settings_theme_update_disables_follow_system_first(self, _mock_cfg_get, mock_cfg_set):
+    def test_settings_theme_update_runs_through_action_worker(self):
         window = self._make_window()
         window.refresh_frontend_state = Mock()
         window.is_dark_theme = False
         window.sig_theme_changed = Mock()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {
-            "status": "ok",
-            "data": {"section": "common", "key": "theme", "value": "dark"},
-        }
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
         window._apply_runtime_setting_after_update = Mock(return_value=set())
 
         MainWindow._update_basic_setting(window, "common", "theme", "dark")
 
-        mock_cfg_set.assert_called_once_with("appearance", "follow_system", False)
-        window._frontend_state_service.handle_action.assert_called_once_with(
-            "update_basic_setting",
-            {"key": "theme", "value": "dark"},
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "update_basic_setting")
+        self.assertEqual(request.payload, {"key": "theme", "value": "dark"})
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="update_basic_setting",
+                payload=dict(request.payload),
+                result={"status": "ok", "data": {"section": "common", "key": "theme", "value": "dark"}},
+            ),
         )
+        window.sig_theme_changed.emit.assert_called_once_with(True)
+        window._apply_runtime_setting_after_update.assert_called_once_with("common", "theme", "dark")
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
 
     def test_update_download_options_refreshes_effective_options_immediately(self):
@@ -1815,15 +1866,16 @@ class MainWindowTests(unittest.TestCase):
         self.assertIsNone(window._pre_fullscreen_geometry)
         self.assertFalse(window._native_maximize_requested)
     @patch("app.ui.main_window.apply_application_theme")
-    @patch("app.ui.main_window.cfg.set")
-    @patch("app.ui.main_window.cfg.set_many")
-    def test_toggle_theme_persists_state_and_emits_signal(self, mock_set_many, mock_cfg_set, mock_apply_theme):
+    def test_toggle_theme_persists_state_and_emits_signal(self, mock_apply_theme):
         """验证 `test_toggle_theme_persists_state_and_emits_signal` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
         window = self._make_window()
         window.is_dark_theme = True
         window.top_bar = Mock()
         window.setPalette = Mock()
         window.sig_theme_changed = Mock()
+        window._frontend_state_service = Mock()
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
 
         window.toggle_theme()
 
@@ -1831,8 +1883,10 @@ class MainWindowTests(unittest.TestCase):
         mock_apply_theme.assert_called_once_with(False)
         window.top_bar.set_theme_icon.assert_called_once_with(False)
         window.sig_theme_changed.emit.assert_called_once_with(False)
-        mock_set_many.assert_called_once_with("common", {"theme": "light", "dark_theme": False})
-        mock_cfg_set.assert_called_once_with("appearance", "follow_system", False)
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "update_basic_setting")
+        self.assertEqual(request.payload, {"key": "theme", "value": "light"})
 
     @patch("app.ui.main_window.cfg.get", return_value=False)
     @patch("app.ui.main_window.apply_application_theme")

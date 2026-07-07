@@ -57,7 +57,7 @@ class SettingsBuildersTests(unittest.TestCase):
         self.assertEqual(widget.current_value(), 20)
 
     @patch("app.ui.plugin_settings.cfg.set")
-    def test_read_bilibili_run_options_persists_selected_pages(self, mocked_set):
+    def test_read_bilibili_run_options_reads_selected_pages_without_persisting(self, mocked_set):
         """验证 `test_read_bilibili_run_options_persists_selected_pages` 对应场景是否符合预期，供 `SettingsBuildersTests` 使用。"""
         widget = PageLimitSettingsWidget(
             label_text="页数:",
@@ -71,7 +71,7 @@ class SettingsBuildersTests(unittest.TestCase):
         result = read_bilibili_run_options(widget)
 
         self.assertEqual(result, {"max_pages": 3, "max_items": 9999})
-        mocked_set.assert_called_once_with("bilibili", "max_pages", 3)
+        mocked_set.assert_not_called()
 
     def test_read_douyin_run_options_returns_defaults_for_invalid_widget(self):
         """验证 `test_read_douyin_run_options_returns_defaults_for_invalid_widget` 对应场景是否符合预期，供 `SettingsBuildersTests` 使用。"""
@@ -96,7 +96,7 @@ class SettingsBuildersTests(unittest.TestCase):
 
     @patch("app.ui.plugin_settings.cfg.update_missav_proxy")
     @patch("app.ui.plugin_settings.cfg.set")
-    def test_read_missav_run_options_updates_config_and_normalizes_proxy(self, mocked_set, mocked_update_proxy):
+    def test_read_missav_run_options_reads_form_without_persisting(self, mocked_set, mocked_update_proxy):
         """验证 `test_read_missav_run_options_updates_config_and_normalizes_proxy` 对应场景是否符合预期，供 `SettingsBuildersTests` 使用。"""
         widget = MissAVSettingsWidget()
         widget.chk_individual.setChecked(True)
@@ -115,10 +115,8 @@ class SettingsBuildersTests(unittest.TestCase):
                 "proxy": "http://127.0.0.1:9001",
             },
         )
-        mocked_set.assert_any_call("missav", "individual_only", True)
-        mocked_set.assert_any_call("missav", "priority", "无码流出优先")
-        mocked_set.assert_any_call("missav", "timeout", 120)
-        mocked_update_proxy.assert_called_once_with("127.0.0.1:9001", "http://127.0.0.1:9001")
+        mocked_set.assert_not_called()
+        mocked_update_proxy.assert_not_called()
 
     def test_read_missav_run_options_returns_defaults_for_invalid_widget(self):
         """验证 `test_read_missav_run_options_returns_defaults_for_invalid_widget` 对应场景是否符合预期，供 `SettingsBuildersTests` 使用。"""

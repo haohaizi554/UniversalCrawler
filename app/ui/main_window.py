@@ -721,6 +721,8 @@ class MainWindow(QMainWindow):
             self._finish_run_tool(result.payload, action_result)
         elif result.action == "register_file_associations":
             self._finish_register_file_associations(action_result)
+        elif result.action in {"update_basic_setting", "update_setting", "change_directory"}:
+            self._finish_setting_update(result.payload, action_result)
 
     def _finish_log_operation(self, payload: dict[str, object], action_result: dict[str, object]) -> None:
         operation = str(payload.get("operation") or "")
@@ -785,6 +787,34 @@ class MainWindow(QMainWindow):
         if callable(feedback):
             feedback(message, ok=ok)
         self.refresh_frontend_state(topics={"settings.update"})
+
+    def _finish_setting_update(self, payload: dict[str, object], action_result: dict[str, object]) -> None:
+        if action_result.get("status") != "ok":
+            self.append_log(str(action_result.get("message") or "setting update failed"), level="ERROR")
+            self.refresh_frontend_state(topics={"settings.update"}, force=True)
+            return
+        data = action_result.get("data") if isinstance(action_result, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        normalized_section = str(data.get("section") or payload.get("section") or "common")
+        config_key = str(data.get("config_key") or data.get("key") or payload.get("key") or "")
+        if config_key == "download_directory":
+            config_key = "save_directory"
+        value = data.get("value", payload.get("value"))
+        if normalized_section == "common" and config_key == "save_directory":
+            directory = str(data.get("directory") or value or "")
+            if directory:
+                changed = directory != self.current_save_dir
+                self.current_save_dir = directory
+                if changed:
+                    self.sig_change_dir.emit()
+        if normalized_section == "common" and config_key == "theme":
+            theme_value = str(value or "light").lower()
+            is_dark = theme_value == "dark"
+            if self.is_dark_theme != is_dark:
+                self.is_dark_theme = is_dark
+                self.sig_theme_changed.emit(is_dark)
+        extra_topics = self._apply_runtime_setting_after_update(normalized_section, config_key, value)
+        self.refresh_frontend_state(topics={"settings.update", *extra_topics})
 
     def _remember_frontend_snapshot_result(
         self,
@@ -989,31 +1019,19 @@ class MainWindow(QMainWindow):
 
     def toggle_theme(self) -> None:
         self.is_dark_theme = not self.is_dark_theme
-        self._persist_manual_theme_config(self.is_dark_theme)
+        self._submit_frontend_action(
+            "update_basic_setting",
+            {"key": "theme", "value": "dark" if self.is_dark_theme else "light"},
+        )
         self._apply_theme_stylesheet()
         self.append_log(f"已切换到{'深色' if self.is_dark_theme else '浅色'}主题")
         self.sig_theme_changed.emit(self.is_dark_theme)
 
-    def _persist_manual_theme_config(self, is_dark: bool) -> None:
-        previous_applying = bool(self.__dict__.get("_applying_appearance", False))
-        self.__dict__["_applying_appearance"] = True
-        try:
-            try:
-                cfg.set("appearance", "follow_system", False)
-            except Exception as exc:
-                debug_logger.log_exception("MainWindow", "disable_follow_system_for_manual_theme", exc)
-            self._persist_theme_config(is_dark)
-        finally:
-            self.__dict__["_applying_appearance"] = previous_applying
-
     def _persist_theme_config(self, is_dark: bool) -> None:
-        theme_values = {"theme": "dark" if is_dark else "light", "dark_theme": bool(is_dark)}
-        set_many = getattr(cfg, "set_many", None)
-        if callable(set_many):
-            set_many("common", theme_values)
-            return
-        for key, value in theme_values.items():
-            cfg.set("common", key, value)
+        self._submit_frontend_action(
+            "update_basic_setting",
+            {"key": "theme", "value": "dark" if is_dark else "light", "manual": False},
+        )
 
     def _apply_theme_stylesheet(
         self,
@@ -1411,7 +1429,7 @@ class MainWindow(QMainWindow):
             top_bar.configure_for_platform(plugin_id, defaults)
         else:
             self.inp_search.setPlaceholderText(self.current_plugin.get_search_placeholder())
-        cfg.set("common", "last_source", plugin_id)
+        self._submit_frontend_action("update_basic_setting", {"key": "last_source", "value": plugin_id})
 
     def set_crawl_running_state(self, is_running: bool) -> None:
         self.app_shell.set_crawl_running_state(is_running, self.plugin_widget)
@@ -1434,33 +1452,13 @@ class MainWindow(QMainWindow):
         selected_dir = str(selected_dir or "").strip()
         if not selected_dir:
             return
-        try:
-            self.set_current_save_dir(selected_dir, persist=True)
-        except Exception as exc:
-            self.append_log(f"保存目录更新失败: {exc}", level="ERROR")
-            self.refresh_frontend_state(topics={"settings.update"}, force=True)
-            return
-        self.sig_change_dir.emit()
+        self.set_current_save_dir(selected_dir, persist=True)
 
     def set_current_save_dir(self, save_dir: str, *, persist: bool = False) -> None:
-        previous = self.current_save_dir
-        self.current_save_dir = save_dir
         if persist:
-            try:
-                if "_frontend_state_service" in self.__dict__:
-                    result = self._frontend_state_service.handle_action(
-                        "update_basic_setting",
-                        {"key": "download_directory", "value": save_dir},
-                    )
-                    if result.get("status") != "ok":
-                        raise RuntimeError(result.get("message") or "download directory update failed")
-                    data = result.get("data") or {}
-                    self.current_save_dir = str(data.get("directory") or data.get("value") or save_dir)
-                else:
-                    cfg.set("common", "save_directory", save_dir)
-            except Exception:
-                self.current_save_dir = previous
-                raise
+            if self._submit_frontend_action("update_basic_setting", {"key": "download_directory", "value": save_dir}):
+                return
+        self.current_save_dir = save_dir
         self.refresh_frontend_state(topics={"settings.update"} if persist else None)
 
     def add_video_row(self, video_item) -> None:
@@ -1836,45 +1834,7 @@ class MainWindow(QMainWindow):
         payload = {"key": key, "value": value}
         if action == "update_setting":
             payload["section"] = normalized_section
-        if normalized_section == "common" and str(key or "") == "theme":
-            self._disable_follow_system_for_manual_theme()
-        result = self._frontend_state_service.handle_action(action, payload)
-        if result.get("status") != "ok":
-            self.append_log(result.get("message") or "setting update failed", level="ERROR")
-            self.refresh_frontend_state(topics={"settings.update"}, force=True)
-            return
-        data = result.get("data") or {}
-        config_key = str(data.get("config_key") or data.get("key") or key or "")
-        if normalized_section == "common" and config_key == "save_directory":
-            directory = str(data.get("directory") or data.get("value") or "")
-            if directory:
-                changed = directory != self.current_save_dir
-                self.current_save_dir = directory
-                if changed:
-                    self.sig_change_dir.emit()
-        if normalized_section == "common" and config_key == "theme":
-            theme_value = str(data.get("value") or value or "light").lower()
-            is_dark = theme_value == "dark"
-            if self.is_dark_theme != is_dark:
-                self.is_dark_theme = is_dark
-                self.sig_theme_changed.emit(is_dark)
-        extra_topics = self._apply_runtime_setting_after_update(
-            str(data.get("section") or normalized_section),
-            config_key,
-            data.get("value", value),
-        )
-        self.refresh_frontend_state(topics={"settings.update", *extra_topics})
-
-    def _disable_follow_system_for_manual_theme(self) -> None:
-        previous_applying = bool(self.__dict__.get("_applying_appearance", False))
-        self.__dict__["_applying_appearance"] = True
-        try:
-            if bool(cfg.get("appearance", "follow_system", False)):
-                cfg.set("appearance", "follow_system", False)
-        except Exception as exc:
-            debug_logger.log_exception("MainWindow", "disable_follow_system_for_setting_theme", exc)
-        finally:
-            self.__dict__["_applying_appearance"] = previous_applying
+        self._submit_frontend_action(action, payload)
 
     def _apply_runtime_setting_after_update(self, section: str, key: str, value) -> set[str]:
         section = str(section or "")

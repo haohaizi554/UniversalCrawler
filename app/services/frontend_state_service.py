@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections import deque
 from copy import deepcopy
 from collections.abc import Mapping
 from collections.abc import Callable
@@ -96,6 +97,7 @@ class FrontendStateService:
     FRONTEND_DELTA_EVENTS_LIMIT = 64
     FILE_LOG_BACKFILL_LIMIT = 500
     PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
+    APP_STATE_PENDING_EVENTS_LIMIT = 4096
 
     def __init__(
         self,
@@ -139,6 +141,8 @@ class FrontendStateService:
         self._platform_auth_force_refresh_once = False
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
+        self._pending_app_state_events: deque[Any] = deque()
+        self._pending_app_state_events_overflowed = False
         self._active_event_time_cache: dict[str, str] = {}
         self._metadata_retry_tracker = MetadataRetryTracker(
             retry_callback=lambda video_id, source_path: self._retry_completed_metadata_probe(video_id, source_path),
@@ -158,7 +162,7 @@ class FrontendStateService:
         self._metadata_probe_budget_remaining: int | None = None
         self._app_state_event_handler = self.app_state.event_bus.subscribe(
             "app_state.changed",
-            self._record_app_state_change,
+            self._queue_app_state_change,
         )
         subscribe_async = getattr(self.config, "subscribe_async", None)
         subscribe = getattr(self.config, "subscribe", None)
@@ -170,6 +174,7 @@ class FrontendStateService:
             else None
         )
         self._apply_logging_runtime_settings(cleanup_old_logs=True)
+        self.flush_pending_app_state_events()
 
     @staticmethod
     def _is_qt_gui_thread() -> bool:
@@ -280,6 +285,9 @@ class FrontendStateService:
             self._config_event_handler = None
         self._metadata_retry_tracker.cancel_all(clear_failures=True)
         self._cancel_metadata_probe_queue(close=True)
+        with self._delta_lock:
+            self._pending_app_state_events.clear()
+            self._pending_app_state_events_overflowed = False
         self._file_log_cache_store.shutdown()
         self.failed_record_store.shutdown()
         if self._owns_app_state:
@@ -292,7 +300,11 @@ class FrontendStateService:
         return self._event_aggregator.version
 
     def frontend_metrics(self) -> dict[str, Any]:
-        return self._event_aggregator.metrics()
+        metrics = self._event_aggregator.metrics()
+        with self._delta_lock:
+            metrics["pending_app_state_event_count"] = len(self._pending_app_state_events)
+            metrics["pending_app_state_event_overflowed"] = self._pending_app_state_events_overflowed
+        return metrics
 
     def record_event(self, topic: str, payload: Mapping[str, Any] | None = None) -> None:
         if self._destroyed:
@@ -312,6 +324,36 @@ class FrontendStateService:
             return
         sections = self._sections_for_recorded_event(normalized, payload_dict)
         self._event_aggregator.record(normalized, payload_dict, sections=sections)
+
+    def _queue_app_state_change(self, payload: Any) -> None:
+        if self._destroyed:
+            return
+        queued_payload = dict(payload) if isinstance(payload, dict) else payload
+        with self._delta_lock:
+            if len(self._pending_app_state_events) >= self.APP_STATE_PENDING_EVENTS_LIMIT:
+                self._pending_app_state_events.popleft()
+                self._pending_app_state_events_overflowed = True
+            self._pending_app_state_events.append(queued_payload)
+
+    def flush_pending_app_state_events(self) -> None:
+        """Drain AppState events before building a frontend snapshot or delta."""
+
+        with self._delta_lock:
+            if not self._pending_app_state_events and not self._pending_app_state_events_overflowed:
+                return
+            events = list(self._pending_app_state_events)
+            overflowed = self._pending_app_state_events_overflowed
+            self._pending_app_state_events.clear()
+            self._pending_app_state_events_overflowed = False
+
+        if overflowed:
+            self._event_aggregator.record(
+                "app_state.resync_required",
+                {"overflowed": True},
+                sections=ALL_FRONTEND_SECTIONS,
+            )
+        for event_payload in events:
+            self._record_app_state_change(event_payload)
 
     def _record_app_state_change(self, payload: Any) -> None:
         if self._destroyed:
@@ -456,6 +498,7 @@ class FrontendStateService:
         return sections
 
     def get_snapshot(self, *, mock: bool = False, sections: frozenset[str] | None = None) -> dict[str, Any]:
+        self.flush_pending_app_state_events()
         if mock:
             snapshot = self.mock_snapshot()
             snapshot["version"] = self.frontend_version
@@ -498,6 +541,7 @@ class FrontendStateService:
     ) -> dict[str, Any]:
         """Return a versioned frontend delta while keeping full snapshots compatible."""
 
+        self.flush_pending_app_state_events()
         with self._delta_lock:
             try:
                 base_version = int(since_version or 0)
@@ -1910,6 +1954,7 @@ class FrontendStateService:
         config_key = aliases.get(key, key)
         allowed = {
             "save_directory",
+            "last_source",
             "filename_template",
             "open_after_download",
             "default_open_mode",
@@ -1921,6 +1966,8 @@ class FrontendStateService:
         if config_key == "save_directory" and value is None:
             value = payload.get("directory")
         try:
+            if config_key == "theme" and bool(payload.get("manual", True)):
+                self.config.set("appearance", "follow_system", False)
             self.config.set("common", config_key, value)
             current_value = self.config.get("common", config_key)
             self._apply_runtime_setting("common", config_key, current_value)

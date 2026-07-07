@@ -253,6 +253,41 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "error")
             self.assertEqual(manager.get("common", "default_open_mode"), "builtin_player")
 
+    def test_update_basic_theme_disables_follow_system_in_backend_action(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            manager.set("appearance", "follow_system", True)
+            service = FrontendStateService(config_manager=manager)
+
+            result = service.handle_action("update_basic_setting", {"key": "theme", "value": "dark"})
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(manager.get("common", "theme"), "dark")
+            self.assertFalse(manager.get("appearance", "follow_system"))
+
+    def test_update_basic_theme_from_system_palette_keeps_follow_system(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            manager.set("appearance", "follow_system", True)
+            service = FrontendStateService(config_manager=manager)
+
+            result = service.handle_action("update_basic_setting", {"key": "theme", "value": "dark", "manual": False})
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(manager.get("common", "theme"), "dark")
+            self.assertTrue(manager.get("appearance", "follow_system"))
+
+    def test_update_basic_last_source_persists_from_backend_action(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            service = FrontendStateService(config_manager=manager)
+
+            result = service.handle_action("update_basic_setting", {"key": "last_source", "value": "douyin"})
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(manager.get("common", "last_source"), "douyin")
+            self.assertEqual(ConfigManager(str(Path(temp_dir) / "config.json")).get("common", "last_source"), "douyin")
+
     def test_update_setting_hot_loads_extended_sections_and_persists(self):
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
@@ -1122,6 +1157,7 @@ class FrontendStateServiceTests(unittest.TestCase):
 
     def test_log_items_respect_ui_max_display_count_for_file_cache(self):
         original_latest_file = debug_logger.latest_file
+        original_is_main_process = debug_logger._is_main_process
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
             manager.set("logging", "ui_log_max_display_count", 500)
@@ -1134,12 +1170,14 @@ class FrontendStateServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             debug_logger.latest_file = latest_file
+            debug_logger._is_main_process = False
             try:
                 service = FrontendStateService(config_manager=manager)
                 service.refresh_file_log_cache()
                 items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
             finally:
                 debug_logger.latest_file = original_latest_file
+                debug_logger._is_main_process = original_is_main_process
 
         self.assertEqual(len(items), 500)
         self.assertEqual(items[0]["message_summary"], "file-log-200")
@@ -1147,6 +1185,7 @@ class FrontendStateServiceTests(unittest.TestCase):
 
     def test_max_log_display_limit_does_not_backfill_entire_file_cache(self):
         original_latest_file = debug_logger.latest_file
+        original_is_main_process = debug_logger._is_main_process
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
             manager.set("logging", "ui_log_max_display_count", 500)
@@ -1159,12 +1198,14 @@ class FrontendStateServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             debug_logger.latest_file = latest_file
+            debug_logger._is_main_process = False
             try:
                 service = FrontendStateService(config_manager=manager)
                 service.refresh_file_log_cache()
                 items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
             finally:
                 debug_logger.latest_file = original_latest_file
+                debug_logger._is_main_process = original_is_main_process
 
         self.assertEqual(len(items), FrontendStateService.FILE_LOG_BACKFILL_LIMIT)
         self.assertEqual(items[0]["message_summary"], "file-log-1500")
@@ -1172,6 +1213,7 @@ class FrontendStateServiceTests(unittest.TestCase):
 
     def test_log_display_limit_increase_keeps_existing_window_without_backfill(self):
         original_latest_file = debug_logger.latest_file
+        original_is_main_process = debug_logger._is_main_process
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
             manager.set("logging", "ui_log_max_display_count", 100)
@@ -1184,6 +1226,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             debug_logger.latest_file = latest_file
+            debug_logger._is_main_process = False
             try:
                 service = FrontendStateService(config_manager=manager)
                 service.refresh_file_log_cache()
@@ -1195,6 +1238,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 expanded_items = service.get_snapshot(sections=frozenset({"log_items"}))["log_items"]
             finally:
                 debug_logger.latest_file = original_latest_file
+                debug_logger._is_main_process = original_is_main_process
 
         self.assertEqual(len(initial_items), 100)
         self.assertEqual(len(expanded_items), 100)
@@ -1829,6 +1873,52 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertFalse(delta["full"])
         self.assertIn("active_downloads", delta["changed_sections"])
         self.assertIn("app_status", delta["sections"])
+
+    def test_app_state_changed_is_queued_until_delta_flush(self):
+        service = FrontendStateService()
+        base_version = service.frontend_version
+
+        service.app_state.set_running_state("busy")
+
+        self.assertEqual(service.frontend_version, base_version)
+        self.assertEqual(service.frontend_metrics()["pending_app_state_event_count"], 1)
+
+        delta = service.get_delta(base_version)
+
+        self.assertGreater(delta["version"], base_version)
+        self.assertEqual(service.frontend_metrics()["pending_app_state_event_count"], 0)
+        self.assertIn("app_status", delta["changed_sections"])
+        self.assertTrue(any(event["topic"] == "app.running_state" for event in delta["events"]))
+
+    def test_app_state_changed_is_queued_until_snapshot_flush(self):
+        service = FrontendStateService()
+        base_version = service.frontend_version
+
+        service.app_state.set_running_state("busy")
+        snapshot = service.get_snapshot(sections=frozenset({"app_status"}))
+
+        self.assertGreater(snapshot["version"], base_version)
+        self.assertEqual(service.frontend_metrics()["pending_app_state_event_count"], 0)
+        self.assertIn("app_status", snapshot)
+
+    def test_app_state_changed_queue_is_bounded_and_requests_resync(self):
+        service = FrontendStateService()
+        service.APP_STATE_PENDING_EVENTS_LIMIT = 2
+        base_version = service.frontend_version
+
+        for index in range(3):
+            service.app_state.set_running_state(f"busy-{index}")
+
+        self.assertEqual(service.frontend_version, base_version)
+        self.assertEqual(service.frontend_metrics()["pending_app_state_event_count"], 2)
+        self.assertTrue(service.frontend_metrics()["pending_app_state_event_overflowed"])
+
+        delta = service.get_delta(base_version)
+
+        self.assertGreater(delta["version"], base_version)
+        self.assertFalse(service.frontend_metrics()["pending_app_state_event_overflowed"])
+        self.assertIn("settings_snapshot", delta["changed_sections"])
+        self.assertTrue(any(event["topic"] == "app_state.resync_required" for event in delta["events"]))
 
     def test_get_delta_keeps_regular_progress_narrow(self):
         service = FrontendStateService()

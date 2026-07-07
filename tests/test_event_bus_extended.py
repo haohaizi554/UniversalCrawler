@@ -155,6 +155,57 @@ class EventBusHandlerIsolationTests(unittest.TestCase):
         self.assertEqual(calls, ["ok"])
 
 
+class EventBusAsyncBackpressureTests(unittest.TestCase):
+    def test_async_noisy_events_are_latest_state_wins_per_entity(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        finished = threading.Event()
+        release = threading.Event()
+        seen: list[int] = []
+
+        def handler(payload: dict[str, Any]) -> None:
+            if not started.is_set():
+                started.set()
+                release.wait(timeout=2)
+            seen.append(int(payload["progress"]))
+            if len(seen) >= 2:
+                finished.set()
+
+        bus.subscribe_async("videos.update", handler)
+        try:
+            bus.publish("videos.update", {"video_id": "v1", "progress": 0})
+            self.assertTrue(started.wait(timeout=2))
+            for progress in range(1, 50):
+                bus.publish("videos.update", {"video_id": "v1", "progress": progress})
+            release.set()
+            self.assertTrue(finished.wait(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertEqual(seen, [0, 49])
+
+    def test_async_non_noisy_events_keep_fifo_order(self) -> None:
+        bus = EventBus()
+        finished = threading.Event()
+        seen: list[int] = []
+
+        def handler(payload: dict[str, int]) -> None:
+            seen.append(payload["index"])
+            if len(seen) >= 3:
+                finished.set()
+
+        bus.subscribe_async("normal", handler)
+        try:
+            for index in range(3):
+                bus.publish("normal", {"index": index})
+            self.assertTrue(finished.wait(timeout=2))
+        finally:
+            bus.shutdown()
+
+        self.assertEqual(seen, [0, 1, 2])
+
+
 class EventBusStormAndLockTests(unittest.TestCase):
     def test_storm_detection_triggers_warning(self) -> None:
         bus = EventBus()

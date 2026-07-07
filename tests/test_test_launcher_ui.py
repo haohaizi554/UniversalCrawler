@@ -44,6 +44,9 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertFalse(window.btn_theme.icon().isNull())
             self.assertEqual(window.run_status.text(), "待命中")
             self.assertEqual(window.progress_percent.text(), "0%")
+            self.assertEqual(window.footer_status_dot.objectName(), "StatusDot")
+            self.assertEqual(window.footer_status_state.text(), "就绪")
+            self.assertEqual(window.footer_status_metrics["scripts"].text(), "脚本 0/0")
         finally:
             window.close()
 
@@ -165,6 +168,33 @@ class TestLauncherWindowUITests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_launcher_progress_detail_keeps_completed_text_on_one_line(self):
+        from tests import test_launcher as launcher
+
+        window = launcher._build_gui()
+        try:
+            window._done_files = 28
+            window._total_files = 126
+            window._update_progress_labels()
+            window.resize(980, 640)
+            window.show()
+            for _ in range(4):
+                self.app.processEvents()
+
+            self.assertFalse(window.progress_detail.wordWrap())
+            self.assertEqual(window.progress_detail.text(), "已完成 28/126 个脚本")
+            self.assertGreaterEqual(
+                window.progress_detail.minimumWidth(),
+                window.progress_detail.fontMetrics().horizontalAdvance(window.progress_detail.text()) + 12,
+            )
+            self.assertGreaterEqual(
+                window.progress_detail.width(),
+                window.progress_detail.fontMetrics().horizontalAdvance(window.progress_detail.text()) + 12,
+            )
+            self.assertLess(window.progress_detail.height(), window.progress_detail.sizeHint().height() * 2)
+        finally:
+            window.close()
+
     def test_launcher_light_large_text_keeps_label_height_and_contrast(self):
         from PyQt6.QtWidgets import QLabel
         from tests import test_launcher as launcher
@@ -226,9 +256,45 @@ class TestLauncherWindowUITests(unittest.TestCase):
             window._select_only("all")
             self.assertEqual(window.stat_scope.text(), "全量")
             self.assertEqual(window.detail_title.text(), "执行范围")
-            self.assertIn("执行范围：全量", window.sbar.currentMessage())
+            self.assertIn("执行范围：全量", window.footer_status_detail.text())
             self.assertEqual(window.left_selected_pill.text(), "全量")
             self.assertIn("全部测试", window.detail_desc.text())
+        finally:
+            window.close()
+
+    def test_launcher_status_bar_uses_gui_status_light_and_result_metrics(self):
+        from tests import test_launcher as launcher
+        from tests.test_runner import TestResult
+
+        window = launcher._build_gui()
+        try:
+            window._total_files = 126
+            window.progress.setRange(0, 126)
+            window.btn_stop.show()
+            results = [
+                TestResult(
+                    category_id="all",
+                    category_name="全部测试",
+                    file_count=126,
+                    passed=251,
+                    failed=0,
+                    skipped=3,
+                    errors=0,
+                    duration=16.03,
+                )
+            ]
+
+            window._on_event("all_done", "all", "全部测试", results)
+
+            self.assertEqual(window.footer_status_dot._state, "running")
+            self.assertEqual(window.footer_status_state.text(), "全部通过")
+            self.assertEqual(window.footer_status_detail.text(), "测试套件运行完成")
+            self.assertEqual(window.footer_status_metrics["scripts"].text(), "脚本 126/126")
+            self.assertEqual(window.footer_status_metrics["passed"].text(), "通过 251")
+            self.assertEqual(window.footer_status_metrics["skipped"].text(), "跳过 3")
+            self.assertEqual(window.footer_status_metrics["failed"].text(), "失败 0")
+            self.assertEqual(window.footer_status_metrics["errors"].text(), "错误 0")
+            self.assertEqual(window.footer_status_metrics["duration"].text(), "耗时 16.03s")
         finally:
             window.close()
 

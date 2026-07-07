@@ -191,10 +191,21 @@ class ActionTable(QTableWidget):
         old_ids = tuple(row_signature[0] for row_signature in old_signature[3])
         new_ids = tuple(row_signature[0] for row_signature in new_signature[3])
         common_count = min(len(old_ids), len(new_ids))
-        return old_ids[:common_count] == new_ids[:common_count]
+        return old_ids[:common_count] == new_ids[:common_count] or ActionTable._has_same_unique_ids(
+            old_ids,
+            new_ids,
+        )
+
+    @staticmethod
+    def _has_same_unique_ids(old_ids: tuple[Any, ...], new_ids: tuple[Any, ...]) -> bool:
+        if len(old_ids) != len(new_ids):
+            return False
+        old_set = set(old_ids)
+        return len(old_set) == len(old_ids) and old_set == set(new_ids)
 
     def _rebuild_rows(self, rows: list[dict[str, Any]], columns: list[str], actions: dict[str, str]) -> None:
-        self.setRowCount(0)
+        while self.rowCount() > 0:
+            self.removeRow(self.rowCount() - 1)
         for row_data in rows:
             row = self.rowCount()
             self.insertRow(row)

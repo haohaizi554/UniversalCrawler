@@ -769,6 +769,39 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(calls, ["row-1"])
         table.deleteLater()
 
+    def test_action_table_reorders_same_ids_without_full_clear(self):
+        class RecordingActionTable(ActionTable):
+            def __init__(self, headers):
+                self.row_count_calls: list[int] = []
+                super().__init__(headers)
+
+            def setRowCount(self, count):  # noqa: N802
+                self.row_count_calls.append(count)
+                return super().setRowCount(count)
+
+        table = RecordingActionTable(["Title", "Progress", "Actions"])
+        rows = [
+            {"id": "row-1", "title": "First", "progress": 10},
+            {"id": "row-2", "title": "Second", "progress": 20},
+        ]
+        table.set_rows(rows, ["title", "progress"], actions={"delete": "Delete"})
+
+        table.row_count_calls.clear()
+        table.set_rows(
+            [
+                {"id": "row-2", "title": "Second updated", "progress": 40},
+                {"id": "row-1", "title": "First updated", "progress": 30},
+            ],
+            ["title", "progress"],
+            actions={"delete": "Delete"},
+        )
+
+        self.assertNotIn(0, table.row_count_calls)
+        self.assertEqual(table.id_order(), ["row-2", "row-1"])
+        self.assertEqual(table.item(0, 0).text(), "Second updated")
+        self.assertEqual(table.cellWidget(0, 1).value(), 40)
+        table.deleteLater()
+
     def test_active_downloads_page_uses_model_view_and_stable_updates(self):
         shell = self._make_shell()
         active = shell.pages["active"]

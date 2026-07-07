@@ -47,6 +47,7 @@ try:
 
     from app.config import cfg
     from app.services.icon_registry import action_icon_file, ui_icon_path
+    from app.ui.layout.status_bar import StatusDotIndicator
     from app.ui.layout.window_chrome import WindowChromeFrame
     from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
     from app.ui.styles.themes import apply_application_theme, theme_colors
@@ -1008,6 +1009,11 @@ if _PYQT6_AVAILABLE:
             self._timer: QTimer | None = None
             self._total_files = 0
             self._done_files = 0
+            self._passed_tests = 0
+            self._failed_tests = 0
+            self._skipped_tests = 0
+            self._error_tests = 0
+            self._elapsed_seconds = 0.0
 
             self.signals = _Signals()
             self.signals.event.connect(self._on_event)
@@ -1262,10 +1268,12 @@ if _PYQT6_AVAILABLE:
             progress_meta.setSpacing(10)
             self.progress_detail = QLabel("尚未开始")
             self.progress_detail.setObjectName("progressHint")
-            self.progress_detail.setWordWrap(True)
+            self.progress_detail.setWordWrap(False)
+            self.progress_detail.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            self.progress_detail.setMinimumWidth(self.progress_detail.fontMetrics().horizontalAdvance("已完成 000/000 个脚本") + 12)
             self.progress_percent = QLabel("0%")
             self.progress_percent.setObjectName("progressHint")
-            progress_meta.addWidget(self.progress_detail)
+            progress_meta.addWidget(self.progress_detail, 0)
             progress_meta.addStretch(1)
             progress_meta.addWidget(self.progress_percent)
             control_layout.addLayout(progress_meta)
@@ -1295,6 +1303,8 @@ if _PYQT6_AVAILABLE:
             right_col.addWidget(self.log, 1)
 
             self.sbar = QStatusBar()
+            self.sbar.setObjectName("LauncherStatusBar")
+            self._build_status_bar()
             self.setStatusBar(self.sbar)
 
             QShortcut(QKeySequence("F5"), self, activated=self._run)
@@ -1302,6 +1312,132 @@ if _PYQT6_AVAILABLE:
             QShortcut(QKeySequence("Ctrl+R"), self, activated=self._select_recommended)
             QShortcut(QKeySequence("Escape"), self, activated=self._clear_selection)
             self._set_theme(self.is_dark_theme, persist=False)
+
+        def _build_status_bar(self):
+            self.footer_status_host = QWidget()
+            self.footer_status_host.setObjectName("launcherStatusStrip")
+            self.footer_status_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            footer_layout = QHBoxLayout(self.footer_status_host)
+            footer_layout.setContentsMargins(8, 0, 8, 0)
+            footer_layout.setSpacing(10)
+
+            self.footer_status_dot = StatusDotIndicator(self.footer_status_host, is_dark=self.is_dark_theme)
+            footer_layout.addWidget(self.footer_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            self.footer_status_state = QLabel("就绪")
+            self.footer_status_state.setObjectName("launcherFooterState")
+            footer_layout.addWidget(self.footer_status_state, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            self.footer_status_detail = QLabel("等待选择测试范围")
+            self.footer_status_detail.setObjectName("launcherFooterDetail")
+            self.footer_status_detail.setMinimumWidth(160)
+            self.footer_status_detail.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            footer_layout.addWidget(self.footer_status_detail, 1, Qt.AlignmentFlag.AlignVCenter)
+
+            self.footer_status_metrics: dict[str, QLabel] = {}
+            for key, text in (
+                ("scripts", "脚本 0/0"),
+                ("passed", "通过 0"),
+                ("skipped", "跳过 0"),
+                ("failed", "失败 0"),
+                ("errors", "错误 0"),
+                ("duration", "耗时 0.00s"),
+            ):
+                label = QLabel(text)
+                label.setObjectName("launcherFooterMetric")
+                label.setProperty("metric", key)
+                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.footer_status_metrics[key] = label
+                footer_layout.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            self.sbar.addPermanentWidget(self.footer_status_host, 1)
+            self._set_footer_status("default", "就绪", "等待选择测试范围")
+
+        def _style_status_bar(self, tone: str = "default"):
+            if not hasattr(self, "footer_status_state"):
+                return
+            tone_colors = {
+                "default": self._theme_color("muted"),
+                "running": self._theme_color("success"),
+                "success": self._theme_color("success"),
+                "danger": self._theme_color("danger"),
+                "warning": self._theme_color("warning"),
+            }
+            state_color = tone_colors.get(tone, tone_colors["default"])
+            text = self._theme_color("text")
+            muted = self._theme_color("muted")
+            border = self._theme_color("border")
+            panel = self._theme_color("status_default_bg")
+            danger = self._theme_color("danger")
+            warning = self._theme_color("warning")
+
+            self.footer_status_state.setStyleSheet(f"color:{state_color}; font-weight:700;")
+            self.footer_status_detail.setStyleSheet(f"color:{muted};")
+            for key, label in self.footer_status_metrics.items():
+                color = text
+                if key in {"failed", "errors"} and not label.text().endswith(" 0"):
+                    color = danger
+                elif key == "skipped" and not label.text().endswith(" 0"):
+                    color = warning
+                label.setStyleSheet(
+                    f"color:{color}; background:{panel}; border:1px solid {border}; "
+                    "border-radius:9px; padding:2px 8px; font-weight:600;"
+                )
+
+        def _set_footer_status(
+            self,
+            tone: str,
+            state: str,
+            detail: str = "",
+            *,
+            scripts_done: int | None = None,
+            scripts_total: int | None = None,
+            passed: int | None = None,
+            skipped: int | None = None,
+            failed: int | None = None,
+            errors: int | None = None,
+            duration: float | None = None,
+        ):
+            if not hasattr(self, "footer_status_state"):
+                return
+            self._footer_status_tone = tone
+            dot_state = {
+                "running": "running",
+                "success": "running",
+                "danger": "error",
+                "warning": "error",
+            }.get(tone, "idle")
+            self.footer_status_dot.set_state(dot_state)
+            self.footer_status_state.setText(state)
+            self.footer_status_detail.setText(detail or " ")
+            self.footer_status_metrics["scripts"].setText(
+                f"脚本 {int(scripts_done or 0)}/{int(scripts_total or 0)}"
+                if scripts_total is not None
+                else "脚本 0/0"
+            )
+            self.footer_status_metrics["passed"].setText(f"通过 {int(passed or 0)}")
+            self.footer_status_metrics["skipped"].setText(f"跳过 {int(skipped or 0)}")
+            self.footer_status_metrics["failed"].setText(f"失败 {int(failed or 0)}")
+            self.footer_status_metrics["errors"].setText(f"错误 {int(errors or 0)}")
+            self.footer_status_metrics["duration"].setText(f"耗时 {float(duration or 0.0):.2f}s")
+            self.footer_status_host.setToolTip(
+                " · ".join(
+                    part
+                    for part in (
+                        state,
+                        detail,
+                        self.footer_status_metrics["scripts"].text(),
+                        self.footer_status_metrics["passed"].text(),
+                        self.footer_status_metrics["skipped"].text(),
+                        self.footer_status_metrics["failed"].text(),
+                        self.footer_status_metrics["errors"].text(),
+                        self.footer_status_metrics["duration"].text(),
+                    )
+                    if part
+                )
+            )
+            self.sbar.clearMessage()
+            self._style_status_bar(tone)
 
         def _apply_window_size_floor(self):
             min_width, min_height = _launcher_minimum_size()
@@ -1428,6 +1564,9 @@ if _PYQT6_AVAILABLE:
                 self._set_theme_button_icon()
             if hasattr(self, "run_status"):
                 self._set_run_status(self._run_status_text, self._run_status_tone)
+            if hasattr(self, "footer_status_dot"):
+                self.footer_status_dot.set_theme(self.is_dark_theme)
+                self._style_status_bar(getattr(self, "_footer_status_tone", "default"))
             if hasattr(self, "window_chrome"):
                 QTimer.singleShot(0, self._refresh_text_minimums)
             self._apply_window_size_floor()
@@ -1543,6 +1682,12 @@ if _PYQT6_AVAILABLE:
             percent = int(min(self._done_files / total, 1) * 100)
             self.progress_percent.setText(f"{percent}%")
             self.progress_detail.setText(f"已完成 {self._done_files}/{self._total_files} 个脚本")
+            self.progress_detail.setMinimumWidth(
+                max(
+                    self.progress_detail.minimumWidth(),
+                    self.progress_detail.fontMetrics().horizontalAdvance(self.progress_detail.text()) + 12,
+                )
+            )
 
         def _selected_files(self) -> list[str]:
             files: list[str] = []
@@ -1653,7 +1798,7 @@ if _PYQT6_AVAILABLE:
                 self.detail_title.setText("执行范围")
                 self.current_hint.setText("待命中")
                 self._set_run_status("待命中", "default")
-                self.sbar.showMessage(snapshot["status"])
+                self._set_footer_status("default", "就绪", snapshot["status"], scripts_done=0, scripts_total=0)
                 return
 
             if len(selected_categories) == 1:
@@ -1661,7 +1806,13 @@ if _PYQT6_AVAILABLE:
             else:
                 self.detail_title.setText("执行范围")
 
-            self.sbar.showMessage(snapshot["status"])
+            self._set_footer_status(
+                "default",
+                "就绪",
+                snapshot["status"],
+                scripts_done=0,
+                scripts_total=len(unique_files),
+            )
 
         def _append_log(self, html: str):
             self.log.append(html)
@@ -1670,17 +1821,29 @@ if _PYQT6_AVAILABLE:
             if self.worker and self.worker.is_alive():
                 return
             if not self.selected_ids:
-                self.sbar.showMessage("请先选择测试套件")
+                self._set_footer_status("warning", "未选择", "请先选择测试套件", scripts_done=0, scripts_total=0)
                 return
 
             self.log.clear()
             self._done_files = 0
             self._total_files = max(len(self._selected_files()), 1)
+            self._passed_tests = 0
+            self._failed_tests = 0
+            self._skipped_tests = 0
+            self._error_tests = 0
+            self._elapsed_seconds = 0.0
             self.progress.setRange(0, self._total_files)
             self.progress.setValue(0)
             self._update_progress_labels()
             self.current_hint.setText("准备运行...")
             self._set_run_status("运行中", "running")
+            self._set_footer_status(
+                "running",
+                "运行中",
+                "准备执行测试脚本",
+                scripts_done=0,
+                scripts_total=self._total_files,
+            )
             self.btn_run.hide()
             self.btn_stop.show()
 
@@ -1701,7 +1864,18 @@ if _PYQT6_AVAILABLE:
                 self.worker.stop()
                 self.current_hint.setText("等待当前脚本收尾后停止...")
                 self._set_run_status("停止中", "warning")
-                self.sbar.showMessage("正在停止...")
+                self._set_footer_status(
+                    "warning",
+                    "停止中",
+                    "等待当前脚本收尾",
+                    scripts_done=self._done_files,
+                    scripts_total=self._total_files,
+                    passed=self._passed_tests,
+                    skipped=self._skipped_tests,
+                    failed=self._failed_tests,
+                    errors=self._error_tests,
+                    duration=self._elapsed_seconds,
+                )
 
         def _emit(self, kind, category_id, name, payload):
             self.signals.event.emit(kind, category_id, str(name), payload)
@@ -1717,7 +1891,18 @@ if _PYQT6_AVAILABLE:
                 self._append_log(f"<span style='color:{accent}; font-weight:700;'>▶ {name}</span>")
                 self.current_hint.setText(f"运行中: {name}")
                 self._set_run_status("运行中", "running")
-                self.sbar.showMessage(f"运行中: {name}")
+                self._set_footer_status(
+                    "running",
+                    "运行中",
+                    f"当前分类：{name}",
+                    scripts_done=self._done_files,
+                    scripts_total=self._total_files,
+                    passed=self._passed_tests,
+                    skipped=self._skipped_tests,
+                    failed=self._failed_tests,
+                    errors=self._error_tests,
+                    duration=self._elapsed_seconds,
+                )
                 return
 
             if kind == "file_start":
@@ -1731,6 +1916,11 @@ if _PYQT6_AVAILABLE:
             if kind == "file_done":
                 if isinstance(payload, TestResult):
                     result = payload
+                    self._passed_tests += result.passed
+                    self._failed_tests += result.failed
+                    self._skipped_tests += result.skipped
+                    self._error_tests += result.errors
+                    self._elapsed_seconds += result.duration
                     color = success if result.success else danger
                     icon = "PASS" if result.success else "FAIL"
                     self._append_log(
@@ -1744,6 +1934,19 @@ if _PYQT6_AVAILABLE:
                 self._done_files += 1
                 self.progress.setValue(min(self._done_files, self._total_files))
                 self._update_progress_labels()
+                tone = "danger" if self._failed_tests or self._error_tests else "running"
+                self._set_footer_status(
+                    tone,
+                    "运行中",
+                    f"已完成 {self._done_files}/{self._total_files} 个脚本",
+                    scripts_done=self._done_files,
+                    scripts_total=self._total_files,
+                    passed=self._passed_tests,
+                    skipped=self._skipped_tests,
+                    failed=self._failed_tests,
+                    errors=self._error_tests,
+                    duration=self._elapsed_seconds,
+                )
                 return
 
             if kind == "category_done":
@@ -1775,6 +1978,11 @@ if _PYQT6_AVAILABLE:
                 skipped = sum(item.skipped for item in results)
                 errors = sum(item.errors for item in results)
                 duration = sum(item.duration for item in results)
+                self._passed_tests = passed
+                self._failed_tests = failed
+                self._skipped_tests = skipped
+                self._error_tests = errors
+                self._elapsed_seconds = duration
 
                 self._append_log(f"<hr style='border:0;border-top:1px solid {border};'>")
                 if failed == 0 and errors == 0:
@@ -1783,14 +1991,36 @@ if _PYQT6_AVAILABLE:
                         f"<span style='color:{success}; font-weight:700; font-size:14px;'>全部通过</span>"
                         f"<span style='color:{muted};'>  {passed} 通过 / {skipped} 跳过 / {duration:.2f}s</span>"
                     )
-                    self.sbar.showMessage(f"全部通过 · {passed} 通过 · {duration:.2f}s")
+                    self._set_footer_status(
+                        "success",
+                        "全部通过",
+                        "测试套件运行完成",
+                        scripts_done=self._done_files,
+                        scripts_total=self._total_files,
+                        passed=passed,
+                        skipped=skipped,
+                        failed=failed,
+                        errors=errors,
+                        duration=duration,
+                    )
                 else:
                     self._set_run_status("有失败", "danger")
                     self._append_log(
                         f"<span style='color:{danger}; font-weight:700; font-size:14px;'>运行结束，有失败</span>"
                         f"<span style='color:{muted};'>  {passed} 通过 / {failed} 失败 / {errors} 错误 / {duration:.2f}s</span>"
                     )
-                    self.sbar.showMessage(f"运行结束 · {failed} 失败 / {errors} 错误 · {duration:.2f}s")
+                    self._set_footer_status(
+                        "danger",
+                        "有失败",
+                        "测试套件运行完成",
+                        scripts_done=self._done_files,
+                        scripts_total=self._total_files,
+                        passed=passed,
+                        skipped=skipped,
+                        failed=failed,
+                        errors=errors,
+                        duration=duration,
+                    )
                 return
 
         def _poll_worker(self):

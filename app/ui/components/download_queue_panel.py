@@ -207,7 +207,8 @@ class DownloadQueuePanel(QFrame):
 
     def clear_rows(self) -> None:
         
-        self.table.setRowCount(0)
+        while self.table.rowCount() > 0:
+            self.table.removeRow(self.table.rowCount() - 1)
 
     def remove_row(self, row: int) -> None:
         

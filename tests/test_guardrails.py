@@ -379,6 +379,22 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn('subscribe_async = getattr(self.config, "subscribe_async", None)', text)
         self.assertIn('subscribe_async("config.changed", self._on_config_changed)', text)
 
+    def test_frontend_state_service_app_state_listener_only_queues_before_flush(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "frontend_state_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn('self.app_state.event_bus.subscribe(\n            "app_state.changed",\n            self._queue_app_state_change,', text)
+        queue_block = text.split("def _queue_app_state_change", 1)[1].split(
+            "def flush_pending_app_state_events",
+            1,
+        )[0]
+        self.assertNotIn("_event_aggregator.record", queue_block)
+        self.assertNotIn("_materialize_stage_title_for_event", queue_block)
+        self.assertIn("flush_pending_app_state_events()", text)
+
     def test_cache_service_sqlite_connections_are_context_managed(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "services" / "cache_service.py").read_text(
@@ -438,6 +454,16 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("_MARQUEE_DEGREES_PER_TICK = 12.0", text)
         self.assertNotIn("setInterval(45)", text)
 
+    def test_qtablewidget_hot_paths_do_not_clear_and_rebuild_rows(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        offenders: list[str] = []
+        for path in (project_root / "app" / "ui").rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "setRowCount(0)" in text:
+                offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
     def test_domain_event_bus_handlers_only_queue_dispatch(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "controllers" / "application_controller.py").read_text(
@@ -450,6 +476,18 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("QTimer.singleShot(0, lambda: dispatcher(event))", text)
         self.assertNotIn('self.event_bus.subscribe("spider.domain_event", self._dispatch_spider_event)', text)
         self.assertNotIn('self.event_bus.subscribe("download.domain_event", self._dispatch_download_event)', text)
+
+    def test_event_bus_noisy_async_topics_use_latest_state_wins(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "core" / "event_bus.py").read_text(encoding="utf-8", errors="ignore")
+
+        self.assertIn("ASYNC_NOISY_TOPICS", text)
+        self.assertIn("_async_pending_latest", text)
+        self.assertIn("_AsyncTaskKey", text)
+        self.assertIn("_enqueue_latest_async_handler", text)
+        for topic in ("videos.update", "video_state_changed", "task_progress", "logs.append", "log"):
+            with self.subTest(topic=topic):
+                self.assertIn(topic, text)
 
     def test_gui_hot_widgets_do_not_touch_files_cache_or_sqlite(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -522,6 +560,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             ("def _open_item_directory", "def _retry_failed_item"),
             ("def _retry_failed_item", "def _copy_item_diagnostics"),
             ("def _copy_item_diagnostics", "def _update_basic_setting"),
+            ("def _update_basic_setting", "def _apply_runtime_setting_after_update"),
             ("def _update_download_options", "def _update_completed_metadata"),
             ("def _pause_download_item", "def _run_tool"),
             ("def _run_tool", "def _register_file_associations_from_frontend"),
@@ -535,6 +574,20 @@ class UIAsyncGuardrailTests(unittest.TestCase):
                     block = block.split(end, 1)[0]
                 self.assertNotIn(".handle_action(", block)
                 self.assertIn("_submit_frontend_action(", block)
+
+    def test_gui_hot_paths_do_not_persist_config_inline(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        files = [
+            project_root / "app" / "ui" / "main_window.py",
+            project_root / "app" / "ui" / "plugin_settings.py",
+        ]
+
+        for path in files:
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                self.assertNotIn("cfg.set(", text)
+                self.assertNotIn("cfg.set_many(", text)
+                self.assertNotIn("cfg.update_missav_proxy(", text)
 
     def test_web_frontend_routes_do_not_build_snapshots_on_event_loop(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

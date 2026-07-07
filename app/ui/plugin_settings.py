@@ -117,7 +117,6 @@ def read_bilibili_run_options(widget: QWidget | None) -> dict[str, int]:
         defaults = get_platform_default_values("bilibili")
         return {"max_pages": int(defaults.get("max_pages", 1)), "max_items": 9999}
     pages = widget.current_value()
-    cfg.set("bilibili", "max_pages", pages)
     return {"max_pages": pages, "max_items": 9999}
 
 def build_douyin_settings_widget(parent=None) -> PageLimitSettingsWidget:
@@ -139,7 +138,6 @@ def read_douyin_run_options(widget: QWidget | None) -> dict[str, int]:
             "timeout": int(defaults.get("timeout", 10)),
         }
     max_items = widget.current_value()
-    cfg.set("douyin", "max_items", max_items)
     defaults = get_platform_runtime_defaults("douyin")
     return {"max_items": max_items, "timeout": int(defaults.get("timeout", 10))}
 
@@ -166,7 +164,6 @@ def read_xiaohongshu_run_options(widget: QWidget | None) -> dict[str, int | floa
             "detail_request_interval": float(defaults.get("detail_request_interval", 0.5)),
         }
     max_items = widget.current_value()
-    cfg.set("xiaohongshu", "max_items", max_items)
     return {
         "max_items": max_items,
         "search_max_pages": int(defaults.get("search_max_pages", 5)),
@@ -194,7 +191,6 @@ def read_kuaishou_run_options(widget: QWidget | None) -> dict[str, int]:
             "timeout": int(defaults.get("timeout", 10)),
         }
     max_items = widget.current_value()
-    cfg.set("kuaishou", "max_items", max_items)
     defaults = get_platform_runtime_defaults("kuaishou")
     return {"max_items": max_items, "timeout": int(defaults.get("timeout", 10))}
 
@@ -216,11 +212,6 @@ def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool | in
     timeout = int(widget.combo_timeout.currentData() or 60)
     proxy_str = widget.combo_proxy.currentText()
     proxy_url = build_missav_proxy_url(proxy_str)
-
-    cfg.set("missav", "individual_only", is_individual)
-    cfg.set("missav", "priority", priority)
-    cfg.set("missav", "timeout", timeout)
-    cfg.update_missav_proxy(proxy_str, proxy_url)
 
     return {
         "individual_only": is_individual,

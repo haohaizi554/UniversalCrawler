@@ -56,12 +56,15 @@
 补充约束：
 - GUI domain event 进入 EventBus 后不得直接执行可能触发弹窗、表格更新或状态重排的慢 handler；GUI 控制器应把实际派发推迟到下一轮 Qt 事件循环，EventBus 发布栈只负责接收与排队。
 - EventBus 提供 `subscribe_async()` 给不参与刷新版本时序的慢 handler 使用；涉及 `FrontendStateService` delta 版本记录和 MainWindow 刷新调度的 handler 不得为了“异步化”直接迁移，否则会造成刷新先于 dirty version 记录的 race。
+- `FrontendStateService` 订阅 `app_state.changed` 时只能做有界入队；标题物化、section 推导、dirty version 记录必须在 `get_snapshot()` / `get_delta()` 入口统一 `flush_pending_app_state_events()` 后执行。初始化阶段产生的 AppState 事件需要在构造结束时合入基线版本，避免第一帧普通 delta 被误判成全量刷新。
+- EventBus 的高频异步 topic（如 `videos.update`、`video_state_changed`、`task_progress`、`logs.append`、`log`）必须按 handler/topic/实体 ID 合并为 latest-state-wins；普通异步 topic 和 critical 事件仍保持 FIFO，不得为降压丢失完成、失败、删除、停止等关键状态。
 - 生产代码不得引入定时 `processEvents()` pump；浏览器 E2E 不得用 3.5 秒固定等待兜底，必须等待 `#app-shell` 或页面可观测状态。
 - 运行态纯视觉反馈定时器不得使用 45ms 级高频刷新；如启动按钮跑马灯这类非关键帧动画，默认周期为 120ms，并通过单次步进保持视觉速度。
 - 应用退出必须按顺序释放 frontend state service、AppState 延迟通知和 CacheService/diskcache 句柄；GUI 控制器和 Web 会话控制器都必须执行这条链路，关闭失败只能降级记录调试日志，不得中断退出流程。AppState 只关闭自己创建的 CacheService，外部注入的缓存由组合根关闭。
 - GUI latest-state-wins worker 应复用统一 worker 骨架；顺序写文件、系统动作派发等必须保序的任务应复用 `SequentialRequestWorker`，不得在业务 worker 中重复维护 `Condition + deque + Thread`。
 - GUI 控制器层不得把 `FrontendStateService.get_snapshot()` 当作业务 fallback；需要队列 ID、状态集合或行数据时，只能读取已在内存中的 `AppState` / 控制器状态，完整 snapshot 构建必须交给 `FrontendSnapshotWorker`。
 - GUI 热路径不得直接调用会触发文件、缓存、SQLite 或系统 API 的 `FrontendStateService.handle_action()`；日志操作、平台认证刷新、打开目录、失败重试、诊断复制、下载选项、暂停下载、工具启动和文件关联注册必须提交到 `FrontendActionWorker`，完成后只回投轻量结果并触发目标 section 刷新。
+- GUI 热路径不得直接调用 `cfg.set()`、`cfg.set_many()` 或平台专用配置落盘方法；平台切换、主题同步、启动参数读取等交互只允许更新轻量 UI 状态或提交 `FrontendActionWorker`，配置持久化统一在 worker / service 层完成。
 - SQLite 热路径不得只写 `with sqlite3.connect(...)`；该上下文只处理事务，不关闭连接。必须使用 `contextlib.closing(sqlite3.connect(...))` 或等价显式关闭，避免 Windows 下缓存/失败记录库文件句柄泄露。
 - 同一批稳定 ID 的表格行发生重排时，不得使用 `beginResetModel()`；应通过 row patch、insert/remove 或 `layoutChanged` 保留滚动、选中和悬停语义。
 - 仍在使用 `QTableWidget` 的小型通用表格也必须遵守稳定 ID 更新：列结构不变且 ID 仅原位变化、尾部追加或尾部移除时，只更新受影响单元格，不得 `setRowCount(0)` 清空重建。
