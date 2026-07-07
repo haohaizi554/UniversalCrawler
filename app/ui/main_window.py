@@ -977,12 +977,6 @@ class MainWindow(QMainWindow):
 
     def _handle_log_action(self, operation: str) -> None:
         operation = str(operation or "").strip()
-        if operation == "open_latest":
-            self.sig_open_latest_log.emit()
-            return
-        if operation == "open_error_summary":
-            self.sig_open_error_summary.emit()
-            return
         if operation == "refresh" and self._should_throttle_log_refresh():
             return
         self._submit_frontend_action("log_operation", {"operation": operation})

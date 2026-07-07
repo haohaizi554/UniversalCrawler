@@ -110,7 +110,11 @@ def builtin_platform_metas() -> dict[str, PlatformUiMeta]:
     }
 
 
-def load_platform_options(snapshot: Mapping[str, Any] | None = None) -> list[PlatformUiMeta]:
+def load_platform_options(
+    snapshot: Mapping[str, Any] | None = None,
+    *,
+    allow_registry_fallback: bool = False,
+) -> list[PlatformUiMeta]:
     builtins = builtin_platform_metas()
     options: list[PlatformUiMeta] = [builtins["all"]]
     seen: set[str] = {"all"}
@@ -134,7 +138,7 @@ def load_platform_options(snapshot: Mapping[str, Any] | None = None) -> list[Pla
             if isinstance(platform_settings, list):
                 entries.extend(item for item in platform_settings if isinstance(item, dict))
 
-    if not entries:
+    if not entries and allow_registry_fallback:
         try:
             from app.core.plugin_registry import registry
 

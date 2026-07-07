@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from app.config import cfg
 
 from .models import AntiDetectionContext
+from app.utils.user_agents import resolve_user_agent
 
 @dataclass(frozen=True, slots=True)
 class BrowserAntiDetectionStrategy:
@@ -19,10 +20,11 @@ class BrowserAntiDetectionStrategy:
 
     def build_context(self, config: dict | None) -> AntiDetectionContext:
         config = dict(config or {})
-        user_agent = str(
-            config.get("ua")
-            or cfg.get(self.source, "user_agent", self.default_user_agent)
-            or self.default_user_agent
+        user_agent = resolve_user_agent(
+            self.source,
+            config,
+            configured_user_agent=cfg.get(self.source, "user_agent", self.default_user_agent),
+            default_user_agent=self.default_user_agent,
         )
         proxy_raw = config.get("proxy")
         proxy_server = str(proxy_raw).strip() if proxy_raw else None

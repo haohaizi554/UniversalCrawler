@@ -1,8 +1,9 @@
 """Tests for shared anti-detection runtime helpers."""
 
 import unittest
+from unittest.mock import patch
 
-from app.core.anti_detection import build_browser_anti_detection
+from app.core.anti_detection import build_browser_anti_detection, resolve_user_agent
 
 class AntiDetectionTests(unittest.TestCase):
     def test_build_browser_anti_detection_prefers_runtime_config(self):
@@ -49,6 +50,42 @@ class AntiDetectionTests(unittest.TestCase):
                 "X-Test": "1",
             },
         )
+
+    @patch("app.utils.user_agents.user_agent_rotator.random", return_value="ua-random")
+    def test_default_user_agent_uses_fake_useragent_rotation(self, mocked_random):
+        user_agent = resolve_user_agent(
+            "bilibili",
+            {},
+            configured_user_agent="ua-default",
+            default_user_agent="ua-default",
+        )
+
+        self.assertEqual(user_agent, "ua-random")
+        mocked_random.assert_called_once_with("ua-default")
+
+    @patch("app.utils.user_agents.user_agent_rotator.random", return_value="ua-random")
+    def test_custom_user_agent_is_not_rotated(self, mocked_random):
+        user_agent = resolve_user_agent(
+            "kuaishou",
+            {},
+            configured_user_agent="ua-custom",
+            default_user_agent="ua-default",
+        )
+
+        self.assertEqual(user_agent, "ua-custom")
+        mocked_random.assert_not_called()
+
+    @patch("app.utils.user_agents.user_agent_rotator.random", return_value="ua-random")
+    def test_random_sentinel_forces_user_agent_rotation(self, mocked_random):
+        user_agent = resolve_user_agent(
+            "xiaohongshu",
+            {"ua": "random"},
+            configured_user_agent="ua-custom",
+            default_user_agent="ua-default",
+        )
+
+        self.assertEqual(user_agent, "ua-random")
+        mocked_random.assert_called_once_with("ua-default")
 
 if __name__ == "__main__":
     unittest.main()

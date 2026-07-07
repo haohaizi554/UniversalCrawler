@@ -70,7 +70,12 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
     ) -> None:
         url = video_item.url
         trace_id = video_item.meta.get("trace_id")
-        ua = video_item.meta.get("ua", DEFAULT_USER_AGENT)
+        user_agent_source = video_item.source or "douyin"
+        ua = self._resolve_runtime_user_agent(
+            video_item,
+            source=user_agent_source,
+            configured_user_agent=cfg.get(user_agent_source, "user_agent", DEFAULT_USER_AGENT),
+        )
         referer = video_item.meta.get("referer", "https://www.douyin.com/")
         proxy = video_item.meta.get("proxy")
         headers = self._headers_from_meta(video_item, ua, referer)

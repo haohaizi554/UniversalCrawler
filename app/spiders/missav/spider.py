@@ -10,6 +10,7 @@ from app.config import DEFAULT_USER_AGENT
 from app.spiders.base import BaseSpider
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.missav.task_builder import MissAVTaskBuilder
+from app.utils.user_agents import resolve_user_agent
 
 class MissAVSpider(BaseSpider):
     """MissAV 爬虫，先扫列表再进入详情页嗅探 m3u8。"""
@@ -43,7 +44,12 @@ class MissAVSpider(BaseSpider):
             self.priority_list = priority_map.get(priority_text, priority_map["中文字幕优先"])
             self.log(f"⚙️ 偏好设置: 单体={enable_individual}, 优先级={self.priority_list}")
             configured_ua = str(self.config.get("ua") or "").strip()
-            my_ua = configured_ua or DEFAULT_USER_AGENT
+            my_ua = resolve_user_agent(
+                "missav",
+                self.config,
+                configured_user_agent=configured_ua or DEFAULT_USER_AGENT,
+                default_user_agent=DEFAULT_USER_AGENT,
+            )
             # 路由解析 (保持不变)
             target_url = ""
             is_single_video_mode = False
@@ -83,7 +89,7 @@ class MissAVSpider(BaseSpider):
                 )
                 self._track_playwright_browser(browser)
                 try:
-                    context_kwargs = {"user_agent": configured_ua} if configured_ua else {}
+                    context_kwargs = {"user_agent": my_ua}
                     context = browser.new_context(**context_kwargs)
                     page = context.new_page()
                     if not configured_ua:

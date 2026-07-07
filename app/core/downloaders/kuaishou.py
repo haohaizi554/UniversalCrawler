@@ -22,8 +22,13 @@ class KuaishouDownloader(BaseDownloader):
         
         trace_id = video_item.meta.get("trace_id")
         download_cfg = cfg.settings.download
+        user_agent = self._resolve_runtime_user_agent(
+            video_item,
+            source="kuaishou",
+            configured_user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+        )
         headers = {
-            "User-Agent": video_item.meta.get("ua", cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT)),
+            "User-Agent": user_agent,
             "Referer": video_item.meta.get("referer", "https://www.kuaishou.com/"),
         }
         cookie_dict = video_item.meta.get("cookies")

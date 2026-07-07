@@ -1,3 +1,4 @@
+import builtins
 import sys
 from pathlib import Path
 
@@ -70,6 +71,29 @@ def test_load_platform_options_can_read_settings_snapshot_platform_rows():
 
     assert by_id["xiaohongshu"].label == "小红书"
     assert by_id["local_plugin"].label == "本地插件"
+
+
+def test_load_platform_options_skips_registry_fallback_by_default(monkeypatch):
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):  # noqa: ANN001
+        if name == "app.core.plugin_registry":
+            raise AssertionError("UI platform options should not discover plugins without a snapshot")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    options = load_platform_options({})
+
+    assert [item.id for item in options] == [
+        "all",
+        "douyin",
+        "bilibili",
+        "kuaishou",
+        "missav",
+        "xiaohongshu",
+        "system",
+    ]
 
 
 def test_log_center_page_does_not_probe_icon_files_during_render():

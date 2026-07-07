@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-import requests
+import requests  # noqa: F401 - kept for tests and external monkeypatch compatibility
 
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
@@ -27,8 +27,13 @@ class DouyinDownloader(BaseDownloader):
         
         trace_id = video_item.meta.get("trace_id")
         download_cfg = cfg.settings.download
+        user_agent = self._resolve_runtime_user_agent(
+            video_item,
+            source="douyin",
+            configured_user_agent=cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT),
+        )
         headers = {
-            "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
+            "User-Agent": user_agent,
             "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
         }
         # 与快手下载器对齐：支持 CLI/SDK 传入的 cookie（字符串）和 GUI spider 传入的 cookies（字典）

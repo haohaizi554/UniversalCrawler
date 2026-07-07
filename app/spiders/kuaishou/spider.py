@@ -15,6 +15,7 @@ from app.spiders.base import BaseSpider
 from app.spiders.kuaishou.parser import KuaishouParser
 from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
 from app.services.auth_service import AuthService
+from app.utils.user_agents import resolve_user_agent
 
 class KuaishouSpider(BaseSpider):
     """快手爬虫，负责页面滚动扫描、任务选择和流监听。"""
@@ -27,8 +28,17 @@ class KuaishouSpider(BaseSpider):
         self.parser = KuaishouParser()
         self.task_builder = KuaishouTaskBuilder()
         self.auth_service = AuthService()
+        self.user_agent = resolve_user_agent(
+            "kuaishou",
+            self.config,
+            configured_user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+            default_user_agent=DEFAULT_USER_AGENT,
+        )
         self._selected_indices: list[int] = []
         self._lock = threading.Lock()
+
+    def _user_agent(self) -> str:
+        return str(getattr(self, "user_agent", "") or DEFAULT_USER_AGENT)
 
     def _max_items_limit(self) -> int:
         """提供 `_max_items_limit` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
@@ -112,7 +122,7 @@ class KuaishouSpider(BaseSpider):
             proxies = {"http": proxy, "https": proxy} if proxy else None
             response = requests.get(
                 url,
-                headers={"User-Agent": cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT)},
+                headers={"User-Agent": self._user_agent()},
                 timeout=self._configured_timeout_seconds(default=60),
                 allow_redirects=True,
                 proxies=proxies,
@@ -132,7 +142,7 @@ class KuaishouSpider(BaseSpider):
     def _build_detail_request_headers(self) -> dict[str, str]:
         """构建分享详情页直连请求头。"""
         return {
-            "User-Agent": cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+            "User-Agent": self._user_agent(),
             "Referer": "https://www.kuaishou.com/",
         }
 
@@ -232,7 +242,7 @@ class KuaishouSpider(BaseSpider):
             url=media_url,
             title=title,
             source="kuaishou",
-            meta=self.task_builder.build_download_meta(trace_id, self.keyword, media_url),
+            meta=self.task_builder.build_download_meta(trace_id, self.keyword, media_url, self._user_agent()),
         )
         self.log(f"✨ 已无浏览器解析分享作品: {title[:24]}...")
         return True
@@ -693,7 +703,7 @@ class KuaishouSpider(BaseSpider):
                 url=stream_url,
                 title=title,
                 source="kuaishou",
-                meta=self.task_builder.build_download_meta(trace_id, page.url, stream_url),
+                meta=self.task_builder.build_download_meta(trace_id, page.url, stream_url, self._user_agent()),
             )
             self.log(f"✨ 已解析分享作品: {title[:24]}...")
             return True
@@ -925,7 +935,7 @@ class KuaishouSpider(BaseSpider):
                             url=url,
                             title=title,
                             source="kuaishou",
-                            meta=self.task_builder.build_download_meta(trace_id, page.url, url),
+                            meta=self.task_builder.build_download_meta(trace_id, page.url, url, self._user_agent()),
                         )
             except (AttributeError, KeyError, TypeError, ValueError, RuntimeError):
                 pass
@@ -1012,7 +1022,7 @@ class KuaishouSpider(BaseSpider):
         self._track_playwright_browser(browser)
         try:
             context = browser.new_context(
-                user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
+                user_agent=self._user_agent(),
                 viewport={"width": 1280, "height": 800},
             )
             self._load_saved_cookies(context, auth_file)
@@ -1039,8 +1049,8 @@ class KuaishouSpider(BaseSpider):
         self._track_playwright_browser(browser)
         try:
             context = browser.new_context(
+                user_agent=self._user_agent(),
                 # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
-                user_agent=cfg.get("kuaishou", "user_agent", DEFAULT_USER_AGENT),
                 viewport={"width": 1280, "height": 800},
             )
             self._load_saved_cookies(context, auth_file)

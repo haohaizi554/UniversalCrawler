@@ -64,10 +64,12 @@
 - GUI latest-state-wins worker 应复用统一 worker 骨架；顺序写文件、系统动作派发等必须保序的任务应复用 `SequentialRequestWorker`，不得在业务 worker 中重复维护 `Condition + deque + Thread`。
 - GUI 控制器层不得把 `FrontendStateService.get_snapshot()` 当作业务 fallback；需要队列 ID、状态集合或行数据时，只能读取已在内存中的 `AppState` / 控制器状态，完整 snapshot 构建必须交给 `FrontendSnapshotWorker`。
 - GUI 热路径不得直接调用会触发文件、缓存、SQLite 或系统 API 的 `FrontendStateService.handle_action()`；日志操作、平台认证刷新、打开目录、失败重试、诊断复制、下载选项、暂停下载、工具启动和文件关联注册必须提交到 `FrontendActionWorker`，完成后只回投轻量结果并触发目标 section 刷新。
+- 日志中心的 `debug.log`、`error.md`、导出、清空与刷新等动作必须统一走 `FrontendActionWorker`；页面和控制器不得为了打开文件或检查路径存在性绕过 worker 直接访问文件系统或系统默认打开方式。
 - GUI 热路径不得直接调用 `cfg.set()`、`cfg.set_many()` 或平台专用配置落盘方法；平台切换、主题同步、启动参数读取等交互只允许更新轻量 UI 状态或提交 `FrontendActionWorker`，配置持久化统一在 worker / service 层完成。
 - SQLite 热路径不得只写 `with sqlite3.connect(...)`；该上下文只处理事务，不关闭连接。必须使用 `contextlib.closing(sqlite3.connect(...))` 或等价显式关闭，避免 Windows 下缓存/失败记录库文件句柄泄露。
 - 同一批稳定 ID 的表格行发生重排时，不得使用 `beginResetModel()`；应通过 row patch、insert/remove 或 `layoutChanged` 保留滚动、选中和悬停语义。
 - 仍在使用 `QTableWidget` 的小型通用表格也必须遵守稳定 ID 更新：列结构不变且 ID 仅原位变化、尾部追加或尾部移除时，只更新受影响单元格，不得 `setRowCount(0)` 清空重建。
+- 日志中心、平台筛选和其他页面初始化路径不得在无快照时访问插件注册表或做平台发现；页面只能消费 `settings_snapshot`、`platforms` 或内建静态元数据，真实平台发现由服务层或启动快照提供。
 
 ### UI Thread
 

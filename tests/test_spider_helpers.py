@@ -15,6 +15,7 @@ from urllib.parse import quote
 import requests
 from playwright.sync_api import Error as PlaywrightError
 
+from app.config import DEFAULT_USER_AGENT
 from app.models import VideoItem
 from app.debug_logger import get_debug_logger
 from app.exceptions import InvalidCookieStateError, LoginCancelledError, LoginCheckError, SpiderAuthError, SpiderParseError
@@ -1382,6 +1383,7 @@ class SpiderHelperTests(unittest.TestCase):
             "ks-trace-1",
             "https://www.kuaishou.com/profile/demo",
             "https://video.example.com/live.mp4?clientCacheKey=cache-1",
+            DEFAULT_USER_AGENT,
         )
 
     def test_douyin_trim_items_applies_config_limit(self):

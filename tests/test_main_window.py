@@ -1019,6 +1019,26 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window._pending_refresh_topics, {"logs.append"})
         window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
 
+    def test_log_file_open_actions_run_through_action_worker(self):
+        for operation in ("open_latest", "open_error_summary"):
+            with self.subTest(operation=operation):
+                window = self._make_window()
+                window._frontend_state_service = Mock()
+                window._frontend_action_worker = self.CapturingActionWorker()
+                window._frontend_action_sequence = 0
+                window.sig_open_latest_log = Mock()
+                window.sig_open_error_summary = Mock()
+
+                MainWindow._handle_log_action(window, operation)
+
+                window._frontend_state_service.handle_action.assert_not_called()
+                request = window._frontend_action_worker.requests[0]
+                self.assertIsInstance(request, FrontendActionRequest)
+                self.assertEqual(request.action, "log_operation")
+                self.assertEqual(request.payload, {"operation": operation})
+                window.sig_open_latest_log.emit.assert_not_called()
+                window.sig_open_error_summary.emit.assert_not_called()
+
     def test_log_refresh_action_throttles_rapid_repeated_clicks(self):
         window = self._make_window()
         window._pending_refresh_topics = set()

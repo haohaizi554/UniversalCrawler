@@ -454,6 +454,18 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("_MARQUEE_DEGREES_PER_TICK = 12.0", text)
         self.assertNotIn("setInterval(45)", text)
 
+    def test_log_file_open_actions_use_frontend_action_worker(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "main_window.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        handler = text.split("def _handle_log_action", 1)[1].split("def _should_throttle_log_refresh", 1)[0]
+
+        self.assertIn('self._submit_frontend_action("log_operation"', handler)
+        self.assertNotIn("sig_open_latest_log.emit", handler)
+        self.assertNotIn("sig_open_error_summary.emit", handler)
+
     def test_qtablewidget_hot_paths_do_not_clear_and_rebuild_rows(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         offenders: list[str] = []

@@ -28,9 +28,15 @@ from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
 from app.debug_logger import debug_logger
 from app.services.auth_service import AuthService
+from app.utils.user_agents import resolve_user_agent
 
 HEADERS = {
-    'User-Agent': DEFAULT_USER_AGENT,
+    'User-Agent': resolve_user_agent(
+        "bilibili",
+        None,
+        configured_user_agent=cfg.get("bilibili", "user_agent", DEFAULT_USER_AGENT),
+        default_user_agent=DEFAULT_USER_AGENT,
+    ),
     'Referer': 'https://www.bilibili.com'
 }
 
@@ -250,6 +256,13 @@ class BilibiliSpider(BaseSpider):
         self.parser = BilibiliParser()
         self.task_builder = BilibiliTaskBuilder(self.parser)
         self.auth_service = AuthService()
+        self.user_agent = resolve_user_agent(
+            "bilibili",
+            self.config,
+            configured_user_agent=cfg.get("bilibili", "user_agent", DEFAULT_USER_AGENT),
+            default_user_agent=DEFAULT_USER_AGENT,
+        )
+        HEADERS["User-Agent"] = self.user_agent
         self._browser_thread: threading.Thread | None = None
         self._api_pool_thread: threading.Thread | None = None
 
@@ -325,7 +338,7 @@ class BilibiliSpider(BaseSpider):
                 "content_type": "video",
                 "media_label": "视频",
                 "audio_url": a_url,
-                "ua": HEADERS['User-Agent'],
+                "ua": getattr(self, "user_agent", HEADERS["User-Agent"]),
                 "referer": task['referer'],
                 "use_subdir": bool(folder_name),
                 "bvid": task["bvid"],

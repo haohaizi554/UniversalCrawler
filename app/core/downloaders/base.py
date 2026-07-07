@@ -8,9 +8,11 @@ from typing import Callable
 
 import requests
 
+from app.config import DEFAULT_USER_AGENT
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
+from app.utils.user_agents import resolve_user_agent
 
 ProgressCallback = Callable[..., None]
 StopCheck = Callable[[], bool]
@@ -85,6 +87,24 @@ class BaseDownloader:
             video_item.meta["ua"] = headers["User-Agent"]
         if headers.get("Referer"):
             video_item.meta["referer"] = headers["Referer"]
+
+    def _resolve_runtime_user_agent(
+        self,
+        video_item: VideoItem,
+        *,
+        source: str,
+        configured_user_agent: str,
+        default_user_agent: str = DEFAULT_USER_AGENT,
+    ) -> str:
+        user_agent = resolve_user_agent(
+            source,
+            video_item.meta,
+            configured_user_agent=configured_user_agent,
+            default_user_agent=default_user_agent,
+        )
+        if not video_item.meta.get("ua"):
+            video_item.meta["ua"] = user_agent
+        return user_agent
 
     #智能下载调度器
     def _download_with_strategy_fallback(

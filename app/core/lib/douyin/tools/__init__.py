@@ -4,7 +4,8 @@
 import asyncio
 from random import randint
 
-from app.config import DEFAULT_USER_AGENT
+from app.config import DEFAULT_USER_AGENT, cfg
+from app.utils.user_agents import resolve_user_agent
 
 # --- Colors (Rich Console Styles) ---
 MASTER = "b #fff200"
@@ -23,7 +24,12 @@ MAX_WORKERS = 4
 COOKIE_UPDATE_INTERVAL = 15 * 60
 
 # --- Headers & UserAgent ---
-USERAGENT = DEFAULT_USER_AGENT
+USERAGENT = resolve_user_agent(
+    "douyin",
+    None,
+    configured_user_agent=cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT),
+    default_user_agent=DEFAULT_USER_AGENT,
+)
 REFERER = "https://www.douyin.com/?recommend=1"
 REFERER_TIKTOK = "https://www.tiktok.com/explore"
 

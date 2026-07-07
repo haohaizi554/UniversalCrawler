@@ -96,8 +96,13 @@ class BilibiliDownloader(BaseDownloader):
         cid = video_item.meta.get("cid")
         video_url = video_item.url
         audio_url = video_item.meta.get("audio_url")
+        user_agent = self._resolve_runtime_user_agent(
+            video_item,
+            source="bilibili",
+            configured_user_agent=cfg.get("bilibili", "user_agent", DEFAULT_USER_AGENT),
+        )
         headers = {
-            "User-Agent": video_item.meta.get("ua", cfg.get("bilibili", "user_agent", DEFAULT_USER_AGENT)),
+            "User-Agent": user_agent,
             "Referer": video_item.meta.get("referer", "https://www.bilibili.com"),
         }
         # 与快手下载器对齐：支持 CLI/SDK 传入的 cookie（字符串）和 GUI spider 传入的 cookies（字典）

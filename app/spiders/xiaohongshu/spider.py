@@ -17,6 +17,7 @@ from app.debug_logger import debug_logger
 from app.exceptions import SpiderAuthError, SpiderParseError
 from app.spiders.base import BaseSpider
 from app.services.auth_service import AuthService
+from app.utils.user_agents import resolve_user_agent
 
 from .client import XiaohongshuClient
 from .helpers import (
@@ -53,9 +54,15 @@ class XiaohongshuSpider(BaseSpider):
         self._detail_request_count = 0
         self._detail_request_lock = threading.RLock()
         self._client: XiaohongshuClient | None = None
+        self.user_agent = resolve_user_agent(
+            "xiaohongshu",
+            self.config,
+            configured_user_agent=cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT),
+            default_user_agent=DEFAULT_USER_AGENT,
+        )
 
     def _user_agent(self) -> str:
-        return str(self.config.get("ua") or cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT))
+        return str(getattr(self, "user_agent", "") or DEFAULT_USER_AGENT)
 
     def _proxy(self) -> str | None:
         return self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))

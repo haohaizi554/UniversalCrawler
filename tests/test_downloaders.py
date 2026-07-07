@@ -2456,6 +2456,27 @@ https://cdn.example.com/seg2.ts
         self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "kuaishou-ua")
 
     @patch.object(KuaishouDownloader, "_download_with_strategy_fallback")
+    @patch("app.utils.user_agents.user_agent_rotator.random", return_value="rotated-ua")
+    @patch("app.core.downloaders.kuaishou.cfg.get")
+    def test_kuaishou_downloader_rotates_user_agent_when_config_uses_default(
+        self,
+        mocked_cfg_get,
+        mocked_random,
+        mocked_download,
+    ):
+        def fake_get(_section, _key, default=None):
+            return default
+
+        mocked_cfg_get.side_effect = fake_get
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="kuaishou")
+
+        KuaishouDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "rotated-ua")
+        self.assertEqual(item.meta["ua"], "rotated-ua")
+        mocked_random.assert_called_once()
+
+    @patch.object(KuaishouDownloader, "_download_with_strategy_fallback")
     @patch("app.core.downloaders.kuaishou.cfg.get", return_value="config-ua")
     def test_kuaishou_downloader_allows_task_level_user_agent_override(
         self,

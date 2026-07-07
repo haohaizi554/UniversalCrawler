@@ -26,8 +26,13 @@ class XiaohongshuDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
     ) -> None:
+        user_agent = self._resolve_runtime_user_agent(
+            video_item,
+            source="xiaohongshu",
+            configured_user_agent=cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT),
+        )
         headers = {
-            "User-Agent": video_item.meta.get("ua", cfg.get("xiaohongshu", "user_agent", DEFAULT_USER_AGENT)),
+            "User-Agent": user_agent,
             "Referer": video_item.meta.get("referer", "https://www.xiaohongshu.com/"),
         }
         cookie = video_item.meta.get("cookie")

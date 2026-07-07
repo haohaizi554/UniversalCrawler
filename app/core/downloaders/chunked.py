@@ -44,8 +44,18 @@ class ChunkedDownloader(BaseDownloader):
     ) -> None:
         
         url = video_item.url
+        user_agent_source = video_item.source or "douyin"
+        user_agent = self._resolve_runtime_user_agent(
+            video_item,
+            source=user_agent_source,
+            configured_user_agent=cfg.get(
+                user_agent_source,
+                "user_agent",
+                cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT),
+            ),
+        )
         headers = {
-            "User-Agent": video_item.meta.get("ua", cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT)),
+            "User-Agent": user_agent,
             "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
         }
         proxy = video_item.meta.get("proxy")
