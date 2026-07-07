@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from app.services.frontend_state_service import FrontendStateService
 from app.ui.main_window import MainWindow
-from app.ui.viewmodels.frontend_snapshot_worker import FrontendSnapshotResult
+from app.ui.viewmodels.frontend_snapshot_worker import FrontendSnapshotResult, build_frontend_snapshot
 
 class MainWindowTests(unittest.TestCase):
 
@@ -359,6 +359,83 @@ class MainWindowTests(unittest.TestCase):
         )
         window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
+    def test_stale_frontend_snapshot_result_seeds_delta_cache_without_rendering(self):
+        window = self._make_window()
+        window.app_shell = Mock()
+        window._frontend_state_service = Mock()
+        worker = self._install_snapshot_worker(window)
+
+        MainWindow._render_frontend_state(window)
+        MainWindow._render_frontend_state(window)
+
+        self.assertEqual(len(worker.requests), 2)
+        self.assertFalse(worker.requests[0].use_delta)
+        self.assertFalse(worker.requests[1].use_delta)
+
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[0],
+                {"version": 7, "queue_items": [], "app_status": {"queue_count": 0}},
+                changed_sections=None,
+                signatures={"queue_items": "seed"},
+            ),
+        )
+
+        window.app_shell.render.assert_not_called()
+        self.assertEqual(window._cached_snapshot["version"], 7)
+        self.assertEqual(window._frontend_section_signatures, {"queue_items": "seed"})
+
+        MainWindow._render_frontend_state(window)
+
+        self.assertEqual(len(worker.requests), 3)
+        self.assertTrue(worker.requests[2].use_delta)
+        self.assertEqual(worker.requests[2].base_version, 7)
+
+    def test_stale_frontend_snapshot_result_does_not_overwrite_newer_cache(self):
+        window = self._make_window()
+        window.app_shell = Mock()
+        window._frontend_state_service = Mock()
+        worker = self._install_snapshot_worker(window)
+        window._cached_snapshot = {"version": 9, "queue_items": [{"id": "new"}]}
+        window._frontend_section_signatures = {"queue_items": "new"}
+
+        MainWindow._render_frontend_state(window)
+
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[0],
+                {"version": 8, "queue_items": [{"id": "old"}]},
+                changed_sections=None,
+                signatures={"queue_items": "old"},
+            ),
+        )
+
+        self.assertEqual(window._cached_snapshot, {"version": 9, "queue_items": [{"id": "new"}]})
+        self.assertEqual(window._frontend_section_signatures, {"queue_items": "new"})
+
+    def test_stale_partial_frontend_snapshot_does_not_seed_empty_cache(self):
+        window = self._make_window()
+        window.app_shell = Mock()
+        window._frontend_state_service = Mock()
+        worker = self._install_snapshot_worker(window)
+
+        MainWindow._render_frontend_state(window, topics={"videos.update"})
+        MainWindow._render_frontend_state(window, topics={"videos.update"})
+
+        MainWindow._on_frontend_snapshot_finished(
+            window,
+            self._snapshot_result(
+                worker.requests[0],
+                {"version": 3, "active_downloads": [], "app_status": {}},
+                changed_sections={"active_downloads", "app_status"},
+            ),
+        )
+
+        self.assertNotIn("_cached_snapshot", window.__dict__)
+        window.app_shell.render.assert_not_called()
+
     def test_frontend_slow_render_warning_is_rate_limited(self):
         window = self._make_window()
         window._ui_update_scheduler = Mock()
@@ -677,6 +754,83 @@ class MainWindowTests(unittest.TestCase):
             ),
         )
         window.app_shell.render.assert_called_once()
+
+    def test_cached_progress_event_builds_worker_delta_without_snapshot_fetch(self):
+        class FakeScheduler:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def schedule(self, topic):
+                self.calls.append(topic)
+
+        class FakeService:
+            def __init__(self):
+                self.delta_calls: list[dict] = []
+                self.snapshot_calls: list[dict] = []
+
+            def get_delta(self, since_version=0, sections=None):
+                self.delta_calls.append({"since_version": since_version, "sections": sections})
+                return {
+                    "version": 6,
+                    "base_version": since_version,
+                    "full": False,
+                    "changed_sections": ["active_downloads", "app_status"],
+                    "sections": {
+                        "active_downloads": [{"id": "v1", "progress": 42}],
+                        "app_status": {"active_count": 1},
+                    },
+                }
+
+            def get_snapshot(self, *, mock=False, sections=None):
+                self.snapshot_calls.append({"mock": mock, "sections": sections})
+                return {"version": 99, "active_downloads": [{"id": "fallback"}]}
+
+        window = self._make_window()
+        window.app_shell = Mock()
+        window.app_shell.current_page_id = "active"
+        window.app_shell.render = Mock()
+        service = FakeService()
+        window._frontend_state_service = service
+        window._ui_update_scheduler = FakeScheduler()
+        window._frontend_refresh_pending_mock = False
+        window._cached_snapshot = {
+            "version": 5,
+            "active_downloads": [{"id": "v1", "progress": 1}],
+            "app_status": {"active_count": 1},
+            "queue_items": [{"id": "q1"}],
+        }
+        worker = self._install_snapshot_worker(window)
+
+        MainWindow._on_app_state_changed(
+            window,
+            {"topic": "videos.update", "video_id": "v1", "status": "downloading", "progress": 42},
+        )
+        MainWindow._flush_frontend_state(window)
+
+        self.assertEqual(window._ui_update_scheduler.calls, ["frontend"])
+        self.assertEqual(len(worker.requests), 1)
+        request = worker.requests[0]
+        self.assertTrue(request.use_delta)
+        self.assertEqual(request.base_version, 5)
+        self.assertEqual(request.sections, frozenset({"active_downloads", "app_status"}))
+
+        result = build_frontend_snapshot(request)
+
+        self.assertEqual(
+            service.delta_calls,
+            [{"since_version": 5, "sections": frozenset({"active_downloads", "app_status"})}],
+        )
+        self.assertEqual(service.snapshot_calls, [])
+        self.assertEqual(result.snapshot["queue_items"], [{"id": "q1"}])
+        self.assertEqual(result.snapshot["active_downloads"], [{"id": "v1", "progress": 42}])
+        self.assertEqual(result.changed_sections, {"active_downloads", "app_status"})
+
+        MainWindow._on_frontend_snapshot_finished(window, result)
+
+        window.app_shell.render.assert_called_once_with(
+            result.snapshot,
+            changed_sections={"active_downloads", "app_status"},
+        )
 
     def test_update_basic_setting_updates_current_directory_and_refreshes(self):
         window = self._make_window()

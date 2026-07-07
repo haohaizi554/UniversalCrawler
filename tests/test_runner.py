@@ -157,14 +157,9 @@ def run_category(
     if extra_args:
         pytest_args.extend(extra_args)
 
-    cmd = [
-        sys.executable, "-m", "pytest",
-        *existing,
-        *pytest_args,
-    ]
-
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     # 禁用 Qt 弹窗（offscreen）
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -191,6 +186,8 @@ def run_category(
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
             file_output = cp.stdout + cp.stderr

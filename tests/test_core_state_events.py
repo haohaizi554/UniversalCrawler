@@ -300,3 +300,24 @@ class StateAndEventTests(unittest.TestCase):
             value["nested"]["value"] = 2
 
             self.assertEqual(cache.get("key")["nested"]["value"], 1)
+
+    def test_cache_service_close_releases_diskcache_once(self):
+        class FakeDiskCache:
+            instances: list["FakeDiskCache"] = []
+
+            def __init__(self, _path: str) -> None:
+                self.close_count = 0
+                FakeDiskCache.instances.append(self)
+
+            def close(self) -> None:
+                self.close_count += 1
+
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            with patch("app.services.cache_service.DiskCache", FakeDiskCache):
+                cache = CacheService(namespace="test-cache-close", cache_dir=temp_dir)
+
+                cache.close()
+                cache.close()
+
+        self.assertEqual(FakeDiskCache.instances[0].close_count, 1)
+        self.assertIsNone(cache._disk_cache)

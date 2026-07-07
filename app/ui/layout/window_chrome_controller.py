@@ -519,18 +519,25 @@ class FramelessWindowChromeController:
             min_max_info.ptMaxTrackSize.x = max_track_width
             min_max_info.ptMaxTrackSize.y = max_track_height
             min_size = self.host.minimumSize()
-            if min_size.width() > 0:
+            min_width = self._logical_px_to_native_track_px(min_size.width())
+            min_height = self._logical_px_to_native_track_px(min_size.height())
+            if min_width > 0:
                 min_max_info.ptMinTrackSize.x = min(
                     max_track_width,
-                    max(min_max_info.ptMinTrackSize.x, min_size.width()),
+                    max(min_max_info.ptMinTrackSize.x, min_width),
                 )
-            if min_size.height() > 0:
+            if min_height > 0:
                 min_max_info.ptMinTrackSize.y = min(
                     max_track_height,
-                    max(min_max_info.ptMinTrackSize.y, min_size.height()),
+                    max(min_max_info.ptMinTrackSize.y, min_height),
                 )
         except Exception as exc:
             debug_logger.log_exception("WindowChrome", "handle_get_min_max_info", exc)
+
+    def _logical_px_to_native_track_px(self, value: int) -> int:
+        if value <= 0:
+            return 0
+        return max(1, round(value * self._qt_dpr()))
 
     def _win32_hit_test(self, msg) -> int:
         pos = self._native_client_pos_from_lparam(msg)

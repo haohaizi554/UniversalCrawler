@@ -49,6 +49,42 @@ class ApplicationLifecycleMixinTests(unittest.TestCase):
         controller._stop_active_spider.assert_called_once()
         controller.dl_manager.stop_all.assert_called_once()
 
+    def test_shutdown_releases_frontend_state_and_cache_resources(self):
+        controller = _DummyLifecycleController()
+        controller._stop_active_spider = Mock()
+        controller.frontend_state_service = Mock()
+        controller.app_state = Mock()
+        controller.cache_service = Mock()
+
+        fake_logger = Mock()
+        with patch("app.controllers.application_lifecycle_mixin.debug_logger", fake_logger):
+            controller.shutdown()
+
+        controller.frontend_state_service.destroy.assert_called_once()
+        controller.app_state.shutdown.assert_called_once()
+        controller.cache_service.close.assert_called_once()
+        controller.host.cleanup_media.assert_called_once()
+
+    def test_shutdown_unsubscribes_deferred_domain_event_handlers(self):
+        controller = _DummyLifecycleController()
+        controller._stop_active_spider = Mock()
+        controller.event_bus = Mock()
+        controller._spider_domain_event_handler = Mock()
+        controller._download_domain_event_handler = Mock()
+
+        fake_logger = Mock()
+        with patch("app.controllers.application_lifecycle_mixin.debug_logger", fake_logger):
+            controller.shutdown()
+
+        controller.event_bus.unsubscribe.assert_any_call(
+            "spider.domain_event",
+            controller._spider_domain_event_handler,
+        )
+        controller.event_bus.unsubscribe.assert_any_call(
+            "download.domain_event",
+            controller._download_domain_event_handler,
+        )
+
     def test_run_exits_with_app_exec_code(self):
         controller = _DummyLifecycleController()
         controller.app.exec.return_value = 7

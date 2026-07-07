@@ -33,8 +33,13 @@ class ApplicationLifecycleMixin:
         event_bus = getattr(self, "event_bus", None)
         unsubscribe = getattr(event_bus, "unsubscribe", None)
         if callable(unsubscribe):
-            unsubscribe("spider.domain_event", getattr(self, "_dispatch_spider_event", None))
-            unsubscribe("download.domain_event", getattr(self, "_dispatch_download_event", None))
+            for topic, handler_name in (
+                ("spider.domain_event", "_spider_domain_event_handler"),
+                ("download.domain_event", "_download_domain_event_handler"),
+            ):
+                handler = getattr(self, handler_name, None)
+                if handler is not None:
+                    unsubscribe(topic, handler)
         dl_manager = getattr(self, "dl_manager", None)
         if dl_manager is not None:
             for signal_name in ("task_started", "task_progress", "task_finished", "task_error"):
@@ -53,6 +58,39 @@ class ApplicationLifecycleMixin:
         short_runner = getattr(self, "_short_task_runner", None)
         if short_runner is not None:
             short_runner.cancel_all(timeout_ms=1000)
+        frontend_state_service = getattr(self, "frontend_state_service", None)
+        destroy_frontend_state = getattr(frontend_state_service, "destroy", None)
+        if callable(destroy_frontend_state):
+            try:
+                destroy_frontend_state()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "ApplicationController",
+                    "shutdown_frontend_state_service",
+                    exc,
+                )
+        app_state = getattr(self, "app_state", None)
+        shutdown_app_state = getattr(app_state, "shutdown", None)
+        if callable(shutdown_app_state):
+            try:
+                shutdown_app_state()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "ApplicationController",
+                    "shutdown_app_state",
+                    exc,
+                )
+        cache_service = getattr(self, "cache_service", None)
+        close_cache = getattr(cache_service, "close", None)
+        if callable(close_cache):
+            try:
+                close_cache()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "ApplicationController",
+                    "shutdown_cache_service",
+                    exc,
+                )
         self._host().cleanup_media()
         self._stop_active_spider()
         if dl_manager is not None:

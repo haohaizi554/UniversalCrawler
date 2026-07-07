@@ -17,7 +17,7 @@ from app.core.download_manager import DownloadManager
 from app.core.media_filter import should_skip_for_video_only
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
-from app.exceptions import ConfigValidationError, DebugActionError, FileOperationError, MediaScanError
+from app.exceptions import ConfigValidationError, FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.services.file_service import MediaLibraryService
 from app.services.frontend_event_aggregator import FrontendEventPriority, priority_for_topic, sections_for_topic
@@ -625,15 +625,17 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             spider.ask_user_selection = MethodType(ask_user_selection_web, spider)
 
         # BaseSpider 现在使用纯 Python 回调信号；WebSocketBridge 自身已负责跨线程投递到 asyncio。
-        on_log = lambda msg: self.bridge.emit(
-            "log",
-            {
-                "message": msg,
-                "trace_id": getattr(spider, "ui_trace_id", "") or "",
-                "source": getattr(spider, "source_id", "") or "Spider",
-                "level": "INFO",
-            },
-        )
+        def on_log(msg):
+            self.bridge.emit(
+                "log",
+                {
+                    "message": msg,
+                    "trace_id": getattr(spider, "ui_trace_id", "") or "",
+                    "source": getattr(spider, "source_id", "") or "Spider",
+                    "level": "INFO",
+                },
+            )
+
         spider.sig_log.connect(on_log)
         spider.sig_item_found.connect(self._on_spider_item_found)
         spider.sig_select_tasks.connect(self._on_spider_select_tasks)
@@ -1245,6 +1247,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         return item.to_dict()
 
     def shutdown(self):
+        frontend_state_service = getattr(self, "frontend_state_service", None)
         with self._lifecycle_condition:
             self._is_shutting_down = True
             spider = self.current_spider
@@ -1259,6 +1262,38 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             if manager is not None:
                 manager.stop_all()
         finally:
+            destroy_frontend_state = getattr(frontend_state_service, "destroy", None)
+            if callable(destroy_frontend_state):
+                try:
+                    destroy_frontend_state()
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "WebController",
+                        "shutdown_frontend_state_service",
+                        exc,
+                    )
+            app_state = getattr(frontend_state_service, "app_state", None)
+            shutdown_app_state = getattr(app_state, "shutdown", None)
+            if callable(shutdown_app_state):
+                try:
+                    shutdown_app_state()
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "WebController",
+                        "shutdown_app_state",
+                        exc,
+                    )
+            cache_service = getattr(frontend_state_service, "cache_service", None)
+            close_cache = getattr(cache_service, "close", None)
+            if callable(close_cache):
+                try:
+                    close_cache()
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "WebController",
+                        "shutdown_cache_service",
+                        exc,
+                    )
             with self._lifecycle_condition:
                 self._is_shutting_down = False
                 self._lifecycle_condition.notify_all()

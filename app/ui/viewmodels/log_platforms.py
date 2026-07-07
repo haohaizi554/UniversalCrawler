@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from pathlib import Path
+from functools import lru_cache
 from typing import Any, Mapping
 
 from app.debug_logger import debug_logger
-from app.services.icon_registry import platform_icon_file, resolve_ui_icon_path
+from app.services.icon_registry import platform_icon_file, ui_icon_runtime_path
 
 
 @dataclass(frozen=True)
@@ -21,8 +22,23 @@ BUILTIN_PLATFORM_ORDER = ("douyin", "bilibili", "kuaishou", "missav", "xiaohongs
 
 
 def resolve_platform_icon_path(platform_id: str) -> str | None:
-    path = resolve_ui_icon_path(platform_icon_file(platform_id))
-    return str(path) if path is not None else None
+    return _resolve_platform_icon_path_cached(str(platform_id).lower(), _runtime_root_signature())
+
+
+def _runtime_root_signature() -> str:
+    return str(getattr(sys, "_MEIPASS", "") or "")
+
+
+@lru_cache(maxsize=64)
+def _resolve_platform_icon_path_cached(platform_id: str, _runtime_root: str) -> str | None:
+    return ui_icon_runtime_path(platform_icon_file(platform_id))
+
+
+@lru_cache(maxsize=128)
+def _trusted_icon_path(icon_path: str, platform_id: str) -> str | None:
+    if icon_path:
+        return icon_path
+    return _resolve_platform_icon_path_cached(platform_id, _runtime_root_signature())
 
 
 def platform_icon_file_for_id(platform_id: str, meta: PlatformUiMeta | None) -> str:
@@ -34,7 +50,7 @@ def platform_icon_file_for_id(platform_id: str, meta: PlatformUiMeta | None) -> 
     icon_file = platform_icon_file(platform_id)
     if platform_id not in builtin_platform_metas() and icon_file == "platform_web.png":
         return ""
-    return icon_file if resolve_ui_icon_path(icon_file) is not None else ""
+    return icon_file
 
 
 def builtin_platform_metas() -> dict[str, PlatformUiMeta]:
@@ -134,8 +150,8 @@ def load_platform_options(snapshot: Mapping[str, Any] | None = None) -> list[Pla
         default = builtins.get(platform_id)
         label = str(entry.get("name") or entry.get("label") or (default.label if default else platform_id))
         icon_path = str(entry.get("icon_path") or entry.get("icon") or "").strip() or None
-        if icon_path and not Path(icon_path).is_file():
-            icon_path = resolve_platform_icon_path(platform_id)
+        if icon_path:
+            icon_path = _trusted_icon_path(icon_path, platform_id)
         elif not icon_path and default:
             icon_path = default.icon_path
         emoji = default.emoji if default else None

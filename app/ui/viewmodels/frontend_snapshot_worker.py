@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from app.debug_logger import debug_logger
+from app.ui.viewmodels.latest_worker import LatestRequestWorker
 
 
 @dataclass(frozen=True)
@@ -196,49 +196,27 @@ class FrontendSnapshotWorker:
     """Latest-state-wins worker for GUI snapshot construction and diffing."""
 
     def __init__(self, on_result: Callable[[FrontendSnapshotResult], None]) -> None:
-        self._on_result = on_result
-        self._condition = threading.Condition()
-        self._pending: FrontendSnapshotRequest | None = None
-        self._shutdown = False
-        self._thread = threading.Thread(target=self._run, name="frontend-snapshot-worker", daemon=True)
-        self._thread.start()
+        self._worker = LatestRequestWorker(
+            name="frontend-snapshot-worker",
+            on_result=on_result,
+            process=self._process,
+        )
 
     def submit(self, request: FrontendSnapshotRequest) -> None:
-        with self._condition:
-            if self._shutdown:
-                return
-            self._pending = request
-            self._condition.notify()
+        self._worker.submit(request)
 
     def shutdown(self) -> None:
-        with self._condition:
-            self._shutdown = True
-            self._condition.notify()
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+        self._worker.shutdown()
 
-    def _run(self) -> None:
-        while True:
-            with self._condition:
-                while self._pending is None and not self._shutdown:
-                    self._condition.wait()
-                if self._shutdown:
-                    return
-                request = self._pending
-                self._pending = None
-            if request is None:
-                continue
-            try:
-                result = build_frontend_snapshot(request)
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "FrontendSnapshotWorker",
-                    "build_frontend_snapshot",
-                    exc,
-                    details={"sequence": request.sequence, "sections": sorted(request.sections or [])},
-                )
-                continue
-            try:
-                self._on_result(result)
-            except RuntimeError:
-                return
+    @staticmethod
+    def _process(request: FrontendSnapshotRequest) -> FrontendSnapshotResult | None:
+        try:
+            return build_frontend_snapshot(request)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendSnapshotWorker",
+                "build_frontend_snapshot",
+                exc,
+                details={"sequence": request.sequence, "sections": sorted(request.sections or [])},
+            )
+            return None

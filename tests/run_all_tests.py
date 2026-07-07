@@ -23,10 +23,20 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-import time
 from pathlib import Path
+
+
+def _configure_console_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, ValueError):
+                pass
+
+_configure_console_output()
+
 
 # 让 test_registry / test_runner 可被 import
 TESTS_DIR = Path(__file__).resolve().parent

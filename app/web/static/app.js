@@ -18,7 +18,6 @@ let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_compl
 let logPage = 1;
 let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size") || 20);
 const LOG_RENDER_ROW_BUDGET = 300;
-const LOG_QUERY_WORKER_THRESHOLD = 80;
 let logQueryWorker = null;
 let logQueryWorkerAvailable = typeof Worker !== "undefined";
 let logQuerySequence = 0;
@@ -1413,7 +1412,7 @@ function translateRuntimeLogText(value) {
   const translated = translateStructuredLogText(text);
   if (translated !== text) return translated;
   if (language !== "en-US") return localizeNonEnglishDynamicLogText(text, language);
-  return localizeEnglishDynamicLogText(text);
+  return cleanupEnglishLogFragments(localizeEnglishDynamicLogText(text));
 }
 
 const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
@@ -1595,8 +1594,9 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "已自动打开快手扫码登录弹窗", en: "Opened the Kuaishou QR-code login popup automatically", tw: "已自動開啟快手掃碼登入彈窗" },
   { zh: "未能自动弹出登录框，请直接在当前快手页面手动登录", en: "Could not open the login popup automatically; please log in manually on the current Kuaishou page", tw: "未能自動彈出登入框，請直接在目前快手頁面手動登入" },
   { zh: "登录失败，以游客身份爬取", en: "Login failed; crawling as guest", tw: "登入失敗，將以訪客身分抓取" },
-  { zh: "已切换到", en: "Switched to", tw: "已切換到" },
-  { zh: "主题", en: "theme", tw: "主題" },
+  { zh: "已切换到浅色主题", en: "Switched to light theme", tw: "已切換到淺色主題" },
+  { zh: "已切换到深色主题", en: "Switched to dark theme", tw: "已切換到深色主題" },
+  { zh: "该目录下没有找到视频或图片", en: "No videos or images found in this directory", tw: "該目錄下沒有找到影片或圖片" },
   { zh: "线程未在", en: "thread did not exit within", tw: "執行緒未在" },
   { zh: "跳过继续收尾", en: "skipping and continuing cleanup", tw: "略過並繼續收尾" },
   { zh: "获取流失败", en: "Failed to fetch stream", tw: "取得串流失敗" },
@@ -1664,7 +1664,6 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "未找到公开作品", en: "No public works found", tw: "未找到公開作品" },
   { zh: "未找到作品或ID无效", en: "found no works or the ID is invalid", tw: "未找到作品或 ID 無效" },
   { zh: "搜索第", en: "Searching page", tw: "搜尋第" },
-  { zh: "找到", en: "Found", tw: "找到" },
   { zh: "个匹配用户", en: "matching users", tw: "個匹配使用者" },
   { zh: "尝试作为 sec_user_id 访问", en: "Trying to access as sec_user_id", tw: "嘗試以 sec_user_id 存取" },
   { zh: "尝试请求用户主页获取 sec_user_id", en: "Trying to request the user homepage to get sec_user_id", tw: "嘗試請求使用者主頁以取得 sec_user_id" },
@@ -1852,7 +1851,105 @@ function applyRuntimePhraseTranslations(text, language) {
   return result;
 }
 
+const EN_LOG_FRAGMENT_CLEANUPS = [
+  ["参数未设置，程序不会储存任何数据至文件", "parameter is not set; the program will not store data to files"],
+  ["响应不是有效的 JSON 格式", "response is not valid JSON format"],
+  ["扫描被中断，跳过中文校验", "scan interrupted; skipped Chinese subtitle check"],
+  ["[DEBUG] 已调度 select_tasks 测试事件", "[DEBUG] select_tasks test event dispatched"],
+  ["无法写入", "failed to write"],
+  ["纯数字 UID 暂不supported直接搜索", "numeric UID cannot be searched directly"],
+  ["视频下载地址解析failed", "video download URL parsing failed"],
+  ["视频下载地址parsing failed", "video download URL parsing failed"],
+  ["Share link解析failed", "share-link parsing failed"],
+  ["Share link解析", "share-link parsing"],
+  ["加载本地 Cookie failed", "failed to load local Cookie"],
+  ["继续尝试页面登录", "continuing page login"],
+  ["关闭 SDK failed", "failed to close SDK"],
+  ["scan完成", "scan completed"],
+  ["登录failed", "login failed"],
+  ["扫描failed", "scan failed"],
+  ["搜索failed", "search failed"],
+  ["解析failed", "parsing failed"],
+  ["获取success", "fetched successfully"],
+  ["数据提取success", "data extracted successfully"],
+  ["视频下载地址解析failed", "video download URL parsing failed"],
+  ["HTTP 请求异常", "HTTP request error"],
+  ["响应内容预览", "response preview"],
+  ["参数已设置为", "parameter set to"],
+  ["使用本地兜底值", "using local fallback value"],
+  ["浏览器信息", "browser info"],
+  ["请求值", "request value"],
+  ["本地值", "local value"],
+  ["开始:", "started:"],
+  ["参数:", "parameter:"],
+  ["准备生成清单", "preparing to generate the list"],
+  ["同时进行中", "running concurrently"],
+  ["Cookie 有效", "Cookie is valid"],
+  ["sessionid_ss 有效", "sessionid_ss is valid"],
+  ["个valid resources", "valid resources"],
+  ["个candidates", "candidates"],
+  ["个下载项", "download items"],
+  ["个有效资源", "valid resources"],
+  ["个匹配用户", "matching users"],
+  ["个小红书下载任务", "Xiaohongshu download tasks"],
+  ["个账号候选", "account candidates"],
+  ["个任务", "tasks"],
+  ["个项目", "items"],
+  ["个视频", "videos"],
+  ["个文件", "files"],
+  ["个候选", "candidates"],
+  ["粉丝", "followers"],
+  ["作品", "works"],
+  ["合集", "collection"],
+  ["小红书", "Xiaohongshu"],
+  ["抖音", "Douyin"],
+  ["快手", "Kuaishou"],
+  ["扫描", "scan"],
+  ["解析", "parse"],
+  ["聚合", "aggregate"],
+  ["有效", "valid"],
+  ["最多", "max"],
+  ["（如", " (for example "],
+  ["）", ")"],
+  ["个for selection", "for selection"],
+  ["内退出", ""],
+];
+
+function cleanupEnglishLogFragments(value) {
+  let result = String(value ?? "");
+  for (const [source, target] of EN_LOG_FRAGMENT_CLEANUPS) {
+    result = result.split(source).join(target);
+  }
+  result = result.replace(/另有\s*(\d+)\s*items?items were removed/gu, "$1 additional items were removed");
+  result = result.replace(/已切换到\s*1\s*主题/gu, "Switched theme");
+  result = result.replace(/获取\s*(.*?)\s*参数failed/gu, "failed to fetch $1 parameter");
+  result = result.replace(/kept\s*(\d+)\s*个\s*(.*?)\s*[,，;]/gu, "kept $1 $2; ");
+  result = result.replace(/共\s*(\d+)\s*个/gu, "total $1 items");
+  result = result.replace(/total\s+(\d+)\s*个/gu, "total $1 items");
+  result = result.replace(/发现\s*(\d+)\s*个/gu, "found $1 items");
+  result = result.replace(/scanned\s*(\d+)\s*个/gu, "scanned $1 items");
+  result = result.replace(/Selected\s*(\d+)\s*个/gu, "Selected $1 items");
+  result = result.replace(/(\d)\s*项/gu, "$1 items");
+  result = result.replace(/(\d)\s*页/gu, "$1");
+  result = result.replace(/另有\s*(\d+)\s*itemsitems were removed/gu, "$1 additional items were removed");
+  result = result.replace(/共\s*(\d+)\s*candidates/gu, "total $1 candidates");
+  result = result.split("scan完成").join("scan completed");
+  result = result.split("视频下载地址parsing failed").join("video download URL parsing failed");
+  result = result.split("itemsitems").join("items");
+  result = result.split("，please").join("; please");
+  result = result.split("，preparing").join("; preparing");
+  result = result.split("，").join(", ");
+  result = result.split("。").join(".");
+  return result;
+}
+
 function localizeEnglishDynamicLogText(text) {
+  const themeSwitch = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?已切换到(浅色|深色)主题[。.]?$/u);
+  if (themeSwitch) return `${themeSwitch[1] || ""}Switched to ${themeSwitch[2] === "浅色" ? "light" : "dark"} theme`;
+  const mediaEmpty = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?该目录下没有找到视频或图片[。.]?$/u);
+  if (mediaEmpty) return `${mediaEmpty[1] || ""}No videos or images found in this directory`;
+  const matchingUsers = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?找到\s*(\d+)\s*(?:个匹配用户|matching users)$/u);
+  if (matchingUsers) return `${matchingUsers[1] || ""}Found ${matchingUsers[2]} matching users`;
   const bilibiliStreamRetry = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?(?:B站|Bilibili)\s+(.*?)\s+流连接断开，(\d+)s\s+后重试\s+\((\d+)\/\s*(\d+)\):\s*(.+)$/u);
   if (bilibiliStreamRetry) {
     const media = localizedMediaTerm(bilibiliStreamRetry[2], "en-US");
@@ -2108,10 +2205,28 @@ function localizedMediaTerm(value, language) {
 function localizeNonEnglishDynamicLogText(text, language) {
   const exact = NON_EN_DYNAMIC_LOG_TEXT[text];
   if (exact) return localizedDynamicValue(exact, language);
+
+  let match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?Switched to\s*(light|dark)\s*theme[。.]?$/iu);
+  if (match) {
+    const light = match[2].toLowerCase() === "light";
+    const mode = language === "zh-TW" ? (light ? "淺色" : "深色") : (light ? "浅色" : "深色");
+    return `${match[1] || ""}${language === "zh-TW" ? "已切換到" : "已切换到"}${mode}${language === "zh-TW" ? "主題" : "主题"}`;
+  }
+
+  match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?No videos or images found in this directory[。.]?$/iu);
+  if (match) {
+    return `${match[1] || ""}${language === "zh-TW" ? "該目錄下沒有找到影片或圖片" : "该目录下没有找到视频或图片"}`;
+  }
+
+  match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?(?:Found|找到)\s*(\d+)\s*(?:matching users|个匹配用户|個匹配使用者)$/iu);
+  if (match) {
+    return `${match[1] || ""}找到 ${match[2]} ${language === "zh-TW" ? "個匹配使用者" : "个匹配用户"}`;
+  }
+
   const phraseResult = applyRuntimePhraseTranslations(text, language);
   if (phraseResult !== text) return phraseResult;
 
-  let match = text.match(/^Bilibili route:\s*(.+)$/);
+  match = text.match(/^Bilibili route:\s*(.+)$/);
   if (match) {
     const route = match[1].trim();
     const browserScan = route.match(/^browser scan\s*(.*)$/);
@@ -2383,7 +2498,6 @@ function emptyLogDetailSummaryHtml() {
 }
 
 function logQueryItems() {
-  trimFrontendLogItems();
   return Array.isArray(frontendState.log_items) ? frontendState.log_items : [];
 }
 
@@ -2470,10 +2584,6 @@ function ensureLogQueryWorker() {
   return logQueryWorker;
 }
 
-function shouldUseLogQueryWorker(items) {
-  return items.length > LOG_QUERY_WORKER_THRESHOLD && Boolean(ensureLogQueryWorker());
-}
-
 function receiveLogQueryResult(result) {
   if (!result || Number(result.sequence) !== logQuerySequence) return;
   logQueryState = {
@@ -2508,15 +2618,8 @@ function renderLogs() {
     renderLogQueryResult(logQueryState.result);
     return;
   }
-  if (shouldUseLogQueryWorker(allItems)) {
-    submitLogQuery(allItems, signature);
-    if (logQueryState.result) renderLogQueryResult(logQueryState.result);
-    return;
-  }
-  const sequence = ++logQuerySequence;
-  const result = queryLogsSync(allItems, sequence);
-  logQueryState = { signature, result, pending: false };
-  renderLogQueryResult(result);
+  submitLogQuery(allItems, signature);
+  if (logQueryState.result) renderLogQueryResult(logQueryState.result);
 }
 
 function renderLogQueryResult(result) {

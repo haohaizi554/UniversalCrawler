@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from app.config.settings import DEFAULT_OPEN_MODE, open_mode_label, playback_player_label
+from app.services.frontend_video_adapter import active_chunk_progress_label, active_detail_fields
 from app.services import frontend_toolbox_adapter as toolbox_adapter
 from app.services.frontend_page_definitions import PAGE_DEFINITIONS
 from app.services.icon_registry import icon_manifest
@@ -23,26 +24,41 @@ def build_mock_snapshot(
     ]
     active_items = []
     for item_id, title, progress, speed, speed_bps, eta, chunks_done in active_specs:
+        platform = "\u6296\u97f3"
+        trace_id = f"dy_20260412_182452_{item_id}"
+        save_dir = "D:\\Downloads\\\u6296\u97f3\\\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5"
+        output_filename = "\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5_\u4e91\u6d77\u7ffb\u6d8c\u7684\u4e00\u5929_20260412.mp4"
+        source_url = "https://v.douyin.com/abc123"
         active_items.append({
             "id": item_id,
             "title": title,
-            "platform": "\u6296\u97f3",
+            "platform": platform,
             "platform_id": "douyin",
             "progress": progress,
             "speed": speed,
             "speed_bps": speed_bps,
             "eta": eta,
             "remaining_time": eta,
-            "trace_id": f"dy_20260412_182452_{item_id}",
-            "save_dir": "D:\\Downloads\\\u6296\u97f3\\\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5",
-            "output_filename": "\u5ddd\u897f\u96ea\u5c71\u4e4b\u65c5_\u4e91\u6d77\u7ffb\u6d8c\u7684\u4e00\u5929_20260412.mp4",
+            "trace_id": trace_id,
+            "save_dir": save_dir,
+            "output_filename": output_filename,
             "thread_count": 8,
             "retry_count": 0,
             "write_status": "\u6b63\u5728\u5199\u5165\uff0839 \u4e2a\u5206\u7247\uff09",
             "merge_status": "\u7b49\u5f85\u5168\u90e8\u5206\u7247\u5b8c\u6210\u540e\u81ea\u52a8\u5408\u5e76",
-            "source_url": "https://v.douyin.com/abc123",
+            "source_url": source_url,
             "chunk_progress": {"completed": chunks_done, "total": 60, "percent": progress},
+            "chunk_progress_label": active_chunk_progress_label(progress=progress, completed=chunks_done, total=60),
             "speed_trend": [3.2, 3.6, 3.1, 4.2, 3.8, 4.9, 3.5, 4.1, 3.9, 4.5, 3.7, 4.2],
+            "speed_trend_label": speed,
+            "detail_fields": active_detail_fields(
+                title=title,
+                platform=platform,
+                save_dir=save_dir,
+                output_filename=output_filename,
+                source_url=source_url,
+                trace_id=trace_id,
+            ),
             "events": [
                 {"time": "20:12:03", "message": "\u5f00\u59cb\u4e0b\u8f7d\uff1a" + title},
                 {"time": "20:12:03", "message": "\u5df2\u89e3\u6790\u89c6\u9891\u4fe1\u606f\uff0c\u5206\u8fa8\u7387\uff1a1920x1080"},

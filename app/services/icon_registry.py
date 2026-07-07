@@ -91,6 +91,11 @@ def safe_icon_file(file_name: str | None, fallback: str = FALLBACK_ICON_FILE) ->
 def ui_icon_path(file_name: str | None, fallback: str = FALLBACK_ICON_FILE) -> str:
     return str(ICON_DIR / safe_icon_file(file_name, fallback=fallback))
 
+def ui_icon_runtime_path(file_name: str | None, fallback: str = FALLBACK_ICON_FILE) -> str:
+    root = getattr(sys, "_MEIPASS", None)
+    base = Path(root) if root else Path(__file__).parents[2]
+    return str(base / ICON_DIR / safe_icon_file(file_name, fallback=fallback))
+
 def ui_icon_search_roots() -> list[Path]:
     roots: list[Path] = []
     meipass = getattr(sys, "_MEIPASS", None)

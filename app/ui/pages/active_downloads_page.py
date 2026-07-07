@@ -1003,21 +1003,53 @@ class ActiveDownloadsPage(PageFrame):
         self.events.set_events(list(events))
 
     def _detail_pairs(self, item: dict[str, Any]) -> list[tuple[str, Any]]:
-        chunk = item.get("chunk_progress") or {}
-        percent = int(chunk.get("percent") or item.get("progress") or 0)
-        completed = int(chunk.get("completed") or 0)
-        total = int(chunk.get("total") or 0)
-        chunk_label = f"{percent}% ({completed}/{total})" if total else f"{percent}%"
+        detail_fields = self._active_detail_fields(item)
+        if detail_fields:
+            return [
+                *detail_fields,
+                (TEXT["chunk_progress"], self._active_chunk_label(item)),
+                (TEXT["trend_title"], self._active_trend_payload(item)),
+            ]
         return [
             (TEXT["title"], item.get("title", "")),
             (TEXT["platform"], item.get("platform", "")),
             (TEXT["save_dir"], item.get("save_dir", "")),
             (TEXT["output_filename"], item.get("output_filename", "")),
-            (TEXT["chunk_progress"], chunk_label),
+            (TEXT["chunk_progress"], self._active_chunk_label(item)),
             (TEXT["source_url"], item.get("source_url", "")),
             (TEXT["trace_id"], item.get("trace_id", "")),
-            (TEXT["trend_title"], {"values": item.get("speed_trend", []), "speed": item.get("speed", "0 B/s")}),
+            (TEXT["trend_title"], self._active_trend_payload(item)),
         ]
+
+    @staticmethod
+    def _active_detail_fields(item: dict[str, Any]) -> list[tuple[str, Any]]:
+        fields: list[tuple[str, Any]] = []
+        for field in list(item.get("detail_fields") or []):
+            if not isinstance(field, dict):
+                continue
+            label = str(field.get("label") or "")
+            if not label:
+                continue
+            fields.append((label, field.get("value", "")))
+        return fields
+
+    @staticmethod
+    def _active_chunk_label(item: dict[str, Any]) -> str:
+        label = str(item.get("chunk_progress_label") or "")
+        if label:
+            return label
+        chunk = item.get("chunk_progress") or {}
+        percent = int(chunk.get("percent") or item.get("progress") or 0)
+        completed = int(chunk.get("completed") or 0)
+        total = int(chunk.get("total") or 0)
+        return f"{percent}% ({completed}/{total})" if total else f"{percent}%"
+
+    @staticmethod
+    def _active_trend_payload(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "values": item.get("speed_trend", []),
+            "speed": item.get("speed_trend_label") or item.get("speed", "0 B/s"),
+        }
 
     def _rebuild_detail_body(self, pairs: list[tuple[str, Any]]) -> None:
         self._translation_dirty = True
@@ -1173,6 +1205,13 @@ class ActiveDownloadsPage(PageFrame):
             chunk.get("total", 0),
             item.get("source_url", ""),
             item.get("trace_id", ""),
+            item.get("chunk_progress_label", ""),
+            item.get("speed_trend_label", ""),
+            tuple(
+                (str(field.get("label") or ""), str(field.get("value") or ""))
+                for field in list(item.get("detail_fields") or [])
+                if isinstance(field, dict)
+            ),
             item.get("speed", ""),
             tuple(item.get("speed_trend", [])[-60:]),
             tuple((event.get("time", ""), event.get("message", "")) for event in item.get("events", [])),

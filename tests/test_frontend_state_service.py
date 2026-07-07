@@ -555,6 +555,15 @@ class FrontendStateServiceTests(unittest.TestCase):
         payload = FrontendStateService()._active_item(item)
         messages = [event["message"] for event in payload["events"]]
 
+        self.assertEqual(payload["chunk_progress_label"], "67% (67/100)")
+        self.assertEqual(payload["speed_trend_label"], "1.4 MB/s")
+        detail_fields = {field["label"]: field["value"] for field in payload["detail_fields"]}
+        self.assertEqual(detail_fields["标题"], "active")
+        self.assertEqual(detail_fields["平台"], "抖音")
+        self.assertIn("保存目录", detail_fields)
+        self.assertEqual(detail_fields["输出文件名"], "active")
+        self.assertEqual(detail_fields["来源链接"], "https://example.com/a.mp4")
+        self.assertEqual(detail_fields["Trace ID"], "trace-active")
         self.assertGreaterEqual(len(messages), 4)
         self.assertEqual(messages[0], "started")
         self.assertTrue(all(event["time"] == "10:00:00" for event in payload["events"]))
@@ -1630,6 +1639,9 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertIn("active_downloads", snapshot)
         self.assertIn("save_dir", snapshot["active_downloads"][0])
         self.assertIn("output_filename", snapshot["active_downloads"][0])
+        self.assertIn("detail_fields", snapshot["active_downloads"][0])
+        self.assertIn("chunk_progress_label", snapshot["active_downloads"][0])
+        self.assertIn("speed_trend_label", snapshot["active_downloads"][0])
         self.assertIn("app_status", snapshot)
         self.assertNotIn("queue_items", snapshot)
         self.assertNotIn("log_items", snapshot)

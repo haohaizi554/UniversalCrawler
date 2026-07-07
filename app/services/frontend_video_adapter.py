@@ -161,10 +161,21 @@ def active_item(
     item_trace_id = trace_id(item)
     write_status = str(meta.get("write_status") or default_write_status(progress))
     merge_status = str(meta.get("merge_status") or default_merge_status(item, progress))
+    title = stage_display_title(item, "active", output_filename)
+    platform = platform_label(item)
+    chunk_label = active_chunk_progress_label(progress=progress, completed=chunks_done, total=chunks_total)
+    detail_fields = active_detail_fields(
+        title=title,
+        platform=platform,
+        save_dir=save_dir,
+        output_filename=output_filename,
+        source_url=item.url,
+        trace_id=item_trace_id,
+    )
     return {
         "id": item.id,
-        "title": stage_display_title(item, "active", output_filename),
-        "platform": platform_label(item),
+        "title": title,
+        "platform": platform,
         "platform_id": item.source,
         "progress": progress,
         "save_dir": save_dir,
@@ -187,7 +198,10 @@ def active_item(
             "total": chunks_total,
             "percent": progress,
         },
+        "chunk_progress_label": chunk_label,
         "speed_trend": list(meta.get("speed_trend") or default_speed_trend(progress)),
+        "speed_trend_label": speed,
+        "detail_fields": detail_fields,
         "events": active_events(
             item,
             progress=progress,
@@ -201,6 +215,33 @@ def active_item(
         ),
         "actions": ["delete"],
     }
+
+
+def active_detail_fields(
+    *,
+    title: str,
+    platform: str,
+    save_dir: str,
+    output_filename: str,
+    source_url: str,
+    trace_id: str,
+) -> list[dict[str, Any]]:
+    """Return UI-ready active detail fields for GUI/WebUI renderers."""
+
+    return [
+        {"label": "标题", "value": title, "wrap": True},
+        {"label": "平台", "value": platform, "wrap": False},
+        {"label": "保存目录", "value": save_dir, "wrap": True},
+        {"label": "输出文件名", "value": output_filename, "wrap": True},
+        {"label": "来源链接", "value": source_url, "wrap": True},
+        {"label": "Trace ID", "value": trace_id, "wrap": False},
+    ]
+
+
+def active_chunk_progress_label(*, progress: int, completed: int, total: int) -> str:
+    if int(total or 0) > 0:
+        return f"{int(progress or 0)}% ({int(completed or 0)}/{int(total or 0)})"
+    return f"{int(progress or 0)}%"
 
 
 def completed_item(

@@ -26,7 +26,7 @@ from test_registry import (
 from test_runner import TestResult, format_summary, run_categories, run_category
 
 try:
-    from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+    from PyQt6.QtCore import QObject, QRect, QSize, Qt, QTimer, pyqtSignal
     from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
     from PyQt6.QtWidgets import (
         QApplication,
@@ -45,8 +45,12 @@ try:
         QWidget,
     )
 
+    from app.config import cfg
+    from app.services.icon_registry import action_icon_file, ui_icon_path
     from app.ui.layout.window_chrome import WindowChromeFrame
     from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
+    from app.ui.styles.themes import apply_application_theme, theme_colors
+    from app.utils.qt_runtime import load_qt_icon
 
     _PYQT6_AVAILABLE = True
 except ImportError:
@@ -395,6 +399,292 @@ QScrollBar::sub-line:vertical {{
 }}
 """
 
+def _shared_launcher_theme_is_dark() -> bool:
+    try:
+        theme = str(cfg.get("common", "theme", "light") or "light").strip().lower()
+        if theme in {"light", "dark"}:
+            return theme == "dark"
+        return bool(cfg.get("common", "dark_theme", False))
+    except Exception:
+        return False
+
+def _launcher_ui_scale_factor() -> float:
+    try:
+        raw = str(cfg.get("appearance", "scale", "100%") or "100%").strip()
+    except Exception:
+        raw = "100%"
+    return {"90%": 0.9, "100%": 1.0, "110%": 1.1, "125%": 1.25}.get(raw, 1.0)
+
+def _launcher_scaled_size(width: int, height: int) -> tuple[int, int]:
+    scale = max(1.0, _launcher_ui_scale_factor())
+    return int(round(width * scale)), int(round(height * scale))
+
+def _launcher_minimum_size() -> tuple[int, int]:
+    return _launcher_scaled_size(980, 640)
+
+def _launcher_default_size() -> tuple[int, int]:
+    min_width, min_height = _launcher_minimum_size()
+    return max(1220, min_width), max(760, min_height)
+
+def _launcher_runtime_colors(is_dark: bool) -> dict[str, str]:
+    try:
+        c = theme_colors(is_dark)
+    except Exception:
+        c = {
+            "text": TEXT,
+            "muted": TEXT_MUTED,
+            "accent": ACCENT,
+            "success": SUCCESS,
+            "danger": DANGER,
+            "warning": WARNING,
+            "border": BORDER,
+        }
+    if is_dark:
+        return {
+            "text": c["text"],
+            "muted": c["muted"],
+            "dim": TEXT_DIM,
+            "accent": c["accent"],
+            "success": c["success"],
+            "danger": c["danger"],
+            "warning": c["warning"],
+            "border": c["border"],
+            "status_default_bg": "#0E1627",
+            "status_running_bg": "#13233E",
+            "status_running_border": "#315896",
+            "status_success_bg": "#0E1E16",
+            "status_success_border": "#1F6D43",
+            "status_danger_bg": "#2A1115",
+            "status_danger_border": "#7F1D1D",
+            "status_warning_bg": "#2B1B07",
+            "status_warning_border": "#8A5A12",
+        }
+    return {
+        "text": c["text"],
+        "muted": c["muted"],
+        "dim": "#94A3B8",
+        "accent": c["accent"],
+        "success": c["success"],
+        "danger": c["danger"],
+        "warning": c["warning"],
+        "border": c["border"],
+        "status_default_bg": c["panel_soft"],
+        "status_running_bg": c["accent_soft"],
+        "status_running_border": c["accent"],
+        "status_success_bg": "#ECFDF5",
+        "status_success_border": "#86EFAC",
+        "status_danger_bg": "#FEF2F2",
+        "status_danger_border": "#FECACA",
+        "status_warning_bg": "#FFFBEB",
+        "status_warning_border": "#FDE68A",
+    }
+
+def _launcher_qss(is_dark: bool) -> str:
+    try:
+        c = theme_colors(is_dark)
+    except Exception:
+        return QSS
+
+    bg = c["bg"]
+    panel = c["panel"]
+    panel_soft = c["panel_soft"]
+    input_bg = c["input"]
+    accent = c["accent"]
+    accent_hover = c["accent_hover"]
+    accent_soft = c["accent_soft"]
+    row_selected = c["row_selected"]
+    text = c["text"] if is_dark else "#020617"
+    muted = c["muted"] if is_dark else "#334155"
+    ghost_text = muted if is_dark else "#0F172A"
+    disabled_text = "#6B7280" if is_dark else "#64748B"
+    border = c["border"]
+    border_strong = c["border_strong"]
+    scrollbar_handle = c["scrollbar_handle"]
+    log_bg = c["log_bg"]
+    danger = c["danger"]
+    mint = ACCENT_MINT if is_dark else "#0F766E"
+
+    return QSS + f"""
+QMainWindow {{
+    background: {bg};
+}}
+QWidget {{
+    color: {text};
+}}
+QFrame#hero,
+QFrame#panel,
+QFrame#statsCard,
+QFrame#selectionSummary,
+QFrame#sectionHeader {{
+    background: {panel};
+    border: 1px solid {border};
+}}
+QFrame#hero,
+QFrame#statsCard,
+QFrame#selectionSummary,
+QFrame#sectionHeader {{
+    background: {panel};
+}}
+QFrame#categoryCard {{
+    background: {panel};
+    border: 1px solid {border};
+}}
+QFrame#categoryCard[state="hover"] {{
+    background: {panel_soft};
+    border: 1px solid {border_strong};
+}}
+QFrame#categoryCard[state="selected"] {{
+    background: {accent_soft};
+    border: 1px solid {accent};
+}}
+QFrame#categoryCard[state="selected-hover"] {{
+    background: {row_selected};
+    border: 1px solid {accent_hover};
+}}
+QFrame#categoryStrip {{
+    background: {border_strong};
+}}
+QFrame#categoryStrip[state="hover"],
+QFrame#categoryStrip[state="selected"],
+QFrame#categoryStrip[state="selected-hover"] {{
+    background: {accent};
+}}
+QFrame#panelHeader {{
+    border-bottom: 1px solid {border};
+}}
+QWidget#contentBody,
+QWidget#categoryViewport,
+QWidget#categoryList {{
+    background: transparent;
+}}
+QLabel#heroSub,
+QLabel#sectionTitle,
+QLabel#metaText,
+QLabel#progressHint,
+QLabel#emptyText,
+QLabel#summaryText,
+QLabel#sectionMeta,
+QLabel#categoryMetaLine,
+QLabel#selectHint,
+QLabel#panelSub,
+QLabel#categoryDesc,
+QLabel#statLabel,
+QLabel#statHint {{
+    color: {muted};
+}}
+QLabel#summaryEyebrow {{
+    color: {mint};
+}}
+QLabel#heroTitle,
+QLabel#sectionLabel,
+QLabel#panelTitle,
+QLabel#categoryTitle,
+QLabel#summaryValue,
+QLabel#statValue {{
+    color: {text};
+}}
+QLabel#avatar {{
+    background: {panel_soft};
+    border: 1px solid {border_strong};
+}}
+QLabel#countPill,
+QLabel#sectionCountPill {{
+    color: {text};
+    background: {accent_soft};
+    border: 1px solid {border_strong};
+}}
+QLabel#countPill[state="hover"],
+QLabel#countPill[state="selected"],
+QLabel#countPill[state="selected-hover"] {{
+    background: {row_selected};
+    border: 1px solid {accent};
+}}
+QLabel#badgePill,
+QLabel#sectionPill,
+QLabel#runStatus {{
+    color: {muted};
+    background: {panel_soft};
+    border: 1px solid {border};
+}}
+QPushButton#primaryBtn {{
+    background: {accent};
+    color: white;
+}}
+QPushButton#primaryBtn:hover {{
+    background: {accent_hover};
+}}
+QPushButton#dangerBtn {{
+    background: {danger};
+    color: white;
+}}
+QPushButton#ghostBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    color: {ghost_text};
+}}
+QPushButton#ghostBtn:hover {{
+    color: {text};
+    background: {panel_soft};
+}}
+QPushButton#ghostBtn:disabled,
+QPushButton#primaryBtn:disabled,
+QPushButton#dangerBtn:disabled {{
+    color: {disabled_text};
+    background: {panel_soft};
+    border: 1px solid {border};
+}}
+QPushButton#ThemeBtn {{
+    min-width: 48px;
+    min-height: 36px;
+    max-width: 48px;
+    max-height: 36px;
+    background: {panel};
+    border: 1px solid {border};
+    border-radius: 18px;
+    padding: 0px;
+}}
+QPushButton#ThemeBtn:hover {{
+    background: {panel_soft};
+    border-color: {border_strong};
+}}
+QCheckBox {{
+    color: {muted};
+}}
+QCheckBox::indicator {{
+    border: 1px solid {border};
+    background: {input_bg};
+}}
+QCheckBox::indicator:checked {{
+    background: {accent};
+    border-color: {accent};
+}}
+QTextEdit#log {{
+    background: {log_bg};
+    border: 1px solid {border};
+    color: {text};
+    selection-background-color: {accent};
+}}
+QProgressBar {{
+    background: {input_bg};
+    border: 1px solid {border};
+    color: {muted};
+}}
+QProgressBar::chunk {{
+    background: {accent};
+}}
+QStatusBar {{
+    background: {panel};
+    border-top: 1px solid {border};
+    color: {muted};
+}}
+QScrollBar::handle:vertical {{
+    background: {scrollbar_handle};
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {border_strong};
+}}
+"""
+
 def _merge_results(current: TestResult | None, update: TestResult) -> TestResult:
     if current is None:
         return TestResult(
@@ -669,9 +959,14 @@ if _PYQT6_AVAILABLE:
             super().__init__(parent)
             self.setWindowTitle("UCrawl 测试套件")
             self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
-            self.resize(1220, 760)
-            self.setMinimumSize(980, 640)
-            self.setStyleSheet(QSS)
+            self.is_dark_theme = _shared_launcher_theme_is_dark()
+            self._theme_colors = _launcher_runtime_colors(self.is_dark_theme)
+            self._run_status_text = "待命中"
+            self._run_status_tone = "default"
+            apply_application_theme(self.is_dark_theme)
+            self.setStyleSheet(_launcher_qss(self.is_dark_theme))
+            self._apply_window_size_floor()
+            self.resize(*_launcher_default_size())
 
             icon = _load_test_icon()
             if icon:
@@ -701,7 +996,7 @@ if _PYQT6_AVAILABLE:
             self.window_chrome = WindowChromeFrame(
                 title=self.windowTitle(),
                 icon=self.windowIcon(),
-                is_dark_theme=True,
+                is_dark_theme=self.is_dark_theme,
             )
             self.window_title_bar = self.window_chrome.title_bar
             self.window_title_bar.minimize_requested.connect(self.showMinimized)
@@ -722,6 +1017,8 @@ if _PYQT6_AVAILABLE:
 
             hero = QFrame()
             hero.setObjectName("hero")
+            hero.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.hero_panel = hero
             hero_layout = QHBoxLayout(hero)
             hero_layout.setContentsMargins(20, 20, 20, 20)
             hero_layout.setSpacing(18)
@@ -754,6 +1051,13 @@ if _PYQT6_AVAILABLE:
                 button.setToolTip(tip)
                 button.clicked.connect(handler)
                 action_row.addWidget(button)
+            self.btn_theme = QPushButton()
+            self.btn_theme.setObjectName("ThemeBtn")
+            self.btn_theme.setFixedSize(48, 36)
+            self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn_theme.setToolTip("切换主题")
+            self.btn_theme.clicked.connect(self._toggle_theme)
+            action_row.addWidget(self.btn_theme)
             hero_layout.addLayout(action_row)
             root.addWidget(hero)
 
@@ -812,6 +1116,8 @@ if _PYQT6_AVAILABLE:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setMinimumHeight(150)
+            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
             scroll_body = QWidget()
             scroll_body.setObjectName("categoryViewport")
             scroll_layout = QVBoxLayout(scroll_body)
@@ -848,6 +1154,7 @@ if _PYQT6_AVAILABLE:
 
             self.detail_panel = QFrame()
             self.detail_panel.setObjectName("panel")
+            self.detail_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             detail_layout = QVBoxLayout(self.detail_panel)
             detail_layout.setContentsMargins(18, 18, 18, 18)
             detail_layout.setSpacing(10)
@@ -870,6 +1177,7 @@ if _PYQT6_AVAILABLE:
 
             self.detail_tags = QLabel("")
             self.detail_tags.setObjectName("metaText")
+            self.detail_tags.setWordWrap(True)
             detail_layout.addWidget(self.detail_tags)
             right_col.addWidget(self.detail_panel)
 
@@ -883,6 +1191,8 @@ if _PYQT6_AVAILABLE:
 
             control_panel = QFrame()
             control_panel.setObjectName("panel")
+            control_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.control_panel = control_panel
             control_layout = QVBoxLayout(control_panel)
             control_layout.setContentsMargins(18, 18, 18, 18)
             control_layout.setSpacing(12)
@@ -898,6 +1208,7 @@ if _PYQT6_AVAILABLE:
             control_title.setObjectName("panelTitle")
             control_sub = QLabel("运行中会按文件推进进度，并在日志区显示套件摘要。")
             control_sub.setObjectName("panelSub")
+            control_sub.setWordWrap(True)
             control_title_col.addWidget(control_title)
             control_title_col.addWidget(control_sub)
             control_header_layout.addLayout(control_title_col, 1)
@@ -915,6 +1226,7 @@ if _PYQT6_AVAILABLE:
             options_row.addStretch(1)
             self.current_hint = QLabel("待命中")
             self.current_hint.setObjectName("progressHint")
+            self.current_hint.setWordWrap(True)
             options_row.addWidget(self.current_hint)
             control_layout.addLayout(options_row)
 
@@ -927,6 +1239,7 @@ if _PYQT6_AVAILABLE:
             progress_meta.setSpacing(10)
             self.progress_detail = QLabel("尚未开始")
             self.progress_detail.setObjectName("progressHint")
+            self.progress_detail.setWordWrap(True)
             self.progress_percent = QLabel("0%")
             self.progress_percent.setObjectName("progressHint")
             progress_meta.addWidget(self.progress_detail)
@@ -954,6 +1267,8 @@ if _PYQT6_AVAILABLE:
             self.log.setObjectName("log")
             self.log.setReadOnly(True)
             self.log.setPlaceholderText("运行日志会显示在这里。")
+            self.log.setMinimumHeight(110)
+            self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
             right_col.addWidget(self.log, 1)
 
             self.sbar = QStatusBar()
@@ -963,6 +1278,146 @@ if _PYQT6_AVAILABLE:
             QShortcut(QKeySequence("Ctrl+1"), self, activated=lambda: self._select_only("all"))
             QShortcut(QKeySequence("Ctrl+R"), self, activated=self._select_recommended)
             QShortcut(QKeySequence("Escape"), self, activated=self._clear_selection)
+            self._set_theme(self.is_dark_theme, persist=False)
+
+        def _apply_window_size_floor(self):
+            min_width, min_height = _launcher_minimum_size()
+            central = self.centralWidget()
+            if central is not None:
+                hint = central.sizeHint()
+                if hint.isValid():
+                    min_width = max(min_width, hint.width())
+                    min_height = max(min_height, hint.height())
+            needs_resize = self.width() < min_width or self.height() < min_height
+            self.setMinimumSize(min_width, min_height)
+            target_width = max(self.width(), min_width)
+            target_height = max(self.height(), min_height)
+            if needs_resize:
+                self.resize(target_width, target_height)
+                QTimer.singleShot(0, self._apply_window_size_floor)
+
+        def _refresh_text_minimums(self):
+            tracked_names = {
+                "heroTitle",
+                "heroSub",
+                "sectionLabel",
+                "sectionMeta",
+                "panelTitle",
+                "panelSub",
+                "summaryEyebrow",
+                "summaryValue",
+                "summaryText",
+                "categoryTitle",
+                "categoryDesc",
+                "categoryMetaLine",
+                "metaText",
+                "progressHint",
+                "statValue",
+                "statLabel",
+                "statHint",
+                "runStatus",
+                "sectionPill",
+                "sectionCountPill",
+                "countPill",
+                "badgePill",
+            }
+            changed = False
+            for label in self.findChildren(QLabel):
+                if not label.text().strip():
+                    continue
+                name = label.objectName()
+                if name not in tracked_names and not label.wordWrap():
+                    continue
+                label.ensurePolished()
+                needed = self._label_minimum_text_height(label)
+                if label.minimumHeight() != needed:
+                    label.setMinimumHeight(needed)
+                    label.updateGeometry()
+                    changed = True
+            for panel in (getattr(self, "detail_panel", None), getattr(self, "control_panel", None)):
+                if panel is None:
+                    continue
+                panel.ensurePolished()
+                needed = max(panel.sizeHint().height(), panel.minimumSizeHint().height(), 0)
+                if needed > 0 and panel.minimumHeight() != needed:
+                    panel.setMinimumHeight(needed)
+                    panel.updateGeometry()
+                    changed = True
+            central = self.centralWidget()
+            needs_floor_sync = False
+            if central is not None:
+                hint = central.sizeHint()
+                needs_floor_sync = hint.isValid() and (
+                    hint.width() > self.minimumWidth() or hint.height() > self.minimumHeight()
+                )
+            if changed or needs_floor_sync:
+                self._apply_window_size_floor()
+                QTimer.singleShot(0, self._apply_window_size_floor)
+
+        @staticmethod
+        def _label_minimum_text_height(label: QLabel) -> int:
+            metrics = label.fontMetrics()
+            line_height = max(metrics.lineSpacing(), metrics.height(), 1)
+            name = label.objectName()
+            vertical_padding = 10 if name in {
+                "runStatus",
+                "sectionPill",
+                "sectionCountPill",
+                "countPill",
+                "badgePill",
+            } else 6
+            if label.wordWrap():
+                width = max(label.width(), 80)
+                rect = metrics.boundingRect(
+                    QRect(0, 0, width, 10000),
+                    int(Qt.TextFlag.TextWordWrap),
+                    label.text(),
+                )
+                content_height = max(rect.height(), line_height)
+            else:
+                content_height = line_height
+            return content_height + vertical_padding
+
+        def _toggle_theme(self):
+            self._set_theme(not self.is_dark_theme, persist=True)
+
+        def _set_theme(self, is_dark: bool, *, persist: bool):
+            self.is_dark_theme = bool(is_dark)
+            self._theme_colors = _launcher_runtime_colors(self.is_dark_theme)
+            if persist:
+                try:
+                    cfg.set_many(
+                        "common",
+                        {
+                            "theme": "dark" if self.is_dark_theme else "light",
+                            "dark_theme": self.is_dark_theme,
+                        },
+                    )
+                except Exception:
+                    pass
+            apply_application_theme(self.is_dark_theme)
+            self.setStyleSheet(_launcher_qss(self.is_dark_theme))
+            if hasattr(self, "window_chrome"):
+                self.window_chrome.apply_theme(self.is_dark_theme)
+            if hasattr(self, "btn_theme"):
+                self._set_theme_button_icon()
+            if hasattr(self, "run_status"):
+                self._set_run_status(self._run_status_text, self._run_status_tone)
+            if hasattr(self, "window_chrome"):
+                QTimer.singleShot(0, self._refresh_text_minimums)
+            self._apply_window_size_floor()
+
+        def _set_theme_button_icon(self):
+            self.btn_theme.setText("")
+            self.btn_theme.setToolTip("切换主题")
+            icon_name = action_icon_file("theme_dark" if self.is_dark_theme else "theme_light")
+            icon = load_qt_icon([ui_icon_path(icon_name)])
+            if icon is not None:
+                self.btn_theme.setIcon(icon)
+                self.btn_theme.setIconSize(QSize(18, 18))
+
+        def _theme_color(self, key: str) -> str:
+            return self._theme_colors.get(key, _launcher_runtime_colors(self.is_dark_theme).get(key, TEXT))
 
         def _toggle_maximized(self):
             if self.isMaximized():
@@ -975,6 +1430,12 @@ if _PYQT6_AVAILABLE:
             super().showEvent(event)
             self._window_chrome_controller.install()
             self._window_chrome_controller.on_show_event()
+            QTimer.singleShot(0, self._refresh_text_minimums)
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            if hasattr(self, "window_chrome"):
+                QTimer.singleShot(0, self._refresh_text_minimums)
 
         def closeEvent(self, event):
             self._window_chrome_controller.uninstall()
@@ -999,6 +1460,7 @@ if _PYQT6_AVAILABLE:
         def _make_stats_card(self, parent_layout, value, label, hint: str = "实时更新"):
             card = QFrame()
             card.setObjectName("statsCard")
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout = QVBoxLayout(card)
             layout.setContentsMargins(16, 14, 16, 14)
             layout.setSpacing(4)
@@ -1016,12 +1478,34 @@ if _PYQT6_AVAILABLE:
             return value_label
 
         def _set_run_status(self, text: str, tone: str):
+            self._run_status_text = text
+            self._run_status_tone = tone
             color_map = {
-                "default": (TEXT_MUTED, "#0E1627", BORDER),
-                "running": (TEXT, "#13233E", "#315896"),
-                "success": (SUCCESS, "#0E1E16", "#1F6D43"),
-                "danger": (DANGER, "#2A1115", "#7F1D1D"),
-                "warning": (WARNING, "#2B1B07", "#8A5A12"),
+                "default": (
+                    self._theme_color("muted"),
+                    self._theme_color("status_default_bg"),
+                    self._theme_color("border"),
+                ),
+                "running": (
+                    self._theme_color("text"),
+                    self._theme_color("status_running_bg"),
+                    self._theme_color("status_running_border"),
+                ),
+                "success": (
+                    self._theme_color("success"),
+                    self._theme_color("status_success_bg"),
+                    self._theme_color("status_success_border"),
+                ),
+                "danger": (
+                    self._theme_color("danger"),
+                    self._theme_color("status_danger_bg"),
+                    self._theme_color("status_danger_border"),
+                ),
+                "warning": (
+                    self._theme_color("warning"),
+                    self._theme_color("status_warning_bg"),
+                    self._theme_color("status_warning_border"),
+                ),
             }
             fg, bg, border = color_map.get(tone, color_map["default"])
             self.run_status.setText(text)
@@ -1138,6 +1622,7 @@ if _PYQT6_AVAILABLE:
             self.left_selected_text.setText(snapshot["left_text"])
             self.detail_desc.setText(snapshot["detail_desc"])
             self.detail_tags.setText(snapshot["detail_tags"])
+            QTimer.singleShot(0, self._refresh_text_minimums)
 
             if not selected_categories:
                 self.detail_title.setText("执行范围")
@@ -1197,8 +1682,14 @@ if _PYQT6_AVAILABLE:
             self.signals.event.emit(kind, category_id, str(name), payload)
 
         def _on_event(self, kind, category_id, name, payload):
+            accent = self._theme_color("accent")
+            muted = self._theme_color("muted")
+            success = self._theme_color("success")
+            danger = self._theme_color("danger")
+            border = self._theme_color("border")
+
             if kind == "category_start":
-                self._append_log(f"<span style='color:{ACCENT}; font-weight:700;'>▶ {name}</span>")
+                self._append_log(f"<span style='color:{accent}; font-weight:700;'>▶ {name}</span>")
                 self.current_hint.setText(f"运行中: {name}")
                 self._set_run_status("运行中", "running")
                 self.sbar.showMessage(f"运行中: {name}")
@@ -1208,23 +1699,23 @@ if _PYQT6_AVAILABLE:
                 path = Path(name).name
                 meta = payload or {}
                 self._append_log(
-                    f"<span style='color:{TEXT_MUTED};'>· {meta.get('index', 0)}/{meta.get('total', 0)} {path}</span>"
+                    f"<span style='color:{muted};'>· {meta.get('index', 0)}/{meta.get('total', 0)} {path}</span>"
                 )
                 return
 
             if kind == "file_done":
                 if isinstance(payload, TestResult):
                     result = payload
-                    color = SUCCESS if result.success else DANGER
+                    color = success if result.success else danger
                     icon = "PASS" if result.success else "FAIL"
                     self._append_log(
                         f"<span style='color:{color};'>{icon}</span> "
-                        f"<span style='color:{TEXT_MUTED};'>P={result.passed} F={result.failed} "
+                        f"<span style='color:{muted};'>P={result.passed} F={result.failed} "
                         f"S={result.skipped} E={result.errors} ({result.duration:.2f}s)</span>"
                     )
                     if result.failed_tests:
                         for failed_name in result.failed_tests[:3]:
-                            self._append_log(f"<span style='color:{DANGER};'>  {failed_name}</span>")
+                            self._append_log(f"<span style='color:{danger};'>  {failed_name}</span>")
                 self._done_files += 1
                 self.progress.setValue(min(self._done_files, self._total_files))
                 self._update_progress_labels()
@@ -1233,11 +1724,11 @@ if _PYQT6_AVAILABLE:
             if kind == "category_done":
                 if isinstance(payload, TestResult):
                     result = payload
-                    color = SUCCESS if result.success else DANGER
+                    color = success if result.success else danger
                     status = "完成" if result.success else "失败"
                     self._append_log(
                         f"<span style='color:{color}; font-weight:700;'>■ {name} {status}</span>"
-                        f"<span style='color:{TEXT_MUTED};'>  {result.passed} 通过 / {result.failed} 失败 / "
+                        f"<span style='color:{muted};'>  {result.passed} 通过 / {result.failed} 失败 / "
                         f"{result.errors} 错误 / {result.duration:.2f}s</span>"
                     )
                 self._append_log("")
@@ -1260,19 +1751,19 @@ if _PYQT6_AVAILABLE:
                 errors = sum(item.errors for item in results)
                 duration = sum(item.duration for item in results)
 
-                self._append_log("<hr style='border:0;border-top:1px solid #22304D;'>")
+                self._append_log(f"<hr style='border:0;border-top:1px solid {border};'>")
                 if failed == 0 and errors == 0:
                     self._set_run_status("全部通过", "success")
                     self._append_log(
-                        f"<span style='color:{SUCCESS}; font-weight:700; font-size:14px;'>全部通过</span>"
-                        f"<span style='color:{TEXT_MUTED};'>  {passed} 通过 / {skipped} 跳过 / {duration:.2f}s</span>"
+                        f"<span style='color:{success}; font-weight:700; font-size:14px;'>全部通过</span>"
+                        f"<span style='color:{muted};'>  {passed} 通过 / {skipped} 跳过 / {duration:.2f}s</span>"
                     )
                     self.sbar.showMessage(f"全部通过 · {passed} 通过 · {duration:.2f}s")
                 else:
                     self._set_run_status("有失败", "danger")
                     self._append_log(
-                        f"<span style='color:{DANGER}; font-weight:700; font-size:14px;'>运行结束，有失败</span>"
-                        f"<span style='color:{TEXT_MUTED};'>  {passed} 通过 / {failed} 失败 / {errors} 错误 / {duration:.2f}s</span>"
+                        f"<span style='color:{danger}; font-weight:700; font-size:14px;'>运行结束，有失败</span>"
+                        f"<span style='color:{muted};'>  {passed} 通过 / {failed} 失败 / {errors} 错误 / {duration:.2f}s</span>"
                     )
                     self.sbar.showMessage(f"运行结束 · {failed} 失败 / {errors} 错误 · {duration:.2f}s")
                 return

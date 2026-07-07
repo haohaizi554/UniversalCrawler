@@ -174,6 +174,61 @@ def _wait_for_webui_ready(page, server_url: str) -> None:
         timeout=5000,
     )
 
+def _install_webui_test_helpers(page) -> None:
+    page.evaluate(
+        """
+        () => {
+          window.__isolateFrontendStateForTest = function (options = {}) {
+            if (typeof cleanupPageResources === "function") cleanupPageResources();
+            if (typeof pageIsUnloading !== "undefined") pageIsUnloading = true;
+            if (typeof logQueryWorkerAvailable !== "undefined") {
+              logQueryWorkerAvailable = options.useLogWorker === true && typeof Worker !== "undefined";
+            }
+            if (typeof logQueryWorker !== "undefined") logQueryWorker = null;
+            if (typeof logQuerySequence !== "undefined") logQuerySequence += 1;
+            if (typeof logQueryState !== "undefined") {
+              logQueryState = { signature: "", result: null, pending: false };
+            }
+          };
+
+          window.__waitForLogRender = async function (options = {}) {
+            const has = key => Object.prototype.hasOwnProperty.call(options, key);
+            const timeoutMs = Number(options.timeoutMs || 5000);
+            const deadline = Date.now() + timeoutMs;
+            let last = {};
+
+            while (Date.now() < deadline) {
+              const state = typeof logQueryState !== "undefined" ? logQueryState : {};
+              const result = state && state.result ? state.result : null;
+              const rows = document.querySelectorAll("#logBody tr").length;
+              const total = result ? Number(result.totalCount) || 0 : null;
+              const matched = result ? Number(result.matchedCount) || 0 : null;
+              const visible = result ? Number(result.visibleCount) || 0 : null;
+              const text = document.getElementById("page-logs")?.textContent || "";
+              const selectedId = (typeof selected !== "undefined" && selected) ? String(selected.log || "") : "";
+              const pageItems = result && Array.isArray(result.pageItems) ? result.pageItems : [];
+              const itemFound = !has("itemId") || pageItems.some(item => String(item.id || "") === String(options.itemId));
+              const textFound = !has("text") || text.includes(String(options.text));
+              last = { pending: Boolean(state && state.pending), rows, total, matched, visible, selectedId, itemFound, textFound };
+
+              const ready = Boolean(result) &&
+                !last.pending &&
+                itemFound &&
+                (!has("rows") || rows === Number(options.rows)) &&
+                (!has("total") || total === Number(options.total)) &&
+                (!has("matched") || matched === Number(options.matched)) &&
+                (!has("visible") || visible === Number(options.visible)) &&
+                (!has("selectedId") || selectedId === String(options.selectedId)) &&
+                textFound;
+              if (ready) return last;
+              await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            throw new Error(`Log render did not settle: ${JSON.stringify(last)}`);
+          };
+        }
+        """
+    )
+
 def _new_webui_page(context):
     page = context.new_page()
     page.add_init_script("localStorage.clear(); sessionStorage.clear();")
@@ -768,6 +823,11 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("function trimFrontendLogItems()", content)
         self.assertIn("frontendState.log_items = frontendState.log_items.slice(-limit);", content)
         self.assertIn("if (trimFrontendLogItems() && !changed.includes(\"log_items\")) changed.push(\"log_items\");", content)
+        log_query_items_block = content.split("function logQueryItems()", 1)[1].split(
+            "function logQuerySignature",
+            1,
+        )[0]
+        self.assertNotIn("trimFrontendLogItems();", log_query_items_block)
 
     def test_web_log_rendering_is_current_page_and_budgeted(self):
         content = _static_bundle_content()
@@ -786,11 +846,12 @@ class StaticAssetsTests(unittest.TestCase):
         )[0]
 
         self.assertIn("const LOG_RENDER_ROW_BUDGET = 300;", content)
-        self.assertIn("const LOG_QUERY_WORKER_THRESHOLD = 80;", content)
+        self.assertNotIn("LOG_QUERY_WORKER_THRESHOLD", content)
         self.assertIn("renderCurrentPage();", render_all_block)
         self.assertNotIn("renderLogs();", render_all_block)
         self.assertIn("submitLogQuery(allItems, signature);", render_logs_block)
-        self.assertIn("queryLogsSync(allItems, sequence);", render_logs_block)
+        self.assertNotIn("queryLogsSync(allItems, sequence);", render_logs_block)
+        self.assertIn("receiveLogQueryResult(queryLogsSync(items, sequence));", content)
         self.assertIn('new Worker("/static/log_query_worker.js?v=20260707-log-worker")', content)
         self.assertIn("const items = Array.isArray(result.pageItems)", query_result_block)
         self.assertIn('patchTableRows("logBody", items', query_result_block)
@@ -999,6 +1060,7 @@ class WebUIBrowserTests(unittest.TestCase):
         for _attempt in range(3):
             try:
                 _wait_for_webui_ready(self._page, self._server_url)
+                _install_webui_test_helpers(self._page)
                 return
             except PlaywrightTimeoutError as exc:
                 last_error = exc
@@ -1224,7 +1286,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
+              window.__isolateFrontendStateForTest();
               frontendState.log_items = [
                 {
                   id: 'log-crawl',
@@ -1271,6 +1334,7 @@ class WebUIBrowserTests(unittest.TestCase):
               document.documentElement.dataset.language = 'zh-CN';
               switchPage('logs');
               renderLogs();
+              await window.__waitForLogRender({ rows: 3, total: 3, matched: 3, visible: 3, text: '全部日志 3' });
               const zh = Array.from(document.querySelectorAll('#logTabs [data-log-tab]')).map(button => button.textContent.trim());
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),
@@ -1298,18 +1362,18 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertIn("Performance logs 0", result["en"])
         self.assertIn("Error logs 1", result["en"])
 
-    def test_09da_large_log_query_uses_worker_and_renders_current_page(self):
+    def test_09da_log_query_uses_worker_even_for_small_batches(self):
         self._goto_ready()
-        self._page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
 
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest({ useLogWorker: true });
               if (ws) {
                 try { ws.close(); } catch (_error) {}
                 ws = null;
               }
-              frontendState.log_items = Array.from({ length: 120 }, (_, index) => ({
+              frontendState.log_items = Array.from({ length: 12 }, (_, index) => ({
                 id: `worker-log-${index}`,
                 time: '2026-07-06 03:30:' + String(index % 60).padStart(2, '0'),
                 level: index % 10 === 0 ? 'ERROR' : 'INFO',
@@ -1332,10 +1396,7 @@ class WebUIBrowserTests(unittest.TestCase):
               logQueryState = { signature: '', result: null, pending: false };
               switchPage('logs');
               renderLogs();
-              const deadline = Date.now() + 4000;
-              while ((!logQueryState.result || logQueryState.pending) && Date.now() < deadline) {
-                await new Promise(resolve => setTimeout(resolve, 25));
-              }
+              await window.__waitForLogRender({ rows: 12, total: 12, matched: 12, visible: 12, timeoutMs: 6000 });
               return {
                 workerCreated: Boolean(logQueryWorker),
                 pending: logQueryState.pending,
@@ -1351,18 +1412,19 @@ class WebUIBrowserTests(unittest.TestCase):
 
         self.assertTrue(result["workerCreated"])
         self.assertFalse(result["pending"])
-        self.assertEqual(result["rows"], 20)
-        self.assertEqual(result["total"], 120)
-        self.assertEqual(result["matched"], 120)
-        self.assertEqual(result["visible"], 20)
-        self.assertIn("120", result["allTab"])
+        self.assertEqual(result["rows"], 12)
+        self.assertEqual(result["total"], 12)
+        self.assertEqual(result["matched"], 12)
+        self.assertEqual(result["visible"], 12)
+        self.assertIn("12", result["allTab"])
 
     def test_09e_language_switch_translates_log_values_and_completed_detail_labels(self):
         self._goto_ready()
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
+              window.__isolateFrontendStateForTest();
               frontendState.settings_snapshot = frontendState.settings_snapshot || {};
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),
@@ -1406,6 +1468,7 @@ class WebUIBrowserTests(unittest.TestCase):
               selected.log = "";
               applyStaticLanguage();
               renderLogs();
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: 'System · GUI' });
               const logText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
               selected.completed = "completed-i18n-a";
@@ -1419,6 +1482,7 @@ class WebUIBrowserTests(unittest.TestCase):
               currentPage = "logs";
               applyStaticLanguage();
               renderLogs();
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: '系統 · 圖形介面' });
               const twLogText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
               renderCompleted();
@@ -1449,7 +1513,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
+              window.__isolateFrontendStateForTest();
               frontendState.settings_snapshot = {
                 "基础设置": {
                   download_directory: "D:\\\\Downloads",
@@ -1564,6 +1629,7 @@ class WebUIBrowserTests(unittest.TestCase):
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
               selected.log = "";
               renderLogs();
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: "All logs 1" });
               const logsText = document.getElementById("page-logs").textContent;
               const logPlatformLabel = document.querySelector("#logPlatformFilter").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
 
@@ -1600,6 +1666,7 @@ class WebUIBrowserTests(unittest.TestCase):
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
               selected.log = "";
               renderLogs();
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: "全部日志 1" });
               const zhLogsText = document.getElementById("page-logs").textContent;
 
               currentPage = "active";
@@ -1726,7 +1793,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
+              window.__isolateFrontendStateForTest();
               window.__languageActions = [];
               window.frontendAction = (action, payload) => window.__languageActions.push({ action, payload });
               frontendAction = window.frontendAction;
@@ -1847,6 +1915,14 @@ class WebUIBrowserTests(unittest.TestCase):
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
               selected.log = "";
               renderLogs();
+              await window.__waitForLogRender({
+                rows: 4,
+                total: 4,
+                matched: 4,
+                visible: 4,
+                itemId: "log-bilibili-start",
+                text: "Started Bilibili crawl task",
+              });
               const logsText = document.getElementById("page-logs").textContent;
               const logPlatformButton = document.querySelector("#logPlatformFilter").closest(".custom-select").querySelector(".custom-select-label").textContent.trim();
               const logPlatformOriginal = document.querySelector("#logPlatformFilter option[value='all']").dataset.originalLabel;
@@ -1963,7 +2039,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("Douyin download task submitted to the queue"),
                 translateRuntimeLogText("Kuaishou video stream captured and submitted to the queue"),
                 translateRuntimeLogText("MissAV detail page sniff timed out; playlist.m3u8 was not found"),
-                translateRuntimeLogText("Xiaohongshu crawl task finished")
+                translateRuntimeLogText("Xiaohongshu crawl task finished"),
+                translateRuntimeLogText("Switched to light theme"),
+                translateRuntimeLogText("ℹ️ No videos or images found in this directory"),
+                translateRuntimeLogText("Found 3 matching users")
               ];
               document.documentElement.dataset.language = "zh-TW";
               const tw = [
@@ -1972,7 +2051,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("Dispatched queued task to a download worker"),
                 translateRuntimeLogText("Download completed: demo.mp4"),
                 translateRuntimeLogText("Started Douyin task | target: demo"),
-                translateRuntimeLogText("Preparing Kuaishou video stream download")
+                translateRuntimeLogText("Preparing Kuaishou video stream download"),
+                translateRuntimeLogText("Switched to dark theme"),
+                translateRuntimeLogText("ℹ️ No videos or images found in this directory"),
+                translateRuntimeLogText("Found 2 matching users")
               ];
               document.documentElement.dataset.language = "en-US";
               const en = [
@@ -1985,7 +2067,11 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("启动抖音任务 | 目标: demo"),
                 translateRuntimeLogText("快手分享链接已解析并提交到下载队列"),
                 translateRuntimeLogText("MissAV m3u8 嗅探成功并提交下载"),
-                translateRuntimeLogText("小红书爬虫任务结束")
+                translateRuntimeLogText("小红书爬虫任务结束"),
+                translateRuntimeLogText("已切换到浅色主题"),
+                translateRuntimeLogText("已切换到深色主题"),
+                translateRuntimeLogText("ℹ️ 该目录下没有找到视频或图片"),
+                translateRuntimeLogText("找到 3 个匹配用户")
               ];
               return { cn, tw, en };
             }
@@ -2007,6 +2093,9 @@ class WebUIBrowserTests(unittest.TestCase):
                 "快手视频流已捕获并提交到下载队列",
                 "MissAV 详情页嗅探超时，未发现 playlist.m3u8",
                 "小红书爬虫任务结束",
+                "已切换到浅色主题",
+                "ℹ️ 该目录下没有找到视频或图片",
+                "找到 3 个匹配用户",
             ],
         )
         self.assertEqual(
@@ -2018,6 +2107,9 @@ class WebUIBrowserTests(unittest.TestCase):
                 "下載完成：demo.mp4",
                 "啟動抖音任務 | 目標：demo",
                 "準備下載快手影片串流",
+                "已切換到深色主題",
+                "ℹ️ 該目錄下沒有找到影片或圖片",
+                "找到 2 個匹配使用者",
             ],
         )
         self.assertEqual(
@@ -2033,6 +2125,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 "Kuaishou share link parsed and submitted to the queue",
                 "MissAV m3u8 sniffed successfully and submitted for download",
                 "Xiaohongshu crawl task finished",
+                "Switched to light theme",
+                "Switched to dark theme",
+                "ℹ️ No videos or images found in this directory",
+                "Found 3 matching users",
             ],
         )
 
@@ -2943,7 +3039,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
+              window.__isolateFrontendStateForTest();
               switchPage('logs');
               currentPage = 'logs';
               logPage = 1;
@@ -2961,12 +3058,14 @@ class WebUIBrowserTests(unittest.TestCase):
                 stack: ''
               }));
               renderLogs();
+              await window.__waitForLogRender({ rows: 20, total: 25, matched: 25, visible: 20 });
               const firstPageRows = document.querySelectorAll('#logBody tr').length;
               const firstStats = document.getElementById('logTotal').textContent;
               const firstIndicator = document.getElementById('logPageIndicator').textContent;
               const firstPrevDisabled = document.getElementById('logPrevPage').disabled;
               const firstNextDisabled = document.getElementById('logNextPage').disabled;
               setLogPage(1);
+              await window.__waitForLogRender({ rows: 5, total: 25, matched: 25, visible: 5 });
               return {
                 firstPageRows,
                 firstStats,
@@ -2999,7 +3098,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
+              window.__isolateFrontendStateForTest();
               switchPage('logs');
               currentPage = 'logs';
               logPage = 1;
@@ -3022,6 +3122,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 stack: ''
               }];
               renderLogs();
+              await window.__waitForLogRender({ rows: 0, total: 1, matched: 0, visible: 0 });
               const empty = document.getElementById('logEmptyState');
               const subtitle = empty.querySelector('.log-empty-subtitle');
               const primaryNode = empty.querySelector('[data-log-empty-primary]');
@@ -3062,7 +3163,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
             result = self._page.evaluate(
                 """
-                () => {
+                async () => {
+                  window.__isolateFrontendStateForTest();
                   currentPage = 'logs';
                   logPage = 1;
                   logPageSize = 20;
@@ -3087,6 +3189,7 @@ class WebUIBrowserTests(unittest.TestCase):
                   }];
                   switchPage('logs');
                   renderLogs();
+                  await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: 'Web 端开始扫描本地媒体目录' });
                   const shell = document.querySelector('#page-logs .logs-table-card .table-shell');
                   const shellRect = shell.getBoundingClientRect();
                   const headers = Array.from(document.querySelectorAll('#page-logs thead th')).map(node => node.getBoundingClientRect());
@@ -3122,6 +3225,7 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               const originalClick = HTMLAnchorElement.prototype.click;
               const originalCreateObjectUrl = URL.createObjectURL;
               const originalRevokeObjectUrl = URL.revokeObjectURL;
@@ -3161,6 +3265,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 }];
                 selected.log = '';
                 renderLogs();
+                await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, selectedId: 'log-detail-a' });
                 copyCurrentLogDetail();
                 copyCurrentLogJson();
                 exportCurrentLogDetail();

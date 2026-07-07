@@ -631,16 +631,16 @@ class MainWindow(QMainWindow):
 
     def _on_frontend_snapshot_finished(self, result: FrontendSnapshotResult) -> None:
         current_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0)
-        if result.sequence != current_sequence:
-            return
         service = self.__dict__.get("_frontend_state_service")
         if result.service_token != id(service):
             return
 
+        is_stale = result.sequence != current_sequence
+        self._remember_frontend_snapshot_result(result, allow_stale_partial=not is_stale)
+        if is_stale:
+            return
+
         snapshot = result.snapshot
-        self.__dict__["_cached_snapshot"] = snapshot
-        self.__dict__["_cached_frontend_version"] = int(snapshot.get("version") or 0)
-        self.__dict__["_frontend_section_signatures"] = dict(result.section_signatures)
         self.__dict__["_last_frontend_snapshot_build_ms"] = float(result.build_duration_ms)
         if result.skip_render:
             return
@@ -648,6 +648,25 @@ class MainWindow(QMainWindow):
         started = time.perf_counter()
         self.app_shell.render(snapshot, changed_sections=result.changed_sections)
         self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
+
+    def _remember_frontend_snapshot_result(
+        self,
+        result: FrontendSnapshotResult,
+        *,
+        allow_stale_partial: bool,
+    ) -> None:
+        snapshot = result.snapshot
+        if not isinstance(snapshot, dict):
+            return
+        previous_version = self._snapshot_frontend_version(self.__dict__.get("_cached_snapshot"))
+        snapshot_version = self._snapshot_frontend_version(snapshot)
+        if previous_version and snapshot_version < previous_version:
+            return
+        if result.changed_sections is not None and not allow_stale_partial and not previous_version:
+            return
+        self.__dict__["_cached_snapshot"] = snapshot
+        self.__dict__["_cached_frontend_version"] = snapshot_version
+        self.__dict__["_frontend_section_signatures"] = dict(result.section_signatures)
 
     def _record_frontend_render_duration(self, duration_ms: float) -> None:
         self.__dict__["_last_frontend_render_ms"] = duration_ms

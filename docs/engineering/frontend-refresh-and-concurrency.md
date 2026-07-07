@@ -25,6 +25,7 @@
 - 只有当前可见页面刷新主内容区；不可见页面只更新侧栏角标和底部状态栏。
 - GUI 初始化、切换 `FrontendStateService`、主动强制刷新可以走全量 snapshot；已有缓存后的普通刷新必须携带缓存 `version` 走 `FrontendSnapshotWorker(use_delta=True)`。
 - GUI delta 路径先调用 `FrontendStateService.get_delta(base_version)`，只把返回的 `sections` 合并进缓存；只有服务端返回 `full=True` 时才允许退回全量 snapshot。
+- 首次全量 snapshot 尚未返回时，后续高频刷新可能产生过期 worker 结果；过期结果不得渲染，但完整且版本不倒退的结果必须允许写入 `_cached_snapshot` 作为后续 delta 基线，避免 `use_delta` 长时间保持 `False`。
 - 页面切换等显式可见页请求如果版本未变化，只允许补拉目标 section，不能因为 `changed_sections` 为空退回全量刷新。
 - 下载队列、正在下载、已完成、失败列表只按 section delta 刷新。
 - 视频普通操作（重排、删除、失败重试、暂停、元数据更新）必须传入 `videos.*` topic 触发局部刷新；不得使用 `force=True` 绕过 delta，除非是初始化、切换 `FrontendStateService`、主动清缓存或错误恢复。
@@ -44,10 +45,18 @@
 - 进度、速度、日志类更新通过 `requestAnimationFrame` 批处理。
 - 非当前页不重建 DOM，只更新必要角标和底部状态。
 - WebSocket 每连接使用有界队列；noisy 消息可以合并或丢弃旧值，critical 消息不能被丢弃。
+- WebUI 日志中心筛选、排序、分页必须优先交给 `log_query_worker.js`；不得用“日志数量较少”作为主线程同步查询的理由。`queryLogsSync()` 只允许在浏览器不支持 Worker 或 worker 初始化/执行失败时作为降级路径。
+- WebUI 日志裁剪只允许发生在本地 append 或 delta 合并阶段；`renderLogs()` / `logQueryItems()` 不得再裁剪或改写 `frontendState.log_items`，避免渲染路径携带大数组副作用。
 
 ## UI / Worker / Cache / DB 职责边界
 
 日志中心、失败列表和大表格遵循三层边界。后续改动如果跨过这些边界，必须同时补回归测试。
+
+补充约束：
+- GUI domain event 进入 EventBus 后不得直接执行可能触发弹窗、表格更新或状态重排的慢 handler；GUI 控制器应把实际派发推迟到下一轮 Qt 事件循环，EventBus 发布栈只负责接收与排队。
+- 生产代码不得引入定时 `processEvents()` pump；浏览器 E2E 不得用 3.5 秒固定等待兜底，必须等待 `#app-shell` 或页面可观测状态。
+- 应用退出必须按顺序释放 frontend state service、AppState 延迟通知和 CacheService/diskcache 句柄；GUI 控制器和 Web 会话控制器都必须执行这条链路，关闭失败只能降级记录调试日志，不得中断退出流程。
+- GUI latest-state-wins worker 应复用统一 worker 骨架；只有顺序写文件等必须保序的任务才保留队列 worker。
 
 ### UI Thread
 
@@ -61,10 +70,13 @@ UI 线程只负责显示和轻量交互：
 - 不执行大列表过滤、排序、分页。
 - 不在选中行时同步规整日志详情、递归本地化或格式化大段 JSON。
 - 不同步构建完整 frontend snapshot，不做大段 JSON 签名 diff。
+- 不在页面渲染前对日志快照做全量 tuple/list 克隆或逐行校验；GUI 日志页只传递快照 batch 引用，过滤、复制、排序、分页交给 `LogQueryWorker`。
 - 不直接查询 SQLite、diskcache 或大体量本地缓存。
 - 不直接写出日志详情等大 payload 文件；页面只选择路径和显示结果，文件写出交给 worker。
+- 不在页面渲染路径探测图标或资源文件是否存在；平台/资源元数据进入页面前必须规整成可直接消费的字段，GUI 平台图标路径只按运行根路径计算，不能在 viewmodel/render 中做 `is_file()`。
+- 不在页面层重复派生下载详情字段；正在下载详情的字段、分片文案和速度标签由 `frontend_video_adapter.active_item()` 预计算，GUI/WebUI 只消费 `detail_fields`、`chunk_progress_label` 和 `speed_trend_label`。
 
-GUI 主窗口刷新时只向 `FrontendSnapshotWorker` 提交目标 section、当前快照引用和签名表，snapshot 构建、局部合并和 section diff 在 worker 中完成；GUI 日志页提交查询时只传递当前快照引用，行复制、筛选、排序和分页由 `LogQueryWorker` 完成；GUI 日志详情选中行后只提交当前行快照，字段派生、本地化、详情 JSON 格式化和 HTML 转义由 `LogDetailWorker` 完成，详情动作按钮必须等 worker 结果回来后再启用，不允许用 UI 线程 fallback 重新构建详情 payload；WebUI 大批日志由 `log_query_worker.js` 完成，主线程只接收 `pageItems` 并 patch 当前页。
+GUI 主窗口刷新时只向 `FrontendSnapshotWorker` 提交目标 section、当前快照引用和签名表，snapshot 构建、局部合并和 section diff 在 worker 中完成；GUI 日志页提交查询时只传递当前快照引用，行复制、筛选、排序和分页由 `LogQueryWorker` 完成；GUI 日志详情选中行后只提交当前行快照，字段派生、本地化、详情 JSON 格式化和 HTML 转义由 `LogDetailWorker` 完成，详情动作按钮必须等 worker 结果回来后再启用，不允许用 UI 线程 fallback 重新构建详情 payload；WebUI 日志查询由 `log_query_worker.js` 完成，主线程只接收 `pageItems` 并 patch 当前页。
 
 ### Worker Thread
 
@@ -87,7 +99,7 @@ Worker 线程负责所有可能卡住 UI 的工作：
 - `LogQueryWorker`：GUI 日志中心筛选、排序、分页。
 - `LogDetailWorker`：GUI 日志详情字段派生、本地化、JSON 格式化和 latest-state-wins 防抖。
 - `LogDetailExportWorker`：GUI 日志详情文件导出，避免页面线程写大 payload。
-- `log_query_worker.js`：WebUI 大批日志查询。
+- `log_query_worker.js`：WebUI 日志查询筛选、排序和分页。
 - `FailedRecordStore`：失败记录后台写 SQLite，并刷新内存快照。
 
 ### Cache / DB
@@ -131,3 +143,13 @@ python -m pytest tests/test_frontend_event_aggregator.py tests/test_frontend_sta
 python -m pytest tests/test_download_manager.py tests/test_unified_frontend_contract.py -q
 node --check app/web/static/app.js
 ```
+
+## GUI use_delta 判定边界
+
+`FrontendSnapshotRequest.use_delta=False` 只允许出现在以下场景：
+
+1. 首次启动或尚未收到任何可用 `_cached_snapshot`。
+2. `mock=True` 的演示快照。
+3. 明确 `force=True` 的人工强制刷新、服务切换或恢复路径。
+
+普通运行态事件，例如 `videos.update`、`logs.append`、`videos.metadata`、`videos.terminal`、`settings.update`，只要已经有 `_cached_snapshot`，必须提交 `use_delta=True`，并由 `FrontendSnapshotWorker` 优先调用 `FrontendStateService.get_delta(base_version, sections=...)`。只有服务端返回 `full=True` 或显式 section 不在 delta 返回体中时，才允许补拉目标 section；不得因为高频事件回退到全量 `get_snapshot()`。

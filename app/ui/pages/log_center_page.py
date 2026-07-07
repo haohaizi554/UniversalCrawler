@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import math
-from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -148,7 +147,7 @@ class LogCenterPage(PageFrame):
         super().__init__("", use_island=False)
         self.setObjectName("LogCenterPage")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._all_items: tuple[Mapping[str, Any], ...] = ()
+        self._all_items: Sequence[Any] = ()
         self.items: list[dict[str, Any]] = []
         self._category = "all"
         self._tab_buttons: dict[str, QPushButton] = {}
@@ -800,13 +799,13 @@ class LogCenterPage(PageFrame):
 
     def _platform_combo_label(self, meta: PlatformUiMeta) -> str:
         label = self._t(meta.label)
-        if meta.emoji and not (meta.icon_path and Path(meta.icon_path).is_file()):
+        if meta.emoji and not meta.icon_path:
             return f"{meta.emoji} {label}"
         return label
 
     def _add_platform_combo_item(self, meta: PlatformUiMeta) -> None:
         icon = QIcon()
-        if meta.icon_path and Path(meta.icon_path).is_file():
+        if meta.icon_path:
             icon = QIcon(meta.icon_path)
         self.platform_filter.addItem(icon, self._platform_combo_label(meta), meta.id)
 
@@ -892,13 +891,13 @@ class LogCenterPage(PageFrame):
         self._submit_log_query(reset_page=False)
 
     @staticmethod
-    def _snapshot_log_items(snapshot: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    def _snapshot_log_items(snapshot: Mapping[str, Any]) -> Sequence[Any]:
         rows = snapshot.get("log_items") or ()
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
             return ()
-        return tuple(item for item in rows if isinstance(item, Mapping))
+        return rows
 
-    def _make_log_items_signature(self, items: Sequence[Mapping[str, Any]]) -> tuple[Any, ...]:
+    def _make_log_items_signature(self, items: Sequence[Any]) -> tuple[Any, ...]:
         if not items:
             return (0, "", "")
         return (
@@ -908,7 +907,9 @@ class LogCenterPage(PageFrame):
         )
 
     @staticmethod
-    def _stable_log_item_signature(item: Mapping[str, Any], index: int) -> tuple[Any, ...]:
+    def _stable_log_item_signature(item: Any, index: int) -> tuple[Any, ...]:
+        if not isinstance(item, Mapping):
+            return ("", "", "", "", index)
         return (
             item.get("id"),
             item.get("time"),

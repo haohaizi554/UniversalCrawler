@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 from app.ui.viewmodels.log_platforms import (
     PlatformUiMeta,
@@ -69,3 +70,18 @@ def test_load_platform_options_can_read_settings_snapshot_platform_rows():
 
     assert by_id["xiaohongshu"].label == "小红书"
     assert by_id["local_plugin"].label == "本地插件"
+
+
+def test_log_center_page_does_not_probe_icon_files_during_render():
+    page_source = Path("app/ui/pages/log_center_page.py").read_text(encoding="utf-8")
+
+    assert "Path(meta.icon_path)" not in page_source
+    assert ".is_file()" not in page_source
+
+
+def test_log_platform_viewmodel_does_not_probe_icon_files():
+    source = Path("app/ui/viewmodels/log_platforms.py").read_text(encoding="utf-8")
+
+    assert "Path(" not in source
+    assert ".is_file()" not in source
+    assert "resolve_ui_icon_path" not in source

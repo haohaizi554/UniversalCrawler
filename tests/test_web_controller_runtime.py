@@ -78,6 +78,22 @@ class WebControllerRuntimeTests(unittest.TestCase):
 
         mocked_manager.assert_not_called()
 
+    def test_shutdown_releases_frontend_state_and_cache_resources(self):
+        from app.web.controller import WebController
+
+        frontend_state = Mock()
+        frontend_state.app_state = Mock()
+        frontend_state.cache_service = Mock()
+
+        with patch("app.web.controller.FrontendStateService", return_value=frontend_state):
+            controller = WebController(None, lambda *_args, **_kwargs: None)
+
+        controller.shutdown()
+
+        frontend_state.destroy.assert_called_once()
+        frontend_state.app_state.shutdown.assert_called_once()
+        frontend_state.cache_service.close.assert_called_once()
+
     def test_start_crawl_waits_for_shutdown_lifecycle_lock(self):
         from app.web.controller import WebController
 

@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Sequence
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QCoreApplication, Qt, QThread, QTimer
 from PyQt6.QtWidgets import QApplication
 
 from app.config import cfg
@@ -253,8 +253,24 @@ class ApplicationController(
             lambda event: self.event_bus.publish("download.domain_event", event),
             Qt.ConnectionType.QueuedConnection,
         )
-        self.event_bus.subscribe("spider.domain_event", self._dispatch_spider_event)
-        self.event_bus.subscribe("download.domain_event", self._dispatch_download_event)
+        self._spider_domain_event_handler = self._queue_spider_domain_event
+        self._download_domain_event_handler = self._queue_download_domain_event
+        self.event_bus.subscribe("spider.domain_event", self._spider_domain_event_handler)
+        self.event_bus.subscribe("download.domain_event", self._download_domain_event_handler)
+
+    def _queue_spider_domain_event(self, event) -> None:
+        self._queue_domain_event_dispatch(self._dispatch_spider_event, event)
+
+    def _queue_download_domain_event(self, event) -> None:
+        self._queue_domain_event_dispatch(self._dispatch_download_event, event)
+
+    @staticmethod
+    def _queue_domain_event_dispatch(dispatcher, event) -> None:
+        app = QCoreApplication.instance()
+        if app is not None and QThread.currentThread() == app.thread():
+            QTimer.singleShot(0, lambda: dispatcher(event))
+            return
+        dispatcher(event)
 
     def _initialize_runtime_state(self) -> None:
         self.videos = self.app_state.videos

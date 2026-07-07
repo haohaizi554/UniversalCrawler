@@ -20,7 +20,7 @@ _DOWNLOAD_FAILED_RE = re.compile(
     r"^(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
     r"下载失败\s*\[(?P<title>.+?)\][：:]\s*(?P<error>.+)$"
 )
-_DYNAMIC_PREFIX = r"(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
+_DYNAMIC_PREFIX = r"(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF\u2139\ufe0f]*\s*)?"
 _CRAWL_CONFIRM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}用户确认了\s*(?P<count>\d+)\s*个任务$")
 _CRAWL_FINAL_CONFIRM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}最终确认\s*(?P<count>\d+)\s*个.*$")
 _CRAWL_START_RE = re.compile(rf"^{_DYNAMIC_PREFIX}启动\s*(?P<platform>.*?)\s*爬虫任务$")
@@ -294,8 +294,9 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("已自动打开快手扫码登录弹窗", "Opened the Kuaishou QR-code login popup automatically", "已自動開啟快手掃碼登入彈窗"),
     ("未能自动弹出登录框，请直接在当前快手页面手动登录", "Could not open the login popup automatically; please log in manually on the current Kuaishou page", "未能自動彈出登入框，請直接在目前快手頁面手動登入"),
     ("登录失败，以游客身份爬取", "Login failed; crawling as guest", "登入失敗，將以訪客身分抓取"),
-    ("已切换到", "Switched to", "已切換到"),
-    ("主题", "theme", "主題"),
+    ("已切换到浅色主题", "Switched to light theme", "已切換到淺色主題"),
+    ("已切换到深色主题", "Switched to dark theme", "已切換到深色主題"),
+    ("该目录下没有找到视频或图片", "No videos or images found in this directory", "該目錄下沒有找到影片或圖片"),
     ("线程未在", "thread did not exit within", "執行緒未在"),
     ("跳过继续收尾", "skipping and continuing cleanup", "略過並繼續收尾"),
     ("获取流失败", "Failed to fetch stream", "取得串流失敗"),
@@ -363,7 +364,6 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("未找到公开作品", "No public works found", "未找到公開作品"),
     ("未找到作品或ID无效", "found no works or the ID is invalid", "未找到作品或 ID 無效"),
     ("搜索第", "Searching page", "搜尋第"),
-    ("找到", "Found", "找到"),
     ("个匹配用户", "matching users", "個匹配使用者"),
     ("尝试作为 sec_user_id 访问", "Trying to access as sec_user_id", "嘗試以 sec_user_id 存取"),
     ("尝试请求用户主页获取 sec_user_id", "Trying to request the user homepage to get sec_user_id", "嘗試請求使用者主頁以取得 sec_user_id"),
@@ -557,6 +557,70 @@ _EN_DYNAMIC_REPLACEMENTS = (
     ("释放下载", "Released download"),
 )
 
+_EN_LOG_FRAGMENT_CLEANUPS = (
+    ("参数未设置，程序不会储存任何数据至文件", "parameter is not set; the program will not store data to files"),
+    ("响应不是有效的 JSON 格式", "response is not valid JSON format"),
+    ("扫描被中断，跳过中文校验", "scan interrupted; skipped Chinese subtitle check"),
+    ("[DEBUG] 已调度 select_tasks 测试事件", "[DEBUG] select_tasks test event dispatched"),
+    ("无法写入", "failed to write"),
+    ("纯数字 UID 暂不supported直接搜索", "numeric UID cannot be searched directly"),
+    ("视频下载地址解析failed", "video download URL parsing failed"),
+    ("视频下载地址parsing failed", "video download URL parsing failed"),
+    ("Share link解析failed", "share-link parsing failed"),
+    ("Share link解析", "share-link parsing"),
+    ("加载本地 Cookie failed", "failed to load local Cookie"),
+    ("继续尝试页面登录", "continuing page login"),
+    ("关闭 SDK failed", "failed to close SDK"),
+    ("scan完成", "scan completed"),
+    ("登录failed", "login failed"),
+    ("扫描failed", "scan failed"),
+    ("搜索failed", "search failed"),
+    ("解析failed", "parsing failed"),
+    ("获取success", "fetched successfully"),
+    ("数据提取success", "data extracted successfully"),
+    ("视频下载地址解析failed", "video download URL parsing failed"),
+    ("HTTP 请求异常", "HTTP request error"),
+    ("响应内容预览", "response preview"),
+    ("参数已设置为", "parameter set to"),
+    ("使用本地兜底值", "using local fallback value"),
+    ("浏览器信息", "browser info"),
+    ("请求值", "request value"),
+    ("本地值", "local value"),
+    ("开始:", "started:"),
+    ("参数:", "parameter:"),
+    ("准备生成清单", "preparing to generate the list"),
+    ("同时进行中", "running concurrently"),
+    ("Cookie 有效", "Cookie is valid"),
+    ("sessionid_ss 有效", "sessionid_ss is valid"),
+    ("个valid resources", "valid resources"),
+    ("个candidates", "candidates"),
+    ("个下载项", "download items"),
+    ("个有效资源", "valid resources"),
+    ("个匹配用户", "matching users"),
+    ("个小红书下载任务", "Xiaohongshu download tasks"),
+    ("个账号候选", "account candidates"),
+    ("个任务", "tasks"),
+    ("个项目", "items"),
+    ("个视频", "videos"),
+    ("个文件", "files"),
+    ("个候选", "candidates"),
+    ("粉丝", "followers"),
+    ("作品", "works"),
+    ("合集", "collection"),
+    ("小红书", "Xiaohongshu"),
+    ("抖音", "Douyin"),
+    ("快手", "Kuaishou"),
+    ("扫描", "scan"),
+    ("解析", "parse"),
+    ("聚合", "aggregate"),
+    ("有效", "valid"),
+    ("最多", "max"),
+    ("（如", " (for example "),
+    ("）", ")"),
+    ("个for selection", "for selection"),
+    ("内退出", ""),
+)
+
 _NON_EN_DYNAMIC_EXACT = {
     "fetch video detail": {
         "zh-CN": "获取视频详情",
@@ -728,7 +792,47 @@ def _localized_media_term(value: str, language: str) -> str:
     return _localized(_MEDIA_TERM_ALIASES.get(text, {}), language) or text
 
 
+def _cleanup_english_log_fragments(text: str) -> str:
+    result = str(text or "")
+    for source, target in _EN_LOG_FRAGMENT_CLEANUPS:
+        result = result.replace(source, target)
+    result = re.sub(r"另有\s*(?P<count>\d+)\s*items?items were removed", r"\g<count> additional items were removed", result)
+    result = re.sub(r"已切换到\s*1\s*主题", "Switched theme", result)
+    result = re.sub(r"获取\s*(?P<name>.*?)\s*参数failed", r"failed to fetch \g<name> parameter", result)
+    result = re.sub(r"kept\s*(?P<count>\d+)\s*个\s*(?P<label>.*?)\s*[,，;]", r"kept \g<count> \g<label>; ", result)
+    result = re.sub(r"共\s*(?P<count>\d+)\s*个", r"total \g<count> items", result)
+    result = re.sub(r"total\s+(?P<count>\d+)\s*个", r"total \g<count> items", result)
+    result = re.sub(r"发现\s*(?P<count>\d+)\s*个", r"found \g<count> items", result)
+    result = re.sub(r"scanned\s*(?P<count>\d+)\s*个", r"scanned \g<count> items", result)
+    result = re.sub(r"Selected\s*(?P<count>\d+)\s*个", r"Selected \g<count> items", result)
+    result = re.sub(r"(?<=\d)\s*项", " items", result)
+    result = re.sub(r"(?<=\d)\s*页", "", result)
+    result = re.sub(r"另有\s*(?P<count>\d+)\s*itemsitems were removed", r"\g<count> additional items were removed", result)
+    result = re.sub(r"共\s*(?P<count>\d+)\s*candidates", r"total \g<count> candidates", result)
+    result = result.replace("scan完成", "scan completed")
+    result = result.replace("视频下载地址parsing failed", "video download URL parsing failed")
+    result = result.replace("itemsitems", "items")
+    result = result.replace("，please", "; please")
+    result = result.replace("，preparing", "; preparing")
+    result = result.replace("，", ", ")
+    result = result.replace("。", ".")
+    return result
+
+
 def _localize_english_dynamic(text: str) -> str:
+    theme_switch = re.match(rf"^{_DYNAMIC_PREFIX}已切换到(?P<mode>浅色|深色)主题[。.]?$", text)
+    if theme_switch:
+        mode = "light" if theme_switch.group("mode") == "浅色" else "dark"
+        return f"{theme_switch.group('prefix') or ''}Switched to {mode} theme"
+
+    media_empty = re.match(rf"^{_DYNAMIC_PREFIX}该目录下没有找到视频或图片[。.]?$", text)
+    if media_empty:
+        return f"{media_empty.group('prefix') or ''}No videos or images found in this directory"
+
+    matching_users = re.match(rf"^{_DYNAMIC_PREFIX}找到\s*(?P<count>\d+)\s*(?:个匹配用户|matching users)$", text)
+    if matching_users:
+        return f"{matching_users.group('prefix') or ''}Found {matching_users.group('count')} matching users"
+
     bilibili_stream_retry = re.match(
         r"^(?P<prefix>.*?)(?:B站|Bilibili)\s+(?P<media>.*?)\s+流连接断开，"
         r"(?P<delay>\d+)s\s+后重试\s+\((?P<attempt>\d+)/(?:\s*)?(?P<total>\d+)\):\s*(?P<error>.+)$",
@@ -888,6 +992,31 @@ def _localize_non_english_dynamic(text: str, language: str) -> str:
     if mapped:
         return _localized(mapped, language)
 
+    match = re.match(rf"^{_DYNAMIC_PREFIX}Switched to\s*(?P<mode>light|dark)\s*theme[。.]?$", text, re.IGNORECASE)
+    if match:
+        mode = match.group("mode").lower()
+        localized_mode = (
+            "淺色" if language == "zh-TW" and mode == "light"
+            else "深色" if language == "zh-TW"
+            else "浅色" if mode == "light"
+            else "深色"
+        )
+        return f"{match.group('prefix') or ''}{'已切換到' if language == 'zh-TW' else '已切换到'}{localized_mode}{'主題' if language == 'zh-TW' else '主题'}"
+
+    match = re.match(rf"^{_DYNAMIC_PREFIX}No videos or images found in this directory[。.]?$", text, re.IGNORECASE)
+    if match:
+        message = "該目錄下沒有找到影片或圖片" if language == "zh-TW" else "该目录下没有找到视频或图片"
+        return f"{match.group('prefix') or ''}{message}"
+
+    match = re.match(
+        rf"^{_DYNAMIC_PREFIX}(?:Found|找到)\s*(?P<count>\d+)\s*(?:matching users|个匹配用户|個匹配使用者)$",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        unit = "個匹配使用者" if language == "zh-TW" else "个匹配用户"
+        return f"{match.group('prefix') or ''}找到 {match.group('count')} {unit}"
+
     match = re.match(r"^Bilibili route:\s*(?P<route>.+)$", text)
     if match:
         route = match.group("route").strip()
@@ -1020,11 +1149,11 @@ def localize_log_text(text: object, language: str | None) -> str:
     phrase = _apply_runtime_phrase_translations(value, normalized)
     if phrase != value:
         if normalized == "en-US":
-            return _localize_english_dynamic(phrase)
+            return _cleanup_english_log_fragments(_localize_english_dynamic(phrase))
         dynamic = _localize_non_english_dynamic(phrase, normalized)
         return dynamic
     if normalized == "en-US":
-        return _localize_english_dynamic(value)
+        return _cleanup_english_log_fragments(_localize_english_dynamic(value))
     return _localize_non_english_dynamic(value, normalized)
 
 

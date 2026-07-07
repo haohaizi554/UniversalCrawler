@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -303,6 +304,29 @@ class AntiRecursionGuardrailTests(unittest.TestCase):
                 bus.publish(f"topic-{index}", index)
 
         warning.assert_not_called()
+
+
+class UIAsyncGuardrailTests(unittest.TestCase):
+    def test_production_code_does_not_pump_qt_process_events(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        offenders: list[str] = []
+        for path in (project_root / "app").rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "processEvents(" in text:
+                offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
+    def test_browser_e2e_does_not_use_legacy_fixed_3_5_second_waits(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        forbidden = ("time.sleep(3.5", "wait_for_timeout(3500", "sleep(3500")
+        offenders: list[str] = []
+        for path in (project_root / "tests").rglob("test_web*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if any(token in text for token in forbidden):
+                offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

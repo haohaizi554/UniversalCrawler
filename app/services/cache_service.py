@@ -147,9 +147,21 @@ class CacheService:
                     conn.commit()
 
     def close(self) -> None:
-        if self._disk_cache is not None:
-            with self._disk_lock:
-                self._disk_cache.close()
+        with self._disk_lock:
+            disk_cache = self._disk_cache
+            if disk_cache is None:
+                return
+            try:
+                disk_cache.close()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "CacheService",
+                    "close_diskcache",
+                    exc,
+                    details={"cache_path": str(self._disk_cache_path)},
+                )
+            finally:
+                self._disk_cache = None
 
     def _read_local_persistent(self, key: str) -> tuple[Any, float | None] | None:
         if self._disk_cache is not None:

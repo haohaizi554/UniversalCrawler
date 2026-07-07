@@ -204,16 +204,18 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("BV ID", placeholder)
         self.assertNotEqual("Enter a profile, shared, or collection link...", placeholder)
 
-    def test_gui_log_query_submission_hands_batch_to_worker_without_row_clone(self):
+    def test_gui_log_query_submission_hands_snapshot_batch_to_worker_without_ui_clone(self):
         shell = self._make_shell()
         logs = shell.pages["logs"]
         row = {"id": "log-a", "time": "2026-07-06 10:00:00", "level": "INFO", "message": "hello"}
-        logs._all_items = (row,)
+        row_batch = [row]
+        logs._all_items = row_batch
 
         with patch.object(logs._log_query_worker, "submit") as submit:
             logs._submit_log_query(reset_page=True)
 
         request = submit.call_args.args[0]
+        self.assertIs(request.items, row_batch)
         self.assertIs(request.items[0], row)
 
     def test_gui_log_empty_state_subtitle_uses_two_comma_free_lines(self):
@@ -799,6 +801,35 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             TEXT["merge_status"],
         }
         self.assertFalse(removed_detail_rows & set(active._detail_value_labels))
+
+    def test_active_downloads_detail_consumes_service_ready_fields(self):
+        shell = self._make_shell()
+        shell.show_page("active")
+        active = shell.pages["active"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        item = snapshot["active_downloads"][0]
+        item["title"] = "raw title should not win"
+        item["detail_fields"] = [
+            {"label": TEXT["title"], "value": "service ready title", "wrap": True},
+            {"label": TEXT["platform"], "value": "service platform", "wrap": False},
+            {"label": TEXT["save_dir"], "value": r"D:\service\ready", "wrap": True},
+            {"label": TEXT["output_filename"], "value": "service-ready.mp4", "wrap": True},
+            {"label": TEXT["source_url"], "value": "https://service.example/video", "wrap": True},
+            {"label": TEXT["trace_id"], "value": "trace-ready", "wrap": False},
+        ]
+        item["chunk_progress_label"] = "42% (2/5)"
+        item["speed_trend_label"] = "9.9 MB/s"
+
+        active.render(snapshot)
+        self.app.processEvents()
+
+        title_label = active._detail_value_labels[TEXT["title"]]
+        title_text = title_label.raw_text() if hasattr(title_label, "raw_text") else title_label.text()
+        self.assertEqual(title_text, "service ready title")
+        self.assertEqual(active._detail_value_labels[TEXT["chunk_progress"]].text(), "42% (2/5)")
+        trend = active.findChild(SpeedTrendWidget)
+        self.assertIsNotNone(trend)
+        self.assertEqual(trend._speed_label, "9.9 MB/s")
 
     def test_smart_wrap_label_breaks_before_next_segment_when_it_will_not_fit(self):
         label = SmartWrapLabel("https://example.com/segment-that-fits/next-segment-that-does-not-fit")
@@ -2575,7 +2606,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn("System logs", tab_text)
 
     def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
-        from app.ui.viewmodels.log_i18n import localize_log_text
+        from app.ui.viewmodels.log_i18n import localize_log_payload, localize_log_text
 
         shell = self._make_shell()
         shell.show_page("logs")
@@ -2629,6 +2660,26 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         )
         self.assertIn("Loaded 1 local file", logs._last_json_text)
         self.assertNotIn("\u5df2\u52a0\u8f7d", logs._last_json_text)
+        self.assertEqual(localize_log_text("已切换到浅色主题", "en-US"), "Switched to light theme")
+        self.assertEqual(localize_log_text("已切换到深色主题", "en-US"), "Switched to dark theme")
+        self.assertEqual(localize_log_text("Switched to light theme", "zh-CN"), "已切换到浅色主题")
+        self.assertEqual(localize_log_text("Switched to dark theme", "zh-TW"), "已切換到深色主題")
+        self.assertEqual(
+            localize_log_text("\u2139\ufe0f 该目录下没有找到视频或图片", "en-US"),
+            "\u2139\ufe0f No videos or images found in this directory",
+        )
+        self.assertEqual(
+            localize_log_text("\u2139\ufe0f No videos or images found in this directory", "zh-CN"),
+            "\u2139\ufe0f 该目录下没有找到视频或图片",
+        )
+        self.assertEqual(localize_log_text("找到 3 个匹配用户", "en-US"), "Found 3 matching users")
+        self.assertEqual(localize_log_text("Found 3 matching users", "zh-CN"), "找到 3 个匹配用户")
+        localized_payload = localize_log_payload(
+            {"description": "\u2139\ufe0f 该目录下没有找到视频或图片"},
+            "zh-CN",
+        )
+        self.assertEqual(localized_payload["description"], "\u2139\ufe0f 该目录下没有找到视频或图片")
+        self.assertNotIn("Found视频", localized_payload["description"])
         self.assertEqual(localize_log_text("用户确认了 45 个任务", "en-US"), "User confirmed 45 tasks")
         self.assertEqual(localize_log_text("启动 Bilibili 爬虫任务", "en-US"), "Started Bilibili crawl task")
         self.assertEqual(localize_log_text("Bilibili 爬虫任务结束", "en-US"), "Bilibili crawl task finished")
@@ -2762,6 +2813,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertEqual(set(gui_entries), set(web_entries))
         self.assertIn(("默认打开方式已生效", "Default open mode is active", "預設開啟方式已生效"), gui_entries)
+        self.assertIn(("已切换到浅色主题", "Switched to light theme", "已切換到淺色主題"), gui_entries)
+        self.assertIn(
+            ("该目录下没有找到视频或图片", "No videos or images found in this directory", "該目錄下沒有找到影片或圖片"),
+            gui_entries,
+        )
+        self.assertNotIn(("已切换到", "Switched to", "已切換到"), gui_entries)
+        self.assertNotIn(("主题", "theme", "主題"), gui_entries)
+        self.assertNotIn(("找到", "Found", "找到"), gui_entries)
 
     def test_gui_log_center_localizes_source_components_after_language_switch(self):
         shell = self._make_shell()
@@ -3754,6 +3813,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("active-detail-fields", content)
         self.assertIn("active-detail-metrics", content)
         active_detail_fn = content.split("function activeDetailHtml", 1)[1].split("function completedDetailHtml", 1)[0]
+        self.assertIn("item.detail_fields", active_detail_fn)
+        self.assertIn("item.chunk_progress_label", active_detail_fn)
+        self.assertIn("item.speed_trend_label", active_detail_fn)
         for removed in (
             "\\u7ebf\\u7a0b\\u6570",
             "\\u91cd\\u8bd5\\u6b21\\u6570",
@@ -3780,7 +3842,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("line-height: 1.18", css)
         self.assertIn("flex: 1 1 0", css)
         self.assertIn("overflow: hidden", css)
-        self.assertIn('activeTrendRenderer(item.speed_trend || [], item.speed || "0 B/s")', content)
+        self.assertIn('activeTrendRenderer(item.speed_trend || [], item.speed_trend_label || item.speed || "0 B/s")', content)
         self.assertIn('text-anchor="end"', content)
         self.assertIn("onloadedmetadata", content)
         self.assertIn('"update_completed_metadata"', content)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from app.debug_logger import debug_logger
+from app.ui.viewmodels.latest_worker import LatestRequestWorker
 from app.ui.viewmodels import log_filtering
 from app.ui.viewmodels.log_platforms import PlatformUiMeta
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, total_pages
@@ -14,7 +14,7 @@ from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_
 @dataclass(frozen=True)
 class LogQueryRequest:
     sequence: int
-    items: tuple[Mapping[str, Any], ...]
+    items: Sequence[Any]
     categories: tuple[str, ...]
     category: str
     level: str
@@ -58,7 +58,7 @@ def stable_log_item_id(item: Mapping[str, Any], index: int) -> str:
 
 
 def query_log_items(request: LogQueryRequest) -> LogQueryResult:
-    all_items = [dict(item) for item in request.items]
+    all_items = [dict(item) for item in request.items if isinstance(item, Mapping)]
     filtered_items = [
         item
         for item in all_items
@@ -132,60 +132,38 @@ class LogQueryWorker:
     """Latest-state-wins worker for expensive log filtering, sorting and paging."""
 
     def __init__(self, on_result: Callable[[LogQueryResult], None]) -> None:
-        self._on_result = on_result
-        self._condition = threading.Condition()
-        self._pending: LogQueryRequest | None = None
-        self._shutdown = False
-        self._thread = threading.Thread(target=self._run, name="log-query-worker", daemon=True)
-        self._thread.start()
+        self._worker = LatestRequestWorker(
+            name="log-query-worker",
+            on_result=on_result,
+            process=self._process,
+        )
 
     def submit(self, request: LogQueryRequest) -> None:
-        with self._condition:
-            if self._shutdown:
-                return
-            self._pending = request
-            self._condition.notify()
+        self._worker.submit(request)
 
     def shutdown(self) -> None:
-        with self._condition:
-            self._shutdown = True
-            self._condition.notify()
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+        self._worker.shutdown()
 
-    def _run(self) -> None:
-        while True:
-            with self._condition:
-                while self._pending is None and not self._shutdown:
-                    self._condition.wait()
-                if self._shutdown:
-                    return
-                request = self._pending
-                self._pending = None
-            if request is None:
-                continue
-            try:
-                result = query_log_items(request)
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "LogQueryWorker",
-                    "query_log_items",
-                    exc,
-                    details={"sequence": request.sequence, "item_count": len(request.items)},
-                )
-                result = LogQueryResult(
-                    sequence=request.sequence,
-                    page_items=[],
-                    category_counts={key: 0 for key in request.categories},
-                    total_count=len(request.items),
-                    matched_count=0,
-                    visible_count=0,
-                    current_page=1,
-                    total_pages=1,
-                    selected_id="",
-                    first_trace_id="",
-                )
-            try:
-                self._on_result(result)
-            except RuntimeError:
-                return
+    @staticmethod
+    def _process(request: LogQueryRequest) -> LogQueryResult:
+        try:
+            return query_log_items(request)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "LogQueryWorker",
+                "query_log_items",
+                exc,
+                details={"sequence": request.sequence, "item_count": len(request.items)},
+            )
+            return LogQueryResult(
+                sequence=request.sequence,
+                page_items=[],
+                category_counts={key: 0 for key in request.categories},
+                total_count=len(request.items),
+                matched_count=0,
+                visible_count=0,
+                current_page=1,
+                total_pages=1,
+                selected_id="",
+                first_trace_id="",
+            )

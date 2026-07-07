@@ -177,17 +177,25 @@
         </div>
       `;
     }
+    const detailFields = Array.isArray(item.detail_fields) && item.detail_fields.length
+      ? item.detail_fields.map(field => [field.label || "", field.value || ""])
+      : [
+          ["\u6807\u9898", item.title], ["\u5e73\u53f0", item.platform], ["\u4fdd\u5b58\u76ee\u5f55", item.save_dir || ""], ["\u8f93\u51fa\u6587\u4ef6\u540d", item.output_filename || ""],
+          ["\u6765\u6e90\u94fe\u63a5", item.source_url], ["Trace ID", item.trace_id],
+        ];
+    const wrapLabels = new Set(
+      (Array.isArray(item.detail_fields) && item.detail_fields.length
+        ? item.detail_fields.filter(field => field && field.wrap).map(field => field.label || "")
+        : ["\u4fdd\u5b58\u76ee\u5f55", "\u8f93\u51fa\u6587\u4ef6\u540d", "\u6765\u6e90\u94fe\u63a5"])
+    );
     const chunk = item.chunk_progress || {};
     const chunkPercent = Number(chunk.percent ?? item.progress ?? 0);
-    const chunkText = `${chunkPercent}% (${chunk.completed || 0}/${chunk.total || 0})`;
+    const chunkText = item.chunk_progress_label || `${chunkPercent}% (${chunk.completed || 0}/${chunk.total || 0})`;
     return `
       <div class="active-detail-card">
         <h2>${escapeHtml(translate("\u5f53\u524d\u4e0b\u8f7d"))}</h2>
         <div class="active-detail-fields">
-          ${kvHtml([
-            ["\u6807\u9898", item.title], ["\u5e73\u53f0", item.platform], ["\u4fdd\u5b58\u76ee\u5f55", item.save_dir || ""], ["\u8f93\u51fa\u6587\u4ef6\u540d", item.output_filename || ""],
-            ["\u6765\u6e90\u94fe\u63a5", item.source_url], ["Trace ID", item.trace_id],
-          ], new Set(["\u4fdd\u5b58\u76ee\u5f55", "\u8f93\u51fa\u6587\u4ef6\u540d", "\u6765\u6e90\u94fe\u63a5"]))}
+          ${kvHtml(detailFields, wrapLabels)}
         </div>
         <div class="active-detail-metrics">
           <div class="active-chunk">
@@ -195,7 +203,7 @@
             ${progressHtml(chunkPercent)}
           </div>
           <h2>${escapeHtml(translate("\u901f\u5ea6\u8d8b\u52bf\uff08\u8fd160\u79d2\uff09"))}</h2>
-          ${activeTrendRenderer(item.speed_trend || [], item.speed || "0 B/s")}
+          ${activeTrendRenderer(item.speed_trend || [], item.speed_trend_label || item.speed || "0 B/s")}
         </div>
       </div>
       <div class="active-events-card">

@@ -72,6 +72,19 @@ def test_query_log_items_moves_to_selected_item_page():
     assert result.selected_id == "a"
 
 
+def test_query_log_items_filters_non_mapping_rows_in_worker():
+    rows = [
+        {"id": "valid", "time": "2026-06-30 10:00:00", "level": "INFO"},
+        "corrupt-row",
+    ]
+
+    result = query_log_items(_request(rows))
+
+    assert result.total_count == 1
+    assert result.matched_count == 1
+    assert [item["id"] for item in result.page_items] == ["valid"]
+
+
 def test_log_query_worker_delivers_latest_result_after_rapid_submits():
     rows = [{"id": "a", "time": "2026-06-30 10:00:00", "level": "INFO"}]
     received = []

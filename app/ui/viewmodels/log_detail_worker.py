@@ -10,6 +10,7 @@ from typing import Any
 
 from app.debug_logger import debug_logger
 from app.ui.localization import normalize_language, tr
+from app.ui.viewmodels.latest_worker import LatestRequestWorker
 from app.ui.viewmodels.log_classification import (
     derive_result_type,
     normalized_event_code,
@@ -157,76 +158,54 @@ class LogDetailWorker:
     """Latest-state-wins worker for log detail normalization and JSON formatting."""
 
     def __init__(self, on_result: Callable[[LogDetailResult], None]) -> None:
-        self._on_result = on_result
-        self._condition = threading.Condition()
-        self._pending: LogDetailRequest | None = None
-        self._shutdown = False
-        self._thread = threading.Thread(target=self._run, name="log-detail-worker", daemon=True)
-        self._thread.start()
+        self._worker = LatestRequestWorker(
+            name="log-detail-worker",
+            on_result=on_result,
+            process=self._process,
+        )
 
     def submit(self, request: LogDetailRequest) -> None:
-        with self._condition:
-            if self._shutdown:
-                return
-            self._pending = request
-            self._condition.notify()
+        self._worker.submit(request)
 
     def shutdown(self) -> None:
-        with self._condition:
-            self._shutdown = True
-            self._condition.notify()
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+        self._worker.shutdown()
 
-    def _run(self) -> None:
-        while True:
-            with self._condition:
-                while self._pending is None and not self._shutdown:
-                    self._condition.wait()
-                if self._shutdown:
-                    return
-                request = self._pending
-                self._pending = None
-            if request is None:
-                continue
-            try:
-                result = build_log_detail_result(request)
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "LogDetailWorker",
-                    "build_log_detail_result",
-                    exc,
-                    details={"sequence": request.sequence, "item_id": request.item_id},
-                )
-                result = LogDetailResult(
-                    sequence=request.sequence,
-                    item_id=request.item_id,
-                    language=normalize_language(request.language),
-                    time_text="-",
-                    source_text="-",
-                    platform_text="-",
-                    trace_id="",
-                    message_text="-",
-                    raw_message="",
-                    raw_level="-",
-                    level_style_key="INFO",
-                    status_text="-",
-                    scope_text="-",
-                    stage_text="-",
-                    event_code_text="-",
-                    event_code_tooltip="",
-                    detail_payload={},
-                    detail_json_text="{}",
-                    detail_json_escaped="{}",
-                    full_payload={},
-                    full_payload_text="{}",
-                    stack_text="",
-                    has_stack=False,
-                )
-            try:
-                self._on_result(result)
-            except RuntimeError:
-                return
+    @staticmethod
+    def _process(request: LogDetailRequest) -> LogDetailResult:
+        try:
+            return build_log_detail_result(request)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "LogDetailWorker",
+                "build_log_detail_result",
+                exc,
+                details={"sequence": request.sequence, "item_id": request.item_id},
+            )
+            return LogDetailResult(
+                sequence=request.sequence,
+                item_id=request.item_id,
+                language=normalize_language(request.language),
+                time_text="-",
+                source_text="-",
+                platform_text="-",
+                trace_id="",
+                message_text="-",
+                raw_message="",
+                raw_level="-",
+                level_style_key="INFO",
+                status_text="-",
+                scope_text="-",
+                stage_text="-",
+                event_code_text="-",
+                event_code_tooltip="",
+                detail_payload={},
+                detail_json_text="{}",
+                detail_json_escaped="{}",
+                full_payload={},
+                full_payload_text="{}",
+                stack_text="",
+                has_stack=False,
+            )
 
 
 class LogDetailExportWorker:
