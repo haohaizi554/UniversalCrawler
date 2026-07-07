@@ -321,3 +321,47 @@ class StateAndEventTests(unittest.TestCase):
 
         self.assertEqual(FakeDiskCache.instances[0].close_count, 1)
         self.assertIsNone(cache._disk_cache)
+
+    def test_app_state_shutdown_closes_owned_cache_service(self):
+        class CloseableCache:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.closed = 0
+
+            def get(self, _key, default=None):
+                return default
+
+            def set(self, *_args, **_kwargs) -> None:
+                return None
+
+            def close(self) -> None:
+                self.closed += 1
+
+        with patch("app.services.app_state.CacheService", CloseableCache):
+            state = AppState(event_bus=EventBus())
+            cache = state.cache_service
+
+            state.shutdown()
+            state.shutdown()
+
+        self.assertEqual(cache.closed, 1)
+
+    def test_app_state_shutdown_does_not_close_borrowed_cache_service(self):
+        class BorrowedCache:
+            def __init__(self) -> None:
+                self.closed = 0
+
+            def get(self, _key, default=None):
+                return default
+
+            def set(self, *_args, **_kwargs) -> None:
+                return None
+
+            def close(self) -> None:
+                self.closed += 1
+
+        cache = BorrowedCache()
+        state = AppState(event_bus=EventBus(), cache_service=cache)
+
+        state.shutdown()
+
+        self.assertEqual(cache.closed, 0)

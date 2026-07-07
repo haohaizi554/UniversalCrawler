@@ -5,6 +5,12 @@ from unittest.mock import patch
 
 from app.web.controller import WebSocketBridge
 
+
+async def _wait_until(predicate):
+    while not predicate():
+        await asyncio.sleep(0)
+
+
 class _FakeLoop:
     def __init__(self):
         self.soon_calls = []
@@ -324,12 +330,51 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual([event_type for event_type, _data in sent], ["frontend_delta", "task_finished"])
         self.assertEqual(bridge._last_delta_version, 2)
 
+    def test_running_loop_builds_frontend_delta_off_event_loop_thread(self):
+        async def scenario():
+            main_thread = threading.get_ident()
+            provider_threads: list[int] = []
+            sent = []
+            delta_sent = asyncio.Event()
+
+            def send_func(event_type, data):
+                sent.append((event_type, data))
+                if event_type == "frontend_delta":
+                    delta_sent.set()
+                return True
+
+            def delta_provider(base_version):
+                provider_threads.append(threading.get_ident())
+                return {
+                    "version": base_version + 1,
+                    "changed_sections": ["queue_items", "app_status"],
+                    "sections": {},
+                }
+
+            bridge = WebSocketBridge(
+                asyncio.get_running_loop(),
+                send_func,
+                delta_provider=delta_provider,
+            )
+
+            bridge.emit("task_finished", {"video_id": "v1"})
+
+            await asyncio.wait_for(delta_sent.wait(), timeout=1)
+            self.assertTrue(provider_threads)
+            self.assertNotEqual(provider_threads[0], main_thread)
+            self.assertIn("frontend_delta", [event_type for event_type, _data in sent])
+
+        asyncio.run(scenario())
+
     def test_async_send_rejection_does_not_acknowledge_delta_version(self):
         async def scenario():
             sent = []
+            delta_sent = asyncio.Event()
 
             async def send_func(event_type, data):
                 sent.append((event_type, data))
+                if event_type == "frontend_delta":
+                    delta_sent.set()
                 if event_type == "frontend_delta":
                     return False
                 return True
@@ -348,8 +393,7 @@ class WebSocketBridgeTests(unittest.TestCase):
             )
 
             bridge.emit("task_finished", {"video_id": "v1"})
-            for _ in range(5):
-                await asyncio.sleep(0)
+            await asyncio.wait_for(delta_sent.wait(), timeout=1)
 
             event_types = [event_type for event_type, _data in sent]
             self.assertEqual(len(event_types), 2)
@@ -361,7 +405,11 @@ class WebSocketBridgeTests(unittest.TestCase):
 
     def test_async_send_acceptance_acknowledges_delta_version(self):
         async def scenario():
+            delta_sent = asyncio.Event()
+
             async def send_func(event_type, data):
+                if event_type == "frontend_delta":
+                    delta_sent.set()
                 return True
 
             def delta_provider(base_version):
@@ -378,8 +426,8 @@ class WebSocketBridgeTests(unittest.TestCase):
             )
 
             bridge.emit("task_finished", {"video_id": "v1"})
-            for _ in range(5):
-                await asyncio.sleep(0)
+            await asyncio.wait_for(delta_sent.wait(), timeout=1)
+            await asyncio.wait_for(_wait_until(lambda: bridge._last_delta_version == 3), timeout=1)
 
             self.assertEqual(bridge._last_delta_version, 3)
 

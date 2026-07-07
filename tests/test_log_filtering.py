@@ -73,7 +73,7 @@ def test_matches_filters_uses_level_time_platform_trace_and_keyword():
     )
 
 
-def test_system_and_performance_logs_are_visible_under_platform_filter():
+def test_platform_filter_excludes_system_logs_for_selected_business_platform():
     options, metas = _platform_context()
     system_row = {
         "time": "2026-06-30 11:45:00",
@@ -81,9 +81,35 @@ def test_system_and_performance_logs_are_visible_under_platform_filter():
         "source": "ApplicationController",
         "status_code": "APP_INIT",
         "platform": "\u7cfb\u7edf",
+        "platform_id": "system",
     }
 
+    assert not log_filtering.matches_platform(
+        system_row,
+        "bilibili",
+        platform_options=options,
+        platform_meta_by_id=metas,
+    )
     assert log_filtering.matches_platform(
+        system_row,
+        "system",
+        platform_options=options,
+        platform_meta_by_id=metas,
+    )
+
+
+def test_platform_filter_prefers_resolved_platform_over_message_tokens():
+    options, metas = _platform_context()
+    system_row = {
+        "time": "2026-06-30 11:45:00",
+        "level": "INFO",
+        "source": "GUI",
+        "platform": "\u7cfb\u7edf",
+        "platform_id": "system",
+        "message": "Started Bilibili crawl task",
+    }
+
+    assert not log_filtering.matches_platform(
         system_row,
         "bilibili",
         platform_options=options,
@@ -116,3 +142,42 @@ def test_category_counts_apply_non_category_filters_once():
     assert counts["download"] == 1
     assert counts["error"] == 1
     assert counts["system"] == 1
+
+
+def test_category_counts_respect_platform_filter_for_system_rows():
+    options, metas = _platform_context()
+    categories = ("all", "crawl", "download", "system", "performance", "error")
+    rows = [
+        {
+            "time": "2026-06-30 10:00:00",
+            "level": "INFO",
+            "source": "BilibiliSpider",
+            "platform": "Bilibili",
+            "platform_id": "bilibili",
+            "status_code": "BILI_SPIDER_START",
+        },
+        {
+            "time": "2026-06-30 10:01:00",
+            "level": "INFO",
+            "source": "ApplicationController",
+            "platform": "\u7cfb\u7edf",
+            "platform_id": "system",
+            "status_code": "APP_INIT",
+        },
+    ]
+
+    counts = log_filtering.category_counts(
+        rows,
+        categories,
+        level="\u5168\u90e8",
+        time_range="\u5168\u90e8",
+        platform_id="bilibili",
+        trace_query="",
+        keyword="",
+        platform_options=options,
+        platform_meta_by_id=metas,
+    )
+
+    assert counts["all"] == 1
+    assert counts["crawl"] == 1
+    assert counts["system"] == 0

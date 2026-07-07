@@ -91,6 +91,17 @@ class ApplicationLifecycleMixin:
                     "shutdown_cache_service",
                     exc,
                 )
+        event_bus = getattr(self, "event_bus", None)
+        shutdown_event_bus = getattr(event_bus, "shutdown", None)
+        if callable(shutdown_event_bus):
+            try:
+                shutdown_event_bus()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "ApplicationController",
+                    "shutdown_event_bus",
+                    exc,
+                )
         self._host().cleanup_media()
         self._stop_active_spider()
         if dl_manager is not None:

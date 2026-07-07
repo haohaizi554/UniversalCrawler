@@ -40,6 +40,11 @@ from app.ui.viewmodels.frontend_snapshot_worker import (
     FrontendSnapshotResult,
     FrontendSnapshotWorker,
 )
+from app.ui.viewmodels.frontend_action_worker import (
+    FrontendActionRequest,
+    FrontendActionResult,
+    FrontendActionWorker,
+)
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
 from app.utils.safe_slot import safe_slot
@@ -127,6 +132,7 @@ class MainWindow(QMainWindow):
     _update_check_finished = pyqtSignal(object)
     _update_check_failed = pyqtSignal(str)
     _frontend_snapshot_finished = pyqtSignal(object)
+    _frontend_action_finished = pyqtSignal(object)
 
     def __init__(self, *, app_state: AppState | None = None, event_bus: EventBus | None = None) -> None:
         super().__init__()
@@ -160,13 +166,20 @@ class MainWindow(QMainWindow):
         self._windows_frameless_style_applied = False
         self._frameless_resize_override_cursor_active = False
         self.event_bus = event_bus or EventBus()
+        self._owns_event_bus = event_bus is None
+        self._owns_app_state = app_state is None
         self.app_state = app_state or AppState(event_bus=self.event_bus)
         self._frontend_state_service = FrontendStateService(app_state=self.app_state)
+        self._owns_frontend_state_service = True
         self._connections = ConnectionRegistry()
         self._frontend_refresh_pending_mock = False
         self._frontend_snapshot_sequence = 0
+        self._frontend_action_sequence = 0
         self._frontend_snapshot_worker = FrontendSnapshotWorker(
             lambda result: self._frontend_snapshot_finished.emit(result)
+        )
+        self._frontend_action_worker = FrontendActionWorker(
+            lambda result: self._frontend_action_finished.emit(result)
         )
         self._ui_update_scheduler = UiUpdateScheduler(
             interval_ms=self.FRONTEND_REFRESH_INTERVAL_MS,
@@ -191,6 +204,11 @@ class MainWindow(QMainWindow):
         self._connections.connect(
             self._frontend_snapshot_finished,
             self._on_frontend_snapshot_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
+            self._frontend_action_finished,
+            self._on_frontend_action_finished,
             Qt.ConnectionType.QueuedConnection,
         )
         self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
@@ -544,13 +562,21 @@ class MainWindow(QMainWindow):
         return value if value.lower().startswith("v") else f"v{value}"
 
     def set_frontend_state_service(self, service: FrontendStateService) -> None:
+        current_service = self.__dict__.get("_frontend_state_service")
+        if current_service is not service and self.__dict__.get("_owns_frontend_state_service", False):
+            destroy_current = getattr(current_service, "destroy", None)
+            if callable(destroy_current):
+                destroy_current()
         new_event_bus = service.app_state.event_bus
         if new_event_bus is not self.event_bus:
             self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
             self.event_bus = new_event_bus
+            self._owns_event_bus = False
             self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)
         self._frontend_state_service = service
+        self._owns_frontend_state_service = False
         self.app_state = service.app_state
+        self._owns_app_state = False
         self._cached_snapshot = None
         self._frontend_section_signatures = {}
         self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
@@ -648,6 +674,111 @@ class MainWindow(QMainWindow):
         started = time.perf_counter()
         self.app_shell.render(snapshot, changed_sections=result.changed_sections)
         self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
+
+    def _submit_frontend_action(self, action: str, payload: dict[str, object] | None = None) -> bool:
+        service = self.__dict__.get("_frontend_state_service")
+        worker = self.__dict__.get("_frontend_action_worker")
+        if service is None or worker is None:
+            return False
+        self._frontend_action_sequence = int(self.__dict__.get("_frontend_action_sequence", 0) or 0) + 1
+        worker.submit(
+            FrontendActionRequest(
+                sequence=self._frontend_action_sequence,
+                service=service,
+                service_token=id(service),
+                action=str(action or ""),
+                payload=dict(payload or {}),
+            )
+        )
+        return True
+
+    def _on_frontend_action_finished(self, result: FrontendActionResult) -> None:
+        service = self.__dict__.get("_frontend_state_service")
+        if result.service_token != id(service):
+            return
+        action_result = result.result if isinstance(result.result, dict) else {}
+        if result.action == "log_operation":
+            self._finish_log_operation(result.payload, action_result)
+        elif result.action == "refresh_platform_auth_status":
+            self._finish_refresh_platform_auth_status(action_result)
+        elif result.action == "open_directory":
+            self._finish_open_directory(action_result)
+        elif result.action == "retry_failed":
+            self._finish_retry_failed(action_result)
+        elif result.action == "copy_diagnostics":
+            self._finish_copy_diagnostics(action_result)
+        elif result.action == "update_download_options":
+            self._finish_update_download_options(action_result)
+        elif result.action == "pause_download":
+            self._finish_pause_download(action_result)
+        elif result.action == "run_tool":
+            self._finish_run_tool(result.payload, action_result)
+        elif result.action == "register_file_associations":
+            self._finish_register_file_associations(action_result)
+
+    def _finish_log_operation(self, payload: dict[str, object], action_result: dict[str, object]) -> None:
+        operation = str(payload.get("operation") or "")
+        if operation not in {"clear", "refresh"}:
+            message = action_result.get("message")
+            if message:
+                self.append_log(str(message))
+        self._request_log_refresh(force=operation == "clear")
+
+    def _finish_refresh_platform_auth_status(self, action_result: dict[str, object]) -> None:
+        data = action_result.get("data") if isinstance(action_result, dict) else {}
+        if isinstance(data, dict) and data.get("refreshed"):
+            self.refresh_frontend_state(topics={"settings.platform_auth"})
+
+    def _finish_open_directory(self, action_result: dict[str, object]) -> None:
+        if action_result.get("status") != "ok":
+            self.append_log(str(action_result.get("message") or "open directory failed"), level="ERROR")
+
+    def _finish_retry_failed(self, action_result: dict[str, object]) -> None:
+        if action_result.get("status") != "ok":
+            self.append_log(str(action_result.get("message") or "retry failed"), level="ERROR")
+        self.refresh_frontend_state(topics={"videos.replace"})
+
+    def _finish_copy_diagnostics(self, action_result: dict[str, object]) -> None:
+        if action_result.get("status") != "ok":
+            self.append_log(str(action_result.get("message") or "copy diagnostics failed"), level="ERROR")
+            return
+        data = action_result.get("data") if isinstance(action_result, dict) else {}
+        text = (data or {}).get("text", "") if isinstance(data, dict) else ""
+        if text:
+            self._request_clipboard_copy(str(text))
+        self.append_log(str(action_result.get("message") or "Trace ID copied"))
+
+    def _finish_update_download_options(self, action_result: dict[str, object]) -> None:
+        if action_result.get("status") != "ok":
+            self.append_log(str(action_result.get("message") or "download options update failed"), level="ERROR")
+            return
+        data = action_result.get("data") if isinstance(action_result, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        self.append_log(
+            f"Download options updated: concurrency={data.get('max_concurrent')}, retries={data.get('max_retries')}, auto_retry={data.get('auto_retry')}"
+        )
+        if self.__dict__.get("_cached_snapshot"):
+            self._render_frontend_state(topics={"settings.update"})
+        else:
+            self.refresh_frontend_state(force=True)
+
+    def _finish_pause_download(self, action_result: dict[str, object]) -> None:
+        self.append_log(str(action_result.get("message") or "download paused"))
+        self.refresh_frontend_state(topics={"videos.update"})
+
+    def _finish_run_tool(self, payload: dict[str, object], action_result: dict[str, object]) -> None:
+        tool_id = str(payload.get("tool_id") or "")
+        self.append_log(str(action_result.get("message") or f"tool started: {tool_id}"))
+
+    def _finish_register_file_associations(self, action_result: dict[str, object]) -> None:
+        ok = action_result.get("status") == "ok"
+        message = str(action_result.get("message") or ("file associations registered" if ok else "file association registration failed"))
+        self.append_log(message, level="INFO" if ok else "ERROR")
+        settings_page = getattr(getattr(self, "app_shell", None), "pages", {}).get("settings")
+        feedback = getattr(settings_page, "show_action_feedback", None)
+        if callable(feedback):
+            feedback(message, ok=ok)
+        self.refresh_frontend_state(topics={"settings.update"})
 
     def _remember_frontend_snapshot_result(
         self,
@@ -815,10 +946,7 @@ class MainWindow(QMainWindow):
             return
         if operation == "refresh" and self._should_throttle_log_refresh():
             return
-        result = self._frontend_state_service.handle_action("log_operation", {"operation": operation})
-        if operation not in {"clear", "refresh"} and result.get("message"):
-            self.append_log(result.get("message") or "日志操作完成")
-        self._request_log_refresh(force=operation == "clear")
+        self._submit_frontend_action("log_operation", {"operation": operation})
 
     def _should_throttle_log_refresh(self) -> bool:
         now_ms = int(time.monotonic() * 1000)
@@ -834,18 +962,7 @@ class MainWindow(QMainWindow):
         self._ui_update_scheduler.schedule("logs.append", force=force)
 
     def _refresh_platform_auth_if_needed(self) -> None:
-        service = getattr(self, "_frontend_state_service", None)
-        handler = getattr(service, "handle_action", None)
-        if not callable(handler):
-            return
-        try:
-            result = handler("refresh_platform_auth_status", {})
-        except Exception as exc:
-            debug_logger.log_exception("MainWindow", "refresh_platform_auth_status", exc)
-            return
-        data = result.get("data") if isinstance(result, dict) else {}
-        if isinstance(data, dict) and data.get("refreshed"):
-            self.refresh_frontend_state(topics={"settings.platform_auth"})
+        self._submit_frontend_action("refresh_platform_auth_status", {})
 
     def _on_page_changed(self, page_id: str) -> None:
         self.app_state.set_visible_page(page_id, list(self.app_shell.pages), emit_change=False)
@@ -1025,57 +1142,73 @@ class MainWindow(QMainWindow):
         if self.is_fullscreen_mode or self._safe_is_fullscreen():
             self._exit_legacy_main_fullscreen()
             return
-        if self._is_effectively_maximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
+        should_maximize = not self._is_effectively_maximized()
         self.__dict__["_custom_maximized"] = False
-        self.__dict__["_native_maximize_requested"] = self._safe_is_native_maximized()
-        self._sync_window_title_bar_state()
-        QTimer.singleShot(0, self._sync_window_title_bar_state)
+        self.__dict__["_native_maximize_requested"] = bool(should_maximize)
+        self._apply_native_maximized_state(should_maximize)
+        self._set_window_title_bar_maximized(should_maximize)
+        QTimer.singleShot(80, self._sync_chrome_maximized_state)
+        QTimer.singleShot(220, self._sync_chrome_maximized_state)
 
     def _is_effectively_maximized(self) -> bool:
-        try:
-            native_maximized = bool(self.windowState() & Qt.WindowState.WindowMaximized) or self.isMaximized()
-        except RuntimeError:
-            native_maximized = bool(self.isMaximized())
-        return (
-            bool(self.__dict__.get("_custom_maximized", False))
-            or bool(self.__dict__.get("_native_maximize_requested", False))
-            or native_maximized
-        )
+        if bool(self.__dict__.get("_custom_maximized", False)):
+            return True
+        return self._safe_is_native_maximized()
 
-    def _current_work_area_geometry(self) -> QRect:
-        screen = QApplication.screenAt(self.frameGeometry().center()) or self.screen() or QApplication.primaryScreen()
-        return screen.availableGeometry() if screen is not None else self.geometry()
+    def _apply_native_maximized_state(self, maximized: bool) -> None:
+        if sys.platform.startswith("win"):
+            try:
+                hwnd = int(self.winId())
+                if self._chrome_controller().set_hwnd_maximized(hwnd, bool(maximized)):
+                    return
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+            except Exception as exc:
+                debug_logger.log_exception("MainWindow", "set_hwnd_maximized", exc)
+        if maximized:
+            self.showMaximized()
+        else:
+            self.showNormal()
+
+    def _refresh_native_maximize_requested_state(self) -> None:
+        self.__dict__["_native_maximize_requested"] = self._safe_is_native_maximized()
+
+    def _sync_chrome_maximized_state(self) -> None:
+        self._refresh_native_maximize_requested_state()
+        self._sync_window_title_bar_state()
 
     def _maximize_to_work_area(self) -> None:
         if not self.__dict__.get("_qt_initialized", False):
             self.showMaximized()
             return
-        if not self.isMaximized() and not self.__dict__.get("_custom_maximized", False):
+        if not self._safe_is_native_maximized() and not self.__dict__.get("_custom_maximized", False):
             self._pre_custom_maximize_geometry = QRect(self.geometry())
         if self.isFullScreen():
             self.showNormal()
         self.__dict__["_custom_maximized"] = False
         self.__dict__["_native_maximize_requested"] = True
-        self.showMaximized()
+        self._apply_native_maximized_state(True)
 
     def _restore_from_custom_or_native_maximized(self) -> None:
         custom_maximized = bool(self.__dict__.get("_custom_maximized", False))
         geometry = self.__dict__.get("_pre_custom_maximize_geometry") if custom_maximized else None
-        if self.isMaximized() or self.isFullScreen():
+        if self.isFullScreen():
             self.showNormal()
+        elif self._safe_is_native_maximized():
+            self._apply_native_maximized_state(False)
         self.__dict__["_custom_maximized"] = False
         self.__dict__["_native_maximize_requested"] = False
         self._pre_custom_maximize_geometry = None
         if custom_maximized and isinstance(geometry, QRect) and geometry.isValid():
             self.setGeometry(geometry)
 
-    def _sync_window_title_bar_state(self) -> None:
+    def _set_window_title_bar_maximized(self, maximized: bool) -> None:
         title_bar = self.__dict__.get("window_title_bar")
         if title_bar is not None:
-            title_bar.set_maximized(self._is_effectively_maximized())
+            title_bar.set_maximized(bool(maximized))
+
+    def _sync_window_title_bar_state(self) -> None:
+        self._set_window_title_bar_maximized(self._is_effectively_maximized())
 
     def _set_shell_widgets_visible(self, visible: bool) -> None:
         if "app_shell" in self.__dict__:
@@ -1118,11 +1251,29 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             return bool(self.__dict__.get("is_fullscreen_mode", False))
 
-    def _safe_is_native_maximized(self) -> bool:
+    def _windows_hwnd_is_zoomed(self) -> bool | None:
+        if not sys.platform.startswith("win"):
+            return None
         try:
-            return bool(self.windowState() & Qt.WindowState.WindowMaximized)
-        except RuntimeError:
+            hwnd = int(self.winId())
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+        try:
+            return bool(self._chrome_controller()._is_hwnd_maximized(hwnd))
+        except Exception:
+            return None
+
+    def _qt_reports_native_maximized(self) -> bool:
+        try:
+            return bool(self.windowState() & Qt.WindowState.WindowMaximized) or bool(self.isMaximized())
+        except (AttributeError, RuntimeError):
             return False
+
+    def _safe_is_native_maximized(self) -> bool:
+        windows_zoomed = self._windows_hwnd_is_zoomed()
+        if windows_zoomed is not None:
+            return bool(windows_zoomed)
+        return self._qt_reports_native_maximized()
 
     def _exit_legacy_main_fullscreen(self) -> None:
         if self._safe_is_fullscreen():
@@ -1147,8 +1298,9 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
-            self.__dict__["_native_maximize_requested"] = bool(self.windowState() & Qt.WindowState.WindowMaximized)
-            self._sync_window_title_bar_state()
+            self._sync_chrome_maximized_state()
+            QTimer.singleShot(0, self._sync_chrome_maximized_state)
+            QTimer.singleShot(80, self._sync_chrome_maximized_state)
 
     def load_initial_state(self) -> None:
         last_source_id = cfg.get("common", "last_source", "kuaishou")
@@ -1179,11 +1331,27 @@ class MainWindow(QMainWindow):
         snapshot_worker = self.__dict__.get("_frontend_snapshot_worker")
         if snapshot_worker is not None:
             snapshot_worker.shutdown()
+        action_worker = self.__dict__.get("_frontend_action_worker")
+        if action_worker is not None:
+            action_worker.shutdown()
+        frontend_state_service = self.__dict__.get("_frontend_state_service")
+        if self.__dict__.get("_owns_frontend_state_service", False) and frontend_state_service is not None:
+            destroy_frontend_state = getattr(frontend_state_service, "destroy", None)
+            if callable(destroy_frontend_state):
+                destroy_frontend_state()
+        app_state = self.__dict__.get("app_state")
+        if self.__dict__.get("_owns_app_state", False) and app_state is not None:
+            shutdown_app_state = getattr(app_state, "shutdown", None)
+            if callable(shutdown_app_state):
+                shutdown_app_state()
         self._connections.disconnect_all()
         self._remove_frameless_resize_event_filter()
         self._remove_windows_native_frame_filter()
         self.cleanup_media()
         self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
+        event_bus_shutdown = getattr(self.event_bus, "shutdown", None)
+        if self.__dict__.get("_owns_event_bus", False) and callable(event_bus_shutdown):
+            event_bus_shutdown()
         cfg.save_ui_state(
             geometry=self.saveGeometry(),
             state=self.saveState(),
@@ -1603,8 +1771,13 @@ class MainWindow(QMainWindow):
             return True
         return super().eventFilter(watched, event)
 
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._sync_chrome_maximized_state()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._sync_chrome_maximized_state()
         self._resize_media_panel_if_ready()
 
     def _resize_media_panel_if_ready(self) -> None:
@@ -1639,24 +1812,13 @@ class MainWindow(QMainWindow):
             media_panel.cleanup()
 
     def _open_item_directory(self, video_id: str) -> None:
-        result = self._frontend_state_service.handle_action("open_directory", {"video_id": video_id})
-        if result.get("status") != "ok":
-            self.append_log(result.get("message") or "打开目录失败")
+        self._submit_frontend_action("open_directory", {"video_id": video_id})
 
     def _retry_failed_item(self, video_id: str) -> None:
-        result = self._frontend_state_service.handle_action("retry_failed", {"video_id": video_id})
-        if result.get("status") != "ok":
-            self.append_log(result.get("message") or "重试失败")
-        self.refresh_frontend_state(topics={"videos.replace"})
+        self._submit_frontend_action("retry_failed", {"video_id": video_id})
 
     def _copy_item_diagnostics(self, video_id: str) -> None:
-        result = self._frontend_state_service.handle_action("copy_diagnostics", {"video_id": video_id})
-        if result.get("status") != "ok":
-            self.append_log(result.get("message") or "复制诊断失败")
-            return
-        text = (result.get("data") or {}).get("text", "")
-        QApplication.clipboard().setText(text)
-        self.append_log("Trace ID 已复制")
+        self._submit_frontend_action("copy_diagnostics", {"video_id": video_id})
 
     @safe_slot
     def _update_basic_setting(self, section: str, key: str, value) -> None:
@@ -1795,18 +1957,7 @@ class MainWindow(QMainWindow):
             apply_panel_settings(settings)
 
     def _update_download_options(self, options: dict) -> None:
-        result = self._frontend_state_service.handle_action("update_download_options", options or {})
-        if result.get("status") == "ok":
-            data = result.get("data") or {}
-            self.append_log(
-                f"Download options updated: concurrency={data.get('max_concurrent')}, retries={data.get('max_retries')}, auto_retry={data.get('auto_retry')}"
-            )
-            if self.__dict__.get("_cached_snapshot"):
-                self._render_frontend_state(topics={"settings.update"})
-            else:
-                self.refresh_frontend_state(force=True)
-        else:
-            self.append_log(result.get("message") or "download options update failed")
+        self._submit_frontend_action("update_download_options", options or {})
 
     def _update_completed_metadata(self, video_id: str, metadata: dict) -> None:
         result = self._frontend_state_service.update_completed_metadata(video_id, metadata or {}, source="gui_player")
@@ -1814,24 +1965,13 @@ class MainWindow(QMainWindow):
             self.refresh_frontend_state(topics={"videos.metadata"})
 
     def _pause_download_item(self, video_id: str) -> None:
-        result = self._frontend_state_service.handle_action("pause_download", {"video_id": video_id})
-        self.append_log(result.get("message") or "download paused")
-        self.refresh_frontend_state(topics={"videos.update"})
+        self._submit_frontend_action("pause_download", {"video_id": video_id})
 
     def _run_tool(self, tool_id: str) -> None:
-        result = self._frontend_state_service.handle_action("run_tool", {"tool_id": tool_id})
-        self.append_log(result.get("message") or f"工具已启动: {tool_id}")
+        self._submit_frontend_action("run_tool", {"tool_id": tool_id})
 
     def _register_file_associations_from_frontend(self, include_video: bool, include_image: bool) -> None:
-        result = self._frontend_state_service.handle_action(
+        self._submit_frontend_action(
             "register_file_associations",
             {"include_video": include_video, "include_image": include_image},
         )
-        ok = result.get("status") == "ok"
-        message = result.get("message") or ("默认打开方式绑定完成" if ok else "默认打开方式绑定失败")
-        self.append_log(message, level="INFO" if ok else "ERROR")
-        settings_page = getattr(getattr(self, "app_shell", None), "pages", {}).get("settings")
-        feedback = getattr(settings_page, "show_action_feedback", None)
-        if callable(feedback):
-            feedback(message, ok=ok)
-        self.refresh_frontend_state(topics={"settings.update"})

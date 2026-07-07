@@ -1,30 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
+
+from app.ui.i18n_catalogs import CATALOGS
 
 SUPPORTED_LANGUAGES = ("zh-CN", "en-US", "zh-TW")
 
-_CATALOG_DIR = Path(__file__).with_name("i18n")
-
-
-def _load_translation_catalogs() -> dict[str, dict[str, str]]:
-    catalogs: dict[str, dict[str, str]] = {language: {} for language in SUPPORTED_LANGUAGES}
-    for language in SUPPORTED_LANGUAGES:
-        if language == "zh-CN":
-            continue
-        catalog_path = _CATALOG_DIR / f"{language}.json"
-        try:
-            raw = json.loads(catalog_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            raw = {}
-        if isinstance(raw, dict):
-            catalogs[language] = {str(key): str(value) for key, value in raw.items()}
-    return catalogs
-
-
-TRANSLATIONS: dict[str, dict[str, str]] = _load_translation_catalogs()
+TRANSLATIONS: dict[str, dict[str, str]] = CATALOGS
 
 _PLATFORM_DISPLAY_NAMES: dict[str, dict[str, str]] = {
     "douyin": {"zh-CN": "\u6296\u97f3", "en-US": "Douyin", "zh-TW": "\u6296\u97f3"},

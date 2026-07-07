@@ -8,7 +8,7 @@ import weakref
 from collections.abc import Callable
 from ctypes import wintypes
 
-from PyQt6.QtCore import QAbstractNativeEventFilter, QEvent, QPoint, QRect, Qt
+from PyQt6.QtCore import QAbstractNativeEventFilter, QEvent, QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -104,13 +104,18 @@ class FramelessWindowChromeController:
     SWP_NOZORDER = 0x0004
     SWP_NOACTIVATE = 0x0010
     SWP_FRAMECHANGED = 0x0020
+    SW_MAXIMIZE = 3
+    SW_RESTORE = 9
     WS_POPUP = 0x80000000
     WS_CAPTION = 0x00C00000
     WS_MAXIMIZEBOX = 0x00010000
     WS_MINIMIZEBOX = 0x00020000
     WS_SYSMENU = 0x00080000
     WS_THICKFRAME = 0x00040000
+    WM_MOVE = 0x0003
+    WM_SIZE = 0x0005
     WM_GETMINMAXINFO = 0x0024
+    WM_WINDOWPOSCHANGED = 0x0047
     WM_NCCALCSIZE = 0x0083
     WM_NCHITTEST = 0x0084
     WM_NCLBUTTONDOWN = 0x00A1
@@ -194,6 +199,10 @@ class FramelessWindowChromeController:
         if message_id == self.WM_GETMINMAXINFO:
             self._handle_get_min_max_info(msg)
             return 0
+        if message_id in {self.WM_MOVE, self.WM_SIZE, self.WM_WINDOWPOSCHANGED}:
+            self.sync_title_bar_state()
+            QTimer.singleShot(0, self.sync_title_bar_state)
+            return None
         if message_id == self.WM_NCHITTEST:
             return self._win32_hit_test(msg)
         if message_id == self.WM_NCLBUTTONDOWN and int(msg.wParam) == self.HTMAXBUTTON:
@@ -428,6 +437,12 @@ class FramelessWindowChromeController:
     def _is_effectively_maximized(self) -> bool:
         if self._is_effectively_maximized_callback is not None:
             return bool(self._is_effectively_maximized_callback())
+        if sys.platform.startswith("win"):
+            try:
+                hwnd = int(self._windows_hwnd if self._windows_hwnd is not None else self.host.winId())
+                return bool(self._is_hwnd_maximized(hwnd))
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
         try:
             return bool(self.host.windowState() & Qt.WindowState.WindowMaximized) or self.host.isMaximized()
         except RuntimeError:
@@ -439,10 +454,20 @@ class FramelessWindowChromeController:
         if self._toggle_maximized_callback is not None:
             self._toggle_maximized_callback()
             return
-        if self._is_effectively_maximized():
-            self.host.showNormal()
-        else:
+        should_maximize = not self._is_effectively_maximized()
+        if sys.platform.startswith("win"):
+            try:
+                hwnd = int(self._windows_hwnd if self._windows_hwnd is not None else self.host.winId())
+                if self.set_hwnd_maximized(hwnd, should_maximize):
+                    self.sync_title_bar_state()
+                    QTimer.singleShot(80, self.sync_title_bar_state)
+                    return
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+        if should_maximize:
             self.host.showMaximized()
+        else:
+            self.host.showNormal()
         self.sync_title_bar_state()
 
     def _uses_windows_native_resize(self) -> bool:
@@ -487,6 +512,19 @@ class FramelessWindowChromeController:
         try:
             return bool(ctypes.windll.user32.IsZoomed(hwnd))
         except Exception:
+            return False
+
+    def set_hwnd_maximized(self, hwnd, maximized: bool) -> bool:
+        if not sys.platform.startswith("win"):
+            return False
+        try:
+            ctypes.windll.user32.ShowWindow(
+                wintypes.HWND(int(hwnd)),
+                self.SW_MAXIMIZE if maximized else self.SW_RESTORE,
+            )
+            return True
+        except Exception as exc:
+            debug_logger.log_exception("WindowChrome", "set_hwnd_maximized", exc)
             return False
 
     def _handle_get_min_max_info(self, msg) -> None:

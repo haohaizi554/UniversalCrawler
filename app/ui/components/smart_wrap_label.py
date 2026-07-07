@@ -10,6 +10,8 @@ class SmartWrapLabel(QLabel):
     """Selectable label that wraps paths and URLs at useful segment boundaries."""
 
     BREAK = "\u200b"
+    LONG_SEGMENT_TEXT_THRESHOLD = 80
+    LONG_SEGMENT_WRAP_WIDTH = 520
 
     def __init__(self, value: Any = "", parent: QWidget | None = None, *, compact: bool = True) -> None:
         super().__init__(parent)
@@ -137,4 +139,6 @@ class SmartWrapLabel(QLabel):
             available = parent.contentsRect().width() - self.x()
             if available > 0:
                 width = min(width or available, available)
+        if len(self._raw_text) >= self.LONG_SEGMENT_TEXT_THRESHOLD and ("\\" in self._raw_text or "/" in self._raw_text):
+            width = min(width or self.LONG_SEGMENT_WRAP_WIDTH, self.LONG_SEGMENT_WRAP_WIDTH)
         return max(1, width)

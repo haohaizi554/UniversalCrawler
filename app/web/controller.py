@@ -137,14 +137,48 @@ class WebSocketBridge:
             base_version = self._last_delta_version
         if self._delta_provider is None:
             return
+        loop = self._get_loop()
+        if loop and loop.is_running() and callable(getattr(loop, "run_in_executor", None)):
+            try:
+                task = loop.create_task(self._build_and_send_frontend_delta(base_version, generation))
+            except RuntimeError:
+                pass
+            else:
+                self._track_task(task)
+                return
+        self._build_and_send_frontend_delta_sync(base_version, generation)
+
+    async def _build_and_send_frontend_delta(self, base_version: int, generation: int | None = None) -> None:
+        if self._delta_provider is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            delta = await loop.run_in_executor(None, self._delta_provider, base_version)
+        except Exception as exc:
+            debug_logger.log_exception("WebSocketBridge", "frontend_delta", exc)
+            return
+        self._emit_frontend_delta(delta, base_version, generation)
+
+    def _build_and_send_frontend_delta_sync(self, base_version: int, generation: int | None = None) -> None:
+        if self._delta_provider is None:
+            return
         try:
             delta = self._delta_provider(base_version)
         except Exception as exc:
             debug_logger.log_exception("WebSocketBridge", "frontend_delta", exc)
             return
+        self._emit_frontend_delta(delta, base_version, generation)
+
+    def _emit_frontend_delta(self, delta: dict[str, Any], base_version: int, generation: int | None = None) -> None:
+        if not isinstance(delta, dict):
+            return
+        with self._delta_lock:
+            if generation is not None and generation != self._delta_schedule_generation:
+                return
         version = int(delta.get("version") or base_version or 0)
         if version == base_version and not delta.get("changed_sections"):
             return
+
         def _mark_delivered() -> None:
             with self._delta_lock:
                 self._last_delta_version = max(self._last_delta_version, version)

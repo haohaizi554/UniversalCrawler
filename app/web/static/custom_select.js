@@ -253,6 +253,12 @@
     if (menu) menu.hidden = false;
     if (button) button.setAttribute("aria-expanded", "true");
     openCustomSelect = wrapper;
+    const view = wrapper.ownerDocument && wrapper.ownerDocument.defaultView;
+    if (view && typeof view.requestAnimationFrame === "function") {
+      view.requestAnimationFrame(() => {
+        if (openCustomSelect === wrapper) updateMenuPlacement(wrapper);
+      });
+    }
   }
 
   function close(wrapper = openCustomSelect, focusButton = false) {

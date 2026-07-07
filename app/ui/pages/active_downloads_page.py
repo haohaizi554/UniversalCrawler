@@ -1024,13 +1024,23 @@ class ActiveDownloadsPage(PageFrame):
     @staticmethod
     def _active_detail_fields(item: dict[str, Any]) -> list[tuple[str, Any]]:
         fields: list[tuple[str, Any]] = []
+        live_values = {
+            TEXT["save_dir"]: item.get("save_dir"),
+            TEXT["output_filename"]: item.get("output_filename"),
+            TEXT["source_url"]: item.get("source_url"),
+            TEXT["trace_id"]: item.get("trace_id"),
+        }
         for field in list(item.get("detail_fields") or []):
             if not isinstance(field, dict):
                 continue
             label = str(field.get("label") or "")
             if not label:
                 continue
-            fields.append((label, field.get("value", "")))
+            value = field.get("value", "")
+            live_value = live_values.get(label)
+            if live_value is not None and str(live_value) != "":
+                value = live_value
+            fields.append((label, value))
         return fields
 
     @staticmethod

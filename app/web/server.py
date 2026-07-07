@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import cfg
-from app.debug_logger import debug_logger
 from app.utils.runtime_paths import resolve_resource_file
 
 # WebController 在 create_app() 中延迟初始化
@@ -78,6 +77,10 @@ def _store_controller_video(active_controller, item) -> None:
         store_video(item)
         return
     active_controller.videos[item.id] = item
+
+
+async def _run_controller_worker_call(func, *args):
+    return await asyncio.get_running_loop().run_in_executor(None, func, *args)
 
 def create_app(lifespan=None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
@@ -175,20 +178,21 @@ def create_app(lifespan=None) -> FastAPI:
 
     @app.get("/api/frontend/state")
     async def get_frontend_state():
-        return controller.get_frontend_state()
+        return await _run_controller_worker_call(controller.get_frontend_state)
 
     @app.get("/api/frontend/delta")
     async def get_frontend_delta(since_version: int = Query(default=0, ge=0)):
         getter = getattr(controller, "get_frontend_delta", None)
         if callable(getter):
-            return getter(since_version)
+            return await _run_controller_worker_call(getter, since_version)
         snapshot_getter = getattr(controller, "get_frontend_state", None)
         if callable(snapshot_getter):
+            sections = await _run_controller_worker_call(snapshot_getter)
             return {
                 "version": 0,
                 "base_version": since_version,
                 "full": True,
-                "sections": snapshot_getter(),
+                "sections": sections,
             }
         return {"status": "error", "error": "frontend delta is unavailable"}
 
@@ -229,7 +233,7 @@ def create_app(lifespan=None) -> FastAPI:
             delta_getter = getattr(controller, "get_frontend_delta", None)
             if callable(delta_getter):
                 try:
-                    delta = delta_getter(frontend_version)
+                    delta = await _run_controller_worker_call(delta_getter, frontend_version)
                 except Exception:
                     delta = None
                 if isinstance(delta, dict):

@@ -29,6 +29,7 @@ class AppState:
         cache_service: CacheService | None = None,
     ) -> None:
         self.event_bus = event_bus or EventBus()
+        self._owns_cache_service = cache_service is None
         self.cache_service = cache_service or CacheService(namespace="app_state")
         self._lock = threading.RLock()
         self.videos: dict[str, Any] = {}
@@ -241,6 +242,20 @@ class AppState:
     def shutdown(self) -> None:
         """Cancel pending asynchronous UI notifications owned by this state store."""
         self._cancel_pending_log_publish()
+        if not self._owns_cache_service:
+            return
+        close_cache = getattr(self.cache_service, "close", None)
+        if not callable(close_cache):
+            return
+        try:
+            close_cache()
+            self._owns_cache_service = False
+        except Exception as exc:
+            debug_logger.log_exception(
+                "AppState",
+                "shutdown_cache_service",
+                exc,
+            )
 
     def snapshot_meta(self) -> dict[str, Any]:
         with self._lock:

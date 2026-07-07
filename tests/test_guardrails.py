@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import unittest
 from pathlib import Path
@@ -305,6 +306,28 @@ class AntiRecursionGuardrailTests(unittest.TestCase):
 
         warning.assert_not_called()
 
+    def test_event_bus_async_subscriber_does_not_block_publisher(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        release = threading.Event()
+        seen: list[str] = []
+
+        def slow_handler(payload: object) -> None:
+            started.set()
+            release.wait(timeout=2)
+            seen.append(str(payload))
+
+        bus.subscribe_async("slow", slow_handler)
+        try:
+            bus.publish("slow", "payload")
+            self.assertTrue(started.wait(timeout=2))
+            self.assertEqual(seen, [])
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertEqual(seen, ["payload"])
+
 
 class UIAsyncGuardrailTests(unittest.TestCase):
     def test_production_code_does_not_pump_qt_process_events(self) -> None:
@@ -322,6 +345,117 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         forbidden = ("time.sleep(3.5", "wait_for_timeout(3500", "sleep(3500")
         offenders: list[str] = []
         for path in (project_root / "tests").rglob("test_web*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if any(token in text for token in forbidden):
+                offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
+    def test_gui_controllers_do_not_synchronously_build_frontend_snapshots(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        offenders: list[str] = []
+        for path in (project_root / "app" / "controllers").rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "get_snapshot(" in text:
+                offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
+    def test_gui_hot_widgets_do_not_touch_files_cache_or_sqlite(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        forbidden = (
+            "read_text(",
+            "read_bytes(",
+            "write_text(",
+            "write_bytes(",
+            "sqlite3",
+            "DiskCache",
+            "cache_service.",
+            "get_snapshot(",
+        )
+        paths = [project_root / "app" / "ui" / "main_window.py"]
+        paths.extend((project_root / "app" / "ui" / "pages").rglob("*.py"))
+        paths.extend((project_root / "app" / "ui" / "components").rglob("*.py"))
+        paths.extend((project_root / "app" / "ui" / "dialogs").rglob("*.py"))
+        paths.extend((project_root / "app" / "ui" / "layout").rglob("*.py"))
+        paths.extend(
+            [
+                project_root / "app" / "ui" / "gui_selection_strategy.py",
+                project_root / "app" / "ui" / "localization.py",
+            ]
+        )
+        offenders: list[str] = []
+        for path in paths:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if any(token in text for token in forbidden):
+                offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
+    def test_runtime_i18n_catalog_is_static_and_matches_json_sources(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        from app.ui.i18n_catalogs import CATALOGS
+
+        expected = {"zh-CN": {}, "en-US": {}, "zh-TW": {}}
+        for language in ("en-US", "zh-TW"):
+            path = project_root / "app" / "ui" / "i18n" / f"{language}.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            expected[language] = {str(key): str(value) for key, value in raw.items()}
+
+        self.assertEqual(CATALOGS, expected)
+
+    def test_fifo_workers_use_shared_sequential_worker(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        worker_sources = (
+            project_root / "app" / "ui" / "viewmodels" / "frontend_action_worker.py",
+            project_root / "app" / "ui" / "viewmodels" / "log_detail_worker.py",
+        )
+        for path in worker_sources:
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                self.assertIn("SequentialRequestWorker", text)
+                self.assertNotIn("threading.Condition(", text)
+                self.assertNotIn("threading.Thread(", text)
+
+    def test_main_window_log_action_does_not_call_frontend_service_inline(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "main_window.py").read_text(encoding="utf-8", errors="ignore")
+        block = text.split("def _handle_log_action", 1)[1].split("def _should_throttle_log_refresh", 1)[0]
+
+        self.assertNotIn(".handle_action(", block)
+
+    def test_main_window_slow_frontend_actions_use_worker(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "main_window.py").read_text(encoding="utf-8", errors="ignore")
+        boundaries = [
+            ("def _refresh_platform_auth_if_needed", "def _on_page_changed"),
+            ("def _open_item_directory", "def _retry_failed_item"),
+            ("def _retry_failed_item", "def _copy_item_diagnostics"),
+            ("def _copy_item_diagnostics", "def _update_basic_setting"),
+            ("def _update_download_options", "def _update_completed_metadata"),
+            ("def _pause_download_item", "def _run_tool"),
+            ("def _run_tool", "def _register_file_associations_from_frontend"),
+            ("def _register_file_associations_from_frontend", None),
+        ]
+
+        for start, end in boundaries:
+            with self.subTest(start=start):
+                block = text.split(start, 1)[1]
+                if end is not None:
+                    block = block.split(end, 1)[0]
+                self.assertNotIn(".handle_action(", block)
+                self.assertIn("_submit_frontend_action(", block)
+
+    def test_web_frontend_routes_do_not_build_snapshots_on_event_loop(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        forbidden = (
+            "return controller.get_frontend_state()",
+            "return getter(since_version)",
+            '"sections": snapshot_getter()',
+            "delta = delta_getter(frontend_version)",
+        )
+        offenders: list[str] = []
+        for path in (project_root / "app" / "web").glob("*.py"):
             text = path.read_text(encoding="utf-8", errors="ignore")
             if any(token in text for token in forbidden):
                 offenders.append(str(path.relative_to(project_root)))

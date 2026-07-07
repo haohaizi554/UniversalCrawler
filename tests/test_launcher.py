@@ -160,10 +160,14 @@ QFrame#panelHeader {{
     border-bottom: 1px solid {HAIRLINE};
 }}
 QFrame#sectionHeader {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-        stop:0 #0F1930,
-        stop:1 #0A1223);
-    border-radius: 14px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid {HAIRLINE};
+    border-radius: 0px;
+}}
+QFrame#sectionMarker {{
+    background: {ACCENT_MINT};
+    border-radius: 2px;
 }}
 QWidget#categoryViewport,
 QWidget#categoryList {{
@@ -189,9 +193,9 @@ QLabel#selectHint {{
 }}
 QLabel#sectionLabel {{
     color: {TEXT};
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0px;
 }}
 QLabel#summaryEyebrow {{
     color: {ACCENT_MINT};
@@ -274,8 +278,8 @@ QLabel#sectionPill {{
 }}
 QLabel#sectionCountPill {{
     color: {TEXT};
-    background: #13233E;
-    border: 1px solid #294168;
+    background: #1D2B45;
+    border: 1px solid #3B4E72;
 }}
 QLabel#runStatus {{
     color: {TEXT_MUTED};
@@ -521,9 +525,18 @@ QFrame#sectionHeader {{
 }}
 QFrame#hero,
 QFrame#statsCard,
-QFrame#selectionSummary,
-QFrame#sectionHeader {{
+QFrame#selectionSummary {{
     background: {panel};
+}}
+QFrame#sectionHeader {{
+    background: transparent;
+    border: none;
+    border-top: 1px solid {border};
+    border-radius: 0px;
+}}
+QFrame#sectionMarker {{
+    background: {accent};
+    border-radius: 2px;
 }}
 QFrame#categoryCard {{
     background: {panel};
@@ -784,26 +797,37 @@ if _PYQT6_AVAILABLE:
         def __init__(self, section_name: str, count: int):
             super().__init__()
             self.setObjectName("sectionHeader")
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout = QHBoxLayout(self)
-            layout.setContentsMargins(14, 12, 14, 12)
+            layout.setContentsMargins(4, 10, 4, 8)
             layout.setSpacing(10)
 
+            marker = QFrame()
+            marker.setObjectName("sectionMarker")
+            marker.setFixedSize(4, 34)
+            layout.addWidget(marker, 0, Qt.AlignmentFlag.AlignTop)
+
             title_col = QVBoxLayout()
-            title_col.setSpacing(2)
+            title_col.setSpacing(4)
+
+            title_row = QHBoxLayout()
+            title_row.setSpacing(8)
 
             label = QLabel(section_name)
             label.setObjectName("sectionLabel")
-            title_col.addWidget(label)
-
-            meta = QLabel("按职责组织，可独立选择或组合运行")
-            meta.setObjectName("sectionMeta")
-            title_col.addWidget(meta)
-            layout.addLayout(title_col, 1)
+            title_row.addWidget(label)
 
             pill = QLabel(f"{count} 项")
             pill.setObjectName("sectionCountPill")
-            layout.addWidget(pill)
-            layout.addStretch(1)
+            title_row.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
+            title_row.addStretch(1)
+            title_col.addLayout(title_row)
+
+            meta = QLabel("按职责组织，可独立选择或组合运行")
+            meta.setObjectName("sectionMeta")
+            meta.setWordWrap(True)
+            title_col.addWidget(meta)
+            layout.addLayout(title_col, 1)
 
     class _CategoryCard(QFrame):
         def __init__(self, category, on_click):
@@ -1126,6 +1150,7 @@ if _PYQT6_AVAILABLE:
 
             list_container = QWidget()
             list_container.setObjectName("categoryList")
+            list_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             list_layout = QVBoxLayout(list_container)
             list_layout.setContentsMargins(0, 0, 0, 0)
             list_layout.setSpacing(10)
@@ -1141,9 +1166,7 @@ if _PYQT6_AVAILABLE:
                     self.cards[category.id] = card
                     list_layout.addWidget(card)
 
-            list_layout.addStretch(1)
             scroll_layout.addWidget(list_container)
-            scroll_layout.addStretch(1)
             scroll.setWidget(scroll_body)
             left_layout.addWidget(scroll, 1)
             content_row.addWidget(left_panel)
@@ -1284,10 +1307,10 @@ if _PYQT6_AVAILABLE:
             min_width, min_height = _launcher_minimum_size()
             central = self.centralWidget()
             if central is not None:
-                hint = central.sizeHint()
-                if hint.isValid():
-                    min_width = max(min_width, hint.width())
-                    min_height = max(min_height, hint.height())
+                for hint in (central.minimumSizeHint(), central.sizeHint()):
+                    if hint.isValid():
+                        min_width = max(min_width, hint.width())
+                        min_height = max(min_height, hint.height())
             needs_resize = self.width() < min_width or self.height() < min_height
             self.setMinimumSize(min_width, min_height)
             target_width = max(self.width(), min_width)
@@ -1346,10 +1369,12 @@ if _PYQT6_AVAILABLE:
             central = self.centralWidget()
             needs_floor_sync = False
             if central is not None:
-                hint = central.sizeHint()
-                needs_floor_sync = hint.isValid() and (
-                    hint.width() > self.minimumWidth() or hint.height() > self.minimumHeight()
-                )
+                for hint in (central.minimumSizeHint(), central.sizeHint()):
+                    needs_floor_sync = hint.isValid() and (
+                        hint.width() > self.minimumWidth() or hint.height() > self.minimumHeight()
+                    )
+                    if needs_floor_sync:
+                        break
             if changed or needs_floor_sync:
                 self._apply_window_size_floor()
                 QTimer.singleShot(0, self._apply_window_size_floor)

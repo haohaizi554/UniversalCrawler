@@ -3,9 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence
 
 from PyQt6.QtCore import QCoreApplication, QObject, Qt, QThread, pyqtSignal
 
@@ -13,6 +11,7 @@ from app.config import cfg
 from app.debug_logger import debug_logger
 from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
+from app.services import frontend_video_adapter as video_adapter
 from app.services.media_release_coordination import normalize_media_path
 from app.ui.task_runtime import ShortTaskRunner
 
@@ -455,10 +454,54 @@ class MediaHostControllerMixin:
             queue_item_ids = getattr(service, "queue_item_ids", None)
         if callable(queue_item_ids):
             return {str(video_id) for video_id in queue_item_ids() if video_id}
-        if service is not None:
-            snapshot = service.get_snapshot(sections=frozenset({"queue_items"}))
-            return {str(item["id"]) for item in snapshot.get("queue_items", []) if item.get("id")}
+        queued_ids = self._queued_manager_video_ids()
+        active_ids = self._active_manager_video_ids()
+        return {
+            str(video_id)
+            for video_id, item in self._video_items_for_clear().items()
+            if video_id and video_adapter.bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids) == "queue"
+        }
+
+    def _video_items_for_clear(self) -> dict[str, VideoItem]:
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None and hasattr(app_state, "videos"):
+            lock = getattr(app_state, "_lock", None)
+            if lock is not None:
+                with lock:
+                    return {str(video_id): item for video_id, item in getattr(app_state, "videos", {}).items()}
+            return {str(video_id): item for video_id, item in getattr(app_state, "videos", {}).items()}
+        with self._video_state_guard():
+            return {str(video_id): item for video_id, item in getattr(self, "videos", {}).items()}
+
+    def _queued_manager_video_ids(self) -> set[str]:
+        manager = getattr(self, "dl_manager", None)
+        queued_video_ids = getattr(manager, "queued_video_ids", None)
+        if callable(queued_video_ids):
+            return {str(video_id) for video_id in queued_video_ids() if video_id}
+        queue_obj = getattr(manager, "queue", None)
+        snapshot_video_ids = getattr(queue_obj, "snapshot_video_ids", None)
+        if callable(snapshot_video_ids):
+            return {str(video_id) for video_id in snapshot_video_ids() if video_id}
         return set()
+
+    def _active_manager_video_ids(self) -> set[str]:
+        manager = getattr(self, "dl_manager", None)
+        prune_finished = getattr(manager, "prune_finished_workers", None)
+        if callable(prune_finished):
+            prune_finished()
+        lock = getattr(manager, "_workers_lock", None)
+        if lock is not None:
+            with lock:
+                workers = list(getattr(manager, "workers", []) or [])
+        else:
+            workers = list(getattr(manager, "workers", []) or [])
+        ids: set[str] = set()
+        for worker in workers:
+            video = getattr(worker, "video", None)
+            video_id = getattr(video, "id", "")
+            if video_id:
+                ids.add(str(video_id))
+        return ids
 
     def _cancel_queue_items(self, video_ids: set[str]) -> None:
         manager_dict = getattr(self.dl_manager, "__dict__", {}) if self.dl_manager is not None else {}

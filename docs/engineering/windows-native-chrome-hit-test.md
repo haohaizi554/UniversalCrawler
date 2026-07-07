@@ -136,6 +136,21 @@ setGeometry(screen.availableGeometry())
 
 `showFullScreen()` 会绕开任务栏、Snap Layout、工作区和部分窗口动画语义，容易引发黑边、任务栏无法唤出、状态错乱等问题。真正全屏只属于媒体预览窗口。
 
+## 最大化状态真值
+
+自绘标题栏的最大化/还原按钮状态必须来自真实窗口状态，不能来自“刚刚请求过最大化”的缓存标记。
+
+规则：
+
+- `_native_maximize_requested` 只能作为 UI 辅助字段，不能作为 `_is_effectively_maximized()` 的持久真值。
+- 不要把点击后的 pending 目标态放进 `_is_effectively_maximized()`。这个函数同时被标题栏按钮、最大化/还原动作判断、resize hit-test 使用，混入临时态会污染窗口缩放。
+- Windows 下真实最大化状态只信 Win32 `IsZoomed(hwnd)`。如果 `IsZoomed(hwnd)` 是 `False`，即使 Qt 仍残留 `WindowMaximized`，也必须按非最大化处理。
+- Windows 下最大化/还原动作优先使用 Win32 `ShowWindow(hwnd, SW_MAXIMIZE/SW_RESTORE)`，不要依赖 Qt 在陈旧 `WindowMaximized` 标记下重新执行 `showMaximized()` / `showNormal()`。
+- 点击按钮后可以临时把按钮画成目标图标，但这个临时反馈不能反写到 `_is_effectively_maximized()`；后续同步只能用真实窗口状态覆盖。
+- 非 Windows 或取不到 HWND 时，才退回 Qt 的 `windowState()` / `isMaximized()`。
+
+经验教训：不要把“请求过最大化”“Win32 当前回报”“Qt 当前回报”“几何贴合工作区”混成同一种状态。临时按钮反馈只负责视觉反馈；真实状态和 resize/hit-test 必须只看真实窗口状态。
+
 ## 不要做的事
 
 - 不要让 Windows 原生标题栏和 Qt 自绘标题栏同时绘制。

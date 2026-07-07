@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 from typing import Any, Callable
@@ -44,6 +45,10 @@ class FrontendActionRequest(_RequestModel):
     action: str = Field(..., min_length=1, max_length=80)
     payload: dict[str, Any] = Field(default_factory=dict)
     frontend_version: int | None = Field(default=0, ge=0)
+
+
+async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(None, func, *args)
 
 def build_rest_router(
     *,
@@ -99,7 +104,7 @@ def build_rest_router(
         controller = get_request_context(request).controller
         getter = getattr(controller, "get_frontend_state", None)
         if callable(getter):
-            return getter()
+            return await _run_controller_worker_call(getter)
         return {"status": "error", "message": "frontend state is unavailable"}
 
     @router.get("/api/frontend/delta")
@@ -107,10 +112,11 @@ def build_rest_router(
         controller = get_request_context(request).controller
         getter = getattr(controller, "get_frontend_delta", None)
         if callable(getter):
-            return getter(since_version)
+            return await _run_controller_worker_call(getter, since_version)
         snapshot_getter = getattr(controller, "get_frontend_state", None)
         if callable(snapshot_getter):
-            return {"version": 0, "base_version": since_version, "full": True, "sections": snapshot_getter()}
+            sections = await _run_controller_worker_call(snapshot_getter)
+            return {"version": 0, "base_version": since_version, "full": True, "sections": sections}
         return {"status": "error", "message": "frontend delta is unavailable"}
 
     @router.get("/api/frontend/icons")
@@ -148,7 +154,7 @@ def build_rest_router(
                 delta_getter = getattr(controller, "get_frontend_delta", None)
                 if callable(delta_getter):
                     try:
-                        delta = delta_getter(frontend_version)
+                        delta = await _run_controller_worker_call(delta_getter, frontend_version)
                     except Exception:
                         delta = None
                     if isinstance(delta, dict):

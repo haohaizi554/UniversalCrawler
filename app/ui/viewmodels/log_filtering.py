@@ -60,14 +60,10 @@ def matches_platform(
     if not platform_id or platform_id == "all":
         return True
 
-    scope = derive_log_scope(dict(item))
-    if scope in {"system", "performance"}:
-        return True
-
     row = dict(item)
     resolved = resolve_item_platform_id(row, platform_options, platform_meta_by_id)
-    if resolved and resolved == platform_id:
-        return True
+    if resolved:
+        return resolved == platform_id
 
     meta = platform_meta_by_id.get(platform_id) or builtin_platform_metas().get(platform_id)
     tokens: set[str] = {platform_id.lower()}

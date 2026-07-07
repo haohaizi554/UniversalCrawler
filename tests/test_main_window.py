@@ -7,11 +7,19 @@ from unittest.mock import Mock, patch
 
 from app.services.frontend_state_service import FrontendStateService
 from app.ui.main_window import MainWindow
+from app.ui.viewmodels.frontend_action_worker import FrontendActionRequest, FrontendActionResult
 from app.ui.viewmodels.frontend_snapshot_worker import FrontendSnapshotResult, build_frontend_snapshot
 
 class MainWindowTests(unittest.TestCase):
 
     class CapturingSnapshotWorker:
+        def __init__(self):
+            self.requests = []
+
+        def submit(self, request):
+            self.requests.append(request)
+
+    class CapturingActionWorker:
         def __init__(self):
             self.requests = []
 
@@ -176,22 +184,57 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window.refresh_frontend_state = Mock()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "retry queued"}
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
 
         MainWindow._retry_failed_item(window, "video-1")
 
-        window._frontend_state_service.handle_action.assert_called_once_with("retry_failed", {"video_id": "video-1"})
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "retry_failed")
+        self.assertEqual(request.payload, {"video_id": "video-1"})
+        window.refresh_frontend_state.assert_not_called()
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="retry_failed",
+                payload=dict(request.payload),
+                result={"status": "ok", "message": "retry queued"},
+            ),
+        )
+
         window.refresh_frontend_state.assert_called_once_with(topics={"videos.replace"})
 
     def test_pause_download_item_refreshes_without_force_full_snapshot(self):
         window = self._make_window()
         window.refresh_frontend_state = Mock()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "paused"}
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
 
         MainWindow._pause_download_item(window, "video-1")
 
-        window._frontend_state_service.handle_action.assert_called_once_with("pause_download", {"video_id": "video-1"})
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "pause_download")
+        self.assertEqual(request.payload, {"video_id": "video-1"})
+        window.refresh_frontend_state.assert_not_called()
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="pause_download",
+                payload=dict(request.payload),
+                result={"status": "ok", "message": "paused"},
+            ),
+        )
+
+        window.append_log.assert_called_once_with("paused")
         window.refresh_frontend_state.assert_called_once_with(topics={"videos.update"})
 
     def test_copy_trace_click_requires_selected_video(self):
@@ -903,15 +946,32 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window._pending_refresh_topics = set()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "日志缓存已刷新"}
+        window._frontend_action_worker = Mock()
+        window._frontend_action_sequence = 0
         window._ui_update_scheduler = Mock()
 
         MainWindow._handle_log_action(window, "refresh")
 
-        window._frontend_state_service.handle_action.assert_called_once_with(
-            "log_operation",
-            {"operation": "refresh"},
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.submit.call_args.args[0]
+        self.assertIsInstance(request, FrontendActionRequest)
+        self.assertEqual(request.action, "log_operation")
+        self.assertEqual(request.payload, {"operation": "refresh"})
+        window.append_log.assert_not_called()
+        self.assertEqual(window._pending_refresh_topics, set())
+        window._ui_update_scheduler.schedule.assert_not_called()
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="log_operation",
+                payload={"operation": "refresh"},
+                result={"status": "ok", "message": "日志缓存已刷新"},
+            ),
         )
+
         window.append_log.assert_not_called()
         self.assertEqual(window._pending_refresh_topics, {"logs.append"})
         window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
@@ -920,21 +980,43 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window._pending_refresh_topics = set()
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {"status": "ok", "message": "日志缓存已刷新"}
+        window._frontend_action_worker = Mock()
+        window._frontend_action_sequence = 0
         window._ui_update_scheduler = Mock()
 
         with patch("app.ui.main_window.time.monotonic", side_effect=[100.0, 100.1]):
             MainWindow._handle_log_action(window, "refresh")
             MainWindow._handle_log_action(window, "refresh")
 
-        window._frontend_state_service.handle_action.assert_called_once_with(
-            "log_operation",
-            {"operation": "refresh"},
-        )
+        window._frontend_state_service.handle_action.assert_not_called()
+        window._frontend_action_worker.submit.assert_called_once()
+        request = window._frontend_action_worker.submit.call_args.args[0]
+        self.assertEqual(request.action, "log_operation")
+        self.assertEqual(request.payload, {"operation": "refresh"})
         window.append_log.assert_not_called()
         self.assertEqual(window._pending_refresh_topics, {"logs.append"})
-        self.assertEqual(window._ui_update_scheduler.schedule.call_count, 2)
-        window._ui_update_scheduler.schedule.assert_called_with("logs.append", force=False)
+        window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
+
+    def test_log_action_result_appends_non_refresh_feedback_and_refreshes_logs(self):
+        window = self._make_window()
+        window._pending_refresh_topics = set()
+        window._frontend_state_service = Mock()
+        window._ui_update_scheduler = Mock()
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=1,
+                service_token=id(window._frontend_state_service),
+                action="log_operation",
+                payload={"operation": "export"},
+                result={"status": "ok", "message": "日志已导出"},
+            ),
+        )
+
+        window.append_log.assert_called_once_with("日志已导出")
+        self.assertEqual(window._pending_refresh_topics, {"logs.append"})
+        window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
 
     @patch("app.ui.main_window.cfg.set")
     @patch("app.ui.main_window.cfg.get", return_value=True)
@@ -963,19 +1045,30 @@ class MainWindowTests(unittest.TestCase):
         window = self._make_window()
         window._cached_snapshot = {"version": 1, "download_options": {"max_concurrent": 3}}
         window._frontend_state_service = Mock()
-        window._frontend_state_service.handle_action.return_value = {
-            "status": "ok",
-            "data": {"auto_retry": True, "max_retries": 3, "max_concurrent": 5},
-        }
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
         window._render_frontend_state = Mock()
         window.refresh_frontend_state = Mock()
 
         MainWindow._update_download_options(window, {"max_concurrent": 6})
 
-        window._frontend_state_service.handle_action.assert_called_once_with(
-            "update_download_options",
-            {"max_concurrent": 6},
+        window._frontend_state_service.handle_action.assert_not_called()
+        request = window._frontend_action_worker.requests[0]
+        self.assertEqual(request.action, "update_download_options")
+        self.assertEqual(request.payload, {"max_concurrent": 6})
+        window._render_frontend_state.assert_not_called()
+
+        MainWindow._on_frontend_action_finished(
+            window,
+            FrontendActionResult(
+                sequence=request.sequence,
+                service_token=id(window._frontend_state_service),
+                action="update_download_options",
+                payload=dict(request.payload),
+                result={"status": "ok", "data": {"auto_retry": True, "max_retries": 3, "max_concurrent": 5}},
+            ),
         )
+
         window._render_frontend_state.assert_called_once_with(topics={"settings.update"})
         window.refresh_frontend_state.assert_not_called()
 
@@ -1470,21 +1563,117 @@ class MainWindowTests(unittest.TestCase):
         window.isFullScreen = Mock(return_value=False)
         window.showMaximized = Mock()
         window.showNormal = Mock()
+        window._safe_is_native_maximized = Mock(return_value=False)
+        window._apply_native_maximized_state = Mock()
 
         MainWindow._maximize_to_work_area(window)
 
         self.assertFalse(window._custom_maximized)
         self.assertEqual(window._pre_custom_maximize_geometry, normal_geometry)
-        window.showMaximized.assert_called_once()
+        window._apply_native_maximized_state.assert_called_once_with(True)
+        window.showMaximized.assert_not_called()
         window.setGeometry.assert_not_called()
 
-        window.isMaximized.return_value = True
+        window._safe_is_native_maximized.return_value = True
         MainWindow._restore_from_custom_or_native_maximized(window)
 
-        window.showNormal.assert_called_once()
+        window._apply_native_maximized_state.assert_called_with(False)
+        window.showNormal.assert_not_called()
         self.assertFalse(window._custom_maximized)
         self.assertIsNone(window._pre_custom_maximize_geometry)
         window.setGeometry.assert_not_called()
+
+    def test_stale_maximize_request_flag_does_not_drive_effective_state(self):
+        window = self._make_window()
+        window._custom_maximized = False
+        window._native_maximize_requested = True
+        window._safe_is_native_maximized = Mock(return_value=False)
+
+        self.assertFalse(MainWindow._is_effectively_maximized(window))
+
+    def test_windows_is_zoomed_false_overrides_stale_qt_maximized_state(self):
+        window = self._make_window()
+        window._custom_maximized = False
+        window._windows_hwnd_is_zoomed = Mock(return_value=False)
+        window._qt_reports_native_maximized = Mock(return_value=True)
+
+        self.assertFalse(MainWindow._is_effectively_maximized(window))
+        window._qt_reports_native_maximized.assert_not_called()
+
+    def test_toggle_maximized_uses_native_action_from_real_state(self):
+        window = self._make_window()
+        window.is_fullscreen_mode = False
+        window._safe_is_fullscreen = Mock(return_value=False)
+        window._is_effectively_maximized = Mock(return_value=False)
+        window._apply_native_maximized_state = Mock()
+        window._set_window_title_bar_maximized = Mock()
+
+        with patch("app.ui.main_window.QTimer.singleShot") as single_shot:
+            MainWindow._toggle_maximized(window)
+
+        self.assertTrue(window._native_maximize_requested)
+        window._apply_native_maximized_state.assert_called_once_with(True)
+        window._set_window_title_bar_maximized.assert_called_once_with(True)
+        self.assertEqual(single_shot.call_count, 2)
+
+    def test_toggle_restore_uses_native_action_from_real_state(self):
+        window = self._make_window()
+        window.is_fullscreen_mode = False
+        window._safe_is_fullscreen = Mock(return_value=False)
+        window._is_effectively_maximized = Mock(return_value=True)
+        window._apply_native_maximized_state = Mock()
+        window._set_window_title_bar_maximized = Mock()
+
+        with patch("app.ui.main_window.QTimer.singleShot"):
+            MainWindow._toggle_maximized(window)
+
+        self.assertFalse(window._native_maximize_requested)
+        window._apply_native_maximized_state.assert_called_once_with(False)
+        window._set_window_title_bar_maximized.assert_called_once_with(False)
+
+    def test_apply_native_maximized_state_uses_windows_show_window_controller(self):
+        window = self._make_window()
+        controller = Mock()
+        controller.set_hwnd_maximized.return_value = True
+        window._chrome_controller = Mock(return_value=controller)
+        window.winId = Mock(return_value=1001)
+        window.showMaximized = Mock()
+        window.showNormal = Mock()
+
+        with patch("app.ui.main_window.sys.platform", "win32"):
+            MainWindow._apply_native_maximized_state(window, True)
+
+        controller.set_hwnd_maximized.assert_called_once_with(1001, True)
+        window.showMaximized.assert_not_called()
+        window.showNormal.assert_not_called()
+
+    def test_apply_native_maximized_state_falls_back_to_qt_when_native_action_fails(self):
+        window = self._make_window()
+        controller = Mock()
+        controller.set_hwnd_maximized.return_value = False
+        window._chrome_controller = Mock(return_value=controller)
+        window.winId = Mock(return_value=1001)
+        window.showMaximized = Mock()
+        window.showNormal = Mock()
+
+        with patch("app.ui.main_window.sys.platform", "win32"):
+            MainWindow._apply_native_maximized_state(window, True)
+
+        window.showMaximized.assert_called_once()
+        window.showNormal.assert_not_called()
+
+    def test_windows_is_zoomed_keeps_titlebar_restore_state(self):
+        window = self._make_window()
+        window._custom_maximized = False
+        window._native_maximize_requested = False
+        window._windows_hwnd_is_zoomed = Mock(return_value=True)
+        window._qt_reports_native_maximized = Mock(return_value=False)
+        window.window_title_bar = Mock()
+
+        MainWindow._sync_chrome_maximized_state(window)
+
+        self.assertTrue(window._native_maximize_requested)
+        window.window_title_bar.set_maximized.assert_called_once_with(True)
 
     @patch("app.ui.main_window.cfg.save_ui_state")
     def test_close_event_never_persists_legacy_main_fullscreen_state(self, mock_save_ui_state):
@@ -1557,6 +1746,40 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(result, MainWindow.HTMAXBUTTON)
 
+    def test_chrome_controller_prefers_windows_is_zoomed_over_qt_state(self):
+        from PyQt6.QtCore import Qt
+        from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
+
+        host = Mock()
+        host.winId.return_value = 1001
+        host.windowState.return_value = Qt.WindowState.WindowMaximized
+        host.isMaximized.return_value = True
+        controller = FramelessWindowChromeController(host, title_bar_getter=lambda: None)
+        controller._is_hwnd_maximized = Mock(return_value=False)
+
+        with patch("app.ui.layout.window_chrome_controller.sys.platform", "win32"):
+            self.assertFalse(controller._is_effectively_maximized())
+        controller._is_hwnd_maximized.assert_called_once_with(1001)
+
+    def test_chrome_controller_toggle_uses_windows_show_window_without_callback(self):
+        from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
+
+        host = Mock()
+        host.winId.return_value = 1001
+        host.showMaximized = Mock()
+        host.showNormal = Mock()
+        controller = FramelessWindowChromeController(host, title_bar_getter=lambda: None)
+        controller._is_hwnd_maximized = Mock(return_value=False)
+        controller.set_hwnd_maximized = Mock(return_value=True)
+
+        with patch("app.ui.layout.window_chrome_controller.sys.platform", "win32"), patch(
+            "app.ui.layout.window_chrome_controller.QTimer.singleShot"
+        ):
+            controller._toggle_maximized()
+
+        controller.set_hwnd_maximized.assert_called_once_with(1001, True)
+        host.showMaximized.assert_not_called()
+        host.showNormal.assert_not_called()
 
     def test_fullscreen_mode_compatibility_forwards_to_media_panel(self):
         window = self._make_window()

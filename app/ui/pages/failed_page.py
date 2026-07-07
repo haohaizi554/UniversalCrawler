@@ -322,11 +322,16 @@ class FailedPage(PageFrame):
         row.setObjectName("FailedLogRow")
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 1, 0, 1)
-        layout.setSpacing(6)
+        layout.setContentsMargins(2, 1, 0, 1)
+        layout.setSpacing(7)
         time_label = QLabel(self._format_log_time(entry.get("time")))
         time_label.setObjectName("FailedLogTime")
-        time_width = max(68, time_label.fontMetrics().horizontalAdvance("00:00:00") + 8)
+        time_label.ensurePolished()
+        time_width = max(
+            64,
+            time_label.fontMetrics().horizontalAdvance("88:88:88"),
+            time_label.fontMetrics().horizontalAdvance(time_label.text()),
+        ) + 10
         time_label.setFixedWidth(time_width)
         time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)

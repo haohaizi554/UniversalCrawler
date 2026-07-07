@@ -95,7 +95,6 @@ class FrontendStateService:
     METADATA_EMPTY_MAX_RETRIES = 3
     FRONTEND_DELTA_EVENTS_LIMIT = 64
     FILE_LOG_BACKFILL_LIMIT = 500
-    FAILED_RECORD_SNAPSHOT_LIMIT = 500
     PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
 
     def __init__(
@@ -140,8 +139,6 @@ class FrontendStateService:
         self._platform_auth_force_refresh_once = False
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
-        self._failed_records_snapshot_exposed = False
-        self._configure_failed_record_store()
         self._active_event_time_cache: dict[str, str] = {}
         self._metadata_retry_tracker = MetadataRetryTracker(
             retry_callback=lambda video_id, source_path: self._retry_completed_metadata_probe(video_id, source_path),
@@ -252,18 +249,6 @@ class FrontendStateService:
         self._cancel_metadata_probe_queue()
         self._clear_metadata_empty_failures()
         self._event_aggregator.reset()
-
-    def _configure_failed_record_store(self) -> None:
-        callback_setter = getattr(self.failed_record_store, "set_refresh_callback", None)
-        if callable(callback_setter):
-            callback_setter(self._on_failed_records_refreshed)
-
-    def _on_failed_records_refreshed(self, count: int) -> None:
-        if self._destroyed:
-            return
-        if not self._failed_records_snapshot_exposed:
-            return
-        self._event_aggregator.record("failed_records.refresh", {"count": int(count or 0)})
 
     def destroy(self) -> None:
         """退订所有 EventBus 订阅，释放资源。应在 FSS 不再使用时调用。"""
@@ -446,8 +431,6 @@ class FrontendStateService:
 
         if want_failed and failed_items:
             self._queue_failed_records(failed_items)
-        if want_failed:
-            failed_items = self._merge_failed_record_snapshot(failed_items)
 
         sections: dict[str, Any] = {}
         if only is None or "queue_items" in only:
@@ -464,7 +447,7 @@ class FrontendStateService:
                 queue_count=bucket_counts["queue"],
                 active_count=bucket_counts["active"],
                 completed_count=bucket_counts["completed"],
-                failed_count=max(bucket_counts["failed"], len(failed_items)) if want_failed else bucket_counts["failed"],
+                failed_count=bucket_counts["failed"],
                 active_downloads=active_downloads if (include_active or want_active_for_status) else None,
             )
         return sections
@@ -1470,38 +1453,6 @@ class FrontendStateService:
                 exc,
                 details={"count": len(failed_items)},
             )
-
-    def _merge_failed_record_snapshot(self, failed_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        self._failed_records_snapshot_exposed = True
-        snapshot_getter = getattr(self.failed_record_store, "records_snapshot", None)
-        if not callable(snapshot_getter):
-            return failed_items
-        try:
-            stored_items = snapshot_getter(limit=self.FAILED_RECORD_SNAPSHOT_LIMIT)
-        except Exception as exc:
-            debug_logger.log_exception(
-                "FrontendStateService",
-                "failed_records_snapshot",
-                exc,
-            )
-            return failed_items
-        if not stored_items:
-            return failed_items
-        merged = list(failed_items)
-        seen_ids = {
-            str(item.get("id") or item.get("video_id") or "")
-            for item in merged
-            if isinstance(item, Mapping)
-        }
-        for item in stored_items:
-            if not isinstance(item, Mapping):
-                continue
-            item_id = str(item.get("id") or item.get("video_id") or "")
-            if not item_id or item_id in seen_ids:
-                continue
-            merged.append(dict(item))
-            seen_ids.add(item_id)
-        return merged
 
     def _fallback_failed_log_entries(
         self,

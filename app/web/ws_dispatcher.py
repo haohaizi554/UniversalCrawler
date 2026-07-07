@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any, Awaitable, Callable
 
@@ -12,6 +13,10 @@ from app.web.session_runtime import WebSessionContext
 
 Handler = Callable[[dict[str, Any], WebSessionContext], Awaitable[None]]
 MAX_SCAN_LIMIT = 5000
+
+
+async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(None, func, *args)
 
 class WebSocketMessageDispatcher:
     """集中处理 WebSocket 协议消息，避免 server.py 承担业务分发职责。"""
@@ -232,13 +237,16 @@ class WebSocketMessageDispatcher:
         if not callable(handler):
             await self._emit_log(context, "❌ frontend action 不可用")
             return
-        result = handler(action, payload)
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(action, payload)
+        else:
+            result = await _run_controller_worker_call(handler, action, payload)
         if inspect.isawaitable(result):
             result = await result
         await context.send("frontend_action_result", result)
         delta_getter = getattr(context.controller, "get_frontend_delta", None)
         if callable(delta_getter):
-            delta = delta_getter(frontend_version)
+            delta = await _run_controller_worker_call(delta_getter, frontend_version)
             if isinstance(delta, dict) and (
                 delta.get("full")
                 or int(delta.get("version") or 0) != frontend_version
@@ -247,4 +255,5 @@ class WebSocketMessageDispatcher:
             return
         getter = getattr(context.controller, "get_frontend_state", None)
         if callable(getter):
-            await context.send("frontend_state", getter())
+            snapshot = await _run_controller_worker_call(getter)
+            await context.send("frontend_state", snapshot)

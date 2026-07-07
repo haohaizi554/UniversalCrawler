@@ -67,6 +67,59 @@ class TestLauncherWindowUITests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_section_header_keeps_count_badge_inline(self):
+        from PyQt6.QtWidgets import QLabel, QFrame
+        from tests import test_launcher as launcher
+
+        header = launcher._SectionHeader("流程层", 2)
+        try:
+            header.resize(360, 72)
+            header.show()
+            for _ in range(3):
+                self.app.processEvents()
+
+            marker = header.findChild(QFrame, "sectionMarker")
+            label = next(item for item in header.findChildren(QLabel) if item.objectName() == "sectionLabel")
+            pill = next(item for item in header.findChildren(QLabel) if item.objectName() == "sectionCountPill")
+            meta = next(item for item in header.findChildren(QLabel) if item.objectName() == "sectionMeta")
+
+            self.assertIsNotNone(marker)
+            self.assertEqual(marker.width(), 4)
+            self.assertTrue(meta.wordWrap())
+            self.assertLess(pill.geometry().left(), header.width() // 2)
+            self.assertGreater(pill.geometry().left(), label.geometry().right())
+            self.assertLess(abs(pill.geometry().center().y() - label.geometry().center().y()), 6)
+        finally:
+            header.close()
+
+    def test_category_scroll_does_not_add_blank_tail_after_last_card(self):
+        from PyQt6.QtWidgets import QWidget
+        from tests import test_launcher as launcher
+
+        window = launcher._build_gui()
+        try:
+            window.resize(1220, 952)
+            window.show()
+            for _ in range(5):
+                self.app.processEvents()
+                window._refresh_text_minimums()
+
+            category_viewport = window.findChild(QWidget, "categoryViewport")
+            category_list = window.findChild(QWidget, "categoryList")
+            cards = window.findChildren(QWidget, "categoryCard")
+            self.assertIsNotNone(category_viewport)
+            self.assertIsNotNone(category_list)
+            self.assertGreater(len(cards), 0)
+
+            last_card = max(cards, key=lambda card: card.geometry().bottom())
+            list_tail_gap = category_list.height() - last_card.geometry().bottom() - 1
+            viewport_tail_gap = category_viewport.height() - category_list.geometry().bottom() - 1
+
+            self.assertLessEqual(list_tail_gap, 4)
+            self.assertLessEqual(viewport_tail_gap, 4)
+        finally:
+            window.close()
+
     def test_launcher_text_refresh_does_not_inflate_or_compress_panels(self):
         from PyQt6.QtWidgets import QLabel
         from tests import test_launcher as launcher
@@ -94,6 +147,13 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertEqual(window.control_panel.minimumHeight(), initial_control_min)
             self.assertGreaterEqual(window.detail_panel.height() + 2, window.detail_panel.minimumHeight())
             self.assertGreaterEqual(window.control_panel.height() + 2, window.control_panel.minimumHeight())
+            self.assertTrue(window.btn_run.isVisible())
+            self.assertGreaterEqual(
+                window.log.geometry().top(),
+                window.control_panel.geometry().bottom() + 1,
+            )
+            btn_bottom = window.control_panel.geometry().top() + window.btn_run.geometry().bottom()
+            self.assertLess(btn_bottom, window.log.geometry().top())
 
             compressed = []
             for label in window.findChildren(QLabel):

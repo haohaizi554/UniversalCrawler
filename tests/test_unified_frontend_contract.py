@@ -831,6 +831,21 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIsNotNone(trend)
         self.assertEqual(trend._speed_label, "9.9 MB/s")
 
+    def test_active_downloads_detail_runtime_fields_follow_live_item_values(self):
+        shell = self._make_shell()
+        shell.show_page("active")
+        active = shell.pages["active"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        item = snapshot["active_downloads"][0]
+        item["source_url"] = "https://upos-sz-estghw.bilivideo.com/upgcxcode/12/25/33508362512/33508362512-1-30080.m4s?long=query"
+        item["output_filename"] = "live-name.mp4"
+
+        active.render(snapshot)
+        self.app.processEvents()
+
+        self.assertEqual(active._detail_value_labels[TEXT["source_url"]].raw_text(), item["source_url"])
+        self.assertEqual(active._detail_value_labels[TEXT["output_filename"]].raw_text(), "live-name.mp4")
+
     def test_smart_wrap_label_breaks_before_next_segment_when_it_will_not_fit(self):
         label = SmartWrapLabel("https://example.com/segment-that-fits/next-segment-that-does-not-fit")
         self.addCleanup(label.deleteLater)
@@ -874,6 +889,23 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertLessEqual(len(lines), 2)
         self.assertTrue(any("project" in line and "UniversalCrawlerProplus" in line for line in lines))
+
+    def test_smart_wrap_label_caps_very_long_url_even_in_wide_container(self):
+        url = "https://upos-sz-estghw.bilivideo.com/upgcxcode/12/25/33508362512/33508362512-1-30080.m4s?long=query"
+        label = SmartWrapLabel(url)
+        self.addCleanup(label.deleteLater)
+        label.resize(900, 160)
+        label.show()
+        self.app.processEvents()
+
+        lines = [line for line in label.text().splitlines() if line]
+
+        self.assertGreaterEqual(len(lines), 2)
+        for line in lines:
+            self.assertLessEqual(
+                label.fontMetrics().horizontalAdvance(line),
+                SmartWrapLabel.LONG_SEGMENT_WRAP_WIDTH + 2,
+            )
 
     def test_active_downloads_trend_widget_has_stable_height_and_current_speed(self):
         shell = self._make_shell()
@@ -3204,11 +3236,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertTrue(failed.table.itemDelegate()._is_failed_reason_cell(failed.table.table_model.index(0, reason_col)))
         log_row = failed.findChild(QFrame, "FailedLogRow")
         self.assertIsNotNone(log_row)
-        self.assertEqual(log_row.layout().contentsMargins().left(), 0)
-        self.assertEqual(log_row.layout().spacing(), 6)
+        self.assertEqual(log_row.layout().contentsMargins().left(), 2)
+        self.assertEqual(log_row.layout().spacing(), 7)
         self.assertEqual(log_row.layout().itemAt(0).widget().objectName(), "FailedLogTime")
         time_widget = log_row.layout().itemAt(0).widget()
-        self.assertEqual(time_widget.width(), max(68, time_widget.fontMetrics().horizontalAdvance("00:00:00") + 8))
+        self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance("88:88:88") + 10)
         level_badge = log_row.layout().itemAt(1).widget()
         self.assertIn(level_badge.objectName(), {"LogLevelBadgeInfo", "LogLevelBadgeSuccess", "LogLevelBadgeWarn", "LogLevelBadgeError", "LogLevelBadgeCommand"})
         self.assertEqual(level_badge.height(), 22)
@@ -3244,7 +3276,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             time_widget = layout.itemAt(0).widget()
             badge = layout.itemAt(1).widget()
             self.assertRegex(time_widget.text(), r"^\d{2}:\d{2}:\d{2}$")
-            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 4)
+            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 10)
             self.assertEqual(badge.width(), 74)
             message_x.append(layout.itemAt(2).geometry().x() if widget.isVisible() else time_widget.width() + layout.spacing() + badge.width() + layout.spacing())
 

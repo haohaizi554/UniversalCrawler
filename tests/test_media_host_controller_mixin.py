@@ -417,5 +417,34 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         self.assertEqual(len(next(iter(controller.dl_manager.cancel_tasks.call_args.args))), 10000)
         controller.host.refresh_frontend_state.assert_called_once_with(force=False, topics={"videos.remove_many"})
 
+    def test_queue_item_ids_fallback_uses_memory_state_without_snapshot(self):
+        controller = _DummyMediaHostController()
+        controller.app_state = AppState()
+        queued = VideoItem(url="https://example.com/queued.mp4", title="queued", source="douyin")
+        queued.status = "\u23f3 \u7b49\u5f85\u4e2d"
+        active = VideoItem(url="https://example.com/active.mp4", title="active", source="douyin")
+        active.status = "\u23f3 \u7b49\u5f85\u4e2d"
+        completed = VideoItem(url="", title="done", source="local")
+        completed.status = "\u2705 \u672c\u5730"
+        completed.progress = 100
+        with controller.app_state._lock:
+            controller.app_state.videos = {
+                queued.id: queued,
+                active.id: active,
+                completed.id: completed,
+            }
+        controller.videos = controller.app_state.videos
+        controller.dl_manager = SimpleNamespace(
+            queue=SimpleNamespace(snapshot_video_ids=Mock(return_value={queued.id, active.id})),
+            workers=[SimpleNamespace(video=active)],
+            prune_finished_workers=Mock(),
+        )
+        controller.frontend_state_service = SimpleNamespace(
+            get_snapshot=Mock(side_effect=AssertionError("full snapshot should not be used")),
+        )
+
+        self.assertEqual(controller._queue_item_ids_for_clear(), {queued.id})
+        controller.frontend_state_service.get_snapshot.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

@@ -1263,7 +1263,7 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["title"], failed["title"])
         self.assertEqual(rows[0]["trace_id"], "trace-failed")
 
-    def test_failed_snapshot_reads_failed_record_memory_snapshot_without_sqlite_query(self):
+    def test_failed_snapshot_does_not_merge_persisted_records_into_live_page(self):
         with TemporaryDirectory() as temp_dir:
             store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
             store.queue_upsert(
@@ -1289,7 +1289,36 @@ class FrontendStateServiceTests(unittest.TestCase):
                 service.destroy()
 
         query_mock.assert_not_called()
-        self.assertEqual(snapshot["failed_items"][0]["id"], "persisted-failed")
+        self.assertEqual(snapshot["failed_items"], [])
+        self.assertEqual(snapshot["app_status"]["failed_count"], 0)
+
+    def test_failed_snapshot_keeps_persisted_records_out_when_current_failures_exist(self):
+        with TemporaryDirectory() as temp_dir:
+            store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            store.queue_upsert(
+                [
+                    {
+                        "id": "persisted-demo",
+                        "title": "Demo",
+                        "reason": "network",
+                        "failed_at": "2026-07-06 12:00:00",
+                        "status": "Failed",
+                        "platform": "Bilibili",
+                        "trace_id": "trace-123",
+                    }
+                ]
+            )
+            self.assertTrue(store.flush(timeout=2))
+            current = VideoItem(url="https://example.com/current", title="Current failure", source="bilibili")
+            current.status = VideoStatus.FAILED.label
+            current.meta["trace_id"] = "trace-current"
+            service = FrontendStateService(SimpleNamespace(videos={current.id: current}), failed_record_store=store)
+            try:
+                snapshot = service.get_snapshot(sections=frozenset({"failed_items", "app_status"}))
+            finally:
+                service.destroy()
+
+        self.assertEqual([item["title"] for item in snapshot["failed_items"]], ["Current failure"])
         self.assertEqual(snapshot["app_status"]["failed_count"], 1)
 
     def test_copy_diagnostics_action_returns_trace_id_only(self):

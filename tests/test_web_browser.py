@@ -173,6 +173,7 @@ def _wait_for_webui_ready(page, server_url: str) -> None:
         """,
         timeout=5000,
     )
+    page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
 
 def _install_webui_test_helpers(page) -> None:
     page.evaluate(
@@ -476,7 +477,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/settings_render.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/task_render.js?v=20260705-i18n-surface', content)
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
-        self.assertIn('/static/custom_select.js?v=20260705-i18n-state-boundary', content)
+        self.assertIn('/static/custom_select.js?v=20260707-placement-stable', content)
         self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
         self.assertIn('/static/app.js?v=20260705-i18n-state-boundary', content)
 
@@ -2787,23 +2788,40 @@ class WebUIBrowserTests(unittest.TestCase):
                 const wrapper = select?.closest(".custom-select");
                 const button = wrapper?.querySelector(".custom-select-button");
                 button?.click();
-                await waitFrame();
-                const option = wrapper?.querySelector(".custom-select-option.selected");
-                const label = option?.querySelector(".custom-select-label");
-                const optionStyle = option ? getComputedStyle(option) : null;
-                const labelStyle = label ? getComputedStyle(label) : null;
-                const optionColor = optionStyle?.color || "";
-                const labelColor = labelStyle?.color || "";
-                const backgroundColor = optionStyle?.backgroundColor || "";
-                button?.click();
+                const deadline = Date.now() + 1200;
+                let sampleResult = null;
+                while (Date.now() < deadline) {
+                  await waitFrame();
+                  const menu = wrapper?.querySelector(".custom-select-menu");
+                  const option = wrapper?.querySelector(".custom-select-option.selected");
+                  const label = option?.querySelector(".custom-select-label");
+                  const optionStyle = option ? getComputedStyle(option) : null;
+                  const labelStyle = label ? getComputedStyle(label) : null;
+                  const optionColor = optionStyle?.color || "";
+                  const labelColor = labelStyle?.color || "";
+                  const backgroundColor = optionStyle?.backgroundColor || "";
+                  sampleResult = {
+                    theme,
+                    accent,
+                    hasOption: Boolean(option && label && menu && !menu.hidden),
+                    optionColor,
+                    labelColor,
+                    backgroundColor,
+                    contrast: contrast(rgb(labelColor), rgb(backgroundColor)),
+                  };
+                  if (sampleResult.hasOption && optionColor && labelColor && backgroundColor) break;
+                }
+                closeCustomSelect(wrapper);
                 return {
                   theme,
                   accent,
-                  hasOption: Boolean(option && label),
-                  optionColor,
-                  labelColor,
-                  backgroundColor,
-                  contrast: contrast(rgb(labelColor), rgb(backgroundColor)),
+                  ...(sampleResult || {
+                    hasOption: false,
+                    optionColor: "",
+                    labelColor: "",
+                    backgroundColor: "",
+                    contrast: 1,
+                  }),
                 };
               };
               const results = [];
@@ -2830,28 +2848,52 @@ class WebUIBrowserTests(unittest.TestCase):
             result = self._page.evaluate(
                 """
                 async () => {
+                  const waitFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+                  const waitUntil = async (predicate, timeoutMs = 1200) => {
+                    const deadline = Date.now() + timeoutMs;
+                    let value = null;
+                    while (Date.now() < deadline) {
+                      value = predicate();
+                      if (value && value.ready) return value;
+                      await waitFrame();
+                    }
+                    return value || { ready: false };
+                  };
+                  const geometry = (wrapper, menu) => {
+                    const wrapperRect = wrapper?.getBoundingClientRect();
+                    const menuRect = menu?.getBoundingClientRect();
+                    const opened = Boolean(menu && !menu.hidden);
+                    const opensUp = Boolean(wrapper?.classList.contains('open-up'));
+                    const menuAboveControl = Boolean(menuRect && wrapperRect && menuRect.bottom <= wrapperRect.top + 1);
+                    const menuInsideViewport = Boolean(menuRect && menuRect.top >= 3 && menuRect.bottom <= window.innerHeight - 3);
+                    return {
+                      ready: opened && opensUp && menuAboveControl && menuInsideViewport,
+                      opened,
+                      opensUp,
+                      menuAboveControl,
+                      menuInsideViewport,
+                      wrapperTop: wrapperRect ? Math.round(wrapperRect.top) : null,
+                      wrapperBottom: wrapperRect ? Math.round(wrapperRect.bottom) : null,
+                      menuTop: menuRect ? Math.round(menuRect.top) : null,
+                      menuBottom: menuRect ? Math.round(menuRect.bottom) : null,
+                      viewportHeight: window.innerHeight,
+                    };
+                  };
                   currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
                   switchPage('settings');
                   renderSettings(true);
-                  await new Promise(resolve => requestAnimationFrame(resolve));
+                  await waitFrame();
                   const select = document.querySelector('#page-settings select[data-setting="speed_limit_kb"]');
                   const wrapper = select?.closest('.custom-select');
                   const button = wrapper?.querySelector('.custom-select-button');
                   wrapper?.scrollIntoView({ block: 'end', inline: 'nearest' });
-                  await new Promise(resolve => requestAnimationFrame(resolve));
+                  await waitUntil(() => {
+                    const rect = wrapper?.getBoundingClientRect();
+                    return { ready: Boolean(rect && window.innerHeight - rect.bottom <= 96) };
+                  });
                   button?.click();
-                  await new Promise(resolve => requestAnimationFrame(resolve));
                   const menu = wrapper?.querySelector('.custom-select-menu');
-                  const wrapperRect = wrapper?.getBoundingClientRect();
-                  const menuRect = menu?.getBoundingClientRect();
-                  return {
-                    opened: Boolean(menu && !menu.hidden),
-                    opensUp: Boolean(wrapper?.classList.contains('open-up')),
-                    menuAboveControl: menuRect && wrapperRect ? menuRect.bottom <= wrapperRect.top + 1 : false,
-                    menuInsideViewport: menuRect
-                      ? menuRect.top >= 3 && menuRect.bottom <= window.innerHeight - 3
-                      : false
-                  };
+                  return await waitUntil(() => geometry(wrapper, menu));
                 }
                 """
             )
@@ -2859,10 +2901,10 @@ class WebUIBrowserTests(unittest.TestCase):
             if original_viewport:
                 self._page.set_viewport_size(original_viewport)
 
-        self.assertTrue(result["opened"])
-        self.assertTrue(result["opensUp"])
-        self.assertTrue(result["menuAboveControl"])
-        self.assertTrue(result["menuInsideViewport"])
+        self.assertTrue(result["opened"], result)
+        self.assertTrue(result["opensUp"], result)
+        self.assertTrue(result["menuAboveControl"], result)
+        self.assertTrue(result["menuInsideViewport"], result)
 
     def test_11k_download_settings_order_matches_gui(self):
         self._goto_ready()
@@ -3301,13 +3343,16 @@ class WebUIBrowserTests(unittest.TestCase):
         self._goto_ready()
         # 注入测试数据
         self._page.evaluate("""
+            switchPage('queue');
             videoOrder = ['a', 'b', 'c'];
             videos = {
                 'a': {title: 'Item A', progress: 0, status: 'done'},
                 'b': {title: 'Item B', progress: 0, status: 'done'},
                 'c': {title: 'Item C', progress: 0, status: 'done'},
             };
+            selectedVideoId = null;
             renderQueue();
+            document.body.focus();
         """)
         # 第一次按 ArrowDown → 选中 a
         self._page.keyboard.press("ArrowDown")

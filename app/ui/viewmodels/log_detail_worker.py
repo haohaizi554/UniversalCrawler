@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import html
-import threading
-from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +9,7 @@ from typing import Any
 from app.debug_logger import debug_logger
 from app.ui.localization import normalize_language, tr
 from app.ui.viewmodels.latest_worker import LatestRequestWorker
+from app.ui.viewmodels.sequential_worker import SequentialRequestWorker
 from app.ui.viewmodels.log_classification import (
     derive_result_type,
     normalized_event_code,
@@ -216,40 +215,17 @@ class LogDetailExportWorker:
     """
 
     def __init__(self, on_result: Callable[[LogDetailExportResult], None]) -> None:
-        self._on_result = on_result
-        self._condition = threading.Condition()
-        self._pending: deque[LogDetailExportRequest] = deque()
-        self._shutdown = False
-        self._thread = threading.Thread(target=self._run, name="log-detail-export-worker", daemon=True)
-        self._thread.start()
+        self._worker = SequentialRequestWorker(
+            name="log-detail-export-worker",
+            on_result=on_result,
+            process=self._write,
+        )
 
     def submit(self, request: LogDetailExportRequest) -> None:
-        with self._condition:
-            if self._shutdown:
-                return
-            self._pending.append(request)
-            self._condition.notify()
+        self._worker.submit(request)
 
     def shutdown(self) -> None:
-        with self._condition:
-            self._shutdown = True
-            self._condition.notify()
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-
-    def _run(self) -> None:
-        while True:
-            with self._condition:
-                while not self._pending and not self._shutdown:
-                    self._condition.wait()
-                if self._shutdown:
-                    return
-                request = self._pending.popleft()
-            result = self._write(request)
-            try:
-                self._on_result(result)
-            except RuntimeError:
-                return
+        self._worker.shutdown()
 
     @staticmethod
     def _write(request: LogDetailExportRequest) -> LogDetailExportResult:
