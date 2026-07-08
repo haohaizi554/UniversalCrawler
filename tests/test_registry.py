@@ -562,6 +562,7 @@ def _bootstrap_registry() -> None:
             "tests/test_pagination_*.py",
             "tests/test_m3u8_*.py",
             "tests/test_task_runtime_*.py",
+            "tests/test_request_workers.py",
             "tests/test_ws_transport_*.py",
             "tests/test_guardrails.py",
             "tests/test_event_bus_extended.py",

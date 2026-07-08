@@ -21,7 +21,7 @@
 
 ## Web REST
 
-`app/web/rest_router.py` 负责 HTTP 接口。REST 适合初始加载、手动刷新、配置读取和明确用户动作，不适合承载每个进度信号。
+`app/web/rest_router.py` 负责 HTTP 接口。开发态入口使用 `python -m entry.web_entry --host 127.0.0.1 --port 8000`，打包态入口使用 `CrawlerWebPortal.exe`。REST 适合初始加载、手动刷新、配置读取和明确用户动作，不适合承载每个进度信号。
 
 典型接口语义：
 
@@ -32,7 +32,7 @@
 
 ## WebSocket
 
-`app/web/ws_router.py` 负责实时状态推送。连接建立或恢复时发送全量 `frontend_state`；稳定运行时以 `frontend_delta` 为主。
+`app/web/ws_router.py` 负责连接路由，`app/web/ws_dispatcher.py` 负责实时状态分发，`app/web/ws_runtime.py` 管理运行期会话。连接建立或恢复时发送全量 `frontend_state`；稳定运行时以 `frontend_delta` 为主。
 
 高频事件需要合并和背压：慢客户端不得拖垮下载核心，进度类 noisy 消息允许 latest-state-wins，完成、失败、删除等关键事件不允许被 noisy 消息挤掉。
 

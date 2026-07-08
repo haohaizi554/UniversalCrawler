@@ -58,12 +58,6 @@ from app.ui.viewmodels.log_platforms import (
     builtin_platform_metas,
     load_platform_options,
 )
-from app.ui.viewmodels.log_display import (
-    decorate_log_item,
-    format_platform_label,
-    resolve_item_platform_id,
-)
-from app.ui.viewmodels.log_i18n import localize_log_text
 from app.ui.viewmodels.log_query_worker import (
     LogQueryRequest,
     LogQueryResult,
@@ -209,8 +203,8 @@ class LogCenterPage(PageFrame):
             self.table.table_model.set_language(normalized)
         self._sync_tab_buttons()
         self._sync_table_presentation()
-        if self._query_page_items:
-            self._refresh_paged_table(selected_id=self.selected_id() or "")
+        if self._all_items or self._query_page_items:
+            self._submit_log_query(reset_page=False, selected_id=self.selected_id() or "")
         else:
             self._render_detail()
 
@@ -1007,7 +1001,7 @@ class LogCenterPage(PageFrame):
             self._submit_log_query(reset_page=False, selected_id="")
 
     def _refresh_paged_table(self, *, selected_id: str = "") -> None:
-        self.items = [self._decorate_log_item(item) for item in self._query_page_items]
+        self.items = list(self._query_page_items)
 
         self.table.set_rows(self.items)
         self._configure_table_columns()
@@ -1072,6 +1066,7 @@ class LogCenterPage(PageFrame):
             platform_meta_by_id=dict(self._platform_meta_by_id),
             page=self._current_page,
             page_size=self._page_size,
+            language=self._language,
             selected_id=self.selected_id() if selected_id is None else str(selected_id or ""),
         )
         self._log_query_worker.submit(request)
@@ -1117,42 +1112,6 @@ class LogCenterPage(PageFrame):
 
     def _is_crawl_pipeline_log(self, item: dict[str, Any]) -> bool:
         return is_crawl_pipeline_log(item)
-
-    def _decorate_log_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        row = decorate_log_item(
-            item,
-            platform_options=self._platform_options,
-            platform_meta_by_id=self._platform_meta_by_id,
-            log_scope=str(item.get("log_scope") or ""),
-            event_stage=str(item.get("event_stage") or ""),
-            scope_reason=str(item.get("_scope_reason") or ""),
-        )
-        for key in ("platform_label", "source_display", "source_display_text", "source_display_full"):
-            if row.get(key):
-                translated = self._translate_platform_display(str(row[key]))
-                row[key] = self._localize_log_text(translated)
-        if row.get("event_stage_display"):
-            row["event_stage_display"] = self._t(row["event_stage_display"])
-        for key in ("message", "message_summary"):
-            if row.get(key):
-                row[key] = self._localize_log_text(row[key])
-        return row
-
-    def _localize_log_text(self, text: object) -> str:
-        return localize_log_text(text, self._language)
-
-    def _resolve_item_platform_id(self, item: dict[str, Any]) -> str:
-        return resolve_item_platform_id(item, self._platform_options, self._platform_meta_by_id)
-
-    def _format_platform_label(self, item: dict[str, Any]) -> str:
-        return self._translate_platform_display(format_platform_label(item, self._platform_options, self._platform_meta_by_id))
-
-    def _translate_platform_display(self, text: str) -> str:
-        translated = str(text or "")
-        for meta in self._platform_meta_by_id.values():
-            if meta.label:
-                translated = translated.replace(meta.label, self._t(meta.label))
-        return self._t(translated)
 
     @staticmethod
     def _direct_trace_id_from_item(item: dict[str, Any] | None) -> str:

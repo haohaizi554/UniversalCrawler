@@ -190,29 +190,18 @@ class CrawlControllerMixinTests(unittest.TestCase):
         controller._schedule_spider_selection.assert_called_once_with([item])
         controller._on_spider_finished.assert_called_once()
 
-    def test_selection_event_is_deferred_on_qt_gui_thread(self):
-        try:
-            from PyQt6.QtCore import QCoreApplication, QThread, QTimer
-        except ImportError:
-            self.skipTest("PyQt6 not available")
-
+    def test_selection_event_is_deferred_through_host_ui_queue(self):
         controller = _DummyCrawlController()
         controller._on_spider_select_tasks = Mock()
-        gui_thread = object()
-        app = Mock()
-        app.thread.return_value = gui_thread
+        callbacks = []
+        controller.host._queue_on_ui.side_effect = callbacks.append
 
-        with patch.object(QCoreApplication, "instance", return_value=app), patch.object(
-            QThread,
-            "currentThread",
-            return_value=gui_thread,
-        ), patch.object(QTimer, "singleShot") as single_shot:
-            controller._dispatch_spider_event(build_selection_required_event([{"title": "A"}]))
+        controller._dispatch_spider_event(build_selection_required_event([{"title": "A"}]))
 
         controller._on_spider_select_tasks.assert_not_called()
-        single_shot.assert_called_once()
-        callback = single_shot.call_args.args[1]
-        callback()
+        controller.host._queue_on_ui.assert_called_once()
+        self.assertEqual(len(callbacks), 1)
+        callbacks[0]()
         controller._on_spider_select_tasks.assert_called_once_with([{"title": "A"}])
 
 if __name__ == "__main__":

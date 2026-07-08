@@ -100,6 +100,30 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(logs.detail_source_value.text(), expected_text)
 
+    def _wait_for_log_table_cell_suffix(self, logs, row: int, column: int, expected_suffix: str) -> str:
+        last_value = ""
+        for _ in range(250):
+            self.app.processEvents()
+            last_value = str(logs.table.model().index(row, column).data(Qt.ItemDataRole.DisplayRole) or "")
+            if last_value.endswith(expected_suffix):
+                return last_value
+            QTest.qWait(20)
+        self.app.processEvents()
+        self.assertTrue(last_value.endswith(expected_suffix), last_value)
+        return last_value
+
+    def _wait_for_log_table_cell_without(self, logs, row: int, column: int, forbidden_text: str) -> str:
+        last_value = ""
+        for _ in range(250):
+            self.app.processEvents()
+            last_value = str(logs.table.model().index(row, column).data(Qt.ItemDataRole.DisplayRole) or "")
+            if forbidden_text not in last_value:
+                return last_value
+            QTest.qWait(20)
+        self.app.processEvents()
+        self.assertNotIn(forbidden_text, last_value)
+        return last_value
+
     def _wait_for_log_detail_status_code(self, logs, expected_text: str) -> None:
         for _ in range(250):
             self.app.processEvents()
@@ -2965,6 +2989,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
         shell.render(snapshot, changed_sections={"settings_snapshot"})
         self.app.processEvents()
+        self._wait_for_log_table_cell_without(logs, 0, 2, "MainWindow")
 
         source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
         self.assertTrue(str(source).endswith("系统 · 主窗口"))

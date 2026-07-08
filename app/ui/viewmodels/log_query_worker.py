@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.debug_logger import debug_logger
-from app.ui.viewmodels.latest_worker import LatestRequestWorker
+from app.ui.localization import normalize_language, tr
 from app.ui.viewmodels import log_filtering
+from app.ui.viewmodels.latest_worker import LatestRequestWorker
+from app.ui.viewmodels.log_display import decorate_log_item
+from app.ui.viewmodels.log_i18n import localize_log_text
 from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope, derive_scope_reason
 from app.ui.viewmodels.log_platforms import PlatformUiMeta
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, total_pages
@@ -27,6 +30,7 @@ class LogQueryRequest:
     platform_meta_by_id: Mapping[str, PlatformUiMeta]
     page: int
     page_size: int
+    language: str = "zh-CN"
     selected_id: str = ""
 
 
@@ -86,14 +90,18 @@ def query_log_items(request: LogQueryRequest) -> LogQueryResult:
         if selected_page is not None:
             current_page = selected_page
     current_page = clamp_page(current_page, len(sorted_items), request.page_size)
-    page_items = [_with_log_pipeline_fields(item) for item in page_slice(sorted_items, current_page, request.page_size)]
+    page_rows = [
+        _with_log_pipeline_fields(item)
+        for item in page_slice(sorted_items, current_page, request.page_size)
+    ]
     selected_id = ""
     if request.selected_id and any(
         stable_log_item_id(item, index) == request.selected_id for index, item in enumerate(sorted_items)
     ):
         selected_id = request.selected_id
-    elif page_items:
-        selected_id = stable_log_item_id(page_items[0], 0)
+    elif page_rows:
+        selected_id = stable_log_item_id(page_rows[0], 0)
+    page_items = [_decorate_log_row(item, request) for item in page_rows]
 
     counts = log_filtering.category_counts(
         all_items,
@@ -136,6 +144,45 @@ def _with_log_pipeline_fields(item: Mapping[str, Any]) -> dict[str, Any]:
     row["log_scope"] = scope
     row["event_stage"] = stage
     row["_scope_reason"] = str(row.get("_scope_reason") or derive_scope_reason(row) or "")
+    return row
+
+
+def _translate_platform_display(
+    text: object,
+    *,
+    language: str,
+    platform_meta_by_id: Mapping[str, PlatformUiMeta],
+) -> str:
+    translated = str(text or "")
+    for meta in platform_meta_by_id.values():
+        if meta.label:
+            translated = translated.replace(meta.label, tr(meta.label, language))
+    return tr(translated, language)
+
+
+def _decorate_log_row(item: Mapping[str, Any], request: LogQueryRequest) -> dict[str, Any]:
+    language = normalize_language(request.language)
+    row = decorate_log_item(
+        item,
+        platform_options=request.platform_options,
+        platform_meta_by_id=request.platform_meta_by_id,
+        log_scope=str(item.get("log_scope") or ""),
+        event_stage=str(item.get("event_stage") or ""),
+        scope_reason=str(item.get("_scope_reason") or ""),
+    )
+    for key in ("platform_label", "source_display", "source_display_text", "source_display_full"):
+        if row.get(key):
+            translated = _translate_platform_display(
+                row[key],
+                language=language,
+                platform_meta_by_id=request.platform_meta_by_id,
+            )
+            row[key] = localize_log_text(translated, language)
+    if row.get("event_stage_display"):
+        row["event_stage_display"] = tr(row["event_stage_display"], language)
+    for key in ("message", "message_summary"):
+        if row.get(key):
+            row[key] = localize_log_text(row[key], language)
     return row
 
 

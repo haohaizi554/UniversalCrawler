@@ -115,6 +115,23 @@ class DesktopHostAdapterTests(unittest.TestCase):
         self.assertEqual(observed["kwargs"], {"trace_id": None, "source": "GUI", "level": "INFO"})
         self.assertTrue(observed["is_main_thread"])
 
+    def test_host_adapter_queue_on_ui_always_defers_when_qt_app_exists(self):
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance() or QApplication([])
+        adapter = DesktopHostAdapter(Mock())
+        delivered = threading.Event()
+
+        adapter._queue_on_ui(delivered.set)
+
+        self.assertFalse(delivered.is_set())
+        deadline = time.time() + 2
+        while not delivered.is_set() and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+
+        self.assertTrue(delivered.is_set())
+
     def test_application_controller_host_is_lazy_and_cached(self):
         controller = ApplicationController.__new__(ApplicationController)
         controller.window = Mock()

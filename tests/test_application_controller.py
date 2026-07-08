@@ -488,24 +488,20 @@ class ApplicationControllerTests(unittest.TestCase):
         controller.current_spider.wait.assert_called_once_with(2000)
         controller.dl_manager.stop_all.assert_called_once()
 
-    def test_domain_event_dispatch_is_deferred_on_qt_gui_thread(self):
+    def test_domain_event_dispatch_uses_host_ui_queue(self):
         controller = self._make_controller()
         dispatcher = Mock()
         event = object()
-        gui_thread = object()
-        app = Mock()
-        app.thread.return_value = gui_thread
+        callbacks = []
+        controller.host = Mock()
+        controller.host._queue_on_ui.side_effect = callbacks.append
 
-        with patch("app.controllers.application_controller.QCoreApplication.instance", return_value=app), patch(
-            "app.controllers.application_controller.QThread.currentThread",
-            return_value=gui_thread,
-        ), patch("app.controllers.application_controller.QTimer.singleShot") as single_shot:
-            controller._queue_domain_event_dispatch(dispatcher, event)
+        controller._queue_domain_event_dispatch(dispatcher, event)
 
+        controller.host._queue_on_ui.assert_called_once()
         dispatcher.assert_not_called()
-        single_shot.assert_called_once()
-        callback = single_shot.call_args.args[1]
-        callback()
+        self.assertEqual(len(callbacks), 1)
+        callbacks[0]()
         dispatcher.assert_called_once_with(event)
 
     def test_cleanup_dead_spider_clears_stale_reference(self):

@@ -262,7 +262,7 @@ print(f"共 {result['total_count']} 个文件")
 ### 启动命令
 
 ```bash
-python web_main.py \
+python -m entry.web_entry \
     --script my_automation.py \
     --script-arg target=douyin \
     --script-arg keyword="测试" \

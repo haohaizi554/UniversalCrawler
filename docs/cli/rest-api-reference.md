@@ -6,16 +6,16 @@ Web 服务启动后暴露的 HTTP API。本文档列出所有可用端点。
 
 ```bash
 # 默认启动 (端口 8000)
-python web_main.py
+python -m entry.web_entry
 
 # 自定义端口
-python web_main.py --port 9000
+python -m entry.web_entry --port 9000
 
 # 启动时注入脚本
-python web_main.py --script my_automation.py --script-arg target=douyin
+python -m entry.web_entry --script my_automation.py --script-arg target=douyin
 
 # 无 Qt 模式（仅 API，爬虫功能不可用）
-python web_main.py --no-qt
+python -m entry.web_entry --no-qt
 ```
 
 服务地址：`http://localhost:8000`（或自定义端口）

@@ -447,6 +447,10 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             "_debug_classification",
             "_derive_log_scope",
             "_derive_event_stage",
+            "decorate_log_item",
+            "localize_log_text",
+            "_decorate_log_item",
+            "_localize_log_text",
         )
 
         for token in forbidden:
@@ -495,9 +499,25 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
         self.assertIn("self._spider_domain_event_handler = self._queue_spider_domain_event", text)
         self.assertIn("self._download_domain_event_handler = self._queue_download_domain_event", text)
-        self.assertIn("QTimer.singleShot(0, lambda: dispatcher(event))", text)
+        self.assertIn("self._host()._queue_on_ui(lambda: dispatcher(event))", text)
+        self.assertNotIn("self._host()._run_on_ui(lambda: dispatcher(event))", text)
+        self.assertNotIn("QTimer.singleShot(0, lambda: dispatcher(event))", text)
+        self.assertNotIn("QThread.currentThread()", text)
         self.assertNotIn('self.event_bus.subscribe("spider.domain_event", self._dispatch_spider_event)', text)
         self.assertNotIn('self.event_bus.subscribe("download.domain_event", self._dispatch_download_event)', text)
+
+    def test_spider_selection_dialog_uses_host_ui_queue(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "controllers" / "crawl_controller_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        block = text.split("def _schedule_spider_selection", 1)[1].split("def _create_spider", 1)[0]
+
+        self.assertIn("_queue_on_ui", block)
+        self.assertNotIn("QCoreApplication", block)
+        self.assertNotIn("QThread.currentThread()", block)
+        self.assertNotIn("QTimer.singleShot", block)
 
     def test_event_bus_noisy_async_topics_use_latest_state_wins(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

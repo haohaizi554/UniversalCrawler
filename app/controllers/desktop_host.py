@@ -160,6 +160,14 @@ class DesktopHostAdapter:
             return
         self._ensure_ui_invoker(app).invoke(callback)
 
+    def _queue_on_ui(self, callback) -> None:
+        """Always defer a callback to the Qt event loop when a GUI app exists."""
+        app = self._qt_app()
+        if app is None:
+            callback()
+            return
+        self._ensure_ui_invoker(app).invoke(callback)
+
     def _ensure_ui_invoker(self, app) -> _UiMethodInvoker:
         with self._ui_invoker_lock:
             if self._ui_invoker is None:

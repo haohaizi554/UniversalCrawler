@@ -34,7 +34,7 @@ result = sdk.search("bilibili", "BV1xxx", selection=sel)
 ### 3. REST API + 启动时注入
 
 ```bash
-python web_main.py --script my_automation.py --script-arg target=douyin
+python -m entry.web_entry --script my_automation.py --script-arg target=douyin
 ```
 
 ### 4. AI Skill（LLM）

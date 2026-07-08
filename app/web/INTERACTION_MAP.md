@@ -3466,7 +3466,7 @@ async def pick_native_folder():
 **为什么 QFileDialog 不弹出来**：
 1. `QFileDialog.getExistingDirectory` 是**同步阻塞**的，会启动自己的 Qt 事件循环
 2. 当这个函数在 **FastAPI 的 asyncio 主线程** 中运行时，整个 asyncio 事件循环**被冻结**
-3. `web_main.py` 里的 `qt_app.processEvents()` 是在另一个 asyncio task 中：
+3. `entry.web_entry` 里的 `qt_app.processEvents()` 是在另一个 asyncio task 中：
    ```python
    async def _process_qt():
        while True:
@@ -3483,7 +3483,7 @@ async def pick_native_folder():
 - GUI 端的 `app.exec()` 启动的是 Qt 事件循环
 - Qt 事件循环和 asyncio 事件循环是**两套**机制
 - 在 GUI 应用中，`QFileDialog.getExistingDirectory` 在 Qt 主线程中调用，Qt 事件循环照常运转
-- 但在 `web_main.py` 中，asyncio 事件循环和 Qt 事件循环**共享主线程**：
+- 但在 `entry.web_entry` 中，asyncio 事件循环和 Qt 事件循环**共享主线程**：
   - uvicorn 的 asyncio 事件循环跑 WebSocket、HTTP
   - `qt_app.processEvents()` 在 asyncio task 中**每 50ms 调一次**
   - 当 `QFileDialog.getExistingDirectory` 同步阻塞主线程时，asyncio task 全部冻结
@@ -3815,7 +3815,7 @@ def emit(self, event_type: str, data: Any = None):
 **症状实测**：
 ```bash
 # 启动 uvicorn
-python web_main.py --port 8128
+python -m entry.web_entry --port 8128
 
 # 测试 1: /api/state → 200 (2.1s) ✅
 # 测试 2: /api/debug/trigger-select → **5 秒超时** ❌
@@ -3876,7 +3876,7 @@ async def debug_trigger_select():
 
 #### 实测验证
 ```bash
-python web_main.py --port 8129
+python -m entry.web_entry --port 8129
 
 # 测试 1: /api/state → 200 (2.09s) ✅
 # 测试 2: /api/debug/trigger-select → 200 (2.05s) ✅
@@ -4055,8 +4055,8 @@ def run(self):
 ### 31.6 用户的测试步骤（必看）
 
 1. **【最重要】重启 web 服务**：
-   - 关掉所有 `python web_main.py` 进程（Ctrl+C 或关闭终端）
-   - 重新运行 `python web_main.py`
+   - 关掉所有 `python -m entry.web_entry` 进程（Ctrl+C 或关闭终端）
+   - 重新运行 `python -m entry.web_entry`
    - 确认启动时没错误
 
 2. **Ctrl+F5 强制刷新浏览器**（清除旧 HTML/CSS/JS）
@@ -4075,7 +4075,7 @@ def run(self):
    - 前端弹窗显示
 
 5. **如果还卡死**：
-   - 看后端终端的日志（web_main.py 的输出）
+   - 看后端终端的日志（entry.web_entry 的输出）
    - 找 "🛑 正在停止任务..." 之后有没有 "✅ 爬虫任务结束" 或 "❌ 用户取消下载"
    - 如果有 → 前端没收到 crawl_state 事件
    - 如果没有 → spider 卡在 Playwright，需要等
@@ -4104,7 +4104,7 @@ def run(self):
 | `POST /api/debug/trigger-select` | ❌ **404** | ✅ 200 `{"status":"ok","items_sent":4}` |
 | `POST /api/dir/pick-native` | ❌ **404** | ✅ 200（弹原生 FolderBrowserDialog） |
 
-**根因**：Python `uvicorn` **不热重载**。用户在我们修复 BUG-156/157/159 之后，**没有重新运行 `python web_main.py`**，所以旧进程里压根没注册这些新路由。
+**根因**：Python `uvicorn` **不热重载**。用户在我们修复 BUG-156/157/159 之后，**没有重新运行 `python -m entry.web_entry`**，所以旧进程里压根没注册这些新路由。
 
 **这是 v13 唯一真正的根因**——不是代码 BUG，是运维问题。
 
@@ -4172,7 +4172,7 @@ def stop_crawl(self):
 
 Playwright 同步 IO 无法被 `is_running=False` 中断（`is_running=True` 时 `ask_user_selection` 会 `wait()` 到天荒地老）。这是**另一个独立的 BUG**，需要在 v14+ 单独修。
 
-**临时缓解**：在 v13 之前不要在前端 "停止" 卡死的任务，**直接关掉 `web_main.py` 进程**。
+**临时缓解**：在 v13 之前不要在前端 "停止" 卡死的任务，**直接关掉 `entry.web_entry` 进程**。
 
 ### 32.5 强制重启原则（必看）
 
@@ -4187,7 +4187,7 @@ Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
 
 # 3. 重新启动
 cd <项目根目录>
-python web_main.py
+python -m entry.web_entry
 ```
 
 **每次修改完前端 HTML/JS 后，必须**：
@@ -4210,13 +4210,13 @@ python web_main.py
 ### 32.7 给用户的可执行验证步骤
 
 ```powershell
-# 第 1 步：彻底关掉旧 web_main.py
+# 第 1 步：彻底关掉旧 entry.web_entry
 Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 Start-Sleep -Seconds 2
 
 # 第 2 步：用最新代码重启
 cd <项目根目录>
-python web_main.py
+python -m entry.web_entry
 # 看到 "http://localhost:8000" 表示启动成功
 
 # 第 3 步：浏览器访问 + 强制刷新
@@ -4456,8 +4456,8 @@ function updateNavBtnsState() {
 | PID | 启动时间 | 命令 | 角色 |
 |---|---|---|---|
 | 53496 | 02:30:44 | `python main.py` | **桌面 GUI（主进程）** |
-| 50356 | 02:10:02 | `python web_main.py --no-qt --port 9000` | Web 1（无 Qt，端口 9000） |
-| 11620 | 04:43:07 | `python web_main.py --port 8000` | Web 2（带 Qt，端口 8000） |
+| 50356 | 02:10:02 | `python -m entry.web_entry --no-qt --port 9000` | Web 1（无 Qt，端口 9000） |
+| 11620 | 04:43:07 | `python -m entry.web_entry --port 8000` | Web 2（带 Qt，端口 8000） |
 
 **问题**：
 - 三个进程都 `import debug_logger` → 触发 [DebugLogger()](../debug_logger.py#L41) 单例
@@ -4578,7 +4578,7 @@ main_logger = get_debug_logger()  # is_main_process: True
 main_logger.log('main', 'main_action_0', message='主进程日志 0')
 ...
 
-# 2. 启动子进程（模拟 web_main.py）
+# 2. 启动子进程（模拟 entry.web_entry）
 multiprocessing.Process(target=worker_proc, args=('web', 3))
 
 # 3. 子进程写 3 条日志，不抛 PermissionError
@@ -5668,7 +5668,7 @@ document.getElementById('queueBody').innerHTML = '';
 
 ```powershell
 taskkill /F /IM python.exe /T  # 杀掉旧 3 个 Python 进程
-Start-Process -FilePath "python" -ArgumentList "web_main.py" -WorkingDirectory "<项目根目录>" -WindowStyle Hidden
+Start-Process -FilePath "python" -ArgumentList "-m entry.web_entry" -WorkingDirectory "<项目根目录>" -WindowStyle Hidden
 curl.exe -s http://localhost:8000/api/ping
 # 返回: {"status":"ok","version":"3.6.17"} ✅
 ```
@@ -5699,7 +5699,7 @@ curl.exe -s http://localhost:8000/api/ping
 |---|---|---|---|
 | **命令行工具** | `python -m cli` 或 `ucrawl` | `ucrawl search --source douyin --keyword "测试"` | 一次性任务、shell 脚本、人工调试 |
 | **Python SDK** | `from ucrawl import UcrawlSDK` | `sdk.search("douyin", "测试")` | 集成到 Python 项目、批量处理 |
-| **启动时脚本注入** | `python web_main.py --script xxx.py` | 启动后自动执行 Python 脚本 | 自动化部署、嵌入式自动化 |
+| **启动时脚本注入** | `python -m entry.web_entry --script xxx.py` | 启动后自动执行 Python 脚本 | 自动化部署、嵌入式自动化 |
 | **AI Skill 封装** | `.trae/skills/ucrawl/SKILL.md` | LLM 提示中提到 "ucrawl" 即激活 | LLM Agent、对话式控制 |
 
 ### 40.2 目录结构
@@ -5734,7 +5734,7 @@ UniversalCrawlerProplus/
 │       └── ucrawl/
 │           └── SKILL.md             # AI skill 正式注册
 ├── pyproject.toml                    # pip 包配置
-└── web_main.py                       # 增加 --script 启动时注入
+└── entry/web_entry.py                   # Web UI 与 --script 启动时注入入口
 ```
 
 ### 40.3 关键设计决策
@@ -5820,7 +5820,7 @@ ucrawl search --source bilibili --keyword "BV1xxx合集" --preload-choices "0,1,
 启动 web 服务时执行 Python 脚本，**在子线程**中运行不阻塞事件循环：
 
 ```bash
-python web_main.py --script my_automation.py --script-arg target=douyin --script-arg max=5
+python -m entry.web_entry --script my_automation.py --script-arg target=douyin --script-arg max=5
 ```
 
 `my_automation.py` 模板：
@@ -5883,7 +5883,7 @@ pip install .
 | 搜索帮助 | `python -m cli search --help` | 完整参数列表 ✅ |
 | 扫描目录 | `python -m cli scan "./sample-dir" --limit 5 --pretty` | 成功返回 1 个文件 ✅ |
 | SDK 导入 | `from ucrawl import UcrawlSDK, list_platforms` | 4 个平台 ✅ |
-| 启动时注入 | `python web_main.py --script test_injected_script.py` | 脚本加载并执行 ✅ |
+| 启动时注入 | `python -m entry.web_entry --script test_injected_script.py` | 脚本加载并执行 ✅ |
 | 启动时注入 + 参数 | `--script-arg target=douyin --script-arg max=5` | kwargs 正确解析 ✅ |
 
 ### 40.9 经验教训（v21 增补）

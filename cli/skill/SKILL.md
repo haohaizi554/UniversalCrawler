@@ -1032,7 +1032,7 @@ pip install .
 - **REST API 同步搜索**：`POST /api/search` 在线程池中执行，不阻塞 Web 事件循环
 - **REST API 异步爬取**：`POST /api/crawl/start` + WebSocket 交互，适合前端实时更新。**此端点始终触发下载（与 GUI 一致），如果请求体包含 `download` 参数会返回错误**，请使用 `POST /api/search` + `download: false` 实现只搜索不下载
 - **WebSocket stop_crawl**：发送 `{"type": "stop_crawl"}` 可停止正在运行的爬虫（与 REST API `POST /api/crawl/stop` 和 GUI 停止按钮对齐）
-- **启动时注入脚本**：用 `python web_main.py --script xxx.py`，脚本在子线程中运行，不阻塞 web 服务
+- **启动时注入脚本**：用 `python -m entry.web_entry --script xxx.py`，脚本在子线程中运行，不阻塞 web 服务
 - **CLI 结构化日志**：CLIRunner 与 GUI/WebController 对齐，使用 debug_logger 记录关键事件（爬虫启动/完成、item 发现、下载完成/失败），便于 CLI 问题排查
 - **下载失败 progress=0**：所有层（GUI/CLI/SDK/Web）在下载失败时统一将 progress 重置为 0，与 REST API `/api/download` 错误路径对齐
 - **REST API/WebSocket download 异常广播**：当 `POST /api/download` 或 WebSocket `download` 消息触发 SDK 异常（TypeError/ValueError/Exception）时，会广播 `task_error` + `video_state_changed` + `log` 事件，与正常下载失败流程对齐，确保前端能正确更新 UI

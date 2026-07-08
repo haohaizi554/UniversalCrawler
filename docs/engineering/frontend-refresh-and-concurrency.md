@@ -89,6 +89,7 @@ UI 线程只负责显示和轻量交互：
 - 不执行大列表过滤、排序、分页。
 - 不在选中行时同步规整日志详情、递归本地化或格式化大段 JSON。
 - 不在日志页面层二次派生 `log_scope`、`event_stage` 或 `_scope_reason`；这些字段由 `LogQueryWorker` 随当前页 batch 一起产出。
+- 不在日志页面层装饰 `source_display`、`platform_label`、`message_summary` 或执行日志本地化；这些展示字段必须由 `LogQueryWorker` 按当前语言和平台元数据随当前页 batch 一次性产出。
 - 不同步构建完整 frontend snapshot，不做大段 JSON 签名 diff。
 - 不在页面渲染前对日志快照做全量 tuple/list 克隆或逐行校验；GUI 日志页只传递快照 batch 引用，过滤、复制、排序、分页交给 `LogQueryWorker`。
 - 不直接查询 SQLite、diskcache 或大体量本地缓存。
@@ -116,7 +117,7 @@ Worker 线程负责所有可能卡住 UI 的工作：
 
 - `FrontendLogCache`：后台 tail 最新 debug 日志，增量解析，避免 snapshot 热路径直接读文件。
 - `FrontendSnapshotWorker`：GUI snapshot 构建、局部合并和 section diff。
-- `LogQueryWorker`：GUI 日志中心筛选、排序、分页。
+- `LogQueryWorker`：GUI 日志中心筛选、排序、分页、当前页展示字段装饰与日志本地化。
 - `LogDetailWorker`：GUI 日志详情字段派生、本地化、JSON 格式化和 latest-state-wins 防抖。
 - `LogDetailExportWorker`：GUI 日志详情文件导出，避免页面线程写大 payload。
 - `log_query_worker.js`：WebUI 日志查询筛选、排序和分页。
@@ -179,6 +180,7 @@ node --check app/web/static/app.js
 
 - `MainWindow` 订阅 `app_state.changed` 必须优先使用 `EventBus.subscribe_async()`，只把事件投递回 Qt 队列，不在发布线程执行刷新调度。
 - `app_state.changed` 属于高频异步主题；当 payload 携带 `video_id`、`id`、`entity_id` 或 `trace_id` 时，EventBus 必须按 handler/topic/entity 采用 latest-state-wins 合并，避免进度事件在异步队列中堆积。
+- `spider.domain_event` 和 `download.domain_event` 的订阅 handler 只能通过 `DesktopHostAdapter` 的 UI 队列投递事件；即使事件来自非 GUI 线程，也不得在 EventBus 发布线程直接执行 `_dispatch_spider_event()` 或 `_dispatch_download_event()`，也不得用无 receiver 的 `QTimer.singleShot()` 作为跨线程桥。
 - `FrontendStateService` 对 `app_state.changed` 的订阅仍保留同步轻量入队，这是为了保证写入 AppState 后下一次 `get_snapshot()` / `get_delta()` 能先 flush 到一致的 dirty version。不得在没有 flush/ack 机制的情况下把它直接迁移为异步订阅。
 - 新增 GUI 热路径订阅时，默认先判断是否能异步；只有直接影响版本一致性、关键事务顺序或必须同步返回结果的 handler 才允许保留同步。
 

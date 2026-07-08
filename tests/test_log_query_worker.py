@@ -27,6 +27,7 @@ def _request(rows, **overrides):
         "platform_meta_by_id": metas,
         "page": 1,
         "page_size": 2,
+        "language": "zh-CN",
         "selected_id": "",
     }
     values.update(overrides)
@@ -75,6 +76,32 @@ def test_query_log_items_attaches_pipeline_fields_for_page_rows():
     assert row["log_scope"] == "download"
     assert row["event_stage"]
     assert row["_scope_reason"]
+
+
+def test_query_log_items_returns_localized_display_rows_from_worker():
+    rows = [
+        {
+            "id": "system-log",
+            "time": "2026-06-30 10:01:00",
+            "level": "INFO",
+            "source": "GUI",
+            "platform": "系统",
+            "status_code": "GUI_USER_CONFIRMED_TASKS",
+            "message": "用户确认了 45 个任务",
+            "message_summary": "用户确认了 45 个任务",
+            "log_scope": "crawl",
+            "event_stage": "confirm",
+        }
+    ]
+
+    result = query_log_items(_request(rows, language="en-US"))
+
+    row = result.page_items[0]
+    assert row["message"] == "User confirmed 45 tasks"
+    assert row["message_summary"] == "User confirmed 45 tasks"
+    assert "System" in row["platform_label"]
+    assert "System" in row["source_display"]
+    assert "GUI" in row["source_display"]
 
 
 def test_query_log_items_moves_to_selected_item_page():
