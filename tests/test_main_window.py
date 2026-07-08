@@ -272,25 +272,28 @@ class MainWindowTests(unittest.TestCase):
         window.append_log.assert_called_once()
         window.sig_copy_trace_id.emit.assert_not_called()
 
-    def test_file_association_click_emits_selected_groups(self):
+    def test_file_association_click_submits_selected_groups_to_action_worker(self):
         window = self._make_window()
-        window.sig_register_file_associations = Mock()
+        window._submit_frontend_action = Mock(return_value=True)
         window.show_file_association_dialog = Mock(
             return_value=SimpleNamespace(include_video=True, include_image=False)
         )
 
         window.on_btn_file_association_clicked()
 
-        window.sig_register_file_associations.emit.assert_called_once_with(True, False)
+        window._submit_frontend_action.assert_called_once_with(
+            "register_file_associations",
+            {"include_video": True, "include_image": False},
+        )
 
     def test_file_association_click_ignores_cancel(self):
         window = self._make_window()
-        window.sig_register_file_associations = Mock()
+        window._submit_frontend_action = Mock(return_value=True)
         window.show_file_association_dialog = Mock(return_value=None)
 
         window.on_btn_file_association_clicked()
 
-        window.sig_register_file_associations.emit.assert_not_called()
+        window._submit_frontend_action.assert_not_called()
 
     def test_error_log_auto_copy_trace_uses_queued_clipboard_signal(self):
         window = self._make_window()

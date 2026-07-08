@@ -17,14 +17,18 @@ from PyQt6.QtWidgets import (
 from app.services.icon_registry import platform_icon_file, ui_icon_path
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
 from app.ui.viewmodels.log_i18n import localize_log_text
 from app.utils.qt_runtime import load_qt_icon
 
 
 class FailedPage(PageFrame):
+    _page_result_ready = pyqtSignal(object)
+
     retry_requested = pyqtSignal(str)
     copy_diagnostics_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
+    ASYNC_ITEM_THRESHOLD = 100
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
@@ -111,9 +115,14 @@ class FailedPage(PageFrame):
         self.root_layout.addWidget(splitter, 1)
 
         self.items: list[dict[str, Any]] = []
+        self._id_order: tuple[str, ...] = ()
+        self._items_by_id: dict[str, dict[str, Any]] = {}
         self._detail_signature: tuple[Any, ...] | None = None
         self._selected_item_id: str | None = None
         self._syncing_selection = False
+        self._page_sequence = 0
+        self._page_worker: ListPageWorker | None = None
+        self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
         self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
         self.table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
@@ -147,11 +156,39 @@ class FailedPage(PageFrame):
 
     def render(self, snapshot: dict) -> None:
         previous_id = self._selected_item_id or self.table.selected_id()
-        self.items = list(snapshot.get("failed_items") or [])
-        self._selected_item_id = self._valid_item_id(previous_id) or self._first_item_id()
+        self._submit_page_request(snapshot.get("failed_items") or [], selected_id=str(previous_id or ""))
+
+    def _submit_page_request(self, items: object, *, selected_id: str = "") -> None:
+        self._page_sequence += 1
+        source_items = items if isinstance(items, list | tuple) else ()
+        request = ListPageRequest(
+            sequence=self._page_sequence,
+            items=source_items,
+            page=1,
+            page_size=0,
+            selected_id=selected_id,
+            paginate=False,
+            select_first=True,
+        )
+        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
+            self._apply_page_result(build_list_page_result(request))
+            return
+        worker = self._page_worker
+        if worker is None:
+            worker = ListPageWorker(self._page_result_ready.emit)
+            self._page_worker = worker
+        worker.submit(request)
+
+    def _apply_page_result(self, result: object) -> None:
+        if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
+            return
+        self.items = result.items
+        self._id_order = result.id_order
+        self._items_by_id = result.items_by_id
+        self._selected_item_id = result.selected_id or None
         self._syncing_selection = True
         try:
-            self.table.set_rows(self.items)
+            self.table.set_rows(result.page_items)
             self._sync_table_selection()
         finally:
             self._syncing_selection = False
@@ -162,7 +199,7 @@ class FailedPage(PageFrame):
         if not selected:
             selected = self._valid_item_id(self.table.selected_id()) or self._first_item_id()
             self._selected_item_id = selected
-        return next((item for item in self.items if str(item.get("id") or "") == selected), None)
+        return self._items_by_id.get(selected or "")
 
     def _on_table_selection_changed(self, *_args: Any) -> None:
         if self._syncing_selection:
@@ -180,12 +217,10 @@ class FailedPage(PageFrame):
         value = str(item_id or "")
         if not value:
             return None
-        return value if any(str(item.get("id") or "") == value for item in self.items) else None
+        return value if value in self._items_by_id else None
 
     def _first_item_id(self) -> str | None:
-        if not self.items:
-            return None
-        return str(self.items[0].get("id") or "") or None
+        return self._id_order[0] if self._id_order else None
 
     def _sync_table_selection(self) -> None:
         selection_model = self.table.selectionModel()
@@ -499,3 +534,9 @@ class FailedPage(PageFrame):
         if ok:
             self._render_selected_detail()
         return ok
+
+    def deleteLater(self) -> None:
+        if self._page_worker is not None:
+            self._page_worker.shutdown()
+            self._page_worker = None
+        super().deleteLater()

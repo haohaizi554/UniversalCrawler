@@ -499,12 +499,18 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
         self.assertIn("self._spider_domain_event_handler = self._queue_spider_domain_event", text)
         self.assertIn("self._download_domain_event_handler = self._queue_download_domain_event", text)
+        self.assertIn('subscribe_async = getattr(self.event_bus, "subscribe_async", None)', text)
         self.assertIn("self._host()._queue_on_ui(lambda: dispatcher(event))", text)
         self.assertNotIn("self._host()._run_on_ui(lambda: dispatcher(event))", text)
         self.assertNotIn("QTimer.singleShot(0, lambda: dispatcher(event))", text)
         self.assertNotIn("QThread.currentThread()", text)
         self.assertNotIn('self.event_bus.subscribe("spider.domain_event", self._dispatch_spider_event)', text)
         self.assertNotIn('self.event_bus.subscribe("download.domain_event", self._dispatch_download_event)', text)
+        self.assertNotIn('self.event_bus.subscribe("spider.domain_event", self._spider_domain_event_handler)', text)
+        self.assertNotIn(
+            'self.event_bus.subscribe("download.domain_event", self._download_domain_event_handler)',
+            text,
+        )
 
     def test_spider_selection_dialog_uses_host_ui_queue(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -518,6 +524,32 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("QCoreApplication", block)
         self.assertNotIn("QThread.currentThread()", block)
         self.assertNotIn("QTimer.singleShot", block)
+
+    def test_four_state_gui_pages_use_list_page_worker_batches(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        page_paths = [
+            project_root / "app" / "ui" / "pages" / "download_queue_page.py",
+            project_root / "app" / "ui" / "pages" / "active_downloads_page.py",
+            project_root / "app" / "ui" / "pages" / "completed_page.py",
+            project_root / "app" / "ui" / "pages" / "failed_page.py",
+        ]
+        forbidden = ("page_slice(", "page_for_item(", "total_pages(")
+
+        for path in page_paths:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            with self.subTest(path=path.name):
+                self.assertIn("ListPageWorker", text)
+                self.assertIn("build_list_page_result", text)
+                self.assertIn("Qt.ConnectionType.QueuedConnection", text)
+                for needle in forbidden:
+                    self.assertNotIn(needle, text)
+
+        queue_text = page_paths[0].read_text(encoding="utf-8", errors="ignore")
+        completed_text = page_paths[2].read_text(encoding="utf-8", errors="ignore")
+        self.assertIn("selected_id_moves_page=True", queue_text)
+        self.assertIn("selected_id_moves_page=False", queue_text)
+        self.assertIn("selected_id_moves_page=True", completed_text)
+        self.assertIn("selected_id_moves_page=False", completed_text)
 
     def test_event_bus_noisy_async_topics_use_latest_state_wins(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

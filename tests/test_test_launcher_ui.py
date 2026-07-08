@@ -27,6 +27,7 @@ class TestLauncherWindowUITests(unittest.TestCase):
 
     def test_build_gui_exposes_core_controls(self):
         from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QFrame, QLabel, QWidget
         from app.ui.layout.window_chrome import WindowChromeFrame
         from app.ui.layout.window_chrome_controller import FramelessWindowChromeController
         from tests import test_launcher as launcher
@@ -47,6 +48,18 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertEqual(window.footer_status_dot.objectName(), "StatusDot")
             self.assertEqual(window.footer_status_state.text(), "就绪")
             self.assertEqual(window.footer_status_metrics["scripts"].text(), "脚本 0/0")
+            self.assertEqual(window.findChildren(type(window.stat_scope), "statHint"), [])
+            self.assertIsNone(window.findChild(QFrame, "selectionSummary"))
+            self.assertEqual(window.findChildren(QFrame, "statsCard"), [])
+            self.assertIsNotNone(window.findChild(QWidget, "scopeMetrics"))
+            self.assertGreaterEqual(len(window.findChildren(QFrame, "scopeMetricDivider")), 3)
+            label_texts = {label.text() for label in window.findChildren(QLabel)}
+            self.assertIn("按职责组合执行范围。", label_texts)
+            self.assertIn("已选分类", label_texts)
+            self.assertNotIn("总分类数", label_texts)
+            self.assertEqual(window.stat_selected.text(), "0")
+            self.assertFalse(hasattr(window, "stat_total"))
+            self.assertFalse(window.detail_desc.wordWrap())
         finally:
             window.close()
 
@@ -255,9 +268,9 @@ class TestLauncherWindowUITests(unittest.TestCase):
         try:
             window._select_only("all")
             self.assertEqual(window.stat_scope.text(), "全量")
+            self.assertEqual(window.stat_selected.text(), "1")
             self.assertEqual(window.detail_title.text(), "执行范围")
             self.assertIn("执行范围：全量", window.footer_status_detail.text())
-            self.assertEqual(window.left_selected_pill.text(), "全量")
             self.assertIn("全部测试", window.detail_desc.text())
         finally:
             window.close()
@@ -322,7 +335,7 @@ class TestLauncherWindowUITests(unittest.TestCase):
         finally:
             card.close()
 
-    def test_multi_selection_updates_left_summary(self):
+    def test_multi_selection_updates_scope_panel(self):
         from tests import test_launcher as launcher
 
         window = launcher._build_gui()
@@ -330,11 +343,13 @@ class TestLauncherWindowUITests(unittest.TestCase):
             window.selected_ids = ["cli_sdk", "web_api"]
             window._refresh_selection_state()
 
-            self.assertEqual(window.left_selected_value.text(), "2")
-            self.assertEqual(window.left_selected_pill.text(), "组合")
             self.assertEqual(window.stat_scope.text(), "组合")
+            self.assertEqual(window.stat_selected.text(), "2")
             self.assertEqual(window.detail_title.text(), "执行范围")
-            self.assertIn("已组合 2 个分类", window.left_selected_text.text())
+            self.assertIn("多分类组合", window.detail_desc.text())
+            self.assertIn("共", window.detail_tags.text())
+            self.assertIn("个去重脚本", window.detail_tags.text())
+            self.assertFalse(hasattr(window, "left_selected_value"))
         finally:
             window.close()
 

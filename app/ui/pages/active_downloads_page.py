@@ -32,6 +32,7 @@ from app.ui.components.combo_popup import ThemedComboBox
 from app.ui.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
 from app.ui.styles.table_rows import (
     install_click_only_row_selection,
     install_stable_vertical_scrollbar,
@@ -671,8 +672,11 @@ class WideHitCheckBox(QCheckBox):
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
 
 class ActiveDownloadsPage(PageFrame):
+    _items_result_ready = pyqtSignal(object)
+
     delete_requested = pyqtSignal(str)
     options_changed = pyqtSignal(dict)
+    ASYNC_ITEM_THRESHOLD = 40
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
@@ -772,6 +776,8 @@ class ActiveDownloadsPage(PageFrame):
         splitter.setCollapsible(1, False)
         self.root_layout.addWidget(splitter, 1)
         self.items: list[dict[str, Any]] = []
+        self._id_order: tuple[str, ...] = ()
+        self._items_by_id: dict[str, dict[str, Any]] = {}
         self._detail_signature: tuple | None = None
         self._selected_detail_id: str | None = None
         self._detail_value_labels: dict[str, QLabel] = {}
@@ -780,6 +786,9 @@ class ActiveDownloadsPage(PageFrame):
         self._syncing_download_options = False
         self._translation_dirty = True
         self._running_count_value: int | None = None
+        self._items_sequence = 0
+        self._items_worker: ListPageWorker | None = None
+        self._items_result_ready.connect(self._apply_items_result, Qt.ConnectionType.QueuedConnection)
         self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
 
@@ -928,16 +937,44 @@ class ActiveDownloadsPage(PageFrame):
 
     def render(self, snapshot: dict) -> None:
         self._sync_download_options(snapshot)
-        self.items = list(snapshot.get("active_downloads") or [])
-        running_count = len(self.items)
+        selected_id = self.table.selected_id()
+        self._submit_items_request(snapshot.get("active_downloads") or [], selected_id=selected_id or "")
+
+    def _submit_items_request(self, items: object, *, selected_id: str = "") -> None:
+        self._items_sequence += 1
+        source_items = items if isinstance(items, list | tuple) else ()
+        request = ListPageRequest(
+            sequence=self._items_sequence,
+            items=source_items,
+            page=1,
+            page_size=0,
+            selected_id=selected_id,
+            paginate=False,
+            select_first=True,
+        )
+        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
+            self._apply_items_result(build_list_page_result(request))
+            return
+        worker = self._items_worker
+        if worker is None:
+            worker = ListPageWorker(self._items_result_ready.emit)
+            self._items_worker = worker
+        worker.submit(request)
+
+    def _apply_items_result(self, result: object) -> None:
+        if not isinstance(result, ListPageResult) or result.sequence != self._items_sequence:
+            return
+        self.items = result.items
+        self._id_order = result.id_order
+        self._items_by_id = result.items_by_id
+        running_count = result.total_count
         if running_count != self._running_count_value:
             self._running_count_value = running_count
             self._update_running_count_label()
             self._translation_dirty = True
-        selected_id = self.table.selected_id()
         table_changed = self.table.set_rows(self.items)
-        if selected_id:
-            self.table.select_id(selected_id)
+        if result.selected_id:
+            self.table.select_id(result.selected_id)
         if self.items and not self.table.selectionModel().selectedRows():
             self.table.selectRow(0)
             self._selected_detail_id = self.table.selected_id()
@@ -989,9 +1026,9 @@ class ActiveDownloadsPage(PageFrame):
 
     def _selected_item(self) -> dict[str, Any] | None:
         selected = self.table.selected_id()
-        if not selected and self.items:
-            selected = self.items[0].get("id")
-        return next((item for item in self.items if item.get("id") == selected), None)
+        if not selected and self._id_order:
+            selected = self._id_order[0]
+        return self._items_by_id.get(str(selected or ""))
 
     def _render_selected_detail(self, *, force: bool = False) -> None:
         item = self._selected_item()
@@ -1247,4 +1284,10 @@ class ActiveDownloadsPage(PageFrame):
         return self.table.row_for_id(item_id)
 
     def select_id(self, item_id: str) -> bool:
-        return self.table.select_id(item_id)
+        return self.table.select_id(item_id) or item_id in self._id_order
+
+    def deleteLater(self) -> None:
+        if self._items_worker is not None:
+            self._items_worker.shutdown()
+            self._items_worker = None
+        super().deleteLater()

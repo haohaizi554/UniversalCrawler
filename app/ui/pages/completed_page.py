@@ -21,16 +21,19 @@ from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
 from app.ui.viewmodels.snapshot_table_model import PENDING_METADATA_EMPTY_VALUES, PENDING_METADATA_LABEL
-from app.ui.viewmodels.pagination_state import clamp_page, page_for_item, page_slice, total_pages
 
 class CompletedPage(PageFrame):
+    _page_result_ready = pyqtSignal(object)
+
     play_requested = pyqtSignal(str)
     open_directory_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
     metadata_detected = pyqtSignal(str, dict)
 
     PAGE_SIZE_OPTIONS = (20, 50, 100)
+    ASYNC_ITEM_THRESHOLD = 200
 
     def __init__(self, style_provider) -> None:
         super().__init__("", use_island=False)
@@ -127,9 +130,13 @@ class CompletedPage(PageFrame):
         self.root_layout.addWidget(splitter, 1)
         self.items: list[dict] = []
         self._visible_items: list[dict] = []
+        self._id_order: tuple[str, ...] = ()
         self._column_fit_pending = False
         self._detail_signature: tuple | None = None
         self._cleanup_done = False
+        self._page_sequence = 0
+        self._page_worker: ListPageWorker | None = None
+        self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
         self.table.selectionModel().currentChanged.connect(lambda *_args: self._render_selected_detail())
         self.table.action_requested.connect(self._on_table_action)
         self.media_panel.sig_media_metadata_detected.connect(self._on_media_metadata_detected)
@@ -154,14 +161,9 @@ class CompletedPage(PageFrame):
         return tr(str(text or ""), self._language)
 
     def render(self, snapshot: dict) -> None:
-        self.items = list(snapshot.get("completed_items") or [])
+        items = snapshot.get("completed_items") or []
         selected_id = self.table.selected_id()
-        if selected_id:
-            self._page = self._page_for_item(selected_id) or self._page
-        self._render_current_page(selected_id=selected_id)
-        if self.items and not self.table.selectionModel().selectedRows():
-            self.table.selectRow(0)
-        self._render_selected_detail()
+        self._submit_page_request(items, selected_id=selected_id or "", selected_id_moves_page=True)
 
     def _selected_item(self) -> dict | None:
         selected = self.table.selected_id()
@@ -315,58 +317,71 @@ class CompletedPage(PageFrame):
         return self.table.selected_id()
 
     def id_order(self) -> list[str]:
-        return [str(item.get("id")) for item in self.items if item.get("id")]
+        return list(self._id_order)
 
     def select_id(self, item_id: str) -> bool:
-        page = self._page_for_item(item_id)
-        if page is None:
+        if item_id not in self._id_order and item_id != self.table.selected_id():
             return False
-        self._page = page
-        self._render_current_page(selected_id=item_id)
-        return self.table.select_id(item_id)
+        self._submit_page_request(self.items, selected_id=item_id, selected_id_moves_page=True)
+        return self.table.select_id(item_id) or item_id in self._id_order
 
-    def _render_current_page(self, *, selected_id: str | None = None) -> None:
-        total = len(self.items)
-        total_pages = self._total_pages()
-        self._page = clamp_page(self._page, total, self._page_size)
-        visible_items = page_slice(self.items, self._page, self._page_size)
+    def _submit_page_request(self, items: object, *, selected_id: str = "", selected_id_moves_page: bool = True) -> None:
+        self._page_sequence += 1
+        source_items = items if isinstance(items, list | tuple) else ()
+        request = ListPageRequest(
+            sequence=self._page_sequence,
+            items=source_items,
+            page=self._page,
+            page_size=self._page_size,
+            selected_id=selected_id,
+            selected_id_moves_page=selected_id_moves_page,
+        )
+        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
+            self._apply_page_result(build_list_page_result(request))
+            return
+        worker = self._page_worker
+        if worker is None:
+            worker = ListPageWorker(self._page_result_ready.emit)
+            self._page_worker = worker
+        worker.submit(request)
+
+    def _apply_page_result(self, result: object) -> None:
+        if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
+            return
+        self.items = result.items
+        self._visible_items = list(result.page_items)
+        self._id_order = result.id_order
+        self._page = result.current_page
         self.table.setUpdatesEnabled(False)
         try:
-            self.table.set_rows(visible_items)
-            self._visible_items = list(visible_items)
-            if selected_id:
-                self.table.select_id(selected_id)
+            self.table.set_rows(result.page_items)
+            if result.selected_id:
+                self.table.select_id(result.selected_id)
         finally:
             self.table.setUpdatesEnabled(True)
-        self._schedule_fit_columns()
-        self.pagination_footer.sync(
-            total_items=total,
-            current_page=self._page,
-            total_pages=total_pages,
-            page_size=self._page_size,
-        )
-
-    def _set_page(self, page: int) -> None:
-        self._page = clamp_page(page, len(self.items), self._page_size)
-        selected_id = self.table.selected_id()
-        self._render_current_page(selected_id=selected_id)
         if self.items and not self.table.selectionModel().selectedRows():
             self.table.selectRow(0)
+        self._schedule_fit_columns()
+        self.pagination_footer.sync(
+            total_items=result.total_count,
+            current_page=self._page,
+            total_pages=result.total_pages,
+            page_size=self._page_size,
+        )
         self._render_selected_detail()
+
+    def _set_page(self, page: int) -> None:
+        self._page = int(page or 1)
+        selected_id = self.table.selected_id()
+        self._submit_page_request(self.items, selected_id=selected_id or "", selected_id_moves_page=False)
 
     def _on_page_size_changed(self, page_size: int | None = None) -> None:
         self._page_size = int(page_size or self.page_size_combo.currentData() or 20)
         self._page = 1
-        self._render_current_page()
-        if self.items and not self.table.selectionModel().selectedRows():
-            self.table.selectRow(0)
-        self._render_selected_detail()
+        self._submit_page_request(self.items)
 
     def _fit_page_size_combo_width(self) -> None:
         self.pagination_footer.fit_page_size_combo_width()
-
-    def _total_pages(self) -> int:
-        return total_pages(len(self.items), self._page_size)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -436,9 +451,6 @@ class CompletedPage(PageFrame):
         action_width = 80
         return [title_width, time_width, duration_width, format_width, action_width]
 
-    def _page_for_item(self, item_id: str) -> int | None:
-        return page_for_item(self.items, item_id, self._page_size)
-
     def show_image(self, image_path: str) -> None:
         self.media_panel.show_image(image_path)
 
@@ -455,6 +467,9 @@ class CompletedPage(PageFrame):
         self.media_panel.cleanup()
 
     def deleteLater(self) -> None:
+        if self._page_worker is not None:
+            self._page_worker.shutdown()
+            self._page_worker = None
         self.cleanup()
         super().deleteLater()
 

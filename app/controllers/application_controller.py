@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Desktop application composition root."""
 
 from __future__ import annotations
@@ -61,8 +61,8 @@ class ApplicationController(
     DOWNLOAD_LOG_COMPONENT = "ApplicationController"
     DOWNLOAD_FINISHED_STATUS_CODE = "APP_DL_FINISH"
     DOWNLOAD_ERROR_STATUS_CODE = "APP_DL_ERROR"
-    DOWNLOAD_FINISHED_MESSAGE = "下载任务完成"
-    DOWNLOAD_ERROR_MESSAGE = "下载任务失败"
+    DOWNLOAD_FINISHED_MESSAGE = "涓嬭浇浠诲姟瀹屾垚"
+    DOWNLOAD_ERROR_MESSAGE = "涓嬭浇浠诲姟澶辫触"
     MEDIA_DELETE_COORDINATION_DELAY_SEC = 0.18
     MEDIA_RELEASE_POLL_INTERVAL_MS = 200
 
@@ -223,7 +223,7 @@ class ApplicationController(
         debug_logger.log(
             component="ApplicationController",
             action="app_init",
-            message="应用开始初始化",
+            message="搴旂敤寮€濮嬪垵濮嬪寲",
             status_code="APP_INIT",
             details={"project_root": str(self.project_root)},
         )
@@ -255,8 +255,10 @@ class ApplicationController(
         )
         self._spider_domain_event_handler = self._queue_spider_domain_event
         self._download_domain_event_handler = self._queue_download_domain_event
-        self.event_bus.subscribe("spider.domain_event", self._spider_domain_event_handler)
-        self.event_bus.subscribe("download.domain_event", self._download_domain_event_handler)
+        subscribe_async = getattr(self.event_bus, "subscribe_async", None)
+        subscribe = subscribe_async if callable(subscribe_async) else self.event_bus.subscribe
+        subscribe("spider.domain_event", self._spider_domain_event_handler)
+        subscribe("download.domain_event", self._download_domain_event_handler)
 
     def _queue_spider_domain_event(self, event) -> None:
         self._queue_domain_event_dispatch(self._dispatch_spider_event, event)
@@ -332,7 +334,7 @@ class ApplicationController(
         debug_logger.log(
             component="ApplicationController",
             action="app_ready",
-            message="主窗口初始化完成",
+            message="涓荤獥鍙ｅ垵濮嬪寲瀹屾垚",
             status_code="APP_READY",
             details={"save_dir": self._host().current_save_dir},
         )
@@ -348,8 +350,6 @@ class ApplicationController(
         self.window.sig_open_latest_log.connect(self.open_latest_log)
         self.window.sig_open_error_summary.connect(self.open_latest_error_summary)
         self.window.sig_copy_trace_id.connect(self.copy_trace_id_for_video)
-        if hasattr(self.window, "sig_register_file_associations"):
-            self.window.sig_register_file_associations.connect(self.on_register_file_associations)
         self.window.bind_video_rename(self.on_rename_video)
         if hasattr(self.window, "sig_switch_preview"):
             self.window.sig_switch_preview.connect(self.switch_preview)
@@ -398,55 +398,6 @@ class ApplicationController(
 
         subprocess.Popen(["xdg-open", path])
 
-    def on_register_file_associations(self, include_video: bool, include_image: bool) -> None:
-        if not include_video and not include_image:
-            self.window.append_log("未选择需要注册的资源类型")
-            return
-
-        from app.services.windows_file_association_service import WindowsFileAssociationService
-
-        service = WindowsFileAssociationService()
-        result = service.register_current_user(
-            self._current_executable_path(),
-            include_video=include_video,
-            include_image=include_image,
-        )
-        if not result.registered:
-            self.window.append_log(f"文件关联注册未完成: {result.message}")
-            return
-
-        default_result = service.set_current_user_defaults(
-            include_video=include_video,
-            include_image=include_image,
-        )
-        if default_result.defaulted_extensions:
-            preview = ", ".join(default_result.defaulted_extensions[:6])
-            suffix = "..." if len(default_result.defaulted_extensions) > 6 else ""
-            self.window.append_log(f"已设置默认打开方式: {preview}{suffix}")
-        if default_result.failed_extensions:
-            preview = ", ".join(default_result.failed_extensions[:6])
-            suffix = "..." if len(default_result.failed_extensions) > 6 else ""
-            self.window.append_log(f"部分默认打开方式设置失败: {preview}{suffix}")
-
-        diagnostics = service.diagnose_current_user(include_video=include_video, include_image=include_image)
-        if diagnostics.available and diagnostics.pending_extensions:
-            preview = ", ".join(diagnostics.pending_extensions[:6])
-            suffix = "..." if len(diagnostics.pending_extensions) > 6 else ""
-            self.window.append_log(f"仍需在 Windows 默认应用中确认: {preview}{suffix}")
-            if service.open_default_apps_settings():
-                self.window.append_log("已打开 Windows 默认应用设置，请手动确认剩余默认打开方式")
-                return
-            self.window.append_log("请手动打开 Windows 默认应用设置，确认剩余默认打开方式")
-            return
-
-        self.window.append_log("默认打开方式已生效")
-
-    @staticmethod
-    def _current_executable_path() -> str:
-        if getattr(sys, "frozen", False):
-            return sys.executable
-        return sys.argv[0]
-
     def _poll_external_media_release_requests(self) -> None:
         self._last_media_release_request_id, request = poll_media_release_request(self._last_media_release_request_id)
         current_playing_id = self._get_current_playing_id()
@@ -460,3 +411,4 @@ class ApplicationController(
             return
         self._host().release_media_playback()
         self._set_current_playing_id(None)
+

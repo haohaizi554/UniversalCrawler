@@ -483,6 +483,7 @@ def _bootstrap_registry() -> None:
             "tests/test_ui_*.py",
             "tests/test_unified_frontend_contract.py",
             "tests/test_log_*.py",
+            "tests/test_list_page_worker.py",
         ],
         icon_color="#EC4899",
         icon_letter="UI",

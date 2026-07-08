@@ -93,8 +93,6 @@ QWidget {{
 }}
 QFrame#hero,
 QFrame#panel,
-QFrame#statsCard,
-QFrame#selectionSummary,
 QFrame#sectionHeader {{
     background: {SURFACE};
     border: 1px solid {BORDER};
@@ -106,16 +104,14 @@ QFrame#hero {{
         stop:0.48 #0C1730,
         stop:1 #091121);
 }}
-QFrame#statsCard {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 {SURFACE},
-        stop:1 #0C1426);
+QWidget#scopeMetrics {{
+    background: transparent;
 }}
-QFrame#selectionSummary {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #0E1B34,
-        stop:1 #0B1428);
-    border-radius: 16px;
+QFrame#scopeMetricDivider {{
+    background: {BORDER};
+    border: none;
+    min-width: 1px;
+    max-width: 1px;
 }}
 QFrame#categoryCard {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -186,7 +182,6 @@ QLabel#sectionTitle,
 QLabel#metaText,
 QLabel#progressHint,
 QLabel#emptyText,
-QLabel#summaryText,
 QLabel#sectionMeta,
 QLabel#categoryMetaLine,
 QLabel#selectHint {{
@@ -198,17 +193,6 @@ QLabel#sectionLabel {{
     font-weight: 700;
     letter-spacing: 0px;
 }}
-QLabel#summaryEyebrow {{
-    color: {ACCENT_MINT};
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1px;
-}}
-QLabel#summaryValue {{
-    font-size: 28px;
-    font-weight: 800;
-}}
-QLabel#summaryText,
 QLabel#sectionMeta,
 QLabel#categoryMetaLine,
 QLabel#selectHint {{
@@ -294,10 +278,6 @@ QLabel#statValue {{
 QLabel#statLabel {{
     color: {TEXT_MUTED};
     font-size: 12px;
-}}
-QLabel#statHint {{
-    color: {TEXT_DIM};
-    font-size: 11px;
 }}
 QPushButton#primaryBtn {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -518,15 +498,11 @@ QWidget {{
 }}
 QFrame#hero,
 QFrame#panel,
-QFrame#statsCard,
-QFrame#selectionSummary,
 QFrame#sectionHeader {{
     background: {panel};
     border: 1px solid {border};
 }}
-QFrame#hero,
-QFrame#statsCard,
-QFrame#selectionSummary {{
+QFrame#hero {{
     background: {panel};
 }}
 QFrame#sectionHeader {{
@@ -566,6 +542,9 @@ QFrame#categoryStrip[state="selected-hover"] {{
 QFrame#panelHeader {{
     border-bottom: 1px solid {border};
 }}
+QFrame#scopeMetricDivider {{
+    background: {border};
+}}
 QWidget#contentBody,
 QWidget#categoryViewport,
 QWidget#categoryList {{
@@ -576,24 +555,18 @@ QLabel#sectionTitle,
 QLabel#metaText,
 QLabel#progressHint,
 QLabel#emptyText,
-QLabel#summaryText,
 QLabel#sectionMeta,
 QLabel#categoryMetaLine,
 QLabel#selectHint,
 QLabel#panelSub,
 QLabel#categoryDesc,
-QLabel#statLabel,
-QLabel#statHint {{
+QLabel#statLabel {{
     color: {muted};
-}}
-QLabel#summaryEyebrow {{
-    color: {mint};
 }}
 QLabel#heroTitle,
 QLabel#sectionLabel,
 QLabel#panelTitle,
 QLabel#categoryTitle,
-QLabel#summaryValue,
 QLabel#statValue {{
     color: {text};
 }}
@@ -1105,43 +1078,17 @@ if _PYQT6_AVAILABLE:
 
             left_header = QFrame()
             left_header.setObjectName("panelHeader")
-            left_header_layout = QVBoxLayout(left_header)
+            left_header_layout = QHBoxLayout(left_header)
             left_header_layout.setContentsMargins(0, 0, 0, 12)
-            left_header_layout.setSpacing(4)
+            left_header_layout.setSpacing(10)
             left_title = QLabel("测试分类")
             left_title.setObjectName("panelTitle")
-            left_sub = QLabel("按职责浏览并组合执行范围；卡片数量表示该分类直接包含的脚本数。")
+            left_sub = QLabel("按职责组合执行范围。")
             left_sub.setObjectName("panelSub")
-            left_sub.setWordWrap(True)
-            left_header_layout.addWidget(left_title)
-            left_header_layout.addWidget(left_sub)
+            left_sub.setWordWrap(False)
+            left_header_layout.addWidget(left_title, 0, Qt.AlignmentFlag.AlignVCenter)
+            left_header_layout.addWidget(left_sub, 1, Qt.AlignmentFlag.AlignVCenter)
             left_layout.addWidget(left_header)
-
-            selection_summary = QFrame()
-            selection_summary.setObjectName("selectionSummary")
-            selection_layout = QVBoxLayout(selection_summary)
-            selection_layout.setContentsMargins(14, 14, 14, 14)
-            selection_layout.setSpacing(4)
-            summary_eyebrow = QLabel("执行范围")
-            summary_eyebrow.setObjectName("summaryEyebrow")
-            selection_layout.addWidget(summary_eyebrow)
-
-            summary_row = QHBoxLayout()
-            summary_row.setSpacing(8)
-            self.left_selected_value = QLabel("0")
-            self.left_selected_value.setObjectName("summaryValue")
-            summary_row.addWidget(self.left_selected_value)
-            self.left_selected_pill = QLabel("未选择")
-            self.left_selected_pill.setObjectName("sectionPill")
-            summary_row.addWidget(self.left_selected_pill, 0, Qt.AlignmentFlag.AlignBottom)
-            summary_row.addStretch(1)
-            selection_layout.addLayout(summary_row)
-
-            self.left_selected_text = QLabel("从左侧分类中确定本次执行范围。")
-            self.left_selected_text.setObjectName("summaryText")
-            self.left_selected_text.setWordWrap(True)
-            selection_layout.addWidget(self.left_selected_text)
-            left_layout.addWidget(selection_summary)
 
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -1190,33 +1137,40 @@ if _PYQT6_AVAILABLE:
 
             detail_header = QFrame()
             detail_header.setObjectName("panelHeader")
-            detail_header_layout = QVBoxLayout(detail_header)
+            detail_header_layout = QHBoxLayout(detail_header)
             detail_header_layout.setContentsMargins(0, 0, 0, 12)
-            detail_header_layout.setSpacing(6)
+            detail_header_layout.setSpacing(12)
             self.detail_title = QLabel("执行范围")
             self.detail_title.setObjectName("heroTitle")
             self.detail_title.setStyleSheet("font-size: 20px; font-weight: 700;")
-            detail_header_layout.addWidget(self.detail_title)
+            detail_header_layout.addWidget(self.detail_title, 0, Qt.AlignmentFlag.AlignVCenter)
 
             self.detail_desc = QLabel("当前尚未选择测试分类，可使用全部、推荐或自定义组合。")
             self.detail_desc.setObjectName("heroSub")
-            self.detail_desc.setWordWrap(True)
-            detail_header_layout.addWidget(self.detail_desc)
+            self.detail_desc.setWordWrap(False)
+            detail_header_layout.addWidget(self.detail_desc, 1, Qt.AlignmentFlag.AlignVCenter)
             detail_layout.addWidget(detail_header)
 
             self.detail_tags = QLabel("")
             self.detail_tags.setObjectName("metaText")
             self.detail_tags.setWordWrap(True)
             detail_layout.addWidget(self.detail_tags)
-            right_col.addWidget(self.detail_panel)
 
-            stats_row = QHBoxLayout()
-            stats_row.setSpacing(12)
-            self.stat_scope = self._make_stats_card(stats_row, "未选", "执行模式", "随选择切换")
-            self.stat_files = self._make_stats_card(stats_row, "0", "去重脚本")
-            self.stat_total = self._make_stats_card(stats_row, str(total_info["total_categories"]), "总分类数")
-            self.stat_misc = self._make_stats_card(stats_row, str(len(get_resolved_files("misc"))), "未归类脚本")
-            right_col.addLayout(stats_row)
+            scope_metrics = QWidget()
+            scope_metrics.setObjectName("scopeMetrics")
+            scope_metrics_layout = QHBoxLayout(scope_metrics)
+            scope_metrics_layout.setContentsMargins(0, 8, 0, 0)
+            scope_metrics_layout.setSpacing(14)
+            self.stat_scope = self._make_scope_metric(scope_metrics_layout, "未选", "执行模式")
+            self.stat_files = self._make_scope_metric(scope_metrics_layout, "0", "去重脚本")
+            self.stat_selected = self._make_scope_metric(scope_metrics_layout, "0", "已选分类")
+            self.stat_misc = self._make_scope_metric(
+                scope_metrics_layout,
+                str(len(get_resolved_files("misc"))),
+                "未归类脚本",
+            )
+            detail_layout.addWidget(scope_metrics)
+            right_col.addWidget(self.detail_panel)
 
             control_panel = QFrame()
             control_panel.setObjectName("panel")
@@ -1463,9 +1417,6 @@ if _PYQT6_AVAILABLE:
                 "sectionMeta",
                 "panelTitle",
                 "panelSub",
-                "summaryEyebrow",
-                "summaryValue",
-                "summaryText",
                 "categoryTitle",
                 "categoryDesc",
                 "categoryMetaLine",
@@ -1473,7 +1424,6 @@ if _PYQT6_AVAILABLE:
                 "progressHint",
                 "statValue",
                 "statLabel",
-                "statHint",
                 "runStatus",
                 "sectionPill",
                 "sectionCountPill",
@@ -1621,24 +1571,33 @@ if _PYQT6_AVAILABLE:
                 return True
             return super().eventFilter(watched, event)
 
-        def _make_stats_card(self, parent_layout, value, label, hint: str = "实时更新"):
-            card = QFrame()
-            card.setObjectName("statsCard")
-            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            layout = QVBoxLayout(card)
-            layout.setContentsMargins(16, 14, 16, 14)
-            layout.setSpacing(4)
+        def _make_scope_metric(self, parent_layout, value, label):
+            if parent_layout.count() > 0:
+                divider = QFrame()
+                divider.setObjectName("scopeMetricDivider")
+                divider.setFixedWidth(1)
+                divider.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+                parent_layout.addWidget(divider)
+
+            metric = QWidget()
+            metric.setObjectName("scopeMetric")
+            metric.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            line = QHBoxLayout()
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(10)
+            line.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            metric.setLayout(line)
 
             value_label = QLabel(value)
             value_label.setObjectName("statValue")
+            value_label.setWordWrap(False)
             text_label = QLabel(label)
             text_label.setObjectName("statLabel")
-            hint_label = QLabel(hint)
-            hint_label.setObjectName("statHint")
-            layout.addWidget(value_label)
-            layout.addWidget(text_label)
-            layout.addWidget(hint_label)
-            parent_layout.addWidget(card, 1)
+            text_label.setWordWrap(False)
+            line.addWidget(value_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            line.addWidget(text_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            line.addStretch(1)
+            parent_layout.addWidget(metric, 1)
             return value_label
 
         def _set_run_status(self, text: str, tone: str):
@@ -1705,10 +1664,7 @@ if _PYQT6_AVAILABLE:
                 return {
                     "categories": selected_categories,
                     "unique_files": unique_files,
-                    "count": 0,
                     "mode": "未选",
-                    "left_pill": "未选择",
-                    "left_text": "从左侧分类中确定本次执行范围。",
                     "detail_desc": "当前尚未选择测试分类，可使用全部、推荐或自定义组合。",
                     "detail_tags": "快捷键: F5 运行  ·  Ctrl+R 推荐  ·  Ctrl+1 全部  ·  Esc 清空",
                     "status": "就绪",
@@ -1727,10 +1683,7 @@ if _PYQT6_AVAILABLE:
                 return {
                     "categories": selected_categories,
                     "unique_files": unique_files,
-                    "count": 1,
                     "mode": mode,
-                    "left_pill": mode,
-                    "left_text": f"已锁定 {category.name}，预计运行 {len(unique_files)} 个去重脚本。",
                     "detail_desc": f"当前执行范围为 {category.name}。",
                     "detail_tags": "  ·  ".join(tags),
                     "status": f"执行范围：{mode} / {len(unique_files)} 个脚本",
@@ -1742,10 +1695,7 @@ if _PYQT6_AVAILABLE:
             return {
                 "categories": selected_categories,
                 "unique_files": unique_files,
-                "count": len(selected_categories),
                 "mode": "组合",
-                "left_pill": "组合",
-                "left_text": f"已组合 {len(selected_categories)} 个分类，预计运行 {len(unique_files)} 个去重脚本。",
                 "detail_desc": "当前执行范围为多分类组合，运行时按所选顺序依次执行。",
                 "detail_tags": f"{names}  ·  共 {len(unique_files)} 个去重脚本",
                 "status": f"执行范围：组合 / {len(selected_categories)} 个分类 / {len(unique_files)} 个脚本",
@@ -1786,10 +1736,8 @@ if _PYQT6_AVAILABLE:
 
             self.stat_scope.setText(snapshot["mode"])
             self.stat_files.setText(str(len(unique_files)))
+            self.stat_selected.setText(str(len(selected_categories)))
             self.stat_misc.setText(str(len(get_resolved_files("misc"))))
-            self.left_selected_value.setText(str(snapshot["count"]))
-            self.left_selected_pill.setText(snapshot["left_pill"])
-            self.left_selected_text.setText(snapshot["left_text"])
             self.detail_desc.setText(snapshot["detail_desc"])
             self.detail_tags.setText(snapshot["detail_tags"])
             QTimer.singleShot(0, self._refresh_text_minimums)

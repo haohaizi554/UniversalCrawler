@@ -1619,7 +1619,7 @@ class MainWindow(QMainWindow):
         choice = self.show_file_association_dialog()
         if choice is None:
             return
-        self.sig_register_file_associations.emit(choice.include_video, choice.include_image)
+        self._register_file_associations_from_frontend(choice.include_video, choice.include_image)
 
     def show_file_association_dialog(self):
         dialog = FileAssociationDialog(self, language=self._current_ui_language())

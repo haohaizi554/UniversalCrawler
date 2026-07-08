@@ -8,25 +8,32 @@ from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.layout.island import IslandCard
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
-from app.ui.viewmodels.pagination_state import clamp_page, page_for_item, page_slice, total_pages
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
 from app.utils.qt_runtime import load_qt_icon
 
 class DownloadQueuePage(PageFrame):
+    _page_result_ready = pyqtSignal(object)
+
     delete_requested = pyqtSignal(str)
     refresh_requested = pyqtSignal()
     clear_all_requested = pyqtSignal()
 
     PAGE_SIZE_OPTIONS = (20, 50, 100)
     ROW_HEIGHT = 52
+    ASYNC_ITEM_THRESHOLD = 200
 
     def __init__(self) -> None:
         super().__init__()
         self.items: list[dict] = []
+        self._id_order: tuple[str, ...] = ()
         self._path_text = ""
         self._events_signature: tuple | None = None
         self._page = 1
         self._page_size = 20
         self._language = "zh-CN"
+        self._page_sequence = 0
+        self._page_worker: ListPageWorker | None = None
+        self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
 
         self.table_island = IslandCard(object_name="QueueTableIsland")
         self.table_island.content_layout.setContentsMargins(10, 10, 10, 10)
@@ -136,16 +143,13 @@ class DownloadQueuePage(PageFrame):
         self.table.force_refresh()
 
     def render(self, snapshot: dict) -> None:
-        self.items = list(snapshot.get("queue_items") or [])
+        items = snapshot.get("queue_items") or []
         path_text = str((snapshot.get("settings_snapshot") or {}).get("基础设置", {}).get("download_directory", ""))
         if path_text != self._path_text:
             self._path_text = path_text
             self.path_label.setText(path_text)
         selected_id = self.table.selected_id()
-        if selected_id:
-            self._page = self._page_for_item(selected_id) or self._page
-        self._render_current_page(selected_id=selected_id)
-        self._render_recent_events()
+        self._submit_page_request(items, selected_id=selected_id or "", selected_id_moves_page=True)
 
     def selected_id(self) -> str | None:
         return self.table.selected_id()
@@ -154,12 +158,10 @@ class DownloadQueuePage(PageFrame):
         return self.table.row_for_id(item_id)
 
     def select_id(self, item_id: str) -> bool:
-        page = self._page_for_item(item_id)
-        if page is None:
+        if item_id not in self._id_order and item_id != self.table.selected_id():
             return False
-        self._page = page
-        self._render_current_page(selected_id=item_id)
-        return self.table.select_id(item_id)
+        self._submit_page_request(self.items, selected_id=item_id, selected_id_moves_page=True)
+        return self.table.select_id(item_id) or item_id in self._id_order
 
     def _on_refresh_clicked(self) -> None:
         self.prepare_force_refresh()
@@ -172,46 +174,63 @@ class DownloadQueuePage(PageFrame):
         if action == "delete":
             self.delete_requested.emit(item_id)
 
-    def _render_current_page(self, *, selected_id: str | None = None) -> None:
-        total = len(self.items)
-        total_pages = self._total_pages()
-        self._page = clamp_page(self._page, total, self._page_size)
-        visible_items = page_slice(self.items, self._page, self._page_size)
+    def _submit_page_request(self, items: object, *, selected_id: str = "", selected_id_moves_page: bool = True) -> None:
+        self._page_sequence += 1
+        source_items = items if isinstance(items, list | tuple) else ()
+        request = ListPageRequest(
+            sequence=self._page_sequence,
+            items=source_items,
+            page=self._page,
+            page_size=self._page_size,
+            selected_id=selected_id,
+            recent_count=3,
+            selected_id_moves_page=selected_id_moves_page,
+        )
+        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
+            self._apply_page_result(build_list_page_result(request))
+            return
+        worker = self._page_worker
+        if worker is None:
+            worker = ListPageWorker(self._page_result_ready.emit)
+            self._page_worker = worker
+        worker.submit(request)
+
+    def _apply_page_result(self, result: object) -> None:
+        if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
+            return
+        self.items = result.items
+        self._id_order = result.id_order
+        self._page = result.current_page
         self.table.setUpdatesEnabled(False)
         try:
-            self.table.set_rows(visible_items)
-            if selected_id:
-                self.table.select_id(selected_id)
+            self.table.set_rows(result.page_items)
+            if result.selected_id:
+                self.table.select_id(result.selected_id)
         finally:
             self.table.setUpdatesEnabled(True)
         self.pagination_footer.sync(
-            total_items=total,
+            total_items=result.total_count,
             current_page=self._page,
-            total_pages=total_pages,
+            total_pages=result.total_pages,
             page_size=self._page_size,
         )
+        self._render_recent_events(result.recent_items)
 
     def _set_page(self, page: int) -> None:
-        self._page = clamp_page(page, len(self.items), self._page_size)
+        self._page = int(page or 1)
         selected_id = self.table.selected_id()
-        self._render_current_page(selected_id=selected_id)
+        self._submit_page_request(self.items, selected_id=selected_id or "", selected_id_moves_page=False)
 
     def _on_page_size_changed(self, page_size: int | None = None) -> None:
         self._page_size = int(page_size or self.page_size_combo.currentData() or 20)
         self._page = 1
-        self._render_current_page()
+        self._submit_page_request(self.items)
 
     def _fit_page_size_combo_width(self) -> None:
         self.pagination_footer.fit_page_size_combo_width()
 
-    def _total_pages(self) -> int:
-        return total_pages(len(self.items), self._page_size)
-
-    def _page_for_item(self, item_id: str) -> int | None:
-        return page_for_item(self.items, item_id, self._page_size)
-
-    def _render_recent_events(self) -> None:
-        recent = self.items[-3:]
+    def _render_recent_events(self, recent_items: list[dict] | None = None) -> None:
+        recent = recent_items if recent_items is not None else self.items[-3:]
         signature = tuple((item.get("id", ""), item.get("status", ""), item.get("title", "")) for item in recent)
         if signature == self._events_signature:
             return
@@ -221,3 +240,9 @@ class DownloadQueuePage(PageFrame):
             return
         lines = [f"{self._t(item.get('status', '待下载'))}: {item.get('title', '')}" for item in reversed(recent)]
         self.event_body.setText("\n".join(lines))
+
+    def deleteLater(self) -> None:
+        if self._page_worker is not None:
+            self._page_worker.shutdown()
+            self._page_worker = None
+        super().deleteLater()
