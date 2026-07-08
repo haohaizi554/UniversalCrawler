@@ -1031,7 +1031,7 @@ class SettingsPage(PageFrame):
         open_mode_layout.addWidget(open_mode_combo)
         open_mode_layout.addWidget(bind_button)
         layout.addWidget(
-            self._build_setting_row("\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f", open_mode_row, control_width=large_w),
+            self._build_setting_row("\u4e0b\u8f7d\u5b8c\u6210\u6253\u5f00\u65b9\u5f0f", open_mode_row, control_width=large_w),
         )
 
     def _build_download_settings(self, layout: QVBoxLayout, value: Any) -> None:
@@ -1405,7 +1405,7 @@ class SettingsPage(PageFrame):
                 current_combo_value(combo),
             )
         )
-        layout.addWidget(self._build_setting_row("打开方式", player_combo))
+        layout.addWidget(self._build_setting_row("手动播放方式", player_combo))
 
         remember_switch = self._build_switch(self._dict_value(value, "remember_position", True))
         remember_switch.toggled.connect(

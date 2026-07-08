@@ -473,6 +473,21 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("from contextlib import closing", text)
         self.assertTrue(all(line.startswith("with closing(sqlite3.connect(") for line in sqlite_lines))
 
+    def test_failed_record_store_exposes_structured_sql_query(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "failed_record_store.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn("class FailedRecordQuery", text)
+        self.assertIn("def query_records", text)
+        self.assertIn("def _build_where_clause", text)
+        self.assertIn("SELECT COUNT(*) FROM failed_records", text)
+        self.assertIn("platform = ?", text)
+        self.assertIn("trace_id LIKE ?", text)
+        self.assertIn("payload_json LIKE ?", text)
+
     def test_log_center_page_does_not_classify_logs_on_ui_thread(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "ui" / "pages" / "log_center_page.py").read_text(

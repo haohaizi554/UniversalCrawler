@@ -65,6 +65,105 @@ def test_failed_record_store_refreshes_memory_snapshot_in_worker(tmp_path):
     assert snapshot_after_mutation[0]["title"] == "snapshot row"
 
 
+def test_failed_record_store_query_records_uses_sql_filters_and_counts(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert(
+            [
+                {
+                    "id": "bili-old",
+                    "title": "old timeout",
+                    "reason": "network timeout",
+                    "failed_at": "2026-07-06 09:00:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "trace-old",
+                },
+                {
+                    "id": "bili-new",
+                    "title": "new timeout",
+                    "reason": "network timeout",
+                    "failed_at": "2026-07-06 10:00:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "trace-new",
+                },
+                {
+                    "id": "douyin-row",
+                    "title": "unrelated",
+                    "reason": "auth",
+                    "failed_at": "2026-07-06 11:00:00",
+                    "status": "Failed",
+                    "platform": "Douyin",
+                    "trace_id": "trace-dy",
+                },
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        page = store.query_records(
+            limit=1,
+            offset=0,
+            platform="Bilibili",
+            keyword="timeout",
+            failed_from="2026-07-06 09:30:00",
+        )
+    finally:
+        store.shutdown()
+
+    assert page.total_count == 1
+    assert page.limit == 1
+    assert page.offset == 0
+    assert [row["id"] for row in page.records] == ["bili-new"]
+
+
+def test_failed_record_store_worker_refresh_accepts_structured_query(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert(
+            [
+                {
+                    "id": "trace-a",
+                    "title": "first",
+                    "reason": "network",
+                    "failed_at": "2026-07-06 08:00:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "bili-trace-a",
+                },
+                {
+                    "id": "trace-b",
+                    "title": "second",
+                    "reason": "network",
+                    "failed_at": "2026-07-06 08:01:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "bili-trace-b",
+                },
+                {
+                    "id": "trace-c",
+                    "title": "third",
+                    "reason": "network",
+                    "failed_at": "2026-07-06 08:02:00",
+                    "status": "Failed",
+                    "platform": "MissAV",
+                    "trace_id": "missav-trace-c",
+                },
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        store.request_refresh(limit=10, platform="Bilibili", trace_query="trace")
+        assert store.flush(timeout=2)
+        snapshot = store.records_snapshot()
+        total_count = store.snapshot_total_count
+    finally:
+        store.shutdown()
+
+    assert total_count == 2
+    assert [row["id"] for row in snapshot] == ["trace-b", "trace-a"]
+
+
 def test_failed_record_store_worker_resets_state_after_unexpected_write_error(tmp_path):
     store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
     original_write_batch = store._write_batch
