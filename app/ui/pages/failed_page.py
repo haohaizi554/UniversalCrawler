@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from app.services.icon_registry import platform_icon_file, ui_icon_path
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
-from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
 from app.ui.viewmodels.log_i18n import localize_log_text
 from app.utils.qt_runtime import load_qt_icon
 
@@ -28,7 +28,6 @@ class FailedPage(PageFrame):
     retry_requested = pyqtSignal(str)
     copy_diagnostics_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
-    ASYNC_ITEM_THRESHOLD = 100
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
@@ -170,9 +169,6 @@ class FailedPage(PageFrame):
             paginate=False,
             select_first=True,
         )
-        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
-            self._apply_page_result(build_list_page_result(request))
-            return
         worker = self._page_worker
         if worker is None:
             worker = ListPageWorker(self._page_result_ready.emit)

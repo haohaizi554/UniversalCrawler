@@ -186,7 +186,7 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         class ImmediateRunner:
             def submit(self, *, name, fn):
                 submitted.append((name, fn))
-                token = SimpleNamespace(is_cancelled=lambda: False)
+                token = SimpleNamespace(is_cancelled=lambda: False, wait_cancelled=Mock(return_value=False))
                 fn(token)
                 return token
 
@@ -197,14 +197,12 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
         controller._ensure_ui_callback_invoker = Mock(return_value=SimpleNamespace(invoke=lambda callback: callback()))
 
-        with patch("app.controllers.media_host_controller_mixin.time.sleep") as mock_sleep:
-            controller.on_delete_video(5, item.id)
+        controller.on_delete_video(5, item.id)
 
         controller._begin_delete_video.assert_called_once_with(item.id)
         controller._before_media_delete.assert_called_once_with(context)
         controller._delete_video_context_sync.assert_called_once_with(context)
         self.assertEqual(submitted[0][0], f"delete-video-{item.id}")
-        mock_sleep.assert_not_called()
         controller.host.remove_video_row.assert_called_once_with(5, item.id)
         controller.host.refresh_table_bindings.assert_called_once()
         self.assertNotIn(item.id, controller.videos)
@@ -249,6 +247,22 @@ class MediaHostControllerMixinTests(unittest.TestCase):
 
         self.assertEqual(controller._delete_coordination_delay(False), 0.0)
         self.assertEqual(controller._delete_coordination_delay(True), 0.18)
+
+    def test_delete_coordination_delay_waits_on_cancel_token(self):
+        token = SimpleNamespace(is_cancelled=lambda: False, wait_cancelled=Mock(return_value=False))
+
+        result = MediaHostControllerMixin._sleep_before_delete(0.25, token)
+
+        self.assertTrue(result)
+        token.wait_cancelled.assert_called_once_with(0.25)
+
+    def test_delete_coordination_delay_stops_when_cancelled(self):
+        token = SimpleNamespace(is_cancelled=lambda: False, wait_cancelled=Mock(return_value=True))
+
+        result = MediaHostControllerMixin._sleep_before_delete(0.25, token)
+
+        self.assertFalse(result)
+        token.wait_cancelled.assert_called_once_with(0.25)
 
     def test_play_video_reports_missing_media(self):
         controller = _DummyMediaHostController()

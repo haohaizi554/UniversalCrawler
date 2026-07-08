@@ -23,6 +23,10 @@ class TaskCancelToken:
     def is_cancelled(self) -> bool:
         return self._event.is_set()
 
+    def wait_cancelled(self, timeout: float | None = None) -> bool:
+        """Wait until cancellation is requested, returning True when cancelled."""
+        return self._event.wait(timeout)
+
     def mark_done(self) -> None:
         self._done_event.set()
 

@@ -10,13 +10,22 @@ class SmartWrapLabel(QLabel):
     """Selectable label that wraps paths and URLs at useful segment boundaries."""
 
     BREAK = "\u200b"
+    ELLIPSIS = "..."
     LONG_SEGMENT_TEXT_THRESHOLD = 80
     LONG_SEGMENT_WRAP_WIDTH = 520
 
-    def __init__(self, value: Any = "", parent: QWidget | None = None, *, compact: bool = True) -> None:
+    def __init__(
+        self,
+        value: Any = "",
+        parent: QWidget | None = None,
+        *,
+        compact: bool = True,
+        max_lines: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self._raw_text = ""
         self._line_gap = 0 if compact else 1
+        self._max_lines = max(1, int(max_lines)) if max_lines else None
         self.setWordWrap(True)
         self.setTextFormat(Qt.TextFormat.PlainText)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -63,7 +72,34 @@ class SmartWrapLabel(QLabel):
         return lines
 
     @classmethod
-    def wrap_text(cls, value: Any, max_width: int | None = None, metrics=None) -> str:  # noqa: ANN001
+    def _ellipsize_line(cls, line: str, max_width: int, metrics) -> str:  # noqa: ANN001
+        suffix = cls.ELLIPSIS
+        if max_width <= 0:
+            return suffix
+        if metrics.horizontalAdvance(line + suffix) <= max_width:
+            return line + suffix
+        clipped = line
+        while clipped and metrics.horizontalAdvance(clipped + suffix) > max_width:
+            clipped = clipped[:-1]
+        return f"{clipped}{suffix}" if clipped else suffix
+
+    @classmethod
+    def _limit_lines(cls, lines: list[str], max_lines: int | None, max_width: int, metrics) -> list[str]:  # noqa: ANN001
+        if not max_lines or len(lines) <= max_lines:
+            return lines
+        limited = lines[:max_lines]
+        limited[-1] = cls._ellipsize_line(limited[-1], max_width, metrics)
+        return limited
+
+    @classmethod
+    def wrap_text(
+        cls,
+        value: Any,
+        max_width: int | None = None,
+        metrics=None,  # noqa: ANN001
+        *,
+        max_lines: int | None = None,
+    ) -> str:
         text = str(value or "")
         if not text:
             return ""
@@ -89,6 +125,7 @@ class SmartWrapLabel(QLabel):
                 current = candidate
         if current:
             lines.append(current)
+        lines = cls._limit_lines(lines, max_lines, max_width, metrics)
         return "\n".join(lines)
 
     def setText(self, value: Any) -> None:  # type: ignore[override]
@@ -102,7 +139,7 @@ class SmartWrapLabel(QLabel):
 
     def heightForWidth(self, width: int) -> int:  # type: ignore[override]
         metrics = self.fontMetrics()
-        text = self.wrap_text(self._raw_text, max(1, width), metrics)
+        text = self.wrap_text(self._raw_text, max(1, width), metrics, max_lines=self._max_lines)
         line_count = max(1, len(text.splitlines()))
         margins = self.contentsMargins()
         return margins.top() + margins.bottom() + line_count * metrics.lineSpacing() + max(0, line_count - 1) * self._line_gap
@@ -124,7 +161,7 @@ class SmartWrapLabel(QLabel):
 
     def _refresh_wrapped_text(self) -> None:
         width = self._effective_wrap_width()
-        text = self.wrap_text(self._raw_text, width, self.fontMetrics())
+        text = self.wrap_text(self._raw_text, width, self.fontMetrics(), max_lines=self._max_lines)
         if text != super().text():
             QLabel.setText(self, text)
             self.updateGeometry()

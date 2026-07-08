@@ -5,7 +5,6 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -171,68 +170,14 @@ class ApplicationControllerTests(unittest.TestCase):
             controller.window.show_image.assert_not_called()
         controller.app_state.set_current_playing_id.assert_called_once_with(item.id)
 
-    def test_register_file_associations_skips_settings_when_defaults_are_applied(self):
+    def test_file_association_registration_is_not_bound_to_controller_sync_slot(self):
         controller = self._make_controller()
-        with patch.object(controller, "_current_executable_path", return_value=r"C:\App\UniversalCrawlerPro.exe"), \
-             patch("app.services.windows_file_association_service.WindowsFileAssociationService") as service_cls:
-            service = service_cls.return_value
-            service.register_current_user.return_value = SimpleNamespace(registered=True, message="")
-            service.set_current_user_defaults.return_value = SimpleNamespace(
-                applied=True,
-                defaulted_extensions=(".mp4",),
-                failed_extensions=(),
-                message="",
-            )
-            service.diagnose_current_user.return_value = SimpleNamespace(
-                available=True,
-                pending_extensions=(),
-            )
-            service.open_default_apps_settings.return_value = True
+        controller.window.sig_register_file_associations = Mock()
 
-            controller.on_register_file_associations(True, False)
+        controller._connect_window_signals()
 
-        service.register_current_user.assert_called_once_with(
-            r"C:\App\UniversalCrawlerPro.exe",
-            include_video=True,
-            include_image=False,
-        )
-        service.set_current_user_defaults.assert_called_once_with(include_video=True, include_image=False)
-        service.diagnose_current_user.assert_called_once_with(include_video=True, include_image=False)
-        service.open_default_apps_settings.assert_not_called()
-        self.assertTrue(any(".mp4" in call_.args[0] for call_ in controller.window.append_log.call_args_list))
-        self.assertTrue(
-            any("默认打开方式已生效" in call_.args[0] for call_ in controller.window.append_log.call_args_list)
-        )
-
-    def test_register_file_associations_opens_settings_when_extensions_remain_pending(self):
-        controller = self._make_controller()
-        with patch.object(controller, "_current_executable_path", return_value=r"C:\App\UniversalCrawlerPro.exe"), \
-             patch("app.services.windows_file_association_service.WindowsFileAssociationService") as service_cls:
-            service = service_cls.return_value
-            service.register_current_user.return_value = SimpleNamespace(registered=True, message="")
-            service.set_current_user_defaults.return_value = SimpleNamespace(
-                applied=False,
-                defaulted_extensions=(".mp4",),
-                failed_extensions=(".mkv",),
-                message="",
-            )
-            service.diagnose_current_user.return_value = SimpleNamespace(
-                available=True,
-                pending_extensions=(".mkv",),
-            )
-            service.open_default_apps_settings.return_value = True
-
-            controller.on_register_file_associations(True, False)
-
-        service.open_default_apps_settings.assert_called_once_with()
-        self.assertTrue(any(".mkv" in call_.args[0] for call_ in controller.window.append_log.call_args_list))
-
-    def test_register_file_associations_rejects_empty_choice(self):
-        controller = self._make_controller()
-
-        controller.on_register_file_associations(False, False)
-
-        controller.window.append_log.assert_called_once_with("未选择需要注册的资源类型")
+        self.assertFalse(hasattr(ApplicationController, "on_register_file_associations"))
+        controller.window.sig_register_file_associations.connect.assert_not_called()
 
     def test_on_start_crawl_rejects_duplicate_running_spider(self):
         """验证 `test_on_start_crawl_rejects_duplicate_running_spider` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""

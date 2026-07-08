@@ -137,7 +137,7 @@ class XiaohongshuDownloader(BaseDownloader):
 
         def download_one(idx: int, image: dict[str, str]) -> tuple[int, str]:
             if check_stop_func():
-                raise DownloaderStoppedError("鐢ㄦ埛鍋滄涓嬭浇")
+                raise DownloaderStoppedError("用户停止下载")
             image_url = image.get("image_url", "")
             ext = ".jpeg"
             lowered = image_url.lower()
@@ -171,7 +171,7 @@ class XiaohongshuDownloader(BaseDownloader):
                 max_retries=cfg.get("download", "max_retries", 3),
                 timeout=cfg.get("download", "request_timeout", 60),
                 chunk_size=cfg.get("download", "chunk_size", 65536),
-                error_message=f"灏忕孩涔﹀浘鐗囦笅杞藉け璐? {base_name}_{idx}",
+                error_message=f"小红书图片下载失败: {base_name}_{idx}",
                 proxy=video_item.meta.get("proxy"),
             )
             return idx, target_path

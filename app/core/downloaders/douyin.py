@@ -13,9 +13,26 @@ from app.models import VideoItem
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
+
 class DouyinDownloader(BaseDownloader):
     """抖音下载器。"""
     source_id = "douyin"
+    DOUYIN_VIEWPORT_COOKIES = ("dy_swidth=1536", "dy_sheight=864")
+
+    @classmethod
+    def _ensure_viewport_cookies(cls, headers: dict[str, str]) -> None:
+        cookie_header = (headers.get("Cookie") or "").strip()
+        cookie_parts = [part.strip() for part in cookie_header.split(";") if part.strip()]
+        cookie_names = {part.split("=", 1)[0].strip() for part in cookie_parts}
+
+        for cookie in cls.DOUYIN_VIEWPORT_COOKIES:
+            name = cookie.split("=", 1)[0]
+            if name not in cookie_names:
+                cookie_parts.append(cookie)
+                cookie_names.add(name)
+
+        if cookie_parts:
+            headers["Cookie"] = "; ".join(cookie_parts)
 
     def download(
         self,
@@ -42,6 +59,7 @@ class DouyinDownloader(BaseDownloader):
             headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
         elif isinstance(video_item.meta.get("cookie"), str):
             headers["Cookie"] = video_item.meta["cookie"]
+        self._ensure_viewport_cookies(headers)
         debug_logger.log(
             component="DouyinDownloader",
             action="prepare_download",

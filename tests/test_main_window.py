@@ -25,6 +25,17 @@ class MainWindowTests(unittest.TestCase):
 
         def submit(self, request):
             self.requests.append(request)
+
+    class CapturingUpdateCheckWorker:
+        def __init__(self):
+            self.requests = []
+            self.shutdown_called = False
+
+        def submit(self, request):
+            self.requests.append(request)
+
+        def shutdown(self):
+            self.shutdown_called = True
     
     def _make_window(self) -> MainWindow:
         """提供 `_make_window` 对应的内部辅助逻辑，供 `MainWindowTests` 使用。"""
@@ -294,6 +305,62 @@ class MainWindowTests(unittest.TestCase):
         window.on_btn_file_association_clicked()
 
         window._submit_frontend_action.assert_not_called()
+
+    def test_update_check_request_uses_latest_worker(self):
+        window = self._make_window()
+        worker = self.CapturingUpdateCheckWorker()
+        window._update_check_worker = worker
+        window._update_check_sequence = 0
+        window._update_check_running = False
+        window._update_check_lock = threading.RLock()
+        window._set_status_bar_update_checking = Mock()
+        window._show_basic_message = Mock()
+        window._show_update_check_error = Mock()
+        window._current_status_version = Mock(return_value="v3.6.17")
+
+        MainWindow._on_update_check_requested(window, "")
+
+        self.assertTrue(window._update_check_running)
+        window._set_status_bar_update_checking.assert_called_once_with(True)
+        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(worker.requests[0].sequence, 1)
+        self.assertEqual(worker.requests[0].local_version, "v3.6.17")
+        window._show_basic_message.assert_not_called()
+        window._show_update_check_error.assert_not_called()
+
+    def test_update_check_worker_is_created_lazily(self):
+        window = self._make_window()
+
+        self.assertIsNone(window.__dict__.get("_update_check_worker"))
+
+    def test_update_check_worker_result_emits_existing_signals(self):
+        from app.services.update_check_service import UPDATE_STATUS_CURRENT, UpdateCheckResult
+        from app.ui.main_window import _UpdateCheckOutcome
+
+        window = self._make_window()
+        window._update_check_sequence = 2
+        window._update_check_finished = Mock()
+        window._update_check_failed = Mock()
+        result = UpdateCheckResult(
+            status=UPDATE_STATUS_CURRENT,
+            local_version="3.6.17",
+            latest_version="3.6.17",
+            tag_name="v3.6.17",
+            release_name="v3.6.17",
+            html_url="https://example.test/release",
+        )
+
+        MainWindow._on_update_check_worker_result(window, _UpdateCheckOutcome(sequence=1, result=result))
+        window._update_check_finished.emit.assert_not_called()
+
+        MainWindow._on_update_check_worker_result(window, _UpdateCheckOutcome(sequence=2, result=result))
+        window._update_check_finished.emit.assert_called_once_with(result)
+        window._update_check_failed.emit.assert_not_called()
+
+        window._update_check_finished.emit.reset_mock()
+        MainWindow._on_update_check_worker_result(window, _UpdateCheckOutcome(sequence=2, error="boom"))
+        window._update_check_failed.emit.assert_called_once_with("boom")
+        window._update_check_finished.emit.assert_not_called()
 
     def test_error_log_auto_copy_trace_uses_queued_clipboard_signal(self):
         window = self._make_window()
@@ -1787,12 +1854,14 @@ class MainWindowTests(unittest.TestCase):
         window.saveGeometry = Mock(return_value=b"geometry")
         window.saveState = Mock(return_value=b"state")
         window.is_fullscreen_mode = True
+        window._update_check_worker = self.CapturingUpdateCheckWorker()
         event = Mock()
 
         MainWindow.closeEvent(window, event)
 
         window._remove_frameless_resize_event_filter.assert_called_once()
         window._remove_windows_native_frame_filter.assert_called_once()
+        self.assertTrue(window._update_check_worker.shutdown_called)
         self.assertFalse(mock_save_ui_state.call_args.kwargs["is_fs"])
         event.accept.assert_called_once()
 

@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目代码量统计报告</title>
+<style>
+
+:root {
+    color-scheme: light;
+    --bg: #eef3f9;
+    --panel: #ffffff;
+    --text: #0f172a;
+    --muted: #64748b;
+    --line: #dbe4f0;
+    --blue: #2563eb;
+    --blue2: #38bdf8;
+    --green: #10b981;
+    --orange: #f59e0b;
+    --red: #ef4444;
+    --purple: #8b5cf6;
+    --shadow: 0 20px 55px rgba(15, 23, 42, 0.10);
+}
+* {
+    box-sizing: border-box;
+}
+body {
+    margin: 0;
+    background:
+        linear-gradient(180deg, rgba(226, 235, 247, 0.92), var(--bg) 360px),
+        var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    font-size: 15px;
+}
+.page {
+    width: min(1280px, calc(100% - 48px));
+    margin: 32px auto 56px;
+}
+.hero {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 32px;
+    overflow: hidden;
+    padding: 34px;
+    min-height: 260px;
+    color: #ffffff;
+    background:
+        linear-gradient(rgba(255, 255, 255, 0.065) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.065) 1px, transparent 1px),
+        linear-gradient(135deg, #0f172a 0%, #1d4ed8 72%, #38bdf8 130%);
+    background-size: 34px 34px, 34px 34px, auto;
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+}
+.hero::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.14));
+    pointer-events: none;
+}
+.hero-content,
+.hero-stat {
+    position: relative;
+    z-index: 1;
+}
+.hero-title {
+    margin: 0;
+    font-size: clamp(32px, 4vw, 54px);
+    line-height: 1.05;
+    letter-spacing: 0;
+}
+.hero-subtitle {
+    width: min(760px, 100%);
+    margin: 16px 0 24px;
+    color: rgba(255, 255, 255, 0.80);
+    font-size: 17px;
+    line-height: 1.75;
+    text-wrap: pretty;
+}
+.hero-path {
+    display: inline-flex;
+    max-width: 100%;
+    padding: 9px 12px;
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    overflow-wrap: anywhere;
+}
+.hero-stat {
+    align-self: end;
+    padding: 24px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 18px;
+    backdrop-filter: blur(14px);
+}
+.hero-stat-label {
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.hero-stat-value {
+    margin-top: 12px;
+    font-size: clamp(36px, 5vw, 58px);
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+.hero-stat-note {
+    margin-top: 10px;
+    color: rgba(255, 255, 255, 0.72);
+}
+.metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 18px;
+}
+.metric-card,
+.chart-card,
+.report-section,
+.insights {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: 0 16px 38px rgba(15, 23, 42, 0.07);
+}
+.metric-card {
+    padding: 18px;
+    transition: transform 160ms ease, box-shadow 160ms ease;
+}
+.metric-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 22px 44px rgba(15, 23, 42, 0.10);
+}
+.metric-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.metric-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    color: var(--blue);
+    background: #e8f1ff;
+    border-radius: 999px;
+    font-weight: 800;
+}
+.metric-label,
+.meta-label {
+    color: var(--muted);
+    font-size: 13px;
+}
+.metric-value {
+    margin-top: 14px;
+    font-size: 30px;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+.metric-hint {
+    margin-top: 12px;
+    color: var(--muted);
+    line-height: 1.55;
+}
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.15fr 1.25fr;
+    gap: 18px;
+    margin-top: 18px;
+}
+.chart-card {
+    min-height: 390px;
+    padding: 20px;
+}
+.chart-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.chart-head h2,
+.report-section h2,
+.section-title h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.35;
+}
+.chart-head p,
+.section-title p {
+    margin: 5px 0 0;
+    color: var(--muted);
+}
+.donut-layout {
+    display: grid;
+    gap: 18px;
+    place-items: center;
+}
+.donut {
+    display: grid;
+    place-items: center;
+    width: 196px;
+    height: 196px;
+    border-radius: 999px;
+    background: conic-gradient(var(--orange) 0deg var(--test-deg), var(--blue) var(--test-deg) 360deg);
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+.donut-hole {
+    display: grid;
+    place-items: center;
+    width: 126px;
+    height: 126px;
+    background: #ffffff;
+    border-radius: 999px;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+.donut-value {
+    font-size: 30px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+.donut-label {
+    margin-top: -22px;
+    color: var(--muted);
+    font-size: 13px;
+}
+.legend {
+    width: 100%;
+    display: grid;
+    gap: 10px;
+}
+.legend-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 8px;
+    align-items: center;
+    color: var(--muted);
+}
+.legend-item strong,
+.legend-item em {
+    color: var(--text);
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
+}
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+}
+.legend-prod {
+    background: var(--blue);
+}
+.legend-test {
+    background: var(--orange);
+}
+.bar-chart {
+    display: grid;
+    gap: 13px;
+}
+.bar-row {
+    display: grid;
+    grid-template-columns: 98px minmax(90px, 1fr) 78px 52px;
+    gap: 10px;
+    align-items: center;
+}
+.bar-name,
+.bar-value,
+.bar-ratio {
+    font-variant-numeric: tabular-nums;
+}
+.bar-name {
+    overflow: hidden;
+    color: #334155;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.bar-track {
+    height: 10px;
+    overflow: hidden;
+    background: #e7edf6;
+    border-radius: 999px;
+}
+.bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, rgba(37, 99, 235, 0.48), rgba(37, 99, 235, 0.92));
+    border-radius: inherit;
+}
+.bar-fill-primary {
+    background: linear-gradient(90deg, var(--blue), var(--blue2));
+}
+.bar-fill-file {
+    background: linear-gradient(90deg, var(--green), var(--blue2));
+}
+.bar-value,
+.bar-ratio {
+    text-align: right;
+    color: #334155;
+}
+.file-bar-row {
+    grid-template-columns: minmax(120px, 1.4fr) auto minmax(90px, 1fr) 72px;
+}
+.file-label {
+    min-width: 0;
+}
+.file-name,
+.file-path {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.file-name {
+    color: #1e293b;
+    font-weight: 650;
+}
+.file-path {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+}
+.insights {
+    margin-top: 18px;
+    padding: 20px;
+}
+.section-title {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+.insight-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+.insight-card {
+    padding: 16px;
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+}
+.insight-label {
+    color: var(--muted);
+    font-size: 13px;
+}
+.insight-value {
+    margin-top: 8px;
+    font-size: 23px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+.insight-card p {
+    margin: 10px 0 0;
+    color: #475569;
+    line-height: 1.55;
+}
+.insight-good {
+    border-color: rgba(16, 185, 129, 0.26);
+    background: #f0fdf8;
+}
+.insight-watch {
+    border-color: rgba(245, 158, 11, 0.28);
+    background: #fffbeb;
+}
+.insight-risk {
+    border-color: rgba(239, 68, 68, 0.26);
+    background: #fff1f2;
+}
+.insight-neutral {
+    border-color: rgba(37, 99, 235, 0.18);
+    background: #eff6ff;
+}
+.report-section {
+    margin-top: 18px;
+    padding: 20px;
+}
+.table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+}
+table {
+    width: 100%;
+    min-width: 720px;
+    border-collapse: collapse;
+}
+th,
+td {
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+    vertical-align: top;
+    font-variant-numeric: tabular-nums;
+}
+th {
+    color: #334155;
+    background: #eef5fb;
+    font-weight: 700;
+}
+tbody tr:hover {
+    background: #f8fbff;
+}
+tr:last-child td {
+    border-bottom: none;
+}
+.text {
+    text-align: left;
+}
+.num {
+    text-align: right;
+}
+.center {
+    text-align: center;
+}
+.path {
+    min-width: 260px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.45;
+}
+.badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 46px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: 0;
+}
+.badge-test {
+    color: #9a3412;
+    background: #ffedd5;
+    border: 1px solid #fdba74;
+}
+.badge-prod {
+    color: #1d4ed8;
+    background: #dbeafe;
+    border: 1px solid #93c5fd;
+}
+.empty-note {
+    padding: 14px;
+    color: var(--muted);
+    background: #f8fafc;
+    border: 1px dashed var(--line);
+    border-radius: 12px;
+}
+@media (max-width: 1100px) {
+    .hero,
+    .dashboard-grid,
+    .metrics,
+    .insight-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+    .hero-stat {
+        align-self: stretch;
+    }
+}
+@media (max-width: 720px) {
+    .page {
+        width: min(100% - 28px, 1280px);
+        margin-top: 18px;
+    }
+    .hero,
+    .dashboard-grid,
+    .metrics,
+    .insight-grid {
+        grid-template-columns: 1fr;
+    }
+    .hero {
+        padding: 24px;
+    }
+    .bar-row,
+    .file-bar-row {
+        grid-template-columns: 1fr;
+        gap: 7px;
+    }
+    .bar-value,
+    .bar-ratio {
+        text-align: left;
+    }
+    .section-title {
+        display: block;
+    }
+}
+@media print {
+    body {
+        background: #ffffff;
+    }
+    .hero,
+    .metric-card,
+    .chart-card,
+    .insights,
+    .report-section {
+        box-shadow: none;
+    }
+}
+
+</style>
+</head>
+<body>
+<main class="page">
+<section class="hero">
+<div class="hero-content">
+<h1 class="hero-title">项目代码量统计报告</h1>
+<p class="hero-subtitle">静态代码规模、语言分布、测试占比与大文件风险概览</p>
+<div class="hero-path">D:\desktop\project\UniversalCrawlerProplus</div>
+</div>
+<aside class="hero-stat">
+<div class="hero-stat-label">Effective LOC</div>
+<div class="hero-stat-value">141,629</div>
+<div class="hero-stat-note">有效代码行数</div>
+</aside>
+</section>
+<section class="metrics">
+
+<article class="metric-card">
+<div class="metric-top">
+<span class="metric-icon">#</span>
+<span class="metric-label">代码文件数</span>
+</div>
+<div class="metric-value">642</div>
+<div class="metric-hint">纳入统计的源代码文件</div>
+</article>
+
+<article class="metric-card">
+<div class="metric-top">
+<span class="metric-icon">Σ</span>
+<span class="metric-label">总行数</span>
+</div>
+<div class="metric-value">163,312</div>
+<div class="metric-hint">包含空行与注释</div>
+</article>
+
+<article class="metric-card">
+<div class="metric-top">
+<span class="metric-icon">&lt;/&gt;</span>
+<span class="metric-label">有效代码行数</span>
+</div>
+<div class="metric-value">141,629</div>
+<div class="metric-hint">排除空行与注释</div>
+</article>
+
+<article class="metric-card">
+<div class="metric-top">
+<span class="metric-icon">T</span>
+<span class="metric-label">测试代码行数</span>
+</div>
+<div class="metric-value">37,007</div>
+<div class="metric-hint">识别为测试文件的有效代码</div>
+</article>
+
+</section>
+<section class="dashboard-grid">
+
+<article class="chart-card chart-card-donut">
+<div class="chart-head">
+<div>
+<h2>代码构成</h2>
+<p>生产代码与测试代码有效行数占比</p>
+</div>
+</div>
+<div class="donut-layout">
+<div class="donut" style="--test-deg: 94.07deg;">
+<div class="donut-hole">
+<div class="donut-value">26.1%</div>
+<div class="donut-label">测试占比</div>
+</div>
+</div>
+<div class="legend">
+<div class="legend-item">
+<span class="legend-dot legend-prod"></span>
+<span>生产代码</span>
+<strong>104,622 行</strong>
+<em>73.9%</em>
+</div>
+<div class="legend-item">
+<span class="legend-dot legend-test"></span>
+<span>测试代码</span>
+<strong>37,007 行</strong>
+<em>26.1%</em>
+</div>
+</div>
+</div>
+</article>
+
+
+<article class="chart-card">
+<div class="chart-head">
+<div>
+<h2>语言分布 Top 8</h2>
+<p>按有效代码行数排序</p>
+</div>
+</div>
+<div class="bar-chart">
+
+<div class="bar-row">
+<div class="bar-name">Python</div>
+<div class="bar-track"><div class="bar-fill bar-fill-primary" style="width: 100.00%"></div></div>
+<div class="bar-value">126,299</div>
+<div class="bar-ratio">89.2%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">JavaScript</div>
+<div class="bar-track"><div class="bar-fill" style="width: 6.85%"></div></div>
+<div class="bar-value">8,647</div>
+<div class="bar-ratio">6.1%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">CSS</div>
+<div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
+<div class="bar-value">3,080</div>
+<div class="bar-ratio">2.2%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">JSON</div>
+<div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
+<div class="bar-value">2,219</div>
+<div class="bar-ratio">1.6%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">HTML</div>
+<div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
+<div class="bar-value">1,118</div>
+<div class="bar-ratio">0.8%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">TOML</div>
+<div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
+<div class="bar-value">142</div>
+<div class="bar-ratio">0.1%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">YAML</div>
+<div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
+<div class="bar-value">99</div>
+<div class="bar-ratio">0.1%</div>
+</div>
+
+<div class="bar-row">
+<div class="bar-name">Shell</div>
+<div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
+<div class="bar-value">25</div>
+<div class="bar-ratio">0.0%</div>
+</div>
+
+</div>
+</article>
+
+
+<article class="chart-card">
+<div class="chart-head">
+<div>
+<h2>最大文件 Top 10</h2>
+<p>按文件总行数排序，提示潜在拆分风险</p>
+</div>
+</div>
+<div class="bar-chart largest-chart">
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="app\web\static\app.js">
+<span class="file-name">app.js</span>
+<span class="file-path">app\web\static\app.js</span>
+</div>
+<span class="badge badge-prod">PROD</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 100.00%"></div></div>
+<div class="bar-value">4,360</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="tests\test_unified_frontend_contract.py">
+<span class="file-name">test_unified_frontend_contract.py</span>
+<span class="file-path">tests\test_unified_frontend_contract.py</span>
+</div>
+<span class="badge badge-test">TEST</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 97.68%"></div></div>
+<div class="bar-value">4,259</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="app\web\static\app.css">
+<span class="file-name">app.css</span>
+<span class="file-path">app\web\static\app.css</span>
+</div>
+<span class="badge badge-prod">PROD</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 82.13%"></div></div>
+<div class="bar-value">3,581</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="tests\test_web_browser.py">
+<span class="file-name">test_web_browser.py</span>
+<span class="file-path">tests\test_web_browser.py</span>
+</div>
+<span class="badge badge-test">TEST</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 80.32%"></div></div>
+<div class="bar-value">3,502</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="tests\test_downloaders.py">
+<span class="file-name">test_downloaders.py</span>
+<span class="file-path">tests\test_downloaders.py</span>
+</div>
+<span class="badge badge-test">TEST</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 57.22%"></div></div>
+<div class="bar-value">2,495</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="tests\test_spider_helpers.py">
+<span class="file-name">test_spider_helpers.py</span>
+<span class="file-path">tests\test_spider_helpers.py</span>
+</div>
+<span class="badge badge-test">TEST</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 56.74%"></div></div>
+<div class="bar-value">2,474</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="TikTokDownloader\src\application\main_terminal.py">
+<span class="file-name">main_terminal.py</span>
+<span class="file-path">TikTokDownloader\src\application\main_terminal.py</span>
+</div>
+<span class="badge badge-prod">PROD</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 53.17%"></div></div>
+<div class="bar-value">2,318</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="tests\test_launcher.py">
+<span class="file-name">test_launcher.py</span>
+<span class="file-path">tests\test_launcher.py</span>
+</div>
+<span class="badge badge-test">TEST</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 49.22%"></div></div>
+<div class="bar-value">2,146</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="app\services\frontend_state_service.py">
+<span class="file-name">frontend_state_service.py</span>
+<span class="file-path">app\services\frontend_state_service.py</span>
+</div>
+<span class="badge badge-prod">PROD</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 49.06%"></div></div>
+<div class="bar-value">2,139</div>
+</div>
+
+<div class="bar-row file-bar-row">
+<div class="file-label" title="tests\test_frontend_state_service.py">
+<span class="file-name">test_frontend_state_service.py</span>
+<span class="file-path">tests\test_frontend_state_service.py</span>
+</div>
+<span class="badge badge-test">TEST</span>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 47.96%"></div></div>
+<div class="bar-value">2,091</div>
+</div>
+
+</div>
+</article>
+
+</section>
+
+<section class="insights">
+<div class="section-title">
+<h2>代码质量 / 风险摘要</h2>
+<p>基于当前统计结果自动生成的结构观察</p>
+</div>
+<div class="insight-grid">
+
+<article class="insight-card insight-good" title="测试占比较高，回归保护较充分">
+<div class="insight-label">测试代码占比</div>
+<div class="insight-value">26.1%</div>
+<p>测试占比较高，回归保护较充分</p>
+</article>
+
+<article class="insight-card insight-risk" title="app\web\static\app.js">
+<div class="insight-label">最大文件风险</div>
+<div class="insight-value">4,360 行</div>
+<p>存在超大文件，建议评估拆分</p>
+</article>
+
+<article class="insight-card insight-neutral" title="主语言：Python，占比 89.2%">
+<div class="insight-label">主语言</div>
+<div class="insight-value">Python</div>
+<p>主语言：Python，占比 89.2%</p>
+</article>
+
+<article class="insight-card insight-neutral" title="用于观察业务代码与测试代码结构">
+<div class="insight-label">生产代码占比</div>
+<div class="insight-value">73.9%</div>
+<p>用于观察业务代码与测试代码结构</p>
+</article>
+
+</div>
+</section>
+
+
+<section class="report-section">
+<h2>总览：含测试 / 排除测试 / 仅测试</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th class="text">统计口径</th><th class="num">代码文件数</th><th class="num">总行数</th><th class="num">空行数</th><th class="num">注释行数</th><th class="num">有效代码行数</th></tr></thead>
+<tbody>
+<tr><td class="text">全部代码_含测试</td><td class="num">642</td><td class="num">163312</td><td class="num">19424</td><td class="num">2259</td><td class="num">141629</td></tr><tr><td class="text">排除测试后</td><td class="num">499</td><td class="num">118813</td><td class="num">12322</td><td class="num">1869</td><td class="num">104622</td></tr><tr><td class="text">仅测试代码</td><td class="num">143</td><td class="num">44499</td><td class="num">7102</td><td class="num">390</td><td class="num">37007</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+
+<section class="report-section">
+<h2>按语言统计：全部 / 排除测试 / 测试</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th class="text">语言</th><th class="num">全部文件</th><th class="num">全部行</th><th class="num">全部代码</th><th class="num">生产代码</th><th class="num">测试代码</th><th class="num">测试文件</th></tr></thead>
+<tbody>
+<tr><td class="text">Python</td><td class="num">607</td><td class="num">146737</td><td class="num">126299</td><td class="num">89292</td><td class="num">37007</td><td class="num">143</td></tr><tr><td class="text">JavaScript</td><td class="num">14</td><td class="num">9255</td><td class="num">8647</td><td class="num">8647</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">CSS</td><td class="num">1</td><td class="num">3581</td><td class="num">3080</td><td class="num">3080</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">JSON</td><td class="num">11</td><td class="num">2219</td><td class="num">2219</td><td class="num">2219</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">HTML</td><td class="num">2</td><td class="num">1178</td><td class="num">1118</td><td class="num">1118</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">TOML</td><td class="num">3</td><td class="num">193</td><td class="num">142</td><td class="num">142</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">YAML</td><td class="num">3</td><td class="num">111</td><td class="num">99</td><td class="num">99</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">Shell</td><td class="num">1</td><td class="num">38</td><td class="num">25</td><td class="num">25</td><td class="num">0</td><td class="num">0</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+
+<section class="report-section">
+<h2>最大文件 Top 30</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th class="num">总行数</th><th class="num">代码行</th><th class="center">类型</th><th class="text path">文件</th></tr></thead>
+<tbody>
+<tr><td class="num">4360</td><td class="num">4041</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\app.js">app\web\static\app.js</td></tr><tr><td class="num">4259</td><td class="num">3784</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_unified_frontend_contract.py">tests\test_unified_frontend_contract.py</td></tr><tr><td class="num">3581</td><td class="num">3080</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\app.css">app\web\static\app.css</td></tr><tr><td class="num">3502</td><td class="num">3193</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_web_browser.py">tests\test_web_browser.py</td></tr><tr><td class="num">2495</td><td class="num">2042</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_downloaders.py">tests\test_downloaders.py</td></tr><tr><td class="num">2474</td><td class="num">2067</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_spider_helpers.py">tests\test_spider_helpers.py</td></tr><tr><td class="num">2318</td><td class="num">2164</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="TikTokDownloader\src\application\main_terminal.py">TikTokDownloader\src\application\main_terminal.py</td></tr><tr><td class="num">2146</td><td class="num">1972</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_launcher.py">tests\test_launcher.py</td></tr><tr><td class="num">2139</td><td class="num">1948</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\frontend_state_service.py">app\services\frontend_state_service.py</td></tr><tr><td class="num">2091</td><td class="num">1742</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_frontend_state_service.py">tests\test_frontend_state_service.py</td></tr><tr><td class="num">2071</td><td class="num">1676</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\test_main_window.py">tests\test_main_window.py</td></tr><tr><td class="num">1990</td><td class="num">1771</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\main_window.py">app\ui\main_window.py</td></tr><tr><td class="num">1799</td><td class="num">1687</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\downloaders\m3u8.py">app\core\downloaders\m3u8.py</td></tr><tr><td class="num">1667</td><td class="num">1527</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\lib\douyin\extract\extractor.py">app\core\lib\douyin\extract\extractor.py</td></tr><tr><td class="num">1621</td><td class="num">1401</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\settings_page.py">app\ui\pages\settings_page.py</td></tr><tr><td class="num">1612</td><td class="num">1524</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\spiders\bilibili\spider.py">app\spiders\bilibili\spider.py</td></tr><tr><td class="num">1582</td><td class="num">1395</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\log_center_page.py">app\ui\pages\log_center_page.py</td></tr><tr><td class="num">1559</td><td class="num">1436</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="TikTokDownloader\src\extract\extractor.py">TikTokDownloader\src\extract\extractor.py</td></tr><tr><td class="num">1464</td><td class="num">1308</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="count_project.py">count_project.py</td></tr><tr><td class="num">1388</td><td class="num">1182</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\styles\themes.py">app\ui\styles\themes.py</td></tr><tr><td class="num">1348</td><td class="num">1151</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\controller.py">app\web\controller.py</td></tr><tr><td class="num">1348</td><td class="num">1328</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\i18n.js">app\web\static\i18n.js</td></tr><tr><td class="num">1338</td><td class="num">1048</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\lib\douyin\tools\parameter.py">app\core\lib\douyin\tools\parameter.py</td></tr><tr><td class="num">1315</td><td class="num">1225</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\viewmodels\log_i18n.py">app\ui\viewmodels\log_i18n.py</td></tr><tr><td class="num">1293</td><td class="num">1191</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\active_downloads_page.py">app\ui\pages\active_downloads_page.py</td></tr><tr><td class="num">1209</td><td class="num">1072</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="TikTokDownloader\src\config\parameter.py">TikTokDownloader\src\config\parameter.py</td></tr><tr><td class="num">1189</td><td class="num">1018</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\config\settings.py">app\config\settings.py</td></tr><tr><td class="num">1128</td><td class="num">1043</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\spiders\kuaishou\spider.py">app\spiders\kuaishou\spider.py</td></tr><tr><td class="num">1042</td><td class="num">922</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\components\media_preview_panel.py">app\ui\components\media_preview_panel.py</td></tr><tr><td class="num">978</td><td class="num">918</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="TikTokDownloader\src\downloader\download.py">TikTokDownloader\src\downloader\download.py</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+</main>
+</body>
+</html>

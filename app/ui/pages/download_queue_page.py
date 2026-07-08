@@ -8,7 +8,7 @@ from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.layout.island import IslandCard
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
-from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
 from app.utils.qt_runtime import load_qt_icon
 
 class DownloadQueuePage(PageFrame):
@@ -20,7 +20,6 @@ class DownloadQueuePage(PageFrame):
 
     PAGE_SIZE_OPTIONS = (20, 50, 100)
     ROW_HEIGHT = 52
-    ASYNC_ITEM_THRESHOLD = 200
 
     def __init__(self) -> None:
         super().__init__()
@@ -186,9 +185,6 @@ class DownloadQueuePage(PageFrame):
             recent_count=3,
             selected_id_moves_page=selected_id_moves_page,
         )
-        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
-            self._apply_page_result(build_list_page_result(request))
-            return
         worker = self._page_worker
         if worker is None:
             worker = ListPageWorker(self._page_result_ready.emit)

@@ -38,6 +38,38 @@ _ALL_COMPLETED_RE = re.compile(
     rf"^{_DYNAMIC_PREFIX}全部完成[:：]\s*(?:成功|success)\s*(?P<success>\d+)\s*/\s*(?P<total>\d+)\s*\|\s*(?:失败|failed)\s*(?P<failed>\d+)$",
     re.IGNORECASE,
 )
+_MOJIBAKE_REPAIR_PHRASES = (
+    "下载失败",
+    "下载任务失败",
+    "下载任务完成",
+    "应用开始初始化",
+    "主窗口初始化完成",
+    "用户停止下载",
+    "小红书图片下载失败",
+    "视频数",
+)
+
+
+def _build_mojibake_repair_map() -> dict[str, str]:
+    repair_map: dict[str, str] = {}
+    for phrase in _MOJIBAKE_REPAIR_PHRASES:
+        for encoding in ("gbk", "gb18030", "cp936"):
+            damaged = phrase.encode("utf-8").decode(encoding, errors="replace")
+            if damaged and damaged != phrase:
+                repair_map[damaged] = phrase
+                repair_map[damaged.replace("\ufffd", "?")] = phrase
+    return repair_map
+
+
+_MOJIBAKE_REPAIR_MAP = _build_mojibake_repair_map()
+
+
+def _repair_mojibake_text(text: str) -> str:
+    repaired = text
+    for damaged, phrase in _MOJIBAKE_REPAIR_MAP.items():
+        if damaged in repaired:
+            repaired = repaired.replace(damaged, phrase)
+    return repaired
 
 _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("Bilibili 流请求建立成功", "Bilibili stream request established", "Bilibili 串流請求建立成功"),
@@ -72,6 +104,9 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("下载任务已加入执行队列", "Download task has been queued for execution", "下載任務已加入執行隊列"),
     ("下载任务开始执行", "Download task started", "下載任務開始執行"),
     ("下载任务完成", "Download task completed", "下載任務完成"),
+    ("下载任务失败", "Download task failed", "下載任務失敗"),
+    ("UI 回调失败", "ui callback failed", "UI 回調失敗"),
+    ("回调失败", "callback failed", "回調失敗"),
     ("下载任务被用户停止", "Download task stopped by user", "下載任務被使用者停止"),
     ("下载完成后已按文件签名修正扩展名", "Fixed extension after download by file signature", "下載完成後已依檔案簽章修正副檔名"),
     ("分块下载不可用，回退到后续下载策略", "Chunked download unavailable; falling back to later download strategy", "分塊下載不可用，回退到後續策略"),
@@ -81,7 +116,18 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("抖音爬虫任务结束", "Douyin crawl task finished", "抖音爬蟲任務結束"),
     ("抖音爬虫运行异常", "Douyin crawl runtime error", "抖音爬蟲執行異常"),
     ("进入抖音任务提交阶段", "Entered Douyin task submit stage", "進入抖音任務提交階段"),
-    ("Douyin 参数初始化完成", "Douyin parameters initialized", "Douyin 參數初始化完成"),
+    ("Douyin 参数初始化完成", "Douyin parameters initialized", "Douyin 參數初始化完成", "Douyin参数初始化完成"),
+    ("正在更新抖音参数，请稍等...", "Updating Douyin parameters, please wait...", "正在更新抖音參數，請稍候..."),
+    (
+        "配置文件 cookie 参数未登录，数据获取已提前结束",
+        "Config cookie is not logged in; data fetching ended early",
+        "設定檔 cookie 參數未登入，資料取得已提前結束",
+    ),
+    (
+        "配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用",
+        "Config cookie is not set; Douyin features may not work properly",
+        "設定檔 cookie 參數未設定，抖音平台功能可能無法正常使用",
+    ),
     ("抖音作品详情返回", "Douyin work detail returned", "抖音作品詳情返回"),
     ("抖音用户作品分页返回", "Douyin user works page returned", "抖音使用者作品分頁返回"),
     ("抖音合集分页返回", "Douyin collection page returned", "抖音合集分頁返回"),
@@ -212,6 +258,16 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
         "N_m3u8DL-RE 失败，正在尝试 yt-dlp 模拟回退",
         "N_m3u8DL-RE failed; trying yt-dlp impersonation fallback",
         "N_m3u8DL-RE 失敗，正在嘗試 yt-dlp 模擬回退",
+    ),
+    (
+        "Web 事件循环不可用，已延后前端增量刷新",
+        "Web event loop is unavailable; deferred frontend delta until a later async flush.",
+        "Web 事件迴圈不可用，已延後前端增量刷新",
+    ),
+    (
+        "没有可用事件循环，已跳过前端增量刷新",
+        "Skipped frontend delta flush because no running event loop is available.",
+        "沒有可用事件迴圈，已略過前端增量刷新",
     ),
     ("默认打开方式已生效", "Default open mode is active", "預設開啟方式已生效"),
     ("未选择需要注册的资源类型", "No resource type selected for registration", "未選擇需要註冊的資源類型"),
@@ -520,7 +576,7 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("下载已暂停", "download paused", "下載已暫停"),
     ("Web 端启动爬虫任务", "Web started crawl task", "Web 端啟動爬蟲任務"),
     ("Web 端发现可下载资源", "Web found downloadable resources", "Web 端發現可下載資源"),
-    ("_on_spider_finished 被调用", "_on_spider_finished was called", "_on_spider_finished 被呼叫"),
+    ("爬虫完成回调已调用", "_on_spider_finished was called", "爬蟲完成回呼已呼叫", "_on_spider_finished 被调用"),
     ("CLI 发现可下载资源", "CLI found downloadable resources", "CLI 發現可下載資源"),
     ("CLI 启动爬虫任务", "CLI started crawl task", "CLI 啟動爬蟲任務"),
     ("CLI 下载任务失败", "CLI download task failed", "CLI 下載任務失敗"),
@@ -716,6 +772,12 @@ _BILIBILI_ROUTE_ALIASES = {
 }
 
 _STRUCTURED_SEGMENT_ALIASES = {
+    "Douyin": {"zh-CN": "抖音", "en-US": "Douyin", "zh-TW": "抖音"},
+    "Kuaishou": {"zh-CN": "快手", "en-US": "Kuaishou", "zh-TW": "快手"},
+    "Xiaohongshu": {"zh-CN": "小红书", "en-US": "Xiaohongshu", "zh-TW": "小紅書"},
+    "XiaoHongShu": {"zh-CN": "小红书", "en-US": "Xiaohongshu", "zh-TW": "小紅書"},
+    "小红书": {"en-US": "Xiaohongshu", "zh-TW": "小紅書"},
+    "小紅書": {"zh-CN": "小红书", "en-US": "Xiaohongshu"},
     "System": {"zh-CN": "系统", "en-US": "System", "zh-TW": "系統"},
     "系统": {"en-US": "System", "zh-TW": "系統"},
     "系統": {"zh-CN": "系统", "en-US": "System"},
@@ -737,6 +799,18 @@ _STRUCTURED_SEGMENT_ALIASES = {
     "Downloader": {"zh-CN": "下载器", "en-US": "Downloader", "zh-TW": "下載器"},
     "下载器": {"en-US": "Downloader", "zh-TW": "下載器"},
     "下載器": {"zh-CN": "下载器", "en-US": "Downloader"},
+    "BaseDownloader": {"zh-CN": "基础下载器", "en-US": "BaseDownloader", "zh-TW": "基礎下載器"},
+    "BaseSpider": {"zh-CN": "基础爬虫", "en-US": "BaseSpider", "zh-TW": "基礎爬蟲"},
+    "BilibiliSpider": {"zh-CN": "Bilibili 爬虫", "en-US": "BilibiliSpider", "zh-TW": "Bilibili 爬蟲"},
+    "DouyinSpider": {"zh-CN": "抖音爬虫", "en-US": "DouyinSpider", "zh-TW": "抖音爬蟲"},
+    "KuaishouSpider": {"zh-CN": "快手爬虫", "en-US": "KuaishouSpider", "zh-TW": "快手爬蟲"},
+    "XiaohongshuSpider": {"zh-CN": "小红书爬虫", "en-US": "XiaohongshuSpider", "zh-TW": "小紅書爬蟲"},
+    "XiaoHongShuSpider": {"zh-CN": "小红书爬虫", "en-US": "XiaoHongShuSpider", "zh-TW": "小紅書爬蟲"},
+    "MissAVSpider": {"zh-CN": "MissAV 爬虫", "en-US": "MissAVSpider", "zh-TW": "MissAV 爬蟲"},
+    "BiliAPI": {"zh-CN": "Bilibili 接口", "en-US": "BiliAPI", "zh-TW": "Bilibili 介面"},
+    "DouyinItemParser": {"zh-CN": "抖音条目解析器", "en-US": "DouyinItemParser", "zh-TW": "抖音項目解析器"},
+    "DouyinLoginProcess": {"zh-CN": "抖音登录流程", "en-US": "DouyinLoginProcess", "zh-TW": "抖音登入流程"},
+    "XiaohongshuClient": {"zh-CN": "小红书客户端", "en-US": "XiaohongshuClient", "zh-TW": "小紅書用戶端"},
     "BilibiliDownloader": {"zh-CN": "Bilibili 下载器", "en-US": "BilibiliDownloader", "zh-TW": "Bilibili 下載器"},
     "DouyinDownloader": {"zh-CN": "抖音下载器", "en-US": "DouyinDownloader", "zh-TW": "抖音下載器"},
     "KuaishouDownloader": {"zh-CN": "快手下载器", "en-US": "KuaishouDownloader", "zh-TW": "快手下載器"},
@@ -747,11 +821,46 @@ _STRUCTURED_SEGMENT_ALIASES = {
         "en-US": "N_m3u8DL_RE_Downloader",
         "zh-TW": "N_m3u8DL-RE 下載器",
     },
+    "M3U8Downloader": {"zh-CN": "M3U8 下载器", "en-US": "M3U8Downloader", "zh-TW": "M3U8 下載器"},
+    "M3U8Proxy": {"zh-CN": "M3U8 代理", "en-US": "M3U8Proxy", "zh-TW": "M3U8 代理"},
     "FFmpegDownloader": {"zh-CN": "FFmpeg 下载器", "en-US": "FFmpegDownloader", "zh-TW": "FFmpeg 下載器"},
     "ChunkedDownloader": {"zh-CN": "分块下载器", "en-US": "ChunkedDownloader", "zh-TW": "分塊下載器"},
+    "ExternalToolRunner": {"zh-CN": "外部工具运行器", "en-US": "ExternalToolRunner", "zh-TW": "外部工具執行器"},
+    "FailedRecordStore": {"zh-CN": "失败记录存储", "en-US": "FailedRecordStore", "zh-TW": "失敗記錄儲存"},
     "FrontendStateService": {"zh-CN": "前端状态服务", "en-US": "FrontendStateService", "zh-TW": "前端狀態服務"},
+    "FrontendLogCache": {"zh-CN": "前端日志缓存", "en-US": "FrontendLogCache", "zh-TW": "前端日誌快取"},
+    "FrontendSettingsAdapter": {"zh-CN": "前端设置适配器", "en-US": "FrontendSettingsAdapter", "zh-TW": "前端設定適配器"},
+    "FrontendActionWorker": {"zh-CN": "前端动作线程", "en-US": "FrontendActionWorker", "zh-TW": "前端動作執行緒"},
+    "FrontendSnapshotWorker": {"zh-CN": "前端快照线程", "en-US": "FrontendSnapshotWorker", "zh-TW": "前端快照執行緒"},
+    "LogQueryWorker": {"zh-CN": "日志查询线程", "en-US": "LogQueryWorker", "zh-TW": "日誌查詢執行緒"},
+    "LogDetailWorker": {"zh-CN": "日志详情线程", "en-US": "LogDetailWorker", "zh-TW": "日誌詳情執行緒"},
+    "ListPageWorker": {"zh-CN": "列表分页线程", "en-US": "ListPageWorker", "zh-TW": "列表分頁執行緒"},
+    "LatestRequestWorker": {"zh-CN": "最新请求线程", "en-US": "LatestRequestWorker", "zh-TW": "最新請求執行緒"},
+    "SequentialRequestWorker": {"zh-CN": "顺序请求线程", "en-US": "SequentialRequestWorker", "zh-TW": "順序請求執行緒"},
     "AppState": {"zh-CN": "应用状态", "en-US": "AppState", "zh-TW": "應用狀態"},
     "MediaMetadataService": {"zh-CN": "媒体元数据服务", "en-US": "MediaMetadataService", "zh-TW": "媒體中繼資料服務"},
+    "CacheService": {"zh-CN": "缓存服务", "en-US": "CacheService", "zh-TW": "快取服務"},
+    "MediaLibraryService": {"zh-CN": "媒体库服务", "en-US": "MediaLibraryService", "zh-TW": "媒體庫服務"},
+    "PlaybackPositionService": {"zh-CN": "播放位置服务", "en-US": "PlaybackPositionService", "zh-TW": "播放位置服務"},
+    "MkvPlaybackRepairService": {"zh-CN": "MKV 播放修复服务", "en-US": "MkvPlaybackRepairService", "zh-TW": "MKV 播放修復服務"},
+    "DebugArtifactsService": {"zh-CN": "调试产物服务", "en-US": "DebugArtifactsService", "zh-TW": "偵錯產物服務"},
+    "MediaHostControllerMixin": {"zh-CN": "媒体控制器", "en-US": "MediaHostControllerMixin", "zh-TW": "媒體控制器"},
+    "SettingsPage": {"zh-CN": "配置页", "en-US": "SettingsPage", "zh-TW": "設定頁"},
+    "SettingsPathPicker": {"zh-CN": "路径选择器", "en-US": "SettingsPathPicker", "zh-TW": "路徑選擇器"},
+    "WebController": {"zh-CN": "Web 控制器", "en-US": "WebController", "zh-TW": "Web 控制器"},
+    "WebControllerRouteService": {"zh-CN": "Web 控制器路由服务", "en-US": "WebControllerRouteService", "zh-TW": "Web 控制器路由服務"},
+    "WebWorkflowService": {"zh-CN": "Web 工作流服务", "en-US": "WebWorkflowService", "zh-TW": "Web 工作流服務"},
+    "WebWorkflowDownloadService": {"zh-CN": "Web 下载工作流服务", "en-US": "WebWorkflowDownloadService", "zh-TW": "Web 下載工作流服務"},
+    "WebDirectoryService": {"zh-CN": "Web 目录服务", "en-US": "WebDirectoryService", "zh-TW": "Web 目錄服務"},
+    "WebSearchService": {"zh-CN": "Web 搜索服务", "en-US": "WebSearchService", "zh-TW": "Web 搜尋服務"},
+    "WebSocketRuntime": {"zh-CN": "WebSocket 运行时", "en-US": "WebSocketRuntime", "zh-TW": "WebSocket 執行階段"},
+    "WebSocketBridge": {"zh-CN": "WebSocket 桥接器", "en-US": "WebSocketBridge", "zh-TW": "WebSocket 橋接器"},
+    "WebSocketMessageDispatcher": {"zh-CN": "WebSocket 消息分发器", "en-US": "WebSocketMessageDispatcher", "zh-TW": "WebSocket 訊息分發器"},
+    "WebSocketBootstrapper": {"zh-CN": "WebSocket 初始化器", "en-US": "WebSocketBootstrapper", "zh-TW": "WebSocket 初始化器"},
+    "WebSocketSessionBinder": {"zh-CN": "WebSocket 会话绑定器", "en-US": "WebSocketSessionBinder", "zh-TW": "WebSocket 工作階段綁定器"},
+    "ConnectionManager": {"zh-CN": "连接管理器", "en-US": "ConnectionManager", "zh-TW": "連線管理器"},
+    "WindowChrome": {"zh-CN": "窗口标题栏", "en-US": "WindowChrome", "zh-TW": "視窗標題列"},
+    "log_platforms": {"zh-CN": "日志平台元数据", "en-US": "log_platforms", "zh-TW": "日誌平台中繼資料"},
     "WebUI": {"zh-CN": "网页端", "en-US": "WebUI", "zh-TW": "網頁端"},
     "网页端": {"en-US": "WebUI", "zh-TW": "網頁端"},
     "網頁端": {"zh-CN": "网页端", "en-US": "WebUI"},
@@ -966,16 +1075,16 @@ def _apply_runtime_phrase_translations(text: str, language: str) -> str:
 
 
 def _localize_structured_segments(text: str, language: str) -> str:
-    if " · " not in text and " / " not in text:
+    if " · " not in text and " / " not in text and " 路 " not in text:
         mapped = _STRUCTURED_SEGMENT_ALIASES.get(text)
         if mapped:
             return _localized(mapped, language) or text
         return text
-    parts = re.split(r"(\s+·\s+|\s+/\s+)", text)
+    parts = re.split(r"(\s+·\s+|\s+/\s+|\s+路\s+)", text)
     changed = False
     translated_parts: list[str] = []
     for part in parts:
-        if re.fullmatch(r"\s*(?:·|/)\s*", part):
+        if re.fullmatch(r"\s*(?:·|/|路)\s*", part):
             translated_parts.append(part)
             continue
         translated = tr(part, language)
@@ -1136,7 +1245,7 @@ def _localize_non_english_dynamic(text: str, language: str) -> str:
 
 
 def localize_log_text(text: object, language: str | None) -> str:
-    value = str(text or "")
+    value = _repair_mojibake_text(str(text or ""))
     if not value:
         return value
     normalized = normalize_language(language)

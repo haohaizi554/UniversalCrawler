@@ -5,9 +5,10 @@ from typing import Any
 
 def sanitize_filename(name: str) -> str:
     """Strip invalid Windows filename characters and trim length."""
-    safe_name = re.sub(r'[\\/:*?"<>|]', "_", str(name)).strip()
+    safe_name = re.sub(r'[\x00-\x1f\x7f\\/:*?"<>|]', "_", str(name)).strip()
     safe_name = safe_name.rstrip(". ")
     safe_name = safe_name[:200]
+    safe_name = safe_name.rstrip(". ")
     return safe_name or "untitled"
 
 def build_media_filename(title: str, source: str, extension: str = ".mp4", meta: dict[str, Any] | None = None) -> str:

@@ -20,6 +20,7 @@ let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size
 const LOG_RENDER_ROW_BUDGET = 300;
 let logQueryWorker = null;
 let logQueryWorkerAvailable = typeof Worker !== "undefined";
+let logQueryFallbackTimer = null;
 let logQuerySequence = 0;
 let logQueryState = {
   signature: "",
@@ -30,6 +31,7 @@ window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
 
 function closeLogQueryWorker() {
+  clearLogQueryFallback();
   if (!logQueryWorker) return;
   try {
     logQueryWorker.terminate();
@@ -38,6 +40,12 @@ function closeLogQueryWorker() {
   }
   logQueryWorker = null;
   logQueryState.pending = false;
+}
+
+function clearLogQueryFallback() {
+  if (logQueryFallbackTimer === null) return;
+  clearTimeout(logQueryFallbackTimer);
+  logQueryFallbackTimer = null;
 }
 
 function cleanupPageResources() {
@@ -496,11 +504,13 @@ function patchLegacyProgress(data) {
 }
 
 function scheduleFrontendDeltaFetch(delayMs = 200) {
+  if (pageIsUnloading) return;
   if (frontendDeltaTimer) clearTimeout(frontendDeltaTimer);
   frontendDeltaTimer = setTimeout(fetchFrontendDelta, delayMs);
 }
 
 async function fetchFrontendDelta() {
+  if (pageIsUnloading) return;
   try {
     const response = await fetch(`/api/frontend/delta?since_version=${encodeURIComponent(frontendVersion || 0)}`, { cache: "no-store" });
     if (!response.ok) return;
@@ -1396,12 +1406,118 @@ function logLevelCellHtml(item) {
   return `<span class="log-level-badge log-level-${logLevelClass(label)}">${esc(label)}</span>`;
 }
 
+const STRUCTURED_LOG_SEGMENT_ALIASES = {
+  Douyin: { "zh-CN": "抖音", "en-US": "Douyin", "zh-TW": "抖音" },
+  Kuaishou: { "zh-CN": "快手", "en-US": "Kuaishou", "zh-TW": "快手" },
+  Xiaohongshu: { "zh-CN": "小红书", "en-US": "Xiaohongshu", "zh-TW": "小紅書" },
+  XiaoHongShu: { "zh-CN": "小红书", "en-US": "Xiaohongshu", "zh-TW": "小紅書" },
+  "小红书": { "zh-CN": "小红书", "en-US": "Xiaohongshu", "zh-TW": "小紅書" },
+  "小紅書": { "zh-CN": "小红书", "en-US": "Xiaohongshu", "zh-TW": "小紅書" },
+  System: { "zh-CN": "系统", "en-US": "System", "zh-TW": "系統" },
+  "系统": { "zh-CN": "系统", "en-US": "System", "zh-TW": "系統" },
+  "系統": { "zh-CN": "系统", "en-US": "System", "zh-TW": "系統" },
+  Browser: { "zh-CN": "浏览器", "en-US": "Browser", "zh-TW": "瀏覽器" },
+  "浏览器": { "zh-CN": "浏览器", "en-US": "Browser", "zh-TW": "瀏覽器" },
+  "瀏覽器": { "zh-CN": "浏览器", "en-US": "Browser", "zh-TW": "瀏覽器" },
+  DownloadManager: { "zh-CN": "下载管理器", "en-US": "DownloadManager", "zh-TW": "下載管理器" },
+  MainWindow: { "zh-CN": "主窗口", "en-US": "MainWindow", "zh-TW": "主視窗" },
+  ApplicationContext: { "zh-CN": "应用上下文", "en-US": "ApplicationContext", "zh-TW": "應用程式上下文" },
+  GUI: { "zh-CN": "GUI", "en-US": "GUI", "zh-TW": "GUI" },
+  CLI: { "zh-CN": "CLI", "en-US": "CLI", "zh-TW": "CLI" },
+  Web: { "zh-CN": "Web", "en-US": "Web", "zh-TW": "Web" },
+  Crawler: { "zh-CN": "爬虫", "en-US": "Crawler", "zh-TW": "爬蟲" },
+  "爬虫": { "zh-CN": "爬虫", "en-US": "Crawler", "zh-TW": "爬蟲" },
+  "爬蟲": { "zh-CN": "爬虫", "en-US": "Crawler", "zh-TW": "爬蟲" },
+  Downloader: { "zh-CN": "下载器", "en-US": "Downloader", "zh-TW": "下載器" },
+  "下载器": { "zh-CN": "下载器", "en-US": "Downloader", "zh-TW": "下載器" },
+  "下載器": { "zh-CN": "下载器", "en-US": "Downloader", "zh-TW": "下載器" },
+  BaseDownloader: { "zh-CN": "基础下载器", "en-US": "BaseDownloader", "zh-TW": "基礎下載器" },
+  BaseSpider: { "zh-CN": "基础爬虫", "en-US": "BaseSpider", "zh-TW": "基礎爬蟲" },
+  BilibiliSpider: { "zh-CN": "Bilibili 爬虫", "en-US": "BilibiliSpider", "zh-TW": "Bilibili 爬蟲" },
+  DouyinSpider: { "zh-CN": "抖音爬虫", "en-US": "DouyinSpider", "zh-TW": "抖音爬蟲" },
+  KuaishouSpider: { "zh-CN": "快手爬虫", "en-US": "KuaishouSpider", "zh-TW": "快手爬蟲" },
+  XiaohongshuSpider: { "zh-CN": "小红书爬虫", "en-US": "XiaohongshuSpider", "zh-TW": "小紅書爬蟲" },
+  XiaoHongShuSpider: { "zh-CN": "小红书爬虫", "en-US": "XiaoHongShuSpider", "zh-TW": "小紅書爬蟲" },
+  MissAVSpider: { "zh-CN": "MissAV 爬虫", "en-US": "MissAVSpider", "zh-TW": "MissAV 爬蟲" },
+  BiliAPI: { "zh-CN": "Bilibili 接口", "en-US": "BiliAPI", "zh-TW": "Bilibili 介面" },
+  DouyinItemParser: { "zh-CN": "抖音条目解析器", "en-US": "DouyinItemParser", "zh-TW": "抖音項目解析器" },
+  DouyinLoginProcess: { "zh-CN": "抖音登录流程", "en-US": "DouyinLoginProcess", "zh-TW": "抖音登入流程" },
+  XiaohongshuClient: { "zh-CN": "小红书客户端", "en-US": "XiaohongshuClient", "zh-TW": "小紅書用戶端" },
+  BilibiliDownloader: { "zh-CN": "Bilibili 下载器", "en-US": "BilibiliDownloader", "zh-TW": "Bilibili 下載器" },
+  DouyinDownloader: { "zh-CN": "抖音下载器", "en-US": "DouyinDownloader", "zh-TW": "抖音下載器" },
+  KuaishouDownloader: { "zh-CN": "快手下载器", "en-US": "KuaishouDownloader", "zh-TW": "快手下載器" },
+  XiaohongshuDownloader: { "zh-CN": "小红书下载器", "en-US": "XiaohongshuDownloader", "zh-TW": "小紅書下載器" },
+  MissAVDownloader: { "zh-CN": "MissAV 下载器", "en-US": "MissAVDownloader", "zh-TW": "MissAV 下載器" },
+  N_m3u8DL_RE_Downloader: { "zh-CN": "N_m3u8DL-RE 下载器", "en-US": "N_m3u8DL_RE_Downloader", "zh-TW": "N_m3u8DL-RE 下載器" },
+  M3U8Downloader: { "zh-CN": "M3U8 下载器", "en-US": "M3U8Downloader", "zh-TW": "M3U8 下載器" },
+  M3U8Proxy: { "zh-CN": "M3U8 代理", "en-US": "M3U8Proxy", "zh-TW": "M3U8 代理" },
+  FFmpegDownloader: { "zh-CN": "FFmpeg 下载器", "en-US": "FFmpegDownloader", "zh-TW": "FFmpeg 下載器" },
+  ChunkedDownloader: { "zh-CN": "分块下载器", "en-US": "ChunkedDownloader", "zh-TW": "分塊下載器" },
+  ExternalToolRunner: { "zh-CN": "外部工具运行器", "en-US": "ExternalToolRunner", "zh-TW": "外部工具執行器" },
+  FailedRecordStore: { "zh-CN": "失败记录存储", "en-US": "FailedRecordStore", "zh-TW": "失敗記錄儲存" },
+  FrontendStateService: { "zh-CN": "前端状态服务", "en-US": "FrontendStateService", "zh-TW": "前端狀態服務" },
+  FrontendLogCache: { "zh-CN": "前端日志缓存", "en-US": "FrontendLogCache", "zh-TW": "前端日誌快取" },
+  FrontendSettingsAdapter: { "zh-CN": "前端设置适配器", "en-US": "FrontendSettingsAdapter", "zh-TW": "前端設定適配器" },
+  FrontendActionWorker: { "zh-CN": "前端动作线程", "en-US": "FrontendActionWorker", "zh-TW": "前端動作執行緒" },
+  FrontendSnapshotWorker: { "zh-CN": "前端快照线程", "en-US": "FrontendSnapshotWorker", "zh-TW": "前端快照執行緒" },
+  LogQueryWorker: { "zh-CN": "日志查询线程", "en-US": "LogQueryWorker", "zh-TW": "日誌查詢執行緒" },
+  LogDetailWorker: { "zh-CN": "日志详情线程", "en-US": "LogDetailWorker", "zh-TW": "日誌詳情執行緒" },
+  ListPageWorker: { "zh-CN": "列表分页线程", "en-US": "ListPageWorker", "zh-TW": "列表分頁執行緒" },
+  LatestRequestWorker: { "zh-CN": "最新请求线程", "en-US": "LatestRequestWorker", "zh-TW": "最新請求執行緒" },
+  SequentialRequestWorker: { "zh-CN": "顺序请求线程", "en-US": "SequentialRequestWorker", "zh-TW": "順序請求執行緒" },
+  AppState: { "zh-CN": "应用状态", "en-US": "AppState", "zh-TW": "應用狀態" },
+  MediaMetadataService: { "zh-CN": "媒体元数据服务", "en-US": "MediaMetadataService", "zh-TW": "媒體中繼資料服務" },
+  CacheService: { "zh-CN": "缓存服务", "en-US": "CacheService", "zh-TW": "快取服務" },
+  MediaLibraryService: { "zh-CN": "媒体库服务", "en-US": "MediaLibraryService", "zh-TW": "媒體庫服務" },
+  PlaybackPositionService: { "zh-CN": "播放位置服务", "en-US": "PlaybackPositionService", "zh-TW": "播放位置服務" },
+  MkvPlaybackRepairService: { "zh-CN": "MKV 播放修复服务", "en-US": "MkvPlaybackRepairService", "zh-TW": "MKV 播放修復服務" },
+  DebugArtifactsService: { "zh-CN": "调试产物服务", "en-US": "DebugArtifactsService", "zh-TW": "偵錯產物服務" },
+  MediaHostControllerMixin: { "zh-CN": "媒体控制器", "en-US": "MediaHostControllerMixin", "zh-TW": "媒體控制器" },
+  SettingsPage: { "zh-CN": "配置页", "en-US": "SettingsPage", "zh-TW": "設定頁" },
+  SettingsPathPicker: { "zh-CN": "路径选择器", "en-US": "SettingsPathPicker", "zh-TW": "路徑選擇器" },
+  WebController: { "zh-CN": "Web 控制器", "en-US": "WebController", "zh-TW": "Web 控制器" },
+  WebControllerRouteService: { "zh-CN": "Web 控制器路由服务", "en-US": "WebControllerRouteService", "zh-TW": "Web 控制器路由服務" },
+  WebWorkflowService: { "zh-CN": "Web 工作流服务", "en-US": "WebWorkflowService", "zh-TW": "Web 工作流服務" },
+  WebWorkflowDownloadService: { "zh-CN": "Web 下载工作流服务", "en-US": "WebWorkflowDownloadService", "zh-TW": "Web 下載工作流服務" },
+  WebDirectoryService: { "zh-CN": "Web 目录服务", "en-US": "WebDirectoryService", "zh-TW": "Web 目錄服務" },
+  WebSearchService: { "zh-CN": "Web 搜索服务", "en-US": "WebSearchService", "zh-TW": "Web 搜尋服務" },
+  WebSocketRuntime: { "zh-CN": "WebSocket 运行时", "en-US": "WebSocketRuntime", "zh-TW": "WebSocket 執行階段" },
+  WebSocketBridge: { "zh-CN": "WebSocket 桥接器", "en-US": "WebSocketBridge", "zh-TW": "WebSocket 橋接器" },
+  WebSocketMessageDispatcher: { "zh-CN": "WebSocket 消息分发器", "en-US": "WebSocketMessageDispatcher", "zh-TW": "WebSocket 訊息分發器" },
+  WebSocketBootstrapper: { "zh-CN": "WebSocket 初始化器", "en-US": "WebSocketBootstrapper", "zh-TW": "WebSocket 初始化器" },
+  WebSocketSessionBinder: { "zh-CN": "WebSocket 会话绑定器", "en-US": "WebSocketSessionBinder", "zh-TW": "WebSocket 工作階段綁定器" },
+  ConnectionManager: { "zh-CN": "连接管理器", "en-US": "ConnectionManager", "zh-TW": "連線管理器" },
+  WindowChrome: { "zh-CN": "窗口标题栏", "en-US": "WindowChrome", "zh-TW": "視窗標題列" },
+  log_platforms: { "zh-CN": "日志平台元数据", "en-US": "log_platforms", "zh-TW": "日誌平台中繼資料" },
+  WebUI: { "zh-CN": "网页端", "en-US": "WebUI", "zh-TW": "網頁端" },
+  "网页端": { "zh-CN": "网页端", "en-US": "WebUI", "zh-TW": "網頁端" },
+  "網頁端": { "zh-CN": "网页端", "en-US": "WebUI", "zh-TW": "網頁端" },
+};
+
+function localizedStructuredLogSegment(part, language = currentLanguage()) {
+  const text = String(part ?? "");
+  const trimmed = text.trim();
+  const mapped = STRUCTURED_LOG_SEGMENT_ALIASES[trimmed];
+  if (mapped) {
+    const localized = mapped[language] || mapped["zh-CN"] || trimmed;
+    return trimmed === text ? localized : text.replace(trimmed, localized);
+  }
+  const translated = translateUiText(text);
+  if (translated !== text) return translated;
+  if (trimmed && trimmed !== text) {
+    const translatedTrimmed = translateUiText(trimmed);
+    if (translatedTrimmed !== trimmed) return text.replace(trimmed, translatedTrimmed);
+  }
+  return text;
+}
+
 function translateStructuredLogText(value) {
   const text = String(value ?? "");
   if (!text.trim()) return text;
+  const language = currentLanguage();
   return text
-    .split(/(\s+·\s+|\s+\/\s+)/)
-    .map(part => (/^\s*(?:·|\/)\s*$/.test(part) ? part : translateUiText(part)))
+    .split(/(\s+·\s+|\s+\/\s+|\s+路\s+)/)
+    .map(part => (/^\s*(?:·|\/|路)\s*$/.test(part) ? part : localizedStructuredLogSegment(part, language)))
     .join("");
 }
 
@@ -1448,6 +1564,9 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "下载任务已加入执行队列", en: "Download task has been queued for execution", tw: "下載任務已加入執行隊列" },
   { zh: "下载任务开始执行", en: "Download task started", tw: "下載任務開始執行" },
   { zh: "下载任务完成", en: "Download task completed", tw: "下載任務完成" },
+  { zh: "下载任务失败", en: "Download task failed", tw: "下載任務失敗" },
+  { zh: "UI 回调失败", en: "ui callback failed", tw: "UI 回調失敗" },
+  { zh: "回调失败", en: "callback failed", tw: "回調失敗" },
   { zh: "下载任务被用户停止", en: "Download task stopped by user", tw: "下載任務被使用者停止" },
   { zh: "下载完成后已按文件签名修正扩展名", en: "Fixed extension after download by file signature", tw: "下載完成後已依檔案簽章修正副檔名" },
   { zh: "分块下载不可用，回退到后续下载策略", en: "Chunked download unavailable; falling back to later download strategy", tw: "分塊下載不可用，回退到後續策略" },
@@ -1457,7 +1576,10 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "抖音爬虫任务结束", en: "Douyin crawl task finished", tw: "抖音爬蟲任務結束" },
   { zh: "抖音爬虫运行异常", en: "Douyin crawl runtime error", tw: "抖音爬蟲執行異常" },
   { zh: "进入抖音任务提交阶段", en: "Entered Douyin task submit stage", tw: "進入抖音任務提交階段" },
-  { zh: "Douyin 参数初始化完成", en: "Douyin parameters initialized", tw: "Douyin 參數初始化完成" },
+  { zh: "Douyin 参数初始化完成", en: "Douyin parameters initialized", tw: "Douyin 參數初始化完成", aliases: ["Douyin参数初始化完成"] },
+  { zh: "正在更新抖音参数，请稍等...", en: "Updating Douyin parameters, please wait...", tw: "正在更新抖音參數，請稍候..." },
+  { zh: "配置文件 cookie 参数未登录，数据获取已提前结束", en: "Config cookie is not logged in; data fetching ended early", tw: "設定檔 cookie 參數未登入，資料取得已提前結束" },
+  { zh: "配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用", en: "Config cookie is not set; Douyin features may not work properly", tw: "設定檔 cookie 參數未設定，抖音平台功能可能無法正常使用" },
   { zh: "抖音作品详情返回", en: "Douyin work detail returned", tw: "抖音作品詳情返回" },
   { zh: "抖音用户作品分页返回", en: "Douyin user works page returned", tw: "抖音使用者作品分頁返回" },
   { zh: "抖音合集分页返回", en: "Douyin collection page returned", tw: "抖音合集分頁返回" },
@@ -1521,6 +1643,8 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "MissAV 浏览器 HLS 在缓存播放列表后失败，已跳过可能再次触发 403 的网络播放列表回退", en: "MissAV browser HLS failed after cached playlist; skipping network playlist fallback that would re-hit 403", tw: "MissAV 瀏覽器 HLS 在快取播放清單後失敗，已略過可能再次觸發 403 的網路播放清單回退" },
   { zh: "MissAV 浏览器 HLS 失败，跳过 N_m3u8DL-RE 前尝试 yt-dlp", en: "MissAV browser HLS failed; trying yt-dlp before skipping N_m3u8DL-RE", tw: "MissAV 瀏覽器 HLS 失敗，略過 N_m3u8DL-RE 前嘗試 yt-dlp" },
   { zh: "N_m3u8DL-RE 失败，正在尝试 yt-dlp 模拟回退", en: "N_m3u8DL-RE failed; trying yt-dlp impersonation fallback", tw: "N_m3u8DL-RE 失敗，正在嘗試 yt-dlp 模擬回退" },
+  { zh: "Web 事件循环不可用，已延后前端增量刷新", en: "Web event loop is unavailable; deferred frontend delta until a later async flush.", tw: "Web 事件迴圈不可用，已延後前端增量刷新" },
+  { zh: "没有可用事件循环，已跳过前端增量刷新", en: "Skipped frontend delta flush because no running event loop is available.", tw: "沒有可用事件迴圈，已略過前端增量刷新" },
   { zh: "默认打开方式已生效", en: "Default open mode is active", tw: "預設開啟方式已生效" },
   { zh: "未选择需要注册的资源类型", en: "No resource type selected for registration", tw: "未選擇需要註冊的資源類型" },
   { zh: "文件关联注册未完成", en: "File association registration was not completed", tw: "檔案關聯註冊未完成" },
@@ -1820,7 +1944,7 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "下载已暂停", en: "download paused", tw: "下載已暫停" },
   { zh: "Web 端启动爬虫任务", en: "Web started crawl task", tw: "Web 端啟動爬蟲任務" },
   { zh: "Web 端发现可下载资源", en: "Web found downloadable resources", tw: "Web 端發現可下載資源" },
-  { zh: "_on_spider_finished 被调用", en: "_on_spider_finished was called", tw: "_on_spider_finished 被呼叫" },
+  { zh: "爬虫完成回调已调用", en: "_on_spider_finished was called", tw: "爬蟲完成回呼已呼叫", aliases: ["_on_spider_finished 被调用"] },
   { zh: "CLI 发现可下载资源", en: "CLI found downloadable resources", tw: "CLI 發現可下載資源" },
   { zh: "CLI 启动爬虫任务", en: "CLI started crawl task", tw: "CLI 啟動爬蟲任務" },
   { zh: "CLI 下载任务失败", en: "CLI download task failed", tw: "CLI 下載任務失敗" },
@@ -1841,7 +1965,8 @@ function applyRuntimePhraseTranslations(text, language) {
   const replacements = [];
   for (const entry of RUNTIME_LOG_PHRASE_TRANSLATIONS) {
     const target = language === "en-US" ? entry.en : language === "zh-TW" ? (entry.tw || entry.zh) : entry.zh;
-    for (const source of [entry.zh, entry.en, entry.tw]) {
+    const sources = [entry.zh, entry.en, entry.tw].concat(Array.isArray(entry.aliases) ? entry.aliases : []);
+    for (const source of sources) {
       if (source && source !== target) replacements.push([source, target]);
     }
   }
@@ -2531,6 +2656,12 @@ function buildLogQueryRequest(items, sequence) {
 }
 
 function queryLogsSync(items, sequence) {
+  return queryLogsSyncRequest(buildLogQueryRequest(items, sequence));
+}
+
+function queryLogsSyncRequest(request) {
+  const items = Array.isArray(request && request.items) ? request.items : [];
+  const sequence = request && request.sequence;
   if (
     !window.UcpLogDisplay ||
     typeof window.UcpLogDisplay.queryLogItems !== "function" ||
@@ -2549,7 +2680,7 @@ function queryLogsSync(items, sequence) {
       selectedId: "",
     };
   }
-  return window.UcpLogDisplay.queryLogItems(buildLogQueryRequest(items, sequence));
+  return window.UcpLogDisplay.queryLogItems(request);
 }
 
 function ensureLogQueryWorker() {
@@ -2594,6 +2725,16 @@ function receiveLogQueryResult(result) {
   if (currentPage === "logs") renderLogQueryResult(result);
 }
 
+function scheduleLogQueryFallback(items, sequence) {
+  clearLogQueryFallback();
+  const request = buildLogQueryRequest(Array.isArray(items) ? items.slice() : [], sequence);
+  logQueryFallbackTimer = setTimeout(() => {
+    logQueryFallbackTimer = null;
+    if (Number(sequence) !== logQuerySequence) return;
+    receiveLogQueryResult(queryLogsSyncRequest(request));
+  }, 0);
+}
+
 function submitLogQuery(items, signature) {
   const sequence = ++logQuerySequence;
   logQueryState = {
@@ -2603,9 +2744,10 @@ function submitLogQuery(items, signature) {
   };
   const worker = ensureLogQueryWorker();
   if (!worker) {
-    receiveLogQueryResult(queryLogsSync(items, sequence));
+    scheduleLogQueryFallback(items, sequence);
     return;
   }
+  clearLogQueryFallback();
   worker.postMessage(buildLogQueryRequest(items, sequence));
 }
 

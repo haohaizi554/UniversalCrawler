@@ -102,14 +102,16 @@
     return escapeHtml(String(value ?? "")).replace(/([\\/])/g, "$1<wbr>");
   }
 
+  const LONG_TEXT_KEYS = new Set(["\u6807\u9898", "\u6587\u4ef6\u540d", "\u8f93\u51fa\u6587\u4ef6\u540d"]);
+
   function kvHtml(pairs, wrapKeys = new Set()) {
-    const implicitWrapKeys = new Set(["\u6587\u4ef6\u540d", "\u4fdd\u5b58\u8def\u5f84", "\u4fdd\u5b58\u76ee\u5f55", "\u8f93\u51fa\u6587\u4ef6\u540d", "\u6765\u6e90\u94fe\u63a5"]);
+    const implicitWrapKeys = new Set(["\u6807\u9898", "\u6587\u4ef6\u540d", "\u4fdd\u5b58\u8def\u5f84", "\u4fdd\u5b58\u76ee\u5f55", "\u8f93\u51fa\u6587\u4ef6\u540d", "\u6765\u6e90\u94fe\u63a5"]);
     return `<div class="kv">${pairs.map(([key, value]) => {
       const keyText = String(key);
       const shouldWrap = wrapKeys.has(keyText) || implicitWrapKeys.has(keyText);
-      const valueClass = shouldWrap ? "kv-value smart-wrap" : "kv-value";
+      const valueClass = ["kv-value", shouldWrap ? "smart-wrap" : "", LONG_TEXT_KEYS.has(keyText) ? "long-text" : ""].filter(Boolean).join(" ");
       const valueHtml = shouldWrap ? smartWrapText(value) : escapeHtml(String(value ?? ""));
-      return `<span>${escapeHtml(translate(keyText))}</span><span class="${valueClass}">${valueHtml}</span>`;
+      return `<span>${escapeHtml(translate(keyText))}</span><span class="${valueClass}" title="${escapeAttr(String(value ?? ""))}">${valueHtml}</span>`;
     }).join("")}</div>`;
   }
 

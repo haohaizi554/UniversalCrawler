@@ -232,7 +232,7 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
         self.assertIn("tests/test_cli_entry.py", self.registry.get_resolved_files("rule_suite"))
 
     def test_register_test_files_appends_to_existing_category(self):
-        cat = self.registry.register_category(
+        self.registry.register_category(
             id="manual_suite",
             name="手工套件",
             description="测试追加接口",

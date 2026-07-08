@@ -94,6 +94,14 @@ class TaskRuntimeCancelTests(unittest.TestCase):
         self.assertTrue(thread.interruption_requested)
         self.assertFalse(thread.force_terminated)
 
+    def test_cancel_token_wait_cancelled_reports_event_state(self):
+        token = TaskCancelToken()
+
+        self.assertFalse(token.wait_cancelled(0))
+        token.cancel()
+
+        self.assertTrue(token.wait_cancelled(0))
+
     def test_short_task_cancel_stops_before_run_body(self):
         runner = ShortTaskRunner(max_thread_count=1)
         started = threading.Event()

@@ -34,6 +34,7 @@ dependencies = [
     "curl-cffi>=0.10.0",
     "pycryptodome>=3.20.0",
     "playwright>=1.30.0",
+    "rich>=14.1.0",
     "loguru>=0.7.0",
     "cachetools>=5.3.0",
     "diskcache>=5.6.3",

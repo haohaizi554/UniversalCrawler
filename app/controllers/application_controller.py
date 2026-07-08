@@ -61,8 +61,8 @@ class ApplicationController(
     DOWNLOAD_LOG_COMPONENT = "ApplicationController"
     DOWNLOAD_FINISHED_STATUS_CODE = "APP_DL_FINISH"
     DOWNLOAD_ERROR_STATUS_CODE = "APP_DL_ERROR"
-    DOWNLOAD_FINISHED_MESSAGE = "涓嬭浇浠诲姟瀹屾垚"
-    DOWNLOAD_ERROR_MESSAGE = "涓嬭浇浠诲姟澶辫触"
+    DOWNLOAD_FINISHED_MESSAGE = "下载任务完成"
+    DOWNLOAD_ERROR_MESSAGE = "下载任务失败"
     MEDIA_DELETE_COORDINATION_DELAY_SEC = 0.18
     MEDIA_RELEASE_POLL_INTERVAL_MS = 200
 
@@ -223,7 +223,7 @@ class ApplicationController(
         debug_logger.log(
             component="ApplicationController",
             action="app_init",
-            message="搴旂敤寮€濮嬪垵濮嬪寲",
+            message="应用开始初始化",
             status_code="APP_INIT",
             details={"project_root": str(self.project_root)},
         )
@@ -334,7 +334,7 @@ class ApplicationController(
         debug_logger.log(
             component="ApplicationController",
             action="app_ready",
-            message="涓荤獥鍙ｅ垵濮嬪寲瀹屾垚",
+            message="主窗口初始化完成",
             status_code="APP_READY",
             details={"save_dir": self._host().current_save_dir},
         )
@@ -347,8 +347,6 @@ class ApplicationController(
         self.window.sig_delete_video.connect(self.on_delete_video)
         if hasattr(self.window, "sig_clear_queue"):
             self.window.sig_clear_queue.connect(self.on_clear_queue)
-        self.window.sig_open_latest_log.connect(self.open_latest_log)
-        self.window.sig_open_error_summary.connect(self.open_latest_error_summary)
         self.window.sig_copy_trace_id.connect(self.copy_trace_id_for_video)
         self.window.bind_video_rename(self.on_rename_video)
         if hasattr(self.window, "sig_switch_preview"):

@@ -1246,6 +1246,16 @@ tr.selected:hover td {
 
 #page-completed .completed-info-card .kv-value.smart-wrap {
   line-height: 1.22;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#page-completed .completed-info-card .kv-value.long-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  max-height: calc(1.22em * 5);
+  overflow: hidden;
 }
 
 #page-failed th:nth-child(2), #page-failed td:nth-child(2) { width: 112px; }
@@ -1630,6 +1640,16 @@ tr.selected:hover td {
 
 #activeDetail .active-detail-fields .kv-value.smart-wrap {
   line-height: 1.18;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#activeDetail .active-detail-fields .kv-value.long-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  max-height: calc(1.18em * 4);
+  overflow: hidden;
 }
 
 .active-detail-metrics {

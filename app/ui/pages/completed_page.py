@@ -21,7 +21,7 @@ from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
-from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
 from app.ui.viewmodels.snapshot_table_model import PENDING_METADATA_EMPTY_VALUES, PENDING_METADATA_LABEL
 
 class CompletedPage(PageFrame):
@@ -33,7 +33,6 @@ class CompletedPage(PageFrame):
     metadata_detected = pyqtSignal(str, dict)
 
     PAGE_SIZE_OPTIONS = (20, 50, 100)
-    ASYNC_ITEM_THRESHOLD = 200
 
     def __init__(self, style_provider) -> None:
         super().__init__("", use_island=False)
@@ -261,7 +260,12 @@ class CompletedPage(PageFrame):
             key_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
 
             if index in {0, 1}:
-                value_label = SmartWrapLabel(value, panel, compact=True)
+                value_label = SmartWrapLabel(
+                    value,
+                    panel,
+                    compact=True,
+                    max_lines=5 if index == 0 else 2,
+                )
                 value_label.setObjectName("CompletedInfoSmartWrapLabel")
                 value_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
                 value_label.setMinimumWidth(0)
@@ -336,9 +340,6 @@ class CompletedPage(PageFrame):
             selected_id=selected_id,
             selected_id_moves_page=selected_id_moves_page,
         )
-        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
-            self._apply_page_result(build_list_page_result(request))
-            return
         worker = self._page_worker
         if worker is None:
             worker = ListPageWorker(self._page_result_ready.emit)
@@ -423,7 +424,7 @@ class CompletedPage(PageFrame):
         title_width = bounded(
             0,
             [row.get("title", "") for row in rows],
-            minimum=168,
+            minimum=190,
             maximum=720,
             padding=32,
         )

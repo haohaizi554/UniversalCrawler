@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from types import SimpleNamespace
 
 from PyQt6.QtCore import QCoreApplication, QObject, Qt, QThread, pyqtSignal
@@ -289,12 +288,12 @@ class MediaHostControllerMixin:
     @staticmethod
     def _sleep_before_delete(delay_sec: float, cancel_token) -> bool:
         remaining = max(0.0, float(delay_sec or 0.0))
-        deadline = time.monotonic() + remaining
-        while remaining > 0:
-            if cancel_token.is_cancelled():
-                return False
-            time.sleep(min(0.02, remaining))
-            remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return not cancel_token.is_cancelled()
+        wait_cancelled = getattr(cancel_token, "wait_cancelled", None)
+        if callable(wait_cancelled):
+            return not bool(wait_cancelled(remaining))
+        threading.Event().wait(remaining)
         return not cancel_token.is_cancelled()
 
     def _delete_video_context_sync(self, context):

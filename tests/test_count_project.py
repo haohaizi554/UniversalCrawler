@@ -1,0 +1,115 @@
+"""Tests for count_project console table formatting."""
+
+from rich import box
+
+from count_project import (
+    _build_table,
+    build_language_chart_rows,
+    build_largest_chart_rows,
+    parse_args,
+    save_report_html,
+)
+
+
+def test_build_table_uses_rich_table_when_available():
+    table = _build_table(
+        "Summary",
+        [("Scope", "left"), ("Files", "right")],
+        [["All code", 517]],
+    )
+
+    assert table.title == "Summary"
+    assert table.box == box.SIMPLE_HEAD
+    assert table.show_edge is False
+    assert table.safe_box is True
+    assert len(table.columns) == 2
+    assert table.row_count == 1
+    assert table.columns[0].header == "Scope"
+
+
+def test_save_report_html_writes_escaped_report(tmp_path):
+    result = {
+        "root": "D:/demo/<project>",
+        "total_dirs": 1,
+        "total_files": 2,
+        "code_files": 1,
+        "totals": {
+            "all": {"files": 2, "total": 15, "blank": 1, "comment": 4, "code": 10},
+            "prod": {"files": 1, "total": 10, "blank": 1, "comment": 2, "code": 7},
+            "test": {"files": 1, "total": 5, "blank": 0, "comment": 2, "code": 3},
+        },
+        "by_language": {
+            "all": {
+                "Python": {"files": 1, "total": 10, "blank": 1, "comment": 2, "code": 7},
+                "JavaScript": {"files": 1, "total": 5, "blank": 0, "comment": 2, "code": 3},
+            },
+            "prod": {"Python": {"files": 1, "total": 10, "blank": 1, "comment": 2, "code": 7}},
+            "test": {"JavaScript": {"files": 1, "total": 5, "blank": 0, "comment": 2, "code": 3}},
+        },
+        "largest_files": [
+            {"total": 10, "code": 7, "is_test": False, "path": "app/<main>.py"},
+            {"total": 5, "code": 3, "is_test": True, "path": "tests/<main>_test.py"},
+        ],
+    }
+
+    output_path = save_report_html(result, tmp_path / "nested" / "report.html")
+
+    assert output_path.is_absolute()
+    assert output_path.exists()
+    html = output_path.read_text(encoding="utf-8")
+    assert "<title>项目代码量统计报告</title>" in html
+    assert 'class="hero"' in html
+    assert 'class="hero-stat-label">Effective LOC</div>' in html
+    assert "代码文件数" in html
+    assert "测试代码行数" in html
+    assert 'class="dashboard-grid"' in html
+    assert 'class="donut"' in html
+    assert "语言分布 Top 8" in html
+    assert "最大文件 Top 10" in html
+    assert 'class="insights"' in html
+    assert "D:/demo/&lt;project&gt;" in html
+    assert "app/&lt;main&gt;.py" in html
+    assert "tests/&lt;main&gt;_test.py" in html
+    assert '<span class="badge badge-prod">PROD</span>' in html
+    assert '<span class="badge badge-test">TEST</span>' in html
+    assert 'class="text path"' in html
+
+
+def test_parse_args_generates_html_by_default(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["count_project.py"])
+
+    args = parse_args()
+
+    assert args.html == "code_report.html"
+
+
+def test_chart_rows_compute_widths_and_names():
+    result = {
+        "totals": {
+            "all": {"files": 3, "total": 30, "blank": 0, "comment": 0, "code": 30},
+            "prod": {"files": 2, "total": 20, "blank": 0, "comment": 0, "code": 20},
+            "test": {"files": 1, "total": 10, "blank": 0, "comment": 0, "code": 10},
+        },
+        "by_language": {
+            "all": {
+                "Python": {"files": 1, "total": 20, "blank": 0, "comment": 0, "code": 20},
+                "Shell": {"files": 1, "total": 1, "blank": 0, "comment": 0, "code": 1},
+            },
+            "prod": {},
+            "test": {},
+        },
+        "largest_files": [
+            {"total": 100, "code": 80, "is_test": False, "path": "app\\main.py"},
+            {"total": 25, "code": 20, "is_test": True, "path": "tests\\main_test.py"},
+        ],
+    }
+
+    language_rows = build_language_chart_rows(result)
+    largest_rows = build_largest_chart_rows(result)
+
+    assert language_rows[0]["lang"] == "Python"
+    assert language_rows[0]["width"] == 100
+    assert language_rows[1]["width"] >= 3
+    assert largest_rows[0]["name"] == "main.py"
+    assert largest_rows[0]["width"] == 100
+    assert largest_rows[1]["type"] == "TEST"

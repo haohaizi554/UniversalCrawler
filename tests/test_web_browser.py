@@ -845,6 +845,10 @@ class StaticAssetsTests(unittest.TestCase):
             "function syncLogEmptyState",
             1,
         )[0]
+        submit_log_query_block = content.split("function submitLogQuery", 1)[1].split(
+            "function renderLogs",
+            1,
+        )[0]
 
         self.assertIn("const LOG_RENDER_ROW_BUDGET = 300;", content)
         self.assertNotIn("LOG_QUERY_WORKER_THRESHOLD", content)
@@ -852,7 +856,13 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertNotIn("renderLogs();", render_all_block)
         self.assertIn("submitLogQuery(allItems, signature);", render_logs_block)
         self.assertNotIn("queryLogsSync(allItems, sequence);", render_logs_block)
-        self.assertIn("receiveLogQueryResult(queryLogsSync(items, sequence));", content)
+        self.assertIn("function scheduleLogQueryFallback(items, sequence)", content)
+        self.assertIn("function queryLogsSyncRequest(request)", content)
+        self.assertIn("const request = buildLogQueryRequest(Array.isArray(items) ? items.slice() : [], sequence);", content)
+        self.assertIn("scheduleLogQueryFallback(items, sequence);", content)
+        self.assertIn("if (Number(sequence) !== logQuerySequence) return;", content)
+        self.assertIn("receiveLogQueryResult(queryLogsSyncRequest(request));", content)
+        self.assertNotIn("receiveLogQueryResult(queryLogsSync(items, sequence));", submit_log_query_block)
         self.assertIn('new Worker("/static/log_query_worker.js?v=20260707-log-worker")', content)
         self.assertIn("const items = Array.isArray(result.pageItems)", query_result_block)
         self.assertIn('patchTableRows("logBody", items', query_result_block)
@@ -2043,7 +2053,22 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("Xiaohongshu crawl task finished"),
                 translateRuntimeLogText("Switched to light theme"),
                 translateRuntimeLogText("ℹ️ No videos or images found in this directory"),
-                translateRuntimeLogText("Found 3 matching users")
+                translateRuntimeLogText("Found 3 matching users"),
+                translateRuntimeLogText("System · BaseDownloader"),
+                translateRuntimeLogText("System · WebSocketRuntime"),
+                translateRuntimeLogText("System · WebSocketBridge"),
+                translateRuntimeLogText("System · FrontendLogCache"),
+                translateRuntimeLogText("System · FailedRecordStore"),
+                translateRuntimeLogText("System · BiliAPI"),
+                translateRuntimeLogText("Xiaohongshu · XiaohongshuDownloader"),
+                translateRuntimeLogText("Xiaohongshu · XiaohongshuSpider"),
+                translateRuntimeLogText("Xiaohongshu · XiaoHongShuSpider"),
+                translateRuntimeLogText("Xiaohongshu · XiaohongshuClient"),
+                translateRuntimeLogText("ui callback failed"),
+                translateRuntimeLogText("callback failed"),
+                translateRuntimeLogText("_on_spider_finished 被调用"),
+                translateRuntimeLogText("Web event loop is unavailable; deferred frontend delta until a later async flush."),
+                translateRuntimeLogText("Skipped frontend delta flush because no running event loop is available.")
               ];
               document.documentElement.dataset.language = "zh-TW";
               const tw = [
@@ -2072,7 +2097,8 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("已切换到浅色主题"),
                 translateRuntimeLogText("已切换到深色主题"),
                 translateRuntimeLogText("ℹ️ 该目录下没有找到视频或图片"),
-                translateRuntimeLogText("找到 3 个匹配用户")
+                translateRuntimeLogText("找到 3 个匹配用户"),
+                translateRuntimeLogText("爬虫完成回调已调用")
               ];
               return { cn, tw, en };
             }
@@ -2097,6 +2123,21 @@ class WebUIBrowserTests(unittest.TestCase):
                 "已切换到浅色主题",
                 "ℹ️ 该目录下没有找到视频或图片",
                 "找到 3 个匹配用户",
+                "系统 · 基础下载器",
+                "系统 · WebSocket 运行时",
+                "系统 · WebSocket 桥接器",
+                "系统 · 前端日志缓存",
+                "系统 · 失败记录存储",
+                "系统 · Bilibili 接口",
+                "小红书 · 小红书下载器",
+                "小红书 · 小红书爬虫",
+                "小红书 · 小红书爬虫",
+                "小红书 · 小红书客户端",
+                "UI 回调失败",
+                "回调失败",
+                "爬虫完成回调已调用",
+                "Web 事件循环不可用，已延后前端增量刷新",
+                "没有可用事件循环，已跳过前端增量刷新",
             ],
         )
         self.assertEqual(
@@ -2130,6 +2171,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 "Switched to dark theme",
                 "ℹ️ No videos or images found in this directory",
                 "Found 3 matching users",
+                "_on_spider_finished was called",
             ],
         )
 

@@ -47,7 +47,7 @@ class SettingsBuildersTests(unittest.TestCase):
 
     def test_page_limit_widget_falls_back_to_recommended_count_for_stale_video_value(self):
         widget = PageLimitSettingsWidget(
-            label_text="瑙嗛鏁?",
+            label_text="视频数",
             max_pages=9999,
             default_pages=100,
             tooltip="demo",

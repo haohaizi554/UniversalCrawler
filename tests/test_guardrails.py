@@ -340,6 +340,21 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
+    def test_gui_and_controller_hot_paths_do_not_use_time_sleep(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        offenders: list[str] = []
+        roots = [
+            project_root / "app" / "ui",
+            project_root / "app" / "controllers",
+        ]
+        for root in roots:
+            for path in root.rglob("*.py"):
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                if "time.sleep(" in text:
+                    offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
     def test_browser_e2e_does_not_use_legacy_fixed_3_5_second_waits(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         forbidden = ("time.sleep(3.5", "wait_for_timeout(3500", "sleep(3500")
@@ -480,6 +495,13 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("sig_open_latest_log.emit", handler)
         self.assertNotIn("sig_open_error_summary.emit", handler)
 
+        controller_text = (project_root / "app" / "controllers" / "application_controller.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        self.assertNotIn("sig_open_latest_log.connect", controller_text)
+        self.assertNotIn("sig_open_error_summary.connect", controller_text)
+
     def test_qtablewidget_hot_paths_do_not_clear_and_rebuild_rows(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         offenders: list[str] = []
@@ -539,7 +561,8 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8", errors="ignore")
             with self.subTest(path=path.name):
                 self.assertIn("ListPageWorker", text)
-                self.assertIn("build_list_page_result", text)
+                self.assertNotIn("build_list_page_result", text)
+                self.assertNotIn("ASYNC_ITEM_THRESHOLD", text)
                 self.assertIn("Qt.ConnectionType.QueuedConnection", text)
                 for needle in forbidden:
                     self.assertNotIn(needle, text)
@@ -683,6 +706,43 @@ class UIAsyncGuardrailTests(unittest.TestCase):
                     block = block.split(end, 1)[0]
                 self.assertNotIn(".handle_action(", block)
                 self.assertIn("_submit_frontend_action(", block)
+
+    def test_file_association_registration_stays_on_frontend_action_worker(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        main_window_text = (project_root / "app" / "ui" / "main_window.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        controller_text = (project_root / "app" / "controllers" / "application_controller.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        click_block = main_window_text.split("def on_btn_file_association_clicked", 1)[1].split(
+            "def show_file_association_dialog",
+            1,
+        )[0]
+
+        self.assertIn("_register_file_associations_from_frontend(", click_block)
+        self.assertNotIn("sig_register_file_associations.emit", click_block)
+        self.assertNotIn("WindowsFileAssociationService", controller_text)
+        self.assertNotIn("def on_register_file_associations", controller_text)
+        self.assertNotIn("def _current_executable_path", controller_text)
+        self.assertNotIn("sig_register_file_associations.connect", controller_text)
+        self.assertNotIn("register_current_user(", controller_text)
+
+    def test_update_check_request_uses_shared_latest_worker(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "main_window.py").read_text(encoding="utf-8", errors="ignore")
+        request_block = text.split("def _on_update_check_requested", 1)[1].split(
+            "def _try_begin_update_check",
+            1,
+        )[0]
+
+        self.assertIn("LatestRequestWorker", text)
+        self.assertIn("_update_check_worker", request_block)
+        self.assertIn("worker.submit(", request_block)
+        self.assertNotIn("threading.Thread", request_block)
+        self.assertNotIn(".start()", request_block)
 
     def test_main_window_completed_metadata_update_uses_worker_action(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

@@ -7,8 +7,58 @@ from typing import Any
 from app.debug_logger import debug_logger
 from app.models import VideoItem
 
+
 class DouyinItemParser:
     """抖音数据解析器。"""
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _last_video_url(cls, urls: Any) -> str:
+        if isinstance(urls, str):
+            return "" if ".mp3" in urls.lower() else urls
+        if not isinstance(urls, (list, tuple)):
+            return ""
+        for url in reversed(urls):
+            if isinstance(url, str) and url and ".mp3" not in url.lower():
+                return url
+        return ""
+
+    @classmethod
+    def _select_video_url(cls, video: Any) -> str:
+        if not isinstance(video, dict):
+            return ""
+
+        candidates: list[tuple[int, int, int, int, str]] = []
+        for item in video.get("bit_rate") or []:
+            if not isinstance(item, dict):
+                continue
+            play_addr = item.get("play_addr") or {}
+            if not isinstance(play_addr, dict):
+                continue
+            url = cls._last_video_url(play_addr.get("url_list"))
+            if not url:
+                continue
+            height = cls._safe_int(play_addr.get("height"))
+            width = cls._safe_int(play_addr.get("width"))
+            fps = cls._safe_int(item.get("FPS", item.get("fps")))
+            bitrate = cls._safe_int(item.get("bit_rate"))
+            data_size = cls._safe_int(play_addr.get("data_size"))
+            candidates.append((max(height, width), fps, bitrate, data_size, url))
+
+        if candidates:
+            candidates.sort(key=lambda candidate: candidate[:4])
+            return candidates[-1][-1]
+
+        play_addr = video.get("play_addr") or {}
+        if isinstance(play_addr, dict):
+            return cls._last_video_url(play_addr.get("url_list"))
+        return ""
 
     def parse_aweme(self, data: dict[str, Any]) -> VideoItem | None:
         """解析 `aweme` 对应的输入数据并返回结构化结果，供 `DouyinItemParser` 使用。"""
@@ -21,10 +71,7 @@ class DouyinItemParser:
 
             video_url = ""
             video = data.get("video", {})
-            play_addr = video.get("play_addr", {})
-            url_list = play_addr.get("url_list", [])
-            if url_list:
-                video_url = url_list[-1]
+            video_url = self._select_video_url(video)
 
             is_real_video = bool(video_url and ".mp3" not in video_url.lower())
 

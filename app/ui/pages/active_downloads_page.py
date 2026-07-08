@@ -32,7 +32,7 @@ from app.ui.components.combo_popup import ThemedComboBox
 from app.ui.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
-from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker, build_list_page_result
+from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
 from app.ui.styles.table_rows import (
     install_click_only_row_selection,
     install_stable_vertical_scrollbar,
@@ -676,7 +676,6 @@ class ActiveDownloadsPage(PageFrame):
 
     delete_requested = pyqtSignal(str)
     options_changed = pyqtSignal(dict)
-    ASYNC_ITEM_THRESHOLD = 40
 
     def __init__(self) -> None:
         super().__init__("", use_island=False)
@@ -952,9 +951,6 @@ class ActiveDownloadsPage(PageFrame):
             paginate=False,
             select_first=True,
         )
-        if len(source_items) <= self.ASYNC_ITEM_THRESHOLD:
-            self._apply_items_result(build_list_page_result(request))
-            return
         worker = self._items_worker
         if worker is None:
             worker = ListPageWorker(self._items_result_ready.emit)
@@ -1172,7 +1168,7 @@ class ActiveDownloadsPage(PageFrame):
         label_widget.setContentsMargins(0, 0, 0, 0)
         label_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if label in {TEXT["title"], TEXT["save_dir"], TEXT["output_filename"], TEXT["source_url"]}:
-            value_label = SmartWrapLabel(value)
+            value_label = SmartWrapLabel(value, max_lines=self._detail_value_max_lines(label))
             value_label.setObjectName("LinkValueLabel" if label == TEXT["source_url"] else "SmartWrapLabel")
         else:
             value_label = QLabel(str(value))
@@ -1185,6 +1181,16 @@ class ActiveDownloadsPage(PageFrame):
         body_layout.addWidget(label_widget, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         body_layout.addWidget(value_label, row, 1)
         self._detail_value_labels[label] = value_label
+
+    @staticmethod
+    def _detail_value_max_lines(label: str) -> int:
+        if label == TEXT["title"]:
+            return 4
+        if label == TEXT["output_filename"]:
+            return 3
+        if label in {TEXT["save_dir"], TEXT["source_url"]}:
+            return 2
+        return 4
 
     def _add_chunk_row(self, body_layout: QVBoxLayout, label: str, value: str) -> None:
         row = QWidget()

@@ -741,6 +741,29 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "task-ua")
         self.assertEqual(mocked_download.call_args.kwargs["headers"]["Referer"], "https://www.douyin.com/user/demo")
 
+    @patch.object(DouyinDownloader, "_download_with_strategy_fallback")
+    def test_douyin_downloader_adds_viewport_cookie_for_media_downloads(self, mocked_download):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        DouyinDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        cookie = mocked_download.call_args.kwargs["headers"]["Cookie"]
+        self.assertIn("dy_swidth=1536", cookie)
+        self.assertIn("dy_sheight=864", cookie)
+
+    @patch.object(DouyinDownloader, "_download_with_strategy_fallback")
+    def test_douyin_downloader_preserves_task_cookie_when_adding_viewport_cookie(self, mocked_download):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        item.meta["cookie"] = "sessionid_ss=abc; dy_swidth=999"
+
+        DouyinDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        cookie = mocked_download.call_args.kwargs["headers"]["Cookie"]
+        self.assertIn("sessionid_ss=abc", cookie)
+        self.assertIn("dy_swidth=999", cookie)
+        self.assertNotIn("dy_swidth=1536", cookie)
+        self.assertIn("dy_sheight=864", cookie)
+
     @patch.object(DouyinDownloader, "_download_file")
     def test_douyin_gallery_download_uses_live_and_image_extensions(self, mocked_download_file):
         """验证 `test_douyin_gallery_download_uses_live_and_image_extensions` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -2320,6 +2343,15 @@ https://cdn.example.com/seg2.ts
             filename = worker._generate_filename(".mp4")
 
         self.assertEqual(filename, "bilibili_Demo Title_7.mp4")
+
+    def test_download_worker_generate_filename_removes_windows_control_characters(self):
+        item = VideoItem(url="https://example.com/video.mp4", title="第一行\n第二行\t标题", source="douyin")
+        worker = DownloadWorker(item, "downloads")
+
+        with patch("app.config.cfg.get", return_value="current"):
+            filename = worker._generate_filename(".mp4")
+
+        self.assertEqual(filename, "第一行_第二行_标题.mp4")
 
     def test_download_worker_remembers_output_path_for_frontend_stages(self):
         item = VideoItem(url="https://example.com/video.mp4", title="Demo Title", source="bilibili")

@@ -12,6 +12,11 @@ class FilenameUtilsTests(unittest.TestCase):
 
         self.assertEqual(result, "bad__name__.mp4")
 
+    def test_sanitize_filename_replaces_control_characters(self):
+        result = sanitize_filename("line1\nline2\tclip.mp4")
+
+        self.assertEqual(result, "line1_line2_clip.mp4")
+
     def test_sanitize_filename_truncates_overlong_names(self):
         """验证 `test_sanitize_filename_truncates_overlong_names` 对应场景是否符合预期，供 `FilenameUtilsTests` 使用。"""
         result = sanitize_filename("a" * 260)

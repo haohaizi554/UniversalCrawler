@@ -534,6 +534,7 @@ def _bootstrap_registry() -> None:
         description="业务核心、下载器、文件服务、配置和基础设施测试。",
         include=[
             "tests/test_config_*.py",
+            "tests/test_count_project.py",
             "tests/test_debug_logger.py",
             "tests/test_plugin_*.py",
             "tests/test_runtime_paths.py",
@@ -566,6 +567,7 @@ def _bootstrap_registry() -> None:
             "tests/test_request_workers.py",
             "tests/test_ws_transport_*.py",
             "tests/test_guardrails.py",
+            "tests/test_mojibake_guard.py",
             "tests/test_event_bus_extended.py",
             "tests/test_proxy_manager.py",
         ],

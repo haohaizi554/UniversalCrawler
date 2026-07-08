@@ -133,6 +133,27 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         self.assertIn(expected_text, logs.detail_status_code_value.text())
 
+    def _wait_until(self, predicate, *, message: str = "condition was not met") -> None:
+        for _ in range(250):
+            self.app.processEvents()
+            if predicate():
+                return
+            QTest.qWait(20)
+        self.app.processEvents()
+        self.assertTrue(predicate(), message)
+
+    def _wait_for_table_rows(self, table: QTableView, expected_rows: int) -> None:
+        self._wait_until(
+            lambda: table.model().rowCount() == expected_rows,
+            message=f"expected {expected_rows} table rows, got {table.model().rowCount()}",
+        )
+
+    def _wait_for_active_detail_key(self, active, key: str) -> None:
+        self._wait_until(
+            lambda: key in active._detail_value_labels,
+            message=f"active detail key was not rendered: {key}",
+        )
+
     def _assert_combo_selected_row_paints_to_right_edge(self, combo: QComboBox) -> None:
         view = combo.view()
         popup = view.window()
@@ -842,14 +863,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         snapshot = FrontendStateService.mock_snapshot()
         shell.show_page("active")
         active.render(snapshot)
+        self._wait_for_table_rows(active.table, len(snapshot["active_downloads"]))
         resets.clear()
         active.render(snapshot)
+        self._wait_for_table_rows(active.table, len(snapshot["active_downloads"]))
         self.assertEqual(resets, [])
 
         changed_snapshot = deepcopy(snapshot)
         changed_snapshot["active_downloads"][0]["progress"] = 66
         changed_snapshot["active_downloads"][0]["chunk_progress"]["percent"] = 66
         active.render(changed_snapshot)
+        self._wait_until(lambda: bool(changes), message="active table did not patch changed cells")
 
         self.assertEqual(resets, [])
         self.assertTrue(changes)
@@ -912,7 +936,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         item["speed_trend_label"] = "9.9 MB/s"
 
         active.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_active_detail_key(active, TEXT["title"])
 
         title_label = active._detail_value_labels[TEXT["title"]]
         title_text = title_label.raw_text() if hasattr(title_label, "raw_text") else title_label.text()
@@ -932,7 +956,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         item["output_filename"] = "live-name.mp4"
 
         active.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_active_detail_key(active, TEXT["source_url"])
 
         self.assertEqual(active._detail_value_labels[TEXT["source_url"]].raw_text(), item["source_url"])
         self.assertEqual(active._detail_value_labels[TEXT["output_filename"]].raw_text(), "live-name.mp4")
@@ -1005,7 +1029,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         snapshot = FrontendStateService.mock_snapshot()
 
         active.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_active_detail_key(active, TEXT["title"])
         trend = active.findChild(SpeedTrendWidget)
 
         self.assertIsNotNone(trend)
@@ -1033,7 +1057,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         item["speed_trend"] = [2_400_000 for _ in range(60)]
 
         active.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_active_detail_key(active, TEXT["source_url"])
         shell.layout().activate()
         self.app.processEvents()
 
@@ -1209,6 +1233,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         ]
 
         queue.render(snapshot)
+        self._wait_for_table_rows(queue.table, 20)
 
         self.assertEqual(queue.table.model().rowCount(), 20)
         self.assertEqual(queue.total_label.text(), "共 25 项")
@@ -1220,10 +1245,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             self.assertGreaterEqual(widget.height(), 34)
 
         queue.btn_next.click()
+        self._wait_for_table_rows(queue.table, 5)
         self.assertEqual(queue.page_label.text(), "2 / 2 页")
         self.assertEqual(queue.table.model().rowCount(), 5)
 
         self.assertTrue(queue.select_id("q-03"))
+        self._wait_until(lambda: queue.selected_id() == "q-03", message="queue did not select q-03")
         self.assertEqual(queue.page_label.text(), "1 / 2 页")
         self.assertEqual(queue.selected_id(), "q-03")
 
@@ -2476,8 +2503,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         shell.show_page("queue")
         shell.render(snapshot, changed_sections={"settings_snapshot", "queue_items"})
-        self.app.processEvents()
         queue = shell.pages["queue"]
+        self._wait_until(lambda: queue.event_body.text() == "No queued tasks", message="queue empty text was not translated")
         self.assertEqual(queue.path_prefix_label.text(), "Save to:")
         self.assertEqual(queue.event_title.text(), "Activity (latest 3)")
         self.assertEqual(queue.event_body.text(), "No queued tasks")
@@ -2485,8 +2512,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         shell.show_page("active")
         shell.render(snapshot, changed_sections={"settings_snapshot", "active_downloads", "app_status"})
-        self.app.processEvents()
         active = shell.pages["active"]
+        self._wait_until(lambda: active.running_count_label.text() == "Running: 0 tasks", message="active count was not translated")
         self.assertEqual(active.detail_events_title.text(), "Current task events")
         self.assertEqual(active.running_count_label.text(), "Running: 0 tasks")
 
@@ -2495,8 +2522,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         snapshot["completed_items"][0]["metadata_pending"] = True
         shell.show_page("completed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "completed_items"})
-        self.app.processEvents()
         completed = shell.pages["completed"]
+        self._wait_for_table_rows(completed.table, 1)
         completed_model = completed.table.model()
         self.assertEqual(
             completed_model.data(completed_model.index(0, 2), Qt.ItemDataRole.DisplayRole),
@@ -2511,8 +2538,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         shell.show_page("failed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
-        self.app.processEvents()
         failed = shell.pages["failed"]
+        self._wait_until(
+            lambda: "No failed tasks" in {label.text() for label in failed.findChildren(QLabel)},
+            message="failed empty text was not translated",
+        )
         failed_labels = {label.text() for label in failed.findChildren(QLabel)}
         self.assertEqual(failed.detail_title.text(), "Error details")
         self.assertEqual(failed.solutions_title.text(), "Possible fixes")
@@ -2592,9 +2622,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         shell.show_page("failed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
-        self.app.processEvents()
 
         failed = shell.pages["failed"]
+        self._wait_for_table_rows(failed.table, 1)
         model = failed.table.model()
         self.assertEqual(model.index(0, 2).data(Qt.ItemDataRole.DisplayRole), "Link failed")
 
@@ -2647,11 +2677,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         ]
         shell.show_page("failed")
         shell.render(snapshot, changed_sections={"settings_snapshot", "failed_items"})
-        self.app.processEvents()
 
         failed = shell.pages["failed"]
+        self._wait_for_table_rows(failed.table, 3)
         self.assertTrue(failed.select_id("p16"))
-        self.app.processEvents()
+        self._wait_until(lambda: failed.selected_id() == "p16", message="failed page did not select p16")
         self.assertEqual(failed.selected_id(), "p16")
 
         snapshot["failed_items"] = [
@@ -2660,7 +2690,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             snapshot["failed_items"][2],
         ]
         shell.render(snapshot, changed_sections={"failed_items"})
-        self.app.processEvents()
+        self._wait_until(lambda: failed.selected_id() == "p16", message="failed page did not preserve p16")
 
         title_row = failed.summary_layout.itemAt(0).widget()
         title_value = title_row.layout().itemAt(1).widget().findChild(QLabel).text()
@@ -2668,8 +2698,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(failed.table.selected_id(), "p16")
         self.assertEqual(title_value, "P16_生物为什么要进化出性别?")
 
-        self.assertTrue(failed.table.select_id("p18"))
-        self.app.processEvents()
+        self.assertTrue(failed.select_id("p18"))
+        self._wait_until(lambda: failed.selected_id() == "p18", message="failed page did not select p18")
         title_row = failed.summary_layout.itemAt(0).widget()
         title_value = title_row.layout().itemAt(1).widget().findChild(QLabel).text()
         self.assertEqual(failed.selected_id(), "p18")
@@ -2811,12 +2841,30 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(localize_log_text("Bilibili route: direct BV video", "zh-CN"), "Bilibili 路由：直接 BV 视频")
         self.assertEqual(localize_log_text("Download task has been queued", "zh-CN"), "下载任务已入队")
         self.assertEqual(localize_log_text("Released download concurrency slot", "zh-CN"), "已释放下载并发槽位")
+        damaged_download_failure = "下载任务失败".encode("utf-8").decode("gbk", errors="replace")
+        self.assertEqual(localize_log_text(damaged_download_failure, "zh-CN"), "下载任务失败")
+        self.assertEqual(localize_log_text(damaged_download_failure, "en-US"), "Download task failed")
+        damaged_payload = localize_log_payload({"description": damaged_download_failure}, "zh-CN")
+        self.assertEqual(damaged_payload["description"], "下载任务失败")
         self.assertEqual(localize_log_text("System · MainWindow", "zh-CN"), "系统 · 主窗口")
         self.assertEqual(localize_log_text("系统 · MainWindow", "en-US"), "System · MainWindow")
         self.assertEqual(localize_log_text("系统 · ApplicationContext", "en-US"), "System · ApplicationContext")
         self.assertEqual(localize_log_text("Bilibili · BilibiliDownloader", "zh-CN"), "Bilibili · Bilibili 下载器")
+        self.assertEqual(localize_log_text("System · BaseDownloader", "zh-CN"), "系统 · 基础下载器")
+        self.assertEqual(localize_log_text("System · WebSocketRuntime", "zh-CN"), "系统 · WebSocket 运行时")
+        self.assertEqual(localize_log_text("System · WebSocketBridge", "zh-CN"), "系统 · WebSocket 桥接器")
+        self.assertEqual(localize_log_text("System · FrontendLogCache", "zh-CN"), "系统 · 前端日志缓存")
+        self.assertEqual(localize_log_text("System · FailedRecordStore", "zh-CN"), "系统 · 失败记录存储")
+        self.assertEqual(localize_log_text("System · BiliAPI", "zh-CN"), "系统 · Bilibili 接口")
+        self.assertEqual(localize_log_text("Xiaohongshu · XiaohongshuDownloader", "zh-CN"), "小红书 · 小红书下载器")
+        self.assertEqual(localize_log_text("Xiaohongshu · XiaohongshuSpider", "zh-CN"), "小红书 · 小红书爬虫")
+        self.assertEqual(localize_log_text("Xiaohongshu · XiaoHongShuSpider", "zh-CN"), "小红书 · 小红书爬虫")
+        self.assertEqual(localize_log_text("Xiaohongshu · XiaohongshuClient", "zh-CN"), "小红书 · 小红书客户端")
         self.assertEqual(localize_log_text("DownloadManager", "zh-CN"), "下载管理器")
         self.assertEqual(localize_log_text("系统 · GUI", "en-US"), "System · GUI")
+        self.assertEqual(localize_log_text("ui callback failed", "zh-CN"), "UI 回调失败")
+        self.assertEqual(localize_log_text("callback failed", "zh-CN"), "回调失败")
+        self.assertEqual(localize_log_text("_on_spider_finished 被调用", "zh-CN"), "爬虫完成回调已调用")
         self.assertEqual(localize_log_text("Bilibili stream request established", "zh-CN"), "Bilibili 流请求建立成功")
         self.assertEqual(
             localize_log_text("Preparing to merge Bilibili audio/video stream", "zh-CN"),
@@ -2912,6 +2960,20 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             localize_log_text("Completed media metadata probe finished without usable duration or resolution", "zh-TW"),
             "媒體中繼資料探測已完成，但未取得可用時長或解析度",
         )
+        self.assertEqual(
+            localize_log_text(
+                "Web event loop is unavailable; deferred frontend delta until a later async flush.",
+                "zh-CN",
+            ),
+            "Web 事件循环不可用，已延后前端增量刷新",
+        )
+        self.assertEqual(
+            localize_log_text(
+                "Skipped frontend delta flush because no running event loop is available.",
+                "zh-CN",
+            ),
+            "没有可用事件循环，已跳过前端增量刷新",
+        )
 
     def test_web_runtime_log_phrase_translations_match_gui_table(self):
         import ast
@@ -2932,9 +2994,22 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         web_bundle = _html_bundle()
         web_block = web_bundle.split("const RUNTIME_LOG_PHRASE_TRANSLATIONS = [", 1)[1].split("];", 1)[0]
-        web_entries = re.findall(r'\{ zh: "(.*?)", en: "(.*?)", tw: "(.*?)" \}', web_block)
+        web_entries = []
+        web_aliases = {}
+        for match in re.finditer(
+            r'\{\s*zh:\s*"(.*?)",\s*en:\s*"(.*?)",\s*tw:\s*"(.*?)"(?:,\s*aliases:\s*\[(.*?)\])?\s*\}',
+            web_block,
+        ):
+            entry = (match.group(1), match.group(2), match.group(3))
+            web_entries.append(entry)
+            if match.group(4):
+                web_aliases[entry] = tuple(re.findall(r'"(.*?)"', match.group(4)))
 
-        self.assertEqual(set(gui_entries), set(web_entries))
+        gui_entries_primary = {tuple(entry[:3]) for entry in gui_entries}
+        gui_aliases = {tuple(entry[:3]): tuple(entry[3:]) for entry in gui_entries if len(entry) > 3}
+
+        self.assertEqual(gui_entries_primary, set(web_entries))
+        self.assertEqual(gui_aliases, web_aliases)
         self.assertIn(("默认打开方式已生效", "Default open mode is active", "預設開啟方式已生效"), gui_entries)
         self.assertIn(("已切换到浅色主题", "Switched to light theme", "已切換到淺色主題"), gui_entries)
         self.assertIn(
@@ -3148,7 +3223,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         snapshot = FrontendStateService.mock_snapshot()
         shell.show_page("completed")
         completed.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_table_rows(completed.table, 20)
 
         table_card = completed.findChild(QFrame, "CompletedTableCard")
         preview_card = completed.findChild(QFrame, "CompletedPreviewCard")
@@ -3233,8 +3308,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         shell.show_page("completed")
         completed.render(snapshot)
-        self.app.processEvents()
-        self.app.processEvents()
+        self._wait_for_table_rows(completed.table, 20)
 
         metrics = completed.table.fontMetrics()
         self.assertGreaterEqual(completed.table.columnWidth(0), 190)
@@ -3263,7 +3337,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         shell.show_page("completed")
 
         completed.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_table_rows(completed.table, 20)
 
         self.assertEqual(completed.btn_prev.objectName(), "PaginationButton")
         self.assertEqual(completed.btn_next.objectName(), "PaginationButton")
@@ -3295,7 +3369,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         first_page_id = completed.table.model().index(0, 0).data()
 
         completed.btn_next.click()
-        self.app.processEvents()
+        self._wait_until(
+            lambda: completed.table.model().index(0, 0).data() != first_page_id,
+            message="completed page did not render the next page",
+        )
         second_page_id = completed.table.model().index(0, 0).data()
 
         self.assertNotEqual(first_page_id, second_page_id)
@@ -3307,7 +3384,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         snapshot = FrontendStateService.mock_snapshot()
         shell.show_page("failed")
         failed.render(snapshot)
-        self.app.processEvents()
+        self._wait_for_table_rows(failed.table, len(snapshot["failed_items"]))
 
         self.assertIsNotNone(failed.findChild(QFrame, "FailedTableCard"))
         self.assertIsNotNone(failed.findChild(QFrame, "FailedDetailCard"))
@@ -3354,10 +3431,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
     def test_failed_log_rows_keep_full_time_and_aligned_messages(self):
         shell = self._make_shell()
         failed = shell.pages["failed"]
+        damaged_download_failure = "下载任务失败".encode("utf-8").decode("gbk", errors="replace")
         rows = [
             {"time": "2026-06-30 03:32:05", "level": "WARN", "message": "下载策略执行失败，回退到后续策略"},
             {"time": "2026-06-30 03:32:06", "level": "ERROR", "message": "小红书视频下载失败"},
             {"time": "03:32:07", "level": "INFO", "message": "Released download concurrency slot"},
+            {"time": "03:32:08", "level": "ERROR", "message": damaged_download_failure},
         ]
 
         widgets = [failed._log_row(row) for row in rows]
@@ -3373,6 +3452,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             message_x.append(layout.itemAt(2).geometry().x() if widget.isVisible() else time_widget.width() + layout.spacing() + badge.width() + layout.spacing())
 
         self.assertEqual(len(set(message_x)), 1)
+        message_labels = [widget.layout().itemAt(2).widget() for widget in widgets]
+        self.assertEqual(message_labels[-1].text(), "下载任务失败")
 
     def test_queue_recent_events_skip_identical_rebuilds(self):
         shell = self._make_shell()

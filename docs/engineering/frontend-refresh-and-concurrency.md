@@ -53,6 +53,7 @@
 - WebController 的异步 HTTP / WebSocket 动作入口不得在 asyncio 事件循环中直接执行同步 service 方法；配置写入、前端动作处理和其他可能触发文件、缓存、SQLite 或系统 API 的普通函数必须下沉到 executor 或等价 worker。
 - WebSocket 尚未绑定运行中的事件循环时只能记录 dirty event 并等待后续异步 flush 或客户端主动拉取；不得在事件来源线程同步构建 `frontend_delta`。
 - WebUI 日志中心筛选、排序、分页必须优先交给 `log_query_worker.js`；不得用“日志数量较少”作为主线程同步查询的理由。`queryLogsSync()` 只允许在浏览器不支持 Worker 或 worker 初始化/执行失败时作为降级路径。
+- WebUI 日志 worker 不可用时，降级查询也必须通过 `scheduleLogQueryFallback()` 异步调度并按最新 `sequence` 生效；提交时必须冻结 `buildLogQueryRequest(...)` 快照，异步回调不得再临时读取当前过滤器、页码或可变日志数组；不得在 `renderLogs()` / `submitLogQuery()` 当前调用栈里直接同步执行过滤、排序和分页。
 - WebUI 日志裁剪只允许发生在本地 append 或 delta 合并阶段；`renderLogs()` / `logQueryItems()` 不得再裁剪或改写 `frontendState.log_items`，避免渲染路径携带大数组副作用。
 
 ## UI / Worker / Cache / DB 职责边界
@@ -64,7 +65,7 @@
 - EventBus 提供 `subscribe_async()` 给不参与刷新版本时序的慢 handler 使用；涉及 `FrontendStateService` delta 版本记录和 MainWindow 刷新调度的 handler 不得为了“异步化”直接迁移，否则会造成刷新先于 dirty version 记录的 race。
 - `FrontendStateService` 订阅 `app_state.changed` 时只能做有界入队；标题物化、section 推导、dirty version 记录必须在 `get_snapshot()` / `get_delta()` 入口统一 `flush_pending_app_state_events()` 后执行。初始化阶段产生的 AppState 事件需要在构造结束时合入基线版本，避免第一帧普通 delta 被误判成全量刷新。
 - EventBus 的高频异步 topic（如 `videos.update`、`videos.metadata`、`video_state_changed`、`task_progress`、`logs.append`、`log`）必须按 handler/topic/实体 ID 合并为 latest-state-wins；普通异步 topic 和 critical 事件仍保持 FIFO，不得为降压丢失完成、失败、删除、停止等关键状态。
-- 生产代码不得引入定时 `processEvents()` pump；浏览器 E2E 不得用 3.5 秒固定等待兜底，必须等待 `#app-shell` 或页面可观测状态。
+- 生产代码不得引入定时 `processEvents()` pump；GUI 和 controller 热路径不得使用 `time.sleep()` 做协调等待，后台任务需要等待时优先使用 cancel token / event 的可取消等待；浏览器 E2E 不得用 3.5 秒固定等待兜底，必须等待 `#app-shell` 或页面可观测状态。
 - 运行态纯视觉反馈定时器不得使用 45ms 级高频刷新；如启动按钮跑马灯这类非关键帧动画，默认周期为 120ms，并通过单次步进保持视觉速度。
 - 应用退出必须按顺序释放 frontend state service、AppState 延迟通知和 CacheService/diskcache 句柄；GUI 控制器和 Web 会话控制器都必须执行这条链路，关闭失败只能降级记录调试日志，不得中断退出流程。AppState 只关闭自己创建的 CacheService，外部注入的缓存由组合根关闭。
 - GUI latest-state-wins worker 应复用统一 worker 骨架；顺序写文件、系统动作派发等必须保序的任务应复用 `SequentialRequestWorker`，不得在业务 worker 中重复维护 `Condition + deque + Thread`。
@@ -170,8 +171,8 @@ node --check app/web/static/app.js
 
 ### 当前验证基线
 
-- 2026-07-08 全量 `python -m pytest -q`：`2113 passed, 3 skipped, 7 warnings in 140.41s (0:02:20)`。
-- 历史手工观测全量约 7 到 8 分钟；本轮通过 GUI 四态列表批处理、EventBus 异步投递、日志/快照 worker 化和固定等待移除后，当前基线约 2 分 20 秒。
+- 2026-07-08 全量 `python -m pytest -q`：`2124 passed, 3 skipped, 7 warnings in 208.07s (0:03:28)`。
+- 历史手工观测全量约 7 到 15 分钟；本轮通过 GUI 四态列表批处理、EventBus 异步投递、日志/快照 worker 化和固定等待移除后，当前基线约 3 到 4 分钟。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查是否引入同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
 
 ## GUI use_delta 判定边界
@@ -197,3 +198,4 @@ node --check app/web/static/app.js
 - `LatestRequestWorker` 和 `SequentialRequestWorker` 是 GUI 异步化的通用底座；业务处理函数抛异常时只能记录到 `debug_logger` 并继续消费后续请求，不得让 worker 线程静默退出。
 - worker 的结果回调如果遇到普通异常，同样只记录并继续；只有 Qt 对象销毁等 `RuntimeError` 代表生命周期结束时才允许停止 worker。
 - 新增 GUI 后台任务时优先复用这两个 worker；只有需要独立调度协议、独立队列背压或跨进程执行时才允许新增专用线程结构。
+- 非常驻 GUI 后台任务必须按需创建，不得在主窗口构造期预启动；否则测试和页面重建会堆积空闲线程，增加 Qt 退出和重建时的崩溃风险。检查更新、诊断、文件关联注册等低频动作应在用户触发后创建或提交到既有 worker，并在 `closeEvent` 中回收。

@@ -1,13 +1,10 @@
 """测试模块，覆盖 `tests/test_spider_helpers.py` 对应功能的行为与回归场景。"""
 
 import asyncio
-import inspect
 import os
 import queue
 import threading
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -340,6 +337,52 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(item.meta["content_type"], "video")
         self.assertEqual(item.meta["duration"], 12)
         self.assertEqual(item.meta["folder_name"], "作者A")
+
+    def test_douyin_parser_prefers_best_bit_rate_url_over_play_addr(self):
+        parser = DouyinItemParser()
+
+        item = parser.parse_aweme(
+            {
+                "aweme_id": "1001",
+                "desc": "bitrate video",
+                "author": {"nickname": "author"},
+                "video": {
+                    "duration": 12345,
+                    "play_addr": {"url_list": ["https://cdn.example.com/fallback.mp4"]},
+                    "bit_rate": [
+                        {
+                            "FPS": 30,
+                            "bit_rate": 1000,
+                            "play_addr": {
+                                "data_size": 10,
+                                "height": 720,
+                                "width": 1280,
+                                "url_list": [
+                                    "https://cdn.example.com/low-first.mp4",
+                                    "https://cdn.example.com/low-last.mp4",
+                                ],
+                            },
+                        },
+                        {
+                            "FPS": 60,
+                            "bit_rate": 5000,
+                            "play_addr": {
+                                "data_size": 20,
+                                "height": 1080,
+                                "width": 1920,
+                                "url_list": [
+                                    "https://cdn.example.com/high-first.mp4",
+                                    "https://cdn.example.com/high-last.mp4",
+                                ],
+                            },
+                        },
+                    ],
+                },
+            }
+        )
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item.url, "https://cdn.example.com/high-last.mp4")
 
     def test_douyin_parser_returns_gallery_item_for_live_photo_aweme(self):
         """验证 `test_douyin_parser_returns_gallery_item_for_live_photo_aweme` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

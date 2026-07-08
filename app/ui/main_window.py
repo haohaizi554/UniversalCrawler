@@ -6,6 +6,7 @@ import threading
 import time
 import sys
 
+from dataclasses import dataclass
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QWidget
@@ -45,9 +46,23 @@ from app.ui.viewmodels.frontend_action_worker import (
     FrontendActionResult,
     FrontendActionWorker,
 )
+from app.ui.viewmodels.latest_worker import LatestRequestWorker
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
 from app.utils.safe_slot import safe_slot
+
+
+@dataclass(frozen=True)
+class _UpdateCheckRequest:
+    sequence: int
+    local_version: str
+
+
+@dataclass(frozen=True)
+class _UpdateCheckOutcome:
+    sequence: int
+    result: UpdateCheckResult | None = None
+    error: str = ""
 
 
 class MainWindow(QMainWindow):
@@ -182,6 +197,8 @@ class MainWindow(QMainWindow):
         self._frontend_action_worker = FrontendActionWorker(
             lambda result: self._frontend_action_finished.emit(result)
         )
+        self._update_check_sequence = 0
+        self._update_check_worker: LatestRequestWorker[_UpdateCheckRequest, _UpdateCheckOutcome] | None = None
         self._ui_update_scheduler = UiUpdateScheduler(
             interval_ms=self.FRONTEND_REFRESH_INTERVAL_MS,
             on_flush=self._flush_frontend_state,
@@ -405,13 +422,9 @@ class MainWindow(QMainWindow):
             return
         self._set_status_bar_update_checking(True)
         local_version = version_text or self._current_status_version()
-        worker = threading.Thread(
-            target=self._run_update_check,
-            args=(local_version,),
-            daemon=True,
-            name="ucp-update-check",
-        )
-        worker.start()
+        worker = self._ensure_update_check_worker()
+        self._update_check_sequence = int(self.__dict__.get("_update_check_sequence", 0) or 0) + 1
+        worker.submit(_UpdateCheckRequest(sequence=self._update_check_sequence, local_version=local_version))
 
     def _try_begin_update_check(self) -> bool:
         with self._update_check_lock:
@@ -439,6 +452,17 @@ class MainWindow(QMainWindow):
             return str(text())
         return "v3.6.17"
 
+    def _ensure_update_check_worker(self) -> LatestRequestWorker[_UpdateCheckRequest, _UpdateCheckOutcome]:
+        worker = self.__dict__.get("_update_check_worker")
+        if worker is None:
+            worker = LatestRequestWorker(
+                name="update-check-worker",
+                on_result=self._on_update_check_worker_result,
+                process=self._process_update_check_request,
+            )
+            self._update_check_worker = worker
+        return worker
+
     def _current_ui_language(self) -> str:
         shell_language = getattr(getattr(self, "app_shell", None), "_language", "")
         if shell_language:
@@ -448,13 +472,22 @@ class MainWindow(QMainWindow):
     def _tr(self, text: str) -> str:
         return tr(text, self._current_ui_language())
 
-    def _run_update_check(self, local_version: str) -> None:
+    @staticmethod
+    def _process_update_check_request(request: _UpdateCheckRequest) -> _UpdateCheckOutcome:
         try:
-            result = check_for_update(local_version)
+            result = check_for_update(request.local_version)
         except Exception as exc:
-            self._update_check_failed.emit(str(exc))
+            return _UpdateCheckOutcome(sequence=request.sequence, error=str(exc))
+        return _UpdateCheckOutcome(sequence=request.sequence, result=result)
+
+    def _on_update_check_worker_result(self, outcome: _UpdateCheckOutcome) -> None:
+        current_sequence = int(self.__dict__.get("_update_check_sequence", 0) or 0)
+        if outcome.sequence != current_sequence:
             return
-        self._update_check_finished.emit(result)
+        if outcome.error:
+            self._update_check_failed.emit(outcome.error)
+            return
+        self._update_check_finished.emit(outcome.result)
 
     def _on_update_check_finished(self, result: object) -> None:
         self._finish_update_check()
@@ -1368,6 +1401,9 @@ class MainWindow(QMainWindow):
         action_worker = self.__dict__.get("_frontend_action_worker")
         if action_worker is not None:
             action_worker.shutdown()
+        update_check_worker = self.__dict__.get("_update_check_worker")
+        if update_check_worker is not None:
+            update_check_worker.shutdown()
         frontend_state_service = self.__dict__.get("_frontend_state_service")
         if self.__dict__.get("_owns_frontend_state_service", False) and frontend_state_service is not None:
             destroy_frontend_state = getattr(frontend_state_service, "destroy", None)
