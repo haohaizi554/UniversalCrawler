@@ -19,6 +19,7 @@ HANDLER_WARN_SECONDS = 0.2
 ASYNC_NOISY_TOPICS = frozenset(
     {"app_state.changed", "videos.update", "videos.metadata", "video_state_changed", "task_progress", "logs.append", "log"}
 )
+ASYNC_TOPIC_LATEST_KEYS = frozenset({"logs.append"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,9 @@ class EventBus:
         normalized = str(topic or "")
         if normalized not in ASYNC_NOISY_TOPICS or not isinstance(payload, dict):
             return None
+        topic_key = EventBus._async_topic_latest_key(normalized, payload)
+        if topic_key is not None:
+            return (id(handler), normalized, "topic", topic_key)
         entity_id = (
             payload.get("video_id")
             or payload.get("id")
@@ -244,6 +248,16 @@ class EventBus:
         if not entity_id:
             return None
         return (id(handler), normalized, type(entity_id).__name__, str(entity_id))
+
+    @staticmethod
+    def _async_topic_latest_key(topic: str, payload: dict[str, Any]) -> str | None:
+        if topic in ASYNC_TOPIC_LATEST_KEYS:
+            return topic
+        if topic == "app_state.changed":
+            inner_topic = str(payload.get("topic") or "")
+            if inner_topic in ASYNC_TOPIC_LATEST_KEYS:
+                return inner_topic
+        return None
 
     def _run_async_handlers(self) -> None:
         while True:

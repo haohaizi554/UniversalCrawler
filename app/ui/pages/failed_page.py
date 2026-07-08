@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.services.icon_registry import platform_icon_file, ui_icon_path
+from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
@@ -29,9 +30,13 @@ class FailedPage(PageFrame):
     copy_diagnostics_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
 
+    PAGE_SIZE_OPTIONS = (20, 50, 100)
+
     def __init__(self) -> None:
         super().__init__("", use_island=False)
         self._language = "zh-CN"
+        self._page = 1
+        self._page_size = 20
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("FailedPageSplitter")
 
@@ -50,6 +55,18 @@ class FailedPage(PageFrame):
         )
         self.table.setObjectName("FailedItemsTable")
         table_card_layout.addWidget(self.table, 1)
+        self.pagination_footer = PaginationFooter(
+            self.PAGE_SIZE_OPTIONS,
+            default_page_size=self._page_size,
+            object_name="FailedPaginationFooter",
+        )
+        self.pagination_footer.layout().setContentsMargins(0, 10, 0, 0)
+        self.total_label = self.pagination_footer.total_label
+        self.btn_prev = self.pagination_footer.btn_prev
+        self.btn_next = self.pagination_footer.btn_next
+        self.page_label = self.pagination_footer.page_label
+        self.page_size_combo = self.pagination_footer.page_size_combo
+        table_card_layout.addWidget(self.pagination_footer)
         splitter.addWidget(self.table_card)
 
         self.detail = QWidget()
@@ -120,11 +137,14 @@ class FailedPage(PageFrame):
         self._selected_item_id: str | None = None
         self._syncing_selection = False
         self._page_sequence = 0
+        self._page_request_preserves_selection = False
         self._page_worker: ListPageWorker | None = None
         self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
         self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
         self.table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
+        self.pagination_footer.page_requested.connect(lambda delta: self._set_page(self._page + delta))
+        self.pagination_footer.page_size_changed.connect(self._on_page_size_changed)
 
     def set_language(self, language: str | None) -> None:
         normalized = normalize_language(language)
@@ -134,6 +154,7 @@ class FailedPage(PageFrame):
         self.detail_title.setText(self._t("错误详情"))
         self.log_title.setText(self._t("Trace / 日志片段"))
         self.solutions_title.setText(self._t("可能的解决方案"))
+        self.pagination_footer.set_language(normalized)
         if hasattr(self.table, "table_model"):
             self.table.table_model.set_language(normalized)
         self._render_selected_detail()
@@ -159,15 +180,16 @@ class FailedPage(PageFrame):
 
     def _submit_page_request(self, items: object, *, selected_id: str = "") -> None:
         self._page_sequence += 1
+        self._page_request_preserves_selection = bool(selected_id)
         source_items = items if isinstance(items, list | tuple) else ()
         request = ListPageRequest(
             sequence=self._page_sequence,
             items=source_items,
-            page=1,
-            page_size=0,
+            page=self._page,
+            page_size=self._page_size,
             selected_id=selected_id,
-            paginate=False,
             select_first=True,
+            selected_id_moves_page=bool(selected_id),
         )
         worker = self._page_worker
         if worker is None:
@@ -178,10 +200,13 @@ class FailedPage(PageFrame):
     def _apply_page_result(self, result: object) -> None:
         if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
             return
-        current_selected_id = str(self._selected_item_id or self.table.selected_id() or "")
+        current_selected_id = ""
+        if self._page_request_preserves_selection:
+            current_selected_id = str(self._selected_item_id or self.table.selected_id() or "")
         self.items = result.items
         self._id_order = result.id_order
         self._items_by_id = result.items_by_id
+        self._page = result.current_page
         if current_selected_id and current_selected_id in self._items_by_id:
             self._selected_item_id = current_selected_id
         else:
@@ -192,7 +217,24 @@ class FailedPage(PageFrame):
             self._sync_table_selection()
         finally:
             self._syncing_selection = False
+        self.pagination_footer.sync(
+            total_items=result.total_count,
+            current_page=self._page,
+            total_pages=result.total_pages,
+            page_size=self._page_size,
+        )
         self._render_selected_detail()
+
+    def _set_page(self, page: int) -> None:
+        self._page = int(page or 1)
+        self._selected_item_id = None
+        self._submit_page_request(self.items, selected_id="")
+
+    def _on_page_size_changed(self, page_size: int | None = None) -> None:
+        self._page_size = int(page_size or self.page_size_combo.currentData() or 20)
+        self._page = 1
+        selected_id = self.table.selected_id() or self._selected_item_id or ""
+        self._submit_page_request(self.items, selected_id=str(selected_id or ""))
 
     def _selected_item(self) -> dict[str, Any] | None:
         selected = self._valid_item_id(self._selected_item_id)
@@ -526,6 +568,9 @@ class FailedPage(PageFrame):
         if not selected:
             return False
         self._selected_item_id = selected
+        if selected not in self.table.id_order():
+            self._submit_page_request(self.items, selected_id=selected)
+            return True
         self._syncing_selection = True
         try:
             ok = self.table.select_id(selected)

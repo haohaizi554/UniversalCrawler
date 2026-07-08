@@ -13,7 +13,7 @@
   <script src="/static/settings_render.js?v=20260705-i18n-surface" defer></script>
   <script src="/static/task_render.js?v=20260705-i18n-surface" defer></script>
   <script src="/static/playback_state.js?v=20260701-playback-state" defer></script>
-  <script src="/static/app.js?v=20260705-i18n-state-boundary" defer></script>
+  <script src="/static/app.js?v=20260708-log-i18n-runtime-v2" defer></script>
 </head>
 <body>
   <main id="app-shell" class="app-body">
@@ -153,6 +153,19 @@
                 <thead><tr><th>标题</th><th>失败时间</th><th>失败原因</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody id="failedBody"></tbody>
               </table>
+            </div>
+            <div class="queue-footer failed-footer">
+              <span id="failedTotal">共 0 项</span>
+              <div class="pager" aria-label="失败列表分页">
+                <button id="failedPrevPage" class="icon-btn pagination-button" type="button" onclick="setFailedPage(-1)" title="上一页" aria-label="上一页">‹</button>
+                <span><b id="failedPageNow">1</b> / <span id="failedTotalPages">1</span> 页</span>
+                <button id="failedNextPage" class="icon-btn pagination-button" type="button" onclick="setFailedPage(1)" title="下一页" aria-label="下一页">›</button>
+                <select id="failedPageSize" onchange="setFailedPageSize(this.value)" aria-label="每页条数">
+                  <option value="20">20 条/页</option>
+                  <option value="50">50 条/页</option>
+                  <option value="100">100 条/页</option>
+                </select>
+              </div>
             </div>
           </div>
           <aside class="failed-right-column">

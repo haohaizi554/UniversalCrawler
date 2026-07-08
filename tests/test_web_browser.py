@@ -479,7 +479,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/custom_select.js?v=20260707-placement-stable', content)
         self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
-        self.assertIn('/static/app.js?v=20260705-i18n-state-boundary', content)
+        self.assertIn('/static/app.js?v=20260708-log-i18n-runtime-v2', content)
 
     def test_video_end_autoplays_next_preview(self):
         content = _static_bundle_content()
@@ -909,23 +909,43 @@ class StaticAssetsTests(unittest.TestCase):
             "function selectCompleted",
             1,
         )[0]
+        render_failed_block = content.split("function renderFailed()", 1)[1].split(
+            "function selectFailed",
+            1,
+        )[0]
 
         self.assertIn("function normalizeTablePageSize(value)", content)
+        self.assertIn('new Worker("/static/list_page_worker.js?v=20260708-list-page-worker")', content)
         self.assertIn('let queuePageSize = normalizeTablePageSize(localStorage.getItem("webui_queue_page_size") || 20);', content)
         self.assertIn('let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);', content)
+        self.assertIn('let failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_page_size") || 20);', content)
         self.assertIn("return [20, 50, 100].includes(numeric) ? numeric : 20;", content)
         self.assertIn("queuePageSize = normalizeTablePageSize(value);", content)
         self.assertIn("completedPageSize = normalizeTablePageSize(value);", content)
+        self.assertIn("failedPageSize = normalizeTablePageSize(value);", content)
+        self.assertIn("worker.postMessage(request);", render_failed_block)
+        self.assertIn("applyFailedPageResult(buildListPageResultSync(request));", render_failed_block)
         self.assertIn('syncCustomSelectForSelect(byId("queuePageSize"))', render_queue_block)
         self.assertIn('syncCustomSelectForSelect(byId("completedPageSize"))', render_completed_block)
+        self.assertIn('syncCustomSelectForSelect(byId("failedPageSize"))', render_failed_block)
         self.assertIn('byId("queuePrevPage").disabled = queuePage <= 1;', render_queue_block)
         self.assertIn('byId("queueNextPage").disabled = queuePage >= totalPages;', render_queue_block)
         self.assertIn('byId("completedPrevPage").disabled = completedPage <= 1;', render_completed_block)
         self.assertIn('byId("completedNextPage").disabled = completedPage >= totalPages;', render_completed_block)
-        for elem_id in ("queuePrevPage", "queueNextPage", "completedPrevPage", "completedNextPage"):
+        self.assertIn('byId("failedPrevPage").disabled = failedPage <= 1;', render_failed_block)
+        self.assertIn('byId("failedNextPage").disabled = failedPage >= totalPages;', render_failed_block)
+        for elem_id in (
+            "queuePrevPage",
+            "queueNextPage",
+            "completedPrevPage",
+            "completedNextPage",
+            "failedPrevPage",
+            "failedNextPage",
+        ):
             self.assertIn(f'id="{elem_id}"', content)
         self.assertIn('id="queuePrevPage" class="icon-btn pagination-button" type="button"', content)
         self.assertIn('id="completedNextPage" class="icon-btn pagination-button" type="button"', content)
+        self.assertIn('id="failedNextPage" class="icon-btn pagination-button" type="button"', content)
         self.assertIn(".pagination-button", content)
         self.assertIn("width: 38px;", content)
         self.assertIn('aria-label="上一页"', content)
@@ -1479,7 +1499,7 @@ class WebUIBrowserTests(unittest.TestCase):
               selected.log = "";
               applyStaticLanguage();
               renderLogs();
-              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: 'System · GUI' });
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: 'System \\u00b7 GUI' });
               const logText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
               selected.completed = "completed-i18n-a";
@@ -1493,7 +1513,7 @@ class WebUIBrowserTests(unittest.TestCase):
               currentPage = "logs";
               applyStaticLanguage();
               renderLogs();
-              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: '系統 · 圖形介面' });
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: '系統 \\u00b7 圖形介面' });
               const twLogText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
               renderCompleted();
@@ -2069,7 +2089,12 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("_on_spider_finished 被调用"),
                 translateRuntimeLogText("Web event loop is unavailable; deferred frontend delta until a later async flush."),
                 translateRuntimeLogText("Skipped frontend delta flush because no running event loop is available."),
-                translateRuntimeLogText("Douyin参数初始化完成")
+                translateRuntimeLogText("Douyin参数初始化完成"),
+                translateRuntimeLogText("Douyin parameters updated!"),
+                translateRuntimeLogText("Config cookie_tiktok is not set; TikTok features may not work properly"),
+                translateRuntimeLogText("[INFO] Updating Douyin parameters, please wait..."),
+                translateRuntimeLogText("Download task completed"),
+                translateRuntimeLogText("\U0001f50d Resolving link redirect")
               ];
               document.documentElement.dataset.language = "zh-TW";
               const tw = [
@@ -2102,7 +2127,14 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("爬虫完成回调已调用"),
                 translateRuntimeLogText("[INFO] 正在更新抖音参数，请稍等..."),
                 translateRuntimeLogText("配置文件 cookie 参数未登录，数据获取已提前结束"),
-                translateRuntimeLogText("配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用")
+                translateRuntimeLogText("配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用"),
+                translateRuntimeLogText("⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用"),
+                translateRuntimeLogText("[INFO] Douyin参数初始化完成"),
+                translateRuntimeLogText("[INFO] Douyin参数更新完毕!"),
+                translateRuntimeLogText("[INFO] 抖音参数更新完毕！"),
+                translateRuntimeLogText("TikTok 参数更新完毕！"),
+                translateRuntimeLogText("✅️ 下载完成: emoji.mp4"),
+                translateRuntimeLogText("下载完成: demo.mp4")
               ];
               return { cn, tw, en };
             }
@@ -2143,6 +2175,11 @@ class WebUIBrowserTests(unittest.TestCase):
                 "Web 事件循环不可用，已延后前端增量刷新",
                 "没有可用事件循环，已跳过前端增量刷新",
                 "Douyin 参数初始化完成",
+                "抖音参数更新完毕！",
+                "配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用",
+                "[INFO] 正在更新抖音参数，请稍等...",
+                "下载任务完成",
+                "\U0001f50d 正在解析链接重定向",
             ],
         )
         self.assertEqual(
@@ -2180,8 +2217,160 @@ class WebUIBrowserTests(unittest.TestCase):
                 "[INFO] Updating Douyin parameters, please wait...",
                 "Config cookie is not logged in; data fetching ended early",
                 "Config cookie is not set; Douyin features may not work properly",
+                "⚠️ Config cookie_tiktok is not set; TikTok features may not work properly",
+                "[INFO] Douyin parameters initialized",
+                "[INFO] Douyin parameters updated!",
+                "[INFO] Douyin parameters updated!",
+                "TikTok parameters updated!",
+                "✅️ Download completed: emoji.mp4",
+                "Download completed: demo.mp4",
             ],
         )
+
+    def test_09ia_log_table_localizes_mixed_runtime_summaries_after_language_switch(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              frontendState.log_items = [
+                {
+                  id: "web-log-douyin-init",
+                  time: "2026-07-08 13:28:01",
+                  level: "INFO",
+                  source: "GUI",
+                  platform: "系统",
+                  trace_id: "dy_i18n_1",
+                  message_summary: "[INFO] Douyin参数初始化完成",
+                  message: "[INFO] Douyin参数初始化完成"
+                },
+                {
+                  id: "web-log-cookie",
+                  time: "2026-07-08 13:28:02",
+                  level: "INFO",
+                  source: "DouyinSpider",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_2",
+                  message_summary: "配置文件 cookie 参数未登录，数据获取已提前结束",
+                  message: "配置文件 cookie 参数未登录，数据获取已提前结束"
+                },
+                {
+                  id: "web-log-cookie-tiktok",
+                  time: "2026-07-08 13:28:03",
+                  level: "WARN",
+                  source: "DouyinSpider",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_3",
+                  message_summary: "⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用",
+                  message: "⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用",
+                  detail: { description: "⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用" }
+                },
+                {
+                  id: "web-log-completed-cn",
+                  time: "2026-07-08 13:28:04",
+                  level: "INFO",
+                  source: "BaseDownloader",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_4",
+                  message_summary: "下载完成: demo.mp4",
+                  message: "下载完成: demo.mp4"
+                },
+                {
+                  id: "web-log-completed-emoji-cn",
+                  time: "2026-07-08 13:28:05",
+                  level: "INFO",
+                  source: "BaseDownloader",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_5",
+                  message_summary: "✅️ 下载完成: emoji.mp4",
+                  message: "✅️ 下载完成: emoji.mp4",
+                  detail: { description: "✅️ 下载完成: emoji.mp4" }
+                },
+                {
+                  id: "web-log-douyin-updated",
+                  time: "2026-07-08 13:28:06",
+                  level: "INFO",
+                  source: "DouyinSpider",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_6",
+                  message_summary: "[INFO] Douyin参数更新完毕!",
+                  message: "[INFO] Douyin参数更新完毕!"
+                },
+                {
+                  id: "web-log-updating-en",
+                  time: "2026-07-08 13:28:07",
+                  level: "INFO",
+                  source: "DouyinSpider",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_7",
+                  message_summary: "[INFO] Updating Douyin parameters, please wait...",
+                  message: "[INFO] Updating Douyin parameters, please wait..."
+                },
+                {
+                  id: "web-log-task-en",
+                  time: "2026-07-08 13:28:08",
+                  level: "INFO",
+                  source: "BaseDownloader",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_8",
+                  message_summary: "Download task completed",
+                  message: "Download task completed"
+                },
+                {
+                  id: "web-log-redirect-en",
+                  time: "2026-07-08 13:28:09",
+                  level: "INFO",
+                  source: "DouyinSpider",
+                  platform: "Douyin",
+                  trace_id: "dy_i18n_9",
+                  message_summary: "\U0001f50d Resolving link redirect",
+                  message: "\U0001f50d Resolving link redirect"
+                }
+              ];
+              logFilters = { category: "all", level: "all", time: "all", platform: "all", trace: "", keyword: "" };
+              logPage = 1;
+              logPageSize = 20;
+              selected.log = "";
+              currentPage = "logs";
+              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
+
+              document.documentElement.dataset.language = "en-US";
+              renderLogs();
+              await window.__waitForLogRender({ rows: 9, total: 9, matched: 9, visible: 9, text: "[INFO] Douyin parameters initialized" });
+              const enText = document.getElementById("page-logs").textContent;
+              selectLog("web-log-cookie-tiktok");
+              await window.__waitForLogRender({ rows: 9, total: 9, matched: 9, visible: 9, selectedId: "web-log-cookie-tiktok", text: "Config cookie_tiktok is not set; TikTok features may not work properly" });
+              const enDetailText = document.getElementById("logDetail").textContent;
+              const enDetailJson = document.querySelector("#logDetail .log-detail-readable")?.dataset?.json || "";
+
+              document.documentElement.dataset.language = "zh-CN";
+              renderLogs();
+              await window.__waitForLogRender({ rows: 9, total: 9, matched: 9, visible: 9, text: "\U0001f50d 正在解析链接重定向" });
+              const zhText = document.getElementById("page-logs").textContent;
+              return { enText, enDetailText, enDetailJson, zhText };
+            }
+            """
+        )
+
+        self.assertIn("[INFO] Douyin parameters initialized", result["enText"])
+        self.assertIn("Config cookie is not logged in; data fetching ended early", result["enText"])
+        self.assertIn("⚠️ Config cookie_tiktok is not set; TikTok features may not work properly", result["enText"])
+        self.assertIn("Download completed: demo.mp4", result["enText"])
+        self.assertIn("✅️ Download completed: emoji.mp4", result["enText"])
+        self.assertIn("[INFO] Douyin parameters updated!", result["enText"])
+        self.assertNotIn("Douyin参数初始化完成", result["enText"])
+        self.assertNotIn("Douyin参数更新完毕", result["enText"])
+        self.assertNotIn("配置文件 cookie 参数未登录", result["enText"])
+        self.assertNotIn("配置文件 cookie_tiktok 参数未设置", result["enText"])
+        self.assertIn("⚠️ Config cookie_tiktok is not set; TikTok features may not work properly", result["enDetailText"])
+        self.assertIn("Config cookie_tiktok is not set; TikTok features may not work properly", result["enDetailJson"])
+        self.assertNotIn("配置文件 cookie_tiktok 参数未设置", result["enDetailJson"])
+        self.assertIn("[INFO] 正在更新抖音参数，请稍等...", result["zhText"])
+        self.assertIn("下载任务完成", result["zhText"])
+        self.assertIn("\U0001f50d 正在解析链接重定向", result["zhText"])
+        self.assertNotIn("Updating Douyin parameters", result["zhText"])
+        self.assertNotIn("Download task completed", result["zhText"])
 
     def test_09j_completed_pending_metadata_fallback_respects_language(self):
         self._goto_ready()
@@ -2468,7 +2657,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
               frontendState.active_downloads = [
                 { id: 'active-a', title: 'Active A', platform: 'Bilibili', platform_id: 'bilibili', progress: 12, speed: '1 MB/s' }
               ];
@@ -2490,6 +2679,22 @@ class WebUIBrowserTests(unittest.TestCase):
               ];
               selected.failed = 'missing-failed';
               renderFailed();
+              await new Promise((resolve, reject) => {
+                const deadline = performance.now() + 3000;
+                const tick = () => {
+                  const selectedRow = document.querySelector('#failedBody tr.selected');
+                  if (selected.failed === 'failed-a' && selectedRow && selectedRow.dataset.id === 'failed-a') {
+                    resolve();
+                    return;
+                  }
+                  if (performance.now() > deadline) {
+                    reject(new Error('failed page worker did not render the selected row'));
+                    return;
+                  }
+                  requestAnimationFrame(tick);
+                };
+                tick();
+              });
 
               frontendState.toolbox_items = [
                 { id: 'tool-a', title: 'Tool A', summary: 'Tool summary', input_example: 'Input A', output_example: 'Output A', icon_file: 'nav_toolbox.png' }

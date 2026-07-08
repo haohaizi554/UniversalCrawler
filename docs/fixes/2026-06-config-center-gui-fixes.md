@@ -2,42 +2,135 @@
 
 ## 背景
 
-2026-06 期间，配置中心和 GUI 暴露出一组相关问题：设置项没有完全热加载、GUI 与 WebUI 默认值不一致、下拉框弹层尺寸和主题不稳定、主题/语言切换存在白屏式重绘、代理设置没有做到选择与输入并存，以及默认打开方式弹窗只显示但没有真正落地。
+2026-06 期间，配置中心和 GUI 暴露出一组相关问题：设置项没有完全热加载、GUI 与 WebUI 默认值不一致、下拉框弹层尺寸和主题不稳定、主题/语言切换存在白屏式重绘、代理设置没有做到选择与输入并存、默认打开方式弹窗只显示但没有真正落地，以及“仅下载视频”等业务开关只保存配置却没有贯穿运行链路。
 
-这些问题的共同根因是：可见控件、运行时配置和前端快照之间没有完全收敛到同一份契约。修复目标不是单独调一个控件，而是让 GUI、WebUI 和后端配置对同一设置项给出一致解释。
+这些问题的共同根因是：可见控件、运行时配置、前端快照和业务执行链路没有完全收敛到同一份契约。修复目标不是单独调一个控件，而是让 GUI、WebUI、配置快照、控制器和核心服务对同一设置项给出一致解释。
+
+本文已吸收原 `archive/` 下 2026-06 的配置中心、GUI、运行时热加载和文件关联相关单点记录；后续排查优先读本文。
 
 ## 已合并的修复主题
 
 - 配置中心选项化和热加载：设置选项从后端快照读取，避免 GUI 固定写死默认值。
 - 零值回退：数值设置允许 `0` 作为有效值，不能被错误当成空值回退。
-- 平台代理启用状态：修复平台代理启用字段类型不一致导致的控件状态漂移。
-- 主题闪屏和入口崩溃：主题切换时批量应用样式和调色板，降低白屏和异常退出概率。
-- 主题同步与代理契约：保证顶部入口、设置页和 WebUI 使用同一主题/代理状态。
-- 下拉框与语言目录：统一下拉弹层组件，语言切换覆盖更多可见页面。
-- 智能换行与底栏布局：避免长文件名、路径和说明文本把底部栏顶出屏幕。
-- 弹窗主题与默认打开方式：弹窗控件跟随主题，并明确 Windows 默认打开方式注册流程。
-- 仅下载视频开关：确保“跳过封面和图片资源”在任务构建与下载执行链路中都生效。
+- 运行时热加载：配置写入后只走一条明确的运行态同步路径，避免旧配置兜底把新值覆盖回去。
+- 平台代理启用状态：Qt API 的 enabled / checked / visible 等状态必须传入严格 `bool`，不能把链式 `and` 的字符串结果传给控件。
+- 主题闪屏和入口崩溃：主题切换时批量应用样式和调色板，关闭临时 popup，降低白屏和异常退出概率。
+- 主题同步与代理契约：顶部入口、设置页和 WebUI 使用同一主题/代理状态；外部同步主题不能二次回写配置。
+- 下拉框与语言目录：统一 `ThemedComboBox` / popup polish 行为，GUI 和 WebUI 复用共享 i18n 目录。
+- 智能换行与底栏布局：长文件名、路径和说明文本在局部滚动区内处理，不能把底部栏顶出屏幕。
+- 弹窗主题与默认打开方式：确认弹窗和文件关联弹窗显式应用局部主题，并明确 Windows 默认打开方式注册结果。
+- 仅下载视频开关：设置项要贯穿配置快照、运行时对象、GUI/Web 回调和核心下载兜底。
+- 安装源完整性：打包前必须检查 HTML、CSS、JS、GUI/Web 图标和设置图标，避免安装器带缺资源产物。
 
-## 工程结论
+## 单点事故吸收
 
-- 设置项必须以后端配置快照为事实来源，GUI 控件不能私自维护默认值。
-- 下拉框必须使用统一弹层组件，不能依赖平台原生弹层的默认样式。
-- 主题、语言、字体和缩放变化要走批处理路径，避免整页重建造成闪屏。
-- 代理入口应支持预设选择和自定义输入并存，最终写入统一配置字段。
-- Windows 默认打开方式属于系统集成功能，需要明确注册结果和生效时机。
-- 修复用户可见设置问题时，应同时检查 GUI、WebUI、配置快照、测试和文档。
+### 配置中心选项化与热加载
 
-## 归档记录
+配置中心曾同时暴露自绘开关不可点击、字号/缩放热加载无感、Cookie 认证状态写死、MissAV 代理参数错位、安装源校验不足、下拉框打开态颜色回落、自定义代理提交时机混乱、设置页旧控件残留、平台设置列宽只在静态测试通过、Windows 配置保存偶发 `PermissionError` 等问题。
 
-以下文档是当时排查过程的原始记录，已经被本文合并为当前结论：
+吸收后的工程约束：
 
-- [archive/2026-06-config-center-options-hotload.md](archive/2026-06-config-center-options-hotload.md)
-- [archive/2026-06-config-center-zero-value-hotload.md](archive/2026-06-config-center-zero-value-hotload.md)
-- [archive/2026-06-config-center-platform-proxy-enabled-type.md](archive/2026-06-config-center-platform-proxy-enabled-type.md)
-- [archive/2026-06-28-config-center-theme-flash-entry-crash.md](archive/2026-06-28-config-center-theme-flash-entry-crash.md)
-- [archive/2026-06-config-center-theme-sync-proxy-contract.md](archive/2026-06-config-center-theme-sync-proxy-contract.md)
-- [archive/2026-06-29-config-center-combo-language.md](archive/2026-06-29-config-center-combo-language.md)
-- [archive/2026-06-runtime-hotload-debug-proxy.md](archive/2026-06-runtime-hotload-debug-proxy.md)
-- [archive/2026-06-29-gui-smart-wrap-bottom-bar.md](archive/2026-06-29-gui-smart-wrap-bottom-bar.md)
-- [archive/2026-06-29-gui-dialog-theme-file-association.md](archive/2026-06-29-gui-dialog-theme-file-association.md)
-- [archive/2026-06-30-video-only-toggle-no-effect.md](archive/2026-06-30-video-only-toggle-no-effect.md)
+- 自绘复用原生控件时，不能只改 `paintEvent()`，还要检查命中、焦点和可访问行为。
+- Qt QSS 优先级高于应用字体，主题、字号或缩放热加载必须同时重新生成 stylesheet。
+- 认证状态和平台能力展示必须来自真实配置或服务状态，不能按平台 ID 写死。
+- 公共配置函数一旦有多个入口，必须设计成容错领域接口，避免位置参数错位。
+- 下拉框是“本体 + 弹层”两套绘制路径，主题适配必须同时覆盖。
+- 可编辑下拉框要把“选择预设”和“输入自定义值”拆成明确状态。
+- Qt 动态页面切换清理旧控件时只 `hide()` + `deleteLater()`，不要 `setParent(None)` 制造隐藏 top-level。
+- 配置中心这种生产工具页必须用截图和 DOM / Qt 尺寸验证，不能只靠字符串或“控件存在”测试。
+- Windows 文件替换按短暂竞争设计，`PermissionError` 需要短重试和临时文件清理。
+
+### 主题、下拉框和语言切换
+
+主题切换、下拉弹层和语言目录曾经反复出现白屏、黑框、滚动条、右侧留白和局部语言未刷新等问题。关键根因包括 Qt QSS 不等同于浏览器 CSS、popup 是独立临时窗口、delegate 引用丢失会让默认焦点框回归、`AppShell.apply_language(force=True)` 扩大刷新半径，以及浅色构造后的控件保留内联浅色 QSS。
+
+吸收后的工程约束：
+
+- Qt stylesheet 必须以真实解析结果为准，`outline`、`line-height`、`opacity`、小数像素、`data:image/svg+xml` 等浏览器 CSS 写法不可直接照搬。
+- 主题切换前关闭 QComboBox popup 和临时 top-level popup，避免留下空白小窗。
+- 渲染缓存不能只看数据签名，还要验证当前 view 结构完整性。
+- 主题热加载拆成“立即换肤”和“受控刷新数据”，不要在同一调用栈里重排、重绘和重建所有页面。
+- popup 短列表应全量展开并锁定滚动范围；选中行背景要覆盖 popup 顶层窗口的完整行宽。
+- 共享 combo 必须能在主题切换后重新生成当前主题下的本体和 popup 样式；配置中心自己的 combo 可以只共享 popup，不强行覆盖本体。
+- 语言、主题、字体等全局设置要区分“真实语义变化”和“同值快照刷新”，避免小变更放大全窗口重绘。
+
+### 主题同步、数量单位和平台代理
+
+顶部主题按钮、配置中心外观页、平台数量选项、MissAV 代理和 WebUI 文案曾经由不同路径维护，导致 Light/Dark 分段控件不同步、页数与视频数混淆、自定义代理 URL 写进下拉框、WebUI 只翻译配置中心局部。
+
+吸收后的工程约束：
+
+- 外部主题同步必须走静默路径，signal blocking 或等价机制要防止二次写配置。
+- `settings_snapshot()` 必须输出足够的语义字段，例如 `count_unit`、平台特定 `count_options`、`proxy_custom_value` 和 `proxy_custom_active`。
+- Bilibili 等分页平台使用 `max_pages/pages`，MissAV 和短视频平台使用 `max_items/videos`，前端不能猜单位。
+- MissAV 代理拆成“预设下拉 + 自定义端点输入”：下拉写 `proxy_app`，输入框写规范化后的 `proxy_url`。
+- WebUI 顶栏、侧栏、状态栏和配置中心都要走统一语言映射。
+
+### 运行时热加载与调试代理
+
+下载设置热加载曾出现 `max_concurrent` 已经生效，却被后续旧配置兜底同步回退的问题；测试 patch `debug_logger.configure` 时也因为代理对象缺少 `__delattr__()` 导致清理失败。
+
+吸收后的工程约束：
+
+- 一次 action 可以先持久化，再调用一个明确的运行态同步方法，但不要在不同方法里重复写同一个运行时字段。
+- 运行时配置读取优先走可被测试和生产共享的 section 数据，不要让 mock `get()` 默认值覆盖新值。
+- 模块级代理对象需要覆盖测试工具会用到的属性生命周期方法，包括 `__getattr__()`、`__setattr__()` 和 `__delattr__()`。
+
+### 弹窗主题与默认打开方式
+
+任务确认弹窗和默认打开方式弹窗曾依赖全局样式继承，主题切换后背景、表格、按钮、复选框可能退回系统默认颜色；设置页按钮参数也和实际弹窗流程不一致。
+
+吸收后的工程约束：
+
+- 阻塞/非阻塞弹窗都要显式应用当前主题色，不能假设父窗口样式继承总是稳定。
+- 默认打开方式这类系统集成功能需要产品化确认流程，明确视频/图片选择、状态提示和失败后跳转系统设置页。
+- 文件关联注册是否生效要区分“程序写入成功”和“Windows UserChoice / 默认应用设置已接受”。
+
+### 智能换行与底栏布局
+
+长文件名、保存路径和顶部数量框曾把完成页与底部状态栏压坏。`SmartWrapLabel` 还曾被语言同步错误写回带换行的显示文本，导致 raw text 越刷越碎。
+
+吸收后的工程约束：
+
+- 文件名、路径、链接等动态文本要标记跳过 i18n 文本改写，语言同步只处理固定 UI 文案。
+- 长内容放进卡片内部滚动区，不参与整页高度膨胀。
+- 控制框宽度和弹层宽度可以分离：本体按当前选中项或稳定策略排版，弹层保证最长项不截断。
+- 视觉问题要检查 popup 顶层窗口、view 和 viewport，不只看内部 viewport。
+
+### 仅下载视频开关
+
+“仅下载视频”曾只保存到配置，没有贯穿普通 `update_setting` 热加载、下载管理器消费、GUI/Web 爬虫回调和核心服务兜底。
+
+吸收后的工程约束：
+
+- 设置项是否生效不能只看配置文件和界面控件，还要检查运行时对象是否收到参数。
+- GUI/Web 回调必须在写入前端列表和入队前过滤非视频资源。
+- 核心服务需要兜底过滤，避免某个入口漏判导致业务规则失效。
+
+## 当前稳定约束
+
+- 除下载目录和 MissAV 自定义代理端点外，设置项优先使用下拉、开关或分段按钮。
+- `0`、空字符串和 `False` 如果是合法业务值，不得用 `value or default` 回退。
+- `speed_limit_kb=0` 必须显示为“无限制（0 KB/s）”。
+- 平台默认数量必须带单位，例如短视频平台“20 个视频（推荐）”、分页平台“1 页（推荐）”。
+- 外观设置包含语言选项，支持 `zh-CN`、`en-US`、`zh-TW`，GUI 和 WebUI 使用同一快照字段。
+- GUI 和 WebUI 都从 `FrontendStateService.settings_snapshot()` 读取同一组选项。
+- GUI 与 WebUI 配置中心都采用“左侧分类 + 右侧详情”的 master-detail 布局；平台设置使用摘要条和稳定表格列。
+- WebUI 不再生成 `type="number"` 设置控件。
+- 修复用户可见设置问题时，应同时检查 GUI、WebUI、配置快照、运行时热加载、测试和文档。
+
+## 验证基线
+
+相关历史修复累计覆盖过以下测试面：
+
+- `tests/test_unified_frontend_contract.py`
+- `tests/test_frontend_state_service.py`
+- `tests/test_main_window.py`
+- `tests/test_web_browser.py`
+- `tests/test_fastapi_endpoints.py`
+- `tests/test_config_settings.py`
+- `tests/test_application_controller.py`
+- `tests/test_web_controller_runtime.py`
+- `tests/test_download_manager_core.py`
+
+后续修改配置中心、主题、语言、弹层、默认打开方式、仅下载视频或运行时热加载时，至少需要跑对应 focused tests；涉及真实布局和弹层的问题，必须补 GUI 截图或像素级/尺寸级验证。

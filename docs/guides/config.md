@@ -24,7 +24,9 @@
 - 主题色必须覆盖控件高亮、下拉框 focus/open 状态和数据行选中背景；GUI 与 WebUI 都不能把选中行固定成单一蓝色。顶部主题按钮必须同步外观页 Light/Dark 控件，不能只改图标或全局样式。
 - GUI 下拉框弹层不能保留 Qt 原生黑色 focus rectangle；打开 popup 前必须同步 view 当前行，保证输入框当前值和弹层选中行一致。
 - GUI 下拉框短列表必须完整展开；12 项以内不显示水平或垂直滚动条，内部 `verticalScrollBar().maximum()` 必须为 `0`，不允许通过隐藏滚动条或偏小 `maximumHeight` 制造可滚动空白。自定义 delegate 必须设置在 `QComboBox` 本体和内部 view 上，并保留 Python 引用，防止 Qt 恢复默认 delegate 后重新出现黑框。调用方传入的 popup 行高和可见行数必须保存到 combo 属性，避免 `showPopup()` 重新 polish 时回退到默认尺寸。
-- GUI 深浅主题热切换必须先关闭临时 popup，再同步刷新当前设置快照并补绘 settings 页、分组导航和详情面板；不能把设置页刷新完全延后到下一轮事件，否则会出现控件树仍完整但用户看到一帧空白的闪屏。
+- GUI 深浅主题热切换必须先关闭临时 popup，但不能在热路径里触发完整前端 snapshot 或整页重绘。主题按钮先更新预览图标，实际样式按 latest-state-wins 合并到最后一次用户意图；设置页只同步必要的 Light/Dark 分段控件和局部主题色。
+- GUI 主题切换必须在 UI 构建完成后执行，不能在 `MainWindow._build_ui()` 前应用全局 stylesheet。不得冻结 `window_root`；如确需短暂冻结，只允许冻结已可见的 `app_shell`，并必须在 `finally` 中恢复 `updatesEnabled`。
+- 主题切换后必须检查并修复 shell chrome：`window_root`、标题栏、`app_shell`、`control_island`、TopBar、Sidebar、PageStack、`status_island` 和 StatusBar 都要可见且可重绘。只检查子控件会漏掉父级 island 或 stack 被隐藏的黑屏事故。
 - GUI 全局 QSS 必须能被 Qt 原生解析，不能使用 Qt 不支持的 `outline`、`line-height`、`opacity`、小数像素或 `data:image/svg+xml`。主题热加载前后不允许出现 `Could not parse application stylesheet`，否则会造成下拉框、输入框或深浅主题状态局部失效。
 - 语言和字号属于全局外观配置。语言切换需要覆盖 GUI/WebUI 顶栏、侧栏、状态栏和配置中心；字号切换需要影响配置中心局部 QSS，不能只改变系统默认字体。
 - 设置页使用渲染签名缓存时，必须同时检查当前视图是否仍有有效子控件；如果堆叠页被清空或隐藏恢复后为空，必须强制重建，不能只因为快照签名一致就跳过渲染。
@@ -105,4 +107,7 @@
 - GUI 目录选择必须使用非原生、非模态 `QFileDialog`，并由页面或窗口持有引用；禁止在主线程直接调用 `QFileDialog.getExistingDirectory()` 这类阻塞静态入口。
 - 主题热加载只允许给真实顶层窗口（`QMainWindow` / `QDialog`）应用根样式。动态页面清理旧控件时不能先 `setParent(None)` 再 `deleteLater()`，否则旧按钮、卡片会在删除事件处理前变成隐藏 top-level，导致主题切换越来越慢，甚至留下空白小窗。
 - `ConfigManager.set_many()` 用于同一配置分组的成组写入，例如 `common.theme` + `common.dark_theme`。GUI 与 WebUI 切换主题时应批量保存，避免连续 `config.changed` 事件触发误判 storm 或重复热加载。
-- 主题切换性能回归必须覆盖“连续切换主题 + 设置分组 + 页面”的混合压力路径，验收指标至少包括：只有主窗口可见、隐藏 Settings 顶层控件为 0、无 QSS parse warning、无异常退出。
+- 主题按钮 busy 状态不能禁用按钮；连续点击应排队合并，不允许出现“图标已变、页面仍旧主题”或“按钮空变但主界面不重绘”的状态。
+- `_apply_theme_stylesheet()` 默认不应刷新完整前端快照；前端状态刷新应交给 `FrontendSnapshotWorker` 或明确的局部 section，避免主题、配置落盘和列表刷新互相抢 UI 线程。
+- 媒体预览全屏状态必须与主窗口主题状态分开判断；退出全屏或 stale fullscreen 清理后再执行 shell 可见性修复，避免黑色预览区域遮住主界面。
+- 主题切换性能回归必须覆盖“连续切换主题 + 设置分组 + 页面 + 媒体预览”的混合压力路径，验收指标至少包括：只有主窗口可见、隐藏 Settings 顶层控件为 0、TopBar/Sidebar/PageStack/StatusBar 不消失、主题按钮仍可点击、无 QSS parse warning、无异常退出。事故细节见 [GUI 主题切换黑屏事故复盘](../fixes/2026-07-gui-theme-black-shell.md)。

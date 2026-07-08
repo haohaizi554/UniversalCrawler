@@ -22,7 +22,7 @@
 - **黑盒 vs 白盒**：黑盒看 API 行为，白盒 mock 内部实现
 - **契约测试**：验证多个入口输出一致
 - **Pipeline 测试**：验证 stdin/stdout 数据流转换
-- **Web E2E**（新增）：Playwright + 真实浏览器 + 静态/可访问性/设计指南审查
+- **Web E2E**：Playwright + 真实浏览器 + 静态/可访问性/设计指南审查
 
 ## 测试基础设施（v2 升级）
 
@@ -31,7 +31,8 @@
 集中管理所有测试类别与文件，运行时可注册新类别：
 
 - `TestCategory` dataclass：id/name/description/files/icon_color/icon_letter/priority/requires_network/requires_gui/enabled
-- 预置 11 个类别（all/cli_sdk/web_api/app_flows/desktop_ui/browser_e2e/pipeline/packaging/core_services/suite_infra/misc）
+- 当前预置 13 个类别（all/cli_sdk/web_api/app_flows/desktop_ui/browser_e2e/pipeline/packaging/core_services/architecture/benchmark/suite_infra/misc）
+- 截至 2026-07-08，本地注册表显示 13 个启用类别、131 个测试文件；`misc` 当前为 0，用于收纳尚未命中规则的新脚本。
 - `register_category()` 运行时注册新类别
 - `register_category_rule()` 用规则自动归类新脚本
 - `register_test_files()` 便于把后续测试脚本加入已有套件
@@ -94,9 +95,9 @@ python tests/test_launcher.py --gui
 
 - `tests/test_config_settings.py`：配置段默认值、类型收敛、枚举校验、重载持久化。
 - `tests/test_frontend_state_service.py`：`settings_snapshot()` 快照形状、`update_setting` 热加载、`max_retries=0` 等边界。
-- `tests/test_main_window.py`：GUI 设置变更进入统一前端动作，并刷新 `settings_snapshot` / `download_options` / `app_status`；顶部主题按钮必须同步设置页 Light/Dark 控件。
+- `tests/test_main_window.py`：GUI 设置变更进入统一前端动作，并刷新 `settings_snapshot` / `download_options` / `app_status`；顶部主题按钮必须同步设置页 Light/Dark 控件；主题快速切换必须 latest-state-wins，不能冻结 `window_root`，也不能触发完整前端快照重绘。
 - `tests/test_unified_frontend_contract.py`：PyQt 设置页控件、WebUI 设置控件、GUI/WebUI 文案与动作契约；平台设置必须覆盖 `max_pages/pages`、`max_items/videos`、MissAV 独立自定义代理输入；全局 GUI QSS 需要用 Qt 实际应用一次，防止样式解析失败导致主题热加载或下拉框高亮失效。
-- `tests/test_unified_frontend_contract.py` 还必须覆盖 GUI 非模态目录选择器、设置页重建后不留下隐藏 top-level 控件，以及主题热加载只给真实顶层窗口应用根样式，防止空白小窗和越切越慢的回归。
+- `tests/test_unified_frontend_contract.py` 还必须覆盖 GUI 非模态目录选择器、设置页重建后不留下隐藏 top-level 控件、主题热加载只给真实顶层窗口应用根样式、TopBar 主题 busy 按钮保持可点击，以及 Web 自定义下拉框深浅主题文字可读性。
 - `tests/test_fastapi_endpoints.py`：`create_app()` 直连启动路径必须暴露 `/api/frontend/state` 和 `/api/frontend/delta`，避免与组合式 `rest_router` 漂移。
 - `tests/test_web_browser.py`：WebUI 静态资源必须使用版本化 CSS/JS，并验证移动端设置页无全局横向溢出、Web 顶栏启动数量使用平台 `count_config_key`、主题按钮可同步外观页主题控件。
 
@@ -130,11 +131,11 @@ python tests/test_launcher.py --gui
 
 测试服务的 `stdout` / `stderr` 也不能挂在无人消费的 `subprocess.PIPE` 上。长时间运行的浏览器套件会持续输出服务日志，管道填满后可能把 uvicorn 或测试进程拖住；应重定向到临时文件或显式消费输出。
 
-2026-07 本地基线：用户原先观测 `tests/test_web_browser.py` 约需 7 到 8 分钟。移除 3.5 秒硬等并修正测试服务输出后，当前实测：
+2026-07 本地基线：用户原先观测 `tests/test_web_browser.py` 约需 7 到 8 分钟。移除 3.5 秒硬等并修正测试服务输出后，历史实测：
 
 ```bash
 python -m pytest tests/test_web_browser.py -q
-# 2026-07-07 最新实测：97 passed in 247.64s (0:04:07)
+# 2026-07-07 基线：97 passed in 247.64s (0:04:07)
 # 2026-07 早前热运行：97 passed in 185.66s (外部秒表约 187.9s)
 ```
 
@@ -232,10 +233,10 @@ python -m pytest tests/test_web_browser.py -q
 
 适合对象：
 
-- `entry/dispatcher.py` 的 TUI 菜单 + Qt 弹窗
-- `entry/web_entry.py` 的端口冲突弹窗
-- `_load_app_icon` 行为
-- `is_tty` / `is_gui_available` 环境检测
+- Qt 主窗口、控制器、队列面板、日志中心、配置中心、媒体预览和宿主适配层。
+- 自绘标题栏、主题切换、侧栏/顶栏/状态栏 shell、窗口生命周期和桌面弹窗。
+- `entry/dispatcher.py` 的 TUI 菜单 + Qt 弹窗、`entry/web_entry.py` 的端口冲突弹窗。
+- `_load_app_icon`、`is_tty` / `is_gui_available` 等桌面环境检测。
 
 特征：
 
@@ -244,9 +245,7 @@ python -m pytest tests/test_web_browser.py -q
 - 不实际 exec 弹窗（避免阻塞）
 - mock input() / sys.stdin 测试 TUI
 
-测试文件：
-
-- `tests/test_ui_dialogs.py`
+当前注册表按规则收纳 21 个文件；新增桌面 UI 回归不要只挂到 `tests/test_ui_dialogs.py`，应让文件名命中 `test_main_window.py`、`test_*_panel.py`、`test_gui_*.py`、`test_desktop_*.py`、`test_ui_*.py` 等既有规则。
 
 ### 管道测试（pipeline）
 
@@ -304,6 +303,30 @@ python -m pytest tests/test_web_browser.py -q
 - `tests/test_web_browser.py`（浏览器交互、可访问性与设计规范回归）
 - `tests/web_test_app.py`（uvicorn shim）
 
+### 架构适应度（architecture）
+
+适合对象：
+
+- 依赖方向、Spider 协议、跨层引用边界和文件大小约束。
+- `tests/architecture/test_*.py` 下的结构性规则。
+
+特征：
+
+- 不依赖真实网络或 GUI。
+- 用轻量静态检查兜住“越层调用”“历史大文件继续膨胀”等回归。
+
+### 性能基准（benchmark）
+
+适合对象：
+
+- `tests/test_performance_benchmarks.py` 中显式运行的轻量性能基准。
+- 前端刷新、日志查询、列表分页、快照生成这类容易被同步重绘拖慢的路径。
+
+特征：
+
+- 默认作为保障层类别出现，但不替代真实交互验证。
+- 结果受机器负载影响，发现明显回退时先排查固定等待、全量快照、UI 线程阻塞和未合并的高频事件。
+
 ### 人工验证
 
 仍建议人工验证以下场景：
@@ -350,6 +373,8 @@ python tests/run_all_tests.py --category packaging     # 打包发布
 python tests/run_all_tests.py --category pipeline      # 数据管道
 python tests/run_all_tests.py --category browser_e2e   # 浏览器 E2E
 python tests/run_all_tests.py --category core_services # 核心服务
+python tests/run_all_tests.py --category architecture  # 架构适应度
+python tests/run_all_tests.py --category benchmark     # 性能基准
 python tests/run_all_tests.py --category suite_infra   # 测试套件
 ```
 
@@ -455,9 +480,9 @@ register_test_files(
 )
 ```
 
-## 修复的生产 Bug
+## 历史测试发现的生产 Bug
 
-通过本次全量测试，发现并修复了 3 个生产 bug：
+历史全量测试曾发现并修复 3 个生产 bug，作为“测试能主动发现生产风险”的案例保留：
 
 1. **RuleSelection.__init__ 中 `self.select = select` 覆盖了 `def select()` 方法**
    - 修复：用 `self._select_rule = select`

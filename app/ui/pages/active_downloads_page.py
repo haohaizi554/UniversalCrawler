@@ -967,7 +967,6 @@ class ActiveDownloadsPage(PageFrame):
         if running_count != self._running_count_value:
             self._running_count_value = running_count
             self._update_running_count_label()
-            self._translation_dirty = True
         table_changed = self.table.set_rows(self.items)
         if result.selected_id:
             self.table.select_id(result.selected_id)
@@ -1113,7 +1112,6 @@ class ActiveDownloadsPage(PageFrame):
         }
 
     def _rebuild_detail_body(self, pairs: list[tuple[str, Any]]) -> None:
-        self._translation_dirty = True
         old_widget = self.detail_fields_scroll.takeWidget()
         if old_widget is not None:
             old_widget.deleteLater()

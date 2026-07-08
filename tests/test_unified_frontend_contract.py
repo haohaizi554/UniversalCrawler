@@ -890,13 +890,18 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         queue_card = active.findChild(QFrame, "QueueControlPanel")
         fields_scroll = active.findChild(QScrollArea, "ActiveDetailFieldsScroll")
         events_scroll = active.findChild(QScrollArea, "ActiveEventsScroll")
-        fields_host = active.findChild(QWidget, "ActiveDetailFieldsHost")
-        fields_body = active.findChild(QWidget, "ActiveDetailFieldsBody")
 
         for card in (table_card, detail_card, events_card, queue_card):
             self.assertIsNotNone(card)
         self.assertIsNotNone(fields_scroll)
         self.assertIsNotNone(events_scroll)
+        self._wait_until(
+            lambda: fields_scroll.widget() is not None
+            and len(active.detail_card.findChildren(SmartWrapLabel)) >= 3,
+            message="active detail worker did not render the detail body",
+        )
+        fields_host = active.findChild(QWidget, "ActiveDetailFieldsHost")
+        fields_body = active.findChild(QWidget, "ActiveDetailFieldsBody")
         self.assertIs(fields_scroll.widget(), fields_host)
         self.assertIs(fields_body.parentWidget(), fields_host)
         self.assertIs(active.table.parent(), table_card)
@@ -1760,6 +1765,20 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             button = top_bar.btn_dir
             self.assertGreaterEqual(button.minimumWidth(), button.sizeHint().width())
             self.assertGreaterEqual(button.maximumWidth(), button.sizeHint().width())
+
+    def test_gui_top_bar_theme_busy_keeps_button_clickable(self):
+        from app.ui.layout.top_bar import TopBarWidget
+
+        top_bar = TopBarWidget(is_dark_theme=False)
+        self.addCleanup(top_bar.deleteLater)
+
+        top_bar.set_theme_button_busy(True)
+        self.assertTrue(top_bar.btn_theme.isEnabled())
+        self.assertEqual(top_bar.btn_theme.property("themeBusy"), "true")
+
+        top_bar.set_theme_button_busy(False)
+        self.assertTrue(top_bar.btn_theme.isEnabled())
+        self.assertEqual(top_bar.btn_theme.property("themeBusy"), "false")
 
     def test_web_selection_modal_matches_gui_confirmation_interaction(self):
         content = _html_bundle()
@@ -2903,7 +2922,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         damaged_payload = localize_log_payload({"description": damaged_download_failure}, "zh-CN")
         self.assertEqual(damaged_payload["description"], "下载任务失败")
         self.assertEqual(localize_log_text("System · MainWindow", "zh-CN"), "系统 · 主窗口")
-        self.assertEqual(localize_log_text("系统 · MainWindow", "en-US"), "System · MainWindow")
+        self.assertEqual(localize_log_text("系统 · MainWindow", "en-US"), "System · Main window")
         self.assertEqual(localize_log_text("系统 · ApplicationContext", "en-US"), "System · ApplicationContext")
         self.assertEqual(localize_log_text("Bilibili · BilibiliDownloader", "zh-CN"), "Bilibili · Bilibili 下载器")
         self.assertEqual(localize_log_text("System · BaseDownloader", "zh-CN"), "系统 · 基础下载器")
@@ -2922,9 +2941,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(localize_log_text("callback failed", "zh-CN"), "回调失败")
         self.assertEqual(localize_log_text("_on_spider_finished 被调用", "zh-CN"), "爬虫完成回调已调用")
         self.assertEqual(localize_log_text("Douyin参数初始化完成", "zh-CN"), "Douyin 参数初始化完成")
+        self.assertEqual(localize_log_text("[INFO] Douyin参数初始化完成", "en-US"), "[INFO] Douyin parameters initialized")
         self.assertEqual(
             localize_log_text("[INFO] 正在更新抖音参数，请稍等...", "en-US"),
             "[INFO] Updating Douyin parameters, please wait...",
+        )
+        self.assertEqual(
+            localize_log_text("[INFO] Updating Douyin parameters, please wait...", "zh-CN"),
+            "[INFO] 正在更新抖音参数，请稍等...",
         )
         self.assertEqual(
             localize_log_text("配置文件 cookie 参数未登录，数据获取已提前结束", "en-US"),
@@ -2933,6 +2957,29 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(
             localize_log_text("配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用", "en-US"),
             "Config cookie is not set; Douyin features may not work properly",
+        )
+        self.assertEqual(
+            localize_log_text("⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用", "en-US"),
+            "⚠️ Config cookie_tiktok is not set; TikTok features may not work properly",
+        )
+        self.assertEqual(
+            localize_log_text("[INFO] Douyin参数更新完毕!", "en-US"),
+            "[INFO] Douyin parameters updated!",
+        )
+        self.assertEqual(
+            localize_log_text("[INFO] 抖音参数更新完毕！", "en-US"),
+            "[INFO] Douyin parameters updated!",
+        )
+        self.assertEqual(
+            localize_log_text("TikTok 参数更新完毕！", "en-US"),
+            "TikTok parameters updated!",
+        )
+        self.assertEqual(
+            localize_log_payload(
+                {"description": "⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用"},
+                "en-US",
+            )["description"],
+            "⚠️ Config cookie_tiktok is not set; TikTok features may not work properly",
         )
         self.assertEqual(localize_log_text("Bilibili stream request established", "zh-CN"), "Bilibili 流请求建立成功")
         self.assertEqual(
@@ -2957,6 +3004,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "準備下載快手影片串流",
         )
         self.assertEqual(localize_log_text("Download completed: demo.mp4", "zh-CN"), "下载完成：demo.mp4")
+        self.assertEqual(localize_log_text("Download task completed", "zh-CN"), "下载任务完成")
+        self.assertEqual(localize_log_text("\U0001f50d Resolving link redirect", "zh-CN"), "\U0001f50d 正在解析链接重定向")
         self.assertEqual(localize_log_text("Started Douyin task | target: demo", "zh-CN"), "启动抖音任务 | 目标：demo")
         self.assertEqual(
             localize_log_text("准备下载 Bilibili 音视频流", "en-US"),
@@ -3044,6 +3093,87 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "没有可用事件循环，已跳过前端增量刷新",
         )
 
+    def test_gui_log_table_localizes_mixed_runtime_summary_rows_after_language_switch(self):
+        shell = self._make_shell()
+        shell.show_page("logs")
+        logs = shell.pages["logs"]
+        snapshot = deepcopy(shell._last_snapshot or FrontendStateService.mock_snapshot())
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "en-US"
+        samples = [
+            ("gui-log-douyin-init", "[INFO] Douyin参数初始化完成", "GUI", "system", "系统"),
+            ("gui-log-cookie", "配置文件 cookie 参数未登录，数据获取已提前结束", "DouyinSpider", "douyin", "Douyin"),
+            (
+                "gui-log-cookie-tiktok",
+                "⚠️ 配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用",
+                "DouyinSpider",
+                "douyin",
+                "Douyin",
+            ),
+            ("gui-log-completed-cn", "下载完成: demo.mp4", "BaseDownloader", "douyin", "Douyin"),
+            ("gui-log-completed-emoji-cn", "✅️ 下载完成: emoji.mp4", "BaseDownloader", "douyin", "Douyin"),
+            ("gui-log-douyin-updated", "[INFO] Douyin参数更新完毕!", "DouyinSpider", "douyin", "Douyin"),
+            ("gui-log-updating-en", "[INFO] Updating Douyin parameters, please wait...", "DouyinSpider", "douyin", "Douyin"),
+            ("gui-log-task-en", "Download task completed", "BaseDownloader", "douyin", "Douyin"),
+            ("gui-log-redirect-en", "\U0001f50d Resolving link redirect", "DouyinSpider", "douyin", "Douyin"),
+        ]
+        snapshot["log_items"] = [
+            {
+                "id": item_id,
+                "time": f"2026-07-08 13:28:{index:02d}",
+                "level": "INFO",
+                "raw_level": "INFO",
+                "source": source,
+                "platform": platform,
+                "platform_id": platform_id,
+                "trace_id": f"dy_i18n_{index}",
+                "message": message,
+                "message_summary": message,
+            }
+            for index, (item_id, message, source, platform_id, platform) in enumerate(samples, start=1)
+        ]
+
+        all_time_index = logs.time_filter.findData("全部")
+        self.assertGreaterEqual(all_time_index, 0)
+        logs.time_filter.setCurrentIndex(all_time_index)
+        shell.render(snapshot, changed_sections={"settings_snapshot", "log_items"})
+        self._wait_for_log_rows(logs, len(samples))
+
+        def table_messages() -> str:
+            model = logs.table.model()
+            return "\n".join(
+                str(model.index(row, 4).data(Qt.ItemDataRole.DisplayRole) or "")
+                for row in range(model.rowCount())
+            )
+
+        self._wait_until(
+            lambda: "[INFO] Douyin parameters initialized" in table_messages(),
+            message="English log table did not translate Douyin parameter init",
+        )
+        en_messages = table_messages()
+        self.assertIn("[INFO] Douyin parameters initialized", en_messages)
+        self.assertIn("Config cookie is not logged in; data fetching ended early", en_messages)
+        self.assertIn("⚠️ Config cookie_tiktok is not set; TikTok features may not work properly", en_messages)
+        self.assertIn("Download completed: demo.mp4", en_messages)
+        self.assertIn("✅️ Download completed: emoji.mp4", en_messages)
+        self.assertIn("[INFO] Douyin parameters updated!", en_messages)
+        self.assertNotIn("Douyin参数初始化完成", en_messages)
+        self.assertNotIn("Douyin参数更新完毕", en_messages)
+        self.assertNotIn("配置文件 cookie 参数未登录", en_messages)
+        self.assertNotIn("配置文件 cookie_tiktok 参数未设置", en_messages)
+
+        snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
+        shell.render(snapshot, changed_sections={"settings_snapshot"})
+        self._wait_until(
+            lambda: "\U0001f50d 正在解析链接重定向" in table_messages(),
+            message="Chinese log table did not translate English redirect message",
+        )
+        zh_messages = table_messages()
+        self.assertIn("[INFO] 正在更新抖音参数，请稍等...", zh_messages)
+        self.assertIn("下载任务完成", zh_messages)
+        self.assertIn("\U0001f50d 正在解析链接重定向", zh_messages)
+        self.assertNotIn("Updating Douyin parameters", zh_messages)
+        self.assertNotIn("Download task completed", zh_messages)
+
     def test_web_runtime_log_phrase_translations_match_gui_table(self):
         import ast
         import re
@@ -3127,16 +3257,13 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self._wait_for_log_rows(logs, 1)
 
         source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
-        self.assertTrue(str(source).endswith("System · MainWindow"))
-        self._wait_for_log_detail_source(logs, "MainWindow")
+        self.assertTrue(str(source).endswith("System · Main window"))
+        self._wait_for_log_detail_source(logs, "Main window")
 
         snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
         shell.render(snapshot, changed_sections={"settings_snapshot"})
         self.app.processEvents()
-        self._wait_for_log_table_cell_without(logs, 0, 2, "MainWindow")
-
-        source = logs.table.model().index(0, 2).data(Qt.ItemDataRole.DisplayRole)
-        self.assertTrue(str(source).endswith("系统 · 主窗口"))
+        source = self._wait_for_log_table_cell_suffix(logs, 0, 2, "系统 · 主窗口")
         self.assertNotIn("MainWindow", str(source))
         self._wait_for_log_detail_source(logs, "主窗口")
 
@@ -3532,6 +3659,55 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         failed._clear_layout(failed.summary_layout)
         self.assertIs(first_summary_row.parent(), failed.summary_body)
         self.assertTrue(first_summary_row.isHidden())
+
+    def test_failed_page_uses_worker_pagination_batches(self):
+        shell = self._make_shell()
+        failed = shell.pages["failed"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+
+        def failed_row(index: int) -> dict:
+            return {
+                "id": f"failed-{index:02d}",
+                "title": f"Failed task {index:02d}",
+                "failed_at": "2026-07-06 18:49:04",
+                "failed_at_table": "07-06 18:49",
+                "reason": "B站下载失败",
+                "reason_detail": "B站下载失败",
+                "reason_label": "链接失败",
+                "reason_icon_file": "action_trace_link.png",
+                "platform": "Bilibili",
+                "platform_id": "bilibili",
+                "trace_id": f"trace-{index:02d}",
+                "status_label": "失败",
+                "log_excerpt_items": [],
+                "solutions": [],
+            }
+
+        snapshot["failed_items"] = [failed_row(index) for index in range(45)]
+        shell.show_page("failed")
+        failed.render(snapshot)
+
+        self._wait_for_table_rows(failed.table, 20)
+        self.assertIsInstance(failed.pagination_footer, PaginationFooter)
+        self.assertEqual(failed.table.model().rowCount(), 20)
+        self.assertIn("45", failed.total_label.text())
+        self.assertEqual(failed.selected_id(), "failed-00")
+
+        first_page_title = failed.table.model().index(0, 0).data(Qt.ItemDataRole.DisplayRole)
+        failed.btn_next.click()
+        self._wait_until(
+            lambda: failed._page == 2
+            and failed.table.model().index(0, 0).data(Qt.ItemDataRole.DisplayRole) != first_page_title,
+            message="failed page did not render the second worker page",
+        )
+        self.assertEqual(failed.table.model().rowCount(), 20)
+        self.assertEqual(failed.selected_id(), "failed-20")
+
+        failed.btn_next.click()
+        self._wait_for_table_rows(failed.table, 5)
+        self.assertEqual(failed._page, 3)
+        self.assertEqual(failed.selected_id(), "failed-40")
+        self.assertFalse(failed.btn_next.isEnabled())
 
     def test_failed_log_rows_keep_full_time_and_aligned_messages(self):
         shell = self._make_shell()

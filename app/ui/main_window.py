@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
     FRONTEND_RENDER_WARN_MS = 50
     FRONTEND_RENDER_WARN_MIN_INTERVAL_MS = 10_000
     LOG_REFRESH_THROTTLE_MS = 350
+    THEME_TOGGLE_COALESCE_MS = 120
     FRAMELESS_RESIZE_BORDER_PX = 8
     AUTO_HIDE_TASKBAR_RESERVE_PX = 2
     WVR_REDRAW = 0x0300
@@ -164,7 +165,6 @@ class MainWindow(QMainWindow):
         self._apply_default_window_geometry()
         configured_theme = str(cfg.get("common", "theme", "dark" if cfg.get("common", "dark_theme", False) else "light") or "light").lower()
         self.is_dark_theme = configured_theme == "dark"
-        self._apply_theme_stylesheet()
         icon = load_qt_icon(["favicon.ico"], fallback_names=["Web.ico"])
         if icon is not None:
             self.setWindowIcon(icon)
@@ -197,6 +197,11 @@ class MainWindow(QMainWindow):
         self._frontend_action_worker = FrontendActionWorker(
             lambda result: self._frontend_action_finished.emit(result)
         )
+        self._theme_transition_in_progress = False
+        self._queued_theme_is_dark: bool | None = None
+        self._theme_transition_target_is_dark: bool | None = None
+        self._theme_transition_sequence = 0
+        self._last_committed_theme_sequence = 0
         self._update_check_sequence = 0
         self._update_check_worker: LatestRequestWorker[_UpdateCheckRequest, _UpdateCheckOutcome] | None = None
         self._ui_update_scheduler = UiUpdateScheduler(
@@ -248,12 +253,22 @@ class MainWindow(QMainWindow):
         self._update_check_lock = threading.RLock()
 
         self._build_ui()
+        self._debug_shell_visibility("after_build_ui")
         self._expose_component_refs()
         self._bind_component_signals()
         self._apply_playback_runtime_settings()
-        self._apply_theme_stylesheet()
+        self._apply_theme_stylesheet(
+            refresh_frontend_snapshot=False,
+            update_theme_icon=True,
+            freeze_updates=False,
+        )
         self.load_initial_state()
+        self._exit_stale_media_fullscreen_if_needed(reason="after_load_initial_state")
+        self._ensure_shell_chrome_visible(reason="after_load_initial_state")
+        self._debug_shell_visibility("after_load_initial_state")
         self.refresh_frontend_state(mock=True, force=True)
+        self._ensure_shell_chrome_visible(reason="after_initial_refresh")
+        self._debug_shell_visibility("after_initial_refresh")
         self._install_frameless_resize_event_filter()
         self._install_windows_native_frame_filter()
 
@@ -719,6 +734,7 @@ class MainWindow(QMainWindow):
         started = time.perf_counter()
         self.app_shell.render(snapshot, changed_sections=result.changed_sections)
         self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
+        self._repair_black_shell_if_needed("_on_frontend_snapshot_finished")
 
     def _submit_frontend_action(self, action: str, payload: dict[str, object] | None = None) -> bool:
         service = self.__dict__.get("_frontend_state_service")
@@ -856,6 +872,24 @@ class MainWindow(QMainWindow):
         if normalized_section == "common" and config_key == "theme":
             theme_value = str(value or "light").lower()
             is_dark = theme_value == "dark"
+            source = str(payload.get("source") or "")
+            theme_toggle_ui_applied = payload.get("ui_applied") is True and source in {
+                "theme_toggle",
+                "system_palette",
+            }
+            if theme_toggle_ui_applied:
+                try:
+                    payload_sequence = int(payload.get("theme_sequence") or 0)
+                except (TypeError, ValueError):
+                    payload_sequence = 0
+                current_sequence = int(self.__dict__.get("_theme_transition_sequence", 0) or 0)
+                if source == "theme_toggle" and payload_sequence and payload_sequence != current_sequence:
+                    return
+                if self.is_dark_theme != is_dark:
+                    self.is_dark_theme = is_dark
+                    self._apply_theme_stylesheet(refresh_frontend_snapshot=False)
+                    self.sig_theme_changed.emit(is_dark)
+                return
             if self.is_dark_theme != is_dark:
                 self.is_dark_theme = is_dark
                 self.sig_theme_changed.emit(is_dark)
@@ -1058,60 +1092,247 @@ class MainWindow(QMainWindow):
         self._title_rename_handler = on_rename
 
     def toggle_theme(self) -> None:
-        self.is_dark_theme = not self.is_dark_theme
-        self._submit_frontend_action(
-            "update_basic_setting",
-            {"key": "theme", "value": "dark" if self.is_dark_theme else "light"},
+        if self.__dict__.get("_theme_transition_in_progress", False):
+            base_theme = self.__dict__.get("_queued_theme_is_dark")
+            if base_theme is None:
+                base_theme = self.__dict__.get("_theme_transition_target_is_dark", self.is_dark_theme)
+            self.__dict__["_queued_theme_is_dark"] = not bool(base_theme)
+            self._set_theme_button_busy(True)
+            return
+
+        self._begin_theme_transition(not bool(self.is_dark_theme))
+
+    def _begin_theme_transition(self, is_dark: bool) -> None:
+        is_dark = bool(is_dark)
+        last_applied = self.__dict__.get("_last_applied_theme_is_dark")
+        if last_applied is not None and bool(last_applied) == is_dark:
+            self._set_theme_icon_immediate(is_dark)
+            self._set_theme_button_busy(False)
+            return
+
+        self.__dict__["_theme_transition_in_progress"] = True
+        self.__dict__["_queued_theme_is_dark"] = None
+        self.__dict__["_theme_transition_target_is_dark"] = is_dark
+        self.__dict__["_theme_transition_sequence"] = int(
+            self.__dict__.get("_theme_transition_sequence", 0) or 0
+        ) + 1
+        sequence = int(self.__dict__["_theme_transition_sequence"])
+        self._set_theme_button_busy(True)
+        QTimer.singleShot(0, lambda: self._commit_theme_toggle_interactive(is_dark, sequence))
+
+    def _commit_theme_toggle_interactive(self, is_dark: bool, sequence: int) -> None:
+        if sequence != int(self.__dict__.get("_theme_transition_sequence", 0) or 0):
+            return
+        queued_before_start = self.__dict__.pop("_queued_theme_is_dark", None)
+        if queued_before_start is not None:
+            is_dark = bool(queued_before_start)
+            self.__dict__["_theme_transition_target_is_dark"] = is_dark
+            if is_dark == bool(self.is_dark_theme):
+                self._finish_theme_transition(bool(self.is_dark_theme), 0.0, failed=False, queued=True)
+                return
+        started = time.perf_counter()
+        failed = False
+        try:
+            self._commit_theme_toggle(bool(is_dark), ui_already_serialized=True)
+        except Exception as exc:
+            failed = True
+            debug_logger.log_exception(
+                "MainWindow",
+                "theme_transition",
+                exc,
+                details={"is_dark": bool(is_dark), "sequence": int(sequence)},
+            )
+        finally:
+            duration_ms = (time.perf_counter() - started) * 1000
+            self._finish_theme_transition(bool(self.is_dark_theme), duration_ms, failed=failed)
+
+    def _finish_theme_transition(
+        self,
+        applied_is_dark: bool,
+        duration_ms: float,
+        *,
+        failed: bool = False,
+        queued: bool | None = None,
+    ) -> None:
+        applied_is_dark = bool(applied_is_dark)
+        queued_after_apply = self.__dict__.pop("_queued_theme_is_dark", None)
+        has_next = queued_after_apply is not None and bool(queued_after_apply) != bool(self.is_dark_theme)
+        self._set_theme_icon_immediate(applied_is_dark)
+        self.__dict__["_theme_transition_in_progress"] = False
+        self.__dict__["_theme_transition_target_is_dark"] = None
+
+        queued_exists = bool(queued) if queued is not None else has_next
+        self._log_theme_transition_finished(
+            applied_is_dark,
+            duration_ms,
+            queued=queued_exists,
+            failed=failed,
         )
-        self._apply_theme_stylesheet()
+        if has_next:
+            self._set_theme_button_busy(True)
+            self._ensure_shell_chrome_visible(reason="theme_transition_queued")
+            self._repair_black_shell_if_needed("theme_transition_queued")
+            QTimer.singleShot(16, lambda: self._begin_theme_transition(bool(queued_after_apply)))
+            return
+
+        self._set_theme_button_busy(False)
+        self._ensure_shell_chrome_visible(reason="theme_transition_finished")
+        self._repair_black_shell_if_needed("theme_transition_finished")
+
+    def _log_theme_transition_finished(
+        self,
+        is_dark: bool,
+        duration_ms: float,
+        *,
+        queued: bool,
+        failed: bool,
+    ) -> None:
+        visible_page = ""
+        app_state = self.__dict__.get("app_state")
+        get_visible_page = getattr(app_state, "get_visible_page", None)
+        if callable(get_visible_page):
+            try:
+                visible_page = str(get_visible_page() or "")
+            except RuntimeError:
+                visible_page = ""
+        is_slow = duration_ms > 80
+        debug_logger.log(
+            component="MainWindow",
+            action="theme_transition_finished",
+            level="ERROR" if failed else ("WARN" if is_slow else "INFO"),
+            message="Theme transition failed" if failed else "Theme transition finished",
+            status_code="THEME_TRANSITION_FAILED" if failed else ("THEME_APPLY_SLOW" if is_slow else "THEME_TRANSITION_FINISHED"),
+            details={
+                "apply_theme_duration_ms": round(float(duration_ms), 2),
+                "visible_page": visible_page,
+                "refresh_frontend_snapshot": bool(self.__dict__.get("_last_theme_refresh_frontend_snapshot", False)),
+                "queued_theme": bool(queued),
+                "is_dark": bool(is_dark),
+            },
+        )
+
+    def _commit_theme_toggle(self, is_dark: bool, *, ui_already_serialized: bool = False) -> None:
+        self.is_dark_theme = bool(is_dark)
+        last_applied = self.__dict__.get("_last_applied_theme_is_dark")
+        if last_applied is not None and bool(last_applied) == self.is_dark_theme:
+            return
+        payload = {"key": "theme", "value": "dark" if self.is_dark_theme else "light"}
+        if ui_already_serialized:
+            payload.update(
+                {
+                    "source": "theme_toggle",
+                    "ui_applied": True,
+                    "theme_sequence": int(self.__dict__.get("_theme_transition_sequence", 0) or 0),
+                }
+            )
+        self._submit_frontend_action("update_basic_setting", payload)
+        self._apply_theme_stylesheet(
+            refresh_frontend_snapshot=False,
+            update_theme_icon=False,
+            freeze_updates=False,
+        )
         self.append_log(f"已切换到{'深色' if self.is_dark_theme else '浅色'}主题")
         self.sig_theme_changed.emit(self.is_dark_theme)
-
-    def _persist_theme_config(self, is_dark: bool) -> None:
-        self._submit_frontend_action(
-            "update_basic_setting",
-            {"key": "theme", "value": "dark" if is_dark else "light", "manual": False},
+        self.__dict__["_last_committed_theme_sequence"] = int(
+            self.__dict__.get("_theme_transition_sequence", 0) or 0
         )
+
+    def _set_theme_icon_immediate(self, is_dark: bool) -> None:
+        top_bar = self.__dict__.get("top_bar")
+        set_preview_icon = getattr(top_bar, "set_theme_preview_icon", None)
+        if callable(set_preview_icon):
+            set_preview_icon(bool(is_dark))
+
+    def _set_theme_button_busy(self, busy: bool) -> None:
+        top_bar = self.__dict__.get("top_bar")
+        setter = getattr(top_bar, "set_theme_button_busy", None)
+        if callable(setter):
+            setter(bool(busy))
+
+    def _persist_theme_config(
+        self,
+        is_dark: bool,
+        *,
+        source: str = "",
+        ui_applied: bool = False,
+    ) -> None:
+        payload = {"key": "theme", "value": "dark" if is_dark else "light", "manual": False}
+        if source:
+            payload.update({"source": source, "ui_applied": bool(ui_applied)})
+        self._submit_frontend_action("update_basic_setting", payload)
 
     def _apply_theme_stylesheet(
         self,
         *,
         refresh_shell_theme: bool = True,
         sync_settings_theme: bool = True,
+        refresh_frontend_snapshot: bool = False,
+        update_theme_icon: bool = True,
+        freeze_updates: bool = False,
     ) -> None:
-        if refresh_shell_theme:
-            self._close_transient_popups_before_theme()
-        self._apply_root_background()
-        apply_application_theme(self.is_dark_theme)
-        self._apply_root_background()
-        window_chrome = self.__dict__.get("window_chrome")
-        if window_chrome is not None:
-            window_chrome.apply_theme(self.is_dark_theme)
-        title_bar = self.__dict__.get("window_title_bar")
-        if title_bar is not None and window_chrome is None:
-            title_bar.apply_theme(self.is_dark_theme)
-        top_bar = self.__dict__.get("top_bar")
-        if top_bar is not None and refresh_shell_theme:
-            top_bar.set_theme_icon(self.is_dark_theme)
-        app_shell = self.__dict__.get("app_shell")
-        if app_shell is not None and refresh_shell_theme:
-            app_shell.apply_theme(self.is_dark_theme)
-        if app_shell is not None and sync_settings_theme:
-            settings_page = getattr(app_shell, "pages", {}).get("settings")
-            sync_theme = getattr(settings_page, "sync_external_theme", None)
-            if callable(sync_theme):
-                sync_theme(
-                    self.is_dark_theme,
-                    follow_system=bool(cfg.get("appearance", "follow_system", False)),
-                )
-        refreshed = False
-        if "_frontend_state_service" in self.__dict__:
-            self._refresh_frontend_after_theme_change()
-            refreshed = True
-        if not self.__dict__.get("_qt_initialized", False):
-            return
-        if not refreshed:
-            self._finalize_theme_repaint()
+        self._debug_shell_visibility("before_theme_apply")
+        self.__dict__["_last_theme_refresh_frontend_snapshot"] = bool(refresh_frontend_snapshot)
+        freeze_states: list[tuple[QWidget, bool]] = []
+        if freeze_updates and refresh_shell_theme:
+            for widget in (self.__dict__.get("app_shell"),):
+                if widget is None:
+                    continue
+                try:
+                    if not widget.isVisible():
+                        continue
+                    was_enabled = bool(widget.updatesEnabled())
+                    freeze_states.append((widget, was_enabled))
+                    if was_enabled:
+                        widget.setUpdatesEnabled(False)
+                except RuntimeError:
+                    continue
+        try:
+            if refresh_shell_theme:
+                self._close_transient_popups_before_theme()
+            self._apply_root_background()
+            apply_application_theme(self.is_dark_theme)
+            self._apply_root_background()
+            window_chrome = self.__dict__.get("window_chrome")
+            if window_chrome is not None:
+                window_chrome.apply_theme(self.is_dark_theme)
+            title_bar = self.__dict__.get("window_title_bar")
+            if title_bar is not None and window_chrome is None:
+                title_bar.apply_theme(self.is_dark_theme)
+            top_bar = self.__dict__.get("top_bar")
+            if top_bar is not None and refresh_shell_theme and update_theme_icon:
+                top_bar.set_theme_icon(self.is_dark_theme)
+            app_shell = self.__dict__.get("app_shell")
+            if app_shell is not None and refresh_shell_theme:
+                app_shell.apply_theme(self.is_dark_theme)
+            if app_shell is not None and sync_settings_theme:
+                settings_page = getattr(app_shell, "pages", {}).get("settings")
+                sync_theme = getattr(settings_page, "sync_external_theme", None)
+                if callable(sync_theme):
+                    sync_theme(
+                        self.is_dark_theme,
+                        follow_system=bool(cfg.get("appearance", "follow_system", False)),
+                    )
+            self.__dict__["_last_applied_theme_is_dark"] = bool(self.is_dark_theme)
+            self.__dict__["_theme_apply_refreshed_snapshot"] = False
+            if refresh_frontend_snapshot and "_frontend_state_service" in self.__dict__:
+                self._refresh_frontend_after_theme_change()
+                self.__dict__["_theme_apply_refreshed_snapshot"] = True
+            if not self.__dict__.get("_qt_initialized", False):
+                return
+        finally:
+            for widget, was_enabled in reversed(freeze_states):
+                try:
+                    widget.setUpdatesEnabled(was_enabled)
+                    if was_enabled:
+                        widget.update()
+                except RuntimeError:
+                    continue
+            if self.__dict__.get("_qt_initialized", False):
+                self._ensure_shell_chrome_visible(reason="theme_apply_finally")
+                self._repair_black_shell_if_needed("theme_apply_finally")
+                if not self.__dict__.get("_theme_apply_refreshed_snapshot", False):
+                    self._finalize_theme_repaint()
+                self._debug_shell_visibility("after_theme_apply")
 
     def _apply_root_background(self) -> None:
         palette = build_palette(self.is_dark_theme)
@@ -1139,11 +1360,161 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 continue
 
-    def _refresh_frontend_after_theme_change(self) -> None:
+    def _debug_shell_visibility(self, reason: str) -> None:
+        shell = self.__dict__.get("app_shell")
+        widgets = {
+            "main_window": self,
+            "window_root": self.__dict__.get("window_root"),
+            "window_title_bar": self.__dict__.get("window_title_bar"),
+            "app_shell": shell,
+            "control_island": getattr(shell, "control_island", None),
+            "top_bar": self.__dict__.get("top_bar"),
+            "sidebar": getattr(shell, "sidebar", None),
+            "page_stack": getattr(shell, "stack", None),
+            "status_island": getattr(shell, "status_island", None),
+            "status_bar": getattr(shell, "status_bar", None),
+            "media_panel": self.__dict__.get("media_panel"),
+        }
+        details: dict[str, dict[str, object]] = {}
+        for name, widget in widgets.items():
+            if widget is None:
+                details[name] = {"exists": False}
+                continue
+            try:
+                details[name] = {
+                    "exists": True,
+                    "visible": bool(widget.isVisible()),
+                    "hidden": bool(widget.isHidden()),
+                    "updates_enabled": bool(widget.updatesEnabled()),
+                    "geometry": str(widget.geometry()),
+                    "object_name": str(widget.objectName()),
+                }
+            except RuntimeError:
+                details[name] = {"exists": True, "deleted": True}
+        debug_logger.log(
+            component="MainWindow",
+            action="shell_visibility_probe",
+            level="INFO",
+            message=f"Shell visibility probe: {reason}",
+            status_code="SHELL_VISIBILITY_PROBE",
+            details=details,
+        )
+
+    def _media_panel_is_fullscreen(self) -> bool:
+        media_panel = self.__dict__.get("media_panel")
+        if media_panel is None:
+            return False
+        for attr in ("is_media_fullscreen", "is_fullscreen", "_is_fullscreen", "_fullscreen"):
+            value = getattr(media_panel, attr, None)
+            if callable(value):
+                try:
+                    return bool(value())
+                except Exception:
+                    continue
+            if value is not None:
+                return bool(value)
         try:
-            self.refresh_frontend_state(topics={"settings.update"})
-        finally:
-            self._finalize_theme_repaint()
+            return bool(getattr(media_panel, "_fullscreen_window", None) is not None)
+        except RuntimeError:
+            return False
+
+    def _exit_stale_media_fullscreen_if_needed(self, *, reason: str = "") -> None:
+        media_panel = self.__dict__.get("media_panel")
+        if media_panel is None:
+            return
+        try:
+            if getattr(media_panel, "_fullscreen_window", None) is None:
+                return
+        except RuntimeError:
+            return
+        exit_fullscreen = getattr(media_panel, "exit_media_fullscreen", None)
+        if not callable(exit_fullscreen):
+            return
+        try:
+            exit_fullscreen()
+            debug_logger.log(
+                component="MainWindow",
+                action="exit_stale_media_fullscreen",
+                level="WARN",
+                message="Exited stale media fullscreen while restoring shell chrome",
+                status_code="STALE_MEDIA_FULLSCREEN_EXITED",
+                details={"reason": reason},
+            )
+        except Exception as exc:
+            debug_logger.log_exception(
+                "MainWindow",
+                "exit_stale_media_fullscreen",
+                exc,
+                details={"reason": reason},
+            )
+
+    def _ensure_shell_chrome_visible(self, *, reason: str = "") -> None:
+        if self.__dict__.get("is_fullscreen_mode", False):
+            return
+        try:
+            if self.isFullScreen():
+                return
+        except RuntimeError:
+            pass
+        if self._media_panel_is_fullscreen():
+            return
+
+        shell = self.__dict__.get("app_shell")
+        widgets = [
+            self.__dict__.get("window_root"),
+            self.__dict__.get("window_title_bar"),
+            shell,
+            getattr(shell, "control_island", None),
+            getattr(shell, "top_bar", None),
+            getattr(shell, "sidebar", None),
+            getattr(shell, "stack", None),
+            getattr(shell, "status_island", None),
+            getattr(shell, "status_bar", None),
+        ]
+        for widget in widgets:
+            if widget is None:
+                continue
+            try:
+                widget.setUpdatesEnabled(True)
+                widget.setVisible(True)
+                widget.show()
+                widget.updateGeometry()
+                widget.update()
+            except RuntimeError:
+                continue
+        self._debug_shell_visibility(f"ensure_shell_chrome_visible:{reason}")
+
+    def _repair_black_shell_if_needed(self, reason: str = "") -> None:
+        shell = self.__dict__.get("app_shell")
+        top_bar = self.__dict__.get("top_bar")
+        control_island = getattr(shell, "control_island", None)
+        sidebar = getattr(shell, "sidebar", None)
+        page_stack = getattr(shell, "stack", None)
+        status_island = getattr(shell, "status_island", None)
+        status_bar = getattr(shell, "status_bar", None)
+        missing_shell = False
+        for widget in (control_island, top_bar, sidebar, page_stack, status_island, status_bar):
+            try:
+                if widget is None or not widget.isVisible() or not widget.updatesEnabled():
+                    missing_shell = True
+                    break
+            except RuntimeError:
+                missing_shell = True
+                break
+        if not missing_shell:
+            return
+        debug_logger.log(
+            component="MainWindow",
+            action="repair_black_shell",
+            level="WARN",
+            message="Shell chrome was hidden unexpectedly; restoring shell chrome",
+            status_code="BLACK_SHELL_REPAIR",
+            details={"reason": reason},
+        )
+        self._ensure_shell_chrome_visible(reason=f"repair:{reason}")
+
+    def _refresh_frontend_after_theme_change(self) -> None:
+        self.refresh_frontend_state(topics={"settings.update"})
 
     def _finalize_theme_repaint(self) -> None:
         try:
@@ -1197,13 +1568,37 @@ class MainWindow(QMainWindow):
         if not self._follow_system_theme_enabled():
             return
         is_dark = self._system_palette_is_dark()
-        self._persist_theme_config(is_dark)
         if self.is_dark_theme == is_dark:
+            self._persist_theme_config(is_dark, source="system_palette", ui_applied=True)
             return
+        if self.__dict__.get("_theme_transition_in_progress", False):
+            self.__dict__["_queued_theme_is_dark"] = is_dark
+            return
+        started = time.perf_counter()
+        failed = False
+        self._set_theme_button_busy(True)
+        self._persist_theme_config(is_dark, source="system_palette", ui_applied=True)
         self.is_dark_theme = is_dark
-        self._apply_theme_stylesheet()
-        self.sig_theme_changed.emit(is_dark)
-        self.refresh_frontend_state(topics={"settings.update"})
+        try:
+            self._apply_theme_stylesheet(refresh_frontend_snapshot=False)
+            self.sig_theme_changed.emit(is_dark)
+        except Exception as exc:
+            failed = True
+            debug_logger.log_exception(
+                "MainWindow",
+                "system_palette_theme_transition",
+                exc,
+                details={"is_dark": bool(is_dark)},
+            )
+        finally:
+            self._set_theme_icon_immediate(self.is_dark_theme)
+            self._set_theme_button_busy(False)
+            self._log_theme_transition_finished(
+                bool(self.is_dark_theme),
+                (time.perf_counter() - started) * 1000,
+                queued=False,
+                failed=failed,
+            )
 
     def _toggle_maximized(self) -> None:
         if self.is_fullscreen_mode or self._safe_is_fullscreen():
@@ -1671,6 +2066,9 @@ class MainWindow(QMainWindow):
         controller = self._chrome_controller()
         controller.install()
         controller.on_show_event()
+        self._ensure_shell_chrome_visible(reason="show_event")
+        self._repair_black_shell_if_needed("show_event")
+        self._debug_shell_visibility("show_event")
 
     def nativeEvent(self, event_type, message):
         hit_test = self._chrome_controller().handle_native_event(event_type, message)
@@ -1950,6 +2348,12 @@ class MainWindow(QMainWindow):
                     sync_settings_theme=False,
                 )
                 self.setPalette(build_palette(self.is_dark_theme))
+                return
+            if (
+                changed_key in {"theme", "dark_theme"}
+                and self.__dict__.get("_last_applied_theme_is_dark") == self.is_dark_theme
+            ):
+                self._set_theme_icon_immediate(self.is_dark_theme)
                 return
             self._apply_theme_stylesheet()
             self.setPalette(build_palette(self.is_dark_theme))

@@ -72,11 +72,13 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
     def test_spiders_core_imports_stay_in_known_runtime_whitelist(self) -> None:
         allowed_modules = {
             "app.core.events",
+            "app.core.anti_detection",
             "app.core.guardrails",
             "app.core.media_filter",
             "app.core.plugins.run_options",
         }
         allowed_prefixes = {
+            "app.core.anti_detection.",
             "app.core.guardrails.",
             "app.core.lib.douyin.",
         }

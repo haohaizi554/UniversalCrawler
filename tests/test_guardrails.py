@@ -579,9 +579,11 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         text = (project_root / "app" / "core" / "event_bus.py").read_text(encoding="utf-8", errors="ignore")
 
         self.assertIn("ASYNC_NOISY_TOPICS", text)
+        self.assertIn("ASYNC_TOPIC_LATEST_KEYS", text)
         self.assertIn("_async_pending_latest", text)
         self.assertIn("_AsyncTaskKey", text)
         self.assertIn("_enqueue_latest_async_handler", text)
+        self.assertIn("_async_topic_latest_key", text)
         for topic in ("videos.update", "videos.metadata", "video_state_changed", "task_progress", "logs.append", "log"):
             with self.subTest(topic=topic):
                 self.assertIn(topic, text)

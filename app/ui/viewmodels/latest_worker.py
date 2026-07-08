@@ -24,7 +24,8 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
         self._on_result = on_result
         self._process = process
         self._condition = threading.Condition()
-        self._pending: RequestT | None = None
+        self._pending: tuple[int, RequestT] | None = None
+        self._generation = 0
         self._shutdown = False
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
@@ -33,7 +34,8 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
         with self._condition:
             if self._shutdown:
                 return
-            self._pending = request
+            self._generation += 1
+            self._pending = (self._generation, request)
             self._condition.notify()
 
     def shutdown(self) -> None:
@@ -50,7 +52,7 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
                     self._condition.wait()
                 if self._shutdown:
                     return
-                request = self._pending
+                generation, request = self._pending
                 self._pending = None
             if request is None:
                 continue
@@ -66,6 +68,9 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
                 continue
             if result is None:
                 continue
+            with self._condition:
+                if generation != self._generation or self._shutdown:
+                    continue
             try:
                 self._on_result(result)
             except RuntimeError:

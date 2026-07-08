@@ -36,7 +36,7 @@ class MainWindowTests(unittest.TestCase):
 
         def shutdown(self):
             self.shutdown_called = True
-    
+
     def _make_window(self) -> MainWindow:
         """提供 `_make_window` 对应的内部辅助逻辑，供 `MainWindowTests` 使用。"""
         window = MainWindow.__new__(MainWindow)
@@ -51,6 +51,54 @@ class MainWindowTests(unittest.TestCase):
         window.plugin_widget = None
         window._pending_delete_video_ids = []
         return window
+
+    class FakeShellWidget:
+        def __init__(self, *, visible: bool = True, updates_enabled: bool = True, object_name: str = "FakeWidget"):
+            self._visible = visible
+            self._updates_enabled = updates_enabled
+            self._object_name = object_name
+            self.set_updates_enabled_calls: list[bool] = []
+            self.set_visible_calls: list[bool] = []
+            self.show_calls = 0
+            self.update_calls = 0
+            self.update_geometry_calls = 0
+            self.pages = {}
+
+        def isVisible(self):
+            return self._visible
+
+        def isHidden(self):
+            return not self._visible
+
+        def updatesEnabled(self):
+            return self._updates_enabled
+
+        def setUpdatesEnabled(self, enabled):
+            self._updates_enabled = bool(enabled)
+            self.set_updates_enabled_calls.append(bool(enabled))
+
+        def setVisible(self, visible):
+            self._visible = bool(visible)
+            self.set_visible_calls.append(bool(visible))
+
+        def show(self):
+            self._visible = True
+            self.show_calls += 1
+
+        def updateGeometry(self):
+            self.update_geometry_calls += 1
+
+        def update(self):
+            self.update_calls += 1
+
+        def geometry(self):
+            return "QRect(0, 0, 100, 100)"
+
+        def objectName(self):
+            return self._object_name
+
+        def apply_theme(self, _is_dark):
+            self.update_calls += 1
 
     def _install_snapshot_worker(self, window: MainWindow) -> "MainWindowTests.CapturingSnapshotWorker":
         worker = self.CapturingSnapshotWorker()
@@ -1982,28 +2030,131 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(window.is_fullscreen_mode)
         self.assertIsNone(window._pre_fullscreen_geometry)
         self.assertFalse(window._native_maximize_requested)
+    @patch("app.ui.main_window.QTimer.singleShot")
     @patch("app.ui.main_window.apply_application_theme")
-    def test_toggle_theme_persists_state_and_emits_signal(self, mock_apply_theme):
+    def test_toggle_theme_persists_state_and_emits_signal(self, mock_apply_theme, mock_single_shot):
         """验证 `test_toggle_theme_persists_state_and_emits_signal` 对应场景是否符合预期，供 `MainWindowTests` 使用。"""
         window = self._make_window()
         window.is_dark_theme = True
+        window._last_applied_theme_is_dark = True
+        window._theme_transition_in_progress = False
+        window._queued_theme_is_dark = None
+        window._theme_transition_target_is_dark = None
+        window._theme_transition_sequence = 0
         window.top_bar = Mock()
         window.setPalette = Mock()
         window.sig_theme_changed = Mock()
         window._frontend_state_service = Mock()
+        window.refresh_frontend_state = Mock()
         window._frontend_action_worker = self.CapturingActionWorker()
         window._frontend_action_sequence = 0
 
         window.toggle_theme()
 
+        self.assertTrue(window.is_dark_theme)
+        mock_single_shot.assert_called_once()
+        self.assertEqual(mock_single_shot.call_args.args[0], 0)
+        mock_apply_theme.assert_not_called()
+        window.top_bar.set_theme_button_busy.assert_called_once_with(True)
+        window.top_bar.set_theme_preview_icon.assert_not_called()
+        window.top_bar.set_theme_icon.assert_not_called()
+        window.sig_theme_changed.emit.assert_not_called()
+        self.assertEqual(window._frontend_action_worker.requests, [])
+
+        mock_single_shot.call_args.args[1]()
+
         self.assertFalse(window.is_dark_theme)
         mock_apply_theme.assert_called_once_with(False)
-        window.top_bar.set_theme_icon.assert_called_once_with(False)
+        window.top_bar.set_theme_icon.assert_not_called()
+        window.top_bar.set_theme_preview_icon.assert_called_once_with(False)
+        window.top_bar.set_theme_button_busy.assert_any_call(False)
         window.sig_theme_changed.emit.assert_called_once_with(False)
         window._frontend_state_service.handle_action.assert_not_called()
+        window.refresh_frontend_state.assert_not_called()
         request = window._frontend_action_worker.requests[0]
         self.assertEqual(request.action, "update_basic_setting")
-        self.assertEqual(request.payload, {"key": "theme", "value": "light"})
+        self.assertEqual(
+            request.payload,
+            {
+                "key": "theme",
+                "value": "light",
+                "source": "theme_toggle",
+                "ui_applied": True,
+                "theme_sequence": 1,
+            },
+        )
+
+    @patch("app.ui.main_window.QTimer.singleShot")
+    @patch("app.ui.main_window.apply_application_theme")
+    def test_theme_toggle_coalesces_rapid_clicks_to_latest_state(self, mock_apply_theme, mock_single_shot):
+        window = self._make_window()
+        window.is_dark_theme = True
+        window._last_applied_theme_is_dark = True
+        window._theme_transition_in_progress = False
+        window._queued_theme_is_dark = None
+        window._theme_transition_target_is_dark = None
+        window._theme_transition_sequence = 0
+        window.top_bar = Mock()
+        window.setPalette = Mock()
+        window.sig_theme_changed = Mock()
+        window._frontend_state_service = Mock()
+        window.refresh_frontend_state = Mock()
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
+
+        window.toggle_theme()
+        window.toggle_theme()
+        window.toggle_theme()
+
+        self.assertTrue(window.is_dark_theme)
+        mock_single_shot.assert_called_once()
+        mock_apply_theme.assert_not_called()
+        self.assertEqual(window._frontend_action_worker.requests, [])
+        window.top_bar.set_theme_icon.assert_not_called()
+
+        mock_single_shot.call_args.args[1]()
+
+        self.assertFalse(window.is_dark_theme)
+        mock_apply_theme.assert_called_once_with(False)
+        window.top_bar.set_theme_icon.assert_not_called()
+        window.top_bar.set_theme_preview_icon.assert_called_once_with(False)
+        self.assertEqual(len(window._frontend_action_worker.requests), 1)
+        self.assertEqual(
+            window._frontend_action_worker.requests[0].payload,
+            {
+                "key": "theme",
+                "value": "light",
+                "source": "theme_toggle",
+                "ui_applied": True,
+                "theme_sequence": 1,
+            },
+        )
+        window.sig_theme_changed.emit.assert_called_once_with(False)
+
+    @patch("app.ui.main_window.QTimer.singleShot")
+    @patch("app.ui.main_window.apply_application_theme")
+    def test_theme_toggle_can_cancel_before_first_repaint(self, mock_apply_theme, mock_single_shot):
+        window = self._make_window()
+        window.is_dark_theme = True
+        window._last_applied_theme_is_dark = True
+        window._theme_transition_in_progress = False
+        window._queued_theme_is_dark = None
+        window._theme_transition_target_is_dark = None
+        window._theme_transition_sequence = 0
+        window.top_bar = Mock()
+        window.sig_theme_changed = Mock()
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
+
+        window.toggle_theme()
+        window.toggle_theme()
+        mock_single_shot.call_args.args[1]()
+
+        self.assertTrue(window.is_dark_theme)
+        mock_apply_theme.assert_not_called()
+        self.assertEqual(window._frontend_action_worker.requests, [])
+        window.sig_theme_changed.emit.assert_not_called()
+        window.top_bar.set_theme_preview_icon.assert_called_once_with(True)
 
     @patch("app.ui.main_window.cfg.get", return_value=False)
     @patch("app.ui.main_window.apply_application_theme")
@@ -2015,10 +2166,104 @@ class MainWindowTests(unittest.TestCase):
         settings_page = Mock()
         window.app_shell = Mock()
         window.app_shell.pages = {"settings": settings_page}
+        window._frontend_state_service = Mock()
+        window.refresh_frontend_state = Mock()
 
         window._apply_theme_stylesheet()
 
         settings_page.sync_external_theme.assert_called_once_with(True, follow_system=False)
+        window.refresh_frontend_state.assert_not_called()
+
+    @patch("app.ui.main_window.apply_application_theme")
+    def test_apply_theme_never_freezes_window_root(self, _mock_apply_theme):
+        window = self._make_window()
+        window.is_dark_theme = True
+        window._qt_initialized = True
+        window.is_fullscreen_mode = False
+        window.isFullScreen = Mock(return_value=False)
+        window.update = Mock()
+        window._media_panel_is_fullscreen = Mock(return_value=False)
+        window._debug_shell_visibility = Mock()
+        window._close_transient_popups_before_theme = Mock()
+        window._apply_root_background = Mock()
+        window._finalize_theme_repaint = Mock()
+        window.setPalette = Mock()
+        window.window_root = self.FakeShellWidget(object_name="WindowRoot")
+        window.window_title_bar = self.FakeShellWidget(object_name="WindowTitleBar")
+        window.top_bar = Mock()
+        window.app_shell = self.FakeShellWidget(object_name="AppShell")
+        window.app_shell.control_island = self.FakeShellWidget(object_name="ControlIsland")
+        window.app_shell.top_bar = self.FakeShellWidget(object_name="TopBar")
+        window.app_shell.sidebar = self.FakeShellWidget(object_name="Sidebar")
+        window.app_shell.stack = self.FakeShellWidget(object_name="PageStack")
+        window.app_shell.status_island = self.FakeShellWidget(object_name="StatusIsland")
+        window.app_shell.status_bar = self.FakeShellWidget(object_name="StatusBar")
+
+        window._apply_theme_stylesheet(freeze_updates=True)
+
+        self.assertIn(False, window.app_shell.set_updates_enabled_calls)
+        self.assertNotIn(False, window.window_root.set_updates_enabled_calls)
+        self.assertTrue(window.window_root.updatesEnabled())
+
+    def test_repair_black_shell_restores_shell_chrome_widgets(self):
+        window = self._make_window()
+        window.is_fullscreen_mode = False
+        window.isFullScreen = Mock(return_value=False)
+        window._media_panel_is_fullscreen = Mock(return_value=False)
+        window._debug_shell_visibility = Mock()
+        shell = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="AppShell")
+        shell.control_island = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="ControlIsland")
+        shell.top_bar = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="TopBar")
+        shell.sidebar = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="Sidebar")
+        shell.stack = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="PageStack")
+        shell.status_island = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="StatusIsland")
+        shell.status_bar = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="StatusBar")
+        window.app_shell = shell
+        window.top_bar = shell.top_bar
+        window.window_title_bar = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="WindowTitleBar")
+        window.window_root = self.FakeShellWidget(visible=False, updates_enabled=False, object_name="WindowRoot")
+
+        window._repair_black_shell_if_needed("unit")
+
+        for widget in (
+            window.window_title_bar,
+            shell.control_island,
+            shell.top_bar,
+            shell.sidebar,
+            shell.stack,
+            shell.status_island,
+            shell.status_bar,
+            shell,
+            window.window_root,
+        ):
+            self.assertTrue(widget.isVisible())
+            self.assertTrue(widget.updatesEnabled())
+
+    def test_theme_toggle_action_result_skips_redundant_runtime_refresh(self):
+        window = self._make_window()
+        window.is_dark_theme = False
+        window._theme_transition_sequence = 3
+        window._apply_runtime_setting_after_update = Mock(return_value={"settings.update"})
+        window._apply_theme_stylesheet = Mock()
+        window.sig_theme_changed = Mock()
+        window.refresh_frontend_state = Mock()
+
+        MainWindow._finish_setting_update(
+            window,
+            {
+                "key": "theme",
+                "value": "light",
+                "source": "theme_toggle",
+                "ui_applied": True,
+                "theme_sequence": 3,
+            },
+            {"status": "ok", "data": {"section": "common", "key": "theme", "value": "light"}},
+        )
+
+        window._apply_runtime_setting_after_update.assert_not_called()
+        window._apply_theme_stylesheet.assert_not_called()
+        window.sig_theme_changed.emit.assert_not_called()
+        window.refresh_frontend_state.assert_not_called()
 
     @patch("app.ui.main_window.cfg.get")
     def test_language_appearance_update_skips_theme_repolish(self, mock_cfg_get):
@@ -2040,6 +2285,31 @@ class MainWindowTests(unittest.TestCase):
 
         window._apply_theme_stylesheet.assert_not_called()
         window.setPalette.assert_not_called()
+
+    @patch("app.ui.main_window.cfg.get")
+    def test_theme_setting_echo_skips_redundant_repolish(self, mock_cfg_get):
+        def fake_get(section, key, default=None):
+            values = {
+                ("appearance", "follow_system"): False,
+                ("common", "theme"): "dark",
+            }
+            return values.get((section, key), default)
+
+        mock_cfg_get.side_effect = fake_get
+        window = self._make_window()
+        window._applying_appearance = False
+        window.is_dark_theme = True
+        window._last_applied_theme_is_dark = True
+        window._apply_theme_stylesheet = Mock()
+        window.setPalette = Mock()
+        window.top_bar = Mock()
+
+        MainWindow._apply_appearance_runtime_settings(window, "theme")
+
+        window._apply_theme_stylesheet.assert_not_called()
+        window.setPalette.assert_not_called()
+        window.top_bar.set_theme_preview_icon.assert_called_once_with(True)
+        window.top_bar.set_theme_icon.assert_not_called()
 
     @patch("app.ui.main_window.cfg.get")
     def test_font_size_appearance_update_skips_sidebar_theme_refresh(self, mock_cfg_get):

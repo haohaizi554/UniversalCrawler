@@ -247,10 +247,24 @@ class TopBarWidget(QFrame):
     def set_theme_icon(self, is_dark_theme: bool) -> None:
         self._is_dark_theme = bool(is_dark_theme)
         self._apply_button_styles()
-        self.btn_theme.setText("")
-        self._set_button_icon(self.btn_theme, action_icon_file("theme_dark" if is_dark_theme else "theme_light"))
+        self.set_theme_preview_icon(is_dark_theme)
         if self.btn_start.property("running") == "true":
             self.btn_start.set_crawl_running(True, is_dark_theme=is_dark_theme)
+
+    def set_theme_preview_icon(self, is_dark_theme: bool) -> None:
+        self.btn_theme.setText("")
+        self._set_button_icon(self.btn_theme, action_icon_file("theme_dark" if is_dark_theme else "theme_light"))
+
+    def set_theme_button_busy(self, busy: bool) -> None:
+        busy = bool(busy)
+        self.btn_theme.setProperty("themeBusy", "true" if busy else "false")
+        self.btn_theme.setEnabled(True)
+        self.btn_theme.setToolTip(
+            tr("正在切换主题...", self._language) if busy else tr("切换主题", self._language)
+        )
+        self.btn_theme.style().unpolish(self.btn_theme)
+        self.btn_theme.style().polish(self.btn_theme)
+        self.btn_theme.update()
 
     def _apply_button_styles(self) -> None:
         colors = theme_colors(self._is_dark_theme)
@@ -304,6 +318,11 @@ class TopBarWidget(QFrame):
             padding: 0px;
         }}
         QPushButton:hover {{
+            background-color: {colors['panel_soft']};
+            border-color: {colors['border_strong']};
+        }}
+        QPushButton[themeBusy="true"],
+        QPushButton:disabled {{
             background-color: {colors['panel_soft']};
             border-color: {colors['border_strong']};
         }}

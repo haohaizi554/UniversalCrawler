@@ -29,8 +29,17 @@ GUI 和 WebUI 共享 7 个业务页面：下载队列、正在下载、已完成
 - 高频事件合并推送，例如进度、速度和日志追加。
 - 当前可见页面刷新内容区；不可见页面只更新侧栏角标和底部状态栏。
 - GUI 表格优先按 id 更新行；WebUI 使用 keyed patch 和 reducer 合并状态。
+- GUI 全量前端快照走 `FrontendSnapshotWorker`，用户动作走 `FrontendActionWorker`，日志中心走 `LogQueryWorker` / `LogDetailWorker`，完成/失败/队列分页走 `ListPageWorker`。这些 worker 的共同目标是把查询、格式化和分页从 UI 线程移开。
+- WebUI 的 `/api/frontend/state` 和 `/api/frontend/delta` 必须与 GUI 使用同一份 `FrontendStateService` 语义；新增字段不能只改静态 JS，也不能只改 PyQt 页面。
+- 主题切换、语言切换、日志追加和下载进度都属于高频刷新风险区。主题切换默认不触发完整前端 snapshot，避免按钮、设置落盘、列表重绘和 shell repaint 互相抢主线程。
 
 细化执行规则见 [前端刷新与并发控制工程实践](../engineering/frontend-refresh-and-concurrency.md)。
+
+## Shell 与主题边界
+
+GUI 当前使用自绘标题栏和统一 shell：标题栏、TopBar、Sidebar、PageStack、StatusBar 共同组成主界面。主题切换必须在 UI 构建完成后执行，并且不能冻结 `window_root`。如果 shell 出现黑屏、只剩媒体预览或按钮图标先变页面滞后的症状，优先检查 shell chrome 可见性、`updatesEnabled`、主题 busy 队列和前端 snapshot 是否误入热路径。
+
+相关事故复盘见 [GUI 主题切换黑屏事故复盘](../fixes/2026-07-gui-theme-black-shell.md)。
 
 ## 下载流水线
 

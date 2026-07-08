@@ -30,6 +30,36 @@ def test_latest_request_worker_survives_process_exception() -> None:
     assert received[-1] == "ok"
 
 
+def test_latest_request_worker_drops_result_when_newer_request_arrives_during_processing() -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    latest_delivered = threading.Event()
+    received: list[str] = []
+
+    def process(request: str) -> str:
+        if request == "first":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        return request
+
+    def on_result(result: str) -> None:
+        received.append(result)
+        if result == "second":
+            latest_delivered.set()
+
+    worker = LatestRequestWorker(name="test-latest-drop-worker", on_result=on_result, process=process)
+    try:
+        worker.submit("first")
+        assert first_started.wait(timeout=2)
+        worker.submit("second")
+        release_first.set()
+        assert latest_delivered.wait(timeout=2)
+    finally:
+        worker.shutdown()
+
+    assert received == ["second"]
+
+
 def test_sequential_request_worker_survives_process_exception_and_keeps_order() -> None:
     ready = threading.Event()
     received: list[str] = []

@@ -15,6 +15,11 @@ let queuePage = 1;
 let queuePageSize = normalizeTablePageSize(localStorage.getItem("webui_queue_page_size") || 20);
 let completedPage = 1;
 let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);
+let failedPage = 1;
+let failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_page_size") || 20);
+let failedPageWorker = null;
+let failedPageWorkerAvailable = typeof Worker !== "undefined";
+let failedPageSequence = 0;
 let logPage = 1;
 let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size") || 20);
 const LOG_RENDER_ROW_BUDGET = 300;
@@ -1024,9 +1029,41 @@ function selectedTaskItem(key, items) {
   return rows.find(row => String(row.id || "") === id) || null;
 }
 
+function queueItemsForRender() {
+  const stateItems = Array.isArray(frontendState.queue_items) ? frontendState.queue_items : [];
+  const stateIds = new Set(stateItems.map(item => String(item.id || "")));
+  const hasManualVideoOrder = Array.isArray(videoOrder)
+    && videoOrder.length > 0
+    && videoOrder.some(id => !stateIds.has(String(id || "")))
+    && videoOrder.every(id => videos[String(id || "")]);
+  if (hasManualVideoOrder) {
+    return videoOrder
+      .map(id => ({ id: String(id || ""), ...(videos[String(id || "")] || {}) }))
+      .filter(item => item.id);
+  }
+  if (stateItems.length || !Array.isArray(videoOrder) || !videoOrder.length) return stateItems;
+  const hasUnifiedTaskItems = ["active_downloads", "completed_items", "failed_items"]
+    .some(key => Array.isArray(frontendState[key]) && frontendState[key].length > 0);
+  if (hasUnifiedTaskItems) return stateItems;
+  return videoOrder
+    .map(id => ({ id: String(id || ""), ...(videos[String(id || "")] || {}) }))
+    .filter(item => item.id);
+}
+
+function queueNavigationOrder() {
+  const allItems = queueItemsForRender();
+  const totalPages = Math.max(1, Math.ceil(allItems.length / queuePageSize));
+  const page = Math.max(1, Math.min(queuePage, totalPages));
+  const start = (page - 1) * queuePageSize;
+  return allItems
+    .slice(start, start + queuePageSize)
+    .map(item => String(item.id || ""))
+    .filter(Boolean);
+}
+
 function renderQueue() {
   byId("queuePath").textContent = (((frontendState.settings_snapshot || {})["基础设置"] || {}).download_directory || "");
-  const allItems = frontendState.queue_items || [];
+  const allItems = queueItemsForRender();
   const totalPages = Math.max(1, Math.ceil(allItems.length / queuePageSize));
   queuePage = Math.max(1, Math.min(queuePage, totalPages));
   const start = (queuePage - 1) * queuePageSize;
@@ -1248,15 +1285,109 @@ function dirnameFromPath(path) {
   return window.UcpMediaDisplay ? window.UcpMediaDisplay.dirnameFromPath(path) : "";
 }
 
+function ensureFailedPageWorker() {
+  if (!failedPageWorkerAvailable) return null;
+  if (failedPageWorker) return failedPageWorker;
+  try {
+    failedPageWorker = new Worker("/static/list_page_worker.js?v=20260708-list-page-worker");
+    failedPageWorker.onmessage = event => applyFailedPageResult(event.data || {});
+    failedPageWorker.onerror = () => {
+      failedPageWorkerAvailable = false;
+      if (failedPageWorker) failedPageWorker.terminate();
+      failedPageWorker = null;
+      renderFailed();
+    };
+  } catch (_error) {
+    failedPageWorkerAvailable = false;
+    failedPageWorker = null;
+  }
+  return failedPageWorker;
+}
+
 function renderFailed() {
-  const items = frontendState.failed_items || [];
+  const allItems = Array.isArray(frontendState.failed_items) ? frontendState.failed_items : [];
+  const request = {
+    type: "page",
+    sequence: ++failedPageSequence,
+    items: allItems,
+    page: failedPage,
+    pageSize: failedPageSize,
+    selectedId: selected.failed,
+    selectFirst: true,
+    selectedIdMovesPage: Boolean(selected.failed),
+  };
+  const worker = ensureFailedPageWorker();
+  if (worker) {
+    worker.postMessage(request);
+    return;
+  }
+  applyFailedPageResult(buildListPageResultSync(request));
+}
+
+function applyFailedPageResult(result) {
+  if (!result || result.type !== "page" || Number(result.sequence) !== failedPageSequence) return;
+  const items = Array.isArray(result.pageItems) ? result.pageItems : [];
+  const totalPages = Number(result.totalPages) || 1;
+  failedPage = Number(result.currentPage) || 1;
+  selected.failed = String(result.selectedId || "");
   reconcileSelectedTask("failed", items);
   patchTableRows("failedBody", items, item => item.id, item => taskRenderService().failedRow(item, selected.failed));
+  byId("failedTotal").textContent = translateUiText(`\u5171 ${Number(result.totalCount) || 0} \u9879`);
+  byId("failedPageNow").textContent = String(failedPage);
+  byId("failedTotalPages").textContent = String(totalPages);
+  byId("failedPageSize").value = String(failedPageSize);
+  syncCustomSelectForSelect(byId("failedPageSize"));
+  byId("failedPrevPage").disabled = failedPage <= 1;
+  byId("failedNextPage").disabled = failedPage >= totalPages;
   renderFailedDetail();
+}
+
+function buildListPageResultSync(request) {
+  const items = Array.isArray(request.items) ? request.items : [];
+  const pageSize = normalizeTablePageSize(request.pageSize);
+  const totalCount = items.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  let currentPage = Math.max(1, Math.min(Number(request.page) || 1, totalPages));
+  let selectedId = String(request.selectedId || "");
+  if (selectedId && request.selectedIdMovesPage) {
+    const selectedIndex = items.findIndex(item => String(item.id || "") === selectedId);
+    if (selectedIndex >= 0) currentPage = Math.floor(selectedIndex / pageSize) + 1;
+  }
+  const start = (currentPage - 1) * pageSize;
+  const pageItems = items.slice(start, start + pageSize);
+  const visibleIds = pageItems.map(item => String(item.id || "")).filter(Boolean);
+  if ((!selectedId || !visibleIds.includes(selectedId)) && request.selectFirst && visibleIds.length) {
+    selectedId = visibleIds[0];
+  }
+  if (selectedId && !items.some(item => String(item.id || "") === selectedId)) selectedId = "";
+  return {
+    type: "page",
+    sequence: Number(request.sequence) || 0,
+    totalCount,
+    totalPages,
+    currentPage,
+    pageSize,
+    pageItems,
+    selectedId,
+  };
 }
 
 function selectFailed(id) {
   selected.failed = id;
+  renderFailed();
+}
+
+function setFailedPage(delta) {
+  failedPage += Number(delta) || 0;
+  selected.failed = "";
+  renderFailed();
+}
+
+function setFailedPageSize(value) {
+  failedPageSize = normalizeTablePageSize(value);
+  failedPage = 1;
+  selected.failed = "";
+  localStorage.setItem("webui_failed_page_size", String(failedPageSize));
   renderFailed();
 }
 
@@ -1420,9 +1551,9 @@ const STRUCTURED_LOG_SEGMENT_ALIASES = {
   "浏览器": { "zh-CN": "浏览器", "en-US": "Browser", "zh-TW": "瀏覽器" },
   "瀏覽器": { "zh-CN": "浏览器", "en-US": "Browser", "zh-TW": "瀏覽器" },
   DownloadManager: { "zh-CN": "下载管理器", "en-US": "DownloadManager", "zh-TW": "下載管理器" },
-  MainWindow: { "zh-CN": "主窗口", "en-US": "MainWindow", "zh-TW": "主視窗" },
+  MainWindow: { "zh-CN": "主窗口", "en-US": "Main window", "zh-TW": "主視窗" },
   ApplicationContext: { "zh-CN": "应用上下文", "en-US": "ApplicationContext", "zh-TW": "應用程式上下文" },
-  GUI: { "zh-CN": "GUI", "en-US": "GUI", "zh-TW": "GUI" },
+  GUI: { "zh-CN": "图形界面", "en-US": "GUI", "zh-TW": "圖形介面" },
   CLI: { "zh-CN": "CLI", "en-US": "CLI", "zh-TW": "CLI" },
   Web: { "zh-CN": "Web", "en-US": "Web", "zh-TW": "Web" },
   Crawler: { "zh-CN": "爬虫", "en-US": "Crawler", "zh-TW": "爬蟲" },
@@ -1578,8 +1709,11 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "进入抖音任务提交阶段", en: "Entered Douyin task submit stage", tw: "進入抖音任務提交階段" },
   { zh: "Douyin 参数初始化完成", en: "Douyin parameters initialized", tw: "Douyin 參數初始化完成", aliases: ["Douyin参数初始化完成"] },
   { zh: "正在更新抖音参数，请稍等...", en: "Updating Douyin parameters, please wait...", tw: "正在更新抖音參數，請稍候..." },
+  { zh: "抖音参数更新完毕！", en: "Douyin parameters updated!", tw: "抖音參數更新完成！", aliases: ["Douyin 参数更新完毕！", "Douyin 参数更新完毕", "Douyin参数更新完毕！", "Douyin参数更新完毕!", "Douyin参数更新完毕"] },
+  { zh: "TikTok 参数更新完毕！", en: "TikTok parameters updated!", tw: "TikTok 參數更新完成！", aliases: ["TikTok参数更新完毕！", "TikTok参数更新完毕!", "TikTok参数更新完毕"] },
   { zh: "配置文件 cookie 参数未登录，数据获取已提前结束", en: "Config cookie is not logged in; data fetching ended early", tw: "設定檔 cookie 參數未登入，資料取得已提前結束" },
   { zh: "配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用", en: "Config cookie is not set; Douyin features may not work properly", tw: "設定檔 cookie 參數未設定，抖音平台功能可能無法正常使用" },
+  { zh: "配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用", en: "Config cookie_tiktok is not set; TikTok features may not work properly", tw: "設定檔 cookie_tiktok 參數未設定，TikTok 平台功能可能無法正常使用" },
   { zh: "抖音作品详情返回", en: "Douyin work detail returned", tw: "抖音作品詳情返回" },
   { zh: "抖音用户作品分页返回", en: "Douyin user works page returned", tw: "抖音使用者作品分頁返回" },
   { zh: "抖音合集分页返回", en: "Douyin collection page returned", tw: "抖音合集分頁返回" },
@@ -2075,6 +2209,12 @@ function localizeEnglishDynamicLogText(text) {
   if (mediaEmpty) return `${mediaEmpty[1] || ""}No videos or images found in this directory`;
   const matchingUsers = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?找到\s*(\d+)\s*(?:个匹配用户|matching users)$/u);
   if (matchingUsers) return `${matchingUsers[1] || ""}Found ${matchingUsers[2]} matching users`;
+  const configNotLogged = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?配置文件\s+([\w.-]+)\s+参数未登录[，,]\s*数据获取已提前结束$/u);
+  if (configNotLogged) return `${configNotLogged[1] || ""}Config ${configNotLogged[2]} is not logged in; data fetching ended early`;
+  const configNotSet = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?配置文件\s+([\w.-]+)\s+参数未设置[，,]\s*([A-Za-z0-9_.-]+|[\u4e00-\u9fff]+)\s*平台功能可能无法正常使用$/u);
+  if (configNotSet) return `${configNotSet[1] || ""}Config ${configNotSet[2]} is not set; ${localizedRuntimePlatformName(configNotSet[3], "en-US")} features may not work properly`;
+  const paramUpdated = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?(Douyin|douyin|抖音|TikTok|tiktok)\s*参数更新完毕[!！]?$/u);
+  if (paramUpdated) return `${paramUpdated[1] || ""}${localizedRuntimePlatformName(paramUpdated[2], "en-US")} parameters updated!`;
   const bilibiliStreamRetry = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?(?:B站|Bilibili)\s+(.*?)\s+流连接断开，(\d+)s\s+后重试\s+\((\d+)\/\s*(\d+)\):\s*(.+)$/u);
   if (bilibiliStreamRetry) {
     const media = localizedMediaTerm(bilibiliStreamRetry[2], "en-US");
@@ -2084,16 +2224,16 @@ function localizeEnglishDynamicLogText(text) {
   if (spiderSummary) {
     return `${spiderSummary[1] || ""}spider finished, elapsed ${spiderSummary[2]}s, collected ${spiderSummary[3]} items, secondary selections ${spiderSummary[4]}`;
   }
-  const loaded = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?已加载\s*(\d+)\s*个本地文件\s*\(视频[:：]\s*(\d+)\s*,\s*图片[:：]\s*(\d+)\)$/u);
+  const loaded = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?已加载\s*(\d+)\s*个本地文件\s*\(视频[:：]\s*(\d+)\s*,\s*图片[:：]\s*(\d+)\)$/u);
   if (loaded) {
     const noun = loaded[2] === "1" ? "file" : "files";
     return `${loaded[1] || ""}Loaded ${loaded[2]} local ${noun} (videos: ${loaded[3]}, images: ${loaded[4]})`;
   }
-  const scanning = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?正在扫描目录[:：]\s*(.+)$/u);
+  const scanning = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?正在扫描目录[:：]\s*(.+)$/u);
   if (scanning) return `${scanning[1] || ""}Scanning directory: ${scanning[2]}`;
-  const done = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?下载完成[:：]\s*(.+)$/u);
+  const done = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?下载完成[:：]\s*(.+)$/u);
   if (done) return `${done[1] || ""}Download completed: ${done[2]}`;
-  const failed = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?下载失败\s*\[(.+?)\][：:]\s*(.+)$/u);
+  const failed = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?下载失败\s*\[(.+?)\][：:]\s*(.+)$/u);
   if (failed) return `${failed[1] || ""}Download failed [${failed[2]}]: ${failed[3]}`;
   const patterns = [
     [/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?用户确认了\s*(\d+)\s*个任务$/u, match => `${match[1] || ""}User confirmed ${match[2]} tasks`],
@@ -2289,7 +2429,10 @@ function localizedRuntimePlatformName(value, language) {
   const text = String(value || "").trim();
   const aliases = {
     Douyin: { "zh-CN": "抖音", "zh-TW": "抖音", "en-US": "Douyin" },
+    douyin: { "zh-CN": "抖音", "zh-TW": "抖音", "en-US": "Douyin" },
     抖音: { "zh-CN": "抖音", "zh-TW": "抖音", "en-US": "Douyin" },
+    TikTok: { "zh-CN": "TikTok", "zh-TW": "TikTok", "en-US": "TikTok" },
+    tiktok: { "zh-CN": "TikTok", "zh-TW": "TikTok", "en-US": "TikTok" },
     Xiaohongshu: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
     XiaoHongShu: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
     小红书: { "zh-CN": "小红书", "zh-TW": "小紅書", "en-US": "Xiaohongshu" },
@@ -2346,6 +2489,30 @@ function localizeNonEnglishDynamicLogText(text, language) {
   match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?(?:Found|找到)\s*(\d+)\s*(?:matching users|个匹配用户|個匹配使用者)$/iu);
   if (match) {
     return `${match[1] || ""}找到 ${match[2]} ${language === "zh-TW" ? "個匹配使用者" : "个匹配用户"}`;
+  }
+
+  match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?Config\s+([\w.-]+)\s+is not logged in;\s*data fetching ended early$/iu);
+  if (match) {
+    return language === "zh-TW"
+      ? `${match[1] || ""}設定檔 ${match[2]} 參數未登入，資料取得已提前結束`
+      : `${match[1] || ""}配置文件 ${match[2]} 参数未登录，数据获取已提前结束`;
+  }
+
+  match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?Config\s+([\w.-]+)\s+is not set;\s*(.+?)\s+features may not work properly$/iu);
+  if (match) {
+    const platform = localizedRuntimePlatformName(match[3], language);
+    return language === "zh-TW"
+      ? `${match[1] || ""}設定檔 ${match[2]} 參數未設定，${platform} 平台功能可能無法正常使用`
+      : `${match[1] || ""}配置文件 ${match[2]} 参数未设置，${platform} 平台功能可能无法正常使用`;
+  }
+
+  match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?(Douyin|douyin|抖音|TikTok|tiktok)\s+parameters updated[!！]?$/iu);
+  if (match) {
+    const platform = localizedRuntimePlatformName(match[2], language);
+    const suffix = language === "zh-TW" ? "參數更新完成！" : "参数更新完毕！";
+    return /[A-Za-z0-9]$/.test(platform)
+      ? `${match[1] || ""}${platform} ${suffix}`
+      : `${match[1] || ""}${platform}${suffix}`;
   }
 
   const phraseResult = applyRuntimePhraseTranslations(text, language);
@@ -2630,6 +2797,7 @@ function logQuerySignature(items) {
   const first = items[0] || {};
   const last = items[items.length - 1] || {};
   return JSON.stringify({
+    language: currentLanguage(),
     count: items.length,
     first: logItemId(first),
     last: logItemId(last),
@@ -2866,6 +3034,10 @@ function localizedLogDetailValue(value, key = "") {
   return value;
 }
 
+function localizedLogDetailPayload(item) {
+  return localizedLogDetailValue(normalizeLogDetailPayload(item));
+}
+
 function formatLogDetailDisplayText(payload) {
   if (!payload || typeof payload !== "object") return readableLogDetailValue(payload);
   const entries = Object.entries(localizedLogDetailValue(payload));
@@ -2877,14 +3049,14 @@ function formatLogDetailDisplayText(payload) {
 }
 
 function buildLogDetailPayload(item) {
-  const detailPayload = normalizeLogDetailPayload(item);
+  const detailPayload = localizedLogDetailPayload(item);
   return {
     time: item.time || "",
     level: item.level || item.raw_level || "",
-    platform: item.platform_display || item.platform || "",
-    source: item.source || "",
+    platform: translateRuntimeLogText(item.platform_display || item.platform || ""),
+    source: translateRuntimeLogText(item.source || ""),
     trace_id: item.trace_id || "",
-    message: item.message || item.message_summary || "",
+    message: translateRuntimeLogText(item.message || item.message_summary || ""),
     detail: detailPayload,
     stack: item.stack || "",
   };
@@ -2915,7 +3087,7 @@ function copyCurrentLogJson() {
     appendLog(t("暂无日志"));
     return;
   }
-  writeTextToClipboard(JSON.stringify(normalizeLogDetailPayload(item), null, 2), t("已复制详细信息"));
+  writeTextToClipboard(JSON.stringify(localizedLogDetailPayload(item), null, 2), t("已复制详细信息"));
 }
 
 function exportCurrentLogDetail() {
@@ -2966,7 +3138,7 @@ function renderLogDetail(itemsOverride) {
     `;
     return;
   }
-  const detailPayload = normalizeLogDetailPayload(item);
+  const detailPayload = localizedLogDetailPayload(item);
   const detailJson = JSON.stringify(detailPayload, null, 2);
   const detailDisplayText = formatLogDetailDisplayText(detailPayload);
   const stack = String(item.stack || "").trim();
@@ -4405,8 +4577,14 @@ function toggleFullscreen() {
 function fmtTime(seconds) { return playbackStateService()?.fmtTime(seconds) || `${String(Math.floor((Number(seconds) || 0) / 60)).padStart(2, "0")}:${String(Math.floor((Number(seconds) || 0) % 60)).padStart(2, "0")}`; }
 function fmtClockTime(seconds) { return playbackStateService()?.fmtClockTime(seconds) || "00:00:00"; }
 function selectVideo(id) {
-  selectedVideoId = id;
-  if ((frontendState.completed_items || []).some(item => item.id === id)) selectCompleted(id);
+  const nextId = String(id || "");
+  const oldId = selectedVideoId;
+  selectedVideoId = nextId;
+  if ((frontendState.completed_items || []).some(item => String(item.id || "") === nextId)) {
+    selectCompleted(nextId);
+    return;
+  }
+  updateSelection(oldId, nextId);
 }
 function updateSelection(oldId, newId) {
   if (oldId) {
@@ -4430,15 +4608,16 @@ document.addEventListener("keydown", event => {
       document.exitFullscreen().catch(() => {});
     }
   }
-  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && videoOrder.length > 0) {
+  const navigationOrder = queueNavigationOrder();
+  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && navigationOrder.length > 0) {
     const tag = document.activeElement && document.activeElement.tagName;
     if (["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
     event.preventDefault();
-    const current = selectedVideoId ? videoOrder.indexOf(selectedVideoId) : -1;
+    const current = selectedVideoId ? navigationOrder.indexOf(selectedVideoId) : -1;
     const next = event.key === "ArrowDown"
-      ? (current < videoOrder.length - 1 ? current + 1 : 0)
-      : (current > 0 ? current - 1 : videoOrder.length - 1);
-    selectVideo(videoOrder[next]);
+      ? (current < navigationOrder.length - 1 ? current + 1 : 0)
+      : (current > 0 ? current - 1 : navigationOrder.length - 1);
+    selectVideo(navigationOrder[next]);
   }
   if (event.key === "Delete" && selectedVideoId && document.activeElement === document.body) {
     deleteVideo(selectedVideoId);

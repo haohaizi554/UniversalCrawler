@@ -915,6 +915,7 @@ class LogCenterPage(PageFrame):
             self._trace_filter_query(),
             self._keyword_filter_query(),
             self._platform_option_ids,
+            self._language,
         )
 
     def _make_category_count_signature(self) -> tuple[Any, ...]:

@@ -21,14 +21,23 @@
 
 ## Web REST
 
-`app/web/rest_router.py` 负责 HTTP 接口。开发态入口使用 `python -m entry.web_entry --host 127.0.0.1 --port 8000`，打包态入口使用 `CrawlerWebPortal.exe`。REST 适合初始加载、手动刷新、配置读取和明确用户动作，不适合承载每个进度信号。
+`app/web/server.py:create_app()` 是用户真实访问 WebUI 的直连入口，`app/web/rest_router.py` 是组合式路由入口。两边必须保持端点语义一致，尤其是前端状态、delta、图标、国际化和动作接口；新增接口时要同步 `tests/test_fastapi_endpoints.py`，避免只修组合路由或只修直连入口。
+
+开发态入口使用 `python -m entry.web_entry --host 127.0.0.1 --port 8000`，打包态入口使用 `CrawlerWebPortal.exe`。REST 适合初始加载、手动刷新、配置读取和明确用户动作，不适合承载每个进度信号。
 
 典型接口语义：
 
-- 获取前端状态快照。
-- 启动、停止、删除、重试任务。
-- 更新配置项。
-- 执行工具箱动作。
+- `GET /api/ping`、`GET /api/platforms`：健康检查和平台列表。
+- `GET /api/config`、`PUT /api/config`：配置读取和更新。
+- `GET /api/state`：兼容状态入口。
+- `GET /api/frontend/state`：前端全量快照。
+- `GET /api/frontend/delta?since_version=...`：版本化前端增量；没有可用 delta 时返回可恢复的全量语义。
+- `GET /api/frontend/icons`、`GET /api/i18n/{language}`：图标与国际化资源。
+- `POST /api/frontend/action`：统一前端动作入口。请求可带 `frontend_version`，响应可带 `frontend_delta`，用于 GUI/WebUI 减少全量刷新。
+- `POST /api/scan`、`POST /api/search`、`POST /api/crawl/start`、`POST /api/crawl/stop`、`POST /api/crawl/select`：采集和爬取控制。
+- `POST /api/download`、`DELETE /api/video/{video_id}`、`POST /api/video/rename`、`GET /api/media/{video_id}`：下载与本地媒体操作。
+- `GET /api/dir/list`、`POST /api/dir/change`、`POST /api/dir/pick-native`：目录浏览与保存目录变更。
+- `GET /api/debug/latest-log`、`GET /api/debug/error-summary`：诊断接口。
 
 ## WebSocket
 
@@ -42,3 +51,4 @@
 - 控制器负责校验动作能否执行，并把请求转到下载管理器或服务层。
 - 适配层只做状态转换和动作分发，不承载平台爬取业务。
 - 新增 Web 字段时要同步 GUI、WebUI、测试和文档。
+- 状态快照、日志查询、列表分页和可能较重的格式化工作不得阻塞 UI 主线程；GUI 走 `FrontendSnapshotWorker` / `ListPageWorker` / `LogQueryWorker`，Web 侧也要避免在高频请求里重复做全量昂贵计算。

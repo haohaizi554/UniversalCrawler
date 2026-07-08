@@ -243,6 +243,64 @@ class EventBusAsyncBackpressureTests(unittest.TestCase):
 
         self.assertEqual(seen, [0, 49])
 
+    def test_async_logs_append_events_are_latest_state_wins_per_topic(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        finished = threading.Event()
+        release = threading.Event()
+        seen: list[int] = []
+
+        def handler(payload: dict[str, Any]) -> None:
+            if not started.is_set():
+                started.set()
+                release.wait(timeout=2)
+            seen.append(int(payload["count"]))
+            if len(seen) >= 2:
+                finished.set()
+
+        bus.subscribe_async("logs.append", handler)
+        try:
+            bus.publish("logs.append", {"count": 1})
+            self.assertTrue(started.wait(timeout=2))
+            for count in range(2, 51):
+                bus.publish("logs.append", {"count": count})
+            release.set()
+            self.assertTrue(finished.wait(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertEqual(seen, [1, 50])
+
+    def test_async_app_state_changed_logs_append_is_latest_state_wins_per_topic(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        finished = threading.Event()
+        release = threading.Event()
+        seen: list[int] = []
+
+        def handler(payload: dict[str, Any]) -> None:
+            if not started.is_set():
+                started.set()
+                release.wait(timeout=2)
+            seen.append(int(payload["count"]))
+            if len(seen) >= 2:
+                finished.set()
+
+        bus.subscribe_async("app_state.changed", handler)
+        try:
+            bus.publish("app_state.changed", {"topic": "logs.append", "count": 1})
+            self.assertTrue(started.wait(timeout=2))
+            for count in range(2, 51):
+                bus.publish("app_state.changed", {"topic": "logs.append", "count": count})
+            release.set()
+            self.assertTrue(finished.wait(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertEqual(seen, [1, 50])
+
     def test_async_non_noisy_events_keep_fifo_order(self) -> None:
         bus = EventBus()
         finished = threading.Event()

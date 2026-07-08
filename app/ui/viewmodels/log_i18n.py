@@ -6,21 +6,32 @@ from typing import Any
 from app.ui.localization import normalize_language, platform_display_name, tr
 
 
+_EMOJI_PREFIX_PATTERN = r"[\U0001F300-\U0001FAFF\u2600-\u27BF\u2139\ufe0e\ufe0f]*"
 _LOCAL_FILE_LOADED_RE = re.compile(
-    r"^(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
+    rf"^(?P<prefix>{_EMOJI_PREFIX_PATTERN}\s*)?"
     r"已加载\s*(?P<count>\d+)\s*个本地文件\s*"
     r"\(视频[:：]\s*(?P<videos>\d+)\s*,\s*图片[:：]\s*(?P<images>\d+)\)$"
 )
 _SCAN_DIR_RE = re.compile(
-    r"^(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
+    rf"^(?P<prefix>{_EMOJI_PREFIX_PATTERN}\s*)?"
     r"正在扫描目录[:：]\s*(?P<path>.+)$"
 )
-_DOWNLOAD_DONE_RE = re.compile(r"^(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?下载完成[:：]\s*(?P<title>.+)$")
+_DOWNLOAD_DONE_RE = re.compile(rf"^(?P<prefix>{_EMOJI_PREFIX_PATTERN}\s*)?下载完成[:：]\s*(?P<title>.+)$")
 _DOWNLOAD_FAILED_RE = re.compile(
-    r"^(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF]*\s*)?"
+    rf"^(?P<prefix>{_EMOJI_PREFIX_PATTERN}\s*)?"
     r"下载失败\s*\[(?P<title>.+?)\][：:]\s*(?P<error>.+)$"
 )
-_DYNAMIC_PREFIX = r"(?P<prefix>[\U0001F300-\U0001FAFF\u2600-\u27BF\u2139\ufe0f]*\s*)?"
+_DYNAMIC_PREFIX = rf"(?P<prefix>{_EMOJI_PREFIX_PATTERN}\s*)?"
+_CONFIG_NOT_LOGGED_RE = re.compile(
+    rf"^{_DYNAMIC_PREFIX}配置文件\s+(?P<key>[\w.-]+)\s+参数未登录[，,]\s*数据获取已提前结束$"
+)
+_CONFIG_NOT_SET_RE = re.compile(
+    rf"^{_DYNAMIC_PREFIX}配置文件\s+(?P<key>[\w.-]+)\s+参数未设置[，,]\s*"
+    r"(?P<platform>[A-Za-z0-9_.-]+|[\u4e00-\u9fff]+)\s*平台功能可能无法正常使用$"
+)
+_PARAM_UPDATED_RE = re.compile(
+    rf"^{_DYNAMIC_PREFIX}(?P<platform>Douyin|douyin|抖音|TikTok|tiktok)\s*参数更新完毕[!！]?$"
+)
 _CRAWL_CONFIRM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}用户确认了\s*(?P<count>\d+)\s*个任务$")
 _CRAWL_FINAL_CONFIRM_RE = re.compile(rf"^{_DYNAMIC_PREFIX}最终确认\s*(?P<count>\d+)\s*个.*$")
 _CRAWL_START_RE = re.compile(rf"^{_DYNAMIC_PREFIX}启动\s*(?P<platform>.*?)\s*爬虫任务$")
@@ -119,6 +130,24 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("Douyin 参数初始化完成", "Douyin parameters initialized", "Douyin 參數初始化完成", "Douyin参数初始化完成"),
     ("正在更新抖音参数，请稍等...", "Updating Douyin parameters, please wait...", "正在更新抖音參數，請稍候..."),
     (
+        "抖音参数更新完毕！",
+        "Douyin parameters updated!",
+        "抖音參數更新完成！",
+        "Douyin 参数更新完毕！",
+        "Douyin 参数更新完毕",
+        "Douyin参数更新完毕！",
+        "Douyin参数更新完毕!",
+        "Douyin参数更新完毕",
+    ),
+    (
+        "TikTok 参数更新完毕！",
+        "TikTok parameters updated!",
+        "TikTok 參數更新完成！",
+        "TikTok参数更新完毕！",
+        "TikTok参数更新完毕!",
+        "TikTok参数更新完毕",
+    ),
+    (
         "配置文件 cookie 参数未登录，数据获取已提前结束",
         "Config cookie is not logged in; data fetching ended early",
         "設定檔 cookie 參數未登入，資料取得已提前結束",
@@ -127,6 +156,11 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
         "配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用",
         "Config cookie is not set; Douyin features may not work properly",
         "設定檔 cookie 參數未設定，抖音平台功能可能無法正常使用",
+    ),
+    (
+        "配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用",
+        "Config cookie_tiktok is not set; TikTok features may not work properly",
+        "設定檔 cookie_tiktok 參數未設定，TikTok 平台功能可能無法正常使用",
     ),
     ("抖音作品详情返回", "Douyin work detail returned", "抖音作品詳情返回"),
     ("抖音用户作品分页返回", "Douyin user works page returned", "抖音使用者作品分頁返回"),
@@ -781,9 +815,9 @@ _STRUCTURED_SEGMENT_ALIASES = {
     "System": {"zh-CN": "系统", "en-US": "System", "zh-TW": "系統"},
     "系统": {"en-US": "System", "zh-TW": "系統"},
     "系統": {"zh-CN": "系统", "en-US": "System"},
-    "MainWindow": {"zh-CN": "主窗口", "en-US": "MainWindow", "zh-TW": "主視窗"},
-    "主窗口": {"en-US": "MainWindow", "zh-TW": "主視窗"},
-    "主視窗": {"zh-CN": "主窗口", "en-US": "MainWindow"},
+    "MainWindow": {"zh-CN": "主窗口", "en-US": "Main window", "zh-TW": "主視窗"},
+    "主窗口": {"en-US": "Main window", "zh-TW": "主視窗"},
+    "主視窗": {"zh-CN": "主窗口", "en-US": "Main window"},
     "ApplicationContext": {"zh-CN": "应用上下文", "en-US": "ApplicationContext", "zh-TW": "應用上下文"},
     "应用上下文": {"en-US": "ApplicationContext", "zh-TW": "應用上下文"},
     "應用上下文": {"zh-CN": "应用上下文", "en-US": "ApplicationContext"},
@@ -864,6 +898,9 @@ _STRUCTURED_SEGMENT_ALIASES = {
     "WebUI": {"zh-CN": "网页端", "en-US": "WebUI", "zh-TW": "網頁端"},
     "网页端": {"en-US": "WebUI", "zh-TW": "網頁端"},
     "網頁端": {"zh-CN": "网页端", "en-US": "WebUI"},
+    "GUI": {"zh-CN": "图形界面", "en-US": "GUI", "zh-TW": "圖形介面"},
+    "图形界面": {"en-US": "GUI", "zh-TW": "圖形介面"},
+    "圖形介面": {"zh-CN": "图形界面", "en-US": "GUI"},
 }
 
 _EVENT_CODE_SEGMENT_ALIASES = {
@@ -887,6 +924,18 @@ def _plural(value: str, singular: str, plural: str) -> str:
 def _runtime_platform_name(value: str, language: str) -> str:
     text = str(value or "").strip()
     return platform_display_name("", language, fallback=text) if text else text
+
+
+def _runtime_config_platform_name(value: str, language: str) -> str:
+    text = str(value or "").strip()
+    aliases = {
+        "Douyin": {"zh-CN": "抖音", "en-US": "Douyin", "zh-TW": "抖音"},
+        "douyin": {"zh-CN": "抖音", "en-US": "Douyin", "zh-TW": "抖音"},
+        "抖音": {"zh-CN": "抖音", "en-US": "Douyin", "zh-TW": "抖音"},
+        "TikTok": {"zh-CN": "TikTok", "en-US": "TikTok", "zh-TW": "TikTok"},
+        "tiktok": {"zh-CN": "TikTok", "en-US": "TikTok", "zh-TW": "TikTok"},
+    }
+    return _localized(aliases.get(text, {}), language) or _runtime_platform_name(text, language)
 
 
 def _runtime_subject(prefix: str, platform: str, suffix: str) -> str:
@@ -941,6 +990,20 @@ def _localize_english_dynamic(text: str) -> str:
     matching_users = re.match(rf"^{_DYNAMIC_PREFIX}找到\s*(?P<count>\d+)\s*(?:个匹配用户|matching users)$", text)
     if matching_users:
         return f"{matching_users.group('prefix') or ''}Found {matching_users.group('count')} matching users"
+
+    match = _CONFIG_NOT_LOGGED_RE.match(text)
+    if match:
+        return f"{match.group('prefix') or ''}Config {match.group('key')} is not logged in; data fetching ended early"
+
+    match = _CONFIG_NOT_SET_RE.match(text)
+    if match:
+        platform = _runtime_config_platform_name(match.group("platform"), "en-US")
+        return f"{match.group('prefix') or ''}Config {match.group('key')} is not set; {platform} features may not work properly"
+
+    match = _PARAM_UPDATED_RE.match(text)
+    if match:
+        platform = _runtime_config_platform_name(match.group("platform"), "en-US")
+        return f"{match.group('prefix') or ''}{platform} parameters updated!"
 
     bilibili_stream_retry = re.match(
         r"^(?P<prefix>.*?)(?:B站|Bilibili)\s+(?P<media>.*?)\s+流连接断开，"
@@ -1125,6 +1188,30 @@ def _localize_non_english_dynamic(text: str, language: str) -> str:
     if match:
         unit = "個匹配使用者" if language == "zh-TW" else "个匹配用户"
         return f"{match.group('prefix') or ''}找到 {match.group('count')} {unit}"
+
+    match = re.match(rf"^{_DYNAMIC_PREFIX}Config\s+(?P<key>[\w.-]+)\s+is not logged in;\s*data fetching ended early$", text, re.IGNORECASE)
+    if match:
+        if language == "zh-TW":
+            return f"{match.group('prefix') or ''}設定檔 {match.group('key')} 參數未登入，資料取得已提前結束"
+        return f"{match.group('prefix') or ''}配置文件 {match.group('key')} 参数未登录，数据获取已提前结束"
+
+    match = re.match(
+        rf"^{_DYNAMIC_PREFIX}Config\s+(?P<key>[\w.-]+)\s+is not set;\s*(?P<platform>.+?)\s+features may not work properly$",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        platform = _runtime_config_platform_name(match.group("platform"), language)
+        if language == "zh-TW":
+            return f"{match.group('prefix') or ''}設定檔 {match.group('key')} 參數未設定，{platform} 平台功能可能無法正常使用"
+        return f"{match.group('prefix') or ''}配置文件 {match.group('key')} 参数未设置，{platform} 平台功能可能无法正常使用"
+
+    match = re.match(rf"^{_DYNAMIC_PREFIX}(?P<platform>Douyin|douyin|抖音|TikTok|tiktok)\s+parameters updated[!！]?$", text, re.IGNORECASE)
+    if match:
+        platform = _runtime_config_platform_name(match.group("platform"), language)
+        suffix = "參數更新完成！" if language == "zh-TW" else "参数更新完毕！"
+        padded = bool(re.search(r"[A-Za-z0-9]$", platform))
+        return f"{match.group('prefix') or ''}{platform} {suffix}" if padded else f"{match.group('prefix') or ''}{platform}{suffix}"
 
     match = re.match(r"^Bilibili route:\s*(?P<route>.+)$", text)
     if match:

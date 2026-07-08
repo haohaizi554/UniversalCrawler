@@ -53,7 +53,17 @@
 
 ```bash
 python -m compileall app tests main.py
-python -m unittest discover -s tests
+python -m pytest -q
+python tests/test_launcher.py --list
+```
+
+局部改动优先跑相关文件或类别，例如：
+
+```bash
+python -m pytest tests/test_main_window.py -q
+python -m pytest tests/test_unified_frontend_contract.py -q -k "theme or top_bar"
+python tests/test_launcher.py --category desktop_ui
+python tests/test_launcher.py --category web_api
 ```
 
 ### 推荐原则
@@ -79,6 +89,8 @@ python -m unittest discover -s tests
 - `docs/guides/api.md`
 - `testing.md`
 - 对应目录下的 `README.md`
+- `docs/fixes/README.md` 和对应复盘文档。`docs/fixes/archive/` 已合并上移，新增事故不要再放进 archive 子目录。
+- `docs/engineering/frontend-refresh-and-concurrency.md`。涉及 GUI/WebUI 刷新、日志、主题、队列或 worker 的改动，应同步更新工程约束。
 
 ## 日志约定
 
@@ -93,10 +105,17 @@ python -m unittest discover -s tests
 - 已切换完成的旧 shim 直接删除，不继续保留空壳。
 - 新功能不再回填进历史大文件。
 
+## GUI / WebUI 刷新与主题约束
+
+- GUI 主题切换不能把按钮图标变化当成完成信号；快速点击必须按 latest-state-wins 合并到最后一次用户意图。
+- 主题应用必须在 UI 构建完成后执行，不能在 `MainWindow._build_ui()` 前触碰未构建的 shell。
+- 主题热路径不允许触发完整前端 snapshot；需要刷新前端状态时走 `FrontendSnapshotWorker` 或明确的 section 刷新。
+- 不要冻结 `window_root`。确需临时冻结时，只能冻结已经可见的 `app_shell`，并用 `try/finally` 恢复。
+- WebUI 与 GUI 的设置、主题、语言、日志翻译和自定义下拉框样式必须共享后端语义；新增字段时同时检查 `app/web/server.py` 的直连入口和 `app/web/rest_router.py` 的组合路由。
+
 ## 提交流程建议
 
 1. 先补或更新测试。
 2. 再改实现。
 3. 执行完整测试。
 4. 最后同步文档与目录 README。
-

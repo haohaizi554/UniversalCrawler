@@ -55,6 +55,7 @@
 - WebUI 日志中心筛选、排序、分页必须优先交给 `log_query_worker.js`；不得用“日志数量较少”作为主线程同步查询的理由。`queryLogsSync()` 只允许在浏览器不支持 Worker 或 worker 初始化/执行失败时作为降级路径。
 - WebUI 日志 worker 不可用时，降级查询也必须通过 `scheduleLogQueryFallback()` 异步调度并按最新 `sequence` 生效；提交时必须冻结 `buildLogQueryRequest(...)` 快照，异步回调不得再临时读取当前过滤器、页码或可变日志数组；不得在 `renderLogs()` / `submitLogQuery()` 当前调用栈里直接同步执行过滤、排序和分页。
 - WebUI 日志裁剪只允许发生在本地 append 或 delta 合并阶段；`renderLogs()` / `logQueryItems()` 不得再裁剪或改写 `frontendState.log_items`，避免渲染路径携带大数组副作用。
+- WebUI 失败列表不得把 `failed_items` 全量同步渲染到 DOM；分页、选中项跨页定位和当前页切片必须优先提交给 `list_page_worker.js`，主线程只接收 `pageItems` 并 patch 当前页。同步 `buildListPageResultSync()` 只允许作为 Worker 不可用的降级路径。
 
 ## UI / Worker / Cache / DB 职责边界
 
@@ -73,6 +74,10 @@
 - GUI 热路径不得直接调用会触发文件、缓存、SQLite 或系统 API 的 `FrontendStateService.handle_action()`；日志操作、平台认证刷新、打开目录、失败重试、诊断复制、下载选项、已完成元数据更新、暂停下载、工具启动和文件关联注册必须提交到 `FrontendActionWorker`，完成后只回投轻量结果并触发目标 section 刷新。
 - 日志中心的 `debug.log`、`error.md`、导出、清空与刷新等动作必须统一走 `FrontendActionWorker`；页面和控制器不得为了打开文件或检查路径存在性绕过 worker 直接访问文件系统或系统默认打开方式。
 - GUI 热路径不得直接调用 `cfg.set()`、`cfg.set_many()` 或平台专用配置落盘方法；平台切换、主题同步、启动参数读取等交互只允许更新轻量 UI 状态或提交 `FrontendActionWorker`，配置持久化统一在 worker / service 层完成。
+- GUI 主题切换不得冻结 `window_root`、隐藏 shell 父容器或触发完整 frontend snapshot；主题热加载默认只更新 Qt palette/QSS、shell theme 和设置页外观控件。需要抑制闪烁时，只允许短暂冻结已可见的 `app_shell`，并必须在 `finally` 恢复 `updatesEnabled`。
+- GUI 主题按钮的图标状态不是主题切换完成信号。快速点击必须按 latest-state-wins 合并，busy 状态保持按钮可点击；完成时再统一同步图标、释放 busy，并检查 shell chrome 可见性。
+- GUI shell 可见性恢复必须覆盖父级和子级：`window_root`、标题栏、`app_shell`、`control_island`、TopBar、Sidebar、PageStack、`status_island`、StatusBar。只恢复 TopBar/Sidebar/StatusBar 本体不能防止父容器隐藏或更新冻结导致的黑屏。
+- 主题、媒体预览全屏和主窗口全屏是不同状态机。主题切换前后必须识别 stale media fullscreen；不能让媒体预览残留状态阻止主 shell 恢复。
 - SQLite 热路径不得只写 `with sqlite3.connect(...)`；该上下文只处理事务，不关闭连接。必须使用 `contextlib.closing(sqlite3.connect(...))` 或等价显式关闭，避免 Windows 下缓存/失败记录库文件句柄泄露。
 - 同一批稳定 ID 的表格行发生重排时，不得使用 `beginResetModel()`；应通过 row patch、insert/remove 或 `layoutChanged` 保留滚动、选中和悬停语义。
 - 仍在使用 `QTableWidget` 的小型通用表格也必须遵守稳定 ID 更新：列结构不变且 ID 仅原位变化、尾部追加或尾部移除时，只更新受影响单元格，不得 `setRowCount(0)` 清空重建。
@@ -192,6 +197,7 @@ node --check app/web/static/app.js
 
 - `MainWindow` 订阅 `app_state.changed` 必须优先使用 `EventBus.subscribe_async()`，只把事件投递回 Qt 队列，不在发布线程执行刷新调度。
 - `app_state.changed` 属于高频异步主题；当 payload 携带 `video_id`、`id`、`entity_id` 或 `trace_id` 时，EventBus 必须按 handler/topic/entity 采用 latest-state-wins 合并，避免进度事件在异步队列中堆积。
+- `logs.append` 这类只有 topic/count、没有实体 ID 的高频事件必须按 handler/topic 做 latest-state-wins 合并；不得因为缺少实体 ID 退回 FIFO，把日志追加重新堆到 UI 刷新链路里。
 - `spider.domain_event` 和 `download.domain_event` 的订阅 handler 必须优先使用 `subscribe_async()`，且只能通过 `DesktopHostAdapter._queue_on_ui()` 投递事件；即使事件来自非 GUI 线程，也不得在 EventBus 发布线程直接执行 `_dispatch_spider_event()` 或 `_dispatch_download_event()`，也不得用无 receiver 的 `QTimer.singleShot()` 或只判断当前线程的 `_run_on_ui()` 作为跨线程桥。
 - `FrontendStateService` 对 `app_state.changed` 的订阅仍保留同步轻量入队，这是为了保证写入 AppState 后下一次 `get_snapshot()` / `get_delta()` 能先 flush 到一致的 dirty version。不得在没有 flush/ack 机制的情况下把它直接迁移为异步订阅。
 - 新增 GUI 热路径订阅时，默认先判断是否能异步；只有直接影响版本一致性、关键事务顺序或必须同步返回结果的 handler 才允许保留同步。
@@ -199,6 +205,7 @@ node --check app/web/static/app.js
 ## 后台 Worker 守护边界
 
 - `LatestRequestWorker` 和 `SequentialRequestWorker` 是 GUI 异步化的通用底座；业务处理函数抛异常时只能记录到 `debug_logger` 并继续消费后续请求，不得让 worker 线程静默退出。
+- `LatestRequestWorker` 是真正的 latest-state-wins：如果某个请求处理期间已经收到更新请求，旧请求即使成功产出结果也不得触发结果回调；页面层的 `sequence` 校验仍保留作为最后一道防线。
 - worker 的结果回调如果遇到普通异常，同样只记录并继续；只有 Qt 对象销毁等 `RuntimeError` 代表生命周期结束时才允许停止 worker。
 - 新增 GUI 后台任务时优先复用这两个 worker；只有需要独立调度协议、独立队列背压或跨进程执行时才允许新增专用线程结构。
 - 非常驻 GUI 后台任务必须按需创建，不得在主窗口构造期预启动；否则测试和页面重建会堆积空闲线程，增加 Qt 退出和重建时的崩溃风险。检查更新、诊断、文件关联注册等低频动作应在用户触发后创建或提交到既有 worker，并在 `closeEvent` 中回收。
