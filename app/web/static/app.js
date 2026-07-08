@@ -17,9 +17,9 @@ let completedPage = 1;
 let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);
 let failedPage = 1;
 let failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_page_size") || 20);
-let failedPageWorker = null;
-let failedPageWorkerAvailable = typeof Worker !== "undefined";
-let failedPageSequence = 0;
+let listPageWorker = null;
+let listPageWorkerAvailable = typeof Worker !== "undefined";
+let listPageSequences = { queue: 0, completed: 0, failed: 0 };
 let logPage = 1;
 let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size") || 20);
 const LOG_RENDER_ROW_BUDGET = 300;
@@ -34,6 +34,16 @@ let logQueryState = {
 };
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
+
+function closeListPageWorker() {
+  if (!listPageWorker) return;
+  try {
+    listPageWorker.terminate();
+  } catch (_error) {
+    // Browser teardown is best-effort; stale workers must not block navigation.
+  }
+  listPageWorker = null;
+}
 
 function closeLogQueryWorker() {
   clearLogQueryFallback();
@@ -70,6 +80,7 @@ function cleanupPageResources() {
     }
   }
   closeLogQueryWorker();
+  closeListPageWorker();
 }
 
 window.addEventListener("pagehide", cleanupPageResources, { once: true });
@@ -1051,32 +1062,92 @@ function queueItemsForRender() {
 }
 
 function queueNavigationOrder() {
-  const allItems = queueItemsForRender();
-  const totalPages = Math.max(1, Math.ceil(allItems.length / queuePageSize));
-  const page = Math.max(1, Math.min(queuePage, totalPages));
-  const start = (page - 1) * queuePageSize;
-  return allItems
-    .slice(start, start + queuePageSize)
-    .map(item => String(item.id || ""))
+  return Array.from(document.querySelectorAll("#queueBody tr[data-id]"))
+    .map(row => String((row.dataset && row.dataset.id) || ""))
     .filter(Boolean);
+}
+
+function ensureListPageWorker() {
+  if (!listPageWorkerAvailable) return null;
+  if (listPageWorker) return listPageWorker;
+  try {
+    listPageWorker = new Worker("/static/list_page_worker.js?v=20260708-list-page-worker");
+    listPageWorker.onmessage = event => applyListPageResult(event.data || {});
+    listPageWorker.onerror = () => {
+      listPageWorkerAvailable = false;
+      closeListPageWorker();
+      renderQueue();
+      renderCompleted();
+      renderFailed();
+    };
+  } catch (_error) {
+    listPageWorkerAvailable = false;
+    listPageWorker = null;
+  }
+  return listPageWorker;
+}
+
+function submitListPageRequest(pageKey, requestData) {
+  if (!["queue", "completed", "failed"].includes(pageKey)) return;
+  listPageSequences[pageKey] = (Number(listPageSequences[pageKey]) || 0) + 1;
+  const request = {
+    type: "page",
+    pageKey,
+    sequence: listPageSequences[pageKey],
+    ...requestData,
+  };
+  const worker = ensureListPageWorker();
+  if (worker) {
+    worker.postMessage(request);
+    return;
+  }
+  applyListPageResult(buildListPageResultSync(request));
+}
+
+function applyListPageResult(result) {
+  if (!result || result.type !== "page") return;
+  const pageKey = String(result.pageKey || "");
+  if (!["queue", "completed", "failed"].includes(pageKey)) return;
+  if (Number(result.sequence) !== Number(listPageSequences[pageKey] || 0)) return;
+  if (pageKey === "queue") {
+    applyQueuePageResult(result);
+    return;
+  }
+  if (pageKey === "completed") {
+    applyCompletedPageResult(result);
+    return;
+  }
+  applyFailedPageResult(result);
 }
 
 function renderQueue() {
   byId("queuePath").textContent = (((frontendState.settings_snapshot || {})["基础设置"] || {}).download_directory || "");
   const allItems = queueItemsForRender();
-  const totalPages = Math.max(1, Math.ceil(allItems.length / queuePageSize));
-  queuePage = Math.max(1, Math.min(queuePage, totalPages));
-  const start = (queuePage - 1) * queuePageSize;
-  const items = allItems.slice(start, start + queuePageSize);
+  submitListPageRequest("queue", {
+    items: allItems,
+    page: queuePage,
+    pageSize: queuePageSize,
+    selectedId: selectedVideoId,
+    selectFirst: false,
+    selectedIdMovesPage: false,
+  });
+  setHtmlIfChanged("queueEvents", taskRenderService().queueEventsHtml(frontendState.queue_items || []));
+}
+
+function applyQueuePageResult(result) {
+  const items = Array.isArray(result.pageItems) ? result.pageItems : [];
+  const totalPages = Number(result.totalPages) || 1;
+  queuePage = Number(result.currentPage) || 1;
+  queuePageSize = normalizeTablePageSize(result.pageSize);
   patchTableRows("queueBody", items, item => item.id, item => taskRenderService().queueRow(item));
-  byId("queueTotal").textContent = translateUiText(`\u5171 ${allItems.length} \u9879`);
+  if (selectedVideoId) updateSelection(null, selectedVideoId);
+  byId("queueTotal").textContent = translateUiText(`\u5171 ${Number(result.totalCount) || 0} \u9879`);
   byId("queuePageNow").textContent = String(queuePage);
   byId("queueTotalPages").textContent = String(totalPages);
   byId("queuePageSize").value = String(queuePageSize);
   syncCustomSelectForSelect(byId("queuePageSize"));
   byId("queuePrevPage").disabled = queuePage <= 1;
   byId("queueNextPage").disabled = queuePage >= totalPages;
-  setHtmlIfChanged("queueEvents", taskRenderService().queueEventsHtml(frontendState.queue_items || []));
 }
 
 function queueTitleHtml(item) {
@@ -1210,17 +1281,25 @@ function activeTrendHtml(values, speedLabel = "0 B/s") {
 function renderCompleted() {
   const allItems = frontendState.completed_items || [];
   cleanupWebPlaybackPositions(allItems);
-  const totalPages = Math.max(1, Math.ceil(allItems.length / completedPageSize));
-  completedPage = Math.max(1, Math.min(completedPage, totalPages));
-  if (selected.completed) {
-    const selectedIndex = allItems.findIndex(item => item.id === selected.completed);
-    if (selectedIndex >= 0) completedPage = Math.floor(selectedIndex / completedPageSize) + 1;
-  }
-  const start = (completedPage - 1) * completedPageSize;
-  const items = allItems.slice(start, start + completedPageSize);
+  submitListPageRequest("completed", {
+    items: allItems,
+    page: completedPage,
+    pageSize: completedPageSize,
+    selectedId: selected.completed,
+    selectFirst: true,
+    selectedIdMovesPage: Boolean(selected.completed),
+  });
+}
+
+function applyCompletedPageResult(result) {
+  const items = Array.isArray(result.pageItems) ? result.pageItems : [];
+  const totalPages = Number(result.totalPages) || 1;
+  completedPage = Number(result.currentPage) || 1;
+  completedPageSize = normalizeTablePageSize(result.pageSize);
+  selected.completed = String(result.selectedId || "");
   reconcileSelectedTask("completed", items);
   patchTableRows("completedBody", items, item => item.id, item => taskRenderService().completedRow(item, selected.completed));
-  byId("completedTotal").textContent = translateUiText(`\u5171 ${allItems.length} \u9879`);
+  byId("completedTotal").textContent = translateUiText(`\u5171 ${Number(result.totalCount) || 0} \u9879`);
   byId("completedPageNow").textContent = String(completedPage);
   byId("completedTotalPages").textContent = String(totalPages);
   byId("completedPageSize").value = String(completedPageSize);
@@ -1285,50 +1364,23 @@ function dirnameFromPath(path) {
   return window.UcpMediaDisplay ? window.UcpMediaDisplay.dirnameFromPath(path) : "";
 }
 
-function ensureFailedPageWorker() {
-  if (!failedPageWorkerAvailable) return null;
-  if (failedPageWorker) return failedPageWorker;
-  try {
-    failedPageWorker = new Worker("/static/list_page_worker.js?v=20260708-list-page-worker");
-    failedPageWorker.onmessage = event => applyFailedPageResult(event.data || {});
-    failedPageWorker.onerror = () => {
-      failedPageWorkerAvailable = false;
-      if (failedPageWorker) failedPageWorker.terminate();
-      failedPageWorker = null;
-      renderFailed();
-    };
-  } catch (_error) {
-    failedPageWorkerAvailable = false;
-    failedPageWorker = null;
-  }
-  return failedPageWorker;
-}
-
 function renderFailed() {
   const allItems = Array.isArray(frontendState.failed_items) ? frontendState.failed_items : [];
-  const request = {
-    type: "page",
-    sequence: ++failedPageSequence,
+  submitListPageRequest("failed", {
     items: allItems,
     page: failedPage,
     pageSize: failedPageSize,
     selectedId: selected.failed,
     selectFirst: true,
     selectedIdMovesPage: Boolean(selected.failed),
-  };
-  const worker = ensureFailedPageWorker();
-  if (worker) {
-    worker.postMessage(request);
-    return;
-  }
-  applyFailedPageResult(buildListPageResultSync(request));
+  });
 }
 
 function applyFailedPageResult(result) {
-  if (!result || result.type !== "page" || Number(result.sequence) !== failedPageSequence) return;
   const items = Array.isArray(result.pageItems) ? result.pageItems : [];
   const totalPages = Number(result.totalPages) || 1;
   failedPage = Number(result.currentPage) || 1;
+  failedPageSize = normalizeTablePageSize(result.pageSize);
   selected.failed = String(result.selectedId || "");
   reconcileSelectedTask("failed", items);
   patchTableRows("failedBody", items, item => item.id, item => taskRenderService().failedRow(item, selected.failed));
@@ -1362,6 +1414,7 @@ function buildListPageResultSync(request) {
   if (selectedId && !items.some(item => String(item.id || "") === selectedId)) selectedId = "";
   return {
     type: "page",
+    pageKey: String(request.pageKey || ""),
     sequence: Number(request.sequence) || 0,
     totalCount,
     totalPages,

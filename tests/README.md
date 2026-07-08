@@ -1,251 +1,169 @@
 # 测试目录说明
 
-本目录覆盖项目的所有风险路径，从单元到端到端、UI 弹窗、Web 浏览器真实交互全套测试。
+本目录是项目的测试套件入口，覆盖 CLI/SDK、Web API、GUI、浏览器 E2E、下载核心、配置、日志、打包、架构约束和性能基准。当前测试体系以 `pytest` 为统一执行器，通过 [test_registry.py](test_registry.py) 做分类注册，通过 [test_launcher.py](test_launcher.py) 提供 GUI / TUI / CLI 三模启动器。
 
-## 行业测试标准参考
+## 当前快照
 
-本项目测试遵循以下行业规范：
+以下数据来自 `python tests/test_registry.py`，更新时间为 2026-07-08：
 
-- **测试金字塔**（Mike Cohn）：底层单元测试最多，往上集成、E2E 逐渐减少
-- **FIRST 原则**：Fast、Independent、Repeatable、Self-validating、Timely
-- **AAA 模式**：Arrange（准备）/ Act（执行）/ Assert（断言）
-- **测试隔离**：每个测试独立 setUp/tearDown，主要以 `unittest.TestCase` 风格编写，由 `pytest` 统一执行
-- **黑盒 vs 白盒**：黑盒只看 API 行为，白盒 mock 内部实现
-- **契约测试**：验证多个入口（CLI/SDK/API）的输出一致
-- **Pipeline 测试**：验证 stdin/stdout 数据流转换
-- **Web E2E**：Playwright + 真实浏览器（参考 Vercel Web Interface Guidelines）
+| 指标 | 当前值 |
+| --- | --- |
+| 启用分类 | 13 |
+| 可运行测试文件 | 131 |
+| 套件实现文件 | `test_launcher.py` / `test_registry.py` / `test_runner.py` |
+| 未归类测试 | 0 |
 
-## 测试类别
+测试套件实现文件位于 `tests/` 目录内，但不会作为普通 pytest 测试脚本运行。
 
-| 类别 | 文件数 | 用例数 | 说明 |
-|------|------|------|------|
-| **all** | 34 | 全部 | 当前 `tests/` 目录下所有可执行测试脚本 |
-| cli_sdk | 7 | 130+ | CLI、SDK、选择策略、默认值与 Runner |
-| web_api | 3 | 150+ | FastAPI 端点、Web 入口、多入口契约 |
-| app_flows | 3 | 30+ | 端到端流程、入口调度、跨模块流程 |
-| desktop_ui | 4 | 40+ | Qt 主窗口、控制器、队列面板、对话框 |
-| browser_e2e | 1 | 30+ | Playwright 真实浏览器前端交互回归 |
-| pipeline | 1 | 30+ | stdin/stdout JSON 管道与多轮预加载 |
-| packaging | 1 | 40+ | spec、runtime hook、资源与发布入口 |
-| core_services | 13 | 100+ | 下载器、文件服务、配置、日志、核心服务 |
-| suite_infra | 1 | 30+ | 测试入口、插件接入、测试套件自身行为 |
-| misc | 自动 | 自动 | 未命中规则的新测试脚本，便于后续补分类 |
+## 分类总览
 
-**总用例数：数百个，持续增长**
+| ID | 名称 | 文件数 | 分组 | 说明 |
+| --- | --- | ---: | --- | --- |
+| `all` | 全部测试 | 131 | 开始使用 | 运行当前测试目录下所有可执行测试脚本 |
+| `cli_sdk` | CLI / SDK | 8 | 接口层 | 命令行、SDK、选择策略、默认值和 Runner |
+| `web_api` | Web / API | 14 | 接口层 | FastAPI 端点、Web 入口、Web 控制器桥接和多入口契约 |
+| `app_flows` | 应用流程 | 9 | 流程层 | 端到端流程、入口调度与跨模块集成流 |
+| `desktop_ui` | 桌面界面 | 21 | 体验层 | Qt 主窗口、控制器、队列面板、宿主适配层、日志和对话框 |
+| `browser_e2e` | 浏览器 E2E | 1 | 体验层 | Playwright 驱动的真实浏览器测试与前端交互回归 |
+| `pipeline` | 数据管道 | 1 | 流程层 | stdin/stdout JSON 管道、多轮选择与预加载链路 |
+| `packaging` | 打包发布 | 1 | 保障层 | spec、runtime hook、资源文件和发布入口完整性 |
+| `core_services` | 核心服务 | 75 | 保障层 | 业务核心、下载器、文件服务、配置和基础设施 |
+| `architecture` | 架构适应度 | 3 | 保障层 | 依赖方向、Spider 协议和文件大小等结构性约束 |
+| `benchmark` | 性能基准 | 1 | 保障层 | 显式运行的轻量性能基准 |
+| `suite_infra` | 测试套件 | 2 | 套件自身 | 测试入口、分类注册、启动器 UI 与测试套件自身行为 |
+| `misc` | 未归类 | 0 | 扩展测试 | 自动收纳尚未命中规则的新脚本 |
 
-## 核心测试基础设施（v2 升级）
+`desktop_ui` 标记为需要 GUI 环境，`browser_e2e` 标记为需要浏览器/网络能力。其它分类默认不依赖真实外部站点。
 
-### 1. 测试注册表 [test_registry.py](test_registry.py)
+## 核心基础设施
 
-集中管理所有测试类别与文件：
+### [test_registry.py](test_registry.py)
 
-- `TestCategory` dataclass（id/name/description/files/icon_color/icon_letter/priority/requires_network/requires_gui/enabled）
-- 预置 11 个类别（all/cli_sdk/web_api/app_flows/desktop_ui/browser_e2e/pipeline/packaging/core_services/suite_infra/misc）
-- `register_category()` 运行时注册新类别
-- `register_category_rule()` 用 glob 规则自动归类
-- `register_test_files()` 便于后续把测试脚本接入现有套件
-- `get_enabled_categories()` 按 priority 排序
-- `get_resolved_files(cat_id)` 解析 `all` 为所有其他类别
-- `auto_discover_tests()` 自动发现未命中规则的新测试脚本
+测试注册表是分类事实来源：
 
-### 2. 测试运行引擎 [test_runner.py](test_runner.py)
+- `TestCategory` 保存 id、名称、描述、文件规则、图标、分组、是否需要 GUI / 网络等元数据。
+- `register_category_rule()` 通过 glob 规则自动归类测试文件。
+- `get_resolved_files(cat_id)` 解析某个分类最终会运行的脚本。
+- `auto_discover_tests()` 找出尚未命中任何内置规则的新测试脚本。
+- `summary()` 输出当前分类、文件数量和动态插件目录。
 
-封装 pytest 调用与结果解析：
+新增测试时，优先改文件名让它命中现有规则；只有长期稳定的新职责才扩展注册表规则。
 
-- `TestResult` dataclass（passed/failed/skipped/errors/duration/failed_tests）
-- `run_category()` 逐文件运行 pytest，解析输出
-- `run_categories()` 顺序运行多个类别
-- `format_summary()` 多行汇总文本
-- 进度回调（GUI 进度条用）
+### [test_runner.py](test_runner.py)
 
-### 3. 统一测试入口 [test_launcher.py](test_launcher.py)
+测试运行引擎封装 pytest 调用和结果解析：
 
-**三模自适应启动器**（GUI / TUI / CLI）：
+- `run_category()` 运行单个分类。
+- `run_categories()` 顺序运行多个分类。
+- `TestResult` 保存通过、失败、跳过、错误、耗时和失败明细。
+- `format_summary()` 生成文本汇总，供 CLI/TUI/GUI 共用。
+
+### [test_launcher.py](test_launcher.py)
+
+统一测试启动器，支持 GUI / TUI / CLI：
 
 ```bash
-# 1. 弹 Qt 菜单（默认）
-python tests/test_launcher.py
-
-# 2. 命令行直接跑某个类别
-python tests/test_launcher.py --category cli_sdk
+python tests/test_launcher.py                 # 默认 GUI
+python tests/test_launcher.py --gui           # 强制 GUI
+python tests/test_launcher.py --tui           # TUI 菜单
+python tests/test_launcher.py --list          # 列出分类
 python tests/test_launcher.py --category all
-python tests/test_launcher.py --category browser_e2e
-
-# 3. TUI 菜单（无 GUI 环境）
-python tests/test_launcher.py --tui
-
-# 4. 列出所有类别
-python tests/test_launcher.py --list
-
-# 5. 强制 GUI
-python tests/test_launcher.py --gui
-```
-
-特性：
-- 左侧分组套件列表 + 右侧统计/详情/控制台的现代双栏布局
-- 实时运行面板（统计卡片 + 进度条 + QTextEdit 滚动日志）
-- F5 运行 / Ctrl+1 全部 / Ctrl+R 推荐 / Esc 清空
-- failfast / verbose 复选框
-- **任务栏/窗口图标：优先使用根目录 `test.ico`，不存在时回退到 `tests/test.ico`**
-- Windows AppUserModelID：`ucrawl.universalcrawlerpro.test`
-
-### 4. 测试图标 [test.ico](../test.ico)
-
-**多帧标准 ICO**（BMP 转换后用 Pillow 重存）：
-
-- 7 帧：16/24/32/48/64/128/256 × 32-bit
-- 任务栏、窗口标题、所有子窗口统一使用
-- Windows 任务栏 AppUserModelID 区分（避免与主程序混用）
-
-### 5. CLI 兼容入口 [run_all_tests.py](run_all_tests.py)
-
-旧的 CLI 入口，重构后从 `test_registry` 读取类别：
-
-```bash
-python tests/run_all_tests.py                         # 全量
-python tests/run_all_tests.py --category cli_sdk      # 按类别
-python tests/run_all_tests.py --list                  # 列出
-python tests/run_all_tests.py --verbose               # 详细
-python tests/run_all_tests.py --no-failfast           # 不遇失败停止
-```
-
-## 测试文件总览
-
-命名与自动分类规则见 [NAMING.md](NAMING.md)。
-
-### CLI / SDK / 选择策略（cli_sdk 类别）
-- [test_cli_entry.py](test_cli_entry.py) - cli_entry 透传
-- [test_cli_main.py](test_cli_main.py) - argparse 解析 + 平台别名
-- [test_cli_selection.py](test_cli_selection.py) - RuleSelection/AutoSelection
-- [test_cli_pipe.py](test_cli_pipe.py) - PipeSelection 预加载
-- [test_cli_defaults.py](test_cli_defaults.py) - defaults + validate + proxy
-- [test_cli_sdk.py](test_cli_sdk.py) - UcrawlSDK
-- [test_cli_runner.py](test_cli_runner.py) - CLIRunner 生命周期
-
-### Web / API（web_api 类别）
-- [test_fastapi_endpoints.py](test_fastapi_endpoints.py) - FastAPI 全部 REST 端点
-- [test_web_entry.py](test_web_entry.py) - Web 入口
-- [test_contract.py](test_contract.py) - CLI/SDK/API 三层契约
-
-### 端到端 / 打包 / UI / 管道
-- [test_e2e.py](test_e2e.py) - 完整流程
-- [test_packaging.py](test_packaging.py) - 打包配置
-- [test_ui_dialogs.py](test_ui_dialogs.py) - 弹窗与界面
-- [test_pipeline.py](test_pipeline.py) - 管道选择
-
-### 浏览器 E2E（browser_e2e 类别）
-- [test_web_browser.py](test_web_browser.py) - Playwright 真实浏览器测试
-  - StaticAssetsTests（HTML/CSS/JS 静态结构，不需 Playwright）
-  - WebSocketMessageTypesTests（WS 消息类型一致性）
-  - WebUIBrowserTests（15+ 浏览器交互：主题切换、弹窗、键盘、删除等）
-  - WebUIAccessibilityTests（按钮可读性、html lang、viewport）
-  - WebDesignGuidelinesTests（focus 样式、hover、disabled、错误日志）
-- [web_test_app.py](web_test_app.py) - uvicorn 启动 shim（暴露 `app` 给 `tests.web_test_app:app`）
-
-浏览器 E2E 用例必须等待可观测状态，不得用固定 3.5 秒硬等兜底。通用导航 helper 应等待 `#app-shell`、核心 JS 函数和必要基础控件；具体页面的数据加载、下拉选项、弹窗内容由对应用例自己等待。除非测试对象本身是防抖、节流或定时器窗口，否则不要用 `page.wait_for_timeout(...)` 等固定超时等待 UI 稳定。测试服务输出不得长期挂在无人消费的 `PIPE` 上，避免日志管道填满导致套件假性变慢或卡住。
-
-当前本地基线：`python -m pytest tests/test_web_browser.py -q` 最新实测为 `97 passed in 247.64s (0:04:07)`，早前热运行曾到 `97 passed in 185.66s`（外部秒表约 `187.9s`）。历史硬等版本约 7-8 分钟，当前约节省 172-292 秒；新增浏览器用例必须等待可观测状态，不得重新引入固定 3.5 秒硬等。
-
-### 核心组件（core_services 类别）
-- test_application_controller.py - 控制器
-- test_downloaders.py / test_download_manager_dispatch.py - 下载器
-- test_spider_helpers.py - 爬虫辅助
-- test_file_service.py - 文件服务
-- test_main_window.py / test_main_entry.py - 主窗口与入口
-
-### 历史其他测试
-- test_auth_service.py / test_settings_builders.py - 服务
-- test_runtime_paths.py - 路径解析
-- test_download_queue_panel.py - 队列面板
-- test_cli_pipe.py / test_cli_sdk.py - 管道与 SDK
-- 等等...
-
-## 运行方式
-
-### 推荐：统一测试启动器
-
-```bash
-# 弹 Qt 菜单（默认）
-python tests/test_launcher.py
-
-# 命令行
-python tests/test_launcher.py --category all
-python tests/test_launcher.py --category cli_sdk
+python tests/test_launcher.py --category desktop_ui
 python tests/test_launcher.py --category browser_e2e
 ```
 
-### 全量（CLI）
+GUI 启动器使用 `test.ico`、独立 AppUserModelID `ucrawl.universalcrawlerpro.test`，并在左侧按分组展示测试分类，右侧显示执行范围、统计、进度和日志。主题切换、浅色模式可读性、缩放最小宽度和运行按钮可见性都属于启动器自身回归范围。
+
+### [run_all_tests.py](run_all_tests.py)
+
+兼容 CLI 入口，仍从注册表读取分类：
 
 ```bash
 python tests/run_all_tests.py
+python tests/run_all_tests.py --list
+python tests/run_all_tests.py --category cli_sdk
+python tests/run_all_tests.py --category core_services
+python tests/run_all_tests.py --no-failfast
 ```
 
-### 按类别（CLI）
+## 常用运行方式
 
 ```bash
-python tests/run_all_tests.py --category cli_sdk       # CLI / SDK
-python tests/run_all_tests.py --category web_api       # Web / API
-python tests/run_all_tests.py --category app_flows     # 应用流程
-python tests/run_all_tests.py --category desktop_ui    # 桌面界面
-python tests/run_all_tests.py --category pipeline      # 管道
-python tests/run_all_tests.py --category packaging     # 打包
-python tests/run_all_tests.py --category browser_e2e   # 浏览器 E2E
-python tests/run_all_tests.py --category core_services # 核心服务
-python tests/run_all_tests.py --category suite_infra   # 测试套件
+# 查看当前分类和文件数
+python tests/test_launcher.py --list
+python tests/test_registry.py
+
+# 单个分类
+python tests/test_launcher.py --category cli_sdk
+python tests/test_launcher.py --category web_api
+python tests/test_launcher.py --category desktop_ui
+python tests/test_launcher.py --category architecture
+python tests/test_launcher.py --category benchmark
+
+# 单个文件
+python -m pytest tests/test_fastapi_endpoints.py -q
+python -m pytest tests/test_main_window.py -q
+
+# 主题 / 顶栏相关快速回归
+python -m pytest tests/test_main_window.py -q
+python -m pytest tests/test_unified_frontend_contract.py -q -k "theme or top_bar"
 ```
 
-### 单个文件
+## 重点分类说明
 
-```bash
-python -m pytest tests/test_fastapi_endpoints.py -v
-```
+### CLI / SDK
 
-### 详细输出
+覆盖 `test_cli_*.py`，包括 CLI 参数、选择策略、管道输入、SDK 生命周期、Runner 默认值和异常边界。
 
-```bash
-python -m pytest tests/ -v
-```
+### Web / API
 
-### 不遇失败停止
+覆盖 FastAPI、WebController、WebSocket、脚本 API、Web session 和多入口契约。`app/web/server.py:create_app()` 是用户真实访问 WebUI 的入口，`app/web/rest_router.py` 是组合式路由入口，两者的 `/api/frontend/state`、`/api/frontend/delta`、`/api/frontend/action`、图标和 i18n 语义必须同步验证。
 
-```bash
-python -m pytest tests/ --no-failfast
-```
+### 桌面界面
+
+覆盖 PyQt 主窗口、GUI 入口、日志中心、列表分页 worker、媒体预览、队列面板、统一前端契约和 UI 更新调度。主题切换相关测试必须防止以下回归：
+
+- 冻结 `window_root` 导致 shell 黑屏。
+- 主题按钮图标先变但页面重绘滞后。
+- TopBar / Sidebar / PageStack / StatusBar 或外层 island 消失。
+- 主题 busy 状态禁用按钮，导致快速点击后无法恢复。
+
+### 浏览器 E2E
+
+`test_web_browser.py` 使用 Playwright 真实浏览器。用例必须等待可观测状态，不得用固定 3.5 秒硬等兜底。服务输出不能长期挂在无人消费的 `PIPE` 上，避免日志管道填满导致假性变慢或卡住。
+
+历史本地基线：移除固定硬等后，`python -m pytest tests/test_web_browser.py -q` 曾从约 7-8 分钟降至约 188-248 秒。这个数字只作为历史参考，不作为硬性通过标准。
+
+### 架构适应度
+
+`tests/architecture/test_*.py` 用轻量静态检查约束依赖方向、Spider 协议和文件大小。新增大模块或重构分层时，优先补这里，而不是只依赖人工 review。
+
+### 性能基准
+
+`test_performance_benchmarks.py` 是显式运行的轻量基准。它适合发现明显回退，但不能替代真实 GUI/Web 交互验证。
 
 ## 编写约定
 
-- 统一用 `pytest` 作为执行入口
-- 测试主体可继续使用 `unittest.TestCase` 风格（与历史资产兼容）
-- 测试文件名以 `test_` 开头
-- 类名以 `Test` 结尾（单元测试）或描述性名词
-- 方法名以 `test_` 开头
-- 一个测试一个断言重点
-- 优先 mock 外部依赖（爬虫、网络）
-- 不真爬虫（避免线程崩溃 + 测试慢）
+- 执行入口统一使用 `pytest`。
+- 历史测试可继续使用 `unittest.TestCase` 风格。
+- 测试文件必须以 `test_` 开头，具体命名规则见 [NAMING.md](NAMING.md)。
+- 一个测试聚焦一个行为重点，避免“顺手测很多东西”的大断言。
+- 外部站点、浏览器上下文、下载器和文件系统副作用优先 mock 或使用临时目录。
+- 不要把测试建立在真实站点稳定性上；真实登录、风控和外部工具可用性仍需要人工验证。
+- 新增测试文件后运行 `python tests/test_registry.py`，确认没有落入 `misc`。
 
-## 扩展测试类别
+## 扩展分类
 
-新增测试类别或把新脚本纳入现有套件，优先走注册接口：
+新增分类或把新脚本接入现有套件时，优先使用注册接口：
 
 ```python
-from tests.test_registry import (
-    register_category,
-    register_category_rule,
-    register_test_files,
-)
-
-register_category(
-    id="perf",
-    name="性能测试",
-    description="基准测试 + 内存分析",
-    files=["tests/test_perf_bench.py"],
-)
+from tests.test_registry import register_category, register_category_rule, register_test_files
 
 register_category_rule(
     id="plugin_api",
     name="插件接口",
-    description="自动纳入某个命名规则下的新测试脚本",
-    include=["tests/test_plugin_*.py"],
+    description="自动纳入插件接口相关脚本",
+    include=["tests/test_plugin_api_*.py"],
 )
 
 register_test_files(
@@ -254,68 +172,22 @@ register_test_files(
 )
 ```
 
-## 测试覆盖范围
+扩展分类规则后必须同步：
 
-### 黑盒测试
-- 所有 REST API 端点的输入校验 + 响应结构
-- CLI 子命令的参数解析 + 调用路径
-- SDK 函数调用的输入校验 + 返回值结构
-- Web 浏览器真实交互（Playwright）
+- [test_registry.py](test_registry.py)
+- [test_test_entry.py](test_test_entry.py)
+- [test_test_launcher_ui.py](test_test_launcher_ui.py)（如果影响启动器 UI）
+- [NAMING.md](NAMING.md)
+- [../docs/guides/testing.md](../docs/guides/testing.md)
 
-### 白盒测试
-- SelectionStrategy 协议（duck-type check）
-- PipeSelection 的 stdin 解析逻辑
-- WebController 的端口处理
-- 打包 spec 的 hiddenimports / datas 配置
+## 历史测试发现的生产 Bug
 
-### 单元测试
-- 各种选择策略（Rule/Pipe/Interactive/Auto）
-- 配置校验函数
-- argparse 子命令
+以下案例作为测试价值说明保留：
 
-### 集成测试
-- TestClient 完整 HTTP 流程
-- 跨层调用链路（CLI → handler → SDK → Runner）
-- 多端点协作（scan → dir/change → state）
-
-### API 测试
-- FastAPI 20+ 端点
-- HTTP 状态码 + 响应体结构
-- 跨域（CORS）头
-
-### 管道测试
-- stdin JSON 多种格式（list / dict with indices / items）
-- stdout 结构化 JSON 输出
-- 多轮预加载（合集场景）
-
-### E2E 测试
-- 完整 scan → dir/change → state 链路
-- 配置持久化 PUT/GET 循环
-- SDK 资源管理（with / close / QApplication）
-
-### Web 浏览器测试（新增）
-- 静态资源（HTML/CSS/JS 结构）
-- WebSocket 消息类型一致性
-- 真实浏览器交互（主题切换、弹窗、键盘、删除）
-- 可访问性（按钮可读、html lang、viewport）
-- 设计指南（focus、hover、disabled、错误日志）
-
-## 修复的生产 Bug
-
-通过本次全量测试，发现并修复了 3 个生产 bug：
-
-1. **RuleSelection.__init__ 中 `self.select = select` 覆盖了 `def select()` 方法**
-   - 修复：用 `self._select_rule = select`
-   - 发现于：test_cli_selection.py
-
-2. **cli/main.py 顶部 `sys.path.insert(0, ROOT)` 不去重**
-   - 修复：加 `if _PROJECT_ROOT not in sys.path:` 去重检查
-   - 发现于：test_cli_main.py
-
-3. **SDK `_resolve_selection` 中 `isinstance(selection, SelectionStrategy)` 在 Protocol 没 @runtime_checkable 时崩 TypeError**
-   - 修复：加 `is_selection_strategy()` duck-type check 函数
-   - 发现于：test_contract.py
+1. `RuleSelection.__init__` 中 `self.select = select` 覆盖 `def select()` 方法，后续改为 `self._select_rule`。
+2. `cli/main.py` 顶部重复插入项目根目录，后续增加 `if _PROJECT_ROOT not in sys.path:` 检查。
+3. SDK `_resolve_selection` 对未 `@runtime_checkable` 的 Protocol 做 `isinstance` 导致 TypeError，后续改为 duck-type check。
 
 ## 维护建议
 
-新增平台或重构目录时，请同步更新本文件与 `docs/testing.md`。
+测试目录结构、分类规则、GUI 启动器布局、Web API 入口或主题/日志/前端刷新契约变化时，请同步更新本文档、[NAMING.md](NAMING.md) 和 [../docs/guides/testing.md](../docs/guides/testing.md)。

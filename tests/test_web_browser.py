@@ -923,8 +923,17 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("queuePageSize = normalizeTablePageSize(value);", content)
         self.assertIn("completedPageSize = normalizeTablePageSize(value);", content)
         self.assertIn("failedPageSize = normalizeTablePageSize(value);", content)
-        self.assertIn("worker.postMessage(request);", render_failed_block)
-        self.assertIn("applyFailedPageResult(buildListPageResultSync(request));", render_failed_block)
+        self.assertIn("function ensureListPageWorker()", content)
+        self.assertIn("function submitListPageRequest(pageKey, requestData)", content)
+        self.assertIn("function applyListPageResult(result)", content)
+        self.assertIn("worker.postMessage(request);", content)
+        self.assertIn("applyListPageResult(buildListPageResultSync(request));", content)
+        self.assertIn('submitListPageRequest("queue"', render_queue_block)
+        self.assertIn('submitListPageRequest("completed"', render_completed_block)
+        self.assertIn('submitListPageRequest("failed"', render_failed_block)
+        self.assertIn("applyQueuePageResult(result)", render_queue_block)
+        self.assertIn("applyCompletedPageResult(result)", render_completed_block)
+        self.assertIn("applyFailedPageResult(result)", render_failed_block)
         self.assertIn('syncCustomSelectForSelect(byId("queuePageSize"))', render_queue_block)
         self.assertIn('syncCustomSelectForSelect(byId("completedPageSize"))', render_completed_block)
         self.assertIn('syncCustomSelectForSelect(byId("failedPageSize"))', render_failed_block)
@@ -958,6 +967,8 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('button.setAttribute("aria-label", t(label));', content)
         self.assertNotIn("queuePageSize = Math.max(20, Number(value) || 20)", content)
         self.assertNotIn("completedPageSize = Math.max(20, Number(value) || 20)", content)
+        self.assertNotIn("allItems.slice(start, start + queuePageSize)", render_queue_block)
+        self.assertNotIn("allItems.slice(start, start + completedPageSize)", render_completed_block)
 
     def test_web_active_download_selects_sync_custom_shell_after_state_updates(self):
         content = _static_bundle_content()
@@ -2673,28 +2684,30 @@ class WebUIBrowserTests(unittest.TestCase):
               completedPage = 2;
               selected.completed = 'missing-completed';
               renderCompleted();
-
-              frontendState.failed_items = [
-                { id: 'failed-a', title: 'Failed A', failed_at: '2026-07-04 06:03:00', failed_at_table: '07-04 06:03', reason: '403', reason_label: '链接失败', platform: 'Bilibili', platform_id: 'bilibili', status_label: '失败' }
-              ];
-              selected.failed = 'missing-failed';
-              renderFailed();
-              await new Promise((resolve, reject) => {
+              const waitForSelectedRow = (selector, expectedId, selectedGetter, label) => new Promise((resolve, reject) => {
                 const deadline = performance.now() + 3000;
                 const tick = () => {
-                  const selectedRow = document.querySelector('#failedBody tr.selected');
-                  if (selected.failed === 'failed-a' && selectedRow && selectedRow.dataset.id === 'failed-a') {
+                  const selectedRow = document.querySelector(`${selector} tr.selected`);
+                  if (selectedGetter() === expectedId && selectedRow && selectedRow.dataset.id === expectedId) {
                     resolve();
                     return;
                   }
                   if (performance.now() > deadline) {
-                    reject(new Error('failed page worker did not render the selected row'));
+                    reject(new Error(`${label} page worker did not render the selected row`));
                     return;
                   }
                   requestAnimationFrame(tick);
                 };
                 tick();
               });
+              await waitForSelectedRow('#completedBody', 'completed-c', () => selected.completed, 'completed');
+
+              frontendState.failed_items = [
+                { id: 'failed-a', title: 'Failed A', failed_at: '2026-07-04 06:03:00', failed_at_table: '07-04 06:03', reason: '403', reason_label: '链接失败', platform: 'Bilibili', platform_id: 'bilibili', status_label: '失败' }
+              ];
+              selected.failed = 'missing-failed';
+              renderFailed();
+              await waitForSelectedRow('#failedBody', 'failed-a', () => selected.failed, 'failed');
 
               frontendState.toolbox_items = [
                 { id: 'tool-a', title: 'Tool A', summary: 'Tool summary', input_example: 'Input A', output_example: 'Output A', icon_file: 'nav_toolbox.png' }
@@ -3609,6 +3622,10 @@ class WebUIBrowserTests(unittest.TestCase):
             renderQueue();
             document.body.focus();
         """)
+        self._page.wait_for_function(
+            "() => document.querySelectorAll('#queueBody tr[data-id]').length === 3",
+            timeout=5000,
+        )
         # 第一次按 ArrowDown → 选中 a
         self._page.keyboard.press("ArrowDown")
         self._page.wait_for_function("() => selectedVideoId === 'a'", timeout=5000)

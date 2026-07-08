@@ -32,6 +32,7 @@ function buildListPageResult(request) {
 
   return {
     type: "page",
+    pageKey: String(request.pageKey || ""),
     sequence: Number(request.sequence) || 0,
     totalCount,
     totalPages,
