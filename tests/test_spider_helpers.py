@@ -973,6 +973,47 @@ class SpiderHelperTests(unittest.TestCase):
         spider.log.assert_any_call("   ❌ 获取流失败: payload malformed")
         spider.log.assert_any_call("   ✨ 获取成功 [1080P]")
 
+    def test_bilibili_process_download_tasks_async_batches_ready_items(self):
+        spider = self._make_bilibili_spider()
+        spider.config = {"api_workers": 2}
+        spider.emit_videos = Mock(return_value=2)
+        spider._worker_api_for_thread = Mock(return_value=Mock())
+
+        def resolve(task, api=None):
+            del api
+            item = VideoItem(
+                url=f"https://video.example.com/{task['bvid']}.mp4",
+                title=task["file_name"].removesuffix(".mp4"),
+                source="bilibili",
+            )
+            item.meta["trace_id"] = task["trace_id"]
+            return item
+
+        spider._resolve_download_item = Mock(side_effect=resolve)
+        tasks = [
+            {
+                "trace_id": "trace-1",
+                "bvid": "BV1",
+                "cid": 101,
+                "file_name": "P01_示例.mp4",
+                "referer": "https://www.bilibili.com/video/BV1",
+            },
+            {
+                "trace_id": "trace-2",
+                "bvid": "BV2",
+                "cid": 102,
+                "file_name": "P02_示例.mp4",
+                "referer": "https://www.bilibili.com/video/BV2",
+            },
+        ]
+
+        success_count, failure_count = spider._process_download_tasks_async(tasks)
+
+        self.assertEqual((success_count, failure_count), (2, 0))
+        self.assertEqual(spider._resolve_download_item.call_count, 2)
+        spider.emit_videos.assert_called_once()
+        spider.emit_video.assert_not_called()
+
     @patch("app.spiders.douyin.spider.os.path.exists", return_value=True)
     def test_douyin_load_or_login_falls_back_to_scan_when_local_cookie_invalid(self, _mock_exists):
         """验证 `test_douyin_load_or_login_falls_back_to_scan_when_local_cookie_invalid` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

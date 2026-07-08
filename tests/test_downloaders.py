@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import requests
 
+from app.config import cfg
 from app.core.download_manager import DownloadManager, DownloadWorker
 from app.core.download_manager_core import PendingDownloadQueue
 from app.core.lib.douyin.tools.session import create_client, request_params
@@ -84,6 +85,25 @@ class DownloaderStrategyTests(unittest.TestCase):
         BaseDownloader._emit_progress(progress_callback, 42, bytes_downloaded=1024, bytes_total=2048)
 
         self.assertEqual(calls, [42])
+
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_downloader_zero_retries_still_makes_initial_attempt(self, mocked_get):
+        mocked_get.return_value = self._make_stream_response([b"ok"], headers={"content-length": "2"})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+
+            BaseDownloader()._download_http_file(
+                url="https://example.com/demo.mp4",
+                save_path=save_path,
+                headers={},
+                check_stop_func=lambda: False,
+                max_retries=0,
+            )
+
+            self.assertEqual(Path(save_path).read_bytes(), b"ok")
+
+        self.assertEqual(mocked_get.call_count, 1)
 
     def test_m3u8_cleanup_removes_external_tool_temp_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -465,6 +485,24 @@ class DownloaderStrategyTests(unittest.TestCase):
         auto_select_index = command.index("--auto-select")
         self.assertEqual(command[auto_select_index + 1], "true")
 
+    @patch("app.core.downloaders.external.cfg.get")
+    def test_nm3u8_external_tool_uses_configured_retry_count(self, mocked_cfg_get):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "max_retries"):
+                return 2
+            return cfg.get(section, key, default)
+
+        mocked_cfg_get.side_effect = cfg_get
+        command = NM3U8DLREExternalTool.build_download_command(
+            "N_m3u8DL-RE.exe",
+            "https://cdn.example.com/live/index.m3u8",
+            os.path.join("downloads", "demo.mp4"),
+            "ua-demo",
+            "https://www.douyin.com/",
+        )
+
+        self.assertEqual(command[command.index("--download-retry-count") + 1], "2")
+
     def test_nm3u8_external_tool_build_download_command_accepts_tmp_dir(self):
         tmp_dir = os.path.join("downloads", ".ucp-nm3u8-tmp", "ucp-demo")
         command = NM3U8DLREExternalTool.build_download_command(
@@ -775,6 +813,15 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIn("dy_swidth=999", cookie)
         self.assertNotIn("dy_swidth=1536", cookie)
         self.assertIn("dy_sheight=864", cookie)
+
+    @patch.object(DouyinDownloader, "_download_with_strategy_fallback")
+    def test_douyin_downloader_honors_resume_enabled_setting(self, mocked_download):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with patch.object(cfg.settings.download, "resume_enabled", False):
+            DouyinDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        self.assertFalse(mocked_download.call_args.kwargs["support_resume"])
 
     @patch.object(DouyinDownloader, "_download_file")
     def test_douyin_gallery_download_uses_live_and_image_extensions(self, mocked_download_file):
@@ -2595,6 +2642,30 @@ https://cdn.example.com/seg2.ts
         KuaishouDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
 
         self.assertEqual(mocked_download.call_args.kwargs["headers"]["User-Agent"], "meta-ua")
+
+    @patch.object(KuaishouDownloader, "_download_with_strategy_fallback")
+    def test_kuaishou_downloader_honors_resume_enabled_setting(self, mocked_download):
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="kuaishou")
+
+        with patch.object(cfg.settings.download, "resume_enabled", True):
+            KuaishouDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        self.assertTrue(mocked_download.call_args.kwargs["support_resume"])
+
+    @patch.object(XiaohongshuDownloader, "_download_with_strategy_fallback")
+    @patch("app.core.downloaders.xiaohongshu.cfg.get")
+    def test_xiaohongshu_downloader_honors_resume_enabled_setting(self, mocked_cfg_get, mocked_download):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "resume_enabled"):
+                return False
+            return cfg.get(section, key, default)
+
+        mocked_cfg_get.side_effect = cfg_get
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="xiaohongshu")
+
+        XiaohongshuDownloader().download(item, "demo.mp4", lambda _: None, lambda: False)
+
+        self.assertFalse(mocked_download.call_args.kwargs["support_resume"])
 
 if __name__ == "__main__":
     unittest.main()

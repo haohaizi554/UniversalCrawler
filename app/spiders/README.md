@@ -26,6 +26,7 @@
 - 让流程控制更容易测试。
 - 减少 spider 直接承担过多数据拼装职责。
 - 把纯解析和任务装配继续下沉到 `parser / task_builder`。
+- 平台采集异步化应按 `docs/engineering/spider-async-pipeline.md` 的边界推进：请求可受限并发，游标分页保留顺序，最终批量入队。
 
 ## 分支补强点
 

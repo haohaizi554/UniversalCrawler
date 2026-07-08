@@ -132,12 +132,9 @@ class BilibiliDownloader(BaseDownloader):
         temp_a = os.path.join(save_dir, f"{base_name}_audio.m4s")
         video_item.meta["download_temp_files"] = [temp_v, temp_a] if audio_url else [temp_v]
         chunk_size = max(cfg.get("download", "chunk_size", 65536), 256 * 1024)
-        try:
-            max_retries = max(1, min(int(cfg.get("download", "max_retries", 3) or 3), 10))
-        except (TypeError, ValueError):
-            max_retries = 3
+        max_retries = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
         resume_raw = cfg.get("download", "resume_enabled", True)
-        resume_enabled = str(resume_raw).strip().lower() not in {"0", "false", "no", "off"}
+        resume_enabled = self._coerce_bool_setting(resume_raw)
         debug_logger.log(
             component="BilibiliDownloader",
             action="prepare_download",
@@ -254,7 +251,7 @@ class BilibiliDownloader(BaseDownloader):
 
         def download_stream(name: str, path: str) -> None:
             """下载单个流（video/audio），失败时重新获取 CDN URL 后重试。"""
-            for attempt in range(max_retries):
+            for attempt in range(max_retries + 1):
                 if stop_event.is_set():
                     return
                 with _url_lock:
@@ -328,7 +325,7 @@ class BilibiliDownloader(BaseDownloader):
                                         emit_combined_progress()
                     return  # 成功，退出重试循环
                 except (requests.ConnectionError, ConnectionResetError, ConnectionAbortedError, OSError) as exc:
-                    if attempt < max_retries - 1:
+                    if attempt < max_retries:
                         wait = (attempt + 1) * 2
                         resume_offset = os.path.getsize(path) if resume_enabled and os.path.exists(path) else 0
                         debug_logger.log(

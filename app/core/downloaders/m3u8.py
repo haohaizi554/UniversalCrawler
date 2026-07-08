@@ -1729,6 +1729,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         proxy: str | None,
         progress_hook,
     ) -> dict[str, Any]:
+        retry_count = BaseDownloader._coerce_retry_count(cfg.get("download", "max_retries", 3))
+        resume_enabled = BaseDownloader._coerce_bool_setting(cfg.get("download", "resume_enabled", True))
         return {
             "quiet": True,
             "no_warnings": True,
@@ -1737,10 +1739,10 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             "paths": {"home": str(Path(save_path).parent)},
             "http_headers": headers,
             "proxy": proxy or None,
-            "retries": 10,
-            "fragment_retries": 10,
-            "continuedl": True,
-            "nopart": False,
+            "retries": retry_count,
+            "fragment_retries": retry_count,
+            "continuedl": resume_enabled,
+            "nopart": not resume_enabled,
             "merge_output_format": "mp4",
             "progress_hooks": [progress_hook],
             "impersonate": "",

@@ -439,7 +439,7 @@ class MediaHostControllerMixin:
         if self._should_clear_queue_in_background():
             invoker = self._ensure_ui_callback_invoker()
 
-            def clear_in_background() -> None:
+            def clear_in_background(_cancel_token) -> None:
                 try:
                     ids = self._queue_item_ids_for_clear()
                     labels = self._queue_delete_log_labels(ids)
@@ -460,11 +460,10 @@ class MediaHostControllerMixin:
                     return
                 invoker.invoke(lambda: self._finalize_clear_queue_removal(removed_ids, labels))
 
-            threading.Thread(
-                target=clear_in_background,
-                name="ClearDownloadQueueWorker",
-                daemon=True,
-            ).start()
+            self._ensure_short_task_runner().submit(
+                name="clear-download-queue",
+                fn=clear_in_background,
+            )
             return
 
         ids = self._queue_item_ids_for_clear()

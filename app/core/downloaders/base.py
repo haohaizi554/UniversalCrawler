@@ -211,6 +211,22 @@ class BaseDownloader:
                 pass
         os.rename(temp_path, save_path)
 
+    @staticmethod
+    def _coerce_retry_count(value: object, default: int = 3) -> int:
+        try:
+            retry_count = int(value)
+        except (TypeError, ValueError):
+            retry_count = default
+        return max(0, min(retry_count, 10))
+
+    @staticmethod
+    def _coerce_bool_setting(value: object, default: bool = True) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off"}
+        return bool(value)
+
     #单线程 HTTP 下载实现
     def _download_http_file(
         self,
@@ -231,8 +247,9 @@ class BaseDownloader:
         temp_path = save_path + ".downloading"
         success = False
         proxies = {"http": proxy, "https": proxy} if proxy else None
+        retry_count = self._coerce_retry_count(max_retries)
 
-        for attempt in range(max_retries):
+        for attempt in range(retry_count + 1):
             if check_stop_func():
                 raise DownloaderStoppedError("用户停止下载")
             try:
@@ -266,16 +283,16 @@ class BaseDownloader:
                 self._cleanup_temp_file(temp_path)
                 raise
             except requests.RequestException:
-                if attempt == max_retries - 1:
+                if attempt == retry_count:
                     break
-                time.sleep(1 if max_retries <= 3 else 3)
+                time.sleep(1 if retry_count <= 3 else 3)
             except OSError as exc:
                 self._cleanup_temp_file(temp_path)
                 raise StreamDownloadError(f"{error_message}: {exc}") from exc
             except (ValueError, TypeError, RuntimeError) as exc:
-                if attempt == max_retries - 1:
+                if attempt == retry_count:
                     raise StreamDownloadError(f"{error_message}: {exc}") from exc
-                time.sleep(1 if max_retries <= 3 else 3)
+                time.sleep(1 if retry_count <= 3 else 3)
 
         if not success:
             self._cleanup_temp_file(temp_path)

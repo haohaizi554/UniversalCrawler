@@ -6,4 +6,5 @@
 | --- | --- |
 | [windows-native-chrome-hit-test.md](windows-native-chrome-hit-test.md) | Windows 自绘标题栏、原生命中、边框缩放、Snap Layout 和任务栏经验 |
 | [frontend-refresh-and-concurrency.md](frontend-refresh-and-concurrency.md) | GUI/WebUI 高频刷新、日志洪峰、下载并发和背压准则 |
+| [spider-async-pipeline.md](spider-async-pipeline.md) | 以 Douyin 为基线的平台异步采集、解析、任务构建、批量入队和背压边界 |
 | [settings-ui-contract.md](settings-ui-contract.md) | GUI/WebUI 设置、下拉框、主题语言和国际化契约 |

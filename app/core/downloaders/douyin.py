@@ -98,6 +98,7 @@ class DouyinDownloader(BaseDownloader):
             download_cfg.max_retries,
             download_cfg.request_timeout,
             download_cfg.chunk_size,
+            download_cfg.resume_enabled,
         )
 
     def _download_single(
@@ -110,6 +111,7 @@ class DouyinDownloader(BaseDownloader):
         max_retries: int,
         request_timeout: int,
         chunk_size: int,
+        support_resume: bool,
     ) -> None:
         """提供 `_download_single` 对应的内部辅助逻辑，供 `DouyinDownloader` 使用。"""
         self._download_with_strategy_fallback(
@@ -121,7 +123,7 @@ class DouyinDownloader(BaseDownloader):
             max_retries=max_retries,
             timeout=request_timeout,
             chunk_size=chunk_size,
-            support_resume=True,
+            support_resume=self._coerce_bool_setting(support_resume),
             error_message="下载失败，请检查网络或链接是否失效",
         )
 
@@ -248,5 +250,6 @@ class DouyinDownloader(BaseDownloader):
             max_retries=cfg.get("download", "max_retries", 3),
             timeout=cfg.get("download", "request_timeout", 60),
             chunk_size=8192,
+            support_resume=self._coerce_bool_setting(cfg.get("download", "resume_enabled", True)),
             error_message=f"文件下载失败: {os.path.basename(save_path)}",
         )

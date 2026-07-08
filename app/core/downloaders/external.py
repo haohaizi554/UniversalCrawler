@@ -34,6 +34,20 @@ def build_no_window_flags() -> int:
         return 0
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+def _configured_retry_count(default: int = 3) -> int:
+    try:
+        retry_count = int(cfg.get("download", "max_retries", default))
+    except (TypeError, ValueError):
+        retry_count = default
+    return max(0, min(retry_count, 10))
+
+def _configured_request_timeout(default: int = 60) -> int:
+    try:
+        timeout = int(cfg.get("download", "request_timeout", default))
+    except (TypeError, ValueError):
+        timeout = default
+    return max(1, min(timeout, 3600))
+
 class ExternalToolRunner:
     """封装外部工具查找、等待和停止控制的公共逻辑。"""
 
@@ -122,8 +136,17 @@ class FFmpegExternalTool:
         return cls.resolve_executable() is not None
 
     @classmethod
-    def build_download_command(cls, executable: str, url: str, save_path: str, headers: dict[str, str], proxy: str | None = None) -> list[str]:
+    def build_download_command(
+        cls,
+        executable: str,
+        url: str,
+        save_path: str,
+        headers: dict[str, str],
+        proxy: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> list[str]:
         """构造 ffmpeg 直连下载媒体流的命令行参数。"""
+        timeout_us = str(max(1, int(timeout_seconds or _configured_request_timeout())) * 1_000_000)
         cmd = [
             executable,
             "-y",
@@ -143,7 +166,9 @@ class FFmpegExternalTool:
             "-reconnect_delay_max",
             "5",
             "-timeout",
-            "60000000",
+            timeout_us,
+            "-rw_timeout",
+            timeout_us,
         ]
         if proxy:
             cmd.extend(["-http_proxy", proxy])
@@ -254,6 +279,8 @@ class NM3U8DLREExternalTool:
         save_name_no_ext = os.path.splitext(os.path.basename(save_path))[0]
         headers = cls._normalized_headers(user_agent, referer, extra_headers)
         thread_count_text = str(thread_count or cls._m3u8_thread_count())
+        retry_count_text = str(_configured_retry_count())
+        request_timeout_text = str(_configured_request_timeout())
         cmd = [
             executable,
             source_url,
@@ -268,7 +295,9 @@ class NM3U8DLREExternalTool:
             "--thread-count",
             thread_count_text,
             "--download-retry-count",
-            "10",
+            retry_count_text,
+            "--http-request-timeout",
+            request_timeout_text,
             "--auto-select",
             "true",
             "--mux-after-done",

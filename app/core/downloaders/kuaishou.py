@@ -69,6 +69,7 @@ class KuaishouDownloader(BaseDownloader):
             max_retries=download_cfg.max_retries,
             timeout=download_cfg.request_timeout,
             chunk_size=download_cfg.chunk_size,
+            support_resume=self._coerce_bool_setting(download_cfg.resume_enabled),
             error_message="下载失败",
         )
         debug_logger.log(

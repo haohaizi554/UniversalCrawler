@@ -120,6 +120,21 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertEqual(pending.snapshot_video_ids(), {second.id})
         self.assertEqual(pending.get_nowait()[0].id, second.id)
 
+    def test_add_tasks_batches_pending_queue_wakeup(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager.video_only = False
+        manager.is_running = True
+        first = VideoItem(url="https://example.com/1.mp4", title="first", source="douyin")
+        second = VideoItem(url="https://example.com/2.mp4", title="second", source="douyin")
+
+        queued = manager.add_tasks([first, second], "downloads")
+
+        self.assertEqual(queued, 2)
+        self.assertEqual(manager.queue.snapshot_video_ids(), {first.id, second.id})
+        self.assertEqual(manager.queue.get_nowait()[0].id, first.id)
+        self.assertEqual(manager.queue.get_nowait()[0].id, second.id)
+
     def test_cancel_tasks_batches_queued_and_running_items(self):
         manager = DownloadManagerCore.__new__(DownloadManagerCore)
         manager.queue = PendingDownloadQueue()

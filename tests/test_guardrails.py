@@ -597,6 +597,21 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("os.path.exists", play_block)
         self.assertIn("def _submit_playback_file_check", text)
 
+    def test_media_host_clear_queue_reuses_short_task_runner(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "controllers" / "media_host_controller_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        clear_block = text.split("def on_clear_queue", 1)[1].split(
+            "def _should_clear_queue_in_background",
+            1,
+        )[0]
+
+        self.assertIn("_ensure_short_task_runner().submit", clear_block)
+        self.assertNotIn("threading.Thread", clear_block)
+        self.assertNotIn("ClearDownloadQueueWorker", clear_block)
+
     def test_media_host_rename_video_submits_file_transaction_before_ui_finalize(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         host_text = (project_root / "app" / "controllers" / "media_host_controller_mixin.py").read_text(

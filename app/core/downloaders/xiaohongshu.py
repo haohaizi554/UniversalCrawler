@@ -59,7 +59,7 @@ class XiaohongshuDownloader(BaseDownloader):
             max_retries=cfg.get("download", "max_retries", 3),
             timeout=cfg.get("download", "request_timeout", 60),
             chunk_size=cfg.get("download", "chunk_size", 65536),
-            support_resume=True,
+            support_resume=self._coerce_bool_setting(cfg.get("download", "resume_enabled", True)),
             error_message="小红书视频下载失败",
         )
 
@@ -171,6 +171,7 @@ class XiaohongshuDownloader(BaseDownloader):
                 max_retries=cfg.get("download", "max_retries", 3),
                 timeout=cfg.get("download", "request_timeout", 60),
                 chunk_size=cfg.get("download", "chunk_size", 65536),
+                support_resume=self._coerce_bool_setting(cfg.get("download", "resume_enabled", True)),
                 error_message=f"小红书图片下载失败: {base_name}_{idx}",
                 proxy=video_item.meta.get("proxy"),
             )

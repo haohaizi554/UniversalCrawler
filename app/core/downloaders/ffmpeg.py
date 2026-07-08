@@ -155,6 +155,7 @@ class FFmpegDownloader(BaseDownloader):
             raise ExternalToolNotFoundError("未找到 ffmpeg.exe")
         proxy = video_item.meta.get("proxy")
         proxies = {"http": proxy, "https": proxy} if proxy else None
+        request_timeout = cfg.get("download", "request_timeout", 60)
         expected_duration = None
         raw_duration = video_item.meta.get("duration")
         if isinstance(raw_duration, (int, float)) and raw_duration > 0:
@@ -167,7 +168,7 @@ class FFmpegDownloader(BaseDownloader):
                 resp = requests.head(
                     source_url,
                     headers=headers,
-                    timeout=15,
+                    timeout=request_timeout,
                     allow_redirects=True,
                     proxies=proxies,
                 )
@@ -201,15 +202,22 @@ class FFmpegDownloader(BaseDownloader):
 
         startupinfo = build_hidden_startupinfo()
 
-        max_retries = cfg.get("download", "max_retries", 3)
-        for attempt in range(max_retries):
+        max_retries = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
+        for attempt in range(max_retries + 1):
             attempt_completed = False
             stderr_tail: deque[str] = deque(maxlen=12)
             current_url, current_expected_size = _resolve_stream_url(original_url)
             url = current_url
             if current_expected_size:
                 expected_size_bytes = current_expected_size
-            cmd = FFmpegExternalTool.build_download_command(ffmpeg, url, save_path, headers, proxy=proxy)
+            cmd = FFmpegExternalTool.build_download_command(
+                ffmpeg,
+                url,
+                save_path,
+                headers,
+                proxy=proxy,
+                timeout_seconds=request_timeout,
+            )
             debug_logger.log_command(
                 component="FFmpegDownloader",
                 tool_name="ffmpeg",
@@ -302,14 +310,14 @@ class FFmpegDownloader(BaseDownloader):
                         trace_id=trace_id,
                     )
                     return
-                if attempt < max_retries - 1:
+                if attempt < max_retries:
                     time.sleep(3)
                 else:
                     raise ExternalToolError(f"ffmpeg 下载失败 (Code: {process.returncode})")
             except DownloaderStoppedError:
                 raise
             except (OSError, RuntimeError, ValueError, ExternalToolError) as exc:
-                if attempt < max_retries - 1:
+                if attempt < max_retries:
                     time.sleep(3)
                 else:
                     debug_logger.log_exception(
