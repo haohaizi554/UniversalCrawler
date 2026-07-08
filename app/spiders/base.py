@@ -472,13 +472,44 @@ class BaseSpider(threading.Thread):
         args: list[str] | None = None,
         **extra,
     ) -> dict:
+        from app.core.anti_detection.models import AUTOMATION_CONTROLLED_ARG
+
         kwargs = {"headless": headless, **extra}
-        if args:
-            kwargs["args"] = args
+        launch_args = list(args or [])
+        if AUTOMATION_CONTROLLED_ARG not in launch_args:
+            launch_args.append(AUTOMATION_CONTROLLED_ARG)
+        kwargs["args"] = launch_args
         proxy_server = self._effective_proxy_server(proxy)
         if proxy_server:
             kwargs["proxy"] = {"server": proxy_server}
         return kwargs
+
+    def _playwright_context_kwargs(
+        self,
+        *,
+        user_agent: str = "",
+        referer: str = "",
+        viewport: dict[str, int] | None = None,
+        **extra,
+    ) -> dict:
+        from app.config import DEFAULT_USER_AGENT
+        from app.core.anti_detection import build_browser_anti_detection
+
+        anti_context = build_browser_anti_detection(
+            getattr(self, "trace_prefix", "") or self.__class__.__name__.replace("Spider", "").lower() or "browser",
+            {**(getattr(self, "config", {}) or {}), "ua": user_agent or "random"},
+            referer=referer,
+            default_user_agent=user_agent or DEFAULT_USER_AGENT,
+            viewport=viewport,
+        )
+        kwargs = anti_context.browser_context_kwargs()
+        kwargs.update(extra)
+        return kwargs
+
+    def _apply_stealth_to_context(self, context) -> None:
+        from app.core.anti_detection import apply_stealth_to_context
+
+        apply_stealth_to_context(context)
 
     def run(self):
         """执行当前对象或脚本的主流程，供 `BaseSpider` 使用。

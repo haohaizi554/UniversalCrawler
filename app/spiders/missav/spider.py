@@ -89,8 +89,13 @@ class MissAVSpider(BaseSpider):
                 )
                 self._track_playwright_browser(browser)
                 try:
-                    context_kwargs = {"user_agent": my_ua}
+                    context_kwargs = self._playwright_context_kwargs(
+                        user_agent=my_ua,
+                        referer="https://missav.ai/",
+                        viewport={"width": 1280, "height": 800},
+                    )
                     context = browser.new_context(**context_kwargs)
+                    self._apply_stealth_to_context(context)
                     page = context.new_page()
                     if not configured_ua:
                         try:

@@ -24,6 +24,7 @@ from app.spiders.douyin.parser import DouyinItemParser
 from app.spiders.douyin.task_builder import DouyinTaskBuilder
 from app.models import VideoItem
 from app.services.auth_service import AuthService
+from app.core.anti_detection import build_browser_anti_detection
 
 # ================= DouK-Downloader 核心库引入 =================
 # 1. 工具与配置
@@ -49,14 +50,17 @@ def _run_login_process(auth_file, user_agent, result_queue, proxy_server=None, t
         auth_service = AuthService()
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            launch_kwargs = {
-                "headless": False,
-                "args": ['--disable-blink-features=AutomationControlled'],
-            }
-            if proxy_server:
-                launch_kwargs["proxy"] = {"server": proxy_server}
+            anti_context = build_browser_anti_detection(
+                "douyin",
+                {"ua": user_agent, "proxy": proxy_server},
+                referer="https://www.douyin.com/",
+                default_user_agent=user_agent,
+                viewport={"width": 1280, "height": 800},
+            )
+            launch_kwargs = anti_context.browser_launch_kwargs(headless=False)
             browser = p.chromium.launch(**launch_kwargs)
-            context = browser.new_context(user_agent=user_agent)
+            context = browser.new_context(**anti_context.browser_context_kwargs())
+            anti_context.apply_to_context(context)
             page = context.new_page()
 
             page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=timeout_ms)

@@ -340,7 +340,14 @@ class XiaohongshuSpider(BaseSpider):
             self._track_playwright_instance(playwright)
             self._track_playwright_browser(browser)
             try:
-                context = browser.new_context(user_agent=self._user_agent())
+                context = browser.new_context(
+                    **self._playwright_context_kwargs(
+                        user_agent=self._user_agent(),
+                        referer=self.HOME_URL,
+                        viewport={"width": 1280, "height": 800},
+                    )
+                )
+                self._apply_stealth_to_context(context)
                 if os.path.exists(self.auth_file):
                     try:
                         self.auth_service.restore_playwright_cookies(context, self.auth_file)
@@ -712,7 +719,14 @@ class XiaohongshuSpider(BaseSpider):
             self._track_playwright_instance(playwright)
             self._track_playwright_browser(browser)
             try:
-                context = browser.new_context(user_agent=self._user_agent())
+                context = browser.new_context(
+                    **self._playwright_context_kwargs(
+                        user_agent=self._user_agent(),
+                        referer=self.HOME_URL,
+                        viewport={"width": 1280, "height": 800},
+                    )
+                )
+                self._apply_stealth_to_context(context)
                 if os.path.exists(self.auth_file):
                     try:
                         self.auth_service.restore_playwright_cookies(context, self.auth_file)

@@ -178,10 +178,14 @@ class FailedPage(PageFrame):
     def _apply_page_result(self, result: object) -> None:
         if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
             return
+        current_selected_id = str(self._selected_item_id or self.table.selected_id() or "")
         self.items = result.items
         self._id_order = result.id_order
         self._items_by_id = result.items_by_id
-        self._selected_item_id = result.selected_id or None
+        if current_selected_id and current_selected_id in self._items_by_id:
+            self._selected_item_id = current_selected_id
+        else:
+            self._selected_item_id = result.selected_id or None
         self._syncing_selection = True
         try:
             self.table.set_rows(result.page_items)

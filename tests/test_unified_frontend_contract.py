@@ -961,6 +961,46 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(active._detail_value_labels[TEXT["source_url"]].raw_text(), item["source_url"])
         self.assertEqual(active._detail_value_labels[TEXT["output_filename"]].raw_text(), "live-name.mp4")
 
+    def test_active_downloads_detail_caps_long_text_fields_without_losing_raw_text(self):
+        shell = self._make_shell()
+        shell.show_page("active")
+        active = shell.pages["active"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        long_text = "接码平台开发者涉嫌侵犯公民个人信息罪，一审判4年9个月，" * 6
+        item = snapshot["active_downloads"][0]
+        item["title"] = long_text
+        item["output_filename"] = f"{long_text}.mp4"
+        for field in item.get("detail_fields") or []:
+            if field.get("label") == TEXT["title"]:
+                field["value"] = long_text
+            elif field.get("label") == TEXT["output_filename"]:
+                field["value"] = f"{long_text}.mp4"
+
+        active.render(snapshot)
+        def detail_text_ready() -> bool:
+            title = active._detail_value_labels.get(TEXT["title"])
+            output = active._detail_value_labels.get(TEXT["output_filename"])
+            return (
+                hasattr(title, "raw_text")
+                and hasattr(output, "raw_text")
+                and title.raw_text() == long_text
+                and output.raw_text() == f"{long_text}.mp4"
+            )
+
+        self._wait_until(detail_text_ready, message="active detail did not receive updated long text")
+        active.layout().activate()
+        self.app.processEvents()
+
+        title_label = active._detail_value_labels[TEXT["title"]]
+        output_label = active._detail_value_labels[TEXT["output_filename"]]
+
+        self.assertIsInstance(title_label, SmartWrapLabel)
+        self.assertIsInstance(output_label, SmartWrapLabel)
+        self.assertEqual(title_label.raw_text(), long_text)
+        self.assertEqual(output_label.raw_text(), f"{long_text}.mp4")
+        self.assertLessEqual(len(title_label.text().splitlines()), 4)
+        self.assertLessEqual(len(output_label.text().splitlines()), 3)
+
     def test_smart_wrap_label_breaks_before_next_segment_when_it_will_not_fit(self):
         label = SmartWrapLabel("https://example.com/segment-that-fits/next-segment-that-does-not-fit")
         self.addCleanup(label.deleteLater)
@@ -1021,6 +1061,22 @@ class UnifiedFrontendContractTests(unittest.TestCase):
                 label.fontMetrics().horizontalAdvance(line),
                 SmartWrapLabel.LONG_SEGMENT_WRAP_WIDTH + 2,
             )
+
+    def test_smart_wrap_label_caps_long_plain_text_to_requested_lines(self):
+        long_text = "接码平台开发者涉嫌侵犯公民个人信息罪，一审判4年9个月，" * 8
+        label = SmartWrapLabel(long_text, max_lines=3)
+        self.addCleanup(label.deleteLater)
+        label.resize(260, 160)
+        label.show()
+        self.app.processEvents()
+
+        lines = [line for line in label.text().splitlines() if line]
+
+        self.assertEqual(label.raw_text(), long_text)
+        self.assertLessEqual(len(lines), 3)
+        self.assertTrue(lines[-1].endswith(SmartWrapLabel.ELLIPSIS))
+        for line in lines:
+            self.assertLessEqual(label.fontMetrics().horizontalAdvance(line), label.contentsRect().width() + 2)
 
     def test_active_downloads_trend_widget_has_stable_height_and_current_speed(self):
         shell = self._make_shell()
@@ -2865,6 +2921,19 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(localize_log_text("ui callback failed", "zh-CN"), "UI 回调失败")
         self.assertEqual(localize_log_text("callback failed", "zh-CN"), "回调失败")
         self.assertEqual(localize_log_text("_on_spider_finished 被调用", "zh-CN"), "爬虫完成回调已调用")
+        self.assertEqual(localize_log_text("Douyin参数初始化完成", "zh-CN"), "Douyin 参数初始化完成")
+        self.assertEqual(
+            localize_log_text("[INFO] 正在更新抖音参数，请稍等...", "en-US"),
+            "[INFO] Updating Douyin parameters, please wait...",
+        )
+        self.assertEqual(
+            localize_log_text("配置文件 cookie 参数未登录，数据获取已提前结束", "en-US"),
+            "Config cookie is not logged in; data fetching ended early",
+        )
+        self.assertEqual(
+            localize_log_text("配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用", "en-US"),
+            "Config cookie is not set; Douyin features may not work properly",
+        )
         self.assertEqual(localize_log_text("Bilibili stream request established", "zh-CN"), "Bilibili 流请求建立成功")
         self.assertEqual(
             localize_log_text("Preparing to merge Bilibili audio/video stream", "zh-CN"),
@@ -3290,6 +3359,38 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         for removed in ("下载速率", "完成概览", "存储占用"):
             self.assertNotIn(removed, detail_texts)
 
+    def test_completed_file_info_caps_long_filename_without_losing_raw_text(self):
+        shell = self._make_shell()
+        completed = shell.pages["completed"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        long_text = "接码平台开发者涉嫌侵犯公民个人信息罪，一审判4年9个月，" * 6
+        snapshot["completed_items"][0]["filename"] = f"{long_text}.mp4"
+
+        completed.render(snapshot)
+        self._wait_until(
+            lambda: completed.table.model().rowCount() > 0,
+            message="completed table did not render the first page",
+        )
+        self._wait_until(
+            lambda: any(
+                label.raw_text() == f"{long_text}.mp4"
+                for label in completed.info_body.findChildren(SmartWrapLabel, "CompletedInfoSmartWrapLabel")
+            ),
+            message="completed file info did not render the long filename",
+        )
+        completed.layout().activate()
+        self.app.processEvents()
+
+        filename_label = next(
+            label
+            for label in completed.info_body.findChildren(SmartWrapLabel, "CompletedInfoSmartWrapLabel")
+            if label.raw_text() == f"{long_text}.mp4"
+        )
+
+        self.assertLessEqual(len(filename_label.text().splitlines()), 5)
+        self.assertTrue(filename_label.text().endswith(SmartWrapLabel.ELLIPSIS))
+        self.assertEqual(filename_label.toolTip(), f"{long_text}.mp4")
+
     def test_completed_page_compacts_short_visible_columns_without_truncating_webp(self):
         shell = self._make_shell()
         completed = shell.pages["completed"]
@@ -3309,6 +3410,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         shell.show_page("completed")
         completed.render(snapshot)
         self._wait_for_table_rows(completed.table, 20)
+        self._wait_until(
+            lambda: completed.table.columnWidth(0) >= 190,
+            message="completed title column was not fitted",
+        )
 
         metrics = completed.table.fontMetrics()
         self.assertGreaterEqual(completed.table.columnWidth(0), 190)
@@ -3956,6 +4061,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         detail_fn = content.split("function completedDetailHtml", 1)[1].split("function iconTextHtml", 1)[0]
         for expected in ("\\u6587\\u4ef6\\u540d", "\\u4fdd\\u5b58\\u8def\\u5f84", "\\u5b8c\\u6210\\u65f6\\u95f4", "\\u65f6\\u957f", "\\u5206\\u8fa8\\u7387", "\\u5927\\u5c0f", "\\u683c\\u5f0f"):
             self.assertIn(expected, detail_fn)
+        self.assertIn("LONG_TEXT_KEYS", content)
+        self.assertIn('["\\u6807\\u9898", "\\u6587\\u4ef6\\u540d", "\\u8f93\\u51fa\\u6587\\u4ef6\\u540d"]', content)
+        self.assertIn('title="${escapeAttr(valueText)}"', content)
         for removed in ("\\u4e0b\\u8f7d\\u901f\\u5ea6", "\\u5b8c\\u6210\\u6982\\u89c8", "\\u5b58\\u50a8\\u5360\\u7528"):
             self.assertNotIn(removed, detail_fn)
         self.assertIn('byId("previewPanel")', content)
@@ -3995,6 +4103,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#page-completed th:nth-child(3), #page-completed td:nth-child(3) { width: 108px; }", css)
         self.assertIn("#page-completed th:nth-child(4), #page-completed td:nth-child(4) { width: 76px; }", css)
         self.assertIn("#page-completed th:nth-child(5), #page-completed td:nth-child(5) { width: 100px; }", css)
+        self.assertIn("#page-completed .completed-info-card .kv-value.long-text", css)
+        self.assertIn("-webkit-line-clamp: 5", css)
 
     def test_web_active_controls_and_detail_values_are_wrap_ready(self):
         content = _html_bundle()
@@ -4014,7 +4124,9 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("function syncActiveDownloadOptions", content)
         self.assertIn("frontendState.download_options", content)
         self.assertIn("function smartWrapText", content)
-        self.assertIn("kv-value smart-wrap", content)
+        self.assertIn('kv-value smart-wrap${LONG_TEXT_KEYS.has(keyText) ? " long-text" : ""}', content)
+        self.assertIn('kv-value${LONG_TEXT_KEYS.has(keyText) ? " long-text" : ""}', content)
+        self.assertIn("long-text", content)
         self.assertIn("active-detail-fields", content)
         self.assertIn("active-detail-metrics", content)
         active_detail_fn = content.split("function activeDetailHtml", 1)[1].split("function completedDetailHtml", 1)[0]
@@ -4044,6 +4156,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#page-active th:nth-child(6), #page-active td:nth-child(6) { width: 72px; }", css)
         self.assertIn("#activeDetail .active-detail-card", css)
         self.assertIn("#activeDetail .active-detail-fields .kv", css)
+        self.assertIn("#activeDetail .active-detail-fields .kv-value.long-text", css)
+        self.assertIn("-webkit-line-clamp: 4", css)
         self.assertIn("line-height: 1.18", css)
         self.assertIn("flex: 1 1 0", css)
         self.assertIn("overflow: hidden", css)

@@ -1022,9 +1022,13 @@ class KuaishouSpider(BaseSpider):
         self._track_playwright_browser(browser)
         try:
             context = browser.new_context(
-                user_agent=self._user_agent(),
-                viewport={"width": 1280, "height": 800},
+                **self._playwright_context_kwargs(
+                    user_agent=self._user_agent(),
+                    viewport={"width": 1280, "height": 800},
+                    referer="https://www.kuaishou.com/",
+                )
             )
+            self._apply_stealth_to_context(context)
             self._load_saved_cookies(context, auth_file)
             page = context.new_page()
             return self._ensure_login(page, context, auth_file, entry_url=entry_url, allow_manual_login=True)
@@ -1049,10 +1053,14 @@ class KuaishouSpider(BaseSpider):
         self._track_playwright_browser(browser)
         try:
             context = browser.new_context(
-                user_agent=self._user_agent(),
-                # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
-                viewport={"width": 1280, "height": 800},
+                **self._playwright_context_kwargs(
+                    user_agent=self._user_agent(),
+                    # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
+                    viewport={"width": 1280, "height": 800},
+                    referer="https://www.kuaishou.com/",
+                )
             )
+            self._apply_stealth_to_context(context)
             self._load_saved_cookies(context, auth_file)
             page = context.new_page()
             if not self._ensure_login(

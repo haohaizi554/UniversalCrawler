@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.config import DEFAULT_USER_AGENT, cfg
+from app.core.anti_detection import build_browser_anti_detection
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
@@ -1180,10 +1181,18 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             launch_kwargs = self._playwright_launch_kwargs(video_item, proxy)
             browser = playwright.chromium.launch(**launch_kwargs)
             try:
-                context_kwargs: dict[str, Any] = {"user_agent": user_agent}
+                anti_context = build_browser_anti_detection(
+                    "missav",
+                    {"ua": user_agent},
+                    referer=referer or "https://missav.ai/",
+                    default_user_agent=user_agent or DEFAULT_USER_AGENT,
+                    viewport={"width": 1280, "height": 800},
+                )
+                context_kwargs: dict[str, Any] = anti_context.browser_context_kwargs()
                 if isinstance(storage_state, dict) and storage_state:
                     context_kwargs["storage_state"] = storage_state
                 context = browser.new_context(**context_kwargs)
+                anti_context.apply_to_context(context)
                 self._add_cookie_header_to_context(context, headers.get("Cookie"), video_item.url, referer)
                 page = context.new_page()
                 captured_playlist_cache: dict[str, str] = {}

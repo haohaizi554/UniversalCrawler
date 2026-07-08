@@ -77,13 +77,14 @@
 - 同一批稳定 ID 的表格行发生重排时，不得使用 `beginResetModel()`；应通过 row patch、insert/remove 或 `layoutChanged` 保留滚动、选中和悬停语义。
 - 仍在使用 `QTableWidget` 的小型通用表格也必须遵守稳定 ID 更新：列结构不变且 ID 仅原位变化、尾部追加或尾部移除时，只更新受影响单元格，不得 `setRowCount(0)` 清空重建。
 - 日志中心、平台筛选和其他页面初始化路径不得在无快照时访问插件注册表或做平台发现；页面只能消费 `settings_snapshot`、`platforms` 或内建静态元数据，真实平台发现由服务层或启动快照提供。
-- GUI 四态列表（下载队列、正在下载、已完成、失败列表）的行归一化、选中项定位、分页切片和最近事件切片必须统一经过 `ListPageWorker` / `build_list_page_result()`；页面层只能接收 worker 返回的 batch 后 patch model。普通翻页不得被当前选中行拉回原页，只有显式 `select_id()` 才允许跨页定位选中项。
+- GUI 四态列表（下载队列、正在下载、已完成、失败列表）的行归一化、选中项定位、分页切片和最近事件切片必须统一提交给 `ListPageWorker`；`build_list_page_result()` 只允许在 worker 内部和单元测试中使用，页面层不得按条数走同步快捷路径，也不得重新引入 `ASYNC_ITEM_THRESHOLD`。页面层只能接收 worker 返回的 batch 后 patch model。普通翻页不得被当前选中行拉回原页，只有显式 `select_id()` 才允许跨页定位选中项。
 
 ### UI Thread
 
 UI 线程只负责显示和轻量交互：
 
 - 接收后端或 worker 发来的当前页 batch。
+- 四态列表页面不得直接调用 `build_list_page_result()`；即使只有 1 条记录，也必须走 `ListPageWorker`，避免小数据路径和大数据路径行为分叉。
 - 批量 append / patch 到 Qt model 或 Web DOM。
 - 更新选中态、按钮状态、分页状态和详情面板。
 - 不读取日志文件。
@@ -168,6 +169,8 @@ python -m pytest tests/test_request_workers.py tests/test_frontend_snapshot_work
 python -m pytest tests/test_download_manager.py tests/test_unified_frontend_contract.py -q
 node --check app/web/static/app.js
 ```
+
+自动化用例不得使用固定 3.5 秒等待兜底；WebUI 优先等待 `#app-shell`、行数、选中 ID、详情文本和按钮状态等可观测状态，GUI/Qt 测试可以短轮询处理事件，但每轮都必须检查目标状态，不能只靠时间推进。
 
 ### 当前验证基线
 

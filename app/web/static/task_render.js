@@ -109,9 +109,12 @@
     return `<div class="kv">${pairs.map(([key, value]) => {
       const keyText = String(key);
       const shouldWrap = wrapKeys.has(keyText) || implicitWrapKeys.has(keyText);
-      const valueClass = ["kv-value", shouldWrap ? "smart-wrap" : "", LONG_TEXT_KEYS.has(keyText) ? "long-text" : ""].filter(Boolean).join(" ");
-      const valueHtml = shouldWrap ? smartWrapText(value) : escapeHtml(String(value ?? ""));
-      return `<span>${escapeHtml(translate(keyText))}</span><span class="${valueClass}" title="${escapeAttr(String(value ?? ""))}">${valueHtml}</span>`;
+      const valueText = String(value ?? "");
+      const valueClass = shouldWrap
+        ? `kv-value smart-wrap${LONG_TEXT_KEYS.has(keyText) ? " long-text" : ""}`
+        : `kv-value${LONG_TEXT_KEYS.has(keyText) ? " long-text" : ""}`;
+      const valueHtml = shouldWrap ? smartWrapText(valueText) : escapeHtml(valueText);
+      return `<span>${escapeHtml(translate(keyText))}</span><span class="${valueClass}" title="${escapeAttr(valueText)}">${valueHtml}</span>`;
     }).join("")}</div>`;
   }
 

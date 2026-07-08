@@ -1,9 +1,9 @@
 """Tests for shared anti-detection runtime helpers."""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from app.core.anti_detection import build_browser_anti_detection, resolve_user_agent
+from app.core.anti_detection import build_browser_anti_detection, load_stealth_script, resolve_user_agent
 
 class AntiDetectionTests(unittest.TestCase):
     def test_build_browser_anti_detection_prefers_runtime_config(self):
@@ -31,6 +31,11 @@ class AntiDetectionTests(unittest.TestCase):
             {
                 "user_agent": "ua-custom",
                 "viewport": {"width": 1280, "height": 800},
+                "locale": "zh-CN",
+                "timezone_id": "Asia/Shanghai",
+                "extra_http_headers": {
+                    "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
             },
         )
 
@@ -47,9 +52,61 @@ class AntiDetectionTests(unittest.TestCase):
             {
                 "User-Agent": "ua-custom",
                 "Referer": "https://missav.ai/",
+                "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
                 "X-Test": "1",
             },
         )
+
+    def test_browser_anti_detection_accepts_locale_and_timezone_overrides(self):
+        context = build_browser_anti_detection(
+            "xiaohongshu",
+            {
+                "ua": "ua-custom",
+                "locale": "en-US",
+                "timezone_id": "America/New_York",
+                "accept_language": "en-US,en;q=0.9",
+            },
+            referer="https://www.xiaohongshu.com/",
+            default_user_agent="ua-default",
+        )
+
+        kwargs = context.browser_context_kwargs()
+        self.assertEqual(kwargs["locale"], "en-US")
+        self.assertEqual(kwargs["timezone_id"], "America/New_York")
+        self.assertEqual(kwargs["extra_http_headers"], {"Accept-Language": "en-US,en;q=0.9"})
+
+    def test_stealth_script_covers_common_browser_detection_surfaces(self):
+        script = load_stealth_script()
+
+        expected_tokens = [
+            "navigatorPrototype",
+            "webdriver",
+            "window.chrome",
+            "plugins",
+            "languages",
+            "permissions",
+            "toDataURL",
+            "getImageData",
+            "WebGLRenderingContext",
+            "WebGL2RenderingContext",
+            "resolvedOptions",
+            "Asia/Shanghai",
+        ]
+        for token in expected_tokens:
+            self.assertIn(token, script)
+
+    def test_anti_detection_context_applies_stealth_script_to_playwright_context(self):
+        browser_context = Mock()
+        anti_context = build_browser_anti_detection(
+            "douyin",
+            {"ua": "ua-custom"},
+            referer="https://www.douyin.com/",
+            default_user_agent="ua-default",
+        )
+
+        anti_context.apply_to_context(browser_context)
+
+        browser_context.add_init_script.assert_called_once_with(load_stealth_script())
 
     @patch("app.utils.user_agents.user_agent_rotator.random", return_value="ua-random")
     def test_default_user_agent_uses_fake_useragent_rotation(self, mocked_random):

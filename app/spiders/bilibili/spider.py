@@ -1209,7 +1209,15 @@ class BilibiliSpider(BaseSpider):
                     )
                 )
                 self._track_playwright_browser(browser)
-                page = browser.new_page()
+                context = browser.new_context(
+                    **self._playwright_context_kwargs(
+                        user_agent=HEADERS.get("User-Agent", DEFAULT_USER_AGENT),
+                        referer="https://www.bilibili.com/",
+                        viewport={"width": 1280, "height": 800},
+                    )
+                )
+                self._apply_stealth_to_context(context)
+                page = context.new_page()
                 self._restore_scan_cookies(page)
                 current_url = url
                 browser_timeout_ms = self._configured_timeout_ms(default=60)
@@ -1574,7 +1582,14 @@ class BilibiliSpider(BaseSpider):
                     )
                 )
                 self._track_playwright_browser(browser)
-                context = browser.new_context()
+                context = browser.new_context(
+                    **self._playwright_context_kwargs(
+                        user_agent=HEADERS.get("User-Agent", DEFAULT_USER_AGENT),
+                        referer="https://www.bilibili.com/",
+                        viewport={"width": 1280, "height": 800},
+                    )
+                )
+                self._apply_stealth_to_context(context)
                 page = context.new_page()
                 if not self.interruptible_playwright_goto(
                     page,

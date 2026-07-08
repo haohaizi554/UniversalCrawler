@@ -827,7 +827,9 @@ class SpiderHelperTests(unittest.TestCase):
                 return None
 
         page = FakePage()
-        browser.new_page.return_value = page
+        context = Mock()
+        context.new_page.return_value = page
+        browser.new_context.return_value = context
         playwright = Mock()
         playwright.chromium.launch.return_value = browser
         mocked_sync_playwright.return_value.__enter__.return_value = playwright
@@ -837,6 +839,7 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertTrue(getattr(page, "asserted", False))
         self.assertEqual(page.goto_timeout, 90000)
+        context.add_init_script.assert_called_once()
         browser.close.assert_called_once()
         self.assertIsNone(spider._playwright_browser)
 

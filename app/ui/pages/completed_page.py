@@ -362,6 +362,7 @@ class CompletedPage(PageFrame):
             self.table.setUpdatesEnabled(True)
         if self.items and not self.table.selectionModel().selectedRows():
             self.table.selectRow(0)
+        self._fit_current_page_columns()
         self._schedule_fit_columns()
         self.pagination_footer.sync(
             total_items=result.total_count,
@@ -402,11 +403,14 @@ class CompletedPage(PageFrame):
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(48)
         widths = self._completed_table_widths(self._visible_items)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, widths[0])
+        fixed_width = sum(widths[1:])
+        viewport_width = max(0, self.table.viewport().width())
+        widths[0] = max(widths[0], viewport_width - fixed_width)
         for column, width in enumerate(widths[1:], start=1):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(column, width)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, widths[0])
 
     def _completed_table_widths(self, rows: list[dict]) -> list[int]:
         metrics = self.table.fontMetrics()

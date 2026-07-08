@@ -2068,7 +2068,8 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("callback failed"),
                 translateRuntimeLogText("_on_spider_finished 被调用"),
                 translateRuntimeLogText("Web event loop is unavailable; deferred frontend delta until a later async flush."),
-                translateRuntimeLogText("Skipped frontend delta flush because no running event loop is available.")
+                translateRuntimeLogText("Skipped frontend delta flush because no running event loop is available."),
+                translateRuntimeLogText("Douyin参数初始化完成")
               ];
               document.documentElement.dataset.language = "zh-TW";
               const tw = [
@@ -2098,7 +2099,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 translateRuntimeLogText("已切换到深色主题"),
                 translateRuntimeLogText("ℹ️ 该目录下没有找到视频或图片"),
                 translateRuntimeLogText("找到 3 个匹配用户"),
-                translateRuntimeLogText("爬虫完成回调已调用")
+                translateRuntimeLogText("爬虫完成回调已调用"),
+                translateRuntimeLogText("[INFO] 正在更新抖音参数，请稍等..."),
+                translateRuntimeLogText("配置文件 cookie 参数未登录，数据获取已提前结束"),
+                translateRuntimeLogText("配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用")
               ];
               return { cn, tw, en };
             }
@@ -2138,6 +2142,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 "爬虫完成回调已调用",
                 "Web 事件循环不可用，已延后前端增量刷新",
                 "没有可用事件循环，已跳过前端增量刷新",
+                "Douyin 参数初始化完成",
             ],
         )
         self.assertEqual(
@@ -2172,6 +2177,9 @@ class WebUIBrowserTests(unittest.TestCase):
                 "ℹ️ No videos or images found in this directory",
                 "Found 3 matching users",
                 "_on_spider_finished was called",
+                "[INFO] Updating Douyin parameters, please wait...",
+                "Config cookie is not logged in; data fetching ended early",
+                "Config cookie is not set; Douyin features may not work properly",
             ],
         )
 

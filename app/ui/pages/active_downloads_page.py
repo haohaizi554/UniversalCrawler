@@ -1071,11 +1071,14 @@ class ActiveDownloadsPage(PageFrame):
     def _active_detail_fields(item: dict[str, Any]) -> list[tuple[str, Any]]:
         fields: list[tuple[str, Any]] = []
         live_values = {
+            TEXT["title"]: item.get("title"),
+            TEXT["platform"]: item.get("platform"),
             TEXT["save_dir"]: item.get("save_dir"),
             TEXT["output_filename"]: item.get("output_filename"),
             TEXT["source_url"]: item.get("source_url"),
             TEXT["trace_id"]: item.get("trace_id"),
         }
+        live_override_labels = {TEXT["save_dir"], TEXT["output_filename"], TEXT["source_url"]}
         for field in list(item.get("detail_fields") or []):
             if not isinstance(field, dict):
                 continue
@@ -1084,7 +1087,9 @@ class ActiveDownloadsPage(PageFrame):
                 continue
             value = field.get("value", "")
             live_value = live_values.get(label)
-            if live_value is not None and str(live_value) != "":
+            if live_value is not None and str(live_value) != "" and (
+                label in live_override_labels or value is None or str(value) == ""
+            ):
                 value = live_value
             fields.append((label, value))
         return fields
