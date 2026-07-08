@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 import unittest
+from unittest.mock import patch
 
 from app.web.ws_transport import ConnectionManager, WebSocketConnection
 
@@ -19,6 +22,30 @@ class WsTransportBackpressureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(conn.outbound_queue), 1)
         self.assertEqual(conn.metrics["coalesced"], 1)
         self.assertIn('"progress": 90', conn.outbound_queue[0].text)
+
+    async def test_emit_builds_json_message_off_event_loop_thread(self):
+        manager = ConnectionManager(max_queue_size=8)
+        conn = self._connection()
+        manager.active_connections["s1"] = [conn]
+        main_thread = threading.get_ident()
+        encode_threads: list[int] = []
+        original_dumps = json.dumps
+
+        def dumps(*args, **kwargs):
+            encode_threads.append(threading.get_ident())
+            return original_dumps(*args, **kwargs)
+
+        with patch("app.web.ws_transport.json.dumps", side_effect=dumps):
+            accepted = await manager.emit_to_session(
+                "s1",
+                "frontend_delta",
+                {"priority": "normal", "version": 2, "sections": {"log_items": [{"id": "log-1"}]}},
+            )
+
+        self.assertTrue(accepted)
+        self.assertTrue(encode_threads)
+        self.assertTrue(all(thread_id != main_thread for thread_id in encode_threads))
+        self.assertEqual(conn.outbound_queue[0].event_type, "frontend_delta")
 
     async def test_critical_message_displaces_noisy_when_queue_is_full(self):
         manager = ConnectionManager(max_queue_size=2)

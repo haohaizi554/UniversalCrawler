@@ -436,6 +436,7 @@ def _bootstrap_registry() -> None:
             "tests/test_web_entry.py",
             "tests/test_web_controller_*.py",
             "tests/test_websocket_*.py",
+            "tests/test_ws_*.py",
         ],
         exclude=["tests/test_web_browser.py"],
         icon_color="#14B8A6",

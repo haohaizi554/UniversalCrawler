@@ -5,6 +5,8 @@ from collections import deque
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
+from app.debug_logger import debug_logger
+
 
 RequestT = TypeVar("RequestT")
 ResultT = TypeVar("ResultT")
@@ -50,8 +52,24 @@ class SequentialRequestWorker(Generic[RequestT, ResultT]):
                 if self._shutdown:
                     return
                 request = self._pending.popleft()
-            result = self._process(request)
+            try:
+                result = self._process(request)
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "SequentialRequestWorker",
+                    "process",
+                    exc,
+                    details={"request_type": type(request).__name__},
+                )
+                continue
             try:
                 self._on_result(result)
             except RuntimeError:
                 return
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "SequentialRequestWorker",
+                    "on_result",
+                    exc,
+                    details={"result_type": type(result).__name__},
+                )

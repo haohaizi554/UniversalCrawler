@@ -48,6 +48,31 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_section_signatures = {}
         return worker
 
+    def test_app_state_subscription_prefers_async_event_bus_handler(self):
+        class FakeBus:
+            def __init__(self):
+                self.async_calls = []
+                self.sync_calls = []
+
+            def subscribe_async(self, topic, handler):
+                self.async_calls.append((topic, handler))
+                return "async-handler"
+
+            def subscribe(self, topic, handler):
+                self.sync_calls.append((topic, handler))
+                return "sync-handler"
+
+        window = self._make_window()
+        bus = FakeBus()
+        window.event_bus = bus
+        window._queue_app_state_changed = Mock()
+
+        handler = MainWindow._subscribe_app_state_changed(window)
+
+        self.assertEqual(handler, "async-handler")
+        self.assertEqual(bus.async_calls, [("app_state.changed", window._queue_app_state_changed)])
+        self.assertEqual(bus.sync_calls, [])
+
     @staticmethod
     def _snapshot_result(request, snapshot, *, changed_sections=None, skip_render=False, signatures=None):
         return FrontendSnapshotResult(

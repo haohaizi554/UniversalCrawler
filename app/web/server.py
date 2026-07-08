@@ -154,11 +154,11 @@ def create_app(lifespan=None) -> FastAPI:
 
     @app.get("/api/platforms")
     async def get_platforms():
-        return controller.get_platforms()
+        return await _run_controller_worker_call(controller.get_platforms)
 
     @app.get("/api/config")
     async def get_config():
-        return controller.get_config()
+        return await _run_controller_worker_call(controller.get_config)
 
     @app.put("/api/config")
     async def update_config(updates: dict):
@@ -169,12 +169,12 @@ def create_app(lifespan=None) -> FastAPI:
         if callable(handler):
             await handler(updates)
         else:
-            controller.update_config(updates)
+            await _run_controller_worker_call(controller.update_config, updates)
         return {"status": "ok"}
 
     @app.get("/api/state")
     async def get_state():
-        return controller.get_state()
+        return await _run_controller_worker_call(controller.get_state)
 
     @app.get("/api/frontend/state")
     async def get_frontend_state():

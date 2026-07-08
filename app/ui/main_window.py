@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
             self._on_frontend_action_finished,
             Qt.ConnectionType.QueuedConnection,
         )
-        self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)
+        self._app_state_handler = self._subscribe_app_state_changed()
         self._pending_delete_video_ids: list[str] = []
         self._title_rename_handler = None
         self._applying_appearance = False
@@ -578,7 +578,7 @@ class MainWindow(QMainWindow):
             self.event_bus.unsubscribe("app_state.changed", self._app_state_handler)
             self.event_bus = new_event_bus
             self._owns_event_bus = False
-            self._app_state_handler = self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)
+            self._app_state_handler = self._subscribe_app_state_changed()
         self._frontend_state_service = service
         self._owns_frontend_state_service = False
         self.app_state = service.app_state
@@ -587,6 +587,12 @@ class MainWindow(QMainWindow):
         self._frontend_section_signatures = {}
         self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
         self.refresh_frontend_state(force=True)
+
+    def _subscribe_app_state_changed(self):
+        subscribe_async = getattr(self.event_bus, "subscribe_async", None)
+        if callable(subscribe_async):
+            return subscribe_async("app_state.changed", self._queue_app_state_changed)
+        return self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)
 
     def refresh_frontend_state(self, *, mock: bool = False, force: bool = False, topics: set[str] | None = None) -> None:
         if "app_shell" not in self.__dict__ or "_frontend_state_service" not in self.__dict__:
@@ -721,6 +727,8 @@ class MainWindow(QMainWindow):
             self._finish_run_tool(result.payload, action_result)
         elif result.action == "register_file_associations":
             self._finish_register_file_associations(action_result)
+        elif result.action == "update_completed_metadata":
+            self._finish_update_completed_metadata(action_result)
         elif result.action in {"update_basic_setting", "update_setting", "change_directory"}:
             self._finish_setting_update(result.payload, action_result)
 
@@ -787,6 +795,11 @@ class MainWindow(QMainWindow):
         if callable(feedback):
             feedback(message, ok=ok)
         self.refresh_frontend_state(topics={"settings.update"})
+
+    def _finish_update_completed_metadata(self, action_result: dict[str, object]) -> None:
+        data = action_result.get("data") if isinstance(action_result, dict) else {}
+        if isinstance(data, dict) and data.get("changed"):
+            self.refresh_frontend_state(topics={"videos.metadata"})
 
     def _finish_setting_update(self, payload: dict[str, object], action_result: dict[str, object]) -> None:
         if action_result.get("status") != "ok":
@@ -1923,9 +1936,10 @@ class MainWindow(QMainWindow):
         self._submit_frontend_action("update_download_options", options or {})
 
     def _update_completed_metadata(self, video_id: str, metadata: dict) -> None:
-        result = self._frontend_state_service.update_completed_metadata(video_id, metadata or {}, source="gui_player")
-        if result.get("status") == "ok" and self.__dict__.get("_cached_snapshot"):
-            self.refresh_frontend_state(topics={"videos.metadata"})
+        self._submit_frontend_action(
+            "update_completed_metadata",
+            {"video_id": video_id, "metadata": metadata or {}, "source": "gui_player"},
+        )
 
     def _pause_download_item(self, video_id: str) -> None:
         self._submit_frontend_action("pause_download", {"video_id": video_id})

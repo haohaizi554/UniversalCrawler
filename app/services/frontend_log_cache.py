@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from app.debug_logger import debug_logger
 from app.services import frontend_log_adapter as log_adapter
 
 
@@ -282,6 +283,13 @@ class FrontendLogCache:
             if read_limit > 0:
                 try:
                     self._refresh_from_source(read_limit)
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "FrontendLogCache",
+                        "worker_refresh",
+                        exc,
+                        details={"read_limit": read_limit},
+                    )
                 finally:
                     with self._worker_lock:
                         if self._pending_read_limit > 0:
@@ -292,4 +300,12 @@ class FrontendLogCache:
     def _delete_cache_key(self, key: str) -> None:
         delete = getattr(self._cache_service, "delete", None)
         if callable(delete):
-            delete(key)
+            try:
+                delete(key)
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "FrontendLogCache",
+                    "delete_cache_key",
+                    exc,
+                    details={"key": key},
+                )

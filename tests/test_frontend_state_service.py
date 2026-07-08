@@ -1264,6 +1264,70 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(items[0]["message_summary"], "log-400")
         self.assertEqual(items[-1]["message_summary"], "log-499")
 
+    def test_snapshot_reuses_log_rows_for_failed_and_log_sections(self):
+        item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        item.meta["trace_id"] = "trace-failed"
+        rows = [
+            {
+                "time": "2026-07-08 10:00:00",
+                "level": "ERROR",
+                "source": "Downloader",
+                "trace_id": "trace-failed",
+                "message": "download failed",
+                "message_summary": "download failed",
+            }
+        ]
+        calls = 0
+        service = FrontendStateService(SimpleNamespace(videos={item.id: item}))
+
+        def log_items() -> list[dict[str, str]]:
+            nonlocal calls
+            calls += 1
+            return list(rows)
+
+        service.log_items = log_items  # type: ignore[method-assign]
+        try:
+            snapshot = service.get_snapshot(sections=frozenset({"failed_items", "log_items"}))
+        finally:
+            service.destroy()
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(snapshot["log_items"], rows)
+        self.assertEqual(snapshot["failed_items"][0]["log_excerpt"], ["download failed"])
+
+    def test_full_snapshot_reuses_log_rows_for_failed_excerpt(self):
+        item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        item.meta["trace_id"] = "trace-failed"
+        rows = [
+            {
+                "time": "2026-07-08 10:00:00",
+                "level": "ERROR",
+                "source": "Downloader",
+                "trace_id": "trace-failed",
+                "message": "download failed",
+                "message_summary": "download failed",
+            }
+        ]
+        calls = 0
+        service = FrontendStateService(SimpleNamespace(videos={item.id: item}))
+
+        def log_items() -> list[dict[str, str]]:
+            nonlocal calls
+            calls += 1
+            return list(rows)
+
+        service.log_items = log_items  # type: ignore[method-assign]
+        try:
+            snapshot = service.get_snapshot()
+        finally:
+            service.destroy()
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(snapshot["log_items"], rows)
+        self.assertEqual(snapshot["failed_items"][0]["log_excerpt"], ["download failed"])
+
     def test_failed_item_actions_exclude_retry(self):
         item = VideoItem(url="https://example.com", title="failed", source="douyin")
         item.status = VideoStatus.FAILED.label

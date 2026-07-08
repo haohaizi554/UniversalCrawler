@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from copy import deepcopy
+from functools import partial
 from typing import Any, Callable
 
 from app.config import cfg
@@ -127,7 +128,17 @@ class WebSocketBridge:
         if loop and loop.is_running():
             loop.call_soon_threadsafe(_schedule)
         else:
-            self._flush_frontend_delta()
+            with self._delta_lock:
+                if generation == self._delta_schedule_generation:
+                    self._delta_pending = False
+            debug_logger.log(
+                "WebSocketBridge",
+                "frontend_delta_deferred",
+                level="DEBUG",
+                message="Web event loop is unavailable; deferred frontend delta until a later async flush.",
+                status_code="WEB_DELTA_DEFERRED",
+                details={"event_type": event_type, "generation": generation},
+            )
 
     def _flush_frontend_delta(self, generation: int | None = None) -> None:
         with self._delta_lock:
@@ -146,7 +157,14 @@ class WebSocketBridge:
             else:
                 self._track_task(task)
                 return
-        self._build_and_send_frontend_delta_sync(base_version, generation)
+        debug_logger.log(
+            "WebSocketBridge",
+            "frontend_delta_skipped",
+            level="DEBUG",
+            message="Skipped frontend delta flush because no running event loop is available.",
+            status_code="WEB_DELTA_NO_LOOP",
+            details={"generation": generation},
+        )
 
     async def _build_and_send_frontend_delta(self, base_version: int, generation: int | None = None) -> None:
         if self._delta_provider is None:
@@ -154,16 +172,6 @@ class WebSocketBridge:
         try:
             loop = asyncio.get_running_loop()
             delta = await loop.run_in_executor(None, self._delta_provider, base_version)
-        except Exception as exc:
-            debug_logger.log_exception("WebSocketBridge", "frontend_delta", exc)
-            return
-        self._emit_frontend_delta(delta, base_version, generation)
-
-    def _build_and_send_frontend_delta_sync(self, base_version: int, generation: int | None = None) -> None:
-        if self._delta_provider is None:
-            return
-        try:
-            delta = self._delta_provider(base_version)
         except Exception as exc:
             debug_logger.log_exception("WebSocketBridge", "frontend_delta", exc)
             return
@@ -1196,7 +1204,10 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     async def _run_api_operation(self, operation: str, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         del operation
         async with self._api_operation_semaphore:
-            result = func(*args, **kwargs)
+            if inspect.iscoroutinefunction(func):
+                result = func(*args, **kwargs)
+            else:
+                result = await asyncio.get_running_loop().run_in_executor(None, partial(func, *args, **kwargs))
             if inspect.isawaitable(result):
                 return await result
             return result
@@ -1251,19 +1262,20 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         return self.frontend_state_service.handle_action(action, payload or {})
 
     async def async_handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
-        async def _handle() -> dict:
-            normalized_payload = payload or {}
-            if action == "delete_item":
-                video_id = str(normalized_payload.get("id") or normalized_payload.get("video_id") or "")
-                if not video_id:
-                    return {"status": "error", "message": "missing video id"}
-                result = await self.async_delete_video(video_id)
-                if isinstance(result, dict):
-                    return result
-                return {"status": "ok", "message": "deleted", "data": {"video_id": video_id}}
-            return self.handle_frontend_action(action, normalized_payload)
+        normalized_payload = payload or {}
 
-        return await self._run_api_operation("frontend_action", _handle)
+        async def _delete() -> dict:
+            video_id = str(normalized_payload.get("id") or normalized_payload.get("video_id") or "")
+            if not video_id:
+                return {"status": "error", "message": "missing video id"}
+            result = await self.async_delete_video(video_id)
+            if isinstance(result, dict):
+                return result
+            return {"status": "ok", "message": "deleted", "data": {"video_id": video_id}}
+
+        if action == "delete_item":
+            return await self._run_api_operation("frontend_action", _delete)
+        return await self._run_api_operation("frontend_action", self.handle_frontend_action, action, normalized_payload)
 
     # ---- 媒体路径 ----
 

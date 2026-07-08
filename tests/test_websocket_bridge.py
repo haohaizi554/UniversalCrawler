@@ -36,8 +36,17 @@ class _FakeLoop:
         self.call_later_calls.append((delay, callback, args))
         callback(*args)
 
+    def run_in_executor(self, *_args):
+        raise AssertionError("Fake loop should only advertise executor support; real async tests cover execution.")
+
     def create_task(self, coro):
         self.created_coroutines.append(coro)
+        if getattr(getattr(coro, "cr_code", None), "co_name", "") == "_build_and_send_frontend_delta":
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(coro)
+                return object()
         coro.close()
         return object()
 
@@ -107,7 +116,7 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual(recorded, [("videos.metadata", {"video_id": "done", "metadata": True})])
         self.assertEqual(delta_bases, [0])
         self.assertEqual(len(loop.call_later_calls), 1)
-        self.assertEqual(len(loop.created_coroutines), 2)
+        self.assertEqual(len(loop.created_coroutines), 3)
 
     def test_progress_event_uses_frontend_delta_without_legacy_echo(self):
         loop = _FakeLoop()
@@ -319,16 +328,16 @@ class WebSocketBridgeTests(unittest.TestCase):
 
         bridge.emit("task_finished", {"video_id": "v1"})
 
-        self.assertEqual(delta_bases, [0])
+        self.assertEqual(delta_bases, [])
         self.assertEqual(sent, [])
         self.assertEqual(bridge._last_delta_version, 0)
 
         bridge.set_loop(_FakeLoop())
         bridge.emit("task_finished", {"video_id": "v2"})
 
-        self.assertEqual(delta_bases, [0, 0])
+        self.assertEqual(delta_bases, [0])
         self.assertEqual([event_type for event_type, _data in sent], ["frontend_delta", "task_finished"])
-        self.assertEqual(bridge._last_delta_version, 2)
+        self.assertEqual(bridge._last_delta_version, 1)
 
     def test_running_loop_builds_frontend_delta_off_event_loop_thread(self):
         async def scenario():

@@ -17,7 +17,7 @@ MAX_PUBLISH_DEPTH = 16
 LOCK_WARN_SECONDS = 1.0
 HANDLER_WARN_SECONDS = 0.2
 ASYNC_NOISY_TOPICS = frozenset(
-    {"videos.update", "videos.metadata", "video_state_changed", "task_progress", "logs.append", "log"}
+    {"app_state.changed", "videos.update", "videos.metadata", "video_state_changed", "task_progress", "logs.append", "log"}
 )
 
 

@@ -13,6 +13,16 @@ from app.web.session_runtime import WebSessionContext
 
 CreateTaskFn = Callable[[Awaitable[Any]], asyncio.Task[Any]]
 
+async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(None, func, *args)
+
+def _encode_message(event_type: str, data: Any) -> str:
+    return json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
+
+async def _send_json(ws: WebSocket, event_type: str, data: Any) -> None:
+    text = await _run_controller_worker_call(_encode_message, event_type, data)
+    await ws.send_text(text)
+
 class WebSocketBootstrapper:
     """封装 WebSocket 连接成功后的首包与初始化副作用。"""
 
@@ -29,30 +39,40 @@ class WebSocketBootstrapper:
     async def _send_initial_snapshot(self, ws: WebSocket, context: WebSessionContext) -> None:
         controller = context.controller
         try:
-            await ws.send_text(json.dumps({"type": "init_state", "data": controller.get_state()}, ensure_ascii=False))
+            state = await _run_controller_worker_call(controller.get_state)
+            await _send_json(ws, "init_state", state)
             getter = getattr(controller, "get_frontend_state", None)
             if callable(getter):
-                snapshot = getter()
-                await ws.send_text(json.dumps({"type": "frontend_state", "data": snapshot}, ensure_ascii=False))
+                snapshot = await _run_controller_worker_call(getter)
+                await _send_json(ws, "frontend_state", snapshot)
                 marker = getattr(getattr(controller, "bridge", None), "mark_frontend_version_sent", None)
                 if callable(marker):
                     marker(snapshot.get("version", 0) if isinstance(snapshot, dict) else 0)
-            await ws.send_text(json.dumps({"type": "platforms", "data": controller.get_platforms()}, ensure_ascii=False))
-            await ws.send_text(json.dumps({"type": "config", "data": controller.get_config()}, ensure_ascii=False))
+            platforms = await _run_controller_worker_call(controller.get_platforms)
+            await _send_json(ws, "platforms", platforms)
+            config = await _run_controller_worker_call(controller.get_config)
+            await _send_json(ws, "config", config)
             await self._replay_cached_videos(ws, controller)
         except Exception as exc:
             log_web_exception("WebSocketBootstrapper", "send_initial_snapshot", exc)
 
     async def _replay_cached_videos(self, ws: WebSocket, controller: Any) -> None:
+        payloads = await _run_controller_worker_call(self._cached_video_payloads, controller)
+        for payload in payloads:
+            await _send_json(ws, "item_found", payload)
+
+    def _cached_video_payloads(self, controller: Any) -> list[dict[str, Any]]:
         snapshot = getattr(controller, "_video_items_snapshot", None)
         videos = snapshot() if callable(snapshot) else getattr(controller, "videos", None)
         if not videos:
-            return
+            return []
+        payloads: list[dict[str, Any]] = []
         for item in videos.values():
             payload = self._serialize_cached_item(controller, item)
             if not payload:
                 continue
-            await ws.send_text(json.dumps({"type": "item_found", "data": payload}, ensure_ascii=False))
+            payloads.append(payload)
+        return payloads
 
     @staticmethod
     def _serialize_cached_item(controller: Any, item: Any) -> dict[str, Any] | None:

@@ -118,11 +118,14 @@ class ConnectionManager:
     ) -> bool:
         if not connections:
             return False
-        message = self._build_message(event_type, data)
+        message = await self._build_message_async(event_type, data)
         accepted = False
         for conn in list(connections):
             accepted = await self._enqueue(conn, message) or accepted
         return accepted
+
+    async def _build_message_async(self, event_type: str, data: Any) -> OutboundMessage:
+        return await asyncio.get_running_loop().run_in_executor(None, self._build_message, event_type, data)
 
     def _build_message(self, event_type: str, data: Any) -> OutboundMessage:
         normalized_type = str(event_type or "")

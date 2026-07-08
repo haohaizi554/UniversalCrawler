@@ -76,11 +76,11 @@ def build_rest_router(
 
     @router.get("/api/platforms")
     async def get_platforms(request: Request):
-        return get_request_context(request).controller.get_platforms()
+        return await _run_controller_worker_call(get_request_context(request).controller.get_platforms)
 
     @router.get("/api/config")
     async def get_config(request: Request):
-        return get_request_context(request).controller.get_config()
+        return await _run_controller_worker_call(get_request_context(request).controller.get_config)
 
     @router.put("/api/config")
     async def update_config(request: Request, updates: ConfigUpdatesRequest):
@@ -89,7 +89,7 @@ def build_rest_router(
         if callable(handler):
             errors = await handler(updates.root)
         else:
-            errors = controller.update_config(updates.root)
+            errors = await _run_controller_worker_call(controller.update_config, updates.root)
         if errors:
             joined = "; ".join(f"{error.section}.{error.key}: {error.error}" for error in errors)
             return finalize_api_result(error_result(joined, http_status=400))
@@ -97,7 +97,7 @@ def build_rest_router(
 
     @router.get("/api/state")
     async def get_state(request: Request):
-        return get_request_context(request).controller.get_state()
+        return await _run_controller_worker_call(get_request_context(request).controller.get_state)
 
     @router.get("/api/frontend/state")
     async def get_frontend_state(request: Request):

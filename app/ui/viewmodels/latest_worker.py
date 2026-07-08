@@ -4,6 +4,8 @@ import threading
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
+from app.debug_logger import debug_logger
+
 
 RequestT = TypeVar("RequestT")
 ResultT = TypeVar("ResultT")
@@ -52,10 +54,26 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
                 self._pending = None
             if request is None:
                 continue
-            result = self._process(request)
+            try:
+                result = self._process(request)
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "LatestRequestWorker",
+                    "process",
+                    exc,
+                    details={"request_type": type(request).__name__},
+                )
+                continue
             if result is None:
                 continue
             try:
                 self._on_result(result)
             except RuntimeError:
                 return
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "LatestRequestWorker",
+                    "on_result",
+                    exc,
+                    details={"result_type": type(result).__name__},
+                )

@@ -253,6 +253,31 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(result["message"], "permission denied")
         controller.async_delete_video.assert_awaited_once_with("video-1")
 
+    def test_async_frontend_action_runs_sync_handler_off_event_loop_thread(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        worker_threads: list[int] = []
+
+        def fake_handle(action, payload):
+            worker_threads.append(threading.get_ident())
+            return {"status": "ok", "action": action, "payload": payload}
+
+        async def run_action():
+            main_thread = threading.get_ident()
+            result = await controller.async_handle_frontend_action("update_setting", {"key": "theme"})
+            return main_thread, result
+
+        controller.handle_frontend_action = fake_handle
+
+        main_thread, result = asyncio.run(run_action())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["action"], "update_setting")
+        self.assertTrue(worker_threads)
+        self.assertNotEqual(worker_threads[0], main_thread)
+
     def test_async_delete_video_preserves_item_on_file_delete_error(self):
         import asyncio
 

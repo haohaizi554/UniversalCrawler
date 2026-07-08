@@ -12,8 +12,7 @@ import threading
 import time
 from collections import deque
 from copy import deepcopy
-from collections.abc import Mapping
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -432,6 +431,7 @@ class FrontendStateService:
         *,
         shallow: bool = False,
         only: frozenset[str] | None = None,
+        log_items_cache: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         videos = self._videos(shallow=shallow)
         queued_ids = self._queued_video_ids()
@@ -448,7 +448,7 @@ class FrontendStateService:
         want_active_items = only is None or "active_downloads" in only
         want_active_for_status = only is not None and "app_status" in only
         if want_failed:
-            log_excerpt_index = self._log_excerpt_index()
+            log_excerpt_index = self._log_excerpt_index(log_items_cache=log_items_cache)
 
         previous_probe_budget = self._metadata_probe_budget_remaining
         if want_completed:
@@ -515,21 +515,31 @@ class FrontendStateService:
         })
         video_keys = frozenset({"queue_items", "active_downloads", "completed_items", "failed_items", "app_status"})
         if sections is None:
-            video_parts = self._build_video_sections(shallow=False)
+            log_items_cache = self.log_items()
+            video_parts = self._build_video_sections(shallow=False, log_items_cache=log_items_cache)
             result = dict(self._static_snapshot_parts())
             result.update(video_parts)
-            result["log_items"] = self.log_items()
+            result["log_items"] = log_items_cache
             result["version"] = self.frontend_version
             return result
 
         result: dict[str, Any] = {}
+        log_items_cache: list[dict[str, Any]] | None = None
+        if "log_items" in sections and "failed_items" in sections:
+            log_items_cache = self.log_items()
         if sections & static_keys:
             result.update({key: value for key, value in self._static_snapshot_parts().items() if key in sections})
         if sections & video_keys:
             shallow = sections <= (video_keys | frozenset({"log_items"}))
-            result.update(self._build_video_sections(shallow=shallow, only=sections & video_keys))
+            result.update(
+                self._build_video_sections(
+                    shallow=shallow,
+                    only=sections & video_keys,
+                    log_items_cache=log_items_cache,
+                )
+            )
         if "log_items" in sections:
-            result["log_items"] = self.log_items()
+            result["log_items"] = log_items_cache if log_items_cache is not None else self.log_items()
         result["version"] = self.frontend_version
         return result
 
@@ -1446,7 +1456,7 @@ class FrontendStateService:
             return Path("__missing_latest_debug_log__")
 
     def _on_file_log_cache_refreshed(self, count: int) -> None:
-        self._emit_frontend_event(
+        self.record_event(
             "logs.append",
             {"count": int(count), "source": "frontend_log_worker", "batched": True},
         )
@@ -1467,8 +1477,13 @@ class FrontendStateService:
     def _enrich_log_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
         return log_adapter.enrich_log_item(item)
 
-    def _log_excerpt_index(self) -> dict[str, list[dict[str, Any]]]:
-        return log_adapter.build_log_excerpt_index(self.log_items())
+    def _log_excerpt_index(
+        self,
+        *,
+        log_items_cache: Sequence[Mapping[str, Any]] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        items = list(log_items_cache) if log_items_cache is not None else self.log_items()
+        return log_adapter.build_log_excerpt_index(items)
 
     def _log_excerpt(self, trace_id: str) -> list[str]:
         if not trace_id:

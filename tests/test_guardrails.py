@@ -366,8 +366,18 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         text = (project_root / "app" / "ui" / "main_window.py").read_text(encoding="utf-8", errors="ignore")
 
         self.assertIn("_app_state_changed_queued = pyqtSignal(object)", text)
-        self.assertIn('self.event_bus.subscribe("app_state.changed", self._queue_app_state_changed)', text)
+        self.assertIn("def _subscribe_app_state_changed(self):", text)
+        self.assertIn('subscribe_async("app_state.changed", self._queue_app_state_changed)', text)
+        self.assertIn("self._app_state_handler = self._subscribe_app_state_changed()", text)
         self.assertNotIn('self.event_bus.subscribe("app_state.changed", self._on_app_state_changed)', text)
+
+    def test_event_bus_coalesces_async_app_state_changed_progress_events(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "core" / "event_bus.py").read_text(encoding="utf-8", errors="ignore")
+
+        self.assertIn('"app_state.changed"', text)
+        self.assertIn("ASYNC_NOISY_TOPICS", text)
+        self.assertIn("payload.get(\"video_id\")", text)
 
     def test_frontend_state_service_config_listener_prefers_async_event_bus_subscription(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -532,6 +542,41 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
+    def test_ui_and_web_hot_paths_do_not_call_synchronous_log_refresh(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        forbidden = (
+            "refresh_file_log_cache(",
+            "refresh_now(",
+            "wait_for_idle(",
+        )
+        roots = [
+            project_root / "app" / "ui",
+            project_root / "app" / "controllers",
+            project_root / "app" / "web",
+        ]
+        offenders: list[str] = []
+        for root in roots:
+            for path in root.rglob("*.py"):
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                if any(token in text for token in forbidden):
+                    offenders.append(str(path.relative_to(project_root)))
+
+        self.assertEqual(offenders, [])
+
+    def test_frontend_state_service_file_log_cache_uses_background_worker(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "frontend_state_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        constructor_block = text.split("self._file_log_cache_store = FrontendLogCache(", 1)[1].split(
+            "self._running_state",
+            1,
+        )[0]
+
+        self.assertIn("worker_enabled=True", constructor_block)
+        self.assertIn("on_refresh=self._on_file_log_cache_refreshed", constructor_block)
+
     def test_runtime_i18n_catalog_is_static_and_matches_json_sources(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         from app.ui.i18n_catalogs import CATALOGS
@@ -587,6 +632,14 @@ class UIAsyncGuardrailTests(unittest.TestCase):
                 self.assertNotIn(".handle_action(", block)
                 self.assertIn("_submit_frontend_action(", block)
 
+    def test_main_window_completed_metadata_update_uses_worker_action(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "main_window.py").read_text(encoding="utf-8", errors="ignore")
+        block = text.split("def _update_completed_metadata", 1)[1].split("def _pause_download_item", 1)[0]
+
+        self.assertIn('_submit_frontend_action(\n            "update_completed_metadata"', block)
+        self.assertNotIn("._frontend_state_service.update_completed_metadata", block)
+
     def test_gui_hot_paths_do_not_persist_config_inline(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         files = [
@@ -616,6 +669,47 @@ class UIAsyncGuardrailTests(unittest.TestCase):
                 offenders.append(str(path.relative_to(project_root)))
 
         self.assertEqual(offenders, [])
+
+    def test_web_controller_sync_api_work_runs_in_executor(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "web" / "controller.py").read_text(encoding="utf-8", errors="ignore")
+        operation_block = text.split("async def _run_api_operation", 1)[1].split("async def async_update_config", 1)[0]
+        action_block = text.split("async def async_handle_frontend_action", 1)[1].split("    # ----", 1)[0]
+
+        self.assertIn("run_in_executor", operation_block)
+        self.assertIn("inspect.iscoroutinefunction(func)", operation_block)
+        self.assertIn("self._run_api_operation(\"frontend_action\", self.handle_frontend_action", action_block)
+
+    def test_web_bootstrap_and_rest_getters_use_worker_executor(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        bootstrap = (project_root / "app" / "web" / "ws_bootstrap.py").read_text(encoding="utf-8", errors="ignore")
+        rest_router = (project_root / "app" / "web" / "rest_router.py").read_text(encoding="utf-8", errors="ignore")
+        server = (project_root / "app" / "web" / "server.py").read_text(encoding="utf-8", errors="ignore")
+
+        self.assertIn("run_in_executor", bootstrap)
+        self.assertIn("await _run_controller_worker_call(controller.get_state)", bootstrap)
+        self.assertIn("snapshot = await _run_controller_worker_call(getter)", bootstrap)
+        self.assertIn("await _run_controller_worker_call(_encode_message", bootstrap)
+        self.assertNotIn("snapshot = getter()", bootstrap)
+        self.assertNotIn("await ws.send_text(json.dumps", bootstrap)
+
+        self.assertIn("await _run_controller_worker_call(get_request_context(request).controller.get_platforms)", rest_router)
+        self.assertIn("await _run_controller_worker_call(get_request_context(request).controller.get_config)", rest_router)
+        self.assertIn("await _run_controller_worker_call(get_request_context(request).controller.get_state)", rest_router)
+
+        self.assertIn("await _run_controller_worker_call(controller.get_platforms)", server)
+        self.assertIn("await _run_controller_worker_call(controller.get_config)", server)
+        self.assertIn("await _run_controller_worker_call(controller.get_state)", server)
+
+    def test_websocket_transport_encodes_outbound_messages_off_loop(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "web" / "ws_transport.py").read_text(encoding="utf-8", errors="ignore")
+        emit_block = text.split("async def _emit_to_connections", 1)[1].split("    def _build_message", 1)[0]
+        build_async_block = text.split("async def _build_message_async", 1)[1].split("    def _build_message", 1)[0]
+
+        self.assertIn("message = await self._build_message_async(event_type, data)", emit_block)
+        self.assertIn("run_in_executor", build_async_block)
+        self.assertNotIn("message = self._build_message(event_type, data)", emit_block)
 
 
 if __name__ == "__main__":
