@@ -39,6 +39,7 @@
     "\u4e0b\u8f7d\u76ee\u5f55": "\u4fdd\u5b58\u4e0b\u8f7d\u6587\u4ef6\u7684\u4f4d\u7f6e",
     "\u6587\u4ef6\u547d\u540d\u89c4\u5219": "\u4ece\u9884\u8bbe\u6a21\u677f\u4e2d\u9009\u62e9",
     "\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f": "\u4e0b\u8f7d\u5b8c\u6210\u540e\u7684\u6253\u5f00\u884c\u4e3a",
+    "\u4e0b\u8f7d\u5b8c\u6210\u6253\u5f00\u65b9\u5f0f": "\u81ea\u52a8\u6253\u5f00\u5f00\u542f\u65f6\u4f7f\u7528",
     "\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00": "\u4efb\u52a1\u5b8c\u6210\u540e\u81ea\u52a8\u6253\u5f00",
     "\u663e\u793a\u6d4f\u89c8\u5668\u5185\u6838": "MissAV \u6709 5 \u79d2\u76fe\uff0c\u5efa\u8bae\u663e\u5f0f\u8fd0\u884c\u5e76\u624b\u52a8\u8fc7\u76fe",
     "\u5e76\u53d1\u6570": "\u6700\u5927\u540c\u65f6\u4e0b\u8f7d\u6570",
@@ -49,6 +50,7 @@
     "\u65ad\u70b9\u7eed\u4f20": "\u7ee7\u7eed\u672a\u5b8c\u6210\u4efb\u52a1",
     "\u4ec5\u4e0b\u8f7d\u89c6\u9891": "\u8df3\u8fc7\u56fe\u7247\u8d44\u6e90",
     "\u6253\u5f00\u65b9\u5f0f": "\u9ed8\u8ba4\u64ad\u653e\u65b9\u5f0f",
+    "\u624b\u52a8\u64ad\u653e\u65b9\u5f0f": "\u70b9\u51fb\u64ad\u653e\u952e\u65f6\u4f7f\u7528",
     "\u8bb0\u4f4f\u64ad\u653e\u8fdb\u5ea6": "\u4e0b\u6b21\u6062\u590d\u64ad\u653e\u4f4d\u7f6e",
     "\u89c6\u9891\u64ad\u653e\u5b8c\u81ea\u52a8\u4e0b\u4e00\u9879": "\u7ed3\u675f\u540e\u64ad\u653e\u4e0b\u4e00\u9879",
     "\u56fe\u7247\u53ea\u624b\u52a8\u5207\u6362": "\u5173\u95ed\u56fe\u7247\u81ea\u52a8\u8f6e\u64ad",
@@ -98,7 +100,7 @@
         settingSelect("\u6587\u4ef6\u547d\u540d\u89c4\u5219", "filename_template", value && value.filename_template, options.filename_template || [], "basic"),
         settingCheckbox("\u4e0b\u8f7d\u540e\u81ea\u52a8\u6253\u5f00", "open_after_download", !!(value && value.open_after_download), "basic"),
         settingCheckbox("\u663e\u793a\u6d4f\u89c8\u5668\u5185\u6838", "show_browser_window", value ? value.show_browser_window !== false : true, "basic"),
-        settingSelect("\u9ed8\u8ba4\u6253\u5f00\u65b9\u5f0f", "default_open_mode", value && value.default_open_mode, options.default_open_mode || [], "basic", "", associationButton),
+        settingSelect("\u4e0b\u8f7d\u5b8c\u6210\u6253\u5f00\u65b9\u5f0f", "default_open_mode", value && value.default_open_mode, options.default_open_mode || [], "basic", "", associationButton),
       ].join("");
     }
     if (group === "\u4e0b\u8f7d\u8bbe\u7f6e") {
@@ -118,7 +120,7 @@
     }
     if (group === "\u64ad\u653e\u8bbe\u7f6e") {
       return [
-        settingSelect("\u6253\u5f00\u65b9\u5f0f", "default_player", value && value.default_player, options.default_player || [], "playback"),
+        settingSelect("\u624b\u52a8\u64ad\u653e\u65b9\u5f0f", "default_player", value && value.default_player, options.default_player || [], "playback"),
         settingCheckbox("\u8bb0\u4f4f\u64ad\u653e\u8fdb\u5ea6", "remember_position", !!(value && value.remember_position), "playback"),
         settingCheckbox("\u89c6\u9891\u64ad\u653e\u5b8c\u81ea\u52a8\u4e0b\u4e00\u9879", "autoplay_next", !!(value && value.autoplay_next), "playback"),
         imageManualSwitchSetting(value || {}, options || {}),

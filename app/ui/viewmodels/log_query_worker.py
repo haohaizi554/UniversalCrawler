@@ -8,6 +8,7 @@ from app.debug_logger import debug_logger
 from app.ui.localization import normalize_language, tr
 from app.ui.viewmodels import log_filtering
 from app.ui.viewmodels.latest_worker import LatestRequestWorker
+from app.ui.viewmodels.log_classification import cache_classification_facts, drop_classification_facts
 from app.ui.viewmodels.log_display import decorate_log_item
 from app.ui.viewmodels.log_i18n import localize_log_text
 from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope, derive_scope_reason
@@ -63,7 +64,7 @@ def stable_log_item_id(item: Mapping[str, Any], index: int) -> str:
 
 
 def query_log_items(request: LogQueryRequest) -> LogQueryResult:
-    all_items = [dict(item) for item in request.items if isinstance(item, Mapping)]
+    all_items = [_prepare_query_row(item) for item in request.items if isinstance(item, Mapping)]
     filtered_items = [
         item
         for item in all_items
@@ -137,6 +138,12 @@ def _first_trace_id(items: Sequence[Mapping[str, Any]]) -> str:
     return ""
 
 
+def _prepare_query_row(item: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(item)
+    cache_classification_facts(row)
+    return row
+
+
 def _with_log_pipeline_fields(item: Mapping[str, Any]) -> dict[str, Any]:
     row = dict(item)
     scope = str(row.get("log_scope") or derive_log_scope(row) or "")
@@ -183,7 +190,7 @@ def _decorate_log_row(item: Mapping[str, Any], request: LogQueryRequest) -> dict
     for key in ("message", "message_summary"):
         if row.get(key):
             row[key] = localize_log_text(row[key], language)
-    return row
+    return drop_classification_facts(row)
 
 
 class LogQueryWorker:

@@ -147,6 +147,21 @@ Worker 线程负责所有可能卡住 UI 的工作：
 
 UI 热路径只能读取已经准备好的内存快照。维护脚本、测试或显式管理动作可以调用同步查询接口，但 GUI/WebUI 页面渲染链路不得直接查 SQLite 或重扫日志文件。
 
+### 复盘补充：日志、失败页与缓存边界
+
+这几轮排查证明，性能问题经常不是某个按钮或表格“看起来卡”，而是页面层重新承担了 worker / cache / DB 的职责。后续改动必须按下面的证据口径审查：
+
+- 日志中心的数据来源是 `FrontendLogCache` 产出的内存快照，再交给 `LogQueryWorker` / `log_query_worker.js` 做过滤、排序、分页和展示字段投影。GUI/WebUI 页面不得直接 tail `latest_debug.log`、不得在页面层 split 时间戳、不得在表格绘制或选中回调里调用日志本地化正则。
+- 失败列表的数据来源是失败记录快照或 `FailedRecordStore` 的结构化查询结果。失败页可以显示当前页 batch、详情和建议，但不得在 UI 线程从 SQLite 重查、不得从原始日志里二次解析失败时间、原因和日志片段。
+- `classification_facts()`、`derive_log_scope()`、`derive_event_stage()`、`derive_scope_reason()` 属于日志语义规则树。单次 worker 查询内，同一行日志的分类事实必须只构造一次，并通过私有字段或查询上下文缓存复用；返回 UI 前不得暴露私有缓存字段。不得让筛选、计数、分页装饰和详情本地化各自重复跑整棵规则树。
+- 日志 tail 缓存必须证明“读文件、解析、查缓存、写 diskcache”都在 worker / service 层完成。缓存 key 至少要区分日志文件路径、文件身份、大小或偏移、修改时间以及显示上限；仅创建 diskcache 目录或只在测试里 `persist=True` 不能算落地。
+- diskcache 用于可复用解析结果和本地 key-value 中间结果；cachetools 用于短 TTL 热数据；SQLite 用于失败记录、结构化过滤、分页和统计。三者不能互相冒充：例如用 `frontend.file_log_cache.{limit}` 这类单一 key 覆盖多文件 tail，不满足多文件和轮转场景。
+- SQLite 查询必须把平台、状态、时间范围、Trace ID、关键字、分页和统计尽量下推到 SQL。失败记录、日志索引或后续结构化表不允许长期只做 `SELECT *` 后在 UI / JS 里切片；分页应使用 `LIMIT/OFFSET` 或游标方案。
+- 所有 SQLite 连接必须显式关闭；后台写入 worker 的 `_writing`、队列状态和 condition 通知必须在 `finally` 中恢复。异常捕获不能只覆盖 `OSError` / `sqlite3.Error`，否则 `TypeError`、数据形态错误或序列化错误会杀死 worker 并留下假忙状态。
+- 媒体路径检查、播放进度 JSON 读写、MKV 修复缓存扫描和 metadata probe 都属于磁盘或外部进程热路径，不得在 UI 线程做 `read_text()`、`write_text()`、`glob()`、`unlink()`、`stat()` 或每次播放即时 probe；必须复用短任务 worker、有限线程池或服务层缓存，并提供 shutdown / cancel 边界。
+- 自动化测试不得用固定 sleep 证明异步链路稳定。WebUI 优先等待 `#app-shell`、指定行、按钮状态、worker 结果序号或详情字段；GUI 测试可以短轮询 Qt 事件，但每轮都要检查目标状态。新增等待策略必须写入测试或 guardrail，而不是靠“本机刚好够快”。
+- 每次声称优化完成时，必须同时给出当前证据：目标代码路径、是否有 guardrail 防止回退、针对性测试、必要时的基线时长。没有覆盖证据的“已经异步化”“已经增量刷新”“diskcache 已落地”都按未完成处理。
+
 ## 下载并发规则
 
 - 普通并发默认 3，推荐选项为 1、3、5。

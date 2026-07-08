@@ -1,5 +1,8 @@
 from app.ui.viewmodels.log_classification import (
+    CLASSIFICATION_FACTS_KEY,
+    cache_classification_facts,
     classification_facts,
+    drop_classification_facts,
     derive_result_type,
     is_performance_log,
     is_system_config_log,
@@ -34,6 +37,19 @@ def test_classification_facts_splits_source_action_and_detail_status():
     assert facts["status"] == "DL_FINISH"
     assert normalized_status_code(item) == "DL_FINISH"
     assert normalized_event_code(item) == "DL_FINISH"
+
+
+def test_classification_facts_cache_is_explicit_and_private():
+    item = {"source": "Bilibili/API::get_video_info", "message": "ok"}
+
+    facts = classification_facts(item)
+
+    assert CLASSIFICATION_FACTS_KEY not in item
+    cached = cache_classification_facts(item)
+    assert cached == facts
+    assert classification_facts(item) is cached
+    assert drop_classification_facts(item) is item
+    assert CLASSIFICATION_FACTS_KEY not in item
 
 
 def test_result_type_prioritizes_explicit_levels_and_command_logs():

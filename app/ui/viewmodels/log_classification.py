@@ -6,6 +6,46 @@ from typing import Any
 
 from app.ui.viewmodels.log_detail_payloads import parse_structured_detail_text
 
+CLASSIFICATION_FACTS_KEY = "_classification_facts"
+
+_FACT_KEYS = (
+    "raw_level",
+    "source",
+    "source_lower",
+    "action",
+    "action_lower",
+    "status",
+    "status_upper",
+    "event_code",
+    "event_code_upper",
+    "message",
+    "message_lower",
+    "platform",
+    "platform_lower",
+    "trace_id",
+    "detail_text",
+    "detail_lower",
+    "legacy_category",
+    "combined",
+    "combined_upper",
+    "combined_lower",
+)
+
+
+def _cached_facts(item: dict[str, Any]) -> dict[str, str] | None:
+    cached = item.get(CLASSIFICATION_FACTS_KEY)
+    if not isinstance(cached, dict):
+        return None
+    if all(isinstance(cached.get(key), str) for key in _FACT_KEYS):
+        return cached
+    return None
+
+
+def drop_classification_facts(item: dict[str, Any]) -> dict[str, Any]:
+    """Remove private classification cache before handing rows to the UI."""
+    item.pop(CLASSIFICATION_FACTS_KEY, None)
+    return item
+
 
 def normalized_source(item: dict[str, Any]) -> str:
     value = str(
@@ -149,6 +189,23 @@ def normalized_raw_level(item: dict[str, Any]) -> str:
 
 def classification_facts(item: dict[str, Any]) -> dict[str, str]:
     """Build one normalized fact object for semantic log classification."""
+    cached = _cached_facts(item)
+    if cached is not None:
+        return cached
+    return _build_classification_facts(item)
+
+
+def cache_classification_facts(item: dict[str, Any]) -> dict[str, str]:
+    """Precompute classification facts for a worker-local row."""
+    cached = _cached_facts(item)
+    if cached is not None:
+        return cached
+    facts = _build_classification_facts(item)
+    item[CLASSIFICATION_FACTS_KEY] = facts
+    return facts
+
+
+def _build_classification_facts(item: dict[str, Any]) -> dict[str, str]:
     raw_source = str(
         item.get("source")
         or item.get("logger")
