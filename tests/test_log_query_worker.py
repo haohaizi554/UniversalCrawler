@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from app.ui.viewmodels.log_platforms import builtin_platform_metas
+from app.ui.viewmodels.log_classification import CLASSIFICATION_FACTS_KEY
 from app.ui.viewmodels.log_query_worker import LogQueryRequest, LogQueryWorker, query_log_items
 
 
@@ -76,6 +77,22 @@ def test_query_log_items_attaches_pipeline_fields_for_page_rows():
     assert row["log_scope"] == "download"
     assert row["event_stage"]
     assert row["_scope_reason"]
+    assert CLASSIFICATION_FACTS_KEY not in row
+
+
+def test_query_log_items_does_not_mutate_source_rows_with_worker_cache():
+    source_row = {
+        "id": "download",
+        "time": "2026-06-30 10:01:00",
+        "level": "INFO",
+        "source": "DownloadWorker",
+        "status_code": "DL_START",
+        "message": "download task",
+    }
+
+    query_log_items(_request([source_row]))
+
+    assert CLASSIFICATION_FACTS_KEY not in source_row
 
 
 def test_query_log_items_returns_localized_display_rows_from_worker():

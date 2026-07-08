@@ -302,6 +302,8 @@ class FrontendLogCache:
             )
         elif tail_state is not None and self._tail_reader is not None:
             self._tail_reader.hydrate(tail_state, cached, limit=read_limit)
+        if tail_state is not None:
+            self._delete_stale_tail_cache_keys(cache_key)
         with self._lock:
             self._items = deepcopy(cached)[-read_limit:]
             self._limit = read_limit
@@ -364,3 +366,14 @@ class FrontendLogCache:
                     exc,
                     details={"key": key},
                 )
+
+    def _delete_stale_tail_cache_keys(self, current_key: str) -> None:
+        prefix = "frontend.file_log_cache.tail."
+        with self._lock:
+            stale_keys = [
+                key for key in self._known_cache_keys if key != current_key and key.startswith(prefix)
+            ]
+            for key in stale_keys:
+                self._known_cache_keys.discard(key)
+        for key in stale_keys:
+            self._delete_cache_key(key)

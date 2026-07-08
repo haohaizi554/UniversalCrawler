@@ -34,6 +34,7 @@ from app.ui.viewmodels.active_download_projection import (
     localize_active_event_message,
     prepare_active_item_for_display,
 )
+from app.ui.viewmodels.failed_page_projection import prepare_failed_item_for_display
 
 def _html_bundle() -> str:
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -3770,7 +3771,11 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             {"time": "03:32:08", "level": "ERROR", "message": damaged_download_failure},
         ]
 
-        widgets = [failed._log_row(row) for row in rows]
+        display_rows = prepare_failed_item_for_display(
+            {"id": "failed-log-contract", "log_excerpt_items": rows},
+            language="zh-CN",
+        )["log_excerpt_display_items"]
+        widgets = [failed._log_row(row) for row in display_rows]
 
         message_x = []
         for widget in widgets:

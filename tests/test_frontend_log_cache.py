@@ -242,6 +242,32 @@ def test_tail_log_cache_persists_parsed_state_with_file_identity(tmp_path):
     assert [item["message_summary"] for item in items] == ["cached"]
 
 
+def test_tail_log_cache_replaces_stale_persistent_tail_keys(tmp_path):
+    cache_service = FakeCacheService()
+    log_file = Path(tmp_path) / "latest_debug.log"
+    log_file.write_text("[2026-06-30 10:00:00] [INFO] Test / cached\n", encoding="utf-8")
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        log_path_provider=lambda: log_file,
+        limit_provider=lambda: 100,
+    )
+
+    cache.refresh_now()
+    initial_keys = [key for key in cache_service.values if key.startswith("frontend.file_log_cache.tail.")]
+    assert len(initial_keys) == 1
+    initial_key = initial_keys[0]
+
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write("[2026-06-30 10:00:01] [INFO] Test / appended\n")
+    updated = cache.refresh_now()
+
+    tail_keys = [key for key in cache_service.values if key.startswith("frontend.file_log_cache.tail.")]
+    assert len(tail_keys) == 1
+    assert tail_keys[0] != initial_key
+    assert initial_key in cache_service.deleted
+    assert [item["message_summary"] for item in updated] == ["cached", "appended"]
+
+
 def test_tail_log_cache_hit_hydrates_reader_without_reparsing(tmp_path):
     cache_service = FakeCacheService()
     log_file = Path(tmp_path) / "latest_debug.log"

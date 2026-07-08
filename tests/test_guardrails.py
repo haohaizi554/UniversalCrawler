@@ -488,6 +488,27 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("trace_id LIKE ?", text)
         self.assertIn("payload_json LIKE ?", text)
 
+    def test_failed_record_store_sqlite_queries_stay_out_of_ui_layers(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        roots = (
+            project_root / "app" / "ui",
+            project_root / "app" / "controllers",
+            project_root / "app" / "web",
+        )
+        forbidden = (
+            ".query_records(",
+            ".records_snapshot(",
+            "FailedRecordQuery(",
+            "FailedRecordQueryResult(",
+        )
+
+        for root in roots:
+            for path in root.rglob("*.py"):
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                for token in forbidden:
+                    with self.subTest(path=path.relative_to(project_root), token=token):
+                        self.assertNotIn(token, text)
+
     def test_log_center_page_does_not_classify_logs_on_ui_thread(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "ui" / "pages" / "log_center_page.py").read_text(
@@ -785,7 +806,11 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             raw = json.loads(path.read_text(encoding="utf-8"))
             expected[language] = {str(key): str(value) for key, value in raw.items()}
 
+        catalog_source = (project_root / "app" / "ui" / "i18n_catalogs.py").read_text(encoding="utf-8")
+        longest_line = max((len(line) for line in catalog_source.splitlines()), default=0)
+
         self.assertEqual(CATALOGS, expected)
+        self.assertLessEqual(longest_line, 240)
 
     def test_fifo_workers_use_shared_sequential_worker(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -886,6 +911,50 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("_submit_cached_playable_path_lookup", play_video_block)
         self.assertIn("sig_cached_playable_path_ready", text)
         self.assertNotIn("cached_playable_path(", play_video_block)
+
+    def test_media_preview_disk_backed_state_uses_short_task_runners(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "components" / "media_preview_panel.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        init_block = text.split("def __init__", 1)[1].split("def set_language", 1)[0]
+        restore_block = text.split("def _submit_playback_position_restore", 1)[1].split(
+            "def _submit_playback_position_save",
+            1,
+        )[0]
+        save_block = text.split("def _submit_playback_position_save", 1)[1].split(
+            "def _submit_playback_position_delete",
+            1,
+        )[0]
+        delete_block = text.split("def _submit_playback_position_delete", 1)[1].split(
+            "def _submit_playback_position_clear",
+            1,
+        )[0]
+        clear_block = text.split("def _submit_playback_position_clear", 1)[1].split(
+            "def _refresh_image_auto_advance_timer",
+            1,
+        )[0]
+
+        self.assertIn("MkvPlaybackRepairService(cleanup_on_init=False)", init_block)
+        self.assertIn("PlaybackPositionService(load_on_init=False)", init_block)
+        self.assertIn("_playback_position_task_runner = ShortTaskRunner", init_block)
+        for block in (restore_block, save_block, delete_block, clear_block):
+            with self.subTest(block=block[:48]):
+                self.assertIn("_playback_position_task_runner.submit", block)
+
+    def test_failed_record_store_worker_state_resets_in_finally(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "failed_record_store.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        worker_block = text.split("def _worker_loop", 1)[1].split("def _init_db", 1)[0]
+
+        self.assertIn("except Exception as exc", worker_block)
+        self.assertIn("finally:", worker_block)
+        self.assertIn("self._writing = False", worker_block)
+        self.assertIn("self._refreshing = False", worker_block)
 
     def test_gui_hot_paths_do_not_persist_config_inline(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

@@ -256,13 +256,46 @@ class StateAndEventTests(unittest.TestCase):
             self.assertTrue(state.should_emit_progress("video-1", 11))
             self.assertTrue(state.should_emit_progress("video-1", 100))
 
-    def test_cache_service_does_not_update_memory_when_persistent_write_fails(self):
+    def test_cache_service_falls_back_to_sqlite_when_diskcache_write_fails(self):
+        class FailingDiskCache:
+            def __init__(self, _path: str) -> None:
+                self.values = {}
+
+            def get(self, key, default=None):
+                return self.values.get(key, default)
+
+            def set(self, _key, _value, *, expire=None):
+                raise RuntimeError("diskcache locked")
+
+            def delete(self, key):
+                self.values.pop(key, None)
+
+            def close(self):
+                return None
+
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            with patch("app.services.cache_service.DiskCache", FailingDiskCache):
+                cache = CacheService(namespace="test-cache-diskcache-fallback", cache_dir=temp_dir)
+                with patch("app.services.cache_service.debug_logger.log_exception") as log_exception:
+                    cache.set("key", "new", persist=True)
+
+                self.assertEqual(cache.get("key"), "new")
+                with cache._memory_lock:
+                    cache._memory_cache.pop("key", None)
+                self.assertEqual(cache.get("key"), "new")
+                log_exception.assert_called_once()
+                self.assertEqual(log_exception.call_args.args[:2], ("CacheService", "write_diskcache"))
+
+    def test_cache_service_does_not_update_memory_when_all_persistent_writes_fail(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             cache = CacheService(namespace="test-cache-consistency", cache_dir=temp_dir)
             cache.set("key", "old")
 
             if cache._disk_cache is not None:
-                with patch.object(cache._disk_cache, "set", side_effect=RuntimeError("disk full")):
+                with (
+                    patch.object(cache._disk_cache, "set", side_effect=RuntimeError("disk full")),
+                    patch.object(cache, "_write_sqlite_persistent", side_effect=RuntimeError("sqlite full")),
+                ):
                     with self.assertRaises(RuntimeError):
                         cache.set("key", "new", persist=True)
             else:

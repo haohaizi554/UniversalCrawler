@@ -190,9 +190,17 @@ class CacheService:
         expires_at: float | None,
     ) -> None:
         if self._disk_cache is not None:
-            with self._disk_lock:
-                self._disk_cache.set(key, value, expire=ttl_seconds)
-            return
+            try:
+                with self._disk_lock:
+                    self._disk_cache.set(key, value, expire=ttl_seconds)
+                return
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "CacheService",
+                    "write_diskcache",
+                    exc,
+                    details={"key": key, "cache_path": str(self._disk_cache_path)},
+                )
         self._write_sqlite_persistent(key, value, expires_at=expires_at)
 
     def _write_sqlite_persistent(self, key: str, value: Any, *, expires_at: float | None) -> None:
