@@ -27,6 +27,7 @@ from app.spiders.bilibili.input_router import BilibiliInputRoute
 from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
 from app.debug_logger import debug_logger
+from app.models import VideoItem
 from app.services.auth_service import AuthService
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 from app.utils.user_agents import resolve_user_agent
@@ -353,6 +354,73 @@ class BilibiliSpider(BaseSpider):
         HEADERS["User-Agent"] = self.user_agent
         self._browser_thread: threading.Thread | None = None
         self._api_pool_thread: threading.Thread | None = None
+        self._worker_api_local = threading.local()
+        self._worker_apis: list[BiliAPI] = []
+        self._worker_apis_lock = threading.RLock()
+
+    def _bilibili_cookie_file(self) -> str:
+        return cfg.get(
+            "auth",
+            "bilibili_cookie_file",
+            cfg.get("bilibili", "auth_file", get_setting_default("bilibili", "auth_file")),
+        )
+
+    def _bilibili_request_timeout_seconds(self) -> int:
+        return self._configured_timeout_seconds(
+            default=cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout"))
+        )
+
+    def _bilibili_api_worker_count(self, total: int | None = None) -> int:
+        try:
+            configured = int(
+                (getattr(self, "config", {}) or {}).get(
+                    "api_workers",
+                    cfg.get("bilibili", "api_workers", get_setting_default("bilibili", "api_workers")),
+                )
+            )
+        except (TypeError, ValueError):
+            configured = int(get_setting_default("bilibili", "api_workers"))
+        count = max(1, min(configured, 16))
+        if total is not None:
+            count = min(count, max(1, int(total)))
+        return count
+
+    def _worker_api_guard(self) -> threading.RLock:
+        lock = getattr(self, "_worker_apis_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._worker_apis_lock = lock
+        return lock
+
+    def _worker_api_for_thread(self) -> BiliAPI:
+        local = getattr(self, "_worker_api_local", None)
+        if local is None:
+            local = threading.local()
+            self._worker_api_local = local
+        api = getattr(local, "api", None)
+        if api is not None:
+            return api
+        parser = getattr(self, "parser", None) or BilibiliParser()
+        api = BiliAPI(self._bilibili_cookie_file(), parser=parser)
+        api.request_timeout = self._bilibili_request_timeout_seconds()
+        local.api = api
+        with self._worker_api_guard():
+            apis = getattr(self, "_worker_apis", None)
+            if apis is None:
+                apis = []
+                self._worker_apis = apis
+            apis.append(api)
+        return api
+
+    def _close_worker_apis(self) -> None:
+        with self._worker_api_guard():
+            apis = list(getattr(self, "_worker_apis", []) or [])
+            self._worker_apis = []
+        for api in apis:
+            try:
+                api.close()
+            except Exception as exc:
+                debug_logger.log_exception("BilibiliSpider", "close_worker_api", exc)
 
     def _max_items_limit(self) -> int:
         default_limit = get_setting_default("bilibili", "max_items")
@@ -393,11 +461,12 @@ class BilibiliSpider(BaseSpider):
         episode_title = episode.get("title") or f"第 {fallback_index + 1} 集"
         return f"{parent} · P{num_str} · {episode_title}"
 
-    def _process_download_task(self, task: dict) -> bool:
-        """逐条取流并提交下载，单条失败不影响后续任务继续执行。"""
+    def _resolve_download_item(self, task: dict, api: BiliAPI | None = None) -> VideoItem | None:
+        """Resolve one Bilibili task into a download item without emitting it."""
         self.log(f"🎬 解析流: {task['file_name'][:15]}...")
         try:
-            v_url, a_url, q_id = self.api.get_play_url(task['bvid'], task['cid'], trace_id=task['trace_id'])
+            api = api or self.api
+            v_url, a_url, q_id = api.get_play_url(task['bvid'], task['cid'], trace_id=task['trace_id'])
             if not v_url:
                 self.log("   ❌ 获取流失败")
                 self.debug_state(
@@ -420,7 +489,7 @@ class BilibiliSpider(BaseSpider):
             self.log(f"   ✨ 获取成功 [{q_text}]")
             folder_name = task.get("folder_name")
             proxy_str = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
-            cookie_dict = self.api.snapshot_cookies()
+            cookie_dict = api.snapshot_cookies()
             meta = {
                 "trace_id": task["trace_id"],
                 "content_type": "video",
@@ -438,12 +507,8 @@ class BilibiliSpider(BaseSpider):
                 meta["proxy"] = proxy_str
             if folder_name:
                 meta["folder_name"] = folder_name
-            self.emit_video(
-                url=v_url,
-                title=os.path.splitext(task["file_name"])[0],
-                source="bilibili",
-                meta=meta
-            )
+            item = VideoItem(url=v_url, title=os.path.splitext(task["file_name"])[0], source="bilibili")
+            item.meta = meta
             self.debug_state(
                 action="emit_download_task",
                 message="Bilibili 下载任务已提交到下载队列",
@@ -458,7 +523,7 @@ class BilibiliSpider(BaseSpider):
                 },
                 trace_id=task["trace_id"],
             )
-            return True
+            return item
         except Exception as exc:
             self.log(f"   ❌ 获取流失败: {exc}")
             self.debug_state(
@@ -474,9 +539,87 @@ class BilibiliSpider(BaseSpider):
                 level="ERROR",
                 trace_id=task["trace_id"],
             )
-            return False
-        finally:
+            return None
+
+    def _process_download_task(self, task: dict) -> bool:
+        """逐条取流并提交下载，单条失败不影响后续任务继续执行。"""
+        item = self._resolve_download_item(task, api=getattr(self, "api", None))
+        if item is None:
             self.interruptible_sleep(0.5)
+            return False
+        self.emit_video(url=item.url, title=item.title, source=item.source, meta=item.meta)
+        self.interruptible_sleep(0.5)
+        return True
+
+    def _process_download_tasks_async(self, tasks: list[dict]) -> tuple[int, int]:
+        """Resolve Bilibili play URLs concurrently, then emit ready items in batches."""
+        task_list = list(tasks or [])
+        if not task_list:
+            return 0, 0
+        worker_count = self._bilibili_api_worker_count(len(task_list))
+        if worker_count <= 1 or len(task_list) == 1:
+            success_count = 0
+            failure_count = 0
+            for task in task_list:
+                if not self.is_running:
+                    break
+                if self._process_download_task(task):
+                    success_count += 1
+                else:
+                    failure_count += 1
+            return success_count, failure_count
+
+        self.debug_state(
+            action="download_submit_pool_start",
+            message="Bilibili 并发解析播放流并批量提交下载项",
+            status_code="BILI_SUBMIT_POOL_START",
+            details={"task_count": len(task_list), "worker_count": worker_count},
+        )
+        success_count = 0
+        failure_count = 0
+        ready_items: list[VideoItem] = []
+
+        def resolve_one(task: dict) -> VideoItem | None:
+            if not self.is_running:
+                return None
+            return self._resolve_download_item(task, api=self._worker_api_for_thread())
+
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="bili-submit") as executor:
+            future_map = {executor.submit(resolve_one, task): task for task in task_list}
+            for future in as_completed(future_map):
+                if not self.is_running:
+                    break
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    task = future_map[future]
+                    failure_count += 1
+                    self.log(f"   ❌ 获取流失败: {exc}")
+                    self.debug_state(
+                        action="resolve_stream_worker_failed",
+                        message="Bilibili 并发取流线程失败",
+                        status_code="BILI_STREAM_WORKER_FAIL",
+                        context={
+                            "trace_id": task.get("trace_id"),
+                            "bvid": task.get("bvid"),
+                            "cid": task.get("cid"),
+                        },
+                        details={"file_name": task.get("file_name"), "error": str(exc)},
+                        level="ERROR",
+                        trace_id=task.get("trace_id"),
+                    )
+                    continue
+                if item is None:
+                    failure_count += 1
+                    continue
+                ready_items.append(item)
+                success_count += 1
+
+        emitted = self.emit_videos(ready_items)
+        if emitted != len(ready_items):
+            failure_count += len(ready_items) - emitted
+            success_count = max(0, success_count - (len(ready_items) - emitted))
+        return success_count, failure_count
 
     #完整流程控制器
     def run(self):
@@ -489,15 +632,9 @@ class BilibiliSpider(BaseSpider):
                 context={"keyword": self.keyword},
                 details={"config": self.config},
             )
-            cookie_file = cfg.get(
-                "auth",
-                "bilibili_cookie_file",
-                cfg.get("bilibili", "auth_file", get_setting_default("bilibili", "auth_file")),
-            )
+            cookie_file = self._bilibili_cookie_file()
             self.api = BiliAPI(cookie_file, parser=self.parser)
-            self.api.request_timeout = self._configured_timeout_seconds(
-                default=cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout"))
-            )
+            self.api.request_timeout = self._bilibili_request_timeout_seconds()
             try:
                 is_logged_in = self.api.check_login()
             except LoginCheckError as exc:
@@ -630,16 +767,10 @@ class BilibiliSpider(BaseSpider):
                     "sample_tasks": [task["file_name"] for task in final_download_queue[:5]],
                 },
             )
-            success_count = 0
-            failure_count = 0
-            for task in final_download_queue:
-                if not self.is_running: break
-                if self._process_download_task(task):
-                    success_count += 1
-                else:
-                    failure_count += 1
+            success_count, failure_count = self._process_download_tasks_async(final_download_queue)
             self.log(f"🎉 全部完成: 成功 {success_count}/{len(final_download_queue)} | 失败 {failure_count}")
         finally:
+            self._close_worker_apis()
             api = getattr(self, "api", None)
             if api is not None:
                 api.close()
@@ -980,28 +1111,28 @@ class BilibiliSpider(BaseSpider):
         def process_one(raw_id):
             """Resolve one queued bvid/aid into structured video info."""
             if not self.is_running:
-                return None
+                return None, None
+            api = self._worker_api_for_thread()
             if isinstance(raw_id, dict):
                 aid = str(raw_id.get("aid") or "").strip()
                 if aid:
-                    return self.api.get_video_info(None, trace_id=f"bilibili_av{aid}", aid=aid)
+                    result = api.get_video_info(None, trace_id=f"bilibili_av{aid}", aid=aid)
+                    error = None if result else api.consume_video_info_error(aid)
+                    return result, error
                 bvid = str(raw_id.get("bvid") or "").strip()
             else:
                 bvid = str(raw_id or "").strip()
             if not bvid:
-                return None
-            return self.api.get_video_info(bvid, trace_id=f"bilibili_{bvid}")
+                return None, None
+            result = api.get_video_info(bvid, trace_id=f"bilibili_{bvid}")
+            error = None if result else api.consume_video_info_error(bvid)
+            return result, error
 
         try:
-            api_workers = int(
-                (getattr(self, "config", {}) or {}).get(
-                    "api_workers",
-                    cfg.get("bilibili", "api_workers", get_setting_default("bilibili", "api_workers")),
-                )
-            )
+            api_workers = self._bilibili_api_worker_count()
         except (TypeError, ValueError):
-            api_workers = int(get_setting_default("bilibili", "api_workers"))
-        executor = ThreadPoolExecutor(max_workers=max(1, min(api_workers, 16)))
+            api_workers = 1
+        executor = ThreadPoolExecutor(max_workers=api_workers, thread_name_prefix="bili-detail")
         try:
             while True:
                 if not self.is_running: break
@@ -1013,14 +1144,10 @@ class BilibiliSpider(BaseSpider):
                         if not self.is_running:
                             return
                         try:
-                            res = f.result()
+                            res, error = f.result()
                             if res:
                                 self.parsed_info_queue.put(res)
                             else:
-                                error_key = raw_id
-                                if isinstance(raw_id, dict):
-                                    error_key = raw_id.get("aid") or raw_id.get("bvid") or raw_id
-                                error = getattr(self.api, "consume_video_info_error", lambda _key: None)(error_key)
                                 if isinstance(error, dict) and error:
                                     self._record_api_failure(raw_id, error)
                                     self.log(

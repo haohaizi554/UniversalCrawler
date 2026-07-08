@@ -303,6 +303,20 @@ class ApplicationController(
         with self._video_state_guard():
             self.videos[item.id] = item
 
+    def _store_video_items(self, items: Sequence[VideoItem]) -> None:
+        video_items = [item for item in list(items or []) if getattr(item, "id", None)]
+        if not video_items:
+            return
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None:
+            upsert_many = getattr(app_state, "upsert_videos", None)
+            if callable(upsert_many):
+                upsert_many(video_items)
+                return
+        with self._video_state_guard():
+            for item in video_items:
+                self.videos[item.id] = item
+
     def _remove_video_item(self, video_id: str) -> VideoItem | None:
         app_state = getattr(self, "app_state", None)
         if app_state is None:

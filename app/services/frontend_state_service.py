@@ -121,10 +121,12 @@ class FrontendStateService:
         self._directory_opener = directory_opener or self._open_directory_with_system
         self._association_service_factory = association_service_factory
         self._executable_path_provider = executable_path_provider or self._current_executable_path
+        self._owns_media_metadata_service = media_metadata_service is None
         self.media_metadata_service = media_metadata_service or MediaMetadataService()
         self._frontend_event_emitter = frontend_event_emitter
         self._destroyed = False
         self.failed_record_store = failed_record_store or FailedRecordStore()
+        self._failed_record_write_signatures: dict[str, tuple[Any, ...]] = {}
         self._gui_runtime_invoker = self._create_gui_runtime_invoker()
         self._file_log_cache_store = FrontendLogCache(
             cache_service=self.cache_service,
@@ -237,6 +239,16 @@ class FrontendStateService:
             return
         self.app_state.upsert_video(item)
 
+    def upsert_videos(self, items: Sequence[VideoItem]) -> None:
+        if self._destroyed:
+            return
+        upsert_many = getattr(self.app_state, "upsert_videos", None)
+        if callable(upsert_many):
+            upsert_many(list(items or []))
+            return
+        for item in list(items or []):
+            self.app_state.upsert_video(item)
+
     def remove_video(self, video_id: str) -> None:
         if self._destroyed:
             return
@@ -296,6 +308,10 @@ class FrontendStateService:
             self._pending_app_state_events_overflowed = False
         self._file_log_cache_store.shutdown()
         self.failed_record_store.shutdown()
+        if self._owns_media_metadata_service:
+            shutdown_metadata_service = getattr(self.media_metadata_service, "shutdown", None)
+            if callable(shutdown_metadata_service):
+                shutdown_metadata_service()
         if self._owns_app_state:
             shutdown = getattr(self.app_state, "shutdown", None)
             if callable(shutdown):
@@ -383,6 +399,8 @@ class FrontendStateService:
     @staticmethod
     def _sections_for_recorded_event(topic: str, payload: Mapping[str, Any]) -> frozenset[str] | None:
         normalized = str(topic or "")
+        if normalized == "logs.append" and payload.get("source") == "frontend_log_worker":
+            return frozenset({"log_items", "failed_items", "app_status"})
         if normalized not in {"videos.update", "video_state_changed", "task_progress"}:
             return sections_for_topic(normalized)
         status = str(payload.get("status") or "")
@@ -855,6 +873,7 @@ class FrontendStateService:
             "task_finished",
             "task_error",
             "videos.upsert",
+            "videos.upsert_many",
             "videos.update",
             "video_state_changed",
             "task_progress",
@@ -1521,15 +1540,66 @@ class FrontendStateService:
         )
 
     def _queue_failed_records(self, failed_items: list[Mapping[str, Any]]) -> None:
+        changed_items = self._changed_failed_records(failed_items)
+        if not changed_items:
+            return
         try:
-            self.failed_record_store.queue_upsert(failed_items)
+            self.failed_record_store.queue_upsert(changed_items)
         except Exception as exc:
             debug_logger.log_exception(
                 "FrontendStateService",
                 "queue_failed_records",
                 exc,
-                details={"count": len(failed_items)},
+                details={"count": len(changed_items)},
             )
+
+    def _changed_failed_records(self, failed_items: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        changed_items: list[Mapping[str, Any]] = []
+        current_ids: set[str] = set()
+        for item in failed_items:
+            video_id = str(item.get("id") or item.get("video_id") or "")
+            if not video_id:
+                continue
+            current_ids.add(video_id)
+            signature = self._failed_record_signature(item)
+            if self._failed_record_write_signatures.get(video_id) == signature:
+                continue
+            self._failed_record_write_signatures[video_id] = signature
+            changed_items.append(item)
+        if current_ids:
+            for stale_id in set(self._failed_record_write_signatures) - current_ids:
+                self._failed_record_write_signatures.pop(stale_id, None)
+        else:
+            self._failed_record_write_signatures.clear()
+        return changed_items
+
+    @staticmethod
+    def _failed_record_signature(item: Mapping[str, Any]) -> tuple[Any, ...]:
+        log_excerpt = tuple(str(value or "") for value in item.get("log_excerpt") or ())
+        log_excerpt_items = tuple(
+            (
+                str(entry.get("time") or ""),
+                str(entry.get("level") or ""),
+                str(entry.get("source") or ""),
+                str(entry.get("message") or ""),
+            )
+            for entry in item.get("log_excerpt_items") or ()
+            if isinstance(entry, Mapping)
+        )
+        return (
+            str(item.get("id") or item.get("video_id") or ""),
+            str(item.get("title") or ""),
+            str(item.get("failed_at") or item.get("failed_at_table") or ""),
+            str(item.get("reason") or item.get("reason_label") or ""),
+            str(item.get("reason_detail") or ""),
+            str(item.get("status") or item.get("status_label") or ""),
+            str(item.get("trace_id") or ""),
+            str(item.get("platform") or item.get("platform_label") or ""),
+            str(item.get("platform_id") or ""),
+            str(item.get("source_url") or ""),
+            log_excerpt,
+            log_excerpt_items,
+        )
 
     def _fallback_failed_log_entries(
         self,

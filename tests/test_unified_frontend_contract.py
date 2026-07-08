@@ -29,6 +29,7 @@ from app.ui.layout.sidebar import _badge_size
 from app.ui.main_window import MainWindow
 from app.ui.pages.active_downloads_page import EventTimelineWidget, SpeedTrendWidget, TEXT
 from app.ui.pages.common import ActionTable, connect_table_actions
+from app.ui.pages.failed_page import FailedLogMessageLabel
 from app.ui.styles.themes import apply_application_theme, generate_stylesheet, theme_colors
 from app.ui.viewmodels.active_download_projection import (
     localize_active_event_message,
@@ -3688,16 +3689,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertTrue(failed.table.itemDelegate()._is_failed_reason_cell(failed.table.table_model.index(0, reason_col)))
         log_row = failed.findChild(QFrame, "FailedLogRow")
         self.assertIsNotNone(log_row)
-        self.assertEqual(log_row.layout().contentsMargins().left(), 2)
-        self.assertEqual(log_row.layout().spacing(), 7)
+        self.assertEqual(log_row.layout().contentsMargins().left(), 0)
+        self.assertEqual(log_row.layout().spacing(), 5)
         self.assertEqual(log_row.layout().itemAt(0).widget().objectName(), "FailedLogTime")
         time_widget = log_row.layout().itemAt(0).widget()
-        self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance("88:88:88") + 10)
+        self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance("88:88:88") + 2)
         level_badge = log_row.layout().itemAt(1).widget()
         self.assertIn(level_badge.objectName(), {"LogLevelBadgeInfo", "LogLevelBadgeSuccess", "LogLevelBadgeWarn", "LogLevelBadgeError", "LogLevelBadgeCommand"})
         self.assertEqual(level_badge.height(), 22)
-        self.assertEqual(level_badge.width(), 74)
+        self.assertEqual(level_badge.width(), 68)
         message_widget = log_row.layout().itemAt(2).widget()
+        self.assertIsInstance(message_widget, FailedLogMessageLabel)
         self.assertEqual(message_widget.minimumWidth(), 0)
         self.assertEqual(log_row.layout().stretch(2), 1)
         first_summary_row = failed.summary_layout.itemAt(0).widget()
@@ -3783,13 +3785,32 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             time_widget = layout.itemAt(0).widget()
             badge = layout.itemAt(1).widget()
             self.assertRegex(time_widget.text(), r"^\d{2}:\d{2}:\d{2}$")
-            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 10)
-            self.assertEqual(badge.width(), 74)
+            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 2)
+            self.assertEqual(badge.width(), 68)
             message_x.append(layout.itemAt(2).geometry().x() if widget.isVisible() else time_widget.width() + layout.spacing() + badge.width() + layout.spacing())
 
         self.assertEqual(len(set(message_x)), 1)
         message_labels = [widget.layout().itemAt(2).widget() for widget in widgets]
         self.assertEqual(message_labels[-1].text(), "下载任务失败")
+
+    def test_failed_log_rows_wrap_long_error_segments_without_clipping(self):
+        shell = self._make_shell()
+        failed = shell.pages["failed"]
+        long_message = (
+            "B-site stream download failed: ('Connection broken: "
+            "IncompleteRead(524288bytesread,375299811moreexpected)',"
+            "IncompleteRead(524288bytesread,375299811moreexpected))"
+        )
+
+        widget = failed._log_row({"time_display": "06:32:21", "level": "ERROR", "message_display": long_message})
+        message_label = widget.layout().itemAt(2).widget()
+
+        self.assertIsInstance(message_label, FailedLogMessageLabel)
+        self.assertEqual(message_label.raw_text(), long_message)
+        rendered_text = QLabel.text(message_label)
+        self.assertIn(FailedLogMessageLabel.SOFT_BREAK, rendered_text)
+        self.assertNotIn(FailedLogMessageLabel.SOFT_BREAK, message_label.text())
+        self.assertIn("Connection broken: IncompleteRead", message_label.text())
 
     def test_queue_recent_events_skip_identical_rebuilds(self):
         shell = self._make_shell()

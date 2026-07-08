@@ -1902,6 +1902,9 @@ class MainWindow(QMainWindow):
     def add_video_row(self, video_item) -> None:
         self._frontend_state_service.upsert_video(video_item)
 
+    def add_video_rows(self, video_items) -> None:
+        self._frontend_state_service.upsert_videos(list(video_items or []))
+
     def update_video_status(self, video_id, status, progress=None) -> None:
         # Controller updates video fields in-place; UI refresh is driven by app_state.changed.
         return

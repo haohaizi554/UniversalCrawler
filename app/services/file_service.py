@@ -57,29 +57,51 @@ class MediaLibraryService:
         return False
 
     def _iter_bilibili_temp_paths(self, video: VideoItem, file_path: str) -> list[str]:
-        if not file_path:
-            return []
-        final_dir = os.path.abspath(os.path.dirname(file_path) or os.curdir)
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        expected_paths = {
-            os.path.normcase(os.path.abspath(os.path.join(final_dir, f"{base_name}{suffix}"))): os.path.join(
-                final_dir,
-                f"{base_name}{suffix}",
-            )
-            for suffix in self.BILIBILI_TEMP_SUFFIXES
-        }
         meta = video.meta if isinstance(video.meta, dict) else {}
+        source = str(getattr(video, "source", "") or "").lower()
+        has_bilibili_context = source == "bilibili" or any(meta.get(key) for key in ("bvid", "cid", "audio_url"))
         candidates: list[str] = []
         seen: set[str] = set()
+        roots: list[tuple[str, str]] = []
+        seen_roots: set[tuple[str, str]] = set()
 
-        def add_if_owned(path: object) -> None:
+        def temp_root_from_path(path: str) -> tuple[str, str] | None:
+            path_text = str(path or "")
+            lower_name = os.path.basename(path_text).lower()
+            for suffix in self.BILIBILI_TEMP_SUFFIXES:
+                if lower_name.endswith(suffix):
+                    base_name = os.path.basename(path_text)[: -len(suffix)]
+                    if base_name:
+                        return os.path.abspath(os.path.dirname(path_text) or os.curdir), base_name
+            return None
+
+        def add_root(root: tuple[str, str] | None) -> None:
+            if root is None:
+                return
+            directory, base_name = root
+            normalized = (os.path.normcase(os.path.abspath(directory)), base_name)
+            if normalized in seen_roots:
+                return
+            seen_roots.add(normalized)
+            roots.append((os.path.abspath(directory), base_name))
+
+        def add_candidate(path: object) -> None:
             if not isinstance(path, str) or not path:
                 return
             normalized = os.path.normcase(os.path.abspath(path))
-            owned_path = expected_paths.get(normalized)
-            if owned_path and normalized not in seen:
+            if normalized not in seen:
                 seen.add(normalized)
-                candidates.append(owned_path)
+                candidates.append(os.path.abspath(path))
+
+        if file_path:
+            temp_root = temp_root_from_path(file_path)
+            if temp_root is not None:
+                add_root(temp_root)
+            else:
+                final_dir = os.path.abspath(os.path.dirname(file_path) or os.curdir)
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                if base_name:
+                    add_root((final_dir, base_name))
 
         for key in self.TEMP_FILE_META_KEYS:
             raw_paths = meta.get(key)
@@ -90,13 +112,14 @@ class MediaLibraryService:
             else:
                 continue
             for raw_path in iterable:
-                add_if_owned(raw_path)
+                if file_path:
+                    continue
+                add_root(temp_root_from_path(raw_path))
 
-        source = str(getattr(video, "source", "") or "").lower()
-        has_bilibili_context = source == "bilibili" or any(meta.get(key) for key in ("bvid", "cid", "audio_url"))
         if has_bilibili_context:
-            for owned_path in expected_paths.values():
-                add_if_owned(owned_path)
+            for directory, base_name in roots:
+                for suffix in self.BILIBILI_TEMP_SUFFIXES:
+                    add_candidate(os.path.join(directory, f"{base_name}{suffix}"))
 
         return candidates
 

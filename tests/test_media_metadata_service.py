@@ -221,6 +221,75 @@ Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'demo.mp4':
         self.assertEqual(results[0].format, "MP4")
         self.assertEqual(results[0].content_type, "video")
 
+    def test_probe_worker_pool_limits_concurrent_probe_tasks(self):
+        active = 0
+        max_active = 0
+        calls = 0
+        condition = threading.Condition()
+        release = threading.Event()
+        completed = threading.Event()
+        results: list[MediaMetadata] = []
+
+        def runner(args, **_kwargs):
+            nonlocal active, calls, max_active
+            with condition:
+                active += 1
+                calls += 1
+                max_active = max(max_active, active)
+                condition.notify_all()
+            release.wait(timeout=2)
+            with condition:
+                active -= 1
+                condition.notify_all()
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout='{"format":{"duration":"12","format_name":"mp4"},"streams":[{"codec_type":"video","width":640,"height":360}]}',
+                stderr="",
+            )
+
+        def on_done(metadata: MediaMetadata) -> None:
+            results.append(metadata)
+            if len(results) >= 5:
+                completed.set()
+
+        service = MediaMetadataService(
+            ffprobe_resolver=lambda: "ffprobe",
+            runner=runner,
+            max_workers=2,
+        )
+        try:
+            with TemporaryDirectory() as tmp:
+                paths = []
+                for index in range(5):
+                    path = Path(tmp) / f"clip-{index}.mp4"
+                    path.write_bytes(f"media-{index}".encode("utf-8"))
+                    paths.append(path)
+
+                for path in paths:
+                    self.assertTrue(service.ensure_probe(path, on_done))
+
+                with condition:
+                    self.assertTrue(condition.wait_for(lambda: max_active >= 2, timeout=2))
+                self.assertLessEqual(max_active, 2)
+                release.set()
+                self.assertTrue(completed.wait(2))
+        finally:
+            service.shutdown(wait=True)
+
+        self.assertEqual(calls, 5)
+        self.assertEqual(len(results), 5)
+        self.assertLessEqual(max_active, 2)
+
+    def test_shutdown_prevents_new_probe_tasks(self):
+        service = MediaMetadataService(ffprobe_resolver=lambda: "ffprobe")
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            path.write_bytes(b"media")
+            service.shutdown()
+
+            self.assertFalse(service.ensure_probe(path, lambda _metadata: None))
+
     def test_windows_shell_payload_extracts_duration_and_resolution(self):
         metadata = MediaMetadataService.from_windows_shell_payload(
             {"Duration": 2080000000, "Width": 1920, "Height": 1080},

@@ -85,6 +85,17 @@ class AppState:
             self.videos[item.id] = item
         self._publish_change("videos.upsert", {"video_id": item.id})
 
+    def upsert_videos(self, items: Any) -> list[str]:
+        video_items = [item for item in items if getattr(item, "id", None)]
+        if not video_items:
+            return []
+        with self._lock:
+            for item in video_items:
+                self.videos[item.id] = item
+            video_ids = [item.id for item in video_items]
+        self._publish_change("videos.upsert_many", {"video_ids": video_ids, "count": len(video_ids)})
+        return video_ids
+
     def remove_video(self, video_id: str) -> None:
         removed = self.remove_videos({video_id}, publish=False)
         if removed:

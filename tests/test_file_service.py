@@ -164,6 +164,38 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertFalse(os.path.exists(video_temp))
         self.assertFalse(os.path.exists(audio_temp))
 
+    def test_delete_media_removes_bilibili_sidecars_when_local_path_is_temp_stream(self):
+        base = self.temp_dir.name
+        video_temp = os.path.join(base, "demo_video.m4s")
+        audio_temp = os.path.join(base, "demo_audio.m4s")
+        for path in (video_temp, audio_temp):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+        item = VideoItem(url="", title="demo", source="bilibili")
+        item.local_path = video_temp
+
+        deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(video_temp))
+        self.assertFalse(os.path.exists(audio_temp))
+
+    def test_delete_media_removes_bilibili_meta_temp_files_without_local_path(self):
+        base = self.temp_dir.name
+        video_temp = os.path.join(base, "demo_video.m4s")
+        audio_temp = os.path.join(base, "demo_audio.m4s")
+        for path in (video_temp, audio_temp):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+        item = VideoItem(url="", title="demo", source="bilibili")
+        item.meta["download_temp_files"] = [video_temp, audio_temp]
+
+        deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(video_temp))
+        self.assertFalse(os.path.exists(audio_temp))
+
     def test_delete_media_ignores_unowned_temp_sidecar_path(self):
         base = self.temp_dir.name
         outside_dir = os.path.join(base, "outside")

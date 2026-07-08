@@ -102,6 +102,10 @@ class DesktopHostAdapter:
     def add_video_row(self, item: VideoItem) -> None:
         self._run_on_ui(lambda: self.window.add_video_row(item))
 
+    def add_video_rows(self, items: list[VideoItem]) -> None:
+        video_items = list(items or [])
+        self._run_on_ui(lambda: self.window.add_video_rows(video_items))
+
     def update_video_status(self, video_id: str, status: str, progress: int | None = None) -> None:
         self._run_on_ui(lambda: self.window.update_video_status(video_id, status, progress))
 

@@ -614,6 +614,46 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("os.path.exists", rename_block)
         self.assertIn("def _rename_video_io", library_text)
 
+    def test_web_controller_media_paths_do_not_stat_on_event_loop(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "web" / "controller.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        async_rename_block = text.split("async def async_rename_video", 1)[1].split(
+            "# ---- 配置 ----",
+            1,
+        )[0]
+        get_media_path_block = text.split("def get_media_path", 1)[1].split(
+            "# ---- 辅助 ----",
+            1,
+        )[0]
+
+        self.assertNotIn("os.path.exists", async_rename_block)
+        self.assertNotIn("os.path.exists", get_media_path_block)
+        self.assertIn("run_in_executor", async_rename_block)
+
+    def test_web_debug_file_downloads_do_not_probe_files_on_event_loop(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        router_text = (project_root / "app" / "web" / "rest_router.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        server_text = (project_root / "app" / "web" / "server.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        router_block = router_text.split('async def download_latest_log', 1)[1].split("return router", 1)[0]
+        server_block = server_text.split('async def download_latest_log', 1)[1].split(
+            "# ---- WebSocket ----",
+            1,
+        )[0]
+
+        self.assertIn("await file_response_service.async_latest_log_response", router_block)
+        self.assertIn("await file_response_service.async_latest_error_summary_response", router_block)
+        self.assertIn("run_in_executor", server_block)
+        self.assertNotIn("os.path.exists", server_block)
+
     def test_start_task_marquee_uses_low_frequency_timer(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "ui" / "components" / "start_task_button.py").read_text(

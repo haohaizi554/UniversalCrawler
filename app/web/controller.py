@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import os
 import threading
 import time
 from copy import deepcopy
@@ -352,6 +351,12 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         with self._videos_lock:
             self.videos[item.id] = item
 
+    def _store_video_items(self, items: list[VideoItem]) -> None:
+        with self._videos_lock:
+            for item in list(items or []):
+                if getattr(item, "id", None):
+                    self.videos[item.id] = item
+
     def _remove_video_item(self, video_id: str) -> VideoItem | None:
         self._forget_progress_emit_state(video_id)
         with self._videos_lock:
@@ -680,11 +685,15 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
 
         spider.sig_log.connect(on_log)
         spider.sig_item_found.connect(self._on_spider_item_found)
+        batch_signal = getattr(spider, "sig_items_found", None)
+        if batch_signal is not None:
+            batch_signal.connect(self._on_spider_items_found)
         spider.sig_select_tasks.connect(self._on_spider_select_tasks)
         spider.sig_finished.connect(self._on_spider_finished)
         self._spider_signal_handlers = {
             "on_log": on_log,
             "on_item_found": self._on_spider_item_found,
+            "on_items_found": self._on_spider_items_found,
             "on_select_tasks": self._on_spider_select_tasks,
             "on_finished": self._on_spider_finished,
         }
@@ -694,6 +703,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         mapping = (
             ("sig_log", handlers.get("on_log")),
             ("sig_item_found", handlers.get("on_item_found")),
+            ("sig_items_found", handlers.get("on_items_found")),
             ("sig_select_tasks", handlers.get("on_select_tasks")),
             ("sig_finished", handlers.get("on_finished")),
         )
@@ -710,13 +720,39 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._spider_signal_handlers = {}
 
     def _on_spider_item_found(self, item: VideoItem):
-        if self._should_skip_for_video_only(item):
-            self._log_video_only_skip(item)
+        self._on_spider_items_found([item])
+
+    def _on_spider_items_found(self, items: list[VideoItem]):
+        accepted_items: list[VideoItem] = []
+        for item in list(items or []):
+            if self._should_skip_for_video_only(item):
+                self._log_video_only_skip(item)
+                continue
+            self._prepare_pending_item(item)
+            accepted_items.append(item)
+        if not accepted_items:
             return
-        self._prepare_pending_item(item)
-        self._store_video_item(item)
-        self.bridge.emit("item_found", self._video_item_to_dict(item))
-        self.dl_manager.add_task(item, self.current_save_dir)
+        if len(accepted_items) == 1:
+            item = accepted_items[0]
+            self._store_video_item(item)
+            self.bridge.emit("item_found", self._video_item_to_dict(item))
+            self.dl_manager.add_task(item, self.current_save_dir)
+            self._log_spider_item_found(item)
+            return
+
+        self._store_video_items(accepted_items)
+        for item in accepted_items:
+            self.bridge.emit("item_found", self._video_item_to_dict(item))
+        add_tasks = getattr(self.dl_manager, "add_tasks", None)
+        if callable(add_tasks):
+            add_tasks(accepted_items, self.current_save_dir)
+        else:
+            for item in accepted_items:
+                self.dl_manager.add_task(item, self.current_save_dir)
+        for item in accepted_items:
+            self._log_spider_item_found(item)
+
+    def _log_spider_item_found(self, item: VideoItem) -> None:
         # 与 GUI _on_spider_item_found 对齐：记录 item 发现日志（含 context 和 trace_id）
         debug_logger.log(
             component="WebController",
@@ -1137,7 +1173,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         normalized_title = new_title.strip()
         if not normalized_title:
             return {"status": "error", "message": "标题不能为空"}
-        if not video.local_path or not os.path.exists(video.local_path):
+        if not video.local_path:
             return {"status": "error", "message": "文件不存在，无法重命名"}
         try:
             old_path, new_path = await asyncio.get_running_loop().run_in_executor(
@@ -1281,7 +1317,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
 
     def get_media_path(self, video_id: str) -> str | None:
         item = self._video_lookup(video_id)
-        if item and item.local_path and os.path.exists(item.local_path):
+        if item and item.local_path:
             return item.local_path
         return None
 

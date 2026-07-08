@@ -114,8 +114,15 @@ class WebFileResponseService:
                 remaining -= len(data)
                 yield data
 
+    async def async_latest_log_response(self, request: Request):
+        self._require_session_token(request)
+        return await asyncio.get_running_loop().run_in_executor(None, self._latest_log_response_unchecked)
+
     def latest_log_response(self, request: Request):
         self._require_session_token(request)
+        return self._latest_log_response_unchecked()
+
+    def _latest_log_response_unchecked(self):
         from app.services.debug_service import DebugArtifactsService
 
         service = DebugArtifactsService()
@@ -124,8 +131,15 @@ class WebFileResponseService:
             return FileResponse(log_path, filename=os.path.basename(log_path), media_type="text/plain")
         return {"error": "日志文件不存在"}
 
+    async def async_latest_error_summary_response(self, request: Request):
+        self._require_session_token(request)
+        return await asyncio.get_running_loop().run_in_executor(None, self._latest_error_summary_response_unchecked)
+
     def latest_error_summary_response(self, request: Request):
         self._require_session_token(request)
+        return self._latest_error_summary_response_unchecked()
+
+    def _latest_error_summary_response_unchecked(self):
         from app.services.debug_service import DebugArtifactsService
 
         service = DebugArtifactsService()

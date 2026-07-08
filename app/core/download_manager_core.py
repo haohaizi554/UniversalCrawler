@@ -41,6 +41,17 @@ class PendingDownloadQueue:
             self._track_enqueue(getattr(item[0], "id", ""))
             self._condition.notify()
 
+    def put_many(self, items: Iterable[tuple[VideoItem, str]]) -> int:
+        count = 0
+        with self._condition:
+            for item in items:
+                self._items.append(item)
+                self._track_enqueue(getattr(item[0], "id", ""))
+                count += 1
+            if count:
+                self._condition.notify_all()
+        return count
+
     def get(self, timeout: float | None = None) -> tuple[VideoItem, str]:
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._condition:
@@ -349,6 +360,34 @@ class DownloadManagerCore:
 
     def add_task(self, video: VideoItem, save_dir: str):
         """Add a video item into the download queue."""
+        return self.add_tasks([video], save_dir) > 0
+
+    def add_tasks(self, videos: Iterable[VideoItem], save_dir: str) -> int:
+        """Add multiple video items into the download queue with one queue wakeup."""
+        queued: list[tuple[VideoItem, str]] = []
+        for video in videos:
+            if self._log_and_skip_video_only(video):
+                continue
+            self._log_queue_task(video, save_dir)
+            queued.append((video, save_dir))
+
+        if not queued:
+            return 0
+
+        with self._start_stop_guard():
+            if not self.is_running:
+                raise RuntimeError("\u5df2\u505c\u6b62: DownloadManager cannot add more tasks")
+            put_many = getattr(self.queue, "put_many", None)
+            if callable(put_many):
+                count = int(put_many(queued))
+            else:
+                for item in queued:
+                    self.queue.put(item)
+                count = len(queued)
+            self._get_dispatch_slot_gate().set()
+        return count
+
+    def _log_and_skip_video_only(self, video: VideoItem) -> bool:
         if self._should_skip_for_video_only(video):
             self._mark_video_only_skip(video)
             debug_logger.log(
@@ -370,7 +409,11 @@ class DownloadManagerCore:
                 ),
                 trace_id=video.meta.get("trace_id"),
             )
-            return False
+            return True
+        return False
+
+    @staticmethod
+    def _log_queue_task(video: VideoItem, save_dir: str) -> None:
         trace_id = video.meta.get("trace_id")
         debug_logger.log(
             component="DownloadManager",
@@ -387,12 +430,6 @@ class DownloadManagerCore:
             ),
             trace_id=trace_id,
         )
-        with self._start_stop_guard():
-            if not self.is_running:
-                raise RuntimeError("\u5df2\u505c\u6b62: DownloadManager cannot add more tasks")
-            self.queue.put((video, save_dir))
-            self._get_dispatch_slot_gate().set()
-        return True
 
     def cancel_task(self, video_id: str) -> str | None:
         """Cancel a queued or running task."""

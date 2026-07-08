@@ -12,6 +12,9 @@ class _FakeSignal:
     def connect(self, target):
         self.targets.append(target)
 
+    def disconnect(self, target):
+        self.targets = [item for item in self.targets if item != target]
+
 class _FakeSpider:
     def __init__(self):
         self.sig_log = _FakeSignal()
@@ -52,6 +55,21 @@ class SpiderSessionTests(unittest.TestCase):
         self.assertEqual(spider.sig_item_found.targets, [bindings.on_item_found])
         self.assertEqual(spider.sig_select_tasks.targets, [bindings.on_select_tasks])
         self.assertEqual(spider.sig_finished.targets, [bindings.on_finished])
+
+    def test_bind_spider_connects_optional_batch_item_signal(self):
+        spider = _FakeSpider()
+        spider.sig_items_found = _FakeSignal()
+        bindings = SpiderSessionBindings(
+            on_log=Mock(),
+            on_item_found=Mock(),
+            on_items_found=Mock(),
+            on_select_tasks=Mock(),
+            on_finished=Mock(),
+        )
+
+        SpiderSession.bind_spider(spider, bindings)
+
+        self.assertEqual(spider.sig_items_found.targets, [bindings.on_items_found])
 
     def test_activate_spider_binds_and_starts_existing_instance(self):
         spider = _FakeSpider()
@@ -123,4 +141,3 @@ class BaseSpiderLifecycleTests(unittest.TestCase):
         spider.run()
 
         self.assertEqual(steps, ["run_impl", "finished"])
-

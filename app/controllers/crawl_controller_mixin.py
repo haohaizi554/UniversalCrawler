@@ -5,6 +5,7 @@ from app.core.events import (
     DomainEventType,
     build_crawl_state_event,
     build_item_found_event,
+    build_items_found_event,
     build_log_event,
     build_selection_required_event,
 )
@@ -56,6 +57,9 @@ class CrawlControllerMixin:
     def _emit_spider_item_found_event(self, item: VideoItem) -> None:
         self._spider_bridge.sig_event.emit(build_item_found_event(item))
 
+    def _emit_spider_items_found_event(self, items: list[VideoItem]) -> None:
+        self._spider_bridge.sig_event.emit(build_items_found_event(items))
+
     def _emit_spider_selection_event(self, items: list) -> None:
         self._spider_bridge.sig_event.emit(build_selection_required_event(items))
 
@@ -76,6 +80,11 @@ class CrawlControllerMixin:
         if item is not None:
             self._on_spider_item_found(item)
 
+    def _handle_spider_items_found_event(self, event: DomainEvent) -> None:
+        items = self._event_payload(event).get("items")
+        if items is not None:
+            self._on_spider_items_found(items)
+
     def _handle_spider_selection_event(self, event: DomainEvent) -> None:
         items = self._event_payload(event).get("items")
         if items is not None:
@@ -89,6 +98,7 @@ class CrawlControllerMixin:
         return {
             DomainEventType.LOG: self._handle_spider_log_event,
             DomainEventType.ITEM_FOUND: self._handle_spider_item_found_event,
+            DomainEventType.ITEMS_FOUND: self._handle_spider_items_found_event,
             DomainEventType.SELECTION_REQUIRED: self._handle_spider_selection_event,
             DomainEventType.CRAWL_STATE_CHANGED: self._handle_spider_crawl_state_event,
         }
@@ -126,6 +136,7 @@ class CrawlControllerMixin:
         return SpiderSessionBindings(
             on_log=self._emit_spider_log_event,
             on_item_found=self._emit_spider_item_found_event,
+            on_items_found=self._emit_spider_items_found_event,
             on_select_tasks=self._emit_spider_selection_event,
             on_finished=self._emit_spider_finished_event,
         )
@@ -196,12 +207,53 @@ class CrawlControllerMixin:
 
     def _on_spider_item_found(self, item):
         """Append a newly discovered item into the host and queue it for download."""
-        if self._should_skip_for_video_only(item):
-            self._log_video_only_skip(item)
+        self._on_spider_items_found([item])
+
+    def _on_spider_items_found(self, items):
+        """Append discovered items and enqueue them with one batched queue wakeup."""
+        accepted_items: list[VideoItem] = []
+        for item in list(items or []):
+            if self._should_skip_for_video_only(item):
+                self._log_video_only_skip(item)
+                continue
+            self._prepare_pending_item(item)
+            accepted_items.append(item)
+        if not accepted_items:
             return
-        self._prepare_pending_item(item)
-        self._store_video_item(item)
-        self._host().add_video_row(item)
+        if len(accepted_items) == 1:
+            item = accepted_items[0]
+            self._store_video_item(item)
+            self._host().add_video_row(item)
+            self._log_spider_item_found(item)
+            self.dl_manager.add_task(item, self._host().current_save_dir)
+            return
+
+        store_many = getattr(self, "_store_video_items", None)
+        if callable(store_many):
+            store_many(accepted_items)
+        else:
+            for item in accepted_items:
+                self._store_video_item(item)
+
+        add_rows = getattr(self._host(), "add_video_rows", None)
+        if callable(add_rows):
+            add_rows(accepted_items)
+        else:
+            for item in accepted_items:
+                self._host().add_video_row(item)
+
+        save_dir = self._host().current_save_dir
+        add_tasks = getattr(self.dl_manager, "add_tasks", None)
+        if callable(add_tasks):
+            add_tasks(accepted_items, save_dir)
+        else:
+            for item in accepted_items:
+                self.dl_manager.add_task(item, save_dir)
+
+        for item in accepted_items:
+            self._log_spider_item_found(item)
+
+    def _log_spider_item_found(self, item: VideoItem) -> None:
         debug_logger.log(
             component="ApplicationController",
             action="item_found",
@@ -211,7 +263,6 @@ class CrawlControllerMixin:
             details=self._item_details(item),
             trace_id=self._item_trace_id(item),
         )
-        self.dl_manager.add_task(item, self._host().current_save_dir)
 
     def _on_spider_select_tasks(self, items):
         """Resume spider processing using the host-provided selection result."""

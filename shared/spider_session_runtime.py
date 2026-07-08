@@ -13,6 +13,7 @@ class SpiderSessionBindings:
     on_item_found: Callable[[Any], None]
     on_select_tasks: Callable[[Any], None]
     on_finished: Callable[[], None]
+    on_items_found: Callable[[list[Any]], None] | None = None
     patch_spider: Callable[[Any], None] | None = None
 
 @dataclass(slots=True)
@@ -50,6 +51,9 @@ class SpiderSession:
             bindings.patch_spider(spider)
         spider.sig_log.connect(bindings.on_log)
         spider.sig_item_found.connect(bindings.on_item_found)
+        batch_signal = getattr(spider, "sig_items_found", None)
+        if bindings.on_items_found is not None and batch_signal is not None:
+            batch_signal.connect(bindings.on_items_found)
         spider.sig_select_tasks.connect(bindings.on_select_tasks)
         spider.sig_finished.connect(bindings.on_finished)
 
@@ -58,9 +62,12 @@ class SpiderSession:
         for signal, callback in (
             (spider.sig_log, bindings.on_log),
             (spider.sig_item_found, bindings.on_item_found),
+            (getattr(spider, "sig_items_found", None), bindings.on_items_found),
             (spider.sig_select_tasks, bindings.on_select_tasks),
             (spider.sig_finished, bindings.on_finished),
         ):
+            if signal is None or callback is None:
+                continue
             try:
                 signal.disconnect(callback)
             except (TypeError, ValueError):

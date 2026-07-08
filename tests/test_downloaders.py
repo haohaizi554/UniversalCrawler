@@ -45,6 +45,17 @@ class DownloaderStrategyTests(unittest.TestCase):
         response.__exit__ = Mock(return_value=False)
         return response
 
+    def _make_stream_response_raising(self, chunks, exc, headers=None, status_code=200):
+        response = self._make_stream_response([], headers=headers, status_code=status_code)
+
+        def iter_content(chunk_size=0):
+            for chunk in chunks:
+                yield chunk
+            raise exc
+
+        response.iter_content.side_effect = iter_content
+        return response
+
     def test_source_downloaders_can_handle_matching_items(self):
         """验证 `test_source_downloaders_can_handle_matching_items` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
         self.assertTrue(DouyinDownloader.can_handle(VideoItem(url="https://example.com/1", title="a", source="douyin")))
@@ -987,6 +998,55 @@ class DownloaderStrategyTests(unittest.TestCase):
             self.assertEqual(mocked_build_merge.call_args.args[1:3], (temp_v, temp_a))
 
         self.assertEqual(mocked_get.call_count, 2)
+        mocked_run_merge.assert_called_once()
+
+    @patch.object(BilibiliDownloader, "_run_merge_process")
+    @patch("app.core.downloaders.bilibili.time.sleep", return_value=None)
+    @patch("app.core.downloaders.bilibili.debug_logger.log")
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    @patch("app.core.downloaders.bilibili.requests.get")
+    def test_bilibili_downloader_retries_incomplete_read_with_range_resume(
+        self,
+        mocked_get,
+        _mocked_resolve,
+        _mocked_build_merge,
+        mocked_log,
+        _mocked_sleep,
+        mocked_run_merge,
+    ):
+        first_chunk = b"x" * 524288
+        incomplete = requests.exceptions.ChunkedEncodingError(
+            "Connection broken: IncompleteRead(524288 bytes read, 254385392 more expected)"
+        )
+        mocked_get.side_effect = [
+            self._make_stream_response_raising(
+                [first_chunk],
+                incomplete,
+                headers={"content-length": "254909680", "content-type": "video/mp4"},
+            ),
+            self._make_stream_response(
+                [b"tail"],
+                headers={"content-length": "4", "content-type": "video/mp4"},
+                status_code=206,
+            ),
+        ]
+        item = VideoItem(url="https://cdn.example.com/video.m4s", title="Bili incomplete", source="bilibili")
+        item.meta.update({"audio_url": None, "trace_id": "trace-incomplete"})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(save_path).write_bytes(b"merged")
+
+            BilibiliDownloader().download(item, save_path, lambda *_args, **_kwargs: None, lambda: False)
+
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertNotIn("Range", mocked_get.call_args_list[0].kwargs["headers"])
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Range"], "bytes=524288-")
+        self.assertTrue(
+            any(call.kwargs.get("action") == "stream_retry" for call in mocked_log.call_args_list),
+            "IncompleteRead should produce a visible stream_retry log before retrying.",
+        )
         mocked_run_merge.assert_called_once()
 
     @patch("app.core.downloaders.bilibili.requests.get")

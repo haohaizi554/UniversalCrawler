@@ -882,6 +882,21 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(events, [])
         retry.assert_not_called()
 
+    def test_destroy_shuts_down_owned_media_metadata_service(self):
+        class FakeMetadataService:
+            def __init__(self) -> None:
+                self.shutdown_called = False
+
+            def shutdown(self) -> None:
+                self.shutdown_called = True
+
+        with patch("app.services.frontend_state_service.MediaMetadataService", FakeMetadataService):
+            service = FrontendStateService()
+            metadata_service = service.media_metadata_service
+            service.destroy()
+
+        self.assertTrue(metadata_service.shutdown_called)
+
     def test_frontend_event_emitter_keeps_shared_app_state_refresh(self):
         app_state = AppState()
         local_events: list[dict] = []
@@ -1370,6 +1385,65 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["id"], failed["id"])
         self.assertEqual(rows[0]["title"], failed["title"])
         self.assertEqual(rows[0]["trace_id"], "trace-failed")
+
+    def test_failed_snapshot_deduplicates_unchanged_sqlite_upserts(self):
+        class CollectingFailedRecordStore:
+            def __init__(self) -> None:
+                self.calls: list[list[dict[str, object]]] = []
+
+            def queue_upsert(self, records):
+                self.calls.append([dict(record) for record in records])
+
+            def shutdown(self) -> None:
+                return None
+
+        store = CollectingFailedRecordStore()
+        item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        item.meta["error"] = "403"
+        item.meta["trace_id"] = "trace-failed"
+        service = FrontendStateService(
+            SimpleNamespace(videos={item.id: item}),
+            failed_record_store=store,
+        )
+        try:
+            service.get_snapshot(sections=frozenset({"failed_items"}))
+            service.get_snapshot(sections=frozenset({"failed_items"}))
+        finally:
+            service.destroy()
+
+        self.assertEqual(len(store.calls), 1)
+        self.assertEqual(store.calls[0][0]["trace_id"], "trace-failed")
+
+    def test_failed_snapshot_requeues_sqlite_upsert_when_failure_changes(self):
+        class CollectingFailedRecordStore:
+            def __init__(self) -> None:
+                self.calls: list[list[dict[str, object]]] = []
+
+            def queue_upsert(self, records):
+                self.calls.append([dict(record) for record in records])
+
+            def shutdown(self) -> None:
+                return None
+
+        store = CollectingFailedRecordStore()
+        item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        item.meta["error"] = "403"
+        item.meta["trace_id"] = "trace-failed"
+        service = FrontendStateService(
+            SimpleNamespace(videos={item.id: item}),
+            failed_record_store=store,
+        )
+        try:
+            service.get_snapshot(sections=frozenset({"failed_items"}))
+            item.meta["error"] = "500"
+            service.get_snapshot(sections=frozenset({"failed_items"}))
+        finally:
+            service.destroy()
+
+        self.assertEqual(len(store.calls), 2)
+        self.assertEqual(store.calls[1][0]["reason"], "500")
 
     def test_failed_snapshot_does_not_merge_persisted_records_into_live_page(self):
         with TemporaryDirectory() as temp_dir:
@@ -2075,6 +2149,26 @@ class FrontendStateServiceTests(unittest.TestCase):
         delta = service.get_delta(acknowledged)
 
         self.assertEqual(delta["deleted_ids"], [])
+
+    def test_file_log_worker_refresh_marks_failed_items_dirty(self):
+        service = FrontendStateService()
+        base_version = service.frontend_version
+
+        service.record_event("logs.append", {"count": 3, "source": "frontend_log_worker", "batched": True})
+        delta = service.get_delta(base_version)
+
+        self.assertIn("log_items", delta["changed_sections"])
+        self.assertIn("failed_items", delta["changed_sections"])
+
+    def test_regular_log_append_keeps_failed_items_lazy(self):
+        service = FrontendStateService()
+        base_version = service.frontend_version
+
+        service.record_event("logs.append", {"message": "tick"})
+        delta = service.get_delta(base_version)
+
+        self.assertIn("log_items", delta["changed_sections"])
+        self.assertNotIn("failed_items", delta["changed_sections"])
 
     def test_log_refresh_action_does_not_publish_log_append_event(self):
         service = FrontendStateService()

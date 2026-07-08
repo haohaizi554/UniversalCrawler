@@ -738,25 +738,33 @@ def create_app(lifespan=None) -> FastAPI:
 
     # ---- 调试文件下载 API ----
 
-    @app.get("/api/debug/latest-log")
-    async def download_latest_log():
-        """下载最新调试日志。"""
+    def _latest_log_file_response():
         from app.services.debug_service import DebugArtifactsService
+
         svc = DebugArtifactsService()
         log_path = svc.latest_log_path()
         if log_path and os.path.exists(log_path):
             return FileResponse(log_path, filename=os.path.basename(log_path), media_type="text/plain")
         return {"error": "日志文件不存在"}
 
-    @app.get("/api/debug/error-summary")
-    async def download_error_summary():
-        """下载最新错误摘要。"""
+    def _latest_error_summary_file_response():
         from app.services.debug_service import DebugArtifactsService
+
         svc = DebugArtifactsService()
         summary_path = svc.latest_error_summary_path()
         if summary_path and os.path.exists(summary_path):
             return FileResponse(summary_path, filename=os.path.basename(summary_path), media_type="text/markdown")
         return {"error": "错误摘要不存在"}
+
+    @app.get("/api/debug/latest-log")
+    async def download_latest_log():
+        """下载最新调试日志。"""
+        return await asyncio.get_running_loop().run_in_executor(None, _latest_log_file_response)
+
+    @app.get("/api/debug/error-summary")
+    async def download_error_summary():
+        """下载最新错误摘要。"""
+        return await asyncio.get_running_loop().run_in_executor(None, _latest_error_summary_file_response)
 
     # ---- WebSocket ----
 

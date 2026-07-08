@@ -159,6 +159,37 @@ class CLIRunner(ControllerSessionMixin):
         self._debug_log("item_found", "CLI 发现可下载资源", "CLI_ITEM_FOUND",
                          details={"video_id": item.id, "title": item.title, "source": item.source})
 
+    def _on_items_found(self, items: list) -> None:
+        """spider.sig_items_found 回调：批量收集并批量入下载队列。"""
+        video_items = list(items or [])
+        if not video_items:
+            return
+        if len(video_items) == 1:
+            self._on_item_found(video_items[0])
+            return
+
+        accepted_items = []
+        for item in video_items:
+            if self.download:
+                self._prepare_pending_item(item)
+            else:
+                item.status = "📋 已收集"
+                item.progress = 0
+            self.videos[item.id] = item
+            accepted_items.append(item)
+
+        if self.download and self._dl_manager and accepted_items:
+            add_tasks = getattr(self._dl_manager, "add_tasks", None)
+            if callable(add_tasks):
+                add_tasks(accepted_items, self.save_dir)
+            else:
+                for item in accepted_items:
+                    self._dl_manager.add_task(item, self.save_dir)
+
+        for item in accepted_items:
+            self._debug_log("item_found", "CLI 发现可下载资源", "CLI_ITEM_FOUND",
+                            details={"video_id": item.id, "title": item.title, "source": item.source})
+
     def _on_select_tasks(self, items: list) -> None:
         """spider.sig_select_tasks 回调（与 GUI _on_spider_select_tasks 对称）。
 
@@ -473,6 +504,7 @@ class CLIRunner(ControllerSessionMixin):
             SpiderSessionBindings(
                 on_log=self._on_log,
                 on_item_found=self._on_item_found,
+                on_items_found=self._on_items_found,
                 on_select_tasks=self._on_select_tasks,
                 on_finished=self._on_finished,
                 patch_spider=self._patch_spider,

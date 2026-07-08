@@ -292,6 +292,29 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertIs(controller._video_lookup(item.id), item)
         controller.file_service.delete_media.assert_called_once_with(item)
 
+    def test_async_rename_video_delegates_file_check_to_executor_service(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        item.local_path = "Z:/definitely-missing/input.mp4"
+        controller.file_service.rename_media = Mock(side_effect=FileOperationError("file not found"))
+
+        result = asyncio.run(controller.async_rename_video(item.id, "new title"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "file not found")
+        controller.file_service.rename_media.assert_called_once_with(
+            item,
+            "new title",
+            controller.current_save_dir,
+        )
+
+    def test_get_media_path_returns_record_path_without_disk_probe(self):
+        controller, item = self._controller_with_video()
+        item.local_path = "Z:/definitely-missing/input.mp4"
+
+        self.assertEqual(controller.get_media_path(item.id), item.local_path)
+
     def test_progress_signal_is_throttled_inside_time_window(self):
         controller, item = self._controller_with_video()
 

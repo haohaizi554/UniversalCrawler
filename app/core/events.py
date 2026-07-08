@@ -18,6 +18,7 @@ class DomainEventType(str, Enum):
     TASK_FINISHED = "task_finished"
     TASK_ERROR = "task_error"
     ITEM_FOUND = "item_found"
+    ITEMS_FOUND = "items_found"
     SELECTION_REQUIRED = "selection_required"
     CRAWL_STATE_CHANGED = "crawl_state_changed"
     LOG = "log"
@@ -88,6 +89,13 @@ def build_item_found_event(item: VideoItem) -> DomainEvent:
         payload={"item": item},
         trace_id=item.meta.get("trace_id") if item.meta else None,
         entity_id=item.id,
+    )
+
+def build_items_found_event(items: list[VideoItem]) -> DomainEvent:
+    """Build a canonical batched item-found event."""
+    return DomainEvent(
+        event_type=DomainEventType.ITEMS_FOUND,
+        payload={"items": list(items)},
     )
 
 def build_selection_required_event(items: list[Any]) -> DomainEvent:

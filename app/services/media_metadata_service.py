@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -45,6 +46,7 @@ class MediaMetadataService:
         ffprobe_resolver: Callable[[], str | None] | None = None,
         ffmpeg_resolver: Callable[[], str | None] | None = None,
         runner: Callable[..., subprocess.CompletedProcess] | None = None,
+        max_workers: int = 2,
     ) -> None:
         self._ffprobe_resolver = ffprobe_resolver or (
             lambda: ExternalToolRunner.resolve_executable("ffprobe.exe", "ffprobe", ["-version"])
@@ -55,6 +57,11 @@ class MediaMetadataService:
         self._cache: dict[str, tuple[_CacheKey, MediaMetadata]] = {}
         self._empty_cache: dict[str, tuple[_CacheKey, float]] = {}
         self._inflight: set[str] = set()
+        self._shutdown = False
+        self._executor = ThreadPoolExecutor(
+            max_workers=max(1, int(max_workers or 1)),
+            thread_name_prefix="media-metadata-probe",
+        )
 
     def cached(self, path: str | Path) -> MediaMetadata | None:
         key = self._cache_key(path)
@@ -71,6 +78,8 @@ class MediaMetadataService:
         if key is None:
             return False
         with self._lock:
+            if self._shutdown:
+                return False
             cached = self._cache.get(key.path)
             if cached and cached[0] == key and self._has_useful_metadata(cached[1]):
                 return False
@@ -93,20 +102,51 @@ class MediaMetadataService:
                         context={"path": key.path},
                     )
                     metadata = MediaMetadata(format=Path(key.path).suffix.lstrip(".").upper(), content_type=self._content_type_for_path(key.path))
+                should_callback = False
                 with self._lock:
-                    if self._has_useful_metadata(metadata):
-                        self._cache[key.path] = (key, metadata)
-                        self._empty_cache.pop(key.path, None)
-                    else:
-                        self._cache.pop(key.path, None)
-                        self._empty_cache[key.path] = (key, time.monotonic())
-                callback(metadata)
+                    if not self._shutdown:
+                        if self._has_useful_metadata(metadata):
+                            self._cache[key.path] = (key, metadata)
+                            self._empty_cache.pop(key.path, None)
+                        else:
+                            self._cache.pop(key.path, None)
+                            self._empty_cache[key.path] = (key, time.monotonic())
+                        should_callback = True
+                if should_callback:
+                    try:
+                        callback(metadata)
+                    except Exception as exc:
+                        debug_logger.log_exception(
+                            "MediaMetadataService",
+                            "probe_callback_error",
+                            exc,
+                            context={"path": key.path},
+                        )
             finally:
                 with self._lock:
                     self._inflight.discard(key.path)
 
-        threading.Thread(target=worker, name="media-metadata-probe", daemon=True).start()
+        try:
+            self._executor.submit(worker)
+        except RuntimeError as exc:
+            with self._lock:
+                self._inflight.discard(key.path)
+            debug_logger.log_exception(
+                "MediaMetadataService",
+                "probe_submit_error",
+                exc,
+                context={"path": key.path},
+            )
+            return False
         return True
+
+    def shutdown(self, *, wait: bool = False) -> None:
+        with self._lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            self._inflight.clear()
+        self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def is_probe_deferred(self, path: str | Path) -> bool:
         """Return true when a missing result is still being retried or throttled."""

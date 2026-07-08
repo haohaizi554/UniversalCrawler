@@ -445,14 +445,7 @@ class XiaohongshuSpider(BaseSpider):
             cookie_str=cookie_str,
             proxy=self._proxy(),
         )
-        for item in items:
-            self.emit_video(
-                item.url,
-                item.title,
-                "xiaohongshu",
-                meta=item.meta,
-            )
-        return len(items)
+        return self.emit_videos(items)
 
     def _handle_note_url(
         self,

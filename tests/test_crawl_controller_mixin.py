@@ -3,7 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.controllers.crawl_controller_mixin import CrawlControllerMixin
-from app.core.events import build_crawl_state_event, build_item_found_event, build_selection_required_event
+from app.core.events import (
+    build_crawl_state_event,
+    build_item_found_event,
+    build_items_found_event,
+    build_selection_required_event,
+)
 from app.core.state import CrawlStatus
 from app.models import VideoItem
 from shared.controller_session import ControllerSessionMixin
@@ -65,6 +70,8 @@ class CrawlControllerMixinTests(unittest.TestCase):
         self.assertIs(bindings.on_log.__func__, controller._emit_spider_log_event.__func__)
         self.assertIs(bindings.on_item_found.__self__, controller)
         self.assertIs(bindings.on_item_found.__func__, controller._emit_spider_item_found_event.__func__)
+        self.assertIs(bindings.on_items_found.__self__, controller)
+        self.assertIs(bindings.on_items_found.__func__, controller._emit_spider_items_found_event.__func__)
         self.assertIs(bindings.on_select_tasks.__self__, controller)
         self.assertIs(bindings.on_select_tasks.__func__, controller._emit_spider_selection_event.__func__)
         self.assertIs(bindings.on_finished.__self__, controller)
@@ -85,6 +92,7 @@ class CrawlControllerMixinTests(unittest.TestCase):
         self.assertIs(activated_spider, spider)
         self.assertIs(bindings.on_log.__self__, controller)
         self.assertIs(bindings.on_item_found.__self__, controller)
+        self.assertIs(bindings.on_items_found.__self__, controller)
         self.assertIs(bindings.on_select_tasks.__self__, controller)
         self.assertIs(bindings.on_finished.__self__, controller)
         self.assertIs(controller.current_spider, spider)
@@ -174,19 +182,40 @@ class CrawlControllerMixinTests(unittest.TestCase):
         controller.host.add_video_row.assert_called_once_with(item)
         controller.dl_manager.add_task.assert_called_once_with(item, "downloads")
 
+    def test_on_spider_items_found_batches_ui_and_download_queue(self):
+        controller = _DummyCrawlController()
+        controller.host.current_save_dir = "downloads"
+        first = VideoItem(url="https://example.com/1.mp4", title="one", source="bilibili")
+        second = VideoItem(url="https://example.com/2.mp4", title="two", source="bilibili")
+
+        with patch("app.controllers.crawl_controller_mixin.debug_logger", Mock()):
+            controller._on_spider_items_found([first, second])
+
+        self.assertEqual(first.status, "⏳ 等待中")
+        self.assertEqual(second.progress, 0)
+        self.assertIs(controller.videos[first.id], first)
+        self.assertIs(controller.videos[second.id], second)
+        controller.host.add_video_rows.assert_called_once_with([first, second])
+        controller.host.add_video_row.assert_not_called()
+        controller.dl_manager.add_tasks.assert_called_once_with([first, second], "downloads")
+        controller.dl_manager.add_task.assert_not_called()
+
     def test_dispatch_spider_event_routes_selection_and_finish(self):
         controller = _DummyCrawlController()
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         controller._on_spider_item_found = Mock()
+        controller._on_spider_items_found = Mock()
         controller._schedule_spider_selection = Mock()
         controller._on_spider_finished = Mock()
 
         controller._dispatch_spider_event(build_item_found_event(item))
+        controller._dispatch_spider_event(build_items_found_event([item]))
         controller._dispatch_spider_event(build_selection_required_event([item]))
         controller._dispatch_spider_event(build_crawl_state_event(CrawlStatus.FINISHED))
         controller._dispatch_spider_event(build_crawl_state_event(CrawlStatus.RUNNING, is_running=True))
 
         controller._on_spider_item_found.assert_called_once_with(item)
+        controller._on_spider_items_found.assert_called_once_with([item])
         controller._schedule_spider_selection.assert_called_once_with([item])
         controller._on_spider_finished.assert_called_once()
 

@@ -62,8 +62,10 @@ CRITICAL_TOPICS = frozenset(
 NORMAL_TOPICS = frozenset(
     {
         "videos.upsert",
+        "videos.upsert_many",
         "videos.replace",
         "item_found",
+        "items_found",
         "task_started",
         "scan_result",
         "video_renamed",
@@ -95,11 +97,13 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
         return frozenset({"completed_items", "app_status"})
     if normalized in {
         "videos.upsert",
+        "videos.upsert_many",
         "videos.remove",
         "videos.remove_many",
         "videos.clear",
         "videos.replace",
         "item_found",
+        "items_found",
         "task_started",
         "task_finished",
         "task_error",

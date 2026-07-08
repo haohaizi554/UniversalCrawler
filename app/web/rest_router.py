@@ -223,10 +223,10 @@ def build_rest_router(
 
     @router.get("/api/debug/latest-log")
     async def download_latest_log(request: Request):
-        return file_response_service.latest_log_response(request)
+        return await file_response_service.async_latest_log_response(request)
 
     @router.get("/api/debug/error-summary")
     async def download_error_summary(request: Request):
-        return file_response_service.latest_error_summary_response(request)
+        return await file_response_service.async_latest_error_summary_response(request)
 
     return router

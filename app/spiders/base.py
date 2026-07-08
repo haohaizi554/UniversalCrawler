@@ -28,6 +28,7 @@ class BaseSpider(threading.Thread):
         self._is_running = True
         self.sig_log = CallbackSignal()
         self.sig_item_found = CallbackSignal()
+        self.sig_items_found = CallbackSignal()
         self.sig_finished = CallbackSignal()
         self.sig_select_tasks = CallbackSignal()
         self.trace_prefix = self.__class__.__name__.replace("Spider", "").lower() or "spider"
@@ -701,6 +702,27 @@ class BaseSpider(threading.Thread):
             item.meta = {"raw_meta": clean_meta}
         self.ensure_trace_id(item.meta, suffix=item.source)
         self.sig_item_found.emit(item)
+
+    def emit_videos(self, items: list[VideoItem]) -> int:
+        """Emit a batch of already-built download items through one callback event."""
+        ready_items: list[VideoItem] = []
+        for item in items:
+            if not isinstance(item, VideoItem):
+                continue
+            clean_meta = sanitize(getattr(item, "meta", {}) or {})
+            if isinstance(clean_meta, dict):
+                item.meta = clean_meta
+            elif clean_meta:
+                item.meta = {"raw_meta": clean_meta}
+            self.ensure_trace_id(item.meta, suffix=item.source)
+            item.url = str(sanitize(item.url))
+            item.title = str(sanitize(item.title))
+            item.source = str(sanitize(item.source))
+            ready_items.append(item)
+        if not ready_items:
+            return 0
+        self.sig_items_found.emit(ready_items)
+        return len(ready_items)
 
     #暂停爬虫线程，向 UI 发送选择请求，等待用户选择结果
     def ask_user_selection(self, items: list) -> list | None:

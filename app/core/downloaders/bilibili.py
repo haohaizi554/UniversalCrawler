@@ -132,6 +132,12 @@ class BilibiliDownloader(BaseDownloader):
         temp_a = os.path.join(save_dir, f"{base_name}_audio.m4s")
         video_item.meta["download_temp_files"] = [temp_v, temp_a] if audio_url else [temp_v]
         chunk_size = max(cfg.get("download", "chunk_size", 65536), 256 * 1024)
+        try:
+            max_retries = max(1, min(int(cfg.get("download", "max_retries", 3) or 3), 10))
+        except (TypeError, ValueError):
+            max_retries = 3
+        resume_raw = cfg.get("download", "resume_enabled", True)
+        resume_enabled = str(resume_raw).strip().lower() not in {"0", "false", "no", "off"}
         debug_logger.log(
             component="BilibiliDownloader",
             action="prepare_download",
@@ -144,6 +150,8 @@ class BilibiliDownloader(BaseDownloader):
                     "audio_url": audio_url,
                     "save_path": save_path,
                     "chunk_size": chunk_size,
+                    "max_retries": max_retries,
+                    "resume_enabled": resume_enabled,
                     "bvid": bvid,
                     "cid": cid,
                 },
@@ -152,6 +160,8 @@ class BilibiliDownloader(BaseDownloader):
                 "audio_url",
                 "save_path",
                 "chunk_size",
+                "max_retries",
+                "resume_enabled",
                 "bvid",
                 "cid",
             ),
@@ -244,7 +254,6 @@ class BilibiliDownloader(BaseDownloader):
 
         def download_stream(name: str, path: str) -> None:
             """下载单个流（video/audio），失败时重新获取 CDN URL 后重试。"""
-            max_retries = 3
             for attempt in range(max_retries):
                 if stop_event.is_set():
                     return
@@ -255,22 +264,56 @@ class BilibiliDownloader(BaseDownloader):
                 # 第一次尝试走代理，重试直连 CDN
                 proxies = {"http": proxy, "https": proxy} if _use_proxy[0] else None
                 try:
-                    with requests.get(url, headers=headers, stream=True, timeout=(15, 120), proxies=proxies) as response:
+                    existing_size = os.path.getsize(path) if resume_enabled and os.path.exists(path) else 0
+                    request_headers = dict(headers)
+                    if existing_size > 0:
+                        request_headers["Range"] = f"bytes={existing_size}-"
+                        debug_logger.log(
+                            component="BilibiliDownloader",
+                            action="stream_resume",
+                            message=f"B站 {name} 流断点续传：从 {existing_size} 字节继续下载",
+                            status_code="BILI_STREAM_RESUME",
+                            details={"url": url, "attempt": attempt + 1, "resume_offset": existing_size},
+                            trace_id=trace_id,
+                        )
+                    with requests.get(url, headers=request_headers, stream=True, timeout=(15, 120), proxies=proxies) as response:
                         response.raise_for_status()
                         total = int(response.headers.get("content-length", 0))
+                        mode = "wb"
+                        downloaded = 0
+                        resumed = False
+                        if existing_size > 0:
+                            if response.status_code == 206:
+                                mode = "ab"
+                                downloaded = existing_size
+                                total += existing_size
+                                resumed = True
+                            else:
+                                existing_size = 0
                         debug_logger.log_api(
                             component="BilibiliDownloader",
                             api_name=f"stream_{name}",
-                            request={"url": url, "save_path": path, "attempt": attempt + 1, "use_proxy": _use_proxy[0]},
-                            response_summary={"content_length": total, "content_type": response.headers.get("content-type")},
+                            request={
+                                "url": url,
+                                "save_path": path,
+                                "attempt": attempt + 1,
+                                "use_proxy": _use_proxy[0],
+                                "resume_offset": existing_size,
+                            },
+                            response_summary={
+                                "content_length": total,
+                                "content_type": response.headers.get("content-type"),
+                                "resumed": resumed,
+                            },
                             message="Bilibili 流请求建立成功",
                             status_code=response.status_code,
                             trace_id=trace_id,
                         )
                         with progress_lock:
                             stream_stats[name]["total"] = total
+                            stream_stats[name]["downloaded"] = downloaded
                             emit_combined_progress()
-                        with open(path, "wb") as fp:
+                        with open(path, mode) as fp:
                             for chunk in response.iter_content(chunk_size=chunk_size):
                                 if stop_event.is_set():
                                     return
@@ -279,20 +322,28 @@ class BilibiliDownloader(BaseDownloader):
                                     raise DownloaderStoppedError("用户停止下载")
                                 if chunk:
                                     fp.write(chunk)
+                                    downloaded += len(chunk)
                                     with progress_lock:
-                                        stream_stats[name]["downloaded"] += len(chunk)
+                                        stream_stats[name]["downloaded"] = downloaded
                                         emit_combined_progress()
                     return  # 成功，退出重试循环
                 except (requests.ConnectionError, ConnectionResetError, ConnectionAbortedError, OSError) as exc:
                     if attempt < max_retries - 1:
                         wait = (attempt + 1) * 2
+                        resume_offset = os.path.getsize(path) if resume_enabled and os.path.exists(path) else 0
                         debug_logger.log(
                             component="BilibiliDownloader",
                             action="stream_retry",
                             level="WARNING",
                             message=f"B站 {name} 流连接断开，{wait}s 后重试 ({attempt + 1}/{max_retries}): {exc}",
                             status_code="BILI_STREAM_RETRY",
-                            details={"url": url, "attempt": attempt + 1, "error": str(exc)},
+                            details={
+                                "url": url,
+                                "attempt": attempt + 1,
+                                "error": str(exc),
+                                "resume_enabled": resume_enabled,
+                                "resume_offset": resume_offset,
+                            },
                             trace_id=trace_id,
                         )
                         time.sleep(wait)

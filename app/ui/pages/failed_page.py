@@ -23,6 +23,62 @@ from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, 
 from app.utils.qt_runtime import load_qt_icon
 
 
+class FailedLogMessageLabel(QLabel):
+    """Log message label that can soft-wrap long tokens without changing text()."""
+
+    SOFT_BREAK = "\u200b"
+    MAX_SEGMENT_CHARS = 24
+
+    def __init__(self, value: Any = "") -> None:
+        super().__init__()
+        self._raw_text = ""
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setProperty("i18nSkipText", "true")
+        self.setText(value)
+
+    def setText(self, value: Any) -> None:  # type: ignore[override]
+        self._raw_text = str(value or "")
+        QLabel.setText(self, self._with_soft_breaks(self._raw_text))
+        self.setToolTip(self._raw_text)
+        self.updateGeometry()
+
+    def text(self) -> str:  # type: ignore[override]
+        return self._raw_text
+
+    def raw_text(self) -> str:
+        return self._raw_text
+
+    @classmethod
+    def _with_soft_breaks(cls, text: str) -> str:
+        pieces: list[str] = []
+        token: list[str] = []
+        for char in text:
+            if char.isspace():
+                if token:
+                    pieces.append(cls._break_token("".join(token)))
+                    token.clear()
+                pieces.append(char)
+            else:
+                token.append(char)
+        if token:
+            pieces.append(cls._break_token("".join(token)))
+        return "".join(pieces)
+
+    @classmethod
+    def _break_token(cls, token: str) -> str:
+        if len(token) <= cls.MAX_SEGMENT_CHARS:
+            return token
+        return cls.SOFT_BREAK.join(
+            token[index : index + cls.MAX_SEGMENT_CHARS]
+            for index in range(0, len(token), cls.MAX_SEGMENT_CHARS)
+        )
+
+
 class FailedPage(PageFrame):
     _page_result_ready = pyqtSignal(object)
 
@@ -398,28 +454,22 @@ class FailedPage(PageFrame):
         row.setObjectName("FailedLogRow")
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(2, 1, 0, 1)
-        layout.setSpacing(7)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(5)
         time_label = QLabel(str(entry.get("time_display") or "--:--:--"))
         time_label.setObjectName("FailedLogTime")
         time_label.ensurePolished()
         time_width = max(
-            64,
             time_label.fontMetrics().horizontalAdvance("88:88:88"),
             time_label.fontMetrics().horizontalAdvance(time_label.text()),
-        ) + 10
+        ) + 2
         time_label.setFixedWidth(time_width)
-        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         level_badge = self._log_level_badge(entry)
         layout.addWidget(level_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        message = QLabel(str(entry.get("message_display") or ""))
+        message = FailedLogMessageLabel(str(entry.get("message_display") or ""))
         message.setObjectName("FailedLogMessage")
-        message.setWordWrap(True)
-        message.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        message.setMinimumWidth(0)
-        message.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(message, 1, Qt.AlignmentFlag.AlignTop)
         layout.setStretch(2, 1)
         return row
@@ -463,7 +513,7 @@ class FailedPage(PageFrame):
         badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setFixedHeight(22)
-        badge.setFixedWidth(74)
+        badge.setFixedWidth(68)
         return badge
 
     def _solution_row(self, solution: dict[str, Any]) -> QWidget:
