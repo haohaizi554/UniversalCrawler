@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 from app.services.frontend_log_cache import FrontendLogCache
 
@@ -10,12 +11,14 @@ class FakeCacheService:
     def __init__(self) -> None:
         self.values = {}
         self.deleted = []
+        self.persist_flags = {}
 
     def get(self, key, default=None):
         return self.values.get(key, default)
 
     def set(self, key, value, *, ttl_seconds=None, persist=False):
         self.values[key] = list(value)
+        self.persist_flags[key] = persist
 
     def delete(self, key):
         self.deleted.append(key)
@@ -219,3 +222,49 @@ def test_tail_log_reader_refreshes_appended_entries(tmp_path):
 
     assert [item["message_summary"] for item in initial] == ["old-0", "old-1"]
     assert [item["message_summary"] for item in updated] == ["old-0", "old-1", "new-2"]
+
+
+def test_tail_log_cache_persists_parsed_state_with_file_identity(tmp_path):
+    cache_service = FakeCacheService()
+    log_file = Path(tmp_path) / "latest_debug.log"
+    log_file.write_text("[2026-06-30 10:00:00] [INFO] Test / cached\n", encoding="utf-8")
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        log_path_provider=lambda: log_file,
+        limit_provider=lambda: 100,
+    )
+
+    items = cache.refresh_now()
+
+    tail_keys = [key for key in cache_service.values if key.startswith("frontend.file_log_cache.tail.")]
+    assert len(tail_keys) == 1
+    assert cache_service.persist_flags[tail_keys[0]] is True
+    assert [item["message_summary"] for item in items] == ["cached"]
+
+
+def test_tail_log_cache_hit_hydrates_reader_without_reparsing(tmp_path):
+    cache_service = FakeCacheService()
+    log_file = Path(tmp_path) / "latest_debug.log"
+    log_file.write_text("[2026-06-30 10:00:00] [INFO] Test / cached\n", encoding="utf-8")
+    first_cache = FrontendLogCache(
+        cache_service=cache_service,
+        log_path_provider=lambda: log_file,
+        limit_provider=lambda: 100,
+    )
+    first_cache.refresh_now()
+
+    second_cache = FrontendLogCache(
+        cache_service=cache_service,
+        log_path_provider=lambda: log_file,
+        limit_provider=lambda: 100,
+    )
+    with patch("app.services.frontend_log_cache.log_adapter.parse_debug_log_text") as parse_debug_log_text:
+        parse_debug_log_text.side_effect = AssertionError("cache hit should not parse the file")
+        cached = second_cache.refresh_now()
+
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write("[2026-06-30 10:00:01] [INFO] Test / appended\n")
+    updated = second_cache.refresh_now()
+
+    assert [item["message_summary"] for item in cached] == ["cached"]
+    assert [item["message_summary"] for item in updated] == ["cached", "appended"]

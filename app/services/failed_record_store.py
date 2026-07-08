@@ -8,11 +8,33 @@ import threading
 import time
 from contextlib import closing
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_data_root
+
+
+@dataclass(frozen=True)
+class FailedRecordQuery:
+    limit: int = 100
+    offset: int = 0
+    platform: str = ""
+    status: str = ""
+    trace_query: str = ""
+    keyword: str = ""
+    failed_from: str = ""
+    failed_to: str = ""
+    order: str = "desc"
+
+
+@dataclass(frozen=True)
+class FailedRecordQueryResult:
+    records: list[dict[str, Any]]
+    total_count: int
+    limit: int
+    offset: int
 
 
 class FailedRecordStore:
@@ -36,9 +58,11 @@ class FailedRecordStore:
         self._event = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending: dict[str, dict[str, Any]] = {}
-        self._refresh_requested: tuple[int, int] | None = None
-        self._last_refresh_request = (max(1, int(snapshot_limit)), 0)
+        initial_query = FailedRecordQuery(limit=max(1, int(snapshot_limit)), offset=0)
+        self._refresh_requested: FailedRecordQuery | None = None
+        self._last_refresh_request = initial_query
         self._snapshot: list[dict[str, Any]] = []
+        self._snapshot_total_count = 0
         self._writing = False
         self._refreshing = False
         self._shutdown = False
@@ -64,16 +88,71 @@ class FailedRecordStore:
 
     def query(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """Synchronous maintenance query; UI code should use ``records_snapshot``."""
-        return self._query_rows(limit=limit, offset=offset)
+        return self.query_records(limit=limit, offset=offset).records
+
+    def query_records(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        platform: str = "",
+        status: str = "",
+        trace_query: str = "",
+        keyword: str = "",
+        failed_from: str = "",
+        failed_to: str = "",
+        order: str = "desc",
+    ) -> FailedRecordQueryResult:
+        query = self._normalize_query(
+            FailedRecordQuery(
+                limit=limit,
+                offset=offset,
+                platform=platform,
+                status=status,
+                trace_query=trace_query,
+                keyword=keyword,
+                failed_from=failed_from,
+                failed_to=failed_to,
+                order=order,
+            )
+        )
+        records, total_count = self._query_rows(query)
+        return FailedRecordQueryResult(
+            records=records,
+            total_count=total_count,
+            limit=query.limit,
+            offset=query.offset,
+        )
 
     def set_refresh_callback(self, callback: Callable[[int], None] | None) -> None:
         with self._lock:
             self._on_refresh = callback
 
-    def request_refresh(self, *, limit: int | None = None, offset: int = 0) -> None:
-        requested = (
-            max(1, int(limit if limit is not None else self._last_refresh_request[0])),
-            max(0, int(offset)),
+    def request_refresh(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        platform: str = "",
+        status: str = "",
+        trace_query: str = "",
+        keyword: str = "",
+        failed_from: str = "",
+        failed_to: str = "",
+        order: str = "desc",
+    ) -> None:
+        requested = self._normalize_query(
+            FailedRecordQuery(
+                limit=limit if limit is not None else self._last_refresh_request.limit,
+                offset=offset,
+                platform=platform,
+                status=status,
+                trace_query=trace_query,
+                keyword=keyword,
+                failed_from=failed_from,
+                failed_to=failed_to,
+                order=order,
+            )
         )
         with self._lock:
             if self._shutdown:
@@ -87,6 +166,11 @@ class FailedRecordStore:
         with self._snapshot_lock:
             rows = self._snapshot if limit is None else self._snapshot[: max(0, int(limit))]
             return deepcopy(rows)
+
+    @property
+    def snapshot_total_count(self) -> int:
+        with self._snapshot_lock:
+            return int(self._snapshot_total_count)
 
     def flush(self, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + max(0.0, float(timeout))
@@ -155,8 +239,7 @@ class FailedRecordStore:
                             "refresh_snapshot_unhandled",
                             exc,
                             details={
-                                "limit": refresh_request[0],
-                                "offset": refresh_request[1],
+                                "query": refresh_request.__dict__,
                                 "db_path": str(self._db_path),
                             },
                         )
@@ -193,39 +276,48 @@ class FailedRecordStore:
                 conn.commit()
             self._initialized = True
 
-    def _query_rows(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    def _query_rows(self, query: FailedRecordQuery) -> tuple[list[dict[str, Any]], int]:
         self._init_db()
+        where_sql, params = self._build_where_clause(query)
+        order_sql = "ASC" if query.order == "asc" else "DESC"
         rows: list[sqlite3.Row]
         with closing(sqlite3.connect(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
+            total_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM failed_records {where_sql}",
+                    params,
+                ).fetchone()[0]
+            )
             rows = list(
                 conn.execute(
-                    """
+                    f"""
                     SELECT video_id, title, reason, failed_at, status, platform, trace_id, payload_json, updated_at
                     FROM failed_records
-                    ORDER BY COALESCE(failed_at, updated_at) DESC
+                    {where_sql}
+                    ORDER BY COALESCE(NULLIF(failed_at, ''), printf('%020.6f', updated_at)) {order_sql}
                     LIMIT ? OFFSET ?
                     """,
-                    (max(1, int(limit)), max(0, int(offset))),
+                    (*params, query.limit, query.offset),
                 )
             )
-        return [self._row_to_record(row) for row in rows]
+        return [self._row_to_record(row) for row in rows], total_count
 
-    def _refresh_snapshot(self, request: tuple[int, int]) -> None:
-        limit, offset = request
+    def _refresh_snapshot(self, request: FailedRecordQuery) -> None:
         try:
-            rows = self._query_rows(limit=limit, offset=offset)
+            rows, total_count = self._query_rows(request)
         except (OSError, sqlite3.Error, RuntimeError) as exc:
             debug_logger.log_exception(
                 "FailedRecordStore",
                 "refresh_snapshot",
                 exc,
-                details={"limit": limit, "offset": offset, "db_path": str(self._db_path)},
+                details={"query": request.__dict__, "db_path": str(self._db_path)},
             )
             return
         with self._snapshot_lock:
-            changed = rows != self._snapshot
+            changed = rows != self._snapshot or total_count != self._snapshot_total_count
             self._snapshot = rows
+            self._snapshot_total_count = total_count
         if not changed:
             return
         callback = self._on_refresh
@@ -238,7 +330,7 @@ class FailedRecordStore:
                 "FailedRecordStore",
                 "refresh_callback",
                 exc,
-                details={"count": len(rows)},
+                details={"count": len(rows), "total_count": total_count},
             )
 
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
@@ -295,6 +387,58 @@ class FailedRecordStore:
             "trace_id": str(payload.get("trace_id") or ""),
             "payload": payload,
         }
+
+    @staticmethod
+    def _normalize_query(query: FailedRecordQuery) -> FailedRecordQuery:
+        try:
+            limit = int(query.limit)
+        except (TypeError, ValueError):
+            limit = 100
+        try:
+            offset = int(query.offset)
+        except (TypeError, ValueError):
+            offset = 0
+        order = str(query.order or "desc").lower()
+        if order not in {"asc", "desc"}:
+            order = "desc"
+        return FailedRecordQuery(
+            limit=max(1, min(limit, 5000)),
+            offset=max(0, offset),
+            platform=str(query.platform or "").strip(),
+            status=str(query.status or "").strip(),
+            trace_query=str(query.trace_query or "").strip(),
+            keyword=str(query.keyword or "").strip(),
+            failed_from=str(query.failed_from or "").strip(),
+            failed_to=str(query.failed_to or "").strip(),
+            order=order,
+        )
+
+    @staticmethod
+    def _build_where_clause(query: FailedRecordQuery) -> tuple[str, tuple[Any, ...]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if query.platform:
+            clauses.append("platform = ?")
+            params.append(query.platform)
+        if query.status:
+            clauses.append("status = ?")
+            params.append(query.status)
+        if query.trace_query:
+            clauses.append("trace_id LIKE ?")
+            params.append(f"%{query.trace_query}%")
+        if query.failed_from:
+            clauses.append("failed_at >= ?")
+            params.append(query.failed_from)
+        if query.failed_to:
+            clauses.append("failed_at <= ?")
+            params.append(query.failed_to)
+        if query.keyword:
+            like = f"%{query.keyword}%"
+            clauses.append("(title LIKE ? OR reason LIKE ? OR payload_json LIKE ?)")
+            params.extend([like, like, like])
+        if not clauses:
+            return "", ()
+        return "WHERE " + " AND ".join(clauses), tuple(params)
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:

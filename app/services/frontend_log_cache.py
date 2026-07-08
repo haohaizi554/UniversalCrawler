@@ -200,11 +200,13 @@ class FrontendLogCache:
             self._items = []
             self._at = 0.0
             self._limit = 0
+            known_cache_keys = list(self._known_cache_keys)
+            self._known_cache_keys.clear()
         if self._tail_reader is not None:
             self._tail_reader.reset()
         self._delete_cache_key("frontend.file_log_cache")
         self._delete_cache_key(self.cache_key(normalized_limit))
-        for key in list(self._known_cache_keys):
+        for key in known_cache_keys:
             self._delete_cache_key(key)
 
     def resize_limit(self, limit: Any) -> None:
@@ -286,6 +288,9 @@ class FrontendLogCache:
 
     def _refresh_from_source(self, read_limit: int) -> None:
         cache_key, tail_state = self._cache_key_for_read(read_limit)
+        if self._tail_reader is not None:
+            with self._lock:
+                self._known_cache_keys.add(cache_key)
         cached = self._cache_service.get(cache_key)
         if cached is None:
             cached = self._source_read(limit=read_limit)
@@ -295,7 +300,6 @@ class FrontendLogCache:
                 ttl_seconds=self._ttl_seconds,
                 persist=self._tail_reader is not None,
             )
-            self._known_cache_keys.add(cache_key)
         elif tail_state is not None and self._tail_reader is not None:
             self._tail_reader.hydrate(tail_state, cached, limit=read_limit)
         with self._lock:
