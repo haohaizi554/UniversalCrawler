@@ -63,3 +63,57 @@ def test_failed_record_store_refreshes_memory_snapshot_in_worker(tmp_path):
     assert refreshed_counts[-1] == 1
     assert snapshot[0]["id"] == "video-2"
     assert snapshot_after_mutation[0]["title"] == "snapshot row"
+
+
+def test_failed_record_store_worker_resets_state_after_unexpected_write_error(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    original_write_batch = store._write_batch
+    calls: list[list[dict]] = []
+
+    def broken_write_batch(records: list[dict]) -> None:
+        calls.append(records)
+        raise TypeError("simulated bad payload")
+
+    try:
+        store._write_batch = broken_write_batch  # type: ignore[method-assign]
+        store.queue_upsert(
+            [
+                {
+                    "id": "video-bad",
+                    "title": "bad row",
+                    "reason": "bad payload",
+                    "failed_at": "2026-07-06 12:00:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "trace-bad",
+                }
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        assert calls
+        with store._lock:
+            assert not store._writing
+            assert not store._refreshing
+
+        store._write_batch = original_write_batch  # type: ignore[method-assign]
+        store.queue_upsert(
+            [
+                {
+                    "id": "video-good",
+                    "title": "good row",
+                    "reason": "recovered",
+                    "failed_at": "2026-07-06 12:01:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "trace-good",
+                }
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        rows = store.query(limit=10)
+    finally:
+        store.shutdown()
+
+    assert [row["id"] for row in rows] == ["video-good"]

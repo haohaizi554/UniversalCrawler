@@ -13,7 +13,7 @@ from app.debug_logger import debug_logger
 from app.exceptions import SpiderParseError
 
 from .helpers import build_search_id, extract_note_detail_from_html
-from .sign import sign_with_xhshow
+from .sign import sign_xiaohongshu_headers
 
 class XiaohongshuClient:
     """Signed XHS web-api client."""
@@ -59,7 +59,7 @@ class XiaohongshuClient:
     def _signed_headers(self, *, uri: str, data: dict[str, Any], method: str) -> dict[str, str]:
         headers = dict(self.session.headers)
         headers.update(
-            sign_with_xhshow(
+            sign_xiaohongshu_headers(
                 uri=uri,
                 data=data,
                 cookie_str=self.cookie_str,

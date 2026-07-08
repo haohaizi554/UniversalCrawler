@@ -411,7 +411,8 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             errors="ignore",
         )
 
-        self.assertIn('self.app_state.event_bus.subscribe(\n            "app_state.changed",\n            self._queue_app_state_change,', text)
+        self.assertIn('getattr(self.app_state.event_bus, "subscribe_async", None)', text)
+        self.assertIn('subscribe_app_state(\n            "app_state.changed",\n            self._queue_app_state_change,', text)
         queue_block = text.split("def _queue_app_state_change", 1)[1].split(
             "def flush_pending_app_state_events",
             1,
@@ -419,6 +420,30 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("_event_aggregator.record", queue_block)
         self.assertNotIn("_materialize_stage_title_for_event", queue_block)
         self.assertIn("flush_pending_app_state_events()", text)
+
+    def test_web_directory_listing_does_not_walk_filesystem_on_event_loop(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        service_text = (project_root / "app" / "web" / "directory_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        server_text = (project_root / "app" / "web" / "server.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        service_block = service_text.split("async def list_directory", 1)[1].split(
+            "@staticmethod\n    def _collect_subdirectories",
+            1,
+        )[0]
+        server_block = server_text.split('async def list_directory(path: str = ""):', 1)[1].split(
+            '@app.post("/api/dir/change")',
+            1,
+        )[0]
+        self.assertIn("run_in_executor", service_block)
+        self.assertIn("run_in_executor", server_block)
+        self.assertNotIn("os.listdir(", service_block)
+        self.assertNotIn("os.listdir(", server_block)
 
     def test_cache_service_sqlite_connections_are_context_managed(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -471,6 +496,87 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         for token in forbidden:
             with self.subTest(token=token):
                 self.assertNotIn(token, text)
+
+    def test_failed_page_uses_worker_display_projection_for_dynamic_logs(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "pages" / "failed_page.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn("prepare_failed_item_for_display", text)
+        self.assertIn("item_transformer=", text)
+        self.assertIn("reason_detail_display", text)
+        self.assertIn("log_excerpt_display_items", text)
+        self.assertIn("solutions_display", text)
+        self.assertNotIn("localize_log_text", text)
+        self.assertNotIn("def _format_log_time", text)
+        self.assertNotIn("text.split()", text)
+
+    def test_active_download_timeline_uses_worker_display_projection(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "pages" / "active_downloads_page.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        timeline_block = text.split("class EventTimelineWidget", 1)[1].split(
+            "class WideHitCheckBox",
+            1,
+        )[0]
+        paint_block = timeline_block.split("def paintEvent", 1)[1]
+
+        self.assertIn("prepare_active_item_for_display", text)
+        self.assertIn("item_transformer=", text)
+        self.assertIn("message_display", paint_block)
+        self.assertNotIn("re.match", timeline_block)
+        self.assertNotIn("_localized_message", timeline_block)
+        self.assertNotIn("localize_active_event_message", timeline_block)
+
+    def test_app_shell_video_lookup_uses_page_item_index(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "layout" / "app_shell.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        lookup_block = text.split("def row_for_video_id", 1)[1].split("def show_image", 1)[0]
+
+        self.assertIn("_page_item_rows", text)
+        self.assertIn("_refresh_page_item_indexes", text)
+        self.assertIn("_page_item_indexes_initialized", text)
+        self.assertNotIn("enumerate(self._items_for_page", lookup_block)
+        self.assertNotIn("any(item.get(\"id\")", lookup_block)
+
+    def test_media_host_play_video_submits_file_probe_before_playback(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "controllers" / "media_host_controller_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        play_block = text.split("def play_video", 1)[1].split(
+            "def _should_check_playback_file_in_background",
+            1,
+        )[0]
+
+        self.assertIn("_submit_playback_file_check", play_block)
+        self.assertNotIn("os.path.exists", play_block)
+        self.assertIn("def _submit_playback_file_check", text)
+
+    def test_media_host_rename_video_submits_file_transaction_before_ui_finalize(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        host_text = (project_root / "app" / "controllers" / "media_host_controller_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        library_text = (project_root / "app" / "controllers" / "media_library_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        rename_block = host_text.split("def on_rename_video", 1)[1].split("def on_delete_video", 1)[0]
+
+        self.assertIn("_submit_rename_video_task", rename_block)
+        self.assertIn("_finalize_rename_video", rename_block)
+        self.assertNotIn("os.path.exists", rename_block)
+        self.assertIn("def _rename_video_io", library_text)
 
     def test_start_task_marquee_uses_low_frequency_timer(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -754,6 +860,18 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn('_submit_frontend_action(\n            "update_completed_metadata"', block)
         self.assertNotIn("._frontend_state_service.update_completed_metadata", block)
 
+    def test_media_preview_play_video_uses_async_repair_cache_lookup(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "ui" / "components" / "media_preview_panel.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        play_video_block = text.split("def play_video", 1)[1].split("def stop_playback", 1)[0]
+
+        self.assertIn("_submit_cached_playable_path_lookup", play_video_block)
+        self.assertIn("sig_cached_playable_path_ready", text)
+        self.assertNotIn("cached_playable_path(", play_video_block)
+
     def test_gui_hot_paths_do_not_persist_config_inline(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         files = [
@@ -793,6 +911,24 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("run_in_executor", operation_block)
         self.assertIn("inspect.iscoroutinefunction(func)", operation_block)
         self.assertIn("self._run_api_operation(\"frontend_action\", self.handle_frontend_action", action_block)
+
+    def test_web_media_range_streaming_does_not_read_files_on_event_loop(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        service_text = (project_root / "app" / "web" / "file_response_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        server_text = (project_root / "app" / "web" / "server.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertNotIn("async def stream_range", service_text)
+        self.assertNotIn("async def stream_range", server_text)
+        self.assertIn("run_in_executor", service_text)
+        self.assertIn("run_in_executor", server_text)
+        self.assertIn("def _iter_file_range", service_text)
+        self.assertIn("def _iter_file_range", server_text)
 
     def test_web_bootstrap_and_rest_getters_use_worker_executor(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

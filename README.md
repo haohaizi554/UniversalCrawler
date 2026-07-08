@@ -9,7 +9,7 @@
   <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.17-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20unittest-informational" />
+  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20registry-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
@@ -72,7 +72,7 @@
 ### ⚡ 3. 统一下载引擎，不是平台脚本拼盘
 
 - **统一队列调度**：所有任务统一进入 `DownloadManager`，由 `DownloadWorker` 管理生命周期、并发槽位与回调。
-- **策略自动分发**：根据资源特征自动选择不同下载器与外部工具，包括普通 HTTP、分块下载、`ffmpeg`、`N_m3u8DL-RE` 等路径。
+- **策略自动分发**：根据资源特征自动选择不同下载器与外部工具，包括普通 HTTP、分块下载、`ffmpeg` / `ffprobe`、`N_m3u8DL-RE` 等路径。
 - **文件落盘更稳健**：自动推断扩展名、避免重名覆盖、按文件签名修正后缀，减少下载成功但打不开的尴尬。
 - **适配多种资源形态**：支持普通视频、DASH 音视频分离、图集、实况图、m3u8/HLS 流媒体等多类资源。
 
@@ -92,8 +92,8 @@
 
 ### 🧪 6. 不只是能跑，还强调测试与工程质量
 
-- **统一测试框架**：项目使用 `unittest`，本地与 GitHub Actions 保持一致。
-- **覆盖真实高风险路径**：当前测试已覆盖模型、配置、控制器、下载器、解析器、日志脱敏、半集成链路等多个层面。
+- **统一测试入口**：项目以 `pytest` 为执行器，通过 `tests/test_registry.py` 管理测试分类，通过 `tests/test_launcher.py` 提供 GUI / TUI / CLI 三模启动。
+- **覆盖真实高风险路径**：当前测试注册表收录 13 个启用分类、131 个可运行测试文件，覆盖模型、配置、控制器、下载器、解析器、日志脱敏、半集成链路、架构适应度和轻量性能基准。
 - **适合重构**：Spider 主流程、下载策略、配置迁移、文件落盘等区域都在逐步补齐保护网，降低后续演进成本。
 
 ---
@@ -132,6 +132,8 @@
 python main.py
 # 或
 python -m entry.gui_entry
+# 安装为 editable/package 后也可用
+ucrawl-gui
 ```
 
 - `main.py` 是统一自适应入口，无参数时默认进入桌面 GUI。
@@ -156,15 +158,27 @@ ucrawl-web --host 127.0.0.1 --port 8000
 
 | 端点 | 方法 | 说明 |
 | :-- | :--: | :-- |
+| `/api/ping` | GET | 健康检查 |
 | `/api/platforms` | GET | 获取支持的平台列表 |
 | `/api/config` | GET/PUT | 读取/更新配置 |
+| `/api/state` | GET | 获取兼容状态快照 |
+| `/api/frontend/state` | GET | 获取前端完整状态快照 |
+| `/api/frontend/delta` | GET | 获取版本化前端增量 |
+| `/api/frontend/action` | POST | 统一前端动作入口 |
+| `/api/scan` | POST | 扫描本地媒体目录 |
+| `/api/search` | POST | 执行平台搜索 |
 | `/api/crawl/start` | POST | 启动爬取任务 |
 | `/api/crawl/stop` | POST | 停止当前爬取 |
-| `/api/download/start` | POST | 开始下载选中项 |
-| `/api/download/stop` | POST | 停止下载 |
+| `/api/crawl/select` | POST | 提交爬取选择结果 |
+| `/api/video/{video_id}` | DELETE | 删除视频记录 |
+| `/api/video/rename` | POST | 重命名视频记录 |
+| `/api/download` | POST | 创建下载任务 |
+| `/api/media/{video_id}` | GET | 打开本地媒体文件 |
 | `/api/dir/list` | GET | 浏览目录内容 |
 | `/api/dir/change` | POST | 切换保存目录 |
-| `/api/dir/pick-native` | GET | 调用系统原生文件夹选择器 |
+| `/api/dir/pick-native` | POST | 调用系统原生文件夹选择器 |
+| `/api/debug/latest-log` | GET | 获取最新日志 |
+| `/api/debug/error-summary` | GET | 获取错误摘要 |
 
 ---
 
@@ -201,7 +215,7 @@ ucrawl-web --host 127.0.0.1 --port 8000
 - **操作系统**：Windows 10 / 11
 - **Python**：3.10 及以上
 - **浏览器内核**：Playwright Chromium
-- **外部工具**：`ffmpeg`、`N_m3u8DL-RE`（Windows 可用 `.exe`，Linux/容器可用无扩展名二进制）
+- **外部工具**：`ffmpeg`、`ffprobe`、`N_m3u8DL-RE`（Windows 可用 `.exe`，Linux/容器可用无扩展名二进制）
 
 ### 2. 获取源码
 
@@ -222,6 +236,7 @@ playwright install chromium
 为了保证 B 站混流与 m3u8 下载等完整能力，请确保以下工具位于**项目根目录**、`UCRAWL_TOOL_ROOT` 指向的目录，或者已经在系统环境中可被找到：
 
 - `ffmpeg` / `ffmpeg.exe`
+- `ffprobe` / `ffprobe.exe`
 - `N_m3u8DL-RE` / `N_m3u8DL-RE.exe`
 
 推荐的根目录结构大致如下：
@@ -239,6 +254,7 @@ UniversalCrawlerProplus/
 ├── packaging/              # 打包脚本与配置
 ├── tests/                  # 测试用例
 ├── ffmpeg.exe              # Windows 外部工具示例
+├── ffprobe.exe             # Windows 外部工具示例
 ├── N_m3u8DL-RE.exe         # Windows 外部工具示例
 ├── main.py                 # 统一自适应入口（默认进入 GUI）
 ├── entry/                  # GUI / Web / CLI / Interactive / Test 薄入口
@@ -251,15 +267,27 @@ UniversalCrawlerProplus/
 
 ```bash
 python main.py
+# 或
+ucrawl-gui
 ```
 
 **Web UI 模式：**
 
 ```bash
 python -m entry.web_entry --host 127.0.0.1 --port 8000
+# 或
+ucrawl-web --host 127.0.0.1 --port 8000
 ```
 
 首次启动后，程序会自动完成必要的初始化，并准备默认运行环境。
+
+**CLI / 测试入口：**
+
+```bash
+ucrawl --help
+ucrawl-test --help
+ucrawl-test-gui
+```
 
 ### 6. 发布版使用方式
 
@@ -400,7 +428,7 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
     "remember_position": true
   },
   "logging": {
-    "retention_days": 30,
+    "retention_days": 1,
     "level": "info",
     "ui_log_max_display_count": 300
   },
@@ -408,7 +436,8 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
     "follow_system": false,
     "accent": "blue",
     "scale": "100%",
-    "font_size": "medium"
+    "font_size": "medium",
+    "language": "zh-CN"
   },
   "bilibili": {
     "api_workers": 8,
@@ -435,106 +464,48 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
 
 本项目的重点，从来不只是能抓到资源，而是让这件事能够**长期维护、持续扩展、方便排障、易于打包**。
 
-### 核心数据流
+### 核心数据流摘要
 
 ```mermaid
 graph TD
-    UI[PyQt6 UI / Web UI] --> CTRL[ApplicationController]
-    CTRL --> SPIDER[Spider]
+    UI[PyQt6 UI / Web UI / CLI] --> FSS[FrontendStateService / API Adapter]
+    FSS --> CTRL[ApplicationController]
+    CTRL --> SPIDER[Spider / Plugin Registry]
     SPIDER --> PARSER[Parser]
     PARSER --> BUILDER[TaskBuilder]
     BUILDER --> MANAGER[DownloadManager]
     MANAGER --> WORKER[DownloadWorker]
     WORKER --> DOWNLOADER[Downloader / External Tools]
     DOWNLOADER --> IO[Local File IO]
+    MANAGER --> EVENT[Event Bus / UI Snapshot]
+    EVENT --> UI
 ```
 
-### 关键分层说明
+### 核心工程原则
 
-#### `app/controllers`
+- GUI、WebUI、CLI 共享 `ApplicationController`、平台插件、下载调度和前端状态服务，不做三套平行实现。
+- Spider / Parser / TaskBuilder / Downloader 分层，平台访问、数据清洗、任务装配和下载执行互不穿透。
+- UI 线程只做轻量展示；快照构建、日志查询、列表分页、文件动作、SQLite / diskcache 访问都必须下沉到 worker 或服务层。
+- 高频进度、日志和 WebSocket 消息采用 latest-state-wins、有界队列和关键事件旁路，避免慢客户端或日志洪峰拖垮主界面。
+- 新增平台、设置项、下载策略或前端字段时，应同步检查测试注册表和专题文档。
 
-- 负责把 UI、爬虫、下载管理器、文件服务组装成完整应用。
-- 统一接收信号回调，避免逻辑分散在各个窗口类里。
-- 是用户动作和内部服务之间的总编排层。
+### 核心技术分流
 
-#### `app/spiders`
-
-每个平台尽量遵循统一三段式：
-
-- `spider.py`：站点访问、登录、滚动、捕获、用户勾选、发射任务。
-- `parser.py`：清洗 HTML / JSON / 标题 / URL / 指纹等原始数据。
-- `task_builder.py`：把平台结果映射为统一下载任务元数据。
-
-这套拆分的最大价值在于：**流程复杂的部分与纯逻辑部分可以分开测试与演进。**
-
-#### `app/core/download_manager.py`
-
-- 负责下载队列与并发槽位控制。
-- 负责统一管理 Worker 生命周期。
-- 支持排队取消、运行中停止、回调分发和任务完成收尾。
-
-#### `app/core/downloaders`
-
-封装了多种下载策略，根据资源类型自动选择最优路径：
-
-| 下载器 | 用途 |
-| :-- | :-- |
-| `base.py` | 下载器基类与通用 HTTP 下载 |
-| `chunked.py` | 大文件分块下载 |
-| `bilibili.py` | B 站 DASH 音视频分离下载 |
-| `douyin.py` | 抖音专属下载策略 |
-| `kuaishou.py` | 快手专属下载策略 |
-| `missav.py` | MissAV 专属下载策略 |
-| `ffmpeg.py` | ffmpeg 命令构建与执行（混流、转码等） |
-| `m3u8.py` | HLS/m3u8 流媒体下载（调用 N_m3u8DL-RE） |
-| `external.py` | 外部工具统一调用封装 |
-
-#### `app/core/plugins`
-
-- 提供平台注册表。
-- 将平台定义、配置面板和 spider 类暴露为统一能力。
-- 新增平台时，不需要在控制器和 UI 里到处加 if-else。
-
-#### `app/web`
-
-- 基于 FastAPI + uvicorn 的 Web UI 服务。
-- 提供完整的 RESTful API，覆盖爬取、下载、配置、目录管理等全部功能。
-- 静态前端页面位于 `app/web/static/`。
-- 支持脚本注入系统，可通过 `--script` 参数在启动时执行自定义 Python 脚本。
-
-#### `app/core/lib/douyin`
-
-抖音平台专属底层库，包含：
-
-- `encrypt/`：请求参数加密
-- `extract/`：数据提取
-- `interface/`：API 接口封装
-- `js/`：X-Bogus / A-Bogus 等 JS 签名
-- `link/`：链接解析
-- `tools/`：辅助工具
-
-### 为什么这套架构值得一提？
-
-因为很多能用的下载工具，随着平台增多会很快变成：
-
-- 控制器越来越大
-- 每个平台都直接操作 UI
-- 下载逻辑和站点逻辑互相穿透
-- 出问题时根本不知道该看哪里
-
-而这个项目已经明显在规避这些问题：
-
-- 平台接入路径清晰
-- 下载调度独立
-- UI 与业务解耦
-- Web UI 与桌面 GUI 共享同一套核心引擎
-- 测试与文档配套存在
-- 打包逻辑单独收口到 `packaging/`
+| 方向 | 当前做法 | 维护边界 |
+| :-: | :-: | :-: |
+| UI | PyQt6 Shell、WebUI reducer、稳定 ID 表格 patch | 只渲染当前可见页和当前页数据，不在热路径做文件、数据库或大 JSON 工作 |
+| Worker | `FrontendSnapshotWorker`、`FrontendActionWorker`、`LogQueryWorker`、`LogDetailWorker`、`ListPageWorker`、Web worker | 查询、分页、格式化、导出、动作执行和 snapshot/delta 构建离开 UI 线程 |
+| Cache | `CacheService`、`FrontendLogCache`、内存 TTL、diskcache | UI 读取已准备好的快照；日志 tail、热数据和可复用中间结果走缓存层 |
+| DB | SQLite 失败记录、缓存 fallback、结构化查询 | 连接必须显式关闭；GUI/WebUI 页面不直接查库，失败记录通过后台写入与快照读取 |
+| 背压 | EventBus noisy 合并、WebSocket 有界队列、latest-state-wins、critical bypass | 进度和日志可以合并或丢旧值，完成、失败、删除、停止等关键事件不能被压掉 |
+| 下载并发 | `DownloadManager` + `DownloadWorker` + 并发槽位 | 并发数表示同时运行任务数；释放槽位后必须继续派发等待队列，失败/取消也要释放 |
 
 相关文档：
 
 - [架构说明](docs/guides/architecture.md)
+- [核心技术参考](docs/guides/core-technologies.md)
 - [内部接口说明](docs/guides/api.md)
+- [前端刷新与并发控制工程实践](docs/engineering/frontend-refresh-and-concurrency.md)
 
 ---
 
@@ -590,15 +561,19 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 
 ### 当前分支的测试信号
 
-- 已覆盖 CLI / SDK / Web API / 打包配置 / 桌面 UI / 浏览器 E2E 等多个层面。
-- 已接入自动分类测试套件，新增测试可按命名规则自动归类。
+- `tests/test_registry.py` 当前登记 13 个启用分类、131 个可运行测试文件，`misc` 当前为 0。
+- 已覆盖 CLI / SDK / Web API / 打包配置 / 桌面 UI / 浏览器 E2E / 应用流程 / 核心服务 / 架构适应度 / 性能基准等多个层面。
+- 自动分类测试套件已进入主线，新增测试应优先按命名规则或注册表显式归类，避免长期停留在未归类桶。
 - GitHub Actions 已接入基础自动化检查。
-- 浏览器 E2E 不使用固定 3.5 秒硬等，当前 `tests/test_web_browser.py` 本地最新实测为 `97 passed in 247.64s (0:04:07)`，早前热运行曾到 `97 passed in 185.66s`（外部秒表约 `187.9s`），较历史 7-8 分钟约快 41%-61%。
 
 ### 本地执行命令
 
 ```bash
 python -m compileall app tests main.py
+python tests/test_registry.py
+python tests/test_launcher.py --list
+python tests/test_launcher.py --category architecture
+python tests/test_launcher.py --category benchmark
 python -m pytest tests
 ```
 
@@ -617,6 +592,7 @@ python -m pytest tests
 ---
 
 <a id="docs"></a>
+
 ## 📚 文档与目录索引
 
 如果你希望快速理解项目，建议按下面顺序阅读：
@@ -665,7 +641,7 @@ python -m pytest tests
 - `UniversalCrawlerPro.exe` — 桌面 GUI 主程序
 - `CrawlerWebPortal.exe` — Web UI 入口（系统托盘驻留）
 - `_internal/` — 运行时依赖与资源
-- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — Windows 便携版外部下载工具
+- `ffmpeg.exe` / `ffprobe.exe` / `N_m3u8DL-RE.exe` — Windows 便携版外部下载工具
 - `ms-playwright/` — 内置 Chromium 内核
 
 ### 安装包特性
@@ -768,7 +744,6 @@ python -m entry.web_entry --host 127.0.0.1 --port 8000
 
 1. **运行环境偏向 Windows**：当前路径处理、外部工具封装、打包脚本都明显偏向 Windows 桌面环境。
 2. **真实站点行为会变化**：目标平台的页面结构、接口策略、登录机制都可能变化，因此平台逻辑需要持续维护。
-3. **TikTok 仅保留底层能力**：仓库中保留相关底层协议与接口能力，但 GUI 尚未完整接入。
 4. **部分平台依赖登录态**：Cookie 失效或浏览器状态异常时，需要重新登录或重新持久化会话。
 
 ### 免责声明

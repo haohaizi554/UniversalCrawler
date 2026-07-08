@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import mimetypes
 import os
+from collections.abc import Iterator
 
 from fastapi import FastAPI, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,8 +80,61 @@ def _store_controller_video(active_controller, item) -> None:
     active_controller.videos[item.id] = item
 
 
+def _list_directory_payload(path: str) -> dict:
+    if not os.path.exists(path):
+        return {"error": "目录不存在", "path": path}
+
+    entries = os.listdir(path)
+    subdirs = []
+    for name in sorted(entries, key=str.lower):
+        full = os.path.join(path, name)
+        try:
+            if os.path.isdir(full) and not name.startswith("."):
+                subdirs.append({"name": name, "path": full})
+        except PermissionError:
+            continue
+
+    parent = os.path.dirname(path) if path else ""
+    drives = []
+    if os.name == "nt":
+        import string
+
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.exists(drive):
+                drives.append({"name": drive, "path": drive})
+
+    return {
+        "current": path,
+        "parent": parent,
+        "subdirs": subdirs,
+        "drives": drives,
+    }
+
+
 async def _run_controller_worker_call(func, *args):
     return await asyncio.get_running_loop().run_in_executor(None, func, *args)
+
+
+def _media_file_info(path: str) -> tuple[str, int, str]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    file_size = os.path.getsize(path)
+    content_type, _ = mimetypes.guess_type(path)
+    return path, file_size, content_type or "application/octet-stream"
+
+
+def _iter_file_range(path: str, start: int, chunk_size: int) -> Iterator[bytes]:
+    with open(path, "rb") as file_obj:
+        file_obj.seek(start)
+        remaining = chunk_size
+        while remaining > 0:
+            read_size = min(8192, remaining)
+            data = file_obj.read(read_size)
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
 
 def create_app(lifespan=None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
@@ -492,14 +546,14 @@ def create_app(lifespan=None) -> FastAPI:
     async def get_media(video_id: str, range: str | None = None):
         path = controller.get_media_path(video_id)
         # 修复 BUG-150: 文件不存在返回 404，让 video 元素正确触发 onerror
-        if not path or not os.path.exists(path):
+        if not path:
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="file not found")
-
-        file_size = os.path.getsize(path)
-        content_type, _ = mimetypes.guess_type(path)
-        if not content_type:
-            content_type = "application/octet-stream"
+        try:
+            path, file_size, content_type = await asyncio.get_running_loop().run_in_executor(None, _media_file_info, path)
+        except FileNotFoundError:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="file not found")
 
         # 处理 Range 请求（视频 seek 必需）
         range_header = range
@@ -511,20 +565,8 @@ def create_app(lifespan=None) -> FastAPI:
                 end = min(end, file_size - 1)
                 chunk_size = end - start + 1
 
-                async def stream_range():
-                    with open(path, "rb") as f:
-                        f.seek(start)
-                        remaining = chunk_size
-                        while remaining > 0:
-                            read_size = min(8192, remaining)
-                            data = f.read(read_size)
-                            if not data:
-                                break
-                            remaining -= len(data)
-                            yield data
-
                 return StreamingResponse(
-                    stream_range(),
+                    _iter_file_range(path, start, chunk_size),
                     status_code=206,
                     media_type=content_type,
                     headers={
@@ -552,36 +594,8 @@ def create_app(lifespan=None) -> FastAPI:
         if not path:
             path = controller.current_save_dir
 
-        if not os.path.exists(path):
-            return {"error": "目录不存在", "path": path}
-
         try:
-            entries = os.listdir(path)
-            subdirs = []
-            for name in sorted(entries, key=str.lower):
-                full = os.path.join(path, name)
-                try:
-                    if os.path.isdir(full) and not name.startswith("."):
-                        subdirs.append({"name": name, "path": full})
-                except PermissionError:
-                    continue
-
-            parent = os.path.dirname(path) if path else ""
-            # 获取常见根目录（Windows 驱动器）
-            drives = []
-            if os.name == "nt":
-                import string
-                for letter in string.ascii_uppercase:
-                    drive = f"{letter}:\\"
-                    if os.path.exists(drive):
-                        drives.append({"name": drive, "path": drive})
-
-            return {
-                "current": path,
-                "parent": parent,
-                "subdirs": subdirs,
-                "drives": drives,
-            }
+            return await asyncio.get_running_loop().run_in_executor(None, _list_directory_payload, path)
         except PermissionError:
             return {"error": "无权限访问该目录", "path": path}
         except OSError as exc:

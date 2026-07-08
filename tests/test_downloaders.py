@@ -30,6 +30,7 @@ from app.core.downloaders.external import ExternalToolRunner
 from app.core.downloaders.m3u8 import _LocalHlsProxy, _Nm3u8OutputProgress
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError, MergeError, StreamDownloadError
 from app.models import VideoItem
+from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 
 class DownloaderStrategyTests(unittest.TestCase):
     
@@ -991,6 +992,10 @@ class DownloaderStrategyTests(unittest.TestCase):
     @patch("app.core.downloaders.bilibili.requests.get")
     def test_bilibili_play_url_refresh_forwards_proxy_settings(self, mocked_get):
         """B站刷新 play_url 时必须沿用代理配置，否则 Web/CLI 网络路径会出现分叉。"""
+        BILIBILI_WBI_SIGNER.set_keys(
+            "7cd084941338484aae1ad9425b84077c",
+            "4932caff0ff746eab6f01bf08b70ac45",
+        )
         response = Mock()
         response.json.return_value = {
             "code": 0,
@@ -1014,10 +1019,18 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(video_url, "https://cdn.example.com/video.m4s")
         self.assertEqual(audio_url, "https://cdn.example.com/audio.m4s")
         self.assertEqual(mocked_get.call_args.kwargs["proxies"], proxies)
+        params = mocked_get.call_args.kwargs["params"]
+        self.assertEqual(params["fnval"], "4048")
+        self.assertIn("wts", params)
+        self.assertIn("w_rid", params)
 
     @patch("app.core.downloaders.bilibili.debug_logger.log_exception")
     @patch("app.core.downloaders.bilibili.requests.get")
     def test_bilibili_play_url_refresh_logs_request_exceptions(self, mocked_get, mocked_log_exception):
+        BILIBILI_WBI_SIGNER.set_keys(
+            "7cd084941338484aae1ad9425b84077c",
+            "4932caff0ff746eab6f01bf08b70ac45",
+        )
         response = Mock()
         response.json.return_value = {
             "code": 0,

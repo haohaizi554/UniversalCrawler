@@ -159,6 +159,55 @@ class MediaHostControllerMixinTests(unittest.TestCase):
 
         controller.host.reorder_video_row.assert_called_once_with(item)
 
+    def test_on_rename_video_submits_file_transaction_on_qt_thread(self):
+        controller = _DummyMediaHostController()
+        fake_thread = object()
+        fake_app = Mock()
+        fake_app.thread.return_value = fake_thread
+        controller.app = fake_app
+        item = VideoItem(url="", title="old", source="local")
+        item.local_path = "D:/media/old.mp4"
+        controller.videos[item.id] = item
+        table_item = Mock()
+        table_item.column.return_value = 0
+        table_item.data.return_value = item.id
+        table_item.text.return_value = "new"
+        submitted: list[str] = []
+
+        class ImmediateRunner:
+            def submit(self, *, name, fn):
+                submitted.append(name)
+                token = SimpleNamespace(is_cancelled=lambda: False)
+                fn(token)
+                return token
+
+        controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
+        controller._ensure_ui_callback_invoker = Mock(return_value=SimpleNamespace(invoke=lambda callback: callback()))
+        controller._rename_video_io = Mock(
+            return_value=SimpleNamespace(
+                status="ok",
+                video_id=item.id,
+                video=item,
+                old_path=item.local_path,
+                new_path="D:/media/new.mp4",
+                new_title="new",
+                error=None,
+            )
+        )
+
+        with (
+            patch("app.controllers.media_host_controller_mixin.QCoreApplication.instance", return_value=fake_app),
+            patch("app.controllers.media_host_controller_mixin.QThread.currentThread", return_value=fake_thread),
+        ):
+            controller.on_rename_video(table_item)
+
+        self.assertEqual(submitted, [f"rename-video-{item.id}"])
+        controller._rename_video_io.assert_called_once_with(item.id, "new", controller.host.current_save_dir)
+        self.assertEqual(item.title, "new")
+        self.assertEqual(item.local_path, "D:/media/new.mp4")
+        table_item.setToolTip.assert_called_once_with("new")
+        controller.host.reorder_video_row.assert_called_once_with(item)
+
     def test_on_delete_video_missing_entry_removes_row_only(self):
         controller = _DummyMediaHostController()
 
@@ -273,6 +322,44 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.play_video(item.id)
 
         controller.host.report_missing_media.assert_called_once()
+
+    def test_play_video_checks_file_exists_via_short_task_on_qt_thread(self):
+        controller = _DummyMediaHostController()
+        fake_thread = object()
+        fake_app = Mock()
+        fake_app.thread.return_value = fake_thread
+        controller.app = fake_app
+        item = VideoItem(url="", title="demo", source="local")
+        item.local_path = "D:/media/demo.mp4"
+        controller.videos[item.id] = item
+        submitted: list[str] = []
+
+        class ImmediateRunner:
+            def submit(self, *, name, fn):
+                submitted.append(name)
+                token = SimpleNamespace(cancel=Mock(), is_cancelled=lambda: False)
+                fn(token)
+                return token
+
+        controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
+        controller._ensure_ui_callback_invoker = Mock(return_value=SimpleNamespace(invoke=lambda callback: callback()))
+        controller._playback_file_exists = Mock(return_value=True)
+
+        with (
+            patch("app.controllers.media_host_controller_mixin.QCoreApplication.instance", return_value=fake_app),
+            patch("app.controllers.media_host_controller_mixin.QThread.currentThread", return_value=fake_thread),
+            patch("app.controllers.media_host_controller_mixin.cfg.get") as cfg_get,
+        ):
+            cfg_get.side_effect = lambda section, key, default=None: (
+                "builtin_player" if (section, key) == ("playback", "default_player")
+                else True if (section, key) == ("playback", "builtin_player_enabled")
+                else default
+            )
+            controller.play_video(item.id)
+
+        self.assertEqual(submitted, [f"check-playback-file-{item.id}"])
+        controller._playback_file_exists.assert_called_once_with(item.local_path)
+        controller.host.play_video.assert_called_once_with(item.local_path)
 
     def test_play_video_routes_image_and_video_to_correct_host_action(self):
         controller = _DummyMediaHostController()

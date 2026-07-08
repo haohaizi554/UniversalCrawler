@@ -22,6 +22,16 @@ from app.spiders.xiaohongshu.helpers import (
     parse_creator_info_from_url,
     parse_note_info_from_note_url,
 )
+from app.spiders.xiaohongshu import sign as xhs_sign_module
+from app.spiders.xiaohongshu.sign import (
+    XHS_CRC32_TABLE,
+    XiaohongshuLocalSignatureError,
+    _build_sign_string,
+    _minimal_fingerprint,
+    _signed_crc32,
+    sign_with_local_algorithm,
+    sign_xiaohongshu_headers,
+)
 from app.spiders.xiaohongshu.spider import XiaohongshuSpider
 from app.spiders.xiaohongshu.task_builder import XiaohongshuTaskBuilder
 
@@ -30,6 +40,98 @@ class XiaohongshuHelperTests(unittest.TestCase):
         token = build_search_id()
         self.assertTrue(token)
         self.assertIsInstance(token, str)
+
+    def test_local_xhs_signer_generates_headers_without_xhshow(self):
+        with patch("app.spiders.xiaohongshu.sign.sign_with_xhshow", side_effect=AssertionError("xhshow should be fallback only")):
+            headers = sign_xiaohongshu_headers(
+                uri="/api/sns/web/v1/search/notes",
+                data={"keyword": "穿搭", "page": 1, "page_size": 20},
+                cookie_str="a1=demo-a1; web_session=demo-session",
+                method="POST",
+            )
+
+        self.assertTrue(headers["X-S"].startswith("XYS_"))
+        self.assertTrue(headers["X-T"].isdigit())
+        self.assertTrue(headers["x-S-Common"])
+        self.assertEqual(len(headers["X-B3-Traceid"]), 16)
+
+    def test_xhs_signer_falls_back_to_xhshow_only_after_local_failure(self):
+        fallback_headers = {
+            "X-S": "XYS_fallback",
+            "X-T": "1700000000000",
+            "x-S-Common": "fallback-common",
+            "X-B3-Traceid": "abcdef0123456789",
+        }
+        with patch(
+            "app.spiders.xiaohongshu.sign.sign_with_local_algorithm",
+            side_effect=XiaohongshuLocalSignatureError("local failed"),
+        ) as mocked_local, patch(
+            "app.spiders.xiaohongshu.sign.sign_with_xhshow",
+            return_value=fallback_headers,
+        ) as mocked_xhshow:
+            headers = sign_xiaohongshu_headers(
+                uri="/api/sns/web/v1/user_posted",
+                data={"num": 20},
+                cookie_str="a1=demo-a1",
+                method="GET",
+            )
+
+        self.assertEqual(headers, fallback_headers)
+        mocked_local.assert_called_once()
+        mocked_xhshow.assert_called_once()
+
+    def test_xhs_signer_does_not_fallback_on_programming_errors(self):
+        with patch(
+            "app.spiders.xiaohongshu.sign.sign_with_local_algorithm",
+            side_effect=TypeError("programming bug"),
+        ) as mocked_local, patch("app.spiders.xiaohongshu.sign.sign_with_xhshow") as mocked_xhshow:
+            with self.assertRaises(TypeError):
+                sign_xiaohongshu_headers(
+                    uri="/api/sns/web/v1/user_posted",
+                    data={"num": 20},
+                    cookie_str="a1=demo-a1",
+                    method="GET",
+                )
+
+        mocked_local.assert_called_once()
+        mocked_xhshow.assert_not_called()
+
+    def test_local_xhs_crc32_uses_precomputed_table(self):
+        table_id = id(xhs_sign_module.XHS_CRC32_TABLE)
+        self.assertEqual(len(XHS_CRC32_TABLE), 256)
+        self.assertEqual(_signed_crc32("demo-b1"), _signed_crc32("demo-b1"))
+        self.assertEqual(id(xhs_sign_module.XHS_CRC32_TABLE), table_id)
+
+    def test_local_xhs_fingerprint_is_stable_per_cookie_not_global(self):
+        fp_a = _minimal_fingerprint({"a1": "account-a", "web_session": "session-a"})
+        fp_a_repeat = _minimal_fingerprint({"a1": "account-a", "web_session": "session-a"})
+        fp_b = _minimal_fingerprint({"a1": "account-b", "web_session": "session-b"})
+
+        self.assertEqual(fp_a["x36"], fp_a_repeat["x36"])
+        self.assertEqual(fp_a["x43"], fp_a_repeat["x43"])
+        self.assertNotEqual(fp_a["x43"], fp_b["x43"])
+
+    def test_local_xhs_get_sign_string_preserves_query_params(self):
+        content = _build_sign_string(
+            "/api/sns/web/v1/user_posted",
+            {"image_formats": "jpg,webp,avif", "cursor": "", "num": 20},
+            "GET",
+        )
+        self.assertEqual(
+            content,
+            "/api/sns/web/v1/user_posted?image_formats=jpg,webp,avif&cursor=&num=20",
+        )
+
+    def test_local_xhs_signer_supports_fixed_timestamp(self):
+        headers = sign_with_local_algorithm(
+            uri="/api/sns/web/v1/feed",
+            data={"source_note_id": "note-1"},
+            cookie_str="a1=demo-a1",
+            method="POST",
+            timestamp=1700000000.123,
+        )
+        self.assertEqual(headers["X-T"], "1700000000123")
+        self.assertTrue(headers["X-S"].startswith("XYS_"))
 
     def test_parse_note_info_from_note_url_extracts_id_and_tokens(self):
         info = parse_note_info_from_note_url(

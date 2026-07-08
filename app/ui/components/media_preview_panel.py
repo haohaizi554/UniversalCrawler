@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.debug_logger import debug_logger
 from app.services.mkv_repair_service import MkvPlaybackRepairService
 from app.services.playback_position_service import PlaybackPositionService
 from app.ui.localization import normalize_language, tr
@@ -118,6 +119,8 @@ class MediaPreviewPanel(QFrame):
     sig_repair_commit_progress = pyqtSignal(str, int, str)
     sig_repair_commit_finished = pyqtSignal(str, str, bool, str)
     sig_media_metadata_detected = pyqtSignal(str, dict)
+    sig_playback_position_ready = pyqtSignal(str, int)
+    sig_cached_playable_path_ready = pyqtSignal(str, str, str)
 
     def __init__(
         self,
@@ -127,8 +130,9 @@ class MediaPreviewPanel(QFrame):
     ):
         super().__init__(style_provider if isinstance(style_provider, QWidget) else None)
         self._style_provider = style_provider
-        self._repair_service = repair_service or MkvPlaybackRepairService()
-        self._playback_position_service = playback_position_service or PlaybackPositionService()
+        self._owns_repair_service = repair_service is None
+        self._repair_service = repair_service or MkvPlaybackRepairService(cleanup_on_init=False)
+        self._playback_position_service = playback_position_service or PlaybackPositionService(load_on_init=False)
         self._active_video_source: str | None = None
         self._active_source_path: str | None = None
         self._repair_candidate_path: str | None = None
@@ -142,6 +146,7 @@ class MediaPreviewPanel(QFrame):
         self._cleanup_done = False
         self._long_task_runner = LongTaskRunner(self)
         self._short_task_runner = ShortTaskRunner(self, max_thread_count=2)
+        self._playback_position_task_runner = ShortTaskRunner(self, max_thread_count=1)
         self._pending_cleanup_token: TaskCancelToken | None = None
         self.current_image_path: str | None = None
         self.is_slider_pressed = False
@@ -281,6 +286,13 @@ class MediaPreviewPanel(QFrame):
         self.sig_repair_finished.connect(self._on_repair_finished, Qt.ConnectionType.QueuedConnection)
         self.sig_repair_commit_progress.connect(self._on_repair_commit_progress, Qt.ConnectionType.QueuedConnection)
         self.sig_repair_commit_finished.connect(self._on_repair_commit_finished, Qt.ConnectionType.QueuedConnection)
+        self.sig_playback_position_ready.connect(self._on_playback_position_ready, Qt.ConnectionType.QueuedConnection)
+        self.sig_cached_playable_path_ready.connect(
+            self._on_cached_playable_path_ready,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        if self._owns_repair_service:
+            self._submit_repair_cache_startup_cleanup()
 
     def set_language(self, language: str | None) -> None:
         normalized = normalize_language(language)
@@ -320,7 +332,7 @@ class MediaPreviewPanel(QFrame):
         if not self._remember_position_enabled:
             self._saved_positions.clear()
             self._last_position_flush_at.clear()
-            self._playback_position_service.clear()
+            self._submit_playback_position_clear()
         self._refresh_image_auto_advance_timer()
 
     def show_image(self, image_path: str) -> None:
@@ -351,21 +363,9 @@ class MediaPreviewPanel(QFrame):
         self._repair_candidate_path = None
         self._repair_candidate_key = None
 
-        playable_path = self._repair_service.cached_playable_path(video_path)
-        if self._normalize_path(playable_path) == source_key:
-            self._remember_repair_candidate(video_path, playable_path, source_key)
-        elif not self._is_busy(source_key):
-            self._set_repair_state(
-                source_key,
-                video_path,
-                "committing",
-                0,
-                "已找到修复缓存，正在写回原文件",
-                playable_path,
-            )
-            QTimer.singleShot(500, lambda: self._start_commit_to_source(source_key, video_path, playable_path))
-
-        self.player.setSource(QUrl.fromLocalFile(playable_path))
+        self._remember_repair_candidate(video_path, video_path, source_key)
+        self.player.setSource(QUrl.fromLocalFile(video_path))
+        self._submit_cached_playable_path_lookup(source_key, video_path)
         self._schedule_pending_cache_cleanup()
         self._restore_repair_status(source_key)
         self.player.setVideoOutput(self.video_item)
@@ -466,6 +466,9 @@ class MediaPreviewPanel(QFrame):
         short_runner = getattr(self, "_short_task_runner", None)
         if short_runner is not None:
             short_runner.cancel_all(timeout_ms=5000)
+        playback_position_runner = getattr(self, "_playback_position_task_runner", None)
+        if playback_position_runner is not None:
+            playback_position_runner.cancel_all(timeout_ms=5000)
         long_runner = getattr(self, "_long_task_runner", None)
         if long_runner is not None:
             long_runner.cancel_all(timeout_ms=10000)
@@ -550,7 +553,7 @@ class MediaPreviewPanel(QFrame):
             self._set_play_button_stopped()
             if self._active_video_source:
                 self._saved_positions.pop(self._active_video_source, None)
-                self._playback_position_service.delete(self._active_video_source)
+                self._submit_playback_position_delete(self._active_video_source)
             if self._autoplay_next_enabled and self._active_video_source and not self._end_emitted_for_source:
                 self._end_emitted_for_source = True
                 self.sig_auto_next_preview.emit()
@@ -572,17 +575,73 @@ class MediaPreviewPanel(QFrame):
             return
         position_ms = int(self._saved_positions.get(source_key) or 0)
         if position_ms <= 0:
-            position_ms = self._playback_position_service.get(source_key)
-            if position_ms > 0:
-                self._saved_positions[source_key] = position_ms
+            self._submit_playback_position_restore(source_key)
+            return
+        QTimer.singleShot(350, lambda key=source_key, pos=position_ms: self._restore_playback_position(key, pos))
+
+    def _on_playback_position_ready(self, source_key: str, position_ms: int) -> None:
+        if self._cleanup_requested.is_set() or not self._remember_position_enabled:
+            return
+        if self._active_video_source != source_key:
+            return
+        position_ms = max(0, int(position_ms or 0))
         if position_ms <= 0:
             return
+        self._saved_positions[source_key] = position_ms
         QTimer.singleShot(350, lambda key=source_key, pos=position_ms: self._restore_playback_position(key, pos))
 
     def _restore_playback_position(self, source_key: str, position_ms: int) -> None:
         if self._active_video_source != source_key or not self._remember_position_enabled:
             return
         self.player.setPosition(max(0, int(position_ms)))
+
+    def _submit_cached_playable_path_lookup(self, source_key: str, source_path: str) -> None:
+        if self._cleanup_requested.is_set() or not source_key or not source_path:
+            return
+
+        def task(token: TaskCancelToken) -> None:
+            if token.is_cancelled():
+                return
+            resolver = getattr(self._repair_service, "cached_playable_path", None)
+            playable_path = str(source_path)
+            if callable(resolver):
+                try:
+                    playable_path = str(resolver(source_path) or source_path)
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    debug_logger.log_exception(
+                        "MediaPreviewPanel",
+                        "cached_playable_path_lookup",
+                        exc,
+                        details={"source_path": source_path},
+                    )
+                    playable_path = str(source_path)
+            if token.is_cancelled():
+                return
+            self.sig_cached_playable_path_ready.emit(source_key, source_path, playable_path)
+
+        self._short_task_runner.submit(name="cached-playable-path", fn=task)
+
+    def _on_cached_playable_path_ready(self, source_key: str, source_path: str, playable_path: str) -> None:
+        if self._cleanup_requested.is_set() or self._active_video_source != source_key:
+            return
+        if not playable_path:
+            return
+        if self._normalize_path(playable_path) == source_key:
+            self._remember_repair_candidate(source_path, playable_path, source_key)
+            return
+        if self._is_busy(source_key):
+            return
+        self._set_repair_state(
+            source_key,
+            source_path,
+            "committing",
+            0,
+            "已找到修复缓存，正在写回原文件",
+            playable_path,
+        )
+        if self._normalize_path(self._current_player_path()) != self._normalize_path(playable_path):
+            self._switch_to_repaired_source(playable_path)
+        QTimer.singleShot(500, lambda: self._start_commit_to_source(source_key, source_path, playable_path))
 
     def _persist_current_playback_position(
         self,
@@ -604,11 +663,56 @@ class MediaPreviewPanel(QFrame):
         if not force and now - last_flush < 5.0:
             return
         self._last_position_flush_at[self._active_video_source] = now
-        self._playback_position_service.save(
-            self._active_video_source,
-            position_ms,
-            duration_ms=duration_ms,
-        )
+        self._submit_playback_position_save(self._active_video_source, position_ms, duration_ms)
+
+    def _submit_playback_position_restore(self, source_key: str) -> None:
+        if self._cleanup_requested.is_set() or not source_key:
+            return
+
+        def task(token: TaskCancelToken) -> None:
+            if token.is_cancelled():
+                return
+            position_ms = self._playback_position_service.get(source_key)
+            if token.is_cancelled():
+                return
+            self.sig_playback_position_ready.emit(source_key, int(position_ms or 0))
+
+        self._playback_position_task_runner.submit(name="restore-playback-position", fn=task)
+
+    def _submit_playback_position_save(self, source_key: str, position_ms: int, duration_ms: int) -> None:
+        if self._cleanup_requested.is_set() or not source_key:
+            return
+
+        def task(token: TaskCancelToken) -> None:
+            if token.is_cancelled():
+                return
+            self._playback_position_service.save(
+                source_key,
+                position_ms,
+                duration_ms=duration_ms,
+            )
+
+        self._playback_position_task_runner.submit(name="save-playback-position", fn=task)
+
+    def _submit_playback_position_delete(self, source_key: str) -> None:
+        if self._cleanup_requested.is_set() or not source_key:
+            return
+
+        def task(token: TaskCancelToken) -> None:
+            if not token.is_cancelled():
+                self._playback_position_service.delete(source_key)
+
+        self._playback_position_task_runner.submit(name="delete-playback-position", fn=task)
+
+    def _submit_playback_position_clear(self) -> None:
+        if self._cleanup_requested.is_set():
+            return
+
+        def task(token: TaskCancelToken) -> None:
+            if not token.is_cancelled():
+                self._playback_position_service.clear()
+
+        self._playback_position_task_runner.submit(name="clear-playback-position", fn=task)
 
     def _refresh_image_auto_advance_timer(self) -> None:
         if not hasattr(self, "_image_auto_advance_timer"):
@@ -921,6 +1025,16 @@ class MediaPreviewPanel(QFrame):
             if discard_cache_file(path):
                 with self._repair_lock:
                     self._pending_cache_cleanup.discard(path)
+
+    def _submit_repair_cache_startup_cleanup(self) -> None:
+        if self._cleanup_requested.is_set():
+            return
+
+        def task(token: TaskCancelToken) -> None:
+            if not token.is_cancelled():
+                self._repair_service.cleanup_stale_cache_files()
+
+        self._short_task_runner.submit(name="cleanup-stale-repair-cache", fn=task)
 
     def _current_player_path(self) -> str:
         source = self.player.source()

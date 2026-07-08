@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,6 +28,16 @@ class MediaPreviewPanelTests(unittest.TestCase):
         for widget in list(self.app.topLevelWidgets()):
             widget.deleteLater()
         self.app.processEvents()
+
+    def _wait_until(self, predicate, *, timeout_ms: int = 1000, message: str = "condition was not met") -> None:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline:
+            self.app.processEvents()
+            if predicate():
+                return
+            QTest.qWait(10)
+        self.app.processEvents()
+        self.assertTrue(predicate(), message)
 
     def test_play_button_uses_icon(self):
         host = QWidget()
@@ -212,10 +224,39 @@ class MediaPreviewPanelTests(unittest.TestCase):
 
         panel.play_video(source)
 
-        self.assertEqual(panel.player.source().toLocalFile(), f"{source}.cache.mkv")
+        self._wait_until(
+            lambda: panel.player.source().toLocalFile() == f"{source}.cache.mkv",
+            timeout_ms=1500,
+            message="cached media was not applied after background lookup",
+        )
         self.assertFalse(panel.repair_panel.isHidden())
         self.assertIn("cache", panel.player.source().toLocalFile())
         self.assertFalse(FakeRepairService.repair_called)
+
+    def test_cached_playable_path_lookup_runs_off_ui_thread(self):
+        class FakeRepairService:
+            thread_ids: list[int] = []
+
+            @staticmethod
+            def is_mkv_path(path):
+                return str(path).lower().endswith(".mkv")
+
+            @staticmethod
+            def is_repairable_path(path):
+                return str(path).lower().endswith(".mkv")
+
+            @classmethod
+            def cached_playable_path(cls, path):
+                cls.thread_ids.append(threading.get_ident())
+                return str(path)
+
+        host = QWidget()
+        panel = MediaPreviewPanel(host, repair_service=FakeRepairService())
+
+        panel.play_video("normal.mkv")
+
+        self._wait_until(lambda: bool(FakeRepairService.thread_ids), message="cache lookup did not run")
+        self.assertNotEqual(FakeRepairService.thread_ids[0], threading.get_ident())
 
     def test_unknown_duration_non_mkv_can_repair_and_switch_to_cache(self):
         class FakeRepairService:
@@ -515,6 +556,7 @@ class MediaPreviewPanelTests(unittest.TestCase):
             self.app.processEvents()
 
             panel.player.setPosition.assert_called_once_with(30_000)
+            panel.cleanup()
 
     def test_playback_position_is_deleted_when_media_ends_or_memory_disabled(self):
         with TemporaryDirectory() as temp_dir:
@@ -527,11 +569,48 @@ class MediaPreviewPanelTests(unittest.TestCase):
             service.save(media, 20_000, duration_ms=100_000)
             panel._active_video_source = source_key
             panel.on_player_media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-            self.assertEqual(service.get(media), 0)
+            self._wait_until(lambda: service.get(media) == 0, message="playback position was not deleted")
 
             service.save(media, 25_000, duration_ms=100_000)
             panel.apply_playback_settings({"remember_position": False})
-            self.assertEqual(service.snapshot(), {})
+            self._wait_until(lambda: service.snapshot() == {}, message="playback positions were not cleared")
+            panel.cleanup()
+
+    def test_playback_position_restore_runs_off_ui_thread(self):
+        class RecordingPlaybackPositionService:
+            def __init__(self) -> None:
+                self.thread_ids: list[int] = []
+
+            def get(self, _path):
+                self.thread_ids.append(threading.get_ident())
+                return 30_000
+
+            def save(self, *_args, **_kwargs):
+                raise AssertionError("save should not be called")
+
+            def delete(self, *_args, **_kwargs):
+                raise AssertionError("delete should not be called")
+
+            def clear(self):
+                raise AssertionError("clear should not be called")
+
+        service = RecordingPlaybackPositionService()
+        panel = MediaPreviewPanel(QWidget(), playback_position_service=service)
+        source_key = "video-key"
+        panel._active_video_source = source_key
+        panel.player.setPosition = Mock()
+
+        panel._restore_playback_position_later(source_key)
+
+        self._wait_until(lambda: bool(service.thread_ids), message="restore did not query the service")
+        self.assertNotEqual(service.thread_ids[0], threading.get_ident())
+        self._wait_until(
+            lambda: panel.player.setPosition.call_count == 1,
+            timeout_ms=1500,
+            message="restore did not seek after the background result",
+        )
+        panel.player.setPosition.assert_called_once_with(30_000)
+        panel.cleanup()
 
     def test_image_auto_advance_respects_manual_switch_setting(self):
         panel = MediaPreviewPanel(QWidget())

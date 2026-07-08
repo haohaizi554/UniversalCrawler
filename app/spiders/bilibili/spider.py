@@ -28,6 +28,7 @@ from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
 from app.debug_logger import debug_logger
 from app.services.auth_service import AuthService
+from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 from app.utils.user_agents import resolve_user_agent
 
 HEADERS = {
@@ -119,6 +120,7 @@ class BiliAPI:
             with self._session_guard():
                 response = self.sess.get(url, timeout=self._request_timeout())
             resp = response.json()
+            BILIBILI_WBI_SIGNER.update_from_nav_data(resp.get("data") if isinstance(resp, dict) else None)
             debug_logger.log_api(
                 component="BiliAPI",
                 api_name="check_login",
@@ -137,6 +139,42 @@ class BiliAPI:
             debug_logger.log_exception("BiliAPI", "check_login", e, context={"cookie_path": self.cookie_path})
             raise LoginCheckError("Bilibili 登录状态校验失败") from e
 
+    def _signed_api_get(
+        self,
+        endpoint: str,
+        params: dict[str, object],
+        *,
+        unsigned_endpoint: str | None = None,
+    ) -> tuple[requests.Response, bool, str]:
+        headers = getattr(self.sess, "headers", None)
+        if not isinstance(headers, dict):
+            headers = HEADERS
+        with self._session_guard():
+            signed_params, signed = BILIBILI_WBI_SIGNER.sign_params(
+                params,
+                request_get=self.sess.get,
+                headers=headers,
+                timeout=self._request_timeout(),
+            )
+            request_endpoint = endpoint if signed or not unsigned_endpoint else unsigned_endpoint
+            response = self.sess.get(request_endpoint, params=signed_params, timeout=self._request_timeout())
+        response_url = getattr(response, "url", None)
+        if not isinstance(response_url, str) or not response_url:
+            response_url = f"{request_endpoint}?{urllib.parse.urlencode(signed_params)}"
+        return response, signed, response_url
+
+    def _unsigned_api_get(
+        self,
+        endpoint: str,
+        params: dict[str, object],
+    ) -> tuple[requests.Response, str]:
+        with self._session_guard():
+            response = self.sess.get(endpoint, params=params, timeout=self._request_timeout())
+        response_url = getattr(response, "url", None)
+        if not isinstance(response_url, str) or not response_url:
+            response_url = f"{endpoint}?{urllib.parse.urlencode(params)}"
+        return response, response_url
+
     def get_video_info(self, bvid: str | None = None, trace_id=None, *, aid: str | int | None = None):
         """Fetch Bilibili video detail by bvid, or by aid for legacy av links."""
         target = str(aid if aid is not None else bvid or "").strip()
@@ -144,15 +182,47 @@ class BiliAPI:
             raise SpiderParseError("missing Bilibili video id")
         query_key = "aid" if aid is not None else "bvid"
         try:
-            url = f"https://api.bilibili.com/x/web-interface/view?{query_key}={urllib.parse.quote(target)}"
-            with self._session_guard():
-                response = self.sess.get(url, timeout=self._request_timeout())
+            endpoint = "https://api.bilibili.com/x/web-interface/view"
+            response, signed, request_url = self._signed_api_get(endpoint, {query_key: target})
             resp = response.json()
+            if not isinstance(resp, dict):
+                raise ValueError("unexpected Bilibili video detail response")
+            unsigned_retry_attempted = False
+            unsigned_retry_used = False
+            if signed and resp.get("code") != 0:
+                unsigned_retry_attempted = True
+                try:
+                    retry_response, retry_url = self._unsigned_api_get(endpoint, {query_key: target})
+                    retry_resp = retry_response.json()
+                    if not isinstance(retry_resp, dict):
+                        raise ValueError("unexpected unsigned Bilibili video detail response")
+                    if retry_resp.get("code") == 0:
+                        response = retry_response
+                        resp = retry_resp
+                        request_url = retry_url
+                        signed = False
+                        unsigned_retry_used = True
+                except (requests.RequestException, ValueError, TypeError) as retry_exc:
+                    debug_logger.log_exception(
+                        "BiliAPI",
+                        "get_video_info_unsigned_retry",
+                        retry_exc,
+                        context={"bvid": bvid, "aid": aid},
+                        trace_id=trace_id,
+                    )
             data = resp.get('data') or {}
             debug_logger.log_api(
                 component="BiliAPI",
                 api_name="get_video_info",
-                request={"trace_id": trace_id, "url": url, "bvid": bvid, "aid": aid},
+                request={
+                    "trace_id": trace_id,
+                    "url": request_url,
+                    "bvid": bvid,
+                    "aid": aid,
+                    "wbi_signed": signed,
+                    "unsigned_retry_attempted": unsigned_retry_attempted,
+                    "unsigned_retry_used": unsigned_retry_used,
+                },
                 response_summary={
                     "api_code": resp.get("code"),
                     "title": data.get("title"),
@@ -184,14 +254,25 @@ class BiliAPI:
         
         def _request(fnval):
             """提供 `_request` 对应的内部辅助逻辑。"""
-            url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
-            with self._session_guard():
-                response = self.sess.get(url, timeout=self._request_timeout())
-            return url, response.status_code, response.json()
-        request_url, http_status, resp = _request(4048)
+            endpoint = "https://api.bilibili.com/x/player/wbi/playurl"
+            params = {
+                "bvid": bvid,
+                "cid": cid,
+                "qn": 120,
+                "fnval": fnval,
+                "fourk": 1,
+                "platform": "pc",
+            }
+            response, signed, request_url = self._signed_api_get(
+                endpoint,
+                params,
+                unsigned_endpoint="https://api.bilibili.com/x/player/playurl",
+            )
+            return request_url, response.status_code, response.json(), signed
+        request_url, http_status, resp, signed = _request(4048)
         request_mode = 4048
         if resp['code'] != 0 or 'data' not in resp or 'dash' not in resp['data']:
-            request_url, http_status, resp = _request(80)
+            request_url, http_status, resp, signed = _request(80)
             request_mode = 80
         if resp.get("code") != 0 or "data" not in resp:
             raise StreamResolveError(f"B站取流失败: code={resp.get('code')}")
@@ -201,7 +282,14 @@ class BiliAPI:
         debug_logger.log_api(
             component="BiliAPI",
             api_name="get_play_url",
-            request={"trace_id": trace_id, "url": request_url, "bvid": bvid, "cid": cid, "fnval": request_mode},
+            request={
+                "trace_id": trace_id,
+                "url": request_url,
+                "bvid": bvid,
+                "cid": cid,
+                "fnval": request_mode,
+                "wbi_signed": signed,
+            },
             response_summary={
                 "api_code": resp.get("code"),
                 "accept_quality": resp.get("data", {}).get("accept_quality", []),

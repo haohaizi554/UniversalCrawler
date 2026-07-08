@@ -63,6 +63,14 @@ class AppShell(QWidget):
         self._language = "zh-CN"
         self._translation_dirty_pages: set[str] = set()
         self._top_quantity_signature: tuple | None = None
+        self._page_item_rows: dict[str, dict[str, int]] = {
+            "queue": {},
+            "active": {},
+            "completed": {},
+            "failed": {},
+        }
+        self._completed_item_ids: tuple[str, ...] = ()
+        self._page_item_indexes_initialized = False
         self.top_bar = TopBarWidget(is_dark_theme)
         self.sidebar = SidebarWidget()
         self.status_bar = StatusBarWidget(is_dark=is_dark_theme)
@@ -208,9 +216,46 @@ class AppShell(QWidget):
         "failed": "failed_items",
     }
 
+    def _refresh_page_item_indexes(
+        self,
+        snapshot: dict,
+        *,
+        changed_sections: set[str] | None,
+        full_refresh: bool,
+    ) -> None:
+        page_ids = self._PAGE_SECTION_KEYS.keys()
+        if not full_refresh and changed_sections is not None:
+            page_ids = [
+                page_id
+                for page_id, section in self._PAGE_SECTION_KEYS.items()
+                if section in changed_sections
+            ]
+        for page_id in page_ids:
+            rows: dict[str, int] = {}
+            ids: list[str] = []
+            for row, item in enumerate(self._snapshot_items_for_page(snapshot, page_id)):
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id") or "")
+                if not item_id:
+                    continue
+                rows.setdefault(item_id, row)
+                if page_id == "completed":
+                    ids.append(item_id)
+            self._page_item_rows[page_id] = rows
+            if page_id == "completed":
+                self._completed_item_ids = tuple(ids)
+
     def render(self, snapshot: dict, *, changed_sections: set[str] | None = None) -> None:
         self._last_snapshot = snapshot
         full_refresh = changed_sections is None
+        full_index_refresh = full_refresh or not self._page_item_indexes_initialized
+        self._refresh_page_item_indexes(
+            snapshot,
+            changed_sections=changed_sections,
+            full_refresh=full_index_refresh,
+        )
+        self._page_item_indexes_initialized = True
         language_changed = self.apply_language(self._language_from_snapshot(snapshot))
 
         page_needs_render = full_refresh or self._page_needs_render(self.current_page_id, changed_sections)
@@ -609,28 +654,29 @@ class AppShell(QWidget):
 
     def row_for_video_id(self, video_id: str) -> int:
         for page_id in ("queue", "active", "completed", "failed"):
-            for row, item in enumerate(self._items_for_page(page_id)):
-                if item.get("id") == video_id:
-                    return row
+            row = self._page_item_rows.get(page_id, {}).get(str(video_id or ""))
+            if row is not None:
+                return row
         return -1
 
     def completed_id_order(self) -> list[str]:
-        return [item.get("id", "") for item in self._items_for_page("completed") if item.get("id")]
+        return list(self._completed_item_ids)
 
     def select_video_id(self, video_id: str) -> bool:
+        target_id = str(video_id or "")
         for page_id in ("completed", "queue", "active", "failed"):
-            if not any(item.get("id") == video_id for item in self._items_for_page(page_id)):
+            if target_id not in self._page_item_rows.get(page_id, {}):
                 continue
             page = self.pages[page_id]
             if self.current_page_id != page_id:
                 self.show_page(page_id)
             selector = getattr(page, "select_id", None)
-            if callable(selector) and selector(video_id):
+            if callable(selector) and selector(target_id):
                 return True
             row_for_id = getattr(page, "row_for_id", None)
             table = getattr(page, "table", None)
             if callable(row_for_id) and table is not None:
-                row = row_for_id(video_id)
+                row = row_for_id(target_id)
                 if row >= 0:
                     table.selectRow(row)
                     return True
@@ -638,14 +684,10 @@ class AppShell(QWidget):
 
     def _items_for_page(self, page_id: str) -> list[dict]:
         snapshot = self._last_snapshot or {}
-        return list(
-            {
-                "queue": snapshot.get("queue_items") or [],
-                "active": snapshot.get("active_downloads") or [],
-                "completed": snapshot.get("completed_items") or [],
-                "failed": snapshot.get("failed_items") or [],
-            }.get(page_id, [])
-        )
+        return list(self._snapshot_items_for_page(snapshot, page_id))
+
+    def _snapshot_items_for_page(self, snapshot: dict, page_id: str) -> list:
+        return list((snapshot.get(self._PAGE_SECTION_KEYS.get(page_id, "")) or []))
 
     def show_image(self, image_path: str) -> None:
         self.show_page("completed")

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
 import re
-from typing import Callable
+from collections.abc import Callable, Iterator
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -57,14 +58,16 @@ class WebFileResponseService:
         if not path:
             raise HTTPException(status_code=404, detail="file not found")
         try:
-            path = self._path_policy.resolve_existing_file(path, context.approved_roots)
+            path, file_size, content_type = await asyncio.get_running_loop().run_in_executor(
+                None,
+                self._media_file_info,
+                path,
+                tuple(context.approved_roots),
+            )
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="file not found")
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-        file_size = os.path.getsize(path)
-        content_type = self._guess_media_type(path)
 
         if range_header:
             range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
@@ -74,20 +77,8 @@ class WebFileResponseService:
                 end = min(end, file_size - 1)
                 chunk_size = end - start + 1
 
-                async def stream_range():
-                    with open(path, "rb") as file_obj:
-                        file_obj.seek(start)
-                        remaining = chunk_size
-                        while remaining > 0:
-                            read_size = min(8192, remaining)
-                            data = file_obj.read(read_size)
-                            if not data:
-                                break
-                            remaining -= len(data)
-                            yield data
-
                 return StreamingResponse(
-                    stream_range(),
+                    self._iter_file_range(path, start, chunk_size),
                     status_code=206,
                     media_type=content_type,
                     headers={
@@ -105,6 +96,23 @@ class WebFileResponseService:
                 "Content-Length": str(file_size),
             },
         )
+
+    def _media_file_info(self, path: str, approved_roots: tuple[str, ...]) -> tuple[str, int, str]:
+        resolved = self._path_policy.resolve_existing_file(path, approved_roots)
+        return resolved, os.path.getsize(resolved), self._guess_media_type(resolved)
+
+    @staticmethod
+    def _iter_file_range(path: str, start: int, chunk_size: int) -> Iterator[bytes]:
+        with open(path, "rb") as file_obj:
+            file_obj.seek(start)
+            remaining = chunk_size
+            while remaining > 0:
+                read_size = min(8192, remaining)
+                data = file_obj.read(read_size)
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
 
     def latest_log_response(self, request: Request):
         self._require_session_token(request)

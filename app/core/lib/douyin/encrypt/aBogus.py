@@ -21,7 +21,7 @@ __all__ = [
 ]
 
 class ABogus:
-    
+
     __filter = compile(r"%([0-9A-F]{2})")
     __arguments = [0, 1, 14]
     __ua_key = "\u0000\u0001\u000e"
@@ -70,7 +70,7 @@ class ABogus:
         b=85,
         c=45,
     ) -> list:
-        
+
         return cls.random_list(
             random_num,
             a,
@@ -88,7 +88,7 @@ class ABogus:
         a=170,
         b=85,
     ) -> list:
-        
+
         return cls.random_list(
             random_num,
             a,
@@ -106,7 +106,7 @@ class ABogus:
         a=170,
         b=85,
     ) -> list:
-        
+
         return cls.random_list(
             random_num,
             a,
@@ -127,7 +127,7 @@ class ABogus:
         f=0,
         g=0,
     ) -> list:
-        
+
         r = a or (random() * 10000)
         v = [
             r,
@@ -146,7 +146,7 @@ class ABogus:
 
     @staticmethod
     def from_char_code(*args):
-        
+
         return "".join(chr(code) for code in args)
 
     @classmethod
@@ -156,7 +156,7 @@ class ABogus:
         random_num_2=None,
         random_num_3=None,
     ):
-        
+
         return (
             cls.from_char_code(*cls.list_1(random_num_1))
             + cls.from_char_code(*cls.list_2(random_num_2))
@@ -170,7 +170,7 @@ class ABogus:
         start_time=0,
         end_time=0,
     ) -> str:
-        
+
         a = self.generate_string_2_list(
             url_params,
             method,
@@ -183,7 +183,7 @@ class ABogus:
         return self.rc4_encrypt(self.from_char_code(*a), "y")
 
     def generate_ua_code(self, user_agent: str) -> list[int]:
-        
+
         u = self.rc4_encrypt(user_agent, self.__ua_key)
         u = self.generate_result(u, "s3")
         return self.sum(u)
@@ -195,7 +195,7 @@ class ABogus:
         start_time=0,
         end_time=0,
     ) -> list:
-        
+
         start_time = start_time or int(time() * 1000)
         end_time = end_time or (start_time + randint(4, 8))
         params_array = self.generate_params_code(url_params)
@@ -222,7 +222,7 @@ class ABogus:
 
     @staticmethod
     def reg_to_array(a):
-        
+
         o = [0] * 32
         for i in range(8):
             c = a[i]
@@ -237,7 +237,7 @@ class ABogus:
         return o
 
     def compress(self, a):
-        
+
         f = self.generate_f(a)
         i = self.reg[:]
         for o in range(64):
@@ -267,7 +267,7 @@ class ABogus:
 
     @classmethod
     def generate_f(cls, e):
-        
+
         r = [0] * 132
 
         for t in range(16):
@@ -291,13 +291,13 @@ class ABogus:
 
     @staticmethod
     def pad_array(arr, length=60):
-        
+
         while len(arr) < length:
             arr.append(0)
         return arr
 
     def fill(self, length=60):
-        
+
         size = 8 * self.size
         self.chunk.append(128)
         self.chunk = self.pad_array(self.chunk, length)
@@ -324,7 +324,7 @@ class ABogus:
         q: int,
         r: int,
     ) -> list:
-        
+
         return [
             44,
             a,
@@ -374,7 +374,7 @@ class ABogus:
 
     @staticmethod
     def end_check_num(a: list):
-        
+
         r = 0
         for i in a:
             r ^= i
@@ -385,29 +385,29 @@ class ABogus:
         cls,
         url_string,
     ):
-        
+
         decoded = cls.__filter.sub(cls.replace_func, url_string)
         return decoded
 
     @staticmethod
     def replace_func(match):
-        
+
         return chr(int(match.group(1), 16))
 
     @staticmethod
     def de(e, r):
-        
+
         r %= 32
         return ((e << r) & 0xFFFFFFFF) | (e >> (32 - r))
 
     @staticmethod
     def pe(e):
-        
+
         return 2043430169 if 0 <= e < 16 else 2055708042
 
     @staticmethod
     def he(e, r, t, n):
-        
+
         if 0 <= e < 16:
             return (r ^ t ^ n) & 0xFFFFFFFF
         elif 16 <= e < 64:
@@ -416,7 +416,7 @@ class ABogus:
 
     @staticmethod
     def ve(e, r, t, n):
-        
+
         if 0 <= e < 16:
             return (r ^ t ^ n) & 0xFFFFFFFF
         elif 16 <= e < 64:
@@ -425,7 +425,7 @@ class ABogus:
 
     @staticmethod
     def convert_to_char_code(a):
-        
+
         d = []
         for i in a:
             d.append(ord(i))
@@ -433,7 +433,7 @@ class ABogus:
 
     @staticmethod
     def split_array(arr, chunk_size=64):
-        
+
         result = []
         for i in range(0, len(arr), chunk_size):
             result.append(arr[i : i + chunk_size])
@@ -441,14 +441,14 @@ class ABogus:
 
     @staticmethod
     def char_code_at(s):
-        
+
         return [ord(char) for char in s]
 
     def write(
         self,
         e,
     ):
-        
+
         self.size = len(e)
         if isinstance(e, str):
             e = self.decode_string(e)
@@ -464,13 +464,13 @@ class ABogus:
     def reset(
         self,
     ):
-        
+
         self.chunk = []
         self.size = 0
         self.reg = self.__reg[:]
 
     def sum(self, e, length=60):
-        
+
         self.reset()
         self.write(e)
         self.fill(length)
@@ -479,7 +479,7 @@ class ABogus:
 
     @classmethod
     def generate_result_unit(cls, n, s):
-        
+
         r = ""
         for i, j in zip(range(18, -1, -6), (16515072, 258048, 4032, 63)):
             r += cls.__str[s][(n & j) >> i]
@@ -487,7 +487,7 @@ class ABogus:
 
     @classmethod
     def generate_result_end(cls, s, e="s4"):
-        
+
         r = ""
         b = ord(s[120]) << 16
         r += cls.__str[e][(b & 16515072) >> 18]
@@ -504,7 +504,7 @@ class ABogus:
         #     r += cls.generate_result_unit(b, e)
         # return r
 
-        
+
         r = []
 
         for i in range(0, len(s), 3):
@@ -527,7 +527,7 @@ class ABogus:
 
     @classmethod
     def generate_args_code(cls):
-        
+
         a = []
         for j in range(24, -1, -8):
             a.append(cls.__arguments[0] >> j)
@@ -540,26 +540,22 @@ class ABogus:
         return [int(i) & 255 for i in a]
 
     def generate_method_code(self, method: str = "GET") -> list[int]:
-        
+
         return self.sm3_to_array(self.sm3_to_array(method + self.__end_string))
         # return self.sum(self.sum(method + self.__end_string))
 
     def generate_params_code(self, params: str) -> list[int]:
-        
+
         return self.sm3_to_array(self.sm3_to_array(params + self.__end_string))
         # return self.sum(self.sum(params + self.__end_string))
 
     @classmethod
     def sm3_to_array(cls, data: str | list) -> list[int]:
         """
-        代码参考: https://github.com/Johnserf-Seed/f2/blob/main/f2/utils/abogus.py
-
         计算请求体的 SM3 哈希值，并将结果转换为整数数组
         Calculate the SM3 hash value of the request body and convert the result to an array of integers
-
         Args:
             data (Union[str, List[int]]): 输入数据 (Input data).
-
         Returns:
             List[int]: 哈希值的整数数组 (Array of integers representing the hash value).
         """
@@ -577,7 +573,7 @@ class ABogus:
 
     @classmethod
     def generate_browser_info(cls, platform: str = "Win32") -> str:
-        
+
         inner_width = randint(1280, 1920)
         inner_height = randint(720, 1080)
         outer_width = randint(inner_width, 1920)
@@ -607,7 +603,7 @@ class ABogus:
 
     @staticmethod
     def rc4_encrypt(plaintext, key):
-        
+
         s = list(range(256))
         j = 0
 
@@ -638,7 +634,7 @@ class ABogus:
         random_num_2=None,
         random_num_3=None,
     ) -> str:
-        
+
         string_1 = self.generate_string_1(
             random_num_1,
             random_num_2,

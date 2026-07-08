@@ -205,15 +205,76 @@ class MediaHostControllerMixin:
             return
 
         new_title = item.text().strip()
-        if new_title == video.title or not os.path.exists(video.local_path):
+        if new_title == video.title:
             item.setText(video.title)
             return
         if self._get_current_playing_id() == vid:
             self._host().release_media_playback()
             self._set_current_playing_id(None)
 
+        if self._should_rename_media_in_background():
+            self._submit_rename_video_task(item, vid, new_title, self._host().current_save_dir)
+            return
+
         outcome = self._rename_video_sync(vid, new_title, self._host().current_save_dir)
+        self._finalize_rename_video(item, outcome, video_id=vid, fallback_video=video)
+
+    def _should_rename_media_in_background(self) -> bool:
+        app = self._qt_app_for_background_work()
+        if app is None:
+            return False
+        return QThread.currentThread() == app.thread()
+
+    def _submit_rename_video_task(self, item, video_id: str, new_title: str, save_dir: str) -> None:
+        generation_by_id = getattr(self, "_rename_generation_by_id", None)
+        if not isinstance(generation_by_id, dict):
+            generation_by_id = {}
+            self._rename_generation_by_id = generation_by_id
+        generation = int(generation_by_id.get(video_id, 0) or 0) + 1
+        generation_by_id[video_id] = generation
+
+        invoker = self._ensure_ui_callback_invoker()
+        runner = self._ensure_short_task_runner()
+
+        def rename_in_background(cancel_token) -> None:
+            outcome = self._rename_video_io(video_id, new_title, save_dir)
+            if cancel_token.is_cancelled():
+                return
+            invoker.invoke(
+                lambda outcome=outcome: self._finalize_rename_video(
+                    item,
+                    outcome,
+                    generation=generation,
+                    video_id=video_id,
+                )
+            )
+
+        runner.submit(name=f"rename-video-{video_id}", fn=rename_in_background)
+
+    def _finalize_rename_video(
+        self,
+        item,
+        outcome,
+        *,
+        generation: int | None = None,
+        video_id: str | None = None,
+        fallback_video: VideoItem | None = None,
+    ) -> None:
+        outcome_video_id = video_id or getattr(outcome, "video_id", None)
+        if generation is not None:
+            generation_by_id = getattr(self, "_rename_generation_by_id", {})
+            if int(generation_by_id.get(outcome_video_id, 0) or 0) != generation:
+                return
+        video = getattr(outcome, "video", None) or fallback_video
         if outcome.status == "ok":
+            if video is None:
+                self._host().report_rename_error(getattr(outcome, "error", None) or "未知错误")
+                return
+            new_title = getattr(outcome, "new_title", None) or video.title
+            new_path = getattr(outcome, "new_path", None)
+            video.title = new_title
+            if new_path is not None:
+                video.local_path = new_path
             item.setToolTip(new_title)
             self._host().reorder_video_row(video)
             message = self._rename_outcome_message(outcome)
@@ -221,7 +282,8 @@ class MediaHostControllerMixin:
                 self._host().append_log(message)
         else:
             self._host().report_rename_error(outcome.error or "未知错误")
-            item.setText(video.title)
+            if video is not None:
+                item.setText(video.title)
 
     def on_delete_video(self, row_idx, vid):
         """Delete a media item and reconcile host/download queue state."""
@@ -610,10 +672,82 @@ class MediaHostControllerMixin:
     def play_video(self, vid):
         """Preview a local media item through the host adapter."""
         video = self._video_lookup(vid) if vid else None
-        if not video or not os.path.exists(video.local_path):
+        if not video:
             self._host().report_missing_media()
             return
-        self._set_current_playing_id(vid)
+        if self._should_check_playback_file_in_background():
+            self._submit_playback_file_check(vid, video.local_path)
+            return
+        if not self._playback_file_exists(video.local_path):
+            self._host().report_missing_media()
+            return
+        self._finish_play_video_after_file_check(vid, video.local_path, exists=True)
+
+    def _should_check_playback_file_in_background(self) -> bool:
+        app = self._qt_app_for_background_work()
+        if app is None:
+            return False
+        return QThread.currentThread() == app.thread()
+
+    @staticmethod
+    def _playback_file_exists(file_path: str) -> bool:
+        try:
+            return os.path.exists(file_path)
+        except OSError as exc:
+            debug_logger.log_exception(
+                "MediaHostControllerMixin",
+                "playback_file_exists",
+                exc,
+                details={"path": file_path},
+            )
+            return False
+
+    def _submit_playback_file_check(self, video_id: str, local_path: str) -> None:
+        generation = int(getattr(self, "_playback_file_check_generation", 0) or 0) + 1
+        self._playback_file_check_generation = generation
+        previous_token = getattr(self, "_playback_file_check_token", None)
+        if previous_token is not None:
+            previous_token.cancel()
+
+        invoker = self._ensure_ui_callback_invoker()
+        runner = self._ensure_short_task_runner()
+
+        def check_in_background(cancel_token) -> None:
+            exists = self._playback_file_exists(local_path)
+            if cancel_token.is_cancelled():
+                return
+            invoker.invoke(
+                lambda exists=exists: self._finish_play_video_after_file_check(
+                    video_id,
+                    local_path,
+                    exists=exists,
+                    generation=generation,
+                )
+            )
+
+        self._playback_file_check_token = runner.submit(name=f"check-playback-file-{video_id}", fn=check_in_background)
+
+    def _finish_play_video_after_file_check(
+        self,
+        video_id: str,
+        expected_path: str,
+        *,
+        exists: bool,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != int(getattr(self, "_playback_file_check_generation", 0) or 0):
+            return
+        video = self._video_lookup(video_id)
+        if not video or normalize_media_path(video.local_path) != normalize_media_path(expected_path):
+            return
+        if not exists:
+            self._host().report_missing_media()
+            return
+        self._start_video_playback(video_id, video)
+
+    def _start_video_playback(self, video_id: str, video: VideoItem) -> None:
+        """Run the actual playback branch after any path probe has completed."""
+        self._set_current_playing_id(video_id)
         self._host().announce_playback(video.title)
 
         if self._should_open_with_system_player():

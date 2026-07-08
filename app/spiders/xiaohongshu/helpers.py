@@ -27,7 +27,6 @@ def _base36_encode(number: int) -> str:
     return sign + base36
 
 def build_search_id() -> str:
-    """Build XHS search_id following the browser-compatible MediaCrawler strategy."""
     epoch_part = int(time.time() * 1000) << 64
     random_part = int(random.uniform(0, 2147483646))
     return _base36_encode(epoch_part + random_part)

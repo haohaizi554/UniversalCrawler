@@ -24,6 +24,7 @@ from app.spiders.bilibili.spider import BiliAPI
 from app.spiders.bilibili.spider import BilibiliSpider
 from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
+from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER, make_mixin_key, sign_wbi_params
 from app.spiders.douyin.parser import DouyinItemParser
 from app.spiders.douyin.spider import DouyinSpider
 from app.spiders.douyin.task_builder import DouyinTaskBuilder
@@ -94,6 +95,10 @@ class SpiderHelperTests(unittest.TestCase):
 
     def _make_bili_api(self) -> BiliAPI:
         """提供 `_make_bili_api` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
+        BILIBILI_WBI_SIGNER.set_keys(
+            "7cd084941338484aae1ad9425b84077c",
+            "4932caff0ff746eab6f01bf08b70ac45",
+        )
         api = BiliAPI.__new__(BiliAPI)
         api.sess = Mock()
         api.cookie_path = "bili_auth.json"
@@ -218,6 +223,21 @@ class SpiderHelperTests(unittest.TestCase):
         )
         self.assertEqual(result["bvid"], "BV1xx")
         self.assertEqual(len(result["episodes"]), 1)
+
+    def test_bilibili_wbi_signer_matches_media_crawler_algorithm(self):
+        img_key = "7cd084941338484aae1ad9425b84077c"
+        sub_key = "4932caff0ff746eab6f01bf08b70ac45"
+
+        signed = sign_wbi_params(
+            {"foo": "114", "bar": "514", "baz": "1919810"},
+            img_key,
+            sub_key,
+            now=1700000000,
+        )
+
+        self.assertEqual(make_mixin_key(img_key, sub_key), "ea1db124af3c7062474693fa704f4ff8")
+        self.assertEqual(signed["wts"], "1700000000")
+        self.assertEqual(signed["w_rid"], "efcb2ff452f5bc617792e9bc1c092c4f")
 
     def test_bilibili_parser_rejects_incomplete_video_info(self):
         """验证 `test_bilibili_parser_rejects_incomplete_video_info` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -652,7 +672,37 @@ class SpiderHelperTests(unittest.TestCase):
         result = api.get_video_info(None, trace_id="trace-aid", aid=123456)
 
         self.assertEqual(result["bvid"], "BVfromAid")
-        self.assertIn("aid=123456", api.sess.get.call_args.args[0])
+        self.assertEqual(api.sess.get.call_args.args[0], "https://api.bilibili.com/x/web-interface/view")
+        params = api.sess.get.call_args.kwargs["params"]
+        self.assertEqual(params["aid"], "123456")
+        self.assertIn("wts", params)
+        self.assertIn("w_rid", params)
+
+    def test_bili_api_get_video_info_retries_unsigned_when_signed_detail_fails(self):
+        api = self._make_bili_api()
+        signed_response = Mock(status_code=200)
+        signed_response.json.return_value = {"code": -400, "message": "invalid signature"}
+        unsigned_response = Mock(status_code=200)
+        unsigned_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "bvid": "BVunsigned",
+                "title": "demo",
+                "owner": {"name": "up"},
+                "pages": [{"part": "P1", "cid": 123, "page": 1}],
+            },
+        }
+        api.sess.get.side_effect = [signed_response, unsigned_response]
+
+        result = api.get_video_info("BVunsigned", trace_id="trace-detail")
+
+        self.assertEqual(result["bvid"], "BVunsigned")
+        first_params = api.sess.get.call_args_list[0].kwargs["params"]
+        second_params = api.sess.get.call_args_list[1].kwargs["params"]
+        self.assertEqual(first_params["bvid"], "BVunsigned")
+        self.assertIn("wts", first_params)
+        self.assertIn("w_rid", first_params)
+        self.assertEqual(second_params, {"bvid": "BVunsigned"})
 
     def test_bili_api_load_cookies_rejects_invalid_payload_shape(self):
         """验证 `test_bili_api_load_cookies_rejects_invalid_payload_shape` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -701,8 +751,12 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(video_url, "https://video.example.com/v.mp4")
         self.assertEqual(audio_url, "https://video.example.com/a.m4a")
         self.assertEqual(quality_id, 80)
-        self.assertIn("fnval=4048", api.sess.get.call_args_list[0].args[0])
-        self.assertIn("fnval=80", api.sess.get.call_args_list[1].args[0])
+        first_params = api.sess.get.call_args_list[0].kwargs["params"]
+        second_params = api.sess.get.call_args_list[1].kwargs["params"]
+        self.assertEqual(first_params["fnval"], "4048")
+        self.assertEqual(second_params["fnval"], "80")
+        self.assertIn("w_rid", first_params)
+        self.assertIn("w_rid", second_params)
 
     def test_bili_api_get_play_url_raises_when_both_modes_fail(self):
         """验证 `test_bili_api_get_play_url_raises_when_both_modes_fail` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

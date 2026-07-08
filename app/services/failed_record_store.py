@@ -133,23 +133,37 @@ class FailedRecordStore:
                 self._refreshing = refresh_request is not None
             if not batch and refresh_request is None:
                 continue
-            write_failed = False
             try:
+                write_failed = False
                 if batch:
-                    self._write_batch(batch)
-            except (OSError, sqlite3.Error, RuntimeError) as exc:
-                write_failed = True
-                debug_logger.log_exception(
-                    "FailedRecordStore",
-                    "write_batch",
-                    exc,
-                    details={"count": len(batch), "db_path": str(self._db_path)},
-                )
-            if refresh_request is not None and not write_failed:
-                self._refresh_snapshot(refresh_request)
-            with self._lock:
-                self._writing = False
-                self._refreshing = False
+                    try:
+                        self._write_batch(batch)
+                    except Exception as exc:
+                        write_failed = True
+                        debug_logger.log_exception(
+                            "FailedRecordStore",
+                            "write_batch",
+                            exc,
+                            details={"count": len(batch), "db_path": str(self._db_path)},
+                        )
+                if refresh_request is not None and not write_failed:
+                    try:
+                        self._refresh_snapshot(refresh_request)
+                    except Exception as exc:
+                        debug_logger.log_exception(
+                            "FailedRecordStore",
+                            "refresh_snapshot_unhandled",
+                            exc,
+                            details={
+                                "limit": refresh_request[0],
+                                "offset": refresh_request[1],
+                                "db_path": str(self._db_path),
+                            },
+                        )
+            finally:
+                with self._lock:
+                    self._writing = False
+                    self._refreshing = False
 
     def _init_db(self) -> None:
         if self._initialized:

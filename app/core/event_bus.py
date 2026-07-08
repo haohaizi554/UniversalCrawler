@@ -41,6 +41,7 @@ class EventBus:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._async_idle_condition = threading.Condition(self._lock)
         self._subscribers: dict[str, list[Callable[[Any], None]]] = defaultdict(list)
         self._async_subscribers: dict[str, list[Callable[[Any], None]]] = defaultdict(list)
         self._logger = logging.getLogger(__name__)
@@ -50,7 +51,9 @@ class EventBus:
         self._async_queue: queue.Queue[_AsyncTask | _AsyncTaskKey | None] = queue.Queue(maxsize=1024)
         self._async_pending_latest: dict[tuple[int, str, str, str], _AsyncTask] = {}
         self._async_enqueued_latest_keys: set[tuple[int, str, str, str]] = set()
+        self._async_inflight = 0
         self._async_thread: threading.Thread | None = None
+        self._async_thread_id: int | None = None
         self._async_shutdown = False
 
     @contextmanager
@@ -155,6 +158,22 @@ class EventBus:
         with self._locked("snapshot"):
             return [dict(item) for item in self._history]
 
+    def wait_for_async_idle(self, timeout: float | None = None) -> bool:
+        """Wait until queued async handlers have finished without pumping UI events."""
+        if threading.get_ident() == self._async_thread_id:
+            return False
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        with self._async_idle_condition:
+            while self._async_inflight > 0:
+                if deadline is None:
+                    self._async_idle_condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._async_idle_condition.wait(remaining)
+            return True
+
     def shutdown(self) -> None:
         with self._locked("shutdown"):
             self._async_shutdown = True
@@ -197,9 +216,11 @@ class EventBus:
         for handler in handlers:
             if self._enqueue_latest_async_handler(topic, payload, handler):
                 continue
+            self._track_async_task_enqueued()
             try:
                 self._async_queue.put_nowait(_AsyncTask(topic, payload, handler))
             except queue.Full:
+                self._track_async_task_finished()
                 self._logger.warning("EventBus async handler queue full for topic %s", topic)
                 return
 
@@ -218,14 +239,28 @@ class EventBus:
             if key in self._async_enqueued_latest_keys:
                 return True
             self._async_enqueued_latest_keys.add(key)
+            self._async_inflight += 1
+            self._async_idle_condition.notify_all()
         try:
             self._async_queue.put_nowait(_AsyncTaskKey(key))
         except queue.Full:
             with self._locked("async.latest.full"):
                 self._async_pending_latest.pop(key, None)
                 self._async_enqueued_latest_keys.discard(key)
+                self._async_inflight = max(0, self._async_inflight - 1)
+                self._async_idle_condition.notify_all()
             self._logger.warning("EventBus async handler queue full for topic %s", topic)
         return True
+
+    def _track_async_task_enqueued(self) -> None:
+        with self._async_idle_condition:
+            self._async_inflight += 1
+            self._async_idle_condition.notify_all()
+
+    def _track_async_task_finished(self) -> None:
+        with self._async_idle_condition:
+            self._async_inflight = max(0, self._async_inflight - 1)
+            self._async_idle_condition.notify_all()
 
     @staticmethod
     def _async_latest_key(
@@ -260,29 +295,36 @@ class EventBus:
         return None
 
     def _run_async_handlers(self) -> None:
-        while True:
-            item = self._async_queue.get()
-            if item is None:
-                return
-            task = self._resolve_async_task(item)
-            if task is None:
-                continue
-            if self._async_shutdown:
-                return
-            started = time.monotonic()
-            try:
-                task.handler(task.payload)
-            except Exception:  # pragma: no cover - defensive isolation
-                self._logger.exception("EventBus async handler failed for topic %s", task.topic)
-            finally:
-                elapsed = time.monotonic() - started
-                if elapsed > HANDLER_WARN_SECONDS:
-                    self._logger.warning(
-                        "EventBus slow async handler %.3fs for topic %s: %r",
-                        elapsed,
-                        task.topic,
-                        task.handler,
-                    )
+        self._async_thread_id = threading.get_ident()
+        try:
+            while True:
+                item = self._async_queue.get()
+                if item is None:
+                    return
+                try:
+                    task = self._resolve_async_task(item)
+                    if task is None:
+                        continue
+                    if self._async_shutdown:
+                        return
+                    started = time.monotonic()
+                    try:
+                        task.handler(task.payload)
+                    except Exception:  # pragma: no cover - defensive isolation
+                        self._logger.exception("EventBus async handler failed for topic %s", task.topic)
+                    finally:
+                        elapsed = time.monotonic() - started
+                        if elapsed > HANDLER_WARN_SECONDS:
+                            self._logger.warning(
+                                "EventBus slow async handler %.3fs for topic %s: %r",
+                                elapsed,
+                                task.topic,
+                                task.handler,
+                            )
+                finally:
+                    self._track_async_task_finished()
+        finally:
+            self._async_thread_id = None
 
     def _resolve_async_task(self, item: _AsyncTask | _AsyncTaskKey) -> _AsyncTask | None:
         if isinstance(item, _AsyncTask):
@@ -295,6 +337,8 @@ class EventBus:
         with self._locked("async.drain"):
             self._async_pending_latest.clear()
             self._async_enqueued_latest_keys.clear()
+            self._async_inflight = 0
+            self._async_idle_condition.notify_all()
         while True:
             try:
                 self._async_queue.get_nowait()

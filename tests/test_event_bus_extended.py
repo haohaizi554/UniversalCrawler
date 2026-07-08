@@ -321,6 +321,71 @@ class EventBusAsyncBackpressureTests(unittest.TestCase):
 
         self.assertEqual(seen, [0, 1, 2])
 
+    def test_wait_for_async_idle_tracks_running_handlers(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        release = threading.Event()
+        seen: list[str] = []
+
+        def handler(payload: str) -> None:
+            started.set()
+            release.wait(timeout=2)
+            seen.append(payload)
+
+        bus.subscribe_async("normal", handler)
+        try:
+            bus.publish("normal", "payload")
+            self.assertTrue(started.wait(timeout=2))
+            self.assertFalse(bus.wait_for_async_idle(timeout=0.01))
+            release.set()
+            self.assertTrue(bus.wait_for_async_idle(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertEqual(seen, ["payload"])
+
+    def test_wait_for_async_idle_times_out_while_handler_is_blocked(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        release = threading.Event()
+
+        def handler(payload: str) -> None:
+            started.set()
+            release.wait(timeout=2)
+
+        bus.subscribe_async("normal", handler)
+        try:
+            bus.publish("normal", "payload")
+            self.assertTrue(started.wait(timeout=2))
+
+            self.assertFalse(bus.wait_for_async_idle(timeout=0.01))
+
+            release.set()
+            self.assertTrue(bus.wait_for_async_idle(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+    def test_wait_for_async_idle_returns_false_from_async_worker_thread(self) -> None:
+        bus = EventBus()
+        finished = threading.Event()
+        results: list[bool] = []
+
+        def handler(payload: str) -> None:
+            results.append(bus.wait_for_async_idle(timeout=1))
+            finished.set()
+
+        bus.subscribe_async("normal", handler)
+        try:
+            bus.publish("normal", "payload")
+            self.assertTrue(finished.wait(timeout=2))
+            self.assertTrue(bus.wait_for_async_idle(timeout=2))
+        finally:
+            bus.shutdown()
+
+        self.assertEqual(results, [False])
+
 
 class EventBusStormAndLockTests(unittest.TestCase):
     def test_storm_detection_triggers_warning(self) -> None:

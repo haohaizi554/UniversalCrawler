@@ -18,8 +18,8 @@ from app.services.icon_registry import platform_icon_file, ui_icon_path
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
+from app.ui.viewmodels.failed_page_projection import prepare_failed_item_for_display
 from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
-from app.ui.viewmodels.log_i18n import localize_log_text
 from app.utils.qt_runtime import load_qt_icon
 
 
@@ -157,13 +157,11 @@ class FailedPage(PageFrame):
         self.pagination_footer.set_language(normalized)
         if hasattr(self.table, "table_model"):
             self.table.table_model.set_language(normalized)
-        self._render_selected_detail()
+        selected_id = self.table.selected_id() or self._selected_item_id or ""
+        self._submit_page_request(self.items, selected_id=str(selected_id or ""))
 
     def _t(self, text: object) -> str:
         return tr(str(text or ""), self._language)
-
-    def _runtime_text(self, text: object) -> str:
-        return localize_log_text(text, self._language)
 
     @staticmethod
     def _scroll_container(object_name: str) -> QScrollArea:
@@ -190,6 +188,10 @@ class FailedPage(PageFrame):
             selected_id=selected_id,
             select_first=True,
             selected_id_moves_page=bool(selected_id),
+            item_transformer=lambda item, language=self._language: prepare_failed_item_for_display(
+                item,
+                language=language,
+            ),
         )
         worker = self._page_worker
         if worker is None:
@@ -302,7 +304,7 @@ class FailedPage(PageFrame):
         self.summary_layout.addWidget(
             self._detail_row(
                 "失败原因",
-                self._runtime_text(item.get("reason_detail") or item.get("reason") or ""),
+                item.get("reason_detail_display") or "",
                 icon_file=str(item.get("reason_icon_file") or ""),
                 emphasized=True,
             )
@@ -316,16 +318,13 @@ class FailedPage(PageFrame):
         )
         self.summary_layout.addWidget(self._detail_row("Trace ID", item.get("trace_id", "")))
 
-        for entry in list(item.get("log_excerpt_items") or []):
+        for entry in list(item.get("log_excerpt_display_items") or []):
             self.log_layout.addWidget(self._log_row(entry))
-        if not (item.get("log_excerpt_items") or []):
-            for message in list(item.get("log_excerpt") or []):
-                self.log_layout.addWidget(self._log_row({"level": "INFO", "message": message, "icon_file": "log_level_info.png"}))
         if self.log_layout.count() == 0:
             self.log_layout.addWidget(self._empty_label("暂无日志片段"))
         self.log_layout.addStretch(1)
 
-        for solution in list(item.get("solutions") or []):
+        for solution in list(item.get("solutions_display") or []):
             self.solutions_list_layout.addWidget(self._solution_row(solution))
         if self.solutions_list_layout.count() == 0:
             self.solutions_list_layout.addWidget(self._empty_label("暂无建议"))
@@ -339,23 +338,23 @@ class FailedPage(PageFrame):
             item.get("id", ""),
             item.get("title", ""),
             item.get("failed_at", ""),
-            item.get("reason_detail") or item.get("reason") or "",
+            item.get("reason_detail_display") or "",
             item.get("reason_icon_file", ""),
             item.get("platform", ""),
             item.get("platform_id", ""),
             item.get("trace_id", ""),
-            self._log_entries_signature(item.get("log_excerpt_items") or []),
-            tuple(str(message) for message in (item.get("log_excerpt") or [])),
-            self._solutions_signature(item.get("solutions") or []),
+            self._log_entries_signature(item.get("log_excerpt_display_items") or []),
+            self._solutions_signature(item.get("solutions_display") or []),
         )
 
     @staticmethod
-    def _log_entries_signature(entries: Any) -> tuple[tuple[str, str, str, str], ...]:
+    def _log_entries_signature(entries: Any) -> tuple[tuple[str, str, str, str, str], ...]:
         return tuple(
             (
                 str(entry.get("time") or ""),
+                str(entry.get("time_display") or ""),
                 str(entry.get("level") or entry.get("raw_level") or ""),
-                str(entry.get("message") or ""),
+                str(entry.get("message_display") or ""),
                 str(entry.get("icon_file") or ""),
             )
             for entry in list(entries or [])
@@ -366,8 +365,8 @@ class FailedPage(PageFrame):
     def _solutions_signature(solutions: Any) -> tuple[tuple[str, str, str], ...]:
         return tuple(
             (
-                str(solution.get("title") or ""),
-                str(solution.get("description") or ""),
+                str(solution.get("title_display") or ""),
+                str(solution.get("description_display") or ""),
                 str(solution.get("icon_file") or ""),
             )
             for solution in list(solutions or [])
@@ -401,7 +400,7 @@ class FailedPage(PageFrame):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(2, 1, 0, 1)
         layout.setSpacing(7)
-        time_label = QLabel(self._format_log_time(entry.get("time")))
+        time_label = QLabel(str(entry.get("time_display") or "--:--:--"))
         time_label.setObjectName("FailedLogTime")
         time_label.ensurePolished()
         time_width = max(
@@ -414,7 +413,7 @@ class FailedPage(PageFrame):
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         level_badge = self._log_level_badge(entry)
         layout.addWidget(level_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        message = QLabel(self._runtime_text(entry.get("message") or ""))
+        message = QLabel(str(entry.get("message_display") or ""))
         message.setObjectName("FailedLogMessage")
         message.setWordWrap(True)
         message.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -450,19 +449,6 @@ class FailedPage(PageFrame):
             return level
         return level[:8] or "INFO"
 
-    @staticmethod
-    def _format_log_time(value: Any) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return "--:--:--"
-        parts = text.split()
-        candidate = parts[-1] if parts else text
-        if "." in candidate:
-            candidate = candidate.split(".", 1)[0]
-        if len(candidate) >= 8 and candidate[-8:-6].isdigit() and candidate[-5:-3].isdigit() and candidate[-2:].isdigit():
-            return candidate[-8:]
-        return text[-8:].rjust(8, "-")
-
     def _log_level_badge(self, entry: dict[str, Any]) -> QLabel:
         level = self._log_level_text(entry)
         object_names = {
@@ -493,11 +479,11 @@ class FailedPage(PageFrame):
         text_layout = QVBoxLayout(text_box)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(3)
-        title = QLabel(self._runtime_text(solution.get("title") or "建议"))
+        title = QLabel(str(solution.get("title_display") or ""))
         title.setObjectName("FailedSolutionTitle")
         title.setWordWrap(True)
         title.setMinimumWidth(0)
-        desc = QLabel(self._runtime_text(solution.get("description") or ""))
+        desc = QLabel(str(solution.get("description_display") or ""))
         desc.setObjectName("FailedSolutionDescription")
         desc.setWordWrap(True)
         desc.setMinimumWidth(0)

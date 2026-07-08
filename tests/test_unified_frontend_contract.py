@@ -30,6 +30,10 @@ from app.ui.main_window import MainWindow
 from app.ui.pages.active_downloads_page import EventTimelineWidget, SpeedTrendWidget, TEXT
 from app.ui.pages.common import ActionTable, connect_table_actions
 from app.ui.styles.themes import apply_application_theme, generate_stylesheet, theme_colors
+from app.ui.viewmodels.active_download_projection import (
+    localize_active_event_message,
+    prepare_active_item_for_display,
+)
 
 def _html_bundle() -> str:
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -846,6 +850,27 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(table.item(0, 0).text(), "Second updated")
         self.assertEqual(table.cellWidget(0, 1).value(), 40)
         table.deleteLater()
+
+    def test_app_shell_item_index_initializes_on_first_partial_snapshot(self):
+        shell = AppShell(is_dark_theme=False, style_provider=self.app)
+        self.addCleanup(self._cleanup_shell, shell)
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        snapshot["queue_items"] = [{"id": "queue-1", "title": "Queued"}]
+        snapshot["active_downloads"] = [{"id": "active-1", "title": "Active"}]
+        snapshot["completed_items"] = [
+            {"id": "completed-1", "title": "Completed 1"},
+            {"id": "completed-2", "title": "Completed 2"},
+        ]
+        snapshot["failed_items"] = [{"id": "failed-1", "title": "Failed"}]
+
+        shell.render(snapshot, changed_sections={"completed_items"})
+        self.app.processEvents()
+
+        self.assertEqual(shell.row_for_video_id("queue-1"), 0)
+        self.assertEqual(shell.row_for_video_id("active-1"), 0)
+        self.assertEqual(shell.row_for_video_id("completed-2"), 1)
+        self.assertEqual(shell.row_for_video_id("failed-1"), 0)
+        self.assertEqual(shell.completed_id_order(), ["completed-1", "completed-2"])
 
     def test_active_downloads_page_uses_model_view_and_stable_updates(self):
         shell = self._make_shell()
@@ -2266,26 +2291,51 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertNotIn("\u5feb\u624b", texts)
 
     def test_gui_active_timeline_translates_dynamic_event_messages(self):
-        timeline = EventTimelineWidget()
-        self.addCleanup(timeline.deleteLater)
-        timeline.set_language("en-US")
-
         self.assertEqual(
-            timeline._localized_message("\u4efb\u52a1\u8fdb\u5165 \u6296\u97f3 \u4e0b\u8f7d\u5668"),
+            localize_active_event_message("\u4efb\u52a1\u8fdb\u5165 \u6296\u97f3 \u4e0b\u8f7d\u5668", "en-US"),
             "Task entered Douyin downloader",
         )
         self.assertEqual(
-            timeline._localized_message("\u4efb\u52a1\u8fdb\u5165 Bilibili \u4e0b\u8f7d\u5668"),
+            localize_active_event_message("\u4efb\u52a1\u8fdb\u5165 Bilibili \u4e0b\u8f7d\u5668", "en-US"),
             "Task entered Bilibili downloader",
         )
         self.assertEqual(
-            timeline._localized_message("\u97f3\u89c6\u9891\u6d41\u4e0b\u8f7d\u4e2d"),
+            localize_active_event_message("\u97f3\u89c6\u9891\u6d41\u4e0b\u8f7d\u4e2d", "en-US"),
             "Audio/video stream downloading",
         )
         self.assertEqual(
-            timeline._localized_message("\u5f53\u524d\u901f\u5ea6\uff1a1.0 MB/s\uff0c\u5269\u4f59\uff1a00:47"),
+            localize_active_event_message(
+                "\u5f53\u524d\u901f\u5ea6\uff1a1.0 MB/s\uff0c\u5269\u4f59\uff1a00:47",
+                "en-US",
+            ),
             "Current speed: 1.0 MB/s, remaining: 00:47",
         )
+
+    def test_gui_active_timeline_uses_worker_prepared_display_events(self):
+        item = {
+            "id": "active-1",
+            "events": [
+                {
+                    "time": "20:20:48",
+                    "message": "\u4efb\u52a1\u8fdb\u5165 Bilibili \u4e0b\u8f7d\u5668",
+                },
+                {
+                    "time": "20:20:49",
+                    "message": "\u5f53\u524d\u901f\u5ea6\uff1a1.0 MB/s\uff0c\u5269\u4f59\uff1a00:47",
+                },
+            ],
+        }
+
+        projected = prepare_active_item_for_display(item, language="en-US")
+
+        self.assertEqual(
+            [event["message_display"] for event in projected["events_display"]],
+            [
+                "Task entered Bilibili downloader",
+                "Current speed: 1.0 MB/s, remaining: 00:47",
+            ],
+        )
+        self.assertEqual(item["events"][0]["message"], "\u4efb\u52a1\u8fdb\u5165 Bilibili \u4e0b\u8f7d\u5668")
 
     def test_gui_settings_language_rebuild_closes_open_combo_popup(self):
         shell = self._make_shell()

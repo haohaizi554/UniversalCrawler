@@ -35,20 +35,24 @@ class PlaybackPositionService:
         *,
         max_entries: int = 1000,
         cleanup_on_load: bool = True,
+        load_on_init: bool = True,
     ) -> None:
         self.file_path = Path(file_path) if file_path is not None else resolve_user_file("playback_positions.json")
         self.max_entries = max(1, int(max_entries or 1000))
         self._lock = threading.RLock()
         self._entries: dict[str, PlaybackPositionEntry] = {}
-        self._load()
-        if cleanup_on_load:
-            self.cleanup()
+        self._loaded = False
+        self._cleanup_on_load = bool(cleanup_on_load)
+        if load_on_init:
+            with self._lock:
+                self._ensure_loaded_locked()
 
     def get(self, path: str | os.PathLike[str]) -> int:
         key = self.normalize_path(path)
         if not key:
             return 0
         with self._lock:
+            self._ensure_loaded_locked()
             entry = self._entries.get(key)
             if entry is None:
                 return 0
@@ -65,6 +69,7 @@ class PlaybackPositionService:
         position_ms = max(0, int(position_ms or 0))
         duration_ms = max(0, int(duration_ms or 0))
         with self._lock:
+            self._ensure_loaded_locked()
             metadata = self._file_metadata(key)
             if metadata is None:
                 self._entries.pop(key, None)
@@ -92,31 +97,25 @@ class PlaybackPositionService:
         if not key:
             return
         with self._lock:
+            self._ensure_loaded_locked()
             if self._entries.pop(key, None) is not None:
                 self._write_locked()
 
     def clear(self) -> None:
         with self._lock:
+            self._ensure_loaded_locked()
             if self._entries:
                 self._entries.clear()
                 self._write_locked()
 
     def cleanup(self) -> int:
         with self._lock:
-            before = len(self._entries)
-            self._entries = {
-                key: entry
-                for key, entry in self._entries.items()
-                if self._entry_matches_file(entry)
-            }
-            self._prune_size_locked()
-            removed = before - len(self._entries)
-            if removed:
-                self._write_locked()
-            return removed
+            self._ensure_loaded_locked()
+            return self._cleanup_loaded_locked()
 
     def snapshot(self) -> dict[str, PlaybackPositionEntry]:
         with self._lock:
+            self._ensure_loaded_locked()
             return dict(self._entries)
 
     @staticmethod
@@ -132,39 +131,64 @@ class PlaybackPositionService:
 
     def _load(self) -> None:
         with self._lock:
-            self._entries = {}
+            self._load_locked()
+            self._loaded = True
+
+    def _ensure_loaded_locked(self) -> None:
+        if self._loaded:
+            return
+        self._load_locked()
+        self._loaded = True
+        if self._cleanup_on_load:
+            self._cleanup_loaded_locked()
+
+    def _load_locked(self) -> None:
+        self._entries = {}
+        try:
+            payload = json.loads(self.file_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            debug_logger.log_exception(
+                "PlaybackPositionService",
+                "load",
+                exc,
+                details={"file_path": str(self.file_path)},
+            )
+            return
+        raw_entries = payload.get("entries") if isinstance(payload, dict) else {}
+        if not isinstance(raw_entries, dict):
+            return
+        for raw_key, raw_entry in raw_entries.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            key = self.normalize_path(raw_entry.get("path") or raw_key)
+            if not key:
+                continue
             try:
-                payload = json.loads(self.file_path.read_text(encoding="utf-8"))
-            except FileNotFoundError:
-                return
-            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-                debug_logger.log_exception(
-                    "PlaybackPositionService",
-                    "load",
-                    exc,
-                    details={"file_path": str(self.file_path)},
+                self._entries[key] = PlaybackPositionEntry(
+                    path=key,
+                    position_ms=int(raw_entry.get("position_ms") or 0),
+                    duration_ms=int(raw_entry.get("duration_ms") or 0),
+                    size=int(raw_entry.get("size") or 0),
+                    mtime_ns=int(raw_entry.get("mtime_ns") or 0),
+                    updated_at=float(raw_entry.get("updated_at") or 0.0),
                 )
-                return
-            raw_entries = payload.get("entries") if isinstance(payload, dict) else {}
-            if not isinstance(raw_entries, dict):
-                return
-            for raw_key, raw_entry in raw_entries.items():
-                if not isinstance(raw_entry, dict):
-                    continue
-                key = self.normalize_path(raw_entry.get("path") or raw_key)
-                if not key:
-                    continue
-                try:
-                    self._entries[key] = PlaybackPositionEntry(
-                        path=key,
-                        position_ms=int(raw_entry.get("position_ms") or 0),
-                        duration_ms=int(raw_entry.get("duration_ms") or 0),
-                        size=int(raw_entry.get("size") or 0),
-                        mtime_ns=int(raw_entry.get("mtime_ns") or 0),
-                        updated_at=float(raw_entry.get("updated_at") or 0.0),
-                    )
-                except (TypeError, ValueError):
-                    continue
+            except (TypeError, ValueError):
+                continue
+
+    def _cleanup_loaded_locked(self) -> int:
+        before = len(self._entries)
+        self._entries = {
+            key: entry
+            for key, entry in self._entries.items()
+            if self._entry_matches_file(entry)
+        }
+        self._prune_size_locked()
+        removed = before - len(self._entries)
+        if removed:
+            self._write_locked()
+        return removed
 
     def _write_locked(self) -> None:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)

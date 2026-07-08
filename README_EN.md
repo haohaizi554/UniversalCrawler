@@ -9,7 +9,7 @@
   <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.17-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20unittest-informational" />
+  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20registry-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
@@ -71,7 +71,7 @@ It is neither a thin shell around a webpage nor a pile of scattered scripts. It 
 ### ⚡ 3. A Unified Download Engine, Not A Pile Of Platform Scripts
 
 - **Unified queue scheduling**: all tasks enter `DownloadManager`, and `DownloadWorker` manages lifecycle, concurrency slots, and callbacks.
-- **Automatic strategy routing**: chooses different downloaders and external tools based on resource characteristics, including normal HTTP, chunked downloading, `ffmpeg`, `N_m3u8DL-RE`, and more.
+- **Automatic strategy routing**: chooses different downloaders and external tools based on resource characteristics, including normal HTTP, chunked downloading, `ffmpeg` / `ffprobe`, `N_m3u8DL-RE`, and more.
 - **More robust file persistence**: automatically infers extensions, avoids collisions, and corrects suffixes by file signature, reducing the case where downloads succeed but files cannot be opened.
 - **Supports multiple media shapes**: ordinary videos, DASH separated audio/video, image galleries, live photos, and m3u8/HLS streaming resources.
 
@@ -91,8 +91,8 @@ It is neither a thin shell around a webpage nor a pile of scattered scripts. It 
 
 ### 🧪 6. Not Just Runnable, But Also Focused On Testing And Engineering Quality
 
-- **Unified testing framework**: the project uses `unittest`, aligned with local execution and GitHub Actions.
-- **Covers real high-risk paths**: current tests already cover models, configuration, controllers, downloaders, parsers, log desensitization, and semi-integrated flows.
+- **Unified test entry**: the project uses `pytest` as the runner, `tests/test_registry.py` for suite classification, and `tests/test_launcher.py` for GUI / TUI / CLI launch modes.
+- **Covers real high-risk paths**: the current registry contains 13 enabled categories and 131 runnable test files, covering models, configuration, controllers, downloaders, parsers, log desensitization, semi-integrated flows, architecture fitness, and lightweight benchmarks.
 - **Friendly for refactoring**: the spider main flow, download strategies, configuration migration, and file persistence areas are gradually being protected by tests, lowering the risk of future evolution.
 
 ---
@@ -131,6 +131,8 @@ The project offers two interaction modes to cover different usage scenarios:
 python main.py
 # or
 python -m entry.gui_entry
+# after editable/package installation
+ucrawl-gui
 ```
 
 - `main.py` is the unified adaptive entry point and defaults to desktop GUI when launched without arguments.
@@ -155,15 +157,27 @@ ucrawl-web --host 127.0.0.1 --port 8000
 
 | Endpoint | Method | Description |
 | :-- | :--: | :-- |
+| `/api/ping` | GET | health check |
 | `/api/platforms` | GET | get the supported platform list |
 | `/api/config` | GET/PUT | read or update configuration |
+| `/api/state` | GET | get the compatibility state snapshot |
+| `/api/frontend/state` | GET | get the full frontend state snapshot |
+| `/api/frontend/delta` | GET | get versioned frontend deltas |
+| `/api/frontend/action` | POST | unified frontend action entry |
+| `/api/scan` | POST | scan local media directories |
+| `/api/search` | POST | run platform search |
 | `/api/crawl/start` | POST | start a crawling task |
 | `/api/crawl/stop` | POST | stop the current crawl |
-| `/api/download/start` | POST | start downloading selected items |
-| `/api/download/stop` | POST | stop downloading |
+| `/api/crawl/select` | POST | submit crawl selection results |
+| `/api/video/{video_id}` | DELETE | delete a video record |
+| `/api/video/rename` | POST | rename a video record |
+| `/api/download` | POST | create a download task |
+| `/api/media/{video_id}` | GET | open a local media file |
 | `/api/dir/list` | GET | browse directory contents |
 | `/api/dir/change` | POST | change the save directory |
-| `/api/dir/pick-native` | GET | invoke the native system folder picker |
+| `/api/dir/pick-native` | POST | invoke the native system folder picker |
+| `/api/debug/latest-log` | GET | get the latest log |
+| `/api/debug/error-summary` | GET | get the error summary |
 
 ---
 
@@ -200,7 +214,7 @@ You will probably care more about these engineering points:
 - **Operating System**: Windows 10 / 11
 - **Python**: 3.10 or above
 - **Browser Runtime**: Playwright Chromium
-- **External Tools**: `ffmpeg`, `N_m3u8DL-RE` (use `.exe` on Windows and the extensionless binary on Linux/containers)
+- **External Tools**: `ffmpeg`, `ffprobe`, `N_m3u8DL-RE` (use `.exe` on Windows and the extensionless binary on Linux/containers)
 
 ### 2. Get The Source Code
 
@@ -221,6 +235,7 @@ playwright install chromium
 To guarantee full capabilities such as Bilibili stream merging and m3u8 downloading, ensure the following tools are available in the **project root directory**, under `UCRAWL_TOOL_ROOT`, or through the system environment:
 
 - `ffmpeg` / `ffmpeg.exe`
+- `ffprobe` / `ffprobe.exe`
 - `N_m3u8DL-RE` / `N_m3u8DL-RE.exe`
 
 The recommended root directory structure looks like this:
@@ -238,6 +253,7 @@ UniversalCrawlerProplus/
 ├── packaging/              # packaging scripts and configuration
 ├── tests/                  # test cases
 ├── ffmpeg.exe              # Windows external tool example
+├── ffprobe.exe             # Windows external tool example
 ├── N_m3u8DL-RE.exe         # Windows external tool example
 ├── main.py                 # unified adaptive entry (defaults to GUI)
 ├── entry/                  # thin entries for GUI / Web / CLI / Interactive / Test
@@ -250,15 +266,27 @@ UniversalCrawlerProplus/
 
 ```bash
 python main.py
+# or
+ucrawl-gui
 ```
 
 **Web UI Mode:**
 
 ```bash
 python -m entry.web_entry --host 127.0.0.1 --port 8000
+# or
+ucrawl-web --host 127.0.0.1 --port 8000
 ```
 
 On the first launch, the application will complete the necessary initialization and prepare the default runtime environment.
+
+**CLI / Test Entries:**
+
+```bash
+ucrawl --help
+ucrawl-test --help
+ucrawl-test-gui
+```
 
 ### 6. Packaged Release Usage
 
@@ -399,7 +427,7 @@ Project configuration is centrally managed by [`app/config/settings.py`](app/con
     "remember_position": true
   },
   "logging": {
-    "retention_days": 30,
+    "retention_days": 1,
     "level": "info",
     "ui_log_max_display_count": 300
   },
@@ -407,7 +435,8 @@ Project configuration is centrally managed by [`app/config/settings.py`](app/con
     "follow_system": false,
     "accent": "blue",
     "scale": "100%",
-    "font_size": "medium"
+    "font_size": "medium",
+    "language": "en-US"
   },
   "bilibili": {
     "api_workers": 8,
@@ -434,106 +463,48 @@ For more details:
 
 The point of this project has never been just “grab the resource somehow”, but making that capability **maintainable in the long run, continuously extensible, easy to debug, and easy to package**.
 
-### Core Data Flow
+### Core Data Flow Summary
 
 ```mermaid
 graph TD
-    UI[PyQt6 UI / Web UI] --> CTRL[ApplicationController]
-    CTRL --> SPIDER[Spider]
+    UI[PyQt6 UI / Web UI / CLI] --> FSS[FrontendStateService / API Adapter]
+    FSS --> CTRL[ApplicationController]
+    CTRL --> SPIDER[Spider / Plugin Registry]
     SPIDER --> PARSER[Parser]
     PARSER --> BUILDER[TaskBuilder]
     BUILDER --> MANAGER[DownloadManager]
     MANAGER --> WORKER[DownloadWorker]
     WORKER --> DOWNLOADER[Downloader / External Tools]
     DOWNLOADER --> IO[Local File IO]
+    MANAGER --> EVENT[Event Bus / UI Snapshot]
+    EVENT --> UI
 ```
 
-### Key Layer Breakdown
+### Core Engineering Principles
 
-#### `app/controllers`
+- GUI, WebUI, and CLI share `ApplicationController`, platform plugins, download scheduling, and frontend state services instead of maintaining three parallel implementations.
+- Spider / Parser / TaskBuilder / Downloader are separated so platform access, data cleanup, task assembly, and download execution do not leak into each other.
+- The UI thread only renders lightweight state. Snapshot building, log querying, list pagination, file actions, and SQLite / diskcache access must run in workers or service layers.
+- High-frequency progress, logs, and WebSocket messages use latest-state-wins, bounded queues, and critical-event bypass so slow clients or log floods do not freeze the main UI.
+- Adding a platform, setting, download strategy, or frontend field should also update the test registry and the relevant focused documentation.
 
-- Assembles UI, spiders, download manager, and file services into the complete application.
-- Receives signals and callbacks in a unified place, instead of scattering logic across window classes.
-- Acts as the main orchestration layer between user actions and internal services.
+### Core Technology Split
 
-#### `app/spiders`
-
-Each platform tries to follow the same three-part pattern:
-
-- `spider.py`: site access, login, scrolling, capture, user selection, and task emission.
-- `parser.py`: cleans raw HTML / JSON / titles / URLs / fingerprints and related raw data.
-- `task_builder.py`: maps platform results into unified download task metadata.
-
-The biggest benefit of this split is that **flow-heavy parts and pure logic parts can evolve and be tested separately**.
-
-#### `app/core/download_manager.py`
-
-- Controls the download queue and concurrency slots.
-- Manages worker lifecycle in a unified way.
-- Supports queued cancellation, stopping running tasks, callback dispatching, and completion cleanup.
-
-#### `app/core/downloaders`
-
-Encapsulates multiple download strategies and automatically selects the optimal path according to resource type:
-
-| Downloader | Purpose |
-| :-- | :-- |
-| `base.py` | downloader base class and generic HTTP download |
-| `chunked.py` | chunked large-file download |
-| `bilibili.py` | Bilibili DASH separated audio/video download |
-| `douyin.py` | Douyin-specific download strategy |
-| `kuaishou.py` | Kuaishou-specific download strategy |
-| `missav.py` | MissAV-specific download strategy |
-| `ffmpeg.py` | `ffmpeg` command construction and execution, including muxing and transcoding |
-| `m3u8.py` | HLS / m3u8 streaming download via `N_m3u8DL-RE` |
-| `external.py` | unified wrapper for external tool invocation |
-
-#### `app/core/plugins`
-
-- Provides the platform registry.
-- Exposes platform definitions, configuration panels, and spider classes as unified capabilities.
-- Allows adding new platforms without scattering `if-else` logic across controller and UI layers.
-
-#### `app/web`
-
-- Provides the Web UI service based on FastAPI + uvicorn.
-- Exposes a full RESTful API covering crawling, downloading, configuration, and directory management.
-- Static front-end assets are located in `app/web/static/`.
-- Supports a script injection system, and custom Python scripts can be executed at startup through `--script`.
-
-#### `app/core/lib/douyin`
-
-This is the Douyin-specific low-level library, including:
-
-- `encrypt/`: request parameter encryption
-- `extract/`: data extraction
-- `interface/`: API wrappers
-- `js/`: signatures such as X-Bogus / A-Bogus
-- `link/`: link parsing
-- `tools/`: helper utilities
-
-### Why Is This Architecture Worth Calling Out
-
-Because many “usable” download tools eventually become this as platforms grow:
-
-- larger and larger controllers
-- every platform directly manipulating the UI
-- download logic and site logic penetrating each other
-- no one knows where to look when something breaks
-
-This project is already clearly trying to avoid those traps:
-
-- the platform integration path is explicit
-- download scheduling is independent
-- UI and business logic are decoupled
-- Web UI and desktop GUI share the same core engine
-- tests and documentation actually exist together with the code
-- packaging logic is isolated under `packaging/`
+| Area | Current Approach | Maintenance Boundary |
+| :-- | :-- | :-- |
+| UI | PyQt6 Shell, WebUI reducer, stable-id table patching | Render only the visible page and current page data; no file, database, or large JSON work in hot paths |
+| Worker | `FrontendSnapshotWorker`, `FrontendActionWorker`, `LogQueryWorker`, `LogDetailWorker`, `ListPageWorker`, Web workers | Queries, pagination, formatting, export, actions, and snapshot/delta construction leave the UI thread |
+| Cache | `CacheService`, `FrontendLogCache`, memory TTL, diskcache | UI reads prepared snapshots; log tailing, hot data, and reusable intermediate results stay in the cache layer |
+| DB | SQLite failed records, cache fallback, structured queries | Connections must close explicitly; GUI/WebUI pages do not query DB directly, and failed records are written in the background |
+| Backpressure | EventBus noisy coalescing, bounded WebSocket queues, latest-state-wins, critical bypass | Progress and logs may be coalesced or have stale values dropped; completion, failure, delete, and stop events must survive |
+| Download Concurrency | `DownloadManager` + `DownloadWorker` + concurrency slots | Concurrency means simultaneously running tasks; releasing a slot must dispatch the waiting queue, including failure/cancel paths |
 
 Related documents:
 
 - [Architecture Overview](docs/guides/architecture.md)
+- [Core Technologies](docs/guides/core-technologies.md)
 - [Internal API Notes](docs/guides/api.md)
+- [Frontend Refresh And Concurrency Practice](docs/engineering/frontend-refresh-and-concurrency.md)
 
 ---
 
@@ -589,14 +560,19 @@ The project currently uses `pytest` as the unified execution entry, while the te
 
 ### Current Test Signal In This Branch
 
-- already covers CLI / SDK / Web API / packaging configuration / desktop UI / browser E2E and more
-- automatic test-suite classification has been integrated, and new tests can be categorized through naming rules
-- GitHub Actions already includes baseline automation checks
+- `tests/test_registry.py` currently registers 13 enabled categories and 131 runnable test files, with `misc` currently at 0.
+- already covers CLI / SDK / Web API / packaging configuration / desktop UI / browser E2E / application flows / core services / architecture fitness / benchmarks and more
+- automatic test-suite classification is now part of the main workflow; new tests should be categorized by naming rules or explicit registry entries instead of staying in the uncategorized bucket
+- GitHub Actions already includes baseline automation checks. 
 
 ### Local Execution Commands
 
 ```bash
 python -m compileall app tests main.py
+python tests/test_registry.py
+python tests/test_launcher.py --list
+python tests/test_launcher.py --category architecture
+python tests/test_launcher.py --category benchmark
 python -m pytest tests
 ```
 
@@ -663,7 +639,7 @@ This project is not only meant for source execution; practical delivery and dist
 - `UniversalCrawlerPro.exe` — desktop GUI main program
 - `CrawlerWebPortal.exe` — Web UI entry with tray residency
 - `_internal/` — runtime dependencies and resources
-- `ffmpeg.exe` / `N_m3u8DL-RE.exe` — Windows portable-build external download tools
+- `ffmpeg.exe` / `ffprobe.exe` / `N_m3u8DL-RE.exe` — Windows portable-build external download tools
 - `ms-playwright/` — embedded Chromium runtime
 
 ### Installer Features
@@ -766,7 +742,6 @@ If you find value in this project, contributions are welcome through:
 
 1. **The runtime environment is strongly Windows-oriented**: current path handling, external tool wrappers, and packaging scripts clearly target the Windows desktop environment.
 2. **Real site behavior can change**: target platforms may change page structure, APIs, and login mechanisms, so platform logic needs continuous maintenance.
-3. **TikTok currently keeps only the low-level capability layer**: related low-level protocols and interfaces remain in the repository, but the GUI has not yet been fully integrated.
 4. **Some platforms depend on login state**: when cookies expire or browser state becomes invalid, login may need to be refreshed or the session persisted again.
 
 ### Disclaimer

@@ -19,6 +19,7 @@ from app.exceptions import (
     StreamDownloadError,
 )
 from app.models import VideoItem
+from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
@@ -43,12 +44,25 @@ class BilibiliDownloader(BaseDownloader):
         返回 (video_url, audio_url)，失败返回 (None, None)。
         """
         for fnval in (4048, 80):
-            api_url = (
-                f"https://api.bilibili.com/x/player/playurl"
-                f"?bvid={bvid}&cid={cid}&qn=120&fnval={fnval}&fourk=1"
-            )
+            endpoint = "https://api.bilibili.com/x/player/wbi/playurl"
+            params = {
+                "bvid": bvid,
+                "cid": cid,
+                "qn": 120,
+                "fnval": fnval,
+                "fourk": 1,
+                "platform": "pc",
+            }
             try:
-                resp = requests.get(api_url, headers=headers, timeout=15, proxies=proxies)
+                signed_params, signed = BILIBILI_WBI_SIGNER.sign_params(
+                    params,
+                    request_get=requests.get,
+                    headers=headers,
+                    timeout=15,
+                    proxies=proxies,
+                )
+                request_endpoint = endpoint if signed else "https://api.bilibili.com/x/player/playurl"
+                resp = requests.get(request_endpoint, params=signed_params, headers=headers, timeout=15, proxies=proxies)
                 data = resp.json()
                 if data.get("code") == 0 and "data" in data:
                     dash = data["data"].get("dash", {})
@@ -62,7 +76,7 @@ class BilibiliDownloader(BaseDownloader):
                             action="play_url_refresh",
                             message="重刷新 B站 CDN URL 成功",
                             status_code="BILI_URL_REFRESH",
-                            details={"fnval": fnval, "bvid": bvid, "cid": cid},
+                            details={"fnval": fnval, "bvid": bvid, "cid": cid, "wbi_signed": signed},
                             trace_id=trace_id,
                         )
                         return v_url, a_url

@@ -51,11 +51,13 @@
 - `/api/frontend/state`、`/api/frontend/delta` 和 WebSocket `frontend_delta` 的 snapshot/delta 构建必须离开 asyncio 事件循环，使用后台 executor 或等价 worker；事件循环只负责调度、发送和合并结果。
 - WebSocket 首次连接的 `init_state`、`frontend_state`、`platforms`、`config` 和缓存视频回放也必须使用后台 executor 构建；大 snapshot 的 JSON 编码不得直接在事件循环线程执行。
 - WebController 的异步 HTTP / WebSocket 动作入口不得在 asyncio 事件循环中直接执行同步 service 方法；配置写入、前端动作处理和其他可能触发文件、缓存、SQLite 或系统 API 的普通函数必须下沉到 executor 或等价 worker。
+- Web 目录选择、目录扫描和本地文件枚举不得在 asyncio 事件循环中直接执行 `os.listdir()`、`os.path.exists()`、`os.path.isdir()` 等文件系统遍历；`/api/dir/list` 只能在路由中做参数校验和结果组装，实际目录枚举必须下沉到 executor 或等价 worker。
+- Web 媒体预览和 Range 请求不得在 asyncio 事件循环中直接读取文件块；路径解析、大小和媒体类型判断必须下沉到 executor，Range body 使用同步 iterator 交给 ASGI 线程池消费，不得重新引入 `async def stream_range()` 包裹 `file.read()`。
 - WebSocket 尚未绑定运行中的事件循环时只能记录 dirty event 并等待后续异步 flush 或客户端主动拉取；不得在事件来源线程同步构建 `frontend_delta`。
 - WebUI 日志中心筛选、排序、分页必须优先交给 `log_query_worker.js`；不得用“日志数量较少”作为主线程同步查询的理由。`queryLogsSync()` 只允许在浏览器不支持 Worker 或 worker 初始化/执行失败时作为降级路径。
 - WebUI 日志 worker 不可用时，降级查询也必须通过 `scheduleLogQueryFallback()` 异步调度并按最新 `sequence` 生效；提交时必须冻结 `buildLogQueryRequest(...)` 快照，异步回调不得再临时读取当前过滤器、页码或可变日志数组；不得在 `renderLogs()` / `submitLogQuery()` 当前调用栈里直接同步执行过滤、排序和分页。
 - WebUI 日志裁剪只允许发生在本地 append 或 delta 合并阶段；`renderLogs()` / `logQueryItems()` 不得再裁剪或改写 `frontendState.log_items`，避免渲染路径携带大数组副作用。
-- WebUI 失败列表不得把 `failed_items` 全量同步渲染到 DOM；分页、选中项跨页定位和当前页切片必须优先提交给 `list_page_worker.js`，主线程只接收 `pageItems` 并 patch 当前页。同步 `buildListPageResultSync()` 只允许作为 Worker 不可用的降级路径。
+- WebUI 下载队列、已完成列表和失败列表不得把 `queue_items` / `completed_items` / `failed_items` 全量同步渲染到 DOM；分页、选中项跨页定位和当前页切片必须优先提交给 `list_page_worker.js`，主线程只接收 `pageItems` 并 patch 当前页。同步 `buildListPageResultSync()` 只允许作为 Worker 不可用的降级路径。
 
 ## UI / Worker / Cache / DB 职责边界
 
@@ -63,8 +65,9 @@
 
 补充约束：
 - GUI domain event 进入 EventBus 后不得直接执行可能触发弹窗、表格更新或状态重排的慢 handler；GUI 控制器应优先 `subscribe_async()`，并通过 `DesktopHostAdapter._queue_on_ui()` 把实际派发推迟到下一轮 Qt 事件循环，EventBus 发布栈只负责接收与排队。
-- EventBus 提供 `subscribe_async()` 给不参与刷新版本时序的慢 handler 使用；涉及 `FrontendStateService` delta 版本记录和 MainWindow 刷新调度的 handler 不得为了“异步化”直接迁移，否则会造成刷新先于 dirty version 记录的 race。
-- `FrontendStateService` 订阅 `app_state.changed` 时只能做有界入队；标题物化、section 推导、dirty version 记录必须在 `get_snapshot()` / `get_delta()` 入口统一 `flush_pending_app_state_events()` 后执行。初始化阶段产生的 AppState 事件需要在构造结束时合入基线版本，避免第一帧普通 delta 被误判成全量刷新。
+- EventBus 提供 `subscribe_async()` 给不参与同步返回值的 handler 使用；`FrontendStateService` 与 MainWindow 都应走异步订阅，但必须保持“状态服务先入队、主窗口后调度刷新”的订阅顺序，避免刷新先于 dirty event 入队。
+- `FrontendStateService.get_snapshot()` / `get_delta()` 在 flush pending AppState 事件前必须通过 `EventBus.wait_for_async_idle()` 等待异步交付完成；该等待基于条件变量和 inflight 计数，不允许用 `time.sleep()` 或 `processEvents()` 碰运气。`wait_for_async_idle()` 从 EventBus async worker 线程内被调用时必须立即返回 `False`，避免 self-call 死锁；超过 timeout 也必须返回 `False`，不得无限阻塞 flush。
+- `FrontendStateService` 订阅 `app_state.changed` 时只能做有界入队；标题物化、section 推导、dirty version 记录必须在 `get_snapshot()` / `get_delta()` 入口统一 `flush_pending_app_state_events()` 后执行。初始化阶段产生的 AppState 事件需要在构造结束时合入基线版本，避免第一帧普通 delta 被误判成全量刷新。异步订阅不得在 handler 内做日志解析、快照构建、SQLite 查询或 UI 回调。
 - EventBus 的高频异步 topic（如 `videos.update`、`videos.metadata`、`video_state_changed`、`task_progress`、`logs.append`、`log`）必须按 handler/topic/实体 ID 合并为 latest-state-wins；普通异步 topic 和 critical 事件仍保持 FIFO，不得为降压丢失完成、失败、删除、停止等关键状态。
 - 生产代码不得引入定时 `processEvents()` pump；GUI 和 controller 热路径不得使用 `time.sleep()` 做协调等待，后台任务需要等待时优先使用 cancel token / event 的可取消等待；浏览器 E2E 不得用 3.5 秒固定等待兜底，必须等待 `#app-shell` 或页面可观测状态。
 - 运行态纯视觉反馈定时器不得使用 45ms 级高频刷新；如启动按钮跑马灯这类非关键帧动画，默认周期为 120ms，并通过单次步进保持视觉速度。
@@ -130,6 +133,8 @@ Worker 线程负责所有可能卡住 UI 的工作：
 - `LogDetailExportWorker`：GUI 日志详情文件导出，避免页面线程写大 payload。
 - `ListPageWorker`：GUI 四态列表的行归一化、分页、选中项定位、最近事件切片和 id 索引。
 - `log_query_worker.js`：WebUI 日志查询筛选、排序和分页。
+- `list_page_worker.js`：WebUI 下载队列、已完成列表和失败列表的分页、当前页切片和选中项跨页定位。
+- `WebDirectoryService` / `/api/dir/list`：Web 目录浏览路由只负责调度，目录存在性判断、枚举和子目录过滤在 executor 中完成。
 - `FailedRecordStore`：失败记录后台写 SQLite，并刷新内存快照。
 
 ### Cache / DB
@@ -179,8 +184,8 @@ node --check app/web/static/app.js
 
 ### 当前验证基线
 
-- 2026-07-08 全量 `python -m pytest -q`：`2124 passed, 3 skipped, 7 warnings in 208.07s (0:03:28)`。
-- 历史手工观测全量约 7 到 15 分钟；本轮通过 GUI 四态列表批处理、EventBus 异步投递、日志/快照 worker 化和固定等待移除后，当前基线约 3 到 4 分钟。
+- 2026-07-08 全量 `python -m pytest -q`：`2154 passed, 3 skipped, 7 warnings in 236.95s (0:03:56)`。
+- 近期连续基线为 `2141 -> 2145 -> 2149 -> 2151 -> 2154`；耗时从 `208s -> 190s -> 117s -> 187s -> 237s` 波动，当前实测约 3 分 56 秒。后续比较优化收益时优先记录精确秒数，不再只写“3 到 4 分钟”。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查是否引入同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
 
 ## GUI use_delta 判定边界
@@ -198,8 +203,9 @@ node --check app/web/static/app.js
 - `MainWindow` 订阅 `app_state.changed` 必须优先使用 `EventBus.subscribe_async()`，只把事件投递回 Qt 队列，不在发布线程执行刷新调度。
 - `app_state.changed` 属于高频异步主题；当 payload 携带 `video_id`、`id`、`entity_id` 或 `trace_id` 时，EventBus 必须按 handler/topic/entity 采用 latest-state-wins 合并，避免进度事件在异步队列中堆积。
 - `logs.append` 这类只有 topic/count、没有实体 ID 的高频事件必须按 handler/topic 做 latest-state-wins 合并；不得因为缺少实体 ID 退回 FIFO，把日志追加重新堆到 UI 刷新链路里。
+- `EventBus.wait_for_async_idle()` 只用于外部 flush/ack；如果在 EventBus async worker 线程内被调用，必须短路返回 `False`，避免 handler 等待自己完成形成死锁。等待 deadline 到期也必须返回 `False`，调用方只能降级继续或记录调试信息，不得无限阻塞 UI / Web 响应。
 - `spider.domain_event` 和 `download.domain_event` 的订阅 handler 必须优先使用 `subscribe_async()`，且只能通过 `DesktopHostAdapter._queue_on_ui()` 投递事件；即使事件来自非 GUI 线程，也不得在 EventBus 发布线程直接执行 `_dispatch_spider_event()` 或 `_dispatch_download_event()`，也不得用无 receiver 的 `QTimer.singleShot()` 或只判断当前线程的 `_run_on_ui()` 作为跨线程桥。
-- `FrontendStateService` 对 `app_state.changed` 的订阅仍保留同步轻量入队，这是为了保证写入 AppState 后下一次 `get_snapshot()` / `get_delta()` 能先 flush 到一致的 dirty version。不得在没有 flush/ack 机制的情况下把它直接迁移为异步订阅。
+- `FrontendStateService` 对 `app_state.changed` 使用 `subscribe_async()`，并通过 `flush_pending_app_state_events()` + `wait_for_async_idle()` 保证下一次 `get_snapshot()` / `get_delta()` 先合入一致的 dirty version。不得绕过这条 flush/ack 契约直接读取旧状态，也不得在异步 handler 内构建快照。
 - 新增 GUI 热路径订阅时，默认先判断是否能异步；只有直接影响版本一致性、关键事务顺序或必须同步返回结果的 handler 才允许保留同步。
 
 ## 后台 Worker 守护边界

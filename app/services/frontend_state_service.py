@@ -97,6 +97,7 @@ class FrontendStateService:
     FILE_LOG_BACKFILL_LIMIT = 500
     PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
     APP_STATE_PENDING_EVENTS_LIMIT = 4096
+    APP_STATE_ASYNC_DELIVERY_TIMEOUT_SECONDS = 0.2
 
     def __init__(
         self,
@@ -159,7 +160,13 @@ class FrontendStateService:
             timer_factory=threading.Timer,
         )
         self._metadata_probe_budget_remaining: int | None = None
-        self._app_state_event_handler = self.app_state.event_bus.subscribe(
+        subscribe_app_state_async = getattr(self.app_state.event_bus, "subscribe_async", None)
+        subscribe_app_state = (
+            subscribe_app_state_async
+            if callable(subscribe_app_state_async)
+            else self.app_state.event_bus.subscribe
+        )
+        self._app_state_event_handler = subscribe_app_state(
             "app_state.changed",
             self._queue_app_state_change,
         )
@@ -299,6 +306,7 @@ class FrontendStateService:
         return self._event_aggregator.version
 
     def frontend_metrics(self) -> dict[str, Any]:
+        self._wait_for_app_state_async_delivery()
         metrics = self._event_aggregator.metrics()
         with self._delta_lock:
             metrics["pending_app_state_event_count"] = len(self._pending_app_state_events)
@@ -337,6 +345,7 @@ class FrontendStateService:
     def flush_pending_app_state_events(self) -> None:
         """Drain AppState events before building a frontend snapshot or delta."""
 
+        self._wait_for_app_state_async_delivery()
         with self._delta_lock:
             if not self._pending_app_state_events and not self._pending_app_state_events_overflowed:
                 return
@@ -353,6 +362,12 @@ class FrontendStateService:
             )
         for event_payload in events:
             self._record_app_state_change(event_payload)
+
+    def _wait_for_app_state_async_delivery(self) -> None:
+        event_bus = getattr(self.app_state, "event_bus", None)
+        wait_for_async_idle = getattr(event_bus, "wait_for_async_idle", None)
+        if callable(wait_for_async_idle):
+            wait_for_async_idle(self.APP_STATE_ASYNC_DELIVERY_TIMEOUT_SECONDS)
 
     def _record_app_state_change(self, payload: Any) -> None:
         if self._destroyed:

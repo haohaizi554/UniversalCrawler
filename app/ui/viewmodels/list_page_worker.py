@@ -20,6 +20,7 @@ class ListPageRequest:
     paginate: bool = True
     select_first: bool = False
     selected_id_moves_page: bool = True
+    item_transformer: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,17 @@ def item_stable_id(item: Mapping[str, Any]) -> str:
 
 
 def build_list_page_result(request: ListPageRequest) -> ListPageResult:
-    items = [dict(item) for item in request.items if isinstance(item, Mapping)]
+    items: list[dict[str, Any]] = []
+    for item in request.items:
+        if not isinstance(item, Mapping):
+            continue
+        row = dict(item)
+        transformer = request.item_transformer
+        if transformer is not None:
+            transformed = transformer(row)
+            if isinstance(transformed, Mapping):
+                row = dict(transformed)
+        items.append(row)
     id_order = tuple(item_stable_id(item) for item in items if item_stable_id(item))
     items_by_id: dict[str, dict[str, Any]] = {}
     for item in items:

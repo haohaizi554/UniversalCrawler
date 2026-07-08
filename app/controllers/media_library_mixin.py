@@ -31,6 +31,7 @@ class MediaRenameOutcome:
     video: VideoItem | None = None
     old_path: str | None = None
     new_path: str | None = None
+    new_title: str | None = None
     error: str | None = None
 
 class MediaLibraryMixin:
@@ -120,7 +121,7 @@ class MediaLibraryMixin:
             messages.append(f"🛑 已请求停止下载: {outcome.video.title}")
         return messages
 
-    def _rename_video_sync(self, video_id: str, new_title: str, save_dir: str) -> MediaRenameOutcome:
+    def _rename_video_io(self, video_id: str, new_title: str, save_dir: str) -> MediaRenameOutcome:
         video = self._video_lookup(video_id)
         if not video:
             return MediaRenameOutcome(status="missing", video_id=video_id, error="视频不存在")
@@ -138,15 +139,23 @@ class MediaLibraryMixin:
                 video=video,
                 error=str(exc),
             )
-        video.title = normalized_title
-        video.local_path = new_path
         return MediaRenameOutcome(
             status="ok",
             video_id=video_id,
             video=video,
             old_path=old_path,
             new_path=new_path,
+            new_title=normalized_title,
         )
+
+    def _rename_video_sync(self, video_id: str, new_title: str, save_dir: str) -> MediaRenameOutcome:
+        outcome = self._rename_video_io(video_id, new_title, save_dir)
+        if outcome.status == "ok" and outcome.video is not None:
+            if outcome.new_title is not None:
+                outcome.video.title = outcome.new_title
+            if outcome.new_path is not None:
+                outcome.video.local_path = outcome.new_path
+        return outcome
 
     @staticmethod
     def _rename_outcome_message(outcome: MediaRenameOutcome) -> str | None:

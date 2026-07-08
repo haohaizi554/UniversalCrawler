@@ -1515,6 +1515,23 @@ class WebUIBrowserTests(unittest.TestCase):
               currentPage = "completed";
               selected.completed = "completed-i18n-a";
               renderCompleted();
+              const waitForCompletedText = expectedText => new Promise((resolve, reject) => {
+                const deadline = performance.now() + 3000;
+                const tick = () => {
+                  const text = document.getElementById("completedDetail").textContent;
+                  if (text.includes(expectedText)) {
+                    resolve();
+                    return;
+                  }
+                  if (performance.now() > deadline) {
+                    reject(new Error(`completed detail did not render: ${expectedText}`));
+                    return;
+                  }
+                  requestAnimationFrame(tick);
+                };
+                tick();
+              });
+              await waitForCompletedText("Filename");
               const completedText = document.getElementById("completedDetail").textContent;
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),
@@ -1528,6 +1545,7 @@ class WebUIBrowserTests(unittest.TestCase):
               const twLogText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
               renderCompleted();
+              await waitForCompletedText("檔案名稱");
               const twCompletedText = document.getElementById("completedDetail").textContent;
               return { logText, completedText, twLogText, twCompletedText };
             }
@@ -1986,6 +2004,22 @@ class WebUIBrowserTests(unittest.TestCase):
               currentPage = "completed";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "completed"));
               renderCompleted();
+              await new Promise((resolve, reject) => {
+                const deadline = performance.now() + 3000;
+                const tick = () => {
+                  const text = document.getElementById("page-completed").textContent;
+                  if (text.includes("Checking")) {
+                    resolve();
+                    return;
+                  }
+                  if (performance.now() > deadline) {
+                    reject(new Error("completed page did not render localized pending metadata"));
+                    return;
+                  }
+                  requestAnimationFrame(tick);
+                };
+                tick();
+              });
               const completedText = document.getElementById("page-completed").textContent;
 
               frontendState.active_downloads = [{
@@ -2675,12 +2709,18 @@ class WebUIBrowserTests(unittest.TestCase):
               selected.active = 'missing-active';
               renderActive();
 
-              frontendState.completed_items = [
-                { id: 'completed-a', title: 'Completed A', filename: 'completed-a.mp4', completed_at: '2026-07-04 06:00:00', completed_at_table: '07-04 06:00', format: 'MP4' },
-                { id: 'completed-b', title: 'Completed B', filename: 'completed-b.mp4', completed_at: '2026-07-04 06:01:00', completed_at_table: '07-04 06:01', format: 'MP4' },
-                { id: 'completed-c', title: 'Completed C', filename: 'completed-c.mp4', completed_at: '2026-07-04 06:02:00', completed_at_table: '07-04 06:02', format: 'MP4' }
-              ];
-              completedPageSize = 2;
+              frontendState.completed_items = Array.from({ length: 21 }, (_, index) => {
+                const number = index + 1;
+                return {
+                  id: `completed-${number}`,
+                  title: `Completed ${number}`,
+                  filename: `completed-${number}.mp4`,
+                  completed_at: `2026-07-04 06:${String(number).padStart(2, '0')}:00`,
+                  completed_at_table: `07-04 06:${String(number).padStart(2, '0')}`,
+                  format: 'MP4'
+                };
+              });
+              completedPageSize = 20;
               completedPage = 2;
               selected.completed = 'missing-completed';
               renderCompleted();
@@ -2700,7 +2740,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 };
                 tick();
               });
-              await waitForSelectedRow('#completedBody', 'completed-c', () => selected.completed, 'completed');
+              await waitForSelectedRow('#completedBody', 'completed-21', () => selected.completed, 'completed');
 
               frontendState.failed_items = [
                 { id: 'failed-a', title: 'Failed A', failed_at: '2026-07-04 06:03:00', failed_at_table: '07-04 06:03', reason: '403', reason_label: '链接失败', platform: 'Bilibili', platform_id: 'bilibili', status_label: '失败' }
@@ -2737,9 +2777,9 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["activeSelected"], "active-a")
         self.assertEqual(result["activeRows"], ["active-a"])
         self.assertIn("Active A", result["activeDetail"])
-        self.assertEqual(result["completedSelected"], "completed-c")
-        self.assertEqual(result["completedRows"], ["completed-c"])
-        self.assertIn("completed-c.mp4", result["completedDetail"])
+        self.assertEqual(result["completedSelected"], "completed-21")
+        self.assertEqual(result["completedRows"], ["completed-21"])
+        self.assertIn("completed-21.mp4", result["completedDetail"])
         self.assertEqual(result["failedSelected"], "failed-a")
         self.assertEqual(result["failedRows"], ["failed-a"])
         self.assertIn("Failed A", result["failedDetail"])

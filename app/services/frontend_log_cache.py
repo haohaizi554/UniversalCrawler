@@ -6,11 +6,20 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from app.debug_logger import debug_logger
 from app.services import frontend_log_adapter as log_adapter
+
+
+@dataclass(frozen=True)
+class _TailCacheState:
+    cache_key: str
+    path_key: str
+    offset: int
 
 
 class _TailLogFileReader:
@@ -31,6 +40,36 @@ class _TailLogFileReader:
         self._offset = 0
         self._items = []
         self._initialized = False
+
+    def cache_state(self, *, limit: int) -> _TailCacheState | None:
+        path = Path(self._path_provider())
+        try:
+            stat = path.stat()
+            resolved = str(path.resolve())
+        except OSError:
+            return None
+        size = max(0, int(stat.st_size))
+        fingerprint = "|".join(
+            [
+                resolved,
+                str(getattr(stat, "st_dev", "")),
+                str(getattr(stat, "st_ino", "")),
+                str(size),
+                str(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))),
+            ]
+        )
+        digest = sha256(fingerprint.encode("utf-8", errors="replace")).hexdigest()[:24]
+        return _TailCacheState(
+            cache_key=f"frontend.file_log_cache.tail.{digest}.{int(limit)}",
+            path_key=resolved,
+            offset=size,
+        )
+
+    def hydrate(self, state: _TailCacheState, items: list[dict[str, Any]], *, limit: int) -> None:
+        self._path_key = state.path_key
+        self._offset = state.offset
+        self._items = deepcopy(items[-limit:])
+        self._initialized = True
 
     def read(self, *, limit: int) -> list[dict[str, Any]]:
         path = Path(self._path_provider())
@@ -108,6 +147,7 @@ class FrontendLogCache:
         self._lock = threading.RLock()
         self._reader = reader
         self._tail_reader = _TailLogFileReader(log_path_provider) if log_path_provider is not None else None
+        self._known_cache_keys: set[str] = set()
         if self._reader is None and self._tail_reader is None:
             self._reader = lambda *, limit: []
         self._worker_enabled = bool(worker_enabled)
@@ -130,6 +170,14 @@ class FrontendLogCache:
     @staticmethod
     def cache_key(limit: int) -> str:
         return f"frontend.file_log_cache.{int(limit)}"
+
+    def _cache_key_for_read(self, read_limit: int) -> tuple[str, _TailCacheState | None]:
+        if self._tail_reader is None:
+            return self.cache_key(read_limit), None
+        state = self._tail_reader.cache_state(limit=read_limit)
+        if state is None:
+            return self.cache_key(read_limit), None
+        return state.cache_key, state
 
     @property
     def items_snapshot(self) -> list[dict[str, Any]]:
@@ -156,6 +204,8 @@ class FrontendLogCache:
             self._tail_reader.reset()
         self._delete_cache_key("frontend.file_log_cache")
         self._delete_cache_key(self.cache_key(normalized_limit))
+        for key in list(self._known_cache_keys):
+            self._delete_cache_key(key)
 
     def resize_limit(self, limit: Any) -> None:
         normalized_limit = self.normalize_limit(limit)
@@ -235,18 +285,19 @@ class FrontendLogCache:
         return 0
 
     def _refresh_from_source(self, read_limit: int) -> None:
-        cache_key = self.cache_key(read_limit)
-        cached = None
-        if self._tail_reader is None:
-            cached = self._cache_service.get(cache_key)
+        cache_key, tail_state = self._cache_key_for_read(read_limit)
+        cached = self._cache_service.get(cache_key)
         if cached is None:
             cached = self._source_read(limit=read_limit)
             self._cache_service.set(
                 cache_key,
                 cached,
                 ttl_seconds=self._ttl_seconds,
-                persist=False,
+                persist=self._tail_reader is not None,
             )
+            self._known_cache_keys.add(cache_key)
+        elif tail_state is not None and self._tail_reader is not None:
+            self._tail_reader.hydrate(tail_state, cached, limit=read_limit)
         with self._lock:
             self._items = deepcopy(cached)[-read_limit:]
             self._limit = read_limit

@@ -88,20 +88,14 @@ class WebDirectoryService:
         except PermissionError as exc:
             return error_result(str(exc), http_status=403, path=path)
 
-        if not os.path.exists(path):
-            return error_result("目录不存在", http_status=404, path=path)
-
         try:
-            entries = os.listdir(path)
-            subdirs = []
-            for name in sorted(entries, key=str.lower):
-                full = os.path.join(path, name)
-                try:
-                    if os.path.isdir(full) and not name.startswith("."):
-                        subdirs.append({"name": name, "path": full})
-                except PermissionError:
-                    continue
-
+            exists, subdirs = await asyncio.get_running_loop().run_in_executor(
+                None,
+                self._collect_subdirectories,
+                path,
+            )
+            if not exists:
+                return error_result("目录不存在", http_status=404, path=path)
             parent_candidate = os.path.dirname(path) if path else ""
             parent = parent_candidate if parent_candidate and context.is_directory_allowed(parent_candidate) else ""
             drives = [{"name": root, "path": root} for root in sorted(context.approved_roots)]
@@ -115,6 +109,21 @@ class WebDirectoryService:
             return error_result("无权限访问该目录", http_status=403, path=path)
         except OSError as exc:
             return error_result(str(exc), http_status=500, path=path)
+
+    @staticmethod
+    def _collect_subdirectories(path: str) -> tuple[bool, list[dict[str, str]]]:
+        if not os.path.exists(path):
+            return False, []
+        subdirs: list[dict[str, str]] = []
+        entries = os.listdir(path)
+        for name in sorted(entries, key=str.lower):
+            full = os.path.join(path, name)
+            try:
+                if os.path.isdir(full) and not name.startswith("."):
+                    subdirs.append({"name": name, "path": full})
+            except PermissionError:
+                continue
+        return True, subdirs
 
     async def change_dir(self, request: Request) -> dict:
         try:

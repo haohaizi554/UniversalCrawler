@@ -55,11 +55,13 @@ class MkvPlaybackRepairService:
         cache_root: Path | None = None,
         ffmpeg_resolver: Callable[[], str | None] | None = None,
         process_runner: ProcessRunner | None = None,
+        cleanup_on_init: bool = True,
     ) -> None:
         self.cache_root = cache_root or (user_cache_root() / "mkv_repair")
         self.ffmpeg_resolver = ffmpeg_resolver or FFmpegExternalTool.resolve_executable
         self.process_runner = process_runner
-        self.cleanup_stale_cache_files()
+        if cleanup_on_init:
+            self.cleanup_stale_cache_files()
 
     @staticmethod
     def is_mkv_path(path: str | os.PathLike[str]) -> bool:
