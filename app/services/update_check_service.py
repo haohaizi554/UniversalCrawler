@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +30,7 @@ from app.services.secure_updater import (
     LocalUpdateState,
     ManifestError,
     ManifestLocations,
+    MetadataNotFoundError,
     UpdateManifestVerifier,
     VersionPolicy,
     compare_semver,
@@ -48,10 +51,15 @@ UPDATE_CHANNEL = DEFAULT_CHANNEL
 UPDATE_STATUS_CURRENT = "current"
 UPDATE_STATUS_AVAILABLE = "available"
 UPDATE_STATUS_LOCAL_NEWER = "local_newer"
+UPDATE_STATUS_UNTRUSTED = "untrusted"
 
 
 class UpdateCheckError(RuntimeError):
     """Raised when the remote release version cannot be resolved."""
+
+
+class SignedMetadataUnavailableError(UpdateCheckError):
+    """Raised when releases exist but omit latest.json or its signature."""
 
 
 @dataclass(frozen=True)
@@ -321,17 +329,43 @@ def check_secure_update(
         except (ManifestError, ValueError) as exc:
             raise UpdateCheckError(str(exc)) from exc
     else:
-        verified_candidates = _fetch_verified_update_candidates(
-            release_client=release_client or GitHubReleaseClient(owner=owner, repo=repo),
-            verifier=verifier,
-            selector=selector,
-            metadata_dir=metadata_dir,
-            local_version=normalized_local,
-            manual=manual,
-            max_candidates=max_candidates,
-        )
+        try:
+            verified_candidates = _fetch_verified_update_candidates(
+                release_client=release_client or GitHubReleaseClient(owner=owner, repo=repo),
+                verifier=verifier,
+                selector=selector,
+                metadata_dir=metadata_dir,
+                local_version=normalized_local,
+                manual=manual,
+                max_candidates=max_candidates,
+            )
+        except SignedMetadataUnavailableError:
+            # A normal GitHub Release is useful for version comparison but is
+            # never sufficient authorization for automatic installation.
+            readonly_result = check_for_update(
+                normalized_local,
+                fetcher=fetch_latest_release_payload,
+            )
+            if readonly_result.status == UPDATE_STATUS_AVAILABLE:
+                log_update_event(
+                    "update.check.untrusted_release",
+                    "newer release lacks signed update metadata",
+                    level="WARN",
+                    version=readonly_result.latest_version,
+                )
+                return replace(readonly_result, status=UPDATE_STATUS_UNTRUSTED)
+            return readonly_result
 
     ranked_candidates = _sort_candidates_desc(verified_candidates)
+    if (
+        ranked_candidates
+        and managed_state.last_seen_version
+        and compare_versions(ranked_candidates[0].version, managed_state.last_seen_version) < 0
+    ):
+        raise UpdateCheckError(
+            "Latest verified update candidate is older than last seen version "
+            f"{managed_state.last_seen_version}"
+        )
     available_candidates = tuple(
         candidate
         for candidate in ranked_candidates
@@ -344,7 +378,10 @@ def check_secure_update(
         )
     )
     if state is None:
-        if ranked_candidates:
+        if ranked_candidates and (
+            not managed_state.last_seen_version
+            or compare_versions(ranked_candidates[0].version, managed_state.last_seen_version) > 0
+        ):
             managed_state.last_seen_version = normalize_version(ranked_candidates[0].version)
         save_local_update_state(managed_state)
 
@@ -437,6 +474,22 @@ def _fetch_verified_update_candidates(
         else:
             locations = (release_client.fetch_manifest_locations(manual=manual),)
     except DownloadError as exc:
+        cached = _load_cached_update_candidates(
+            verifier=verifier,
+            selector=selector,
+            metadata_dir=metadata_dir,
+            local_version=local_version,
+        )
+        if cached:
+            log_update_event(
+                "update.check.cache_fallback",
+                "release discovery failed; using verified cached manifests",
+                level="WARN",
+                reason=str(exc),
+            )
+            return cached
+        if isinstance(exc, MetadataNotFoundError):
+            raise SignedMetadataUnavailableError(str(exc)) from exc
         raise UpdateCheckError(str(exc)) from exc
     if not locations or all(location.not_modified for location in locations):
         cached = _load_cached_update_candidates(
@@ -451,13 +504,44 @@ def _fetch_verified_update_candidates(
 
     candidates: list[UpdateCandidate] = []
     errors: list[str] = []
+    attempted_candidates = 0
+    missing_metadata_candidates = 0
     for index, location in enumerate(locations, start=1):
         if location.not_modified:
             continue
+        attempted_candidates += 1
         try:
-            manifest_target, signature_target = _metadata_targets(metadata_dir, location, index)
-            manifest_path = _download_metadata_file(location.manifest_url, manifest_target)
-            signature_path = _download_metadata_file(location.signature_url, signature_target)
+            with tempfile.TemporaryDirectory(prefix=".candidate-", dir=metadata_dir) as temp_dir:
+                temp_root = Path(temp_dir)
+                temp_manifest = _download_metadata_file(
+                    location.manifest_url,
+                    temp_root / DEFAULT_MANIFEST_NAME,
+                )
+                temp_signature = _download_metadata_file(
+                    location.signature_url,
+                    temp_root / DEFAULT_SIGNATURE_NAME,
+                )
+                # Verify before touching the last known-good cache. A tag may be
+                # republished, so the content digest also makes generations immutable.
+                _candidate_from_verified_metadata(
+                    verifier=verifier,
+                    selector=selector,
+                    local_version=local_version,
+                    manifest_path=temp_manifest,
+                    signature_path=temp_signature,
+                    release_url=location.release_url,
+                    tag_name=location.tag_name,
+                    release_name=location.release_name,
+                )
+                digest = hashlib.sha256(temp_manifest.read_bytes()).hexdigest()
+                manifest_path, signature_path = _metadata_targets(
+                    metadata_dir,
+                    location,
+                    index,
+                    content_digest=digest,
+                )
+                temp_manifest.replace(manifest_path)
+                temp_signature.replace(signature_path)
             candidates.append(
                 _candidate_from_verified_metadata(
                     verifier=verifier,
@@ -470,10 +554,30 @@ def _fetch_verified_update_candidates(
                     release_name=location.release_name,
                 )
             )
+        except MetadataNotFoundError as exc:
+            missing_metadata_candidates += 1
+            errors.append(str(exc))
+            log_update_event("update.check.candidate_skipped", str(exc), level="WARN")
         except (ManifestError, DownloadError, UpdateCheckError, ValueError) as exc:
             errors.append(str(exc))
             log_update_event("update.check.candidate_skipped", str(exc), level="WARN")
     if not candidates:
+        cached = _load_cached_update_candidates(
+            verifier=verifier,
+            selector=selector,
+            metadata_dir=metadata_dir,
+            local_version=local_version,
+        )
+        if cached:
+            log_update_event(
+                "update.check.cache_fallback",
+                "fresh update metadata failed; using verified cached manifests",
+                level="WARN",
+            )
+            return cached
+        if attempted_candidates and missing_metadata_candidates == attempted_candidates:
+            detail = "; ".join(error for error in errors if error)
+            raise SignedMetadataUnavailableError(detail or "Signed update metadata is not published")
         detail = "; ".join(error for error in errors if error)
         raise UpdateCheckError(detail or "No signed update candidates were available")
     return tuple(candidates)
@@ -513,12 +617,19 @@ def _load_cached_update_candidates(
     return tuple(candidates)
 
 
-def _metadata_targets(metadata_dir: Path, location: ManifestLocations, index: int) -> tuple[Path, Path]:
+def _metadata_targets(
+    metadata_dir: Path,
+    location: ManifestLocations,
+    index: int,
+    *,
+    content_digest: str = "",
+) -> tuple[Path, Path]:
     label = normalize_version(location.tag_name or location.release_name or "") or f"candidate-{index}"
     safe_label = sanitize_filename(label)
+    generation = f"-{content_digest[:16]}" if content_digest else ""
     return (
-        metadata_dir / f"{safe_label}.{DEFAULT_MANIFEST_NAME}",
-        metadata_dir / f"{safe_label}.{DEFAULT_SIGNATURE_NAME}",
+        metadata_dir / f"{safe_label}{generation}.{DEFAULT_MANIFEST_NAME}",
+        metadata_dir / f"{safe_label}{generation}.{DEFAULT_SIGNATURE_NAME}",
     )
 
 
@@ -599,6 +710,8 @@ def _download_metadata_file(url: str, target: Path, *, timeout: float = 8.0, max
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise MetadataNotFoundError("metadata download failed with HTTP 404") from exc
         raise DownloadError(f"metadata download failed with HTTP {exc.code}") from exc
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         raise DownloadError(f"metadata download failed: {exc}") from exc

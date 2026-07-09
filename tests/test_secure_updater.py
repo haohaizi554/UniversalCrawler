@@ -4,7 +4,9 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import URLError
@@ -21,6 +23,7 @@ from app.services.secure_updater import (
     InstallerRunner,
     LocalUpdateState,
     ManifestError,
+    MetadataNotFoundError,
     PackageVerifier,
     PendingInstall,
     UpdateAsset,
@@ -248,6 +251,68 @@ def test_downloader_retries_transient_network_errors(tmp_path):
     assert target.read_bytes() == data
 
 
+def test_downloader_passes_timeout_as_keyword_for_urlopen_compatibility(tmp_path):
+    data = b"installer"
+    asset = UpdateAsset(
+        name="installer.exe",
+        url="https://github.com/owner/repo/releases/download/v/installer.exe",
+        sha256=hashlib.sha256(data).hexdigest(),
+        size=len(data),
+        installer_type="inno",
+        os="windows",
+        arch="x64",
+    )
+    seen_timeout: list[float] = []
+
+    def opener(_request, *, timeout):
+        seen_timeout.append(timeout)
+        return _BytesResponse(data)
+
+    target = Downloader(cache_dir=tmp_path, timeout_seconds=4.25).download(asset, opener=opener)
+
+    assert seen_timeout == [4.25]
+    assert target.read_bytes() == data
+
+
+def test_downloader_uses_real_urlopen_against_loopback_http_server(tmp_path):
+    data = b"real urlopen installer payload"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        asset = UpdateAsset(
+            name="installer.exe",
+            url=f"http://127.0.0.1:{server.server_port}/installer.exe",
+            sha256=hashlib.sha256(data).hexdigest(),
+            size=len(data),
+            installer_type="inno",
+            os="windows",
+            arch="x64",
+        )
+        target = Downloader(
+            cache_dir=tmp_path,
+            timeout_seconds=2.0,
+            development_mode=True,
+        ).download(asset)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert target.read_bytes() == data
+
+
 def test_downloader_resumes_existing_partial_file_with_range(tmp_path):
     data = b"0123456789abcdef"
     digest = hashlib.sha256(data).hexdigest()
@@ -298,6 +363,24 @@ def test_github_client_handles_304_and_rate_limit(tmp_path):
                 client.http_error(request.full_url, 429, "rate limited")
             )
         )
+
+
+def test_github_latest_release_without_signed_assets_reports_metadata_missing(tmp_path):
+    client = GitHubReleaseClient(owner="owner", repo="repo", cache_path=tmp_path / "github.json")
+
+    def opener(_request, *, timeout):
+        return _BytesResponse(
+            json.dumps(
+                {
+                    "tag_name": "v3.8.0",
+                    "html_url": "https://github.com/owner/repo/releases/tag/v3.8.0",
+                    "assets": [{"name": "installer.exe", "browser_download_url": "https://github.com/file"}],
+                }
+            ).encode("utf-8")
+        )
+
+    with pytest.raises(MetadataNotFoundError):
+        client.fetch_manifest_locations(opener=opener, manual=True)
 
 
 def test_github_client_throttles_automatic_checks_but_not_manual(tmp_path):
@@ -435,6 +518,38 @@ def test_github_client_passes_timeout_as_keyword_for_urlopen_compatibility(tmp_p
     client.fetch_manifest_location_candidates(opener=opener, manual=True)
 
     assert seen_timeout == [3.5]
+
+
+def test_github_client_falls_back_to_release_atom_when_api_is_rate_limited(tmp_path):
+    client = GitHubReleaseClient(owner="owner", repo="repo", cache_path=tmp_path / "github.json")
+    seen_urls: list[str] = []
+    atom = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link rel="alternate" type="text/html" href="https://github.com/owner/repo/releases/tag/v3.8.0" />
+    <title>Release 3.8.0</title>
+  </entry>
+  <entry>
+    <link rel="alternate" type="text/html" href="https://github.com/owner/repo/releases/tag/v3.7.0" />
+    <title>Release 3.7.0</title>
+  </entry>
+</feed>"""
+
+    def opener(request, *, timeout):
+        seen_urls.append(request.full_url)
+        if request.full_url.startswith("https://api.github.com/"):
+            raise client.http_error(request.full_url, 429, "rate limited")
+        return _BytesResponse(atom)
+
+    locations = client.fetch_manifest_location_candidates(opener=opener, manual=True, per_page=2)
+
+    assert seen_urls == [
+        "https://api.github.com/repos/owner/repo/releases?per_page=2",
+        "https://github.com/owner/repo/releases.atom",
+    ]
+    assert [item.tag_name for item in locations] == ["v3.8.0", "v3.7.0"]
+    assert locations[0].manifest_url == "https://github.com/owner/repo/releases/download/v3.8.0/latest.json"
+    assert locations[1].signature_url == "https://github.com/owner/repo/releases/download/v3.7.0/latest.json.sig"
 
 
 def test_installer_runner_uses_argv_and_records_nonzero_exit(tmp_path):
@@ -645,6 +760,9 @@ def test_updater_helper_entry_uses_installer_runner_and_no_shell_strings():
     assert helper.exists()
     source = helper.read_text(encoding="utf-8")
     assert "InstallerRunner" in source
+    assert "UpdateManifestVerifier" in source
+    assert '"--manifest"' in source
+    assert '"--signature"' in source
     assert "restart-argv-json" in source
     assert "shell=True" not in source
     assert "os.system" not in source
@@ -661,24 +779,55 @@ def test_update_trust_config_contains_only_public_trust_anchors():
     assert "UPDATE_TRUSTED_THUMBPRINTS" in source
 
 
+def test_updater_helper_loads_asset_from_signed_manifest(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    manifest_path, signature_path, public_pem = _signed_manifest(tmp_path)
+    monkeypatch.setattr(updater_helper, "UPDATE_PUBLIC_KEY_PEM", public_pem, raising=False)
+    loader = getattr(updater_helper, "_load_verified_asset", lambda **_kwargs: None)
+
+    asset = loader(
+        manifest_path=manifest_path,
+        signature_path=signature_path,
+        expected_version="3.7.0",
+        os_name="windows",
+        arch="x64",
+    )
+
+    assert isinstance(asset, UpdateAsset)
+    assert asset.name == "UniversalCrawlerPro_Setup_3.7.0.exe"
+
+
+def test_updater_helper_rejects_signed_manifest_for_another_version(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    manifest_path, signature_path, public_pem = _signed_manifest(tmp_path)
+    monkeypatch.setattr(updater_helper, "UPDATE_PUBLIC_KEY_PEM", public_pem)
+
+    with pytest.raises(VerificationError, match="does not match requested version"):
+        updater_helper._load_verified_asset(
+            manifest_path=manifest_path,
+            signature_path=signature_path,
+            expected_version="3.8.0",
+            os_name="windows",
+            arch="x64",
+        )
+
+
 def test_updater_helper_restarts_app_after_success_without_shell(tmp_path, monkeypatch):
     from entry import updater_helper
 
-    asset_json = tmp_path / "asset.json"
-    asset_json.write_text(
-        json.dumps(
-            {
-                "name": "installer.msi",
-                "url": "https://github.com/owner/repo/releases/download/v/installer.msi",
-                "sha256": "a" * 64,
-                "size": 1,
-                "installerType": "msi",
-                "os": "windows",
-                "arch": "x64",
-            }
-        ),
-        encoding="utf-8",
+    asset = UpdateAsset(
+        name="installer.msi",
+        url="https://github.com/owner/repo/releases/download/v/installer.msi",
+        sha256="a" * 64,
+        size=1,
+        installer_type="msi",
+        os="windows",
+        arch="x64",
     )
+    manifest_path = tmp_path / "latest.json"
+    signature_path = tmp_path / "latest.json.sig"
     installer = tmp_path / "installer.msi"
     installer.write_bytes(b"x")
     calls: list[dict] = []
@@ -691,14 +840,17 @@ def test_updater_helper_restarts_app_after_success_without_shell(tmp_path, monke
             return SimpleNamespace(exit_code=0, succeeded=True)
 
     monkeypatch.setattr(updater_helper, "InstallerRunner", FakeRunner)
+    monkeypatch.setattr(updater_helper, "_load_verified_asset", lambda **_kwargs: asset)
     monkeypatch.setattr(updater_helper.subprocess, "Popen", lambda argv, **kwargs: calls.append({"argv": argv, "kwargs": kwargs}))
 
     exit_code = updater_helper.main(
         [
             "--installer",
             str(installer),
-            "--asset-json",
-            str(asset_json),
+            "--manifest",
+            str(manifest_path),
+            "--signature",
+            str(signature_path),
             "--version",
             "3.7.0",
             "--log-path",
@@ -710,3 +862,54 @@ def test_updater_helper_restarts_app_after_success_without_shell(tmp_path, monke
 
     assert exit_code == 0
     assert calls == [{"argv": ["python", "-m", "entry.gui_entry"], "kwargs": {"shell": False}}]
+
+
+def test_updater_helper_waits_for_parent_before_running_installer(tmp_path, monkeypatch):
+    from entry import updater_helper
+
+    asset = UpdateAsset(
+        name="installer.msi",
+        url="https://github.com/owner/repo/releases/download/v/installer.msi",
+        sha256="a" * 64,
+        size=1,
+        installer_type="msi",
+        os="windows",
+        arch="x64",
+    )
+    manifest_path = tmp_path / "latest.json"
+    signature_path = tmp_path / "latest.json.sig"
+    installer = tmp_path / "installer.msi"
+    installer.write_bytes(b"x")
+    events: list[tuple[str, int | None]] = []
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_verified_installer(self, *_args, **_kwargs):
+            events.append(("install", None))
+            return SimpleNamespace(exit_code=0, succeeded=True)
+
+    monkeypatch.setattr(updater_helper, "InstallerRunner", FakeRunner)
+    monkeypatch.setattr(updater_helper, "_load_verified_asset", lambda **_kwargs: asset)
+    monkeypatch.setattr(updater_helper, "_wait_for_process_exit", lambda pid: events.append(("wait", pid)))
+
+    exit_code = updater_helper.main(
+        [
+            "--installer",
+            str(installer),
+            "--manifest",
+            str(manifest_path),
+            "--signature",
+            str(signature_path),
+            "--version",
+            "3.7.0",
+            "--log-path",
+            str(tmp_path / "install.log"),
+            "--wait-pid",
+            "4242",
+        ]
+    )
+
+    assert exit_code == 0
+    assert events == [("wait", 4242), ("install", None)]

@@ -15,11 +15,12 @@
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from Crypto.PublicKey import ECC
 
@@ -27,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
 UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
+BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
 REQUIREMENTS_WEB = PROJECT_ROOT / "requirements-web.txt"
@@ -45,6 +47,46 @@ def _load_update_manifest_tool():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_build_release_tool():
+    spec = importlib.util.spec_from_file_location("ucrawl_build_release_tool", BUILD_RELEASE_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class ProductionReleaseBuildOrderTests(unittest.TestCase):
+    def test_signed_release_rebuilds_portable_after_trust_injection(self):
+        tool = _load_build_release_tool()
+        calls: list[list[str]] = []
+
+        with (
+            patch.dict(os.environ, {"UCRAWL_SIGN_WINDOWS": "1"}),
+            patch.object(tool.subprocess, "run", side_effect=lambda argv, **_kwargs: calls.append(list(argv))),
+            patch.object(tool, "_validate_production_trust", return_value=None, create=True),
+        ):
+            tool.main()
+
+        self.assertEqual(
+            [Path(argv[1]).name for argv in calls],
+            ["build_portable.py", "build_installer.py", "build_portable.py", "build_installer.py"],
+        )
+
+    def test_signed_release_rejects_empty_packaged_trust_anchors(self):
+        tool = _load_build_release_tool()
+        config = Path(tempfile.mkdtemp()) / "update_trust.py"
+        config.write_text(
+            'UPDATE_PUBLIC_KEY_PEM = ""\n'
+            "UPDATE_TRUSTED_PUBLISHERS = ()\n"
+            "UPDATE_TRUSTED_THUMBPRINTS = ()\n",
+            encoding="utf-8",
+        )
+        validator = getattr(tool, "_validate_production_trust", lambda **_kwargs: None)
+
+        with self.assertRaises(SystemExit):
+            validator(config_path=config)
 
 class SpecFileExistenceTests(unittest.TestCase):
     """spec 文件基本检查。"""

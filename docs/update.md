@@ -115,12 +115,19 @@ Never publish the private key. Do not fetch public keys from the network.
 ```powershell
 python packaging/build_release.py
 python scripts/update_bootstrap.py production-bootstrap --installer dist/installer/UniversalCrawlerPro_Setup_<version>.exe
+$env:UCRAWL_SIGN_WINDOWS = "1"
+python packaging/build_release.py
 python packaging/update_manifest.py `
   --output-dir dist/release-assets `
   --version <version> `
   --tag v<version> `
   --asset-spec <asset-spec>
 ```
+
+第一次 `build_release.py` 只生成供 bootstrap 签名和提取证书身份的安装包。
+`production-bootstrap` 注入公开 publisher/thumbprint 后，必须以
+`UCRAWL_SIGN_WINDOWS=1` 再构建一次。签名构建会先签名并确认 trust anchor，
+再重新冻结 portable 客户端并签最终 installer，防止最终程序仍携带空信任根。
 
 然后上传这些公开 release 资产：
 
@@ -210,8 +217,10 @@ and `signature_path`.
 The GUI must spawn `entry.updater_helper` after download verification. Portable
 and installer builds include a dedicated `updater_helper.exe`; frozen GUI builds
 prefer that helper instead of trying to install from the main process. The helper
-repeats hash and OS signature verification before executing any installer. All
-process calls use argv arrays with `shell=False`.
+waits for the GUI process to exit, verifies `latest.json` and `latest.json.sig`
+again, binds the signed manifest version to the requested version, then repeats
+hash and OS signature verification before executing any installer. All process
+calls use argv arrays with `shell=False`.
 
 ## Failure Recovery
 
@@ -227,6 +236,12 @@ The updater records structured logs such as:
 - `update.install.exit`
 - `update.install.succeeded`
 - `update.install.failed`
+
+A GitHub Release without `latest.json` and `latest.json.sig` is used only for
+read-only version comparison. If the local build is current or newer, the UI
+reports that normal state. If the unsigned Release is newer, the UI shows a
+blocked update state and never exposes the automatic download action. Invalid,
+expired or tampered signed metadata remains a hard verification failure.
 
 Pending installs track attempt counts and are cleared only when the next app
 startup reports the expected version. Failed versions are not retried forever.

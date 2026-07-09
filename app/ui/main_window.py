@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -25,6 +26,7 @@ from app.services.update_check_service import (
     UPDATE_STATUS_AVAILABLE,
     UPDATE_STATUS_CURRENT,
     UPDATE_STATUS_LOCAL_NEWER,
+    UPDATE_STATUS_UNTRUSTED,
     UPDATE_PUBLIC_KEY_PEM,
     UPDATE_TRUSTED_PUBLISHERS,
     UPDATE_TRUSTED_THUMBPRINTS,
@@ -40,7 +42,6 @@ from app.services.secure_updater import (
     record_pending_install,
     record_skipped_update,
     record_startup_update_health,
-    write_update_asset_descriptor,
 )
 from app.ui.connection_registry import ConnectionRegistry
 from app.ui.dialogs import FileAssociationDialog
@@ -85,7 +86,8 @@ class _UpdateCheckOutcome:
 @dataclass(frozen=True)
 class _PreparedUpdate:
     installer_path: str
-    asset_json_path: str
+    manifest_path: str
+    signature_path: str
     version: str
     log_path: str
 
@@ -489,6 +491,7 @@ class MainWindow(QMainWindow):
             return
         self._set_status_bar_update_checking(True)
         local_version = version_text or self._current_status_version()
+        self._last_update_check_local_version = local_version
         worker = self._ensure_update_check_worker()
         self._update_check_sequence = int(self.__dict__.get("_update_check_sequence", 0) or 0) + 1
         worker.submit(_UpdateCheckRequest(sequence=self._update_check_sequence, local_version=local_version))
@@ -580,11 +583,14 @@ class MainWindow(QMainWindow):
         self._show_update_check_error(message)
 
     def _show_update_check_error(self, message: str) -> None:
+        local_version = str(self.__dict__.get("_last_update_check_local_version") or "").strip()
         self._show_basic_message(
             "检查更新失败",
             "暂时无法检查最新版本。",
             message,
             status="error",
+            local_version=self._display_version(local_version) if local_version else "",
+            latest_version="",
         )
 
     def _show_update_check_result(self, result: UpdateCheckResult) -> None:
@@ -617,6 +623,19 @@ class MainWindow(QMainWindow):
             return
         if result.status == UPDATE_STATUS_AVAILABLE:
             self._show_update_available_message(local_version, latest_version, result)
+            return
+        if result.status == UPDATE_STATUS_UNTRUSTED:
+            self._show_basic_message(
+                "检查更新",
+                self._tr("检测到版本 {version}，但该 Release 未提供签名更新清单。").format(
+                    version=latest_version,
+                ),
+                self._tr("自动更新已安全阻止，请等待发布者补充 latest.json 与 latest.json.sig。"),
+                status="error",
+                local_version=local_version,
+                latest_version=latest_version,
+                release_url=result.html_url,
+            )
             return
         self._show_update_check_error(f"未知更新状态：{result.status}")
 
@@ -770,10 +789,15 @@ class MainWindow(QMainWindow):
             cancel_event.set()
         dialog = self.__dict__.get("_update_download_dialog")
         if dialog is not None:
-            dialog.set_cancelled()
+            dialog.set_cancelling()
         self.append_log("用户取消更新下载")
 
     def _retry_update_download(self) -> None:
+        worker = self.__dict__.get("_update_download_thread")
+        is_alive = getattr(worker, "is_alive", None)
+        if callable(is_alive) and is_alive():
+            self.append_log("正在等待上一次更新下载线程停止，暂不能重试。")
+            return
         result = self.__dict__.get("_last_update_result")
         if not isinstance(result, UpdateCheckResult):
             self._show_update_check_error("没有可重试的更新任务。")
@@ -794,14 +818,18 @@ class MainWindow(QMainWindow):
             helper_module,
             "--installer",
             prepared.installer_path,
-            "--asset-json",
-            prepared.asset_json_path,
+            "--manifest",
+            prepared.manifest_path,
+            "--signature",
+            prepared.signature_path,
             "--version",
             prepared.version,
             "--log-path",
             prepared.log_path,
             "--restart-argv-json",
             json.dumps(self._restart_argv_after_update()),
+            "--wait-pid",
+            str(os.getpid()),
         ]
         helper_exe = Path(sys.executable).with_name("updater_helper.exe")
         if getattr(sys, "frozen", False) and helper_exe.exists():
@@ -809,14 +837,18 @@ class MainWindow(QMainWindow):
                 str(helper_exe),
                 "--installer",
                 prepared.installer_path,
-                "--asset-json",
-                prepared.asset_json_path,
+                "--manifest",
+                prepared.manifest_path,
+                "--signature",
+                prepared.signature_path,
                 "--version",
                 prepared.version,
                 "--log-path",
                 prepared.log_path,
                 "--restart-argv-json",
                 json.dumps(self._restart_argv_after_update()),
+                "--wait-pid",
+                str(os.getpid()),
             ]
         try:
             record_pending_install(
@@ -859,10 +891,10 @@ class MainWindow(QMainWindow):
             trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
             trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
         ).verify(installer_path, asset)
-        asset_json_path = write_update_asset_descriptor(installer_path, asset)
         return _PreparedUpdate(
             installer_path=str(installer_path),
-            asset_json_path=str(asset_json_path),
+            manifest_path=str(result.manifest_path),
+            signature_path=str(result.signature_path),
             version=manifest.version,
             log_path=str(installer_path.with_name("updater-install.log")),
         )

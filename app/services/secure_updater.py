@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,10 @@ class DownloadError(RuntimeError):
     def __init__(self, message: str, *, keep_partial: bool = False) -> None:
         super().__init__(message)
         self.keep_partial = bool(keep_partial)
+
+
+class MetadataNotFoundError(DownloadError):
+    """Raised when a release does not publish the signed updater metadata."""
 
 
 class VerificationError(RuntimeError):
@@ -504,7 +509,12 @@ class GitHubReleaseClient:
             if exc.code == 304:
                 return ManifestLocations(not_modified=True, etag=str(cache.get("etag") or ""), last_modified=str(cache.get("last_modified") or ""))
             if exc.code in {403, 429}:
-                raise DownloadError("GitHub rate limit reached") from exc
+                _log_update_event(
+                    "update.check.api_rate_limited",
+                    "GitHub API rate limited; falling back to the public release feed",
+                    level="WARN",
+                )
+                return self._fetch_manifest_locations_from_atom(opener=opener, per_page=1)[0]
             if exc.code == 404:
                 raise DownloadError("GitHub release was not found") from exc
             if exc.code >= 500:
@@ -574,7 +584,12 @@ class GitHubReleaseClient:
                     ),
                 )
             if exc.code in {403, 429}:
-                raise DownloadError("GitHub rate limit reached") from exc
+                _log_update_event(
+                    "update.check.api_rate_limited",
+                    "GitHub API rate limited; falling back to the public release feed",
+                    level="WARN",
+                )
+                return self._fetch_manifest_locations_from_atom(opener=opener, per_page=page_size)
             if exc.code == 404:
                 raise DownloadError("GitHub releases were not found") from exc
             if exc.code >= 500:
@@ -593,11 +608,72 @@ class GitHubReleaseClient:
             except DownloadError:
                 continue
         if not locations:
-            raise DownloadError("GitHub releases do not contain signed update manifests")
+            raise MetadataNotFoundError("GitHub releases do not contain signed update manifests")
         self._save_cache(
             {
                 "etag": etag,
                 "last_modified": last_modified,
+                "last_check_at": datetime.now(timezone.utc).isoformat(),
+                "release_url": locations[0].release_url,
+            }
+        )
+        return tuple(locations)
+
+    def _fetch_manifest_locations_from_atom(
+        self,
+        *,
+        opener: Callable[..., Any],
+        per_page: int,
+    ) -> tuple[ManifestLocations, ...]:
+        """Discover release tags without consuming the GitHub REST rate limit.
+
+        The feed only supplies release identity. Downloaded manifests still pass
+        the normal Ed25519 verification, so this fallback does not weaken trust.
+        """
+
+        feed_url = f"https://github.com/{self.owner}/{self.repo}/releases.atom"
+        request = urllib.request.Request(feed_url, headers={"User-Agent": self.user_agent})
+        try:
+            with opener(request, timeout=self.timeout) as response:
+                payload = response.read()
+            root = ET.fromstring(payload)
+        except urllib.error.HTTPError as exc:
+            raise DownloadError(f"GitHub release feed failed with HTTP {exc.code}") from exc
+        except (OSError, TimeoutError, urllib.error.URLError, ET.ParseError) as exc:
+            raise DownloadError(f"GitHub release feed failed: {exc}") from exc
+
+        namespace = {"atom": "http://www.w3.org/2005/Atom"}
+        expected_prefix = f"/{self.owner}/{self.repo}/releases/tag/"
+        locations: list[ManifestLocations] = []
+        for entry in root.findall("atom:entry", namespace):
+            release_url = ""
+            for link in entry.findall("atom:link", namespace):
+                if str(link.attrib.get("rel") or "alternate") == "alternate":
+                    release_url = str(link.attrib.get("href") or "")
+                    break
+            parsed = urllib.parse.urlparse(release_url)
+            if parsed.scheme != "https" or parsed.hostname != "github.com" or not parsed.path.startswith(expected_prefix):
+                continue
+            tag_name = urllib.parse.unquote(parsed.path[len(expected_prefix) :]).strip("/")
+            if not tag_name:
+                continue
+            encoded_tag = urllib.parse.quote(tag_name, safe="")
+            download_base = f"https://github.com/{self.owner}/{self.repo}/releases/download/{encoded_tag}"
+            locations.append(
+                ManifestLocations(
+                    manifest_url=f"{download_base}/{DEFAULT_MANIFEST_NAME}",
+                    signature_url=f"{download_base}/{DEFAULT_SIGNATURE_NAME}",
+                    release_url=release_url,
+                    tag_name=tag_name,
+                    release_name=str(entry.findtext("atom:title", default="", namespaces=namespace) or ""),
+                )
+            )
+            if len(locations) >= per_page:
+                break
+        if not locations:
+            raise DownloadError("GitHub release feed did not contain release tags")
+        self._save_cache(
+            {
                 "last_check_at": datetime.now(timezone.utc).isoformat(),
                 "release_url": locations[0].release_url,
             }
@@ -617,7 +693,7 @@ class GitHubReleaseClient:
             elif name == DEFAULT_SIGNATURE_NAME:
                 sig_url = browser_url
         if not manifest_url or not sig_url:
-            raise DownloadError("GitHub release does not contain latest.json and latest.json.sig")
+            raise MetadataNotFoundError("GitHub release does not contain latest.json and latest.json.sig")
         return ManifestLocations(
             manifest_url=manifest_url,
             signature_url=sig_url,

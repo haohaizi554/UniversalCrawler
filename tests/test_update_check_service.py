@@ -281,6 +281,252 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertEqual(result.latest_version, "3.7.0")
         self.assertEqual(result.manifest_path, str(cached_manifest))
 
+    def test_secure_update_reuses_verified_cache_when_release_discovery_fails(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import DownloadError, LocalUpdateState
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_metadata = root / "cache" / "updates" / "metadata"
+            manifest_path, sig_path, public_pem = _signed_manifest(root / "source")
+            cache_metadata.mkdir(parents=True)
+            (cache_metadata / "3.7.0.latest.json").write_bytes(manifest_path.read_bytes())
+            (cache_metadata / "3.7.0.latest.json.sig").write_bytes(sig_path.read_bytes())
+
+            class FailingReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    raise DownloadError("GitHub rate limit reached")
+
+            with patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"):
+                result = check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    release_client=FailingReleaseClient(),
+                    os_name="windows",
+                    arch="x64",
+                    state=LocalUpdateState(),
+                )
+
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(result.latest_version, "3.7.0")
+
+    def test_secure_update_preserves_last_good_cache_when_fresh_signature_download_fails(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_metadata = root / "cache" / "updates" / "metadata"
+            manifest_path, sig_path, public_pem = _signed_manifest(root / "source")
+            cache_metadata.mkdir(parents=True)
+            cached_manifest = cache_metadata / "3.7.0.latest.json"
+            cached_signature = cache_metadata / "3.7.0.latest.json.sig"
+            original_manifest = manifest_path.read_bytes()
+            original_signature = sig_path.read_bytes()
+            cached_manifest.write_bytes(original_manifest)
+            cached_signature.write_bytes(original_signature)
+
+            manifest_url = "https://github.com/owner/repo/releases/download/v3.7.0/latest.json"
+            signature_url = f"{manifest_url}.sig"
+
+            class FreshReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return (
+                        ManifestLocations(
+                            manifest_url=manifest_url,
+                            signature_url=signature_url,
+                            tag_name="v3.7.0",
+                        ),
+                    )
+
+            def failing_urlopen(request, timeout):
+                if request.full_url == signature_url:
+                    raise HTTPError(signature_url, 503, "unavailable", None, None)
+                return _FakeBytesResponse(b'{"incomplete": true}')
+
+            with (
+                patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
+                patch("app.services.update_check_service.urllib.request.urlopen", side_effect=failing_urlopen),
+            ):
+                result = check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    release_client=FreshReleaseClient(),
+                    os_name="windows",
+                    arch="x64",
+                    state=LocalUpdateState(),
+                )
+
+            self.assertEqual(cached_manifest.read_bytes(), original_manifest)
+            self.assertEqual(cached_signature.read_bytes(), original_signature)
+
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(result.latest_version, "3.7.0")
+
+    def test_secure_update_uses_readonly_release_status_when_signed_metadata_is_missing_and_local_is_newer(self):
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+
+        manifest_url = "https://github.com/owner/repo/releases/download/v3.6.14/latest.json"
+
+        class ReleaseClient:
+            def fetch_manifest_location_candidates(self, **_kwargs):
+                return (
+                    ManifestLocations(
+                        manifest_url=manifest_url,
+                        signature_url=f"{manifest_url}.sig",
+                        release_url="https://github.com/owner/repo/releases/tag/v3.6.14",
+                        tag_name="v3.6.14",
+                    ),
+                )
+
+        with (
+            patch(
+                "app.services.update_check_service.urllib.request.urlopen",
+                side_effect=HTTPError(manifest_url, 404, "missing", None, None),
+            ),
+            patch(
+                "app.services.update_check_service.fetch_latest_release_payload",
+                return_value={
+                    "tag_name": "v3.6.14",
+                    "name": "v3.6.14",
+                    "html_url": "https://github.com/owner/repo/releases/tag/v3.6.14",
+                },
+            ),
+        ):
+            result = check_secure_update(
+                "3.6.17",
+                public_key_pem="test-public-key",
+                release_client=ReleaseClient(),
+                os_name="windows",
+                arch="x64",
+                state=LocalUpdateState(),
+            )
+
+        self.assertEqual(result.status, UPDATE_STATUS_LOCAL_NEWER)
+        self.assertEqual(result.local_version, "3.6.17")
+        self.assertEqual(result.latest_version, "3.6.14")
+
+    def test_secure_update_reports_untrusted_state_when_newer_release_lacks_signed_metadata(self):
+        import app.services.update_check_service as update_service
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+
+        manifest_url = "https://github.com/owner/repo/releases/download/v3.8.0/latest.json"
+
+        class ReleaseClient:
+            def fetch_manifest_location_candidates(self, **_kwargs):
+                return (
+                    ManifestLocations(
+                        manifest_url=manifest_url,
+                        signature_url=f"{manifest_url}.sig",
+                        release_url="https://github.com/owner/repo/releases/tag/v3.8.0",
+                        tag_name="v3.8.0",
+                    ),
+                )
+
+        with (
+            patch(
+                "app.services.update_check_service.urllib.request.urlopen",
+                side_effect=HTTPError(manifest_url, 404, "missing", None, None),
+            ),
+            patch(
+                "app.services.update_check_service.fetch_latest_release_payload",
+                return_value={
+                    "tag_name": "v3.8.0",
+                    "name": "v3.8.0",
+                    "html_url": "https://github.com/owner/repo/releases/tag/v3.8.0",
+                },
+            ),
+        ):
+            result = check_secure_update(
+                "3.6.17",
+                public_key_pem="test-public-key",
+                release_client=ReleaseClient(),
+                os_name="windows",
+                arch="x64",
+                state=LocalUpdateState(),
+            )
+
+        self.assertEqual(result.status, getattr(update_service, "UPDATE_STATUS_UNTRUSTED", "untrusted"))
+        self.assertEqual(result.local_version, "3.6.17")
+        self.assertEqual(result.latest_version, "3.8.0")
+        self.assertEqual(result.manifest_path, "")
+        self.assertEqual(result.signature_path, "")
+
+    def test_secure_update_never_downgrades_invalid_signature_to_readonly_release_check(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path, signature_path, public_pem = _signed_manifest(root / "source")
+            signature_path.write_bytes(b"invalid-signature")
+            manifest_url = "https://github.com/owner/repo/releases/download/v3.8.0/latest.json"
+            signature_url = f"{manifest_url}.sig"
+            blobs = {
+                manifest_url: manifest_path.read_bytes(),
+                signature_url: signature_path.read_bytes(),
+            }
+
+            class ReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return (
+                        ManifestLocations(
+                            manifest_url=manifest_url,
+                            signature_url=signature_url,
+                            tag_name="v3.8.0",
+                        ),
+                    )
+
+            def fake_urlopen(request, timeout):
+                return _FakeBytesResponse(blobs[request.full_url])
+
+            with (
+                patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
+                patch("app.services.update_check_service.urllib.request.urlopen", side_effect=fake_urlopen),
+                patch("app.services.update_check_service.fetch_latest_release_payload") as readonly_fetch,
+            ):
+                with self.assertRaisesRegex(UpdateCheckError, "signature verification failed"):
+                    check_secure_update(
+                        "3.6.17",
+                        public_key_pem=public_pem,
+                        release_client=ReleaseClient(),
+                        os_name="windows",
+                        arch="x64",
+                        state=LocalUpdateState(),
+                    )
+
+            readonly_fetch.assert_not_called()
+
+    def test_secure_update_rejects_release_head_older_than_last_seen_version(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path, sig_path, public_pem = _signed_manifest(root)
+            state = LocalUpdateState(last_seen_version="3.8.0")
+
+            with self.assertRaisesRegex(UpdateCheckError, "older than last seen"):
+                check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    manifest_path=manifest_path,
+                    signature_path=sig_path,
+                    os_name="windows",
+                    arch="x64",
+                    state=state,
+                )
+
+        self.assertEqual(state.last_seen_version, "3.8.0")
+
     def test_secure_update_rejects_manifest_requiring_newer_client(self):
         from tempfile import TemporaryDirectory
 
@@ -309,6 +555,10 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertIn("_download_verified_update", source)
         self.assertIn("_cancel_update_download", source)
         self.assertIn("entry.updater_helper", source)
+        self.assertIn('"--wait-pid"', source)
+        self.assertIn('"--manifest"', source)
+        self.assertIn('"--signature"', source)
+        self.assertNotIn('"--asset-json"', source)
         self.assertIn("shell=False", source)
         self.assertIn("record_skipped_update", source)
         self.assertIn("跳过此版本", source)
@@ -319,8 +569,120 @@ class UpdateCheckServiceTests(unittest.TestCase):
         source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")
 
         self.assertIn("class UpdateDownloadDialog", source)
-        for text in ("取消下载", "重试", "查看日志", "安装并重启"):
+        for text in ("取消下载", "正在取消", "重试", "查看日志", "安装并重启"):
             self.assertIn(text, source)
+        self.assertIn("def set_cancelling", source)
+
+    def test_cancel_update_download_enters_non_retryable_cancelling_state(self):
+        from app.ui.main_window import MainWindow
+
+        events: list[str] = []
+
+        class CancelEvent:
+            def set(self):
+                events.append("cancel-event")
+
+        class Dialog:
+            def set_cancelling(self):
+                events.append("cancelling")
+
+            def set_cancelled(self):
+                events.append("cancelled")
+
+        host = type("Host", (), {"append_log": lambda self, _message: None})()
+        host.__dict__["_update_download_cancel_event"] = CancelEvent()
+        host.__dict__["_update_download_dialog"] = Dialog()
+
+        MainWindow._cancel_update_download(host)
+
+        self.assertEqual(events, ["cancel-event", "cancelling"])
+
+    def test_retry_update_download_waits_until_previous_worker_has_stopped(self):
+        from app.services.update_check_service import UpdateCheckResult
+        from app.ui.main_window import MainWindow
+
+        events: list[str] = []
+
+        class RunningThread:
+            @staticmethod
+            def is_alive():
+                return True
+
+        host = type(
+            "Host",
+            (),
+            {
+                "append_log": lambda self, _message: events.append("log"),
+                "_begin_update_download": lambda self, _result: events.append("begin"),
+                "_show_update_check_error": lambda self, _message: events.append("error"),
+            },
+        )()
+        host.__dict__["_last_update_result"] = UpdateCheckResult(
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="3.6.17",
+            latest_version="3.7.0",
+            tag_name="v3.7.0",
+            release_name="3.7.0",
+            html_url="https://example.test/release",
+        )
+        host.__dict__["_update_download_thread"] = RunningThread()
+
+        MainWindow._retry_update_download(host)
+
+        self.assertEqual(events, ["log"])
+
+    def test_untrusted_update_state_renders_known_versions_without_download_action(self):
+        from app.services.update_check_service import UpdateCheckResult
+        from app.ui.main_window import MainWindow
+
+        calls: list[tuple] = []
+        host = type(
+            "Host",
+            (),
+            {
+                "_display_version": staticmethod(lambda version: f"v{str(version).lstrip('vV')}"),
+                "_tr": lambda self, text: text,
+                "_show_basic_message": lambda self, *args, **kwargs: calls.append(("basic", args, kwargs)),
+                "_show_update_available_message": lambda self, *_args: calls.append(("download", (), {})),
+                "_show_update_check_error": lambda self, message: calls.append(("generic-error", (message,), {})),
+            },
+        )()
+        result = UpdateCheckResult(
+            status="untrusted",
+            local_version="3.6.17",
+            latest_version="3.8.0",
+            tag_name="v3.8.0",
+            release_name="Release 3.8.0",
+            html_url="https://github.com/owner/repo/releases/tag/v3.8.0",
+        )
+
+        MainWindow._show_update_check_result(host, result)
+
+        self.assertEqual(len(calls), 1)
+        kind, _args, kwargs = calls[0]
+        self.assertEqual(kind, "basic")
+        self.assertEqual(kwargs["status"], "error")
+        self.assertEqual(kwargs["local_version"], "v3.6.17")
+        self.assertEqual(kwargs["latest_version"], "v3.8.0")
+
+    def test_generic_update_error_preserves_known_local_version(self):
+        from app.ui.main_window import MainWindow
+
+        calls: list[dict] = []
+        host = type(
+            "Host",
+            (),
+            {
+                "_display_version": staticmethod(lambda version: f"v{str(version).lstrip('vV')}"),
+                "_show_basic_message": lambda self, *_args, **kwargs: calls.append(kwargs),
+            },
+        )()
+        host.__dict__["_last_update_check_local_version"] = "3.6.17"
+
+        MainWindow._show_update_check_error(host, "network unavailable")
+
+        self.assertEqual(calls[0]["local_version"], "v3.6.17")
+        self.assertEqual(calls[0]["latest_version"], "")
 
 
 @unittest.skipUnless(_pyqt6_available(), "PyQt6 is not installed")

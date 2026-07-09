@@ -538,6 +538,14 @@ class UpdateDownloadDialog(ChromedDialog):
         self.install_button.hide()
         self.retry_button.show()
 
+    def set_cancelling(self) -> None:
+        self._terminal_state = True
+        self.state_label.setText(self._tr("正在取消下载"))
+        self.detail_label.setText(self._tr("正在等待下载线程停止，请稍候。"))
+        self.cancel_button.hide()
+        self.retry_button.hide()
+        self.install_button.hide()
+
     def set_cancelled(self) -> None:
         self.set_error(self._tr("已取消下载。"))
 
