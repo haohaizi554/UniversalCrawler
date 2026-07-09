@@ -8,7 +8,6 @@ let selected = {
   active: "",
   completed: "",
   failed: "",
-  log: "",
   tool: "link_parser",
 };
 let queuePage = 1;
@@ -20,26 +19,6 @@ let failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_p
 let listPageWorker = null;
 let listPageWorkerAvailable = typeof Worker !== "undefined";
 let listPageSequences = { queue: 0, completed: 0, failed: 0 };
-let logPage = 1;
-let logPageSize = normalizeLogPageSize(localStorage.getItem("webui_log_page_size") || 20);
-const LOG_RENDER_ROW_BUDGET = 300;
-let logQueryWorker = null;
-let logQueryWorkerAvailable = typeof Worker !== "undefined";
-let logQueryFallbackTimer = null;
-let logQuerySequence = 0;
-let logQueryState = {
-  signature: "",
-  result: null,
-  pending: false,
-};
-let logDetailWorker = null;
-let logDetailWorkerAvailable = typeof Worker !== "undefined";
-let logDetailSequence = 0;
-let logDetailState = {
-  signature: "",
-  result: null,
-  pending: false,
-};
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
 
@@ -51,35 +30,6 @@ function closeListPageWorker() {
     // Browser teardown is best-effort; stale workers must not block navigation.
   }
   listPageWorker = null;
-}
-
-function closeLogQueryWorker() {
-  clearLogQueryFallback();
-  if (!logQueryWorker) return;
-  try {
-    logQueryWorker.terminate();
-  } catch (_error) {
-    // Browser teardown is best-effort; stale workers must not block navigation.
-  }
-  logQueryWorker = null;
-  logQueryState.pending = false;
-}
-
-function closeLogDetailWorker() {
-  if (!logDetailWorker) return;
-  try {
-    logDetailWorker.terminate();
-  } catch (_error) {
-    // Browser teardown is best-effort; stale workers must not block navigation.
-  }
-  logDetailWorker = null;
-  logDetailState.pending = false;
-}
-
-function clearLogQueryFallback() {
-  if (logQueryFallbackTimer === null) return;
-  clearTimeout(logQueryFallbackTimer);
-  logQueryFallbackTimer = null;
 }
 
 function cleanupPageResources() {
@@ -98,8 +48,7 @@ function cleanupPageResources() {
       // The page is leaving; close failures are intentionally ignored.
     }
   }
-  closeLogQueryWorker();
-  closeLogDetailWorker();
+  if (window.UcpLogCenter) window.UcpLogCenter.dispose();
   closeListPageWorker();
 }
 
@@ -118,25 +67,11 @@ function formatLocalDateTime(date = new Date()) {
   ].join(" ");
 }
 
-function normalizeLogPageSize(value) {
-  const numeric = Number(value);
-  if (numeric === 0) return 0;
-  return [20, 50, 100].includes(numeric) ? numeric : 20;
-}
-
 function normalizeTablePageSize(value) {
   const numeric = Number(value);
   return [20, 50, 100].includes(numeric) ? numeric : 20;
 }
 
-let logFilters = {
-  category: "all",
-  level: "all",
-  time: "30m",
-  platform: "all",
-  trace: "",
-  keyword: "",
-};
 let currentSettingsGroup = localStorage.getItem("webui_settings_group") || "基础设置";
 let imageAutoAdvanceTimer = null;
 let selectionItems = [];
@@ -205,9 +140,6 @@ function trimFrontendLogItems() {
   const limit = uiLogDisplayLimit();
   if (frontendState.log_items.length <= limit) return false;
   frontendState.log_items = frontendState.log_items.slice(-limit);
-  if (selected.log && !frontendState.log_items.some(item => logItemId(item) === selected.log)) {
-    selected.log = "";
-  }
   return true;
 }
 
@@ -217,6 +149,29 @@ function i18nService() {
 
 function logI18nService() {
   return window.UcpLogI18n || null;
+}
+
+function logCenterService() {
+  if (!window.UcpLogCenter) throw new Error("UcpLogCenter is unavailable");
+  return window.UcpLogCenter;
+}
+
+function logCenterDependencies() {
+  return {
+    getState: () => frontendState,
+    getLanguage: currentLanguage,
+    t,
+    esc,
+    escAttr,
+    byId,
+    writeClipboard,
+    runOperation: performLogOperation,
+    onFiltersChange: () => {},
+  };
+}
+
+function configureLogCenterHelpers() {
+  return logCenterService().configure(logCenterDependencies());
 }
 
 function configureI18nHelpers() {
@@ -272,41 +227,6 @@ function canonicalUiText(text) {
     : String(text || "");
 }
 
-function isAllLogFilterText(value) {
-  const text = String(value || "").trim().toLowerCase();
-  return !text || text === "all" || text === "全部" || text === "所有";
-}
-
-function normalizeLogFilterValue(key, value) {
-  const raw = String(value || "").trim();
-  const canonical = canonicalUiText(raw);
-  if (key === "level") {
-    if (isAllLogFilterText(raw) || isAllLogFilterText(canonical)) return "all";
-    return raw.toUpperCase();
-  }
-  if (key === "time") {
-    if (isAllLogFilterText(raw) || isAllLogFilterText(canonical)) return "all";
-    const aliases = {
-      "30m": "30m",
-      "1h": "1h",
-      "24h": "24h",
-      "近 30 分钟": "30m",
-      "近 1 小时": "1h",
-      "近 24 小时": "24h",
-      "Last 30 minutes": "30m",
-      "Last 30 min": "30m",
-      "Last 1 hour": "1h",
-      "Last 24 hours": "24h",
-    };
-    return aliases[raw] || aliases[canonical] || raw || "30m";
-  }
-  if (key === "platform") {
-    if (isAllLogFilterText(raw) || isAllLogFilterText(canonical)) return "all";
-    return canonical || raw;
-  }
-  return raw;
-}
-
 function uiTextWithDetail(label, detail = "") {
   const base = t(label);
   const extra = String(detail || "").trim();
@@ -336,10 +256,12 @@ function setButtonContent(buttonId, label) {
 function applyStaticLanguage() {
   const service = configureI18nHelpers();
   if (service) service.applyStaticLanguage();
+  if (window.UcpLogCenter) window.UcpLogCenter.render();
 }
 
 configureI18nHelpers();
 configureLogI18nHelpers();
+configureLogCenterHelpers();
 
 // Compatibility globals used by a few older browser tests.
 let videos = {};
@@ -1522,718 +1444,43 @@ function solutionRowHtml(solution) {
   return taskRenderService().solutionRowHtml(solution);
 }
 
-function logLevelClass(level) {
-  const normalized = String(level || "").toUpperCase();
-  if (["SUCCESS", "OK"].includes(normalized)) return "success";
-  if (["WARN", "WARNING"].includes(normalized)) return "warn";
-  if (normalized === "ERROR") return "error";
-  if (["CMD", "COMMAND"].includes(normalized)) return "cmd";
-  return "info";
-}
-
-function localizedLogTabLabel(category) {
-  return logI18nService()?.localizedLogTabLabel(category) ?? String(category || "all");
-}
-
-function emptyLogTabCounts() {
-  const counts = Object.fromEntries(["all", "crawl", "download", "system", "performance", "error"].map(key => [key, 0]));
-  return counts;
-}
-
-function currentLogTabCounts() {
-  return (logQueryState.result && logQueryState.result.tabCounts) || emptyLogTabCounts();
-}
-
-function syncLogTabLabels(countsOverride) {
-  const counts = countsOverride || currentLogTabCounts();
-  document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => {
-    const category = button.dataset.logTab || "all";
-    button.textContent = `${localizedLogTabLabel(category)} ${counts[category] || 0}`;
-  });
-}
-
-function syncLogStaticLanguage() {
-  syncLogTabLabels();
-  const logFilterLabels = ["日志级别", "时间范围", "平台", "Trace ID", "关键词搜索"];
-  document.querySelectorAll("#page-logs .log-filter-label").forEach((label, index) => {
-    if (logFilterLabels[index]) label.textContent = t(logFilterLabels[index]);
-  });
-  const logTraceFilter = byId("logTraceFilter");
-  if (logTraceFilter) logTraceFilter.placeholder = t("请输入 Trace ID");
-  const logKeywordFilter = byId("logKeywordFilter");
-  if (logKeywordFilter) logKeywordFilter.placeholder = t("请输入关键词...");
-  const logHeaders = ["时间", "级别", "来源", "Trace ID", "消息摘要"];
-  document.querySelectorAll("#page-logs th").forEach((header, index) => {
-    if (logHeaders[index]) header.textContent = t(logHeaders[index]);
-  });
-  const logActionLabels = [
-    ["runLogOperation('refresh')", "刷新"],
-    ["runLogOperation('clear')", "清空"],
-    ["runLogOperation('export')", "导出"],
-    ["runLogOperation('open_latest')", "debug.log"],
-    ["runLogOperation('open_error_summary')", "error.md"],
-    ["copySelectedLogTraceId()", "复制TraceID"],
-  ];
-  for (const [onclick, label] of logActionLabels) {
-    const button = document.querySelector(`#page-logs .log-actions [onclick="${onclick}"]`);
-    if (button) button.textContent = t(label);
-  }
-  setButtonContent("logPrevPage", "上一页");
-  setButtonContent("logNextPage", "下一页");
-}
-
-function logLevelCellHtml(item) {
-  const label = item.level_display || item.level || "INFO";
-  return `<span class="log-level-badge log-level-${logLevelClass(label)}">${esc(label)}</span>`;
-}
-
-function logValueHtml(value) {
-  return esc(logI18nService()?.translateRuntimeLogText(value) ?? String(value ?? ""));
-}
-
-function logEventCodeText(value) {
-  return logI18nService()?.localizeLogEventCode(value) ?? String(value || "-");
-}
-
-function logSourceCellHtml(item) {
-  const label = item.source_display || item.source || item.platform || "";
-  const iconFile = item.source_display_icon_file || "";
-  const translated = logI18nService()?.translateRuntimeLogText(label) ?? String(label ?? "");
-  if (!iconFile) return esc(translated);
-  return `<span class="platform-cell log-source-cell"><img src="${iconFileUrl(iconFile)}" alt="" />${esc(translated)}</span>`;
-}
-
-function logDetailRowHtml(label, valueHtml) {
-  return `<span>${esc(t(label))}</span><span class="kv-value">${valueHtml}</span>`;
-}
-
-function logDetailSummaryHtml(item) {
-  const platformLabel = item.platform_display || item.platform_label || item.platform || "";
-  const logI18n = logI18nService();
-  const rows = [
-    ["时间", esc(item.time || "")],
-    ["级别", logLevelCellHtml(item)],
-    ["性质", logValueHtml(logI18n?.logResultNatureText(item) ?? (item.result_type_display || item.type_display || item.nature_display || item.result_type || item.type || item.nature || "过程"))],
-    ["范围", logValueHtml(logI18n?.logScopeDisplayText(item) ?? (item.log_scope_display || item.scope_display || item.log_scope || item.scope || item.category || "-"))],
-    ["阶段", logValueHtml(logI18n?.logStageDisplayText(item) ?? (item.event_stage_display || item.stage_display || item.event_stage || item.stage || "-"))],
-    ["事件码", esc(logEventCodeText(item.event_code || item.status_code || "-"))],
-    ["来源", logSourceCellHtml(item)],
-    ["平台", logValueHtml(platformLabel || "-")],
-    ["Trace ID", esc(item.trace_id || "-")],
-    ["消息", logValueHtml(item.message || item.message_summary || "-")],
-  ];
-  return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, value)).join("")}</div>`;
-}
-
-function emptyLogDetailSummaryHtml() {
-  const rows = [
-    ["时间", "-"],
-    ["级别", "-"],
-    ["性质", "-"],
-    ["范围", "-"],
-    ["阶段", "-"],
-    ["事件码", "-"],
-    ["来源", "-"],
-    ["平台", "-"],
-    ["Trace ID", "-"],
-    ["消息", "-"],
-  ];
-  return `<div class="kv log-detail-kv">${rows.map(([label, value]) => logDetailRowHtml(label, esc(value))).join("")}</div>`;
-}
-
-function logQueryItems() {
-  return Array.isArray(frontendState.log_items) ? frontendState.log_items : [];
-}
-
-function logQuerySignature(items) {
-  const first = items[0] || {};
-  const last = items[items.length - 1] || {};
-  return JSON.stringify({
-    language: currentLanguage(),
-    count: items.length,
-    first: logItemId(first),
-    last: logItemId(last),
-    firstTime: first.time || "",
-    lastTime: last.time || "",
-    filters: logFilters,
-    page: logPage,
-    pageSize: logPageSize,
-    limit: uiLogDisplayLimit(),
-  });
-}
-
-function buildLogQueryRequest(items, sequence) {
-  return {
-    sequence,
-    items,
-    filters: { ...logFilters },
-    page: logPage,
-    pageSize: logPageSize,
-    rowBudget: uiLogDisplayLimit(),
-    selectedId: selected.log,
-    nowMs: Date.now(),
-  };
-}
-
-function queryLogsSync(items, sequence) {
-  return queryLogsSyncRequest(buildLogQueryRequest(items, sequence));
-}
-
-function queryLogsSyncRequest(request) {
-  const items = Array.isArray(request && request.items) ? request.items : [];
-  const sequence = request && request.sequence;
-  if (
-    !window.UcpLogDisplay ||
-    typeof window.UcpLogDisplay.queryLogItems !== "function" ||
-    typeof window.UcpLogDisplay.filteredLogItems !== "function" ||
-    typeof window.UcpLogDisplay.visibleLogItems !== "function"
-  ) {
-    return {
-      sequence,
-      pageItems: [],
-      tabCounts: emptyLogTabCounts(),
-      totalCount: items.length,
-      matchedCount: 0,
-      visibleCount: 0,
-      currentPage: 1,
-      totalPages: 1,
-      selectedId: "",
-    };
-  }
-  return window.UcpLogDisplay.queryLogItems(request);
-}
-
-function ensureLogQueryWorker() {
-  if (!logQueryWorkerAvailable) return null;
-  if (logQueryWorker) return logQueryWorker;
-  try {
-    logQueryWorker = new Worker("/static/log_query_worker.js?v=20260707-log-worker");
-    logQueryWorker.onmessage = event => {
-      const payload = event && event.data ? event.data : {};
-      if (payload.type === "result") {
-        receiveLogQueryResult(payload.result);
-      } else if (payload.type === "error") {
-        logQueryWorkerAvailable = false;
-        logQueryState.pending = false;
-        appendLog(payload.message || "log query worker failed");
-        renderLogs();
-      }
-    };
-    logQueryWorker.onerror = () => {
-      logQueryWorkerAvailable = false;
-      logQueryState.pending = false;
-      if (logQueryWorker) {
-        logQueryWorker.terminate();
-        logQueryWorker = null;
-      }
-      renderLogs();
-    };
-  } catch (_error) {
-    logQueryWorkerAvailable = false;
-    logQueryWorker = null;
-  }
-  return logQueryWorker;
-}
-
-function receiveLogQueryResult(result) {
-  if (!result || Number(result.sequence) !== logQuerySequence) return;
-  logQueryState = {
-    signature: logQueryState.signature,
-    result,
-    pending: false,
-  };
-  if (currentPage === "logs") renderLogQueryResult(result);
-}
-
-function scheduleLogQueryFallback(items, sequence) {
-  clearLogQueryFallback();
-  const request = buildLogQueryRequest(Array.isArray(items) ? items.slice() : [], sequence);
-  logQueryFallbackTimer = setTimeout(() => {
-    logQueryFallbackTimer = null;
-    if (Number(sequence) !== logQuerySequence) return;
-    receiveLogQueryResult(queryLogsSyncRequest(request));
-  }, 0);
-}
-
-function submitLogQuery(items, signature) {
-  const sequence = ++logQuerySequence;
-  logQueryState = {
-    signature,
-    result: logQueryState.result,
-    pending: true,
-  };
-  const worker = ensureLogQueryWorker();
-  if (!worker) {
-    scheduleLogQueryFallback(items, sequence);
-    return;
-  }
-  clearLogQueryFallback();
-  worker.postMessage(buildLogQueryRequest(items, sequence));
-}
-
-function renderLogs() {
-  syncLogStaticLanguage();
-  syncLogFilterControls();
-  const allItems = logQueryItems();
-  const signature = logQuerySignature(allItems);
-  if (logQueryState.signature === signature && logQueryState.result && !logQueryState.pending) {
-    renderLogQueryResult(logQueryState.result);
-    return;
-  }
-  submitLogQuery(allItems, signature);
-  if (logQueryState.result) renderLogQueryResult(logQueryState.result);
-}
-
-function renderLogQueryResult(result) {
-  syncLogStaticLanguage();
-  syncLogFilterControls();
-  const items = Array.isArray(result.pageItems) ? result.pageItems : [];
-  const boundedItems = { length: Number(result.matchedCount) || 0 };
-  const totalPages = Number(result.totalPages) || 1;
-  logPage = Number(result.currentPage) || 1;
-  syncLogTabLabels(result.tabCounts || emptyLogTabCounts());
-  if (!items.some(item => logItemId(item) === selected.log)) selected.log = items.length ? logItemId(items[0]) : "";
-  patchTableRows("logBody", items, item => logItemId(item), item => `
-    <tr class="${selected.log === logItemId(item) ? "selected" : ""}" onclick="selectLog('${escAttr(logItemId(item))}')">
-      <td>${esc(item.time)}</td>
-      <td>${logLevelCellHtml(item)}</td>
-      <td>${logSourceCellHtml(item)}</td>
-      <td>${esc(item.trace_id || "")}</td>
-      <td title="${escAttr(logI18nService()?.translateRuntimeLogText(item.message_summary || "") ?? String(item.message_summary || ""))}">${logValueHtml(item.message_summary || "")}</td>
-    </tr>
-  `);
-  syncLogEmptyState(items.length === 0);
-  byId("logTotal").textContent = translateUiText(`共 ${(frontendState.log_items || []).length} 条 / 匹配 ${boundedItems.length} 条 / 当前显示 ${items.length} 条`);
-  byId("logPageIndicator").textContent = translateUiText(`第 ${logPage} / ${totalPages} 页`);
-  byId("logPageSize").value = String(logPageSize);
-  syncCustomSelectForSelect(byId("logPageSize"));
-  byId("logPrevPage").disabled = logPage <= 1 || logPageSize <= 0;
-  byId("logNextPage").disabled = logPage >= totalPages || logPageSize <= 0;
-  renderLogDetail(items);
-}
-
-function syncLogEmptyState(empty) {
-  const panel = byId("logEmptyState");
-  if (!panel) return;
-  panel.hidden = !empty;
-  if (!empty) return;
-  const title = panel.querySelector("strong");
-  const subtitle = panel.querySelector(".log-empty-subtitle");
-  const subtitlePrimary = panel.querySelector("[data-log-empty-primary]");
-  const subtitleSecondary = panel.querySelector("[data-log-empty-secondary]");
-  if (title) title.textContent = t("暂无匹配日志");
-  if (subtitle) subtitle.setAttribute("aria-label", t("调整筛选条件 或点击「刷新缓冲」重新加载日志"));
-  if (subtitlePrimary) subtitlePrimary.textContent = t("调整筛选条件");
-  if (subtitleSecondary) subtitleSecondary.textContent = t("或点击「刷新缓冲」重新加载日志");
-}
-
-function logItemId(item) {
-  return window.UcpLogDisplay ? window.UcpLogDisplay.logItemId(item) : String(item.id || "");
-}
-
-function selectLog(id) {
-  selected.log = String(id);
-  renderLogs();
-}
-
-function currentLogDetailItem(itemsOverride) {
-  const items = Array.isArray(itemsOverride)
-    ? itemsOverride
-    : ((logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : []);
-  return items.find(row => logItemId(row) === selected.log) || null;
-}
-
-function logDetailSignature(item) {
-  if (!item) return `${currentLanguage()}|`;
-  const detail = item.detail;
-  const detailMarker = detail && typeof detail === "object"
-    ? [
-        Object.keys(detail).sort().join(","),
-        detail.description || "",
-        detail.status_code || "",
-        detail.event_code || "",
-      ].join("|")
-    : String(detail || "");
-  return [
-    currentLanguage(),
-    logItemId(item),
-    item.time || "",
-    item.level || item.raw_level || "",
-    item.platform_display || item.platform || "",
-    item.source_display || item.source || "",
-    item.trace_id || "",
-    item.message || item.message_summary || "",
-    item.event_code || item.status_code || "",
-    detailMarker,
-    item.stack || "",
-  ].join("\u001f");
-}
-
-function logDetailTranslationHints(item) {
-  return logI18nService()?.translationHints(item) ?? {};
-}
-
-function buildLogDetailRequest(item, sequence) {
-  return {
-    sequence,
-    itemId: logItemId(item),
-    item,
-    language: currentLanguage(),
-    translations: logDetailTranslationHints(item),
-  };
-}
-
-function emptyLogDetailResult(sequence = logDetailSequence) {
-  return {
-    sequence,
-    itemId: "",
-    language: currentLanguage(),
-    item: null,
-    detailJson: "{}",
-    detailDisplayText: "{}",
-    fullJson: "{}",
-    stack: "",
-    filename: "log_detail_current.json",
-  };
-}
-
-function ensureLogDetailWorker() {
-  if (!logDetailWorkerAvailable) return null;
-  if (logDetailWorker) return logDetailWorker;
-  try {
-    logDetailWorker = new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker");
-    logDetailWorker.onmessage = event => {
-      const payload = event && event.data ? event.data : {};
-      if (payload.type === "result") {
-        receiveLogDetailResult(payload.result);
-      } else if (payload.type === "error") {
-        logDetailWorkerAvailable = false;
-        logDetailState.pending = false;
-        appendLog(payload.message || "log detail worker failed");
-        renderLogDetailResult(emptyLogDetailResult(Number(payload.sequence) || logDetailSequence));
-      }
-    };
-    logDetailWorker.onerror = () => {
-      logDetailWorkerAvailable = false;
-      logDetailState.pending = false;
-      if (logDetailWorker) {
-        logDetailWorker.terminate();
-        logDetailWorker = null;
-      }
-      renderLogDetailResult(emptyLogDetailResult());
-    };
-  } catch (_error) {
-    logDetailWorkerAvailable = false;
-    logDetailWorker = null;
-  }
-  return logDetailWorker;
-}
-
-function receiveLogDetailResult(result) {
-  if (!result || Number(result.sequence) !== logDetailSequence) return;
-  logDetailState = {
-    signature: logDetailState.signature,
-    result,
-    pending: false,
-  };
-  if (currentPage === "logs" && String(result.itemId || "") === String(selected.log || "")) {
-    renderLogDetailResult(result);
-  }
-}
-
-function submitLogDetail(item) {
-  const signature = logDetailSignature(item);
-  if (logDetailState.signature === signature && (logDetailState.pending || logDetailState.result)) return;
-  const sequence = ++logDetailSequence;
-  logDetailState = {
-    signature,
-    result: null,
-    pending: true,
-  };
-  const worker = ensureLogDetailWorker();
-  if (!worker) {
-    logDetailState = {
-      signature,
-      result: emptyLogDetailResult(sequence),
-      pending: false,
-    };
-    return;
-  }
-  worker.postMessage(buildLogDetailRequest(item, sequence));
-}
-
-function currentLogDetailResult() {
-  const result = logDetailState.result;
-  if (!result || logDetailState.pending) return null;
-  if (String(result.itemId || "") !== String(selected.log || "")) return null;
-  return result;
-}
-
-function writeTextToClipboard(text, successMessage) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text)
-      .then(() => appendUiLog(successMessage))
-      .catch(() => appendLog(text));
-    return;
-  }
-  appendLog(text);
-}
-
-
-function renderEmptyLogDetail() {
-  byId("logDetail").innerHTML = `
-    <div class="log-inspector-header">
-      <h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2>
-      <div class="log-inspector-actions">
-        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
-        <button class="btn" type="button" disabled>${esc(t("\u5bfc\u51fa"))}</button>
-      </div>
-    </div>
-    <div class="log-detail-card">
-      ${emptyLogDetailSummaryHtml()}
-    </div>
-    <div class="log-extra-card log-json-card">
-      <div class="log-card-head">
-        <h2>${esc(t("\u8be6\u7ec6\u4fe1\u606f"))}</h2>
-        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
-      </div>
-      <pre class="log-snippet">{}</pre>
-    </div>
-  `;
-}
-
-function renderPendingLogDetail(item) {
-  byId("logDetail").innerHTML = `
-    <div class="log-inspector-header">
-      <h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2>
-      <div class="log-inspector-actions">
-        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
-        <button class="btn" type="button" disabled>${esc(t("\u5bfc\u51fa"))}</button>
-      </div>
-    </div>
-    <div class="log-detail-card">
-      ${logDetailSummaryHtml(item)}
-    </div>
-    <div class="log-extra-card log-json-card">
-      <div class="log-card-head">
-        <h2>${esc(t("\u8be6\u7ec6\u4fe1\u606f"))}</h2>
-        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
-      </div>
-      <pre class="log-snippet">{}</pre>
-    </div>
-  `;
-}
-
-function renderLogDetailResult(result) {
-  const item = result && result.item ? result.item : null;
-  if (!item) {
-    renderEmptyLogDetail();
-    return;
-  }
-  const stack = String(result.stack || "").trim();
-  const extraBlocks = [`
-    <div class="log-extra-card log-json-card">
-      <div class="log-card-head">
-        <h2>${esc(t("\u8be6\u7ec6\u4fe1\u606f"))}</h2>
-        <button class="btn" type="button" onclick="copyCurrentLogJson()">${esc(t("\u590d\u5236"))}</button>
-      </div>
-      <pre class="log-snippet log-detail-readable" data-json="${escAttr(result.detailJson || "{}")}">${esc(result.detailDisplayText || "{}")}</pre>
-    </div>
-  `];
-  if (stack && stack !== "\u65e0") {
-    extraBlocks.push(`
-      <div class="log-extra-card">
-        <h2>${esc(t("\u5806\u6808\u8ffd\u8e2a"))}</h2>
-        <pre class="log-snippet">${esc(stack)}</pre>
-      </div>
-    `);
-  }
-  byId("logDetail").innerHTML = `
-    <div class="log-inspector-header">
-      <h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2>
-      <div class="log-inspector-actions">
-        <button class="btn" type="button" onclick="copyCurrentLogDetail()">${esc(t("\u590d\u5236"))}</button>
-        <button class="btn" type="button" onclick="exportCurrentLogDetail()">${esc(t("\u5bfc\u51fa"))}</button>
-      </div>
-    </div>
-    <div class="log-detail-card">
-      ${logDetailSummaryHtml(item)}
-    </div>
-    ${extraBlocks.join("")}
-  `;
-}
-
-function renderLogDetail(itemsOverride) {
-  const items = Array.isArray(itemsOverride)
-    ? itemsOverride
-    : ((logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : []);
-  const item = currentLogDetailItem(items);
-  if (!item) {
-    logDetailState = { signature: "", result: null, pending: false };
-    renderEmptyLogDetail();
-    return;
-  }
-  const signature = logDetailSignature(item);
-  if (logDetailState.signature === signature && logDetailState.result && !logDetailState.pending) {
-    renderLogDetailResult(logDetailState.result);
-    return;
-  }
-  submitLogDetail(item);
-  if (logDetailState.result && !logDetailState.pending) renderLogDetailResult(logDetailState.result);
-  else renderPendingLogDetail(item);
-}
-
-function copyCurrentLogDetail() {
-  const item = currentLogDetailItem();
-  if (!item) {
-    appendLog(t("\u6682\u65e0\u65e5\u5fd7"));
-    return;
-  }
-  const result = currentLogDetailResult();
-  if (!result) {
-    submitLogDetail(item);
-    appendUiLog(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
-    return;
-  }
-  writeTextToClipboard(result.fullJson || "{}", t("\u5df2\u590d\u5236\u65e5\u5fd7\u8be6\u60c5"));
-}
-
-function copyCurrentLogJson() {
-  const item = currentLogDetailItem();
-  if (!item) {
-    appendLog(t("\u6682\u65e0\u65e5\u5fd7"));
-    return;
-  }
-  const result = currentLogDetailResult();
-  if (!result) {
-    submitLogDetail(item);
-    appendUiLog(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
-    return;
-  }
-  writeTextToClipboard(result.detailJson || "{}", t("\u5df2\u590d\u5236\u8be6\u7ec6\u4fe1\u606f"));
-}
-
-function exportCurrentLogDetail() {
-  const item = currentLogDetailItem();
-  if (!item) {
-    appendLog(t("\u6682\u65e0\u65e5\u5fd7"));
-    return;
-  }
-  const result = currentLogDetailResult();
-  if (!result) {
-    submitLogDetail(item);
-    appendUiLog(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
-    return;
-  }
-  const text = result.fullJson || "{}";
-  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = result.filename || "log_detail_current.json";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-  appendUiLog(t("\u5df2\u5bfc\u51fa\u65e5\u5fd7\u8be6\u60c5"), link.download);
-}
-
-function setLogTab(category) {
-  logFilters.category = category || "all";
-  selected.log = "";
-  logPage = 1;
-  renderLogs();
-}
-
-function syncLogFiltersFromDom() {
-  logFilters.level = normalizeLogFilterValue("level", byId("logLevelFilter")?.value || "all");
-  logFilters.time = normalizeLogFilterValue("time", byId("logTimeFilter")?.value || "30m");
-  logFilters.platform = normalizeLogFilterValue("platform", byId("logPlatformFilter")?.value || "all");
-  logFilters.trace = byId("logTraceFilter")?.value.trim() || "";
-  logFilters.keyword = byId("logKeywordFilter")?.value.trim() || "";
-  selected.log = "";
-  logPage = 1;
-  renderLogs();
-}
-
-function selectValueOrFallback(select, preferredValue, fallbackValue) {
-  if (!select || select.tagName !== "SELECT") return String(preferredValue ?? "");
-  const options = Array.from(select.options);
-  const preferred = String(preferredValue ?? "");
-  if (options.some(option => String(option.value) === preferred)) return preferred;
-  const fallback = String(fallbackValue ?? "");
-  if (options.some(option => String(option.value) === fallback)) return fallback;
-  const defaultOption = options.find(option => option.defaultSelected) || options[0];
-  return defaultOption ? String(defaultOption.value) : "";
-}
-
-function syncLogFilterControls() {
-  document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => button.classList.toggle("active", button.dataset.logTab === logFilters.category));
-  const selectBindings = [
-    ["logLevelFilter", "level", "all"],
-    ["logTimeFilter", "time", "30m"],
-    ["logPlatformFilter", "platform", "all"],
-  ];
-  for (const [id, key, fallback] of selectBindings) {
-    const node = byId(id);
-    const value = selectValueOrFallback(node, normalizeLogFilterValue(key, logFilters[key]), fallback);
-    if (node && node.value !== value) node.value = value;
-    logFilters[key] = normalizeLogFilterValue(key, value);
-    syncCustomSelectForSelect(node);
-  }
-  const textBindings = [
-    ["logTraceFilter", logFilters.trace],
-    ["logKeywordFilter", logFilters.keyword],
-  ];
-  for (const [id, value] of textBindings) {
-    const node = byId(id);
-    if (node && node.value !== value) node.value = value;
-  }
-}
-
-function setLogPage(delta) {
-  logPage += Number(delta) || 0;
-  renderLogs();
-}
-
-function setLogPageSize(value) {
-  logPageSize = normalizeLogPageSize(value);
-  logPage = 1;
-  localStorage.setItem("webui_log_page_size", String(logPageSize));
-  renderLogs();
-  syncCustomSelectForSelect(byId("logPageSize"));
-}
-
-function currentLogTraceId() {
-  const items = (logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : [];
-  const current = items.find(row => logItemId(row) === selected.log);
-  const trace = String((current && current.trace_id) || "").trim();
-  if (trace) return trace;
-  const fallback = items.find(row => String(row.trace_id || "").trim());
-  return String((fallback && fallback.trace_id) || "").trim();
-}
-
-function copySelectedLogTraceId() {
-  const traceId = currentLogTraceId();
-  if (!traceId) {
-    appendLog(t("当前日志没有可复制的 Trace ID"));
-    return;
+function writeClipboard(text, successMessage = "", successDetail = "") {
+  const value = String(text ?? "");
+  if (!value) {
+    if (successMessage) appendUiLog(successMessage, successDetail);
+    return Promise.resolve(false);
   }
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(traceId)
-      .then(() => appendUiLog("已复制 Trace ID", traceId))
-      .catch(() => appendLog(traceId));
-    return;
+    return navigator.clipboard.writeText(value)
+      .then(() => {
+        if (successMessage) appendUiLog(successMessage, successDetail);
+        return true;
+      })
+      .catch(() => {
+        appendLog(value);
+        return false;
+      });
   }
-  appendLog(traceId);
+  appendLog(value);
+  return Promise.resolve(false);
 }
 
-function runLogOperation(operation) {
+function performLogOperation(operation) {
   frontendAction("log_operation", { operation });
-  if (operation === "refresh" || operation === "clear") {
-    setTimeout(fetchFrontendDelta, 200);
-  }
+  if (operation === "refresh" || operation === "clear") setTimeout(fetchFrontendDelta, 200);
 }
+
+function renderLogs() { return logCenterService().render(); }
+function selectLog(id) { return logCenterService().select(id); }
+function setLogTab(category) { return logCenterService().setTab(category); }
+window.syncLogFiltersFromDom = () => logCenterService().syncFiltersFromDom();
+function setLogPage(delta) { return logCenterService().setPage(delta); }
+function setLogPageSize(value) { return logCenterService().setPageSize(value); }
+function copySelectedLogTraceId() { return logCenterService().copyTraceId(); }
+function copyCurrentLogDetail() { return logCenterService().copyDetail(); }
+function copyCurrentLogJson() { return logCenterService().copyJson(); }
+function exportCurrentLogDetail() { return logCenterService().exportDetail(); }
+function runLogOperation(operation) { return logCenterService().runOperation(operation); }
 
 function renderSettings(force = false) {
   const settings = frontendState.settings_snapshot || {};

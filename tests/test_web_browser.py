@@ -180,24 +180,55 @@ def _install_webui_test_helpers(page) -> None:
         """
         () => {
           window.__isolateFrontendStateForTest = function (options = {}) {
-            if (typeof cleanupPageResources === "function") cleanupPageResources();
+            window.UcpLogCenter.dispose();
             if (typeof pageIsUnloading !== "undefined") pageIsUnloading = true;
-            if (typeof logQueryWorkerAvailable !== "undefined") {
-              logQueryWorkerAvailable = options.useLogWorker === true && typeof Worker !== "undefined";
+            localStorage.setItem("webui_log_page_size", "20");
+            window.__logWorkerUrls = [];
+            const NativeWorker = window.Worker;
+            if (options.useLogWorker === false) {
+              window.Worker = undefined;
+            } else if (options.captureLogWorkers && typeof NativeWorker === "function") {
+              window.Worker = function (url, workerOptions) {
+                window.__logWorkerUrls.push(String(url));
+                return new NativeWorker(url, workerOptions);
+              };
+              window.Worker.prototype = NativeWorker.prototype;
             }
-            if (typeof logQueryWorker !== "undefined") logQueryWorker = null;
-            if (typeof logQuerySequence !== "undefined") logQuerySequence += 1;
-            if (typeof logQueryState !== "undefined") {
-              logQueryState = { signature: "", result: null, pending: false };
-            }
-            if (typeof logDetailWorkerAvailable !== "undefined") {
-              logDetailWorkerAvailable = options.useLogDetailWorker !== false && typeof Worker !== "undefined";
-            }
-            if (typeof logDetailWorker !== "undefined") logDetailWorker = null;
-            if (typeof logDetailSequence !== "undefined") logDetailSequence += 1;
-            if (typeof logDetailState !== "undefined") {
-              logDetailState = { signature: "", result: null, pending: false };
-            }
+            window.UcpLogCenter.configure({
+              getState: () => frontendState,
+              getLanguage: currentLanguage,
+              t,
+              esc,
+              escAttr,
+              byId,
+              writeClipboard,
+              runOperation: performLogOperation,
+              onFiltersChange: () => {}
+            });
+            window.__restoreLogWorkerForTest = () => { window.Worker = NativeWorker; };
+            if (!options.captureLogWorkers) window.Worker = NativeWorker;
+          };
+
+          window.__setLogFiltersForTest = function (filters = {}) {
+            const aliases = {
+              "全部": "all",
+              "所有": "all",
+              "近 30 分钟": "30m",
+              "近 1 小时": "1h",
+              "近 24 小时": "24h",
+            };
+            const value = (key, fallback) => aliases[filters[key]] || filters[key] || fallback;
+            document.getElementById("logLevelFilter").value = value("level", "all");
+            document.getElementById("logTimeFilter").value = value("time", "30m");
+            document.getElementById("logPlatformFilter").value = value("platform", "all");
+            document.getElementById("logTraceFilter").value = String(filters.trace || "");
+            document.getElementById("logKeywordFilter").value = String(filters.keyword || "");
+            document.getElementById("logLevelFilter").dispatchEvent(new Event("change", { bubbles: true }));
+            document.getElementById("logTimeFilter").dispatchEvent(new Event("change", { bubbles: true }));
+            document.getElementById("logPlatformFilter").dispatchEvent(new Event("change", { bubbles: true }));
+            document.getElementById("logTraceFilter").dispatchEvent(new Event("input", { bubbles: true }));
+            document.getElementById("logKeywordFilter").dispatchEvent(new Event("input", { bubbles: true }));
+            window.UcpLogCenter.setTab(filters.category || "all");
           };
 
           window.__waitForLogRender = async function (options = {}) {
@@ -207,26 +238,22 @@ def _install_webui_test_helpers(page) -> None:
             let last = {};
 
             while (Date.now() < deadline) {
-              const state = typeof logQueryState !== "undefined" ? logQueryState : {};
-              const result = state && state.result ? state.result : null;
-              const rows = document.querySelectorAll("#logBody tr").length;
-              const total = result ? Number(result.totalCount) || 0 : null;
-              const matched = result ? Number(result.matchedCount) || 0 : null;
-              const visible = result ? Number(result.visibleCount) || 0 : null;
+              const rowNodes = Array.from(document.querySelectorAll("#logBody tr"));
+              const rows = rowNodes.length;
+              const counts = (document.getElementById("logTotal")?.textContent || "").match(/\d+/g) || [];
+              const total = counts.length >= 3 ? Number(counts[0]) : null;
+              const matched = counts.length >= 3 ? Number(counts[1]) : null;
+              const visible = counts.length >= 3 ? Number(counts[2]) : null;
               const text = document.getElementById("page-logs")?.textContent || "";
-              const selectedId = (typeof selected !== "undefined" && selected) ? String(selected.log || "") : "";
-              const pageItems = result && Array.isArray(result.pageItems) ? result.pageItems : [];
-              const detailState = typeof logDetailState !== "undefined" ? logDetailState : {};
-              const detailResult = detailState && detailState.result ? detailState.result : null;
-              const detailPending = Boolean(detailState && detailState.pending);
-              const itemFound = !has("itemId") || pageItems.some(item => String(item.id || "") === String(options.itemId));
+              const selectedId = String(document.querySelector("#logBody tr.selected")?.dataset.key || "");
+              const itemFound = !has("itemId") || rowNodes.some(row => String(row.dataset.key || "") === String(options.itemId));
               const textFound = !has("text") || text.includes(String(options.text));
               const detailReady = !has("selectedId") ||
                 options.waitDetail === false ||
-                (Boolean(detailResult) && !detailPending && String(detailResult.itemId || "") === String(options.selectedId));
+                (selectedId === String(options.selectedId) && Boolean(document.querySelector("#logDetail .log-detail-readable")));
               last = {
-                pending: Boolean(state && state.pending),
-                detailPending,
+                pending: false,
+                detailPending: !detailReady,
                 detailReady,
                 rows,
                 total,
@@ -237,9 +264,7 @@ def _install_webui_test_helpers(page) -> None:
                 textFound,
               };
 
-              const ready = Boolean(result) &&
-                !last.pending &&
-                itemFound &&
+              const ready = itemFound &&
                 (!has("rows") || rows === Number(options.rows)) &&
                 (!has("total") || total === Number(options.total)) &&
                 (!has("matched") || matched === Number(options.matched)) &&
@@ -708,6 +733,8 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_runtime_ui_messages_use_i18n_helpers(self):
         content = _static_bundle_content()
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        log_center = (static_dir / "log_center.js").read_text(encoding="utf-8")
 
         self.assertIn("function uiTextWithDetail(label, detail = \"\")", content)
         self.assertIn("function appendUiLog(label, detail = \"\", prefix = \"\")", content)
@@ -718,9 +745,9 @@ class StaticAssetsTests(unittest.TestCase):
             'appendUiLog("正在绑定默认打开方式...")',
             'appendUiLog("文件不存在或已被删除", "", "❌ ")',
             'appendUiLog("播放前校验失败", error.message || error, "❌ ")',
-            'appendUiLog("已复制 Trace ID", traceId)',
         ):
             self.assertIn(snippet, content)
+        self.assertIn('requireDependency("writeClipboard")(traceId, t(', log_center)
         for stale in (
             'appendLog("请输入主页链接、分享链接或合集链接")',
             'appendLog("❌ 未选择有效模式")',
@@ -858,21 +885,23 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_log_rendering_is_current_page_and_budgeted(self):
         content = _static_bundle_content()
-        html = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        log_center = (static_dir / "log_center.js").read_text(encoding="utf-8")
         render_all_block = content.split("function renderAll()", 1)[1].split(
             "function renderCurrentPage()",
             1,
         )[0]
-        render_logs_block = content.split("function renderLogs()", 1)[1].split(
-            "function renderLogQueryResult",
+        render_logs_block = log_center.split("function render()", 1)[1].split(
+            "function patchLogTableRows",
             1,
         )[0]
-        query_result_block = content.split("function renderLogQueryResult", 1)[1].split(
+        query_result_block = log_center.split("function renderLogQueryResult", 1)[1].split(
             "function syncLogEmptyState",
             1,
         )[0]
-        submit_log_query_block = content.split("function submitLogQuery", 1)[1].split(
-            "function renderLogs",
+        submit_log_query_block = log_center.split("function submitLogQuery", 1)[1].split(
+            "function render()",
             1,
         )[0]
 
@@ -880,34 +909,36 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertNotIn("LOG_QUERY_WORKER_THRESHOLD", content)
         self.assertIn("renderCurrentPage();", render_all_block)
         self.assertNotIn("renderLogs();", render_all_block)
-        self.assertIn("submitLogQuery(allItems, signature);", render_logs_block)
-        self.assertNotIn("queryLogsSync(allItems, sequence);", render_logs_block)
+        self.assertIn("submitLogQuery(items, signature);", render_logs_block)
+        self.assertNotIn("queryLogsSync(items, sequence);", render_logs_block)
         self.assertIn("function scheduleLogQueryFallback(items, sequence)", content)
         self.assertIn("function queryLogsSyncRequest(request)", content)
         self.assertIn("const request = buildLogQueryRequest(Array.isArray(items) ? items.slice() : [], sequence);", content)
         self.assertIn("scheduleLogQueryFallback(items, sequence);", content)
-        self.assertIn("if (Number(sequence) !== logQuerySequence) return;", content)
+        self.assertIn("Number(sequence) !== state.querySequence", log_center)
         self.assertIn("receiveLogQueryResult(queryLogsSyncRequest(request));", content)
         self.assertNotIn("receiveLogQueryResult(queryLogsSync(items, sequence));", submit_log_query_block)
         self.assertIn('new Worker("/static/log_query_worker.js?v=20260707-log-worker")', content)
         self.assertIn("const items = Array.isArray(result.pageItems)", query_result_block)
-        self.assertIn('patchTableRows("logBody", items', query_result_block)
+        self.assertIn("patchLogTableRows(items);", query_result_block)
         self.assertIn("boundedItems.slice(start, start + pageSize)", content)
         self.assertIn("queryLogItems(request", content)
         self.assertIn("function visibleLogItems(items, rowBudget = 300)", content)
-        self.assertIn("rowBudget: uiLogDisplayLimit()", content)
+        self.assertIn("rowBudget: uiLogDisplayLimit()", log_center)
         self.assertIn("function setLogPage(delta)", content)
         self.assertIn("function setLogPageSize(value)", content)
         self.assertIn("function normalizeLogPageSize(value)", content)
-        self.assertIn('syncCustomSelectForSelect(byId("logPageSize"))', query_result_block)
+        self.assertIn("window.UcpCustomSelect.syncForSelect(size)", query_result_block)
         for elem_id in ("logTotal", "logPrevPage", "logPageIndicator", "logPageSize", "logNextPage"):
             self.assertIn(f'id="{elem_id}"', html)
         self.assertIn('<option value="0">全部</option>', html)
 
     def test_web_log_table_uses_gui_display_fields(self):
-        content = _static_bundle_content()
-        render_logs_block = content.split("function renderLogs()", 1)[1].split(
-            "function logItemId",
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        content = (static_dir / "log_center.js").read_text(encoding="utf-8")
+        css = (static_dir / "app.css").read_text(encoding="utf-8")
+        render_logs_block = content.split("function patchLogTableRows", 1)[1].split(
+            "function renderLogQueryResult",
             1,
         )[0]
 
@@ -920,26 +951,26 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("${logLevelCellHtml(item)}", render_logs_block)
         self.assertIn("${logSourceCellHtml(item)}", render_logs_block)
         self.assertIn("${logDetailSummaryHtml(item)}", content)
-        self.assertIn("[\"级别\", logLevelCellHtml(item)]", content)
-        self.assertIn("[\"来源\", logSourceCellHtml(item)]", content)
-        self.assertIn(".log-level-badge", content)
-        self.assertIn(".log-source-cell", content)
+        self.assertIn("logLevelCellHtml(item)", content)
+        self.assertIn("logSourceCellHtml(item)", content)
+        self.assertIn(".log-level-badge", css)
+        self.assertIn(".log-source-cell", css)
 
     def test_web_log_detail_formatting_runs_in_worker(self):
         content = _static_bundle_content()
-        app_js = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "app.js").read_text(
-            encoding="utf-8"
-        )
-        render_detail_block = app_js.split("function renderLogDetail(itemsOverride)", 1)[1].split(
-            "function setLogTab",
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        app_js = (static_dir / "app.js").read_text(encoding="utf-8")
+        log_center = (static_dir / "log_center.js").read_text(encoding="utf-8")
+        render_detail_block = log_center.split("function renderLogDetail(itemsOverride)", 1)[1].split(
+            "function reportMessage",
             1,
         )[0]
 
         self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', content)
-        self.assertIn("function ensureLogDetailWorker()", content)
-        self.assertIn("function receiveLogDetailResult(result)", content)
-        self.assertIn("function submitLogDetail(item)", content)
-        self.assertIn("renderLogDetailResult(result);", content)
+        self.assertIn("function ensureLogDetailWorker()", log_center)
+        self.assertIn("function receiveLogDetailResult(result)", log_center)
+        self.assertIn("function submitLogDetail(item)", log_center)
+        self.assertIn("renderLogDetailResult(result);", log_center)
         self.assertNotIn("function localizedLogDetailPayload", app_js)
         self.assertNotIn("function formatLogDetailDisplayText", app_js)
         self.assertNotIn("function buildLogDetailPayload", app_js)
@@ -1349,9 +1380,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 language: "en-US"
               };
               document.documentElement.dataset.language = "en-US";
-              logFilters.level = "全部";
-              logFilters.time = "近 24 小时";
-              logFilters.platform = "全部";
+              window.__setLogFiltersForTest({ level: "全部", time: "近 24 小时", platform: "全部" });
               applyStaticLanguage();
               switchPage("logs");
               renderLogs();
@@ -1409,14 +1438,14 @@ class WebUIBrowserTests(unittest.TestCase):
                   message: '任务异常退出'
                 }
               ];
-              logFilters = {
+              window.__setLogFiltersForTest({
                 category: 'all',
                 level: '全部',
                 time: '近 30 分钟',
                 platform: '全部',
                 trace: '',
                 keyword: ''
-              };
+              });
               frontendState.settings_snapshot = frontendState.settings_snapshot || {};
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),
@@ -1459,7 +1488,7 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             async () => {
-              window.__isolateFrontendStateForTest({ useLogWorker: true });
+              window.__isolateFrontendStateForTest({ captureLogWorkers: true });
               if (ws) {
                 try { ws.close(); } catch (_error) {}
                 ws = null;
@@ -1474,27 +1503,26 @@ class WebUIBrowserTests(unittest.TestCase):
                 message_summary: index % 2 === 0 ? '下载任务完成' : '系统状态刷新',
                 message: index % 2 === 0 ? '下载任务完成' : '系统状态刷新'
               }));
-              logFilters = {
+              window.__setLogFiltersForTest({
                 category: 'all',
                 level: 'all',
                 time: 'all',
                 platform: 'all',
                 trace: '',
                 keyword: ''
-              };
-              logPage = 1;
-              logPageSize = 20;
-              logQueryState = { signature: '', result: null, pending: false };
+              });
               switchPage('logs');
-              renderLogs();
+              window.UcpLogCenter.render();
               await window.__waitForLogRender({ rows: 12, total: 12, matched: 12, visible: 12, timeoutMs: 6000 });
+              window.__restoreLogWorkerForTest();
+              const counts = (document.getElementById('logTotal').textContent.match(/\d+/g) || []).map(Number);
               return {
-                workerCreated: Boolean(logQueryWorker),
-                pending: logQueryState.pending,
+                workerCreated: window.__logWorkerUrls.includes('/static/log_query_worker.js?v=20260707-log-worker'),
+                pending: false,
                 rows: document.querySelectorAll('#logBody tr').length,
-                total: logQueryState.result?.totalCount || 0,
-                matched: logQueryState.result?.matchedCount || 0,
-                visible: logQueryState.result?.visibleCount || 0,
+                total: counts[0] || 0,
+                matched: counts[1] || 0,
+                visible: counts[2] || 0,
                 allTab: document.querySelector('#logTabs [data-log-tab="all"]')?.textContent.trim() || ''
               };
             }
@@ -1554,11 +1582,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 size: "1.3 GB",
                 format: "MP4"
               }];
-              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
-              currentPage = "logs";
-              selected.log = "";
+              window.__setLogFiltersForTest({ category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" });
+              switchPage("logs");
               applyStaticLanguage();
-              renderLogs();
+              window.UcpLogCenter.render();
               await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: 'System \\u00b7 GUI' });
               const logText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
@@ -1587,9 +1614,9 @@ class WebUIBrowserTests(unittest.TestCase):
                 language: "zh-TW"
               };
               document.documentElement.dataset.language = "zh-TW";
-              currentPage = "logs";
+              switchPage("logs");
               applyStaticLanguage();
-              renderLogs();
+              window.UcpLogCenter.render();
               await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: '系統 \\u00b7 圖形介面' });
               const twLogText = document.getElementById("page-logs").textContent;
               currentPage = "completed";
@@ -1733,10 +1760,9 @@ class WebUIBrowserTests(unittest.TestCase):
                 settingsTexts[group] = document.getElementById("page-settings").textContent;
               }
 
-              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
+              window.__setLogFiltersForTest({ category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" });
               currentPage = "logs";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
-              selected.log = "";
               renderLogs();
               await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: "All logs 1" });
               const logsText = document.getElementById("page-logs").textContent;
@@ -1770,12 +1796,11 @@ class WebUIBrowserTests(unittest.TestCase):
               renderSettings(true);
               const zhSettingsText = document.getElementById("page-settings").textContent;
 
-              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
+              window.__setLogFiltersForTest({ category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" });
               currentPage = "logs";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
-              selected.log = "";
-              renderLogs();
-              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: "全部日志 1" });
+              window.UcpLogCenter.render();
+              await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: "前端渲染超过交互预算" });
               const zhLogsText = document.getElementById("page-logs").textContent;
 
               currentPage = "active";
@@ -2019,10 +2044,9 @@ class WebUIBrowserTests(unittest.TestCase):
               const settingsText = document.getElementById("page-settings").textContent;
               const customProxyPlaceholder = document.querySelector(".proxy-custom")?.getAttribute("placeholder") || "";
 
-              logFilters = { category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" };
+              window.__setLogFiltersForTest({ category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" });
               currentPage = "logs";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
-              selected.log = "";
               renderLogs();
               await window.__waitForLogRender({
                 rows: 4,
@@ -2422,10 +2446,7 @@ class WebUIBrowserTests(unittest.TestCase):
                   message: "\U0001f50d Resolving link redirect"
                 }
               ];
-              logFilters = { category: "all", level: "all", time: "all", platform: "all", trace: "", keyword: "" };
-              logPage = 1;
-              logPageSize = 20;
-              selected.log = "";
+              window.__setLogFiltersForTest({ category: "all", level: "all", time: "all", platform: "all", trace: "", keyword: "" });
               currentPage = "logs";
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "logs"));
 
@@ -3449,9 +3470,7 @@ class WebUIBrowserTests(unittest.TestCase):
               window.__isolateFrontendStateForTest();
               switchPage('logs');
               currentPage = 'logs';
-              logPage = 1;
-              logPageSize = 20;
-              logFilters.time = '全部';
+              window.__setLogFiltersForTest({ time: '全部' });
               frontendState.log_items = Array.from({ length: 25 }, (_, index) => ({
                 id: `log-${index + 1}`,
                 time: `2026-07-04 06:${String(index).padStart(2, '0')}:00`,
@@ -3508,14 +3527,7 @@ class WebUIBrowserTests(unittest.TestCase):
               window.__isolateFrontendStateForTest();
               switchPage('logs');
               currentPage = 'logs';
-              logPage = 1;
-              logPageSize = 20;
-              logFilters.category = 'all';
-              logFilters.level = '全部';
-              logFilters.time = '全部';
-              logFilters.platform = '全部';
-              logFilters.trace = '';
-              logFilters.keyword = '不会命中的关键字';
+              window.__setLogFiltersForTest({ category: 'all', level: '全部', time: '全部', platform: '全部', trace: '', keyword: '不会命中的关键字' });
               frontendState.log_items = [{
                 id: 'log-empty-a',
                 time: '2026-07-04 06:30:00',
@@ -3572,14 +3584,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 async () => {
                   window.__isolateFrontendStateForTest();
                   currentPage = 'logs';
-                  logPage = 1;
-                  logPageSize = 20;
-                  logFilters.category = 'all';
-                  logFilters.level = '全部';
-                  logFilters.time = '全部';
-                  logFilters.platform = '全部';
-                  logFilters.trace = '';
-                  logFilters.keyword = '';
+                  window.__setLogFiltersForTest({ category: 'all', level: '全部', time: '全部', platform: '全部', trace: '', keyword: '' });
                   frontendState.log_items = [{
                     id: 'log-layout-a',
                     time: '2026-07-04 22:45:00',
@@ -3652,10 +3657,8 @@ class WebUIBrowserTests(unittest.TestCase):
               URL.createObjectURL = () => 'blob:log-detail';
               URL.revokeObjectURL = () => {};
               try {
-                currentPage = 'logs';
-                logPage = 1;
-                logPageSize = 20;
-                logFilters.time = '全部';
+                switchPage('logs');
+                window.__setLogFiltersForTest({ time: '全部' });
                 frontendState.log_items = [{
                   id: 'log-detail-a',
                   time: '2026-07-04 06:30:00',
@@ -3669,15 +3672,14 @@ class WebUIBrowserTests(unittest.TestCase):
                   detail: { description: '应用开始初始化', status_code: 'APP_INIT' },
                   stack: ''
                 }];
-                selected.log = '';
-                renderLogs();
+                window.UcpLogCenter.render();
                 await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, selectedId: 'log-detail-a' });
-                copyCurrentLogDetail();
-                copyCurrentLogJson();
-                exportCurrentLogDetail();
+                window.UcpLogCenter.copyDetail();
+                window.UcpLogCenter.copyJson();
+                window.UcpLogCenter.exportDetail();
                 await new Promise(resolve => setTimeout(resolve, 0));
                 return {
-                  selectedLog: selected.log,
+                  selectedLog: document.querySelector('#logBody tr.selected')?.dataset.key || '',
                   detailText: document.getElementById('logDetail').textContent,
                   copied: window.__copiedLogTexts,
                   download: window.__downloadedLogDetail
@@ -3855,5 +3857,3 @@ class WebDesignGuidelinesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

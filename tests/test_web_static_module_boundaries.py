@@ -47,3 +47,18 @@ def test_log_i18n_owns_runtime_translation_tables() -> None:
         assert marker in module
         assert marker not in app
     assert "function logI18nService()" in app
+
+
+def test_log_center_owns_workers_and_render_pipeline() -> None:
+    module = (STATIC_DIR / "log_center.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for marker in (
+        'new Worker("/static/log_query_worker.js?v=20260707-log-worker")',
+        'new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")',
+        "function renderLogQueryResult",
+        "function renderLogDetailResult",
+        "function syncLogFiltersFromDom",
+    ):
+        assert marker in module
+        assert marker not in app
+    assert "function renderLogs() { return logCenterService().render(); }" in app

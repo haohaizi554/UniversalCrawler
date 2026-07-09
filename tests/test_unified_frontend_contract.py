@@ -4065,6 +4065,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         content = _html_bundle()
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
         log_display = (static_dir / "log_display.js").read_text(encoding="utf-8")
+        log_center = (static_dir / "log_center.js").read_text(encoding="utf-8")
         i18n_js = (static_dir / "i18n.js").read_text(encoding="utf-8")
         logs_page = content.split('id="page-logs"', 1)[1].split('id="page-settings"', 1)[0]
 
@@ -4083,14 +4084,14 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("<span data-log-empty-primary>调整筛选条件</span>", logs_page)
         self.assertIn("<span data-log-empty-secondary>或点击「刷新缓冲」重新加载日志</span>", logs_page)
         self.assertNotIn("调整筛选条件，", logs_page)
-        self.assertIn("function syncLogEmptyState", content)
-        self.assertIn("syncLogEmptyState(items.length === 0);", content)
-        self.assertIn("function syncLogTabLabels", content)
-        self.assertIn("syncLogTabLabels();", content)
-        self.assertIn("function selectValueOrFallback", content)
-        self.assertIn('["logLevelFilter", "level", "all"]', content)
-        self.assertIn('["logTimeFilter", "time", "30m"]', content)
-        self.assertIn("syncCustomSelectForSelect(node);", content)
+        self.assertIn("function syncLogEmptyState", log_center)
+        self.assertIn("syncLogEmptyState(items.length === 0);", log_center)
+        self.assertIn("function syncLogTabLabels", log_center)
+        self.assertIn("syncLogTabLabels();", log_center)
+        self.assertIn("function selectValueOrFallback", log_center)
+        self.assertIn('["logLevelFilter", "level", "all"]', log_center)
+        self.assertIn('["logTimeFilter", "time", "30m"]', log_center)
+        self.assertIn("window.UcpCustomSelect.syncForSelect(node)", log_center)
         css = _css_bundle()
         self.assertIn("grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))", css)
         self.assertIn("#page-logs .log-tabs .tab", css)
@@ -4138,8 +4139,8 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("#logPrevPage {\n  min-width: 112px;", css)
         self.assertIn("#logNextPage {\n  min-width: 100px;", css)
         self.assertIn("#page-logs .custom-select-page-size,\n#page-logs .custom-select-page-size .custom-select-button {\n  height: 30px;", css)
-        self.assertIn("function setLogPage(delta)", content)
-        self.assertIn("function setLogPageSize(value)", content)
+        self.assertIn("setPage,", log_center)
+        self.assertIn("setPageSize,", log_center)
         self.assertIn("boundedItems.slice(start, start + pageSize)", content)
         for action in (
             "runLogOperation('refresh')",
@@ -4150,7 +4151,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "copySelectedLogTraceId()",
         ):
             self.assertIn(action, logs_page)
-        self.assertIn("function currentLogTraceId", content)
+        self.assertIn("copyTraceId,", log_center)
         self.assertIn("function copySelectedLogTraceId", content)
         log_detail_worker = (static_dir / "log_detail_worker.js").read_text(encoding="utf-8")
         for detail_worker_action in (
@@ -4162,17 +4163,13 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             self.assertIn(detail_worker_action, log_detail_worker)
             self.assertNotIn(detail_worker_action, content)
         for detail_action in (
-            "function ensureLogDetailWorker",
-            "function receiveLogDetailResult",
-            "function submitLogDetail",
-            "function currentLogDetailResult",
-            "function renderLogDetailResult",
-            "function copyCurrentLogDetail",
-            "function copyCurrentLogJson",
-            "function exportCurrentLogDetail",
+            "copyDetail,",
+            "copyJson,",
+            "exportDetail,",
+            "dispose,",
         ):
-            self.assertIn(detail_action, content)
-        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', content)
+            self.assertIn(detail_action, log_center)
+        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', log_center)
         log_i18n = (static_dir / "log_i18n.js").read_text(encoding="utf-8")
         for translation_marker in (
             "function translateRuntimeLogText",
@@ -4180,22 +4177,22 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             "function localizeLogEventCode",
         ):
             self.assertIn(translation_marker, log_i18n)
-        self.assertIn("function logI18nService()", content)
-        self.assertIn("logI18nService()?.localizeLogEventCode", content)
+        self.assertIn("function logI18nService()", log_center)
+        self.assertIn("logI18nService()?.localizeLogEventCode", log_center)
         self.assertIn('add("status_code", item.status_code || "", localizeLogEventCode(item.status_code || ""));', log_i18n)
         self.assertIn('add("event_code", item.event_code || "", localizeLogEventCode(item.event_code || ""));', log_i18n)
         self.assertIn('if (sections.has("settings_snapshot")) updatePlaceholder();', content)
         self.assertIn("trimFrontendLogItems();\n  updatePlaceholder();", content)
-        self.assertIn("log-inspector-header", content)
-        self.assertIn("log-json-card", content)
-        self.assertIn("log-detail-readable", content)
-        self.assertIn('data-json="${escAttr(result.detailJson || "{}")}"', content)
-        self.assertIn("function emptyLogDetailSummaryHtml", content)
-        self.assertIn("${emptyLogDetailSummaryHtml()}", content)
-        self.assertIn('<pre class="log-snippet">{}</pre>', content)
-        self.assertIn("copyCurrentLogJson()", content)
-        self.assertIn("copyCurrentLogDetail()", content)
-        self.assertIn("exportCurrentLogDetail()", content)
+        self.assertIn("log-inspector-header", log_center)
+        self.assertIn("log-json-card", log_center)
+        self.assertIn("log-detail-readable", log_center)
+        self.assertIn('data-json="${escAttr(result.detailJson || "{}")}"', log_center)
+        self.assertIn("function emptyLogDetailSummaryHtml", log_center)
+        self.assertIn("${emptyLogDetailSummaryHtml()}", log_center)
+        self.assertIn('<pre class="log-snippet">{}</pre>', log_center)
+        self.assertIn("copyCurrentLogJson()", log_center)
+        self.assertIn("copyCurrentLogDetail()", log_center)
+        self.assertIn("exportCurrentLogDetail()", log_center)
         self.assertIn("#page-logs .log-inspector-header", css)
         self.assertIn("#page-logs .logs-right-column", css)
         self.assertIn("#page-logs .log-json-card .log-snippet", css)
@@ -4674,16 +4671,18 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         index = (static_dir / "index.html").read_text(encoding="utf-8")
         app_js = (static_dir / "app.js").read_text(encoding="utf-8")
         log_display = (static_dir / "log_display.js").read_text(encoding="utf-8")
+        log_center = (static_dir / "log_center.js").read_text(encoding="utf-8")
 
         self.assertIn("/static/log_display.js", index)
         self.assertLess(index.index("/static/log_display.js"), index.index("/static/app.js"))
         self.assertIn("root.UcpLogDisplay", log_display)
         self.assertIn("logMatchesFilters(item, filters", log_display)
         self.assertIn("visibleLogItems(items, rowBudget", log_display)
-        self.assertIn("window.UcpLogDisplay.filteredLogItems", app_js)
-        self.assertIn("window.UcpLogDisplay.visibleLogItems", app_js)
-        self.assertIn("function syncLogStaticLanguage()", app_js)
-        self.assertIn("syncLogStaticLanguage();", app_js)
+        self.assertIn("window.UcpLogDisplay.queryLogItems", log_center)
+        self.assertIn("function syncLogStaticLanguage()", log_center)
+        self.assertIn("syncLogStaticLanguage();", log_center)
+        self.assertNotIn("window.UcpLogDisplay", app_js)
+        self.assertNotIn("function syncLogStaticLanguage()", app_js)
         self.assertNotIn("const category = logCategory(item);", app_js)
 
 
