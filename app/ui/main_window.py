@@ -735,7 +735,12 @@ class MainWindow(QMainWindow):
             return
 
         started = time.perf_counter()
-        self.app_shell.render(snapshot, changed_sections=result.changed_sections)
+        self.app_shell.render(
+            snapshot,
+            changed_sections=result.changed_sections,
+            page_item_rows=result.page_item_rows,
+            completed_item_ids=result.completed_item_ids,
+        )
         self._record_frontend_render_duration((time.perf_counter() - started) * 1000)
         self._repair_black_shell_if_needed("_on_frontend_snapshot_finished")
 

@@ -8,6 +8,7 @@ from typing import Callable
 from shared.runtime_options import validate_direct_download_url
 
 ValidateConfigTypesFn = Callable[[dict], str | None]
+MergeRuntimeConfigFn = Callable[[str, dict, dict], dict]
 
 @dataclass(frozen=True, slots=True)
 class DirectDownloadBuildFailure:

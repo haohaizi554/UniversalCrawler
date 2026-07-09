@@ -32,6 +32,14 @@ let logQueryState = {
   result: null,
   pending: false,
 };
+let logDetailWorker = null;
+let logDetailWorkerAvailable = typeof Worker !== "undefined";
+let logDetailSequence = 0;
+let logDetailState = {
+  signature: "",
+  result: null,
+  pending: false,
+};
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
 
@@ -57,6 +65,17 @@ function closeLogQueryWorker() {
   logQueryState.pending = false;
 }
 
+function closeLogDetailWorker() {
+  if (!logDetailWorker) return;
+  try {
+    logDetailWorker.terminate();
+  } catch (_error) {
+    // Browser teardown is best-effort; stale workers must not block navigation.
+  }
+  logDetailWorker = null;
+  logDetailState.pending = false;
+}
+
 function clearLogQueryFallback() {
   if (logQueryFallbackTimer === null) return;
   clearTimeout(logQueryFallbackTimer);
@@ -80,6 +99,7 @@ function cleanupPageResources() {
     }
   }
   closeLogQueryWorker();
+  closeLogDetailWorker();
   closeListPageWorker();
 }
 
@@ -3044,75 +3064,152 @@ function currentLogDetailItem(itemsOverride) {
   return items.find(row => logItemId(row) === selected.log) || null;
 }
 
-function normalizeLogDetailPayload(item) {
-  if (!item) return {};
+function logDetailSignature(item) {
+  if (!item) return `${currentLanguage()}|`;
   const detail = item.detail;
-  if (detail && typeof detail === "object") return detail;
-  const text = String(detail || "").trim();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch (_error) {
-    return {
-      description: text,
-      status_code: item.event_code || item.status_code || "",
-    };
-  }
+  const detailMarker = detail && typeof detail === "object"
+    ? [
+        Object.keys(detail).sort().join(","),
+        detail.description || "",
+        detail.status_code || "",
+        detail.event_code || "",
+      ].join("|")
+    : String(detail || "");
+  return [
+    currentLanguage(),
+    logItemId(item),
+    item.time || "",
+    item.level || item.raw_level || "",
+    item.platform_display || item.platform || "",
+    item.source_display || item.source || "",
+    item.trace_id || "",
+    item.message || item.message_summary || "",
+    item.event_code || item.status_code || "",
+    detailMarker,
+    item.stack || "",
+  ].join("\u001f");
 }
 
-function readableLogDetailValue(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "object") {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch (_error) {
-      return String(value);
-    }
-  }
-  return String(value)
-    .replace(/\\r\\n|\\n|\\r/g, "\n")
-    .replace(/\r\n?/g, "\n")
-    .replace(/[-=]{36,}/g, "----------------------------");
-}
-
-function localizedLogDetailValue(value, key = "") {
-  if (Array.isArray(value)) return value.map(item => localizedLogDetailValue(item, key));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([childKey, item]) => [childKey, localizedLogDetailValue(item, childKey)]));
-  }
-  if (typeof value === "string") {
-    const readable = readableLogDetailValue(value);
-    return ["status_code", "event_code"].includes(String(key)) ? localizeLogEventCode(readable) : translateRuntimeLogText(readable);
-  }
-  return value;
-}
-
-function localizedLogDetailPayload(item) {
-  return localizedLogDetailValue(normalizeLogDetailPayload(item));
-}
-
-function formatLogDetailDisplayText(payload) {
-  if (!payload || typeof payload !== "object") return readableLogDetailValue(payload);
-  const entries = Object.entries(localizedLogDetailValue(payload));
-  if (!entries.length) return "{}";
-  return entries.map(([key, value]) => {
-    const readable = readableLogDetailValue(value);
-    return readable.includes("\n") ? `${key}:\n${readable}` : `${key}: ${readable}`;
-  }).join("\n");
-}
-
-function buildLogDetailPayload(item) {
-  const detailPayload = localizedLogDetailPayload(item);
-  return {
-    time: item.time || "",
-    level: item.level || item.raw_level || "",
-    platform: translateRuntimeLogText(item.platform_display || item.platform || ""),
-    source: translateRuntimeLogText(item.source || ""),
-    trace_id: item.trace_id || "",
-    message: translateRuntimeLogText(item.message || item.message_summary || ""),
-    detail: detailPayload,
-    stack: item.stack || "",
+function logDetailTranslationHints(item) {
+  const hints = {};
+  const add = (key, value, translatedValue) => {
+    const text = String(value ?? "");
+    if (!text) return;
+    const translated = translatedValue === undefined ? translateRuntimeLogText(text) : String(translatedValue ?? "");
+    hints[text] = translated;
+    hints[text.trim()] = translated;
+    if (key) hints[`${key}:${text}`] = translated;
   };
+  const detail = item && item.detail && typeof item.detail === "object" ? item.detail : {};
+  add("platform", item.platform_display || item.platform || "");
+  add("source", item.source_display || item.source || "");
+  add("message", item.message || item.message_summary || "");
+  add("description", item.message || item.message_summary || "");
+  add("description", detail.description || "");
+  add("type", detail.type || item.type || item.result_type || item.result_type_display || item.type_display || "", translateRuntimeLogText(logResultNatureText(item)));
+  add("scope", detail.scope || item.scope || item.log_scope || item.category || "", translateRuntimeLogText(logScopeDisplayText(item)));
+  add("stage", detail.stage || item.stage || item.event_stage || "", translateRuntimeLogText(logStageDisplayText(item)));
+  add("platform", detail.platform || "");
+  add("source", detail.source || "");
+  add("status_code", item.status_code || "", logEventCodeText(item.status_code || ""));
+  add("event_code", item.event_code || "", logEventCodeText(item.event_code || ""));
+  return hints;
+}
+
+function buildLogDetailRequest(item, sequence) {
+  return {
+    sequence,
+    itemId: logItemId(item),
+    item,
+    language: currentLanguage(),
+    translations: logDetailTranslationHints(item),
+  };
+}
+
+function emptyLogDetailResult(sequence = logDetailSequence) {
+  return {
+    sequence,
+    itemId: "",
+    language: currentLanguage(),
+    item: null,
+    detailJson: "{}",
+    detailDisplayText: "{}",
+    fullJson: "{}",
+    stack: "",
+    filename: "log_detail_current.json",
+  };
+}
+
+function ensureLogDetailWorker() {
+  if (!logDetailWorkerAvailable) return null;
+  if (logDetailWorker) return logDetailWorker;
+  try {
+    logDetailWorker = new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker");
+    logDetailWorker.onmessage = event => {
+      const payload = event && event.data ? event.data : {};
+      if (payload.type === "result") {
+        receiveLogDetailResult(payload.result);
+      } else if (payload.type === "error") {
+        logDetailWorkerAvailable = false;
+        logDetailState.pending = false;
+        appendLog(payload.message || "log detail worker failed");
+        renderLogDetailResult(emptyLogDetailResult(Number(payload.sequence) || logDetailSequence));
+      }
+    };
+    logDetailWorker.onerror = () => {
+      logDetailWorkerAvailable = false;
+      logDetailState.pending = false;
+      if (logDetailWorker) {
+        logDetailWorker.terminate();
+        logDetailWorker = null;
+      }
+      renderLogDetailResult(emptyLogDetailResult());
+    };
+  } catch (_error) {
+    logDetailWorkerAvailable = false;
+    logDetailWorker = null;
+  }
+  return logDetailWorker;
+}
+
+function receiveLogDetailResult(result) {
+  if (!result || Number(result.sequence) !== logDetailSequence) return;
+  logDetailState = {
+    signature: logDetailState.signature,
+    result,
+    pending: false,
+  };
+  if (currentPage === "logs" && String(result.itemId || "") === String(selected.log || "")) {
+    renderLogDetailResult(result);
+  }
+}
+
+function submitLogDetail(item) {
+  const signature = logDetailSignature(item);
+  if (logDetailState.signature === signature && (logDetailState.pending || logDetailState.result)) return;
+  const sequence = ++logDetailSequence;
+  logDetailState = {
+    signature,
+    result: null,
+    pending: true,
+  };
+  const worker = ensureLogDetailWorker();
+  if (!worker) {
+    logDetailState = {
+      signature,
+      result: emptyLogDetailResult(sequence),
+      pending: false,
+    };
+    return;
+  }
+  worker.postMessage(buildLogDetailRequest(item, sequence));
+}
+
+function currentLogDetailResult() {
+  const result = logDetailState.result;
+  if (!result || logDetailState.pending) return null;
+  if (String(result.itemId || "") !== String(selected.log || "")) return null;
+  return result;
 }
 
 function writeTextToClipboard(text, successMessage) {
@@ -3125,43 +3222,88 @@ function writeTextToClipboard(text, successMessage) {
   appendLog(text);
 }
 
-function copyCurrentLogDetail() {
-  const item = currentLogDetailItem();
-  if (!item) {
-    appendLog(t("暂无日志"));
-    return;
-  }
-  writeTextToClipboard(JSON.stringify(buildLogDetailPayload(item), null, 2), t("已复制日志详情"));
+
+function renderEmptyLogDetail() {
+  byId("logDetail").innerHTML = `
+    <div class="log-inspector-header">
+      <h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2>
+      <div class="log-inspector-actions">
+        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
+        <button class="btn" type="button" disabled>${esc(t("\u5bfc\u51fa"))}</button>
+      </div>
+    </div>
+    <div class="log-detail-card">
+      ${emptyLogDetailSummaryHtml()}
+    </div>
+    <div class="log-extra-card log-json-card">
+      <div class="log-card-head">
+        <h2>${esc(t("\u8be6\u7ec6\u4fe1\u606f"))}</h2>
+        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
+      </div>
+      <pre class="log-snippet">{}</pre>
+    </div>
+  `;
 }
 
-function copyCurrentLogJson() {
-  const item = currentLogDetailItem();
-  if (!item) {
-    appendLog(t("暂无日志"));
-    return;
-  }
-  writeTextToClipboard(JSON.stringify(localizedLogDetailPayload(item), null, 2), t("已复制详细信息"));
+function renderPendingLogDetail(item) {
+  byId("logDetail").innerHTML = `
+    <div class="log-inspector-header">
+      <h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2>
+      <div class="log-inspector-actions">
+        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
+        <button class="btn" type="button" disabled>${esc(t("\u5bfc\u51fa"))}</button>
+      </div>
+    </div>
+    <div class="log-detail-card">
+      ${logDetailSummaryHtml(item)}
+    </div>
+    <div class="log-extra-card log-json-card">
+      <div class="log-card-head">
+        <h2>${esc(t("\u8be6\u7ec6\u4fe1\u606f"))}</h2>
+        <button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button>
+      </div>
+      <pre class="log-snippet">{}</pre>
+    </div>
+  `;
 }
 
-function exportCurrentLogDetail() {
-  const item = currentLogDetailItem();
+function renderLogDetailResult(result) {
+  const item = result && result.item ? result.item : null;
   if (!item) {
-    appendLog(t("暂无日志"));
+    renderEmptyLogDetail();
     return;
   }
-  const text = JSON.stringify(buildLogDetailPayload(item), null, 2);
-  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  const suffix = String(item.trace_id || logItemId(item) || "current").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 80);
-  const filename = `log_detail_${suffix || "current"}.json`;
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-  appendUiLog(t("已导出日志详情"), filename);
+  const stack = String(result.stack || "").trim();
+  const extraBlocks = [`
+    <div class="log-extra-card log-json-card">
+      <div class="log-card-head">
+        <h2>${esc(t("\u8be6\u7ec6\u4fe1\u606f"))}</h2>
+        <button class="btn" type="button" onclick="copyCurrentLogJson()">${esc(t("\u590d\u5236"))}</button>
+      </div>
+      <pre class="log-snippet log-detail-readable" data-json="${escAttr(result.detailJson || "{}")}">${esc(result.detailDisplayText || "{}")}</pre>
+    </div>
+  `];
+  if (stack && stack !== "\u65e0") {
+    extraBlocks.push(`
+      <div class="log-extra-card">
+        <h2>${esc(t("\u5806\u6808\u8ffd\u8e2a"))}</h2>
+        <pre class="log-snippet">${esc(stack)}</pre>
+      </div>
+    `);
+  }
+  byId("logDetail").innerHTML = `
+    <div class="log-inspector-header">
+      <h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2>
+      <div class="log-inspector-actions">
+        <button class="btn" type="button" onclick="copyCurrentLogDetail()">${esc(t("\u590d\u5236"))}</button>
+        <button class="btn" type="button" onclick="exportCurrentLogDetail()">${esc(t("\u5bfc\u51fa"))}</button>
+      </div>
+    </div>
+    <div class="log-detail-card">
+      ${logDetailSummaryHtml(item)}
+    </div>
+    ${extraBlocks.join("")}
+  `;
 }
 
 function renderLogDetail(itemsOverride) {
@@ -3170,62 +3312,73 @@ function renderLogDetail(itemsOverride) {
     : ((logQueryState.result && Array.isArray(logQueryState.result.pageItems)) ? logQueryState.result.pageItems : []);
   const item = currentLogDetailItem(items);
   if (!item) {
-    byId("logDetail").innerHTML = `
-      <div class="log-inspector-header">
-        <h2>${esc(t("日志详情"))}</h2>
-        <div class="log-inspector-actions">
-          <button class="btn" type="button" disabled>${esc(t("复制"))}</button>
-          <button class="btn" type="button" disabled>${esc(t("导出"))}</button>
-        </div>
-      </div>
-      <div class="log-detail-card">
-        ${emptyLogDetailSummaryHtml()}
-      </div>
-      <div class="log-extra-card log-json-card">
-        <div class="log-card-head">
-          <h2>${esc(t("详细信息"))}</h2>
-          <button class="btn" type="button" disabled>${esc(t("复制"))}</button>
-        </div>
-        <pre class="log-snippet">{}</pre>
-      </div>
-    `;
+    logDetailState = { signature: "", result: null, pending: false };
+    renderEmptyLogDetail();
     return;
   }
-  const detailPayload = localizedLogDetailPayload(item);
-  const detailJson = JSON.stringify(detailPayload, null, 2);
-  const detailDisplayText = formatLogDetailDisplayText(detailPayload);
-  const stack = String(item.stack || "").trim();
-  const extraBlocks = [];
-  extraBlocks.push(`
-    <div class="log-extra-card log-json-card">
-      <div class="log-card-head">
-        <h2>${esc(t("详细信息"))}</h2>
-        <button class="btn" type="button" onclick="copyCurrentLogJson()">${esc(t("复制"))}</button>
-      </div>
-      <pre class="log-snippet log-detail-readable" data-json="${escAttr(detailJson)}">${esc(detailDisplayText)}</pre>
-    </div>
-  `);
-  if (stack && stack !== "无") {
-    extraBlocks.push(`
-      <div class="log-extra-card">
-        <h2>${esc(t("堆栈跟踪"))}</h2>
-        <pre class="log-snippet">${esc(stack)}</pre>
-      </div>
-    `);
+  const signature = logDetailSignature(item);
+  if (logDetailState.signature === signature && logDetailState.result && !logDetailState.pending) {
+    renderLogDetailResult(logDetailState.result);
+    return;
   }
-  byId("logDetail").innerHTML = `
-    <div class="log-inspector-header">
-      <h2>${esc(t("日志详情"))}</h2>
-      <div class="log-inspector-actions">
-        <button class="btn" type="button" onclick="copyCurrentLogDetail()">${esc(t("复制"))}</button>
-        <button class="btn" type="button" onclick="exportCurrentLogDetail()">${esc(t("导出"))}</button>
-      </div>
-    </div>
-    <div class="log-detail-card">
-      ${logDetailSummaryHtml(item)}
-    </div>
-    ${extraBlocks.join("")}
-  `;
+  submitLogDetail(item);
+  if (logDetailState.result && !logDetailState.pending) renderLogDetailResult(logDetailState.result);
+  else renderPendingLogDetail(item);
+}
+
+function copyCurrentLogDetail() {
+  const item = currentLogDetailItem();
+  if (!item) {
+    appendLog(t("\u6682\u65e0\u65e5\u5fd7"));
+    return;
+  }
+  const result = currentLogDetailResult();
+  if (!result) {
+    submitLogDetail(item);
+    appendUiLog(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
+    return;
+  }
+  writeTextToClipboard(result.fullJson || "{}", t("\u5df2\u590d\u5236\u65e5\u5fd7\u8be6\u60c5"));
+}
+
+function copyCurrentLogJson() {
+  const item = currentLogDetailItem();
+  if (!item) {
+    appendLog(t("\u6682\u65e0\u65e5\u5fd7"));
+    return;
+  }
+  const result = currentLogDetailResult();
+  if (!result) {
+    submitLogDetail(item);
+    appendUiLog(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
+    return;
+  }
+  writeTextToClipboard(result.detailJson || "{}", t("\u5df2\u590d\u5236\u8be6\u7ec6\u4fe1\u606f"));
+}
+
+function exportCurrentLogDetail() {
+  const item = currentLogDetailItem();
+  if (!item) {
+    appendLog(t("\u6682\u65e0\u65e5\u5fd7"));
+    return;
+  }
+  const result = currentLogDetailResult();
+  if (!result) {
+    submitLogDetail(item);
+    appendUiLog(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
+    return;
+  }
+  const text = result.fullJson || "{}";
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = result.filename || "log_detail_current.json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  appendUiLog(t("\u5df2\u5bfc\u51fa\u65e5\u5fd7\u8be6\u60c5"), link.download);
 }
 
 function setLogTab(category) {

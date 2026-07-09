@@ -33,6 +33,8 @@ class FrontendSnapshotResult:
     section_signatures: dict[str, str]
     skip_render: bool
     build_duration_ms: float
+    page_item_rows: dict[str, dict[str, int]]
+    completed_item_ids: tuple[str, ...]
 
 
 def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapshotResult:
@@ -65,14 +67,14 @@ def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapsho
         signatures = _remember_section_signatures(snapshot, None, dict(request.section_signatures or {}))
         skip_render = False
 
-    return FrontendSnapshotResult(
+    return _snapshot_result(
         sequence=request.sequence,
         service_token=request.service_token,
         snapshot=snapshot,
         changed_sections=changed_sections,
         section_signatures=signatures,
         skip_render=skip_render,
-        build_duration_ms=(time.perf_counter() - started) * 1000,
+        started=started,
     )
 
 
@@ -92,14 +94,14 @@ def _build_delta_snapshot(request: FrontendSnapshotRequest, started: float) -> F
             snapshot = request.service.get_snapshot(mock=request.mock, sections=None)
         snapshot["version"] = version
         signatures = _remember_section_signatures(snapshot, None, dict(request.section_signatures or {}))
-        return FrontendSnapshotResult(
+        return _snapshot_result(
             sequence=request.sequence,
             service_token=request.service_token,
             snapshot=snapshot,
             changed_sections=None,
             section_signatures=signatures,
             skip_render=False,
-            build_duration_ms=(time.perf_counter() - started) * 1000,
+            started=started,
         )
 
     snapshot = dict(cached)
@@ -113,15 +115,67 @@ def _build_delta_snapshot(request: FrontendSnapshotRequest, started: float) -> F
     requested = _changed_section_candidates(delta, delta_sections, missing_explicit_sections)
     signatures = dict(request.section_signatures or {})
     changed_sections = _changed_sections(snapshot, frozenset(requested), signatures) if requested else set()
-    return FrontendSnapshotResult(
+    return _snapshot_result(
         sequence=request.sequence,
         service_token=request.service_token,
         snapshot=snapshot,
         changed_sections=changed_sections,
         section_signatures=signatures,
         skip_render=not changed_sections,
-        build_duration_ms=(time.perf_counter() - started) * 1000,
+        started=started,
     )
+
+
+def _snapshot_result(
+    *,
+    sequence: int,
+    service_token: int,
+    snapshot: dict[str, Any],
+    changed_sections: set[str] | None,
+    section_signatures: dict[str, str],
+    skip_render: bool,
+    started: float,
+) -> FrontendSnapshotResult:
+    page_item_rows, completed_item_ids = _page_item_indexes(snapshot)
+    return FrontendSnapshotResult(
+        sequence=sequence,
+        service_token=service_token,
+        snapshot=snapshot,
+        changed_sections=changed_sections,
+        section_signatures=section_signatures,
+        skip_render=skip_render,
+        build_duration_ms=(time.perf_counter() - started) * 1000,
+        page_item_rows=page_item_rows,
+        completed_item_ids=completed_item_ids,
+    )
+
+
+_PAGE_SECTION_KEYS = {
+    "queue": "queue_items",
+    "active": "active_downloads",
+    "completed": "completed_items",
+    "failed": "failed_items",
+}
+
+
+def _page_item_indexes(snapshot: Mapping[str, Any]) -> tuple[dict[str, dict[str, int]], tuple[str, ...]]:
+    page_item_rows: dict[str, dict[str, int]] = {page_id: {} for page_id in _PAGE_SECTION_KEYS}
+    completed_item_ids: list[str] = []
+    for page_id, section in _PAGE_SECTION_KEYS.items():
+        rows = page_item_rows[page_id]
+        items = snapshot.get(section) if isinstance(snapshot, Mapping) else ()
+        if not isinstance(items, list | tuple):
+            continue
+        for row, item in enumerate(items):
+            if not isinstance(item, Mapping):
+                continue
+            item_id = str(item.get("id") or "")
+            if not item_id:
+                continue
+            rows.setdefault(item_id, row)
+            if page_id == "completed":
+                completed_item_ids.append(item_id)
+    return page_item_rows, tuple(completed_item_ids)
 
 
 def _request_base_version(request: FrontendSnapshotRequest, cached_snapshot: Mapping[str, Any]) -> int:

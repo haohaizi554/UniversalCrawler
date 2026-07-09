@@ -62,7 +62,7 @@ def _static_bundle_content() -> str:
     """Read split WebUI assets as one bundle for static assertions."""
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
     parts = []
-    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "log_query_worker.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "app.js"):
+    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "log_query_worker.js", "log_detail_worker.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "app.js"):
         path = static_dir / name
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
@@ -190,6 +190,14 @@ def _install_webui_test_helpers(page) -> None:
             if (typeof logQueryState !== "undefined") {
               logQueryState = { signature: "", result: null, pending: false };
             }
+            if (typeof logDetailWorkerAvailable !== "undefined") {
+              logDetailWorkerAvailable = options.useLogDetailWorker !== false && typeof Worker !== "undefined";
+            }
+            if (typeof logDetailWorker !== "undefined") logDetailWorker = null;
+            if (typeof logDetailSequence !== "undefined") logDetailSequence += 1;
+            if (typeof logDetailState !== "undefined") {
+              logDetailState = { signature: "", result: null, pending: false };
+            }
           };
 
           window.__waitForLogRender = async function (options = {}) {
@@ -208,9 +216,26 @@ def _install_webui_test_helpers(page) -> None:
               const text = document.getElementById("page-logs")?.textContent || "";
               const selectedId = (typeof selected !== "undefined" && selected) ? String(selected.log || "") : "";
               const pageItems = result && Array.isArray(result.pageItems) ? result.pageItems : [];
+              const detailState = typeof logDetailState !== "undefined" ? logDetailState : {};
+              const detailResult = detailState && detailState.result ? detailState.result : null;
+              const detailPending = Boolean(detailState && detailState.pending);
               const itemFound = !has("itemId") || pageItems.some(item => String(item.id || "") === String(options.itemId));
               const textFound = !has("text") || text.includes(String(options.text));
-              last = { pending: Boolean(state && state.pending), rows, total, matched, visible, selectedId, itemFound, textFound };
+              const detailReady = !has("selectedId") ||
+                options.waitDetail === false ||
+                (Boolean(detailResult) && !detailPending && String(detailResult.itemId || "") === String(options.selectedId));
+              last = {
+                pending: Boolean(state && state.pending),
+                detailPending,
+                detailReady,
+                rows,
+                total,
+                matched,
+                visible,
+                selectedId,
+                itemFound,
+                textFound,
+              };
 
               const ready = Boolean(result) &&
                 !last.pending &&
@@ -220,6 +245,7 @@ def _install_webui_test_helpers(page) -> None:
                 (!has("matched") || matched === Number(options.matched)) &&
                 (!has("visible") || visible === Number(options.visible)) &&
                 (!has("selectedId") || selectedId === String(options.selectedId)) &&
+                detailReady &&
                 textFound;
               if (ready) return last;
               await new Promise(resolve => setTimeout(resolve, 25));
@@ -479,7 +505,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/custom_select.js?v=20260707-placement-stable', content)
         self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
-        self.assertIn('/static/app.js?v=20260708-log-i18n-runtime-v2', content)
+        self.assertIn('/static/app.js?v=20260709-log-detail-worker', content)
 
     def test_video_end_autoplays_next_preview(self):
         content = _static_bundle_content()
@@ -901,7 +927,10 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_log_detail_formatting_runs_in_worker(self):
         content = _static_bundle_content()
-        render_detail_block = content.split("function renderLogDetail", 1)[1].split(
+        app_js = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        render_detail_block = app_js.split("function renderLogDetail(itemsOverride)", 1)[1].split(
             "function setLogTab",
             1,
         )[0]
@@ -911,6 +940,9 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("function receiveLogDetailResult(result)", content)
         self.assertIn("function submitLogDetail(item)", content)
         self.assertIn("renderLogDetailResult(result);", content)
+        self.assertNotIn("function localizedLogDetailPayload", app_js)
+        self.assertNotIn("function formatLogDetailDisplayText", app_js)
+        self.assertNotIn("function buildLogDetailPayload", app_js)
         self.assertNotIn("JSON.parse", render_detail_block)
         self.assertNotIn("JSON.stringify", render_detail_block)
         self.assertNotIn("localizedLogDetailPayload(item)", render_detail_block)

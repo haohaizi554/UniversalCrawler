@@ -165,6 +165,10 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertGreaterEqual(window.detail_panel.height() + 2, window.detail_panel.minimumHeight())
             self.assertGreaterEqual(window.control_panel.height() + 2, window.control_panel.minimumHeight())
             self.assertTrue(window.btn_run.isVisible())
+            self.assertFalse(window.hero_sub.wordWrap())
+            panel_log_gap = window.log_card.geometry().top() - window.control_panel.geometry().bottom() - 1
+            self.assertGreaterEqual(panel_log_gap, 0)
+            self.assertLessEqual(panel_log_gap, 12)
             self.assertGreaterEqual(
                 window.log_card.geometry().top(),
                 window.control_panel.geometry().bottom() + 1,

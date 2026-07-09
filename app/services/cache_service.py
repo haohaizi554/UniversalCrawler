@@ -8,6 +8,7 @@ import threading
 import time
 from contextlib import closing
 from copy import deepcopy
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,12 @@ from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_data_root
 
 try:
-    from cachetools import TTLCache as CachetoolsTTLCache
+    CachetoolsTTLCache = getattr(import_module("cachetools"), "TTLCache")
 except Exception:  # pragma: no cover - fallback keeps runtime optional
     CachetoolsTTLCache = None
 
 try:
-    from diskcache import Cache as DiskCache
+    DiskCache = getattr(import_module("diskcache"), "Cache")
 except Exception:  # pragma: no cover - SQLite fallback keeps runtime optional
     DiskCache = None
 

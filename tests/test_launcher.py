@@ -775,6 +775,15 @@ if _PYQT6_AVAILABLE:
     class _Signals(QObject):
         event = pyqtSignal(str, str, object, object)
 
+    class _LogCard(QFrame):
+        """Rounded log surface with a compact preferred height for the minimum window."""
+
+        _PREFERRED_HEIGHT = 140
+
+        def sizeHint(self):
+            hint = super().sizeHint()
+            return QSize(hint.width(), max(self.minimumHeight(), min(hint.height(), self._PREFERRED_HEIGHT)))
+
     class _SectionHeader(QFrame):
         def __init__(self, section_name: str, count: int):
             super().__init__()
@@ -1040,12 +1049,13 @@ if _PYQT6_AVAILABLE:
             hero_title.setObjectName("heroTitle")
             total_info = summary()
             recommended_count = len(RECOMMENDED_CATEGORY_IDS)
-            hero_sub = QLabel(
-                f"按职责浏览测试分类，选中后直接运行。当前已收录 {total_info['total_categories']} 个分类、"
-                f"{total_info['total_files']} 个测试脚本，推荐组合覆盖 {recommended_count} 条高频回归链路。"
+            self.hero_sub = QLabel(
+                f"按职责浏览并运行。{total_info['total_categories']} 类 / "
+                f"{total_info['total_files']} 脚本，推荐覆盖 {recommended_count} 条高频链路。"
             )
+            hero_sub = self.hero_sub
             hero_sub.setObjectName("heroSub")
-            hero_sub.setWordWrap(True)
+            hero_sub.setWordWrap(False)
             title_col.addWidget(hero_title)
             title_col.addWidget(hero_sub)
             hero_layout.addLayout(title_col, 1)
@@ -1133,7 +1143,7 @@ if _PYQT6_AVAILABLE:
             content_row.addWidget(left_panel)
 
             right_col = QVBoxLayout()
-            right_col.setSpacing(14)
+            right_col.setSpacing(10)
             content_row.addLayout(right_col, 1)
 
             self.detail_panel = QFrame()
@@ -1185,8 +1195,8 @@ if _PYQT6_AVAILABLE:
             control_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.control_panel = control_panel
             control_layout = QVBoxLayout(control_panel)
-            control_layout.setContentsMargins(18, 18, 18, 18)
-            control_layout.setSpacing(12)
+            control_layout.setContentsMargins(18, 16, 18, 12)
+            control_layout.setSpacing(10)
 
             control_header = QFrame()
             control_header.setObjectName("panelHeader")
@@ -1256,10 +1266,10 @@ if _PYQT6_AVAILABLE:
             control_layout.addLayout(action_row_2)
             right_col.addWidget(control_panel)
 
-            self.log_card = QFrame()
+            self.log_card = _LogCard()
             self.log_card.setObjectName("logCard")
-            self.log_card.setMinimumHeight(130)
-            self.log_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+            self.log_card.setMinimumHeight(112)
+            self.log_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             log_card_layout = QVBoxLayout(self.log_card)
             log_card_layout.setContentsMargins(8, 8, 8, 8)
             log_card_layout.setSpacing(0)
@@ -1269,7 +1279,7 @@ if _PYQT6_AVAILABLE:
             self.log.setReadOnly(True)
             self.log.setFrameShape(QFrame.Shape.NoFrame)
             self.log.setPlaceholderText("运行日志会显示在这里。")
-            self.log.setMinimumHeight(100)
+            self.log.setMinimumHeight(82)
             self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             log_card_layout.addWidget(self.log)
             right_col.addWidget(self.log_card, 1)

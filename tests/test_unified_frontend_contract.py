@@ -4091,25 +4091,39 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             self.assertIn(action, logs_page)
         self.assertIn("function currentLogTraceId", content)
         self.assertIn("function copySelectedLogTraceId", content)
-        for detail_action in (
-            "function buildLogDetailPayload",
+        log_detail_worker = (static_dir / "log_detail_worker.js").read_text(encoding="utf-8")
+        for detail_worker_action in (
+            "function normalizeLogDetailPayload",
             "function formatLogDetailDisplayText",
             "function readableLogDetailValue",
+            "function buildLogDetailResult",
+        ):
+            self.assertIn(detail_worker_action, log_detail_worker)
+            self.assertNotIn(detail_worker_action, content)
+        for detail_action in (
+            "function ensureLogDetailWorker",
+            "function receiveLogDetailResult",
+            "function submitLogDetail",
+            "function currentLogDetailResult",
+            "function renderLogDetailResult",
             "function copyCurrentLogDetail",
             "function copyCurrentLogJson",
             "function exportCurrentLogDetail",
         ):
             self.assertIn(detail_action, content)
+        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', content)
         self.assertIn("function translateRuntimeLogText", content)
         self.assertIn("function localizeEnglishDynamicLogText", content)
         self.assertIn("function localizeLogEventCode", content)
-        self.assertIn("localizeLogEventCode(readable)", content)
+        self.assertIn("return localizeLogEventCode(value);", content)
+        self.assertIn('add("status_code", item.status_code || "", logEventCodeText(item.status_code || ""));', content)
+        self.assertIn('add("event_code", item.event_code || "", logEventCodeText(item.event_code || ""));', content)
         self.assertIn('if (sections.has("settings_snapshot")) updatePlaceholder();', content)
         self.assertIn("trimFrontendLogItems();\n  updatePlaceholder();", content)
         self.assertIn("log-inspector-header", content)
         self.assertIn("log-json-card", content)
         self.assertIn("log-detail-readable", content)
-        self.assertIn('data-json="${escAttr(detailJson)}"', content)
+        self.assertIn('data-json="${escAttr(result.detailJson || "{}")}"', content)
         self.assertIn("function emptyLogDetailSummaryHtml", content)
         self.assertIn("${emptyLogDetailSummaryHtml()}", content)
         self.assertIn('<pre class="log-snippet">{}</pre>', content)

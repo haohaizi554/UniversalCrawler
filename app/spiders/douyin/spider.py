@@ -1,19 +1,16 @@
 """爬虫实现模块，负责 `app/spiders/douyin/spider.py` 对应平台的采集、解析或任务装配逻辑。"""
 
 import os
-import json
 import asyncio
 import math
 import queue as queue_module
 import re
 import time
+import traceback
 import httpx
-from datetime import datetime
-from types import SimpleNamespace
-from typing import Optional
 
 # Playwright 用于扫码登录
-from playwright.sync_api import Error as PlaywrightError, sync_playwright
+from playwright.sync_api import Error as PlaywrightError
 
 # UCP 基础类
 from app.config import cfg, get_setting_default
@@ -37,14 +34,12 @@ from app.core.lib.douyin.interface.search import Search
 from app.core.lib.douyin.interface.detail import Detail
 from app.core.lib.douyin.interface.account import Account
 from app.core.lib.douyin.interface.mix import Mix
-from app.core.lib.douyin.extract.extractor import Extractor
 from app.core.lib.douyin.link.extractor import Extractor as LinkExtractor
 from multiprocessing import Process, Queue
 
 def _run_login_process(auth_file, user_agent, result_queue, proxy_server=None, timeout_ms=60000):
     """在独立进程中运行 Playwright，避免与 PyQt 线程冲突"""
     import os
-    import traceback
     browser = None
     try:
         auth_service = AuthService()
@@ -747,7 +742,6 @@ class DouyinSpider(BaseSpider):
             search_api = Search(params, keyword=user_id, channel=2)  # 2=用户搜索
             await search_api.run(single_page=True)
         except (RuntimeError, ValueError, TypeError, KeyError) as e:
-            import traceback
             self.log(f"❌ 搜索异常: {e}")
             debug_logger.log_exception(
                 "DouyinSpider",

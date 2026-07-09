@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from shared.cli_runner_runtime import CLIRunner
@@ -639,7 +640,7 @@ class UcrawlSDK:
             raise ValueError("scan_limit 必须大于 0")
 
         from app.config import cfg
-        from app.services.file_service import MediaLibraryService, ScanResult
+        from app.services.file_service import MediaLibraryService
 
         # 与 GUI/WebController 对齐：scan_limit 从配置读取
         if scan_limit is None:

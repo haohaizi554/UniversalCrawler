@@ -414,6 +414,7 @@ class API:
             **kwargs,
     ):
         
+        verify = kwargs.pop("verify", True)
         self.__record_request_messages(
             url,
             params,
