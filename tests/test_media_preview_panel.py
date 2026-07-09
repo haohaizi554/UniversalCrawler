@@ -484,6 +484,28 @@ class MediaPreviewPanelTests(unittest.TestCase):
         self.assertIs(panel.parentWidget(), host)
         self.assertEqual(panel.btn_fullscreen.text(), "[ 全屏 ]")
 
+    def test_release_media_exits_media_fullscreen_window(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+
+        panel.enter_media_fullscreen()
+        self.app.processEvents()
+        fullscreen_window = panel._fullscreen_window
+        self.assertIsNotNone(fullscreen_window)
+
+        panel.release_media()
+        self.app.processEvents()
+
+        self.assertIsNone(panel._fullscreen_window)
+        self.assertIs(panel.parentWidget(), host)
+        self.assertEqual(panel.btn_fullscreen.text(), "[ 全屏 ]")
+        try:
+            self.assertFalse(fullscreen_window.isVisible())
+        except RuntimeError:
+            pass
+
     def test_image_preview_uses_same_media_fullscreen_window(self):
         host = QWidget()
         layout = QVBoxLayout(host)

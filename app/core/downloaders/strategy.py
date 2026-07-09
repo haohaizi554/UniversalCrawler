@@ -12,7 +12,7 @@ from app.models.download_context import DownloadContext
 
 @dataclass(slots=True)
 class DownloadRequest:
-    """Normalized download request passed through the strategy chain."""
+    """下载策略链共享的请求上下文，避免每个策略重复解析 VideoItem/meta。"""
 
     video_item: VideoItem
     save_path: str
@@ -34,7 +34,7 @@ class DownloadRequest:
         return self.context.explicit_strategy
 
 class StrategyCapableDownloader(Protocol):
-    """Minimal downloader surface needed by the strategy chain."""
+    """策略链只依赖 BaseDownloader 的最小接口，便于平台下载器复用。"""
 
     def _apply_runtime_headers(self, video_item: VideoItem, headers: dict[str, str]) -> None:
         ...
@@ -58,7 +58,7 @@ class StrategyCapableDownloader(Protocol):
         ...
 
 class DownloadStrategy(Protocol):
-    """A single download strategy in the explicit chain."""
+    """单个下载策略；返回 False 表示当前策略不适用或允许后续策略接管。"""
 
     name: str
 
@@ -155,7 +155,7 @@ class HttpDownloadStrategy:
         return True
 
 class DownloadStrategyChain:
-    """Ordered strategy chain with optional task-level strategy override."""
+    """按固定顺序尝试下载策略，并支持任务级显式策略优先。"""
 
     def __init__(self, strategies: list[DownloadStrategy]) -> None:
         self._strategies = list(strategies)
@@ -168,6 +168,7 @@ class DownloadStrategyChain:
                 if strategy.execute(downloader, request):
                     return
             except DownloaderStoppedError:
+                # 用户停止不能被当成策略失败回退，否则会出现“取消后又被下一个策略继续下载”。
                 raise
             except Exception as exc:
                 last_error = exc
@@ -192,6 +193,7 @@ class DownloadStrategyChain:
     def _ordered_strategies(self, explicit_strategy: str) -> list[DownloadStrategy]:
         if not explicit_strategy:
             return list(self._strategies)
+        # 显式策略只调整优先级，不关闭兜底；外部工具不可用时仍可回退到 HTTP。
         preferred = [strategy for strategy in self._strategies if strategy.name == explicit_strategy]
         if not preferred:
             available = [strategy.name for strategy in self._strategies]

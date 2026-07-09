@@ -20,6 +20,7 @@ class PendingDownloadQueue:
     def __init__(self) -> None:
         self._items: deque[tuple[VideoItem, str]] = deque()
         self._condition = threading.Condition()
+        # 这里存的是“排队中的 id 计数”而不是 set，避免同一资源被重复加入时取消/快照漏算。
         self._queued_ids: dict[str, int] = {}
 
     def _track_enqueue(self, video_id: str) -> None:
@@ -141,9 +142,11 @@ class DownloadManagerCore:
         self.is_running = True
         self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
         self.dispatcher_thread.start()
+        # 主进程异常退出后，外部工具和分片下载可能留下临时目录；调度器启动时统一做一次安全清扫。
         self._sweep_m3u8_orphan_workspaces_on_startup()
 
     def _sweep_m3u8_orphan_workspaces_on_startup(self) -> None:
+        """启动时清理上一轮异常退出留下的下载临时文件和 HLS 工作目录。"""
         try:
             download_dir = str(cfg.get("common", "save_directory", "") or "").strip()
         except (OSError, RuntimeError, TypeError, ValueError, AppError) as exc:
@@ -202,6 +205,7 @@ class DownloadManagerCore:
                 self._slot_semaphore_capacity = new_slot_capacity
                 self._get_dispatch_slot_gate().set()
             elif new_value < old_value:
+                # 并发下调不抢占已经开始的 worker，只阻止后续调度继续扩张。
                 self._get_dispatch_slot_gate().set()
                 debug_logger.log(
                     component="DownloadManager",
@@ -252,6 +256,7 @@ class DownloadManagerCore:
         return self.image_fast_lane_limit
 
     def _rebuild_slot_semaphore(self, *, old_value: int, new_value: int) -> None:
+        """在运行时扩容调度信号量，同时保留已经被 worker 占用的 token 数。"""
         with self._slot_semaphore_guard():
             available_tokens = 0
             for _ in range(max(0, old_value)):
@@ -272,7 +277,7 @@ class DownloadManagerCore:
         )
 
     def set_runtime_options(self, **options: Any) -> dict[str, Any]:
-        """Apply download settings that should affect newly dispatched work immediately."""
+        """应用运行时下载设置；已启动的 worker 保持原参数，新任务读取最新值。"""
         applied: dict[str, Any] = {}
         if "max_concurrent" in options:
             applied["max_concurrent"] = self.set_max_concurrent(options["max_concurrent"])
@@ -325,6 +330,7 @@ class DownloadManagerCore:
             return len(self.workers) < int(getattr(self, "max_concurrent", 1) or 1)
 
     def _slot_capacity_for(self, max_concurrent: int) -> int:
+        """计算调度槽总量：视频按用户并发限制，图片可走受控 fast lane。"""
         configured = normalize_download_concurrency(max_concurrent)
         if bool(getattr(self, "image_respects_concurrency", False)):
             return configured
@@ -384,6 +390,7 @@ class DownloadManagerCore:
                 return False
             if self._is_lightweight_download(video):
                 return True
+            # 重资源仍受 max_concurrent 约束；图片 fast lane 不能挤占视频下载槽。
             return self._active_heavy_worker_count_unlocked() < int(getattr(self, "max_concurrent", 1) or 1)
 
     def add_task(self, video: VideoItem, save_dir: str):
@@ -473,6 +480,7 @@ class DownloadManagerCore:
         queued_videos = self._remove_queued_tasks(ids)
         queued_ids = {video.id for video in queued_videos}
         for video in queued_videos:
+            # 队列中任务还没创建 worker，只需要回退前端状态并标记用户取消。
             video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
             video.meta["user_cancel_requested"] = True
             results[video.id] = "queued"
@@ -490,6 +498,7 @@ class DownloadManagerCore:
 
         for worker in running_workers:
             video = worker.video
+            # 运行中任务通过 worker.stop() 让下载器在下一个停止检查点退出。
             video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
             video.meta["user_cancel_requested"] = True
             worker.stop()
@@ -498,7 +507,7 @@ class DownloadManagerCore:
         return results
 
     def _dispatch_loop(self):
-        """Dispatcher thread acquires a slot before dequeuing a worker task."""
+        """调度线程：先占槽，再取队列任务，避免并发缩放时短暂超发 worker。"""
         while self.is_running:
             slot_acquired = False
             worker = None
@@ -723,6 +732,7 @@ class DownloadManagerCore:
         return set()
 
     def _wait_for_dispatch_slot(self) -> bool:
+        """等待可用调度槽；配置变化或 worker 完成时由 gate 唤醒重新评估容量。"""
         gate = self._get_dispatch_slot_gate()
         gate_wait_s = 0.25
         acquire_timeout_s = 0.25
@@ -753,6 +763,7 @@ class DownloadManagerCore:
         with self._slot_semaphore_guard():
             if semaphore is self.slot_semaphore:
                 return True
+        # 并发配置可能在 acquire 等待期间被重建，旧信号量上的 token 不能算作有效占槽。
         try:
             semaphore.release()
         except ValueError:
@@ -767,7 +778,9 @@ class DownloadManagerCore:
 
     def _release_worker_slot(self, worker: Any, reason: str) -> None:
         self._release_dispatch_slot(reason, worker=worker)
+
     def _release_dispatch_slot(self, reason: str, worker: Any | None = None) -> None:
+        """释放调度槽并唤醒 dispatcher；worker 标记避免完成钩子和 prune 双重释放。"""
         if worker is not None and getattr(worker, "_slot_released", False):
             return
         if worker is not None:
@@ -835,6 +848,7 @@ class DownloadManagerCore:
             if callable(drain):
                 drain()
             else:
+                # 兼容旧 queue 实现：没有 drain 时逐个取空，确保关闭后不会再派发任务。
                 while True:
                     try:
                         self.queue.get_nowait()

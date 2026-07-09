@@ -706,6 +706,19 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("_MARQUEE_DEGREES_PER_TICK = 12.0", text)
         self.assertNotIn("setInterval(45)", text)
 
+    def test_download_options_snapshot_uses_runtime_memory_not_cache_service(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "services" / "frontend_state_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        snapshot_block = text.split("def download_options_snapshot", 1)[1].split("def app_status", 1)[0]
+        update_block = text.split("def _action_update_download_options", 1)[1].split("def _action_update_setting", 1)[0]
+
+        self.assertIn("self._download_runtime_get", snapshot_block)
+        self.assertNotIn("self.cache_service.get", snapshot_block)
+        self.assertIn('self._download_runtime_options["auto_retry"]', update_block)
+
     def test_log_file_open_actions_use_frontend_action_worker(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "ui" / "main_window.py").read_text(

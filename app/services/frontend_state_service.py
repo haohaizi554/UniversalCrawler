@@ -57,6 +57,7 @@ from app.ui.viewmodels.settings_catalog import GROUP_HINTS
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
 UI_TITLE_STAGE_META_KEY = "ui_title_stage"
 UI_TITLE_TEMPLATE_META_KEY = "ui_title_template"
+DOWNLOAD_AUTO_RETRY_CACHE_KEY = "download.auto_retry"
 
 
 class _GuiRuntimeInvoker(QObject):
@@ -95,6 +96,7 @@ class FrontendStateService:
     METADATA_EMPTY_MAX_RETRIES = 3
     FRONTEND_DELTA_EVENTS_LIMIT = 64
     FILE_LOG_BACKFILL_LIMIT = 500
+    FAILED_RECORD_SNAPSHOT_LIMIT = 500
     PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
     APP_STATE_PENDING_EVENTS_LIMIT = 4096
     APP_STATE_ASYNC_DELIVERY_TIMEOUT_SECONDS = 0.2
@@ -121,6 +123,9 @@ class FrontendStateService:
         self._directory_opener = directory_opener or self._open_directory_with_system
         self._association_service_factory = association_service_factory
         self._executable_path_provider = executable_path_provider or self._current_executable_path
+        self._download_runtime_options: dict[str, Any] = {
+            "auto_retry": self._load_download_auto_retry(),
+        }
         self._owns_media_metadata_service = media_metadata_service is None
         self.media_metadata_service = media_metadata_service or MediaMetadataService()
         self._frontend_event_emitter = frontend_event_emitter
@@ -182,8 +187,65 @@ class FrontendStateService:
             if callable(subscribe)
             else None
         )
+        self._wire_failed_record_store()
         self._apply_logging_runtime_settings(cleanup_old_logs=True)
         self.flush_pending_app_state_events()
+
+    def _load_download_auto_retry(self) -> bool:
+        try:
+            return bool(self.cache_service.get(DOWNLOAD_AUTO_RETRY_CACHE_KEY, True))
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "load_download_auto_retry",
+                exc,
+            )
+            return True
+
+    def _download_runtime_get(self, key: str, default: Any = None) -> Any:
+        if key == DOWNLOAD_AUTO_RETRY_CACHE_KEY:
+            return self._download_runtime_options.get("auto_retry", default)
+        return self._download_runtime_options.get(key, default)
+
+    def _wire_failed_record_store(self) -> None:
+        set_refresh_callback = getattr(self.failed_record_store, "set_refresh_callback", None)
+        if callable(set_refresh_callback):
+            try:
+                set_refresh_callback(self._on_failed_record_store_refreshed)
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "FrontendStateService",
+                    "failed_record_store.set_refresh_callback",
+                    exc,
+                )
+        self._request_failed_record_refresh()
+
+    def _request_failed_record_refresh(self) -> None:
+        request_refresh = getattr(self.failed_record_store, "request_refresh", None)
+        if not callable(request_refresh):
+            return
+        try:
+            request_refresh(limit=self.FAILED_RECORD_SNAPSHOT_LIMIT)
+        except TypeError:
+            try:
+                request_refresh()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "FrontendStateService",
+                    "failed_record_store.request_refresh",
+                    exc,
+                )
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "failed_record_store.request_refresh",
+                exc,
+            )
+
+    def _on_failed_record_store_refreshed(self, count: int) -> None:
+        if self._destroyed:
+            return
+        self.record_event("failed_records.refresh", {"count": int(count)})
 
     @staticmethod
     def _is_qt_gui_thread() -> bool:
@@ -481,6 +543,8 @@ class FrontendStateService:
         want_completed = only is None or "completed_items" in only
         want_active_items = only is None or "active_downloads" in only
         want_active_for_status = only is not None and "app_status" in only
+        want_failed_for_status = only is None or "app_status" in only
+        failed_items_from_store = False
         if want_failed:
             log_excerpt_index = self._log_excerpt_index(log_items_cache=log_items_cache)
 
@@ -508,7 +572,13 @@ class FrontendStateService:
         finally:
             self._metadata_probe_budget_remaining = previous_probe_budget
 
-        if want_failed and failed_items:
+        if want_failed and not failed_items:
+            failed_items = self._failed_record_snapshot_items()
+            failed_items_from_store = bool(failed_items)
+        if want_failed_for_status and bucket_counts["failed"] == 0:
+            bucket_counts["failed"] = self._failed_record_snapshot_count(fallback_count=len(failed_items))
+
+        if want_failed and failed_items and not failed_items_from_store:
             self._queue_failed_records(failed_items)
 
         sections: dict[str, Any] = {}
@@ -1381,6 +1451,54 @@ class FrontendStateService:
             failed_at_fallback=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
+    def _failed_record_snapshot_items(self) -> list[dict[str, Any]]:
+        records_snapshot = getattr(self.failed_record_store, "records_snapshot", None)
+        if not callable(records_snapshot):
+            return []
+        try:
+            rows = records_snapshot(limit=self.FAILED_RECORD_SNAPSHOT_LIMIT)
+        except TypeError:
+            try:
+                rows = records_snapshot()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "FrontendStateService",
+                    "failed_record_store.records_snapshot",
+                    exc,
+                )
+                return []
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "failed_record_store.records_snapshot",
+                exc,
+            )
+            return []
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            return []
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            item = dict(row)
+            if not item.get("id") and item.get("video_id"):
+                item["id"] = str(item.get("video_id") or "")
+            if item.get("id"):
+                items.append(item)
+        return items
+
+    def _failed_record_snapshot_count(self, *, fallback_count: int = 0) -> int:
+        try:
+            total_count = int(getattr(self.failed_record_store, "snapshot_total_count", fallback_count) or 0)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "failed_record_store.snapshot_total_count",
+                exc,
+            )
+            total_count = int(fallback_count or 0)
+        return max(int(fallback_count or 0), total_count)
+
     @staticmethod
     def _safe_stat(path: Path | None):
         if not path:
@@ -1770,7 +1888,7 @@ class FrontendStateService:
     def download_options_snapshot(self) -> dict[str, Any]:
         return settings_adapter.build_download_options_snapshot(
             self.config.get,
-            self.cache_service.get,
+            self._download_runtime_get,
             self._dl_manager(),
         )
 
@@ -1966,7 +2084,7 @@ class FrontendStateService:
         options = settings_adapter.normalize_download_options_payload(
             payload,
             self.config.get,
-            self.cache_service.get,
+            self._download_runtime_get,
         )
         manager = self._dl_manager()
         options["max_concurrent"] = settings_adapter.apply_manager_concurrency(
@@ -1978,6 +2096,7 @@ class FrontendStateService:
             self.cache_service.set,
             options,
         )
+        self._download_runtime_options["auto_retry"] = bool(options.get("auto_retry", True))
         if callable(getattr(manager, "set_runtime_options", None)):
             try:
                 self._apply_runtime_setting("download", "download_options", None)

@@ -56,6 +56,7 @@ class BaseDownloader:
                 return
             progress_callback(progress, **kwargs)
         except TypeError as exc:
+            # 旧调用方只接受百分比；这里降级调用，避免新增 telemetry 字段破坏兼容适配器。
             if not kwargs:
                 debug_logger.log_exception(
                     "BaseDownloader",
@@ -106,7 +107,7 @@ class BaseDownloader:
             video_item.meta["ua"] = user_agent
         return user_agent
 
-    #智能下载调度器
+    # 智能下载调度器：把选择策略交给 strategy.py，便于平台下载器复用同一套回退顺序。
     def _download_with_strategy_fallback(
         self,
         *,
@@ -139,6 +140,7 @@ class BaseDownloader:
         DEFAULT_DOWNLOAD_STRATEGY_CHAIN.execute(self, request)
         return
 
+        # 历史内联实现保留在下方作为迁移参照；当前实际路径已经交给策略链管理。
         from .chunked import ChunkedDownloader
         from .ffmpeg import FFmpegDownloader
         from .m3u8 import N_m3u8DL_RE_Downloader
@@ -227,7 +229,7 @@ class BaseDownloader:
             return value.strip().lower() not in {"0", "false", "no", "off"}
         return bool(value)
 
-    #单线程 HTTP 下载实现
+    # 单线程 HTTP 下载实现，作为所有专用策略不可用时的最终兜底。
     def _download_http_file(
         self,
         *,
@@ -244,17 +246,20 @@ class BaseDownloader:
         proxy: str | None = None,
         trace_id: str | None = None,
     ) -> None:
-        """提供 `_download_http_file` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
+        """按配置执行普通 HTTP 下载，支持基于 `.downloading` 临时文件的续传重试。"""
+        # 只在最后 rename 到 save_path，避免失败或中断时把半成品暴露成可播放文件。
         temp_path = save_path + ".downloading"
         success = False
         proxies = {"http": proxy, "https": proxy} if proxy else None
         retry_count = self._coerce_retry_count(max_retries)
 
+        # retry_count 表示失败后的重试次数，因此总尝试次数是 retry_count + 1。
         for attempt in range(retry_count + 1):
             if check_stop_func():
                 raise DownloaderStoppedError("用户停止下载")
             existing_size = 0
             try:
+                # 续传依赖上次失败保留下来的临时文件；主动停止会清理它，避免用户取消后误续传。
                 existing_size = self._get_existing_size(temp_path) if support_resume and self._should_resume_download(temp_path) else 0
                 request_headers = headers.copy()
                 if support_resume and existing_size > 0:
@@ -279,6 +284,7 @@ class BaseDownloader:
                     if support_resume and existing_size > 0 and response.status_code == 206:
                         total_size += existing_size
                     elif support_resume and existing_size > 0 and response.status_code == 200:
+                        # 服务端忽略 Range 时必须从头覆盖写入，不能继续 append 已有半截文件。
                         existing_size = 0
 
                     mode = "ab" if support_resume and existing_size > 0 and response.status_code == 206 else "wb"
@@ -295,6 +301,7 @@ class BaseDownloader:
                 success = True
                 break
             except DownloaderStoppedError:
+                # 用户主动停止语义是“放弃本次未完成文件”，不同于网络失败后的可续传缓存。
                 self._cleanup_temp_file(temp_path)
                 raise
             except requests.RequestException:
@@ -343,6 +350,7 @@ class BaseDownloader:
                 time.sleep(1 if retry_count <= 3 else 3)
 
         if not success:
+            # 网络失败且重试耗尽后清理兜底临时文件，避免失败列表删除时再遗留 `.downloading`。
             self._cleanup_temp_file(temp_path)
             raise StreamDownloadError(error_message)
 

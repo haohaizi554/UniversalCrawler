@@ -25,7 +25,7 @@ from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
 
 class BilibiliDownloader(BaseDownloader):
-    """实现 `BilibiliDownloader` 对应的资源下载与落盘流程。"""
+    """下载 Bilibili DASH 音视频双流，并用 ffmpeg 合并为最终媒体文件。"""
     source_id = "bilibili"
 
     # ---- B站 play_url API 重刷新 ----
@@ -128,6 +128,7 @@ class BilibiliDownloader(BaseDownloader):
         proxy = video_item.meta.get("proxy")
         save_dir = os.path.dirname(save_path)
         base_name = os.path.splitext(os.path.basename(save_path))[0]
+        # B站 DASH 音视频分离，临时文件名必须和最终文件同 stem，便于删除失败项时联动清理。
         temp_v = os.path.join(save_dir, f"{base_name}_video.m4s")
         temp_a = os.path.join(save_dir, f"{base_name}_audio.m4s")
         video_item.meta["download_temp_files"] = [temp_v, temp_a] if audio_url else [temp_v]
@@ -166,7 +167,7 @@ class BilibiliDownloader(BaseDownloader):
         )
 
         def cleanup_temp_files() -> None:
-            
+            """合并成功、用户停止或失败后清理本任务的音视频分流缓存。"""
             for temp_path in (temp_v, temp_a):
                 last_error: OSError | None = None
                 for attempt in range(3):
@@ -229,7 +230,7 @@ class BilibiliDownloader(BaseDownloader):
             return False
 
         def emit_combined_progress() -> None:
-            
+            """按音频和视频累计字节合成 10-90 的下载阶段进度。"""
             total = sum(item["total"] for item in stream_stats.values() if item["total"] > 0)
             downloaded = sum(item["downloaded"] for item in stream_stats.values())
             if total <= 0:
@@ -264,6 +265,7 @@ class BilibiliDownloader(BaseDownloader):
                     existing_size = os.path.getsize(path) if resume_enabled and os.path.exists(path) else 0
                     request_headers = dict(headers)
                     if existing_size > 0:
+                        # 每个流独立续传；服务端若不返回 206，下面会回退为覆盖写。
                         request_headers["Range"] = f"bytes={existing_size}-"
                         debug_logger.log(
                             component="BilibiliDownloader",
@@ -286,6 +288,7 @@ class BilibiliDownloader(BaseDownloader):
                                 total += existing_size
                                 resumed = True
                             else:
+                                # CDN 忽略 Range 时不能继续追加旧 m4s，否则合并后音画流会损坏。
                                 existing_size = 0
                         debug_logger.log_api(
                             component="BilibiliDownloader",
@@ -400,6 +403,7 @@ class BilibiliDownloader(BaseDownloader):
             if audio_url and (not os.path.exists(temp_a) or os.path.getsize(temp_a) <= 0):
                 raise StreamDownloadError("Bilibili 音频流写入失败或文件为空")
 
+            # 到这里仅代表两个分流落盘成功；最终文件必须等 ffmpeg 合并完成后才算成功。
             total_bytes = sum(item["total"] for item in stream_stats.values() if item["total"] > 0)
             downloaded_bytes = sum(item["downloaded"] for item in stream_stats.values())
             self._emit_progress(
@@ -508,6 +512,7 @@ class BilibiliDownloader(BaseDownloader):
         startupinfo = build_hidden_startupinfo()
         stderr_tail: list[str] = []
         try:
+            # 合并进程独立监听 stderr，只保留尾部片段用于失败诊断，避免日志过量。
             process = subprocess.Popen(
                 command,
                 startupinfo=startupinfo,

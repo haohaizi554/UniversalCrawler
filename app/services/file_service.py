@@ -12,10 +12,11 @@ from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.utils import sanitize_filename
 
-#本地媒体文件管理服务
+# 本地媒体文件管理服务
 @dataclass
 class ScanResult:
-    
+    """媒体库扫描结果；truncated/original_count 用于前端提示大目录被截断。"""
+
     items: list[VideoItem]
     total_count: int
     video_count: int
@@ -26,10 +27,12 @@ class ScanResult:
 class MediaLibraryService:
     """本地媒体库服务，负责扫描、重命名、删除。"""
 
+    # 下载器会把临时文件显式记录到 meta；删除媒体时优先相信这些“本任务拥有”的路径。
     TEMP_FILE_META_KEYS = ("download_temp_files", "temporary_files")
     BILIBILI_TEMP_SUFFIXES = ("_video.m4s", "_audio.m4s")
     HLS_TEMP_ROOT_NAME = ".ucp-nm3u8-tmp"
     HLS_TEMP_DIR_SUFFIXES = ("_curl_cffi_hls", "_playwright_hls")
+    # 分块下载的 .<最终文件名>.partN 允许被清理，但必须匹配隐藏分片格式，避免误删普通文件。
     _CHUNK_PART_RE = re.compile(r"^\..+\.part\d+$", re.IGNORECASE)
     _ORPHAN_MEDIA_TEMP_SUFFIXES = (
         ".mp4.tmp",
@@ -58,6 +61,7 @@ class MediaLibraryService:
         self.all_media_extensions = self.video_extensions + self.image_extensions
 
     def _delete_file(self, file_path: str, *, required: bool) -> bool:
+        """删除单个文件；required=True 时把失败传播给调用方，辅助临时文件则尽量清理。"""
         if not file_path or not os.path.exists(file_path):
             return False
         last_error: OSError | None = None
@@ -87,6 +91,7 @@ class MediaLibraryService:
 
     @classmethod
     def _looks_like_explicit_temp_path(cls, path: str) -> bool:
+        """判断路径名是否像本项目下载器产生的临时文件，作为防误删第一道门。"""
         name = os.path.basename(str(path or "")).lower()
         if not name:
             return False
@@ -114,6 +119,7 @@ class MediaLibraryService:
 
     @classmethod
     def _remove_temp_path(cls, path: str | os.PathLike[str]) -> bool:
+        """删除已确认安全的临时路径；调用方必须先完成命名白名单判断。"""
         try:
             target = Path(path)
             if target.is_dir():
@@ -127,6 +133,7 @@ class MediaLibraryService:
         return False
 
     def _iter_download_temp_paths(self, video: VideoItem, file_path: str) -> list[str]:
+        """枚举普通/分块/外部工具下载的临时文件，限制在最终文件所在目录内。"""
         meta = video.meta if isinstance(video.meta, dict) else {}
         candidates: list[str] = []
         seen: set[str] = set()
@@ -142,6 +149,7 @@ class MediaLibraryService:
             except (OSError, TypeError, ValueError):
                 return
             if require_owned_dir and owned_dirs and directory not in owned_dirs:
+                # meta 里的路径可能来自旧版本或外部输入，默认不跨目录删除。
                 return
             if normalized in seen:
                 return
@@ -153,6 +161,7 @@ class MediaLibraryService:
             owned_dirs.add(self._normalized_abs(final_dir))
             name = os.path.basename(file_path)
             stem = os.path.splitext(name)[0]
+            # 兼容不同下载器命名：有的拼在完整文件名后，有的拼在 stem 后。
             add_candidate(file_path + ".downloading")
             for suffix in (".tmp", ".part", ".aria2", ".download"):
                 add_candidate(os.path.join(final_dir, f"{name}{suffix}"))
@@ -181,11 +190,13 @@ class MediaLibraryService:
             for raw_path in iterable:
                 if not isinstance(raw_path, str) or not self._looks_like_explicit_temp_path(raw_path):
                     continue
+                # 有 final path 时仍要求同目录；没有 final path 的失败记录才允许直接使用 meta 路径。
                 add_candidate(raw_path, require_owned_dir=bool(owned_dirs))
 
         return candidates
 
     def _iter_bilibili_temp_paths(self, video: VideoItem, file_path: str) -> list[str]:
+        """按 Bilibili DASH 分流命名补齐 `_video.m4s`/`_audio.m4s` 兄弟文件。"""
         meta = video.meta if isinstance(video.meta, dict) else {}
         source = str(getattr(video, "source", "") or "").lower()
         has_bilibili_context = source == "bilibili" or any(meta.get(key) for key in ("bvid", "cid", "audio_url"))
@@ -313,6 +324,7 @@ class MediaLibraryService:
 
     @classmethod
     def sweep_orphan_download_temp_artifacts(cls, directories: list[str | os.PathLike[str]]) -> int:
+        """启动时递归清扫下载残留；只删除白名单临时文件/目录和被扫空的子目录。"""
         removed = 0
         for raw_dir in directories:
             try:
@@ -334,6 +346,7 @@ class MediaLibraryService:
                         removed += 1
                 if current_path != root:
                     try:
+                        # 合集目录被用户手动清空或只剩失败缓存时，子项清完后顺手移除空目录。
                         current_path.rmdir()
                         removed += 1
                     except OSError:
@@ -370,7 +383,7 @@ class MediaLibraryService:
         raise FileOperationError(str(last_error) if last_error else "重命名文件失败")
 
     def delete_media(self, video: VideoItem) -> bool:
-        """删除 `media` 对应的对象、文件或记录，供 `MediaLibraryService` 使用。"""
+        """删除媒体最终文件，并联动清理本任务可能留下的下载临时文件。"""
         file_path = video.local_path
         temp_paths = self._iter_download_temp_paths(video, file_path) + self._iter_bilibili_temp_paths(video, file_path)
         deleted = self._delete_file(file_path, required=True)

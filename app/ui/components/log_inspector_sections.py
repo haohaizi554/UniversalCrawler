@@ -20,6 +20,12 @@ from PyQt6.QtWidgets import (
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 
 
+def _set_i18n_source(widget: QWidget, source_text: str, *, skip_generic_text: bool = False) -> None:
+    widget.setProperty("_i18n_source_text", source_text)
+    if skip_generic_text:
+        widget.setProperty("i18nSkipText", "true")
+
+
 @dataclass
 class LogInspectorRefs:
     header: QWidget | None = None
@@ -47,6 +53,7 @@ class LogInspectorRefs:
 def _action_button(label: str) -> QPushButton:
     button = QPushButton(label)
     button.setObjectName("LogInspectorActionButton")
+    _set_i18n_source(button, label, skip_generic_text=True)
     button.setFixedHeight(26)
     button.setMinimumWidth(52)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -63,6 +70,7 @@ def build_log_kv_row(key: str, value_widget: QWidget) -> QWidget:
 
     key_label = QLabel(key)
     key_label.setObjectName("LogDetailKey")
+    _set_i18n_source(key_label, key)
     key_label.setFixedWidth(56)
     key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
@@ -118,6 +126,7 @@ def build_log_inspector_header(
 
     title = QLabel("日志详情")
     title.setObjectName("LogInspectorTitle")
+    _set_i18n_source(title, "日志详情")
     layout.addWidget(title)
     layout.addStretch(1)
 
@@ -200,6 +209,7 @@ def build_log_detail_summary_section(
 
     message_title = QLabel("消息")
     message_title.setObjectName("LogMessageTitle")
+    _set_i18n_source(message_title, "消息")
     layout.addWidget(message_title)
     layout.addWidget(detail_message_frame)
 
@@ -241,6 +251,7 @@ def build_log_json_section(
     header.setSpacing(8)
     title = QLabel("详细信息")
     title.setObjectName("LogSectionTitle")
+    _set_i18n_source(title, "详细信息")
     title.setMinimumWidth(0)
     title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     header.addWidget(title, 1)
@@ -283,6 +294,7 @@ def build_log_stack_section(
 
     title = QLabel("堆栈追踪")
     title.setObjectName("LogSectionTitle")
+    _set_i18n_source(title, "堆栈追踪")
     layout.addWidget(title)
 
     stack_text = QPlainTextEdit()

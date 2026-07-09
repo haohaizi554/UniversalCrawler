@@ -18,6 +18,7 @@ from app.models import VideoItem
 class M3u8DownloaderLifecycleTests(unittest.TestCase):
     @staticmethod
     def _fake_m3u8_module():
+        """构造最小 m3u8 模块，隔离真实依赖，只让 fallback 流程走到分片写入阶段。"""
         fake_m3u8 = types.ModuleType("m3u8")
 
         class FakeSegment:
@@ -34,6 +35,7 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
 
     @staticmethod
     def _fake_curl_cffi_module():
+        """构造 curl_cffi 替身，验证临时目录清理而不发起真实网络请求。"""
         fake_curl_cffi = types.ModuleType("curl_cffi")
         fake_requests = types.ModuleType("curl_cffi.requests")
 
@@ -55,6 +57,7 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
 
     @staticmethod
     def _fake_playwright_modules():
+        """构造 Playwright 上下文替身，覆盖浏览器 fallback 的异常清理路径。"""
         fake_playwright = types.ModuleType("playwright")
         fake_sync_api = types.ModuleType("playwright.sync_api")
 
@@ -93,6 +96,7 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
         return fake_playwright, fake_sync_api
 
     def test_success_with_failing_final_callback_does_not_delete_output(self):
+        """最终 100% 回调失败只是 UI 问题，已经成功的输出文件不能被当失败缓存删除。"""
         save_dir = tempfile.mkdtemp()
         save_path = os.path.join(save_dir, "clip.mp4")
         with open(save_path, "wb") as fp:
@@ -122,6 +126,7 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
         self.assertTrue(os.path.exists(save_path))
 
     def test_wait_process_callback_error_does_not_delete_successful_output(self):
+        """wait 阶段的进度回调异常不应覆盖外部工具已成功退出的事实。"""
         save_dir = tempfile.mkdtemp()
         save_path = os.path.join(save_dir, "clip.mp4")
         with open(save_path, "wb") as fp:
@@ -218,6 +223,7 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
             self.assertFalse(os.path.exists(save_path))
 
     def test_sweep_orphaned_workspaces_removes_stale_dirs(self):
+        """启动清扫同时覆盖新版统一工作目录和旧版 fallback 目录。"""
         with tempfile.TemporaryDirectory() as save_dir:
             nm3u8_workspace = os.path.join(save_dir, N_m3u8DL_RE_Downloader.NM3U8_TEMP_ROOT_NAME, "ucp-foo")
             curl_workspace = os.path.join(save_dir, "xxx_curl_cffi_hls")

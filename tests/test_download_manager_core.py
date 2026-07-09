@@ -23,6 +23,8 @@ class _CallbackSignal:
             target(*args)
 
 class _FakeWorker:
+    """最小 worker 替身：同步触发信号，避免测试依赖真实线程调度时序。"""
+
     def __init__(self, video, save_dir):
         self.video = video
         self.save_dir = save_dir
@@ -49,6 +51,8 @@ class _FakeWorker:
         self.deleted = True
 
 class _CoreManager(DownloadManagerCore):
+    """测试用 DownloadManagerCore 子类，只记录事件，不接入 Qt/前端适配层。"""
+
     def __init__(self):
         self.started = []
         self.progress = []
@@ -111,6 +115,7 @@ class DownloadManagerCoreTests(unittest.TestCase):
             "app.core.download_manager_core.cfg.get",
             return_value=temp_dir,
         ):
+            # 同时覆盖 B站分流缓存和 HTTP `.downloading`，确认启动清扫不会误删成品。
             audio_temp = Path(temp_dir) / "demo_audio.m4s"
             http_temp = Path(temp_dir) / "demo.mp4.downloading"
             keep_file = Path(temp_dir) / "demo.mp4"
@@ -238,6 +243,7 @@ class DownloadManagerCoreTests(unittest.TestCase):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         manager.queue.put((item, "downloads"))
 
+        # worker.start 抛错时，dispatcher 已经占用的并发槽必须释放，否则后续任务会永久阻塞。
         manager._dispatch_loop()
 
         self.assertEqual(manager.workers, [])
@@ -265,6 +271,7 @@ class DownloadManagerCoreTests(unittest.TestCase):
             return video, save_dir
 
         manager.queue.get = get_and_stop
+        # 模拟“刚取出队列项，管理器随即停止”的竞态，任务必须放回队列而不是丢失。
         manager._dispatch_loop()
 
         self.assertEqual(manager.queue.snapshot_video_ids(), {item.id})

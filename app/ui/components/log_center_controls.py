@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from PyQt6.QtCore import Qt
@@ -22,6 +22,7 @@ from app.ui.components.combo_popup import (
 @dataclass
 class LogActionBarRefs:
     copy_trace_button: QPushButton | None = None
+    action_buttons: dict[str, QPushButton] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,6 +47,7 @@ def build_log_action_bar(
     layout.setSpacing(6)
 
     copy_trace_button: QPushButton | None = None
+    action_buttons: dict[str, QPushButton] = {}
     actions = [
         ("refresh", "刷新", "刷新日志缓冲", "LogPrimaryActionButton", 68),
         ("clear", "清空", "清空当前日志缓存", "LogDangerActionButton", 68),
@@ -64,6 +66,10 @@ def build_log_action_bar(
         button = QPushButton(label)
         button.setObjectName(style_name)
         button.setToolTip(tooltip)
+        button.setProperty("_i18n_source_text", label)
+        button.setProperty("_i18n_source_tooltip", tooltip)
+        button.setProperty("i18nSkipText", "true")
+        button.setProperty("logActionMinWidth", width)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFixedHeight(30)
         button.setFixedWidth(width)
@@ -72,10 +78,11 @@ def build_log_action_bar(
             button.clicked.connect(lambda _checked=False: copy_trace_id())
         else:
             button.clicked.connect(lambda _checked=False, key=operation: emit_action(key))
+        action_buttons[operation] = button
         layout.addWidget(button)
 
     layout.addStretch(1)
-    return row, LogActionBarRefs(copy_trace_button=copy_trace_button)
+    return row, LogActionBarRefs(copy_trace_button=copy_trace_button, action_buttons=action_buttons)
 
 
 def build_log_table_footer(

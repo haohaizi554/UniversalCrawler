@@ -381,6 +381,7 @@ class MediaPreviewPanel(QFrame):
         self._set_play_button_stopped()
 
     def release_media(self) -> None:
+        self.exit_media_fullscreen()
         self._persist_current_playback_position(force=True)
         self._active_video_source = None
         self._active_source_path = None

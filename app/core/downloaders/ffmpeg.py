@@ -20,9 +20,9 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
 
-#基于external.py实现
+# 基于 external.py 封装命令构建和可执行文件解析，这里只负责进程生命周期与进度解析。
 class FFmpegDownloader(BaseDownloader):
-    """实现 `FFmpegDownloader` 对应的资源下载与落盘流程。"""
+    """通过 ffmpeg 下载/转封装大媒体文件，并把外部进程状态映射成内部进度。"""
     SIZE_THRESHOLD_MB = 200
     DURATION_THRESHOLD_SEC = 600
     PROGRESS_TIMEOUT_SEC = 30
@@ -76,6 +76,7 @@ class FFmpegDownloader(BaseDownloader):
         out_time_seconds: float | None = None
         progress_value: int | None = None
 
+        # build_download_command 优先使用 -progress pipe:2，但部分 ffmpeg 版本仍会输出传统 stderr 行。
         if "=" in line_str:
             key, value = line_str.split("=", 1)
             key = key.strip()
@@ -162,6 +163,7 @@ class FFmpegDownloader(BaseDownloader):
             expected_duration = float(raw_duration)
         expected_size_bytes = None
         def _resolve_stream_url(source_url: str) -> tuple[str, int | None]:
+            """跟随一次重定向并读取 content-length，给 ffmpeg 进度估算提供基准。"""
             resolved_url = source_url
             resolved_size = expected_size_bytes
             try:
@@ -205,6 +207,7 @@ class FFmpegDownloader(BaseDownloader):
         max_retries = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
         temp_path = save_path + ".downloading"
         if isinstance(getattr(video_item, "meta", None), dict):
+            # 记录给文件服务删除失败项时使用，避免只删最终文件而漏掉 ffmpeg 半成品。
             temp_files = list(video_item.meta.get("download_temp_files") or [])
             if temp_path not in temp_files:
                 temp_files.append(temp_path)
@@ -254,6 +257,7 @@ class FFmpegDownloader(BaseDownloader):
                 stderr_closed = False
 
                 def _pump_stderr() -> None:
+                    """后台读取 stderr，避免子进程因管道缓冲区写满而卡死。"""
                     stderr = process.stderr
                     if stderr is None:
                         stderr_queue.put(None)
@@ -290,6 +294,7 @@ class FFmpegDownloader(BaseDownloader):
                         line = b""
                     if not line:
                         if time.time() - last_progress_time > self.PROGRESS_TIMEOUT_SEC:
+                            # 长时间没有任何输出时认为外部工具卡住；杀进程后进入重试/失败路径。
                             process.kill()
                             break
                         if process.poll() is not None and stderr_closed:
@@ -343,6 +348,7 @@ class FFmpegDownloader(BaseDownloader):
                     raise ExternalToolError(f"ffmpeg 下载失败: {exc}") from exc
             finally:
                 if process is not None:
+                    # 外部工具失败时必须先收掉进程和管道，再清理临时文件，Windows 上尤其容易被句柄占用。
                     returncode = getattr(process, "returncode", None)
                     if returncode is None:
                         try:

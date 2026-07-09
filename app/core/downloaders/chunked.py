@@ -16,7 +16,7 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
 class ChunkedDownloader(BaseDownloader):
-    """多线程分块下载器。"""
+    """适用于大文件的 Range 分块下载器，支持每个分片独立续传和重试。"""
 
     THREAD_COUNT = 8
     CHUNK_SIZE = 8 * 1024 * 1024
@@ -25,6 +25,7 @@ class ChunkedDownloader(BaseDownloader):
 
     @classmethod
     def _effective_thread_count(cls) -> int:
+        """把全局下载并发折算到单任务分片数，避免多个大文件一起把连接数打满。"""
         max_concurrent = max(1, int(cfg.get("download", "max_concurrent", 3)))
         return max(1, cls.THREAD_COUNT // max_concurrent)
 
@@ -83,6 +84,7 @@ class ChunkedDownloader(BaseDownloader):
             chunk_count = thread_budget
         chunk_size = total_size // chunk_count
 
+        # 每个分片使用 HTTP Range 的闭区间 [start, end]，最后一片吸收除不尽的尾部字节。
         chunks: list[tuple[int, int]] = []
         for i in range(chunk_count):
             start = i * chunk_size
@@ -93,6 +95,7 @@ class ChunkedDownloader(BaseDownloader):
 
         temp_dir = os.path.dirname(save_path)
         base_name = os.path.basename(save_path)
+        # 分片临时文件隐藏在目标目录下，删除媒体时可以按 `.<filename>.partN` 精准清理。
         temp_files = [os.path.join(temp_dir, f".{base_name}.part{i}") for i in range(chunk_count)]
 
         downloaded_bytes = [0] * chunk_count
@@ -102,7 +105,7 @@ class ChunkedDownloader(BaseDownloader):
         error_holder: list[Exception] = []
 
         def cleanup_temp_files() -> None:
-            
+            """只清理本次分配出的分片文件，避免误删同目录其他下载缓存。"""
             for temp_file in temp_files:
                 try:
                     os.remove(temp_file)
@@ -119,6 +122,7 @@ class ChunkedDownloader(BaseDownloader):
                 try:
                     existing_size = 0
                     if resume_enabled and os.path.exists(temp_file):
+                        # 单个分片只续传到自己的 end_byte，防止旧缓存比当前分片更长时越界 append。
                         existing_size = min(os.path.getsize(temp_file), chunk_length)
                     if existing_size >= chunk_length:
                         with lock:
@@ -127,6 +131,7 @@ class ChunkedDownloader(BaseDownloader):
 
                     request_start = start_byte + existing_size if resume_enabled else start_byte
                     request_headers = headers.copy()
+                    # 分块下载强依赖 206；如果服务端回 200，说明 Range 没生效，应立即失败回退。
                     request_headers["Range"] = f"bytes={request_start}-{end_byte}"
                     with lock:
                         downloaded_bytes[idx] = existing_size if resume_enabled else 0
@@ -231,6 +236,7 @@ class ChunkedDownloader(BaseDownloader):
 
             try:
                 self._emit_progress(progress_callback, 98, bytes_downloaded=total_size, bytes_total=total_size)
+                # 所有分片成功后再串行合并，保证最终文件只在数据完整时出现。
                 with open(save_path, "wb") as output_fp:
                     for temp_file in temp_files:
                         with open(temp_file, "rb") as input_fp:
@@ -254,6 +260,7 @@ class ChunkedDownloader(BaseDownloader):
             if all_threads_stopped:
                 cleanup_temp_files()
             else:
+                # 守护线程仍可能持有文件句柄，此时强删容易失败或留下半删状态，交给后续清扫兜底。
                 debug_logger.log(
                     component="ChunkedDownloader",
                     action="cleanup_deferred",

@@ -36,7 +36,7 @@ from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 class DownloaderStrategyTests(unittest.TestCase):
     
     def _make_stream_response(self, chunks, headers=None, status_code=200):
-        """提供 `_make_stream_response` 对应的内部辅助逻辑，供 `DownloaderStrategyTests` 使用。"""
+        """构造 requests 流式响应替身，覆盖 context manager 和 iter_content 两个协议。"""
         response = Mock()
         response.headers = headers or {}
         response.status_code = status_code
@@ -47,6 +47,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         return response
 
     def _make_stream_response_raising(self, chunks, exc, headers=None, status_code=200):
+        """先产出部分字节再抛错，用来模拟断线后依赖临时文件续传的场景。"""
         response = self._make_stream_response([], headers=headers, status_code=status_code)
 
         def iter_content(chunk_size=0):
@@ -109,6 +110,7 @@ class DownloaderStrategyTests(unittest.TestCase):
     @patch("app.core.downloaders.base.debug_logger.log")
     @patch("app.core.downloaders.base.requests.get")
     def test_base_downloader_logs_http_retry(self, mocked_get, mocked_log, _mocked_sleep):
+        """HTTP 初次断线后应记录 retry 日志，并把 trace_id 带到失败排查链路。"""
         mocked_get.side_effect = [
             requests.ConnectionError("drop"),
             self._make_stream_response([b"ok"], headers={"content-length": "2"}),
@@ -132,6 +134,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(mocked_log.call_args_list[0].kwargs.get("trace_id"), "trace-retry")
 
     def test_m3u8_cleanup_removes_external_tool_temp_outputs(self):
+        """N_m3u8DL-RE/yt-dlp 失败时只清理目标 stem 相关的副产物。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = os.path.join(temp_dir, "demo.mp4")
             temp_file = os.path.join(temp_dir, "demo.part")
@@ -147,6 +150,7 @@ class DownloaderStrategyTests(unittest.TestCase):
             self.assertFalse(os.path.exists(temp_dir_path))
 
     def test_m3u8_cleanup_skips_unowned_tmp_workspace(self):
+        """临时目录清理必须先校验所有权，避免误删用户手动创建的目录。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             user_dir = Path(temp_dir) / "not-owned"
             user_dir.mkdir()
@@ -407,6 +411,7 @@ class DownloaderStrategyTests(unittest.TestCase):
             temp_path = save_path + ".downloading"
 
             def fake_popen(cmd, **_kwargs):
+                # 断言 ffmpeg 只写临时文件，成功后由下载器 promote 到最终路径。
                 self.assertEqual(cmd[-1], temp_path)
                 Path(cmd[-1]).write_bytes(b"done")
                 process = Mock()
@@ -528,6 +533,8 @@ class DownloaderStrategyTests(unittest.TestCase):
         mocked_cfg_get.side_effect = fake_cfg_get
 
         class BlockingStderr:
+            """模拟 ffmpeg stderr reader 被阻塞，覆盖无进度超时 kill 的防挂死逻辑。"""
+
             def readline(self):
                 threading.Event().wait(0.05)
                 return b""
@@ -2256,6 +2263,7 @@ https://cdn.example.com/seg2.ts
         mocked_fallback,
         mocked_cleanup,
     ):
+        """强制 Python/browser fallback 时，即使失败也不再启动外部 N_m3u8DL-RE。"""
         item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
         item.meta.update(
             {
@@ -2294,6 +2302,7 @@ https://cdn.example.com/seg2.ts
         mocked_fallback,
         mocked_cleanup,
     ):
+        """已有缓存 playlist 且浏览器链路失败时，避免再打网络 playlist 造成重复 403。"""
         item = VideoItem(url="https://surrit.com/demo/playlist.m3u8", title="miss", source="missav")
         item.meta.update(
             {
@@ -2407,6 +2416,7 @@ https://cdn.example.com/seg2.ts
         mocked_wait_progress,
         mocked_cleanup,
     ):
+        """最终进度回调失败不能触发失败清理，否则会删除已经成功的 HLS 输出。"""
         process = Mock()
         process.returncode = 0
         process.poll.return_value = 0
@@ -2481,7 +2491,7 @@ https://cdn.example.com/seg2.ts
         manager.dispatcher_thread.join.assert_called_once_with(timeout=2)
 
     def test_download_manager_release_slot_is_idempotent(self):
-        """验证 `test_download_manager_release_slot_is_idempotent` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
+        """完成回调和线程收尾可能双到达，释放并发槽必须保持幂等。"""
         manager = DownloadManager.__new__(DownloadManager)
         manager.slot_semaphore = Mock()
         manager._workers_lock = threading.Lock()

@@ -88,6 +88,9 @@ LOG_TAB_HEIGHT = 34
 LOG_TAB_MIN_WIDTH = 92
 LOG_TAB_TEXT_PADDING = 34
 LOG_TAB_ROW_HEIGHT = 48
+LOG_ACTION_BUTTON_TEXT_PADDING = 28
+LOG_INSPECTOR_BUTTON_TEXT_PADDING = 24
+LOG_DETAIL_KEY_TEXT_PADDING = 10
 
 class LogCenterTableDelegate(SnapshotActionDelegate):
     """日志中心表格 delegate：source_display 支持按行居中对齐。"""
@@ -139,6 +142,7 @@ class LogCenterPage(PageFrame):
         self.items: list[dict[str, Any]] = []
         self._category = "all"
         self._tab_buttons: dict[str, QPushButton] = {}
+        self._log_action_buttons: dict[str, QPushButton] = {}
         self._platform_options: list[PlatformUiMeta] = []
         self._platform_meta_by_id: dict[str, PlatformUiMeta] = builtin_platform_metas()
         self._platform_option_ids: tuple[str, ...] = ()
@@ -186,6 +190,7 @@ class LogCenterPage(PageFrame):
         self.root_layout.addWidget(splitter, 1)
 
         self._sync_inspector_action_buttons(False)
+        self._sync_inspector_static_labels()
         self._refresh_platform_filter()
         self._sync_table_presentation()
 
@@ -203,6 +208,8 @@ class LogCenterPage(PageFrame):
         self._sync_filter_combo_labels()
         self._sync_platform_combo_labels()
         self._sync_log_page_size_combo_labels()
+        self._sync_action_bar_labels()
+        self._sync_inspector_static_labels()
         self._sync_empty_state_text()
         if hasattr(self, "table") and hasattr(self.table, "table_model"):
             self.table.table_model.set_language(normalized)
@@ -602,7 +609,70 @@ class LogCenterPage(PageFrame):
             copy_trace_id=self._copy_current_trace_id,
         )
         self.copy_trace_button = refs.copy_trace_button
+        self._log_action_buttons = dict(refs.action_buttons)
+        self._sync_action_bar_labels()
         return row
+
+    @staticmethod
+    def _source_text(widget: QWidget, fallback: str = "") -> str:
+        source = widget.property("_i18n_source_text")
+        if source is None:
+            source = fallback or getattr(widget, "text", lambda: "")()
+            widget.setProperty("_i18n_source_text", source)
+        return str(source or "")
+
+    def _fit_fixed_button_width(self, button: QPushButton, *, min_width: int, padding: int) -> None:
+        width = max(min_width, button.fontMetrics().horizontalAdvance(button.text()) + padding)
+        button.setFixedWidth(width)
+        button.setMinimumWidth(width)
+        button.setMaximumWidth(width)
+        button.updateGeometry()
+
+    def _sync_source_button_label(self, button: QPushButton | None, *, min_width: int, padding: int) -> None:
+        if button is None:
+            return
+        source_text = self._source_text(button)
+        button.setText(self._t(source_text))
+        tooltip_source = button.property("_i18n_source_tooltip")
+        if tooltip_source:
+            button.setToolTip(self._t(tooltip_source))
+        self._fit_fixed_button_width(button, min_width=min_width, padding=padding)
+
+    def _sync_action_bar_labels(self) -> None:
+        for button in getattr(self, "_log_action_buttons", {}).values():
+            minimum = int(button.property("logActionMinWidth") or button.minimumWidth() or 0)
+            self._sync_source_button_label(
+                button,
+                min_width=minimum,
+                padding=LOG_ACTION_BUTTON_TEXT_PADDING,
+            )
+
+    def _sync_inspector_static_labels(self) -> None:
+        detail_key_labels: list[QLabel] = []
+        for label in self.findChildren(QLabel):
+            source = label.property("_i18n_source_text")
+            if source is None:
+                continue
+            label.setText(self._t(source))
+            if label.objectName() == "LogDetailKey":
+                detail_key_labels.append(label)
+
+        if detail_key_labels:
+            key_width = max(
+                56,
+                max(label.fontMetrics().horizontalAdvance(label.text()) for label in detail_key_labels)
+                + LOG_DETAIL_KEY_TEXT_PADDING,
+            )
+            for label in detail_key_labels:
+                label.setFixedWidth(key_width)
+                label.updateGeometry()
+
+        for button_name in ("detail_copy_button", "detail_export_button", "json_copy_button"):
+            self._sync_source_button_label(
+                getattr(self, button_name, None),
+                min_width=52,
+                padding=LOG_INSPECTOR_BUTTON_TEXT_PADDING,
+            )
 
     def _build_log_table_area(self) -> QFrame:
         container = self._style_panel(QFrame())
@@ -1215,11 +1285,28 @@ class LogCenterPage(PageFrame):
             if button is not None:
                 button.setEnabled(enabled)
 
-    @staticmethod
-    def _flash_button_text(button: QPushButton, text: str = "已复制", delay_ms: int = 900) -> None:
-        old = button.text()
-        button.setText(text)
-        QTimer.singleShot(delay_ms, lambda: button.setText(old))
+    def _flash_button_text(self, button: QPushButton, text: str | None = None, delay_ms: int = 900) -> None:
+        source_text = self._source_text(button)
+        old_text = self._t(source_text)
+        flash_text = text if text is not None else self._t("已复制")
+        min_width = int(button.property("logActionMinWidth") or button.minimumWidth() or 52)
+        padding = (
+            LOG_ACTION_BUTTON_TEXT_PADDING
+            if button in getattr(self, "_log_action_buttons", {}).values()
+            else LOG_INSPECTOR_BUTTON_TEXT_PADDING
+        )
+
+        button.setText(flash_text)
+        self._fit_fixed_button_width(button, min_width=min_width, padding=padding)
+
+        def restore() -> None:
+            try:
+                button.setText(self._t(source_text) if source_text else old_text)
+                self._fit_fixed_button_width(button, min_width=min_width, padding=padding)
+            except RuntimeError:
+                return
+
+        QTimer.singleShot(delay_ms, restore)
 
     @safe_slot
     def _copy_current_log_json(self) -> None:

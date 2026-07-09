@@ -10,9 +10,9 @@ from app.models import VideoItem
 from app.services.file_service import MediaLibraryService
 
 class MediaLibraryServiceTests(unittest.TestCase):
-    
+    """文件服务行为测试，重点覆盖 Windows 句柄重试和下载残留清理。"""
+
     def setUp(self):
-        
         self.service = MediaLibraryService(
             video_extensions=(".mp4", ".webm"),
             image_extensions=(".jpg", ".png"),
@@ -127,6 +127,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertFalse(self.service.delete_media(item))
 
     def test_delete_media_removes_bilibili_temp_sidecars(self):
+        """删除 B站最终文件时，应同步删除同 stem 的音视频分流缓存。"""
         base = self.temp_dir.name
         file_path = os.path.join(base, "demo.mp4")
         video_temp = os.path.join(base, "demo_video.m4s")
@@ -148,6 +149,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertTrue(os.path.exists(unrelated))
 
     def test_delete_media_removes_generic_download_temp_artifacts(self):
+        """删除普通下载结果时，应联动清理 `.downloading`、分片和 meta 显式临时文件。"""
         base = self.temp_dir.name
         file_path = os.path.join(base, "demo.mp4")
         http_temp = file_path + ".downloading"
@@ -171,6 +173,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertTrue(os.path.exists(unrelated))
 
     def test_sweep_orphan_download_temp_artifacts_removes_safe_patterns(self):
+        """启动清扫只处理下载器白名单临时命名，不能误删正常媒体或封面文件。"""
         base = self.temp_dir.name
         paths_to_remove = [
             os.path.join(base, "demo_video.m4s"),
@@ -195,6 +198,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
             self.assertTrue(os.path.exists(path), path)
 
     def test_sweep_orphan_download_temp_artifacts_recurses_and_prunes_empty_collection_dirs(self):
+        """合集目录可能只剩失败缓存；清扫需要递归删除缓存并移除被扫空的子目录。"""
         base = self.temp_dir.name
         collection_dir = os.path.join(base, "合集")
         media_dir = os.path.join(base, "保留")
@@ -252,6 +256,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertFalse(os.path.exists(audio_temp))
 
     def test_delete_media_removes_bilibili_meta_temp_files_without_local_path(self):
+        """失败记录没有最终 local_path 时，仍可依赖 meta 中的安全临时路径完成清理。"""
         base = self.temp_dir.name
         video_temp = os.path.join(base, "demo_video.m4s")
         audio_temp = os.path.join(base, "demo_audio.m4s")
@@ -268,6 +273,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertFalse(os.path.exists(audio_temp))
 
     def test_delete_media_ignores_unowned_temp_sidecar_path(self):
+        """有最终路径时禁止跨目录删除 meta 临时文件，防止旧数据或外部输入误删用户文件。"""
         base = self.temp_dir.name
         outside_dir = os.path.join(base, "outside")
         os.mkdir(outside_dir)

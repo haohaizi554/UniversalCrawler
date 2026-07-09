@@ -1489,7 +1489,7 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(len(store.calls), 2)
         self.assertEqual(store.calls[1][0]["reason"], "500")
 
-    def test_failed_snapshot_does_not_merge_persisted_records_into_live_page(self):
+    def test_failed_snapshot_uses_persisted_worker_snapshot_when_live_page_empty(self):
         with TemporaryDirectory() as temp_dir:
             store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
             store.queue_upsert(
@@ -1515,8 +1515,59 @@ class FrontendStateServiceTests(unittest.TestCase):
                 service.destroy()
 
         query_mock.assert_not_called()
-        self.assertEqual(snapshot["failed_items"], [])
-        self.assertEqual(snapshot["app_status"]["failed_count"], 0)
+        self.assertEqual([item["id"] for item in snapshot["failed_items"]], ["persisted-failed"])
+        self.assertEqual(snapshot["failed_items"][0]["trace_id"], "trace-persisted")
+        self.assertEqual(snapshot["app_status"]["failed_count"], 1)
+
+    def test_failed_record_refresh_marks_failed_sections_dirty(self):
+        class SnapshotFailedRecordStore:
+            def __init__(self) -> None:
+                self.refresh_callback = None
+                self.refresh_requests: list[dict[str, object]] = []
+                self._rows = [
+                    {
+                        "id": "persisted-failed",
+                        "title": "persisted failed",
+                        "reason": "network",
+                        "failed_at": "2026-07-06 12:00:00",
+                        "status": "Failed",
+                        "platform": "Bilibili",
+                        "trace_id": "trace-persisted",
+                    }
+                ]
+
+            def set_refresh_callback(self, callback):
+                self.refresh_callback = callback
+
+            def request_refresh(self, **kwargs):
+                self.refresh_requests.append(dict(kwargs))
+
+            def records_snapshot(self, *, limit=None):
+                if limit is None:
+                    return [dict(row) for row in self._rows]
+                return [dict(row) for row in self._rows[:limit]]
+
+            @property
+            def snapshot_total_count(self):
+                return len(self._rows)
+
+            def shutdown(self) -> None:
+                return None
+
+        store = SnapshotFailedRecordStore()
+        service = FrontendStateService(SimpleNamespace(videos={}), failed_record_store=store)
+        try:
+            self.assertEqual(store.refresh_requests, [{"limit": service.FAILED_RECORD_SNAPSHOT_LIMIT}])
+            self.assertIsNotNone(store.refresh_callback)
+            base_version = service.frontend_version
+            store.refresh_callback(1)
+            delta = service.get_delta(base_version)
+        finally:
+            service.destroy()
+
+        self.assertEqual(set(delta["changed_sections"]), {"failed_items", "app_status"})
+        self.assertEqual([item["id"] for item in delta["sections"]["failed_items"]], ["persisted-failed"])
+        self.assertEqual(delta["sections"]["app_status"]["failed_count"], 1)
 
     def test_failed_snapshot_keeps_persisted_records_out_when_current_failures_exist(self):
         with TemporaryDirectory() as temp_dir:
@@ -1873,6 +1924,38 @@ class FrontendStateServiceTests(unittest.TestCase):
                 "image_respects_concurrency": True,
             },
         )
+
+    def test_download_options_snapshot_uses_runtime_memory_without_cache_reads(self):
+        class FakeConfig:
+            data = {
+                "common": {},
+                "download": {
+                    "max_concurrent": 3,
+                    "max_retries": 7,
+                    "video_only": False,
+                    "image_respects_concurrency": True,
+                },
+                "playback": {},
+                "logging": {},
+                "appearance": {},
+            }
+
+            def get(self, section, key, default=None):
+                return self.data.get(section, {}).get(key, default)
+
+        manager = SimpleNamespace(max_concurrent=6, video_only=True, image_respects_concurrency=True)
+        controller = SimpleNamespace(_dl_manager=manager)
+        cache = Mock()
+        cache.get.return_value = False
+        service = FrontendStateService(controller, config_manager=FakeConfig(), cache_service=cache)
+        cache.get.reset_mock()
+
+        download_snapshot = service.get_snapshot(sections=frozenset({"download_options"}))
+        settings_snapshot = service.get_snapshot(sections=frozenset({"settings_snapshot"}))
+
+        self.assertFalse(download_snapshot["download_options"]["auto_retry"])
+        self.assertEqual(settings_snapshot["settings_snapshot"]["下载设置"]["max_concurrent"], 5)
+        cache.get.assert_not_called()
 
     def test_partial_snapshot_returns_requested_sections_only(self):
         service = FrontendStateService()

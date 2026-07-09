@@ -89,6 +89,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         process = None
         browser_fallback_error: Exception | None = None
 
+        # MissAV 的 surrit CDN 对请求头/浏览器指纹敏感，优先尝试更像浏览器的下载路径。
         if self._should_try_nm3u8_first(video_item):
             executable = NM3U8DLREExternalTool.resolve_executable()
             if executable:
@@ -255,6 +256,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         output_reader: threading.Thread | None = None
         temp_workspace: Path | None = None
         try:
+            # N_m3u8DL-RE 的分片缓存统一放入受控工作目录，异常退出后可由启动清扫安全删除。
             temp_workspace = self._create_nm3u8_temp_workspace(save_path)
             cmd = NM3U8DLREExternalTool.build_download_command(
                 executable,
@@ -375,6 +377,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 ExternalToolRunner.terminate_process(process)
             self._cleanup_nm3u8_temp_workspace(temp_workspace, trace_id=trace_id)
             if not download_succeeded:
+                # 外部工具可能直接写目标目录旁的 .part/.tmp，失败时做一次目标名前缀清理。
                 self._cleanup_external_temp_files(save_path)
 
     @staticmethod
@@ -422,6 +425,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         parent = target.parent if str(target.parent) else Path.cwd()
         root = parent.resolve(strict=False) / cls.NM3U8_TEMP_ROOT_NAME
         root.mkdir(parents=True, exist_ok=True)
+        # 工作目录名带目标 stem，便于人工排查；真正的删除判断仍依赖父目录和前缀白名单。
         safe_stem = re.sub(r"[^0-9A-Za-z_.-]+", "_", target.stem).strip("._-")[:36] or "download"
         return Path(tempfile.mkdtemp(prefix=f"{cls.NM3U8_TEMP_DIR_PREFIX}{safe_stem}-", dir=str(root))).resolve(
             strict=False
@@ -447,6 +451,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if not temp_dir:
             return
         if not cls._is_owned_nm3u8_temp_workspace(temp_dir):
+            # 这是防误删边界：只删除本下载器创建的 .ucp-nm3u8-tmp/ucp-* 工作目录。
             debug_logger.log(
                 component="N_m3u8DL_RE_Downloader",
                 action="skip_unowned_tmp_cleanup",
@@ -506,6 +511,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             try:
                 if not base_dir.exists() or not base_dir.is_dir():
                     continue
+                # 既扫统一根目录，也扫旧版 fallback 留在目标目录下的 *_hls 目录。
                 candidates = [base_dir / cls.NM3U8_TEMP_ROOT_NAME]
                 candidates.extend(
                     child
@@ -652,6 +658,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             output_progress = _Nm3u8OutputProgress(default_progress=0)
             process = self._popen_nm3u8_process(cmd, build_no_window_flags())
             output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
+            # 本地代理能统计真实转发字节，N_m3u8DL-RE 输出能提供阶段进度，两者取最大值减少回退感。
             combined_provider = self._combine_progress_providers(progress_provider, output_progress.snapshot)
             self._wait_external_process_with_file_progress(
                 process,
@@ -1110,6 +1117,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
+        # Python fallback 先合并成裸 TS，再根据目标后缀决定是否 remux，失败时可整目录清理。
         raw_path = temp_dir / f"{target.stem}.ts"
         session = self._make_curl_cffi_session(curl_requests, headers, proxy)
         playlist_cache = self._playlist_cache_from_meta(video_item)
@@ -1171,6 +1179,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
+        # Playwright fallback 也使用独立目录，避免浏览器上下文失败时污染最终输出路径。
         raw_path = temp_dir / f"{target.stem}.ts"
         storage_state = video_item.meta.get("browser_storage_state")
         referer = str(video_item.meta.get("referer") or headers.get("Referer") or "")
@@ -1484,6 +1493,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 init_section = getattr(segment, "init_section", None)
                 init_uri = getattr(init_section, "absolute_uri", None) if init_section else None
                 if init_uri and init_uri not in written_maps:
+                    # fMP4 HLS 的 MAP 初始化段只写一次，否则合并后的流会被播放器识别为损坏。
                     init_bytes = fetch_bytes(init_uri)
                     output.write(init_bytes)
                     bytes_written += len(init_bytes)
@@ -1786,6 +1796,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         target = Path(save_path)
         parent = target.parent
         stem = target.stem
+        # 只按目标文件 stem 清理外部工具常见副产物，避免误删同目录其他任务。
         candidates = {
             target,
             parent / f"{target.name}.tmp",

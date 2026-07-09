@@ -221,6 +221,29 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         failed_render.assert_not_called()
         self.assertEqual(shell.current_page_id, "failed")
 
+    def test_switching_away_from_completed_releases_media_fullscreen_window(self):
+        shell = self._make_shell()
+        shell.show_page("completed")
+        completed = shell.pages["completed"]
+        media_panel = completed.media_panel
+        original_parent = media_panel.parent()
+
+        media_panel.enter_media_fullscreen()
+        self.app.processEvents()
+        fullscreen_window = media_panel._fullscreen_window
+        self.assertIsNotNone(fullscreen_window)
+
+        shell.show_page("failed")
+        self.app.processEvents()
+
+        self.assertEqual(shell.current_page_id, "failed")
+        self.assertIsNone(media_panel._fullscreen_window)
+        self.assertIs(media_panel.parent(), original_parent)
+        try:
+            self.assertFalse(fullscreen_window.isVisible())
+        except RuntimeError:
+            pass
+
     def test_sidebar_count_badge_uses_compact_mainstream_size(self):
         self.assertEqual(_badge_size("3"), QSize(24, 24))
         self.assertEqual(_badge_size("20").height(), 24)
@@ -2396,17 +2419,33 @@ class UnifiedFrontendContractTests(unittest.TestCase):
 
         self.assertEqual(shell.sidebar._items["queue"].title_label.text(), "Queue")
         self.assertEqual(shell.top_bar.btn_dir.text(), "Change folder")
-        log_title = shell.pages["logs"].findChild(QLabel, "LogInspectorTitle")
+        logs = shell.pages["logs"]
+        log_title = logs.findChild(QLabel, "LogInspectorTitle")
         self.assertIsNotNone(log_title)
         self.assertEqual(log_title.text(), "Log details")
-        self.assertEqual(shell.pages["logs"].level_filter.currentText(), "All")
-        self.assertEqual(shell.pages["logs"].level_filter.currentData(), "全部")
-        self.assertEqual(shell.pages["logs"].page_size_combo.currentText(), "20 / page")
-        self.assertEqual(shell.pages["logs"].page_size_combo.currentData(), 20)
-        page_size = shell.pages["logs"].page_size_combo
+        self.assertEqual(logs.level_filter.currentText(), "All")
+        self.assertEqual(logs.level_filter.currentData(), "全部")
+        self.assertEqual(logs.page_size_combo.currentText(), "20 / page")
+        self.assertEqual(logs.page_size_combo.currentData(), 20)
+        self.assertEqual(logs._log_action_buttons["refresh"].text(), "Refresh")
+        self.assertEqual(logs._log_action_buttons["clear"].text(), "Clear")
+        self.assertEqual(logs._log_action_buttons["export"].text(), "Export")
+        self.assertEqual(logs._log_action_buttons["copy_trace_id"].text(), "Copy TraceID")
+        self.assertEqual(logs.detail_copy_button.text(), "Copy")
+        self.assertEqual(logs.detail_export_button.text(), "Export")
+        self.assertEqual(logs.json_copy_button.text(), "Copy")
+        page_size = logs.page_size_combo
         widest_page_size = combo_widest_item_text_width(page_size)
         self.assertGreaterEqual(combo_edit_field_width(page_size), widest_page_size)
         self.assertLessEqual(page_size.width(), widest_page_size + 24)
+        for button in (*logs._log_action_buttons.values(), logs.detail_copy_button, logs.detail_export_button, logs.json_copy_button):
+            text_width = button.fontMetrics().horizontalAdvance(button.text())
+            self.assertGreaterEqual(button.minimumWidth(), text_width + 20)
+        detail_key_labels = {label.text(): label for label in logs.findChildren(QLabel, "LogDetailKey")}
+        self.assertIn("Event code", detail_key_labels)
+        for label in detail_key_labels.values():
+            text_width = label.fontMetrics().horizontalAdvance(label.text())
+            self.assertGreaterEqual(label.minimumWidth(), text_width + 8)
 
         snapshot["settings_snapshot"]["外观设置"]["language"] = "zh-CN"
         shell.render(snapshot, changed_sections={"settings_snapshot"})
@@ -2415,6 +2454,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(shell.sidebar._items["queue"].title_label.text(), "下载队列")
         self.assertEqual(shell.top_bar.btn_dir.text(), "更改目录")
         self.assertEqual(log_title.text(), "日志详情")
+        self.assertEqual(logs._log_action_buttons["refresh"].text(), "刷新")
+        self.assertEqual(logs.detail_copy_button.text(), "复制")
+        detail_key_labels = {label.text(): label for label in logs.findChildren(QLabel, "LogDetailKey")}
+        self.assertIn("事件码", detail_key_labels)
 
     def test_gui_language_switch_updates_logs_without_filter_refresh_signal(self):
         shell = self._make_shell()
