@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from html import escape
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from app.ui.dialogs.chromed_dialog import ChromedDialog
 from app.ui.localization import normalize_language, tr
@@ -77,6 +77,8 @@ class UpdateStatusIcon(QWidget):
 class UpdateCheckDialog(ChromedDialog):
     """Detailed themed dialog for update-check outcomes."""
 
+    SKIP_CODE = 2
+
     def __init__(
         self,
         parent=None,
@@ -86,6 +88,7 @@ class UpdateCheckDialog(ChromedDialog):
         details: str = "",
         primary_text: str = "确定",
         secondary_text: str = "",
+        skip_text: str = "",
         status: str = "info",
         local_version: str = "",
         latest_version: str = "",
@@ -110,7 +113,7 @@ class UpdateCheckDialog(ChromedDialog):
         layout.addWidget(self._build_version_panel(local_version, latest_version))
         if details or self._release_url:
             layout.addWidget(self._build_detail_card(details))
-        layout.addLayout(self._build_button_row(primary_text, secondary_text))
+        layout.addLayout(self._build_button_row(primary_text, secondary_text, skip_text))
 
     def _build_header(self, title: str, message: str) -> QWidget:
         hero = QFrame()
@@ -202,10 +205,19 @@ class UpdateCheckDialog(ChromedDialog):
             card_layout.addWidget(link)
         return card
 
-    def _build_button_row(self, primary_text: str, secondary_text: str) -> QHBoxLayout:
+    def _build_button_row(self, primary_text: str, secondary_text: str, skip_text: str) -> QHBoxLayout:
         button_row = QHBoxLayout()
         button_row.setContentsMargins(0, 2, 0, 0)
         button_row.addStretch(1)
+
+        if skip_text:
+            self.skip_button = QPushButton(self._tr(skip_text))
+            self.skip_button.setObjectName("DialogNeutralButton")
+            self.skip_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.skip_button.clicked.connect(lambda: self.done(self.SKIP_CODE))
+            button_row.addWidget(self.skip_button)
+        else:
+            self.skip_button = None
 
         if secondary_text:
             self.secondary_button = QPushButton(self._tr(secondary_text))
@@ -277,9 +289,174 @@ class UpdateCheckDialog(ChromedDialog):
         if text:
             return self._tr(text)
         if self._status == "available":
-            return self._tr("当前只完成版本检测与更新确认，下载和安装流程尚未接入。")
+            return self._tr("更新前建议关闭正在运行的采集任务。安装包会先完成签名、大小和 SHA-256 校验。")
         if self._status == "current":
             return self._tr("本地版本与 GitHub 最新 Release 一致，无需更新。")
         if self._status == "local_newer":
             return self._tr("通常表示你正在使用本地构建或预发布构建，无需更新。")
         return self._tr("暂无更多信息。")
+
+
+class UpdateDownloadDialog(ChromedDialog):
+    """Modal progress surface for the verified updater download/install handoff."""
+
+    cancel_requested = pyqtSignal()
+    retry_requested = pyqtSignal()
+    install_requested = pyqtSignal()
+    view_log_requested = pyqtSignal()
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        version: str,
+        asset_name: str = "",
+        release_url: str = "",
+        language: str = "zh-CN",
+    ) -> None:
+        self._language = normalize_language(language)
+        self._terminal_state = False
+        self._release_url = str(release_url or "").strip()
+        super().__init__(
+            parent,
+            title=self._tr("下载更新"),
+            object_name="UpdateDownloadDialog",
+            body_margins=(24, 22, 24, 20),
+            body_spacing=16,
+        )
+        self.setMinimumWidth(620)
+        self.setMaximumWidth(720)
+
+        layout = self.content_layout
+        layout.addWidget(self._build_header(version, asset_name))
+        layout.addWidget(self._build_progress_panel())
+        layout.addLayout(self._build_button_row())
+
+    def _build_header(self, version: str, asset_name: str) -> QWidget:
+        hero = QFrame()
+        hero.setObjectName("UpdateHero")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(0, 0, 0, 0)
+        hero_layout.setSpacing(14)
+
+        self.status_icon = UpdateStatusIcon(status="available", colors=self._colors, parent=hero)
+        hero_layout.addWidget(self.status_icon, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(8)
+        title_label = QLabel(self._tr("正在下载更新"))
+        title_label.setObjectName("DialogTitle")
+        text_col.addWidget(title_label)
+        message = self._tr("正在下载并校验版本 {version}。").format(version=version or "-")
+        if asset_name:
+            message = f"{message}\n{asset_name}"
+        message_label = QLabel(message)
+        message_label.setObjectName("DialogBody")
+        message_label.setWordWrap(True)
+        message_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text_col.addWidget(message_label)
+        hero_layout.addLayout(text_col, 1)
+        return hero
+
+    def _build_progress_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("UpdateDetailCard")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(14, 12, 14, 12)
+        panel_layout.setSpacing(10)
+
+        self.state_label = QLabel(self._tr("准备下载..."))
+        self.state_label.setObjectName("UpdateDetailTitle")
+        panel_layout.addWidget(self.state_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("UpdateDownloadProgress")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        panel_layout.addWidget(self.progress_bar)
+
+        self.detail_label = QLabel(self._tr("安装包会先完成大小、SHA-256 和系统签名校验。"))
+        self.detail_label.setObjectName("DialogStatus")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        panel_layout.addWidget(self.detail_label)
+        return panel
+
+    def _build_button_row(self) -> QHBoxLayout:
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 2, 0, 0)
+
+        self.view_log_button = QPushButton(self._tr("查看日志"))
+        self.view_log_button.setObjectName("DialogNeutralButton")
+        self.view_log_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.view_log_button.clicked.connect(self.view_log_requested.emit)
+        button_row.addWidget(self.view_log_button)
+
+        button_row.addStretch(1)
+
+        self.retry_button = QPushButton(self._tr("重试"))
+        self.retry_button.setObjectName("DialogNeutralButton")
+        self.retry_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retry_button.clicked.connect(self.retry_requested.emit)
+        self.retry_button.hide()
+        button_row.addWidget(self.retry_button)
+
+        self.cancel_button = QPushButton(self._tr("取消下载"))
+        self.cancel_button.setObjectName("DialogNeutralButton")
+        self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        button_row.addWidget(self.cancel_button)
+
+        self.install_button = QPushButton(self._tr("安装并重启"))
+        self.install_button.setObjectName("DialogPrimaryButton")
+        self.install_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.install_button.clicked.connect(self.install_requested.emit)
+        self.install_button.hide()
+        button_row.addWidget(self.install_button)
+        return button_row
+
+    def set_progress(self, progress: dict) -> None:
+        percent = max(0, min(100, int(float(progress.get("percent") or 0))))
+        self.progress_bar.setValue(percent)
+        downloaded = int(progress.get("bytesDownloaded") or 0)
+        total = int(progress.get("totalBytes") or 0)
+        self.state_label.setText(self._tr("正在下载更新"))
+        if total > 0:
+            self.detail_label.setText(
+                self._tr("已下载 {downloaded} / {total} MB").format(
+                    downloaded=f"{downloaded / 1024 / 1024:.1f}",
+                    total=f"{total / 1024 / 1024:.1f}",
+                )
+            )
+
+    def set_error(self, message: str) -> None:
+        self._terminal_state = True
+        self.status_icon.set_status("error", self._colors)
+        self.state_label.setText(self._tr("更新下载失败"))
+        self.detail_label.setText(self._tr(str(message or "未知错误")))
+        self.cancel_button.hide()
+        self.install_button.hide()
+        self.retry_button.show()
+
+    def set_cancelled(self) -> None:
+        self.set_error(self._tr("已取消下载。"))
+
+    def set_ready(self, installer_path: str) -> None:
+        self._terminal_state = True
+        self.status_icon.set_status("current", self._colors)
+        self.progress_bar.setValue(100)
+        self.state_label.setText(self._tr("更新已准备好"))
+        self.detail_label.setText(self._tr("安装包已下载并通过校验：{path}").format(path=installer_path))
+        self.cancel_button.hide()
+        self.retry_button.hide()
+        self.install_button.show()
+        self.install_button.setDefault(True)
+
+    def reject(self) -> None:
+        if not self._terminal_state:
+            self.cancel_requested.emit()
+        super().reject()
+
+    def _tr(self, text: str) -> str:
+        return tr(text, self._language)

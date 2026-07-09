@@ -40,7 +40,7 @@ class RuntimePathsTests(unittest.TestCase):
                 return_value=project_root,
             ), patch.dict(
                 "app.utils.runtime_paths.os.environ",
-                {"LOCALAPPDATA": r"D:\Should\Not\Be\Used"},
+                {"LOCALAPPDATA": r"D:\Should\Not\Be\Used", runtime_paths.USER_DATA_ROOT_ENV: ""},
                 clear=False,
             ):
                 result = runtime_paths.user_data_root()
@@ -54,7 +54,7 @@ class RuntimePathsTests(unittest.TestCase):
             return_value=True,
         ), patch.dict(
             "app.utils.runtime_paths.os.environ",
-            {"LOCALAPPDATA": temp_dir},
+            {"LOCALAPPDATA": temp_dir, runtime_paths.USER_DATA_ROOT_ENV: ""},
             clear=False,
         ):
             result = runtime_paths.user_data_root()
@@ -113,7 +113,7 @@ class RuntimePathsTests(unittest.TestCase):
             return_value=True,
         ), patch.dict(
             "app.utils.runtime_paths.os.environ",
-            {"LOCALAPPDATA": temp_dir},
+            {"LOCALAPPDATA": temp_dir, runtime_paths.USER_DATA_ROOT_ENV: ""},
             clear=False,
         ):
             relative_result = runtime_paths.resolve_user_file("logs/demo.log")

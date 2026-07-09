@@ -18,6 +18,7 @@ if __package__ in (None, ""):
         INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
         PACKAGE_VERSION,
+        UPDATER_HELPER_EXE_NAME,
         WEBUI_DISPLAY_NAME,
         WEBUI_EXE_NAME,
         WEBUI_ICON_NAME,
@@ -34,6 +35,7 @@ else:
         INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
         PACKAGE_VERSION,
+        UPDATER_HELPER_EXE_NAME,
         WEBUI_DISPLAY_NAME,
         WEBUI_EXE_NAME,
         WEBUI_ICON_NAME,
@@ -52,6 +54,7 @@ WEBUI_ICON = PROJECT_ROOT / WEBUI_ICON_NAME
 REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: DIST_DIR / APP_EXE_NAME,
     lambda: DIST_DIR / WEBUI_EXE_NAME,
+    lambda: DIST_DIR / UPDATER_HELPER_EXE_NAME,
     lambda: DIST_DIR / "BUILD_INFO.txt",
     lambda: DIST_DIR / "README.md",
     lambda: DIST_DIR / "README_EN.md",

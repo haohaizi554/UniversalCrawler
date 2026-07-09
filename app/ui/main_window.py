@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 import threading
 import time
-import sys
 
 from dataclasses import dataclass
+from pathlib import Path
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QWidget
@@ -22,13 +25,26 @@ from app.services.update_check_service import (
     UPDATE_STATUS_AVAILABLE,
     UPDATE_STATUS_CURRENT,
     UPDATE_STATUS_LOCAL_NEWER,
+    UPDATE_PUBLIC_KEY_PEM,
+    UPDATE_TRUSTED_PUBLISHERS,
+    UPDATE_TRUSTED_THUMBPRINTS,
     UpdateCheckResult,
-    check_for_update,
+    check_secure_update,
+)
+from app.services.secure_updater import (
+    AssetSelector,
+    DEFAULT_ALLOWED_HOSTS,
+    Downloader,
+    PackageVerifier,
+    UpdateManifestVerifier,
+    record_pending_install,
+    record_skipped_update,
+    record_startup_update_health,
 )
 from app.ui.connection_registry import ConnectionRegistry
 from app.ui.dialogs import FileAssociationDialog
 from app.ui.dialogs.selection import SelectionDialog
-from app.ui.dialogs.update_check import UpdateCheckDialog
+from app.ui.dialogs.update_check import UpdateCheckDialog, UpdateDownloadDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController, _NCCALCSIZE_PARAMS  # noqa: F401
@@ -63,6 +79,14 @@ class _UpdateCheckOutcome:
     sequence: int
     result: UpdateCheckResult | None = None
     error: str = ""
+
+
+@dataclass(frozen=True)
+class _PreparedUpdate:
+    installer_path: str
+    asset_json_path: str
+    version: str
+    log_path: str
 
 
 class MainWindow(QMainWindow):
@@ -147,6 +171,9 @@ class MainWindow(QMainWindow):
     _clipboard_copy_requested = pyqtSignal(str)
     _update_check_finished = pyqtSignal(object)
     _update_check_failed = pyqtSignal(str)
+    _update_download_progress = pyqtSignal(object)
+    _update_download_finished = pyqtSignal(object)
+    _update_download_failed = pyqtSignal(object)
     _app_state_changed_queued = pyqtSignal(object)
     _frontend_snapshot_finished = pyqtSignal(object)
     _frontend_action_finished = pyqtSignal(object)
@@ -225,6 +252,21 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
         self._connections.connect(
+            self._update_download_progress,
+            self._on_update_download_progress,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
+            self._update_download_finished,
+            self._on_update_download_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
+            self._update_download_failed,
+            self._on_update_download_failed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._connections.connect(
             self._app_state_changed_queued,
             self._on_app_state_changed,
             Qt.ConnectionType.QueuedConnection,
@@ -251,6 +293,12 @@ class MainWindow(QMainWindow):
         self._directory_dialog: QFileDialog | None = None
         self._update_check_running = False
         self._update_check_lock = threading.RLock()
+        self._update_download_sequence = 0
+        self._update_download_thread: threading.Thread | None = None
+        self._update_download_cancel_event: threading.Event | None = None
+        self._update_download_dialog: UpdateDownloadDialog | None = None
+        self._last_update_result: UpdateCheckResult | None = None
+        self._prepared_update: _PreparedUpdate | None = None
 
         self._build_ui()
         self._debug_shell_visibility("after_build_ui")
@@ -263,6 +311,7 @@ class MainWindow(QMainWindow):
             freeze_updates=False,
         )
         self.load_initial_state()
+        self._record_update_startup_health()
         self._exit_stale_media_fullscreen_if_needed(reason="after_load_initial_state")
         self._ensure_shell_chrome_visible(reason="after_load_initial_state")
         self._debug_shell_visibility("after_load_initial_state")
@@ -467,6 +516,18 @@ class MainWindow(QMainWindow):
             return str(text())
         return "v3.6.17"
 
+    def _record_update_startup_health(self) -> None:
+        try:
+            current_version = self._display_version(self._current_status_version()).lstrip("vV")
+            record_startup_update_health(current_version=current_version)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "MainWindow",
+                "record_update_startup_health",
+                exc,
+                details={"version": self._current_status_version()},
+            )
+
     def _ensure_update_check_worker(self) -> LatestRequestWorker[_UpdateCheckRequest, _UpdateCheckOutcome]:
         worker = self.__dict__.get("_update_check_worker")
         if worker is None:
@@ -490,7 +551,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _process_update_check_request(request: _UpdateCheckRequest) -> _UpdateCheckOutcome:
         try:
-            result = check_for_update(request.local_version)
+            result = check_secure_update(request.local_version)
         except Exception as exc:
             return _UpdateCheckOutcome(sequence=request.sequence, error=str(exc))
         return _UpdateCheckOutcome(sequence=request.sequence, result=result)
@@ -566,22 +627,249 @@ class MainWindow(QMainWindow):
             self,
             title="检测到新版本",
             message=self._tr("检测到最新版本 {version}，是否要更新？").format(version=latest_version),
-            details="更新前建议关闭正在运行的采集任务。当前只完成确认流程，下载和安装稍后接入。",
-            primary_text="更新",
+            details=result.notes or "更新前建议关闭正在运行的采集任务。安装包会先完成签名、大小和 SHA-256 校验。",
+            primary_text="下载更新",
             secondary_text="稍后",
+            skip_text="" if result.mandatory else "跳过此版本",
             status=UPDATE_STATUS_AVAILABLE,
             local_version=local_version,
             latest_version=latest_version,
             release_url=result.html_url,
             language=self._current_ui_language(),
         )
-        if box.exec() == QDialog.DialogCode.Accepted:
-            self._show_basic_message(
-                "更新暂未接入",
-                "自动下载和安装流程尚未接入。",
-                "当前只完成了版本检测与更新确认弹窗。",
-                status="info",
+        dialog_result = box.exec()
+        if dialog_result == QDialog.DialogCode.Accepted:
+            self._begin_update_download(result)
+        elif int(dialog_result) == UpdateCheckDialog.SKIP_CODE:
+            self._skip_update_version(result.latest_version)
+
+    def _skip_update_version(self, version: str) -> None:
+        try:
+            record_skipped_update(version)
+        except Exception as exc:
+            self._show_update_check_error(str(exc))
+            return
+        self.append_log(f"已跳过更新版本: {version}")
+
+    def _begin_update_download(self, result: UpdateCheckResult) -> None:
+        old_cancel_event = self.__dict__.get("_update_download_cancel_event")
+        if old_cancel_event is not None:
+            old_cancel_event.set()
+        self._update_download_sequence = int(self.__dict__.get("_update_download_sequence", 0) or 0) + 1
+        sequence = self._update_download_sequence
+        cancel_event = threading.Event()
+        self._last_update_result = result
+        self._prepared_update = None
+        self._update_download_cancel_event = cancel_event
+
+        previous_dialog = self.__dict__.get("_update_download_dialog")
+        if previous_dialog is not None:
+            previous_dialog.done(0)
+
+        dialog = UpdateDownloadDialog(
+            self,
+            version=self._display_version(result.latest_version),
+            asset_name=result.asset_name,
+            release_url=result.html_url,
+            language=self._current_ui_language(),
+        )
+        dialog.cancel_requested.connect(self._cancel_update_download)
+        dialog.retry_requested.connect(self._retry_update_download)
+        dialog.install_requested.connect(self._install_prepared_update)
+        dialog.view_log_requested.connect(self.sig_open_latest_log.emit)
+        self._update_download_dialog = dialog
+        dialog.show()
+
+        worker = threading.Thread(
+            target=self._run_update_download,
+            args=(sequence, result, cancel_event),
+            name="update-download-worker",
+            daemon=True,
+        )
+        self._update_download_thread = worker
+        worker.start()
+
+    def _run_update_download(
+        self,
+        sequence: int,
+        result: UpdateCheckResult,
+        cancel_event: threading.Event,
+    ) -> None:
+        try:
+            prepared = self._download_verified_update(
+                result,
+                cancel_event=cancel_event,
+                progress_callback=lambda progress: self._update_download_progress.emit(
+                    {"sequence": sequence, "progress": progress}
+                ),
             )
+        except Exception as exc:
+            message = "已取消下载。" if cancel_event.is_set() else str(exc)
+            self._update_download_failed.emit({"sequence": sequence, "message": message})
+            return
+        if cancel_event.is_set():
+            self._update_download_failed.emit({"sequence": sequence, "message": "已取消下载。"})
+            return
+        self._update_download_finished.emit({"sequence": sequence, "prepared": prepared})
+
+    def _on_update_download_progress(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get("sequence") or 0) != self._update_download_sequence:
+            return
+        dialog = self.__dict__.get("_update_download_dialog")
+        if dialog is not None:
+            dialog.set_progress(dict(payload.get("progress") or {}))
+
+    def _on_update_download_finished(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get("sequence") or 0) != self._update_download_sequence:
+            return
+        prepared = payload.get("prepared")
+        if not isinstance(prepared, _PreparedUpdate):
+            self._on_update_download_failed({"sequence": payload.get("sequence"), "message": "更新准备结果无效。"})
+            return
+        self._prepared_update = prepared
+        self._update_download_cancel_event = None
+        dialog = self.__dict__.get("_update_download_dialog")
+        if dialog is not None:
+            dialog.set_ready(prepared.installer_path)
+        self.append_log(f"更新安装包已下载并通过校验: {Path(prepared.installer_path).name}")
+
+    def _on_update_download_failed(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get("sequence") or 0) != self._update_download_sequence:
+            return
+        self._update_download_cancel_event = None
+        message = str(payload.get("message") or "更新下载失败")
+        dialog = self.__dict__.get("_update_download_dialog")
+        if dialog is not None:
+            if "取消" in message or "cancel" in message.lower():
+                dialog.set_cancelled()
+            else:
+                dialog.set_error(message)
+        self.append_log(message, level="ERROR")
+
+    def _cancel_update_download(self) -> None:
+        cancel_event = self.__dict__.get("_update_download_cancel_event")
+        if cancel_event is not None:
+            cancel_event.set()
+        dialog = self.__dict__.get("_update_download_dialog")
+        if dialog is not None:
+            dialog.set_cancelled()
+        self.append_log("用户取消更新下载")
+
+    def _retry_update_download(self) -> None:
+        result = self.__dict__.get("_last_update_result")
+        if not isinstance(result, UpdateCheckResult):
+            self._show_update_check_error("没有可重试的更新任务。")
+            return
+        self._begin_update_download(result)
+
+    def _install_prepared_update(self) -> None:
+        prepared = self.__dict__.get("_prepared_update")
+        if not isinstance(prepared, _PreparedUpdate):
+            self._show_update_check_error("更新安装包尚未准备好。")
+            return
+        log_path = Path(prepared.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        helper_module = "entry.updater_helper"
+        argv = [
+            sys.executable,
+            "-m",
+            helper_module,
+            "--installer",
+            prepared.installer_path,
+            "--asset-json",
+            prepared.asset_json_path,
+            "--version",
+            prepared.version,
+            "--log-path",
+            prepared.log_path,
+            "--restart-argv-json",
+            json.dumps(self._restart_argv_after_update()),
+        ]
+        helper_exe = Path(sys.executable).with_name("updater_helper.exe")
+        if getattr(sys, "frozen", False) and helper_exe.exists():
+            argv = [
+                str(helper_exe),
+                "--installer",
+                prepared.installer_path,
+                "--asset-json",
+                prepared.asset_json_path,
+                "--version",
+                prepared.version,
+                "--log-path",
+                prepared.log_path,
+                "--restart-argv-json",
+                json.dumps(self._restart_argv_after_update()),
+            ]
+        try:
+            record_pending_install(
+                version=prepared.version,
+                installer_path=prepared.installer_path,
+                log_path=prepared.log_path,
+            )
+            subprocess.Popen(argv, shell=False)
+        except Exception as exc:
+            self._show_update_check_error(str(exc))
+            self.append_log(f"更新安装程序启动失败: {exc}", level="ERROR")
+            return
+        self.append_log("更新安装程序已启动，应用即将退出。")
+        QTimer.singleShot(250, self.close)
+
+    @staticmethod
+    def _restart_argv_after_update() -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable]
+        return [sys.executable, "-m", "entry.gui_entry"]
+
+    @staticmethod
+    def _download_verified_update(
+        result: UpdateCheckResult,
+        *,
+        cancel_event: threading.Event | None = None,
+        progress_callback=None,
+    ) -> _PreparedUpdate:
+        verifier = UpdateManifestVerifier(public_key_pem=UPDATE_PUBLIC_KEY_PEM)
+        manifest = verifier.load_verified(result.manifest_path, result.signature_path)
+        asset = AssetSelector().select(manifest)
+        installer_path = Downloader(
+            allowed_hosts=set(DEFAULT_ALLOWED_HOSTS) | set(manifest.trusted_hosts),
+        ).download(
+            asset,
+            cancel_event=cancel_event,
+            progress_callback=progress_callback,
+        )
+        PackageVerifier(
+            trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
+            trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
+        ).verify(installer_path, asset)
+        asset_json_path = installer_path.with_name(f"{installer_path.name}.asset.json")
+        asset_json_path.write_text(
+            json.dumps(
+                {
+                    "name": asset.name,
+                    "url": asset.url,
+                    "sha256": asset.sha256,
+                    "size": asset.size,
+                    "installerType": asset.installer_type,
+                    "os": asset.os,
+                    "arch": asset.arch,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return _PreparedUpdate(
+            installer_path=str(installer_path),
+            asset_json_path=str(asset_json_path),
+            version=manifest.version,
+            log_path=str(installer_path.with_name("updater-install.log")),
+        )
 
     def _show_basic_message(
         self,
@@ -1806,6 +2094,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         # 退出顺序先停调度器/worker，再销毁 service 和 event bus，避免后台
         # 线程在 QObject 已释放后继续回调主窗口。
+        update_cancel_event = self.__dict__.get("_update_download_cancel_event")
+        if update_cancel_event is not None:
+            update_cancel_event.set()
         self._ui_update_scheduler.stop()
         snapshot_worker = self.__dict__.get("_frontend_snapshot_worker")
         if snapshot_worker is not None:

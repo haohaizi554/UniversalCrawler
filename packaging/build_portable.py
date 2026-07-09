@@ -15,6 +15,7 @@ if __package__ in (None, ""):
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_NAME,
+        UPDATER_HELPER_EXE_NAME,
         FORBIDDEN_USER_DATA_BASENAMES,
         PACKAGE_VERSION,
         WEBUI_DISPLAY_NAME,
@@ -27,6 +28,7 @@ else:
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_NAME,
+        UPDATER_HELPER_EXE_NAME,
         FORBIDDEN_USER_DATA_BASENAMES,
         PACKAGE_VERSION,
         WEBUI_DISPLAY_NAME,
@@ -64,6 +66,7 @@ REQUIRED_FILES = [
     PROJECT_ROOT / "entry" / "web_entry.py",
     PROJECT_ROOT / "entry" / "cli_entry.py",
     PROJECT_ROOT / "entry" / "interactive_entry.py",
+    PROJECT_ROOT / "entry" / "updater_helper.py",
     PROJECT_ROOT / "entry" / "mode_selection_ui.py",
     PROJECT_ROOT / "entry" / "web_tray_ui.py",
     PROJECT_ROOT / "entry" / "web_launch_runtime.py",
@@ -75,6 +78,7 @@ FORBIDDEN_BASENAMES = set(FORBIDDEN_USER_DATA_BASENAMES)
 LOCKING_PROCESSES = [
     APP_EXE_NAME,
     WEBUI_EXE_NAME,
+    UPDATER_HELPER_EXE_NAME,
     "ffmpeg.exe",  # ffmpeg 子进程也可能锁住 _internal 下的 dll
 ]
 
@@ -127,7 +131,7 @@ def clean_previous_outputs() -> None:
                 print(f"警告: 清理 {child} 失败: {e}")
 
     # 4. 清理 spec 生成的临时 launcher
-    for launcher_name in ("_webui_launcher.py", "_gui_launcher.py"):
+    for launcher_name in ("_webui_launcher.py", "_gui_launcher.py", "_updater_helper_launcher.py"):
         launcher = PROJECT_ROOT / "packaging" / launcher_name
         launcher.unlink(missing_ok=True)
 
@@ -173,6 +177,10 @@ def verify_output() -> None:
     webui_path = DIST_DIR / WEBUI_EXE_NAME
     if not webui_path.exists():
         raise SystemExit(f"未找到 WebUI 入口程序: {webui_path}")
+
+    updater_helper_path = DIST_DIR / UPDATER_HELPER_EXE_NAME
+    if not updater_helper_path.exists():
+        raise SystemExit(f"未找到更新 helper: {updater_helper_path}")
 
     for readme_name in PORTABLE_ROOT_DOCS:
         if not (DIST_DIR / readme_name).exists():
@@ -243,10 +251,12 @@ def write_manifest() -> None:
         f"Package Version: {PACKAGE_VERSION}",
         f"Executable: {APP_EXE_NAME}",
         f"WebUI: {WEBUI_EXE_NAME}",
+        f"Updater Helper: {UPDATER_HELPER_EXE_NAME}",
         "",
         "启动方式（双 EXE 直启）：",
         f"- 双击 {APP_EXE_NAME}       → {APP_DISPLAY_NAME} 桌面 GUI",
         f"- 双击 {WEBUI_EXE_NAME} → {WEBUI_DISPLAY_NAME}（FastAPI + 托盘）",
+        f"- {UPDATER_HELPER_EXE_NAME} 由 GUI 更新流程自动调用，请勿手动运行",
         "- CLI / 交互式模式请使用源码环境：ucrawl / ucrawl-i，或 python main.py --mode cli",
         "",
         "Bundled tools:",

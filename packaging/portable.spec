@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 _packaging_dir = Path(SPEC).resolve().parent
 if str(_packaging_dir) not in sys.path:
     sys.path.insert(0, str(_packaging_dir))
-from project_meta import APP_DISPLAY_NAME, APP_ICON_NAME, APP_NAME, WEBUI_DISPLAY_NAME, WEBUI_ICON_NAME, WEBUI_NAME
+from project_meta import APP_DISPLAY_NAME, APP_ICON_NAME, APP_NAME, UPDATER_HELPER_NAME, WEBUI_DISPLAY_NAME, WEBUI_ICON_NAME, WEBUI_NAME
 
 project_root = Path(SPEC).resolve().parents[1]
 main_script = project_root / "main.py"
@@ -80,7 +80,7 @@ hiddenimports = sorted(
         # PyInstaller 静态扫描可能漏掉（动态 import）
         + collect_submodules("PyQt6")
         # entry 动态加载的具体 entry 模块（保险起见显式列）
-        + ["entry.cli_entry", "entry.gui_entry", "entry.web_entry", "entry.interactive_entry", "entry.dispatcher"]
+        + ["entry.cli_entry", "entry.gui_entry", "entry.web_entry", "entry.interactive_entry", "entry.dispatcher", "entry.updater_helper"]
         # cli 动态加载的子命令模块（保险起见显式列）
         + ["cli.commands.search", "cli.commands.download", "cli.commands.scan", "cli.commands.interactive"]
         + [
@@ -129,8 +129,9 @@ pyz = PYZ(a.pure)
 # （错误：unrecognized arguments: --mode web）。
 # 现在的做法：每个 EXE 直接 import 对应 entry 模块，调用其 main(argv)。
 #
-# - UniversalCrawlerPro.exe -> entry.gui_entry.main()  (PyQt6 桌面 GUI)
-# - CrawlerWebPortal.exe    -> entry.web_entry.main()  (FastAPI + Qt 托盘)
+# - UniversalCrawlerPro.exe -> entry.gui_entry.main()      (PyQt6 桌面 GUI)
+# - CrawlerWebPortal.exe    -> entry.web_entry.main()      (FastAPI + Qt 托盘)
+# - updater_helper.exe      -> entry.updater_helper.main() (独立更新 helper)
 
 gui_launcher_script = project_root / "packaging" / "_gui_launcher.py"
 gui_launcher_script.write_text(
@@ -169,6 +170,20 @@ import sys
 
 from entry.web_entry import main as _main
 sys.exit(_main(sys.argv[1:] if len(sys.argv) > 1 else None))
+''',
+    encoding="utf-8",
+)
+
+updater_helper_script = project_root / "packaging" / "_updater_helper_launcher.py"
+updater_helper_script.write_text(
+    '''#!/usr/bin/env python3
+"""updater_helper.exe 入口：独立安装 helper。
+由 packaging/portable.spec 在打包时自动生成。
+"""
+import sys
+
+from entry.updater_helper import main as _main
+sys.exit(_main(sys.argv[1:]))
 ''',
     encoding="utf-8",
 )
@@ -219,9 +234,25 @@ webui_exe = EXE(
     icon=str(webui_icon) if webui_icon.exists() else (str(icon_file) if icon_file.exists() else None),
 )
 
+updater_helper_exe = EXE(
+    pyz,
+    [(UPDATER_HELPER_NAME, str(updater_helper_script), "PYSOURCE")],
+    [],
+    exclude_binaries=True,
+    name=UPDATER_HELPER_NAME,
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    icon=str(icon_file) if icon_file.exists() else None,
+)
+
 coll = COLLECT(
     exe,
     webui_exe,
+    updater_helper_exe,
     a.binaries,
     a.zipfiles,
     a.datas,

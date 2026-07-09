@@ -13,13 +13,20 @@
 - 不依赖已构建的 dist/ 目录（保持快速可重复）
 """
 
+import importlib.util
+import json
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from Crypto.PublicKey import ECC
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
+UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
 REQUIREMENTS_WEB = PROJECT_ROOT / "requirements-web.txt"
@@ -30,11 +37,23 @@ DOCKER_COMPOSE = PROJECT_ROOT / "docker-compose.yml"
 DOCKER_ENTRYPOINT = PROJECT_ROOT / "docker" / "entrypoint.sh"
 DOCKER_ENV_EXAMPLE = PROJECT_ROOT / ".env.docker.example"
 
+
+def _load_update_manifest_tool():
+    spec = importlib.util.spec_from_file_location("ucrawl_update_manifest_tool", UPDATE_MANIFEST_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 class SpecFileExistenceTests(unittest.TestCase):
     """spec 文件基本检查。"""
 
     def test_spec_file_exists(self):
         self.assertTrue(SPEC_FILE.exists(), f"missing: {SPEC_FILE}")
+
+    def test_update_manifest_tool_exists(self):
+        self.assertTrue(UPDATE_MANIFEST_TOOL.exists(), f"missing: {UPDATE_MANIFEST_TOOL}")
 
     def test_spec_file_syntax_valid(self):
         """spec 文件必须能被 Python 编译。"""
@@ -113,7 +132,7 @@ class SpecHiddenImportsTests(unittest.TestCase):
         """动态加载的 entry 模块必须在 hiddenimports。"""
         h = self._spec_globals["hiddenimports"]
         for mod in ("entry.cli_entry", "entry.gui_entry", "entry.web_entry",
-                    "entry.interactive_entry", "entry.dispatcher"):
+                    "entry.interactive_entry", "entry.dispatcher", "entry.updater_helper"):
             self.assertIn(mod, h, f"missing hiddenimport: {mod}")
 
     def test_hiddenimports_includes_cli_commands(self):
@@ -418,11 +437,12 @@ class BuildScriptTests(unittest.TestCase):
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
         self.assertIn("APP_EXE_NAME", source)
         self.assertIn("WEBUI_EXE_NAME", source)
+        self.assertIn("UPDATER_HELPER_EXE_NAME", source)
 
     def test_kill_locking_processes_includes_both_exes(self):
         """kill_locking_processes 必须 kill 两个 EXE + ffmpeg。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
-        for proc in ("APP_EXE_NAME", "WEBUI_EXE_NAME", '"ffmpeg.exe"'):
+        for proc in ("APP_EXE_NAME", "WEBUI_EXE_NAME", "UPDATER_HELPER_EXE_NAME", '"ffmpeg.exe"'):
             self.assertIn(proc, source, f"missing process in kill list: {proc}")
 
     def test_pyinstaller_command_uses_noconfirm_clean(self):
@@ -453,6 +473,7 @@ class PackagingMetadataTests(unittest.TestCase):
         self.assertIn('WEBUI_DISPLAY_NAME = "Crawler Web Portal"', source)
         self.assertIn('APP_EXE_NAME = f"{APP_NAME}.exe"', source)
         self.assertIn('WEBUI_EXE_NAME = f"{WEBUI_NAME}.exe"', source)
+        self.assertIn('UPDATER_HELPER_EXE_NAME = f"{UPDATER_HELPER_NAME}.exe"', source)
         self.assertIn("DIST_DIR_NAME", source)
         self.assertIn("INSTALL_DIR_NAME", source)
 
@@ -576,6 +597,7 @@ class InstallerScriptTests(unittest.TestCase):
         for marker in (
             "APP_EXE_NAME",
             "WEBUI_EXE_NAME",
+            "UPDATER_HELPER_EXE_NAME",
             "BUILD_INFO.txt",
             "README.md",
             "README_EN.md",
@@ -621,6 +643,13 @@ class LauncherTemplateTests(unittest.TestCase):
         # 不走 dispatcher
         self.assertIn("_main(sys.argv", source)
 
+    def test_updater_helper_launcher_content(self):
+        """spec 中的 updater helper 模板必须调用 entry.updater_helper.main。"""
+        with open(SPEC_FILE, "r", encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn("from entry.updater_helper import main", source)
+        self.assertIn("UPDATER_HELPER_NAME", source)
+
     def test_both_launchers_have_console_false(self):
         """两个 EXE 都必须 console=False（不弹黑窗）。至少出现 2 次。"""
         with open(SPEC_FILE, "r", encoding="utf-8") as f:
@@ -646,6 +675,57 @@ class RequirementsBuildTests(unittest.TestCase):
         with open(REQUIREMENTS_BUILD, "r", encoding="utf-8") as f:
             content = f.read().lower()
         self.assertIn("pyinstaller", content)
+
+
+class ReleaseUpdateManifestToolTests(unittest.TestCase):
+    """release latest.json/latest.json.sig 生成工具。"""
+
+    def test_tool_writes_signed_manifest_that_client_verifier_accepts(self):
+        from app.services.secure_updater import UpdateManifestVerifier
+
+        tool = _load_update_manifest_tool()
+        key = ECC.generate(curve="Ed25519")
+        private_key_pem = key.export_key(format="PEM")
+        public_key_pem = key.public_key().export_key(format="PEM")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            installer = root / "UniversalCrawlerPro_Setup_3.7.0_x64.exe"
+            installer.write_bytes(b"installer-bytes")
+            key_file = root / "private.pem"
+            key_file.write_text(private_key_pem, encoding="utf-8")
+            output_dir = root / "release"
+
+            manifest_path, signature_path = tool.write_signed_manifest(
+                output_dir=output_dir,
+                private_key_path=key_file,
+                version="3.7.0",
+                tag="v3.7.0",
+                assets=[
+                    tool.ReleaseAssetSpec(
+                        key="windows-x64",
+                        path=installer,
+                        url="https://github.com/owner/repo/releases/download/v3.7.0/UniversalCrawlerPro_Setup_3.7.0_x64.exe",
+                        os="windows",
+                        arch="x64",
+                        installer_type="inno",
+                    )
+                ],
+                notes="release notes",
+                expires_days=30,
+                published_at="2026-07-10T00:00:00Z",
+            )
+
+            manifest = UpdateManifestVerifier(public_key_pem=public_key_pem).load_verified(
+                manifest_path,
+                signature_path,
+            )
+
+        asset = manifest.assets["windows-x64"]
+        self.assertEqual(manifest.version, "3.7.0")
+        self.assertEqual(asset.size, len(b"installer-bytes"))
+        self.assertRegex(asset.sha256, r"^[0-9a-f]{64}$")
+        self.assertEqual(asset.name, "UniversalCrawlerPro_Setup_3.7.0_x64.exe")
+
 
 class ContainerizationAssetTests(unittest.TestCase):
     """容器化交付资产测试。"""

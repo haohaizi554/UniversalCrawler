@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
@@ -10,6 +11,7 @@ from app.services.update_check_service import (
     UPDATE_STATUS_LOCAL_NEWER,
     UpdateCheckError,
     check_for_update,
+    check_secure_update,
     compare_versions,
     fetch_latest_release_page_payload,
     fetch_latest_release_payload,
@@ -113,6 +115,74 @@ class UpdateCheckServiceTests(unittest.TestCase):
             payload = fetch_latest_release_payload()
 
         self.assertEqual(payload["tag_name"], "v3.6.19")
+
+    def test_secure_update_requires_configured_public_key(self):
+        with self.assertRaises(UpdateCheckError):
+            check_secure_update("v3.6.17", public_key_pem="")
+
+    def test_secure_update_reports_available_signed_manifest(self):
+        from tempfile import TemporaryDirectory
+
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            manifest_path, sig_path, public_pem = _signed_manifest(Path(temp_dir))
+
+            result = check_secure_update(
+                "v3.6.17",
+                public_key_pem=public_pem,
+                manifest_path=manifest_path,
+                signature_path=sig_path,
+                os_name="windows",
+                arch="x64",
+                release_url="https://github.com/owner/repo/releases/tag/v3.7.0",
+            )
+
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(result.latest_version, "3.7.0")
+        self.assertEqual(result.asset_name, "UniversalCrawlerPro_Setup_3.7.0.exe")
+        self.assertEqual(result.installer_type, "inno")
+
+    def test_secure_update_rejects_manifest_requiring_newer_client(self):
+        from tempfile import TemporaryDirectory
+
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            manifest_path, sig_path, public_pem = _signed_manifest(
+                Path(temp_dir),
+                overrides={"minClientVersion": "3.6.18"},
+            )
+
+            with self.assertRaises(UpdateCheckError):
+                check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    manifest_path=manifest_path,
+                    signature_path=sig_path,
+                    os_name="windows",
+                    arch="x64",
+                )
+
+    def test_main_window_update_flow_uses_secure_manifest_path(self):
+        source = Path("app/ui/main_window.py").read_text(encoding="utf-8")
+
+        self.assertIn("check_secure_update", source)
+        self.assertIn("_download_verified_update", source)
+        self.assertIn("_cancel_update_download", source)
+        self.assertIn("entry.updater_helper", source)
+        self.assertIn("shell=False", source)
+        self.assertIn("record_skipped_update", source)
+        self.assertIn("跳过此版本", source)
+        self.assertNotIn("下载和安装稍后接入", source)
+        self.assertNotIn("自动下载和安装流程尚未接入", source)
+
+    def test_update_download_dialog_exposes_cancel_error_retry_and_install_controls(self):
+        source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")
+
+        self.assertIn("class UpdateDownloadDialog", source)
+        for text in ("取消下载", "重试", "查看日志", "安装并重启"):
+            self.assertIn(text, source)
 
 
 @unittest.skipUnless(_pyqt6_available(), "PyQt6 is not installed")
