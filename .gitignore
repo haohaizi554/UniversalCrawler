@@ -97,5 +97,6 @@ Desktop.ini
 *.bak
 *.tmp
 *.orig
+.worktrees/
 
 人工测试.txt
