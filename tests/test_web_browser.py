@@ -899,6 +899,23 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn(".log-level-badge", content)
         self.assertIn(".log-source-cell", content)
 
+    def test_web_log_detail_formatting_runs_in_worker(self):
+        content = _static_bundle_content()
+        render_detail_block = content.split("function renderLogDetail", 1)[1].split(
+            "function setLogTab",
+            1,
+        )[0]
+
+        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', content)
+        self.assertIn("function ensureLogDetailWorker()", content)
+        self.assertIn("function receiveLogDetailResult(result)", content)
+        self.assertIn("function submitLogDetail(item)", content)
+        self.assertIn("renderLogDetailResult(result);", content)
+        self.assertNotIn("JSON.parse", render_detail_block)
+        self.assertNotIn("JSON.stringify", render_detail_block)
+        self.assertNotIn("localizedLogDetailPayload(item)", render_detail_block)
+        self.assertNotIn("formatLogDetailDisplayText(detailPayload)", render_detail_block)
+
     def test_web_table_page_size_matches_gui_pagination_contract(self):
         content = _static_bundle_content()
         render_queue_block = content.split("function renderQueue()", 1)[1].split(
