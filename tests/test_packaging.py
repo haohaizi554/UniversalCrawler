@@ -624,6 +624,14 @@ class InstallerScriptTests(unittest.TestCase):
         ):
             self.assertIn(marker, source)
 
+    def test_build_installer_signing_is_explicitly_opt_in(self):
+        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+
+        self.assertIn("UCRAWL_SIGN_WINDOWS", source)
+        self.assertIn("sign-windows-installer", source)
+        self.assertIn("inject-windows-trust", source)
+        self.assertIn("shell=False", source)
+
 class LauncherTemplateTests(unittest.TestCase):
     """_gui_launcher.py 和 _webui_launcher.py 模板正确性。"""
 
@@ -713,6 +721,7 @@ class ReleaseUpdateManifestToolTests(unittest.TestCase):
                 notes="release notes",
                 expires_days=30,
                 published_at="2026-07-10T00:00:00Z",
+                verify_with_config=False,
             )
 
             manifest = UpdateManifestVerifier(public_key_pem=public_key_pem).load_verified(
@@ -725,6 +734,13 @@ class ReleaseUpdateManifestToolTests(unittest.TestCase):
         self.assertEqual(asset.size, len(b"installer-bytes"))
         self.assertRegex(asset.sha256, r"^[0-9a-f]{64}$")
         self.assertEqual(asset.name, "UniversalCrawlerPro_Setup_3.7.0_x64.exe")
+
+    def test_tool_defaults_private_key_to_release_secret_directory(self):
+        source = UPDATE_MANIFEST_TOOL.read_text(encoding="utf-8")
+
+        self.assertIn("default_manifest_private_key_path", source)
+        self.assertIn("generate-manifest-key", source)
+        self.assertIn("verify_with_config", source)
 
 
 class ContainerizationAssetTests(unittest.TestCase):

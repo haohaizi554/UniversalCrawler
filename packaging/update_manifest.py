@@ -18,7 +18,9 @@ from typing import Any
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 
-from app.services.secure_updater import APP_ID, DEFAULT_CHANNEL, DEFAULT_MANIFEST_NAME, DEFAULT_SIGNATURE_NAME
+from app.config.update_trust import UPDATE_PUBLIC_KEY_PEM
+from app.services.secure_updater import APP_ID, DEFAULT_CHANNEL, DEFAULT_MANIFEST_NAME, DEFAULT_SIGNATURE_NAME, UpdateManifestVerifier
+from scripts.update_bootstrap import default_manifest_private_key_path
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,7 @@ def write_signed_manifest(
     min_client_version: str = "3.0.0",
     mandatory: bool = False,
     trusted_hosts: list[str] | tuple[str, ...] = (),
+    verify_with_config: bool = True,
 ) -> tuple[Path, Path]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -128,6 +131,17 @@ def write_signed_manifest(
     signature = eddsa.new(key, "rfc8032").sign(manifest_bytes)
     signature_path = output / DEFAULT_SIGNATURE_NAME
     signature_path.write_bytes(signature)
+    if verify_with_config:
+        try:
+            _verify_with_configured_public_key(
+                manifest_path,
+                signature_path,
+                app_id=app_id,
+                channel=channel,
+            )
+        except Exception:
+            signature_path.unlink(missing_ok=True)
+            raise
     return manifest_path, signature_path
 
 
@@ -155,7 +169,7 @@ def _parse_asset_specs(path: Path) -> list[ReleaseAssetSpec]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ucrawl-update-manifest")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--private-key", required=True)
+    parser.add_argument("--private-key", default="")
     parser.add_argument("--version", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--asset-spec", required=True, help="JSON array of release asset specs")
@@ -171,9 +185,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    private_key = Path(args.private_key) if args.private_key else default_manifest_private_key_path()
+    if not private_key.is_file():
+        raise SystemExit(
+            "未找到 update manifest 私钥，请先运行: "
+            "python scripts/update_bootstrap.py generate-manifest-key"
+        )
     manifest_path, signature_path = write_signed_manifest(
         output_dir=Path(args.output_dir),
-        private_key_path=Path(args.private_key),
+        private_key_path=private_key,
         version=args.version,
         tag=args.tag,
         assets=_parse_asset_specs(Path(args.asset_spec)),
@@ -198,6 +218,26 @@ def _parse_or_now(value: str | None) -> datetime:
 
 def _format_rfc3339(value: datetime) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _verify_with_configured_public_key(
+    manifest_path: Path,
+    signature_path: Path,
+    *,
+    app_id: str,
+    channel: str,
+) -> None:
+    """Verify release output through the same public trust anchor as clients."""
+
+    if not str(UPDATE_PUBLIC_KEY_PEM or "").strip():
+        raise RuntimeError(
+            "UPDATE_PUBLIC_KEY_PEM is empty; run "
+            "python scripts/update_bootstrap.py generate-manifest-key --write-public-key-to-config"
+        )
+    UpdateManifestVerifier(public_key_pem=UPDATE_PUBLIC_KEY_PEM, app_id=app_id, channel=channel).load_verified(
+        manifest_path,
+        signature_path,
+    )
 
 
 if __name__ == "__main__":

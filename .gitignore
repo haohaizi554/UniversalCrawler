@@ -64,6 +64,19 @@ dy_auth.json
 bili_auth.json
 ks_auth.json
 missav_auth.json
+release-secrets/
+.release-secrets/
+*.pfx
+*.p12
+*.key
+*.pem
+*.pvk
+*.spc
+*.snk
+*.cer.private
+*.password
+*.secret
+*.env.release*
 
 # Logs / Reports
 *.log

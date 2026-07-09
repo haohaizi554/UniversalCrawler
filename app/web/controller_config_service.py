@@ -50,6 +50,7 @@ class WebControllerConfigService:
         },
         "logging": {
             "retention_days",
+            "failed_record_retention_days",
             "ui_log_max_display_count",
             "auto_copy_trace_on_error",
         },

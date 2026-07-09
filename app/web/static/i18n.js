@@ -123,6 +123,7 @@ const FALLBACK_UI_TEXT = {
     "结束后播放下一项": "Play the next item after finishing",
     "关闭图片自动轮播": "Disable automatic image rotation",
     "启动时自动清理": "Clean automatically at startup",
+    "自动清理过期失败记录": "Automatically clear expired failed records",
     "限制日志中心展示条数": "Limit rows shown in Log Center",
     "异常时复制追踪编号": "Copy trace ID on errors",
     "界面语言": "Interface language",
@@ -164,6 +165,7 @@ const FALLBACK_UI_TEXT = {
     "图片只手动切换": "Manual image switching",
     "保留天数": "Retention",
     "日志保留天数": "Log retention",
+    "失败记录保留天数": "Failed record retention",
     "UI最大显示数": "Max UI logs",
     "UI日志最大显示数量": "Max UI logs",
     "日志级别": "Log level",
@@ -238,6 +240,7 @@ const FALLBACK_UI_TEXT = {
     "删除": "Delete",
     "复制 Trace ID": "Copy Trace ID",
     "删除所有": "Delete all",
+    "删除所有失败记录": "Delete all failed records",
     "立即刷新": "Refresh now",
     "速度": "Speed",
     "剩余时间": "Remaining",
@@ -531,6 +534,7 @@ const FALLBACK_UI_TEXT = {
     "结束后播放下一项": "結束後播放下一項",
     "关闭图片自动轮播": "關閉圖片自動輪播",
     "启动时自动清理": "啟動時自動清理",
+    "自动清理过期失败记录": "自動清理過期失敗記錄",
     "限制日志中心展示条数": "限制日誌中心展示筆數",
     "异常时复制追踪编号": "異常時複製追蹤編號",
     "界面语言": "介面語言",
@@ -572,6 +576,7 @@ const FALLBACK_UI_TEXT = {
     "图片只手动切换": "圖片只手動切換",
     "保留天数": "保留天數",
     "日志保留天数": "日誌保留天數",
+    "失败记录保留天数": "失敗記錄保留天數",
     "UI最大显示数": "UI 最大顯示數",
     "UI日志最大显示数量": "UI 日誌最大顯示數量",
     "日志级别": "日誌級別",
@@ -646,6 +651,7 @@ const FALLBACK_UI_TEXT = {
     "删除": "刪除",
     "复制 Trace ID": "複製 Trace ID",
     "删除所有": "刪除所有",
+    "删除所有失败记录": "刪除所有失敗記錄",
     "立即刷新": "立即重新整理",
     "速度": "速度",
     "剩余时间": "剩餘時間",
@@ -1201,6 +1207,12 @@ function applyStaticLanguage() {
   document.querySelectorAll("#page-failed th").forEach((header, index) => {
     if (failedHeaders[index]) header.textContent = t(failedHeaders[index]);
   });
+  setButtonContent("failedClearAll", "删除所有");
+  const failedClearAll = helpers.byId("failedClearAll");
+  if (failedClearAll) {
+    failedClearAll.title = t("删除所有失败记录");
+    failedClearAll.setAttribute("aria-label", t("删除所有失败记录"));
+  }
   const clearQueueButton = document.querySelector("#page-queue [onclick=\"frontendAction('clear_queue',{})\"]");
   if (clearQueueButton) {
     clearQueueButton.title = t("删除所有");
@@ -1255,6 +1267,8 @@ function applyStaticLanguage() {
     queueNextPage: "下一页",
     completedPrevPage: "上一页",
     completedNextPage: "下一页",
+    failedPrevPage: "上一页",
+    failedNextPage: "下一页",
   };
   for (const [id, label] of Object.entries(pagerIconButtons)) {
     const button = helpers.byId(id);

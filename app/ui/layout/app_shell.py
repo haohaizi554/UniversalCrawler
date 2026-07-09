@@ -41,6 +41,7 @@ class AppShell(QWidget):
     open_directory_requested = pyqtSignal(str)
     retry_requested = pyqtSignal(str)
     copy_diagnostics_requested = pyqtSignal(str)
+    delete_failed_record_requested = pyqtSignal(str)
     tool_requested = pyqtSignal(str)
     completed_metadata_detected = pyqtSignal(str, dict)
     file_association_requested = pyqtSignal(bool, bool)
@@ -48,6 +49,7 @@ class AppShell(QWidget):
     platform_settings_visible = pyqtSignal()
     refresh_requested = pyqtSignal()
     clear_all_requested = pyqtSignal()
+    clear_failed_records_requested = pyqtSignal()
     active_options_changed = pyqtSignal(dict)
     log_action_requested = pyqtSignal(str)
     update_check_requested = pyqtSignal(str)
@@ -182,7 +184,8 @@ class AppShell(QWidget):
         failed = self.pages["failed"]
         failed.retry_requested.connect(self.retry_requested.emit)
         failed.copy_diagnostics_requested.connect(self.copy_diagnostics_requested.emit)
-        failed.delete_requested.connect(self.delete_requested.emit)
+        failed.delete_requested.connect(self.delete_failed_record_requested.emit)
+        failed.clear_failed_records_requested.connect(self.clear_failed_records_requested.emit)
         toolbox = self.pages["toolbox"]
         toolbox.tool_requested.connect(self.tool_requested.emit)
         settings = self.pages["settings"]

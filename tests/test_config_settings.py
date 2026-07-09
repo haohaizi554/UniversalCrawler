@@ -15,6 +15,7 @@ from app.config.settings import (
     ConfigManager,
     ConfigValidationError,
     download_concurrency_options,
+    failed_record_retention_options,
     font_size_options,
     get_platform_runtime_defaults,
     language_options,
@@ -279,6 +280,7 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(manager.get("download", "request_timeout"), 60)
             self.assertEqual(manager.get("download", "max_retries"), 3)
             self.assertEqual(manager.get("logging", "retention_days"), 1)
+            self.assertEqual(manager.get("logging", "failed_record_retention_days"), 7)
             self.assertEqual(manager.get("logging", "ui_log_max_display_count"), 300)
             self.assertEqual(manager.get("appearance", "scale"), "100%")
             self.assertEqual(manager.get("appearance", "font_size"), "medium")
@@ -292,6 +294,8 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertNotIn({"value": "0", "label": "无限制（0 KB/s）"}, speed_limit_options())
             self.assertIn({"value": "1", "label": "1 天（推荐）"}, log_retention_options())
             self.assertNotIn({"value": "30", "label": "30 天（推荐）"}, log_retention_options())
+            self.assertIn({"value": "7", "label": "7 天（推荐）"}, failed_record_retention_options())
+            self.assertNotIn({"value": "1", "label": "1 天（推荐）"}, failed_record_retention_options())
             self.assertEqual(
                 ui_log_max_display_options(),
                 [
@@ -320,6 +324,20 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertEqual(manager.get("logging", "retention_days"), 1)
             with self.assertRaises(ConfigValidationError):
                 manager.set("logging", "retention_days", 30)
+
+    def test_failed_record_retention_days_are_limited_to_history_policy_options(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({"logging": {"failed_record_retention_days": 1}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            manager = ConfigManager(str(config_path))
+
+            self.assertEqual(manager.get("logging", "failed_record_retention_days"), 7)
+            with self.assertRaises(ConfigValidationError):
+                manager.set("logging", "failed_record_retention_days", 1)
 
     def test_download_concurrency_caps_regular_workers_while_images_use_fast_lane(self):
         with tempfile.TemporaryDirectory() as temp_dir:

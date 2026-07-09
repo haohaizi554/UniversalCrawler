@@ -68,6 +68,7 @@
 ### `logging`
 
 - `retention_days`：日志保留天数，必须为 `1`、`3`、`5`、`7`；默认 `1` 天。应用初始化和保留策略变更时会清理过期日志。
+- `failed_record_retention_days`：失败列表持久化记录保留天数，必须为 `3`、`7`、`14`、`30`；默认 `7` 天。配置变更时由 `FailedRecordStore` 后台清理过期记录，GUI/WebUI 只消费刷新后的快照。
 - `level`：内部文件日志写入阈值，必须来自 `log_level_options()`；配置中心不再展示该项，日志中心请使用页面筛选器。
 - `ui_log_max_display_count`：日志中心最大展示条数。
 - `auto_copy_trace_on_error`：错误时是否自动保留 Trace ID。

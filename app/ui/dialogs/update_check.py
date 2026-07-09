@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from html import escape
+from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from app.ui.dialogs.chromed_dialog import ChromedDialog
 from app.ui.localization import normalize_language, tr
@@ -93,6 +94,7 @@ class UpdateCheckDialog(ChromedDialog):
         local_version: str = "",
         latest_version: str = "",
         release_url: str = "",
+        candidates: tuple[Any, ...] = (),
         language: str = "zh-CN",
     ) -> None:
         self._language = normalize_language(language)
@@ -107,10 +109,17 @@ class UpdateCheckDialog(ChromedDialog):
         self.setMaximumWidth(720)
         self._status = status or "info"
         self._release_url = str(release_url or "").strip()
+        self._initial_details = str(details or "")
+        self._candidate_options = self._normalize_candidates(candidates, latest_version=latest_version, release_url=release_url)
+        self._selected_version = self._candidate_options[0]["version"] if self._candidate_options else str(latest_version or "")
+        self.details_label: QLabel | None = None
+        self.release_link: QLabel | None = None
 
         layout = self.content_layout
         layout.addWidget(self._build_header(self._tr(title), self._tr(message)))
         layout.addWidget(self._build_version_panel(local_version, latest_version))
+        if len(self._candidate_options) > 1:
+            layout.addWidget(self._build_candidate_selector())
         if details or self._release_url:
             layout.addWidget(self._build_detail_card(details))
         layout.addLayout(self._build_button_row(primary_text, secondary_text, skip_text))
@@ -176,6 +185,26 @@ class UpdateCheckDialog(ChromedDialog):
         grid.setColumnStretch(2, 1)
         return panel
 
+    def _build_candidate_selector(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("UpdateCandidatePanel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(14, 12, 14, 12)
+        panel_layout.setSpacing(8)
+
+        label = QLabel(self._tr("选择要安装的版本"))
+        label.setObjectName("UpdateDetailTitle")
+        panel_layout.addWidget(label)
+
+        self.version_combo = QComboBox()
+        self.version_combo.setObjectName("UpdateVersionCombo")
+        self.version_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        for option in self._candidate_options:
+            self.version_combo.addItem(self._candidate_label(option), option["version"])
+        self.version_combo.currentIndexChanged.connect(self._on_candidate_changed)
+        panel_layout.addWidget(self.version_combo)
+        return panel
+
     def _build_detail_card(self, details: str) -> QWidget:
         card = QFrame()
         card.setObjectName("UpdateDetailCard")
@@ -187,22 +216,22 @@ class UpdateCheckDialog(ChromedDialog):
         detail_title.setObjectName("UpdateDetailTitle")
         card_layout.addWidget(detail_title)
 
-        details_label = QLabel(self._detail_text(details))
-        details_label.setObjectName("DialogStatus")
-        details_label.setWordWrap(True)
-        details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        card_layout.addWidget(details_label)
+        self.details_label = QLabel(self._detail_text(details))
+        self.details_label.setObjectName("DialogStatus")
+        self.details_label.setWordWrap(True)
+        self.details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        card_layout.addWidget(self.details_label)
 
         if self._release_url:
             link_text = self._tr("打开 GitHub Release 页面")
-            link = QLabel(
+            self.release_link = QLabel(
                 f'<a href="{escape(self._release_url, quote=True)}">{escape(link_text)}</a>'
             )
-            link.setObjectName("UpdateReleaseLink")
-            link.setOpenExternalLinks(True)
-            link.setTextFormat(Qt.TextFormat.RichText)
-            link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-            card_layout.addWidget(link)
+            self.release_link.setObjectName("UpdateReleaseLink")
+            self.release_link.setOpenExternalLinks(True)
+            self.release_link.setTextFormat(Qt.TextFormat.RichText)
+            self.release_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            card_layout.addWidget(self.release_link)
         return card
 
     def _build_button_row(self, primary_text: str, secondary_text: str, skip_text: str) -> QHBoxLayout:
@@ -240,6 +269,76 @@ class UpdateCheckDialog(ChromedDialog):
         super().apply_chrome_theme(is_dark)
         if hasattr(self, "status_icon"):
             self.status_icon.set_status(self._status, self._colors)
+
+    def selected_update_version(self) -> str:
+        return str(self._selected_version or "")
+
+    def _on_candidate_changed(self, index: int) -> None:
+        if index < 0 or index >= len(self._candidate_options):
+            return
+        option = self._candidate_options[index]
+        self._selected_version = option["version"]
+        self._release_url = option["release_url"]
+        self.remote_version_value.setText(self._display_version(option["version"]))
+        if self.details_label is not None:
+            self.details_label.setText(self._detail_text(option["notes"] or self._initial_details))
+        if self.release_link is not None and self._release_url:
+            link_text = self._tr("打开 GitHub Release 页面")
+            self.release_link.setText(f'<a href="{escape(self._release_url, quote=True)}">{escape(link_text)}</a>')
+
+    @staticmethod
+    def _display_version(version: str) -> str:
+        text = str(version or "").strip()
+        if text and not text.lower().startswith("v"):
+            return f"v{text}"
+        return text or "-"
+
+    @classmethod
+    def _normalize_candidates(cls, candidates: tuple[Any, ...], *, latest_version: str, release_url: str) -> list[dict[str, str]]:
+        options: list[dict[str, str]] = []
+        for candidate in candidates or ():
+            version = str(cls._candidate_value(candidate, "version") or "").strip()
+            if not version:
+                continue
+            options.append(
+                {
+                    "version": version,
+                    "tag": str(cls._candidate_value(candidate, "tag_name") or ""),
+                    "name": str(cls._candidate_value(candidate, "release_name") or ""),
+                    "release_url": str(cls._candidate_value(candidate, "html_url") or release_url or ""),
+                    "notes": str(cls._candidate_value(candidate, "notes") or ""),
+                    "asset": str(cls._candidate_value(candidate, "asset_name") or ""),
+                }
+            )
+        if not options and latest_version:
+            options.append(
+                {
+                    "version": str(latest_version),
+                    "tag": str(latest_version),
+                    "name": str(latest_version),
+                    "release_url": str(release_url or ""),
+                    "notes": "",
+                    "asset": "",
+                }
+            )
+        return options
+
+    @staticmethod
+    def _candidate_value(candidate: Any, key: str) -> Any:
+        if isinstance(candidate, dict):
+            return candidate.get(key)
+        return getattr(candidate, key, "")
+
+    def _candidate_label(self, option: dict[str, str]) -> str:
+        version = self._display_version(option["version"])
+        name = option["name"] or option["tag"]
+        asset = option["asset"]
+        parts = [version]
+        if name and name not in {version, option["version"]}:
+            parts.append(name)
+        if asset:
+            parts.append(asset)
+        return "  |  ".join(parts)
 
     @staticmethod
     def _make_version_label(text: str) -> QLabel:

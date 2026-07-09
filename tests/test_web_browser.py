@@ -3060,7 +3060,12 @@ class WebUIBrowserTests(unittest.TestCase):
                 "image_auto_advance_interval_seconds",
                 "manual_image_switch",
             },
-            "logging": {"retention_days", "ui_log_max_display_count", "auto_copy_trace_on_error"},
+            "logging": {
+                "retention_days",
+                "failed_record_retention_days",
+                "ui_log_max_display_count",
+                "auto_copy_trace_on_error",
+            },
             "appearance": {"language", "follow_system", "theme", "accent", "scale", "font_size"},
         }
         for group, keys in expected.items():
@@ -3328,7 +3333,7 @@ class WebUIBrowserTests(unittest.TestCase):
               currentSettingsGroup = '\\u65e5\\u5fd7\\u8bbe\\u7f6e';
               switchPage('settings');
               renderSettings(true);
-              const keys = ['retention_days', 'ui_log_max_display_count'];
+              const keys = ['retention_days', 'failed_record_retention_days', 'ui_log_max_display_count'];
               return Object.fromEntries(keys.map(key => {
                 const control = document.querySelector(`#page-settings [data-setting="${key}"]`);
                 const row = control?.closest('.setting-row');
@@ -3343,6 +3348,8 @@ class WebUIBrowserTests(unittest.TestCase):
 
         self.assertEqual(result["retention_days"]["label"], "日志保留天数")
         self.assertIn("初始化时自动清理", result["retention_days"]["description"])
+        self.assertEqual(result["failed_record_retention_days"]["label"], "失败记录保留天数")
+        self.assertIn("自动清理过期失败记录", result["failed_record_retention_days"]["description"])
         self.assertEqual(result["ui_log_max_display_count"]["label"], "UI日志最大显示数量")
         self.assertIn("限制日志中心展示条数", result["ui_log_max_display_count"]["description"])
 

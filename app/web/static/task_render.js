@@ -316,7 +316,7 @@
         <td>${escapeHtml(item.failed_at_table || item.failed_at)}</td>
         <td>${iconTextHtml(item.reason_label || item.reason || "", item.reason_icon_file || "status_error_warning.png")}</td>
         <td>${failedStatusHtml(item.status_label || item.status || "\u5931\u8d25")}</td>
-        <td>${actionButton("copy_diagnostics", "\u590d\u5236 Trace ID", `event.stopPropagation();copyDiagnostics('${id}')`)}${actionButton("delete", "\u5220\u9664", `event.stopPropagation();frontendAction('delete_item',{id:'${id}'})`, true)}</td>
+        <td>${actionButton("copy_diagnostics", "\u590d\u5236 Trace ID", `event.stopPropagation();copyDiagnostics('${id}')`)}${actionButton("delete", "\u5220\u9664", `event.stopPropagation();frontendAction('delete_failed_record',{id:'${id}'})`, true)}</td>
       </tr>
     `;
   }

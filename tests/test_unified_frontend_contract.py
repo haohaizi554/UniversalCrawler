@@ -1423,6 +1423,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.app.processEvents()
         label_texts = {label.text() for label in settings.detail_panel.findChildren(QLabel)}
         self.assertIn("日志保留天数", label_texts)
+        self.assertIn("失败记录保留天数", label_texts)
         self.assertIn("错误时自动复制 Trace", label_texts)
         self.assertNotIn("日志级别", label_texts)
 
@@ -3721,6 +3722,12 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertEqual(failed.detail_card_layout.contentsMargins().left(), 14)
         self.assertFalse(hasattr(failed, "title_label"))
         self.assertEqual(tuple(failed.table.itemDelegate()._action_ids), ("copy_diagnostics", "delete"))
+        self.assertEqual(failed.btn_clear_failed_records.text(), "删除所有")
+        clear_all_hits: list[bool] = []
+        failed.clear_failed_records_requested.connect(lambda: clear_all_hits.append(True))
+        failed.btn_clear_failed_records.click()
+        self.app.processEvents()
+        self.assertEqual(clear_all_hits, [True])
         self.assertNotIn("retry", snapshot["failed_items"][0].get("actions", []))
         self.assertIn("reason_label", failed.table.table_model._columns)
         self.assertIn("failed_at_table", failed.table.table_model._columns)
@@ -4014,7 +4021,10 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("failed-table-card", failed_page)
         self.assertIn("failed-detail-card", failed_page)
         self.assertIn("failed-solutions-card", failed_page)
+        self.assertIn("frontendAction('clear_failed_records',{})", failed_page)
         self.assertNotIn("retry_failed", failed_fn)
+        self.assertIn("frontendAction('delete_failed_record'", failed_fn)
+        self.assertNotIn("frontendAction('delete_item'", failed_fn)
         mock_fn = content.split("function buildMockState()", 1)[1].split("function configureCustomSelectHelpers", 1)[0]
         self.assertNotIn('actions: ["retry", "copy_diagnostics", "delete"]', mock_fn)
         self.assertIn("copyDiagnostics", failed_fn)
@@ -4025,6 +4035,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("solutionRowHtml", content)
         self.assertIn("#page-failed .failed-table-card", css)
         self.assertIn("#page-failed .failed-solutions-card", css)
+        self.assertIn(".failed-clear-all", css)
         self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(420px, clamp(420px, var(--detail-width, 440px), 540px));", css)
         self.assertIn("grid-template-columns: 82px minmax(0, 1fr);", css)
         self.assertIn(".failed-log-row", css)

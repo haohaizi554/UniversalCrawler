@@ -40,6 +40,7 @@ from app.services.secure_updater import (
     record_pending_install,
     record_skipped_update,
     record_startup_update_health,
+    write_update_asset_descriptor,
 )
 from app.ui.connection_registry import ConnectionRegistry
 from app.ui.dialogs import FileAssociationDialog
@@ -463,6 +464,7 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.open_directory_requested, self._open_item_directory)
         self._connections.connect(self.app_shell.retry_requested, self._retry_failed_item)
         self._connections.connect(self.app_shell.copy_diagnostics_requested, self._copy_item_diagnostics)
+        self._connections.connect(self.app_shell.delete_failed_record_requested, self._delete_failed_record)
         self._connections.connect(self.app_shell.tool_requested, self._run_tool)
         self._connections.connect(self.app_shell.completed_metadata_detected, self._update_completed_metadata)
         self._connections.connect(self.app_shell.file_association_requested, lambda *_args: self.on_btn_file_association_clicked())
@@ -471,6 +473,7 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.page_changed, self._on_page_changed)
         self._connections.connect(self.app_shell.refresh_requested, self._on_queue_refresh_requested)
         self._connections.connect(self.app_shell.clear_all_requested, self._on_clear_queue_requested)
+        self._connections.connect(self.app_shell.clear_failed_records_requested, self._clear_failed_records)
         self._connections.connect(self.app_shell.active_options_changed, self._update_download_options)
         self._connections.connect(self.app_shell.log_action_requested, self._handle_log_action)
         self._connections.connect(self.app_shell.update_check_requested, self._on_update_check_requested)
@@ -635,13 +638,22 @@ class MainWindow(QMainWindow):
             local_version=local_version,
             latest_version=latest_version,
             release_url=result.html_url,
+            candidates=result.candidates,
             language=self._current_ui_language(),
         )
         dialog_result = box.exec()
         if dialog_result == QDialog.DialogCode.Accepted:
-            self._begin_update_download(result)
+            selected_result = result
+            selected_version = box.selected_update_version()
+            if selected_version and result.candidates:
+                try:
+                    selected_result = result.for_version(selected_version)
+                except ValueError as exc:
+                    self._show_update_check_error(str(exc))
+                    return
+            self._begin_update_download(selected_result)
         elif int(dialog_result) == UpdateCheckDialog.SKIP_CODE:
-            self._skip_update_version(result.latest_version)
+            self._skip_update_version(box.selected_update_version() or result.latest_version)
 
     def _skip_update_version(self, version: str) -> None:
         try:
@@ -847,23 +859,7 @@ class MainWindow(QMainWindow):
             trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
             trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
         ).verify(installer_path, asset)
-        asset_json_path = installer_path.with_name(f"{installer_path.name}.asset.json")
-        asset_json_path.write_text(
-            json.dumps(
-                {
-                    "name": asset.name,
-                    "url": asset.url,
-                    "sha256": asset.sha256,
-                    "size": asset.size,
-                    "installerType": asset.installer_type,
-                    "os": asset.os,
-                    "arch": asset.arch,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        asset_json_path = write_update_asset_descriptor(installer_path, asset)
         return _PreparedUpdate(
             installer_path=str(installer_path),
             asset_json_path=str(asset_json_path),
@@ -1070,6 +1066,8 @@ class MainWindow(QMainWindow):
             self._finish_retry_failed(action_result)
         elif result.action == "copy_diagnostics":
             self._finish_copy_diagnostics(action_result)
+        elif result.action in {"delete_failed_record", "clear_failed_records"}:
+            self._finish_failed_record_mutation(action_result)
         elif result.action == "update_download_options":
             self._finish_update_download_options(action_result)
         elif result.action == "pause_download":
@@ -1114,6 +1112,13 @@ class MainWindow(QMainWindow):
         if text:
             self._request_clipboard_copy(str(text))
         self.append_log(str(action_result.get("message") or "Trace ID copied"))
+
+    def _finish_failed_record_mutation(self, action_result: dict[str, object]) -> None:
+        if action_result.get("status") != "ok":
+            self.append_log(str(action_result.get("message") or "failed record mutation failed"), level="ERROR")
+            return
+        self.append_log(str(action_result.get("message") or "failed records updated"))
+        self.refresh_frontend_state(topics={"failed_records.refresh"})
 
     def _finish_update_download_options(self, action_result: dict[str, object]) -> None:
         if action_result.get("status") != "ok":
@@ -2578,6 +2583,12 @@ class MainWindow(QMainWindow):
 
     def _copy_item_diagnostics(self, video_id: str) -> None:
         self._submit_frontend_action("copy_diagnostics", {"video_id": video_id})
+
+    def _delete_failed_record(self, video_id: str) -> None:
+        self._submit_frontend_action("delete_failed_record", {"video_id": video_id})
+
+    def _clear_failed_records(self) -> None:
+        self._submit_frontend_action("clear_failed_records", {})
 
     @safe_slot
     def _update_basic_setting(self, section: str, key: str, value) -> None:

@@ -137,6 +137,12 @@ LOG_RETENTION_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "5", "label": "5 \u5929"},
     {"value": "7", "label": "7 \u5929"},
 )
+FAILED_RECORD_RETENTION_OPTIONS: tuple[dict[str, str], ...] = (
+    {"value": "3", "label": "3 \u5929"},
+    {"value": "7", "label": "7 \u5929\uff08\u63a8\u8350\uff09"},
+    {"value": "14", "label": "14 \u5929"},
+    {"value": "30", "label": "30 \u5929"},
+)
 UI_LOG_MAX_DISPLAY_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "100", "label": "100 \u6761"},
     {"value": "300", "label": "300 \u6761\uff08\u63a8\u8350\uff09"},
@@ -236,6 +242,10 @@ def platform_page_count_options() -> list[dict[str, str]]:
 
 def log_retention_options() -> list[dict[str, str]]:
     return [dict(option) for option in LOG_RETENTION_OPTIONS]
+
+
+def failed_record_retention_options() -> list[dict[str, str]]:
+    return [dict(option) for option in FAILED_RECORD_RETENTION_OPTIONS]
 
 
 def ui_log_max_display_options() -> list[dict[str, str]]:
@@ -568,6 +578,7 @@ class PlaybackSettings:
 class LogSettings:
     """封装日志中心展示与清理策略。"""
     retention_days: int = 1
+    failed_record_retention_days: int = 7
     level: str = "info"
     ui_log_max_display_count: int = 300
     auto_copy_trace_on_error: bool = True
@@ -577,6 +588,8 @@ class LogSettings:
 
         if str(self.retention_days) not in _option_values(LOG_RETENTION_OPTIONS):
             self.retention_days = 1
+        if str(self.failed_record_retention_days) not in _option_values(FAILED_RECORD_RETENTION_OPTIONS):
+            self.failed_record_retention_days = 7
         self.ui_log_max_display_count = normalize_ui_log_max_display_count(self.ui_log_max_display_count)
         if self.level not in _option_values(LOG_LEVEL_OPTIONS):
             self.level = "info"
@@ -850,6 +863,11 @@ class ConfigManager:
             days = int(value)
             if str(days) not in _option_values(LOG_RETENTION_OPTIONS):
                 raise ConfigValidationError(f"未知日志保留天数: {value}")
+            return days
+        if section == "logging" and key == "failed_record_retention_days":
+            days = int(value)
+            if str(days) not in _option_values(FAILED_RECORD_RETENTION_OPTIONS):
+                raise ConfigValidationError(f"未知失败记录保留天数: {value}")
             return days
         if section == "appearance" and key == "accent":
             accent = str(value or "blue").strip().lower()

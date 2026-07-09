@@ -704,6 +704,8 @@ class FrontendStateService:
         payload = payload or {}
         handler = {
             "delete_item": self._action_delete_item,
+            "delete_failed_record": self._action_delete_failed_record,
+            "clear_failed_records": self._action_clear_failed_records,
             "clear_queue": self._action_clear_queue,
             "pause_download": self._action_pause_download,
             "retry_failed": self._action_retry_failed,
@@ -817,6 +819,7 @@ class FrontendStateService:
             {
                 "level": "info",
                 "retention_days": 1,
+                "failed_record_retention_days": 7,
                 "cleanup_old_logs_on_start": False,
                 "ui_log_max_display_count": 300,
                 "auto_copy_trace_on_error": True,
@@ -839,6 +842,17 @@ class FrontendStateService:
         set_auto_copy = getattr(self.app_state, "set_auto_copy_trace_on_error", None)
         if callable(set_auto_copy):
             set_auto_copy(bool(logging_cfg.get("auto_copy_trace_on_error", True)))
+        request_prune = getattr(self.failed_record_store, "request_prune", None)
+        if callable(request_prune):
+            try:
+                request_prune(int(logging_cfg.get("failed_record_retention_days", 7) or 7))
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "FrontendStateService",
+                    "failed_record_store.request_prune",
+                    exc,
+                    details={"retention_days": logging_cfg.get("failed_record_retention_days", 7)},
+                )
 
     def _apply_runtime_setting(self, section: str, key: str, value: Any) -> None:
         """配置保存后同步运行时对象；涉及 Qt 控件的更新必须转回 GUI 线程。"""
@@ -2051,6 +2065,49 @@ class FrontendStateService:
             return FrontendActionResult("ok", message or "deleted", data or {"video_id": video_id})
         return FrontendActionResult("error", message or f"delete failed: {status}", data or {"video_id": video_id})
 
+    def _action_delete_failed_record(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        video_id = str(payload.get("id") or payload.get("video_id") or "")
+        if not video_id:
+            return FrontendActionResult("error", "missing failed record id")
+        delete_record = getattr(self.failed_record_store, "delete_record", None)
+        deleted = False
+        if callable(delete_record):
+            try:
+                deleted = bool(delete_record(video_id))
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "FrontendStateService",
+                    "delete_failed_record",
+                    exc,
+                    details={"video_id": video_id},
+                )
+                return FrontendActionResult("error", f"delete failed record failed: {exc}", {"video_id": video_id})
+        if not deleted and self._video_for_update(video_id) is not None:
+            return self._action_delete_item({"video_id": video_id})
+        self.record_event("failed_records.refresh", {"video_id": video_id, "deleted": deleted})
+        return FrontendActionResult(
+            "ok",
+            "failed record deleted" if deleted else "failed record already deleted",
+            {"video_id": video_id, "deleted": deleted},
+        )
+
+    def _action_clear_failed_records(self, payload: Mapping[str, Any]) -> FrontendActionResult:
+        del payload
+        clear_records = getattr(self.failed_record_store, "clear_records", None)
+        if not callable(clear_records):
+            return FrontendActionResult("error", "failed record store is unavailable")
+        try:
+            deleted_count = int(clear_records())
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "clear_failed_records",
+                exc,
+            )
+            return FrontendActionResult("error", f"clear failed records failed: {exc}")
+        self.record_event("failed_records.refresh", {"count": deleted_count, "cleared": True})
+        return FrontendActionResult("ok", "failed records cleared", {"count": deleted_count})
+
     def _action_clear_queue(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         del payload
         queue_ids = sorted(self.queue_item_ids())
@@ -2228,12 +2285,37 @@ class FrontendStateService:
     def _action_copy_diagnostics(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         video_id = str(payload.get("id") or payload.get("video_id") or "")
         item = self._videos().get(video_id)
-        if not item:
+        trace_id = self._trace_id(item) if item else ""
+        if not trace_id and video_id:
+            record = self._failed_record_for_id(video_id)
+            trace_id = str((record or {}).get("trace_id") or "")
+        if not item and not trace_id:
             return FrontendActionResult("error", "task not found")
-        trace_id = self._trace_id(item)
         if not trace_id:
             return FrontendActionResult("error", "trace id not found", {"video_id": video_id})
         return FrontendActionResult("ok", "trace id ready", {"text": trace_id, "trace_id": trace_id})
+
+    def _failed_record_for_id(self, video_id: str) -> dict[str, Any] | None:
+        normalized_id = str(video_id or "")
+        if not normalized_id:
+            return None
+        for row in self._failed_record_snapshot_items():
+            if str(row.get("id") or row.get("video_id") or "") == normalized_id:
+                return row
+        record_by_id = getattr(self.failed_record_store, "record_by_id", None)
+        if not callable(record_by_id):
+            return None
+        try:
+            row = record_by_id(normalized_id)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendStateService",
+                "failed_record_store.record_by_id",
+                exc,
+                details={"video_id": normalized_id},
+            )
+            return None
+        return dict(row) if isinstance(row, Mapping) else None
 
     def _action_update_basic_setting(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         key = str(payload.get("key") or payload.get("name") or "").strip()

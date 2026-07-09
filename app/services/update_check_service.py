@@ -7,7 +7,8 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cmp_to_key
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,11 +27,13 @@ from app.services.secure_updater import (
     GitHubReleaseClient,
     LocalUpdateState,
     ManifestError,
+    ManifestLocations,
     UpdateManifestVerifier,
     VersionPolicy,
     compare_semver,
     load_local_update_state,
     log_update_event,
+    sanitize_filename,
     save_local_update_state,
     validate_asset_url,
 )
@@ -52,6 +55,20 @@ class UpdateCheckError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class UpdateCandidate:
+    version: str
+    tag_name: str
+    release_name: str
+    html_url: str
+    notes: str = ""
+    mandatory: bool = False
+    asset_name: str = ""
+    installer_type: str = ""
+    manifest_path: str = ""
+    signature_path: str = ""
+
+
+@dataclass(frozen=True)
 class UpdateCheckResult:
     status: str
     local_version: str
@@ -65,6 +82,27 @@ class UpdateCheckResult:
     installer_type: str = ""
     manifest_path: str = ""
     signature_path: str = ""
+    candidates: tuple[UpdateCandidate, ...] = ()
+
+    def for_version(self, version: str) -> "UpdateCheckResult":
+        """Return a copy pinned to one verified update candidate."""
+        normalized = normalize_version(version)
+        for candidate in self.candidates:
+            if normalize_version(candidate.version) == normalized:
+                return replace(
+                    self,
+                    latest_version=candidate.version,
+                    tag_name=candidate.tag_name,
+                    release_name=candidate.release_name,
+                    html_url=candidate.html_url,
+                    notes=candidate.notes,
+                    mandatory=candidate.mandatory,
+                    asset_name=candidate.asset_name,
+                    installer_type=candidate.installer_type,
+                    manifest_path=candidate.manifest_path,
+                    signature_path=candidate.signature_path,
+                )
+        raise ValueError(f"unknown update candidate version: {version}")
 
 
 def normalize_version(value: Any) -> str:
@@ -244,6 +282,8 @@ def check_secure_update(
     manual: bool = True,
     state: LocalUpdateState | None = None,
     release_client: GitHubReleaseClient | None = None,
+    selected_version: str | None = None,
+    max_candidates: int = 10,
 ) -> UpdateCheckResult:
     """Check for a signed-manifest update and select the current platform asset.
 
@@ -262,66 +302,110 @@ def check_secure_update(
     metadata_dir = user_cache_root() / "updates" / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    if manifest_path is None or signature_path is None:
-        client = release_client or GitHubReleaseClient(owner=owner, repo=repo)
-        try:
-            locations = client.fetch_manifest_locations(manual=manual)
-        except DownloadError as exc:
-            raise UpdateCheckError(str(exc)) from exc
-        if locations.not_modified:
-            raise UpdateCheckError("GitHub release manifest was not modified and no cached manifest was provided")
-        release_url = release_url or locations.release_url
-        try:
-            manifest_path = _download_metadata_file(
-                locations.manifest_url,
-                metadata_dir / DEFAULT_MANIFEST_NAME,
-            )
-            signature_path = _download_metadata_file(
-                locations.signature_url,
-                metadata_dir / DEFAULT_SIGNATURE_NAME,
-            )
-        except (ManifestError, DownloadError) as exc:
-            raise UpdateCheckError(str(exc)) from exc
-
     verifier = UpdateManifestVerifier(public_key_pem=configured_public_key, app_id=app_id, channel=channel)
-    try:
-        manifest = verifier.load_verified(Path(manifest_path), Path(signature_path))
-        asset = AssetSelector(os_name=os_name, arch=arch).select(manifest)
-    except (ManifestError, ValueError) as exc:
-        raise UpdateCheckError(str(exc)) from exc
-    if compare_versions(normalized_local, manifest.min_client_version) < 0:
-        raise UpdateCheckError(
-            f"当前客户端版本 {normalized_local} 低于此更新要求的最低版本 {manifest.min_client_version}"
+    selector = AssetSelector(os_name=os_name, arch=arch)
+    managed_state = state if state is not None else load_local_update_state()
+
+    if manifest_path is not None and signature_path is not None:
+        try:
+            verified_candidates = (
+                _candidate_from_verified_metadata(
+                    verifier=verifier,
+                    selector=selector,
+                    local_version=normalized_local,
+                    manifest_path=Path(manifest_path),
+                    signature_path=Path(signature_path),
+                    release_url=release_url,
+                ),
+            )
+        except (ManifestError, ValueError) as exc:
+            raise UpdateCheckError(str(exc)) from exc
+    else:
+        verified_candidates = _fetch_verified_update_candidates(
+            release_client=release_client or GitHubReleaseClient(owner=owner, repo=repo),
+            verifier=verifier,
+            selector=selector,
+            metadata_dir=metadata_dir,
+            local_version=normalized_local,
+            manual=manual,
+            max_candidates=max_candidates,
         )
 
-    managed_state = state if state is not None else load_local_update_state()
-    policy = VersionPolicy(channel=channel, state=managed_state).evaluate(
-        manifest.version,
-        current_version=normalized_local,
-        manual=manual,
-        mandatory=manifest.mandatory,
+    ranked_candidates = _sort_candidates_desc(verified_candidates)
+    available_candidates = tuple(
+        candidate
+        for candidate in ranked_candidates
+        if _candidate_is_available(
+            candidate,
+            current_version=normalized_local,
+            channel=channel,
+            manual=manual,
+            state=managed_state,
+        )
     )
     if state is None:
+        if ranked_candidates:
+            managed_state.last_seen_version = normalize_version(ranked_candidates[0].version)
         save_local_update_state(managed_state)
-    latest_version = normalize_version(manifest.version)
-    if not policy.allowed:
-        if compare_versions(normalized_local, latest_version) > 0:
-            status = UPDATE_STATUS_LOCAL_NEWER
-        else:
-            status = UPDATE_STATUS_CURRENT
-    else:
-        status = UPDATE_STATUS_AVAILABLE
-    if status == UPDATE_STATUS_AVAILABLE:
-        log_update_event("update.check.available", "signed update is available", version=latest_version, mandatory=manifest.mandatory)
-    else:
-        log_update_event("update.check.no_update", "no signed update is available", version=latest_version, reason=policy.reason)
 
-    return UpdateCheckResult(
+    selected_candidate = _select_update_candidate(available_candidates, selected_version=selected_version)
+    if selected_candidate is not None:
+        log_update_event(
+            "update.check.available",
+            "signed update is available",
+            version=selected_candidate.version,
+            mandatory=selected_candidate.mandatory,
+        )
+        return _result_from_candidate(
+            selected_candidate,
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version=normalized_local,
+            candidates=available_candidates,
+        )
+
+    if not ranked_candidates:
+        raise UpdateCheckError("No signed update candidates were available")
+    latest_candidate = ranked_candidates[0]
+    if compare_versions(normalized_local, latest_candidate.version) > 0:
+        status = UPDATE_STATUS_LOCAL_NEWER
+    else:
+        status = UPDATE_STATUS_CURRENT
+    log_update_event(
+        "update.check.no_update",
+        "no signed update is available",
+        version=latest_candidate.version,
+        reason="no candidate passed update policy",
+    )
+    return _result_from_candidate(
+        latest_candidate,
         status=status,
         local_version=normalized_local,
-        latest_version=latest_version,
-        tag_name=manifest.tag,
-        release_name=manifest.tag or manifest.version,
+        candidates=available_candidates,
+    )
+
+
+def _candidate_from_verified_metadata(
+    *,
+    verifier: UpdateManifestVerifier,
+    selector: AssetSelector,
+    local_version: str,
+    manifest_path: Path,
+    signature_path: Path,
+    release_url: str = "",
+    tag_name: str = "",
+    release_name: str = "",
+) -> UpdateCandidate:
+    manifest = verifier.load_verified(Path(manifest_path), Path(signature_path))
+    asset = selector.select(manifest)
+    if compare_versions(local_version, manifest.min_client_version) < 0:
+        raise UpdateCheckError(
+            f"当前客户端版本 {local_version} 低于此更新要求的最低版本 {manifest.min_client_version}"
+        )
+    version = normalize_version(manifest.version)
+    return UpdateCandidate(
+        version=version,
+        tag_name=tag_name or manifest.tag,
+        release_name=release_name or manifest.tag or manifest.version,
         html_url=release_url,
         notes=manifest.notes,
         mandatory=manifest.mandatory,
@@ -329,6 +413,182 @@ def check_secure_update(
         installer_type=asset.installer_type,
         manifest_path=str(manifest_path),
         signature_path=str(signature_path),
+    )
+
+
+def _fetch_verified_update_candidates(
+    *,
+    release_client: Any,
+    verifier: UpdateManifestVerifier,
+    selector: AssetSelector,
+    metadata_dir: Path,
+    local_version: str,
+    manual: bool,
+    max_candidates: int,
+) -> tuple[UpdateCandidate, ...]:
+    try:
+        if hasattr(release_client, "fetch_manifest_location_candidates"):
+            locations = tuple(
+                release_client.fetch_manifest_location_candidates(
+                    manual=manual,
+                    per_page=max_candidates,
+                )
+            )
+        else:
+            locations = (release_client.fetch_manifest_locations(manual=manual),)
+    except DownloadError as exc:
+        raise UpdateCheckError(str(exc)) from exc
+    if not locations or all(location.not_modified for location in locations):
+        cached = _load_cached_update_candidates(
+            verifier=verifier,
+            selector=selector,
+            metadata_dir=metadata_dir,
+            local_version=local_version,
+        )
+        if cached:
+            return cached
+        raise UpdateCheckError("GitHub release manifest was not modified and no cached manifest was provided")
+
+    candidates: list[UpdateCandidate] = []
+    errors: list[str] = []
+    for index, location in enumerate(locations, start=1):
+        if location.not_modified:
+            continue
+        try:
+            manifest_target, signature_target = _metadata_targets(metadata_dir, location, index)
+            manifest_path = _download_metadata_file(location.manifest_url, manifest_target)
+            signature_path = _download_metadata_file(location.signature_url, signature_target)
+            candidates.append(
+                _candidate_from_verified_metadata(
+                    verifier=verifier,
+                    selector=selector,
+                    local_version=local_version,
+                    manifest_path=manifest_path,
+                    signature_path=signature_path,
+                    release_url=location.release_url,
+                    tag_name=location.tag_name,
+                    release_name=location.release_name,
+                )
+            )
+        except (ManifestError, DownloadError, UpdateCheckError, ValueError) as exc:
+            errors.append(str(exc))
+            log_update_event("update.check.candidate_skipped", str(exc), level="WARN")
+    if not candidates:
+        detail = "; ".join(error for error in errors if error)
+        raise UpdateCheckError(detail or "No signed update candidates were available")
+    return tuple(candidates)
+
+
+def _load_cached_update_candidates(
+    *,
+    verifier: UpdateManifestVerifier,
+    selector: AssetSelector,
+    metadata_dir: Path,
+    local_version: str,
+) -> tuple[UpdateCandidate, ...]:
+    pairs: list[tuple[Path, Path]] = []
+    legacy_manifest = metadata_dir / DEFAULT_MANIFEST_NAME
+    legacy_signature = metadata_dir / DEFAULT_SIGNATURE_NAME
+    if legacy_manifest.exists() and legacy_signature.exists():
+        pairs.append((legacy_manifest, legacy_signature))
+    for manifest_path in metadata_dir.glob(f"*.{DEFAULT_MANIFEST_NAME}"):
+        signature_path = manifest_path.with_name(f"{manifest_path.name}.sig")
+        if signature_path.exists():
+            pairs.append((manifest_path, signature_path))
+
+    candidates: list[UpdateCandidate] = []
+    for manifest_path, signature_path in pairs:
+        try:
+            candidates.append(
+                _candidate_from_verified_metadata(
+                    verifier=verifier,
+                    selector=selector,
+                    local_version=local_version,
+                    manifest_path=manifest_path,
+                    signature_path=signature_path,
+                )
+            )
+        except (ManifestError, UpdateCheckError, ValueError) as exc:
+            log_update_event("update.check.cached_candidate_skipped", str(exc), level="WARN")
+    return tuple(candidates)
+
+
+def _metadata_targets(metadata_dir: Path, location: ManifestLocations, index: int) -> tuple[Path, Path]:
+    label = normalize_version(location.tag_name or location.release_name or "") or f"candidate-{index}"
+    safe_label = sanitize_filename(label)
+    return (
+        metadata_dir / f"{safe_label}.{DEFAULT_MANIFEST_NAME}",
+        metadata_dir / f"{safe_label}.{DEFAULT_SIGNATURE_NAME}",
+    )
+
+
+def _sort_candidates_desc(candidates: tuple[UpdateCandidate, ...]) -> tuple[UpdateCandidate, ...]:
+    return tuple(
+        sorted(
+            candidates,
+            key=cmp_to_key(lambda left, right: -compare_versions(left.version, right.version)),
+        )
+    )
+
+
+def _candidate_is_available(
+    candidate: UpdateCandidate,
+    *,
+    current_version: str,
+    channel: str,
+    manual: bool,
+    state: LocalUpdateState,
+) -> bool:
+    policy_state = LocalUpdateState(
+        skipped_version=state.skipped_version,
+        install_attempt_limit=state.install_attempt_limit,
+    )
+    policy = VersionPolicy(channel=channel, state=policy_state).evaluate(
+        candidate.version,
+        current_version=current_version,
+        manual=manual,
+        mandatory=candidate.mandatory,
+    )
+    return policy.allowed
+
+
+def _select_update_candidate(
+    candidates: tuple[UpdateCandidate, ...],
+    *,
+    selected_version: str | None,
+) -> UpdateCandidate | None:
+    if not candidates:
+        return None
+    if not selected_version:
+        return candidates[0]
+    normalized = normalize_version(selected_version)
+    for candidate in candidates:
+        if normalize_version(candidate.version) == normalized:
+            return candidate
+    raise UpdateCheckError(f"Selected update version is not available: {selected_version}")
+
+
+def _result_from_candidate(
+    candidate: UpdateCandidate,
+    *,
+    status: str,
+    local_version: str,
+    candidates: tuple[UpdateCandidate, ...],
+) -> UpdateCheckResult:
+    return UpdateCheckResult(
+        status=status,
+        local_version=local_version,
+        latest_version=candidate.version,
+        tag_name=candidate.tag_name,
+        release_name=candidate.release_name,
+        html_url=candidate.html_url,
+        notes=candidate.notes,
+        mandatory=candidate.mandatory,
+        asset_name=candidate.asset_name,
+        installer_type=candidate.installer_type,
+        manifest_path=candidate.manifest_path,
+        signature_path=candidate.signature_path,
+        candidates=candidates,
     )
 
 

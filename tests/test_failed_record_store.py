@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from app.services.failed_record_store import FailedRecordStore
 
 
@@ -222,3 +224,85 @@ def test_failed_record_store_worker_resets_state_after_unexpected_write_error(tm
         store.shutdown()
 
     assert [row["id"] for row in rows] == ["video-good"]
+
+
+def test_failed_record_store_deletes_single_record_and_refreshes_snapshot(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert(
+            [
+                {
+                    "id": "delete-me",
+                    "title": "delete row",
+                    "reason": "network",
+                    "failed_at": "2026-07-06 12:00:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "trace-delete",
+                },
+                {
+                    "id": "keep-me",
+                    "title": "keep row",
+                    "reason": "network",
+                    "failed_at": "2026-07-06 12:01:00",
+                    "status": "Failed",
+                    "platform": "Bilibili",
+                    "trace_id": "trace-keep",
+                },
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        assert store.delete_record("delete-me") is True
+        assert store.flush(timeout=2)
+        rows = store.query(limit=10)
+        snapshot = store.records_snapshot()
+    finally:
+        store.shutdown()
+
+    assert [row["id"] for row in rows] == ["keep-me"]
+    assert [row["id"] for row in snapshot] == ["keep-me"]
+
+
+def test_failed_record_store_clear_records_removes_all_and_refreshes_snapshot(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert(
+            [
+                {"id": "clear-a", "title": "A", "reason": "network", "failed_at": "2026-07-06 12:00:00"},
+                {"id": "clear-b", "title": "B", "reason": "network", "failed_at": "2026-07-06 12:01:00"},
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        assert store.clear_records() == 2
+        assert store.flush(timeout=2)
+        rows = store.query(limit=10)
+        snapshot = store.records_snapshot()
+    finally:
+        store.shutdown()
+
+    assert rows == []
+    assert snapshot == []
+
+
+def test_failed_record_store_prune_expired_records_removes_old_failed_at(tmp_path):
+    old_failed_at = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+    fresh_failed_at = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert(
+            [
+                {"id": "expired", "title": "old", "reason": "network", "failed_at": old_failed_at},
+                {"id": "fresh", "title": "new", "reason": "network", "failed_at": fresh_failed_at},
+            ]
+        )
+
+        assert store.flush(timeout=2)
+        assert store.prune_expired(7) == 1
+        assert store.flush(timeout=2)
+        rows = store.query(limit=10)
+    finally:
+        store.shutdown()
+
+    assert [row["id"] for row in rows] == ["fresh"]

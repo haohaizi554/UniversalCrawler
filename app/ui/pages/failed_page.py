@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -14,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.services.icon_registry import platform_icon_file, ui_icon_path
+from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
@@ -86,6 +87,7 @@ class FailedPage(PageFrame):
     retry_requested = pyqtSignal(str)
     copy_diagnostics_requested = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
+    clear_failed_records_requested = pyqtSignal()
 
     PAGE_SIZE_OPTIONS = (20, 50, 100)
 
@@ -117,13 +119,29 @@ class FailedPage(PageFrame):
             default_page_size=self._page_size,
             object_name="FailedPaginationFooter",
         )
-        self.pagination_footer.layout().setContentsMargins(0, 10, 0, 0)
+        self.pagination_footer.layout().setContentsMargins(0, 0, 0, 0)
         self.total_label = self.pagination_footer.total_label
         self.btn_prev = self.pagination_footer.btn_prev
         self.btn_next = self.pagination_footer.btn_next
         self.page_label = self.pagination_footer.page_label
         self.page_size_combo = self.pagination_footer.page_size_combo
-        table_card_layout.addWidget(self.pagination_footer)
+        self.footer_row = QWidget()
+        footer_layout = QHBoxLayout(self.footer_row)
+        footer_layout.setContentsMargins(0, 10, 0, 0)
+        footer_layout.setSpacing(10)
+        self.btn_clear_failed_records = QPushButton(self._t("删除所有"))
+        self.btn_clear_failed_records.setObjectName("LogDangerActionButton")
+        self.btn_clear_failed_records.setMinimumHeight(34)
+        self.btn_clear_failed_records.setMinimumWidth(96)
+        self.btn_clear_failed_records.setToolTip(self._t("删除所有失败记录"))
+        clear_icon = load_qt_icon([ui_icon_path(action_icon_file("clear_all"))])
+        if clear_icon is not None:
+            self.btn_clear_failed_records.setIcon(clear_icon)
+            self.btn_clear_failed_records.setIconSize(QSize(16, 16))
+        self.btn_clear_failed_records.clicked.connect(self.clear_failed_records_requested.emit)
+        footer_layout.addWidget(self.btn_clear_failed_records)
+        footer_layout.addWidget(self.pagination_footer, 1)
+        table_card_layout.addWidget(self.footer_row)
         splitter.addWidget(self.table_card)
 
         self.detail = QWidget()
@@ -211,6 +229,8 @@ class FailedPage(PageFrame):
         self.detail_title.setText(self._t("错误详情"))
         self.log_title.setText(self._t("Trace / 日志片段"))
         self.solutions_title.setText(self._t("可能的解决方案"))
+        self.btn_clear_failed_records.setText(self._t("删除所有"))
+        self.btn_clear_failed_records.setToolTip(self._t("删除所有失败记录"))
         self.pagination_footer.set_language(normalized)
         if hasattr(self.table, "table_model"):
             self.table.table_model.set_language(normalized)

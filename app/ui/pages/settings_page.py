@@ -1480,6 +1480,20 @@ class SettingsPage(PageFrame):
         )
         layout.addWidget(self._build_setting_row("日志保留天数", retention))
 
+        failed_record_retention = self._build_combo(
+            self._dict_value(options, "failed_record_retention_days", []),
+            self._dict_value(value, "failed_record_retention_days", 7),
+            width=FORM_CONTROL_WIDTH,
+        )
+        failed_record_retention.currentIndexChanged.connect(
+            lambda *_args, combo=failed_record_retention: self._emit_setting_changed(
+                "logging",
+                "failed_record_retention_days",
+                current_combo_int_value(combo, 7),
+            )
+        )
+        layout.addWidget(self._build_setting_row("失败记录保留天数", failed_record_retention))
+
         display_count = self._build_combo(
             self._dict_value(options, "ui_log_max_display_count", UI_LOG_MAX_DISPLAY_OPTIONS),
             self._dict_value(value, "ui_log_max_display_count", 300),

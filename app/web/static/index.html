@@ -155,7 +155,10 @@
               </table>
             </div>
             <div class="queue-footer failed-footer">
-              <span id="failedTotal">共 0 项</span>
+              <span class="failed-footer-left">
+                <span id="failedTotal">共 0 项</span>
+                <button id="failedClearAll" class="btn btn-danger failed-clear-all" type="button" onclick="frontendAction('clear_failed_records',{})">删除所有</button>
+              </span>
               <div class="pager" aria-label="失败列表分页">
                 <button id="failedPrevPage" class="icon-btn pagination-button" type="button" onclick="setFailedPage(-1)" title="上一页" aria-label="上一页">‹</button>
                 <span><b id="failedPageNow">1</b> / <span id="failedTotalPages">1</span> 页</span>

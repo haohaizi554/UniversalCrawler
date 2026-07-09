@@ -9,6 +9,7 @@ import time
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -60,11 +61,13 @@ class FailedRecordStore:
         self._pending: dict[str, dict[str, Any]] = {}
         initial_query = FailedRecordQuery(limit=max(1, int(snapshot_limit)), offset=0)
         self._refresh_requested: FailedRecordQuery | None = None
+        self._prune_retention_days: int | None = None
         self._last_refresh_request = initial_query
         self._snapshot: list[dict[str, Any]] = []
         self._snapshot_total_count = 0
         self._writing = False
         self._refreshing = False
+        self._pruning = False
         self._shutdown = False
         self._initialized = False
         self._on_refresh = on_refresh
@@ -164,6 +167,17 @@ class FailedRecordStore:
             self._ensure_worker_locked()
             self._event.set()
 
+    def request_prune(self, retention_days: int) -> None:
+        """Request background cleanup for expired failed records and refresh the snapshot."""
+        days = self._normalize_retention_days(retention_days)
+        with self._lock:
+            if self._shutdown:
+                return
+            self._prune_retention_days = days
+            self._refresh_requested = self._last_refresh_request
+            self._ensure_worker_locked()
+            self._event.set()
+
     def records_snapshot(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         with self._snapshot_lock:
             rows = self._snapshot if limit is None else self._snapshot[: max(0, int(limit))]
@@ -182,12 +196,82 @@ class FailedRecordStore:
                 pending = bool(self._pending)
                 writing = self._writing
                 refreshing = self._refreshing
+                pruning = self._pruning
                 refresh_requested = self._refresh_requested is not None
-            if not pending and not writing and not refreshing and not refresh_requested:
+                prune_requested = self._prune_retention_days is not None
+            if not pending and not writing and not refreshing and not pruning and not refresh_requested and not prune_requested:
                 return True
             time.sleep(0.01)
         with self._lock:
-            return not self._pending and not self._writing and not self._refreshing and self._refresh_requested is None
+            return (
+                not self._pending
+                and not self._writing
+                and not self._refreshing
+                and not self._pruning
+                and self._refresh_requested is None
+                and self._prune_retention_days is None
+            )
+
+    def record_by_id(self, video_id: str) -> dict[str, Any] | None:
+        normalized_id = str(video_id or "").strip()
+        if not normalized_id:
+            return None
+        self._init_db()
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT video_id, title, reason, failed_at, status, platform, trace_id, payload_json, updated_at
+                FROM failed_records
+                WHERE video_id = ?
+                LIMIT 1
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    def delete_record(self, video_id: str) -> bool:
+        normalized_id = str(video_id or "").strip()
+        if not normalized_id:
+            return False
+        self._init_db()
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            cursor = conn.execute("DELETE FROM failed_records WHERE video_id = ?", (normalized_id,))
+            conn.commit()
+            deleted = int(cursor.rowcount or 0) > 0
+        self._refresh_after_mutation()
+        return deleted
+
+    def clear_records(self) -> int:
+        self._init_db()
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            cursor = conn.execute("DELETE FROM failed_records")
+            conn.commit()
+            deleted_count = max(0, int(cursor.rowcount or 0))
+        self._refresh_after_mutation()
+        return deleted_count
+
+    def prune_expired(self, retention_days: int) -> int:
+        days = self._normalize_retention_days(retention_days)
+        cutoff_dt = datetime.now() - timedelta(days=days)
+        cutoff_text = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+        cutoff_ts = cutoff_dt.timestamp()
+        self._init_db()
+        with closing(sqlite3.connect(self._db_path)) as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM failed_records
+                WHERE
+                    (length(COALESCE(failed_at, '')) >= 19 AND failed_at < ?)
+                    OR (length(COALESCE(failed_at, '')) < 19 AND updated_at < ?)
+                """,
+                (cutoff_text, cutoff_ts),
+            )
+            conn.commit()
+            deleted_count = max(0, int(cursor.rowcount or 0))
+        if deleted_count:
+            self._refresh_after_mutation()
+        return deleted_count
 
     def shutdown(self) -> None:
         with self._lock:
@@ -214,12 +298,17 @@ class FailedRecordStore:
                 self._pending.clear()
                 refresh_request = self._refresh_requested
                 self._refresh_requested = None
+                prune_retention_days = self._prune_retention_days
+                self._prune_retention_days = None
                 if batch and refresh_request is None:
+                    refresh_request = self._last_refresh_request
+                if prune_retention_days is not None and refresh_request is None:
                     refresh_request = self._last_refresh_request
                 self._event.clear()
                 self._writing = bool(batch)
+                self._pruning = prune_retention_days is not None
                 self._refreshing = refresh_request is not None
-            if not batch and refresh_request is None:
+            if not batch and prune_retention_days is None and refresh_request is None:
                 continue
             try:
                 write_failed = False
@@ -233,6 +322,23 @@ class FailedRecordStore:
                             "write_batch",
                             exc,
                             details={"count": len(batch), "db_path": str(self._db_path)},
+                        )
+                if prune_retention_days is not None:
+                    try:
+                        deleted_count = self.prune_expired(prune_retention_days)
+                        if deleted_count:
+                            debug_logger.log(
+                                "FailedRecordStore",
+                                "failed_record_prune",
+                                message=f"Pruned {deleted_count} expired failed records",
+                                details={"count": deleted_count, "retention_days": prune_retention_days},
+                            )
+                    except Exception as exc:
+                        debug_logger.log_exception(
+                            "FailedRecordStore",
+                            "prune_expired",
+                            exc,
+                            details={"retention_days": prune_retention_days, "db_path": str(self._db_path)},
                         )
                 if refresh_request is not None and not write_failed:
                     try:
@@ -251,6 +357,7 @@ class FailedRecordStore:
                 with self._lock:
                     self._writing = False
                     self._refreshing = False
+                    self._pruning = False
 
     def _init_db(self) -> None:
         if self._initialized:
@@ -419,6 +526,22 @@ class FailedRecordStore:
             failed_to=str(query.failed_to or "").strip(),
             order=order,
         )
+
+    @staticmethod
+    def _normalize_retention_days(value: Any) -> int:
+        try:
+            days = int(value)
+        except (TypeError, ValueError):
+            days = 7
+        return max(1, min(days, 365))
+
+    def _refresh_after_mutation(self) -> None:
+        with self._lock:
+            if self._shutdown:
+                return
+            self._refresh_requested = self._last_refresh_request
+            self._ensure_worker_locked()
+            self._event.set()
 
     @staticmethod
     def _build_where_clause(query: FailedRecordQuery) -> tuple[str, tuple[Any, ...]]:

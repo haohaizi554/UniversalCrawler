@@ -55,6 +55,7 @@
     "\u89c6\u9891\u64ad\u653e\u5b8c\u81ea\u52a8\u4e0b\u4e00\u9879": "\u7ed3\u675f\u540e\u64ad\u653e\u4e0b\u4e00\u9879",
     "\u56fe\u7247\u53ea\u624b\u52a8\u5207\u6362": "\u5173\u95ed\u56fe\u7247\u81ea\u52a8\u8f6e\u64ad",
     "\u65e5\u5fd7\u4fdd\u7559\u5929\u6570": "\u521d\u59cb\u5316\u65f6\u81ea\u52a8\u6e05\u7406",
+    "\u5931\u8d25\u8bb0\u5f55\u4fdd\u7559\u5929\u6570": "\u81ea\u52a8\u6e05\u7406\u8fc7\u671f\u5931\u8d25\u8bb0\u5f55",
     "UI\u65e5\u5fd7\u6700\u5927\u663e\u793a\u6570\u91cf": "\u9650\u5236\u65e5\u5fd7\u4e2d\u5fc3\u5c55\u793a\u6761\u6570",
     "\u9519\u8bef\u65f6\u81ea\u52a8\u590d\u5236 Trace": "\u5f02\u5e38\u65f6\u590d\u5236\u8ffd\u8e2a\u7f16\u53f7",
     "\u8bed\u8a00": "\u754c\u9762\u8bed\u8a00",
@@ -129,6 +130,7 @@
     if (group === "\u65e5\u5fd7\u8bbe\u7f6e") {
       return [
         settingSelect("\u65e5\u5fd7\u4fdd\u7559\u5929\u6570", "retention_days", value && value.retention_days, options.retention_days || [], "logging"),
+        settingSelect("\u5931\u8d25\u8bb0\u5f55\u4fdd\u7559\u5929\u6570", "failed_record_retention_days", value && value.failed_record_retention_days, options.failed_record_retention_days || [], "logging"),
         settingSelect("UI\u65e5\u5fd7\u6700\u5927\u663e\u793a\u6570\u91cf", "ui_log_max_display_count", value && value.ui_log_max_display_count, options.ui_log_max_display_count || [], "logging"),
         settingCheckbox("\u9519\u8bef\u65f6\u81ea\u52a8\u590d\u5236 Trace", "auto_copy_trace_on_error", !!(value && value.auto_copy_trace_on_error), "logging"),
       ].join("");

@@ -51,6 +51,10 @@ ucrawl-web = "entry.web_entry:main"
 ucrawl-auto = "entry.dispatcher:run"
 # 测试套件（GUI / TUI / CLI 三模自适应）
 ucrawl-test = "entry.test_entry:main"
+# Release bootstrap / signing automation
+ucrawl-update-bootstrap = "scripts.update_bootstrap:main"
+# Secret leakage guard used before release commits
+scan-secrets = "scripts.update_bootstrap:scan_secrets_main"
 
 [project.gui-scripts]
 # 桌面 GUI（Windows 上启动不弹黑窗）
@@ -59,7 +63,7 @@ ucrawl-gui = "entry.gui_entry:main"
 ucrawl-test-gui = "entry.test_entry:main"
 
 [tool.setuptools.packages.find]
-include = ["app*", "cli*", "entry*", "shared*", "ucrawl*"]
+include = ["app*", "cli*", "entry*", "shared*", "ucrawl*", "scripts*"]
 exclude = ["docs*", "packaging*", "tests*"]
 
 [tool.setuptools.package-data]

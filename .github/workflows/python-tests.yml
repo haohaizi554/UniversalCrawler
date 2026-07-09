@@ -10,6 +10,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
@@ -20,13 +23,19 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
+          python -m pip install pytest~=8.4.2 pytest-asyncio~=1.2.0
 
       - name: Compile Sources
         run: python -m compileall app tests main.py
 
-      - name: Run Unit Tests
-        run: python -m unittest discover -s tests
+      - name: Run Tests
+        run: python -m pytest -q

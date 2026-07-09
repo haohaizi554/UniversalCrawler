@@ -1,6 +1,7 @@
 """打包辅助脚本，负责 `packaging/build_installer.py` 相关的构建、发布或运行时处理。"""
 
 from __future__ import annotations
+import os
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = PROJECT_ROOT / "dist" / DIST_DIR_NAME
 ISS_FILE = PROJECT_ROOT / "packaging" / "installer.iss"
 OUTPUT_DIR = PROJECT_ROOT / "dist" / "installer"
+UPDATE_BOOTSTRAP = PROJECT_ROOT / "scripts" / "update_bootstrap.py"
 WIZARD_IMAGE = PROJECT_ROOT / "packaging" / "wizard_image.bmp"
 WIZARD_SMALL_IMAGE = PROJECT_ROOT / "packaging" / "wizard_small_image.bmp"
 APP_ICON = PROJECT_ROOT / APP_ICON_NAME
@@ -192,6 +194,27 @@ def ensure_prerequisites() -> str:
         )
     return iscc
 
+
+def maybe_sign_windows_installer(setup_exe: Path) -> None:
+    """Optionally run production signing after Inno emits the installer."""
+
+    if os.environ.get("UCRAWL_SIGN_WINDOWS") != "1":
+        print("未设置 UCRAWL_SIGN_WINDOWS=1，跳过生产签名。")
+        return
+    subprocess.run(
+        [sys.executable, str(UPDATE_BOOTSTRAP), "sign-windows-installer", "--installer", str(setup_exe)],
+        cwd=PROJECT_ROOT,
+        check=True,
+        shell=False,
+    )
+    subprocess.run(
+        [sys.executable, str(UPDATE_BOOTSTRAP), "inject-windows-trust", "--installer", str(setup_exe)],
+        cwd=PROJECT_ROOT,
+        check=True,
+        shell=False,
+    )
+
+
 def main() -> None:
     """作为脚本入口组织整体执行流程。"""
     iscc = ensure_prerequisites()
@@ -223,6 +246,7 @@ def main() -> None:
         raise SystemExit(f"安装包构建失败，未找到输出文件: {setup_exe}")
     if setup_exe.stat().st_mtime < build_started_at:
         raise SystemExit(f"安装包未被重新生成，输出文件时间异常: {setup_exe}")
+    maybe_sign_windows_installer(setup_exe)
     print(f"安装包构建完成: {setup_exe}")
 
 if __name__ == "__main__":

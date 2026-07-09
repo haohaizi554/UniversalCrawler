@@ -429,6 +429,7 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
   },
   "logging": {
     "retention_days": 1,
+    "failed_record_retention_days": 7,
     "level": "info",
     "ui_log_max_display_count": 300
   },

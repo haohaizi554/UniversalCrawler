@@ -1901,6 +1901,19 @@ tr.selected:hover td {
   padding: 8px 2px 0;
 }
 
+.failed-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.failed-clear-all {
+  height: 34px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .pager {
   display: inline-flex;
   align-items: center;

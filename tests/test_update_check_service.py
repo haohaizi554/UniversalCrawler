@@ -5,6 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+from Crypto.PublicKey import ECC
+
 from app.services.update_check_service import (
     UPDATE_STATUS_AVAILABLE,
     UPDATE_STATUS_CURRENT,
@@ -32,6 +34,20 @@ class _FakeResponse:
 
     def geturl(self) -> str:
         return self._url
+
+    def read(self, *_args):
+        return self._body
+
+
+class _FakeBytesResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
     def read(self, *_args):
         return self._body
@@ -142,6 +158,128 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertEqual(result.latest_version, "3.7.0")
         self.assertEqual(result.asset_name, "UniversalCrawlerPro_Setup_3.7.0.exe")
         self.assertEqual(result.installer_type, "inno")
+
+    def test_secure_update_returns_verified_candidates_and_honors_selected_version(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.test_secure_updater import _signed_manifest
+
+        def overrides(version: str) -> dict:
+            return {
+                "version": version,
+                "tag": f"v{version}",
+                "notes": f"release {version}",
+                "assets": {
+                    "windows-x64": {
+                        "name": f"UniversalCrawlerPro_Setup_{version}.exe",
+                        "url": f"https://github.com/owner/repo/releases/download/v{version}/installer.exe",
+                        "sha256": "b" * 64,
+                        "size": 2048,
+                        "installerType": "inno",
+                        "os": "windows",
+                        "arch": "x64",
+                    }
+                },
+            }
+
+        key = ECC.generate(curve="Ed25519")
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest38, sig38, public_pem = _signed_manifest(
+                root / "v3.8.0",
+                key=key,
+                manifest_name="latest.json",
+                overrides=overrides("3.8.0"),
+            )
+            manifest37, sig37, _public_pem = _signed_manifest(
+                root / "v3.7.0",
+                key=key,
+                manifest_name="latest.json",
+                overrides=overrides("3.7.0"),
+            )
+            blobs = {
+                "https://github.com/owner/repo/releases/download/v3.8.0/latest.json": manifest38.read_bytes(),
+                "https://github.com/owner/repo/releases/download/v3.8.0/latest.json.sig": sig38.read_bytes(),
+                "https://github.com/owner/repo/releases/download/v3.7.0/latest.json": manifest37.read_bytes(),
+                "https://github.com/owner/repo/releases/download/v3.7.0/latest.json.sig": sig37.read_bytes(),
+            }
+
+            class FakeReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return (
+                        ManifestLocations(
+                            manifest_url="https://github.com/owner/repo/releases/download/v3.8.0/latest.json",
+                            signature_url="https://github.com/owner/repo/releases/download/v3.8.0/latest.json.sig",
+                            release_url="https://github.com/owner/repo/releases/tag/v3.8.0",
+                            tag_name="v3.8.0",
+                            release_name="Release 3.8.0",
+                        ),
+                        ManifestLocations(
+                            manifest_url="https://github.com/owner/repo/releases/download/v3.7.0/latest.json",
+                            signature_url="https://github.com/owner/repo/releases/download/v3.7.0/latest.json.sig",
+                            release_url="https://github.com/owner/repo/releases/tag/v3.7.0",
+                            tag_name="v3.7.0",
+                            release_name="Release 3.7.0",
+                        ),
+                    )
+
+            def fake_urlopen(request, timeout):
+                return _FakeBytesResponse(blobs[request.full_url])
+
+            with (
+                patch("app.services.update_check_service.urllib.request.urlopen", side_effect=fake_urlopen),
+                patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
+            ):
+                result = check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    release_client=FakeReleaseClient(),
+                    os_name="windows",
+                    arch="x64",
+                    state=LocalUpdateState(),
+                )
+
+        self.assertEqual(result.latest_version, "3.8.0")
+        self.assertEqual([candidate.version for candidate in result.candidates], ["3.8.0", "3.7.0"])
+        selected = result.for_version("3.7.0")
+        self.assertEqual(selected.latest_version, "3.7.0")
+        self.assertEqual(selected.asset_name, "UniversalCrawlerPro_Setup_3.7.0.exe")
+        self.assertIn("3.7.0", selected.manifest_path)
+
+    def test_secure_update_reuses_cached_candidate_metadata_when_release_list_is_not_modified(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import LocalUpdateState, ManifestLocations
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_metadata = root / "cache" / "updates" / "metadata"
+            manifest_path, sig_path, public_pem = _signed_manifest(root / "source")
+            cache_metadata.mkdir(parents=True)
+            cached_manifest = cache_metadata / "3.7.0.latest.json"
+            cached_signature = cache_metadata / "3.7.0.latest.json.sig"
+            cached_manifest.write_bytes(manifest_path.read_bytes())
+            cached_signature.write_bytes(sig_path.read_bytes())
+
+            class FakeReleaseClient:
+                def fetch_manifest_location_candidates(self, **_kwargs):
+                    return (ManifestLocations(not_modified=True),)
+
+            with patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"):
+                result = check_secure_update(
+                    "v3.6.17",
+                    public_key_pem=public_pem,
+                    release_client=FakeReleaseClient(),
+                    os_name="windows",
+                    arch="x64",
+                    state=LocalUpdateState(),
+                )
+
+        self.assertEqual(result.status, UPDATE_STATUS_AVAILABLE)
+        self.assertEqual(result.latest_version, "3.7.0")
+        self.assertEqual(result.manifest_path, str(cached_manifest))
 
     def test_secure_update_rejects_manifest_requiring_newer_client(self):
         from tempfile import TemporaryDirectory
@@ -314,3 +452,49 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
             labels,
         )
         self.assertNotIn("\u8fd9\u901a\u5e38\u8868\u793a", labels)
+
+    def test_update_check_dialog_exposes_selector_for_multiple_update_candidates(self):
+        from PyQt6.QtWidgets import QComboBox, QLabel
+
+        from app.services.update_check_service import UpdateCandidate
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="\u68c0\u6d4b\u5230\u65b0\u7248\u672c",
+            message="\u68c0\u6d4b\u5230\u591a\u4e2a\u53ef\u66f4\u65b0\u7248\u672c\u3002",
+            details="\u8bf7\u9009\u62e9\u8981\u5b89\u88c5\u7684\u7248\u672c\u3002",
+            status=UPDATE_STATUS_AVAILABLE,
+            local_version="v3.6.17",
+            latest_version="v3.8.0",
+            release_url="https://example.test/releases/v3.8.0",
+            candidates=(
+                UpdateCandidate(
+                    version="3.8.0",
+                    tag_name="v3.8.0",
+                    release_name="Release 3.8.0",
+                    html_url="https://example.test/releases/v3.8.0",
+                    notes="notes 3.8.0",
+                    asset_name="setup-3.8.0.exe",
+                ),
+                UpdateCandidate(
+                    version="3.7.0",
+                    tag_name="v3.7.0",
+                    release_name="Release 3.7.0",
+                    html_url="https://example.test/releases/v3.7.0",
+                    notes="notes 3.7.0",
+                    asset_name="setup-3.7.0.exe",
+                ),
+            ),
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        combo = dialog.findChild(QComboBox, "UpdateVersionCombo")
+        self.assertIsNotNone(combo)
+        self.assertEqual(combo.count(), 2)
+
+        combo.setCurrentIndex(1)
+        labels = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+
+        self.assertEqual(dialog.selected_update_version(), "3.7.0")
+        self.assertIn("notes 3.7.0", labels)

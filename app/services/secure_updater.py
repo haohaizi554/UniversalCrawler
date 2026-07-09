@@ -438,6 +438,8 @@ class ManifestLocations:
     last_modified: str = ""
     not_modified: bool = False
     release_url: str = ""
+    tag_name: str = ""
+    release_name: str = ""
 
 
 class GitHubReleaseClient:
@@ -493,7 +495,7 @@ class GitHubReleaseClient:
         request = urllib.request.Request(url, headers=headers)
         _log_update_event("update.check.started", "checking GitHub release", manual=manual)
         try:
-            with opener(request, self.timeout) as response:
+            with opener(request, timeout=self.timeout) as response:
                 payload = response.read().decode("utf-8")
                 data = json.loads(payload)
                 etag = str(getattr(response, "headers", {}).get("ETag") or "")
@@ -523,6 +525,85 @@ class GitHubReleaseClient:
         )
         return locations
 
+    def fetch_manifest_location_candidates(
+        self,
+        *,
+        opener: Callable[[urllib.request.Request, float], Any] = urllib.request.urlopen,
+        manual: bool = False,
+        per_page: int = 10,
+    ) -> tuple[ManifestLocations, ...]:
+        """Return signed-manifest locations from recent releases, newest first."""
+
+        cache = self._load_cache()
+        if not manual and self._is_auto_check_throttled(cache):
+            _log_update_event("update.check.throttled", "automatic update check throttled")
+            return (
+                ManifestLocations(
+                    etag=str(cache.get("etag") or ""),
+                    last_modified=str(cache.get("last_modified") or ""),
+                    not_modified=True,
+                    release_url=str(cache.get("release_url") or ""),
+                ),
+            )
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": self.user_agent,
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if cache.get("etag"):
+            headers["If-None-Match"] = str(cache["etag"])
+        if cache.get("last_modified"):
+            headers["If-Modified-Since"] = str(cache["last_modified"])
+        page_size = max(1, min(100, int(per_page)))
+        url = f"{self.api_base}/repos/{self.owner}/{self.repo}/releases?per_page={page_size}"
+        request = urllib.request.Request(url, headers=headers)
+        _log_update_event("update.check.started", "checking GitHub release candidates", manual=manual)
+        try:
+            with opener(request, timeout=self.timeout) as response:
+                payload = response.read().decode("utf-8")
+                data = json.loads(payload)
+                etag = str(getattr(response, "headers", {}).get("ETag") or "")
+                last_modified = str(getattr(response, "headers", {}).get("Last-Modified") or "")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 304:
+                return (
+                    ManifestLocations(
+                        not_modified=True,
+                        etag=str(cache.get("etag") or ""),
+                        last_modified=str(cache.get("last_modified") or ""),
+                    ),
+                )
+            if exc.code in {403, 429}:
+                raise DownloadError("GitHub rate limit reached") from exc
+            if exc.code == 404:
+                raise DownloadError("GitHub releases were not found") from exc
+            if exc.code >= 500:
+                raise DownloadError("GitHub release service is temporarily unavailable") from exc
+            raise DownloadError(f"GitHub release request failed with HTTP {exc.code}") from exc
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise DownloadError(f"GitHub release request failed: {exc}") from exc
+        if not isinstance(data, list):
+            raise DownloadError("GitHub releases response had an unexpected shape")
+        locations: list[ManifestLocations] = []
+        for release in data:
+            if not isinstance(release, Mapping):
+                continue
+            try:
+                locations.append(self._locations_from_release(release, etag=etag, last_modified=last_modified))
+            except DownloadError:
+                continue
+        if not locations:
+            raise DownloadError("GitHub releases do not contain signed update manifests")
+        self._save_cache(
+            {
+                "etag": etag,
+                "last_modified": last_modified,
+                "last_check_at": datetime.now(timezone.utc).isoformat(),
+                "release_url": locations[0].release_url,
+            }
+        )
+        return tuple(locations)
+
     def _locations_from_release(self, data: Mapping[str, Any], *, etag: str, last_modified: str) -> ManifestLocations:
         manifest_url = ""
         sig_url = ""
@@ -543,6 +624,8 @@ class GitHubReleaseClient:
             etag=etag,
             last_modified=last_modified,
             release_url=str(data.get("html_url") or ""),
+            tag_name=str(data.get("tag_name") or ""),
+            release_name=str(data.get("name") or ""),
         )
 
     def _load_cache(self) -> dict[str, Any]:
@@ -690,7 +773,7 @@ class Downloader:
         request = urllib.request.Request(asset.url, headers=headers)
         _log_update_event("update.download.started", "download started", asset=asset.name, size=asset.size)
         try:
-            with opener(request, self.timeout_seconds) as response, partial.open("ab" if resume_from else "wb") as handle:
+            with opener(request, timeout=self.timeout_seconds) as response, partial.open("ab" if resume_from else "wb") as handle:
                 content_length = _header_int(getattr(response, "headers", {}), "Content-Length")
                 if resume_from:
                     range_start = _content_range_start(getattr(response, "headers", {}))
@@ -751,7 +834,7 @@ class PackageVerifier:
     ) -> None:
         self.os_name = normalize_os(os_name or sys.platform)
         self.trusted_publishers = tuple(trusted_publishers)
-        self.trusted_thumbprints = tuple(str(value).replace(" ", "").upper() for value in trusted_thumbprints)
+        self.trusted_thumbprints = tuple(_normalize_certificate_fingerprint(value) for value in trusted_thumbprints if str(value).strip())
         self._verify_func = verify_func
         self._run = run_func
 
@@ -768,13 +851,24 @@ class PackageVerifier:
             return
 
     def _verify_windows(self, path: Path) -> None:
-        if not self.trusted_publishers and not self.trusted_thumbprints:
-            raise VerificationError("Windows updater requires trusted publisher or thumbprint allowlist")
+        if not self.trusted_thumbprints:
+            raise VerificationError("Windows updater requires trusted thumbprint allowlist")
         script = (
             "$s=Get-AuthenticodeSignature -LiteralPath $args[0];"
             "$cert=$s.SignerCertificate;"
             "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
-            "ConvertTo-Json @{Status=[string]$s.Status;Subject=[string]$cert.Subject;Thumbprint=[string]$cert.Thumbprint}"
+            "if ($null -eq $cert) {"
+            "ConvertTo-Json @{Status=[string]$s.Status;Subject='';Thumbprint='';SHA256Fingerprint=''}; exit 0"
+            "};"
+            "$sha256=[System.BitConverter]::ToString("
+            "[System.Security.Cryptography.SHA256]::Create().ComputeHash($cert.RawData)"
+            ").Replace('-','');"
+            "ConvertTo-Json @{"
+            "Status=[string]$s.Status;"
+            "Subject=[string]$cert.Subject;"
+            "Thumbprint=[string]$cert.Thumbprint;"
+            "SHA256Fingerprint=$sha256"
+            "}"
         )
         result = self._run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
@@ -792,12 +886,19 @@ class PackageVerifier:
         if payload.get("Status") != "Valid":
             raise VerificationError("Authenticode signature is not valid")
         subject = str(payload.get("Subject") or "")
-        thumbprint = str(payload.get("Thumbprint") or "").replace(" ", "").upper()
-        if self.trusted_thumbprints and thumbprint in self.trusted_thumbprints:
-            return
-        if self.trusted_publishers and any(publisher in subject for publisher in self.trusted_publishers):
-            return
-        raise VerificationError("Authenticode signer is not trusted")
+        thumbprints = {
+            _normalize_certificate_fingerprint(payload.get("Thumbprint")),
+            _normalize_certificate_fingerprint(payload.get("SHA256Fingerprint")),
+        }
+        if not any(value and value in self.trusted_thumbprints for value in thumbprints):
+            raise VerificationError("Authenticode signer thumbprint is not trusted")
+        if self.trusted_publishers and not any(publisher in subject for publisher in self.trusted_publishers):
+            _log_update_event(
+                "update.verify.publisher_unmatched",
+                "Authenticode thumbprint matched but publisher allowlist did not",
+                level="WARN",
+            )
+        return
 
     def _verify_macos(self, path: Path, asset: UpdateAsset) -> None:
         if not self.trusted_publishers:
@@ -867,6 +968,29 @@ class InstallerRunner:
         raise InstallError(f"unsupported installer type: {asset.os}/{asset.installer_type}")
 
 
+def write_update_asset_descriptor(installer_path: Path, asset: UpdateAsset) -> Path:
+    """Persist the verified asset metadata passed from GUI to updater helper."""
+
+    descriptor_path = Path(installer_path).with_name(f"{Path(installer_path).name}.asset.json")
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "name": asset.name,
+                "url": asset.url,
+                "sha256": asset.sha256,
+                "size": asset.size,
+                "installerType": asset.installer_type,
+                "os": asset.os,
+                "arch": asset.arch,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return descriptor_path
+
+
 def _parse_rfc3339(value: str) -> datetime:
     try:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -917,6 +1041,11 @@ def normalize_arch(value: Any) -> str:
     if raw in {"universal", "universal2"}:
         return "universal"
     return raw
+
+
+def _normalize_certificate_fingerprint(value: Any) -> str:
+    """Normalize SHA1/SHA256 certificate fingerprints from Windows tooling."""
+    return re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
 
 
 def default_installer_types(os_name: str) -> tuple[str, ...]:

@@ -10,6 +10,7 @@ from app.config.settings import (
     accent_label,
     accent_options,
     download_concurrency_options,
+    failed_record_retention_options,
     filename_template_label,
     filename_template_options,
     font_size_label,
@@ -373,10 +374,12 @@ def build_settings_snapshot(
         },
         "日志设置": {
             "retention_days": int(logging_cfg.get("retention_days", 1) or 1),
+            "failed_record_retention_days": int(logging_cfg.get("failed_record_retention_days", 7) or 7),
             "ui_log_max_display_count": normalize_ui_log_max_display_count(logging_cfg.get("ui_log_max_display_count", 300)),
             "auto_copy_trace_on_error": bool(logging_cfg.get("auto_copy_trace_on_error", True)),
             "_options": {
                 "retention_days": log_retention_options(),
+                "failed_record_retention_days": failed_record_retention_options(),
                 "ui_log_max_display_count": ui_log_max_display_options(),
             },
         },

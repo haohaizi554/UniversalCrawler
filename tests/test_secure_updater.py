@@ -55,8 +55,14 @@ class _BytesResponse:
         return self._data
 
 
-def _signed_manifest(tmp_path: Path, *, overrides: dict | None = None) -> tuple[Path, Path, str]:
-    key = ECC.generate(curve="Ed25519")
+def _signed_manifest(
+    tmp_path: Path,
+    *,
+    overrides: dict | None = None,
+    key=None,
+    manifest_name: str = "latest.json",
+) -> tuple[Path, Path, str]:
+    key = key or ECC.generate(curve="Ed25519")
     public_pem = key.public_key().export_key(format="PEM")
     payload = {
         "schema": 1,
@@ -83,11 +89,12 @@ def _signed_manifest(tmp_path: Path, *, overrides: dict | None = None) -> tuple[
     }
     if overrides:
         payload.update(overrides)
-    manifest_path = tmp_path / "latest.json"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    manifest_path = tmp_path / manifest_name
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     signer = eddsa.new(key, "rfc8032")
     signature = signer.sign(manifest_path.read_bytes())
-    sig_path = tmp_path / "latest.json.sig"
+    sig_path = manifest_path.with_name(f"{manifest_path.name}.sig")
     sig_path.write_bytes(signature)
     return manifest_path, sig_path, public_pem
 
@@ -346,6 +353,90 @@ def test_github_client_throttles_automatic_checks_but_not_manual(tmp_path):
     assert len(calls) == 1
 
 
+def test_github_client_lists_multiple_signed_manifest_locations(tmp_path):
+    cache = tmp_path / "github.json"
+    client = GitHubReleaseClient(owner="owner", repo="repo", cache_path=cache)
+    seen_urls: list[str] = []
+
+    def opener(request, timeout):
+        seen_urls.append(request.full_url)
+        return _BytesResponse(
+            json.dumps(
+                [
+                    {
+                        "tag_name": "v3.8.0",
+                        "name": "Release 3.8.0",
+                        "html_url": "https://github.com/owner/repo/releases/tag/v3.8.0",
+                        "assets": [
+                            {
+                                "name": "latest.json",
+                                "browser_download_url": "https://github.com/owner/repo/releases/download/v3.8.0/latest.json",
+                            },
+                            {
+                                "name": "latest.json.sig",
+                                "browser_download_url": "https://github.com/owner/repo/releases/download/v3.8.0/latest.json.sig",
+                            },
+                        ],
+                    },
+                    {
+                        "tag_name": "v3.7.0",
+                        "name": "Release 3.7.0",
+                        "html_url": "https://github.com/owner/repo/releases/tag/v3.7.0",
+                        "assets": [
+                            {
+                                "name": "latest.json",
+                                "browser_download_url": "https://github.com/owner/repo/releases/download/v3.7.0/latest.json",
+                            },
+                            {
+                                "name": "latest.json.sig",
+                                "browser_download_url": "https://github.com/owner/repo/releases/download/v3.7.0/latest.json.sig",
+                            },
+                        ],
+                    },
+                ]
+            ).encode("utf-8"),
+            headers={"ETag": "etag-list", "Last-Modified": "Wed, 09 Jul 2026 02:00:00 GMT"},
+        )
+
+    locations = client.fetch_manifest_location_candidates(opener=opener, manual=True, per_page=5)
+
+    assert seen_urls == ["https://api.github.com/repos/owner/repo/releases?per_page=5"]
+    assert [item.tag_name for item in locations] == ["v3.8.0", "v3.7.0"]
+    assert locations[0].manifest_url.endswith("/v3.8.0/latest.json")
+    assert locations[1].signature_url.endswith("/v3.7.0/latest.json.sig")
+
+
+def test_github_client_passes_timeout_as_keyword_for_urlopen_compatibility(tmp_path):
+    client = GitHubReleaseClient(owner="owner", repo="repo", cache_path=tmp_path / "github.json", timeout=3.5)
+    seen_timeout: list[float] = []
+
+    def opener(request, *, timeout):
+        seen_timeout.append(timeout)
+        return _BytesResponse(
+            json.dumps(
+                [
+                    {
+                        "html_url": "https://github.com/owner/repo/releases/tag/v3.8.0",
+                        "assets": [
+                            {
+                                "name": "latest.json",
+                                "browser_download_url": "https://github.com/owner/repo/releases/download/v3.8.0/latest.json",
+                            },
+                            {
+                                "name": "latest.json.sig",
+                                "browser_download_url": "https://github.com/owner/repo/releases/download/v3.8.0/latest.json.sig",
+                            },
+                        ],
+                    }
+                ]
+            ).encode("utf-8"),
+        )
+
+    client.fetch_manifest_location_candidates(opener=opener, manual=True)
+
+    assert seen_timeout == [3.5]
+
+
 def test_installer_runner_uses_argv_and_records_nonzero_exit(tmp_path):
     installer = tmp_path / "installer.msi"
     installer.write_bytes(b"installer")
@@ -376,6 +467,108 @@ def test_installer_runner_uses_argv_and_records_nonzero_exit(tmp_path):
     assert not result.succeeded
     assert calls[0]["kwargs"]["shell"] is False
     assert calls[0]["argv"][:2] == ["msiexec.exe", "/i"]
+
+
+def _windows_asset_for_file(path: Path) -> UpdateAsset:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return UpdateAsset(
+        name=path.name,
+        url="https://github.com/owner/repo/releases/download/v/installer.exe",
+        sha256=digest,
+        size=path.stat().st_size,
+        installer_type="inno",
+        os="windows",
+        arch="x64",
+    )
+
+
+def _authenticode_run(
+    *,
+    status: str = "Valid",
+    subject: str = "CN=Trusted Publisher",
+    sha1: str = "AA BB CC",
+    sha256: str = "11:22:33",
+):
+    def fake_run(argv, **kwargs):
+        payload = {
+            "Status": status,
+            "Subject": subject,
+            "Thumbprint": sha1,
+            "SHA256Fingerprint": sha256,
+        }
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+
+    return fake_run
+
+
+def test_windows_verifier_rejects_publisher_only_allowlist(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+    verifier = PackageVerifier(
+        os_name="windows",
+        trusted_publishers=["CN=Trusted Publisher"],
+        run_func=_authenticode_run(),
+    )
+
+    with pytest.raises(VerificationError, match="thumbprint"):
+        verifier.verify(installer, asset)
+
+
+def test_windows_verifier_rejects_publisher_match_when_thumbprint_mismatches(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+    verifier = PackageVerifier(
+        os_name="windows",
+        trusted_publishers=["CN=Trusted Publisher"],
+        trusted_thumbprints=["FFFF"],
+        run_func=_authenticode_run(),
+    )
+
+    with pytest.raises(VerificationError, match="thumbprint"):
+        verifier.verify(installer, asset)
+
+
+def test_windows_verifier_accepts_normalized_sha1_thumbprint(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+    verifier = PackageVerifier(
+        os_name="windows",
+        trusted_publishers=["CN=Trusted Publisher"],
+        trusted_thumbprints=["aa:bb cc"],
+        run_func=_authenticode_run(sha1="AA BB CC"),
+    )
+
+    verifier.verify(installer, asset)
+
+
+def test_windows_verifier_accepts_sha256_fingerprint(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+    verifier = PackageVerifier(
+        os_name="windows",
+        trusted_thumbprints=["112233"],
+        run_func=_authenticode_run(sha1="AABBCC", sha256="11:22:33"),
+    )
+
+    verifier.verify(installer, asset)
+
+
+def test_windows_verifier_rejects_invalid_authenticode_status(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+    verifier = PackageVerifier(
+        os_name="windows",
+        trusted_thumbprints=["AABBCC"],
+        run_func=_authenticode_run(status="NotSigned"),
+    )
+
+    with pytest.raises(VerificationError, match="not valid"):
+        verifier.verify(installer, asset)
 
 
 def test_macos_verifier_requires_trusted_publisher_allowlist(tmp_path):

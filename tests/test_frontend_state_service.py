@@ -98,10 +98,16 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertIn({"value": "3", "label": "3（推荐）"}, download_options["max_concurrent"])
             self.assertIn({"value": "0", "label": "无限制"}, download_options["speed_limit_kb"])
             self.assertIn("retention_days", logging_options)
+            self.assertIn("failed_record_retention_days", logging_options)
             self.assertEqual(snapshot["日志设置"]["retention_days"], 1)
+            self.assertEqual(snapshot["日志设置"]["failed_record_retention_days"], 7)
             self.assertNotIn("level", snapshot["日志设置"])
             self.assertNotIn("cleanup_old_logs_on_start", snapshot["日志设置"])
             self.assertIn({"value": "1", "label": "1 天（推荐）"}, logging_options["retention_days"])
+            self.assertIn(
+                {"value": "7", "label": "7 天（推荐）"},
+                logging_options["failed_record_retention_days"],
+            )
             self.assertNotIn("hardware_acceleration", playback)
             self.assertNotIn("builtin_player_enabled", playback)
             self.assertEqual(playback["image_auto_advance_interval_seconds"], 5)
@@ -299,6 +305,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                 {"section": "playback", "key": "default_player", "value": "system_default"},
                 {"section": "playback", "key": "image_auto_advance_interval_seconds", "value": 10},
                 {"section": "logging", "key": "retention_days", "value": 3},
+                {"section": "logging", "key": "failed_record_retention_days", "value": 14},
                 {"section": "appearance", "key": "accent", "value": "green"},
                 {"section": "appearance", "key": "language", "value": "zh-TW"},
                 {"section": "appearance", "key": "theme", "value": "dark"},
@@ -316,6 +323,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(snapshot["播放设置"]["default_player"], "system_default")
             self.assertEqual(snapshot["播放设置"]["image_auto_advance_interval_seconds"], 10)
             self.assertEqual(snapshot["日志设置"]["retention_days"], 3)
+            self.assertEqual(snapshot["日志设置"]["failed_record_retention_days"], 14)
             self.assertEqual(snapshot["外观设置"]["accent"], "green")
             self.assertEqual(snapshot["外观设置"]["language"], "zh-TW")
             self.assertEqual(snapshot["外观设置"]["theme"], "dark")
@@ -323,6 +331,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(reloaded.get("playback", "default_player"), "system_default")
             self.assertEqual(reloaded.get("playback", "image_auto_advance_interval_seconds"), 10)
             self.assertEqual(reloaded.get("logging", "retention_days"), 3)
+            self.assertEqual(reloaded.get("logging", "failed_record_retention_days"), 14)
             self.assertEqual(reloaded.get("appearance", "accent"), "green")
             self.assertEqual(reloaded.get("appearance", "language"), "zh-TW")
             self.assertEqual(reloaded.get("common", "theme"), "dark")
@@ -360,6 +369,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             ]
             logging_updates = [
                 {"section": "logging", "key": "retention_days", "value": 3},
+                {"section": "logging", "key": "failed_record_retention_days", "value": 14},
                 {"section": "logging", "key": "ui_log_max_display_count", "value": 500},
                 {"section": "logging", "key": "auto_copy_trace_on_error", "value": False},
             ]
@@ -443,6 +453,7 @@ class FrontendStateServiceTests(unittest.TestCase):
 
             logging_cfg = snapshot["\u65e5\u5fd7\u8bbe\u7f6e"]
             self.assertEqual(logging_cfg["retention_days"], 3)
+            self.assertEqual(logging_cfg["failed_record_retention_days"], 14)
             self.assertEqual(logging_cfg["ui_log_max_display_count"], 500)
             self.assertFalse(logging_cfg["auto_copy_trace_on_error"])
 
@@ -471,6 +482,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertFalse(reloaded.get("common", "show_browser_window"))
             self.assertEqual(reloaded.get("download", "request_timeout"), 120)
             self.assertEqual(reloaded.get("playback", "manual_image_switch"), True)
+            self.assertEqual(reloaded.get("logging", "failed_record_retention_days"), 14)
             self.assertEqual(reloaded.get("logging", "ui_log_max_display_count"), 500)
             self.assertEqual(reloaded.get("appearance", "language"), "zh-TW")
             self.assertEqual(reloaded.get("missav", "proxy_url"), "http://127.0.0.1:7897")
@@ -519,6 +531,15 @@ class FrontendStateServiceTests(unittest.TestCase):
                 self.assertEqual(result["status"], "ok")
                 self.assertTrue(configure_logger.call_args.kwargs["cleanup_old_logs"])
                 self.assertEqual(configure_logger.call_args.kwargs["retention_days"], 3)
+
+                request_prune = Mock()
+                service.failed_record_store.request_prune = request_prune  # type: ignore[method-assign]
+                result = service.handle_action(
+                    "update_setting",
+                    {"section": "logging", "key": "failed_record_retention_days", "value": 14},
+                )
+                self.assertEqual(result["status"], "ok")
+                request_prune.assert_called_with(14)
 
     def test_logging_retention_cleanup_runs_on_frontend_service_initialization(self):
         with TemporaryDirectory() as temp_dir:
@@ -1612,6 +1633,84 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["text"], "trace-copy")
         self.assertEqual(result["data"]["trace_id"], "trace-copy")
+
+    def test_copy_diagnostics_action_uses_persisted_failed_record_trace(self):
+        with TemporaryDirectory() as temp_dir:
+            store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            store.queue_upsert(
+                [
+                    {
+                        "id": "persisted-copy",
+                        "title": "Persisted failure",
+                        "reason": "network",
+                        "failed_at": "2026-07-06 12:00:00",
+                        "status": "Failed",
+                        "platform": "Bilibili",
+                        "trace_id": "trace-persisted-copy",
+                    }
+                ]
+            )
+            self.assertTrue(store.flush(timeout=2))
+            service = FrontendStateService(SimpleNamespace(videos={}), failed_record_store=store)
+            try:
+                result = service.handle_action("copy_diagnostics", {"id": "persisted-copy"})
+            finally:
+                service.destroy()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["text"], "trace-persisted-copy")
+        self.assertEqual(result["data"]["trace_id"], "trace-persisted-copy")
+
+    def test_delete_failed_record_action_removes_persisted_record(self):
+        with TemporaryDirectory() as temp_dir:
+            store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            store.queue_upsert(
+                [
+                    {
+                        "id": "persisted-delete",
+                        "title": "Persisted failure",
+                        "reason": "network",
+                        "failed_at": "2026-07-06 12:00:00",
+                        "status": "Failed",
+                        "platform": "Bilibili",
+                        "trace_id": "trace-delete",
+                    }
+                ]
+            )
+            self.assertTrue(store.flush(timeout=2))
+            service = FrontendStateService(SimpleNamespace(videos={}), failed_record_store=store)
+            try:
+                result = service.handle_action("delete_failed_record", {"id": "persisted-delete"})
+                self.assertTrue(store.flush(timeout=2))
+                remaining = store.query(limit=10)
+            finally:
+                service.destroy()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["data"]["deleted"])
+        self.assertEqual(remaining, [])
+
+    def test_clear_failed_records_action_removes_all_persisted_records(self):
+        with TemporaryDirectory() as temp_dir:
+            store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            store.queue_upsert(
+                [
+                    {"id": "persisted-a", "title": "A", "reason": "network", "failed_at": "2026-07-06 12:00:00"},
+                    {"id": "persisted-b", "title": "B", "reason": "network", "failed_at": "2026-07-06 12:01:00"},
+                ]
+            )
+            self.assertTrue(store.flush(timeout=2))
+            service = FrontendStateService(SimpleNamespace(videos={}), failed_record_store=store)
+            try:
+                result = service.handle_action("clear_failed_records", {})
+                self.assertTrue(store.flush(timeout=2))
+                remaining = store.query(limit=10)
+            finally:
+                service.destroy()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["data"]["count"], 2)
+        self.assertEqual(remaining, [])
 
     def test_delete_item_action_reports_controller_delete_error(self):
         controller = SimpleNamespace(
