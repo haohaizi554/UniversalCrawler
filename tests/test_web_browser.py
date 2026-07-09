@@ -62,7 +62,7 @@ def _static_bundle_content() -> str:
     """Read split WebUI assets as one bundle for static assertions."""
     static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
     parts = []
-    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "log_query_worker.js", "log_detail_worker.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "app.js"):
+    for name in ("index.html", "app.css", "i18n.js", "custom_select.js", "media_display.js", "log_display.js", "log_query_worker.js", "log_detail_worker.js", "platform_limits.js", "settings_render.js", "task_render.js", "playback_state.js", "log_i18n.js", "frontend_runtime.js", "list_pages.js", "log_center.js", "settings_controller.js", "dialog_controller.js", "playback_controller.js", "app.js"):
         path = static_dir / name
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
@@ -3855,6 +3855,5 @@ class WebDesignGuidelinesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 

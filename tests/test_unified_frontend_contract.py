@@ -51,6 +51,13 @@ def _html_bundle() -> str:
             "settings_render.js",
             "task_render.js",
             "playback_state.js",
+            "log_i18n.js",
+            "frontend_runtime.js",
+            "list_pages.js",
+            "log_center.js",
+            "settings_controller.js",
+            "dialog_controller.js",
+            "playback_controller.js",
             "app.js",
         )
     )
