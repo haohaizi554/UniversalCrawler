@@ -26,7 +26,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y libegl1 libgl1 libpulse0 libxkbcommon-x11-0 libxcb-cursor0
 
       - name: Install Dependencies
         run: |

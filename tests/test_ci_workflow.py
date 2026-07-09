@@ -15,6 +15,7 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("python -m pytest -q", source)
         self.assertNotIn("python -m unittest discover", source)
         self.assertIn("QT_QPA_PLATFORM: offscreen", source)
+        self.assertIn("libpulse0", source)
 
     def test_runtime_requirements_exclude_optional_report_and_fedora_tools(self) -> None:
         requirements = PROJECT_ROOT / "requirements.txt"
@@ -26,6 +27,7 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
 
         self.assertNotIn("the-new-hotness", lines)
         self.assertNotIn("beautifulreport", lines)
+        self.assertIn("pycryptodome", lines)
 
 
 if __name__ == "__main__":
