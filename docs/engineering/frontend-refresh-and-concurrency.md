@@ -259,10 +259,10 @@ node --check app/web/static/app.js
 
 ### 当前验证基线
 
-- 2026-07-09 全量 `python -m pytest -q`：`2243 passed, 3 skipped, 7 warnings in 182.82s (0:03:02)`。
+- 2026-07-09 全量 `python -m pytest -q`：`2244 passed, 3 skipped, 7 warnings in 186.17s (0:03:06)`。
 - 2026-07-09 本轮架构收束聚焦验证：`python -m pytest tests/test_guardrails.py::UIAsyncGuardrailTests tests/test_spider_helpers.py::SpiderHelperTests::test_spider_parser_cache_persists_structured_results tests/test_core_state_events.py::StateAndEventTests::test_cache_service_delete_failures_are_downgraded -q`：`56 passed in 1.46s`。该验证覆盖日志中心、失败记录、四态列表分页/投影、frontend snapshot worker、控制器媒体入口、WebSocket/REST 配置、停止动作、媒体 Range 服务边界、UI 热路径防回退、parser 持久缓存和缓存删除失败降级，不等同于全项目全量验收。
 - 2026-07-09 本轮静态检查：`ruff check app/web/ws_dispatcher.py app/web/workflow_route_service.py app/web/server.py tests/test_guardrails.py`：`All checks passed!`。
-- 近期连续基线为 `2141 -> 2145 -> 2149 -> 2151 -> 2154 -> 2188 -> 2220 -> 2225 -> 2227 -> 2228 -> 2230 -> 2232 -> 2237 -> 2239 -> 2240 -> 2240 -> 2240 -> 2241 -> 2243 -> 2243`；耗时从 `208s -> 190s -> 117s -> 187s -> 237s -> 181s -> 135s -> 194s -> 192s -> 208s -> 203s -> 201s -> 149.77s -> 183.67s -> 215.58s -> 185.62s -> 213.20s -> 199.97s -> 171.04s -> 182.82s` 波动，当前实测约 3 分 02 秒。后续比较优化收益时优先记录精确秒数，不再只写“3 到 4 分钟”。
+- 近期连续基线为 `2141 -> 2145 -> 2149 -> 2151 -> 2154 -> 2188 -> 2220 -> 2225 -> 2227 -> 2228 -> 2230 -> 2232 -> 2237 -> 2239 -> 2240 -> 2240 -> 2240 -> 2241 -> 2243 -> 2243 -> 2244`；耗时从 `208s -> 190s -> 117s -> 187s -> 237s -> 181s -> 135s -> 194s -> 192s -> 208s -> 203s -> 201s -> 149.77s -> 183.67s -> 215.58s -> 185.62s -> 213.20s -> 199.97s -> 171.04s -> 182.82s -> 186.17s` 波动，当前实测约 3 分 06 秒。后续比较优化收益时优先记录精确秒数，不再只写“3 到 4 分钟”。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查是否引入同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
 
 ## GUI use_delta 判定边界

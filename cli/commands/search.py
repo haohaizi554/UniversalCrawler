@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 import cli.runner as cli_runner_module
-from cli.defaults import DEFAULT_CONFIG, build_missav_proxy_url, get_platform_defaults, get_default_save_dir, validate_config_types
+from cli.defaults import build_missav_proxy_url, get_default_save_dir, get_platform_defaults, validate_config_types
 from cli.runner import CLIRunner
 from cli.selection import (
-    AutoSelection,
-    RuleSelection,
     InteractiveTTYSelection,
     PipeSelection,
+    RuleSelection,
 )
 from shared import search_command_runtime as runtime
 
@@ -160,32 +158,6 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
 def _build_selection_strategy(args: argparse.Namespace):
     """根据命令行参数构造选择策略。"""
     return runtime.build_selection_strategy(args, env=_runtime_env())
-    # 下面是迁移到 shared.search_command_runtime 前的旧实现，当前不可达。
-    # 保留到相关兼容测试完全迁移后再删除，避免这轮注释任务扩大行为变更。
-    if getattr(args, "interactive", False):
-        return InteractiveTTYSelection()
-    if getattr(args, "pipe", False):
-        return PipeSelection()
-    if getattr(args, "preload_choices", None):
-        rounds = []
-        for token in args.preload_choices.split("|"):
-            indices = []
-            for part in token.split(","):
-                part = part.strip()
-                if part:
-                    try:
-                        indices.append(int(part))
-                    except ValueError:
-                        pass
-            rounds.append(indices)
-        return PipeSelection(preloaded_choices=rounds)
-    return RuleSelection(
-        select=getattr(args, "select", None),
-        exclude=getattr(args, "exclude", None),
-        all_items=getattr(args, "select_all", False) or getattr(args, "select", None) is None,
-        first=getattr(args, "first", False),
-        last=getattr(args, "last", False),
-    )
 
 def _build_config(args: argparse.Namespace) -> dict:
     """根据命令行参数构造 spider config，与 GUI 默认值完全一致。
@@ -200,139 +172,12 @@ def _build_config(args: argparse.Namespace) -> dict:
     3. 独立参数 (--max-items, --timeout 等，优先级最高)
     """
     return runtime.build_config(args, env=_runtime_env())
-    # 下面是迁移到 shared.search_command_runtime 前的旧实现，当前不可达。
-    source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
-    config = get_platform_defaults(source)
-
-    # 步骤 2：合并 --config JSON（与 SDK config 和 REST API config 对齐）
-    config_json = getattr(args, "config", None)
-    if config_json:
-        try:
-            user_config = json.loads(config_json)
-            if isinstance(user_config, dict):
-                # 与 SDK/REST API 对齐：过滤 None 值，避免覆盖默认值
-                filtered = {k: v for k, v in user_config.items() if v is not None}
-                config.update(filtered)
-        except json.JSONDecodeError:
-            pass  # 校验在 handle_search_command 中完成，这里静默跳过
-
-    # 步骤 3：独立参数覆盖（优先级最高，与 CLI 独立参数语义一致）
-    if getattr(args, "max_items", None) is not None:
-        config["max_items"] = args.max_items
-    if getattr(args, "max_pages", None) is not None:
-        config["max_pages"] = args.max_pages
-    if getattr(args, "timeout", None) is not None:
-        config["timeout"] = args.timeout
-    if getattr(args, "individual_only", False):
-        config["individual_only"] = True
-    if getattr(args, "priority", None):
-        config["priority"] = args.priority
-    if getattr(args, "proxy", None):
-        config["proxy"] = args.proxy
-    # 与 GUI spider build_download_meta 对齐：便捷参数合并到 config（优先级最高）
-    if getattr(args, "cookie", None):
-        config["cookie"] = args.cookie
-    if getattr(args, "download_strategy", None):
-        config["download_strategy"] = args.download_strategy
-    if getattr(args, "referer", None):
-        config["referer"] = args.referer
-    if getattr(args, "ua", None):
-        config["ua"] = args.ua
-    # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
-    if getattr(args, "folder_name", None):
-        config["folder_name"] = args.folder_name
-    if getattr(args, "use_subdir", None):
-        config["use_subdir"] = True
-    # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
-    # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
-    # 即有 folder_name 就自动使用子目录。CLI 用户只传 --folder-name 不传 --use-subdir 时，
-    # 应与 GUI 行为一致，自动启用子目录
-    if config.get("folder_name") and not config.get("use_subdir"):
-        config["use_subdir"] = True
-    # 与 GUI DouyinParser 对齐：传入 author 但未传 folder_name 时，自动将 author 设为 folder_name
-    # GUI DouyinParser 在解析视频时设置 "folder_name": author（parser.py:68/85），
-    # CLI 用户通过 --config '{"author":"..."}' 传入 author 时，应与 GUI 行为一致
-    if config.get("author") and not config.get("folder_name"):
-        config["folder_name"] = config["author"]
-        if not config.get("use_subdir"):
-            config["use_subdir"] = True
-    # 与 GUI spider build_download_meta 对齐：文件名控制
-    if getattr(args, "file_name", None):
-        config["file_name"] = args.file_name
-    # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
-    if getattr(args, "content_type", None):
-        config["content_type"] = args.content_type
-    # 与 REST API/SDK 对齐：统一转换 missav proxy（无论来自 cfg 默认值还是 --proxy 参数）
-    if source == "missav" and "proxy" in config and config["proxy"] is not None:
-        config["proxy"] = build_missav_proxy_url(config["proxy"])
-    return config
 
 def handle_search_command(args: argparse.Namespace) -> int:
     """执行 search 命令。"""
     exit_code, result = runtime.run_search_command(args, env=_runtime_env())
     runtime.emit_result(result, pretty=getattr(args, "pretty", False))
     return exit_code
-    # 下面是迁移到 shared.search_command_runtime 前的旧实现，当前不可达。
-    # 与 CLI download --config 和 SDK config 对齐：校验 --config JSON 格式
-    config_json = getattr(args, "config", None)
-    if config_json:
-        try:
-            parsed = json.loads(config_json)
-            if not isinstance(parsed, dict):
-                sys.stderr.write("❌ --config 必须是 JSON 对象\n")
-                return 1
-        except json.JSONDecodeError as e:
-            sys.stderr.write(f"❌ --config JSON 解析失败: {e}\n")
-            return 1
-        # 与 SDK _validate_config 和 REST API _validate_config_types 对齐：校验已知参数类型
-        config_err = validate_config_types(parsed)
-        if config_err:
-            sys.stderr.write(f"❌ {config_err}\n")
-            return 1
-
-    config = _build_config(args)
-    strategy = _build_selection_strategy(args)
-
-    # 兼容平台别名命令：source 可能来自 _platform 或直接设置
-    source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
-
-    # 与 SDK search() 和 REST API /api/search 对齐：校验 run-timeout > 0
-    run_timeout = getattr(args, "run_timeout", None)
-    if run_timeout is not None and run_timeout <= 0:
-        sys.stderr.write("❌ --run-timeout 必须大于 0\n")
-        return 1
-    # 与 GUI/WebUI/SDK 参数契约对齐：校验 --timeout (spider HTTP 超时) > 0
-    spider_timeout = getattr(args, "timeout", None)
-    if spider_timeout is not None and spider_timeout <= 0:
-        sys.stderr.write("❌ --timeout 必须大于 0\n")
-        return 1
-
-    runner = CLIRunner(
-        source=source,
-        keyword=args.keyword,
-        save_dir=getattr(args, "save_dir", None) or get_default_save_dir(),
-        selection_strategy=strategy,
-        config=config,
-        verbose=not getattr(args, "quiet", False),
-        log_to_stderr=not getattr(args, "quiet", False),
-        timeout=run_timeout,
-        download=not getattr(args, "no_download", False),
-    )
-
-    result = runner.run()
-
-    # 输出
-    if getattr(args, "pretty", False):
-        _print_pretty(result)
-    else:
-        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        sys.stdout.flush()
-
-    if result.get("status") == "ok":
-        return 0
-    if result.get("status") in ("error", "timeout", "cancelled"):
-        return 1
-    return 1
 
 def _print_pretty(result: dict) -> None:
     """人类可读格式输出。"""
