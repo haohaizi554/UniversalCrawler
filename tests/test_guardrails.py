@@ -1278,7 +1278,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(row=row):
                 self.assertIn(row, text)
-        self.assertIn("2244 passed, 3 skipped, 7 warnings in 186.17s (0:03:06)", text)
+        self.assertIn("2244 passed, 3 skipped, 7 warnings in 206.92s (0:03:26)", text)
         self.assertIn("app.spiders.parser_cache.cached_parser_result()", text)
 
 
