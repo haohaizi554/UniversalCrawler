@@ -11,7 +11,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      QT_QPA_PLATFORM: offscreen
+      QT_QPA_PLATFORM: xcb
+      PYTHONFAULTHANDLER: "1"
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -26,7 +27,23 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libpulse0 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libpulse0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xfixes0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            xauth \
+            xvfb
 
       - name: Install Dependencies
         run: |
@@ -38,4 +55,4 @@ jobs:
         run: python -m compileall app tests main.py
 
       - name: Run Tests
-        run: python -m pytest -q
+        run: xvfb-run -a python -X faulthandler -m pytest -q

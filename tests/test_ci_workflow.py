@@ -12,10 +12,13 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")
 
-        self.assertIn("python -m pytest -q", source)
+        self.assertIn("xvfb-run -a python -X faulthandler -m pytest -q", source)
         self.assertNotIn("python -m unittest discover", source)
-        self.assertIn("QT_QPA_PLATFORM: offscreen", source)
+        self.assertIn("QT_QPA_PLATFORM: xcb", source)
+        self.assertIn('PYTHONFAULTHANDLER: "1"', source)
         self.assertIn("libpulse0", source)
+        self.assertIn("libxcb-xinerama0", source)
+        self.assertIn("xvfb", source)
 
     def test_runtime_requirements_exclude_optional_report_and_fedora_tools(self) -> None:
         requirements = PROJECT_ROOT / "requirements.txt"
