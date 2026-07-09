@@ -98,5 +98,6 @@ Desktop.ini
 *.tmp
 *.orig
 .worktrees/
+.superpowers/
 
 人工测试.txt
