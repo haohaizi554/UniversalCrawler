@@ -4173,12 +4173,17 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         ):
             self.assertIn(detail_action, content)
         self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', content)
-        self.assertIn("function translateRuntimeLogText", content)
-        self.assertIn("function localizeEnglishDynamicLogText", content)
-        self.assertIn("function localizeLogEventCode", content)
-        self.assertIn("return localizeLogEventCode(value);", content)
-        self.assertIn('add("status_code", item.status_code || "", logEventCodeText(item.status_code || ""));', content)
-        self.assertIn('add("event_code", item.event_code || "", logEventCodeText(item.event_code || ""));', content)
+        log_i18n = (static_dir / "log_i18n.js").read_text(encoding="utf-8")
+        for translation_marker in (
+            "function translateRuntimeLogText",
+            "function localizeEnglishDynamicLogText",
+            "function localizeLogEventCode",
+        ):
+            self.assertIn(translation_marker, log_i18n)
+        self.assertIn("function logI18nService()", content)
+        self.assertIn("logI18nService()?.localizeLogEventCode", content)
+        self.assertIn('add("status_code", item.status_code || "", localizeLogEventCode(item.status_code || ""));', log_i18n)
+        self.assertIn('add("event_code", item.event_code || "", localizeLogEventCode(item.event_code || ""));', log_i18n)
         self.assertIn('if (sections.has("settings_snapshot")) updatePlaceholder();', content)
         self.assertIn("trimFrontendLogItems();\n  updatePlaceholder();", content)
         self.assertIn("log-inspector-header", content)

@@ -32,3 +32,18 @@ def test_responsibility_modules_load_before_app_in_dependency_order() -> None:
     assert sources.index(expected[-1]) < next(
         index for index, source in enumerate(sources) if source.startswith("/static/app.js?")
     )
+
+
+def test_log_i18n_owns_runtime_translation_tables() -> None:
+    module = (STATIC_DIR / "log_i18n.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for marker in (
+        "STRUCTURED_LOG_SEGMENT_ALIASES",
+        "RUNTIME_LOG_PHRASE_TRANSLATIONS",
+        "NON_EN_DYNAMIC_LOG_TEXT",
+        "function translateRuntimeLogText",
+        "function localizeLogEventCode",
+    ):
+        assert marker in module
+        assert marker not in app
+    assert "function logI18nService()" in app
