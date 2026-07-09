@@ -686,14 +686,15 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         spider.sig_log.connect(on_log)
         spider.sig_item_found.connect(self._on_spider_item_found)
         batch_signal = getattr(spider, "sig_items_found", None)
-        if batch_signal is not None:
-            batch_signal.connect(self._on_spider_items_found)
+        on_items_found = getattr(self, "_on_spider_items_found", None)
+        if batch_signal is not None and callable(on_items_found):
+            batch_signal.connect(on_items_found)
         spider.sig_select_tasks.connect(self._on_spider_select_tasks)
         spider.sig_finished.connect(self._on_spider_finished)
         self._spider_signal_handlers = {
             "on_log": on_log,
             "on_item_found": self._on_spider_item_found,
-            "on_items_found": self._on_spider_items_found,
+            "on_items_found": on_items_found,
             "on_select_tasks": self._on_spider_select_tasks,
             "on_finished": self._on_spider_finished,
         }

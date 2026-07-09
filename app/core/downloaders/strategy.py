@@ -53,6 +53,7 @@ class StrategyCapableDownloader(Protocol):
         support_resume: bool = False,
         error_message: str = "下载失败",
         proxy: str | None = None,
+        trace_id: str | None = None,
     ) -> None:
         ...
 
@@ -149,6 +150,7 @@ class HttpDownloadStrategy:
             support_resume=request.support_resume,
             error_message=request.error_message,
             proxy=request.context.proxy,
+            trace_id=request.context.trace_id,
         )
         return True
 

@@ -2,8 +2,11 @@
 
 import heapq
 import os
+import re
+import shutil
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
@@ -25,6 +28,28 @@ class MediaLibraryService:
 
     TEMP_FILE_META_KEYS = ("download_temp_files", "temporary_files")
     BILIBILI_TEMP_SUFFIXES = ("_video.m4s", "_audio.m4s")
+    HLS_TEMP_ROOT_NAME = ".ucp-nm3u8-tmp"
+    HLS_TEMP_DIR_SUFFIXES = ("_curl_cffi_hls", "_playwright_hls")
+    _CHUNK_PART_RE = re.compile(r"^\..+\.part\d+$", re.IGNORECASE)
+    _ORPHAN_MEDIA_TEMP_SUFFIXES = (
+        ".mp4.tmp",
+        ".mp4.part",
+        ".mp4.download",
+        ".m4s.tmp",
+        ".m4s.part",
+        ".m4s.download",
+        ".ts.tmp",
+        ".ts.part",
+        ".ts.download",
+    )
+    _EXPLICIT_TEMP_SUFFIXES = (
+        ".downloading",
+        ".tmp",
+        ".part",
+        ".aria2",
+        ".download",
+        *BILIBILI_TEMP_SUFFIXES,
+    )
 
     def __init__(self, video_extensions: tuple[str, ...], image_extensions: tuple[str, ...]):
         """初始化当前实例并准备运行所需的状态，供 `MediaLibraryService` 使用。"""
@@ -55,6 +80,110 @@ class MediaLibraryService:
         if required:
             raise FileOperationError(str(last_error) if last_error else "Failed to delete file")
         return False
+
+    @staticmethod
+    def _normalized_abs(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    @classmethod
+    def _looks_like_explicit_temp_path(cls, path: str) -> bool:
+        name = os.path.basename(str(path or "")).lower()
+        if not name:
+            return False
+        return cls._is_safe_orphan_temp_file_name(name) or name.endswith(cls._EXPLICIT_TEMP_SUFFIXES)
+
+    @classmethod
+    def _is_safe_orphan_temp_file_name(cls, name: str) -> bool:
+        lower_name = str(name or "").lower()
+        if not lower_name:
+            return False
+        if lower_name.endswith(".downloading"):
+            return True
+        if lower_name.endswith(cls.BILIBILI_TEMP_SUFFIXES):
+            return True
+        if lower_name.endswith(".aria2"):
+            return True
+        if lower_name.endswith(cls._ORPHAN_MEDIA_TEMP_SUFFIXES):
+            return True
+        return bool(cls._CHUNK_PART_RE.match(lower_name))
+
+    @classmethod
+    def _is_safe_orphan_temp_dir_name(cls, name: str) -> bool:
+        lower_name = str(name or "").lower()
+        return lower_name == cls.HLS_TEMP_ROOT_NAME or lower_name.endswith(cls.HLS_TEMP_DIR_SUFFIXES)
+
+    @classmethod
+    def _remove_temp_path(cls, path: str | os.PathLike[str]) -> bool:
+        try:
+            target = Path(path)
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+                return not target.exists()
+            if target.exists():
+                target.unlink()
+                return True
+        except OSError:
+            return False
+        return False
+
+    def _iter_download_temp_paths(self, video: VideoItem, file_path: str) -> list[str]:
+        meta = video.meta if isinstance(video.meta, dict) else {}
+        candidates: list[str] = []
+        seen: set[str] = set()
+        owned_dirs: set[str] = set()
+
+        def add_candidate(path: object, *, require_owned_dir: bool = True) -> None:
+            if not isinstance(path, str) or not path:
+                return
+            try:
+                absolute = os.path.abspath(path)
+                normalized = self._normalized_abs(absolute)
+                directory = self._normalized_abs(os.path.dirname(absolute) or os.curdir)
+            except (OSError, TypeError, ValueError):
+                return
+            if require_owned_dir and owned_dirs and directory not in owned_dirs:
+                return
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            candidates.append(absolute)
+
+        if file_path:
+            final_dir = os.path.abspath(os.path.dirname(file_path) or os.curdir)
+            owned_dirs.add(self._normalized_abs(final_dir))
+            name = os.path.basename(file_path)
+            stem = os.path.splitext(name)[0]
+            add_candidate(file_path + ".downloading")
+            for suffix in (".tmp", ".part", ".aria2", ".download"):
+                add_candidate(os.path.join(final_dir, f"{name}{suffix}"))
+                if stem:
+                    add_candidate(os.path.join(final_dir, f"{stem}{suffix}"))
+            try:
+                for entry in os.scandir(final_dir):
+                    if not entry.is_file():
+                        continue
+                    entry_name = entry.name
+                    if self._CHUNK_PART_RE.match(entry_name) and entry_name.startswith(f".{name}.part"):
+                        add_candidate(entry.path)
+                    elif stem and entry_name.startswith(stem) and self._looks_like_explicit_temp_path(entry_name):
+                        add_candidate(entry.path)
+            except OSError:
+                pass
+
+        for key in self.TEMP_FILE_META_KEYS:
+            raw_paths = meta.get(key)
+            if isinstance(raw_paths, str):
+                iterable = [raw_paths]
+            elif isinstance(raw_paths, (list, tuple, set)):
+                iterable = raw_paths
+            else:
+                continue
+            for raw_path in iterable:
+                if not isinstance(raw_path, str) or not self._looks_like_explicit_temp_path(raw_path):
+                    continue
+                add_candidate(raw_path, require_owned_dir=bool(owned_dirs))
+
+        return candidates
 
     def _iter_bilibili_temp_paths(self, video: VideoItem, file_path: str) -> list[str]:
         meta = video.meta if isinstance(video.meta, dict) else {}
@@ -182,6 +311,35 @@ class MediaLibraryService:
         except OSError as exc:
             raise MediaScanError(str(exc)) from exc
 
+    @classmethod
+    def sweep_orphan_download_temp_artifacts(cls, directories: list[str | os.PathLike[str]]) -> int:
+        removed = 0
+        for raw_dir in directories:
+            try:
+                root = Path(raw_dir).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
+            if not root.exists() or not root.is_dir():
+                continue
+            for current_root, dirnames, filenames in os.walk(root, topdown=False):
+                current_path = Path(current_root)
+                for filename in filenames:
+                    if not cls._is_safe_orphan_temp_file_name(filename):
+                        continue
+                    if cls._remove_temp_path(current_path / filename):
+                        removed += 1
+                for dirname in dirnames:
+                    path = current_path / dirname
+                    if cls._is_safe_orphan_temp_dir_name(dirname) and cls._remove_temp_path(path):
+                        removed += 1
+                if current_path != root:
+                    try:
+                        current_path.rmdir()
+                        removed += 1
+                    except OSError:
+                        pass
+        return removed
+
     def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:
         
         if not os.path.exists(video.local_path):
@@ -214,7 +372,7 @@ class MediaLibraryService:
     def delete_media(self, video: VideoItem) -> bool:
         """删除 `media` 对应的对象、文件或记录，供 `MediaLibraryService` 使用。"""
         file_path = video.local_path
-        temp_paths = self._iter_bilibili_temp_paths(video, file_path)
+        temp_paths = self._iter_download_temp_paths(video, file_path) + self._iter_bilibili_temp_paths(video, file_path)
         deleted = self._delete_file(file_path, required=True)
         for temp_path in temp_paths:
             deleted = self._delete_file(temp_path, required=False) or deleted

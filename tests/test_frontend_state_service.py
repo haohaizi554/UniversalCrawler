@@ -1364,6 +1364,50 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(failed["log_excerpt_items"][0]["icon_file"], "log_level_error.png")
         self.assertTrue(all(solution.get("icon_file") for solution in failed["solutions"]))
 
+    def test_failed_snapshot_keeps_richer_trace_excerpt_when_log_refresh_is_shorter(self):
+        item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        item.meta["trace_id"] = "trace-failed"
+        item.meta["failed_at"] = "2026-07-09 07:23:34"
+        full_rows = [
+            {
+                "time": "2026-07-09 07:22:01",
+                "level": "INFO",
+                "source": "BilibiliDownloader",
+                "trace_id": "trace-failed",
+                "message": "Bilibili 流请求建立成功",
+                "message_summary": "Bilibili 流请求建立成功",
+            },
+            {
+                "time": "2026-07-09 07:22:20",
+                "level": "WARN",
+                "source": "BilibiliDownloader",
+                "trace_id": "trace-failed",
+                "message": "B站 video 流连接断开，准备断点续传重试",
+                "message_summary": "B站 video 流连接断开，准备断点续传重试",
+            },
+            {
+                "time": "2026-07-09 07:23:34",
+                "level": "ERROR",
+                "source": "Downloader",
+                "trace_id": "trace-failed",
+                "message": "下载失败: Connection broken",
+                "message_summary": "下载失败: Connection broken",
+            },
+        ]
+        short_rows = [full_rows[-1]]
+        batches = [full_rows, short_rows]
+        service = FrontendStateService(SimpleNamespace(videos={item.id: item}))
+        service.log_items = lambda: list(batches.pop(0) if batches else short_rows)  # type: ignore[method-assign]
+        try:
+            first = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
+            second = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
+        finally:
+            service.destroy()
+
+        self.assertEqual(first["log_excerpt"], [row["message"] for row in full_rows])
+        self.assertEqual(second["log_excerpt"], [row["message"] for row in full_rows])
+
     def test_failed_snapshot_queues_structured_sqlite_record(self):
         with TemporaryDirectory() as temp_dir:
             store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")

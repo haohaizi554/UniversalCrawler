@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -379,6 +379,7 @@ class FailedPage(PageFrame):
         if self.log_layout.count() == 0:
             self.log_layout.addWidget(self._empty_label("暂无日志片段"))
         self.log_layout.addStretch(1)
+        self._reset_log_scroll_to_top()
 
         for solution in list(item.get("solutions_display") or []):
             self.solutions_list_layout.addWidget(self._solution_row(solution))
@@ -462,9 +463,9 @@ class FailedPage(PageFrame):
         time_width = max(
             time_label.fontMetrics().horizontalAdvance("88:88:88"),
             time_label.fontMetrics().horizontalAdvance(time_label.text()),
-        ) + 2
+        ) + 16
         time_label.setFixedWidth(time_width)
-        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        time_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         layout.addWidget(time_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         level_badge = self._log_level_badge(entry)
         layout.addWidget(level_badge, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -579,6 +580,17 @@ class FailedPage(PageFrame):
         label.setObjectName("MutedLabel")
         label.setWordWrap(True)
         return label
+
+    def _reset_log_scroll_to_top(self) -> None:
+        self.log_list.adjustSize()
+        self._reset_log_scroll_to_top_now()
+        QTimer.singleShot(0, self._reset_log_scroll_to_top_now)
+        QTimer.singleShot(0, lambda: QTimer.singleShot(0, self._reset_log_scroll_to_top_now))
+
+    def _reset_log_scroll_to_top_now(self) -> None:
+        bar = self.log_scroll.verticalScrollBar()
+        bar.setSliderPosition(bar.minimum())
+        bar.setValue(bar.minimum())
 
     @staticmethod
     def _clear_layout(layout: QVBoxLayout) -> None:

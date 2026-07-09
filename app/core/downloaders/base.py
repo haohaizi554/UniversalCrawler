@@ -242,6 +242,7 @@ class BaseDownloader:
         support_resume: bool = False,
         error_message: str = "下载失败",
         proxy: str | None = None,
+        trace_id: str | None = None,
     ) -> None:
         """提供 `_download_http_file` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
         temp_path = save_path + ".downloading"
@@ -252,11 +253,25 @@ class BaseDownloader:
         for attempt in range(retry_count + 1):
             if check_stop_func():
                 raise DownloaderStoppedError("用户停止下载")
+            existing_size = 0
             try:
                 existing_size = self._get_existing_size(temp_path) if support_resume and self._should_resume_download(temp_path) else 0
                 request_headers = headers.copy()
                 if support_resume and existing_size > 0:
                     request_headers["Range"] = f"bytes={existing_size}-"
+                    debug_logger.log(
+                        component=self.__class__.__name__,
+                        action="http_resume",
+                        message="HTTP 断点续传请求已建立",
+                        status_code="DL_HTTP_RESUME",
+                        details={
+                            "url": url,
+                            "save_path": save_path,
+                            "attempt": attempt + 1,
+                            "resume_offset": existing_size,
+                        },
+                        trace_id=trace_id,
+                    )
 
                 with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
                     response.raise_for_status()
@@ -285,6 +300,22 @@ class BaseDownloader:
             except requests.RequestException:
                 if attempt == retry_count:
                     break
+                debug_logger.log(
+                    component=self.__class__.__name__,
+                    action="http_retry",
+                    level="WARN",
+                    message=f"HTTP 下载失败，准备重试 ({attempt + 1}/{retry_count})",
+                    status_code="DL_HTTP_RETRY",
+                    details={
+                        "url": url,
+                        "save_path": save_path,
+                        "attempt": attempt + 1,
+                        "max_retries": retry_count,
+                        "resume_enabled": support_resume,
+                        "resume_offset": existing_size,
+                    },
+                    trace_id=trace_id,
+                )
                 time.sleep(1 if retry_count <= 3 else 3)
             except OSError as exc:
                 self._cleanup_temp_file(temp_path)
@@ -292,6 +323,23 @@ class BaseDownloader:
             except (ValueError, TypeError, RuntimeError) as exc:
                 if attempt == retry_count:
                     raise StreamDownloadError(f"{error_message}: {exc}") from exc
+                debug_logger.log(
+                    component=self.__class__.__name__,
+                    action="http_retry",
+                    level="WARN",
+                    message=f"HTTP 下载异常，准备重试 ({attempt + 1}/{retry_count})",
+                    status_code="DL_HTTP_RETRY",
+                    details={
+                        "url": url,
+                        "save_path": save_path,
+                        "attempt": attempt + 1,
+                        "max_retries": retry_count,
+                        "resume_enabled": support_resume,
+                        "resume_offset": existing_size,
+                        "error": str(exc),
+                    },
+                    trace_id=trace_id,
+                )
                 time.sleep(1 if retry_count <= 3 else 3)
 
         if not success:

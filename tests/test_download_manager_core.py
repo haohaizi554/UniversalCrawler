@@ -1,10 +1,12 @@
 """纯 Python 下载调度内核测试。"""
 
 import queue
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from app.core.download_manager_core import DownloadManagerCore, PendingDownloadQueue
 from app.models import VideoItem
@@ -104,6 +106,23 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertEqual(image.progress, 100)
         self.assertTrue(image.meta["skipped_by_video_only"])
 
+    def test_startup_sweep_removes_non_hls_orphan_download_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "app.core.download_manager_core.cfg.get",
+            return_value=temp_dir,
+        ):
+            audio_temp = Path(temp_dir) / "demo_audio.m4s"
+            http_temp = Path(temp_dir) / "demo.mp4.downloading"
+            keep_file = Path(temp_dir) / "demo.mp4"
+            for path in (audio_temp, http_temp, keep_file):
+                path.write_bytes(b"test")
+            manager = DownloadManagerCore.__new__(DownloadManagerCore)
+
+            manager._sweep_m3u8_orphan_workspaces_on_startup()
+
+            self.assertFalse(audio_temp.exists())
+            self.assertFalse(http_temp.exists())
+            self.assertTrue(keep_file.exists())
 
     def test_pending_download_queue_removes_many_items_in_one_pass(self):
         pending = PendingDownloadQueue()

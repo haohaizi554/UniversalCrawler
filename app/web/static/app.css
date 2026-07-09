@@ -1419,7 +1419,7 @@ tr.selected:hover td {
 .failed-log-row {
   display: grid;
   align-items: start;
-  grid-template-columns: 8.5ch 74px minmax(0, 1fr);
+  grid-template-columns: 9.5ch 74px minmax(0, 1fr);
   gap: 6px;
   padding: 2px 0;
   font-size: 12px;

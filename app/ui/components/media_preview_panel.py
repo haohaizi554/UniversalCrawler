@@ -141,6 +141,8 @@ class MediaPreviewPanel(QFrame):
         self._committing_sources: set[str] = set()
         self._repair_states: dict[str, _RepairUiState] = {}
         self._pending_cache_cleanup: set[str] = set()
+        self._pending_cached_playable_lookups: set[str] = set()
+        self._pending_repair_after_cache_lookup: set[str] = set()
         self._repair_lock = threading.Lock()
         self._cleanup_requested = threading.Event()
         self._cleanup_done = False
@@ -477,6 +479,8 @@ class MediaPreviewPanel(QFrame):
             with repair_lock:
                 self._repair_states.clear()
                 self._pending_cache_cleanup.clear()
+                self._pending_cached_playable_lookups.clear()
+                self._pending_repair_after_cache_lookup.clear()
 
     def deleteLater(self) -> None:
         self.cleanup()
@@ -598,6 +602,8 @@ class MediaPreviewPanel(QFrame):
     def _submit_cached_playable_path_lookup(self, source_key: str, source_path: str) -> None:
         if self._cleanup_requested.is_set() or not source_key or not source_path:
             return
+        with self._repair_lock:
+            self._pending_cached_playable_lookups.add(source_key)
 
         def task(token: TaskCancelToken) -> None:
             if token.is_cancelled():
@@ -622,15 +628,23 @@ class MediaPreviewPanel(QFrame):
         self._short_task_runner.submit(name="cached-playable-path", fn=task)
 
     def _on_cached_playable_path_ready(self, source_key: str, source_path: str, playable_path: str) -> None:
+        with self._repair_lock:
+            self._pending_cached_playable_lookups.discard(source_key)
+            repair_after_lookup = source_key in self._pending_repair_after_cache_lookup
+            self._pending_repair_after_cache_lookup.discard(source_key)
         if self._cleanup_requested.is_set() or self._active_video_source != source_key:
             return
         if not playable_path:
             return
         if self._normalize_path(playable_path) == source_key:
             self._remember_repair_candidate(source_path, playable_path, source_key)
+            if repair_after_lookup:
+                QTimer.singleShot(0, lambda key=source_key: self._retry_repair_after_cache_lookup(key))
             return
         if self._is_busy(source_key):
             return
+        self._repair_candidate_path = None
+        self._repair_candidate_key = None
         self._set_repair_state(
             source_key,
             source_path,
@@ -726,7 +740,7 @@ class MediaPreviewPanel(QFrame):
             self.sig_switch_preview.emit(1)
 
     def on_player_error(self, _error, _message: str = "") -> None:
-        self._start_repair_if_seek_unavailable(force=True)
+        self._start_repair_if_seek_unavailable(force=True, defer_for_cache=True)
 
     def _set_play_button_stopped(self) -> None:
         self.btn_play.setIcon(self._style_provider.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
@@ -752,14 +766,24 @@ class MediaPreviewPanel(QFrame):
             return
         self._duration_probe_timer.start()
 
-    def _start_repair_if_seek_unavailable(self, force: bool = False) -> None:
+    def _start_repair_if_seek_unavailable(self, force: bool = False, *, defer_for_cache: bool = False) -> None:
         if not self._repair_candidate_path or not self._repair_candidate_key:
             return
         if self._active_video_source != self._repair_candidate_key:
             return
+        if defer_for_cache:
+            with self._repair_lock:
+                if self._repair_candidate_key in self._pending_cached_playable_lookups:
+                    self._pending_repair_after_cache_lookup.add(self._repair_candidate_key)
+                    return
         if not force and not self._seek_is_unavailable():
             return
         self._start_background_repair(self._repair_candidate_path, self._repair_candidate_key)
+
+    def _retry_repair_after_cache_lookup(self, source_key: str) -> None:
+        if self._cleanup_requested.is_set() or self._active_video_source != source_key:
+            return
+        self._start_repair_if_seek_unavailable(force=True)
 
     def _start_background_repair(self, video_path: str, source_key: str) -> None:
         if self._cleanup_requested.is_set():
@@ -785,9 +809,18 @@ class MediaPreviewPanel(QFrame):
             with self._repair_lock:
                 self._repairing_sources.discard(source_key)
 
-    def _repair_video_worker(self, video_path: str, source_key: str) -> None:
+    def _repair_video_worker(
+        self,
+        video_path: str,
+        source_key: str,
+        *,
+        cancel_token: TaskCancelToken | None = None,
+    ) -> None:
+        def is_cancelled() -> bool:
+            return self._cleanup_requested.is_set() or bool(cancel_token and cancel_token.is_cancelled())
+
         def progress(percent: int, message: str) -> None:
-            if self._cleanup_requested.is_set():
+            if is_cancelled():
                 return
             self.sig_repair_progress.emit(source_key, percent, message)
 
@@ -795,9 +828,9 @@ class MediaPreviewPanel(QFrame):
             result = self._repair_service.repair_for_playback(
                 video_path,
                 progress_callback=progress,
-                cancel_check=self._cleanup_requested.is_set,
+                cancel_check=is_cancelled,
             )
-            if not self._cleanup_requested.is_set():
+            if not is_cancelled():
                 self.sig_repair_finished.emit(
                     source_key,
                     video_path,
@@ -835,9 +868,19 @@ class MediaPreviewPanel(QFrame):
             with self._repair_lock:
                 self._committing_sources.discard(source_key)
 
-    def _commit_repair_worker(self, source_key: str, source_path: str, repaired_path: str) -> None:
+    def _commit_repair_worker(
+        self,
+        source_key: str,
+        source_path: str,
+        repaired_path: str,
+        *,
+        cancel_token: TaskCancelToken | None = None,
+    ) -> None:
+        def is_cancelled() -> bool:
+            return self._cleanup_requested.is_set() or bool(cancel_token and cancel_token.is_cancelled())
+
         def progress(percent: int, message: str) -> None:
-            if self._cleanup_requested.is_set():
+            if is_cancelled():
                 return
             self.sig_repair_commit_progress.emit(source_key, percent, message)
 
@@ -855,9 +898,9 @@ class MediaPreviewPanel(QFrame):
                 source_path,
                 repaired_path,
                 progress_callback=progress,
-                cancel_check=self._cleanup_requested.is_set,
+                cancel_check=is_cancelled,
             )
-            if not self._cleanup_requested.is_set():
+            if not is_cancelled():
                 self.sig_repair_commit_finished.emit(source_key, repaired_path, result.committed, result.message)
         finally:
             with self._repair_lock:

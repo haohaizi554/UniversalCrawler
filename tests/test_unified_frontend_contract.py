@@ -3785,13 +3785,57 @@ class UnifiedFrontendContractTests(unittest.TestCase):
             time_widget = layout.itemAt(0).widget()
             badge = layout.itemAt(1).widget()
             self.assertRegex(time_widget.text(), r"^\d{2}:\d{2}:\d{2}$")
-            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 2)
+            self.assertGreaterEqual(time_widget.width(), time_widget.fontMetrics().horizontalAdvance(time_widget.text()) + 8)
             self.assertEqual(badge.width(), 68)
             message_x.append(layout.itemAt(2).geometry().x() if widget.isVisible() else time_widget.width() + layout.spacing() + badge.width() + layout.spacing())
 
         self.assertEqual(len(set(message_x)), 1)
         message_labels = [widget.layout().itemAt(2).widget() for widget in widgets]
         self.assertEqual(message_labels[-1].text(), "下载任务失败")
+
+    def test_failed_log_scroll_resets_to_top_when_detail_log_changes(self):
+        shell = self._make_shell()
+        failed = shell.pages["failed"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        failed.log_scroll.setFixedHeight(86)
+        rows = [
+            {"time": f"2026-07-09 07:22:{index:02d}", "level": "INFO", "message": f"日志片段 {index}"}
+            for index in range(12)
+        ]
+        snapshot["failed_items"] = [
+            {
+                "id": "failed-scroll",
+                "title": "Scroll detail",
+                "failed_at": "2026-07-09 07:23:34",
+                "failed_at_table": "07-09 07:23",
+                "reason": "B站下载失败",
+                "reason_detail": "B站下载失败",
+                "reason_label": "链接失败",
+                "reason_icon_file": "action_trace_link.png",
+                "platform": "Bilibili",
+                "platform_id": "bilibili",
+                "trace_id": "trace-scroll",
+                "status_label": "失败",
+                "log_excerpt_items": rows,
+                "solutions": [],
+            }
+        ]
+        shell.show_page("failed")
+        shell.render(snapshot, changed_sections={"failed_items"})
+        self._wait_for_table_rows(failed.table, 1)
+        bar = failed.log_scroll.verticalScrollBar()
+        bar.setRange(0, 100)
+        bar.setValue(100)
+        self.assertGreater(bar.value(), 0)
+
+        snapshot["failed_items"][0]["log_excerpt_items"] = rows + [
+            {"time": "2026-07-09 07:23:34", "level": "ERROR", "message": "最终失败"}
+        ]
+        shell.render(snapshot, changed_sections={"failed_items"})
+        self._wait_until(
+            lambda: failed.log_scroll.verticalScrollBar().value() == 0,
+            message="failed log scroll did not reset after detail log changed",
+        )
 
     def test_failed_log_rows_wrap_long_error_segments_without_clipping(self):
         shell = self._make_shell()
@@ -3949,7 +3993,7 @@ class UnifiedFrontendContractTests(unittest.TestCase):
         self.assertIn("log-level", failed_log_fn)
         self.assertNotIn("<img", failed_log_fn)
         self.assertLess(failed_log_fn.index("log-time"), failed_log_fn.index("log-level"))
-        self.assertIn("grid-template-columns: 8.5ch 74px minmax(0, 1fr)", css)
+        self.assertIn("grid-template-columns: 9.5ch 74px minmax(0, 1fr)", css)
         self.assertIn("padding: 2px 0", css)
         self.assertIn("function failedLogTime", content)
         self.assertIn("failedLogTime(entry.time)", failed_log_fn)

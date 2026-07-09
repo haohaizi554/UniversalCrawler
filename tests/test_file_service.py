@@ -147,6 +147,77 @@ class MediaLibraryServiceTests(unittest.TestCase):
         self.assertFalse(os.path.exists(audio_temp))
         self.assertTrue(os.path.exists(unrelated))
 
+    def test_delete_media_removes_generic_download_temp_artifacts(self):
+        base = self.temp_dir.name
+        file_path = os.path.join(base, "demo.mp4")
+        http_temp = file_path + ".downloading"
+        chunk_temp = os.path.join(base, ".demo.mp4.part0")
+        explicit_temp = os.path.join(base, "demo.custom.tmp")
+        unrelated = os.path.join(base, "demo_cover.m4s")
+        for path in (file_path, http_temp, chunk_temp, explicit_temp, unrelated):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+        item = VideoItem(url="", title="demo", source="douyin")
+        item.local_path = file_path
+        item.meta["download_temp_files"] = [explicit_temp]
+
+        deleted = self.service.delete_media(item)
+
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(file_path))
+        self.assertFalse(os.path.exists(http_temp))
+        self.assertFalse(os.path.exists(chunk_temp))
+        self.assertFalse(os.path.exists(explicit_temp))
+        self.assertTrue(os.path.exists(unrelated))
+
+    def test_sweep_orphan_download_temp_artifacts_removes_safe_patterns(self):
+        base = self.temp_dir.name
+        paths_to_remove = [
+            os.path.join(base, "demo_video.m4s"),
+            os.path.join(base, "demo_audio.m4s"),
+            os.path.join(base, "demo.mp4.downloading"),
+            os.path.join(base, ".demo.mp4.part0"),
+        ]
+        keep_paths = [
+            os.path.join(base, "demo_cover.m4s"),
+            os.path.join(base, "demo.mp4"),
+        ]
+        for path in paths_to_remove + keep_paths:
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+
+        removed = self.service.sweep_orphan_download_temp_artifacts([base])
+
+        self.assertEqual(removed, len(paths_to_remove))
+        for path in paths_to_remove:
+            self.assertFalse(os.path.exists(path), path)
+        for path in keep_paths:
+            self.assertTrue(os.path.exists(path), path)
+
+    def test_sweep_orphan_download_temp_artifacts_recurses_and_prunes_empty_collection_dirs(self):
+        base = self.temp_dir.name
+        collection_dir = os.path.join(base, "合集")
+        media_dir = os.path.join(base, "保留")
+        empty_collection_dir = os.path.join(base, "空合集")
+        os.mkdir(collection_dir)
+        os.mkdir(media_dir)
+        os.mkdir(empty_collection_dir)
+        nested_temp = os.path.join(collection_dir, "demo_audio.m4s")
+        nested_media = os.path.join(media_dir, "demo.mp4")
+        for path in (nested_temp, nested_media):
+            with open(path, "wb") as fp:
+                fp.write(b"test")
+
+        removed = self.service.sweep_orphan_download_temp_artifacts([base])
+
+        self.assertGreaterEqual(removed, 2)
+        self.assertFalse(os.path.exists(nested_temp))
+        self.assertFalse(os.path.exists(collection_dir))
+        self.assertFalse(os.path.exists(empty_collection_dir))
+        self.assertTrue(os.path.exists(media_dir))
+        self.assertTrue(os.path.exists(nested_media))
+        self.assertTrue(os.path.exists(base))
+
     def test_delete_media_removes_bilibili_temp_sidecars_when_final_missing(self):
         base = self.temp_dir.name
         file_path = os.path.join(base, "demo.mp4")

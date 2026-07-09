@@ -105,6 +105,32 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(mocked_get.call_count, 1)
 
+    @patch("app.core.downloaders.base.time.sleep", return_value=None)
+    @patch("app.core.downloaders.base.debug_logger.log")
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_downloader_logs_http_retry(self, mocked_get, mocked_log, _mocked_sleep):
+        mocked_get.side_effect = [
+            requests.ConnectionError("drop"),
+            self._make_stream_response([b"ok"], headers={"content-length": "2"}),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+
+            BaseDownloader()._download_http_file(
+                url="https://example.com/demo.mp4",
+                save_path=save_path,
+                headers={},
+                check_stop_func=lambda: False,
+                max_retries=1,
+                trace_id="trace-retry",
+            )
+
+            self.assertEqual(Path(save_path).read_bytes(), b"ok")
+
+        self.assertTrue(any(call.kwargs.get("action") == "http_retry" for call in mocked_log.call_args_list))
+        self.assertEqual(mocked_log.call_args_list[0].kwargs.get("trace_id"), "trace-retry")
+
     def test_m3u8_cleanup_removes_external_tool_temp_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = os.path.join(temp_dir, "demo.mp4")
@@ -304,6 +330,7 @@ class DownloaderStrategyTests(unittest.TestCase):
             "https://cdn.example.com/master.m3u8",
             "video.mp4",
             {"User-Agent": "ua-demo", "Referer": "https://www.douyin.com/"},
+            timeout_seconds=30,
         )
 
         self.assertIn("-user_agent", command)
@@ -311,6 +338,8 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIn("-progress", command)
         self.assertIn("pipe:2", command)
         self.assertIn("-nostats", command)
+        self.assertEqual(command[command.index("-timeout") + 1], "30000000")
+        self.assertEqual(command[command.index("-rw_timeout") + 1], "30000000")
         self.assertIn("Referer: https://www.douyin.com/\r\n", command)
         self.assertEqual(command[-1], "video.mp4")
 
@@ -348,12 +377,53 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = os.path.join(temp_dir, "demo.mp4")
-            with open(save_path, "wb") as fp:
+            with open(save_path + ".downloading", "wb") as fp:
                 fp.write(b"done")
             FFmpegDownloader().download(item, save_path, progress.append, lambda: False)
 
         self.assertEqual(progress, [10, 50, 100])
         process.stderr.close.assert_called()
+
+    @patch("app.core.downloaders.ffmpeg.requests.head")
+    @patch("app.core.downloaders.ffmpeg.subprocess.Popen")
+    @patch("app.core.downloaders.ffmpeg.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    def test_ffmpeg_downloader_writes_temp_file_then_promotes_on_success(
+        self,
+        _mocked_resolve,
+        mocked_popen,
+        mocked_head,
+    ):
+        head_response = Mock()
+        head_response.url = "https://cdn.example.com/video.mp4"
+        head_response.status_code = 200
+        head_response.headers = {"content-length": "4096"}
+        mocked_head.return_value = head_response
+
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+        progress = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            temp_path = save_path + ".downloading"
+
+            def fake_popen(cmd, **_kwargs):
+                self.assertEqual(cmd[-1], temp_path)
+                Path(cmd[-1]).write_bytes(b"done")
+                process = Mock()
+                process.stderr.readline.side_effect = [b"progress=end\n", b""]
+                process.poll.return_value = 0
+                process.returncode = 0
+                return process
+
+            mocked_popen.side_effect = fake_popen
+
+            FFmpegDownloader().download(item, save_path, progress.append, lambda: False)
+
+            self.assertTrue(os.path.exists(save_path))
+            self.assertFalse(os.path.exists(temp_path))
+            self.assertEqual(Path(save_path).read_bytes(), b"done")
+
+        self.assertEqual(progress, [100])
 
     def test_ffmpeg_progress_parser_treats_large_out_time_ms_as_microseconds(self):
         """较新的 FFmpeg 会把 out_time_ms 输出为微秒值，不能按毫秒直接换算。"""
@@ -369,14 +439,10 @@ class DownloaderStrategyTests(unittest.TestCase):
     @patch("app.core.downloaders.ffmpeg.time.sleep", return_value=None)
     @patch("app.core.downloaders.ffmpeg.requests.head")
     @patch("app.core.downloaders.ffmpeg.subprocess.Popen")
-    @patch("app.core.downloaders.ffmpeg.os.path.getsize", return_value=1024)
-    @patch("app.core.downloaders.ffmpeg.os.path.exists", return_value=True)
     @patch("app.core.downloaders.ffmpeg.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
     def test_ffmpeg_downloader_refreshes_douyin_stream_url_between_retries(
         self,
         _mocked_resolve,
-        _mocked_exists,
-        _mocked_getsize,
         mocked_popen,
         mocked_head,
         _mocked_sleep,
@@ -402,8 +468,6 @@ class DownloaderStrategyTests(unittest.TestCase):
         success_process.poll.side_effect = [0]
         success_process.returncode = 0
 
-        mocked_popen.side_effect = [failed_process, success_process]
-
         item = VideoItem(
             url="https://www.douyin.com/aweme/v1/play/?video_id=demo",
             title="demo",
@@ -412,7 +476,20 @@ class DownloaderStrategyTests(unittest.TestCase):
         item.meta["duration"] = 12
 
         progress = []
-        FFmpegDownloader().download(item, "demo.mp4", progress.append, lambda: False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            temp_path = save_path + ".downloading"
+
+            def fake_popen(cmd, **_kwargs):
+                if mocked_popen.call_count == 1:
+                    return failed_process
+                self.assertEqual(cmd[-1], temp_path)
+                Path(cmd[-1]).write_bytes(b"done")
+                return success_process
+
+            mocked_popen.side_effect = fake_popen
+
+            FFmpegDownloader().download(item, save_path, progress.append, lambda: False)
 
         self.assertEqual(mocked_head.call_count, 2)
         first_cmd = mocked_popen.call_args_list[0].args[0]
@@ -490,7 +567,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         def cfg_get(section, key, default=None):
             if (section, key) == ("download", "max_retries"):
                 return 2
-            return cfg.get(section, key, default)
+            return default
 
         mocked_cfg_get.side_effect = cfg_get
         command = NM3U8DLREExternalTool.build_download_command(
@@ -502,6 +579,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         )
 
         self.assertEqual(command[command.index("--download-retry-count") + 1], "2")
+        self.assertEqual(command[command.index("--http-request-timeout") + 1], "60")
 
     def test_nm3u8_external_tool_build_download_command_accepts_tmp_dir(self):
         tmp_dir = os.path.join("downloads", ".ucp-nm3u8-tmp", "ucp-demo")
@@ -981,6 +1059,51 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         with self.assertRaises(StreamDownloadError):
             ChunkedDownloader().download(item, "demo.mp4", lambda _value: None, lambda: False)
+
+    @patch("app.core.downloaders.chunked.debug_logger.log")
+    @patch("app.core.downloaders.chunked.time.sleep", return_value=None)
+    @patch("app.core.downloaders.chunked.requests.get")
+    @patch("app.core.downloaders.chunked.requests.head")
+    @patch("app.core.downloaders.chunked.cfg.get")
+    def test_chunked_downloader_resumes_part_file_after_retry(
+        self,
+        mocked_cfg_get,
+        mocked_head,
+        mocked_get,
+        _mocked_sleep,
+        mocked_log,
+    ):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "max_retries"):
+                return 1
+            if (section, key) == ("download", "resume_enabled"):
+                return True
+            return default
+
+        mocked_cfg_get.side_effect = cfg_get
+        head_response = Mock()
+        head_response.headers = {"content-length": "10", "accept-ranges": "bytes"}
+        head_response.raise_for_status.return_value = None
+        mocked_head.return_value = head_response
+        mocked_get.side_effect = [
+            self._make_stream_response_raising(
+                [b"1234"],
+                requests.ConnectionError("drop"),
+                headers={"content-length": "10"},
+                status_code=206,
+            ),
+            self._make_stream_response([b"567890"], headers={"content-length": "6"}, status_code=206),
+        ]
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            ChunkedDownloader().download(item, save_path, lambda _value, **_kwargs: None, lambda: False)
+
+            self.assertEqual(Path(save_path).read_bytes(), b"1234567890")
+
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Range"], "bytes=4-9")
+        self.assertTrue(any(call.kwargs.get("action") == "chunk_retry" for call in mocked_log.call_args_list))
 
     @patch.object(BilibiliDownloader, "_run_merge_process")
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
@@ -2223,7 +2346,16 @@ https://cdn.example.com/seg2.ts
 
         mocked_fallback.assert_not_called()
 
-    def test_yt_dlp_fallback_params_enable_impersonation_and_proxy(self):
+    @patch("app.core.downloaders.m3u8.cfg.get")
+    def test_yt_dlp_fallback_params_enable_impersonation_and_proxy(self, mocked_cfg_get):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "max_retries"):
+                return 4
+            if (section, key) == ("download", "resume_enabled"):
+                return True
+            return default
+
+        mocked_cfg_get.side_effect = cfg_get
         params = N_m3u8DL_RE_Downloader._yt_dlp_params(
             "D:/downloads/demo.mp4",
             {"Referer": "https://missav.ai/cn/demo"},
@@ -2234,6 +2366,9 @@ https://cdn.example.com/seg2.ts
         self.assertEqual(params["impersonate"], "")
         self.assertEqual(params["proxy"], "http://127.0.0.1:7890")
         self.assertEqual(params["http_headers"]["Referer"], "https://missav.ai/cn/demo")
+        self.assertEqual(params["retries"], 4)
+        self.assertEqual(params["fragment_retries"], 4)
+        self.assertTrue(params["continuedl"])
 
     def test_yt_dlp_fallback_retries_without_impersonation_and_wraps_failure(self):
         from yt_dlp.utils import YoutubeDLError
@@ -2658,7 +2793,7 @@ https://cdn.example.com/seg2.ts
         def cfg_get(section, key, default=None):
             if (section, key) == ("download", "resume_enabled"):
                 return False
-            return cfg.get(section, key, default)
+            return default
 
         mocked_cfg_get.side_effect = cfg_get
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="xiaohongshu")

@@ -61,8 +61,10 @@ class ChunkedDownloader(BaseDownloader):
         proxy = video_item.meta.get("proxy")
         proxies = {"http": proxy, "https": proxy} if proxy else None
         timeout = cfg.get("download", "request_timeout", 60)
+        retry_count = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
+        resume_enabled = self._coerce_bool_setting(cfg.get("download", "resume_enabled", True))
         try:
-            resp = requests.head(url, headers=headers, timeout=15, allow_redirects=True, proxies=proxies)
+            resp = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True, proxies=proxies)
             resp.raise_for_status()
         except requests.RequestException as exc:
             raise StreamDownloadError(f"分块下载预检查失败: {exc}") from exc
@@ -108,34 +110,77 @@ class ChunkedDownloader(BaseDownloader):
                     pass
 
         def download_chunk(idx: int, start_byte: int, end_byte: int, temp_file: str) -> bool | None:
-            
-            try:
-                request_headers = headers.copy()
-                request_headers["Range"] = f"bytes={start_byte}-{end_byte}"
-                with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
-                    if response.status_code != 206:
-                        raise StreamDownloadError(f"分块请求未返回 206: {response.status_code}")
-                    response.raise_for_status()
-                    with open(temp_file, "wb") as fp:
-                        for chunk_data in response.iter_content(chunk_size=65536):
-                            if stop_event.is_set() or error_event.is_set():
-                                return None
-                            if check_stop_func():
-                                stop_event.set()
-                                raise DownloaderStoppedError("用户停止下载")
-                            if chunk_data:
-                                fp.write(chunk_data)
-                                with lock:
-                                    downloaded_bytes[idx] += len(chunk_data)
-                return True
-            except DownloaderStoppedError:
+            chunk_length = end_byte - start_byte + 1
+            last_error: Exception | None = None
+
+            for attempt in range(retry_count + 1):
+                if stop_event.is_set() or error_event.is_set():
+                    return None
+                try:
+                    existing_size = 0
+                    if resume_enabled and os.path.exists(temp_file):
+                        existing_size = min(os.path.getsize(temp_file), chunk_length)
+                    if existing_size >= chunk_length:
+                        with lock:
+                            downloaded_bytes[idx] = chunk_length
+                        return True
+
+                    request_start = start_byte + existing_size if resume_enabled else start_byte
+                    request_headers = headers.copy()
+                    request_headers["Range"] = f"bytes={request_start}-{end_byte}"
+                    with lock:
+                        downloaded_bytes[idx] = existing_size if resume_enabled else 0
+                    with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
+                        if response.status_code != 206:
+                            raise StreamDownloadError(f"分块请求未返回 206: {response.status_code}")
+                        response.raise_for_status()
+                        mode = "ab" if resume_enabled and existing_size > 0 else "wb"
+                        with open(temp_file, mode) as fp:
+                            for chunk_data in response.iter_content(chunk_size=65536):
+                                if stop_event.is_set() or error_event.is_set():
+                                    return None
+                                if check_stop_func():
+                                    stop_event.set()
+                                    raise DownloaderStoppedError("用户停止下载")
+                                if chunk_data:
+                                    fp.write(chunk_data)
+                                    with lock:
+                                        downloaded_bytes[idx] += len(chunk_data)
+                    return True
+                except DownloaderStoppedError:
+                    error_event.set()
+                    error_holder.append(DownloaderStoppedError("用户停止下载"))
+                    return False
+                except (requests.RequestException, OSError, ValueError, RuntimeError, StreamDownloadError) as exc:
+                    last_error = exc
+                    if attempt < retry_count:
+                        debug_logger.log(
+                            component="ChunkedDownloader",
+                            action="chunk_retry",
+                            level="WARN",
+                            message=f"分块下载失败，准备重试 ({attempt + 1}/{retry_count})",
+                            status_code="DL_CHUNK_RETRY",
+                            details={
+                                "chunk_index": idx,
+                                "attempt": attempt + 1,
+                                "max_retries": retry_count,
+                                "resume_enabled": resume_enabled,
+                                "resume_offset": existing_size,
+                                "start_byte": start_byte,
+                                "end_byte": end_byte,
+                                "error": str(exc),
+                            },
+                            trace_id=video_item.meta.get("trace_id") if video_item.meta else None,
+                        )
+                        time.sleep(1 if retry_count <= 3 else 3)
+                        continue
+                    error_event.set()
+                    error_holder.append(exc)
+                    return False
+            if last_error is not None:
                 error_event.set()
-                error_holder.append(DownloaderStoppedError("用户停止下载"))
-                return False
-            except (requests.RequestException, OSError, ValueError, RuntimeError, StreamDownloadError) as exc:
-                error_event.set()
-                error_holder.append(exc)
-                return False
+                error_holder.append(last_error)
+            return False
 
         threads: list[threading.Thread] = []
         merged = False

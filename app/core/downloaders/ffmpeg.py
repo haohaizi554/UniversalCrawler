@@ -203,6 +203,12 @@ class FFmpegDownloader(BaseDownloader):
         startupinfo = build_hidden_startupinfo()
 
         max_retries = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
+        temp_path = save_path + ".downloading"
+        if isinstance(getattr(video_item, "meta", None), dict):
+            temp_files = list(video_item.meta.get("download_temp_files") or [])
+            if temp_path not in temp_files:
+                temp_files.append(temp_path)
+            video_item.meta["download_temp_files"] = temp_files
         for attempt in range(max_retries + 1):
             attempt_completed = False
             stderr_tail: deque[str] = deque(maxlen=12)
@@ -213,7 +219,7 @@ class FFmpegDownloader(BaseDownloader):
             cmd = FFmpegExternalTool.build_download_command(
                 ffmpeg,
                 url,
-                save_path,
+                temp_path,
                 headers,
                 proxy=proxy,
                 timeout_seconds=request_timeout,
@@ -223,7 +229,13 @@ class FFmpegDownloader(BaseDownloader):
                 tool_name="ffmpeg",
                 command_args=cmd,
                 message="准备调用 ffmpeg 执行下载",
-                context={"save_path": save_path, "source_url": url, "title": video_item.title, "attempt": attempt + 1},
+                context={
+                    "save_path": save_path,
+                    "temp_path": temp_path,
+                    "source_url": url,
+                    "title": video_item.title,
+                    "attempt": attempt + 1,
+                },
                 trace_id=trace_id,
             )
             process = None
@@ -298,7 +310,8 @@ class FFmpegDownloader(BaseDownloader):
                         self._emit_progress(progress_callback, parsed_progress)
 
                 process.wait()
-                if process.returncode == 0 and os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+                if process.returncode == 0 and os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                    self._finalize_download(temp_path, save_path)
                     attempt_completed = True
                     self._emit_progress(progress_callback, 100)
                     debug_logger.log(
@@ -360,7 +373,8 @@ class FFmpegDownloader(BaseDownloader):
                         debug_logger.log_exception("FFmpegDownloader", "join_stderr_thread", exc)
                 if not attempt_completed:
                     try:
-                        if os.path.exists(save_path):
-                            os.remove(save_path)
+                        for cleanup_path in (temp_path, save_path):
+                            if os.path.exists(cleanup_path):
+                                os.remove(cleanup_path)
                     except OSError:
                         pass

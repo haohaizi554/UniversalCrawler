@@ -146,8 +146,17 @@ class DownloadManagerCore:
     def _sweep_m3u8_orphan_workspaces_on_startup(self) -> None:
         try:
             download_dir = str(cfg.get("common", "save_directory", "") or "").strip()
-            if not download_dir:
-                return
+        except (OSError, RuntimeError, TypeError, ValueError, AppError) as exc:
+            debug_logger.log_exception(
+                "DownloadManager",
+                "download_temp_sweep_config_error",
+                exc,
+            )
+            return
+        if not download_dir:
+            return
+
+        try:
             from app.core.downloaders.m3u8 import N_m3u8DL_RE_Downloader
 
             N_m3u8DL_RE_Downloader.sweep_orphaned_workspaces([download_dir])
@@ -157,6 +166,25 @@ class DownloadManagerCore:
                 "m3u8_orphan_workspace_sweep_error",
                 exc,
                 details={"download_dir": locals().get("download_dir", "")},
+            )
+        try:
+            from app.services.file_service import MediaLibraryService
+
+            removed = MediaLibraryService.sweep_orphan_download_temp_artifacts([download_dir])
+            if removed:
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="download_temp_artifact_sweep",
+                    message="Swept stale download temp artifacts at application startup",
+                    status_code="DL_TEMP_SWEEP",
+                    details={"download_dir": download_dir, "removed_count": removed},
+                )
+        except (OSError, RuntimeError, TypeError, ValueError, ImportError, AppError) as exc:
+            debug_logger.log_exception(
+                "DownloadManager",
+                "download_temp_artifact_sweep_error",
+                exc,
+                details={"download_dir": download_dir},
             )
 
     def set_max_concurrent(self, value: int) -> int:

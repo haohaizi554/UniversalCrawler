@@ -127,6 +127,7 @@ class FrontendStateService:
         self._destroyed = False
         self.failed_record_store = failed_record_store or FailedRecordStore()
         self._failed_record_write_signatures: dict[str, tuple[Any, ...]] = {}
+        self._failed_log_excerpt_cache: dict[str, tuple[tuple[str, str, str], list[dict[str, Any]]]] = {}
         self._gui_runtime_invoker = self._create_gui_runtime_invoker()
         self._file_log_cache_store = FrontendLogCache(
             cache_service=self.cache_service,
@@ -1531,13 +1532,64 @@ class FrontendStateService:
         log_excerpt_index: dict[str, list[dict[str, Any]]] | None,
     ) -> list[dict[str, Any]]:
         index = log_excerpt_index if log_excerpt_index is not None else self._log_excerpt_index()
-        return log_adapter.failed_log_excerpt_items(
+        entries = log_adapter.failed_log_excerpt_items(
             item,
             trace_id=trace_id,
             index=index,
             platform_label=self._platform_label,
             trace_id_for_item=self._trace_id,
         )
+        return self._stable_failed_log_excerpt_items(item, trace_id=trace_id, entries=entries)
+
+    def _stable_failed_log_excerpt_items(
+        self,
+        item: VideoItem,
+        *,
+        trace_id: str,
+        entries: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        video_id = str(item.id or "")
+        fresh_entries = [dict(entry) for entry in entries if isinstance(entry, Mapping)]
+        if not video_id:
+            return fresh_entries[-8:]
+
+        meta = item.meta or {}
+        cache_key = (
+            str(trace_id or ""),
+            str(meta.get("failed_at") or ""),
+            str(meta.get("download_error") or meta.get("error") or item.status or ""),
+        )
+        cached = self._failed_log_excerpt_cache.get(video_id)
+        if cached and cached[0] == cache_key:
+            fresh_entries = self._merge_log_excerpt_entries(cached[1], fresh_entries)
+
+        result = fresh_entries[-8:]
+        self._failed_log_excerpt_cache[video_id] = (cache_key, deepcopy(result))
+        return result
+
+    @staticmethod
+    def _merge_log_excerpt_entries(
+        existing: Sequence[Mapping[str, Any]],
+        fresh: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for entry in [*existing, *fresh]:
+            if not isinstance(entry, Mapping):
+                continue
+            row = dict(entry)
+            key = (
+                str(row.get("time") or ""),
+                str(row.get("level") or ""),
+                str(row.get("source") or ""),
+                str(row.get("trace_id") or ""),
+                str(row.get("message") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+        return merged
 
     def _queue_failed_records(self, failed_items: list[Mapping[str, Any]]) -> None:
         changed_items = self._changed_failed_records(failed_items)
@@ -1569,8 +1621,10 @@ class FrontendStateService:
         if current_ids:
             for stale_id in set(self._failed_record_write_signatures) - current_ids:
                 self._failed_record_write_signatures.pop(stale_id, None)
+                self._failed_log_excerpt_cache.pop(stale_id, None)
         else:
             self._failed_record_write_signatures.clear()
+            self._failed_log_excerpt_cache.clear()
         return changed_items
 
     @staticmethod
