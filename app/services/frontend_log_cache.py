@@ -291,10 +291,10 @@ class FrontendLogCache:
         if self._tail_reader is not None:
             with self._lock:
                 self._known_cache_keys.add(cache_key)
-        cached = self._cache_service.get(cache_key)
+        cached = self._read_cache(cache_key)
         if cached is None:
             cached = self._source_read(limit=read_limit)
-            self._cache_service.set(
+            self._write_cache(
                 cache_key,
                 cached,
                 ttl_seconds=self._ttl_seconds,
@@ -310,6 +310,41 @@ class FrontendLogCache:
             self._at = self._clock()
         if self._on_refresh is not None:
             self._on_refresh(len(self._items))
+
+    def _read_cache(self, key: str) -> Any | None:
+        try:
+            return self._cache_service.get(key)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendLogCache",
+                "read_cache",
+                exc,
+                details={"key": key},
+            )
+            return None
+
+    def _write_cache(
+        self,
+        key: str,
+        value: list[dict[str, Any]],
+        *,
+        ttl_seconds: float,
+        persist: bool,
+    ) -> None:
+        try:
+            self._cache_service.set(
+                key,
+                value,
+                ttl_seconds=ttl_seconds,
+                persist=persist,
+            )
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FrontendLogCache",
+                "write_cache",
+                exc,
+                details={"key": key, "persist": persist},
+            )
 
     def _source_read(self, *, limit: int) -> list[dict[str, Any]]:
         if self._tail_reader is not None:

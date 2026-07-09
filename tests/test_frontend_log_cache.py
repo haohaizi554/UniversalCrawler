@@ -197,6 +197,46 @@ def test_log_cache_invalidate_downgrades_cache_delete_failure():
     assert cache_service.deleted == ["frontend.file_log_cache", "frontend.file_log_cache.500"]
 
 
+def test_log_cache_read_failure_downgrades_to_source_read():
+    class FailingReadCache(FakeCacheService):
+        def get(self, key, default=None):
+            raise RuntimeError("cache read failed")
+
+    cache_service = FailingReadCache()
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        reader=lambda *, limit: [{"message": "from-source"}],
+        limit_provider=lambda: 100,
+    )
+
+    with patch("app.services.frontend_log_cache.debug_logger.log_exception") as log_exception:
+        items = cache.refresh_now()
+
+    assert items == [{"message": "from-source"}]
+    assert cache.items_snapshot == [{"message": "from-source"}]
+    assert log_exception.call_args.args[:2] == ("FrontendLogCache", "read_cache")
+
+
+def test_log_cache_write_failure_keeps_worker_batch_in_memory():
+    class FailingWriteCache(FakeCacheService):
+        def set(self, key, value, *, ttl_seconds=None, persist=False):
+            raise RuntimeError("cache write failed")
+
+    cache_service = FailingWriteCache()
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        reader=lambda *, limit: [{"message": "from-source"}],
+        limit_provider=lambda: 100,
+    )
+
+    with patch("app.services.frontend_log_cache.debug_logger.log_exception") as log_exception:
+        items = cache.refresh_now()
+
+    assert items == [{"message": "from-source"}]
+    assert cache.items_snapshot == [{"message": "from-source"}]
+    assert log_exception.call_args.args[:2] == ("FrontendLogCache", "write_cache")
+
+
 def test_tail_log_reader_refreshes_appended_entries(tmp_path):
     cache_service = FakeCacheService()
     log_file = Path(tmp_path) / "latest_debug.log"
