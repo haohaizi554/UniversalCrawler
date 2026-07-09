@@ -582,6 +582,32 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("enumerate(self._items_for_page", lookup_block)
         self.assertNotIn("any(item.get(\"id\")", lookup_block)
 
+    def test_frontend_snapshot_worker_materializes_page_indexes_for_app_shell(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        worker_text = (project_root / "app" / "ui" / "viewmodels" / "frontend_snapshot_worker.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        main_window_text = (project_root / "app" / "ui" / "main_window.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        app_shell_text = (project_root / "app" / "ui" / "layout" / "app_shell.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        render_call = main_window_text.split("self.app_shell.render(", 1)[1].split(
+            "self._record_frontend_render_duration",
+            1,
+        )[0]
+
+        self.assertIn("page_item_rows: dict[str, dict[str, int]]", worker_text)
+        self.assertIn("completed_item_ids: tuple[str, ...]", worker_text)
+        self.assertIn("_page_item_indexes(snapshot)", worker_text)
+        self.assertIn("page_item_rows=result.page_item_rows", render_call)
+        self.assertIn("completed_item_ids=result.completed_item_ids", render_call)
+        self.assertIn("_apply_worker_page_item_indexes", app_shell_text)
+
     def test_media_host_play_video_submits_file_probe_before_playback(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "controllers" / "media_host_controller_mixin.py").read_text(

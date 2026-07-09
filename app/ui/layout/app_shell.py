@@ -252,16 +252,52 @@ class AppShell(QWidget):
             if page_id == "completed":
                 self._completed_item_ids = tuple(ids)
 
-    def render(self, snapshot: dict, *, changed_sections: set[str] | None = None) -> None:
-        self._last_snapshot = snapshot
-        full_refresh = changed_sections is None
-        full_index_refresh = full_refresh or not self._page_item_indexes_initialized
-        self._refresh_page_item_indexes(
-            snapshot,
-            changed_sections=changed_sections,
-            full_refresh=full_index_refresh,
-        )
+    def _apply_worker_page_item_indexes(
+        self,
+        page_item_rows: dict[str, dict[str, int]] | None,
+        completed_item_ids: tuple[str, ...] | list[str] | None,
+    ) -> bool:
+        if not isinstance(page_item_rows, dict):
+            return False
+        normalized: dict[str, dict[str, int]] = {}
+        for page_id in self._PAGE_SECTION_KEYS:
+            raw_rows = page_item_rows.get(page_id)
+            if not isinstance(raw_rows, dict):
+                normalized[page_id] = {}
+                continue
+            rows: dict[str, int] = {}
+            for item_id, row in raw_rows.items():
+                try:
+                    rows[str(item_id)] = int(row)
+                except (TypeError, ValueError):
+                    continue
+            normalized[page_id] = rows
+        self._page_item_rows = normalized
+        self._completed_item_ids = tuple(str(item_id) for item_id in (completed_item_ids or ()))
         self._page_item_indexes_initialized = True
+        return True
+
+    def render(
+        self,
+        snapshot: dict,
+        *,
+        changed_sections: set[str] | None = None,
+        page_item_rows: dict[str, dict[str, int]] | None = None,
+        completed_item_ids: tuple[str, ...] | list[str] | None = None,
+    ) -> None:
+        self._last_snapshot = snapshot
+        indexes_applied = self._apply_worker_page_item_indexes(page_item_rows, completed_item_ids)
+        if not indexes_applied:
+            full_refresh = changed_sections is None
+            full_index_refresh = full_refresh or not self._page_item_indexes_initialized
+            self._refresh_page_item_indexes(
+                snapshot,
+                changed_sections=changed_sections,
+                full_refresh=full_index_refresh,
+            )
+            self._page_item_indexes_initialized = True
+        else:
+            full_refresh = changed_sections is None
         language_changed = self.apply_language(self._language_from_snapshot(snapshot))
 
         page_needs_render = full_refresh or self._page_needs_render(self.current_page_id, changed_sections)

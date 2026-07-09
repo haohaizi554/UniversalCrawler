@@ -4,7 +4,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.debug_logger import debug_logger
@@ -33,8 +33,8 @@ class FrontendSnapshotResult:
     section_signatures: dict[str, str]
     skip_render: bool
     build_duration_ms: float
-    page_item_rows: dict[str, dict[str, int]]
-    completed_item_ids: tuple[str, ...]
+    page_item_rows: dict[str, dict[str, int]] = field(default_factory=dict)
+    completed_item_ids: tuple[str, ...] = ()
 
 
 def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapshotResult:

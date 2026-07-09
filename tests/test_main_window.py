@@ -516,11 +516,14 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(worker.requests[0].mock)
         self.assertIsNone(worker.requests[0].sections)
         self.assertFalse(worker.requests[0].use_delta)
-        MainWindow._on_frontend_snapshot_finished(
-            window,
-            self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None),
+        result = self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None)
+        MainWindow._on_frontend_snapshot_finished(window, result)
+        window.app_shell.render.assert_called_once_with(
+            {"app_status": {}},
+            changed_sections=None,
+            page_item_rows=result.page_item_rows,
+            completed_item_ids=result.completed_item_ids,
         )
-        window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
     def test_cached_frontend_refresh_submits_delta_request(self):
         class FakeScheduler:
@@ -562,11 +565,14 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(len(worker.requests), 1)
         self.assertIsNone(worker.requests[0].sections)
         self.assertFalse(worker.requests[0].use_delta)
-        MainWindow._on_frontend_snapshot_finished(
-            window,
-            self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None),
+        result = self._snapshot_result(worker.requests[0], {"app_status": {}}, changed_sections=None)
+        MainWindow._on_frontend_snapshot_finished(window, result)
+        window.app_shell.render.assert_called_once_with(
+            {"app_status": {}},
+            changed_sections=None,
+            page_item_rows=result.page_item_rows,
+            completed_item_ids=result.completed_item_ids,
         )
-        window.app_shell.render.assert_called_once_with({"app_status": {}}, changed_sections=None)
 
     def test_stale_frontend_snapshot_result_seeds_delta_cache_without_rendering(self):
         window = self._make_window()
@@ -742,17 +748,17 @@ class MainWindowTests(unittest.TestCase):
         window._frontend_state_service.get_snapshot.assert_not_called()
         self.assertEqual(len(worker.requests), 1)
         self.assertEqual(worker.requests[0].sections, expected_sections)
-        MainWindow._on_frontend_snapshot_finished(
-            window,
-            self._snapshot_result(
-                worker.requests[0],
-                {"active_downloads": [], "log_items": [], "app_status": {}},
-                changed_sections={"active_downloads", "log_items", "app_status"},
-            ),
+        result = self._snapshot_result(
+            worker.requests[0],
+            {"active_downloads": [], "log_items": [], "app_status": {}},
+            changed_sections={"active_downloads", "log_items", "app_status"},
         )
+        MainWindow._on_frontend_snapshot_finished(window, result)
         window.app_shell.render.assert_called_once_with(
             {"active_downloads": [], "log_items": [], "app_status": {}},
             changed_sections={"active_downloads", "log_items", "app_status"},
+            page_item_rows=result.page_item_rows,
+            completed_item_ids=result.completed_item_ids,
         )
 
     def test_frontend_refresh_skips_render_when_requested_sections_are_unchanged(self):
@@ -768,15 +774,13 @@ class MainWindowTests(unittest.TestCase):
         worker = self._install_snapshot_worker(window)
 
         MainWindow._render_frontend_state(window, topics={"page.visible.failed"})
-        MainWindow._on_frontend_snapshot_finished(
-            window,
-            self._snapshot_result(
-                worker.requests[-1],
-                snapshot,
-                changed_sections={"failed_items", "app_status"},
-                signatures={"failed_items": "a", "app_status": "b"},
-            ),
+        first_result = self._snapshot_result(
+            worker.requests[-1],
+            snapshot,
+            changed_sections={"failed_items", "app_status"},
+            signatures={"failed_items": "a", "app_status": "b"},
         )
+        MainWindow._on_frontend_snapshot_finished(window, first_result)
         MainWindow._render_frontend_state(window, topics={"task_error"})
         MainWindow._on_frontend_snapshot_finished(
             window,
@@ -792,6 +796,8 @@ class MainWindowTests(unittest.TestCase):
         window.app_shell.render.assert_called_once_with(
             snapshot,
             changed_sections={"failed_items", "app_status"},
+            page_item_rows=first_result.page_item_rows,
+            completed_item_ids=first_result.completed_item_ids,
         )
 
     def test_app_state_concurrent_event_storm_keeps_pending_topics_thread_safe(self):
@@ -1039,6 +1045,8 @@ class MainWindowTests(unittest.TestCase):
         window.app_shell.render.assert_called_once_with(
             result.snapshot,
             changed_sections={"active_downloads", "app_status"},
+            page_item_rows=result.page_item_rows,
+            completed_item_ids=result.completed_item_ids,
         )
 
     def test_update_basic_setting_updates_current_directory_and_refreshes(self):

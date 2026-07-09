@@ -160,6 +160,35 @@ class FrontendSnapshotWorkerTests(unittest.TestCase):
         self.assertEqual(second.changed_sections, set())
         self.assertTrue(second.skip_render)
 
+    def test_build_frontend_snapshot_materializes_page_item_indexes_off_ui_thread(self):
+        class FakeService:
+            def get_snapshot(self, *, mock=False, sections=None):
+                return {
+                    "queue_items": [{"id": "q1"}],
+                    "active_downloads": [{"id": "a1"}],
+                    "completed_items": [{"id": "c1"}, {"id": "c2"}],
+                    "failed_items": [{"id": "f1"}],
+                    "version": 2,
+                }
+
+        result = build_frontend_snapshot(
+            FrontendSnapshotRequest(
+                sequence=1,
+                service=FakeService(),
+                service_token=1,
+                mock=False,
+                sections=None,
+                cached_snapshot=None,
+                section_signatures={},
+            )
+        )
+
+        self.assertEqual(result.page_item_rows["queue"], {"q1": 0})
+        self.assertEqual(result.page_item_rows["active"], {"a1": 0})
+        self.assertEqual(result.page_item_rows["completed"], {"c1": 0, "c2": 1})
+        self.assertEqual(result.page_item_rows["failed"], {"f1": 0})
+        self.assertEqual(result.completed_item_ids, ("c1", "c2"))
+
 
 if __name__ == "__main__":
     unittest.main()
