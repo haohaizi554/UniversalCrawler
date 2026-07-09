@@ -235,7 +235,7 @@ def test_downloader_retries_transient_network_errors(tmp_path):
     )
     calls = 0
 
-    def opener(_request, _timeout):
+    def opener(_request, timeout):
         nonlocal calls
         calls += 1
         if calls == 1:
