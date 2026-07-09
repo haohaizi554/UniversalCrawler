@@ -189,6 +189,11 @@ class LogCenterPage(PageFrame):
         self._refresh_platform_filter()
         self._sync_table_presentation()
 
+    def set_cache_service(self, cache_service: object | None) -> None:
+        set_cache_service = getattr(self._log_detail_worker, "set_cache_service", None)
+        if callable(set_cache_service):
+            set_cache_service(cache_service)
+
     def set_language(self, language: str | None) -> None:
         normalized = normalize_language(language)
         if normalized == self._language:

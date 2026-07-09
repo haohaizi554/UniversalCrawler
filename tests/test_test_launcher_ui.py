@@ -48,6 +48,7 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertEqual(window.footer_status_dot.objectName(), "StatusDot")
             self.assertEqual(window.footer_status_state.text(), "就绪")
             self.assertEqual(window.footer_status_metrics["scripts"].text(), "脚本 0/0")
+            self.assertIsNotNone(window.findChild(QFrame, "logCard"))
             self.assertEqual(window.findChildren(type(window.stat_scope), "statHint"), [])
             self.assertIsNone(window.findChild(QFrame, "selectionSummary"))
             self.assertEqual(window.findChildren(QFrame, "statsCard"), [])
@@ -165,11 +166,11 @@ class TestLauncherWindowUITests(unittest.TestCase):
             self.assertGreaterEqual(window.control_panel.height() + 2, window.control_panel.minimumHeight())
             self.assertTrue(window.btn_run.isVisible())
             self.assertGreaterEqual(
-                window.log.geometry().top(),
+                window.log_card.geometry().top(),
                 window.control_panel.geometry().bottom() + 1,
             )
             btn_bottom = window.control_panel.geometry().top() + window.btn_run.geometry().bottom()
-            self.assertLess(btn_bottom, window.log.geometry().top())
+            self.assertLess(btn_bottom, window.log_card.geometry().top())
 
             compressed = []
             for label in window.findChildren(QLabel):

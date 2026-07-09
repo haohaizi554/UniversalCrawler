@@ -8,6 +8,7 @@ from app.ui.viewmodels.log_detail_worker import (
     LogDetailExportWorker,
     LogDetailRequest,
     LogDetailWorker,
+    build_cached_log_detail_result,
     build_log_detail_result,
 )
 from app.ui.viewmodels.log_platforms import builtin_platform_metas
@@ -71,6 +72,44 @@ def test_log_detail_worker_delivers_latest_result_after_rapid_submits():
         worker.shutdown()
 
     assert received[-1] == 2
+
+
+def test_cached_log_detail_result_reuses_persisted_worker_payload():
+    class FakeCacheService:
+        def __init__(self):
+            self.values = {}
+            self.persist_flags = {}
+            self.set_count = 0
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value, *, ttl_seconds=None, persist=False):
+            self.values[key] = value
+            self.persist_flags[key] = persist
+            self.set_count += 1
+
+    item = {
+        "id": "row-cache",
+        "time": "2026-07-06 03:31:00",
+        "level": "INFO",
+        "source": "GUI",
+        "platform": "System",
+        "message": "Download completed: demo",
+        "detail": {"description": "Download completed: demo", "trace_id": "trace-cache"},
+        "status_code": "DOWNLOADER",
+    }
+    cache = FakeCacheService()
+
+    first = build_cached_log_detail_result(_request(item, sequence=1), cache_service=cache)
+    second = build_cached_log_detail_result(_request(item, sequence=2), cache_service=cache)
+
+    assert first.trace_id == "trace-cache"
+    assert second.trace_id == "trace-cache"
+    assert second.sequence == 2
+    assert cache.set_count == 1
+    assert len(cache.values) == 1
+    assert next(iter(cache.persist_flags.values())) is True
 
 
 def test_log_detail_export_worker_writes_payload_off_ui_thread(tmp_path):

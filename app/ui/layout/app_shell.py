@@ -125,6 +125,12 @@ class AppShell(QWidget):
         self._connect_page_signals()
         self.apply_theme(is_dark_theme)
 
+    def set_cache_service(self, cache_service: object | None) -> None:
+        logs_page = self.pages.get("logs")
+        set_cache_service = getattr(logs_page, "set_cache_service", None)
+        if callable(set_cache_service):
+            set_cache_service(cache_service)
+
     def apply_theme(self, is_dark: bool) -> None:
         self.is_dark_theme = bool(is_dark)
         self._close_combo_popups(self)

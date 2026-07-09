@@ -629,6 +629,9 @@ class MainWindow(QMainWindow):
             self._app_state_handler = self._subscribe_app_state_changed()
         self._frontend_state_service = service
         self._owns_frontend_state_service = False
+        set_cache_service = getattr(self.app_shell, "set_cache_service", None)
+        if callable(set_cache_service):
+            set_cache_service(getattr(service, "cache_service", None))
         self.app_state = service.app_state
         self._owns_app_state = False
         self._cached_snapshot = None

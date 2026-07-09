@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import html
+import json
+import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +87,79 @@ class LogDetailExportResult:
     error: str = ""
 
 
+LOG_DETAIL_CACHE_PREFIX = "frontend.log_detail."
+
+
+def _platform_cache_payload(platforms: tuple[PlatformUiMeta, ...]) -> tuple[tuple[str, str, str, str], ...]:
+    return tuple(
+        (
+            str(meta.id or ""),
+            str(meta.label or ""),
+            str(meta.emoji or ""),
+            str(meta.icon_path or ""),
+        )
+        for meta in platforms
+    )
+
+
+def _log_detail_cache_key(request: LogDetailRequest) -> str:
+    payload = {
+        "item_id": request.item_id,
+        "language": normalize_language(request.language),
+        "item": dict(request.item),
+        "platforms": _platform_cache_payload(tuple(request.platform_options)),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8", errors="replace")
+    return f"{LOG_DETAIL_CACHE_PREFIX}{sha256(encoded).hexdigest()}"
+
+
+def build_cached_log_detail_result(
+    request: LogDetailRequest,
+    *,
+    cache_service: Any | None = None,
+    ttl_seconds: float = 300.0,
+) -> LogDetailResult:
+    if cache_service is None:
+        return build_log_detail_result(request)
+
+    cache_key = _log_detail_cache_key(request)
+    try:
+        cached = cache_service.get(cache_key)
+    except Exception as exc:
+        debug_logger.log_exception(
+            "LogDetailWorker",
+            "read_log_detail_cache",
+            exc,
+            details={"item_id": request.item_id},
+        )
+        cached = None
+    if isinstance(cached, LogDetailResult):
+        return replace(
+            cached,
+            sequence=request.sequence,
+            item_id=request.item_id,
+            language=normalize_language(request.language),
+        )
+
+    result = build_log_detail_result(request)
+    try:
+        cache_service.set(cache_key, result, ttl_seconds=ttl_seconds, persist=True)
+    except Exception as exc:
+        debug_logger.log_exception(
+            "LogDetailWorker",
+            "write_log_detail_cache",
+            exc,
+            details={"item_id": request.item_id},
+        )
+    return result
+
+
 def _translate_platform_display(
     text: object,
     *,
@@ -156,12 +232,25 @@ def build_log_detail_result(request: LogDetailRequest) -> LogDetailResult:
 class LogDetailWorker:
     """Latest-state-wins worker for log detail normalization and JSON formatting."""
 
-    def __init__(self, on_result: Callable[[LogDetailResult], None]) -> None:
+    def __init__(
+        self,
+        on_result: Callable[[LogDetailResult], None],
+        *,
+        cache_service: Any | None = None,
+        cache_ttl_seconds: float = 300.0,
+    ) -> None:
+        self._cache_lock = threading.RLock()
+        self._cache_service = cache_service
+        self._cache_ttl_seconds = float(cache_ttl_seconds)
         self._worker = LatestRequestWorker(
             name="log-detail-worker",
             on_result=on_result,
             process=self._process,
         )
+
+    def set_cache_service(self, cache_service: Any | None) -> None:
+        with self._cache_lock:
+            self._cache_service = cache_service
 
     def submit(self, request: LogDetailRequest) -> None:
         self._worker.submit(request)
@@ -169,10 +258,16 @@ class LogDetailWorker:
     def shutdown(self) -> None:
         self._worker.shutdown()
 
-    @staticmethod
-    def _process(request: LogDetailRequest) -> LogDetailResult:
+    def _process(self, request: LogDetailRequest) -> LogDetailResult:
         try:
-            return build_log_detail_result(request)
+            with self._cache_lock:
+                cache_service = self._cache_service
+                ttl_seconds = self._cache_ttl_seconds
+            return build_cached_log_detail_result(
+                request,
+                cache_service=cache_service,
+                ttl_seconds=ttl_seconds,
+            )
         except Exception as exc:
             debug_logger.log_exception(
                 "LogDetailWorker",

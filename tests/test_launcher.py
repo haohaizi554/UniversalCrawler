@@ -334,14 +334,18 @@ QCheckBox::indicator:checked {{
     border-color: {ACCENT};
 }}
 QTextEdit#log {{
-    background: #08101E;
-    border: 1px solid {BORDER};
-    border-radius: 16px;
-    padding: 12px;
+    background: transparent;
+    border: none;
+    padding: 10px;
     color: {TEXT};
     font-size: 12px;
     font-family: {MONO};
     selection-background-color: {ACCENT};
+}}
+QFrame#logCard {{
+    background: #08101E;
+    border: 1px solid {BORDER};
+    border-radius: 16px;
 }}
 QProgressBar {{
     background: #08101E;
@@ -646,10 +650,14 @@ QCheckBox::indicator:checked {{
     border-color: {accent};
 }}
 QTextEdit#log {{
-    background: {log_bg};
-    border: 1px solid {border};
+    background: transparent;
+    border: none;
     color: {text};
     selection-background-color: {accent};
+}}
+QFrame#logCard {{
+    background: {log_bg};
+    border: 1px solid {border};
 }}
 QProgressBar {{
     background: {input_bg};
@@ -1248,13 +1256,23 @@ if _PYQT6_AVAILABLE:
             control_layout.addLayout(action_row_2)
             right_col.addWidget(control_panel)
 
+            self.log_card = QFrame()
+            self.log_card.setObjectName("logCard")
+            self.log_card.setMinimumHeight(130)
+            self.log_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+            log_card_layout = QVBoxLayout(self.log_card)
+            log_card_layout.setContentsMargins(8, 8, 8, 8)
+            log_card_layout.setSpacing(0)
+
             self.log = QTextEdit()
             self.log.setObjectName("log")
             self.log.setReadOnly(True)
+            self.log.setFrameShape(QFrame.Shape.NoFrame)
             self.log.setPlaceholderText("运行日志会显示在这里。")
-            self.log.setMinimumHeight(110)
-            self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
-            right_col.addWidget(self.log, 1)
+            self.log.setMinimumHeight(100)
+            self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            log_card_layout.addWidget(self.log)
+            right_col.addWidget(self.log_card, 1)
 
             self.sbar = QStatusBar()
             self.sbar.setObjectName("LauncherStatusBar")

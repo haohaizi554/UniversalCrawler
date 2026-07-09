@@ -132,6 +132,22 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(bus.async_calls, [("app_state.changed", window._queue_app_state_changed)])
         self.assertEqual(bus.sync_calls, [])
 
+    def test_set_frontend_state_service_injects_cache_service_into_app_shell(self):
+        window = self._make_window()
+        bus = SimpleNamespace()
+        cache_service = object()
+        app_state = SimpleNamespace(event_bus=bus)
+        service = SimpleNamespace(app_state=app_state, cache_service=cache_service)
+        window.event_bus = bus
+        window._owns_frontend_state_service = False
+        window.app_shell = Mock()
+        window.refresh_frontend_state = Mock()
+
+        MainWindow.set_frontend_state_service(window, service)
+
+        window.app_shell.set_cache_service.assert_called_once_with(cache_service)
+        window.refresh_frontend_state.assert_called_once_with(force=True)
+
     @staticmethod
     def _snapshot_result(request, snapshot, *, changed_sections=None, skip_render=False, signatures=None):
         return FrontendSnapshotResult(
