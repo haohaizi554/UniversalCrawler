@@ -3704,6 +3704,246 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["download"]["href"], "blob:log-detail")
         self.assertEqual(result["download"]["download"], "log_detail_trace-log-detail-a.json")
 
+    def test_13d_log_center_ignores_stale_worker_errors_and_retries_current_detail(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const nativeWorker = window.Worker;
+              const workers = [];
+              const state = {
+                log_items: [{
+                  id: "worker-log",
+                  time: "2026-07-10 09:00:00",
+                  level: "INFO",
+                  source: "GUI",
+                  trace_id: "worker-trace",
+                  message_summary: "initial message",
+                  message: "initial message",
+                  detail: { description: "same", nested: { alpha: 1, beta: 1 } },
+                  stack: ""
+                }],
+                settings_snapshot: {}
+              };
+
+              class ControlledWorker {
+                constructor(url) {
+                  this.url = String(url);
+                  this.requests = [];
+                  this.terminateCalls = 0;
+                  workers.push(this);
+                }
+                postMessage(request) { this.requests.push(request); }
+                terminate() { this.terminateCalls += 1; }
+                emit(payload) { this.onmessage?.({ data: payload }); }
+                fail() { this.onerror?.(new Event("error")); }
+              }
+
+              const workerFor = name => workers.find(worker => worker.url.includes(name));
+              const detailWorkers = () => workers.filter(worker => worker.url.includes("log_detail_worker"));
+              const queryResult = request => window.UcpLogDisplay.queryLogItems(request);
+              const detailResult = request => {
+                const detailJson = JSON.stringify(request.item.detail, null, 2);
+                return {
+                  sequence: request.sequence,
+                  itemId: request.itemId,
+                  item: request.item,
+                  detailJson,
+                  detailDisplayText: detailJson,
+                  fullJson: JSON.stringify({ detail: request.item.detail }, null, 2),
+                  stack: "",
+                  filename: "worker-log.json"
+                };
+              };
+
+              window.Worker = ControlledWorker;
+              window.UcpLogCenter.dispose();
+              try {
+                window.UcpLogCenter.configure({
+                  getState: () => state,
+                  getLanguage: () => "zh-CN",
+                  t: value => String(value),
+                  esc,
+                  escAttr,
+                  byId,
+                  writeClipboard: () => Promise.resolve(true),
+                  runOperation: () => {},
+                  onFiltersChange: () => {}
+                });
+                switchPage("logs");
+
+                const queryWorker = workerFor("log_query_worker");
+                const firstQuery = queryWorker.requests[0];
+                state.log_items[0].message_summary = "query current";
+                state.log_items[0].message = "query current";
+                window.UcpLogCenter.render();
+                const secondQuery = queryWorker.requests[1];
+                queryWorker.emit({ type: "error", sequence: firstQuery.sequence, message: "stale query error" });
+                const staleQueryIgnored = queryWorker.terminateCalls === 0;
+                if (!staleQueryIgnored) {
+                  return {
+                    staleQueryIgnored,
+                    detailMutationRequested: false,
+                    staleDetailIgnored: false,
+                    stableOrderCacheHit: false,
+                    genericErrorRetried: false,
+                    renderedJson: ""
+                  };
+                }
+                queryWorker.emit({ type: "result", result: queryResult(secondQuery) });
+
+                const detailWorker = detailWorkers()[0];
+                const firstDetail = detailWorker.requests[0];
+                state.log_items[0].message_summary = "detail current";
+                state.log_items[0].message = "detail current";
+                state.log_items[0].detail = { description: "same", nested: { alpha: 1, beta: 2 } };
+                window.UcpLogCenter.render();
+                const thirdQuery = queryWorker.requests[2];
+                queryWorker.emit({ type: "result", result: queryResult(thirdQuery) });
+                const secondDetail = detailWorker.requests[1];
+                const detailMutationRequested = Boolean(secondDetail);
+                detailWorker.emit({ type: "error", sequence: firstDetail.sequence, message: "stale detail error" });
+                const staleDetailIgnored = detailWorker.terminateCalls === 0
+                  && document.getElementById("logDetail").textContent.includes("detail current");
+                if (secondDetail) detailWorker.emit({ type: "result", result: detailResult(secondDetail) });
+
+                state.log_items[0].detail = { nested: { beta: 2, alpha: 1 }, description: "same" };
+                window.UcpLogCenter.render();
+                const fourthQuery = queryWorker.requests[3];
+                queryWorker.emit({ type: "result", result: queryResult(fourthQuery) });
+                const stableOrderCacheHit = detailWorker.requests.length === 2;
+
+                detailWorker.fail();
+                const retryWorker = detailWorkers()[1];
+                const genericErrorRetried = Boolean(retryWorker && retryWorker.requests.length === 1);
+                if (retryWorker) retryWorker.emit({ type: "result", result: detailResult(retryWorker.requests[0]) });
+                const renderedJson = document.querySelector("#logDetail .log-detail-readable")?.dataset.json || "";
+                return {
+                  staleQueryIgnored,
+                  detailMutationRequested,
+                  staleDetailIgnored,
+                  stableOrderCacheHit,
+                  genericErrorRetried,
+                  renderedJson
+                };
+              } finally {
+                window.UcpLogCenter.dispose();
+                window.Worker = nativeWorker;
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["staleQueryIgnored"])
+        self.assertTrue(result["detailMutationRequested"])
+        self.assertTrue(result["staleDetailIgnored"])
+        self.assertTrue(result["stableOrderCacheHit"])
+        self.assertTrue(result["genericErrorRetried"])
+        self.assertIn('"beta": 2', result["renderedJson"])
+
+    def test_13e_log_center_dispose_is_idempotent_and_cancels_pending_fallback(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const nativeWorker = window.Worker;
+              const nativeSetTimeout = window.setTimeout;
+              const nativeClearTimeout = window.clearTimeout;
+              const workers = [];
+              const timers = [];
+              const clearedTimers = [];
+              const state = {
+                log_items: [{
+                  id: "dispose-log",
+                  time: "2026-07-10 10:00:00",
+                  level: "INFO",
+                  source: "GUI",
+                  trace_id: "dispose-trace",
+                  message_summary: "dispose message",
+                  message: "dispose message",
+                  detail: { description: "dispose message" },
+                  stack: ""
+                }],
+                settings_snapshot: {}
+              };
+
+              class ControlledWorker {
+                constructor(url) {
+                  this.url = String(url);
+                  this.requests = [];
+                  this.terminateCalls = 0;
+                  workers.push(this);
+                }
+                postMessage(request) { this.requests.push(request); }
+                terminate() { this.terminateCalls += 1; }
+                emit(payload) { this.onmessage?.({ data: payload }); }
+              }
+
+              const configure = () => window.UcpLogCenter.configure({
+                getState: () => state,
+                getLanguage: () => "zh-CN",
+                t: value => String(value),
+                esc,
+                escAttr,
+                byId,
+                writeClipboard: () => Promise.resolve(true),
+                runOperation: () => {},
+                onFiltersChange: () => {}
+              });
+
+              window.Worker = ControlledWorker;
+              window.UcpLogCenter.dispose();
+              try {
+                configure();
+                switchPage("logs");
+                const queryWorker = workers.find(worker => worker.url.includes("log_query_worker"));
+                const queryRequest = queryWorker.requests[0];
+                queryWorker.emit({ type: "result", result: window.UcpLogDisplay.queryLogItems(queryRequest) });
+                const detailWorker = workers.find(worker => worker.url.includes("log_detail_worker"));
+                window.UcpLogCenter.dispose();
+                window.UcpLogCenter.dispose();
+
+                document.getElementById("logBody").innerHTML = "";
+                document.getElementById("logDetail").innerHTML = "";
+                state.log_items[0].message_summary = "fallback must not render";
+                state.log_items[0].message = "fallback must not render";
+                window.Worker = undefined;
+                let nextTimerId = 1;
+                window.setTimeout = callback => {
+                  const timer = { id: nextTimerId++, callback };
+                  timers.push(timer);
+                  return timer.id;
+                };
+                window.clearTimeout = timerId => { clearedTimers.push(timerId); };
+                configure();
+                window.UcpLogCenter.render();
+                const pendingTimer = timers[0];
+                window.UcpLogCenter.dispose();
+                window.UcpLogCenter.dispose();
+                pendingTimer.callback();
+                return {
+                  queryTerminatedOnce: queryWorker.terminateCalls === 1,
+                  detailTerminatedOnce: detailWorker.terminateCalls === 1,
+                  fallbackCancelled: clearedTimers.includes(pendingTimer.id),
+                  fallbackRendered: document.getElementById("page-logs").textContent.includes("fallback must not render")
+                };
+              } finally {
+                window.UcpLogCenter.dispose();
+                window.Worker = nativeWorker;
+                window.setTimeout = nativeSetTimeout;
+                window.clearTimeout = nativeClearTimeout;
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["queryTerminatedOnce"])
+        self.assertTrue(result["detailTerminatedOnce"])
+        self.assertTrue(result["fallbackCancelled"])
+        self.assertFalse(result["fallbackRendered"])
+
     def test_14_keyboard_arrow_navigation(self):
         """方向键应在 videoOrder 之间切换。"""
         self._goto_ready()

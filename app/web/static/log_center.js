@@ -13,6 +13,7 @@
     fallbackTimer: null,
     queryWorkerAvailable: false,
     detailWorkerAvailable: false,
+    detailWorkerRetryAttempted: false,
     query: { signature: "", result: null, pending: false },
     detail: { signature: "", result: null, pending: false },
     rowSignatures: Object.create(null),
@@ -29,6 +30,7 @@
     state.selectedId = "";
     state.queryWorkerAvailable = typeof Worker !== "undefined";
     state.detailWorkerAvailable = typeof Worker !== "undefined";
+    state.detailWorkerRetryAttempted = false;
     state.query = { signature: "", result: null, pending: false };
     state.detail = { signature: "", result: null, pending: false };
     state.rowSignatures = Object.create(null);
@@ -349,20 +351,22 @@
     if (state.queryWorker) return state.queryWorker;
     const generation = state.generation;
     try {
-      state.queryWorker = new Worker("/static/log_query_worker.js?v=20260707-log-worker");
-      state.queryWorker.onmessage = event => {
+      const worker = new Worker("/static/log_query_worker.js?v=20260707-log-worker");
+      state.queryWorker = worker;
+      worker.onmessage = event => {
         if (generation !== state.generation || state.disposed) return;
         const payload = event && event.data ? event.data : {};
         if (payload.type === "result") receiveLogQueryResult(payload.result);
         else if (payload.type === "error") {
+          if (Number(payload.sequence) !== state.querySequence || state.queryWorker !== worker) return;
           state.queryWorkerAvailable = false;
           closeLogQueryWorker();
           state.query.signature = "";
           render();
         }
       };
-      state.queryWorker.onerror = () => {
-        if (generation !== state.generation || state.disposed) return;
+      worker.onerror = () => {
+        if (generation !== state.generation || state.disposed || state.queryWorker !== worker) return;
         state.queryWorkerAvailable = false;
         closeLogQueryWorker();
         state.query.signature = "";
@@ -520,12 +524,18 @@
     return items.find(row => logItemId(row) === state.selectedId) || null;
   }
 
+  function stableSerialize(value, seen = new WeakSet()) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (seen.has(value)) return JSON.stringify("[Circular]");
+    seen.add(value);
+    if (Array.isArray(value)) return `[${value.map(item => stableSerialize(item, seen)).join(",")}]`;
+    const entries = Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableSerialize(value[key], seen)}`);
+    return `{${entries.join(",")}}`;
+  }
+
   function logDetailSignature(item) {
     if (!item) return `${getLanguage()}|`;
-    const detail = item.detail;
-    const marker = detail && typeof detail === "object"
-      ? [Object.keys(detail).sort().join(","), detail.description || "", detail.status_code || "", detail.event_code || ""].join("|")
-      : String(detail || "");
+    const marker = stableSerialize(item.detail);
     return [getLanguage(), logItemId(item), item.time || "", item.level || item.raw_level || "", item.platform_display || item.platform || "", item.source_display || item.source || "", item.trace_id || "", item.message || item.message_summary || "", item.event_code || item.status_code || "", marker, item.stack || ""].join("\u001f");
   }
 
@@ -548,22 +558,28 @@
     if (state.detailWorker) return state.detailWorker;
     const generation = state.generation;
     try {
-      state.detailWorker = new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker");
-      state.detailWorker.onmessage = event => {
+      const worker = new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker");
+      state.detailWorker = worker;
+      worker.onmessage = event => {
         if (generation !== state.generation || state.disposed) return;
         const payload = event && event.data ? event.data : {};
         if (payload.type === "result") receiveLogDetailResult(payload.result);
         else if (payload.type === "error") {
+          if (Number(payload.sequence) !== state.detailSequence || state.detailWorker !== worker) return;
           state.detailWorkerAvailable = false;
           closeLogDetailWorker();
-          renderLogDetailResult(emptyLogDetailResult(Number(payload.sequence) || state.detailSequence));
+          state.detail.signature = "";
+          renderLogDetail();
         }
       };
-      state.detailWorker.onerror = () => {
-        if (generation !== state.generation || state.disposed) return;
-        state.detailWorkerAvailable = false;
+      worker.onerror = () => {
+        if (generation !== state.generation || state.disposed || state.detailWorker !== worker) return;
+        const retryCurrentDetail = !state.detailWorkerRetryAttempted;
+        state.detailWorkerRetryAttempted = true;
         closeLogDetailWorker();
-        renderLogDetailResult(emptyLogDetailResult());
+        state.detail.signature = "";
+        if (!retryCurrentDetail) state.detailWorkerAvailable = false;
+        renderLogDetail();
       };
     } catch (_error) {
       state.detailWorkerAvailable = false;
@@ -574,6 +590,7 @@
 
   function receiveLogDetailResult(result) {
     if (state.disposed || !result || Number(result.sequence) !== state.detailSequence) return;
+    state.detailWorkerRetryAttempted = false;
     state.detail = { signature: state.detail.signature, result, pending: false };
     if (logsPageIsActive() && String(result.itemId || "") === state.selectedId) renderLogDetailResult(result);
   }
