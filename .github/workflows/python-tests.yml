@@ -9,9 +9,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     env:
-      QT_QPA_PLATFORM: xcb
+      QT_QPA_PLATFORM: offscreen
       PYTHONFAULTHANDLER: "1"
       PYTHONUNBUFFERED: "1"
 
@@ -24,35 +24,15 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libegl1 \
-            libgl1 \
-            libpulse0 \
-            libxkbcommon-x11-0 \
-            libxcb-cursor0 \
-            libxcb-icccm4 \
-            libxcb-image0 \
-            libxcb-keysyms1 \
-            libxcb-randr0 \
-            libxcb-render-util0 \
-            libxcb-shape0 \
-            libxcb-xfixes0 \
-            libxcb-xinerama0 \
-            libxcb-xkb1 \
-            xauth \
-            xvfb
-
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install pytest~=8.4.2 pytest-asyncio~=1.2.0
+          python -m playwright install chromium
 
       - name: Compile Sources
         run: python -m compileall app tests main.py
 
       - name: Run Tests
-        run: xvfb-run -a python -X faulthandler -m pytest -q
+        run: python -X faulthandler -m pytest -q
