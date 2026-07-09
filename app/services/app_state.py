@@ -1,4 +1,4 @@
-"""Central frontend state store for GUI pages, logs and task progress."""
+"""GUI/Web 前端状态中心，统一保存页面状态、日志缓冲和任务进度。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from app.config.settings import normalize_ui_log_max_display_count
 from app.services.cache_service import CacheService
 
 class AppState:
-    """Single source of truth for desktop frontend state."""
+    """桌面端状态单一来源；所有外部更新都通过事件总线广播出去。"""
 
     LOG_BUFFER_LIMIT = 300
     LOG_PUBLISH_INTERVAL_SECONDS = 0.1
@@ -55,6 +55,7 @@ class AppState:
         *,
         emit_change: bool = True,
     ) -> None:
+        """记录当前可见页面；只持久化最近页面，不把整份 page_state 写入缓存。"""
         with self._lock:
             self._visible_page = str(page_id or "queue")
             if all_pages:
@@ -102,6 +103,7 @@ class AppState:
             self._publish_change("videos.remove", {"video_id": video_id})
 
     def remove_videos(self, video_ids, *, publish: bool = True) -> list[str]:
+        """删除视频项时同步清理任务进度节流状态，避免残留进度影响同 ID 新任务。"""
         ids = {str(video_id) for video_id in video_ids if video_id}
         if not ids:
             return []
@@ -125,6 +127,7 @@ class AppState:
         self._publish_change("videos.clear", {})
 
     def replace_videos(self, videos: dict[str, Any]) -> None:
+        """批量替换列表快照，并清除不再存在视频的派生任务状态。"""
         with self._lock:
             self.videos = deepcopy(videos)
             valid_ids = set(self.videos)
@@ -174,6 +177,7 @@ class AppState:
             return self.current_playing_id
 
     def should_emit_progress(self, video_id: str, progress: int) -> bool:
+        """对中间进度做节流，但 0/100 必须放行，保证开始和完成态不会丢。"""
         now = time.monotonic()
         with self._lock:
             last_at = self._last_progress_emit_at.get(video_id, 0.0)
@@ -196,6 +200,7 @@ class AppState:
         trace_id: str = "",
         topic: str = "logs.append",
     ) -> dict[str, Any]:
+        """写入 UI 环形日志；普通追加会被短延迟合并，减少高频日志刷新压力。"""
         entry = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "level": level.upper(),
@@ -217,7 +222,7 @@ class AppState:
         return entry
 
     def configure_log_buffer(self, max_entries: int) -> int:
-        """Resize the UI log ring buffer without losing recent entries."""
+        """调整 UI 环形日志容量，只保留最近记录，避免设置变小时旧日志撑爆页面。"""
         normalized = normalize_ui_log_max_display_count(max_entries, default=self.LOG_BUFFER_LIMIT)
         with self._lock:
             if self.log_buffer.maxlen == normalized:
@@ -251,7 +256,7 @@ class AppState:
         self._publish_change("logs.append", {"count": 0, "cleared": True})
 
     def shutdown(self) -> None:
-        """Cancel pending asynchronous UI notifications owned by this state store."""
+        """取消尚未发出的异步通知；仅关闭自己创建的缓存服务。"""
         self._cancel_pending_log_publish()
         if not self._owns_cache_service:
             return
@@ -279,6 +284,7 @@ class AppState:
             }
 
     def _publish_change(self, topic: str, payload: dict[str, Any]) -> None:
+        """发布状态变化事件，并用线程局部计数防止订阅者递归触发无限广播。"""
         depth = int(getattr(self._publish_depth, "value", 0) or 0)
         if depth >= self.MAX_PUBLISH_DEPTH:
             # 抑制分支不递增 _publish_depth：_publish_depth 跟踪的是 "app_state.changed"
@@ -311,6 +317,7 @@ class AppState:
             self._publish_depth.value = depth
 
     def _schedule_log_publish(self, count: int) -> None:
+        """把多条日志追加合并成一次变更事件，避免日志洪峰导致表格反复重绘。"""
         with self._log_publish_lock:
             self._log_publish_pending = True
             self._log_publish_count = int(count)
@@ -342,6 +349,7 @@ class AppState:
 
     @staticmethod
     def _video_item_from_snapshot(snapshot: dict[str, Any]) -> VideoItem:
+        """从快照重建 VideoItem，返回给调用方时避免暴露内部可变对象。"""
         item = VideoItem(
             url=str(snapshot.get("url") or ""),
             title=str(snapshot.get("title") or ""),

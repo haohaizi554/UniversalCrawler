@@ -24,6 +24,7 @@ from app.spiders.bilibili.spider import BiliAPI
 from app.spiders.bilibili.spider import BilibiliSpider
 from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
+from app.spiders import parser_cache
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER, make_mixin_key, sign_wbi_params
 from app.spiders.douyin.parser import DouyinItemParser
 from app.spiders.douyin.spider import DouyinSpider
@@ -223,6 +224,44 @@ class SpiderHelperTests(unittest.TestCase):
         )
         self.assertEqual(result["bvid"], "BV1xx")
         self.assertEqual(len(result["episodes"]), 1)
+
+    def test_spider_parser_cache_persists_structured_results(self):
+        class FakeCacheService:
+            def __init__(self, **_kwargs):
+                self.values = {}
+                self.set_calls = []
+
+            def get(self, key, default=None):
+                return self.values.get(key, default)
+
+            def set(self, key, value, *, ttl_seconds=None, persist=False):
+                self.values[key] = value
+                self.set_calls.append(
+                    {"key": key, "value": value, "ttl_seconds": ttl_seconds, "persist": persist}
+                )
+
+        cache = FakeCacheService()
+        parser_cache._PARSER_CACHE_SERVICE = None
+        payload = {
+            "bvid": "BVcache",
+            "title": "demo",
+            "owner": {"name": "tester"},
+            "pages": [{"part": "P1", "cid": 123, "page": 1}],
+        }
+
+        try:
+            with patch("app.spiders.parser_cache.CacheService", return_value=cache):
+                parser = BilibiliParser()
+                first = parser.parse_video_info_response(payload)
+                with patch.object(parser, "_parse_video_info_response_uncached") as uncached:
+                    second = parser.parse_video_info_response(payload)
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(cache.set_calls), 1)
+            self.assertTrue(cache.set_calls[0]["persist"])
+            uncached.assert_not_called()
+        finally:
+            parser_cache._PARSER_CACHE_SERVICE = None
 
     def test_bilibili_wbi_signer_matches_media_crawler_algorithm(self):
         img_key = "7cd084941338484aae1ad9425b84077c"

@@ -1,4 +1,4 @@
-"""Frontend-oriented cache abstractions for in-memory and local persistence."""
+"""前端状态缓存：短期内存缓存 + 可选 diskcache/SQLite 持久化。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ except Exception:  # pragma: no cover - SQLite fallback keeps runtime optional
     DiskCache = None
 
 class _FallbackTTLCache(dict):
+    """cachetools 不可用时的最小 TTL 实现，保证运行时依赖可选。"""
+
     def __init__(self, maxsize: int, ttl: float) -> None:
         super().__init__()
         self.maxsize = maxsize
@@ -68,7 +70,7 @@ class _FallbackTTLCache(dict):
                 self._expires.pop(key, None)
 
 class CacheService:
-    """Hybrid cache using TTL memory cache plus SQLite persistence."""
+    """混合缓存：热路径读内存，需要跨启动保留时再落盘。"""
 
     def __init__(
         self,
@@ -106,6 +108,7 @@ class CacheService:
                 conn.commit()
 
     def get(self, key: str, default: Any = None) -> Any:
+        """优先读内存，未命中再读持久化；返回深拷贝避免外部修改缓存体。"""
         with self._operation_lock:
             with self._memory_lock:
                 try:
@@ -124,6 +127,7 @@ class CacheService:
             return self._clone_value(value)
 
     def set(self, key: str, value: Any, *, ttl_seconds: float | None = None, persist: bool = False) -> None:
+        """写缓存；persist=False 只进内存，persist=True 才写 diskcache/SQLite。"""
         value_snapshot = self._clone_value(value)
         if not persist:
             with self._operation_lock:
@@ -141,12 +145,28 @@ class CacheService:
             with self._memory_lock:
                 self._memory_cache.pop(key, None)
             if self._disk_cache is not None:
-                with self._disk_lock:
-                    self._disk_cache.delete(key)
+                try:
+                    with self._disk_lock:
+                        self._disk_cache.delete(key)
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "CacheService",
+                        "delete_diskcache",
+                        exc,
+                        details={"key": key, "cache_path": str(self._disk_cache_path)},
+                    )
             with self._db_lock:
-                with closing(sqlite3.connect(self._db_path)) as conn:
-                    conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
-                    conn.commit()
+                try:
+                    with closing(sqlite3.connect(self._db_path)) as conn:
+                        conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+                        conn.commit()
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "CacheService",
+                        "delete_sqlite",
+                        exc,
+                        details={"key": key, "db_path": str(self._db_path)},
+                    )
 
     def close(self) -> None:
         with self._disk_lock:
@@ -166,6 +186,7 @@ class CacheService:
                 self._disk_cache = None
 
     def _read_local_persistent(self, key: str) -> tuple[Any, float | None] | None:
+        """优先读 diskcache，失败或缺依赖时退回 SQLite。"""
         if self._disk_cache is not None:
             sentinel = object()
             try:
@@ -190,6 +211,7 @@ class CacheService:
         ttl_seconds: float | None,
         expires_at: float | None,
     ) -> None:
+        """优先写 diskcache，失败时退回 SQLite，保证缓存层降级可用。"""
         if self._disk_cache is not None:
             try:
                 with self._disk_lock:
@@ -219,6 +241,7 @@ class CacheService:
                 conn.commit()
 
     def _read_persistent(self, key: str) -> tuple[Any, float | None] | None:
+        """读取 SQLite 兜底缓存；发现损坏 pickle 会删除该条避免反复报错。"""
         with self._db_lock:
             with closing(sqlite3.connect(self._db_path)) as conn:
                 row = conn.execute("SELECT value, expires_at FROM cache_entries WHERE key = ?", (key,)).fetchone()

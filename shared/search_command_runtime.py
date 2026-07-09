@@ -1,4 +1,8 @@
-"""Shared runtime helpers for the CLI search command."""
+"""search 命令的可测试运行时。
+
+这里集中处理参数校验、选择策略创建、平台配置合并和 CLIRunner 调用，
+命令模块本身只保留 argparse/真实依赖装配，避免行为在旧入口间分叉。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,8 @@ from shared.runtime_options import compose_runtime_config
 
 @dataclass(slots=True)
 class SearchCommandEnv:
+    """运行时依赖注入点，主要服务单元测试和平台别名命令复用。"""
+
     CLIRunner_cls: Any
     selection_factory: Any
     get_platform_defaults: Callable[[str], dict]
@@ -70,6 +76,8 @@ def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
         except json.JSONDecodeError:
             pass
 
+    # 独立命令行参数优先级最高，统一交给 compose_runtime_config 过滤空值、
+    # 应用平台默认值和 MissAV proxy 归一化。
     convenience_body: dict[str, Any] = {}
     for attr in (
         "max_items",
@@ -123,6 +131,8 @@ def validate_args(args: argparse.Namespace, *, env: SearchCommandEnv) -> str | N
     return None
 
 def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tuple[int, dict]:
+    """执行一次搜索/下载命令并返回退出码和结构化结果。"""
+
     error = validate_args(args, env=env)
     if error:
         return 1, {"status": "error", "error": error.removeprefix("❌ ").strip()}

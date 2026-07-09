@@ -1,4 +1,4 @@
-"""Base spider helpers used by all platforms."""
+"""各平台 Spider 共用的线程、停止、选择和浏览器辅助逻辑。"""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from app.models import VideoItem
 from app.utils.callback_signal import CallbackSignal
 
 class BaseSpider(threading.Thread):
-    """Common pure-Python spider thread base with UI selection helpers."""
+    """平台 Spider 的线程基类，统一承接 UI 回调、中断语义和防护栏。"""
 
     ALLOW_SYSTEM_PROXY_FALLBACK = False
 
     def __init__(self, keyword: str, config: dict):
-        """初始化当前实例并准备运行所需的状态，供 `BaseSpider` 使用。"""
+        """初始化一次采集任务运行时状态，子类只需要实现平台采集细节。"""
         super().__init__(daemon=True, name=self.__class__.__name__)
         self.keyword = keyword
         self.config = config
@@ -39,7 +39,7 @@ class BaseSpider(threading.Thread):
         self._selection_result = None
         self._selection_emit_perf_ms = 0.0
         self._selection_emit_wall_ms = 0
-        # 修复 BUG-168: 暴露 Playwright browser/context 引用，方便 controller 强制中断
+        # Playwright 同步调用可能卡在页面加载里；保留 browser 引用便于 stop() 立即关闭。
         self._playwright_lock = threading.RLock()
         self._playwright_browser = None
         self._playwright_owner_thread_id: int | None = None
@@ -69,7 +69,7 @@ class BaseSpider(threading.Thread):
         return lock
 
     def stop(self):
-        
+        """请求线程尽快停止，并唤醒选择等待/关闭被跟踪的浏览器。"""
         self.is_running = False
         self._interrupt_requested = True
         self._selection_epoch += 1
@@ -78,6 +78,7 @@ class BaseSpider(threading.Thread):
         self.sig_log.emit("🛑 正在停止任务...")
 
     def _track_playwright_browser(self, browser) -> None:
+        """记录当前线程创建的浏览器，供外部取消时做强制清理。"""
         with self._playwright_guard():
             self._playwright_browser = browser
             self._playwright_owner_thread_id = threading.get_ident()
@@ -102,6 +103,7 @@ class BaseSpider(threading.Thread):
                 self._playwright_pw = None
 
     def _close_tracked_playwright_browser(self, browser=None) -> None:
+        """在 stop 路径中关闭浏览器；异常只记录，不阻断线程收尾。"""
         with self._playwright_guard():
             browser = browser or self._playwright_browser
             if browser is None:
@@ -129,9 +131,7 @@ class BaseSpider(threading.Thread):
         return lock
 
     def interruptible_sleep(self, seconds: float, step: float = 0.5):
-        """修复 BUG-168: 可中断的 sleep，每 step 秒检查一次 is_running。
-        替代 time.sleep(seconds)，避免用户点停止后等几十秒才响应。
-        """
+        """可中断 sleep：长等待被切成小段，用户停止后不再卡完整超时时间。"""
         import time as _time
         deadline = _time.time() + seconds
         while _time.time() < deadline:
@@ -473,6 +473,7 @@ class BaseSpider(threading.Thread):
         args: list[str] | None = None,
         **extra,
     ) -> dict:
+        """集中生成 browser.launch 参数，确保所有平台共享反自动化启动参数。"""
         from app.core.anti_detection.models import AUTOMATION_CONTROLLED_ARG
 
         kwargs = {"headless": headless, **extra}
@@ -493,6 +494,7 @@ class BaseSpider(threading.Thread):
         viewport: dict[str, int] | None = None,
         **extra,
     ) -> dict:
+        """集中生成 browser.new_context 参数，避免 UA/语言/时区策略在各平台漂移。"""
         from app.config import DEFAULT_USER_AGENT
         from app.core.anti_detection import build_browser_anti_detection
 
@@ -513,12 +515,7 @@ class BaseSpider(threading.Thread):
         apply_stealth_to_context(context)
 
     def run(self):
-        """执行当前对象或脚本的主流程，供 `BaseSpider` 使用。
-
-        子类应重写 ``_run_impl()`` 而非此方法。run() 保证无论
-        _run_impl 是否抛异常，都会 emit sig_finished。
-        异常被捕获并记录，不会传播到调用者。
-        """
+        """线程入口：执行子类 `_run_impl()`，并保证任何退出路径都会通知宿主。"""
         try:
             self._run_impl()
         except BudgetExhausted:
@@ -550,7 +547,7 @@ class BaseSpider(threading.Thread):
         return not self.is_alive()
 
     def log(self, msg: str):
-        
+        """统一经信号输出日志，让 CLI/UI/Web 宿主各自决定展示方式。"""
         self.sig_log.emit(msg)
 
     def debug_state(
@@ -563,7 +560,7 @@ class BaseSpider(threading.Thread):
         trace_id=None,
         level: str = "INFO",
     ):
-        
+        """写入结构化调试日志，并尽量从上下文中继承 trace_id。"""
         if isinstance(context, dict):
             trace_id = trace_id or context.get("trace_id")
         if not trace_id and isinstance(details, dict):
@@ -580,7 +577,7 @@ class BaseSpider(threading.Thread):
         )
 
     def debug_api(self, api_name: str, request=None, response_summary=None, message: str = "", status_code=None):
-        
+        """记录一次平台 API 调用摘要，避免把完整响应直接刷进 UI 日志。"""
         trace_id = None
         if isinstance(request, dict):
             trace_id = request.get("trace_id")
@@ -597,11 +594,11 @@ class BaseSpider(threading.Thread):
         )
 
     def new_trace_id(self, suffix: str = "task") -> str:
-        
+        """按平台前缀生成 trace_id，便于失败列表和日志中心串联同一任务。"""
         return debug_logger.new_trace_id(f"{self.trace_prefix}-{suffix}")
 
     def ensure_trace_id(self, meta: dict | None = None, suffix: str = "task") -> str:
-        
+        """确保下载 meta 带 trace_id；已有值必须保留，避免日志链路断裂。"""
         if meta is None:
             return self.new_trace_id(suffix)
         trace_id = meta.get("trace_id")
@@ -643,6 +640,7 @@ class BaseSpider(threading.Thread):
         return max(0.01, parsed)
 
     def _build_crawl_budget(self, config: dict) -> CrawlBudget:
+        """把配置中的爬取预算归一化，防止异常配置让平台请求无限增长。"""
         guardrails = self._guardrail_config(config)
         budget_config = guardrails.get("budget") if isinstance(guardrails.get("budget"), dict) else guardrails
         return CrawlBudget(
@@ -654,6 +652,7 @@ class BaseSpider(threading.Thread):
         )
 
     def _build_rate_limiter(self, config: dict) -> RateLimiter:
+        """构建平台请求限速器；没有显式配置时使用平台默认速率。"""
         guardrails = self._guardrail_config(config)
         rate_config = guardrails.get("rate_limiter") if isinstance(guardrails.get("rate_limiter"), dict) else {}
         if "rate_per_second" not in rate_config and "rate" not in rate_config:
@@ -724,11 +723,10 @@ class BaseSpider(threading.Thread):
         self.sig_items_found.emit(ready_items)
         return len(ready_items)
 
-    #暂停爬虫线程，向 UI 发送选择请求，等待用户选择结果
+    # 暂停 Spider 线程，把候选项交给 UI/CLI/Web 选择，再等宿主回填结果。
     def ask_user_selection(self, items: list) -> list | None:
-        # The spider thread blocks here until the UI resumes it.
-        
-        self._resume_event.clear()#准备进入等待状态
+        # Spider 线程会阻塞在这里，直到宿主调用 resume_from_ui。
+        self._resume_event.clear()
         self._selection_result = None
         self._selection_emit_perf_ms = time.perf_counter() * 1000
         self._selection_emit_wall_ms = int(time.time() * 1000)
@@ -760,7 +758,7 @@ class BaseSpider(threading.Thread):
         *,
         requires_browser: bool = False,
     ) -> bool:
-        """Allow selection on already collected items after the user clicks stop."""
+        """停止后若已有候选结果，短暂恢复运行态以完成“选择并生成任务”。"""
         if self.is_running:
             return True
         if collected_count <= 0:

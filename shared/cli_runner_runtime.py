@@ -591,10 +591,10 @@ class CLIRunner(ControllerSessionMixin):
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            # 检查是否还有活跃的 worker
+            # DownloadManager 没有统一的 join API；CLI 只能同时观察 worker 集合
+            # 和队列长度，二者都为空才说明最终结果可汇总。
             with self._dl_manager._workers_lock:
                 active = len(self._dl_manager.workers)
-            # 检查队列是否还有任务
             queued = self._dl_manager.queue.qsize()
             if active == 0 and queued == 0:
                 return False
@@ -603,7 +603,11 @@ class CLIRunner(ControllerSessionMixin):
         return True
 
     def _reconcile_download_states(self) -> None:
-        """在 CLI 汇总前按真实文件落盘结果兜底校正状态。"""
+        """在 CLI 汇总前按真实文件落盘结果兜底校正状态。
+
+        部分下载器在进程退出窗口期可能先落盘再迟到地发状态信号；CLI 最终
+        JSON 以磁盘上非空文件为准，避免用户看到“失败但文件已完成”的结果。
+        """
         video_status = _video_status_enum()
         for item in self.videos.values():
             if item.status in (

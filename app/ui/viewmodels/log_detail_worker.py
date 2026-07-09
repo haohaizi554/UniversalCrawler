@@ -103,6 +103,8 @@ def _platform_cache_payload(platforms: tuple[PlatformUiMeta, ...]) -> tuple[tupl
 
 
 def _log_detail_cache_key(request: LogDetailRequest) -> str:
+    """把日志原始 payload 和平台元信息一起纳入缓存 key。"""
+
     payload = {
         "item_id": request.item_id,
         "language": normalize_language(request.language),
@@ -125,6 +127,8 @@ def build_cached_log_detail_result(
     cache_service: Any | None = None,
     ttl_seconds: float = 300.0,
 ) -> LogDetailResult:
+    """构建日志详情，并用短 TTL 缓存规避重复 JSON 格式化开销。"""
+
     if cache_service is None:
         return build_log_detail_result(request)
 
@@ -174,6 +178,8 @@ def _translate_platform_display(
 
 
 def build_log_detail_result(request: LogDetailRequest) -> LogDetailResult:
+    """把一条原始日志展开为详情页需要的所有展示字段。"""
+
     language = normalize_language(request.language)
     item = dict(request.item)
     status_code = normalized_status_code(item)
@@ -230,7 +236,7 @@ def build_log_detail_result(request: LogDetailRequest) -> LogDetailResult:
 
 
 class LogDetailWorker:
-    """Latest-state-wins worker for log detail normalization and JSON formatting."""
+    """日志详情 worker：详情切换时只保留最新选中项。"""
 
     def __init__(
         self,

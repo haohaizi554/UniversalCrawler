@@ -121,6 +121,7 @@ def _rotate_left(value: int, bits: int) -> int:
 
 
 def _custom_hash_v2(input_bytes: list[int]) -> list[int]:
+    """小红书 web 签名里的 128-bit 混合哈希，输出参与 a3 字段校验。"""
     s0, s1, s2, s3 = HASH_IV
     length = len(input_bytes)
     s0 ^= length
@@ -199,6 +200,7 @@ def _build_payload_array(
     content_string: str = "",
     timestamp: float | None = None,
 ) -> list[int]:
+    """组装 X-S 载荷数组；字段顺序和长度需要与 web 端实现保持一致。"""
     timestamp = time.time() if timestamp is None else timestamp
     seed = random.randint(0, MAX_32BIT)
     seed_byte = seed & 0xFF
@@ -268,6 +270,7 @@ def _stable_hex(seed: str, label: str, length: int) -> str:
 
 
 def _cached_fingerprint_static(cookie_dict: dict[str, str]) -> dict[str, Any]:
+    """按登录 cookie 生成稳定指纹，避免同一会话每次请求的静态特征抖动。"""
     seed = _fingerprint_seed(cookie_dict)
     cache_key = seed[:32]
     with _FINGERPRINT_LOCK:
@@ -300,6 +303,7 @@ def _cached_fingerprint_static(cookie_dict: dict[str, str]) -> dict[str, Any]:
 
 
 def _minimal_fingerprint(cookie_dict: dict[str, str]) -> dict[str, Any]:
+    """生成最小可用浏览器指纹；动态时间和 cookie 串每次请求刷新。"""
     now_ms = int(time.time() * 1000)
     fingerprint = _cached_fingerprint_static(cookie_dict)
     fingerprint["x44"] = str(now_ms)
@@ -327,6 +331,7 @@ def _rc4_crypt(key: bytes, data: bytes) -> bytes:
 
 
 def _generate_b1(fingerprint: dict[str, Any]) -> str:
+    """把指纹压缩成 x-s-common 需要的 b1 字段。"""
     b1_fp = {
         "x33": fingerprint["x33"],
         "x34": fingerprint["x34"],
@@ -376,7 +381,7 @@ def sign_with_local_algorithm(
     method: str = "POST",
     timestamp: float | None = None,
 ) -> dict[str, str]:
-    """Generate XHS request headers without xhshow."""
+    """优先使用本地签名算法，避免 xhshow 依赖缺失时平台完全不可用。"""
     try:
         timestamp = time.time() if timestamp is None else timestamp
         cookie_dict = _parse_cookies(cookie_str)
@@ -455,7 +460,7 @@ def sign_with_xhshow(
     cookie_str: str = "",
     method: str = "POST",
 ) -> dict[str, str]:
-    """Generate XHS request headers via xhshow fallback."""
+    """通过 xhshow 生成请求头；本地算法失败时作为兼容兜底。"""
     _patch_xhshow_get_hash()
 
     from xhshow import Xhshow
@@ -510,7 +515,7 @@ def sign_xiaohongshu_headers(
     cookie_str: str = "",
     method: str = "POST",
 ) -> dict[str, str]:
-    """Generate XHS request headers with local code first and xhshow as fallback."""
+    """统一签名入口：本地算法优先，失败后才落到外部库。"""
     try:
         return sign_with_local_algorithm(uri=uri, data=data, cookie_str=cookie_str, method=method)
     except XiaohongshuLocalSignatureError:

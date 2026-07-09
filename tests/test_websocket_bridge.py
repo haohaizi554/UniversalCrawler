@@ -12,6 +12,8 @@ async def _wait_until(predicate):
 
 
 class _FakeLoop:
+    """只模拟调度 API 的 loop，用于断言桥接层是否投到目标 loop。"""
+
     def __init__(self):
         self.soon_calls = []
         self.created_coroutines = []
@@ -182,6 +184,8 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual(sent, [("log", {"message": "tick"})])
 
     def test_noisy_events_share_single_delayed_frontend_delta(self):
+        # 进度和日志属于高频事件，应合并成一次延迟 frontend_delta，
+        # 否则浏览器会收到成百上千条重复 patch。
         loop = _DeferredLoop()
         sent = []
         delta_bases = []
@@ -213,6 +217,8 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual([event_type for event_type, _data in sent], ["frontend_delta"])
 
     def test_concurrent_noisy_events_share_single_delayed_frontend_delta(self):
+        # WebController 可能从多个下载线程同时 emit；桥接层需要线程安全地
+        # 共享同一个延迟 flush。
         loop = _DeferredLoop()
         sent = []
         delta_bases = []
@@ -259,6 +265,7 @@ class WebSocketBridgeTests(unittest.TestCase):
         self.assertEqual([event_type for event_type, _data in sent], ["frontend_delta"])
 
     def test_stale_delayed_delta_flush_is_skipped_after_critical_flush(self):
+        # 关键事件会立即 flush；之前排队的延迟 flush 不能再次发送旧 delta。
         loop = _DeferredLoop()
         sent = []
         delta_bases = []

@@ -1,4 +1,4 @@
-"""Per-video download speed / ETA telemetry for GUI, Web and future analytics."""
+"""下载进度遥测：根据字节采样推算速度、ETA，并写回 VideoItem.meta。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class DownloadProgressSnapshot:
         return asdict(self)
 
 class DownloadTelemetryService:
-    """Track per-video throughput and ETA from progress callbacks."""
+    """把下载器回调里的进度和字节数转换成前端可直接展示的快照。"""
 
     MIN_SAMPLE_INTERVAL_SECONDS = 0.2
 
@@ -64,6 +64,7 @@ class DownloadTelemetryService:
 
     @staticmethod
     def resolve_bytes_total(video: VideoItem, *, progress: int, bytes_downloaded: int) -> int:
+        """优先使用显式总大小；缺失时用当前进度反推一个近似值。"""
         meta = video.meta or {}
         size_bytes = int(meta.get("size_bytes", 0) or 0)
         if size_bytes > 0:
@@ -77,6 +78,7 @@ class DownloadTelemetryService:
 
     @staticmethod
     def resolve_bytes_downloaded(video: VideoItem, *, progress: int, bytes_total: int) -> int:
+        """优先用下载器显式上报字节数，再退回总大小/进度或本地文件大小。"""
         meta = video.meta or {}
         explicit = int(meta.get("bytes_downloaded", 0) or 0)
         if explicit > 0:
@@ -103,6 +105,7 @@ class DownloadTelemetryService:
         bytes_total: int | None = None,
         now: float | None = None,
     ) -> DownloadProgressSnapshot:
+        """记录一次进度样本；采样间隔太短时复用旧速度，避免 UI 数字抖动。"""
         now = time.monotonic() if now is None else now
         normalized_progress = max(0, min(100, int(progress)))
         if bytes_total is None:
@@ -159,6 +162,7 @@ class DownloadTelemetryService:
 
     @staticmethod
     def apply_to_meta(video: VideoItem, snapshot: DownloadProgressSnapshot) -> None:
+        """把最新遥测写回 meta，供桌面、Web 和日志详情复用同一份字段。"""
         meta = video.meta
         meta["speed_bps"] = snapshot.speed_bps
         meta["speed"] = snapshot.speed

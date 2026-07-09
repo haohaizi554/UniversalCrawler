@@ -6,7 +6,7 @@ from typing import Any
 
 
 class MetadataProbeQueue:
-    """Debounced batch queue for completed-media metadata probes."""
+    """完成文件元数据探测的防抖队列，批量触发重试回调。"""
 
     def __init__(
         self,
@@ -46,6 +46,7 @@ class MetadataProbeQueue:
             return self._closed
 
     def queue(self, video_id: str, source_path: str) -> None:
+        """入队同一 video/path 的最新探测请求，并按延迟合并批处理。"""
         video_id = str(video_id or "")
         source_path = str(source_path or "")
         if not video_id or not source_path:
@@ -60,6 +61,7 @@ class MetadataProbeQueue:
                 self._schedule_locked()
 
     def drain(self, generation: int | None = None) -> None:
+        """取出一批执行；generation 防止取消后的旧 Timer 继续处理新队列。"""
         with self._lock:
             if self._closed or self._closed_checker() or (
                 generation is not None and generation != self._generation
@@ -88,6 +90,7 @@ class MetadataProbeQueue:
                     self._pending.pop(key, None)
 
     def cancel(self, *, close: bool = False) -> None:
+        """取消当前 Timer 和待处理项；close=True 后不再接受新任务。"""
         with self._lock:
             self._generation += 1
             if close:

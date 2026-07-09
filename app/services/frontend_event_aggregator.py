@@ -80,6 +80,7 @@ NORMAL_TOPICS = frozenset(
 )
 
 def priority_for_topic(topic: str) -> FrontendEventPriority:
+    """按 topic 决定保留优先级，下载进度/日志等高频事件允许被合并。"""
     normalized = str(topic or "")
     if normalized in CRITICAL_TOPICS:
         return FrontendEventPriority.CRITICAL
@@ -88,7 +89,7 @@ def priority_for_topic(topic: str) -> FrontendEventPriority:
     return FrontendEventPriority.NORMAL
 
 def sections_for_topic(topic: str) -> frozenset[str] | None:
-    """Map transport/domain topics to frontend snapshot sections."""
+    """把领域事件映射到快照 section，帮助 Web/GUI 只刷新必要区域。"""
 
     normalized = str(topic or "")
     if normalized in {"videos.update", "video_state_changed", "task_progress"}:
@@ -132,7 +133,7 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
     return None
 
 def event_coalesce_key(topic: str, payload: Any = None) -> tuple[str, str]:
-    """Return the latest-state-wins key for a frontend event."""
+    """返回 latest-state-wins key；同视频的高频事件只保留最后一次。"""
 
     payload = payload if isinstance(payload, dict) else {}
     entity_id = (
@@ -157,7 +158,7 @@ class FrontendDirtyState:
     dropped_count: int = 0
 
 class FrontendEventAggregator:
-    """Thread-safe dirty-section tracker for GUI and WebUI refreshes."""
+    """线程安全的脏 section 跟踪器，同时保留短历史供增量查询。"""
 
     def __init__(self, *, max_pending_events: int = 2048, monotonic=time.monotonic) -> None:
         self._lock = threading.RLock()
@@ -181,6 +182,7 @@ class FrontendEventAggregator:
             return self._version
 
     def record(self, topic: str, payload: Any = None, *, sections: frozenset[str] | set[str] | None = None) -> FrontendDirtyState:
+        """记录一次变更，更新版本、脏 section、待发事件和删除 ID 历史。"""
         priority = priority_for_topic(topic)
         dirty_sections = frozenset(sections) if sections is not None else sections_for_topic(topic)
         with self._lock:
@@ -222,6 +224,7 @@ class FrontendEventAggregator:
             )
 
     def consume(self) -> FrontendDirtyState:
+        """GUI 轮询式消费者使用；消费后清空当前脏状态但保留历史。"""
         with self._lock:
             state = self.peek()
             self._dirty_sections.clear()
@@ -245,7 +248,7 @@ class FrontendEventAggregator:
             }
 
     def sections_since(self, base_version: int) -> frozenset[str]:
-        """Return the exact dirty section union after ``base_version`` when retained."""
+        """历史仍在时返回精确 section；历史丢失时要求客户端全量重刷。"""
         with self._lock:
             try:
                 base = int(base_version or 0)
@@ -280,6 +283,7 @@ class FrontendEventAggregator:
             return tuple(sorted(deleted))
 
     def _remember_event(self, topic: str, payload: Any, priority: FrontendEventPriority) -> None:
+        """在容量受限的队列中保存代表性事件，低优先级事件优先被丢弃。"""
         key = event_coalesce_key(topic, payload)
         if key in self._pending_events:
             self._coalesced_count += 1

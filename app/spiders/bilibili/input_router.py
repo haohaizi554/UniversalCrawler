@@ -1,8 +1,4 @@
-"""Input routing helpers for the Bilibili spider.
-
-This module is deliberately pure: it classifies user input and builds route
-objects, while network-sensitive short-link resolution stays in the spider.
-"""
+"""Bilibili 输入路由：把用户粘贴内容分类成 BV、av、空间、搜索或兜底扫描。"""
 
 from __future__ import annotations
 
@@ -40,7 +36,7 @@ MIN_PLAIN_UID_DIGITS = 5
 
 @dataclass(frozen=True, slots=True)
 class BilibiliInputRoute:
-    """Normalized Bilibili input route used by the browser producer."""
+    """纯分类结果；短链解析等网络行为由 spider 层负责，便于单测覆盖。"""
 
     kind: str
     value: str
@@ -52,7 +48,7 @@ def strip_url_trailing_punctuation(value: str) -> str:
 
 
 def extract_first_url(raw_text: str) -> str:
-    """Extract and clean the first URL from copied share text."""
+    """从分享文案提取首个 URL，并剔除中文标点等复制噪声。"""
     text = str(raw_text or "").strip()
     match = re.search(r"https?://[^\s`'\"<>]+", text)
     if match:
@@ -80,6 +76,7 @@ def keyword_route(keyword: str) -> BilibiliInputRoute:
 
 
 def looks_like_collection_bvid_hint(raw_text: str) -> bool:
+    """判断“BV + 合集提示词”场景，避免把合集入口误当作单视频。"""
     lowered = str(raw_text or "").lower()
     if any(marker in lowered for marker in ("合集", "系列", "列表", "收藏", "collection", "season", "series")):
         return True
@@ -116,7 +113,7 @@ def aid_from_url(url: str) -> str:
 
 
 def collection_bvid_fallback_urls(bvid: str, raw_text: str = "") -> list[str]:
-    """Build browser fallbacks for "BV + collection hint" inputs."""
+    """为疑似合集 BV 构造搜索页和详情页兜底，交给网页扫描确认真实入口。"""
     normalized_bvid = normalize_bvid(bvid)
     raw = str(raw_text or "").strip()
     search_terms = [
@@ -130,6 +127,7 @@ def collection_bvid_fallback_urls(bvid: str, raw_text: str = "") -> list[str]:
 
 
 def is_collection_like_url(parsed: urllib.parse.ParseResult) -> bool:
+    """根据路径和 query 判断是否应走列表/合集扫描，而不是单条取流。"""
     path = (parsed.path or "").lower()
     if any(marker in path for marker in COLLECTION_PATH_MARKERS):
         return True
@@ -155,6 +153,7 @@ def is_bvid_ugc_season_entry_url(parsed: urllib.parse.ParseResult) -> bool:
 
 
 def route_url(url: str) -> BilibiliInputRoute:
+    """把规范 URL 分派到具体路线；只做静态判断，不跟随短链。"""
     url = strip_url_trailing_punctuation(url)
     parsed = urllib.parse.urlparse(url)
     host = parsed.netloc.lower()
@@ -167,6 +166,7 @@ def route_url(url: str) -> BilibiliInputRoute:
         uid_match = re.search(r"/(\d+)(?:/|$)", path)
         target_url = url
         if uid_match and not re.search(r"/(video|lists?)(?:/|$)", path):
+            # 空间首页默认补到 /video，减少网页扫描进入动态/收藏页造成的误抓。
             target_url = f"https://space.bilibili.com/{uid_match.group(1)}/video"
         return BilibiliInputRoute("scan", target_url, {"is_search": False, "is_space": True})
     if "search.bilibili.com" in host:
@@ -189,6 +189,7 @@ def route_url(url: str) -> BilibiliInputRoute:
 
 
 def classify_input(raw_text: str, *, normalize_keyword: Callable[[str], str] | None = None) -> BilibiliInputRoute:
+    """入口函数：先处理显式 ID/URL，再从普通文本里提取 BV/av，否则落到搜索。"""
     raw = str(raw_text or "").strip()
     normalized = normalize_keyword(raw) if normalize_keyword is not None else extract_first_url(raw)
     value = str(normalized or "").strip()
@@ -206,6 +207,7 @@ def classify_input(raw_text: str, *, normalize_keyword: Callable[[str], str] | N
 
     if re.fullmatch(r"\d+", value):
         if len(value) < MIN_PLAIN_UID_DIGITS:
+            # 过短纯数字更像搜索词或 av 片段，直接当 UID 会误跳大量不存在空间。
             return keyword_route(value)
         return BilibiliInputRoute(
             "scan",
@@ -240,6 +242,7 @@ def classify_input(raw_text: str, *, normalize_keyword: Callable[[str], str] | N
 
 
 def build_search_page_url(current_url: str, page_num: int) -> str:
+    """Bilibili 搜索翻页需要同时维护 page 和 o 偏移。"""
     parsed = urllib.parse.urlparse(current_url)
     query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
     query["page"] = str(page_num)

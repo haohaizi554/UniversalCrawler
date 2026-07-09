@@ -17,6 +17,7 @@
   }
 
   function visibleLogItems(items, rowBudget = 300) {
+    // UI 展示条数只影响前端可见窗口，不裁剪后端日志文件。
     if (!Array.isArray(items)) return [];
     const budget = Math.max(1, Number(rowBudget) || 300);
     if (items.length <= budget) return items;
@@ -48,6 +49,7 @@
   }
 
   function queryLogItems(request = {}) {
+    // 日志筛选、分页和 tab 计数集中在纯函数里，Worker/主线程可复用。
     const allItems = Array.isArray(request.items) ? request.items : [];
     const filters = request.filters || {};
     const rowBudget = Math.max(1, Number(request.rowBudget) || 300);
@@ -95,6 +97,7 @@
   }
 
   function logCategory(item) {
+    // 后端未显式分类时，用关键词兜底，保证旧日志也能落入对应 tab。
     const level = String(item.level || "").toUpperCase();
     if (level === "ERROR") return "error";
     if (item.category) return String(item.category);

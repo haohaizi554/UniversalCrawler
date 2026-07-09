@@ -13,7 +13,11 @@ ResultT = TypeVar("ResultT")
 
 
 class SequentialRequestWorker(Generic[RequestT, ResultT]):
-    """FIFO worker for ordered background requests."""
+    """FIFO 后台 worker：按提交顺序处理每个请求。
+
+    适合导出、文件写入等不能被“最新请求”覆盖的操作；与
+    LatestRequestWorker 的语义刻意区分。
+    """
 
     def __init__(
         self,

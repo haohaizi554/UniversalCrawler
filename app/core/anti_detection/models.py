@@ -1,4 +1,4 @@
-"""Structured anti-detection runtime models."""
+"""浏览器/请求反检测参数模型，集中描述 UA、语言、时区和代理。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ DEFAULT_TIMEZONE_ID = "Asia/Shanghai"
 
 @dataclass(frozen=True, slots=True)
 class AntiDetectionContext:
-    """Normalized anti-detection runtime for browser/request setup."""
+    """同一份上下文同时服务 Playwright 启动、context 创建和 HTTP 请求头。"""
 
     source: str
     user_agent: str
@@ -25,6 +25,7 @@ class AntiDetectionContext:
     launch_args: tuple[str, ...] = (AUTOMATION_CONTROLLED_ARG,)
 
     def browser_launch_kwargs(self, *, headless: bool = False) -> dict[str, Any]:
+        """生成 browser.launch 参数；代理属于进程级配置，必须放在这里。"""
         kwargs: dict[str, Any] = {"headless": headless}
         if self.proxy_server:
             kwargs["proxy"] = {"server": self.proxy_server}
@@ -33,6 +34,7 @@ class AntiDetectionContext:
         return kwargs
 
     def browser_context_kwargs(self) -> dict[str, Any]:
+        """生成 browser.new_context 参数，统一控制页面可见的本地化特征。"""
         kwargs: dict[str, Any] = {}
         if self.user_agent:
             kwargs["user_agent"] = self.user_agent
@@ -47,6 +49,7 @@ class AntiDetectionContext:
         return kwargs
 
     def request_headers(self, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+        """生成 requests/aiohttp 可用的基础请求头，并允许平台追加特有字段。"""
         headers: dict[str, str] = {}
         if self.user_agent:
             headers["User-Agent"] = self.user_agent

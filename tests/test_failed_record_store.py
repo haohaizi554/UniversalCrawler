@@ -33,6 +33,8 @@ def test_failed_record_store_persists_queued_records(tmp_path):
 
 
 def test_failed_record_store_refreshes_memory_snapshot_in_worker(tmp_path):
+    # records_snapshot() 暴露给 UI 热路径，必须返回副本；外部改动不能污染
+    # worker 线程维护的内存快照。
     refreshed_counts: list[int] = []
     store = FailedRecordStore(
         db_path=tmp_path / "failed.sqlite3",
@@ -118,6 +120,8 @@ def test_failed_record_store_query_records_uses_sql_filters_and_counts(tmp_path)
 
 
 def test_failed_record_store_worker_refresh_accepts_structured_query(tmp_path):
+    # request_refresh 走后台 worker 查询 SQLite；这里覆盖平台和 trace 条件能
+    # 防止 UI 重新退回同步 query_records。
     store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
     try:
         store.queue_upsert(
@@ -165,6 +169,8 @@ def test_failed_record_store_worker_refresh_accepts_structured_query(tmp_path):
 
 
 def test_failed_record_store_worker_resets_state_after_unexpected_write_error(tmp_path):
+    # 写入异常后 _writing/_refreshing 必须复位，否则下一次失败记录会被永久
+    # 卡在 pending 队列里。
     store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
     original_write_batch = store._write_batch
     calls: list[list[dict]] = []

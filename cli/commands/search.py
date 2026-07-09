@@ -18,7 +18,7 @@ from cli.selection import (
 from shared import search_command_runtime as runtime
 
 class SelectionStrategyFactory:
-    """CLI-local factory that preserves legacy cli.selection strategy classes."""
+    """CLI 本地选择策略工厂，保留旧 cli.selection 类的可替换性。"""
 
     @staticmethod
     def from_cli_args(args: argparse.Namespace, *, default_strategy: str = "rule_all"):
@@ -54,6 +54,8 @@ def _looks_mock(obj) -> bool:
     return module_name.startswith("unittest.mock") or type_module.startswith("unittest.mock")
 
 def _runner_class():
+    """测试可能 monkeypatch 两处 CLIRunner；这里优先返回被替换的对象。"""
+
     if _looks_mock(CLIRunner):
         return CLIRunner
     if _looks_mock(cli_runner_module.CLIRunner):
@@ -61,6 +63,8 @@ def _runner_class():
     return CLIRunner
 
 def _runtime_env() -> runtime.SearchCommandEnv:
+    """装配真实依赖；共享 runtime 通过该对象与测试替身解耦。"""
+
     return runtime.SearchCommandEnv(
         CLIRunner_cls=_runner_class(),
         selection_factory=SelectionStrategyFactory,
@@ -156,6 +160,8 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
 def _build_selection_strategy(args: argparse.Namespace):
     """根据命令行参数构造选择策略。"""
     return runtime.build_selection_strategy(args, env=_runtime_env())
+    # 下面是迁移到 shared.search_command_runtime 前的旧实现，当前不可达。
+    # 保留到相关兼容测试完全迁移后再删除，避免这轮注释任务扩大行为变更。
     if getattr(args, "interactive", False):
         return InteractiveTTYSelection()
     if getattr(args, "pipe", False):
@@ -194,6 +200,7 @@ def _build_config(args: argparse.Namespace) -> dict:
     3. 独立参数 (--max-items, --timeout 等，优先级最高)
     """
     return runtime.build_config(args, env=_runtime_env())
+    # 下面是迁移到 shared.search_command_runtime 前的旧实现，当前不可达。
     source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
     config = get_platform_defaults(source)
 
@@ -265,6 +272,7 @@ def handle_search_command(args: argparse.Namespace) -> int:
     exit_code, result = runtime.run_search_command(args, env=_runtime_env())
     runtime.emit_result(result, pretty=getattr(args, "pretty", False))
     return exit_code
+    # 下面是迁移到 shared.search_command_runtime 前的旧实现，当前不可达。
     # 与 CLI download --config 和 SDK config 对齐：校验 --config JSON 格式
     config_json = getattr(args, "config", None)
     if config_json:

@@ -6,7 +6,7 @@ from typing import Any
 
 
 class MetadataRetryTracker:
-    """Track empty metadata probes and schedule bounded retries."""
+    """记录空元数据探测失败次数，并为单个视频安排有上限的延迟重试。"""
 
     def __init__(
         self,
@@ -39,6 +39,7 @@ class MetadataRetryTracker:
             return dict(self._empty_failures)
 
     def record_empty_failure(self, video_id: str, source_path: str) -> int:
+        """按 video/path 维度累计失败，避免同一视频换文件后沿用旧计数。"""
         failure_key = self._key_factory(video_id, source_path)
         with self._lock:
             attempts = self._empty_failures.get(failure_key, 0) + 1
@@ -64,6 +65,7 @@ class MetadataRetryTracker:
                     self._empty_failures.pop(key, None)
 
     def schedule(self, video_id: str, source_path: str) -> None:
+        """同一 video_id 同时只保留一个重试 Timer，防止探测风暴。"""
         key = str(video_id or "")
         if not key:
             return
@@ -97,6 +99,7 @@ class MetadataRetryTracker:
             timer.cancel()
 
     def _fire(self, video_id: str, source_path: str) -> None:
+        """Timer 触发后执行回调，并把是否成功排期写回前端事件。"""
         with self._lock:
             self._timers.pop(video_id, None)
         retried = self._retry_callback(video_id, source_path)

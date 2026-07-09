@@ -1,6 +1,8 @@
 import unittest
 import threading
 import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -125,6 +127,8 @@ class WebControllerRuntimeTests(unittest.TestCase):
         controller.current_spider = FakeSpider()
         controller._start_crawl_unlocked = fake_start
 
+        # 模拟 shutdown 正在等待 spider 退出；新 start_crawl 必须排队等待，
+        # 否则 current_spider 会被两个生命周期同时读写。
         shutdown_thread = threading.Thread(target=controller.shutdown)
         shutdown_thread.start()
         self.assertTrue(entered_shutdown_wait.wait(timeout=1))
@@ -165,6 +169,8 @@ class WebControllerRuntimeTests(unittest.TestCase):
         shutdown_thread.start()
         self.assertTrue(entered_shutdown_wait.wait(timeout=1))
 
+        # sig_finished 可能在 shutdown 等待期间抵达；回调不能被同一把锁挡住，
+        # 否则退出流程和 spider 线程会互相等待。
         finished_thread = threading.Thread(target=controller._on_spider_finished)
         finished_thread.start()
         finished_thread.join(timeout=0.5)
@@ -271,6 +277,8 @@ class WebControllerRuntimeTests(unittest.TestCase):
 
         controller.handle_frontend_action = fake_handle
 
+        # WebSocket/REST 事件循环只负责调度；同步 action 必须进 executor，
+        # 避免配置写入或文件操作阻塞所有连接。
         main_thread, result = asyncio.run(run_action())
 
         self.assertEqual(result["status"], "ok")
@@ -285,6 +293,7 @@ class WebControllerRuntimeTests(unittest.TestCase):
         controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
         controller.file_service.delete_media = Mock(side_effect=FileOperationError("permission denied"))
 
+        # 删除文件失败时不能先从内存表删项，否则 UI 会丢失可重试/诊断信息。
         result = asyncio.run(controller.async_delete_video(item.id))
 
         self.assertEqual(result["status"], "error")
@@ -314,6 +323,30 @@ class WebControllerRuntimeTests(unittest.TestCase):
         item.local_path = "Z:/definitely-missing/input.mp4"
 
         self.assertEqual(controller.get_media_path(item.id), item.local_path)
+
+    def test_file_response_service_uses_request_range_header_fallback(self):
+        import asyncio
+
+        from app.web.file_response_service import WebFileResponseService
+
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            media_path = Path(temp_dir) / "sample.mp4"
+            media_path.write_bytes(b"0123456789")
+            controller = SimpleNamespace(get_media_path=Mock(return_value=str(media_path)))
+            context = SimpleNamespace(controller=controller, approved_roots=(temp_dir,))
+            request = SimpleNamespace(headers={"range": "bytes=1-3"})
+            service = WebFileResponseService(
+                get_request_context=Mock(return_value=context),
+                has_valid_session_token=Mock(return_value=True),
+            )
+
+            response = asyncio.run(
+                service.get_media(request, "video-1", None, require_session_token=False)
+            )
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["content-range"], "bytes 1-3/10")
+        self.assertEqual(response.headers["content-length"], "3")
 
     def test_progress_signal_is_throttled_inside_time_window(self):
         controller, item = self._controller_with_video()

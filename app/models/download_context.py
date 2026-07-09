@@ -1,4 +1,4 @@
-"""Explicit download-time context derived from VideoItem.meta."""
+"""把 VideoItem.meta 显式归一化成下载层上下文对象。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 @dataclass(slots=True)
 class DownloadContext:
-    """Normalized download context for strategy, worker and downloader flows."""
+    """下载管理器、策略选择和具体下载器共享的只读语义边界。"""
 
     trace_id: str | None = None
     download_strategy: str | None = None
@@ -33,6 +33,7 @@ class DownloadContext:
 
     @staticmethod
     def _as_bool(value: Any) -> bool:
+        """兼容配置/UI 传来的字符串布尔值，避免 `"false"` 被 bool() 误判为 True。"""
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -45,6 +46,7 @@ class DownloadContext:
 
     @staticmethod
     def _as_number(value: Any) -> int | float | None:
+        """把 meta 中的数字字符串规整成数值，非法值不向下载层传播。"""
         if value is None or isinstance(value, bool):
             return None
         if isinstance(value, (int, float)):
@@ -62,6 +64,7 @@ class DownloadContext:
 
     @classmethod
     def from_meta(cls, meta: Mapping[str, Any] | None) -> "DownloadContext":
+        """从松散 meta 构建强语义上下文，并保留旧字段 `file_name` 的兼容入口。"""
         payload = dict(meta or {})
         cookies = payload.get("cookies")
         images_data = payload.get("images_data")
@@ -94,6 +97,7 @@ class DownloadContext:
         return str(self.download_strategy or "").strip().lower()
 
     def to_meta_patch(self) -> dict[str, Any]:
+        """转换回 meta 补丁；只写有值字段，避免覆盖上游已确定的下载参数。"""
         patch: dict[str, Any] = {
             "is_gallery": self.is_gallery,
             "is_mix": self.is_mix,

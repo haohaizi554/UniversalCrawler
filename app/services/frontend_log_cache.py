@@ -1,4 +1,4 @@
-"""Bounded frontend log repository used by GUI and WebUI snapshots."""
+"""前端日志缓存：合并内存日志和调试日志文件尾部内容。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class _TailCacheState:
 
 
 class _TailLogFileReader:
-    """Incrementally read the active debug log without scanning it on every refresh."""
+    """增量读取当前调试日志，避免每次状态快照都全文件扫描。"""
 
     INITIAL_WINDOW_BYTES = 1024 * 1024
     MAX_WINDOW_BYTES = 8 * 1024 * 1024
@@ -42,6 +42,7 @@ class _TailLogFileReader:
         self._initialized = False
 
     def cache_state(self, *, limit: int) -> _TailCacheState | None:
+        """用路径、大小和 mtime 生成缓存指纹；文件轮转后会自动失效。"""
         path = Path(self._path_provider())
         try:
             stat = path.stat()
@@ -66,12 +67,14 @@ class _TailLogFileReader:
         )
 
     def hydrate(self, state: _TailCacheState, items: list[dict[str, Any]], *, limit: int) -> None:
+        """从持久缓存恢复尾读状态，启动后不必立刻重扫大日志。"""
         self._path_key = state.path_key
         self._offset = state.offset
         self._items = deepcopy(items[-limit:])
         self._initialized = True
 
     def read(self, *, limit: int) -> list[dict[str, Any]]:
+        """读取新增字节；文件变小或路径变化时按尾窗重新初始化。"""
         path = Path(self._path_provider())
         try:
             stat = path.stat()
@@ -92,6 +95,7 @@ class _TailLogFileReader:
         return deepcopy(self._items[-limit:])
 
     def _read_tail_window(self, path: Path, path_key: str, size: int, *, limit: int) -> list[dict[str, Any]]:
+        """从文件尾部逐步扩大窗口，尽量读够 UI 需要的最近日志。"""
         window = min(size, self.INITIAL_WINDOW_BYTES)
         items: list[dict[str, Any]] = []
         while True:
@@ -121,7 +125,7 @@ class _TailLogFileReader:
 
 
 class FrontendLogCache:
-    """Cache tail log rows without doing disk IO in the snapshot hot path."""
+    """把文件尾读结果缓存起来，让状态快照只做内存合并。"""
 
     def __init__(
         self,
@@ -221,6 +225,7 @@ class FrontendLogCache:
                 self._at = self._clock()
 
     def merged_items(self, buffer: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """合并文件日志和当前 UI 环形缓冲，保证日志中心能看到启动前后的记录。"""
         limit = self._current_limit()
         read_limit = self._next_read_limit(limit)
         if read_limit > 0:
@@ -233,6 +238,7 @@ class FrontendLogCache:
         return merged
 
     def request_refresh(self, limit: Any | None = None) -> None:
+        """请求后台读取日志文件；连续请求只保留最大的 read_limit。"""
         read_limit = self.normalize_limit(limit if limit is not None else self._current_limit())
         with self._worker_lock:
             if self._shutdown:
@@ -273,6 +279,7 @@ class FrontendLogCache:
             return 300
 
     def _next_read_limit(self, limit: int) -> int:
+        """根据 TTL 判断是否需要重新读文件；列表缩小时先裁剪内存项。"""
         now = self._clock()
         with self._lock:
             if len(self._items) > limit:
@@ -287,6 +294,7 @@ class FrontendLogCache:
         return 0
 
     def _refresh_from_source(self, read_limit: int) -> None:
+        """从缓存或文件源刷新项目，并清掉旧 tail 指纹缓存。"""
         cache_key, tail_state = self._cache_key_for_read(read_limit)
         if self._tail_reader is not None:
             with self._lock:
@@ -364,6 +372,7 @@ class FrontendLogCache:
         self._worker_thread.start()
 
     def _worker_loop(self) -> None:
+        """后台串行刷新日志，避免 UI 快照线程被磁盘 IO 卡住。"""
         while True:
             self._worker_event.wait()
             with self._worker_lock:

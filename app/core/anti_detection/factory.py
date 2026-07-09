@@ -13,7 +13,7 @@ def build_browser_anti_detection(
     default_user_agent: str,
     viewport: dict[str, int] | None = None,
 ) -> AntiDetectionContext:
-    """Build a shared browser anti-detection context for browser-based spiders."""
+    """构建 browser spider 共用的反检测上下文；调用方不需要关心策略类细节。"""
 
     return BrowserAntiDetectionStrategy(
         source=source,

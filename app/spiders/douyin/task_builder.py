@@ -1,13 +1,14 @@
-"""爬虫实现模块，负责 `app/spiders/douyin/task_builder.py` 对应平台的采集、解析或任务装配逻辑。"""
+"""抖音任务装配：把解析出的逻辑作品展开成实际下载项。"""
 
 from __future__ import annotations
 from app.models import VideoItem
 from app.spiders.base_task_builder import BaseTaskBuilder
 
 class DouyinTaskBuilder(BaseTaskBuilder):
-    """负责将解析结果转换为 `DouyinTaskBuilder` 对应的任务或数据对象。"""
+    """负责图集/实况照片的展开，并为每个子资源生成独立 trace_id。"""
+
     def build_items(self, item: VideoItem, trace_id_factory) -> list[VideoItem]:
-        """构建 `items` 对应的结果、参数或对象，供 `DouyinTaskBuilder` 使用。"""
+        """非图集直接透传；图集按图片或实况视频拆成多个下载任务。"""
         if not item.meta.get("is_gallery"):
             return [item]
 
@@ -21,6 +22,7 @@ class DouyinTaskBuilder(BaseTaskBuilder):
             base_trace = item.meta.get("trace_id", trace_id_factory("dy"))
 
             if live_url:
+                # 实况资源保留原作品 meta，但重写 content_type，避免图片下载器误接管。
                 live_item = VideoItem(url=live_url, title=f"{base_title}_{seq}", source="douyin")
                 live_item.meta = item.meta.copy()
                 live_item.meta.update(

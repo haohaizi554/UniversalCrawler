@@ -1,4 +1,4 @@
-"""Async SQLite store for structured failed download records."""
+"""失败下载记录的异步 SQLite 存储，供失败列表分页和筛选使用。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class FailedRecordQueryResult:
 
 
 class FailedRecordStore:
-    """Persist failed rows from snapshots without blocking the UI hot path."""
+    """后台批量写入失败记录，并维护一份前端可直接读取的快照。"""
 
     def __init__(
         self,
@@ -74,6 +74,7 @@ class FailedRecordStore:
         return self._db_path
 
     def queue_upsert(self, records: list[Mapping[str, Any]]) -> None:
+        """合并同 video_id 的待写入记录，避免失败列表刷新时重复写库。"""
         normalized = [self._normalize_record(record) for record in records]
         normalized = [record for record in normalized if record.get("video_id")]
         if not normalized:
@@ -141,6 +142,7 @@ class FailedRecordStore:
         failed_to: str = "",
         order: str = "desc",
     ) -> None:
+        """请求后台刷新快照；查询参数会覆盖上一次失败列表筛选条件。"""
         requested = self._normalize_query(
             FailedRecordQuery(
                 limit=limit if limit is not None else self._last_refresh_request.limit,
@@ -173,6 +175,7 @@ class FailedRecordStore:
             return int(self._snapshot_total_count)
 
     def flush(self, timeout: float = 2.0) -> bool:
+        """测试和关闭路径使用：等待待写入与刷新任务清空。"""
         deadline = time.monotonic() + max(0.0, float(timeout))
         while time.monotonic() < deadline:
             with self._lock:
@@ -201,6 +204,7 @@ class FailedRecordStore:
         self._thread.start()
 
     def _worker_loop(self) -> None:
+        """串行处理写入和刷新，避免 SQLite 写锁与 UI 查询互相打架。"""
         while True:
             self._event.wait()
             with self._lock:
@@ -304,6 +308,7 @@ class FailedRecordStore:
         return [self._row_to_record(row) for row in rows], total_count
 
     def _refresh_snapshot(self, request: FailedRecordQuery) -> None:
+        """根据最近一次查询刷新内存快照，并只在内容变化时通知前端。"""
         try:
             rows, total_count = self._query_rows(request)
         except (OSError, sqlite3.Error, RuntimeError) as exc:
@@ -334,6 +339,7 @@ class FailedRecordStore:
             )
 
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
+        """用 upsert 写入失败记录，保留完整 payload_json 供详情面板展示。"""
         self._init_db()
         now = float(self._clock())
         payloads = [
@@ -376,6 +382,7 @@ class FailedRecordStore:
 
     @staticmethod
     def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
+        """把不同前端投影字段统一到失败记录表字段。"""
         payload = deepcopy(dict(record or {}))
         return {
             "video_id": str(payload.get("id") or payload.get("video_id") or ""),
@@ -415,6 +422,7 @@ class FailedRecordStore:
 
     @staticmethod
     def _build_where_clause(query: FailedRecordQuery) -> tuple[str, tuple[Any, ...]]:
+        """按筛选项构造参数化 WHERE，避免拼接用户输入到 SQL。"""
         clauses: list[str] = []
         params: list[Any] = []
         if query.platform:
@@ -442,6 +450,7 @@ class FailedRecordStore:
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+        """把数据库行还原成前端记录；表字段覆盖旧 payload 中的派生值。"""
         payload: dict[str, Any]
         try:
             payload = json.loads(str(row["payload_json"] or "{}"))

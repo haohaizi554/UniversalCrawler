@@ -50,6 +50,8 @@ class LogQueryResult:
 
 
 def stable_log_item_id(item: Mapping[str, Any], index: int) -> str:
+    """为没有显式 id 的旧日志构造稳定行 ID。"""
+
     explicit = str(item.get("id") or "")
     if explicit:
         return explicit
@@ -64,6 +66,8 @@ def stable_log_item_id(item: Mapping[str, Any], index: int) -> str:
 
 
 def query_log_items(request: LogQueryRequest) -> LogQueryResult:
+    """在后台完成日志分类缓存、筛选、排序、分页和本地化装饰。"""
+
     all_items = [_prepare_query_row(item) for item in request.items if isinstance(item, Mapping)]
     filtered_items = [
         item
@@ -83,6 +87,7 @@ def query_log_items(request: LogQueryRequest) -> LogQueryResult:
     sorted_items = log_filtering.sort_log_items(filtered_items)
     current_page = int(request.page or 1)
     if request.selected_id:
+        # 详情面板选中某条日志时，筛选/刷新后优先翻到该日志所在页。
         selected_page = page_for_match(
             sorted_items,
             lambda item, index: stable_log_item_id(item, index) == request.selected_id,
@@ -140,6 +145,7 @@ def _first_trace_id(items: Sequence[Mapping[str, Any]]) -> str:
 
 def _prepare_query_row(item: Mapping[str, Any]) -> dict[str, Any]:
     row = dict(item)
+    # 分类事实缓存只存在于 worker 临时行上，最终回传前会移除，避免污染快照。
     cache_classification_facts(row)
     return row
 

@@ -10,6 +10,8 @@ from app.spiders.base import BaseSpider
 from app.utils.callback_signal import CallbackSignal
 
 class _DummySpider(BaseSpider):
+    """最小 spider 实现，用于验证 BaseSpider 信号和线程契约。"""
+
     def run(self):
         self.log("started")
         self.emit_video(
@@ -146,6 +148,8 @@ class BaseSpiderTests(unittest.TestCase):
         browser = FakeBrowser()
         spider._track_playwright_browser(browser)
 
+        # stop 可能从 GUI/CLI 控制线程调用，不能依赖 spider 自己的 run 线程
+        # 才能关闭 Playwright 浏览器资源。
         worker = threading.Thread(target=spider.stop)
         worker.start()
         worker.join(timeout=1)
@@ -169,6 +173,8 @@ class BaseSpiderTests(unittest.TestCase):
                 spider.is_running = False
                 raise PlaywrightLikeTimeoutError("timeout")
 
+        # Playwright 的超时异常如果同时伴随 stop，应当作为中断返回 False，
+        # 避免继续重试已经被用户取消的导航。
         result = spider.interruptible_playwright_goto(FakePage(), "https://example.com", timeout=60000, slice_ms=10)
 
         self.assertFalse(result)

@@ -1,4 +1,4 @@
-"""爬虫实现模块，负责 `app/spiders/kuaishou/parser.py` 对应平台的采集、解析或任务装配逻辑。"""
+"""快手 URL 解析辅助，用于从分享/播放地址中提取作品线索。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,20 @@ import base64
 import re
 import urllib.parse
 
+from app.spiders.parser_cache import cached_parser_result
+
 class KuaishouParser:
-    """负责 `KuaishouParser` 对应的数据清洗与结构化解析。"""
+    """收集多个可能的作品 ID，供网页兜底和去重匹配使用。"""
+
     def extract_all_possible_ids(self, url: str) -> set[str]:
-        """提取 `all_possible_ids` 对应的关键信息，供 `KuaishouParser` 使用。"""
+        """从 query、base64 片段和文件名中提取可能 ID；宁可多给候选，不在此处判死。"""
+        return cached_parser_result(
+            "kuaishou.possible_ids",
+            url,
+            lambda: self._extract_all_possible_ids_uncached(url),
+        )
+
+    def _extract_all_possible_ids_uncached(self, url: str) -> set[str]:
         if not url:
             return set()
         ids: set[str] = set()
@@ -20,6 +30,7 @@ class KuaishouParser:
             filename = path.split("/")[-1]
 
             if "clientCacheKey" in qs:
+                # clientCacheKey 往往是最接近播放资源名的稳定标识，先保留无扩展名部分。
                 key = qs["clientCacheKey"][0]
                 key_no_ext = key.rsplit(".", 1)[0]
                 match = re.match(r"^([a-zA-Z0-9]+)", key_no_ext)
@@ -35,6 +46,7 @@ class KuaishouParser:
             if b64_match:
                 b64_str = b64_match.group(1)
                 try:
+                    # 快手部分分享链会把作品信息塞进缺 padding 的 base64 片段。
                     missing_padding = len(b64_str) % 4
                     if missing_padding:
                         b64_str += "=" * (4 - missing_padding)

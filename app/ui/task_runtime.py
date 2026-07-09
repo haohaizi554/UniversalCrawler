@@ -11,7 +11,7 @@ from typing import Any
 from PyQt6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, pyqtSignal, pyqtSlot
 
 class TaskCancelToken:
-    """Thread-safe cancel token shared by long and short tasks."""
+    """长任务和短任务共用的线程安全取消令牌。"""
 
     def __init__(self) -> None:
         self._event = threading.Event()
@@ -70,7 +70,7 @@ class _ShortTaskRunnableSignals(QObject):
     finished = pyqtSignal()
 
 class LongTaskHandle:
-    """Joinable long task handle backed by QThread."""
+    """QThread 长任务句柄，负责取消、等待和资源 hook 释放。"""
 
     def __init__(
         self,
@@ -99,6 +99,8 @@ class LongTaskHandle:
         return self._thread.isRunning()
 
     def terminate(self) -> None:
+        """请求中断并提前释放外部资源，避免异常退出时残留句柄/进程。"""
+
         self._token.cancel()
         self._thread.requestInterruption()
         self.release_resource_hooks()
@@ -107,6 +109,8 @@ class LongTaskHandle:
         return self._token.is_done()
 
     def add_resource_hook(self, hook: Callable[[], Any]) -> None:
+        """注册需要随任务终止释放的资源，例如外部进程、临时目录或下载句柄。"""
+
         with self._resource_hooks_lock:
             if self._resource_hooks_released:
                 try:
@@ -187,6 +191,8 @@ class LongTaskRunner(QObject):
         return handle
 
     def cancel_all(self, *, timeout_ms: int) -> None:
+        """批量取消长任务；超时后转为协作式遗留跟踪，避免关闭窗口卡死。"""
+
         for handle in list(self._handles):
             handle.cancel()
         for handle in list(self._handles):
@@ -258,7 +264,7 @@ class _ShortTaskRunnable(QRunnable):
             self._token.mark_done()
 
 class ShortTaskRunner(QObject):
-    """Submit short-lived jobs onto QThreadPool."""
+    """把短耗时任务提交到 QThreadPool，适合预览/探测类后台工作。"""
 
     def __init__(self, parent: QObject | None = None, *, max_thread_count: int | None = None) -> None:
         super().__init__(parent)
@@ -289,6 +295,8 @@ class ShortTaskRunner(QObject):
         return token
 
     def cancel_all(self, *, timeout_ms: int = 5000) -> None:
+        """取消所有短任务并等待线程池收敛，窗口退出时调用。"""
+
         with self._tokens_lock:
             tokens = list(self._tokens)
         for token in tokens:

@@ -36,7 +36,7 @@ DELTA_ONLY_LEGACY_TOPICS = frozenset(
 )
 
 class WebSocketBridge:
-    """Thread-safe Python bridge from controller events to WebSocket transport."""
+    """线程安全地把 controller 事件桥接到 WebSocket，并调度前端增量快照。"""
 
     def __init__(
         self,
@@ -80,7 +80,7 @@ class WebSocketBridge:
             self._last_delta_version = max(self._last_delta_version, normalized)
 
     def emit(self, event_type: str, data: Any = None):
-        """Safely broadcast an event from any thread and schedule frontend deltas."""
+        """任意线程都可调用：先记录状态事件，再按需发送兼容旧前端的事件。"""
         event_type = str(event_type or "")
         payload = data if isinstance(data, dict) else {}
         self._record_frontend_event(event_type, payload)
@@ -104,6 +104,7 @@ class WebSocketBridge:
             debug_logger.log_exception("WebSocketBridge", "record_frontend_event", exc)
 
     def _schedule_frontend_delta(self, event_type: str) -> None:
+        """合并短时间内的普通更新；关键事件立即刷新，保证删除/失败等状态及时到达。"""
         if self._delta_provider is None or event_type in {"frontend_state", "frontend_delta"}:
             return
         if sections_for_topic(event_type) is None:
@@ -140,6 +141,7 @@ class WebSocketBridge:
             )
 
     def _flush_frontend_delta(self, generation: int | None = None) -> None:
+        """在事件循环里触发 delta 构建；过期 generation 表示已有更新的刷新计划。"""
         with self._delta_lock:
             if generation is not None and generation != self._delta_schedule_generation:
                 return
@@ -199,6 +201,7 @@ class WebSocketBridge:
         *,
         on_accepted: Callable[[], None] | None = None,
     ) -> bool:
+        """把发送动作调度回 Web 事件循环；非协程线程不能直接 await WebSocket。"""
         target_loop = self._get_loop()
         try:
             current_loop = asyncio.get_running_loop()
@@ -266,7 +269,7 @@ class WebSocketBridge:
         callback()
 
 class WebController(ControllerSessionMixin, MediaLibraryMixin):
-    """Web 端核心控制器，逻辑与 ApplicationController 对称，但输出到 WebSocket。"""
+    """Web 端核心控制器，复用桌面下载/采集逻辑，并把状态输出为 WebSocket 快照。"""
 
     MAX_CONCURRENT_API_OPS = 16
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
@@ -314,7 +317,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._api_operation_semaphore = asyncio.Semaphore(self.max_concurrent_api_ops)
     @property
     def dl_manager(self) -> DownloadManager:
-        """延迟创建 DownloadManager，避免空闲会话也创建实例。"""
+        """延迟创建 DownloadManager，避免空闲 Web 会话启动下载线程与清理逻辑。"""
         with self._dl_manager_lock:
             if self._dl_manager is None:
                 self._dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
@@ -1127,7 +1130,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         }
 
     async def async_delete_video(self, video_id: str, _approved_roots=None):
-        """异步版删除视频：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。"""
+        """异步删除：文件 I/O 在线程池中执行，状态事件在当前协程内直接发送。"""
         import asyncio
         context = self._begin_delete_video(video_id)
         if context is None:
@@ -1299,6 +1302,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         return self.frontend_state_service.handle_action(action, payload or {})
 
     async def async_handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
+        """Web 前端动作统一入口；删除动作走异步文件服务，其余复用状态服务。"""
         normalized_payload = payload or {}
 
         async def _delete() -> dict:
@@ -1330,6 +1334,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         return item.to_dict()
 
     def shutdown(self):
+        """关闭 Web 会话：停止 spider/下载器，再释放前端状态服务拥有的资源。"""
         frontend_state_service = getattr(self, "frontend_state_service", None)
         with self._lifecycle_condition:
             self._is_shutting_down = True

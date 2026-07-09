@@ -655,6 +655,46 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("os.path.exists", rename_block)
         self.assertIn("def _rename_video_io", library_text)
 
+    def test_controller_media_entrypoints_do_not_probe_files_inline(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        host_text = (project_root / "app" / "controllers" / "media_host_controller_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        library_text = (project_root / "app" / "controllers" / "media_library_mixin.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        host_boundaries = (
+            ("def play_video", "def _should_check_playback_file_in_background"),
+            ("def on_rename_video", "def _submit_rename_video_task"),
+            ("def on_delete_video", "def _submit_delete_video_task"),
+        )
+
+        for start, end in host_boundaries:
+            with self.subTest(start=start):
+                block = host_text.split(start, 1)[1].split(end, 1)[0]
+                self.assertNotIn("os.path.exists", block)
+                self.assertNotIn(".stat(", block)
+                self.assertNotIn("open(", block)
+
+        allowed_controller_io_helpers = {
+            "app/controllers/media_host_controller_mixin.py": {"_playback_file_exists"},
+            "app/controllers/media_library_mixin.py": {"_rename_video_io"},
+        }
+        for relative_path, allowed_helpers in allowed_controller_io_helpers.items():
+            text = (project_root / relative_path).read_text(encoding="utf-8", errors="ignore")
+            if "os.path.exists" not in text:
+                continue
+            for chunk in text.split("\n    def ")[1:]:
+                method_name = chunk.split("(", 1)[0].strip()
+                if "os.path.exists" in chunk:
+                    with self.subTest(path=relative_path, method=method_name):
+                        self.assertIn(method_name, allowed_helpers)
+
+        self.assertIn("_ensure_short_task_runner().submit", host_text)
+        self.assertIn("def _rename_video_io", library_text)
+
     def test_web_controller_media_paths_do_not_stat_on_event_loop(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "web" / "controller.py").read_text(
@@ -1104,9 +1144,19 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertNotIn("async def stream_range", service_text)
         self.assertNotIn("async def stream_range", server_text)
         self.assertIn("run_in_executor", service_text)
-        self.assertIn("run_in_executor", server_text)
         self.assertIn("def _iter_file_range", service_text)
-        self.assertIn("def _iter_file_range", server_text)
+        self.assertNotIn("def _iter_file_range", server_text)
+        self.assertNotIn("def _media_file_info", server_text)
+        media_route_block = server_text.split('@app.get("/api/media/{video_id}")', 1)[1].split(
+            "# ---- 目录浏览 API",
+            1,
+        )[0]
+        self.assertIn("composition.file_response_service.get_media", media_route_block)
+        self.assertIn('alias="Range"', media_route_block)
+        self.assertIn("range_header", media_route_block)
+        self.assertIn("require_session_token=False", media_route_block)
+        self.assertNotIn("StreamingResponse", media_route_block)
+        self.assertNotIn("FileResponse", media_route_block)
 
     def test_web_bootstrap_and_rest_getters_use_worker_executor(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -1129,6 +1179,74 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("await _run_controller_worker_call(controller.get_config)", server)
         self.assertIn("await _run_controller_worker_call(controller.get_state)", server)
 
+    def test_websocket_dispatcher_config_mutations_use_worker_executor(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "app" / "web" / "ws_dispatcher.py").read_text(encoding="utf-8", errors="ignore")
+        theme_block = text.split("async def _handle_change_theme", 1)[1].split(
+            "async def _handle_change_source",
+            1,
+        )[0]
+        source_block = text.split("async def _handle_change_source", 1)[1].split(
+            "async def _handle_save_config",
+            1,
+        )[0]
+        save_block = text.split("async def _handle_save_config", 1)[1].split(
+            "async def _handle_delete_video",
+            1,
+        )[0]
+
+        self.assertIn("def _set_config_values", text)
+        self.assertIn("def _set_config_value", text)
+        self.assertIn("await _run_controller_worker_call(self._set_config_values, \"common\", theme_values)", theme_block)
+        self.assertNotIn("cfg.set(", theme_block)
+        self.assertNotIn("set_many(", theme_block)
+
+        self.assertIn(
+            'await _run_controller_worker_call(self._set_config_value, "common", "last_source", new_source)',
+            source_block,
+        )
+        self.assertNotIn("cfg.set(", source_block)
+
+        self.assertIn(
+            "await _run_controller_worker_call(self._config_service.update_single_config, section, key, value)",
+            save_block,
+        )
+        self.assertNotIn("self._config_service.update_single_config(section, key, value)", save_block)
+
+    def test_web_stop_crawl_handlers_use_worker_executor(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        dispatcher_text = (project_root / "app" / "web" / "ws_dispatcher.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        workflow_text = (project_root / "app" / "web" / "workflow_route_service.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        server_text = (project_root / "app" / "web" / "server.py").read_text(encoding="utf-8", errors="ignore")
+
+        dispatcher_block = dispatcher_text.split("async def _handle_stop_crawl", 1)[1].split(
+            "async def _handle_select_tasks",
+            1,
+        )[0]
+        workflow_block = workflow_text.split("async def stop_crawl", 1)[1].split(
+            "async def select_tasks",
+            1,
+        )[0]
+        server_block = server_text.split("async def stop_crawl", 1)[1].split(
+            "async def select_tasks",
+            1,
+        )[0]
+
+        self.assertIn("await _run_controller_worker_call(context.controller.stop_crawl)", dispatcher_block)
+        self.assertNotIn("context.controller.stop_crawl()", dispatcher_block)
+
+        self.assertIn("await _run_controller_worker_call(context.controller.stop_crawl)", workflow_block)
+        self.assertNotIn(".controller.stop_crawl()", workflow_block)
+
+        self.assertIn("await _run_controller_worker_call(controller.stop_crawl)", server_block)
+        self.assertNotIn("controller.stop_crawl()", server_block)
+
     def test_websocket_transport_encodes_outbound_messages_off_loop(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         text = (project_root / "app" / "web" / "ws_transport.py").read_text(encoding="utf-8", errors="ignore")
@@ -1138,6 +1256,30 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("message = await self._build_message_async(event_type, data)", emit_block)
         self.assertIn("run_in_executor", build_async_block)
         self.assertNotIn("message = self._build_message(event_type, data)", emit_block)
+
+    def test_frontend_refresh_doc_has_entry_audit_and_current_baseline(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        text = (project_root / "docs" / "engineering" / "frontend-refresh-and-concurrency.md").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+        self.assertIn("## 入口审计表", text)
+        for row in (
+            "| GUI 日志中心 |",
+            "| GUI 失败列表 |",
+            "| GUI 四态列表 |",
+            "| Web `/api/frontend/state` |",
+            "| Web `/api/frontend/delta` |",
+            "| WebSocket `frontend_action` |",
+            "| Web 爬取控制 |",
+            "| Web 媒体文件 |",
+            "| Spider/parser 解析缓存 |",
+        ):
+            with self.subTest(row=row):
+                self.assertIn(row, text)
+        self.assertIn("2243 passed, 3 skipped, 7 warnings in 182.82s (0:03:02)", text)
+        self.assertIn("app.spiders.parser_cache.cached_parser_result()", text)
 
 
 if __name__ == "__main__":

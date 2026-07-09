@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable
 
 from fastapi import Request
 
 from app.web.api_result import error_result
+
+
+async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(None, func, *args)
+
 
 class WebWorkflowRouteService:
     """封装 crawl/download 等基于 session workflow 的路由委派。"""
@@ -35,7 +41,8 @@ class WebWorkflowRouteService:
         return await context.workflow.start_crawl(payload, log_error=False)
 
     async def stop_crawl(self, request: Request) -> dict:
-        self._get_request_context(request).controller.stop_crawl()
+        context = self._get_request_context(request)
+        await _run_controller_worker_call(context.controller.stop_crawl)
         return {"status": "ok"}
 
     async def select_tasks(self, request: Request, body: dict) -> dict:

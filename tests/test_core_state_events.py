@@ -324,6 +324,31 @@ class StateAndEventTests(unittest.TestCase):
                 row = conn.execute("SELECT key FROM cache_entries WHERE key = ?", ("bad",)).fetchone()
             self.assertIsNone(row)
 
+    def test_cache_service_delete_failures_are_downgraded(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-delete-downgrade", cache_dir=temp_dir)
+            cache.set("key", "value", persist=True)
+            with cache._memory_lock:
+                cache._memory_cache["key"] = "memory-value"
+
+            disk_context = (
+                patch.object(cache._disk_cache, "delete", side_effect=RuntimeError("diskcache locked"))
+                if cache._disk_cache is not None
+                else patch("app.services.cache_service.DiskCache", None)
+            )
+            with (
+                disk_context,
+                patch("app.services.cache_service.sqlite3.connect", side_effect=sqlite3.Error("sqlite locked")),
+                patch("app.services.cache_service.debug_logger.log_exception") as log_exception,
+            ):
+                cache.delete("key")
+
+            self.assertIsNone(cache._memory_cache.get("key"))
+            actions = [call.args[1] for call in log_exception.call_args_list]
+            if cache._disk_cache is not None:
+                self.assertIn("delete_diskcache", actions)
+            self.assertIn("delete_sqlite", actions)
+
     def test_cache_service_returns_mutation_isolated_values(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             cache = CacheService(namespace="test-cache-isolation", cache_dir=temp_dir)

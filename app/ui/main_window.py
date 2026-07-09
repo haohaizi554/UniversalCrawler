@@ -653,6 +653,8 @@ class MainWindow(QMainWindow):
         if force:
             self._render_frontend_state(mock=mock, topics=None, force=True)
             return
+        # 普通刷新只记录 pending topic，由 UiUpdateScheduler 合并；真正构建
+        # snapshot/delta 的工作会进入 FrontendSnapshotWorker。
         self._frontend_refresh_pending_mock = bool(self.__dict__.get("_frontend_refresh_pending_mock", False) or mock)
         self._ui_update_scheduler.schedule("frontend")
 
@@ -691,6 +693,7 @@ class MainWindow(QMainWindow):
         service = self._frontend_state_service
         cached = self.__dict__.get("_cached_snapshot")
         cached_version = self._snapshot_frontend_version(cached)
+        # 有缓存且非强制刷新时优先走 delta，减少 GUI 主线程需要 patch 的内容。
         use_delta = bool(cached is not None and not force and not mock)
         self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
         request = FrontendSnapshotRequest(
@@ -725,6 +728,7 @@ class MainWindow(QMainWindow):
             return
 
         is_stale = result.sequence != current_sequence
+        # 迟到的部分结果仍可更新缓存签名，但不能触发渲染，否则页面会回滚。
         self._remember_frontend_snapshot_result(result, allow_stale_partial=not is_stale)
         if is_stale:
             return
@@ -749,6 +753,8 @@ class MainWindow(QMainWindow):
         worker = self.__dict__.get("_frontend_action_worker")
         if service is None or worker is None:
             return False
+        # 设置保存、打开目录、失败重试等慢动作统一送到 worker，UI 信号槽只
+        # 分发请求和处理结果。
         self._frontend_action_sequence = int(self.__dict__.get("_frontend_action_sequence", 0) or 0) + 1
         worker.submit(
             FrontendActionRequest(
@@ -1034,6 +1040,7 @@ class MainWindow(QMainWindow):
         if isinstance(payload, dict):
             topic = str(payload.get("topic") or "")
         if topic == "logs.append":
+            # 日志追加频率高，单独 topic 可让日志页用更轻量的局部刷新路径。
             self._add_pending_refresh_topic("logs.append")
             self._ui_update_scheduler.schedule("logs.append")
             return
@@ -1797,6 +1804,8 @@ class MainWindow(QMainWindow):
 
     @safe_slot
     def closeEvent(self, event) -> None:
+        # 退出顺序先停调度器/worker，再销毁 service 和 event bus，避免后台
+        # 线程在 QObject 已释放后继续回调主窗口。
         self._ui_update_scheduler.stop()
         snapshot_worker = self.__dict__.get("_frontend_snapshot_worker")
         if snapshot_worker is not None:

@@ -16,7 +16,9 @@ MAX_SCAN_LIMIT = 5000
 
 
 async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
+    """把同步 controller/config 调用丢到线程池，避免阻塞 WebSocket receive loop。"""
     return await asyncio.get_running_loop().run_in_executor(None, func, *args)
+
 
 class WebSocketMessageDispatcher:
     """集中处理 WebSocket 协议消息，避免 server.py 承担业务分发职责。"""
@@ -69,11 +71,25 @@ class WebSocketMessageDispatcher:
     async def _emit_log(self, context: WebSessionContext, message: str) -> None:
         await context.send("log", {"message": message})
 
+    @staticmethod
+    def _set_config_values(section: str, values: dict[str, Any]) -> None:
+        set_many = getattr(cfg, "set_many", None)
+        if callable(set_many):
+            set_many(section, values)
+            return
+        for key, value in values.items():
+            cfg.set(section, key, value)
+
+    @staticmethod
+    def _set_config_value(section: str, key: str, value: Any) -> None:
+        cfg.set(section, key, value)
+
     async def _normalize_authorized_save_dir(
         self,
         data: dict[str, Any],
         context: WebSessionContext,
     ) -> dict[str, Any] | None:
+        """校验客户端传入目录必须位于会话授权根内，防止 Web 端任意路径写入。"""
         save_dir = data.get("save_dir")
         if save_dir is None:
             return data
@@ -97,12 +113,13 @@ class WebSocketMessageDispatcher:
 
     async def _handle_stop_crawl(self, data: dict[str, Any], context: WebSessionContext) -> None:
         del data
-        context.controller.stop_crawl()
+        await _run_controller_worker_call(context.controller.stop_crawl)
 
     async def _handle_select_tasks(self, data: dict[str, Any], context: WebSessionContext) -> None:
         await context.workflow.select_tasks(data, log_error=True)
 
     async def _handle_scan_dir(self, data: dict[str, Any], context: WebSessionContext) -> None:
+        """处理目录扫描请求；scan_limit 在入口层限幅，避免一次扫描拖垮事件循环。"""
         directory = data.get("directory")
         if directory is not None and not isinstance(directory, str):
             await self._emit_log(context, "❌ directory 必须是字符串")
@@ -152,12 +169,7 @@ class WebSocketMessageDispatcher:
             return
 
         theme_values = {"theme": "dark" if is_dark else "light", "dark_theme": is_dark}
-        set_many = getattr(cfg, "set_many", None)
-        if callable(set_many):
-            set_many("common", theme_values)
-        else:
-            for key, value in theme_values.items():
-                cfg.set("common", key, value)
+        await _run_controller_worker_call(self._set_config_values, "common", theme_values)
 
     async def _handle_change_source(self, data: dict[str, Any], context: WebSessionContext) -> None:
         new_source = data.get("source", "")
@@ -173,9 +185,10 @@ class WebSocketMessageDispatcher:
                 await self._emit_log(context, f"❌ 无效平台: {new_source}。支持: {valid_ids}")
                 return
 
-        cfg.set("common", "last_source", new_source)
+        await _run_controller_worker_call(self._set_config_value, "common", "last_source", new_source)
 
     async def _handle_save_config(self, data: dict[str, Any], context: WebSessionContext) -> None:
+        """配置保存优先走统一 frontend_action，旧控制器再退回配置服务。"""
         section = data.get("section", "")
         key = data.get("key", "")
         value = data.get("value")
@@ -188,13 +201,17 @@ class WebSocketMessageDispatcher:
             if not callable(handler):
                 handler = getattr(context.controller, "handle_frontend_action", None)
             if callable(handler):
-                result = handler("update_setting", {"section": section, "key": key, "value": value})
+                payload = {"section": section, "key": key, "value": value}
+                if inspect.iscoroutinefunction(handler):
+                    result = await handler("update_setting", payload)
+                else:
+                    result = await _run_controller_worker_call(handler, "update_setting", payload)
                 if inspect.isawaitable(result):
                     result = await result
                 if isinstance(result, dict) and result.get("status") != "ok":
                     await self._emit_log(context, f"❌ 保存配置失败: {result.get('message') or '未知错误'}")
                 return
-            error = self._config_service.update_single_config(section, key, value)
+            error = await _run_controller_worker_call(self._config_service.update_single_config, section, key, value)
             if error:
                 await self._emit_log(context, f"❌ 保存配置失败: {error}")
 
@@ -222,6 +239,7 @@ class WebSocketMessageDispatcher:
         await context.workflow.direct_download(payload, log_error=True)
 
     async def _handle_frontend_action(self, data: dict[str, Any], context: WebSessionContext) -> None:
+        """执行前端动作后尽量返回 delta，旧客户端仍可回退到完整 frontend_state。"""
         action = data.get("action", "")
         payload = data.get("payload", {}) or {}
         try:

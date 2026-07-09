@@ -162,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    # 平台别名特殊处理（使用 resolve_platform 支持别名如 dy/bili/bl/ks/miss）
+    # 平台别名走同一套 handler：先把缺省 argparse 字段补齐，再复用通用
+    # search/download/scan 逻辑，避免平台别名和通用命令行为漂移。
     from cli.commands.platform_base import resolve_platform
     resolved_platform = resolve_platform(args.main_command)
     if resolved_platform:

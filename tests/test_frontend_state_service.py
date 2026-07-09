@@ -1365,6 +1365,8 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertTrue(all(solution.get("icon_file") for solution in failed["solutions"]))
 
     def test_failed_snapshot_keeps_richer_trace_excerpt_when_log_refresh_is_shorter(self):
+        # 失败页详情不能因为后续日志缓存短暂只返回最后一条，就把已保存的
+        # 完整 trace 摘要覆盖成更短版本。
         item = VideoItem(url="https://example.com", title="failed", source="bilibili")
         item.status = VideoStatus.FAILED.label
         item.meta["trace_id"] = "trace-failed"
@@ -1490,6 +1492,8 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(store.calls[1][0]["reason"], "500")
 
     def test_failed_snapshot_uses_persisted_worker_snapshot_when_live_page_empty(self):
+        # 当前 AppState 没有失败项时，失败列表仍要显示 SQLite worker 快照；
+        # 这是应用重启后失败记录可见性的回归保护。
         with TemporaryDirectory() as temp_dir:
             store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
             store.queue_upsert(
@@ -2251,6 +2255,8 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertNotIn("settings_snapshot", progress_delta["sections"])
 
     def test_get_delta_with_requested_sections_does_not_ack_unreturned_dirty_sections(self):
+        # 局部 delta 请求不能把未返回的脏 section 误标为已消费，否则下一轮
+        # 页面切换会漏掉 settings/download_options 等更新。
         service = FrontendStateService()
         base_version = service.frontend_version
 

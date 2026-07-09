@@ -12,7 +12,11 @@ ResultT = TypeVar("ResultT")
 
 
 class LatestRequestWorker(Generic[RequestT, ResultT]):
-    """Single-slot worker: newer requests replace older pending work."""
+    """单槽后台 worker：新请求覆盖尚未开始处理的旧请求。
+
+    适合前端快照、日志筛选、分页这类“只关心最新 UI 状态”的任务，
+    可以把高频刷新合并掉，避免 UI 线程被过期结果反复打断。
+    """
 
     def __init__(
         self,
@@ -34,6 +38,8 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
         with self._condition:
             if self._shutdown:
                 return
+            # generation 是结果防抖边界：即便旧请求已经开始执行，也只能在
+            # 自己仍是最新一代时回调 on_result。
             self._generation += 1
             self._pending = (self._generation, request)
             self._condition.notify()
@@ -69,6 +75,7 @@ class LatestRequestWorker(Generic[RequestT, ResultT]):
             if result is None:
                 continue
             with self._condition:
+                # 丢弃执行期间被新请求取代的结果，避免页面回滚到旧筛选/旧分页。
                 if generation != self._generation or self._shutdown:
                     continue
             try:

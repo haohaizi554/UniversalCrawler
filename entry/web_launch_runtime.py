@@ -19,7 +19,11 @@ def try_reuse_existing_instance(
     browser_opener: Callable[[str], Any] = webbrowser.open,
     stderr=None,
 ) -> bool:
-    """检测并复用已运行的 Web 实例。"""
+    """检测并复用已运行的 Web 实例。
+
+    启动入口先做端口复用判断，能避免用户双击多次后同时启动多个 Web
+    服务和后台下载管理器。
+    """
     stderr = stderr or sys.stderr
     existing_url = resolve_existing_url(host, port)
     if not existing_url:
@@ -63,7 +67,11 @@ def install_shutdown_signal_handlers(
     signal_module=signal,
     stderr=None,
 ) -> Callable[[int, object], None]:
-    """安装 SIGINT/SIGTERM 处理器，统一走 shutdown_event。"""
+    """安装 SIGINT/SIGTERM 处理器，统一走 shutdown_event。
+
+    Web 服务、Qt 托盘和浏览器打开线程都观察同一个事件，退出路径就不会
+    因入口模式不同而遗漏清理。
+    """
     stderr = stderr or sys.stderr
 
     def _signal_handler(signum, frame) -> None:
@@ -83,7 +91,11 @@ def run_server_with_qt(
     create_tray_icon: Callable[[Any, str, threading.Event], Any],
     request_shutdown: Callable[[], None],
 ) -> None:
-    """Qt 模式下：后台线程跑 Web，主线程跑 Qt 事件循环。"""
+    """Qt 模式下：后台线程跑 Web，主线程跑 Qt 事件循环。
+
+    Qt 要占主线程，FastAPI/uvicorn 只能放到后台线程；QTimer 轮询
+    shutdown_event 是为了把信号处理安全切回 Qt 事件循环。
+    """
 
     def _run_server() -> None:
         asyncio.run(serve_async())

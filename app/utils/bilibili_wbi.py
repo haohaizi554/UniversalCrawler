@@ -1,4 +1,4 @@
-"""Bilibili WBI request signing helpers."""
+"""Bilibili WBI 请求签名工具，给需要登录态/风控参数的 API 复用。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ MIXIN_KEY_ENC_TAB = (
     37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
     22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 )
+# 官方前端混淆表；顺序不可随意调整，否则 w_rid 校验会失败。
 
 WBI_FILTER_CHARS = "!'()*"
 
@@ -36,7 +37,7 @@ def _extract_key_from_url(url: object) -> str:
 
 
 def extract_wbi_keys_from_nav_data(nav_data: Mapping[str, Any] | None) -> BilibiliWbiKeys | None:
-    """Extract WBI image keys from Bilibili nav payload data."""
+    """从 nav 响应里提取 img/sub key；响应缺字段时返回 None 让调用方降级。"""
     if not isinstance(nav_data, Mapping):
         return None
     wbi_img = nav_data.get("wbi_img")
@@ -50,7 +51,7 @@ def extract_wbi_keys_from_nav_data(nav_data: Mapping[str, Any] | None) -> Bilibi
 
 
 def make_mixin_key(img_key: str, sub_key: str) -> str:
-    """Build the 32-char WBI mixin key from img/sub keys."""
+    """用固定混淆表生成 32 位 mixin key，这是 w_rid 的私有盐。"""
     raw_key = f"{img_key}{sub_key}"
     if len(raw_key) < max(MIXIN_KEY_ENC_TAB) + 1:
         return ""
@@ -64,7 +65,7 @@ def sign_wbi_params(
     *,
     now: int | None = None,
 ) -> dict[str, str]:
-    """Return params with Bilibili WBI `wts` and `w_rid` applied."""
+    """返回追加 `wts` 和 `w_rid` 的参数；输入值会按前端规则过滤特殊字符。"""
     mixin_key = make_mixin_key(img_key, sub_key)
     if not mixin_key:
         return {str(key): str(value) for key, value in dict(params or {}).items()}
@@ -81,7 +82,7 @@ def sign_wbi_params(
 
 
 class BilibiliWbiSigner:
-    """Thread-safe WBI key cache and signer for sync requests."""
+    """线程安全的 WBI key 缓存；多个采集线程共享时只在过期后重新取 nav。"""
 
     def __init__(self, ttl_seconds: int = 3600):
         self.ttl_seconds = max(60, int(ttl_seconds or 3600))
@@ -121,6 +122,7 @@ class BilibiliWbiSigner:
         timeout: float | int | None = 15,
         proxies: Mapping[str, str] | None = None,
     ) -> BilibiliWbiKeys | None:
+        """访问 nav 获取新 key；失败静默返回 None，让 API 调用保留无签名兜底。"""
         if request_get is None:
             return None
         try:
@@ -147,6 +149,7 @@ class BilibiliWbiSigner:
         timeout: float | int | None = 15,
         proxies: Mapping[str, str] | None = None,
     ) -> BilibiliWbiKeys | None:
+        """双重检查缓存，避免并发线程同时请求 nav 刷 key。"""
         keys = self.current_keys()
         if keys is not None:
             return keys
@@ -166,6 +169,7 @@ class BilibiliWbiSigner:
         proxies: Mapping[str, str] | None = None,
         now: int | None = None,
     ) -> tuple[dict[str, Any], bool]:
+        """签名成功时返回新参数和 True；失败时原样返回并标记 False。"""
         keys = self.ensure_keys(request_get, headers=headers, timeout=timeout, proxies=proxies)
         if keys is None:
             return dict(params or {}), False

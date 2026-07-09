@@ -1,4 +1,4 @@
-"""Host-neutral spider session runtime shared by GUI / CLI / Web."""
+"""GUI / CLI / Web 共用的 spider 会话装配层。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,11 @@ class SpiderLaunchRequest:
     selection_strategy: Any | None = None
 
 class SpiderSession:
-    """Small orchestration layer for spider create/bind/start/stop."""
+    """封装 spider 创建、信号绑定、启动与停止。
+
+    具体宿主只传入回调，不直接触碰插件注册表和 Qt 信号细节，便于三种入口
+    在生命周期上保持一致。
+    """
 
     def __init__(self, plugin_registry=None) -> None:
         self.plugin_registry = plugin_registry or self._resolve_default_registry()
@@ -39,6 +43,8 @@ class SpiderSession:
         return default_registry
 
     def create_spider(self, source_id: str, keyword: str, config: dict):
+        """从插件注册表创建 spider，未知平台在入口层统一转为结构化错误。"""
+
         plugin = self.plugin_registry.get_plugin(source_id)
         if not plugin:
             raise ValueError("未知的爬虫源")
@@ -47,6 +53,8 @@ class SpiderSession:
 
     @staticmethod
     def bind_spider(spider, bindings: SpiderSessionBindings) -> None:
+        """绑定宿主回调；patch_spider 用于 CLI 同步选择等宿主差异。"""
+
         if bindings.patch_spider:
             bindings.patch_spider(spider)
         spider.sig_log.connect(bindings.on_log)
@@ -59,6 +67,8 @@ class SpiderSession:
 
     @staticmethod
     def unbind_spider(spider, bindings: SpiderSessionBindings) -> None:
+        """尽力断开信号，兼容 Qt 已自动断开或测试替身不完整的情况。"""
+
         for signal, callback in (
             (spider.sig_log, bindings.on_log),
             (spider.sig_item_found, bindings.on_item_found),
@@ -86,6 +96,6 @@ class SpiderSession:
 
     @staticmethod
     def stop_session(spider, bindings: SpiderSessionBindings | None = None) -> None:
-        """Request spider shutdown; keep signal bindings until sig_finished fires."""
+        """请求 spider 停止；信号绑定保留到 sig_finished，防止漏掉最终清理。"""
         if spider:
             spider.stop()

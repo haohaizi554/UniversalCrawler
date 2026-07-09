@@ -24,7 +24,7 @@ from app.utils.qt_runtime import load_qt_icon
 
 
 class FailedLogMessageLabel(QLabel):
-    """Log message label that can soft-wrap long tokens without changing text()."""
+    """失败日志消息标签：显示时插入软换行，但 text() 仍返回原文。"""
 
     SOFT_BREAK = "\u200b"
     MAX_SEGMENT_CHARS = 24
@@ -43,6 +43,7 @@ class FailedLogMessageLabel(QLabel):
 
     def setText(self, value: Any) -> None:  # type: ignore[override]
         self._raw_text = str(value or "")
+        # 只影响 QLabel 的视觉换行，复制/详情签名仍使用未插入零宽空格的原文。
         QLabel.setText(self, self._with_soft_breaks(self._raw_text))
         self.setToolTip(self._raw_text)
         self.updateGeometry()
@@ -233,6 +234,8 @@ class FailedPage(PageFrame):
         self._submit_page_request(snapshot.get("failed_items") or [], selected_id=str(previous_id or ""))
 
     def _submit_page_request(self, items: object, *, selected_id: str = "") -> None:
+        """把失败列表投影和分页交给 worker，页面只消费最新一页结果。"""
+
         self._page_sequence += 1
         self._page_request_preserves_selection = bool(selected_id)
         source_items = items if isinstance(items, list | tuple) else ()
@@ -258,6 +261,8 @@ class FailedPage(PageFrame):
     def _apply_page_result(self, result: object) -> None:
         if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
             return
+        # selection 可能在 worker 处理期间被用户点选改变；保留当前选择优先，
+        # 再回退到 worker 计算的默认选中项。
         current_selected_id = ""
         if self._page_request_preserves_selection:
             current_selected_id = str(self._selected_item_id or self.table.selected_id() or "")

@@ -22,7 +22,7 @@ def _build_video_state_event_impl(vid: str, item: "VideoItem", *, requested_prog
     return build_video_state_event(vid, item, requested_progress=requested_progress)
 
 class _DebugLoggerProxy:
-    """Lazy proxy so shared mixins do not import app.debug_logger at module import time."""
+    """延迟代理 debug_logger，避免 shared mixin 导入时拉起完整 app 依赖。"""
 
     def __getattr__(self, name: str):
         from app.debug_logger import debug_logger as _debug_logger
@@ -32,7 +32,11 @@ class _DebugLoggerProxy:
 debug_logger = _DebugLoggerProxy()
 
 class ControllerSessionMixin:
-    """Shared download/session behavior for desktop, web, and CLI hosts."""
+    """桌面端、Web 端和 CLI 共用的下载状态机骨架。
+
+    子类只需要提供视频查找、状态发布和日志输出；下载开始/进度/完成/失败
+    的状态转换、取消语义和结构化日志都在这里保持一致。
+    """
 
     DOWNLOAD_LOG_COMPONENT = "ControllerSession"
     DOWNLOAD_FINISHED_STATUS_CODE = "CTRL_DL_FINISH"
@@ -81,6 +85,8 @@ class ControllerSessionMixin:
         status: str | None = None,
         progress: int | None = None,
     ) -> "VideoItem" | None:
+        """在线程锁内修改 VideoItem，再把变更发布给具体宿主。"""
+
         with self._video_state_guard():
             item = self._video_lookup(vid)
             if not item:
@@ -139,6 +145,8 @@ class ControllerSessionMixin:
             current_item = self._video_lookup(vid)
             cancel_requested = bool(current_item and current_item.meta.get("user_cancel_requested"))
         if cancel_requested:
+            # 用户暂停/取消由 DownloadManager 抛到同一条 error 回调；这里恢复为
+            # pending，避免 UI/CLI 把主动暂停误归类到失败列表。
             with self._video_state_guard():
                 current_item.meta.pop("user_cancel_requested", None)
                 current_item.meta.pop("download_error", None)
@@ -222,6 +230,8 @@ class ControllerSessionMixin:
         return self.videos.get(video_id)
 
     def _video_state_guard(self):
+        """惰性创建状态锁，兼容未显式初始化该字段的轻量测试宿主。"""
+
         lock = getattr(self, "_video_state_lock", None)
         if lock is None:
             lock = threading.RLock()

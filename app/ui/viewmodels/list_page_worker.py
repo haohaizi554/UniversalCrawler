@@ -42,6 +42,12 @@ def item_stable_id(item: Mapping[str, Any]) -> str:
 
 
 def build_list_page_result(request: ListPageRequest) -> ListPageResult:
+    """把原始列表转换为 UI 可直接渲染的一页结果。
+
+    分页、选中项跨页定位和 item_transformer 都放到 worker 里做，页面层
+    只负责 patch table，避免大列表刷新卡住 Qt 主线程。
+    """
+
     items: list[dict[str, Any]] = []
     for item in request.items:
         if not isinstance(item, Mapping):
@@ -65,6 +71,8 @@ def build_list_page_result(request: ListPageRequest) -> ListPageResult:
     selected_id = str(request.selected_id or "")
     selected_is_valid = bool(selected_id and selected_id in set(id_order))
     if selected_is_valid and request.selected_id_moves_page and request.paginate and page_size > 0:
+        # 删除/刷新后仍保留选中项时，自动跳到它所在页；否则用户会看到
+        # 详情存在但表格当前页没有对应行的错位状态。
         selected_page = page_for_match(items, lambda item, _index: item_stable_id(item) == selected_id, page_size)
         if selected_page is not None:
             current_page = selected_page
@@ -102,7 +110,7 @@ def build_list_page_result(request: ListPageRequest) -> ListPageResult:
 
 
 class ListPageWorker:
-    """Latest-state worker for list normalization, selection lookup and page slicing."""
+    """列表分页 worker；只回传最新请求结果。"""
 
     def __init__(self, on_result: Callable[[ListPageResult], None]) -> None:
         self._worker = LatestRequestWorker(

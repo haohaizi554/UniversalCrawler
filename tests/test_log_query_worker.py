@@ -13,6 +13,8 @@ def _platform_context():
 
 
 def _request(rows, **overrides):
+    """构造完整 LogQueryRequest，单个测试只覆盖自己关心的筛选字段。"""
+
     options, metas = _platform_context()
     values = {
         "sequence": 1,
@@ -81,6 +83,7 @@ def test_query_log_items_attaches_pipeline_fields_for_page_rows():
 
 
 def test_query_log_items_does_not_mutate_source_rows_with_worker_cache():
+    # 分类缓存是 worker 内部优化，不能写回 AppState 的原始日志行。
     source_row = {
         "id": "download",
         "time": "2026-06-30 10:01:00",
@@ -150,6 +153,7 @@ def test_query_log_items_filters_non_mapping_rows_in_worker():
 
 
 def test_log_query_worker_delivers_latest_result_after_rapid_submits():
+    # LatestRequestWorker 的契约：快速连续提交时，UI 只消费最后一次查询结果。
     rows = [{"id": "a", "time": "2026-06-30 10:00:00", "level": "INFO"}]
     received = []
     ready = threading.Event()

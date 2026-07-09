@@ -15,6 +15,8 @@ from cli.sdk import UcrawlSDK
 from shared import download_command_runtime as runtime
 
 def _runtime_env() -> runtime.DownloadCommandEnv:
+    """装配真实依赖；共享 runtime 通过该对象与测试替身解耦。"""
+
     return runtime.DownloadCommandEnv(
         UcrawlSDK_cls=UcrawlSDK,
         get_default_save_dir=get_default_save_dir,
@@ -77,6 +79,8 @@ def handle_download_command(args: argparse.Namespace) -> int:
     if result is not None:
         runtime.emit_result(result, pretty=getattr(args, "pretty", False))
     return exit_code
+    # 下面是迁移到 shared.download_command_runtime 前的旧实现，当前不可达。
+    # 暂时保留是为了让尚未完成清理的静态断言/历史对照不丢上下文。
     # 从 cfg 读取默认保存目录（与 GUI 对齐）
     from cli.defaults import get_default_save_dir
     save_dir = getattr(args, "save_dir", None) or get_default_save_dir()

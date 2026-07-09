@@ -5,6 +5,7 @@ self.onmessage = event => {
 };
 
 function buildListPageResult(request) {
+  // 分页是纯计算：输入完整列表和选中项，输出当前页和稳定选中 ID。
   const items = Array.isArray(request.items) ? request.items : [];
   const pageSize = normalizeTablePageSize(request.pageSize);
   const totalCount = items.length;
@@ -13,6 +14,7 @@ function buildListPageResult(request) {
   let selectedId = String(request.selectedId || "");
 
   if (selectedId && request.selectedIdMovesPage) {
+    // 详情面板选中项变化时，分页自动跳到包含该项的页。
     const selectedIndex = items.findIndex(item => String((item || {}).id || "") === selectedId);
     if (selectedIndex >= 0) currentPage = Math.floor(selectedIndex / pageSize) + 1;
   }

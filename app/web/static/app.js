@@ -383,6 +383,7 @@ function scheduleFrame(callback) {
 }
 
 function scheduleRenderSections(sections) {
+  // 合并同一帧内的多次状态变更，避免下载进度高频刷新时整页反复重绘。
   const list = Array.isArray(sections) ? sections : [sections || "all"];
   for (const section of list) pendingRenderSections.add(section || "all");
   if (renderFrame) return;
@@ -432,6 +433,7 @@ function flushRenderSections() {
 }
 
 function applyFrontendDelta(delta) {
+  // 后端增量只携带脏 section；基线不连续时退回完整快照重新同步。
   if (!delta || typeof delta !== "object") return;
   const localVersion = Number(frontendVersion || 0);
   const deltaVersion = Number(delta.version || 0);
@@ -546,6 +548,7 @@ function scheduleFrontendDeltaFetch(delayMs = 200) {
 }
 
 async function fetchFrontendDelta() {
+  // WebSocket 事件可能被合并，主动拉取 delta 用于补齐最新版本。
   if (pageIsUnloading) return;
   try {
     const response = await fetch(`/api/frontend/delta?since_version=${encodeURIComponent(frontendVersion || 0)}`, { cache: "no-store" });
@@ -1088,6 +1091,7 @@ function queueNavigationOrder() {
 }
 
 function ensureListPageWorker() {
+  // 分页计算放入 Worker，避免大列表切页时阻塞主线程交互。
   if (!listPageWorkerAvailable) return null;
   if (listPageWorker) return listPageWorker;
   try {
@@ -1125,6 +1129,7 @@ function submitListPageRequest(pageKey, requestData) {
 }
 
 function applyListPageResult(result) {
+  // Worker 响应带 sequence，旧响应直接丢弃，避免快速翻页时覆盖新结果。
   if (!result || result.type !== "page") return;
   const pageKey = String(result.pageKey || "");
   if (!["queue", "completed", "failed"].includes(pageKey)) return;

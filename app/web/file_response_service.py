@@ -51,8 +51,9 @@ class WebFileResponseService:
         content_type, _ = mimetypes.guess_type(path)
         return content_type or "application/octet-stream"
 
-    async def get_media(self, request: Request, video_id: str, range_header: str | None):
-        self._require_session_token(request)
+    async def get_media(self, request: Request, video_id: str, range_header: str | None, *, require_session_token: bool = True):
+        if require_session_token:
+            self._require_session_token(request)
         context = self._get_request_context(request)
         path = context.controller.get_media_path(video_id)
         if not path:
@@ -69,8 +70,9 @@ class WebFileResponseService:
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-        if range_header:
-            range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        effective_range_header = range_header or request.headers.get("range")
+        if effective_range_header:
+            range_match = re.match(r"bytes=(\d+)-(\d*)", effective_range_header)
             if range_match:
                 start = int(range_match.group(1))
                 end = int(range_match.group(2)) if range_match.group(2) else file_size - 1

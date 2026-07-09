@@ -1,4 +1,4 @@
-"""爬虫实现模块，负责 `app/spiders/douyin/parser.py` 对应平台的采集、解析或任务装配逻辑。"""
+"""抖音作品解析，把 aweme 原始结构转换为 VideoItem。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from app.models import VideoItem
 
 
 class DouyinItemParser:
-    """抖音数据解析器。"""
+    """兼容视频、图集和实况照片三类作品的轻量解析器。"""
 
     @staticmethod
     def _safe_int(value: Any) -> int:
@@ -31,6 +31,7 @@ class DouyinItemParser:
 
     @classmethod
     def _select_video_url(cls, video: Any) -> str:
+        """从 bit_rate 候选中选择质量最高的视频地址，过滤误混入的音频地址。"""
         if not isinstance(video, dict):
             return ""
 
@@ -52,6 +53,7 @@ class DouyinItemParser:
             candidates.append((max(height, width), fps, bitrate, data_size, url))
 
         if candidates:
+            # 排序维度依次偏向分辨率、帧率、码率和体积，避免只按列表顺序拿到低清流。
             candidates.sort(key=lambda candidate: candidate[:4])
             return candidates[-1][-1]
 
@@ -61,7 +63,7 @@ class DouyinItemParser:
         return ""
 
     def parse_aweme(self, data: dict[str, Any]) -> VideoItem | None:
-        """解析 `aweme` 对应的输入数据并返回结构化结果，供 `DouyinItemParser` 使用。"""
+        """解析单个 aweme；图集先汇总为一个逻辑项，后续再展开为多个下载项。"""
         try:
             aweme_id = data.get("aweme_id", "unknown")
             trace_aweme_id = str(aweme_id).replace("-", "_")
@@ -89,6 +91,7 @@ class DouyinItemParser:
 
                 live_video_url = ""
                 if clip_type == 3 and "video" in image:
+                    # clip_type=3 是实况图，下载时应优先保存其动态视频而非静态图。
                     live_addr = image["video"].get("play_addr_h264") or image["video"].get("play_addr")
                     if live_addr:
                         live_urls = live_addr.get("url_list", [])
@@ -146,7 +149,7 @@ class DouyinItemParser:
         return None
 
     def summarize_aweme(self, data: dict[str, Any]) -> dict[str, Any]:
-        
+        """生成调试摘要，避免日志里直接暴露或刷入完整平台响应。"""
         video = data.get("video", {}) or {}
         author = data.get("author", {}) or {}
         images = data.get("images") or []

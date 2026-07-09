@@ -16,6 +16,8 @@ from app.web.logging_utils import log_web_exception
 
 @dataclass(slots=True)
 class OutboundMessage:
+    """预序列化后的发送单元，入队后不再在发送循环里做 JSON 编码。"""
+
     event_type: str
     data: Any
     text: str
@@ -24,7 +26,7 @@ class OutboundMessage:
 
 @dataclass(slots=True)
 class WebSocketConnection:
-    """Represents an active WebSocket session connection."""
+    """一个浏览器连接的发送状态；同一 session 可以同时有多个标签页。"""
 
     ws: WebSocket
     session_id: str
@@ -42,7 +44,7 @@ class WebSocketConnection:
     })
 
 class ConnectionManager:
-    """Manage WebSocket connections and bounded per-session sending."""
+    """管理 WebSocket 连接，并用有界队列吸收前端刷新背压。"""
 
     def __init__(self, *, max_queue_size: int = 256) -> None:
         self.active_connections: dict[str, list[WebSocketConnection]] = {}
@@ -125,6 +127,7 @@ class ConnectionManager:
         return accepted
 
     async def _build_message_async(self, event_type: str, data: Any) -> OutboundMessage:
+        """JSON 序列化可能较重，放到 executor 避免阻塞事件循环。"""
         return await asyncio.get_running_loop().run_in_executor(None, self._build_message, event_type, data)
 
     def _build_message(self, event_type: str, data: Any) -> OutboundMessage:
@@ -141,6 +144,7 @@ class ConnectionManager:
 
     @staticmethod
     def _message_priority(event_type: str, data: Any) -> FrontendEventPriority:
+        """frontend_delta 自带优先级，其余消息沿用领域事件优先级。"""
         if event_type == "frontend_delta" and isinstance(data, dict):
             raw = str(data.get("priority") or "").lower()
             if raw == "critical":
@@ -152,6 +156,7 @@ class ConnectionManager:
 
     @staticmethod
     def _coalesce_key(event_type: str, data: Any) -> tuple[str, str]:
+        """高频消息按事件类型和实体 ID 合并，frontend_delta 始终 latest wins。"""
         if event_type == "frontend_delta":
             return (event_type, "frontend")
         if isinstance(data, dict):
@@ -161,6 +166,7 @@ class ConnectionManager:
         return (event_type, "")
 
     async def _enqueue(self, conn: WebSocketConnection, message: OutboundMessage) -> bool:
+        """有界入队：低优先级先合并/丢弃，关键事件尽量腾出空间。"""
         async with conn.queue_lock:
             if message.priority == FrontendEventPriority.NOISY and self._replace_coalesced(conn, message):
                 conn.metrics["coalesced"] += 1
@@ -219,6 +225,7 @@ class ConnectionManager:
         return False
 
     async def _sender_loop(self, conn: WebSocketConnection) -> None:
+        """每个连接单独串行发送，避免慢客户端拖住其他连接。"""
         try:
             while True:
                 await conn.queue_event.wait()

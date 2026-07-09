@@ -6,11 +6,10 @@ import asyncio
 import inspect
 import mimetypes
 import os
-from collections.abc import Iterator
 
-from fastapi import FastAPI, Query, Request, WebSocket
+from fastapi import FastAPI, Header, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import cfg
@@ -114,27 +113,6 @@ def _list_directory_payload(path: str) -> dict:
 
 async def _run_controller_worker_call(func, *args):
     return await asyncio.get_running_loop().run_in_executor(None, func, *args)
-
-
-def _media_file_info(path: str) -> tuple[str, int, str]:
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-    file_size = os.path.getsize(path)
-    content_type, _ = mimetypes.guess_type(path)
-    return path, file_size, content_type or "application/octet-stream"
-
-
-def _iter_file_range(path: str, start: int, chunk_size: int) -> Iterator[bytes]:
-    with open(path, "rb") as file_obj:
-        file_obj.seek(start)
-        remaining = chunk_size
-        while remaining > 0:
-            read_size = min(8192, remaining)
-            data = file_obj.read(read_size)
-            if not data:
-                break
-            remaining -= len(data)
-            yield data
 
 def create_app(lifespan=None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
@@ -488,7 +466,7 @@ def create_app(lifespan=None) -> FastAPI:
 
     @app.post("/api/crawl/stop")
     async def stop_crawl():
-        controller.stop_crawl()
+        await _run_controller_worker_call(controller.stop_crawl)
         return {"status": "ok"}
 
     @app.post("/api/crawl/select")
@@ -543,47 +521,16 @@ def create_app(lifespan=None) -> FastAPI:
     # ---- 媒体文件服务（支持 Range 请求，视频拖拽进度条必需） ----
 
     @app.get("/api/media/{video_id}")
-    async def get_media(video_id: str, range: str | None = None):
-        path = controller.get_media_path(video_id)
-        # 修复 BUG-150: 文件不存在返回 404，让 video 元素正确触发 onerror
-        if not path:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="file not found")
-        try:
-            path, file_size, content_type = await asyncio.get_running_loop().run_in_executor(None, _media_file_info, path)
-        except FileNotFoundError:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="file not found")
-
-        # 处理 Range 请求（视频 seek 必需）
-        range_header = range
-        if range_header:
-            range_match = __import__("re").match(r"bytes=(\d+)-(\d*)", range_header)
-            if range_match:
-                start = int(range_match.group(1))
-                end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
-                end = min(end, file_size - 1)
-                chunk_size = end - start + 1
-
-                return StreamingResponse(
-                    _iter_file_range(path, start, chunk_size),
-                    status_code=206,
-                    media_type=content_type,
-                    headers={
-                        "Content-Range": f"bytes {start}-{end}/{file_size}",
-                        "Accept-Ranges": "bytes",
-                        "Content-Length": str(chunk_size),
-                    },
-                )
-
-        # 无 Range 请求，返回完整文件
-        return FileResponse(
-            path,
-            media_type=content_type,
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(file_size),
-            },
+    async def get_media(
+        request: Request,
+        video_id: str,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ):
+        return await composition.file_response_service.get_media(
+            request,
+            video_id,
+            range_header,
+            require_session_token=False,
         )
 
     # ---- 目录浏览 API（服务端文件系统，替代浏览器端文件夹选择器） ----

@@ -2,6 +2,7 @@
   "use strict";
 
   function normalizeLogDetailPayload(item) {
+    // detail 可能是对象、JSON 字符串或普通文本；统一成可展示/导出的对象。
     if (!item) return {};
     const detail = item.detail;
     if (detail && typeof detail === "object") return detail;
@@ -71,6 +72,7 @@
   }
 
   function buildLogDetailResult(request = {}) {
+    // 同时产出显示文本和完整 JSON，避免主线程重复格式化日志详情。
     const item = request.item || {};
     const hints = request.translations || {};
     const detailPayload = localizedLogDetailValue(normalizeLogDetailPayload(item), "", hints);

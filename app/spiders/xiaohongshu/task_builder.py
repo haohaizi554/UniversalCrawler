@@ -1,4 +1,4 @@
-"""Task builders for XiaoHongShu spider."""
+"""小红书任务装配：把笔记详情转换成视频或图文下载项。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from app.spiders.base_task_builder import BaseTaskBuilder
 from .helpers import note_author_name, sanitize_note_title
 
 class XiaohongshuTaskBuilder(BaseTaskBuilder):
-    """Convert normalized XHS note payloads into download items."""
+    """保留笔记级基础 meta，再为每个可下载资源补充资源级 trace_id。"""
 
     def build_items(
         self,
@@ -22,7 +22,7 @@ class XiaohongshuTaskBuilder(BaseTaskBuilder):
         cookie_str: str,
         proxy: str | None = None,
     ) -> list[VideoItem]:
-        """Build one or more download items from a note detail."""
+        """视频笔记只取首个可播放候选；图文笔记按图片展开为多个下载项。"""
         title = sanitize_note_title(note)
         author = note_author_name(note)
         note_id = str(note.get("note_id") or note.get("noteId") or "")
@@ -40,6 +40,7 @@ class XiaohongshuTaskBuilder(BaseTaskBuilder):
         )
 
         if video_candidates:
+            # 小红书视频候选通常是同一资源的不同地址，下载器失败时仍可从 meta 查候选。
             item = VideoItem(url=video_candidates[0], title=title, source="xiaohongshu")
             item.meta = {
                 **base_meta,

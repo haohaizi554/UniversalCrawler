@@ -1,13 +1,14 @@
-"""爬虫实现模块，负责 `app/spiders/kuaishou/task_builder.py` 对应平台的采集、解析或任务装配逻辑。"""
+"""快手下载任务装配，按流地址选择 HTTP 或 HLS 下载策略。"""
 
 from __future__ import annotations
 
 from app.spiders.base_task_builder import BaseTaskBuilder
 
 class KuaishouTaskBuilder(BaseTaskBuilder):
-    """负责将解析结果转换为 `KuaishouTaskBuilder` 对应的任务或数据对象。"""
+    """保持快手 meta 与其他短视频平台一致，便于前端状态和日志复用。"""
+
     def build_download_meta(self, trace_id: str, referer: str, stream_url: str, user_agent: str | None = None) -> dict:
-        """构建 `download_meta` 对应的结果、参数或对象，供 `KuaishouTaskBuilder` 使用。"""
+        """根据 URL 后缀选择下载策略；m3u8 交给 HLS 路径，其余走普通 HTTP。"""
         return super().build_download_meta(
             trace_id=trace_id,
             referer=referer,

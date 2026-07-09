@@ -12,7 +12,7 @@ from app.web.ws_dispatcher import WebSocketMessageDispatcher
 from app.web.ws_transport import ConnectionManager
 
 class WebSocketRuntime:
-    """封装 WebSocket 消息接收循环与断连清理。"""
+    """封装 WebSocket 消息接收循环；只做协议防护和分发，不承载业务逻辑。"""
 
     MAX_MESSAGE_CHARS = 64 * 1024
 
@@ -26,6 +26,7 @@ class WebSocketRuntime:
         self._dispatcher = dispatcher
 
     async def run(self, ws: WebSocket, context: WebSessionContext) -> None:
+        """持续接收客户端消息，限制单条消息大小并确保断连时注销连接。"""
         try:
             while True:
                 raw = await ws.receive_text()

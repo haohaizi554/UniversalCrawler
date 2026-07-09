@@ -33,7 +33,7 @@ class _CacheKey:
 
 
 class MediaMetadataService:
-    """Probe media metadata without blocking UI render paths."""
+    """异步探测本地媒体元数据，避免完成列表渲染时被 ffprobe/系统 Shell 阻塞。"""
 
     DURATION_RE = re.compile(r"Duration:\s*(?P<clock>\d{2}:\d{2}:\d{2})(?:\.\d+)?")
     RESOLUTION_RE = re.compile(r"Video:.*?,\s*(?P<w>\d{2,5})x(?P<h>\d{2,5})(?:[,\s\[])")
@@ -64,6 +64,7 @@ class MediaMetadataService:
         )
 
     def cached(self, path: str | Path) -> MediaMetadata | None:
+        """仅在文件大小和 mtime 未变且结果有用时返回缓存。"""
         key = self._cache_key(path)
         if key is None:
             return None
@@ -74,6 +75,7 @@ class MediaMetadataService:
         return None
 
     def ensure_probe(self, path: str | Path, callback: Callable[[MediaMetadata], None]) -> bool:
+        """确保某个文件有后台探测；同一路径同一时刻只提交一个 worker。"""
         key = self._cache_key(path)
         if key is None:
             return False
@@ -165,6 +167,7 @@ class MediaMetadataService:
             )
 
     def probe(self, path: str | Path) -> MediaMetadata:
+        """按 ffprobe、ffmpeg stderr、图片头、Windows Shell 的顺序逐级兜底。"""
         path_text = str(path)
         metadata = self._probe_ffprobe(path_text)
         if self._is_complete_metadata(metadata):
@@ -192,6 +195,7 @@ class MediaMetadataService:
         return MediaMetadata(format=suffix, content_type=self._content_type_for_path(path_text))
 
     def _probe_ffprobe(self, path: str) -> MediaMetadata | None:
+        """首选 ffprobe JSON 输出，字段结构稳定且容易区分视频/图片。"""
         executable = self._ffprobe_resolver()
         if not executable:
             return None
@@ -226,6 +230,7 @@ class MediaMetadataService:
         return self.from_ffprobe_payload(payload, path=path)
 
     def _probe_ffmpeg(self, path: str) -> MediaMetadata | None:
+        """ffprobe 不可用或信息不完整时，从 ffmpeg -i 的 stderr 文本兜底解析。"""
         executable = self._ffmpeg_resolver()
         if not executable:
             return None
@@ -281,6 +286,7 @@ class MediaMetadataService:
         )
 
     def _probe_image_header(self, path: str) -> MediaMetadata | None:
+        """图片不必启动外部工具，直接读取文件头拿分辨率。"""
         if self._content_type_for_path(path) != "image":
             return None
         try:
@@ -296,6 +302,7 @@ class MediaMetadataService:
         )
 
     def _probe_windows_shell(self, path: str) -> MediaMetadata | None:
+        """Windows 上最后尝试 Shell 属性，覆盖系统可读但 ffmpeg 不完整的文件。"""
         if sys.platform != "win32":
             return None
         path_literal = str(path).replace("'", "''")
@@ -358,6 +365,7 @@ class MediaMetadataService:
 
     @classmethod
     def _primary_video_stream(cls, streams: list[dict]) -> dict:
+        """忽略封面 attached_pic，优先选择真正的视频流。"""
         videos = [stream for stream in streams if stream.get("codec_type") == "video"]
         if not videos:
             return {}

@@ -1,4 +1,8 @@
-"""Shared runtime helpers for the CLI download command."""
+"""download 命令的可测试运行时。
+
+命令层只负责 argparse 和真实依赖装配；这里承载参数校验、配置合并和
+SDK 调用流程，便于 CLI、平台别名命令和单元测试复用同一套行为。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,8 @@ from shared.runtime_options import compose_runtime_config
 
 @dataclass(slots=True)
 class DownloadCommandEnv:
+    """把外部依赖显式注入运行时，避免测试导入完整 GUI/SDK 栈。"""
+
     UcrawlSDK_cls: Any
     get_default_save_dir: Callable[[], str]
     build_missav_proxy_url: Callable[[str], str]
@@ -83,6 +89,8 @@ def build_config(args: argparse.Namespace, *, source: str, env: DownloadCommandE
     if error:
         return None, error
 
+    # argparse 里的便捷参数统一归并为 config，保证 CLI download、SDK
+    # download_video 和 GUI spider 产出的 download_meta 使用同一套字段。
     convenience_body: dict[str, Any] = {}
     for attr in (
         "cookie",
@@ -122,6 +130,11 @@ def run_download_command(
     *,
     env: DownloadCommandEnv,
 ) -> tuple[int, dict | None, str | None]:
+    """执行一次直接下载命令。
+
+    返回 `(exit_code, result, error_message)`，让 thin CLI wrapper 自行决定
+    写 stdout/stderr；这样测试可以直接断言结构化结果，不依赖终端输出。
+    """
     save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
 
     if args.timeout <= 0:

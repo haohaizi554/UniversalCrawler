@@ -90,7 +90,7 @@ class FrontendActionResult:
         return result
 
 class FrontendStateService:
-    """Build the 7-page frontend snapshot shared by GUI and WebUI."""
+    """构建 GUI/WebUI 共用的七页快照，并负责把状态变更压缩成增量事件。"""
 
     METADATA_PROBES_PER_SNAPSHOT = 64
     METADATA_EMPTY_MAX_RETRIES = 3
@@ -149,6 +149,7 @@ class FrontendStateService:
         self._platform_auth_force_refresh_once = False
         self._delta_lock = threading.RLock()
         self._event_aggregator = FrontendEventAggregator()
+        # AppState 可能异步投递事件；先排队，再在构建快照/增量前统一落到聚合器。
         self._pending_app_state_events: deque[Any] = deque()
         self._pending_app_state_events_overflowed = False
         self._active_event_time_cache: dict[str, str] = {}
@@ -412,6 +413,7 @@ class FrontendStateService:
         self._event_aggregator.record(normalized, payload_dict, sections=sections)
 
     def _queue_app_state_change(self, payload: Any) -> None:
+        """把 AppState 事件排入本地队列，避免事件总线线程直接重建前端快照。"""
         if self._destroyed:
             return
         queued_payload = dict(payload) if isinstance(payload, dict) else payload
@@ -422,7 +424,7 @@ class FrontendStateService:
             self._pending_app_state_events.append(queued_payload)
 
     def flush_pending_app_state_events(self) -> None:
-        """Drain AppState events before building a frontend snapshot or delta."""
+        """构建快照/增量前清空 AppState 待处理事件，保证版本号不落后于状态。"""
 
         self._wait_for_app_state_async_delivery()
         with self._delta_lock:
@@ -461,6 +463,7 @@ class FrontendStateService:
 
     @staticmethod
     def _sections_for_recorded_event(topic: str, payload: Mapping[str, Any]) -> frozenset[str] | None:
+        """根据事件内容选择最小刷新 section；状态跨桶时必须扩大到全部视频区。"""
         normalized = str(topic or "")
         if normalized == "logs.append" and payload.get("source") == "frontend_log_worker":
             return frozenset({"log_items", "failed_items", "app_status"})
@@ -602,6 +605,7 @@ class FrontendStateService:
         return sections
 
     def get_snapshot(self, *, mock: bool = False, sections: frozenset[str] | None = None) -> dict[str, Any]:
+        """返回完整或局部快照；失败列表和日志列表需要共享同一份日志缓存。"""
         self.flush_pending_app_state_events()
         if mock:
             snapshot = self.mock_snapshot()
@@ -653,7 +657,7 @@ class FrontendStateService:
         *,
         sections: frozenset[str] | set[str] | None = None,
     ) -> dict[str, Any]:
-        """Return a versioned frontend delta while keeping full snapshots compatible."""
+        """返回版本化增量；历史不足或版本异常时强制客户端做完整重同步。"""
 
         self.flush_pending_app_state_events()
         with self._delta_lock:
@@ -837,6 +841,7 @@ class FrontendStateService:
             set_auto_copy(bool(logging_cfg.get("auto_copy_trace_on_error", True)))
 
     def _apply_runtime_setting(self, section: str, key: str, value: Any) -> None:
+        """配置保存后同步运行时对象；涉及 Qt 控件的更新必须转回 GUI 线程。"""
         if section == "download":
             self._apply_download_runtime_settings()
         elif section == "logging":
@@ -873,6 +878,7 @@ class FrontendStateService:
         self.record_event("settings.update", {"section": section, "key": key})
 
     def _dispatch_gui_runtime_setting(self, method_name: str, *args: Any) -> bool:
+        """把窗口运行时设置派发到 GUI 线程，避免后台配置回调直接触碰 Qt 对象。"""
         controller = self.controller
         window = getattr(controller, "window", None)
         target = window or controller
@@ -937,6 +943,7 @@ class FrontendStateService:
         return video_adapter.bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids)
 
     def _materialize_stage_title_for_event(self, topic: str, payload: Mapping[str, Any]) -> None:
+        """事件到达时固化当前阶段标题，避免列表迁移后标题被其他阶段规则改写。"""
         if str(topic or "") not in {
             "item_found",
             "scan_result",
@@ -1378,6 +1385,7 @@ class FrontendStateService:
         self._metadata_retry_tracker.cancel_all()
 
     def _retry_completed_metadata_probe(self, video_id: str, source_path: str) -> bool:
+        """重试完成文件元数据探测；文件路径已变化时放弃旧重试。"""
         if self._destroyed:
             return False
         target = self._video_for_update(video_id)
@@ -1452,6 +1460,7 @@ class FrontendStateService:
         )
 
     def _failed_record_snapshot_items(self) -> list[dict[str, Any]]:
+        """读取失败记录存储的快照，作为内存视频项之外的持久失败列表来源。"""
         records_snapshot = getattr(self.failed_record_store, "records_snapshot", None)
         if not callable(records_snapshot):
             return []
@@ -1583,6 +1592,7 @@ class FrontendStateService:
         return cls._format_completed_at_table(value)
 
     def log_items(self) -> list[dict[str, Any]]:
+        """合并 UI 环形日志和文件日志尾部，并补齐前端展示字段。"""
         buffer = self.app_state.get_log_buffer()
         merged = self._file_log_cache_store.merged_items(buffer)
         return [self._enrich_log_item(item) for item in merged]
@@ -1649,6 +1659,7 @@ class FrontendStateService:
         trace_id: str,
         log_excerpt_index: dict[str, list[dict[str, Any]]] | None,
     ) -> list[dict[str, Any]]:
+        """按 trace_id 取失败日志片段，并交给稳定缓存避免刷新时片段忽隐忽现。"""
         index = log_excerpt_index if log_excerpt_index is not None else self._log_excerpt_index()
         entries = log_adapter.failed_log_excerpt_items(
             item,
@@ -1666,6 +1677,7 @@ class FrontendStateService:
         trace_id: str,
         entries: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
+        """失败原因未变时合并旧片段和新片段，避免日志滚动导致详情只剩最后一条。"""
         video_id = str(item.id or "")
         fresh_entries = [dict(entry) for entry in entries if isinstance(entry, Mapping)]
         if not video_id:
@@ -1710,6 +1722,7 @@ class FrontendStateService:
         return merged
 
     def _queue_failed_records(self, failed_items: list[Mapping[str, Any]]) -> None:
+        """把当前失败投影写入持久存储；签名未变化的记录不会重复入队。"""
         changed_items = self._changed_failed_records(failed_items)
         if not changed_items:
             return
@@ -1886,6 +1899,7 @@ class FrontendStateService:
         return toolbox_adapter.toolbox_recent_items()
 
     def download_options_snapshot(self) -> dict[str, Any]:
+        """从配置、运行时覆盖项和下载管理器合并当前下载选项。"""
         return settings_adapter.build_download_options_snapshot(
             self.config.get,
             self._download_runtime_get,
@@ -1901,6 +1915,7 @@ class FrontendStateService:
         failed_count: int | None = None,
         active_downloads: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """构建顶部状态栏摘要；缺少计数时从当前视频桶实时统计。"""
         try:
             from cli import __version__
         except Exception:

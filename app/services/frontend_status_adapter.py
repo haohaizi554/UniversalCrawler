@@ -21,6 +21,7 @@ def format_transfer_speed(bps: int) -> str:
 
 
 def parse_speed_string(value: str | None) -> int:
+    """解析前端已有的速度字符串，兼容旧下载器只上报文本速度的路径。"""
     text = str(value or "").strip()
     if not text:
         return 0
@@ -51,6 +52,7 @@ def parse_speed_string(value: str | None) -> int:
 
 
 def aggregate_speed_bps(active_downloads: list[Mapping[str, Any]]) -> int:
+    """汇总活动下载速度；优先使用结构化 bps，缺失时解析展示字符串。"""
     total_bps = 0
     for item in active_downloads:
         speed_bps = item.get("speed_bps")
@@ -76,6 +78,7 @@ def build_app_status(
     active_downloads: list[Mapping[str, Any]],
     version: str,
 ) -> dict[str, Any]:
+    """构建状态栏摘要，失败数只影响 indicator，不覆盖运行态文本。"""
     speed_bps = aggregate_speed_bps(active_downloads)
     indicator = "running" if running else ("error" if failed_count > 0 else "idle")
     return {

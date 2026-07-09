@@ -67,6 +67,7 @@ def filename_stem(value: Any) -> str:
 
 
 def stage_display_title(item: VideoItem, stage: str, fallback_filename: Any = "") -> str:
+    """按阶段选择标题，避免完成/失败列表被下载后的文件名规则反向污染。"""
     meta = item.meta or {}
     key = STAGE_TITLE_KEYS.get(stage, "")
     title = str(meta.get(key) or "").strip() if key else ""
@@ -125,6 +126,7 @@ def queue_item(
 
 
 def bucket_for_item(item: VideoItem, *, queued_ids: set[str], active_ids: set[str]) -> str:
+    """把 VideoItem 映射到前端四个列表桶，运行中队列状态优先于原始 status。"""
     parsed = parse_video_status(item.status)
     if parsed in {VideoStatus.COMPLETED, VideoStatus.LOCAL}:
         return "completed"
@@ -146,6 +148,7 @@ def active_item(
     current_save_dir: str,
     active_events: Callable[..., list[dict[str, str]]],
 ) -> dict[str, Any]:
+    """构建下载中行；字段保持 GUI 和 WebUI 共用，避免两端各算一套状态。"""
     meta = item.meta or {}
     progress = int(item.progress or 0)
     chunks_done = int(meta.get("chunks_done", 0) or 0)
@@ -254,6 +257,7 @@ def completed_item(
     metadata_pending: bool,
     platform_label: Callable[[VideoItem], str],
 ) -> dict[str, Any]:
+    """构建已完成行；元数据可能异步补齐，所以 duration/resolution 允许占位。"""
     meta = item.meta or {}
     duration = display_duration(meta.get("duration") or getattr(metadata, "duration", ""))
     resolution = display_resolution(meta.get("resolution"), meta.get("quality"), getattr(metadata, "resolution", ""))
@@ -291,6 +295,7 @@ def failed_item(
     log_excerpt_items: list[dict[str, Any]],
     failed_at_fallback: str,
 ) -> dict[str, Any]:
+    """构建失败行，保留结构化日志片段和可执行建议。"""
     meta = item.meta or {}
     reason = str(meta.get("download_error") or meta.get("error") or item.status or "\u672a\u77e5\u9519\u8bef")
     item_trace_id = trace_id(item)
@@ -421,6 +426,7 @@ def active_events(
     event_time_cache: dict[str, str] | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> list[dict[str, str]]:
+    """组合真实下载事件和派生状态事件，保证详情面板始终有可读时间线。"""
     existing: list[dict[str, str]] = []
     for event in list((item.meta or {}).get("events") or [])[-6:]:
         if not isinstance(event, Mapping):
@@ -475,6 +481,7 @@ def stable_active_event_time(
     event_time_cache: dict[str, str] | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> str:
+    """为派生事件生成稳定时间，避免前端刷新时事件时间不断跳动。"""
     for event in existing:
         value = str(event.get("time") or "").strip()
         if value:
@@ -521,6 +528,7 @@ def default_active_events(item: VideoItem, *, now: Callable[[], datetime] | None
 
 
 def failure_category(reason: str) -> dict[str, str]:
+    """把失败原因粗分类为 UI 标签和图标，不改变原始错误文本。"""
     lowered = str(reason or "").lower()
     if "login" in lowered or "\u767b\u5f55" in reason:
         return {"key": "login", "label": "\u9700\u8981\u767b\u5f55", "icon_file": "action_user.png"}
