@@ -4156,14 +4156,16 @@ class WebUIBrowserTests(unittest.TestCase):
                   runOperation: () => {},
                   onFiltersChange: () => {}
                 });
+                byId("logTimeFilter").value = "all";
+                window.UcpLogCenter.syncFiltersFromDom();
                 switchPage("logs");
 
                 const queryWorker = workerFor("log_query_worker");
-                const firstQuery = queryWorker.requests[0];
+                const firstQuery = queryWorker.requests.at(-1);
                 state.log_items[0].message_summary = "query current";
                 state.log_items[0].message = "query current";
                 window.UcpLogCenter.render();
-                const secondQuery = queryWorker.requests[1];
+                const secondQuery = queryWorker.requests.at(-1);
                 queryWorker.emit({ type: "error", sequence: firstQuery.sequence, message: "stale query error" });
                 const staleQueryIgnored = queryWorker.terminateCalls === 0;
                 if (!staleQueryIgnored) {
@@ -4184,7 +4186,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 state.log_items[0].message = "detail current";
                 state.log_items[0].detail = { description: "same", nested: { alpha: 1, beta: 2 } };
                 window.UcpLogCenter.render();
-                const thirdQuery = queryWorker.requests[2];
+                const thirdQuery = queryWorker.requests.at(-1);
                 queryWorker.emit({ type: "result", result: queryResult(thirdQuery) });
                 const secondDetail = detailWorker.requests[1];
                 const detailMutationRequested = Boolean(secondDetail);
@@ -4195,7 +4197,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
                 state.log_items[0].detail = { nested: { beta: 2, alpha: 1 }, description: "same" };
                 window.UcpLogCenter.render();
-                const fourthQuery = queryWorker.requests[3];
+                const fourthQuery = queryWorker.requests.at(-1);
                 queryWorker.emit({ type: "result", result: queryResult(fourthQuery) });
                 const stableOrderCacheHit = detailWorker.requests.length === 2;
 
