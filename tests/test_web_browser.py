@@ -434,7 +434,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("function switchPreview", bundle)
         self.assertIn("function onSeekCommit", bundle)
         self.assertIn("player.onplay", bundle)
-        self.assertIn("document.addEventListener(\"fullscreenchange\"", bundle)
+        self.assertIn('addOwnedListener(document, "fullscreenchange", handleFullscreenChange)', bundle)
 
     def test_index_html_required_js_functions(self):
         """所有 onclick/on... 引用的函数必须存在。"""
@@ -443,8 +443,10 @@ class StaticAssetsTests(unittest.TestCase):
         # 从 onclick="..." 提取函数名
         onclicks = re.findall(r'onclick="(\w+)\(', content)
         for fn in set(onclicks):
-            self.assertIn(f"function {fn}(", content,
-                         f"missing JS function: {fn}")
+            self.assertTrue(
+                f"function {fn}(" in content or f"window.{fn} =" in content,
+                f"missing JS function: {fn}",
+            )
 
     def test_selection_modal_keyboard_shortcuts_are_scoped(self):
         content = _static_bundle_content()
@@ -542,11 +544,12 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/app.js?v=20260709-log-detail-worker', content)
 
     def test_video_end_autoplays_next_preview(self):
-        content = _static_bundle_content()
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        content = (static_dir / "playback_controller.js").read_text(encoding="utf-8")
 
         self.assertIn("function autoplayNextPreview(", content)
-        self.assertIn("setupPlayerEvents(player, id)", content)
-        self.assertIn("function setupPlayerEvents(player, sourceId)", content)
+        self.assertIn("setupPlayerEvents(player, sourceId, generation, operation)", content)
+        self.assertIn("function setupPlayerEvents(player, sourceId", content)
         self.assertIn("shouldAutoplayNext()", content)
         self.assertIn("autoplayNextPreview();", content)
 
@@ -668,13 +671,12 @@ class StaticAssetsTests(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn("const removesPlayingItem", remove_block)
-        self.assertIn("if (removesPlayingItem) closePreview();", remove_block)
+        self.assertIn("playbackControllerService().prepareDeleteItem(id)", remove_block)
         self.assertIn('for (const key of ["active", "completed", "failed"])', remove_block)
         self.assertIn("selected[key] = \"\"", remove_block)
         self.assertIn("selectedVideoId = null", remove_block)
-        self.assertIn("currentPlayingId = null", remove_block)
-        self.assertIn("removePlaybackPosition(id)", remove_block)
+        self.assertIn("playbackControllerService().removePlaybackPosition(id)", remove_block)
+        self.assertNotIn("currentPlayingId", remove_block)
 
     def test_task_pages_reconcile_stale_selection_before_render(self):
         content = _static_bundle_content()
@@ -700,21 +702,20 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertNotIn("if (!selected.tool && items.length) selected.tool = items[0].id", toolbox_block)
 
     def test_delete_item_closes_current_preview_before_request(self):
-        content = _static_bundle_content()
-        frontend_action_block = content.split("function frontendAction(action, payload)", 1)[1].split(
-            "function mediaUrl(id)",
-            1,
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        app = (static_dir / "app.js").read_text(encoding="utf-8")
+        controller = (static_dir / "playback_controller.js").read_text(encoding="utf-8")
+        frontend_action_block = app.split("function frontendAction(action, payload)", 1)[1].split(
+            "function openDirectory(id)", 1,
         )[0]
-        delete_block = content.split("function prepareDeleteItem(id)", 1)[1].split(
-            "async function previewVideo(id)",
-            1,
+        delete_block = controller.split("function prepareDeleteItem(id)", 1)[1].split(
+            "function deleteVideo(id)", 1,
         )[0]
 
-        self.assertIn('if (action === "delete_item") prepareDeleteItem(payload && (payload.id || payload.video_id));', frontend_action_block)
-        self.assertIn("function prepareDeleteItem(id)", content)
-        self.assertIn("String(currentPlayingId || \"\") === videoId", delete_block)
+        self.assertIn('playbackControllerService().prepareDeleteItem(payload && (payload.id || payload.video_id))', frontend_action_block)
+        self.assertIn('state.currentPlayingId === sourceId', delete_block)
         self.assertIn("closePreview();", delete_block)
-        self.assertIn("prepareDeleteItem(id);", delete_block)
+        self.assertIn("prepareDeleteItem(id);", controller)
 
     def test_start_crawl_validates_platform_and_connection_before_running_state(self):
         content = _static_bundle_content()
@@ -744,6 +745,7 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
         log_center = (static_dir / "log_center.js").read_text(encoding="utf-8")
+        playback = (static_dir / "playback_controller.js").read_text(encoding="utf-8")
 
         self.assertIn("function uiTextWithDetail(label, detail = \"\")", content)
         self.assertIn("function appendUiLog(label, detail = \"\", prefix = \"\")", content)
@@ -752,10 +754,10 @@ class StaticAssetsTests(unittest.TestCase):
             'appendUiLog("未选择有效模式", "", "❌ ")',
             'appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ")',
             'appendUiLog("正在绑定默认打开方式...")',
-            'appendUiLog("文件不存在或已被删除", "", "❌ ")',
-            'appendUiLog("播放前校验失败", error.message || error, "❌ ")',
         ):
             self.assertIn(snippet, content)
+        self.assertIn('appendUiLog("\\u64ad\\u653e\\u524d\\u6821\\u9a8c\\u5931\\u8d25", error.message || error, "\\u274c ")', playback)
+        self.assertIn('"\\u6587\\u4ef6\\u4e0d\\u5b58\\u5728\\u6216\\u5df2\\u88ab\\u5220\\u9664"', playback)
         self.assertIn('requireDependency("writeClipboard")(traceId, t(', log_center)
         for stale in (
             'appendLog("请输入主页链接、分享链接或合集链接")',
@@ -769,40 +771,41 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('"未选择有效模式": "No valid mode selected"', content)
 
     def test_web_playback_position_cache_uses_path_key_and_cleans_orphans(self):
-        content = _static_bundle_content()
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        playback_state = (static_dir / "playback_state.js").read_text(encoding="utf-8")
+        controller = (static_dir / "playback_controller.js").read_text(encoding="utf-8")
         list_pages = (static_dir / "list_pages.js").read_text(encoding="utf-8")
 
-        self.assertIn("const PLAYBACK_POSITION_PREFIX", content)
-        self.assertIn("function playbackPositionIdentity(id)", content)
-        self.assertIn("item.local_path || item.filename || item.id", content)
-        self.assertIn("encodeURIComponent(playbackPositionIdentity(id))", content)
-        self.assertIn("function cleanupWebPlaybackPositions(items)", content)
-        self.assertIn("key.startsWith(PLAYBACK_POSITION_PREFIX)", content)
+        self.assertIn("const PLAYBACK_POSITION_PREFIX", playback_state)
+        self.assertIn("function playbackPositionIdentity(state, id)", playback_state)
+        self.assertIn("item.local_path || item.filename || item.id", playback_state)
+        self.assertIn("encodeURIComponent(playbackPositionIdentity(state, id))", playback_state)
+        self.assertIn("function cleanupPlaybackPositions(storage, state, items)", playback_state)
+        self.assertIn("key.startsWith(PLAYBACK_POSITION_PREFIX)", playback_state)
         self.assertIn("cleanupPlaybackPositions(items);", list_pages)
         self.assertIn("window.UcpPlaybackState.cleanupPlaybackPositions(localStorage, currentState(), items);", list_pages)
-        self.assertIn("localStorage.removeItem(legacyPlaybackPositionKey(sourceId))", content)
+        self.assertIn("localStorage.removeItem(legacyPlaybackPositionKey(sourceId))", controller)
 
     def test_web_preview_validates_media_with_server_before_playback(self):
-        content = _static_bundle_content()
-        validate_block = content.split("async function validateMediaForPreview(id)", 1)[1].split(
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        content = (static_dir / "playback_controller.js").read_text(encoding="utf-8")
+        validate_block = content.split("async function validateMediaForPreview(id, generation, operation)", 1)[1].split(
             "async function playCompleted(id)",
             1,
         )[0]
         play_block = content.split("async function playCompleted(id)", 1)[1].split(
-            "function openDirectory(id)",
+            "function previewVideo(id)",
             1,
         )[0]
 
-        self.assertIn("previewRequestToken", content)
         self.assertIn('headers: { Range: "bytes=0-0" }', validate_block)
         self.assertIn("response.body.cancel()", validate_block)
         self.assertIn("response.status === 404", validate_block)
-        self.assertIn("播放前校验失败", validate_block)
-        self.assertIn('appendUiLog(response.status === 404 ? "文件不存在或已被删除" : "播放前校验失败"', validate_block)
-        self.assertIn("if (!(await validateMediaForPreview(id)) || requestToken !== previewRequestToken) return;", play_block)
+        self.assertIn("isCurrentOperation(generation, operation)", validate_block)
+        self.assertIn("if (!(await validateMediaForPreview(sourceId, generation, operation))) return false;", play_block)
+        self.assertIn("if (!isCurrentOperation(generation, operation)) return false;", play_block)
         self.assertIn("appendPlaybackFailure", content)
-        self.assertIn("video.play().catch(error => appendPlaybackFailure(item, error))", play_block)
+        self.assertIn("playResult.catch(error =>", play_block)
 
     def test_selection_modal_shortcuts_are_bound_to_dialog_actions(self):
         content = _static_bundle_content()
@@ -863,9 +866,10 @@ class StaticAssetsTests(unittest.TestCase):
             self.assertNotIn(claim, doc)
 
     def test_append_log_uses_batched_render_scheduler(self):
-        content = _static_bundle_content()
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        content = (static_dir / "app.js").read_text(encoding="utf-8")
         append_log_block = content.split("function appendLog(message)", 1)[1].split(
-            "function onChangeDirClicked()",
+            "window.onChangeDirClicked",
             1,
         )[0]
 
@@ -3064,6 +3068,219 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["inputValue"], "D:/newest")
         self.assertEqual(result["listText"], "newest")
 
+    def test_11ee_playback_controller_uses_public_selection_and_metadata_callbacks(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const player = document.getElementById('videoPlayer');
+              const originalPlay = player.play;
+              const originalPause = player.pause;
+              const item = Object.freeze({
+                id: 'public-video',
+                title: 'Public Video',
+                filename: 'public-video.mp4',
+                local_path: 'D:/public-video.mp4',
+                content_type: 'video',
+                duration: '--',
+                resolution: '--',
+                metadata_pending: true
+              });
+              const state = Object.freeze({
+                completed_items: Object.freeze([item]),
+                settings_snapshot: Object.freeze({})
+              });
+              let selectedId = '';
+              const metadataPatches = [];
+              const actions = [];
+              window.fetch = () => Promise.resolve(new Response('', { status: 206 }));
+              player.play = () => Promise.resolve();
+              player.pause = () => {};
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => state,
+                  getSelectedCompletedId: () => selectedId,
+                  setSelectedCompletedId: id => { selectedId = String(id || ''); },
+                  patchCompletedMetadata: (id, metadata) => { metadataPatches.push({ id, metadata }); return true; },
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: (action, payload) => { actions.push({ action, payload }); },
+                  appendLog: () => {},
+                  renderCompletedDetail: () => {}
+                });
+                await window.UcpPlaybackController.playCompleted('public-video');
+                Object.defineProperty(player, 'duration', { configurable: true, value: 65 });
+                Object.defineProperty(player, 'videoWidth', { configurable: true, value: 1920 });
+                Object.defineProperty(player, 'videoHeight', { configurable: true, value: 1080 });
+                player.onloadedmetadata();
+                return {
+                  selectedId,
+                  metadataPatches,
+                  metadataAction: actions.find(entry => entry.action === 'update_completed_metadata') || null,
+                  source: player.getAttribute('src'),
+                  originalItem: { duration: item.duration, resolution: item.resolution, pending: item.metadata_pending }
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                player.play = originalPlay;
+                player.pause = originalPause;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["selectedId"], "public-video")
+        self.assertEqual(result["source"], "/api/media/public-video")
+        self.assertEqual(result["metadataPatches"], [{
+            "id": "public-video",
+            "metadata": {"duration": "00:01:05", "resolution": "1920 x 1080"},
+        }])
+        self.assertEqual(result["metadataAction"]["payload"]["source"], "web_player")
+        self.assertEqual(result["originalItem"], {"duration": "--", "resolution": "--", "pending": True})
+
+    def test_11ef_playback_controller_ignores_stale_validation_and_media_handlers(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              let resolveOldValidation;
+              const selections = [];
+              const metadataPatches = [];
+              const logs = [];
+              const item = id => ({
+                id,
+                title: id,
+                filename: `${id}.mp4`,
+                local_path: `D:/${id}.mp4`,
+                content_type: 'video'
+              });
+              const configure = id => window.UcpPlaybackController.configure({
+                getState: () => ({ completed_items: [item(id)], settings_snapshot: {} }),
+                getSelectedCompletedId: () => selections.at(-1) || '',
+                setSelectedCompletedId: value => { selections.push(String(value || '')); },
+                patchCompletedMetadata: (sourceId, metadata) => { metadataPatches.push({ sourceId, metadata }); return true; },
+                t: value => String(value || ''),
+                byId: elementId => document.getElementById(elementId),
+                esc,
+                frontendAction: () => {},
+                appendLog: message => { logs.push(String(message)); },
+                renderCompletedDetail: () => {}
+              });
+              window.fetch = url => String(url).includes('old-video')
+                ? new Promise(resolve => { resolveOldValidation = resolve; })
+                : Promise.resolve(new Response('', { status: 206 }));
+              try {
+                configure('old-video');
+                const oldPending = window.UcpPlaybackController.playCompleted('old-video');
+                await Promise.resolve();
+                configure('new-video');
+                await window.UcpPlaybackController.playCompleted('new-video');
+                const player = document.getElementById('videoPlayer');
+                const staleMetadataHandler = player.onloadedmetadata;
+                configure('third-video');
+                resolveOldValidation(new Response('', { status: 404 }));
+                await oldPending;
+                Object.defineProperty(player, 'duration', { configurable: true, value: 90 });
+                staleMetadataHandler();
+                return {
+                  selections,
+                  metadataPatches,
+                  logs,
+                  source: player.getAttribute('src')
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["selections"], ["old-video", "new-video"])
+        self.assertEqual(result["metadataPatches"], [])
+        self.assertFalse(any("old-video" in message or "文件不存在" in message for message in result["logs"]))
+        self.assertIsNone(result["source"])
+
+    def test_11eg_playback_controller_dispose_is_idempotent_and_cancels_image_advance(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const originalSetTimeout = window.setTimeout;
+              const originalClearTimeout = window.clearTimeout;
+              const timers = [];
+              const cleared = [];
+              const selections = [];
+              const state = {
+                completed_items: ['image-a', 'image-b'].map(id => ({
+                  id,
+                  title: id,
+                  filename: `${id}.png`,
+                  local_path: `D:/${id}.png`,
+                  content_type: 'image'
+                })),
+                settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': { manual_image_switch: false, image_auto_advance_interval_seconds: 1 } }
+              };
+              window.fetch = () => Promise.resolve(new Response('', { status: 206 }));
+              window.setTimeout = callback => {
+                const timer = { id: timers.length + 1, callback };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = id => { cleared.push(id); };
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => state,
+                  getSelectedCompletedId: () => selections.at(-1) || '',
+                  setSelectedCompletedId: id => { selections.push(String(id || '')); },
+                  patchCompletedMetadata: () => false,
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: () => {},
+                  appendLog: () => {},
+                  renderCompletedDetail: () => {}
+                });
+                await window.UcpPlaybackController.playCompleted('image-a');
+                const scheduled = timers[0];
+                window.UcpPlaybackController.dispose();
+                window.UcpPlaybackController.dispose();
+                scheduled.callback();
+                const player = document.getElementById('videoPlayer');
+                return {
+                  selections,
+                  timerCleared: cleared.includes(scheduled.id),
+                  source: player.getAttribute('src'),
+                  videoDisplay: player.style.display,
+                  previewHasImage: Boolean(document.querySelector('#previewArea .preview-image'))
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["selections"], ["image-a"])
+        self.assertTrue(result["timerCleared"])
+        self.assertIsNone(result["source"])
+        self.assertEqual(result["videoDisplay"], "none")
+        self.assertFalse(result["previewHasImage"])
+
     def test_11f_missing_media_validation_keeps_preview_closed(self):
         self._goto_ready()
 
@@ -3088,9 +3305,10 @@ class WebUIBrowserTests(unittest.TestCase):
                 }];
                 currentPage = 'completed';
                 renderCompleted();
-                await playCompleted('missing-media');
+                await window.UcpPlaybackController.playCompleted('missing-media');
                 return {
-                  currentPlayingId,
+                  selectedId: selected.completed,
+                  source: document.getElementById('videoPlayer').getAttribute('src'),
                   videoDisplay: document.getElementById('videoPlayer').style.display,
                   previewDisplay: document.getElementById('previewArea').style.display,
                   logs: (frontendState.log_items || []).slice(-4).map(item => item.message)
@@ -3102,7 +3320,8 @@ class WebUIBrowserTests(unittest.TestCase):
             """
         )
 
-        self.assertIsNone(result["currentPlayingId"])
+        self.assertEqual(result["selectedId"], "missing-media")
+        self.assertIsNone(result["source"])
         self.assertNotEqual(result["videoDisplay"], "block")
         self.assertNotEqual(result["previewDisplay"], "none")
         self.assertTrue(
@@ -3117,6 +3336,7 @@ class WebUIBrowserTests(unittest.TestCase):
             """
             async () => {
               const originalFetch = window.fetch.bind(window);
+              const player = document.getElementById('videoPlayer');
               window.fetch = () => Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), {
                 status: 200,
                 headers: { 'content-type': 'application/json' }
@@ -3126,28 +3346,24 @@ class WebUIBrowserTests(unittest.TestCase):
                 frontendState.completed_items = [{
                   id: 'playing-delete',
                   title: 'Playing Delete',
-                  filename: 'playing-delete.mp4',
-                  local_path: 'Z:/playing-delete.mp4',
-                  content_type: 'video',
-                  format: 'MP4'
+                  filename: 'playing-delete.png',
+                  local_path: 'Z:/playing-delete.png',
+                  content_type: 'image',
+                  format: 'PNG'
                 }];
                 currentPage = 'completed';
-                selected.completed = 'playing-delete';
-                selectedVideoId = 'playing-delete';
-                currentPlayingId = 'playing-delete';
-                const video = document.getElementById('videoPlayer');
                 const preview = document.getElementById('previewArea');
-                video.style.display = 'block';
-                preview.textContent = '';
-                preview.style.display = 'none';
-
+                await window.UcpPlaybackController.playCompleted('playing-delete');
+                const openedImage = Boolean(preview.querySelector('.preview-image'));
                 frontendAction('delete_item', { id: 'playing-delete' });
                 await new Promise(resolve => setTimeout(resolve, 0));
                 return {
-                  currentPlayingId,
-                  videoDisplay: video.style.display,
+                  openedImage,
+                  source: player.getAttribute('src'),
+                  videoDisplay: player.style.display,
                   previewDisplay: preview.style.display,
-                  previewText: preview.textContent
+                  previewText: preview.textContent,
+                  previewHasImage: Boolean(preview.querySelector('.preview-image'))
                 };
               } finally {
                 window.fetch = originalFetch;
@@ -3156,10 +3372,12 @@ class WebUIBrowserTests(unittest.TestCase):
             """
         )
 
-        self.assertIsNone(result["currentPlayingId"])
+        self.assertTrue(result["openedImage"])
+        self.assertIsNone(result["source"])
         self.assertEqual(result["videoDisplay"], "none")
         self.assertEqual(result["previewDisplay"], "flex")
         self.assertEqual(result["previewText"], "")
+        self.assertFalse(result["previewHasImage"])
 
     def test_11f_stale_selection_reconciles_to_visible_first_row(self):
         self._goto_ready()
@@ -4253,7 +4471,7 @@ class WebUIBrowserTests(unittest.TestCase):
               const state = {
                 log_items: [{
                   id: "dispose-log",
-                  time: "2026-07-10 10:00:00",
+                  time: formatLocalDateTime(),
                   level: "INFO",
                   source: "GUI",
                   trace_id: "dispose-trace",
@@ -4749,16 +4967,18 @@ class WebUIBrowserTests(unittest.TestCase):
     def test_15_delete_key_removes(self):
         """Delete 键应触发删除。"""
         self._goto_ready()
-        # Mock sendWS 来拦截 delete_video
         self._page.evaluate("""
             window._deletedIds = [];
-            window.sendWS = (type, data) => {
-                if (type === 'delete_video') window._deletedIds.push(data.video_id);
-            };
             frontendState.queue_items = [{id: 'x1', title: 'to delete', progress: 0, status: 'done'}];
             window.UcpListPages.renderQueue();
             selectedVideoId = 'x1';
             updateSelection(null, 'x1');
+            window.UcpPlaybackController.configure({
+                ...playbackControllerDependencies(),
+                frontendAction: (action, payload) => {
+                    if (action === 'delete_item') window._deletedIds.push(payload.id);
+                }
+            });
         """)
         # 焦点不在输入框
         self._page.evaluate("document.body.focus()")

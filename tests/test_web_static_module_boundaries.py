@@ -88,3 +88,26 @@ def test_settings_and_dialog_controllers_own_their_handlers() -> None:
     for marker in ("function showDirDialog", "function showFileAssociationModal", "function showSelectionModal"):
         assert marker in dialogs
         assert marker not in app
+
+
+def test_playback_controller_owns_preview_and_media_events() -> None:
+    module = (STATIC_DIR / "playback_controller.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for marker in (
+        "function playCompleted",
+        "function previewVideo",
+        "function togglePlay",
+        "function toggleFullscreen",
+        "function setupPlayerEvents",
+        "function rememberWebPlaybackPosition",
+    ):
+        assert marker in module
+        assert marker not in app
+    for marker in (
+        "function toggleTheme",
+        "function restoreTheme",
+        "function applyAppearance",
+        "function applyTheme",
+    ):
+        assert marker in app
+        assert marker not in module

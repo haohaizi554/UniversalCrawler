@@ -33,6 +33,7 @@ function cleanupPageResources() {
   if (window.UcpListPages) window.UcpListPages.dispose();
   if (window.UcpSettingsController) window.UcpSettingsController.dispose();
   if (window.UcpDialogController) window.UcpDialogController.dispose();
+  if (window.UcpPlaybackController) window.UcpPlaybackController.dispose();
 }
 
 window.addEventListener("pagehide", cleanupPageResources, { once: true });
@@ -49,10 +50,6 @@ function formatLocalDateTime(date = new Date()) {
     `${pad2(value.getHours())}:${pad2(value.getMinutes())}:${pad2(value.getSeconds())}`,
   ].join(" ");
 }
-
-let imageAutoAdvanceTimer = null;
-
-const PLAYBACK_POSITION_PREFIX = "ucp_playback_position_";
 
 function logSettingsSnapshot() {
   const snapshot = frontendState.settings_snapshot || {};
@@ -101,6 +98,11 @@ function dialogControllerService() {
   return window.UcpDialogController;
 }
 
+function playbackControllerService() {
+  if (!window.UcpPlaybackController) throw new Error("UcpPlaybackController is unavailable");
+  return window.UcpPlaybackController;
+}
+
 function listPageDependencies() {
   return {
     getState: () => frontendState,
@@ -119,11 +121,10 @@ function listPageDependencies() {
     escAttr,
     byId,
     frontendAction,
-    playCompleted,
+    playCompleted: id => playbackControllerService().playCompleted(id),
     renderStatus: () => {
       renderStatus();
-      updateNavBtnsState();
-      updateMediaControls();
+      playbackControllerService().updateControls();
     },
   };
 }
@@ -180,8 +181,7 @@ function syncSettingsAppearance(change = {}) {
     renderCurrentPage();
   }
   if (change.reschedulePlayback) {
-    const currentItem = completedItemById(currentPlayingId);
-    if (currentItem && isImageItem(currentItem)) scheduleImageAutoAdvance(currentPlayingId);
+    playbackControllerService().rescheduleImageAutoAdvance();
   }
 }
 
@@ -211,7 +211,7 @@ function dialogControllerDependencies() {
     appendUiLog: message => appendLog(message),
     patchSetting: patchSettingSnapshot,
     translateText: translateUiText,
-    closePreview,
+    closePreview: () => playbackControllerService().closePreview(),
     fetchState: fetchFrontendState,
   };
 }
@@ -222,6 +222,44 @@ function configureSettingsControllerHelpers() {
 
 function configureDialogControllerHelpers() {
   return dialogControllerService().configure(dialogControllerDependencies());
+}
+
+function patchCompletedMetadata(sourceId, metadata) {
+  const item = (frontendState.completed_items || []).find(row => String(row.id) === String(sourceId));
+  if (!item) return false;
+  const playbackState = window.UcpPlaybackState;
+  let changed = false;
+  if (metadata.duration && playbackState && !playbackState.hasDisplayDuration(item.duration)) {
+    item.duration = metadata.duration;
+    changed = true;
+  }
+  if (metadata.resolution && playbackState && !playbackState.isRealResolution(item.resolution)) {
+    item.resolution = metadata.resolution;
+    changed = true;
+  }
+  if (playbackState && playbackState.hasDisplayDuration(item.duration) && playbackState.isRealResolution(item.resolution)) {
+    item.metadata_pending = false;
+  }
+  return changed;
+}
+
+function playbackControllerDependencies() {
+  return {
+    getState: () => ({ ...frontendState, icon_manifest: iconManifest }),
+    getSelectedCompletedId: () => selected.completed || selectedVideoId || "",
+    setSelectedCompletedId: id => selectCompleted(id),
+    patchCompletedMetadata,
+    t,
+    byId,
+    esc,
+    frontendAction,
+    appendLog,
+    renderCompletedDetail,
+  };
+}
+
+function configurePlaybackControllerHelpers() {
+  return playbackControllerService().configure(playbackControllerDependencies());
 }
 
 function configureI18nHelpers() {
@@ -315,15 +353,13 @@ configureListPagesHelpers();
 configureLogCenterHelpers();
 configureSettingsControllerHelpers();
 configureDialogControllerHelpers();
+configurePlaybackControllerHelpers();
 
 // Compatibility globals used by a few older browser tests.
 let videos = {};
 let videoOrder = [];
 let selectedVideoId = null;
-let currentPlayingId = null;
-let isFullscreenMode = false;
 let crawlRunning = false;
-let previewRequestToken = 0;
 
 const ACTION_ICON_FILES = {
   delete: "action_delete.png",
@@ -352,7 +388,7 @@ function updateIconManifest(manifest) {
     },
   };
   configureTaskRenderHelpers();
-  updateMediaControls();
+  playbackControllerService().updateControls();
 }
 
 let renderSignatures = {};
@@ -479,10 +515,10 @@ function rememberFrontendSectionSignatures(keys) {
 
 function removeDeletedFromFrontendState(ids) {
   const doomed = new Set(ids.map(id => String(id)));
-  const playingId = String(currentPlayingId || "");
-  const removesPlayingItem = !!playingId && doomed.has(playingId);
-  for (const id of doomed) removePlaybackPosition(id);
-  if (removesPlayingItem) closePreview();
+  for (const id of doomed) {
+    playbackControllerService().prepareDeleteItem(id);
+    playbackControllerService().removePlaybackPosition(id);
+  }
   for (const section of ["queue_items", "active_downloads", "completed_items", "failed_items"]) {
     frontendState[section] = (frontendState[section] || []).filter(item => !doomed.has(String(item.id)));
     frontendSectionSignatures[section] = frontendSectionSignature(frontendState[section]);
@@ -491,7 +527,6 @@ function removeDeletedFromFrontendState(ids) {
     if (doomed.has(String(selected[key] || ""))) selected[key] = "";
   }
   if (doomed.has(String(selectedVideoId || ""))) selectedVideoId = null;
-  if (doomed.has(String(currentPlayingId || ""))) currentPlayingId = null;
 }
 
 function applyLegacyFrontendEvent(type, data) {
@@ -654,8 +689,8 @@ document.addEventListener("DOMContentLoaded", () => {
   fetchFrontendState();
   connectWS();
   dialogControllerService().installDirectoryHandlers();
-  installMediaControlHandlers();
-  updateMediaControls();
+  playbackControllerService().installMediaControlHandlers();
+  playbackControllerService().updateControls();
   document.getElementById("sourceSelect").addEventListener("change", cacheSource);
   document.getElementById("searchInput").addEventListener("keydown", event => {
     if (event.key === "Enter") startCrawl();
@@ -1257,38 +1292,8 @@ function sendWS(type, data) {
 
 const defaultSendWS = sendWS;
 
-function playbackStateService() { return window.UcpPlaybackState || null; }
-function playbackSettings() { return playbackStateService()?.playbackSettings(frontendState) || (((frontendState.settings_snapshot || {})["\u64ad\u653e\u8bbe\u7f6e"] || {})); }
-function shouldUseBuiltinPlayer() { return playbackStateService()?.shouldUseBuiltinPlayer(frontendState) ?? String(playbackSettings().default_player || "builtin_player") !== "system_default"; }
-function shouldRememberPlaybackPosition() { return playbackStateService()?.shouldRememberPlaybackPosition(frontendState) ?? playbackSettings().remember_position !== false; }
-function shouldAutoplayNext() { return playbackStateService()?.shouldAutoplayNext(frontendState) ?? playbackSettings().autoplay_next !== false; }
-function shouldManualSwitchImages() { return playbackStateService()?.shouldManualSwitchImages(frontendState) ?? playbackSettings().manual_image_switch === true; }
-function imageAutoAdvanceIntervalMs() { return playbackStateService()?.imageAutoAdvanceIntervalMs(frontendState) ?? 5000; }
-function completedItemById(id) { return playbackStateService()?.completedItemById(frontendState, id) || (frontendState.completed_items || []).find(item => String(item.id) === String(id)); }
-function playbackPositionIdentity(id) { return playbackStateService()?.playbackPositionIdentity(frontendState, id) || String((completedItemById(id) && (completedItemById(id).local_path || completedItemById(id).filename || completedItemById(id).id)) || id || ""); }
-function playbackPositionKey(id) { return playbackStateService()?.playbackPositionKey(frontendState, id) || `${PLAYBACK_POSITION_PREFIX}${encodeURIComponent(playbackPositionIdentity(id))}`; }
-function legacyPlaybackPositionKey(id) { return playbackStateService()?.legacyPlaybackPositionKey(id) || `${PLAYBACK_POSITION_PREFIX}${id}`; }
-function removePlaybackPosition(id) { const service = playbackStateService(); if (service) return service.removePlaybackPosition(localStorage, frontendState, id); try { localStorage.removeItem(playbackPositionKey(id)); localStorage.removeItem(legacyPlaybackPositionKey(id)); } catch (_error) {} }
-function cleanupWebPlaybackPositions(items) { playbackStateService()?.cleanupPlaybackPositions(localStorage, frontendState, items); }
-function isImageItem(item) { return playbackStateService()?.isImageItem(item) ?? (String(item && item.content_type || "").toLowerCase() === "image" || /\.(png|jpe?g|gif|webp|bmp|avif)$/.test(String(item && (item.local_path || item.filename || item.title) || "").toLowerCase())); }
-function clearImageAutoAdvanceTimer() {
-  if (imageAutoAdvanceTimer) {
-    clearTimeout(imageAutoAdvanceTimer);
-    imageAutoAdvanceTimer = null;
-  }
-}
-
-function scheduleImageAutoAdvance(id) {
-  clearImageAutoAdvanceTimer();
-  if (!id || shouldManualSwitchImages()) return;
-  imageAutoAdvanceTimer = setTimeout(() => {
-    imageAutoAdvanceTimer = null;
-    if (currentPlayingId === id) autoplayNextPreview();
-  }, imageAutoAdvanceIntervalMs());
-}
-
 function frontendAction(action, payload) {
-  if (action === "delete_item") prepareDeleteItem(payload && (payload.id || payload.video_id));
+  if (action === "delete_item") playbackControllerService().prepareDeleteItem(payload && (payload.id || payload.video_id));
   if (ws && ws.readyState === WebSocket.OPEN) {
     sendWS("frontend_action", {
       action,
@@ -1320,78 +1325,6 @@ function frontendAction(action, payload) {
       if (result && result.message) appendLog(translateUiText(result.message));
     })
     .catch(error => appendLog(translateUiText(error.message || String(error))));
-}
-
-function mediaUrl(id) {
-  return `/api/media/${encodeURIComponent(id)}`;
-}
-
-function playbackItemLabel(item, fallback = "") {
-  return String((item && (item.title || item.filename || item.local_path)) || fallback || "").trim();
-}
-
-function appendPlaybackFailure(item, error) {
-  const label = playbackItemLabel(item);
-  const detail = error && (error.message || String(error)) ? `: ${error.message || String(error)}` : "";
-  appendLog(`❌ ${t("播放失败")}${label ? ` [${label}]` : ""}${detail}`);
-}
-
-async function validateMediaForPreview(id) {
-  try {
-    const response = await fetch(mediaUrl(id), {
-      method: "GET",
-      headers: { Range: "bytes=0-0" },
-      cache: "no-store",
-    });
-    if (response.body && typeof response.body.cancel === "function") {
-      response.body.cancel().catch(() => {});
-    }
-    if (response.ok) return true;
-    appendUiLog(response.status === 404 ? "文件不存在或已被删除" : "播放前校验失败", response.status === 404 ? "" : `HTTP ${response.status}`, "❌ ");
-    return false;
-  } catch (error) {
-    appendUiLog("播放前校验失败", error.message || error, "❌ ");
-    return false;
-  }
-}
-
-async function playCompleted(id) {
-  selectCompleted(id);
-  const item = (frontendState.completed_items || []).find(row => row.id === id);
-  const requestToken = ++previewRequestToken;
-  if (!item || !item.local_path) {
-    appendUiLog("文件不存在或已被删除", "", "❌ ");
-    return;
-  }
-  if (!(await validateMediaForPreview(id)) || requestToken !== previewRequestToken) return;
-  if (!shouldUseBuiltinPlayer()) {
-    currentPlayingId = id;
-    clearImageAutoAdvanceTimer();
-    updateMediaControls();
-    frontendAction("open_file", { id });
-    return;
-  }
-  currentPlayingId = id;
-  const video = byId("videoPlayer");
-  const placeholder = byId("previewArea");
-  if (isImageItem(item)) {
-    video.pause();
-    video.removeAttribute("src");
-    video.style.display = "none";
-    placeholder.innerHTML = `<img class="preview-image" src="${mediaUrl(id)}" alt="${escAttr(item.title || item.filename || "")}" />`;
-    placeholder.style.display = "flex";
-    scheduleImageAutoAdvance(id);
-    updateMediaControls(video);
-    return;
-  }
-  clearImageAutoAdvanceTimer();
-  placeholder.textContent = "";
-  video.src = mediaUrl(id);
-  setupPlayerEvents(video, id);
-  video.style.display = "block";
-  placeholder.style.display = "none";
-  updateMediaControls(video);
-  video.play().catch(error => appendPlaybackFailure(item, error));
 }
 
 function openDirectory(id) {
@@ -1525,282 +1458,16 @@ function updatePlaceholder() {
   configureTopCountForSource(source);
 }
 
-function resizePreviewImage() {}
-function mediaActionIconSrc(action) {
-  const manifest = iconManifest || {};
-  const actions = manifest.actions || ACTION_ICON_FILES;
-  const file = actions[action] || ACTION_ICON_FILES[action] || manifest.fallback || "view_grid.png";
-  const route = String(manifest.route || "/ui-icon").replace(/\/+$/, "");
-  return `${route}/${String(file).replace(/^\/+/, "")}`;
-}
-function setPlayButtonState(playing, disabled = false) {
-  const button = byId("playBtn");
-  if (!button) return;
-  button.disabled = !!disabled;
-  const action = playing ? "pause" : "play";
-  const label = playing ? t("暂停") : t("播放");
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.innerHTML = `<img src="${escAttr(mediaActionIconSrc(action))}" alt="" />`;
-}
-function mediaHasVideoSource(player) {
-  return !!(player && (player.currentSrc || player.getAttribute("src")));
-}
-function mediaDuration(player) {
-  const duration = Number(player && player.duration);
-  return Number.isFinite(duration) && duration > 0 ? duration : 0;
-}
-function mediaCurrentTime(player) {
-  const current = Number(player && player.currentTime);
-  return Number.isFinite(current) && current > 0 ? current : 0;
-}
-function hasPreviewContent() {
-  const player = byId("videoPlayer");
-  const placeholder = byId("previewArea");
-  return mediaHasVideoSource(player) || !!(placeholder && placeholder.querySelector(".preview-image"));
-}
-function completedPreviewOrder() {
-  return (frontendState.completed_items || []).map(item => item.id).filter(id => id !== undefined && id !== null && String(id));
-}
-function adjacentCompletedId(currentId, direction, wrap = true) {
-  const order = completedPreviewOrder();
-  if (!order.length) return "";
-  const normalized = String(currentId || "");
-  const index = order.findIndex(id => String(id) === normalized);
-  if (index < 0) return direction >= 0 ? order[0] : order[order.length - 1];
-  let nextIndex = index + (direction >= 0 ? 1 : -1);
-  if (wrap) nextIndex = (nextIndex + order.length) % order.length;
-  if (nextIndex < 0 || nextIndex >= order.length) return "";
-  return order[nextIndex];
-}
-function updateFullscreenButtonState() {
-  const button = byId("fullscreenBtn");
-  if (!button) return;
-  button.textContent = `[ ${t(isFullscreenMode ? "退出" : "全屏")} ]`;
-}
-function updateMediaControls(player = byId("videoPlayer")) {
-  const slider = byId("seekSlider");
-  const label = byId("timeLabel");
-  const hasVideo = mediaHasVideoSource(player);
-  const canStartPreview = !!(currentPlayingId || selected.completed || selectedVideoId);
-  const duration = hasVideo ? mediaDuration(player) : 0;
-  const current = hasVideo ? mediaCurrentTime(player) : 0;
-  const dragging = slider && slider.dataset.dragging === "1";
-  if (slider) {
-    slider.disabled = !hasVideo || duration <= 0;
-    slider.max = String(Math.max(0, Math.floor(duration)));
-    if (!dragging) slider.value = String(Math.min(Math.floor(current), Math.floor(duration || current)));
-  }
-  if (label) {
-    label.textContent = hasVideo ? `${fmtTime(current)} / ${fmtTime(duration)}` : "00:00";
-  }
-  setPlayButtonState(hasVideo && !player.paused && !player.ended, !hasVideo && !canStartPreview);
-  updateNavBtnsState();
-  updateFullscreenButtonState();
-}
-function installMediaControlHandlers() {
-  const slider = byId("seekSlider");
-  if (slider && slider.dataset.mediaHandlers !== "1") {
-    slider.dataset.mediaHandlers = "1";
-    const beginDrag = () => { slider.dataset.dragging = "1"; };
-    const finishDrag = () => {
-      if (slider.dataset.dragging === "1") onSeekCommit(slider.value);
-      slider.dataset.dragging = "";
-    };
-    slider.addEventListener("pointerdown", beginDrag);
-    slider.addEventListener("touchstart", beginDrag, { passive: true });
-    slider.addEventListener("pointerup", finishDrag);
-    slider.addEventListener("pointercancel", finishDrag);
-    slider.addEventListener("touchend", finishDrag);
-  }
-  const player = byId("videoPlayer");
-  if (player && player.dataset.mediaHandlers !== "1") {
-    player.dataset.mediaHandlers = "1";
-    player.addEventListener("play", () => updateMediaControls(player));
-    player.addEventListener("pause", () => updateMediaControls(player));
-    player.addEventListener("durationchange", () => updateMediaControls(player));
-  }
-}
-function closePreview() {
-  previewRequestToken += 1;
-  clearImageAutoAdvanceTimer();
-  const video = byId("videoPlayer");
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-  video.style.display = "none";
-  const placeholder = byId("previewArea");
-  placeholder.textContent = "";
-  placeholder.style.display = "flex";
-  currentPlayingId = null;
-  updateMediaControls(video);
-}
-function updateNavBtnsState() {
-  const order = completedPreviewOrder();
-  const disabled = order.length <= 1;
-  const prev = byId("prevBtn");
-  const next = byId("nextBtn");
-  if (prev) prev.disabled = disabled;
-  if (next) next.disabled = disabled;
-}
-function switchPreview(direction) {
-  const current = currentPlayingId || selected.completed || selectedVideoId;
-  const nextId = adjacentCompletedId(current, Number(direction) || 1, true);
-  if (nextId) void playCompleted(nextId);
-}
-function onSeekInput(value) {
-  const player = byId("videoPlayer");
-  if (!mediaHasVideoSource(player)) {
-    updateMediaControls(player);
-    return;
-  }
-  const duration = mediaDuration(player);
-  const nextTime = Math.max(0, Math.min(Number(value) || 0, duration || Number(value) || 0));
-  const label = byId("timeLabel");
-  if (label) label.textContent = `${fmtTime(nextTime)} / ${fmtTime(duration)}`;
-}
-function onSeekCommit(value) {
-  const player = byId("videoPlayer");
-  if (!mediaHasVideoSource(player)) {
-    updateMediaControls(player);
-    return;
-  }
-  const duration = mediaDuration(player);
-  const nextTime = Math.max(0, Math.min(Number(value) || 0, duration || Number(value) || 0));
-  if (Number.isFinite(nextTime)) player.currentTime = nextTime;
-  const slider = byId("seekSlider");
-  if (slider) slider.dataset.dragging = "";
-  updateMediaControls(player);
-}
-function prepareDeleteItem(id) {
-  const videoId = String(id || "");
-  if (videoId && String(currentPlayingId || "") === videoId) closePreview();
-}
-function deleteVideo(id) {
-  prepareDeleteItem(id);
-  if (typeof window !== "undefined" && window.sendWS !== defaultSendWS && typeof window.sendWS === "function") {
-    window.sendWS("delete_video", { video_id: id });
-    return;
-  }
-  frontendAction("delete_item", { id });
-}
-async function previewVideo(id) {
-  const oldId = selectedVideoId;
-  await playCompleted(id);
-  updateSelection(oldId, id);
-  const player = byId("videoPlayer");
-  setupPlayerEvents(player, id);
-}
-function setupPlayerEvents(player, sourceId) {
-  if (!player) return;
-  const item = completedItemById(sourceId) || {};
-  player.onloadedmetadata = () => {
-    reportCompletedPlayerMetadata(sourceId, player);
-    restoreWebPlaybackPosition(sourceId, player);
-    updateMediaControls(player);
-  };
-  player.ondurationchange = () => updateMediaControls(player);
-  player.onplay = () => updateMediaControls(player);
-  player.onpause = () => updateMediaControls(player);
-  player.ontimeupdate = () => {
-    rememberWebPlaybackPosition(sourceId, player);
-    updateMediaControls(player);
-  };
-  player.onseeked = () => updateMediaControls(player);
-  player.onerror = () => {
-    updateMediaControls(player);
-    if (currentPlayingId === sourceId) appendPlaybackFailure(item, player.error || "media error");
-  };
-  player.onended = () => {
-    removePlaybackPosition(sourceId);
-    updateMediaControls(player);
-    if (currentPlayingId === sourceId && shouldAutoplayNext()) autoplayNextPreview();
-  };
-}
+window.playCompleted = id => playbackControllerService().playCompleted(id);
+window.previewVideo = id => playbackControllerService().previewVideo(id);
+window.togglePlay = () => playbackControllerService().togglePlay();
+window.toggleFullscreen = () => playbackControllerService().toggleFullscreen();
+window.switchPreview = direction => playbackControllerService().switchPreview(direction);
+window.onSeekInput = value => playbackControllerService().onSeekInput(value);
+window.onSeekCommit = value => playbackControllerService().onSeekCommit(value);
+window.deleteVideo = id => playbackControllerService().deleteVideo(id);
+window.closePreview = () => playbackControllerService().closePreview();
 
-function rememberWebPlaybackPosition(sourceId, player) {
-  if (!sourceId || !player || !shouldRememberPlaybackPosition()) return;
-  if (!Number.isFinite(player.currentTime) || player.currentTime < 1) return;
-  if (Number.isFinite(player.duration) && player.duration > 0 && player.currentTime >= player.duration - 1.5) {
-    removePlaybackPosition(sourceId);
-    return;
-  }
-  try {
-    localStorage.setItem(playbackPositionKey(sourceId), String(Math.floor(player.currentTime)));
-    localStorage.removeItem(legacyPlaybackPositionKey(sourceId));
-  } catch (_error) {}
-}
-
-function restoreWebPlaybackPosition(sourceId, player) {
-  if (!sourceId || !player || !shouldRememberPlaybackPosition()) return;
-  let seconds = 0;
-  try {
-    const value = localStorage.getItem(playbackPositionKey(sourceId)) || localStorage.getItem(legacyPlaybackPositionKey(sourceId));
-    seconds = Number(value || 0);
-  } catch (_error) { seconds = 0; }
-  if (seconds > 0 && Number.isFinite(seconds)) player.currentTime = seconds;
-}
-
-function reportCompletedPlayerMetadata(sourceId, player) {
-  if (!sourceId || !player) return;
-  const metadata = {};
-  if (Number.isFinite(player.duration) && player.duration > 0) {
-    metadata.duration = fmtClockTime(player.duration);
-  }
-  if (player.videoWidth > 0 && player.videoHeight > 0) {
-    metadata.resolution = `${player.videoWidth} x ${player.videoHeight}`;
-  }
-  if (!Object.keys(metadata).length) return;
-  const changed = applyCompletedMetadataLocally(sourceId, metadata);
-  frontendAction("update_completed_metadata", { id: sourceId, metadata, source: "web_player" });
-  if (changed) renderCompleted();
-}
-
-function applyCompletedMetadataLocally(sourceId, metadata) {
-  const item = (frontendState.completed_items || []).find(row => row.id === sourceId);
-  if (!item) return false;
-  let changed = false;
-  if (metadata.duration && !hasDisplayDuration(item.duration)) {
-    item.duration = metadata.duration;
-    changed = true;
-  }
-  if (metadata.resolution && !isRealResolution(item.resolution)) {
-    item.resolution = metadata.resolution;
-    changed = true;
-  }
-  if (hasDisplayDuration(item.duration) && isRealResolution(item.resolution)) {
-    item.metadata_pending = false;
-  }
-  return changed;
-}
-
-function hasDisplayDuration(value) { const service = playbackStateService(); if (service) return service.hasDisplayDuration(value); const text = String(value || "").trim(); return !!text && text !== "--" && text !== "\u68c0\u6d4b\u4e2d" && text !== "00:00:00"; }
-function isRealResolution(value) { return playbackStateService()?.isRealResolution(value) ?? /^\d{2,5}\s*x\s*\d{2,5}$/i.test(String(value || "").trim()); }
-function autoplayNextPreview() {
-  const nextId = adjacentCompletedId(currentPlayingId, 1, false);
-  if (nextId) void playCompleted(nextId);
-}
-function togglePlay() {
-  const video = byId("videoPlayer");
-  if (!mediaHasVideoSource(video)) {
-    const id = currentPlayingId || selected.completed || selectedVideoId;
-    if (id) void playCompleted(id);
-    return;
-  }
-  if (video.paused) video.play().catch(error => appendPlaybackFailure(completedItemById(currentPlayingId), error)); else video.pause();
-  updateMediaControls(video);
-}
-function toggleFullscreen() {
-  const panel = byId("previewPanel");
-  if (!panel || !panel.requestFullscreen) return;
-  if (document.fullscreenElement === panel) {
-    document.exitFullscreen().catch(() => {});
-    return;
-  }
-  panel.requestFullscreen().catch(error => appendLog(error.message || String(error)));
-}
-function fmtTime(seconds) { return playbackStateService()?.fmtTime(seconds) || `${String(Math.floor((Number(seconds) || 0) / 60)).padStart(2, "0")}:${String(Math.floor((Number(seconds) || 0) % 60)).padStart(2, "0")}`; }
-function fmtClockTime(seconds) { return playbackStateService()?.fmtClockTime(seconds) || "00:00:00"; }
 function selectVideo(id) {
   const nextId = String(id || "");
   const oldId = selectedVideoId;
@@ -1826,11 +1493,7 @@ function renderQueueCompat() { renderQueue(); }
 
 document.addEventListener("keydown", event => {
   if (dialogControllerService().handleShortcut(event)) return;
-  if (event.key === "Escape") {
-    if (isFullscreenMode && document.fullscreenElement === byId("previewPanel")) {
-      document.exitFullscreen().catch(() => {});
-    }
-  }
+  if (playbackControllerService().handleShortcut(event)) return;
   const navigationOrder = queueNavigationOrder();
   if ((event.key === "ArrowUp" || event.key === "ArrowDown") && navigationOrder.length > 0) {
     const tag = document.activeElement && document.activeElement.tagName;
@@ -1843,16 +1506,9 @@ document.addEventListener("keydown", event => {
     selectVideo(navigationOrder[next]);
   }
   if (event.key === "Delete" && selectedVideoId && document.activeElement === document.body) {
-    deleteVideo(selectedVideoId);
+    playbackControllerService().deleteVideo(selectedVideoId);
   }
 }, true);
-
-document.addEventListener("fullscreenchange", () => {
-  const panel = byId("previewPanel");
-  isFullscreenMode = !!panel && document.fullscreenElement === panel;
-  if (panel) panel.classList.toggle("is-fullscreen", isFullscreenMode);
-  updateFullscreenButtonState();
-});
 
 function byId(id) {
   return document.getElementById(id);
