@@ -136,6 +136,9 @@ class DesktopHostAdapter:
     def cleanup_media(self) -> None:
         self._run_on_ui(self.window.cleanup_media)
 
+    def show_completed_item(self, video_id: str) -> None:
+        self._run_on_ui(lambda: self.window.show_completed_item(video_id))
+
     def show_image(self, file_path: str) -> None:
         self._run_on_ui(lambda: self.window.show_image(file_path))
 

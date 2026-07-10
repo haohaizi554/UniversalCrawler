@@ -23,7 +23,10 @@ import os
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from PyQt6.QtGui import QIcon
 
 class Mode(str, Enum):
     """UCrawl 支持的所有运行模式。"""
@@ -806,27 +809,27 @@ def prompt_mode_menu() -> Mode | None:
 def run_gui(argv: Sequence[str] | None = None) -> int:
     """启动桌面 GUI。"""
     from entry.gui_entry import main as _main
-    return _main(list(argv) if argv else None)
+    return _main(list(argv) if argv is not None else None)
 
 def run_web(argv: Sequence[str] | None = None) -> int:
     """启动 Web UI。"""
     from entry.web_entry import main as _main
-    return _main(list(argv) if argv else None)
+    return _main(list(argv) if argv is not None else None)
 
 def run_cli(argv: Sequence[str] | None = None) -> int:
     """启动 CLI 单次执行。"""
     from entry.cli_entry import main as _main
-    return _main(list(argv) if argv else None)
+    return _main(list(argv) if argv is not None else None)
 
 def run_interactive(argv: Sequence[str] | None = None) -> int:
     """启动交互式引导。"""
     from entry.interactive_entry import main as _main
-    return _main(list(argv) if argv else None)
+    return _main(list(argv) if argv is not None else None)
 
 def run_test(argv: Sequence[str] | None = None) -> int:
     """启动测试套件（GUI / TUI / CLI 自适应）。"""
     from entry.test_entry import main as _main
-    return _main(list(argv) if argv else None)
+    return _main(list(argv) if argv is not None else None)
 
 # ---- 模式 -> 处理器映射 ----
 

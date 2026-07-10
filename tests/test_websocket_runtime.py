@@ -3,6 +3,9 @@ from __future__ import annotations
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
+
+from fastapi import WebSocketDisconnect
 
 from app.web.ws_dispatcher import WebSocketMessageDispatcher
 from app.web.ws_runtime import WebSocketRuntime
@@ -28,7 +31,33 @@ class _OversizedWebSocket:
     async def close(self, *, code: int, reason: str):
         self.closed = (code, reason)
 
+class _OneMessageWebSocket:
+    def __init__(self):
+        self.messages = ['{"type": "noop", "data": {}}']
+
+    async def receive_text(self):
+        if self.messages:
+            return self.messages.pop(0)
+        raise WebSocketDisconnect()
+
 class WebSocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_active_connection_refreshes_and_releases_session_lease(self):
+        manager = _FakeConnectionManager()
+        runtime = WebSocketRuntime(connection_manager=manager, dispatcher=_FakeDispatcher())
+        ws = _OneMessageWebSocket()
+        context = SimpleNamespace(
+            session_id="session-a",
+            mark_websocket_connected=Mock(),
+            mark_websocket_disconnected=Mock(),
+            touch=Mock(),
+        )
+
+        await runtime.run(ws, context)
+
+        context.mark_websocket_connected.assert_called_once()
+        context.touch.assert_called_once()
+        context.mark_websocket_disconnected.assert_called_once()
+
     async def test_oversized_message_closes_and_disconnects_connection(self):
         manager = _FakeConnectionManager()
         runtime = WebSocketRuntime(connection_manager=manager, dispatcher=_FakeDispatcher())

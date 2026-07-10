@@ -81,6 +81,16 @@ class WebSessionRegistryTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - start, 0.2)
         release_shutdown.set()
 
+    def test_prune_keeps_context_with_active_websocket(self):
+        context = self.registry.get_or_create("session-active")
+        context.mark_websocket_connected()
+        self.clock[0] += 11.0
+
+        self.registry.prune()
+
+        self.assertIn("session-active", self.registry._contexts)
+        self.assertEqual(context.controller.shutdown_calls, 0)
+
     def test_context_tracks_background_tasks_until_done(self):
         async def run_case():
             context = self.registry.get_or_create("task-session")

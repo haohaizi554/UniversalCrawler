@@ -55,11 +55,22 @@ class WebControllerConfigService:
             "auto_copy_trace_on_error",
         },
         "appearance": {"follow_system", "accent", "scale", "font_size", "language"},
-        "douyin": {"max_items"},
-        "xiaohongshu": {"max_items"},
-        "kuaishou": {"max_items"},
-        "bilibili": {"max_pages", "max_items"},
-        "missav": {"individual_only", "priority", "proxy_type", "proxy_app", "proxy_port", "proxy_url"},
+        # 这里必须覆盖平台设置快照中所有标记为 editable 的字段；否则 GUI 可改、
+        # Web 设置页也能展示，但 PUT /api/config 会在最后一层把同一个字段拒掉。
+        "douyin": {"max_items", "timeout"},
+        "xiaohongshu": {"max_items", "timeout"},
+        "kuaishou": {"max_items", "timeout"},
+        "bilibili": {"max_pages", "max_items", "timeout"},
+        "missav": {
+            "max_items",
+            "timeout",
+            "individual_only",
+            "priority",
+            "proxy_type",
+            "proxy_app",
+            "proxy_port",
+            "proxy_url",
+        },
     }
 
     def get_config(self) -> dict:

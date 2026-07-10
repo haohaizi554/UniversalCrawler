@@ -591,11 +591,13 @@ class CLIRunner(ControllerSessionMixin):
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            # DownloadManager 没有统一的 join API；CLI 只能同时观察 worker 集合
-            # 和队列长度，二者都为空才说明最终结果可汇总。
-            with self._dl_manager._workers_lock:
-                active = len(self._dl_manager.workers)
-            queued = self._dl_manager.queue.qsize()
+            counter = getattr(self._dl_manager, "pending_work_counts", None)
+            counts = counter() if callable(counter) else None
+            if isinstance(counts, (tuple, list)) and len(counts) == 2:
+                active, queued = counts
+            else:
+                active = len(getattr(self._dl_manager, "workers", []))
+                queued = self._dl_manager.queue.qsize()
             if active == 0 and queued == 0:
                 return False
             self._emit_download_heartbeat()

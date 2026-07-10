@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.config import cfg
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
@@ -122,6 +123,11 @@ class FFmpegDownloadStrategy:
     def execute(self, downloader: StrategyCapableDownloader, request: DownloadRequest) -> bool:
         from .ffmpeg import FFmpegDownloader
 
+        try:
+            if int(cfg.get("download", "speed_limit_kb", 0) or 0) > 0:
+                return False
+        except (TypeError, ValueError):
+            pass
         if request.explicit_strategy != self.name and not FFmpegDownloader.should_use(request.video_item):
             return False
         if not FFmpegDownloader.is_available():

@@ -49,6 +49,7 @@ class EventBus:
         self._history: deque[dict[str, Any]] = deque(maxlen=100)
         self._topic_publish_times: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self._async_queue: queue.Queue[_AsyncTask | _AsyncTaskKey | None] = queue.Queue(maxsize=1024)
+        self._async_priority_overflow: deque[_AsyncTask] = deque()
         self._async_pending_latest: dict[tuple[int, str, str, str], _AsyncTask] = {}
         self._async_enqueued_latest_keys: set[tuple[int, str, str, str]] = set()
         self._async_inflight = 0
@@ -178,7 +179,6 @@ class EventBus:
         with self._locked("shutdown"):
             self._async_shutdown = True
             thread = self._async_thread
-            self._async_thread = None
         if thread is None:
             return
         try:
@@ -186,6 +186,12 @@ class EventBus:
         except queue.Full:
             pass
         thread.join(timeout=1.0)
+        if thread.is_alive():
+            self._logger.warning("EventBus async worker did not stop before shutdown timeout")
+            return
+        with self._locked("shutdown.finished"):
+            if self._async_thread is thread:
+                self._async_thread = None
         self._drain_async_queue()
 
     def _record_topic_publish_locked(self, topic: str, now: float) -> int | None:
@@ -199,6 +205,9 @@ class EventBus:
     def _ensure_async_worker_locked(self) -> None:
         if self._async_thread is not None and self._async_thread.is_alive():
             return
+        if self._async_thread is not None:
+            self._drain_async_queue()
+            self._async_thread = None
         self._async_shutdown = False
         self._async_thread = threading.Thread(
             target=self._run_async_handlers,
@@ -220,9 +229,17 @@ class EventBus:
             try:
                 self._async_queue.put_nowait(_AsyncTask(topic, payload, handler))
             except queue.Full:
+                if self._is_critical_async_task(topic, payload):
+                    with self._locked("async.priority_overflow"):
+                        self._async_priority_overflow.append(_AsyncTask(topic, payload, handler))
+                    self._logger.warning(
+                        "EventBus async queue full; preserved critical event for topic %s",
+                        topic,
+                    )
+                    continue
                 self._track_async_task_finished()
                 self._logger.warning("EventBus async handler queue full for topic %s", topic)
-                return
+                continue
 
     def _enqueue_latest_async_handler(
         self,
@@ -298,7 +315,7 @@ class EventBus:
         self._async_thread_id = threading.get_ident()
         try:
             while True:
-                item = self._async_queue.get()
+                item = self._next_async_item()
                 if item is None:
                     return
                 try:
@@ -333,8 +350,31 @@ class EventBus:
             self._async_enqueued_latest_keys.discard(item.key)
             return self._async_pending_latest.pop(item.key, None)
 
+    def _next_async_item(self) -> _AsyncTask | _AsyncTaskKey | None:
+        with self._locked("async.priority.next"):
+            if self._async_priority_overflow:
+                return self._async_priority_overflow.popleft()
+        return self._async_queue.get()
+
+    @staticmethod
+    def _is_critical_async_task(topic: str, payload: Any) -> bool:
+        if str(topic or "") != "download.domain_event":
+            return False
+        event_type = getattr(payload, "event_type", None)
+        event_value = str(getattr(event_type, "value", event_type) or "")
+        if event_value in {"task_finished", "task_error"}:
+            return True
+        if event_value != "video_state_changed":
+            return False
+        event_payload = getattr(payload, "payload", None)
+        if not isinstance(event_payload, dict):
+            return False
+        status = str(event_payload.get("status_code") or event_payload.get("status") or "").lower()
+        return status in {"completed", "failed", "timed_out", "local"}
+
     def _drain_async_queue(self) -> None:
         with self._locked("async.drain"):
+            self._async_priority_overflow.clear()
             self._async_pending_latest.clear()
             self._async_enqueued_latest_keys.clear()
             self._async_inflight = 0

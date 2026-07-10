@@ -32,7 +32,12 @@ from app.ui.localization import is_translation_of, normalize_language, platform_
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
 from app.ui.viewmodels.active_download_projection import prepare_active_item_for_display
-from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
+from app.ui.viewmodels.list_page_worker import (
+    ListPageRequest,
+    ListPageResult,
+    ListPageWorker,
+    preferred_visible_selection,
+)
 from app.ui.styles.table_rows import (
     install_click_only_row_selection,
     install_stable_vertical_scrollbar,
@@ -866,10 +871,11 @@ class ActiveDownloadsPage(PageFrame):
     def _emit_options_changed(self) -> None:
         if self._syncing_download_options:
             return
+        retry_value = self.retry_combo.currentData()
         self.options_changed.emit(
             {
                 "auto_retry": self.auto_retry.isChecked(),
-                "max_retries": int(self.retry_combo.currentData() or 3),
+                "max_retries": int(3 if retry_value is None else retry_value),
                 "max_concurrent": int(self.thread_combo.currentData() or 3),
             }
         )
@@ -912,6 +918,7 @@ class ActiveDownloadsPage(PageFrame):
     def _apply_items_result(self, result: object) -> None:
         if not isinstance(result, ListPageResult) or result.sequence != self._items_sequence:
             return
+        current_selected_id = self.table.selected_id()
         self.items = result.items
         self._id_order = result.id_order
         self._items_by_id = result.items_by_id
@@ -920,8 +927,9 @@ class ActiveDownloadsPage(PageFrame):
             self._running_count_value = running_count
             self._update_running_count_label()
         table_changed = self.table.set_rows(self.items)
-        if result.selected_id:
-            self.table.select_id(result.selected_id)
+        preferred_id = preferred_visible_selection(current_selected_id, result.selected_id, result.items)
+        if preferred_id:
+            self.table.select_id(preferred_id)
         if self.items and not self.table.selectionModel().selectedRows():
             self.table.selectRow(0)
             self._selected_detail_id = self.table.selected_id()
@@ -935,9 +943,13 @@ class ActiveDownloadsPage(PageFrame):
             settings = snapshot.get("settings_snapshot") or {}
             download_settings = settings.get("\u4e0b\u8f7d\u8bbe\u7f6e") or {}
             if download_settings:
+                current_retry = self.retry_combo.currentData()
                 options = {
                     "auto_retry": self.auto_retry.isChecked(),
-                    "max_retries": download_settings.get("max_retries", self.retry_combo.currentData() or 3),
+                    "max_retries": download_settings.get(
+                        "max_retries",
+                        3 if current_retry is None else current_retry,
+                    ),
                     "max_concurrent": download_settings.get("max_concurrent", self.thread_combo.currentData() or 3),
                 }
         if not options:
@@ -945,7 +957,12 @@ class ActiveDownloadsPage(PageFrame):
         self._syncing_download_options = True
         try:
             self.auto_retry.setChecked(bool(options.get("auto_retry", True)))
-            self._set_combo_value(self.retry_combo, int(options.get("max_retries") or 3), suffix=self._retry_count_label(0).replace("0", ""))
+            retry_value = options.get("max_retries")
+            self._set_combo_value(
+                self.retry_combo,
+                int(3 if retry_value is None else retry_value),
+                suffix=self._retry_count_label(0).replace("0", ""),
+            )
             self._set_combo_value(
                 self.thread_combo,
                 normalize_download_concurrency(options.get("max_concurrent") or 3),

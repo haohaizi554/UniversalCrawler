@@ -373,7 +373,7 @@
     const settings = (snapshot.settings_snapshot || {})["\u4e0b\u8f7d\u8bbe\u7f6e"] || {};
     const options = {
       auto_retry: true,
-      max_retries: Number(settings.max_retries || 3),
+      max_retries: Number(settings.max_retries ?? 3),
       max_concurrent: normalizeDownloadConcurrency(settings.max_concurrent || 3),
       ...(snapshot.download_options || {}),
     };

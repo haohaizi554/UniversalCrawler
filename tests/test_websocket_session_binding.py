@@ -7,10 +7,11 @@ from app.web.session_runtime import WebSessionRegistry
 from app.web.ws_session_binding import WebSocketSessionBinder
 
 class _FakeWebSocket:
-    def __init__(self, *, cookies=None, headers=None):
+    def __init__(self, *, cookies=None, headers=None, client_host="127.0.0.1"):
         self.cookies = cookies or {}
         self.headers = headers or {}
         self.url = SimpleNamespace(scheme="ws", netloc="testserver")
+        self.client = SimpleNamespace(host=client_host)
         self.closed = None
 
     async def close(self, *, code: int, reason: str):
@@ -66,6 +67,16 @@ class WebSocketSessionBinderTests(unittest.IsolatedAsyncioTestCase):
             },
             headers={"origin": "http://testserver"},
         )
+
+        binding = await binder.bind(ws)
+
+        self.assertIsNone(binding)
+        self.assertEqual(ws.closed, (1008, "invalid session token"))
+
+    async def test_bind_rejects_remote_client_without_origin_or_token(self):
+        registry = self._registry()
+        binder = WebSocketSessionBinder(registry, default_session_id="default")
+        ws = _FakeWebSocket(client_host="192.0.2.10")
 
         binding = await binder.bind(ws)
 

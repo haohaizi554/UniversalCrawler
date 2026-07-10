@@ -570,7 +570,9 @@ def _git_stdout(args: Sequence[str], *, project_root: Path, text: bool = True) -
         check=False,
     )
     if result.returncode != 0:
-        return ""
+        stderr = str(result.stderr or "").strip()
+        detail = f": {stderr}" if stderr else ""
+        raise BootstrapError(f"git {' '.join(args)} failed with exit code {result.returncode}{detail}")
     return result.stdout or ""
 
 
@@ -792,7 +794,8 @@ def _cmd_production_bootstrap(args: argparse.Namespace) -> int:
 
 
 def _cmd_scan_secrets(args: argparse.Namespace) -> int:
-    findings = scan_repository_for_secrets(project_root=Path(args.project_root))
+    project_root = Path(args.project_root) if args.project_root else Path.cwd()
+    findings = scan_repository_for_secrets(project_root=project_root)
     if findings:
         print("scan-secrets failed:")
         for finding in findings:
@@ -850,7 +853,7 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.set_defaults(func=_cmd_production_bootstrap)
 
     scan = sub.add_parser("scan-secrets")
-    scan.add_argument("--project-root", default=str(PROJECT_ROOT))
+    scan.add_argument("--project-root", default=None)
     scan.set_defaults(func=_cmd_scan_secrets)
 
     dev = sub.add_parser("generate-dev-windows-cert")

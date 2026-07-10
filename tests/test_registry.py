@@ -432,6 +432,7 @@ def _bootstrap_registry() -> None:
         include=[
             "tests/test_contract.py",
             "tests/test_fastapi_*.py",
+            "tests/test_http_*.py",
             "tests/test_web_*.py",
             "tests/test_web_entry.py",
             "tests/test_web_controller_*.py",

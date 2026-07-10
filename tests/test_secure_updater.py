@@ -754,6 +754,24 @@ def test_record_skipped_update_persists_version(tmp_path):
     assert state.skipped_version == "3.7.0"
 
 
+def test_update_state_atomic_save_preserves_previous_file_on_replace_failure(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    original = LocalUpdateState(last_seen_version="3.6.17")
+    original.save(state_path)
+    original_content = state_path.read_text(encoding="utf-8")
+
+    def fail_replace(_source, _target):
+        raise OSError("replace interrupted")
+
+    monkeypatch.setattr("app.services.secure_updater.os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace interrupted"):
+        LocalUpdateState(last_seen_version="3.7.0").save(state_path)
+
+    assert state_path.read_text(encoding="utf-8") == original_content
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
+
+
 def test_updater_helper_entry_uses_installer_runner_and_no_shell_strings():
     helper = Path("entry/updater_helper.py")
 

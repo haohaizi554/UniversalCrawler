@@ -7,6 +7,7 @@ let selected = {
   failed: "",
   tool: "link_parser",
 };
+let systemThemeListenerRegistered = false;
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
 
@@ -1165,7 +1166,22 @@ function restoreTheme() {
 
 function applyAppearance(appearance = {}) {
   const theme = String(appearance.theme || "").toLowerCase();
-  if (theme === "dark" || theme === "light") {
+  const followsSystem = appearance.follow_system === true;
+  const systemTheme = typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+  if (!systemThemeListenerRegistered && systemTheme && typeof systemTheme.addEventListener === "function") {
+    systemTheme.addEventListener("change", event => {
+      const current = (frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] || {};
+      if (current.follow_system !== true) return;
+      applyTheme(Boolean(event.matches));
+      applyAppearance(current);
+    });
+    systemThemeListenerRegistered = true;
+  }
+  if (followsSystem && systemTheme) {
+    applyTheme(systemTheme.matches);
+  } else if (theme === "dark" || theme === "light") {
     applyTheme(theme === "dark");
     localStorage.setItem("cached_theme", theme);
     localStorage.setItem("cached_dark_theme", String(theme === "dark"));

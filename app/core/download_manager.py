@@ -50,6 +50,7 @@ class DownloadWorker(threading.Thread):
         self.finished = CallbackSignal()
         self._final_ext = ".mp4"
         self._completion_callback: Callable[[DownloadWorker, str], None] | None = None
+        self._path_reservations: list[str] = []
 
     def _trace_id(self) -> str | None:
         """读取当前任务的 trace_id，便于串联调试日志。"""
@@ -202,6 +203,7 @@ class DownloadWorker(threading.Thread):
 
             self.is_running = False
             get_download_telemetry_service().clear(self.video.id)
+            self._release_output_path_reservations()
             try:
                 if callable(self._completion_callback):
                     self._completion_callback(self, completion_reason)
@@ -418,17 +420,49 @@ class DownloadWorker(threading.Thread):
         self.video.meta["save_dir"] = os.path.dirname(filepath)
 
     def _ensure_unique_path(self, filepath: str) -> str:
-        """若目标文件已存在，则为文件名追加递增后缀以避免覆盖。"""
-        if not os.path.exists(filepath):
-            return filepath
-
+        """原子预留一个未占用路径，避免并发任务选中同一目标文件。"""
         base, ext = os.path.splitext(filepath)
-        index = 1
+        index = 0
         while True:
-            candidate = f"{base}_{index}{ext}"
-            if not os.path.exists(candidate):
-                return candidate
-            index += 1
+            candidate = filepath if index == 0 else f"{base}_{index}{ext}"
+            reservation = os.path.join(
+                os.path.dirname(candidate),
+                f".{os.path.basename(candidate)}.ucrawl-reserve",
+            )
+            try:
+                descriptor = os.open(reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                index += 1
+                continue
+            try:
+                os.write(descriptor, str(os.getpid()).encode("ascii", errors="ignore"))
+            finally:
+                os.close(descriptor)
+            if os.path.exists(candidate):
+                try:
+                    os.remove(reservation)
+                except OSError:
+                    pass
+                index += 1
+                continue
+            self._path_reservations.append(reservation)
+            return candidate
+
+    def _release_output_path_reservations(self) -> None:
+        reservations, self._path_reservations = self._path_reservations, []
+        for reservation in reservations:
+            try:
+                os.remove(reservation)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                debug_logger.log_exception(
+                    "DownloadWorker",
+                    "release_output_path_reservation",
+                    exc,
+                    details={"reservation": reservation},
+                    trace_id=self._trace_id(),
+                )
 
     def _detect_actual_file_type(self, filepath: str) -> str:
         """根据文件头检测实际文件类型，避免错误扩展名影响播放。"""

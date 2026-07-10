@@ -12,6 +12,7 @@ REPORT_WIDTH = 140
 
 EXCLUDE_DIRS = {
     ".git",
+    ".worktrees",
     ".idea",
     ".vscode",
     ".venv",
@@ -335,7 +336,7 @@ def scan_project(root: Path) -> dict:
     for current_root, dirs, files in os.walk(root):
         current_path = Path(current_root)
 
-        # 阻止进入 .git / .venv / node_modules 等目录
+        # 阻止进入 .git / .worktrees / .venv / node_modules 等目录
         dirs[:] = [
             d for d in dirs
             if not should_skip_dir(current_path / d)
@@ -1461,4 +1462,3 @@ if __name__ == "__main__":
     result = scan_project(project_root)
     print_report(result)
     html_path = save_report_html(result, args.html)
-    print(f"\nHTML 报告已生成: {html_path}")

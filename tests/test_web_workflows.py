@@ -113,7 +113,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("当前已有任务在运行", result["error"])
-        self.assertIn(("crawl_state", {"is_running": False}), self.events)
+        self.assertNotIn(("crawl_state", {"is_running": False}), self.events)
 
     async def test_select_tasks_normalizes_indices(self):
         self.controller.current_spider = SimpleNamespace(isRunning=lambda: True)

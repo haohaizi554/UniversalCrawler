@@ -21,7 +21,7 @@ from app.exceptions import (
 from app.models import VideoItem
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 
-from .base import BaseDownloader, ProgressCallback, StopCheck
+from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 from .external import FFmpegExternalTool, build_hidden_startupinfo
 
 class BilibiliDownloader(BaseDownloader):
@@ -136,6 +136,8 @@ class BilibiliDownloader(BaseDownloader):
         max_retries = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
         resume_raw = cfg.get("download", "resume_enabled", True)
         resume_enabled = self._coerce_bool_setting(resume_raw)
+        # DASH 的音频和视频并行下载，共享额度后总吞吐才符合设置页的 KB/s 语义。
+        rate_limiter = TransferRateLimiter(cfg.get("download", "speed_limit_kb", 0))
         debug_logger.log(
             component="BilibiliDownloader",
             action="prepare_download",
@@ -322,6 +324,7 @@ class BilibiliDownloader(BaseDownloader):
                                     raise DownloaderStoppedError("用户停止下载")
                                 if chunk:
                                     fp.write(chunk)
+                                    rate_limiter.throttle(len(chunk), lambda: stop_event.is_set() or check_stop_func())
                                     downloaded += len(chunk)
                                     with progress_lock:
                                         stream_stats[name]["downloaded"] = downloaded

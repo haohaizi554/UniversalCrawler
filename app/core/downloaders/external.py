@@ -48,6 +48,14 @@ def _configured_request_timeout(default: int = 60) -> int:
         timeout = default
     return max(1, min(timeout, 3600))
 
+
+def _configured_speed_limit_kb(default: int = 0) -> int:
+    try:
+        speed_limit = int(cfg.get("download", "speed_limit_kb", default))
+    except (TypeError, ValueError):
+        speed_limit = default
+    return max(0, min(speed_limit, 999999))
+
 class ExternalToolRunner:
     """封装外部工具查找、等待和停止控制的公共逻辑。"""
 
@@ -303,6 +311,10 @@ class NM3U8DLREExternalTool:
             "--mux-after-done",
             "format=mp4",
         ])
+        speed_limit_kb = _configured_speed_limit_kb()
+        if speed_limit_kb > 0:
+            # N_m3u8DL-RE 原生支持 K/M 后缀；沿用 KB/s 配置值可避免 Python 侧下载完分片后才延迟。
+            cmd.extend(["--max-speed", f"{speed_limit_kb}K"])
         for key, value in headers.items():
             cmd.extend(["--header", f"{key}: {value}"])
         if proxy:

@@ -109,3 +109,28 @@ def test_worker_result_callback_exception_does_not_kill_worker() -> None:
         worker.shutdown()
 
     assert attempts == ["first", "second"]
+
+
+def test_sequential_worker_does_not_callback_after_shutdown() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    received: list[str] = []
+
+    def process(request: str) -> str:
+        started.set()
+        assert release.wait(timeout=3)
+        return request
+
+    worker = SequentialRequestWorker(
+        name="test-sequential-shutdown-worker",
+        on_result=received.append,
+        process=process,
+    )
+    worker.submit("late-result")
+    assert started.wait(timeout=2)
+
+    worker.shutdown()
+    release.set()
+    worker._thread.join(timeout=2)
+
+    assert received == []

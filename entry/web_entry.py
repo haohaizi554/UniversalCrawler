@@ -23,6 +23,10 @@ import threading
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PyQt6.QtGui import QIcon
 
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
@@ -562,7 +566,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         prog="ucrawl-web",
         description="UCrawl Web UI - FastAPI + 浏览器",
     )
-    parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认: 0.0.0.0)")
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址 (默认: 127.0.0.1；局域网访问需显式指定)")
     parser.add_argument("--port", type=int, default=8000, help="监听端口 (默认: 8000)")
     parser.add_argument("--no-qt", action="store_true", help="无 Qt 模式（适合服务器 / 容器部署）")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")

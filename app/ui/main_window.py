@@ -2387,6 +2387,12 @@ class MainWindow(QMainWindow):
     def select_video_by_id(self, video_id: str) -> bool:
         return self.app_shell.select_video_id(video_id)
 
+    def show_completed_item(self, video_id: str) -> None:
+        """切到已完成页，并在异步列表首轮渲染后补一次目标选择。"""
+        self.app_shell.show_page("completed")
+        if not self.app_shell.select_video_id(video_id):
+            QTimer.singleShot(100, lambda item_id=video_id: self.app_shell.select_video_id(item_id))
+
     def _on_copy_trace_clicked(self) -> None:
         video_id = self.get_selected_video_id()
         if not video_id:

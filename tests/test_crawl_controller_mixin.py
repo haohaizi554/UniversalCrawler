@@ -90,11 +90,14 @@ class CrawlControllerMixinTests(unittest.TestCase):
         controller.spider_session.activate_spider.assert_called_once()
         activated_spider, bindings = controller.spider_session.activate_spider.call_args.args
         self.assertIs(activated_spider, spider)
-        self.assertIs(bindings.on_log.__self__, controller)
-        self.assertIs(bindings.on_item_found.__self__, controller)
-        self.assertIs(bindings.on_items_found.__self__, controller)
-        self.assertIs(bindings.on_select_tasks.__self__, controller)
-        self.assertIs(bindings.on_finished.__self__, controller)
+        self.assertTrue(callable(bindings.on_log))
+        self.assertTrue(callable(bindings.on_item_found))
+        self.assertTrue(callable(bindings.on_items_found))
+        self.assertTrue(callable(bindings.on_select_tasks))
+        self.assertTrue(callable(bindings.on_finished))
+        bindings.on_log("started")
+        emitted = controller._spider_bridge.sig_event.emit.call_args.args[0]
+        self.assertEqual(emitted.payload["session_id"], controller._active_spider_session_id)
         self.assertIs(controller.current_spider, spider)
 
     def test_on_start_crawl_rejects_current_spider_before_thread_start(self):
@@ -232,6 +235,33 @@ class CrawlControllerMixinTests(unittest.TestCase):
         self.assertEqual(len(callbacks), 1)
         callbacks[0]()
         controller._on_spider_select_tasks.assert_called_once_with([{"title": "A"}])
+
+    def test_stale_spider_finish_event_does_not_finish_new_session(self):
+        controller = _DummyCrawlController()
+        controller._active_spider_session_id = "new-session"
+        controller._on_spider_finished = Mock()
+        event = build_crawl_state_event(CrawlStatus.FINISHED)
+        event.payload["session_id"] = "old-session"
+
+        controller._dispatch_spider_event(event)
+
+        controller._on_spider_finished.assert_not_called()
+
+    def test_deferred_selection_is_ignored_after_session_changes(self):
+        controller = _DummyCrawlController()
+        controller.current_spider = Mock()
+        controller._active_spider_session_id = "old-session"
+        callbacks = []
+        controller.host._queue_on_ui.side_effect = callbacks.append
+        event = build_selection_required_event([{"title": "A"}])
+        event.payload["session_id"] = "old-session"
+
+        controller._dispatch_spider_event(event)
+        controller._active_spider_session_id = "new-session"
+        callbacks[0]()
+
+        controller.host.show_selection_dialog.assert_not_called()
+        controller.current_spider.resume_from_ui.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

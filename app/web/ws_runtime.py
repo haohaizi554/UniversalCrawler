@@ -27,9 +27,15 @@ class WebSocketRuntime:
 
     async def run(self, ws: WebSocket, context: WebSessionContext) -> None:
         """持续接收客户端消息，限制单条消息大小并确保断连时注销连接。"""
+        mark_connected = getattr(context, "mark_websocket_connected", None)
+        if callable(mark_connected):
+            mark_connected()
         try:
             while True:
                 raw = await ws.receive_text()
+                touch = getattr(context, "touch", None)
+                if callable(touch):
+                    touch()
                 if len(raw) > self.MAX_MESSAGE_CHARS:
                     log_web_event(
                         "WebSocketRuntime",
@@ -66,3 +72,6 @@ class WebSocketRuntime:
             self._connection_manager.disconnect(ws)
         finally:
             self._connection_manager.disconnect(ws)
+            mark_disconnected = getattr(context, "mark_websocket_disconnected", None)
+            if callable(mark_disconnected):
+                mark_disconnected()

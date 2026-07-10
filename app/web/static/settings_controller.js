@@ -359,7 +359,7 @@
       localStorage.setItem("cached_dark_theme", String(dark));
       notifySideEffects({ section, key, value, applyAppearance: true });
       if (normalizeSettingsGroupName(state.currentGroup) === "外观设置") renderSettings(true);
-    } else if (section === "appearance" && ["scale", "font_size", "accent", "language"].includes(key)) {
+    } else if (section === "appearance" && ["scale", "font_size", "accent", "language", "follow_system"].includes(key)) {
       patchSetting("外观设置", key, value);
       notifySideEffects({
         section,

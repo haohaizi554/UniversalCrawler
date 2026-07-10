@@ -21,7 +21,7 @@ from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
 
-from .base import BaseDownloader, ProgressCallback, StopCheck
+from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 from . import hls_proxy as hls_proxy_utils
 from .hls_proxy import _LocalHlsProxy
 from .nm3u8_progress import _Nm3u8OutputProgress
@@ -1486,6 +1486,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         key_cache: dict[str, bytes] = {}
         total = len(playlist.segments)
         bytes_written = 0
+        rate_limiter = TransferRateLimiter(cfg.get("download", "speed_limit_kb", 0))
         with raw_path.open("wb") as output:
             for index, segment in enumerate(playlist.segments, start=1):
                 if check_stop_func():
@@ -1496,11 +1497,15 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                     # fMP4 HLS 的 MAP 初始化段只写一次，否则合并后的流会被播放器识别为损坏。
                     init_bytes = fetch_bytes(init_uri)
                     output.write(init_bytes)
+                    rate_limiter.throttle(len(init_bytes), check_stop_func)
                     bytes_written += len(init_bytes)
                     written_maps.add(init_uri)
                 segment_bytes = fetch_bytes(segment.absolute_uri)
                 decoded_segment = self._decrypt_hls_segment(segment, segment_bytes, fetch_bytes, key_cache)
                 output.write(decoded_segment)
+                # Python/browser fallback 已经拿到整段数据，只能在段之间施加背压；
+                # 外部工具与 yt-dlp 路径则使用各自的原生限速参数。
+                rate_limiter.throttle(len(decoded_segment), check_stop_func)
                 bytes_written += len(decoded_segment)
                 self._emit_progress(
                     progress_callback,
@@ -1741,7 +1746,11 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
     ) -> dict[str, Any]:
         retry_count = BaseDownloader._coerce_retry_count(cfg.get("download", "max_retries", 3))
         resume_enabled = BaseDownloader._coerce_bool_setting(cfg.get("download", "resume_enabled", True))
-        return {
+        try:
+            speed_limit_kb = max(0, int(cfg.get("download", "speed_limit_kb", 0) or 0))
+        except (TypeError, ValueError):
+            speed_limit_kb = 0
+        params = {
             "quiet": True,
             "no_warnings": True,
             "noprogress": True,
@@ -1757,6 +1766,10 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             "progress_hooks": [progress_hook],
             "impersonate": "",
         }
+        if speed_limit_kb > 0:
+            # yt-dlp 的 ratelimit 单位是 bytes/s，和配置页的 KB/s 做一次显式换算。
+            params["ratelimit"] = speed_limit_kb * 1024
+        return params
 
     @staticmethod
     def _run_yt_dlp(url: str, params: dict[str, Any]) -> None:
@@ -1801,16 +1814,14 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             target,
             parent / f"{target.name}.tmp",
             parent / f"{target.name}.part",
+            parent / f"{target.name}.aria2",
             parent / f"{stem}.tmp",
             parent / f"{stem}.part",
+            parent / f"{stem}.aria2",
+            parent / f"{stem}.ts",
             parent / f"{stem}_tmp",
             parent / f"{stem}.download",
         }
-        candidates.update(parent.glob(f"{stem}*.tmp"))
-        candidates.update(parent.glob(f"{stem}*.part"))
-        candidates.update(parent.glob(f"{stem}*.aria2"))
-        candidates.update(parent.glob(f"{stem}*.ts"))
-        candidates.update(path for path in parent.glob(f"{stem}*") if path.is_dir())
         for path in candidates:
             try:
                 if path.is_dir():

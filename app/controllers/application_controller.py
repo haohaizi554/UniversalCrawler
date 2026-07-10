@@ -161,12 +161,28 @@ class ApplicationController(
         QTimer.singleShot(150, lambda vid=video_id: self._play_pending_launch_media(vid))
 
     def _play_pending_launch_media(self, video_id: str) -> None:
-        if not self._pending_launch_media_path:
+        target_path = self._pending_launch_media_path
+        if not target_path:
             return
         if not self._window_media_ready():
             QTimer.singleShot(200, lambda vid=video_id: self._play_pending_launch_media(vid))
             return
-        self.play_video(video_id)
+        video = self._video_lookup(video_id)
+        if video is None or not self._playback_file_exists(target_path):
+            self._host().report_missing_media()
+            self._pending_launch_media_path = None
+            return
+
+        host = self._host()
+        host.show_completed_item(video_id)
+        self._set_current_playing_id(video_id)
+        host.announce_playback(video.title)
+        # 关联文件已经明确要求由本应用打开，不能再回到“系统默认播放器”分支，
+        # 否则默认应用仍是本程序时会递归启动新实例，页面也无法稳定切到已完成。
+        if self._is_image_file(target_path):
+            host.show_image(target_path)
+        else:
+            host.play_video(target_path)
         self._pending_launch_media_path = None
 
     def _window_media_ready(self) -> bool:
@@ -275,6 +291,7 @@ class ApplicationController(
         self.app_state.set_current_playing_id(None)
         self.current_spider = None
         self._active_spider_bindings = None
+        self._active_spider_session_id = None
         self._last_media_release_request_id: str | None = None
 
     def _video_state_guard(self):

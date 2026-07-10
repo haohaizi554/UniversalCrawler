@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import threading
 import unittest
+from queue import Queue
 from typing import Any
 from unittest.mock import patch
 
 from app.core.event_bus import EventBus
+from app.core.events import DomainEvent, DomainEventType
 
 
 class EventBusPublishSubscribeTests(unittest.TestCase):
@@ -156,6 +158,67 @@ class EventBusHandlerIsolationTests(unittest.TestCase):
 
 
 class EventBusAsyncBackpressureTests(unittest.TestCase):
+    def test_async_queue_preserves_download_terminal_event_when_full(self) -> None:
+        bus = EventBus()
+        bus._async_queue = Queue(maxsize=1)
+        started = threading.Event()
+        release = threading.Event()
+        seen: list[DomainEventType] = []
+
+        def handler(event: DomainEvent) -> None:
+            if not started.is_set():
+                started.set()
+                release.wait(timeout=3)
+            seen.append(event.event_type)
+
+        bus.subscribe_async("download.domain_event", handler)
+        try:
+            bus.publish(
+                "download.domain_event",
+                DomainEvent(DomainEventType.TASK_STARTED, entity_id="running"),
+            )
+            self.assertTrue(started.wait(timeout=2))
+            bus.publish(
+                "download.domain_event",
+                DomainEvent(DomainEventType.TASK_STARTED, entity_id="queued"),
+            )
+            bus.publish(
+                "download.domain_event",
+                DomainEvent(DomainEventType.TASK_FINISHED, entity_id="terminal"),
+            )
+            release.set()
+            self.assertTrue(bus.wait_for_async_idle(timeout=2))
+        finally:
+            release.set()
+            bus.shutdown()
+
+        self.assertIn(DomainEventType.TASK_FINISHED, seen)
+
+    def test_shutdown_timeout_keeps_live_worker_and_inflight_state(self) -> None:
+        bus = EventBus()
+        started = threading.Event()
+        release = threading.Event()
+
+        def handler(_payload: object) -> None:
+            started.set()
+            release.wait(timeout=3)
+
+        bus.subscribe_async("normal", handler)
+        bus.publish("normal", None)
+        self.assertTrue(started.wait(timeout=2))
+        worker = bus._async_thread
+        self.assertIsNotNone(worker)
+
+        try:
+            bus.shutdown()
+            self.assertIs(bus._async_thread, worker)
+            self.assertTrue(worker.is_alive())
+            self.assertFalse(bus.wait_for_async_idle(timeout=0))
+        finally:
+            release.set()
+            worker.join(timeout=2)
+            bus.shutdown()
+
     def test_async_noisy_events_are_latest_state_wins_per_entity(self) -> None:
         bus = EventBus()
         started = threading.Event()

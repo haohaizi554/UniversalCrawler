@@ -7,13 +7,14 @@ import inspect
 import mimetypes
 import os
 
-from fastapi import FastAPI, Header, Query, Request, WebSocket
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import cfg
 from app.utils.runtime_paths import resolve_resource_file
+from app.web.session_runtime import configured_allowed_origins
 
 # WebController 在 create_app() 中延迟初始化
 controller = None
@@ -120,8 +121,9 @@ def create_app(lifespan=None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,  # 修复 BUG-186: wildcard origin 不能带 credentials
+        allow_origins=sorted(configured_allowed_origins()),
+        allow_origin_regex=r"^https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$",
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -481,6 +483,9 @@ def create_app(lifespan=None) -> FastAPI:
         修复 BUG-159: 不能用 controller.bridge.emit（跨线程调度可能死锁），
         改用 loop.call_soon 调度到事件循环的下一次迭代执行
         """
+        if os.getenv("UCRAWL_DEBUG_ROUTES", "0") != "1":
+            raise HTTPException(status_code=404, detail="debug route disabled")
+
         import logging
         items = [
             {"title": "测试视频 1: 演示 modal 弹窗是否正常显示", "index": 0},

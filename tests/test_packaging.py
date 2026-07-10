@@ -119,6 +119,13 @@ class SpecFileExistenceTests(unittest.TestCase):
     def test_update_manifest_tool_exists(self):
         self.assertTrue(UPDATE_MANIFEST_TOOL.exists(), f"missing: {UPDATE_MANIFEST_TOOL}")
 
+    def test_console_test_launcher_is_backed_by_packaged_tests(self):
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn('ucrawl-test = "entry.test_entry:main"', pyproject)
+        self.assertIn('"tests*"', pyproject)
+        self.assertNotIn('exclude = ["docs*", "packaging*", "tests*"]', pyproject)
+
     def test_spec_file_syntax_valid(self):
         """spec 文件必须能被 Python 编译。"""
         # PyInstaller spec 文件不是普通 Python 模块，是 exec'd
@@ -976,6 +983,44 @@ class PyprojectEntryPointsTests(unittest.TestCase):
         # 必须包含 ucrawl 主入口
         self.assertIn("ucrawl", scripts)
         self.assertEqual(scripts.get("ucrawl-auto"), "entry.dispatcher:run")
+
+    def test_wheel_metadata_declares_direct_runtime_dependencies(self):
+        """`pip install .` 必须覆盖源码直接导入和 WebSocket 运行所需依赖。"""
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        names = {
+            requirement.split("[", 1)[0]
+            .split("~=", 1)[0]
+            .split(">=", 1)[0]
+            .split("==", 1)[0]
+            .strip()
+            .lower()
+            for requirement in data["project"]["dependencies"]
+        }
+        expected = {"pydantic", "httpx", "emoji", "gmssl", "m3u8", "xhshow", "websockets"}
+        self.assertEqual(expected - names, set())
+
+    def test_wheel_package_data_includes_shared_ui_icons(self):
+        """普通 wheel 也必须携带 GUI/WebUI 共用图标，不能只靠源码目录或 PyInstaller。"""
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        package_find = data["tool"]["setuptools"]["packages"]["find"]
+        package_data = data["tool"]["setuptools"]["package-data"]
+        self.assertIn("UI*", package_find["include"])
+        self.assertIn("icon/*.png", package_data["UI"])
+        self.assertTrue((PROJECT_ROOT / "UI" / "__init__.py").is_file())
 
 class NoStaleBuildArtifactsTests(unittest.TestCase):
     """避免 build 残留文件。"""

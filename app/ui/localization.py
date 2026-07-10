@@ -76,6 +76,17 @@ def tr(text: str, language: str | None) -> str:
     translated = TRANSLATIONS.get(normalized, {}).get(value)
     if translated is not None:
         return translated
+    # 设置选项会根据后端策略动态生成，不能要求每个天数都预先写进静态词典。
+    # 在精确词条未命中时按同一规则翻译，避免一个下拉框里出现中英文混排。
+    day_match = re.fullmatch(r"(\d+)\s*天(（推荐）)?", value)
+    if day_match and normalized == "en-US":
+        amount = int(day_match.group(1))
+        unit = "day" if amount == 1 else "days"
+        recommended = " (Recommended)" if day_match.group(2) else ""
+        return f"{amount} {unit}{recommended}"
+    if day_match and normalized == "zh-TW":
+        recommended = "（推薦）" if day_match.group(2) else ""
+        return f"{day_match.group(1)} 天{recommended}"
     if normalized == "en-US":
         match = re.fullmatch(r"共\s*(\d+)\s*项", value)
         if match:

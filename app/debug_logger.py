@@ -203,6 +203,13 @@ class DebugLogger:
             masked,
             flags=re.IGNORECASE,
         )
+        masked = re.sub(
+            r"(\b(?:authorization|proxy-authorization|cookie|password|passwd|pwd|secret|token|access_token|refresh_token|sessionid(?:_ss)?|sessdata|mstoken|ttwid)\s*[:=]\s*)"
+            r"(?:bearer\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+            r"\1[已脱敏]",
+            masked,
+            flags=re.IGNORECASE,
+        )
         lowered = masked.lower()
         if lowered.startswith("bearer "):
             return "Bearer ***"
@@ -212,9 +219,39 @@ class DebugLogger:
             return "Authorization: [已脱敏]"
         return masked
 
+    def _redact_command_args(self, command_args: list[str] | tuple[str, ...]) -> list[str]:
+        """Redact both inline secrets and values following known secret flags."""
+        sensitive_flags = {
+            "/p",
+            "--password",
+            "--passphrase",
+            "--token",
+            "--secret",
+            "--authorization",
+            "--cookie",
+        }
+        redacted: list[str] = []
+        mask_next = False
+        for item in command_args:
+            value = str(item)
+            if mask_next:
+                redacted.append("[已脱敏]")
+                mask_next = False
+                continue
+            redacted.append(self._mask_inline_secret(value))
+            if value.strip().lower() in sensitive_flags:
+                mask_next = True
+        return redacted
+
     def _redact_sensitive_value(self, value: Any) -> Any:
         """提供 `_redact_sensitive_value` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if isinstance(value, str):
+            if re.match(
+                r"^\s*(?:cookie|password|passwd|pwd|secret|token|sessionid(?:_ss)?|sessdata|mstoken|ttwid)\s*[:=]",
+                value,
+                flags=re.IGNORECASE,
+            ):
+                return "[已脱敏]"
             masked = self._mask_inline_secret(value)
             return masked if masked != value else "[已脱敏]"
         if isinstance(value, (dict, list, tuple, set)):
@@ -340,6 +377,7 @@ class DebugLogger:
     ):
         # 错误摘要始终覆盖为“最近一次错误”，这样用户从 UI 打开时能直接看到最新诊断结论。
         """提供 `_write_error_summary` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
+        message = self._mask_inline_secret(str(message))
         severity = self._infer_error_severity(component, action, status_code, details)
         conclusion = self._build_error_conclusion(component, action, status_code, details)
         suggestions = self._build_error_suggestions(component, action, status_code, details)
@@ -464,6 +502,7 @@ class DebugLogger:
     ):
         if not self._should_write_level(level):
             return
+        message = self._mask_inline_secret(str(message))
         context = self._clean_mapping(context)
         details = self._clean_mapping(details)
         lines = [
@@ -496,6 +535,7 @@ class DebugLogger:
     ):
         if not self._should_write_level(level):
             return
+        message = self._mask_inline_secret(str(message))
         request = self._clean_mapping(request)
         response_summary = self._clean_mapping(response_summary)
         lines = [
@@ -527,7 +567,8 @@ class DebugLogger:
         
         details = {}
         if command_args:
-            details["args"] = list(command_args)
+            details["args"] = self._redact_command_args(command_args)
+        message = self._mask_inline_secret(str(message))
         context = self._clean_mapping(context)
         lines = [
             "-" * 88,

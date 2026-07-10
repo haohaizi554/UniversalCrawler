@@ -44,6 +44,7 @@ class SequentialRequestWorker(Generic[RequestT, ResultT]):
     def shutdown(self) -> None:
         with self._condition:
             self._shutdown = True
+            self._pending.clear()
             self._condition.notify()
         if self._thread.is_alive():
             self._thread.join(timeout=1.0)
@@ -66,6 +67,9 @@ class SequentialRequestWorker(Generic[RequestT, ResultT]):
                     details={"request_type": type(request).__name__},
                 )
                 continue
+            with self._condition:
+                if self._shutdown:
+                    return
             try:
                 self._on_result(result)
             except RuntimeError:

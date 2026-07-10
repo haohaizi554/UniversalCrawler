@@ -12,7 +12,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 SendFactory = Callable[[str], Callable[[str, Any], Any]]
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"}
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver", "testclient"}
 
 def normalize_directory(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
@@ -81,8 +81,29 @@ class WebSessionContext:
         self.approved_roots: set[str] = set()
         self.background_tasks: set[asyncio.Task] = set()
         self._background_tasks_lock = threading.RLock()
-        self.last_access_at = time.monotonic()
+        self._access_lock = threading.RLock()
+        self._monotonic: Callable[[], float] = time.monotonic
+        self._active_websockets = 0
+        self.last_access_at = self._monotonic()
         self.approve_directory(self.controller.current_save_dir)
+
+    def touch(self) -> None:
+        with self._access_lock:
+            self.last_access_at = self._monotonic()
+
+    def mark_websocket_connected(self) -> None:
+        with self._access_lock:
+            self._active_websockets += 1
+            self.last_access_at = self._monotonic()
+
+    def mark_websocket_disconnected(self) -> None:
+        with self._access_lock:
+            self._active_websockets = max(0, self._active_websockets - 1)
+            self.last_access_at = self._monotonic()
+
+    def has_active_websocket(self) -> bool:
+        with self._access_lock:
+            return self._active_websockets > 0
 
     def track_background_task(self, task: asyncio.Task) -> asyncio.Task:
         with self._background_tasks_lock:
@@ -149,8 +170,9 @@ class WebSessionRegistry:
                     controller_factory=self._controller_factory,
                     workflow_factory=self._workflow_factory,
                 )
+                context._monotonic = self._monotonic
                 self._contexts[session_id] = context
-            context.last_access_at = self._monotonic()
+            context.touch()
         self._evict_overflow()
         return context
 
@@ -163,6 +185,7 @@ class WebSessionRegistry:
                 session_id
                 for session_id, context in self._contexts.items()
                 if session_id not in self._pinned_session_ids
+                and not context.has_active_websocket()
                 and now - getattr(context, "last_access_at", now) > self._idle_ttl_seconds
             ]
         for session_id in expired_session_ids:
@@ -178,6 +201,7 @@ class WebSessionRegistry:
                     (getattr(context, "last_access_at", 0.0), session_id)
                     for session_id, context in self._contexts.items()
                     if session_id not in self._pinned_session_ids
+                    and not context.has_active_websocket()
                 ),
                 key=lambda item: item[0],
             )

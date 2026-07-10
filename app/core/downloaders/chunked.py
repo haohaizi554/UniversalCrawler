@@ -13,7 +13,7 @@ from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
 
-from .base import BaseDownloader, ProgressCallback, StopCheck
+from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 
 class ChunkedDownloader(BaseDownloader):
     """适用于大文件的 Range 分块下载器，支持每个分片独立续传和重试。"""
@@ -74,6 +74,7 @@ class ChunkedDownloader(BaseDownloader):
         if total_size <= 0:
             raise StreamDownloadError("无法获取文件大小，回退到普通下载")
         accept_ranges = resp.headers.get("accept-ranges", "").lower()
+        source_etag = resp.headers.get("etag") or resp.headers.get("ETag")
         # 这里必须先确认服务端显式支持 Range；否则多线程分块会把整文件重复下载多份。
         if "bytes" not in accept_ranges:
             raise StreamDownloadError("服务器不支持 Range 分块下载")
@@ -99,6 +100,8 @@ class ChunkedDownloader(BaseDownloader):
         temp_files = [os.path.join(temp_dir, f".{base_name}.part{i}") for i in range(chunk_count)]
 
         downloaded_bytes = [0] * chunk_count
+        # 所有 Range 线程共享一个 limiter，配置含义是“单任务总速度”，不是每个分片各自一份额度。
+        rate_limiter = TransferRateLimiter(cfg.get("download", "speed_limit_kb", 0))
         lock = threading.Lock()
         error_event = threading.Event()
         stop_event = threading.Event()
@@ -122,8 +125,13 @@ class ChunkedDownloader(BaseDownloader):
                 try:
                     existing_size = 0
                     if resume_enabled and os.path.exists(temp_file):
-                        # 单个分片只续传到自己的 end_byte，防止旧缓存比当前分片更长时越界 append。
-                        existing_size = min(os.path.getsize(temp_file), chunk_length)
+                        actual_size = os.path.getsize(temp_file)
+                        if actual_size > chunk_length:
+                            # 旧任务或不同资源留下的超长分片不能直接参与合并。
+                            with open(temp_file, "wb"):
+                                pass
+                            actual_size = 0
+                        existing_size = actual_size
                     if existing_size >= chunk_length:
                         with lock:
                             downloaded_bytes[idx] = chunk_length
@@ -133,12 +141,21 @@ class ChunkedDownloader(BaseDownloader):
                     request_headers = headers.copy()
                     # 分块下载强依赖 206；如果服务端回 200，说明 Range 没生效，应立即失败回退。
                     request_headers["Range"] = f"bytes={request_start}-{end_byte}"
+                    if source_etag:
+                        request_headers["If-Range"] = str(source_etag)
                     with lock:
                         downloaded_bytes[idx] = existing_size if resume_enabled else 0
                     with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
                         if response.status_code != 206:
                             raise StreamDownloadError(f"分块请求未返回 206: {response.status_code}")
                         response.raise_for_status()
+                        content_range = response.headers.get("content-range") or response.headers.get("Content-Range")
+                        parsed_range = self._parse_content_range_header(content_range)
+                        if parsed_range != (request_start, end_byte, total_size):
+                            raise StreamDownloadError(
+                                "分块响应范围不匹配: "
+                                f"expected bytes {request_start}-{end_byte}/{total_size}, got {content_range!r}"
+                            )
                         mode = "ab" if resume_enabled and existing_size > 0 else "wb"
                         with open(temp_file, mode) as fp:
                             for chunk_data in response.iter_content(chunk_size=65536):
@@ -149,8 +166,16 @@ class ChunkedDownloader(BaseDownloader):
                                     raise DownloaderStoppedError("用户停止下载")
                                 if chunk_data:
                                     fp.write(chunk_data)
+                                    rate_limiter.throttle(
+                                        len(chunk_data),
+                                        lambda: stop_event.is_set() or check_stop_func(),
+                                    )
                                     with lock:
                                         downloaded_bytes[idx] += len(chunk_data)
+                        if os.path.getsize(temp_file) != chunk_length:
+                            raise StreamDownloadError(
+                                f"分块长度不完整: expected {chunk_length}, got {os.path.getsize(temp_file)}"
+                            )
                     return True
                 except DownloaderStoppedError:
                     error_event.set()

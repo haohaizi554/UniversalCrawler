@@ -28,8 +28,15 @@ dependencies = [
     "PyQt6>=6.4.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
+    "pydantic>=2.9.0",
+    "httpx>=0.28.0",
     "requests>=2.28.0",
     "fake-useragent>=2.2.0",
+    "emoji>=2.14.0",
+    "gmssl>=3.2.2",
+    "m3u8>=3.6.0",
+    "xhshow>=0.1.9",
+    "websockets>=12.0",
     "yt-dlp>=2023.0.0",
     "curl-cffi>=0.10.0",
     "pycryptodome>=3.20.0",
@@ -63,8 +70,8 @@ ucrawl-gui = "entry.gui_entry:main"
 ucrawl-test-gui = "entry.test_entry:main"
 
 [tool.setuptools.packages.find]
-include = ["app*", "cli*", "entry*", "shared*", "ucrawl*", "scripts*"]
-exclude = ["docs*", "packaging*", "tests*"]
+include = ["app*", "cli*", "entry*", "shared*", "ucrawl*", "scripts*", "UI*", "tests*"]
+exclude = ["docs*", "packaging*"]
 
 [tool.setuptools.package-data]
 ucrawl = []
@@ -72,6 +79,16 @@ cli = [
     "skill/*.md",
     "skill/examples/*.py",
 ]
+UI = [
+    "icon/*.png",
+    "icon/*.md",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F821", "F822", "F823"]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"

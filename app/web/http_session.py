@@ -36,11 +36,18 @@ class HttpSessionCoordinator:
         request.state.session_id = session_id
         request.state.session_context = context
 
-        if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "DELETE"}:
+        is_api_request = request.url.path.startswith("/api/")
+        client = getattr(request, "client", None)
+        client_host = getattr(client, "host", None)
+        token_valid = self.has_valid_session_token(request, context)
+        if is_api_request and not is_local_host(client_host) and not token_valid:
+            return JSONResponse({"status": "error", "error": "缺少或无效的会话令牌"}, status_code=403)
+
+        if is_api_request and request.method in {"POST", "PUT", "DELETE"}:
             origin = request.headers.get("origin")
             if origin and not self.is_request_origin_allowed(request, origin):
                 return JSONResponse({"status": "error", "error": "不允许的请求来源"}, status_code=403)
-            if origin and not self.has_valid_session_token(request, context):
+            if origin and not token_valid:
                 return JSONResponse({"status": "error", "error": "缺少或无效的会话令牌"}, status_code=403)
 
         response = await call_next(request)
@@ -80,7 +87,7 @@ class HttpSessionCoordinator:
 
     def has_valid_session_token(self, request: Request, context: WebSessionContext | None = None) -> bool:
         session_context = context or self.get_request_context(request)
-        request_token = request.headers.get(self._session_token_header)
+        request_token = request.headers.get(self._session_token_header) or request.cookies.get(self._csrf_cookie_name)
         return secrets.compare_digest(request_token or "", session_context.csrf_token)
 
     @staticmethod

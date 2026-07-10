@@ -510,16 +510,18 @@
   }
 
   function confirmSelection() {
-    cancelScheduledFocus();
     const indices = [...document.querySelectorAll("#selectionBody input:checked")].map(input => Number(input.dataset.index));
-    requireDependency("sendWS")("select_tasks", { indices });
+    if (!requireDependency("sendWS")("select_tasks", { indices })) return false;
+    cancelScheduledFocus();
     byId("selectionModal").style.display = "none";
+    return true;
   }
 
   function cancelSelection() {
+    if (!requireDependency("sendWS")("select_tasks", { indices: null })) return false;
     cancelScheduledFocus();
-    requireDependency("sendWS")("select_tasks", { indices: null });
     byId("selectionModal").style.display = "none";
+    return true;
   }
 
   function isSelectionModalOpen() {

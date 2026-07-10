@@ -121,7 +121,13 @@ class FFmpegDownloader(BaseDownloader):
 
     @classmethod
     def should_use(cls, video_item: VideoItem) -> bool:
-        
+        # ffmpeg 的 -readrate 按媒体时长限速，并不是 KB/s 带宽上限。用户启用限速时
+        # 让策略链继续回退到受 TransferRateLimiter 控制的 HTTP 下载，避免设置假生效。
+        try:
+            if int(cfg.get("download", "speed_limit_kb", 0) or 0) > 0:
+                return False
+        except (TypeError, ValueError):
+            pass
         duration_sec = video_item.meta.get("duration", 0)
         size_mb = video_item.meta.get("size_mb", 0)
         return bool(size_mb > cls.SIZE_THRESHOLD_MB or duration_sec > cls.DURATION_THRESHOLD_SEC)

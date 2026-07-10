@@ -41,6 +41,19 @@ def item_stable_id(item: Mapping[str, Any]) -> str:
     return str(item.get("id") or "")
 
 
+def preferred_visible_selection(
+    current_id: str,
+    result_id: str,
+    visible_items: Sequence[Mapping[str, Any]],
+) -> str:
+    """Keep a newer UI selection when a background list result arrives."""
+    visible_ids = {item_stable_id(item) for item in visible_items}
+    for candidate in (str(current_id or ""), str(result_id or "")):
+        if candidate and candidate in visible_ids:
+            return candidate
+    return ""
+
+
 def build_list_page_result(request: ListPageRequest) -> ListPageResult:
     """把原始列表转换为 UI 可直接渲染的一页结果。
 

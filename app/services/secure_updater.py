@@ -52,6 +52,32 @@ DEFAULT_ALLOWED_HOSTS = frozenset(
 DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30.0
 DEFAULT_INSTALL_ATTEMPT_LIMIT = 2
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Durably replace a text file without exposing partially written JSON."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 DEFAULT_UPDATE_STATE_NAME = "state.json"
 DEFAULT_AUTO_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 
@@ -326,8 +352,7 @@ class LocalUpdateState:
 
     def save(self, path: Path) -> None:
         payload = asdict(self)
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(Path(path), json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def default_update_state_path() -> Path:
@@ -711,8 +736,10 @@ class GitHubReleaseClient:
             return {}
 
     def _save_cache(self, payload: Mapping[str, Any]) -> None:
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(
+            self.cache_path,
+            json.dumps(dict(payload), ensure_ascii=False, indent=2),
+        )
 
     def _is_auto_check_throttled(self, cache: Mapping[str, Any]) -> bool:
         if self.auto_check_interval_seconds <= 0:
@@ -1048,7 +1075,8 @@ def write_update_asset_descriptor(installer_path: Path, asset: UpdateAsset) -> P
     """Persist the verified asset metadata passed from GUI to updater helper."""
 
     descriptor_path = Path(installer_path).with_name(f"{Path(installer_path).name}.asset.json")
-    descriptor_path.write_text(
+    _atomic_write_text(
+        descriptor_path,
         json.dumps(
             {
                 "name": asset.name,
@@ -1062,7 +1090,6 @@ def write_update_asset_descriptor(installer_path: Path, asset: UpdateAsset) -> P
             ensure_ascii=False,
             indent=2,
         ),
-        encoding="utf-8",
     )
     return descriptor_path
 

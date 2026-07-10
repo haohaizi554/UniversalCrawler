@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from Crypto.PublicKey import ECC
@@ -96,6 +97,36 @@ def test_scan_secrets_allows_public_key_in_update_trust(tmp_path, monkeypatch):
     findings = bootstrap.scan_repository_for_secrets(project_root=repo)
 
     assert findings == []
+
+
+def test_scan_secrets_fails_closed_when_git_command_fails(tmp_path, monkeypatch):
+    repo = tmp_path / "not-a-repository"
+    repo.mkdir()
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+
+    assert bootstrap.main(["scan-secrets", "--project-root", str(repo)]) == 1
+
+
+def test_scan_secrets_console_entry_defaults_to_current_worktree(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    captured: dict[str, Path] = {}
+
+    def fake_scan(*, project_root):
+        captured["project_root"] = Path(project_root)
+        return []
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(sys, "argv", ["scan-secrets"])
+    monkeypatch.setattr(bootstrap, "scan_repository_for_secrets", fake_scan)
+
+    assert bootstrap.scan_secrets_main() == 0
+    assert captured["project_root"] == repo
 
 
 def test_extract_windows_trust_parses_and_normalizes_powershell_json(tmp_path):

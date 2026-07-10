@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
+import threading
 import time
 from typing import Callable
 
 import requests
 
-from app.config import DEFAULT_USER_AGENT
+from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
@@ -16,6 +18,37 @@ from app.utils.user_agents import resolve_user_agent
 
 ProgressCallback = Callable[..., None]
 StopCheck = Callable[[], bool]
+
+
+class TransferRateLimiter:
+    """按所有调用线程的累计字节数限制单个下载任务的平均传输速度。"""
+
+    def __init__(self, speed_limit_kb: object) -> None:
+        try:
+            normalized = max(0, int(speed_limit_kb or 0))
+        except (TypeError, ValueError):
+            normalized = 0
+        self.bytes_per_second = normalized * 1024
+        self._started_at = time.monotonic()
+        self._scheduled_bytes = 0
+        self._lock = threading.Lock()
+
+    def throttle(self, byte_count: int, check_stop_func: StopCheck | None = None) -> None:
+        """等待到累计字节对应的时间点；共享实例可限制多分片的合计速度。"""
+        if self.bytes_per_second <= 0 or byte_count <= 0:
+            return
+        with self._lock:
+            self._scheduled_bytes += int(byte_count)
+            deadline = self._started_at + (self._scheduled_bytes / self.bytes_per_second)
+
+        while True:
+            if check_stop_func is not None and check_stop_func():
+                raise DownloaderStoppedError("用户停止下载")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.1))
+
 
 class BaseDownloader:
     """实现 `BaseDownloader` 对应的资源下载与落盘流程。"""
@@ -252,6 +285,7 @@ class BaseDownloader:
         success = False
         proxies = {"http": proxy, "https": proxy} if proxy else None
         retry_count = self._coerce_retry_count(max_retries)
+        rate_limiter = TransferRateLimiter(cfg.get("download", "speed_limit_kb", 0))
 
         # retry_count 表示失败后的重试次数，因此总尝试次数是 retry_count + 1。
         for attempt in range(retry_count + 1):
@@ -282,6 +316,12 @@ class BaseDownloader:
                     response.raise_for_status()
                     total_size = int(response.headers.get("content-length", 0))
                     if support_resume and existing_size > 0 and response.status_code == 206:
+                        content_range = response.headers.get("content-range") or response.headers.get("Content-Range")
+                        parsed_range = self._parse_content_range_header(content_range)
+                        if parsed_range is None or parsed_range[0] != existing_size:
+                            raise StreamDownloadError(
+                                f"断点续传响应范围不匹配: expected {existing_size}, got {content_range!r}"
+                            )
                         total_size += existing_size
                     elif support_resume and existing_size > 0 and response.status_code == 200:
                         # 服务端忽略 Range 时必须从头覆盖写入，不能继续 append 已有半截文件。
@@ -295,6 +335,9 @@ class BaseDownloader:
                                 raise DownloaderStoppedError("用户停止下载")
                             if chunk:
                                 fp.write(chunk)
+                                # iter_content 下一轮读取前等待，才能对网络读取形成背压；
+                                # 只限制本任务，不会让一个慢任务阻塞其他下载 worker。
+                                rate_limiter.throttle(len(chunk), check_stop_func)
                                 downloaded += len(chunk)
                                 if progress_callback and total_size > 0:
                                     self._emit_progress(progress_callback, int(downloaded / total_size * 100), bytes_downloaded=downloaded, bytes_total=total_size)
@@ -367,3 +410,14 @@ class BaseDownloader:
     ) -> None:
         
         raise NotImplementedError
+    @staticmethod
+    def _parse_content_range_header(value: object) -> tuple[int, int, int | None] | None:
+        match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", str(value or "").strip(), re.IGNORECASE)
+        if match is None:
+            return None
+        start = int(match.group(1))
+        end = int(match.group(2))
+        total = None if match.group(3) == "*" else int(match.group(3))
+        if end < start or (total is not None and end >= total):
+            return None
+        return start, end, total

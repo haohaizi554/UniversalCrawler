@@ -223,8 +223,7 @@ def validate_direct_download_url(url: str) -> str | None:
     try:
         addr_infos = socket.getaddrinfo(host, parts.port or None, type=socket.SOCK_STREAM)
     except OSError:
-        # 避免将临时 DNS 问题变成兼容性破坏；至少先拦截显式本地/私网主机。
-        return None
+        return "url 主机名无法解析"
 
     for addr_info in addr_infos:
         resolved_host = addr_info[4][0]

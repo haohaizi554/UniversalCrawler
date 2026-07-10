@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 
-from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin
+from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin, is_local_host
 
 @dataclass(slots=True)
 class WebSocketSessionBinding:
@@ -29,11 +29,14 @@ class WebSocketSessionBinder:
         origin = ws.headers.get("origin")
         token = ws.cookies.get("ucrawl_session_token")
         expected_origin = f"{ws.url.scheme.replace('ws', 'http', 1)}://{ws.url.netloc}"
+        token_valid = secrets.compare_digest(token or "", context.session_token)
 
         if origin and not is_allowed_origin(origin, expected_origin=expected_origin):
             await ws.close(code=1008, reason="forbidden origin")
             return None
-        if origin and not secrets.compare_digest(token or "", context.session_token):
+        client = getattr(ws, "client", None)
+        client_host = getattr(client, "host", None)
+        if not token_valid and (origin or not is_local_host(client_host)):
             await ws.close(code=1008, reason="invalid session token")
             return None
 

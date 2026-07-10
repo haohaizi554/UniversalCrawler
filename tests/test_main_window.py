@@ -37,6 +37,22 @@ class MainWindowTests(unittest.TestCase):
         def shutdown(self):
             self.shutdown_called = True
 
+    @patch("app.ui.main_window.QTimer.singleShot")
+    def test_show_completed_item_switches_page_before_selecting(self, mocked_single_shot):
+        window = SimpleNamespace(app_shell=Mock())
+        window.app_shell.select_video_id.return_value = False
+
+        MainWindow.show_completed_item(window, "media-1")
+
+        self.assertEqual(
+            window.app_shell.method_calls[:2],
+            [
+                unittest.mock.call.show_page("completed"),
+                unittest.mock.call.select_video_id("media-1"),
+            ],
+        )
+        mocked_single_shot.assert_called_once()
+
     def _make_window(self) -> MainWindow:
         """提供 `_make_window` 对应的内部辅助逻辑，供 `MainWindowTests` 使用。"""
         window = MainWindow.__new__(MainWindow)

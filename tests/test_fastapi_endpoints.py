@@ -17,6 +17,7 @@ import sys
 import unittest
 import tempfile
 from typing import Any
+from unittest.mock import patch
 
 def _create_test_client():
     """创建 FastAPI TestClient（fixture）。"""
@@ -545,8 +546,14 @@ class DebugEndpointTests(unittest.TestCase):
     def setUpClass(cls):
         cls.client = _create_test_client()
 
-    def test_debug_trigger_select(self):
-        r = self.client.post("/api/debug/trigger-select")
+    def test_debug_trigger_select_is_disabled_by_default(self):
+        with patch.dict(os.environ, {"UCRAWL_DEBUG_ROUTES": "0"}):
+            r = self.client.post("/api/debug/trigger-select")
+        self.assertEqual(r.status_code, 404)
+
+    def test_debug_trigger_select_can_be_explicitly_enabled(self):
+        with patch.dict(os.environ, {"UCRAWL_DEBUG_ROUTES": "1"}):
+            r = self.client.post("/api/debug/trigger-select")
         self.assertEqual(r.status_code, 200)
         data = r.json()
         self.assertIn("items_sent", data)
@@ -599,6 +606,18 @@ class ServerCORSHeadersTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         # CORS 中间件应返回 access-control-allow-origin
         self.assertIn("access-control-allow-origin", {k.lower() for k in r.headers.keys()})
+
+    def test_cors_header_absent_for_untrusted_remote_origin(self):
+        r = self.client.get("/api/ping", headers={"Origin": "https://untrusted.example"})
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("access-control-allow-origin", {k.lower() for k in r.headers.keys()})
+
+    def test_cors_header_present_for_explicitly_configured_origin(self):
+        with patch.dict(os.environ, {"UCRAWL_ALLOWED_ORIGINS": "https://console.example"}):
+            client = _create_test_client()
+        r = client.get("/api/ping", headers={"Origin": "https://console.example"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers.get("access-control-allow-origin"), "https://console.example")
 
 class ServerModuleExportsTests(unittest.TestCase):
     """app.web.server 模块导出检查。"""

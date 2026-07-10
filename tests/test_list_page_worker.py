@@ -1,4 +1,8 @@
-from app.ui.viewmodels.list_page_worker import ListPageRequest, build_list_page_result
+from app.ui.viewmodels.list_page_worker import (
+    ListPageRequest,
+    build_list_page_result,
+    preferred_visible_selection,
+)
 
 
 def _rows(count: int) -> list[dict[str, str]]:
@@ -54,3 +58,19 @@ def test_list_page_worker_keeps_manual_page_when_selection_should_not_drive_page
     assert result.current_page == 2
     assert result.selected_id == "item-3"
     assert [item["id"] for item in result.page_items] == [f"item-{index}" for index in range(20, 25)]
+
+
+def test_preferred_visible_selection_preserves_newer_user_choice():
+    visible = _rows(3)
+
+    selected = preferred_visible_selection("item-2", "item-0", visible)
+
+    assert selected == "item-2"
+
+
+def test_preferred_visible_selection_falls_back_when_current_choice_disappears():
+    visible = _rows(2)
+
+    selected = preferred_visible_selection("item-9", "item-1", visible)
+
+    assert selected == "item-1"

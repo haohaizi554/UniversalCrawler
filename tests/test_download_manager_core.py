@@ -182,6 +182,37 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertTrue(queued.meta["user_cancel_requested"])
         self.assertTrue(running.meta["user_cancel_requested"])
 
+    def test_cancel_task_stops_running_duplicate_even_when_same_id_is_queued(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        manager.workers = []
+        queued = VideoItem(url="https://example.com/q.mp4", title="queued", source="douyin")
+        running = VideoItem(url="https://example.com/r.mp4", title="running", source="douyin")
+        running.id = queued.id
+        worker = _FakeWorker(running, "downloads")
+        manager.workers = [worker]
+        manager.queue.put((queued, "downloads"))
+
+        result = manager.cancel_task(queued.id)
+
+        self.assertEqual(result, "running")
+        self.assertTrue(queued.meta["user_cancel_requested"])
+        self.assertTrue(running.meta["user_cancel_requested"])
+        worker.stop.assert_called_once()
+
+    def test_pending_work_counts_includes_dequeued_dispatching_tasks(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        manager.workers = []
+        dispatching = VideoItem(url="https://example.com/d.mp4", title="dispatching", source="douyin")
+        manager._dispatching_tasks = [(dispatching, "downloads")]
+
+        active, queued = manager.pending_work_counts()
+
+        self.assertEqual((active, queued), (1, 0))
+
     def test_dispatch_loop_runs_without_qt_adapter(self):
         manager = _CoreManager()
         manager.is_running = False

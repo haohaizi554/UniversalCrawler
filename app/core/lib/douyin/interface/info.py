@@ -84,7 +84,7 @@ class Info(API):
         """提供 `__generate_data` 对应的内部辅助逻辑，供 `Info` 使用。"""
         if isinstance(self.sec_user_id, str):
             self.sec_user_id = [self.sec_user_id]
-        value = f"[{','.join(f'"{i}"' for i in self.sec_user_id)}]"
+        value = "[" + ",".join(f'"{item}"' for item in self.sec_user_id) + "]"
         return {
             "sec_user_ids": value,
         }

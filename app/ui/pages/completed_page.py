@@ -21,7 +21,12 @@ from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
-from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
+from app.ui.viewmodels.list_page_worker import (
+    ListPageRequest,
+    ListPageResult,
+    ListPageWorker,
+    preferred_visible_selection,
+)
 from app.ui.viewmodels.snapshot_table_model import PENDING_METADATA_EMPTY_VALUES, PENDING_METADATA_LABEL
 
 class CompletedPage(PageFrame):
@@ -349,6 +354,7 @@ class CompletedPage(PageFrame):
     def _apply_page_result(self, result: object) -> None:
         if not isinstance(result, ListPageResult) or result.sequence != self._page_sequence:
             return
+        current_selected_id = self.table.selected_id()
         self.items = result.items
         self._visible_items = list(result.page_items)
         self._id_order = result.id_order
@@ -356,8 +362,9 @@ class CompletedPage(PageFrame):
         self.table.setUpdatesEnabled(False)
         try:
             self.table.set_rows(result.page_items)
-            if result.selected_id:
-                self.table.select_id(result.selected_id)
+            preferred_id = preferred_visible_selection(current_selected_id, result.selected_id, result.page_items)
+            if preferred_id:
+                self.table.select_id(preferred_id)
         finally:
             self.table.setUpdatesEnabled(True)
         if self.items and not self.table.selectionModel().selectedRows():

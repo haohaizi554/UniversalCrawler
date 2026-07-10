@@ -137,9 +137,7 @@ class WebWorkflowService:
             message = "当前已有任务在运行，请先停止或等待结束"
             if log_error:
                 await self._emit_log(f"⚠️ {message}")
-                await self.broadcast("crawl_state", {"is_running": False})
-                return {"status": "error", "error": message}
-            return await self._error(message, crawl_state_false=True)
+            return {"status": "error", "error": message}
 
         user_config = payload.get("config", {})
         if not isinstance(user_config, dict):

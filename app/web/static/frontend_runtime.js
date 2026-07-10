@@ -398,6 +398,7 @@
         applyLegacyFrontendEvent(type, data);
         return true;
       case "frontend_action_result":
+        if (data.status && data.status !== "ok") fetchFrontendState();
         if (data.frontend_delta) applyFrontendDelta(data.frontend_delta, generation);
         if (data.message) patchSection("frontend_action_message", data.message, { source: "socket", type });
         return true;

@@ -8,6 +8,25 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 class RuntimeOptionsTests(unittest.TestCase):
+    def test_direct_download_url_rejects_unresolvable_hosts(self):
+        from shared.runtime_options import validate_direct_download_url
+
+        with patch("shared.runtime_options.socket.getaddrinfo", side_effect=OSError("dns failed")):
+            error = validate_direct_download_url("https://unresolvable.example/video.mp4")
+
+        self.assertIn("无法解析", error)
+
+    def test_direct_download_url_rejects_domains_resolving_to_private_ip(self):
+        from shared.runtime_options import validate_direct_download_url
+
+        with patch(
+            "shared.runtime_options.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("127.0.0.1", 443))],
+        ):
+            error = validate_direct_download_url("https://public-looking.example/video.mp4")
+
+        self.assertIn("本地或内网", error)
+
     def test_merge_convenience_params_sets_folder_name_and_use_subdir(self):
         from shared.runtime_options import merge_convenience_params
 

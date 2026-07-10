@@ -130,7 +130,7 @@ class WebEntryArgparseTests(unittest.TestCase):
         from entry.web_entry import _build_argparser
         parser = _build_argparser()
         args = parser.parse_args([])
-        self.assertEqual(args.host, "0.0.0.0")  # 实际默认是 0.0.0.0
+        self.assertEqual(args.host, "127.0.0.1")
         self.assertEqual(args.port, 8000)
         self.assertFalse(args.no_qt)
         self.assertFalse(args.no_browser)

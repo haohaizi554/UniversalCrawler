@@ -72,6 +72,44 @@ class ApplicationControllerTests(unittest.TestCase):
 
         self.assertEqual(paths, [str(Path(media_path).resolve())])
 
+    def test_pending_launch_video_switches_to_completed_and_plays_in_app(self):
+        controller = self._make_controller()
+        controller.host = Mock()
+        controller._window_media_ready = Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_path = os.path.join(temp_dir, "demo.mp4")
+            Path(media_path).write_bytes(b"video")
+            item = controller._video_item_for_launch_path(media_path)
+            controller._store_video_item(item)
+            controller._pending_launch_media_path = media_path
+
+            controller._play_pending_launch_media(item.id)
+
+        controller.host.show_completed_item.assert_called_once_with(item.id)
+        controller.host.play_video.assert_called_once_with(media_path)
+        controller.host.show_image.assert_not_called()
+        self.assertEqual(controller.app_state.current_playing_id, item.id)
+        self.assertIsNone(controller._pending_launch_media_path)
+
+    def test_pending_launch_image_switches_to_completed_and_opens_preview(self):
+        controller = self._make_controller()
+        controller.host = Mock()
+        controller._window_media_ready = Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_path = os.path.join(temp_dir, "cover.jpg")
+            Path(media_path).write_bytes(b"image")
+            item = controller._video_item_for_launch_path(media_path)
+            controller._store_video_item(item)
+            controller._pending_launch_media_path = media_path
+
+            controller._play_pending_launch_media(item.id)
+
+        controller.host.show_completed_item.assert_called_once_with(item.id)
+        controller.host.show_image.assert_called_once_with(media_path)
+        controller.host.play_video.assert_not_called()
+        self.assertEqual(controller.app_state.current_playing_id, item.id)
+        self.assertIsNone(controller._pending_launch_media_path)
+
     def test_clear_local_items_uses_window_api(self):
         """验证 `test_clear_local_items_uses_window_api` 对应场景是否符合预期，供 `ApplicationControllerTests` 使用。"""
         controller = self._make_controller()

@@ -122,6 +122,7 @@ class DownloadManagerCore:
     def __init__(self, max_concurrent: int | None = None):
         self.queue = PendingDownloadQueue()
         self.workers: list[Any] = []
+        self._dispatching_tasks: list[tuple[VideoItem, str]] = []
         self.max_concurrent = normalize_download_concurrency(max_concurrent or cfg.get("download", "max_concurrent", 3))
         self.max_retries = cfg.get("download", "max_retries", 3)
         self.request_timeout = cfg.get("download", "request_timeout", 60)
@@ -485,15 +486,17 @@ class DownloadManagerCore:
             video.meta["user_cancel_requested"] = True
             results[video.id] = "queued"
 
-        remaining_ids = ids - queued_ids
-        if not remaining_ids:
-            return results
-
         running_workers = []
         with self._workers_lock:
+            for dispatching_video, _save_dir in list(getattr(self, "_dispatching_tasks", [])):
+                if dispatching_video.id in ids:
+                    dispatching_video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
+                    dispatching_video.meta["user_cancel_requested"] = True
+                    if results[dispatching_video.id] is None:
+                        results[dispatching_video.id] = "dispatching"
             for worker in list(self.workers):
                 worker_id = getattr(getattr(worker, "video", None), "id", None)
-                if worker_id in remaining_ids:
+                if worker_id in ids:
                     running_workers.append(worker)
 
         for worker in running_workers:
@@ -505,6 +508,27 @@ class DownloadManagerCore:
             results[video.id] = "running"
 
         return results
+
+    def pending_work_counts(self) -> tuple[int, int]:
+        """Return active-or-dispatching and queued counts as one consistent snapshot."""
+        with self._workers_lock:
+            active = len(self.workers) + len(getattr(self, "_dispatching_tasks", []))
+        return active, self.queue.qsize()
+
+    def _mark_dispatching(self, video: VideoItem, save_dir: str) -> None:
+        with self._workers_lock:
+            tasks = getattr(self, "_dispatching_tasks", None)
+            if tasks is None:
+                tasks = []
+                self._dispatching_tasks = tasks
+            tasks.append((video, save_dir))
+
+    def _clear_dispatching(self, video: VideoItem | None) -> None:
+        if video is None:
+            return
+        with self._workers_lock:
+            tasks = getattr(self, "_dispatching_tasks", [])
+            self._dispatching_tasks = [item for item in tasks if item[0] is not video]
 
     def _dispatch_loop(self):
         """调度线程：先占槽，再取队列任务，避免并发缩放时短暂超发 worker。"""
@@ -523,22 +547,39 @@ class DownloadManagerCore:
                     self._release_dispatch_slot("dispatch_slot_queue_empty")
                     slot_acquired = False
                     continue
+                self._mark_dispatching(video, save_dir)
 
                 with self._start_stop_guard():
                     if not self.is_running:
                         self.queue.put((video, save_dir))
+                        self._clear_dispatching(video)
                         self._release_dispatch_slot("dispatch_slot_manager_stopped")
                         slot_acquired = False
                         break
 
                 if not self._has_capacity_for(video):
                     self.queue.put((video, save_dir))
+                    self._clear_dispatching(video)
                     self._release_dispatch_slot("dispatch_slot_task_capacity_full")
                     slot_acquired = False
                     time.sleep(0.02)
                     continue
 
+                if video.meta.get("user_cancel_requested"):
+                    self._clear_dispatching(video)
+                    self._release_dispatch_slot("dispatch_slot_task_cancelled")
+                    slot_acquired = False
+                    continue
+
                 worker = self._create_worker(video, save_dir)
+                if video.meta.get("user_cancel_requested"):
+                    stop_worker = getattr(worker, "stop", None)
+                    if callable(stop_worker):
+                        stop_worker()
+                    self._clear_dispatching(video)
+                    self._release_dispatch_slot("dispatch_slot_task_cancelled_after_create")
+                    slot_acquired = False
+                    continue
                 debug_logger.log(
                     component="DownloadManager",
                     action="dispatch_task",
@@ -570,6 +611,7 @@ class DownloadManagerCore:
                         break
                     with self._workers_lock:
                         self.workers.append(worker)
+                    self._clear_dispatching(video)
                     worker.start()
                 slot_acquired = False
             except queue.Empty:
@@ -594,6 +636,7 @@ class DownloadManagerCore:
                 if failed_video is not None:
                     self._emit_task_error(failed_video.id, f"\u8c03\u5ea6\u5931\u8d25: {e}")
             finally:
+                self._clear_dispatching(video)
                 if slot_acquired:
                     self._release_dispatch_slot("dispatch_slot_finally")
 

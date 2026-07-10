@@ -596,9 +596,13 @@ class UcrawlSDK:
             deadline = time.time() + timeout
             timed_out = False
             while time.time() < deadline:
-                with dl_manager._workers_lock:
-                    active = len(dl_manager.workers)
-                queued = dl_manager.queue.qsize()
+                counter = getattr(dl_manager, "pending_work_counts", None)
+                counts = counter() if callable(counter) else None
+                if isinstance(counts, (tuple, list)) and len(counts) == 2:
+                    active, queued = counts
+                else:
+                    active = len(getattr(dl_manager, "workers", []))
+                    queued = dl_manager.queue.qsize()
                 if active == 0 and queued == 0:
                     break
                 time.sleep(0.5)

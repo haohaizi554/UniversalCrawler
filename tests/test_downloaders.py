@@ -106,6 +106,49 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(mocked_get.call_count, 1)
 
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_resume_rejects_mismatched_content_range(self, mocked_get):
+        mocked_get.return_value = self._make_stream_response(
+            [b"567890"],
+            headers={"content-length": "6", "content-range": "bytes 0-5/10"},
+            status_code=206,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            Path(save_path + ".downloading").write_bytes(b"1234")
+
+            with self.assertRaises(StreamDownloadError):
+                BaseDownloader()._download_http_file(
+                    url="https://example.com/demo.mp4",
+                    save_path=save_path,
+                    headers={},
+                    check_stop_func=lambda: False,
+                    max_retries=0,
+                    support_resume=True,
+                )
+
+            self.assertFalse(Path(save_path).exists())
+
+    @patch("app.core.downloaders.base.TransferRateLimiter")
+    @patch("app.core.downloaders.base.cfg.get")
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_http_download_applies_configured_speed_limit(self, mocked_get, mocked_cfg_get, limiter_type):
+        mocked_get.return_value = self._make_stream_response([b"ab", b"cd"], headers={"content-length": "4"})
+        mocked_cfg_get.side_effect = lambda section, key, default=None: 1024 if (section, key) == ("download", "speed_limit_kb") else default
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            BaseDownloader()._download_http_file(
+                url="https://example.com/demo.mp4",
+                save_path=os.path.join(temp_dir, "demo.mp4"),
+                headers={},
+                check_stop_func=lambda: False,
+                max_retries=0,
+            )
+
+        limiter_type.assert_called_once_with(1024)
+        self.assertEqual(limiter_type.return_value.throttle.call_count, 2)
+
     @patch("app.core.downloaders.base.time.sleep", return_value=None)
     @patch("app.core.downloaders.base.debug_logger.log")
     @patch("app.core.downloaders.base.requests.get")
@@ -139,15 +182,21 @@ class DownloaderStrategyTests(unittest.TestCase):
             save_path = os.path.join(temp_dir, "demo.mp4")
             temp_file = os.path.join(temp_dir, "demo.part")
             temp_dir_path = os.path.join(temp_dir, "demo_tmp")
+            unrelated_file = os.path.join(temp_dir, "demo-other.part")
+            unrelated_dir = os.path.join(temp_dir, "demo_archive")
             open(save_path, "wb").close()
             open(temp_file, "wb").close()
+            open(unrelated_file, "wb").close()
             os.mkdir(temp_dir_path)
+            os.mkdir(unrelated_dir)
 
             N_m3u8DL_RE_Downloader._cleanup_external_temp_files(save_path)
 
             self.assertFalse(os.path.exists(save_path))
             self.assertFalse(os.path.exists(temp_file))
             self.assertFalse(os.path.exists(temp_dir_path))
+            self.assertTrue(os.path.exists(unrelated_file))
+            self.assertTrue(os.path.exists(unrelated_dir))
 
     def test_m3u8_cleanup_skips_unowned_tmp_workspace(self):
         """临时目录清理必须先校验所有权，避免误删用户手动创建的目录。"""
@@ -568,6 +617,69 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertIn("Referer: https://www.douyin.com/", command)
         auto_select_index = command.index("--auto-select")
         self.assertEqual(command[auto_select_index + 1], "true")
+
+    @patch("app.core.downloaders.external.cfg.get")
+    def test_nm3u8_external_tool_applies_configured_speed_limit(self, mocked_cfg_get):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "speed_limit_kb"):
+                return 2048
+            return default
+
+        mocked_cfg_get.side_effect = cfg_get
+        command = NM3U8DLREExternalTool.build_download_command(
+            "N_m3u8DL-RE.exe",
+            "https://cdn.example.com/live/index.m3u8",
+            os.path.join("downloads", "demo.mp4"),
+            "ua-demo",
+            "https://www.douyin.com/",
+        )
+
+        self.assertEqual(command[command.index("--max-speed") + 1], "2048K")
+
+    @patch("app.core.downloaders.ffmpeg.cfg.get", return_value=1024)
+    def test_ffmpeg_large_file_strategy_yields_to_rate_limited_http(self, _mocked_cfg_get):
+        item = VideoItem(url="https://cdn.example.com/video.mp4", title="demo", source="douyin")
+        item.meta["size_mb"] = FFmpegDownloader.SIZE_THRESHOLD_MB + 1
+
+        self.assertFalse(FFmpegDownloader.should_use(item))
+
+    @patch("app.core.downloaders.strategy.cfg.get", return_value=1024)
+    @patch("app.core.downloaders.ffmpeg.FFmpegDownloader.download")
+    def test_explicit_ffmpeg_strategy_also_yields_when_speed_limited(self, mocked_download, _mocked_cfg_get):
+        from app.core.downloaders.strategy import FFmpegDownloadStrategy, DownloadRequest
+
+        item = VideoItem(url="https://cdn.example.com/video.mp4", title="demo", source="douyin")
+        item.meta["download_strategy"] = "ffmpeg"
+        request = DownloadRequest(
+            video_item=item,
+            save_path="demo.mp4",
+            headers={},
+            progress_callback=lambda _value: None,
+            check_stop_func=lambda: False,
+            max_retries=0,
+            timeout=60,
+            chunk_size=8192,
+        )
+
+        self.assertFalse(FFmpegDownloadStrategy().execute(BaseDownloader(), request))
+        mocked_download.assert_not_called()
+
+    @patch("app.core.downloaders.m3u8.cfg.get")
+    def test_yt_dlp_fallback_applies_configured_speed_limit(self, mocked_cfg_get):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "speed_limit_kb"):
+                return 512
+            return default
+
+        mocked_cfg_get.side_effect = cfg_get
+        params = N_m3u8DL_RE_Downloader._yt_dlp_params(
+            "demo.mp4",
+            {},
+            None,
+            lambda _status: None,
+        )
+
+        self.assertEqual(params["ratelimit"], 512 * 1024)
 
     @patch("app.core.downloaders.external.cfg.get")
     def test_nm3u8_external_tool_uses_configured_retry_count(self, mocked_cfg_get):
@@ -1089,17 +1201,21 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         mocked_cfg_get.side_effect = cfg_get
         head_response = Mock()
-        head_response.headers = {"content-length": "10", "accept-ranges": "bytes"}
+        head_response.headers = {"content-length": "10", "accept-ranges": "bytes", "etag": '"v1"'}
         head_response.raise_for_status.return_value = None
         mocked_head.return_value = head_response
         mocked_get.side_effect = [
             self._make_stream_response_raising(
                 [b"1234"],
                 requests.ConnectionError("drop"),
-                headers={"content-length": "10"},
+                headers={"content-length": "10", "content-range": "bytes 0-9/10"},
                 status_code=206,
             ),
-            self._make_stream_response([b"567890"], headers={"content-length": "6"}, status_code=206),
+            self._make_stream_response(
+                [b"567890"],
+                headers={"content-length": "6", "content-range": "bytes 4-9/10"},
+                status_code=206,
+            ),
         ]
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
 
@@ -1110,7 +1226,82 @@ class DownloaderStrategyTests(unittest.TestCase):
             self.assertEqual(Path(save_path).read_bytes(), b"1234567890")
 
         self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Range"], "bytes=4-9")
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["If-Range"], '"v1"')
         self.assertTrue(any(call.kwargs.get("action") == "chunk_retry" for call in mocked_log.call_args_list))
+
+    @patch("app.core.downloaders.chunked.time.sleep", return_value=None)
+    @patch("app.core.downloaders.chunked.requests.get")
+    @patch("app.core.downloaders.chunked.requests.head")
+    @patch("app.core.downloaders.chunked.cfg.get")
+    def test_chunked_downloader_rejects_oversized_stale_part(
+        self,
+        mocked_cfg_get,
+        mocked_head,
+        mocked_get,
+        _mocked_sleep,
+    ):
+        def cfg_get(section, key, default=None):
+            if (section, key) == ("download", "max_retries"):
+                return 0
+            if (section, key) == ("download", "resume_enabled"):
+                return True
+            return default
+
+        mocked_cfg_get.side_effect = cfg_get
+        head_response = Mock()
+        head_response.headers = {"content-length": "10", "accept-ranges": "bytes"}
+        head_response.raise_for_status.return_value = None
+        mocked_head.return_value = head_response
+        mocked_get.return_value = self._make_stream_response(
+            [b"0123456789"],
+            headers={"content-length": "10", "content-range": "bytes 0-9/10"},
+            status_code=206,
+        )
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            Path(temp_dir, ".demo.mp4.part0").write_bytes(b"stale-data!!")
+
+            ChunkedDownloader().download(item, save_path, lambda _value, **_kwargs: None, lambda: False)
+
+            self.assertEqual(Path(save_path).read_bytes(), b"0123456789")
+
+        self.assertEqual(mocked_get.call_args.kwargs["headers"]["Range"], "bytes=0-9")
+
+    @patch("app.core.downloaders.chunked.time.sleep", return_value=None)
+    @patch("app.core.downloaders.chunked.requests.get")
+    @patch("app.core.downloaders.chunked.requests.head")
+    @patch("app.core.downloaders.chunked.cfg.get")
+    def test_chunked_downloader_rejects_mismatched_content_range(
+        self,
+        mocked_cfg_get,
+        mocked_head,
+        mocked_get,
+        _mocked_sleep,
+    ):
+        mocked_cfg_get.side_effect = lambda section, key, default=None: (
+            0 if (section, key) == ("download", "max_retries") else default
+        )
+        head_response = Mock()
+        head_response.headers = {"content-length": "10", "accept-ranges": "bytes"}
+        head_response.raise_for_status.return_value = None
+        mocked_head.return_value = head_response
+        mocked_get.return_value = self._make_stream_response(
+            [b"0123456789"],
+            headers={"content-length": "10", "content-range": "bytes 1-9/10"},
+            status_code=206,
+        )
+        item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(StreamDownloadError):
+                ChunkedDownloader().download(
+                    item,
+                    os.path.join(temp_dir, "demo.mp4"),
+                    lambda _value, **_kwargs: None,
+                    lambda: False,
+                )
 
     @patch.object(BilibiliDownloader, "_run_merge_process")
     @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
@@ -2692,6 +2883,35 @@ https://cdn.example.com/seg2.ts
             unique_path = worker._ensure_unique_path(base_path)
 
         self.assertTrue(unique_path.endswith("demo_2.mp4"))
+
+    def test_download_worker_reserves_distinct_paths_concurrently(self):
+        item_a = VideoItem(url="https://example.com/a.mp4", title="demo", source="douyin")
+        item_b = VideoItem(url="https://example.com/b.mp4", title="demo", source="douyin")
+        worker_a = DownloadWorker(item_a, "downloads")
+        worker_b = DownloadWorker(item_b, "downloads")
+        barrier = threading.Barrier(2)
+        paths: list[str] = []
+        paths_lock = threading.Lock()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = os.path.join(temp_dir, "demo.mp4")
+
+            def reserve(worker):
+                barrier.wait(timeout=2)
+                reserved = worker._ensure_unique_path(target)
+                with paths_lock:
+                    paths.append(reserved)
+
+            threads = [threading.Thread(target=reserve, args=(worker,)) for worker in (worker_a, worker_b)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+
+            self.assertEqual(len(paths), 2)
+            self.assertEqual(len(set(paths)), 2)
+            worker_a._release_output_path_reservations()
+            worker_b._release_output_path_reservations()
 
     def test_download_worker_detect_actual_file_type_recognizes_mp4_signature(self):
         """验证 `test_download_worker_detect_actual_file_type_recognizes_mp4_signature` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""

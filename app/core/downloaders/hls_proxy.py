@@ -8,10 +8,13 @@ import re
 import socketserver
 import threading
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.debug_logger import debug_logger
 from app.exceptions import ExternalToolError
+
+if TYPE_CHECKING:
+    from .m3u8 import N_m3u8DL_RE_Downloader
 
 
 def looks_like_hls_playlist(url: str, content_type: str, body: bytes) -> bool:

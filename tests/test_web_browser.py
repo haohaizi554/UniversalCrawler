@@ -861,6 +861,51 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('if (event.key === "Enter") confirmSelection();', shortcut_block)
         self.assertIn("else cancelSelection();", shortcut_block)
 
+        confirm_block = content.split("function confirmSelection()", 1)[1].split(
+            "function cancelSelection()",
+            1,
+        )[0]
+        cancel_block = content.split("function cancelSelection()", 1)[1].split(
+            "function isSelectionModalOpen()",
+            1,
+        )[0]
+        self.assertIn('if (!requireDependency("sendWS")("select_tasks", { indices })) return false;', confirm_block)
+        self.assertIn('if (!requireDependency("sendWS")("select_tasks", { indices: null })) return false;', cancel_block)
+
+    def test_frontend_full_snapshot_rejects_state_older_than_ws_delta(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
+        snapshot_block = runtime.split("function applyFullState(data", 1)[1].split(
+            "function removeDeletedFromState",
+            1,
+        )[0]
+
+        self.assertIn("incomingVersion < frontendVersion", snapshot_block)
+        self.assertIn("operationAdvanced", snapshot_block)
+        self.assertIn("return false", snapshot_block)
+
+    def test_zero_retry_setting_is_not_replaced_by_default(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        controller = (static_dir / "list_pages.js").read_text(encoding="utf-8")
+        options_block = controller.split("function currentDownloadOptions()", 1)[1].split(
+            "function normalizeDownloadConcurrency",
+            1,
+        )[0]
+
+        self.assertIn("settings.max_retries ?? 3", options_block)
+        self.assertNotIn("settings.max_retries || 3", options_block)
+
+    def test_failed_optimistic_setting_action_resyncs_server_state(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
+        result_block = runtime.split('case "frontend_action_result":', 1)[1].split(
+            "default:",
+            1,
+        )[0]
+
+        self.assertIn('data.status && data.status !== "ok"', result_block)
+        self.assertIn("fetchFrontendState();", result_block)
+
     def test_interaction_map_does_not_keep_stale_fixed_bug_claims(self):
         from pathlib import Path
 
@@ -1365,6 +1410,36 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertFalse(result["afterFollowSystem"])
         self.assertEqual(result["activeValue"], "dark")
         self.assertEqual(result["theme"], "dark")
+        self.assertEqual(result["dataTheme"], "dark")
+
+    def test_07c_follow_system_setting_applies_browser_color_scheme(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const originalMatchMedia = window.matchMedia;
+              window.matchMedia = () => ({
+                matches: true,
+                addEventListener() {},
+                removeEventListener() {}
+              });
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              const appearance = (frontendState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'] ||= {});
+              appearance.theme = 'light';
+              appearance.follow_system = false;
+              updateSetting('appearance', 'follow_system', true);
+              const value = {
+                followSystem: appearance.follow_system,
+                dataTheme: document.documentElement.dataset.theme || ''
+              };
+              window.matchMedia = originalMatchMedia;
+              return value;
+            }
+            """
+        )
+
+        self.assertTrue(result["followSystem"])
         self.assertEqual(result["dataTheme"], "dark")
 
     def test_08_dir_modal_opens(self):

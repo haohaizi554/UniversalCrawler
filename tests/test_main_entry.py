@@ -136,8 +136,8 @@ class DispatcherTests(unittest.TestCase):
         from entry import dispatcher
         with patch("entry.gui_entry.main", return_value=0) as mock_handler:
             self.assertEqual(dispatcher.run(["--mode", "gui"]), 0)
-            # 透传后 argv 为空 → run_gui 传 None 给 main
-            mock_handler.assert_called_once_with(None)
+            # 透传后 argv 为空也必须保留为 []，避免下游重新读取 dispatcher 的 sys.argv。
+            mock_handler.assert_called_once_with([])
 
     def test_run_with_no_args_calls_prompt(self):
         """run() 无参数调用 prompt_mode_menu。"""
@@ -145,8 +145,7 @@ class DispatcherTests(unittest.TestCase):
         with patch.object(dispatcher, "prompt_mode_menu", return_value=dispatcher.Mode.CLI), \
              patch("entry.cli_entry.main", return_value=0) as mock_cli:
             self.assertEqual(dispatcher.run([]), 0)
-            # 透传后 argv 为空 → run_cli 传 None 给 main
-            mock_cli.assert_called_once_with(None)
+            mock_cli.assert_called_once_with([])
 
     def test_run_with_no_args_non_tty_uses_prompt_qt_fallback(self):
         """无参数 + 非 TTY 仍走 prompt_mode_menu，由菜单内部决定 Qt 弹窗后备。"""
@@ -155,7 +154,23 @@ class DispatcherTests(unittest.TestCase):
              patch("entry.gui_entry.main", return_value=0) as mock_gui:
             self.assertEqual(dispatcher.run([]), 0)
             mock_prompt.assert_called_once_with()
-            mock_gui.assert_called_once_with(None)
+            mock_gui.assert_called_once_with([])
+
+    def test_mode_adapters_preserve_explicit_empty_argv(self):
+        """空 argv 是有意义的输入，不能退化为“重新读取 sys.argv”。"""
+        from entry import dispatcher
+
+        adapters = (
+            (dispatcher.run_gui, "entry.gui_entry.main"),
+            (dispatcher.run_web, "entry.web_entry.main"),
+            (dispatcher.run_cli, "entry.cli_entry.main"),
+            (dispatcher.run_interactive, "entry.interactive_entry.main"),
+            (dispatcher.run_test, "entry.test_entry.main"),
+        )
+        for adapter, target in adapters:
+            with self.subTest(adapter=adapter.__name__), patch(target, return_value=0) as mocked:
+                self.assertEqual(adapter([]), 0)
+                mocked.assert_called_once_with([])
 
     def test_run_with_prompt_returns_none_exits_zero(self):
         """用户主动选 q (prompt 返回 None) → exit 0。"""

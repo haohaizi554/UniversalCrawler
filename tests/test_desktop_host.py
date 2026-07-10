@@ -25,6 +25,7 @@ class DesktopHostAdapterTests(unittest.TestCase):
         adapter.show_selection_dialog([item])
         adapter.release_media_playback()
         adapter.cleanup_media()
+        adapter.show_completed_item(item.id)
         adapter.show_image("demo.jpg")
         adapter.play_video("demo.mp4")
 
@@ -38,6 +39,7 @@ class DesktopHostAdapterTests(unittest.TestCase):
         window.show_selection_dialog.assert_called_once_with([item])
         window.release_media_playback.assert_called_once_with()
         window.cleanup_media.assert_called_once_with()
+        window.show_completed_item.assert_called_once_with(item.id)
         window.show_image.assert_called_once_with("demo.jpg")
         window.play_video.assert_called_once_with("demo.mp4")
 

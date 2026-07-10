@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from app.core.events import (
     DomainEvent,
     DomainEventType,
@@ -47,24 +49,37 @@ class CrawlControllerMixin:
             trace_id=self._item_trace_id(item),
         )
 
-    def _emit_spider_log_event(self, message: str) -> None:
+    @staticmethod
+    def _tag_spider_session(event: DomainEvent, session_id: str | None) -> DomainEvent:
+        if session_id:
+            event.payload["session_id"] = session_id
+        return event
+
+    def _emit_spider_log_event(self, message: str, session_id: str | None = None) -> None:
         trace_id = getattr(getattr(self, "current_spider", None), "ui_trace_id", None)
         source = getattr(getattr(self, "current_spider", None), "source_id", None) or "Spider"
-        self._spider_bridge.sig_event.emit(
-            build_log_event(message, trace_id=trace_id, source=source, level="INFO")
-        )
+        event = build_log_event(message, trace_id=trace_id, source=source, level="INFO")
+        self._spider_bridge.sig_event.emit(self._tag_spider_session(event, session_id))
 
-    def _emit_spider_item_found_event(self, item: VideoItem) -> None:
-        self._spider_bridge.sig_event.emit(build_item_found_event(item))
+    def _emit_spider_item_found_event(self, item: VideoItem, session_id: str | None = None) -> None:
+        event = build_item_found_event(item)
+        self._spider_bridge.sig_event.emit(self._tag_spider_session(event, session_id))
 
-    def _emit_spider_items_found_event(self, items: list[VideoItem]) -> None:
-        self._spider_bridge.sig_event.emit(build_items_found_event(items))
+    def _emit_spider_items_found_event(
+        self,
+        items: list[VideoItem],
+        session_id: str | None = None,
+    ) -> None:
+        event = build_items_found_event(items)
+        self._spider_bridge.sig_event.emit(self._tag_spider_session(event, session_id))
 
-    def _emit_spider_selection_event(self, items: list) -> None:
-        self._spider_bridge.sig_event.emit(build_selection_required_event(items))
+    def _emit_spider_selection_event(self, items: list, session_id: str | None = None) -> None:
+        event = build_selection_required_event(items)
+        self._spider_bridge.sig_event.emit(self._tag_spider_session(event, session_id))
 
-    def _emit_spider_finished_event(self) -> None:
-        self._spider_bridge.sig_event.emit(build_crawl_state_event(CrawlStatus.FINISHED))
+    def _emit_spider_finished_event(self, session_id: str | None = None) -> None:
+        event = build_crawl_state_event(CrawlStatus.FINISHED)
+        self._spider_bridge.sig_event.emit(self._tag_spider_session(event, session_id))
 
     def _handle_spider_log_event(self, event: DomainEvent) -> None:
         payload = self._event_payload(event)
@@ -86,9 +101,14 @@ class CrawlControllerMixin:
             self._on_spider_items_found(items)
 
     def _handle_spider_selection_event(self, event: DomainEvent) -> None:
-        items = self._event_payload(event).get("items")
+        payload = self._event_payload(event)
+        items = payload.get("items")
         if items is not None:
-            self._schedule_spider_selection(items)
+            session_id = payload.get("session_id")
+            if session_id is None:
+                self._schedule_spider_selection(items)
+            else:
+                self._schedule_spider_selection(items, session_id)
 
     def _handle_spider_crawl_state_event(self, event: DomainEvent) -> None:
         if self._event_payload(event).get("status") == CrawlStatus.FINISHED.value:
@@ -104,13 +124,22 @@ class CrawlControllerMixin:
         }
 
     def _dispatch_spider_event(self, event: DomainEvent) -> None:
+        session_id = self._event_payload(event).get("session_id")
+        active_session_id = getattr(self, "_active_spider_session_id", None)
+        if session_id is not None and session_id != active_session_id:
+            return
         handler = self._spider_event_handlers().get(event.event_type)
         if handler:
             handler(event)
 
-    def _schedule_spider_selection(self, items: list) -> None:
+    def _schedule_spider_selection(self, items: list, session_id: str | None = None) -> None:
         """Open the modal selection dialog outside the EventBus publish stack."""
-        self._host()._queue_on_ui(lambda selected_items=list(items): self._on_spider_select_tasks(selected_items))
+        selected_items = list(items)
+        if session_id is None:
+            callback = lambda: self._on_spider_select_tasks(selected_items)
+        else:
+            callback = lambda: self._on_spider_select_tasks(selected_items, session_id)
+        self._host()._queue_on_ui(callback)
 
     def _create_spider(self, source_id: str, keyword: str, config: dict):
         """Create a spider via shared session runtime and surface host-visible failures."""
@@ -131,14 +160,22 @@ class CrawlControllerMixin:
             plugin = registry.get_plugin(source_id)
             return plugin, None
 
-    def _build_spider_session_bindings(self) -> SpiderSessionBindings:
+    def _build_spider_session_bindings(self, session_id: str | None = None) -> SpiderSessionBindings:
         """Build host callbacks for the shared spider runtime."""
+        if session_id is None:
+            return SpiderSessionBindings(
+                on_log=self._emit_spider_log_event,
+                on_item_found=self._emit_spider_item_found_event,
+                on_items_found=self._emit_spider_items_found_event,
+                on_select_tasks=self._emit_spider_selection_event,
+                on_finished=self._emit_spider_finished_event,
+            )
         return SpiderSessionBindings(
-            on_log=self._emit_spider_log_event,
-            on_item_found=self._emit_spider_item_found_event,
-            on_items_found=self._emit_spider_items_found_event,
-            on_select_tasks=self._emit_spider_selection_event,
-            on_finished=self._emit_spider_finished_event,
+            on_log=lambda message: self._emit_spider_log_event(message, session_id),
+            on_item_found=lambda item: self._emit_spider_item_found_event(item, session_id),
+            on_items_found=lambda items: self._emit_spider_items_found_event(items, session_id),
+            on_select_tasks=lambda items: self._emit_spider_selection_event(items, session_id),
+            on_finished=lambda: self._emit_spider_finished_event(session_id),
         )
 
     def _bind_spider_signals(self, spider) -> None:
@@ -154,6 +191,7 @@ class CrawlControllerMixin:
         if bindings is not None:
             SpiderSession.unbind_spider(spider, bindings)
         self._active_spider_bindings = None
+        self._active_spider_session_id = None
         self._host().append_log("⚠️ 上次任务未正常结束，正在清理...")
         self._host().finish_crawl()
         self.current_spider = None
@@ -174,7 +212,10 @@ class CrawlControllerMixin:
             spider.ui_trace_id = debug_logger.new_trace_id(f"{source_id}-crawl")
             spider.source_id = source_id
             self.current_spider = spider
-            self._active_spider_bindings = self._build_spider_session_bindings()
+            self._active_spider_session_id = uuid.uuid4().hex
+            self._active_spider_bindings = self._build_spider_session_bindings(
+                self._active_spider_session_id
+            )
             spider_session = getattr(self, "spider_session", SpiderSession(registry))
             spider_session.activate_spider(
                 self.current_spider,
@@ -189,6 +230,7 @@ class CrawlControllerMixin:
                 context={"source_id": source_id, "keyword": keyword},
             )
             self.current_spider = None
+            self._active_spider_session_id = None
 
     def _log_crawl_start(self, plugin_name: str, keyword: str, source_id: str, config: dict) -> None:
         """Record the effective crawl input for later debugging and audit."""
@@ -264,11 +306,17 @@ class CrawlControllerMixin:
             trace_id=self._item_trace_id(item),
         )
 
-    def _on_spider_select_tasks(self, items):
+    def _on_spider_select_tasks(self, items, session_id: str | None = None):
         """Resume spider processing using the host-provided selection result."""
-        selected = self._host().show_selection_dialog(items)
         spider = self.current_spider
         if not spider:
+            return
+        if session_id is not None and session_id != getattr(self, "_active_spider_session_id", None):
+            return
+        selected = self._host().show_selection_dialog(items)
+        if spider is not self.current_spider:
+            return
+        if session_id is not None and session_id != getattr(self, "_active_spider_session_id", None):
             return
         if selected is None:
             self._stop_spider_after_selection_cancel(spider)
@@ -297,6 +345,7 @@ class CrawlControllerMixin:
         if spider is not None and bindings is not None:
             SpiderSession.unbind_spider(spider, bindings)
         self._active_spider_bindings = None
+        self._active_spider_session_id = None
         self._host().finish_crawl()
         debug_logger.log(
             component="ApplicationController",

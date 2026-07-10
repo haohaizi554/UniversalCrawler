@@ -179,6 +179,60 @@ class DebugLoggerTests(unittest.TestCase):
         self.assertNotIn("user:pass@", content)
         self.assertIn("Cookie: [已脱敏]", content)
 
+    def test_log_command_masks_values_after_sensitive_flags(self):
+        original_session = debug_logger.session_file
+        original_latest_log = debug_logger.latest_file
+        with tempfile.TemporaryDirectory() as temp_dir:
+            debug_logger.session_file = Path(temp_dir) / "session.log"
+            debug_logger.latest_file = Path(temp_dir) / "latest_debug.log"
+            try:
+                debug_logger.log_command(
+                    component="ReleaseSigner",
+                    tool_name="signtool",
+                    command_args=[
+                        "signtool",
+                        "sign",
+                        "/p",
+                        "pfx-secret-value",
+                        "--token=token-secret-value",
+                    ],
+                )
+                content = debug_logger.session_file.read_text(encoding="utf-8")
+            finally:
+                debug_logger.session_file = original_session
+                debug_logger.latest_file = original_latest_log
+
+        self.assertNotIn("pfx-secret-value", content)
+        self.assertNotIn("token-secret-value", content)
+
+    def test_log_exception_masks_inline_secrets_in_log_and_summary(self):
+        original_latest = debug_logger.latest_error_summary_file
+        original_session = debug_logger.session_file
+        original_latest_log = debug_logger.latest_file
+        with tempfile.TemporaryDirectory() as temp_dir:
+            debug_logger.latest_error_summary_file = Path(temp_dir) / "latest_error_summary.md"
+            debug_logger.session_file = Path(temp_dir) / "session.log"
+            debug_logger.latest_file = Path(temp_dir) / "latest_debug.log"
+            try:
+                debug_logger.log_exception(
+                    "ApiClient",
+                    "request",
+                    RuntimeError(
+                        "request failed: cookie=session-secret; "
+                        "Authorization: Bearer bearer-secret"
+                    ),
+                )
+                session_content = debug_logger.session_file.read_text(encoding="utf-8")
+                summary_content = debug_logger.latest_error_summary_file.read_text(encoding="utf-8")
+            finally:
+                debug_logger.latest_error_summary_file = original_latest
+                debug_logger.session_file = original_session
+                debug_logger.latest_file = original_latest_log
+
+        for content in (session_content, summary_content):
+            self.assertNotIn("session-secret", content)
+            self.assertNotIn("bearer-secret", content)
+
     def test_trace_id_prefixes_are_platform_normalized(self):
         self.assertEqual(normalize_trace_prefix("douyin-dy"), "dy")
         self.assertEqual(normalize_trace_prefix("bili-BV1xx-123"), "bilibili_BV1xx_123")
