@@ -53,9 +53,9 @@
       : "";
   }
 
-  function setSelected(domain, id) {
+  function setSelected(domain, id, options = {}) {
     if (typeof dependencies.setSelection === "function") {
-      dependencies.setSelection(domain, String(id || ""));
+      dependencies.setSelection(domain, String(id || ""), { activate: options.activate === true });
     }
   }
 
@@ -173,6 +173,35 @@
     }
   }
 
+  function disableListPageWorker(worker) {
+    state.workerAvailable = false;
+    closeListPageWorker(worker);
+    renderQueue();
+    renderCompleted();
+    renderFailed();
+  }
+
+  function typedListPageErrorIsCurrent(payload) {
+    const sequence = Number(payload && payload.sequence);
+    if (!Number.isFinite(sequence) || sequence <= 0) return false;
+    const pageKey = String((payload && payload.pageKey) || "");
+    if (pageKey) {
+      return PAGED_LISTS.includes(pageKey)
+        && sequence === Number(state.sequences[pageKey] || 0);
+    }
+    return PAGED_LISTS.filter(key => sequence === Number(state.sequences[key] || 0)).length === 1;
+  }
+
+  function handleTypedListPageError(payload, worker, generation) {
+    if (
+      state.disposed ||
+      generation !== state.generation ||
+      state.worker !== worker ||
+      !typedListPageErrorIsCurrent(payload)
+    ) return;
+    disableListPageWorker(worker);
+  }
+
   function ensureListPageWorker() {
     if (!state.workerAvailable || state.disposed) return null;
     if (state.worker) return state.worker;
@@ -180,14 +209,17 @@
     try {
       const worker = new Worker("/static/list_page_worker.js?v=20260708-list-page-worker");
       state.worker = worker;
-      worker.onmessage = event => applyListPageResult(event.data || {}, worker, generation);
+      worker.onmessage = event => {
+        const payload = event.data || {};
+        if (payload.type === "error") {
+          handleTypedListPageError(payload, worker, generation);
+          return;
+        }
+        applyListPageResult(payload, worker, generation);
+      };
       worker.onerror = () => {
         if (state.disposed || generation !== state.generation || state.worker !== worker) return;
-        state.workerAvailable = false;
-        closeListPageWorker(worker);
-        renderQueue();
-        renderCompleted();
-        renderFailed();
+        disableListPageWorker(worker);
       };
     } catch (_error) {
       state.workerAvailable = false;
@@ -468,7 +500,7 @@
   }
 
   function selectCompleted(id) {
-    setSelected("completed", id);
+    setSelected("completed", id, { activate: true });
     renderCompleted();
   }
 

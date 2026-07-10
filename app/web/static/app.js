@@ -141,14 +141,14 @@ function listPageDependencies() {
   return {
     getState: () => frontendState,
     getSelection: domain => domain === "queue" ? selectedVideoId : selected[domain],
-    setSelection: (domain, id) => {
+    setSelection: (domain, id, options = {}) => {
       const value = String(id || "");
       if (domain === "queue") {
         selectedVideoId = value || null;
         return;
       }
       if (Object.prototype.hasOwnProperty.call(selected, domain)) selected[domain] = value;
-      if (domain === "completed") selectedVideoId = value || null;
+      if (domain === "completed" && options.activate === true) selectedVideoId = value || null;
     },
     t,
     esc,
