@@ -11,6 +11,7 @@
   let disposedGeneration = -1;
   let stateFetchSequence = 0;
   let deltaFetchSequence = 0;
+  let stateOperationEpoch = 0;
   let actionSequence = 0;
   let socketSequence = 0;
   let frontendVersion = 0;
@@ -29,6 +30,7 @@
     configured = true;
     frontendVersion = Number((currentState() || {}).version || 0);
     frontendSectionSignatures = {};
+    stateOperationEpoch = 0;
     return window.UcpFrontendRuntime;
   }
 
@@ -43,6 +45,10 @@
       throw new Error("UcpFrontendRuntime requires replaceState");
     }
     dependencies.replaceState(nextState);
+  }
+
+  function markStateOperation() {
+    stateOperationEpoch += 1;
   }
 
   function isCurrentGeneration(generation) {
@@ -122,10 +128,16 @@
 
   function applyFullState(data, context = {}) {
     if (!data || typeof data !== "object" || !Array.isArray(data.queue_items)) return false;
+    const hasVersion = data.version !== undefined && data.version !== null && Number.isFinite(Number(data.version));
+    const incomingVersion = hasVersion ? Number(data.version) : 0;
+    const operationAdvanced = context.operationEpoch !== undefined && context.operationEpoch !== stateOperationEpoch;
+    if (hasVersion && incomingVersion < frontendVersion) return false;
+    if (operationAdvanced && (!hasVersion || incomingVersion <= frontendVersion)) return false;
     const nextState = { ...data };
-    frontendVersion = Number(data.version || frontendVersion || 0);
+    frontendVersion = hasVersion ? incomingVersion : Number(frontendVersion || 0);
     if (frontendVersion && !nextState.version) nextState.version = frontendVersion;
     replaceState(nextState);
+    markStateOperation();
     const keys = Object.keys(nextState);
     for (const key of keys) patchSection(key, nextState[key], { ...context, full: true });
     rememberFrontendSectionSignatures(keys);
@@ -143,6 +155,7 @@
       nextState[section] = (state[section] || []).filter(item => !doomed.has(String(item.id)));
     }
     replaceState(nextState);
+    markStateOperation();
     const extra = patchSection("deleted_ids", Array.from(doomed), context);
     rememberFrontendSectionSignatures(itemSections);
     return Array.from(new Set([...itemSections, ...extra]));
@@ -180,6 +193,7 @@
     frontendVersion = Number(delta.version || frontendVersion || 0);
     if (frontendVersion) nextState.version = frontendVersion;
     replaceState(nextState);
+    markStateOperation();
 
     for (const [key, value] of Object.entries(sections)) {
       changed.push(...patchSection(key, value, { source: "delta", delta }));
@@ -209,6 +223,7 @@
     });
     if (!changed) return false;
     replaceState({ ...state, active_downloads: rows });
+    markStateOperation();
     rememberFrontendSectionSignatures(["active_downloads"]);
     return true;
   }
@@ -225,6 +240,7 @@
       const state = currentState() || {};
       const sections = ["queue_items", "active_downloads", "completed_items", "failed_items"];
       replaceState({ ...state, ...Object.fromEntries(sections.map(section => [section, []])) });
+      markStateOperation();
       rememberFrontendSectionSignatures(sections);
       patchSection("clear_videos", data, { source: "legacy", type });
       scheduleRenderSections([...sections, "app_status"]);
@@ -252,13 +268,14 @@
     if (!active) return false;
     const generation = lifecycleGeneration;
     const sequence = ++stateFetchSequence;
+    const operationEpoch = stateOperationEpoch;
     let loaded = false;
     try {
       const response = await fetch("/api/frontend/state", { cache: "no-store" });
       if (!isCurrentGeneration(generation) || sequence !== stateFetchSequence || !response.ok) return false;
       const data = await response.json();
       if (!isCurrentGeneration(generation) || sequence !== stateFetchSequence) return false;
-      loaded = applyFullState(data, { source: "fetch", generation, sequence });
+      loaded = applyFullState(data, { source: "fetch", generation, sequence, operationEpoch });
       return loaded;
     } catch (error) {
       if (isCurrentGeneration(generation) && sequence === stateFetchSequence) {
@@ -436,6 +453,7 @@
     disposedGeneration = -1;
     frontendVersion = Number((currentState() || {}).version || 0);
     frontendSectionSignatures = {};
+    stateOperationEpoch = 0;
     pendingRenderSections.clear();
     bindLifecycleListeners();
     connectWS();
@@ -498,6 +516,7 @@
     connect: connectWS,
     fetchState: fetchFrontendState,
     fetchDelta: fetchFrontendDelta,
+    scheduleDelta: scheduleFrontendDeltaFetch,
     scheduleSections: scheduleRenderSections,
     handleServerMessage,
     send,

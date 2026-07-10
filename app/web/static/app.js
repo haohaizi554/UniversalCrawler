@@ -460,6 +460,10 @@ let renderSignatures = {};
 let scheduleRenderSections = sections => frontendRuntimeService().scheduleSections(sections);
 let fetchFrontendState = () => frontendRuntimeService().fetchState();
 let fetchFrontendDelta = () => frontendRuntimeService().fetchDelta();
+window.fetchFrontendState = (...args) => frontendRuntimeService().fetchState(...args);
+window.fetchFrontendDelta = (...args) => frontendRuntimeService().fetchDelta(...args);
+window.scheduleRenderSections = (...args) => frontendRuntimeService().scheduleSections(...args);
+window.sendWS = (...args) => frontendRuntimeService().send(...args);
 
 function renderFrontendSections(sections) {
   const previousLanguage = document.documentElement.dataset.language || "zh-CN";
@@ -932,7 +936,7 @@ function writeClipboard(text, successMessage = "", successDetail = "") {
 
 function performLogOperation(operation) {
   frontendAction("log_operation", { operation });
-  if (operation === "refresh" || operation === "clear") setTimeout(fetchFrontendDelta, 200);
+  if (operation === "refresh" || operation === "clear") frontendRuntimeService().scheduleDelta(200);
 }
 
 function renderLogs() { return logCenterService().render(); }

@@ -5371,6 +5371,211 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["settledCount"], 1)
         self.assertEqual(result["logs"], [])
 
+    def test_13j_frontend_runtime_rejects_full_state_older_than_newer_transport_state(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const runtime = window.UcpFrontendRuntime;
+              runtime.dispose();
+              const nativeFetch = window.fetch;
+              const NativeWebSocket = window.WebSocket;
+              const requests = [];
+              let state = { version: 0, queue_items: [], log_items: [] };
+
+              class FakeWebSocket {
+                static CONNECTING = 0;
+                static OPEN = 1;
+                static CLOSED = 3;
+                constructor() { this.readyState = FakeWebSocket.CONNECTING; }
+                close() { this.readyState = FakeWebSocket.CLOSED; }
+                send() {}
+              }
+
+              window.fetch = url => new Promise(resolve => requests.push({ url: String(url), resolve }));
+              window.WebSocket = FakeWebSocket;
+              const response = payload => ({ ok: true, json: async () => payload });
+
+              try {
+                runtime.configure({
+                  getState: () => state,
+                  replaceState: nextState => { state = nextState; },
+                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
+                  patchSection: () => [],
+                  renderSections: () => {},
+                  renderAll: () => {},
+                  onConnected: () => {},
+                  onSettled: () => {},
+                  appendUiLog: () => {},
+                });
+
+                const versionedFetch = runtime.start();
+                runtime.handleServerMessage({
+                  type: "frontend_state",
+                  data: { version: 2, queue_items: [{ id: "socket-v2" }], log_items: [] },
+                });
+                requests[0].resolve(response({
+                  version: 1,
+                  queue_items: [{ id: "fetch-v1" }],
+                  log_items: [],
+                }));
+                await versionedFetch;
+                const versionedStaleIgnored = state.version === 2 && state.queue_items[0]?.id === "socket-v2";
+
+                const unversionedFetch = runtime.fetchState();
+                runtime.handleServerMessage({
+                  type: "frontend_state",
+                  data: { version: 3, queue_items: [{ id: "socket-v3" }], log_items: [] },
+                });
+                requests[1].resolve(response({
+                  queue_items: [{ id: "fetch-without-version" }],
+                  log_items: [],
+                }));
+                await unversionedFetch;
+
+                return {
+                  versionedStaleIgnored,
+                  unversionedStaleIgnored: state.version === 3 && state.queue_items[0]?.id === "socket-v3",
+                };
+              } finally {
+                runtime.dispose();
+                window.fetch = nativeFetch;
+                window.WebSocket = NativeWebSocket;
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["versionedStaleIgnored"])
+        self.assertTrue(result["unversionedStaleIgnored"])
+
+    def test_13k_frontend_runtime_cancels_delayed_delta_from_an_old_run(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const runtime = window.UcpFrontendRuntime;
+              runtime.dispose();
+              const nativeFetch = window.fetch;
+              const NativeWebSocket = window.WebSocket;
+              const nativeSetTimeout = window.setTimeout;
+              const nativeClearTimeout = window.clearTimeout;
+              const timers = [];
+              const cleared = [];
+              let deltaRequests = 0;
+              let state = { version: 0, queue_items: [], log_items: [] };
+
+              class FakeWebSocket {
+                static CONNECTING = 0;
+                static OPEN = 1;
+                static CLOSED = 3;
+                constructor() { this.readyState = FakeWebSocket.CONNECTING; }
+                close() { this.readyState = FakeWebSocket.CLOSED; }
+                send() {}
+              }
+
+              const response = payload => ({ ok: true, json: async () => payload });
+              window.fetch = url => {
+                if (String(url).includes("/api/frontend/delta")) deltaRequests += 1;
+                return Promise.resolve(response({ version: 0, queue_items: [], log_items: [] }));
+              };
+              window.WebSocket = FakeWebSocket;
+              window.setTimeout = callback => {
+                const timer = { id: timers.length + 1, callback };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = id => cleared.push(id);
+
+              try {
+                runtime.configure({
+                  getState: () => state,
+                  replaceState: nextState => { state = nextState; },
+                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
+                  patchSection: () => [],
+                  renderSections: () => {},
+                  renderAll: () => {},
+                  onConnected: () => {},
+                  onSettled: () => {},
+                  appendUiLog: () => {},
+                });
+
+                await runtime.start();
+                runtime.scheduleDelta(200);
+                const oldTimer = timers[0];
+                runtime.dispose();
+                await runtime.start();
+                oldTimer.callback();
+                await Promise.resolve();
+
+                return {
+                  oldTimerCleared: cleared.includes(oldTimer.id),
+                  oldTimerIgnored: deltaRequests === 0,
+                };
+              } finally {
+                runtime.dispose();
+                window.fetch = nativeFetch;
+                window.WebSocket = NativeWebSocket;
+                window.setTimeout = nativeSetTimeout;
+                window.clearTimeout = nativeClearTimeout;
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["oldTimerCleared"])
+        self.assertTrue(result["oldTimerIgnored"])
+
+    def test_13l_runtime_compatibility_globals_delegate_to_the_public_service(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const nativeRuntime = window.UcpFrontendRuntime;
+              const calls = [];
+              window.UcpFrontendRuntime = Object.freeze({
+                ...nativeRuntime,
+                fetchState: (...args) => { calls.push(["fetchState", ...args]); return Promise.resolve("state"); },
+                fetchDelta: (...args) => { calls.push(["fetchDelta", ...args]); return Promise.resolve("delta"); },
+                scheduleSections: (...args) => { calls.push(["scheduleSections", ...args]); return "sections"; },
+                send: (...args) => { calls.push(["send", ...args]); return true; },
+              });
+              try {
+                const types = Object.fromEntries([
+                  "fetchFrontendState",
+                  "fetchFrontendDelta",
+                  "scheduleRenderSections",
+                  "sendWS",
+                ].map(name => [name, typeof window[name]]));
+                const values = [
+                  await window.fetchFrontendState("state-arg"),
+                  await window.fetchFrontendDelta("delta-arg"),
+                  window.scheduleRenderSections(["queue_items"]),
+                  window.sendWS("crawl_state", { running: true }),
+                ];
+                return { types, values, calls };
+              } finally {
+                window.UcpFrontendRuntime = nativeRuntime;
+              }
+            }
+            """
+        )
+
+        self.assertEqual(set(result["types"].values()), {"function"})
+        self.assertEqual(result["values"], ["state", "delta", "sections", True])
+        self.assertEqual(
+            result["calls"],
+            [
+                ["fetchState", "state-arg"],
+                ["fetchDelta", "delta-arg"],
+                ["scheduleSections", ["queue_items"]],
+                ["send", "crawl_state", {"running": True}],
+            ],
+        )
+
     def test_14_keyboard_arrow_navigation(self):
         """方向键应在可见队列行之间切换。"""
         self._goto_ready()

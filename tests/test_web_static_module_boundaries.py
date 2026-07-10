@@ -136,6 +136,7 @@ def test_frontend_runtime_exports_the_complete_lifecycle_contract() -> None:
         "connect",
         "fetchState",
         "fetchDelta",
+        "scheduleDelta",
         "scheduleSections",
         "handleServerMessage",
         "send",
@@ -160,3 +161,26 @@ def test_app_js_is_a_composition_root_not_a_feature_monolith() -> None:
         "function setupPlayerEvents",
     ):
         assert marker not in content
+
+
+def test_frontend_runtime_owns_delayed_delta_scheduling() -> None:
+    runtime = (STATIC_DIR / "frontend_runtime.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    operation = app.split("function performLogOperation(operation)", 1)[1].split(
+        "function renderLogs()",
+        1,
+    )[0]
+    assert "scheduleDelta: scheduleFrontendDeltaFetch" in runtime
+    assert "frontendRuntimeService().scheduleDelta(200)" in operation
+    assert "setTimeout" not in operation
+
+
+def test_app_exposes_thin_runtime_compatibility_globals() -> None:
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for wrapper in (
+        "window.fetchFrontendState = (...args) => frontendRuntimeService().fetchState(...args);",
+        "window.fetchFrontendDelta = (...args) => frontendRuntimeService().fetchDelta(...args);",
+        "window.scheduleRenderSections = (...args) => frontendRuntimeService().scheduleSections(...args);",
+        "window.sendWS = (...args) => frontendRuntimeService().send(...args);",
+    ):
+        assert wrapper in app
