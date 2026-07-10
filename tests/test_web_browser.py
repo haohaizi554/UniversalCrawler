@@ -5605,6 +5605,7 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               frontendState.queue_items = [{ id: "queue-global", title: "Queue global" }];
               frontendState.completed_items = [
                 { id: "completed-auto", title: "Completed auto", format: "MP4" },
