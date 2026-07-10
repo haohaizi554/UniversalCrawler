@@ -62,3 +62,17 @@ def test_log_center_owns_workers_and_render_pipeline() -> None:
         assert marker in module
         assert marker not in app
     assert "function renderLogs() { return logCenterService().render(); }" in app
+
+
+def test_list_pages_owns_paging_worker_and_four_state_renderers() -> None:
+    module = (STATIC_DIR / "list_pages.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for marker in (
+        'new Worker("/static/list_page_worker.js?v=20260708-list-page-worker")',
+        "function applyListPageResult",
+    ):
+        assert marker in module
+        assert marker not in app
+    for name in ("Queue", "Active", "Completed", "Failed"):
+        assert f"function render{name}" in module
+        assert f"function render{name}() {{ return listPagesService().render{name}(); }}" in app

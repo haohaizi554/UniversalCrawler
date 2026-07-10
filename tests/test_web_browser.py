@@ -761,6 +761,8 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_playback_position_cache_uses_path_key_and_cleans_orphans(self):
         content = _static_bundle_content()
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        list_pages = (static_dir / "list_pages.js").read_text(encoding="utf-8")
 
         self.assertIn("const PLAYBACK_POSITION_PREFIX", content)
         self.assertIn("function playbackPositionIdentity(id)", content)
@@ -768,7 +770,8 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("encodeURIComponent(playbackPositionIdentity(id))", content)
         self.assertIn("function cleanupWebPlaybackPositions(items)", content)
         self.assertIn("key.startsWith(PLAYBACK_POSITION_PREFIX)", content)
-        self.assertIn("cleanupWebPlaybackPositions(allItems);", content)
+        self.assertIn("cleanupPlaybackPositions(items);", list_pages)
+        self.assertIn("window.UcpPlaybackState.cleanupPlaybackPositions(localStorage, currentState(), items);", list_pages)
         self.assertIn("localStorage.removeItem(legacyPlaybackPositionKey(sourceId))", content)
 
     def test_web_preview_validates_media_with_server_before_playback(self):
@@ -981,48 +984,48 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_table_page_size_matches_gui_pagination_contract(self):
         content = _static_bundle_content()
-        render_queue_block = content.split("function renderQueue()", 1)[1].split(
-            "function queueTitleHtml",
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        list_pages = (static_dir / "list_pages.js").read_text(encoding="utf-8")
+        render_queue_block = list_pages.split("function renderQueue()", 1)[1].split(
+            "function applyQueuePageResult",
             1,
         )[0]
-        render_completed_block = content.split("function renderCompleted()", 1)[1].split(
-            "function selectCompleted",
+        render_completed_block = list_pages.split("function renderCompleted()", 1)[1].split(
+            "function applyCompletedPageResult",
             1,
         )[0]
-        render_failed_block = content.split("function renderFailed()", 1)[1].split(
-            "function selectFailed",
+        render_failed_block = list_pages.split("function renderFailed()", 1)[1].split(
+            "function applyFailedPageResult",
             1,
         )[0]
 
-        self.assertIn("function normalizeTablePageSize(value)", content)
-        self.assertIn('new Worker("/static/list_page_worker.js?v=20260708-list-page-worker")', content)
-        self.assertIn('let queuePageSize = normalizeTablePageSize(localStorage.getItem("webui_queue_page_size") || 20);', content)
-        self.assertIn('let completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);', content)
-        self.assertIn('let failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_page_size") || 20);', content)
-        self.assertIn("return [20, 50, 100].includes(numeric) ? numeric : 20;", content)
-        self.assertIn("queuePageSize = normalizeTablePageSize(value);", content)
-        self.assertIn("completedPageSize = normalizeTablePageSize(value);", content)
-        self.assertIn("failedPageSize = normalizeTablePageSize(value);", content)
-        self.assertIn("function ensureListPageWorker()", content)
-        self.assertIn("function submitListPageRequest(pageKey, requestData)", content)
-        self.assertIn("function applyListPageResult(result)", content)
-        self.assertIn("worker.postMessage(request);", content)
-        self.assertIn("applyListPageResult(buildListPageResultSync(request));", content)
+        self.assertIn("function normalizeTablePageSize(value)", list_pages)
+        self.assertIn('new Worker("/static/list_page_worker.js?v=20260708-list-page-worker")', list_pages)
+        self.assertIn('state.queuePageSize = normalizeTablePageSize(localStorage.getItem("webui_queue_page_size") || 20);', list_pages)
+        self.assertIn('state.completedPageSize = normalizeTablePageSize(localStorage.getItem("webui_completed_page_size") || 20);', list_pages)
+        self.assertIn('state.failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_page_size") || 20);', list_pages)
+        self.assertIn("return [20, 50, 100].includes(numeric) ? numeric : 20;", list_pages)
+        self.assertIn("state.queuePageSize = normalizeTablePageSize(value);", list_pages)
+        self.assertIn("state.completedPageSize = normalizeTablePageSize(value);", list_pages)
+        self.assertIn("state.failedPageSize = normalizeTablePageSize(value);", list_pages)
+        self.assertIn("function ensureListPageWorker()", list_pages)
+        self.assertIn("function submitListPageRequest(pageKey, requestData)", list_pages)
+        self.assertIn("function applyListPageResult(result, worker = state.worker", list_pages)
+        self.assertIn("worker.postMessage(request);", list_pages)
+        self.assertIn("scheduleListPageFallback(request);", list_pages)
+        self.assertIn("const timer = setTimeout(() =>", list_pages)
         self.assertIn('submitListPageRequest("queue"', render_queue_block)
         self.assertIn('submitListPageRequest("completed"', render_completed_block)
         self.assertIn('submitListPageRequest("failed"', render_failed_block)
-        self.assertIn("applyQueuePageResult(result)", render_queue_block)
-        self.assertIn("applyCompletedPageResult(result)", render_completed_block)
-        self.assertIn("applyFailedPageResult(result)", render_failed_block)
-        self.assertIn('syncCustomSelectForSelect(byId("queuePageSize"))', render_queue_block)
-        self.assertIn('syncCustomSelectForSelect(byId("completedPageSize"))', render_completed_block)
-        self.assertIn('syncCustomSelectForSelect(byId("failedPageSize"))', render_failed_block)
-        self.assertIn('byId("queuePrevPage").disabled = queuePage <= 1;', render_queue_block)
-        self.assertIn('byId("queueNextPage").disabled = queuePage >= totalPages;', render_queue_block)
-        self.assertIn('byId("completedPrevPage").disabled = completedPage <= 1;', render_completed_block)
-        self.assertIn('byId("completedNextPage").disabled = completedPage >= totalPages;', render_completed_block)
-        self.assertIn('byId("failedPrevPage").disabled = failedPage <= 1;', render_failed_block)
-        self.assertIn('byId("failedNextPage").disabled = failedPage >= totalPages;', render_failed_block)
+        self.assertIn('syncCustomSelectForSelect(byId("queuePageSize"))', list_pages)
+        self.assertIn('syncCustomSelectForSelect(byId("completedPageSize"))', list_pages)
+        self.assertIn('syncCustomSelectForSelect(byId("failedPageSize"))', list_pages)
+        self.assertIn('byId("queuePrevPage").disabled = state.queuePage <= 1;', list_pages)
+        self.assertIn('byId("queueNextPage").disabled = state.queuePage >= totalPages;', list_pages)
+        self.assertIn('byId("completedPrevPage").disabled = state.completedPage <= 1;', list_pages)
+        self.assertIn('byId("completedNextPage").disabled = state.completedPage >= totalPages;', list_pages)
+        self.assertIn('byId("failedPrevPage").disabled = state.failedPage <= 1;', list_pages)
+        self.assertIn('byId("failedNextPage").disabled = state.failedPage >= totalPages;', list_pages)
         for elem_id in (
             "queuePrevPage",
             "queueNextPage",
@@ -1045,10 +1048,10 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('queuePrevPage: "上一页"', content)
         self.assertIn('completedNextPage: "下一页"', content)
         self.assertIn('button.setAttribute("aria-label", t(label));', content)
-        self.assertNotIn("queuePageSize = Math.max(20, Number(value) || 20)", content)
-        self.assertNotIn("completedPageSize = Math.max(20, Number(value) || 20)", content)
-        self.assertNotIn("allItems.slice(start, start + queuePageSize)", render_queue_block)
-        self.assertNotIn("allItems.slice(start, start + completedPageSize)", render_completed_block)
+        self.assertNotIn("queuePageSize = Math.max(20, Number(value) || 20)", list_pages)
+        self.assertNotIn("completedPageSize = Math.max(20, Number(value) || 20)", list_pages)
+        self.assertNotIn("items.slice(start, start + state.queuePageSize)", render_queue_block)
+        self.assertNotIn("items.slice(start, start + state.completedPageSize)", render_completed_block)
 
     def test_web_active_download_selects_sync_custom_shell_after_state_updates(self):
         content = _static_bundle_content()
@@ -2790,10 +2793,10 @@ class WebUIBrowserTests(unittest.TestCase):
                   format: 'MP4'
                 };
               });
-              completedPageSize = 20;
-              completedPage = 2;
+              window.UcpListPages.setCompletedPageSize(20);
+              window.UcpListPages.setCompletedPage(1);
               selected.completed = 'missing-completed';
-              renderCompleted();
+              window.UcpListPages.renderCompleted();
               const waitForSelectedRow = (selector, expectedId, selectedGetter, label) => new Promise((resolve, reject) => {
                 const deadline = performance.now() + 3000;
                 const tick = () => {
@@ -3944,20 +3947,215 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["fallbackCancelled"])
         self.assertFalse(result["fallbackRendered"])
 
+    def test_13f_list_pages_reject_stale_workers_and_preserve_shared_selection(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const nativeWorker = window.Worker;
+              const workers = [];
+              const selection = { active: "", completed: "", failed: "", queue: "" };
+              const state = {
+                settings_snapshot: {},
+                queue_items: [],
+                active_downloads: [],
+                completed_items: [{ id: "old-completed", title: "Old completed", format: "MP4" }],
+                failed_items: []
+              };
+
+              class ControlledWorker {
+                constructor(url) {
+                  this.url = String(url);
+                  this.requests = [];
+                  this.terminateCalls = 0;
+                  workers.push(this);
+                }
+                postMessage(request) { this.requests.push(request); }
+                terminate() { this.terminateCalls += 1; }
+                emit(result) { this.onmessage?.({ data: result }); }
+              }
+
+              const configure = () => window.UcpListPages.configure({
+                getState: () => state,
+                getSelection: domain => selection[domain] || "",
+                setSelection: (domain, id) => { selection[domain] = String(id || ""); },
+                t: value => String(value),
+                esc,
+                escAttr,
+                byId,
+                frontendAction: () => {},
+                playCompleted: () => {},
+                renderStatus: () => {}
+              });
+              const resultFor = (request, item) => ({
+                type: "page",
+                pageKey: request.pageKey,
+                sequence: request.sequence,
+                totalCount: 1,
+                totalPages: 1,
+                currentPage: 1,
+                pageSize: request.pageSize,
+                pageItems: [item],
+                selectedId: item.id
+              });
+
+              window.Worker = ControlledWorker;
+              window.UcpListPages.dispose();
+              try {
+                configure();
+                window.UcpListPages.renderCompleted();
+                const obsoleteWorker = workers[0];
+                const obsoleteRequest = obsoleteWorker.requests[0];
+
+                state.completed_items = [{ id: "current-a", title: "Current A", format: "MP4" }];
+                configure();
+                window.UcpListPages.renderCompleted();
+                const currentWorker = workers[1];
+                const firstCurrentRequest = currentWorker.requests[0];
+                obsoleteWorker.emit(resultFor(obsoleteRequest, { id: "old-completed", title: "Old completed", format: "MP4" }));
+                const generationIgnored = selection.completed === "";
+
+                state.completed_items = [{ id: "current-b", title: "Current B", format: "MP4" }];
+                window.UcpListPages.renderCompleted();
+                const secondCurrentRequest = currentWorker.requests[1];
+                currentWorker.emit(resultFor(firstCurrentRequest, { id: "current-a", title: "Current A", format: "MP4" }));
+                const sequenceIgnored = selection.completed === "";
+                currentWorker.emit(resultFor(secondCurrentRequest, state.completed_items[0]));
+
+                return {
+                  generationIgnored,
+                  sequenceIgnored,
+                  sharedSelection: selection.completed,
+                  selectedRows: Array.from(document.querySelectorAll("#completedBody tr.selected")).map(row => row.dataset.id),
+                  obsoleteTerminatedOnce: obsoleteWorker.terminateCalls === 1
+                };
+              } finally {
+                window.UcpListPages.dispose();
+                window.Worker = nativeWorker;
+                if (typeof configureListPagesHelpers === "function") configureListPagesHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["generationIgnored"])
+        self.assertTrue(result["sequenceIgnored"])
+        self.assertEqual(result["sharedSelection"], "current-b")
+        self.assertEqual(result["selectedRows"], ["current-b"])
+        self.assertTrue(result["obsoleteTerminatedOnce"])
+
+    def test_13g_list_pages_schedule_fallback_and_dispose_idempotently(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const nativeWorker = window.Worker;
+              const nativeSetTimeout = window.setTimeout;
+              const nativeClearTimeout = window.clearTimeout;
+              const timers = [];
+              const clearedTimers = [];
+              const selection = { active: "", completed: "", failed: "", queue: "" };
+              const state = {
+                settings_snapshot: {},
+                queue_items: [{ id: "queue-fallback", title: "Queue fallback" }],
+                active_downloads: [],
+                completed_items: [{ id: "completed-fallback", title: "Completed fallback", format: "MP4" }],
+                failed_items: [{ id: "failed-fallback", title: "Failed fallback", reason: "403" }]
+              };
+              let workerTerminateCalls = 0;
+
+              class ControlledWorker {
+                postMessage() {}
+                terminate() { workerTerminateCalls += 1; }
+              }
+
+              const configure = () => window.UcpListPages.configure({
+                getState: () => state,
+                getSelection: domain => selection[domain] || "",
+                setSelection: (domain, id) => { selection[domain] = String(id || ""); },
+                t: value => String(value),
+                esc,
+                escAttr,
+                byId,
+                frontendAction: () => {},
+                playCompleted: () => {},
+                renderStatus: () => {}
+              });
+
+              window.UcpListPages.dispose();
+              try {
+                window.Worker = ControlledWorker;
+                configure();
+                window.UcpListPages.renderQueue();
+                window.UcpListPages.dispose();
+                window.UcpListPages.dispose();
+
+                window.Worker = undefined;
+                let nextTimerId = 1;
+                window.setTimeout = callback => {
+                  const timer = { id: nextTimerId++, callback };
+                  timers.push(timer);
+                  return timer.id;
+                };
+                window.clearTimeout = timerId => { clearedTimers.push(timerId); };
+
+                configure();
+                document.getElementById("queueBody").innerHTML = "";
+                window.UcpListPages.renderQueue();
+                const firstTimer = timers[0];
+                const fallbackWasScheduled = document.querySelector("#queueBody tr[data-id]") === null;
+                firstTimer.callback();
+                const fallbackRendered = document.querySelector("#queueBody tr[data-id]")?.dataset.id === "queue-fallback";
+
+                configure();
+                for (const id of ["queueBody", "completedBody", "failedBody"]) document.getElementById(id).innerHTML = "";
+                window.UcpListPages.renderQueue();
+                window.UcpListPages.renderCompleted();
+                window.UcpListPages.renderFailed();
+                const pendingTimers = timers.slice(1);
+                window.UcpListPages.dispose();
+                window.UcpListPages.dispose();
+                pendingTimers.forEach(timer => timer.callback());
+
+                return {
+                  workerTerminatedOnce: workerTerminateCalls === 1,
+                  fallbackWasScheduled,
+                  fallbackRendered,
+                  allFallbacksCancelled: pendingTimers.length === 3 && pendingTimers.every(timer => clearedTimers.includes(timer.id)),
+                  staleFallbackRows: ["queueBody", "completedBody", "failedBody"].some(id => document.querySelector(`#${id} tr[data-id]`))
+                };
+              } finally {
+                window.UcpListPages.dispose();
+                window.Worker = nativeWorker;
+                window.setTimeout = nativeSetTimeout;
+                window.clearTimeout = nativeClearTimeout;
+                if (typeof configureListPagesHelpers === "function") configureListPagesHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["workerTerminatedOnce"])
+        self.assertTrue(result["fallbackWasScheduled"])
+        self.assertTrue(result["fallbackRendered"])
+        self.assertTrue(result["allFallbacksCancelled"])
+        self.assertFalse(result["staleFallbackRows"])
+
     def test_14_keyboard_arrow_navigation(self):
-        """方向键应在 videoOrder 之间切换。"""
+        """方向键应在可见队列行之间切换。"""
         self._goto_ready()
         # 注入测试数据
         self._page.evaluate("""
             switchPage('queue');
-            videoOrder = ['a', 'b', 'c'];
-            videos = {
-                'a': {title: 'Item A', progress: 0, status: 'done'},
-                'b': {title: 'Item B', progress: 0, status: 'done'},
-                'c': {title: 'Item C', progress: 0, status: 'done'},
-            };
+            frontendState.queue_items = [
+                {id: 'a', title: 'Item A', progress: 0, status: 'done'},
+                {id: 'b', title: 'Item B', progress: 0, status: 'done'},
+                {id: 'c', title: 'Item C', progress: 0, status: 'done'},
+            ];
             selectedVideoId = null;
-            renderQueue();
+            window.UcpListPages.renderQueue();
             document.body.focus();
         """)
         self._page.wait_for_function(
@@ -3984,9 +4182,8 @@ class WebUIBrowserTests(unittest.TestCase):
             window.sendWS = (type, data) => {
                 if (type === 'delete_video') window._deletedIds.push(data.video_id);
             };
-            videoOrder = ['x1'];
-            videos = {'x1': {title: 'to delete', progress: 0, status: 'done'}};
-            renderQueue();
+            frontendState.queue_items = [{id: 'x1', title: 'to delete', progress: 0, status: 'done'}];
+            window.UcpListPages.renderQueue();
             selectedVideoId = 'x1';
             updateSelection(null, 'x1');
         """)
