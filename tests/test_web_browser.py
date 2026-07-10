@@ -450,7 +450,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('byId("selectionConfirmBtn").focus({ preventScroll: true })', content)
         self.assertIn('if (event.key === "Enter") confirmSelection();', content)
         self.assertIn("else cancelSelection();", content)
-        self.assertIn("if (handleSelectionModalShortcut(event)) return;", content)
+        self.assertIn("if (handleSelectionModalShortcut(event)) return true;", content)
         self.assertIn("}, true);", content)
 
     def test_file_association_modal_shortcuts_are_bound_to_dialog_actions(self):
@@ -465,7 +465,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('if (!["Enter", "Escape"].includes(event.key)) return false;', content)
         self.assertIn('if (event.key === "Enter") confirmFileAssociationModal();', content)
         self.assertIn("else cancelFileAssociationModal();", content)
-        self.assertIn("if (handleFileAssociationModalShortcut(event)) return;", content)
+        self.assertIn("if (handleFileAssociationModalShortcut(event)) return true;", content)
 
     def test_directory_modal_uses_web_directory_browser_contract(self):
         content = _static_bundle_content()
@@ -494,7 +494,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/api/dir/list', content)
         self.assertIn('/api/dir/change', content)
         self.assertIn('localStorage.setItem("dir_last_browsed"', content)
-        self.assertIn("await fetchFrontendState()", content)
+        self.assertIn("await dependencies.fetchState()", content)
         self.assertIn(".dir-modal-box", content)
         self.assertIn(".dir-entry.selected", content)
         self.assertIn(".dir-folder-list", content)
@@ -554,7 +554,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("configureTopCountForSource", content)
         self.assertIn('count_config_key || "max_items"', content)
         self.assertIn('data-setting="proxy_url"', content)
-        self.assertIn('updateSetting(platformId, key, "\\u81ea\\u5b9a\\u4e49")', content)
+        self.assertIn('updateSetting(platformId, key, "自定义")', content)
         self.assertIn("renderSettings(true);", content)
         self.assertIn("\u7b14\u8bb0\u6570:", content)
         self.assertIn("function countFallbackOptions(unit)", content)
@@ -1288,9 +1288,9 @@ class WebUIBrowserTests(unittest.TestCase):
               const appearance = (frontendState.settings_snapshot['\\u5916\\u89c2\\u8bbe\\u7f6e'] ||= {});
               appearance.follow_system = true;
               appearance.theme = 'light';
-              currentSettingsGroup = '\\u5916\\u89c2\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u5916\\u89c2\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const beforeSwitch = document.querySelector('#page-settings [data-setting="follow_system"]');
               const darkButton = document.querySelector('#page-settings .setting-theme-segment-btn[data-value="dark"]');
               darkButton?.click();
@@ -1346,7 +1346,7 @@ class WebUIBrowserTests(unittest.TestCase):
 
         result = self._page.evaluate(
             """
-            () => {
+            async () => {
               frontendState.settings_snapshot = frontendState.settings_snapshot || {};
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),
@@ -1356,7 +1356,10 @@ class WebUIBrowserTests(unittest.TestCase):
               applyStaticLanguage();
               document.getElementById("searchInput").value = "";
               startCrawl();
-              setDirStatus("目录加载失败：boom", "error");
+              const originalFetch = window.fetch;
+              window.fetch = () => Promise.reject(new Error("boom"));
+              await window.UcpDialogController.loadDirectory("C:/missing");
+              window.fetch = originalFetch;
               const lastLog = frontendState.log_items[frontendState.log_items.length - 1] || {};
               return {
                 startLabel: document.getElementById("startBtn").textContent.trim(),
@@ -1755,11 +1758,11 @@ class WebUIBrowserTests(unittest.TestCase):
               const sourceOptions = Array.from(document.querySelectorAll("#sourceSelect option")).map(option => option.textContent.trim());
 
               currentPage = "settings";
-              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "settings"));
+              document.querySelectorAll(".page").forEach(page => page.classList.remove("active"));
               const settingsTexts = {};
               for (const group of ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置"]) {
-                currentSettingsGroup = group;
-                renderSettings(true);
+                window.UcpSettingsController.switchGroup(group);
+                window.UcpSettingsController.render(true);
                 settingsTexts[group] = document.getElementById("page-settings").textContent;
               }
 
@@ -1794,9 +1797,9 @@ class WebUIBrowserTests(unittest.TestCase):
               const zhSourceOptions = Array.from(document.querySelectorAll("#sourceSelect option")).map(option => option.textContent.trim());
 
               currentPage = "settings";
-              document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "settings"));
-              currentSettingsGroup = "平台设置";
-              renderSettings(true);
+              document.querySelectorAll(".page").forEach(page => page.classList.remove("active"));
+              window.UcpSettingsController.switchGroup("平台设置");
+              window.UcpSettingsController.render(true);
               const zhSettingsText = document.getElementById("page-settings").textContent;
 
               window.__setLogFiltersForTest({ category: "all", level: "全部", time: "全部", platform: "全部", trace: "", keyword: "" });
@@ -2036,14 +2039,14 @@ class WebUIBrowserTests(unittest.TestCase):
               document.documentElement.dataset.language = "zh-CN";
               renderPlatforms();
               currentPage = "settings";
-              currentSettingsGroup = "外观设置";
+              window.UcpSettingsController.switchGroup("外观设置");
               document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === "settings"));
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               updateSetting("appearance", "language", "en-US");
 
               const sourceOptions = Array.from(document.querySelectorAll("#sourceSelect option")).map(option => option.textContent.trim());
-              currentSettingsGroup = "平台设置";
-              renderSettings(true);
+              window.UcpSettingsController.switchGroup("平台设置");
+              window.UcpSettingsController.render(true);
               const settingsText = document.getElementById("page-settings").textContent;
               const customProxyPlaceholder = document.querySelector(".proxy-custom")?.getAttribute("placeholder") || "";
 
@@ -2673,7 +2676,107 @@ class WebUIBrowserTests(unittest.TestCase):
             [{"action": "register_file_associations", "payload": {"include_video": True, "include_image": False}}],
         )
 
-    def test_11d_missing_media_validation_keeps_preview_closed(self):
+    def test_11d_settings_controller_commits_custom_proxy_through_public_api(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            r"""
+            () => {
+              const actions = [];
+              const state = {
+                settings_snapshot: {
+                  '\u5e73\u53f0\u8bbe\u7f6e': [{
+                    id: 'demo',
+                    name: 'Demo',
+                    proxy: '\u7cfb\u7edf\u4ee3\u7406',
+                    proxy_config_key: 'proxy_url',
+                    proxy_editable: true,
+                    proxy_custom_allowed: true,
+                    proxy_options: ['\u7cfb\u7edf\u4ee3\u7406', '\u76f4\u8fde', '\u81ea\u5b9a\u4e49']
+                  }]
+                },
+                settings_contract: { group_order: ['\u5e73\u53f0\u8bbe\u7f6e'] }
+              };
+              window.UcpSettingsController.configure({
+                getState: () => state,
+                t: value => String(value || ''),
+                optionLabel: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                sendWS: (action, payload) => actions.push({ action, payload }),
+                syncAppearance: () => {},
+                enhanceSelects: () => {}
+              });
+              window.UcpSettingsController.render(true);
+              const select = document.querySelector('#settingsGrid .platform-proxy');
+              select.value = '\u81ea\u5b9a\u4e49';
+              window.UcpSettingsController.handleProxySelect('demo', 'proxy_url', select);
+              const input = document.querySelector('#settingsGrid .proxy-custom');
+              input.value = 'http://127.0.0.1:7890';
+              window.UcpSettingsController.commitProxyCustom('demo', 'proxy_url', input);
+              return {
+                actions,
+                inputHidden: input.hidden,
+                inputDisabled: input.disabled,
+                rowCustom: select.closest('.setting-platform').classList.contains('has-proxy-custom')
+              };
+            }
+            """
+        )
+
+        self.assertEqual(
+            result["actions"],
+            [
+                {"action": "update_setting", "payload": {"section": "demo", "key": "proxy_url", "value": "\u81ea\u5b9a\u4e49"}},
+                {"action": "update_setting", "payload": {"section": "demo", "key": "proxy_url", "value": "http://127.0.0.1:7890"}},
+            ],
+        )
+        self.assertFalse(result["inputHidden"])
+        self.assertFalse(result["inputDisabled"])
+        self.assertTrue(result["rowCustom"])
+
+    def test_11e_dialog_controller_dispose_hides_and_clears_modals_without_actions(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const actions = [];
+              const messages = [];
+              window.UcpDialogController.configure({
+                getState: () => frontendState,
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: (action, payload) => actions.push({ action, payload }),
+                sendWS: (type, payload) => messages.push({ type, payload }),
+                appendUiLog: () => {}
+              });
+              window.UcpDialogController.showSelection([{ title: 'one' }, { title: 'two' }]);
+              window.UcpDialogController.showAssociation();
+              document.getElementById('dirModal').style.display = 'flex';
+              window.UcpDialogController.dispose();
+              window.UcpDialogController.dispose();
+              return {
+                actions,
+                messages,
+                selectionDisplay: document.getElementById('selectionModal').style.display,
+                associationDisplay: document.getElementById('fileAssociationModal').style.display,
+                directoryDisplay: document.getElementById('dirModal').style.display,
+                selectionHtml: document.getElementById('selectionBody').innerHTML
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["actions"], [])
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(result["selectionDisplay"], "none")
+        self.assertEqual(result["associationDisplay"], "none")
+        self.assertEqual(result["directoryDisplay"], "none")
+        self.assertEqual(result["selectionHtml"], "")
+
+    def test_11f_missing_media_validation_keeps_preview_closed(self):
         self._goto_ready()
 
         result = self._page.evaluate(
@@ -2867,9 +2970,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             async () => {
-              currentSettingsGroup = '基础设置';
+              window.UcpSettingsController.switchGroup('基础设置');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const images = Array.from(document.querySelectorAll('#page-settings .settings-nav-btn img, #page-settings .settings-detail-icon img'));
               await Promise.all(images.map(img => {
                 if (img.complete && img.naturalWidth > 0) return Promise.resolve();
@@ -2906,9 +3009,9 @@ class WebUIBrowserTests(unittest.TestCase):
             """
             () => {
               __STABLE_PLATFORM_SETTINGS__
-              currentSettingsGroup = '\\u5e73\\u53f0\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u5e73\\u53f0\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const proxySelect = Array.from(document.querySelectorAll('#page-settings select.platform-proxy'))
                 .find(select => !select.disabled && Array.from(select.options).some(option => option.value === '\\u81ea\\u5b9a\\u4e49'));
               if (proxySelect) {
@@ -2970,9 +3073,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
-              currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u57fa\\u7840\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const body = document.querySelector('#page-settings .settings-detail-body');
               const hint = document.querySelector('#page-settings .settings-hint-card');
               const row = document.querySelector('#page-settings .setting-row');
@@ -2996,8 +3099,8 @@ class WebUIBrowserTests(unittest.TestCase):
                   .map(node => node.dataset.setting),
                 platformBefore
               };
-              currentSettingsGroup = '\\u5e73\\u53f0\\u8bbe\\u7f6e';
-              renderSettings(true);
+              window.UcpSettingsController.switchGroup('\\u5e73\\u53f0\\u8bbe\\u7f6e');
+              window.UcpSettingsController.render(true);
               const platformBody = document.querySelector('#page-settings .settings-platform-body');
               const panel = document.querySelector('#page-settings .settings-detail-panel');
               return {
@@ -3046,8 +3149,8 @@ class WebUIBrowserTests(unittest.TestCase):
               const collected = {};
               switchPage('settings');
               for (const [name, group] of Object.entries(groups)) {
-                currentSettingsGroup = group;
-                renderSettings(true);
+                window.UcpSettingsController.switchGroup(group);
+                window.UcpSettingsController.render(true);
                 collected[name] = Array.from(new Set(
                   Array.from(document.querySelectorAll('#page-settings [data-setting]'))
                     .map(node => node.dataset.setting)
@@ -3101,9 +3204,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
-              currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u57fa\\u7840\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const defaultOpen = document.querySelector('#page-settings [data-setting="default_open_mode"]');
               const cluster = defaultOpen?.closest('.setting-control-cluster');
               const selectBox = defaultOpen?.closest('.custom-select') || defaultOpen;
@@ -3166,9 +3269,9 @@ class WebUIBrowserTests(unittest.TestCase):
               };
               const sample = async (theme, accent) => {
                 applyAppearance({ theme, accent, scale: "100%", font_size: "medium", language: "zh-CN" });
-                currentSettingsGroup = "\\u57fa\\u7840\\u8bbe\\u7f6e";
+                window.UcpSettingsController.switchGroup("\\u57fa\\u7840\\u8bbe\\u7f6e");
                 switchPage("settings");
-                renderSettings(true);
+                window.UcpSettingsController.render(true);
                 await waitFrame();
                 const select = document.querySelector('#page-settings select[data-setting="filename_template"]');
                 const wrapper = select?.closest(".custom-select");
@@ -3265,9 +3368,9 @@ class WebUIBrowserTests(unittest.TestCase):
                       viewportHeight: window.innerHeight,
                     };
                   };
-                  currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
+                  window.UcpSettingsController.switchGroup('\\u4e0b\\u8f7d\\u8bbe\\u7f6e');
                   switchPage('settings');
-                  renderSettings(true);
+                  window.UcpSettingsController.render(true);
                   await waitFrame();
                   const select = document.querySelector('#page-settings select[data-setting="speed_limit_kb"]');
                   const wrapper = select?.closest('.custom-select');
@@ -3298,9 +3401,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
-              currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u4e0b\\u8f7d\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               return Array.from(document.querySelectorAll('#page-settings .setting-row'))
                 .map(row => row.querySelector('[data-setting]')?.dataset.setting || '')
                 .filter(Boolean);
@@ -3327,9 +3430,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
-              currentSettingsGroup = '\\u4e0b\\u8f7d\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u4e0b\\u8f7d\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const keys = ['max_retries', 'speed_limit_kb'];
               return Object.fromEntries(keys.map(key => {
                 const control = document.querySelector(`#page-settings [data-setting="${key}"]`);
@@ -3354,9 +3457,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
-              currentSettingsGroup = '\\u65e5\\u5fd7\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u65e5\\u5fd7\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const keys = ['retention_days', 'failed_record_retention_days', 'ui_log_max_display_count'];
               return Object.fromEntries(keys.map(key => {
                 const control = document.querySelector(`#page-settings [data-setting="${key}"]`);
@@ -3383,9 +3486,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             async () => {
-              currentSettingsGroup = '\\u57fa\\u7840\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u57fa\\u7840\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const row = document.querySelector('#page-settings .setting-download-directory');
               const button = row?.querySelector('.setting-path-browse');
               const icon = button?.querySelector('img');
@@ -3417,9 +3520,9 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
-              currentSettingsGroup = '\\u64ad\\u653e\\u8bbe\\u7f6e';
+              window.UcpSettingsController.switchGroup('\\u64ad\\u653e\\u8bbe\\u7f6e');
               switchPage('settings');
-              renderSettings(true);
+              window.UcpSettingsController.render(true);
               const keys = ['remember_position', 'autoplay_next', 'manual_image_switch'];
               return Object.fromEntries(keys.map(key => {
                 const input = document.querySelector(`#page-settings [data-setting="${key}"]`);

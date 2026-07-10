@@ -31,6 +31,8 @@ function cleanupPageResources() {
   }
   if (window.UcpLogCenter) window.UcpLogCenter.dispose();
   if (window.UcpListPages) window.UcpListPages.dispose();
+  if (window.UcpSettingsController) window.UcpSettingsController.dispose();
+  if (window.UcpDialogController) window.UcpDialogController.dispose();
 }
 
 window.addEventListener("pagehide", cleanupPageResources, { once: true });
@@ -48,57 +50,9 @@ function formatLocalDateTime(date = new Date()) {
   ].join(" ");
 }
 
-let currentSettingsGroup = localStorage.getItem("webui_settings_group") || "基础设置";
 let imageAutoAdvanceTimer = null;
-let selectionItems = [];
-let dirCurrentPath = "";
-let dirSelectedPath = "";
-let dirParentPath = "";
 
 const PLAYBACK_POSITION_PREFIX = "ucp_playback_position_";
-
-const SETTINGS_GROUP_ORDER_FALLBACK = ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"];
-const SETTINGS_GROUP_DESCRIPTIONS_FALLBACK = {
-  "基础设置": "下载目录、命名规则和打开行为",
-  "下载设置": "并发、超时、重试和下载策略",
-  "平台设置": "认证状态、爬取数量和代理入口",
-  "播放设置": "播放器、进度记忆和预览行为",
-  "日志设置": "保留策略、展示数量和错误追踪",
-  "外观设置": "语言、主题色、缩放和字体",
-};
-
-const SETTINGS_GROUP_HINTS_FALLBACK = {
-  "基础设置": "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。",
-  "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
-  "平台设置": "认证状态自动检测；代理仅对需要的平台开放。",
-  "播放设置": "播放设置只影响本地预览，不影响下载文件。",
-  "日志设置": "UI 显示数量只影响日志中心显示，不影响日志文件本身。",
-  "外观设置": "外观设置会即时生效，并保存到本地配置。",
-};
-
-const SETTINGS_GROUP_ICONS = {
-  "基础设置": "action_open_directory.png",
-  "下载设置": "action_download.png",
-  "平台设置": "platform_web.png",
-  "播放设置": "action_play.png",
-  "日志设置": "nav_log_center.png",
-  "外观设置": "action_theme_palette.png",
-};
-
-function normalizeSettingsGroupName(group) {
-  const canonical = canonicalUiText(group);
-  return SETTINGS_GROUP_ORDER_FALLBACK.includes(canonical) ? canonical : String(group || "");
-}
-
-function settingsContract() {
-  const contract = frontendState.settings_contract || {};
-  const order = Array.isArray(contract.group_order) ? contract.group_order.filter(Boolean) : [];
-  return {
-    order,
-    descriptions: contract.group_descriptions || {},
-    hints: contract.group_hints || {},
-  };
-}
 
 function logSettingsSnapshot() {
   const snapshot = frontendState.settings_snapshot || {};
@@ -135,6 +89,16 @@ function logCenterService() {
 function listPagesService() {
   if (!window.UcpListPages) throw new Error("UcpListPages is unavailable");
   return window.UcpListPages;
+}
+
+function settingsControllerService() {
+  if (!window.UcpSettingsController) throw new Error("UcpSettingsController is unavailable");
+  return window.UcpSettingsController;
+}
+
+function dialogControllerService() {
+  if (!window.UcpDialogController) throw new Error("UcpDialogController is unavailable");
+  return window.UcpDialogController;
 }
 
 function listPageDependencies() {
@@ -184,6 +148,56 @@ function logCenterDependencies() {
 
 function configureLogCenterHelpers() {
   return logCenterService().configure(logCenterDependencies());
+}
+
+function syncSettingsAppearance(change = {}) {
+  if (change.appearance) applyAppearance(change.appearance);
+  if (change.refreshLanguage) {
+    renderSignatures = {};
+    renderAll();
+  } else if (change.renderCurrentPage) {
+    renderCurrentPage();
+  }
+  if (change.reschedulePlayback) {
+    const currentItem = completedItemById(currentPlayingId);
+    if (currentItem && isImageItem(currentItem)) scheduleImageAutoAdvance(currentPlayingId);
+  }
+}
+
+function settingsControllerDependencies() {
+  return {
+    getState: () => ({ ...frontendState, icon_manifest: iconManifest }),
+    t,
+    optionLabel,
+    byId,
+    sendWS: (action, payload) => frontendAction(action, payload),
+    syncAppearance: syncSettingsAppearance,
+    enhanceSelects,
+  };
+}
+
+function dialogControllerDependencies() {
+  return {
+    getState: () => frontendState,
+    t,
+    esc,
+    escAttr,
+    byId,
+    frontendAction: (action, payload) => frontendAction(action, payload),
+    sendWS: (type, payload) => sendWS(type, payload),
+    appendUiLog: message => appendLog(message),
+    translateText: translateUiText,
+    closePreview,
+    fetchState: fetchFrontendState,
+  };
+}
+
+function configureSettingsControllerHelpers() {
+  return settingsControllerService().configure(settingsControllerDependencies());
+}
+
+function configureDialogControllerHelpers() {
+  return dialogControllerService().configure(dialogControllerDependencies());
 }
 
 function configureI18nHelpers() {
@@ -275,6 +289,8 @@ configureI18nHelpers();
 configureLogI18nHelpers();
 configureListPagesHelpers();
 configureLogCenterHelpers();
+configureSettingsControllerHelpers();
+configureDialogControllerHelpers();
 
 // Compatibility globals used by a few older browser tests.
 let videos = {};
@@ -370,7 +386,7 @@ function flushRenderSections() {
   if (sections.has("failed_items") && currentPage === "failed") renderFailed();
   if (sections.has("log_items") && currentPage === "logs") renderLogs();
   if ((sections.has("settings_snapshot") || sections.has("settings_contract")) && currentPage === "settings") {
-    renderSettings();
+    settingsControllerService().render();
   }
   if (sections.has("settings_snapshot")) updatePlaceholder();
   if ((sections.has("toolbox_items") || sections.has("toolbox_recent_items")) && currentPage === "toolbox") renderToolbox();
@@ -521,21 +537,6 @@ function configureMediaDisplayHelpers() {
   if (window.UcpMediaDisplay) window.UcpMediaDisplay.configure({ esc, translate: translateUiText });
 }
 
-function configureSettingsRenderHelpers() {
-  if (window.UcpSettingsRender) {
-    window.UcpSettingsRender.configure({
-      esc,
-      escAttr,
-      t,
-      optionLabel,
-      countOptionLabel,
-      platformIconUrl: (platformId, iconFile) => {
-        const id = String(platformId || "").toLowerCase();
-        return iconFileUrl(iconFile || (iconManifest.platforms || {})[id] || "platform_web.png");
-      },
-    });
-  }
-}
 function configureTaskRenderHelpers() {
   if (window.UcpTaskRender) {
     window.UcpTaskRender.configure({
@@ -628,7 +629,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadPlatforms();
   fetchFrontendState();
   connectWS();
-  installDirDialogHandlers();
+  dialogControllerService().installDirectoryHandlers();
   installMediaControlHandlers();
   updateMediaControls();
   document.getElementById("sourceSelect").addEventListener("change", cacheSource);
@@ -787,6 +788,13 @@ function countFallbackOptions(unit) { return platformLimitService()?.countFallba
 function countOptionLabel(value, unit) { return platformLimitService()?.countOptionLabel(value, unit) || String(value || ""); }
 function countLabelText(unit) { return platformLimitService()?.countLabelText(unit) || "\u89c6\u9891\u6570:"; }
 function defaultCountForUnit(unit) { return platformLimitService()?.defaultCount(unit) || (unit === "pages" ? "1" : "20"); }
+function normalizeTopCountOption(option) {
+  if (option && typeof option === "object") {
+    const value = String(option.value ?? option.id ?? option.label ?? "");
+    return { value, label: String(option.label ?? value) };
+  }
+  return { value: String(option ?? ""), label: String(option ?? "") };
+}
 function configureTopCountForSource(sourceId) {
   const row = platformSettingsRow(sourceId);
   const unit = row && row.count_unit ? row.count_unit : "videos";
@@ -794,7 +802,7 @@ function configureTopCountForSource(sourceId) {
   const label = document.querySelector(".count-label");
   if (!select) return;
 
-  let options = ((row && row.count_options) || countFallbackOptions(unit)).map(normalizeSettingOption).filter(option => option.value);
+  let options = ((row && row.count_options) || countFallbackOptions(unit)).map(normalizeTopCountOption).filter(option => option.value);
   const currentValue = String((row && row.default_count) || defaultCountForUnit(unit));
   if (!options.some(option => option.value === currentValue)) {
     options.unshift({
@@ -911,7 +919,7 @@ function renderCurrentPage() {
   else if (currentPage === "completed") renderCompleted();
   else if (currentPage === "failed") renderFailed();
   else if (currentPage === "logs") renderLogs();
-  else if (currentPage === "settings") renderSettings();
+  else if (currentPage === "settings") settingsControllerService().render();
   else if (currentPage === "toolbox") renderToolbox();
   renderStatus();
   enhanceSelects();
@@ -1072,250 +1080,12 @@ function copyCurrentLogJson() { return logCenterService().copyJson(); }
 function exportCurrentLogDetail() { return logCenterService().exportDetail(); }
 function runLogOperation(operation) { return logCenterService().runOperation(operation); }
 
-function renderSettings(force = false) {
-  const settings = frontendState.settings_snapshot || {};
-  const contract = settingsContract();
-  const fallbackOrder = contract.order.length ? contract.order : SETTINGS_GROUP_ORDER_FALLBACK;
-  const orderedGroups = fallbackOrder.filter(group => Object.prototype.hasOwnProperty.call(settings, group));
-  for (const group of Object.keys(settings)) {
-    if (!orderedGroups.includes(group)) orderedGroups.push(group);
-  }
-  currentSettingsGroup = normalizeSettingsGroupName(currentSettingsGroup);
-  if (!orderedGroups.includes(currentSettingsGroup)) currentSettingsGroup = orderedGroups[0] || "基础设置";
-  const currentValue = settings[currentSettingsGroup] || {};
-  const description =
-    contract.descriptions?.[currentSettingsGroup]
-    || SETTINGS_GROUP_DESCRIPTIONS_FALLBACK[currentSettingsGroup]
-    || "";
-  const hint =
-    contract.hints?.[currentSettingsGroup]
-    || SETTINGS_GROUP_HINTS_FALLBACK[currentSettingsGroup]
-    || "";
-  const title = document.querySelector("#page-settings .page-head h1");
-  if (title) title.textContent = t("配置中心");
-  const subtitle = document.querySelector("#page-settings .page-head p");
-  if (subtitle) subtitle.textContent = t("集中管理下载行为、平台状态、播放体验、日志策略与界面外观");
-  const navHtml = orderedGroups.map(group => `
-    <button class="settings-nav-btn ${group === currentSettingsGroup ? "active" : ""}" type="button" data-group="${escAttr(group)}" onclick="switchSettingsGroup('${escAttr(group)}')">
-      <img src="${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(settingGroupIconFile(group))}" alt="" />
-      <span>${esc(t(group))}</span>
-    </button>
-  `).join("");
-  const html = `
-    <div class="settings-shell">
-      <aside class="settings-side-nav">
-        <div class="settings-nav-title">${esc(t("设置分类"))}</div>
-        ${navHtml}
-      </aside>
-      <section class="settings-detail-panel">
-        <header class="settings-detail-head">
-          <span class="settings-detail-icon" aria-hidden="true">
-            <img src="${escAttr(iconManifest.route || "/ui-icon")}/${escAttr(settingGroupIconFile(currentSettingsGroup))}" alt="" />
-          </span>
-          <h2>${esc(t(currentSettingsGroup))}</h2>
-          <p>${esc(t(description))}</p>
-        </header>
-        <div class="settings-detail-body ${currentSettingsGroup === "\u5e73\u53f0\u8bbe\u7f6e" ? "settings-platform-body" : ""}">
-          ${settingsControls(currentSettingsGroup, currentValue)}
-        </div>
-        ${hint ? `<div class="settings-hint-card"><span class="settings-hint-icon">i</span><span>${esc(t(hint))}</span></div>` : ""}
-      </section>
-    </div>
-  `;
-  if (!force && renderSignatures.settingsGrid && renderSignatures.settingsGrid !== html && hasFocusedDescendant("settingsGrid")) return;
-  setHtmlIfChanged("settingsGrid", html);
-}
-
-function isPlatformSettingsVisible() {
-  return currentPage === "settings" && normalizeSettingsGroupName(currentSettingsGroup) === "平台设置";
-}
-
-function maybeRefreshPlatformAuthStatus(force = false) {
-  if (!isPlatformSettingsVisible()) return;
-  frontendAction("refresh_platform_auth_status", { force: Boolean(force) });
-}
-
-function switchSettingsGroup(group) {
-  if (!group) return;
-  const nextGroup = normalizeSettingsGroupName(group);
-  const sameGroup = nextGroup === normalizeSettingsGroupName(currentSettingsGroup);
-  if (!sameGroup) {
-    currentSettingsGroup = nextGroup;
-    localStorage.setItem("webui_settings_group", nextGroup);
-    renderSettings(true);
-  }
-  maybeRefreshPlatformAuthStatus(false);
-}
-
-function settingsRenderService() {
-  configureSettingsRenderHelpers();
-  return window.UcpSettingsRender || null;
-}
-
-function settingsControls(group, value) {
-  const service = settingsRenderService();
-  return service ? service.settingsControls(group, value) : "";
-}
-
-function platformSettingsSummary(rows) {
-  const service = settingsRenderService();
-  return service ? service.platformSettingsSummary(rows) : "";
-}
-
-function platformSettingsHeader() {
-  const service = settingsRenderService();
-  return service ? service.platformSettingsHeader() : "";
-}
-
-function platformSettingRow(row) {
-  const service = settingsRenderService();
-  return service ? service.platformSettingRow(row) : "";
-}
-
-function isCustomProxyValue(value) {
-  const service = settingsRenderService();
-  return service ? service.isCustomProxyValue(value) : false;
-}
-
-function proxyCustomDisplayValue(value) {
-  const service = settingsRenderService();
-  return service ? service.proxyCustomDisplayValue(value) : String(value || "");
-}
-
-function updatePlatformSettingSnapshot(platformId, key, value) {
-  const rows = (frontendState.settings_snapshot || {})["\u5e73\u53f0\u8bbe\u7f6e"];
-  if (!Array.isArray(rows)) return false;
-  const row = rows.find(item => String(item.id || "") === String(platformId || ""));
-  if (!row) return false;
-  const text = String(value ?? "").trim();
-  if (key === row.proxy_config_key || key === "proxy" || key === "proxy_url") {
-    const proxyOptions = row.proxy_options || ["\u7cfb\u7edf\u4ee3\u7406", "\u76f4\u8fde", "Clash (7890)", "v2rayN (10809)", "\u81ea\u5b9a\u4e49"];
-    const options = proxyOptions.map(normalizeSettingOption).filter(option => option.value);
-    const optionKnown = options.some(option => String(option.value) === text);
-    row.proxy = text || "\u7cfb\u7edf\u4ee3\u7406";
-    row.proxy_custom_active = text === "\u81ea\u5b9a\u4e49" || (!!text && !optionKnown);
-    if (text && text !== "\u81ea\u5b9a\u4e49" && !optionKnown) row.proxy_custom_value = text;
-    return true;
-  }
-  if (key === row.count_config_key || key === "default_count" || key === "max_items") {
-    row.default_count = Number.isFinite(Number(text)) ? Number(text) : text;
-    return true;
-  }
-  if (key === row.timeout_config_key || key === "timeout" || key === "default_timeout") {
-    row.default_timeout = Number.isFinite(Number(text)) ? Number(text) : text;
-    return true;
-  }
-  row[key] = value;
-  return true;
-}
-
-function handleProxySelect(platformId, key, select) {
-  const value = String(select.value || "").trim();
-  const row = select.closest(".setting-platform");
-  const input = row ? row.querySelector(".proxy-custom") : null;
-  const proxyEntry = row ? row.querySelector(".platform-proxy-entry") : null;
-  if (input) {
-    const custom = isCustomProxyValue(value);
-    row.classList.toggle("has-proxy-custom", custom);
-    if (proxyEntry) proxyEntry.classList.toggle("has-custom", custom);
-    input.hidden = !custom;
-    input.disabled = !custom;
-    input.classList.toggle("active", custom);
-    if (custom) {
-      if (value !== "\u81ea\u5b9a\u4e49") input.value = proxyCustomDisplayValue(value);
-      updateSetting(platformId, key, "\u81ea\u5b9a\u4e49");
-      input.focus();
-      return;
-    }
-  }
-  updateSetting(platformId, key, value);
-}
-
-function commitProxyCustom(platformId, key, input) {
-  const value = String(input.value || "").trim();
-  if (!value) return;
-  updateSetting(platformId, key, value);
-}
-
-function selectAppearanceTheme(value) {
-  const theme = String(value || "").toLowerCase() === "dark" ? "dark" : "light";
-  updateSetting("common", "theme", theme);
-}
-
-function updateBasicSetting(key, value) {
-  frontendAction("update_basic_setting", { key, value });
-}
-
-function updateSetting(section, key, value) {
-  if (!section || !key) return;
-  if (section === "basic") {
-    updateBasicSetting(key, value);
-    return;
-  }
-  if (section === "common" && key === "theme") {
-    const dark = String(value).toLowerCase() === "dark";
-    const appearance = ((frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] ||= {});
-    appearance.follow_system = false;
-    appearance.theme = dark ? "dark" : "light";
-    localStorage.setItem("cached_dark_theme", String(dark));
-    applyAppearance(appearance);
-    if (currentPage === "settings" && normalizeSettingsGroupName(currentSettingsGroup) === "外观设置") renderSettings(true);
-  }
-  if (section === "appearance" && ["scale", "font_size", "accent", "language"].includes(key)) {
-    const appearance = ((frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] ||= {});
-    appearance[key] = value;
-    applyAppearance(appearance);
-    if (key === "language") {
-      renderSignatures = {};
-      renderAll();
-    }
-    else if (key === "font_size" || key === "scale") renderCurrentPage();
-  }
-  if (section === "playback") {
-    const playback = ((frontendState.settings_snapshot || {})["\u64ad\u653e\u8bbe\u7f6e"] ||= {});
-    playback[key] = key === "image_auto_advance_interval_seconds" ? Number(value || 5) : value;
-    if (currentPage === "settings" && normalizeSettingsGroupName(currentSettingsGroup) === "\u64ad\u653e\u8bbe\u7f6e") renderSettings(true);
-    const currentItem = completedItemById(currentPlayingId);
-    if (currentItem && isImageItem(currentItem)) scheduleImageAutoAdvance(currentPlayingId);
-  }
-  updatePlatformSettingSnapshot(section, key, value);
-  frontendAction("update_setting", { section, key, value });
-}
-
-function settingInput(label, key, value, scope = "") {
-  const service = settingsRenderService();
-  return service ? service.settingInput(label, key, value, scope) : "";
-}
-
-function settingCheckbox(label, key, checked, scope = "") {
-  const service = settingsRenderService();
-  return service ? service.settingCheckbox(label, key, checked, scope) : "";
-}
-
-function imageManualSwitchSetting(value, options) {
-  const service = settingsRenderService();
-  return service ? service.imageManualSwitchSetting(value, options) : "";
-}
-
-function normalizeSettingOption(option) {
-  const service = settingsRenderService();
-  if (service) return service.normalizeSettingOption(option);
-  if (option && typeof option === "object") {
-    const value = String(option.value ?? option.id ?? option.label ?? "");
-    const label = String(option.label ?? value);
-    return { value, label };
-  }
-  return { value: String(option ?? ""), label: String(option ?? "") };
-}
-
-function settingSelect(label, key, value, options, scope = "", extraAttrs = "") {
-  const service = settingsRenderService();
-  return service ? service.settingSelect(label, key, value, options, scope, extraAttrs) : "";
-}
-
-function settingGroupIconFile(group) {
-  return SETTINGS_GROUP_ICONS[group] || "nav_settings.png";
-}
+window.switchSettingsGroup = group => settingsControllerService().switchGroup(group);
+window.handleProxySelect = (platformId, key, select) => settingsControllerService().handleProxySelect(platformId, key, select);
+window.commitProxyCustom = (platformId, key, input) => settingsControllerService().commitProxyCustom(platformId, key, input);
+window.selectAppearanceTheme = value => settingsControllerService().selectAppearanceTheme(value);
+window.updateBasicSetting = (key, value) => settingsControllerService().updateBasic(key, value);
+window.updateSetting = (section, key, value) => settingsControllerService().update(section, key, value);
 
 function renderToolbox() {
   const title = document.querySelector("#page-toolbox .page-head h1");
@@ -1378,7 +1148,7 @@ function switchPage(pageId) {
   document.querySelectorAll(".nav-item").forEach(button => button.classList.toggle("active", button.dataset.page === pageId));
   document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.dataset.page === pageId));
   renderCurrentPage();
-  maybeRefreshPlatformAuthStatus(false);
+  settingsControllerService().refreshPlatformAuthStatus(false);
 }
 
 function progressHtml(value) {
@@ -1630,394 +1400,25 @@ function appendLog(message) {
   scheduleRenderSections(["log_items", "app_status"]);
 }
 
-function currentDownloadDirectory() {
-  const basic = (frontendState.settings_snapshot || {})["基础设置"] || {};
-  return String(basic.download_directory || basic.save_directory || "");
-}
+window.onChangeDirClicked = () => dialogControllerService().onChangeDirectory();
+window.showDirDialog = () => dialogControllerService().showDirectory();
+window.dirBrowsePath = () => dialogControllerService().browseDirectory();
+window.dirGoParent = () => dialogControllerService().goDirectoryParent();
+window.dirRefresh = () => dialogControllerService().refreshDirectory();
+window.confirmDirDialog = () => dialogControllerService().confirmDirectory();
+window.cancelDirDialog = () => dialogControllerService().cancelDirectory();
 
-function setDirStatus(message, tone = "") {
-  const status = byId("dirStatus");
-  if (!status) return;
-  status.textContent = translateUiText(message || "");
-  status.dataset.tone = tone || "";
-}
+window.applyFileAssociationLanguage = () => dialogControllerService().applyAssociationLanguage();
+window.showFileAssociationModal = () => dialogControllerService().showAssociation();
+window.cancelFileAssociationModal = () => dialogControllerService().cancelAssociation();
+window.confirmFileAssociationModal = () => dialogControllerService().confirmAssociation();
 
-function setDirBusy(busy) {
-  ["dirGoBtn", "dirParentBtn", "dirRefreshBtn", "dirConfirmBtn"].forEach(id => {
-    const button = byId(id);
-    if (button) button.disabled = !!busy;
-  });
-}
-
-function installDirDialogHandlers() {
-  const input = byId("dirInput");
-  if (input && !input.dataset.bound) {
-    input.dataset.bound = "true";
-    input.addEventListener("keydown", event => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        dirBrowsePath();
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        cancelDirDialog();
-      }
-    });
-  }
-  for (const id of ["dirList", "dirDrivesList"]) {
-    const list = byId(id);
-    if (!list || list.dataset.bound) continue;
-    list.dataset.bound = "true";
-    list.addEventListener("click", event => {
-      const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
-      if (!button) return;
-      selectDirPath(button.dataset.dirPath || "");
-    });
-    list.addEventListener("dblclick", event => {
-      const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
-      if (!button) return;
-      dirLoadPath(button.dataset.dirPath || "");
-    });
-  }
-}
-
-function updateDirStaticText() {
-  const textMap = {
-    dirTitle: "选择保存目录",
-    dirGoBtn: "跳转",
-    dirParentBtn: "上一级",
-    dirCancelBtn: "取消",
-    dirConfirmBtn: "选择此目录",
-  };
-  for (const [id, label] of Object.entries(textMap)) {
-    const element = byId(id);
-    if (element) element.textContent = t(label);
-  }
-  const refresh = byId("dirRefreshBtn");
-  if (refresh) {
-    refresh.title = t("刷新");
-    refresh.setAttribute("aria-label", t("刷新"));
-  }
-  const input = byId("dirInput");
-  if (input) input.placeholder = t("输入目录路径");
-}
-
-function dirEntryHtml(entry, kind = "folder") {
-  const path = String(entry && entry.path || "");
-  const name = String(entry && entry.name || path || "");
-  return `
-    <button class="dir-entry" type="button" data-dir-path="${escAttr(path)}" data-dir-kind="${escAttr(kind)}" title="${escAttr(path)}">
-      <img src="/ui-icon/action_open_directory.png" alt="" />
-      <span>${esc(name)}</span>
-    </button>
-  `;
-}
-
-function renderDirEntries(data) {
-  const drives = Array.isArray(data.drives) ? data.drives : [];
-  const subdirs = Array.isArray(data.subdirs) ? data.subdirs : [];
-  const drivesList = byId("dirDrivesList");
-  const dirList = byId("dirList");
-  if (drivesList) {
-    drivesList.innerHTML = drives.length
-      ? drives.map(entry => dirEntryHtml(entry, "root")).join("")
-      : `<div class="dir-empty">${esc(t("无可用根目录"))}</div>`;
-  }
-  if (dirList) {
-    dirList.innerHTML = subdirs.length
-      ? subdirs.map(entry => dirEntryHtml(entry, "folder")).join("")
-      : `<div class="dir-empty">${esc(t("没有可进入的子目录"))}</div>`;
-  }
-}
-
-function selectDirPath(path) {
-  dirSelectedPath = String(path || "");
-  const input = byId("dirInput");
-  if (input && dirSelectedPath) input.value = dirSelectedPath;
-  document.querySelectorAll(".dir-entry.selected").forEach(item => item.classList.remove("selected"));
-  const selectedEntry = dirSelectedPath
-    ? Array.from(document.querySelectorAll(".dir-entry")).find(item => item.dataset.dirPath === dirSelectedPath)
-    : null;
-  if (selectedEntry) selectedEntry.classList.add("selected");
-  if (dirSelectedPath) setDirStatus("已选择目录", "ok");
-}
-
-async function onChangeDirClicked() {
-  await showDirDialog();
-}
-
-async function showDirDialog() {
-  updateDirStaticText();
-  installDirDialogHandlers();
-  const modal = byId("dirModal");
-  const input = byId("dirInput");
-  const startPath = localStorage.getItem("dir_last_browsed") || currentDownloadDirectory();
-  if (input) input.value = startPath;
-  modal.style.display = "flex";
-  requestAnimationFrame(() => input && input.focus({ preventScroll: true }));
-  await dirLoadPath(startPath);
-}
-
-async function dirLoadPath(path = "") {
-  const target = String(path || byId("dirInput")?.value || "").trim();
-  setDirBusy(true);
-  setDirStatus("正在加载目录...", "loading");
-  try {
-    const query = target ? `?path=${encodeURIComponent(target)}` : "";
-    const response = await fetch(`/api/dir/list${query}`, { cache: "no-store" });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.error || data.status === "error") {
-      throw new Error(data.error || data.message || `HTTP ${response.status}`);
-    }
-    dirCurrentPath = String(data.current || target || "");
-    dirSelectedPath = dirCurrentPath;
-    dirParentPath = String(data.parent || "");
-    if (dirCurrentPath) localStorage.setItem("dir_last_browsed", dirCurrentPath);
-    const input = byId("dirInput");
-    if (input) input.value = dirCurrentPath;
-    renderDirEntries(data);
-    setDirStatus("单击选择，双击进入子目录", "ok");
-  } catch (error) {
-    renderDirEntries({ drives: [], subdirs: [] });
-    setDirStatus(`目录加载失败：${error.message || error}`, "error");
-  } finally {
-    setDirBusy(false);
-  }
-}
-
-function dirBrowsePath() {
-  return dirLoadPath(byId("dirInput")?.value || "");
-}
-
-function dirGoParent() {
-  if (!dirParentPath) {
-    setDirStatus("当前目录没有可访问的上一级", "error");
-    return Promise.resolve();
-  }
-  return dirLoadPath(dirParentPath);
-}
-
-function dirRefresh() {
-  return dirLoadPath(dirCurrentPath || byId("dirInput")?.value || "");
-}
-
-async function confirmDirDialog() {
-  const directory = String(dirSelectedPath || byId("dirInput")?.value || "").trim();
-  if (!directory) {
-    setDirStatus("目录路径不能为空", "error");
-    return;
-  }
-  setDirBusy(true);
-  setDirStatus("正在切换目录...", "loading");
-  try {
-    const response = await fetch("/api/dir/change", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ directory }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.error || data.status === "error") {
-      throw new Error(data.error || data.message || `HTTP ${response.status}`);
-    }
-    closePreview();
-    const basic = ((frontendState.settings_snapshot ||= {})["基础设置"] ||= {});
-    basic.download_directory = String(data.directory || directory);
-    localStorage.setItem("dir_last_browsed", basic.download_directory);
-    byId("dirModal").style.display = "none";
-    appendLog(translateUiText(data.message || "目录已变更"));
-    await fetchFrontendState();
-  } catch (error) {
-    setDirStatus(`切换目录失败：${error.message || error}`, "error");
-  } finally {
-    setDirBusy(false);
-  }
-}
-
-function cancelDirDialog() {
-  byId("dirModal").style.display = "none";
-}
-
-function fileAssociationLabels() {
-  return {
-    title: "绑定默认打开方式",
-    description: "选择要注册到 Windows 默认应用的资源类型。Windows 可能会要求在系统默认应用页再次确认。",
-    video: "视频资源（mp4、mkv、avi、mov、webm 等）",
-    image: "图片资源（jpg、png、gif、webp、bmp 等）",
-    status: "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。",
-    cancel: "取消",
-    confirm: "绑定",
-  };
-}
-
-function applyFileAssociationLanguage() {
-  const labels = fileAssociationLabels();
-  const title = byId("associationTitle");
-  const description = byId("associationDescription");
-  const status = byId("associationStatus");
-  const videoLabel = document.querySelector("#fileAssociationModal label[for='associationVideo'] span")
-    || document.querySelector("#associationVideo + span");
-  const imageLabel = document.querySelector("#fileAssociationModal label[for='associationImage'] span")
-    || document.querySelector("#associationImage + span");
-  if (title) title.textContent = t(labels.title);
-  if (description) description.textContent = t(labels.description);
-  if (status) status.textContent = t(labels.status);
-  if (videoLabel) videoLabel.textContent = t(labels.video);
-  if (imageLabel) imageLabel.textContent = t(labels.image);
-  const cancel = byId("associationCancelBtn");
-  const confirm = byId("associationConfirmBtn");
-  if (cancel) cancel.textContent = t(labels.cancel);
-  if (confirm) confirm.textContent = t(labels.confirm);
-}
-
-function showFileAssociationModal() {
-  applyFileAssociationLanguage();
-  const modal = byId("fileAssociationModal");
-  const video = byId("associationVideo");
-  const image = byId("associationImage");
-  if (video) video.checked = true;
-  if (image) image.checked = true;
-  modal.style.display = "flex";
-  requestAnimationFrame(() => {
-    if (modal.style.display === "flex") byId("associationConfirmBtn").focus({ preventScroll: true });
-  });
-}
-
-function cancelFileAssociationModal() {
-  byId("fileAssociationModal").style.display = "none";
-}
-
-function confirmFileAssociationModal() {
-  const includeVideo = !!(byId("associationVideo") && byId("associationVideo").checked);
-  const includeImage = !!(byId("associationImage") && byId("associationImage").checked);
-  byId("fileAssociationModal").style.display = "none";
-  frontendAction("register_file_associations", { include_video: includeVideo, include_image: includeImage });
-}
-
-function isFileAssociationModalOpen() {
-  const modal = byId("fileAssociationModal");
-  return !!modal && modal.style.display === "flex";
-}
-
-function handleFileAssociationModalShortcut(event) {
-  if (!isFileAssociationModalOpen()) return false;
-  if (!["Enter", "Escape"].includes(event.key)) return false;
-  if (event.key === "Enter" && isTextEntryTarget(event.target)) return false;
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.key === "Enter") confirmFileAssociationModal();
-  else cancelFileAssociationModal();
-  return true;
-}
-
-function selectionHeaderText(count) {
-  return t("共扫描到 {count} 个资源，请勾选需要下载的项目：").replace("{count}", String(count));
-}
-
-function selectionItemTitle(item, index) {
-  if (item && typeof item === "object") return String(item.title || item.name || `项目 ${index + 1}`);
-  const text = String(item ?? "").trim();
-  return text || `项目 ${index + 1}`;
-}
-
-function selectionRowHtml(item, index) {
-  const rawTitle = selectionItemTitle(item, index);
-  const title = esc(rawTitle);
-  return `
-    <tr class="selection-row" data-index="${index}" onclick="toggleSelectionItem(${index}, event)">
-      <td><input class="selection-checkbox" type="checkbox" data-index="${index}" checked tabindex="-1" aria-checked="true" aria-label="${escAttr(t("选择"))} ${index + 1}" onmousedown="event.preventDefault()" onclick="event.preventDefault();event.stopPropagation();toggleSelectionItem(${index})"></td>
-      <td class="selection-title-cell" title="${escAttr(rawTitle)}">${title}</td>
-    </tr>
-  `;
-}
-
-function syncSelectionRowState(index) {
-  const checkbox = document.querySelector(`#selectionBody input[data-index="${index}"]`);
-  const row = document.querySelector(`#selectionBody tr[data-index="${index}"]`);
-  if (!checkbox || !row) return;
-  row.classList.toggle("unchecked", !checkbox.checked);
-  checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
-}
-
-function toggleSelectionItem(index, event) {
-  const checkbox = document.querySelector(`#selectionBody input[data-index="${index}"]`);
-  if (!checkbox) return;
-  if (event && event.target === checkbox) {
-    syncSelectionRowState(index);
-    return;
-  }
-  checkbox.checked = !checkbox.checked;
-  syncSelectionRowState(index);
-}
-
-function selectAllSelectionItems() {
-  document.querySelectorAll("#selectionBody input[type='checkbox']").forEach(input => {
-    input.checked = true;
-    syncSelectionRowState(Number(input.dataset.index));
-  });
-}
-
-function invertSelectionItems() {
-  document.querySelectorAll("#selectionBody input[type='checkbox']").forEach(input => {
-    input.checked = !input.checked;
-    syncSelectionRowState(Number(input.dataset.index));
-  });
-}
-
-function showSelectionModal(items) {
-  selectionItems = Array.isArray(items) ? items : [];
-  byId("selectionTitle").textContent = t("任务清单确认");
-  byId("selectionHeader").textContent = selectionHeaderText(selectionItems.length);
-  const selectionHeadCells = document.querySelectorAll(".selection-table thead th");
-  if (selectionHeadCells[0]) selectionHeadCells[0].textContent = t("选择");
-  if (selectionHeadCells[1]) selectionHeadCells[1].textContent = t("视频标题 / 描述");
-  byId("selectionAllBtn").textContent = t("全选");
-  byId("selectionInvertBtn").textContent = t("反选");
-  byId("selectionCancelBtn").textContent = t("取消任务");
-  byId("selectionConfirmBtn").textContent = t("开始下载");
-  byId("selectionBody").innerHTML = selectionItems.map(selectionRowHtml).join("");
-  const modal = byId("selectionModal");
-  modal.style.display = "flex";
-  requestAnimationFrame(() => {
-    if (modal.style.display === "flex") byId("selectionConfirmBtn").focus({ preventScroll: true });
-  });
-}
-
-function confirmSelection() {
-  const indices = [...document.querySelectorAll("#selectionBody input:checked")].map(input => Number(input.dataset.index));
-  sendWS("select_tasks", { indices });
-  byId("selectionModal").style.display = "none";
-}
-
-function cancelSelection() {
-  sendWS("select_tasks", { indices: null });
-  byId("selectionModal").style.display = "none";
-}
-
-function isSelectionModalOpen() {
-  const modal = byId("selectionModal");
-  return !!modal && modal.style.display === "flex";
-}
-
-function isTextEntryTarget(target) {
-  if (!target || !target.tagName) return false;
-  if (target.isContentEditable) return true;
-  const tagName = String(target.tagName).toUpperCase();
-  if (tagName === "INPUT") {
-    const inputType = String(target.type || "text").toLowerCase();
-    return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(inputType);
-  }
-  return ["SELECT", "TEXTAREA"].includes(tagName);
-}
-
-function handleSelectionModalShortcut(event) {
-  if (!isSelectionModalOpen()) return false;
-  if (!["Enter", "Escape"].includes(event.key)) return false;
-  if (event.key === "Enter" && isTextEntryTarget(event.target)) return false;
-  event.preventDefault();
-  event.stopPropagation();
-  if (event.key === "Enter") confirmSelection();
-  else cancelSelection();
-  return true;
-}
+window.toggleSelectionItem = (index, event) => dialogControllerService().toggleSelection(index, event);
+window.selectAllSelectionItems = () => dialogControllerService().selectAllSelection();
+window.invertSelectionItems = () => dialogControllerService().invertSelection();
+window.showSelectionModal = items => dialogControllerService().showSelection(items);
+window.confirmSelection = () => dialogControllerService().confirmSelection();
+window.cancelSelection = () => dialogControllerService().cancelSelection();
 
 function toggleTheme() {
   const dark = document.documentElement.dataset.theme !== "dark";
@@ -2400,10 +1801,8 @@ function updateSelection(oldId, newId) {
 function renderQueueCompat() { renderQueue(); }
 
 document.addEventListener("keydown", event => {
-  if (handleSelectionModalShortcut(event)) return;
-  if (handleFileAssociationModalShortcut(event)) return;
+  if (dialogControllerService().handleShortcut(event)) return;
   if (event.key === "Escape") {
-    if (byId("dirModal").style.display === "flex") cancelDirDialog();
     if (isFullscreenMode && document.fullscreenElement === byId("previewPanel")) {
       document.exitFullscreen().catch(() => {});
     }

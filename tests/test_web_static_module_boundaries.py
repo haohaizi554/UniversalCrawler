@@ -76,3 +76,15 @@ def test_list_pages_owns_paging_worker_and_four_state_renderers() -> None:
     for name in ("Queue", "Active", "Completed", "Failed"):
         assert f"function render{name}" in module
         assert f"function render{name}() {{ return listPagesService().render{name}(); }}" in app
+
+
+def test_settings_and_dialog_controllers_own_their_handlers() -> None:
+    settings = (STATIC_DIR / "settings_controller.js").read_text(encoding="utf-8")
+    dialogs = (STATIC_DIR / "dialog_controller.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for marker in ("function renderSettings", "function updateSetting", "function commitProxyCustom"):
+        assert marker in settings
+        assert marker not in app
+    for marker in ("function showDirDialog", "function showFileAssociationModal", "function showSelectionModal"):
+        assert marker in dialogs
+        assert marker not in app
