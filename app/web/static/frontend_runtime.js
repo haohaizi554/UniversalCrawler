@@ -107,11 +107,16 @@
     for (const section of list) pendingRenderSections.add(section || "all");
     if (renderFrame) return;
     const generation = lifecycleGeneration;
-    renderFrame = scheduleFrame(() => {
+    const frame = { kind: "pending", id: null, generation };
+    renderFrame = frame;
+    const scheduled = scheduleFrame(() => {
+      if (renderFrame !== frame) return;
       renderFrame = null;
       if (!isCurrentGeneration(generation)) return;
       flushRenderSections(generation);
     });
+    frame.kind = scheduled.kind;
+    frame.id = scheduled.id;
   }
 
   function flushRenderSections(generation = lifecycleGeneration) {
@@ -255,13 +260,16 @@
 
   function scheduleFrontendDeltaFetch(delayMs = 200) {
     if (!active) return;
-    if (frontendDeltaTimer) clearTimeout(frontendDeltaTimer);
+    if (frontendDeltaTimer) clearTimeout(frontendDeltaTimer.id);
     const generation = lifecycleGeneration;
-    frontendDeltaTimer = setTimeout(() => {
+    const timer = { id: null, generation };
+    timer.id = setTimeout(() => {
+      if (frontendDeltaTimer !== timer) return;
       frontendDeltaTimer = null;
       if (!isCurrentGeneration(generation)) return;
       fetchFrontendDelta();
     }, Math.max(0, Number(delayMs) || 0));
+    frontendDeltaTimer = timer;
   }
 
   async function fetchFrontendState() {
@@ -315,7 +323,7 @@
     const WebSocketType = window.WebSocket;
     if (ws && [WebSocketType.CONNECTING, WebSocketType.OPEN].includes(ws.readyState)) return ws;
     if (wsReconnectTimer) {
-      clearTimeout(wsReconnectTimer);
+      clearTimeout(wsReconnectTimer.id);
       wsReconnectTimer = null;
     }
     const generation = lifecycleGeneration;
@@ -339,11 +347,14 @@
       socket.onclose = () => {
         if (!isCurrentGeneration(generation) || sequence !== socketSequence || ws !== socket) return;
         ws = null;
-        wsReconnectTimer = setTimeout(() => {
+        const reconnect = { id: null, generation, sequence };
+        reconnect.id = setTimeout(() => {
+          if (wsReconnectTimer !== reconnect) return;
           wsReconnectTimer = null;
           if (!isCurrentGeneration(generation) || sequence !== socketSequence) return;
           connectWS();
         }, 2000);
+        wsReconnectTimer = reconnect;
       };
       return socket;
     } catch (_error) {
@@ -485,11 +496,11 @@
     pendingActionSequences.clear();
     pendingRenderSections.clear();
     if (wsReconnectTimer) {
-      clearTimeout(wsReconnectTimer);
+      clearTimeout(wsReconnectTimer.id);
       wsReconnectTimer = null;
     }
     if (frontendDeltaTimer) {
-      clearTimeout(frontendDeltaTimer);
+      clearTimeout(frontendDeltaTimer.id);
       frontendDeltaTimer = null;
     }
     cancelRenderFrame();
