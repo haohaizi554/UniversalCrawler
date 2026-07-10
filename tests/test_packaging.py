@@ -38,6 +38,15 @@ DOCKERFILE = PROJECT_ROOT / "Dockerfile"
 DOCKER_COMPOSE = PROJECT_ROOT / "docker-compose.yml"
 DOCKER_ENTRYPOINT = PROJECT_ROOT / "docker" / "entrypoint.sh"
 DOCKER_ENV_EXAMPLE = PROJECT_ROOT / ".env.docker.example"
+SPLIT_FRONTEND_MODULES = (
+    "frontend_runtime.js",
+    "list_pages.js",
+    "log_i18n.js",
+    "log_center.js",
+    "settings_controller.js",
+    "dialog_controller.js",
+    "playback_controller.js",
+)
 
 
 def _load_update_manifest_tool():
@@ -293,6 +302,16 @@ class SpecDataFilesTests(unittest.TestCase):
         readme_targets = [Path(d[0]).name for d in datas]
         self.assertIn("README.md", readme_targets)
         self.assertIn("README_EN.md", readme_targets)
+
+    def test_portable_spec_packages_the_complete_web_static_tree(self):
+        source = SPEC_FILE.read_text(encoding="utf-8")
+        self.assertIn(
+            'optional_tree(project_root / "app" / "web" / "static", "app/web/static")',
+            source,
+        )
+        static_dir = PROJECT_ROOT / "app" / "web" / "static"
+        for module_name in SPLIT_FRONTEND_MODULES:
+            self.assertTrue((static_dir / module_name).is_file(), f"missing static module: {module_name}")
 
     def test_binaries_pin_python_sqlite_runtime(self):
         """_sqlite3.pyd 必须搭配当前 Python 自带 sqlite3.dll，不能让其它组件抢同名 DLL。"""
@@ -672,6 +691,11 @@ class InstallerScriptTests(unittest.TestCase):
             "_missing_install_source_entries",
         ):
             self.assertIn(marker, source)
+
+    def test_build_installer_checks_every_split_frontend_module(self):
+        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+        for module_name in SPLIT_FRONTEND_MODULES:
+            self.assertIn(f'"static" / "{module_name}"', source)
 
     def test_build_installer_signing_is_explicitly_opt_in(self):
         source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")

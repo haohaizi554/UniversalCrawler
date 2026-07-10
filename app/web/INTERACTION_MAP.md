@@ -6,6 +6,37 @@
 
 ---
 
+## WebUI JavaScript 模块职责图（2026-07-10）
+
+WebUI 保持无 Node、无构建器的经典脚本加载方式。`index.html` 先按固定顺序加载七个职责模块，最后加载 `app.js`：
+
+```text
+index.html
+  -> UcpLogI18n             日志字段、短语和事件码本地化
+  -> UcpFrontendRuntime     snapshot/delta、WebSocket、渲染调度与页面生命周期
+  -> UcpListPages           queue/active/completed/failed 分页、worker、选择与行 patch
+  -> UcpLogCenter           日志筛选、分页、详情、query/detail worker 与导出动作
+  -> UcpSettingsController  设置分组、热更新、代理输入与认证状态
+  -> UcpDialogController    目录、文件关联、任务选择弹窗及键盘/焦点清理
+  -> UcpPlaybackController  图片/视频预览、媒体事件、进度、全屏与自动切换
+  -> app.js                 frontendState 所有者、AppContext、configure() 注入、启动、导航和兼容包装
+```
+
+七个模块分别暴露冻结的 `window.Ucp*` namespace。每个 namespace 都有显式 `configure(options)` 和幂等 `dispose()`；worker、WebSocket 和 timer 由创建它的模块释放，runtime 在页面退出时只协调一次模块清理。
+
+### State access rule
+
+- `app.js` 是 `frontendState` 和跨页面选中状态的唯一所有者。
+- 业务模块通过注入的 `getState()` 读取最新状态；不得保存整份 state 副本，也不得直接访问另一个模块的私有可变状态。
+- 业务模块需要修改共享状态时，只能调用 `configure()` 注入的 `patch*`、`onSelectionChange`、`frontendAction`、`sendWS` 或 `scheduleRender` 回调。
+- reducer/state/delta 合并保留在 runtime + composition 边界；feature controller 只消费当前快照并渲染自己拥有的 DOM。
+
+### 旧全局兼容入口
+
+HTML 内联事件和旧浏览器测试仍可调用 `renderQueue()`、`renderLogs()`、`switchSettingsGroup()`、`showDirDialog()`、`playCompleted()`、`fetchFrontendState()`、`sendWS()` 等全局函数。这些入口必须是只转发参数和返回值的薄包装；业务实现只存在于对应 `Ucp*` namespace，禁止在 `app.js` 中复制列表、日志、设置、弹窗、播放或 transport 逻辑。
+
+---
+
 ## 一、信号/事件映射表
 
 | 桌面 GUI 信号 | 触发者 | Web UI WebSocket 事件 | 方向 |

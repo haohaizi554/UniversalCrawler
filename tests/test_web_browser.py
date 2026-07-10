@@ -4334,6 +4334,67 @@ class WebUIBrowserTests(unittest.TestCase):
                            and "404" not in e]
         self.assertEqual(critical_errors, [], f"JS errors: {critical_errors}")
 
+    def test_split_frontend_modules_load_and_survive_navigation(self):
+        errors: list[str] = []
+        self._page.on("pageerror", lambda error: errors.append(str(error)))
+
+        self._goto_ready()
+        module_contracts = self._page.evaluate(
+            """
+            () => [
+              'UcpFrontendRuntime',
+              'UcpListPages',
+              'UcpLogI18n',
+              'UcpLogCenter',
+              'UcpSettingsController',
+              'UcpDialogController',
+              'UcpPlaybackController'
+            ].map(name => ({
+              name,
+              namespace: typeof window[name],
+              configure: typeof window[name]?.configure,
+              dispose: typeof window[name]?.dispose
+            }))
+            """
+        )
+        self.assertTrue(
+            all(
+                contract["namespace"] == "object"
+                and contract["configure"] == "function"
+                and contract["dispose"] == "function"
+                for contract in module_contracts
+            ),
+            module_contracts,
+        )
+
+        for page_id in ("queue", "active", "completed", "failed", "logs", "settings", "toolbox"):
+            self._page.evaluate("pageId => switchPage(pageId)", page_id)
+            self._page.wait_for_selector(
+                f"#page-{page_id}.active",
+                state="visible",
+                timeout=5000,
+            )
+
+        self._page.evaluate(
+            """
+            () => {
+              for (const name of [
+                'UcpFrontendRuntime',
+                'UcpListPages',
+                'UcpLogI18n',
+                'UcpLogCenter',
+                'UcpSettingsController',
+                'UcpDialogController',
+                'UcpPlaybackController'
+              ]) {
+                window[name].dispose();
+                window[name].dispose();
+              }
+            }
+            """
+        )
+        self.assertEqual(errors, [])
+
     def test_13_log_panel_writes(self):
         """appendLog 应在 logPanel 写入内容。"""
         self._goto_ready()
@@ -4732,6 +4793,7 @@ class WebUIBrowserTests(unittest.TestCase):
         result = self._page.evaluate(
             """
             () => {
+              window.__isolateFrontendStateForTest();
               const nativeWorker = window.Worker;
               const nativeSetTimeout = window.setTimeout;
               const nativeClearTimeout = window.clearTimeout;
@@ -4765,17 +4827,21 @@ class WebUIBrowserTests(unittest.TestCase):
                 emit(payload) { this.onmessage?.({ data: payload }); }
               }
 
-              const configure = () => window.UcpLogCenter.configure({
-                getState: () => state,
-                getLanguage: () => "zh-CN",
-                t: value => String(value),
-                esc,
-                escAttr,
-                byId,
-                writeClipboard: () => Promise.resolve(true),
-                runOperation: () => {},
-                onFiltersChange: () => {}
-              });
+              const configure = () => {
+                window.UcpLogCenter.configure({
+                  getState: () => state,
+                  getLanguage: () => "zh-CN",
+                  t: value => String(value),
+                  esc,
+                  escAttr,
+                  byId,
+                  writeClipboard: () => Promise.resolve(true),
+                  runOperation: () => {},
+                  onFiltersChange: () => {}
+                });
+                byId("logTimeFilter").value = "all";
+                window.UcpLogCenter.syncFiltersFromDom();
+              };
 
               window.Worker = ControlledWorker;
               window.UcpLogCenter.dispose();
@@ -4783,7 +4849,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 configure();
                 switchPage("logs");
                 const queryWorker = workers.find(worker => worker.url.includes("log_query_worker"));
-                const queryRequest = queryWorker.requests[0];
+                const queryRequest = queryWorker.requests.at(-1);
                 queryWorker.emit({ type: "result", result: window.UcpLogDisplay.queryLogItems(queryRequest) });
                 const detailWorker = workers.find(worker => worker.url.includes("log_detail_worker"));
                 window.UcpLogCenter.dispose();
@@ -4803,7 +4869,7 @@ class WebUIBrowserTests(unittest.TestCase):
                 window.clearTimeout = timerId => { clearedTimers.push(timerId); };
                 configure();
                 window.UcpLogCenter.render();
-                const pendingTimer = timers[0];
+                const pendingTimer = timers.at(-1);
                 window.UcpLogCenter.dispose();
                 window.UcpLogCenter.dispose();
                 pendingTimer.callback();
@@ -5703,6 +5769,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self._goto_ready()
         # 注入测试数据
         self._page.evaluate("""
+            window.__isolateFrontendStateForTest();
             switchPage('queue');
             frontendState.queue_items = [
                 {id: 'a', title: 'Item A', progress: 0, status: 'done'},

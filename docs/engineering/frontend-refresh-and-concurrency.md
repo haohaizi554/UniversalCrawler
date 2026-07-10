@@ -61,6 +61,26 @@
 - WebUI 日志裁剪只允许发生在本地 append 或 delta 合并阶段；`renderLogs()` / `logQueryItems()` 不得再裁剪或改写 `frontendState.log_items`，避免渲染路径携带大数组副作用。
 - WebUI 下载队列、已完成列表和失败列表不得把 `queue_items` / `completed_items` / `failed_items` 全量同步渲染到 DOM；分页、选中项跨页定位和当前页切片必须优先提交给 `list_page_worker.js`，主线程只接收 `pageItems` 并 patch 当前页。同步 `buildListPageResultSync()` 只允许作为 Worker 不可用的降级路径。
 
+## WebUI JavaScript 组合与生命周期
+
+`app/web/static/app.js` 只负责共享状态和应用组合：它拥有唯一 `frontendState`、跨页面选择、AppContext、启动/导航/顶栏/状态栏/工具箱编排，以及旧 HTML 入口所需的薄包装。日志翻译表、四态列表分页、日志 worker/详情、设置控制、弹窗实现、媒体事件和 WebSocket 生命周期不再由 `app.js` 实现。
+
+七个职责模块在 `app.js` 之前以同一 cache version 加载，并分别暴露冻结 namespace：
+
+| 文件 | namespace | 资源与职责所有权 |
+| --- | --- | --- |
+| `log_i18n.js` | `UcpLogI18n` | 纯日志本地化映射与转换；不读取 DOM、文件或网络 |
+| `frontend_runtime.js` | `UcpFrontendRuntime` | snapshot/delta、WebSocket、重连 timer、渲染帧与页面退出清理 |
+| `list_pages.js` | `UcpListPages` | `list_page_worker.js`、四态分页、选择、当前页 row patch |
+| `log_center.js` | `UcpLogCenter` | query/detail worker、fallback timer、筛选、分页、详情与导出 |
+| `settings_controller.js` | `UcpSettingsController` | 设置分组、认证刷新、热更新、代理选择/输入 |
+| `dialog_controller.js` | `UcpDialogController` | 三类弹窗、焦点与 Enter/Escape 生命周期 |
+| `playback_controller.js` | `UcpPlaybackController` | 预览请求、media listener、自动播放/切换 timer、全屏 |
+
+控制器统一通过 `configure(options)` 注入 `getState()`、翻译、DOM、transport、action、patch 和 render callback。模块不得缓存整份 `frontendState`，只能在需要时调用 `getState()`；共享状态变更必须回到注入 callback。每个模块只释放自己创建的 worker/socket/timer/listener，`dispose()` 必须幂等；`UcpFrontendRuntime.dispose()` 负责页面退出时协调一次全模块释放。
+
+浏览器自动化必须用 selector、事件或可观测状态作为完成条件，例如 `#app-shell` visible、`#page-<id>.active` visible、worker sequence/result、行数、详情文本或按钮状态。禁止用固定 sleep/`wait_for_timeout()` 证明加载、导航或异步 worker 已完成；需要测试模块自身行为时先隔离 live runtime/WebSocket，避免测试 fixture 与真实 state/delta 竞争。
+
 ## UI / Worker / Cache / DB 职责边界
 
 日志中心、失败列表和大表格遵循三层边界。后续改动如果跨过这些边界，必须同时补回归测试。
@@ -252,6 +272,13 @@ python -m pytest tests/test_failed_record_store.py tests/test_frontend_state_ser
 python -m pytest tests/test_frontend_state_service.py::FrontendStateServiceTests::test_download_options_snapshot_uses_runtime_memory_without_cache_reads -q
 python -m pytest tests/test_request_workers.py tests/test_frontend_snapshot_worker.py tests/test_log_query_worker.py tests/test_log_detail_worker.py tests/test_list_page_worker.py -q
 python -m pytest tests/test_download_manager.py tests/test_unified_frontend_contract.py -q
+node --check app/web/static/log_i18n.js
+node --check app/web/static/frontend_runtime.js
+node --check app/web/static/list_pages.js
+node --check app/web/static/log_center.js
+node --check app/web/static/settings_controller.js
+node --check app/web/static/dialog_controller.js
+node --check app/web/static/playback_controller.js
 node --check app/web/static/app.js
 ```
 
@@ -259,11 +286,11 @@ node --check app/web/static/app.js
 
 ### 当前验证基线
 
-- 2026-07-09 全量 `python -m pytest -q`：`2244 passed, 3 skipped, 7 warnings in 206.92s (0:03:26)`。
-- 2026-07-09 本轮架构收束聚焦验证：`python -m pytest tests/test_guardrails.py::UIAsyncGuardrailTests tests/test_spider_helpers.py::SpiderHelperTests::test_spider_parser_cache_persists_structured_results tests/test_core_state_events.py::StateAndEventTests::test_cache_service_delete_failures_are_downgraded -q`：`56 passed in 1.46s`。该验证覆盖日志中心、失败记录、四态列表分页/投影、frontend snapshot worker、控制器媒体入口、WebSocket/REST 配置、停止动作、媒体 Range 服务边界、UI 热路径防回退、parser 持久缓存和缓存删除失败降级，不等同于全项目全量验收。
-- 2026-07-09 本轮静态检查：`ruff check app/web/ws_dispatcher.py app/web/workflow_route_service.py app/web/server.py tests/test_guardrails.py`：`All checks passed!`。
-- 近期连续基线为 `2141 -> 2145 -> 2149 -> 2151 -> 2154 -> 2188 -> 2220 -> 2225 -> 2227 -> 2228 -> 2230 -> 2232 -> 2237 -> 2239 -> 2240 -> 2240 -> 2240 -> 2241 -> 2243 -> 2243 -> 2244`；耗时从 `208s -> 190s -> 117s -> 187s -> 237s -> 181s -> 135s -> 194s -> 192s -> 208s -> 203s -> 201s -> 149.77s -> 183.67s -> 215.58s -> 185.62s -> 213.20s -> 199.97s -> 171.04s -> 182.82s -> 206.92s` 波动，当前实测约 3 分 26 秒。后续比较优化收益时优先记录精确秒数，不再只写“3 到 4 分钟”。
-- 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查是否引入同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
+- 2026-07-10 focused：`python -m pytest tests/test_web_static_module_boundaries.py tests/test_fastapi_endpoints.py tests/test_web_browser.py tests/test_unified_frontend_contract.py tests/test_packaging.py -q`：`461 passed in 99.91s (0:01:39)`，`0 skipped`，`0 warnings`。
+- 2026-07-10 full：`python -X faulthandler -m pytest -q`：`2360 passed, 3 skipped, 7 warnings in 206.78s (0:03:26)`。
+- skip 数量与 Task 8 前基线同为 3；7 条 warning 为 5 条 pytest collection warning（带 `__init__` 的测试辅助类）和 2 条既有文件尺寸报告 warning，没有新增 warning 类型。
+- 七个职责模块与 `app.js` 均通过 `node --check`；`app.js` 为 `57,118` bytes，满足 `<= 100,000` bytes 的组合根上限。
+- 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
 
 ## GUI use_delta 判定边界
 

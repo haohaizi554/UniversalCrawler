@@ -181,6 +181,13 @@ python packaging/build_release.py
 - `README_EN.md`
 - `_internal/app/web/static/index.html`
 - `_internal/app/web/static/app.css`
+- `_internal/app/web/static/log_i18n.js`
+- `_internal/app/web/static/frontend_runtime.js`
+- `_internal/app/web/static/list_pages.js`
+- `_internal/app/web/static/log_center.js`
+- `_internal/app/web/static/settings_controller.js`
+- `_internal/app/web/static/dialog_controller.js`
+- `_internal/app/web/static/playback_controller.js`
 - `_internal/app/web/static/app.js`
 - `_internal/UI/icon/nav_settings.png`
 - `favicon.ico`
@@ -199,8 +206,10 @@ python packaging/build_release.py
 5. 验证 Chromium 运行时可用
 6. 验证 `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 能被找到
 7. 验证下载目录、日志目录和配置目录可正常创建
-8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、`app/web/static/app.css`、`app/web/static/app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
+8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、`app/web/static/app.css`、七个职责模块 `log_i18n.js`、`frontend_runtime.js`、`list_pages.js`、`log_center.js`、`settings_controller.js`、`dialog_controller.js`、`playback_controller.js`，以及 `app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
 9. 确认产物中未混入用户态配置和 Cookie
+
+`portable.spec` 必须继续递归收录整个 `app/web/static` 树；安装器构建脚本还会逐项校验上述七个职责模块，避免静态树存在于源码但安装源缺文件。发布验证不需要 Node 或前端构建器，只需对八个 JavaScript 文件执行 `node --check`，再运行 focused WebUI/packaging pytest 套件与完整 pytest 套件。
 
 ## 常见问题
 
