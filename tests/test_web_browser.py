@@ -4100,7 +4100,7 @@ class WebUIBrowserTests(unittest.TestCase):
               const state = {
                 log_items: [{
                   id: "worker-log",
-                  time: formatLocalDateTime(),
+                  time: "2026-07-10 09:00:00",
                   level: "INFO",
                   source: "GUI",
                   trace_id: "worker-trace",
