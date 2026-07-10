@@ -29,6 +29,7 @@ PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
 UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
 BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
+BUILD_INSTALLER_TOOL = PACKAGING_DIR / "build_installer.py"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
 REQUIREMENTS_WEB = PROJECT_ROOT / "requirements-web.txt"
@@ -63,6 +64,18 @@ def _load_build_release_tool():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_build_installer_tool():
+    spec = importlib.util.spec_from_file_location("ucrawl_build_installer_tool", BUILD_INSTALLER_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.path.insert(0, str(PACKAGING_DIR))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
     return module
 
 
@@ -304,12 +317,13 @@ class SpecDataFilesTests(unittest.TestCase):
         self.assertIn("README_EN.md", readme_targets)
 
     def test_portable_spec_packages_the_complete_web_static_tree(self):
-        source = SPEC_FILE.read_text(encoding="utf-8")
-        self.assertIn(
-            'optional_tree(project_root / "app" / "web" / "static", "app/web/static")',
-            source,
-        )
         static_dir = PROJECT_ROOT / "app" / "web" / "static"
+        static_tree_entries = [
+            (Path(source).resolve(), target)
+            for source, target in self._spec_globals["datas"]
+            if target == "app/web/static"
+        ]
+        self.assertEqual(static_tree_entries, [(static_dir.resolve(), "app/web/static")])
         for module_name in SPLIT_FRONTEND_MODULES:
             self.assertTrue((static_dir / module_name).is_file(), f"missing static module: {module_name}")
 
@@ -693,9 +707,23 @@ class InstallerScriptTests(unittest.TestCase):
             self.assertIn(marker, source)
 
     def test_build_installer_checks_every_split_frontend_module(self):
-        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
-        for module_name in SPLIT_FRONTEND_MODULES:
-            self.assertIn(f'"static" / "{module_name}"', source)
+        tool = _load_build_installer_tool()
+        expected_paths = {
+            tool.DIST_DIR / "_internal" / "app" / "web" / "static" / module_name
+            for module_name in SPLIT_FRONTEND_MODULES
+        }
+        resolved_paths = {resolver() for resolver in tool.REQUIRED_INSTALL_SOURCE_ENTRIES}
+        self.assertTrue(expected_paths.issubset(resolved_paths))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dist_dir = Path(temp_dir)
+            with patch.object(tool, "DIST_DIR", dist_dir):
+                missing_paths = {Path(path) for path in tool._missing_install_source_entries()}
+            expected_missing = {
+                dist_dir / "_internal" / "app" / "web" / "static" / module_name
+                for module_name in SPLIT_FRONTEND_MODULES
+            }
+        self.assertTrue(expected_missing.issubset(missing_paths))
 
     def test_build_installer_signing_is_explicitly_opt_in(self):
         source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")

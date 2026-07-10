@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import unittest
 from pathlib import Path
@@ -1278,7 +1279,19 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(row=row):
                 self.assertIn(row, text)
-        self.assertIn("2244 passed, 3 skipped, 7 warnings in 206.92s (0:03:26)", text)
+        full_command = "python -X faulthandler -m pytest -q"
+        self.assertIn(full_command, text)
+        baseline = re.search(
+            rf"full：`{re.escape(full_command)}`：`(?P<passed>\d+) passed, "
+            r"(?P<skipped>\d+) skipped, (?P<warnings>\d+) warnings in [^`]+`",
+            text,
+        )
+        self.assertIsNotNone(baseline, "missing structured full-suite baseline")
+        assert baseline is not None
+        self.assertEqual(int(baseline.group("passed")), 2361)
+        self.assertEqual(int(baseline.group("skipped")), 3)
+        self.assertEqual(int(baseline.group("warnings")), 7)
+        self.assertNotIn("2244 passed", text)
         self.assertIn("app.spiders.parser_cache.cached_parser_result()", text)
 
 

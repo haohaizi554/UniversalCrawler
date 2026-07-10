@@ -535,7 +535,31 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/custom_select.js?v=20260707-placement-stable', content)
         self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
-        self.assertIn('/static/app.js?v=20260709-log-detail-worker', content)
+        self.assertIn('/static/app.js?v=20260710-app-split', content)
+
+    def test_split_frontend_scripts_share_cache_version_and_load_order(self):
+        import re
+
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        index = (static_dir / "index.html").read_text(encoding="utf-8")
+        expected_names = [
+            "log_i18n.js",
+            "frontend_runtime.js",
+            "list_pages.js",
+            "log_center.js",
+            "settings_controller.js",
+            "dialog_controller.js",
+            "playback_controller.js",
+            "app.js",
+        ]
+        scripts = re.findall(
+            r'<script src="/static/([^"?]+)\?v=([^"]+)" defer></script>',
+            index,
+        )
+        split_scripts = [(name, version) for name, version in scripts if name in expected_names]
+
+        self.assertEqual([name for name, _version in split_scripts], expected_names)
+        self.assertEqual({version for _name, version in split_scripts}, {"20260710-app-split"})
 
     def test_video_end_autoplays_next_preview(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"

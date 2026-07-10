@@ -286,8 +286,8 @@ node --check app/web/static/app.js
 
 ### 当前验证基线
 
-- 2026-07-10 focused：`python -m pytest tests/test_web_static_module_boundaries.py tests/test_fastapi_endpoints.py tests/test_web_browser.py tests/test_unified_frontend_contract.py tests/test_packaging.py -q`：`461 passed in 99.91s (0:01:39)`，`0 skipped`，`0 warnings`。
-- 2026-07-10 full：`python -X faulthandler -m pytest -q`：`2360 passed, 3 skipped, 7 warnings in 206.78s (0:03:26)`。
+- 2026-07-10 focused：`python -m pytest tests/test_web_static_module_boundaries.py tests/test_fastapi_endpoints.py tests/test_web_browser.py tests/test_unified_frontend_contract.py tests/test_packaging.py -q`：`462 passed in 134.97s (0:02:14)`，`0 skipped`，`0 warnings`。
+- 2026-07-10 full：`python -X faulthandler -m pytest -q`：`2361 passed, 3 skipped, 7 warnings in 181.28s (0:03:01)`。
 - skip 数量与 Task 8 前基线同为 3；7 条 warning 为 5 条 pytest collection warning（带 `__init__` 的测试辅助类）和 2 条既有文件尺寸报告 warning，没有新增 warning 类型。
 - 七个职责模块与 `app.js` 均通过 `node --check`；`app.js` 为 `57,118` bytes，满足 `<= 100,000` bytes 的组合根上限。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。

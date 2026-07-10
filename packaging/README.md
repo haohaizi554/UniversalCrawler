@@ -209,7 +209,7 @@ python packaging/build_release.py
 8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、`app/web/static/app.css`、七个职责模块 `log_i18n.js`、`frontend_runtime.js`、`list_pages.js`、`log_center.js`、`settings_controller.js`、`dialog_controller.js`、`playback_controller.js`，以及 `app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
 9. 确认产物中未混入用户态配置和 Cookie
 
-`portable.spec` 必须继续递归收录整个 `app/web/static` 树；安装器构建脚本还会逐项校验上述七个职责模块，避免静态树存在于源码但安装源缺文件。发布验证不需要 Node 或前端构建器，只需对八个 JavaScript 文件执行 `node --check`，再运行 focused WebUI/packaging pytest 套件与完整 pytest 套件。
+`portable.spec` 必须继续递归收录整个 `app/web/static` 树；安装器构建脚本还会逐项校验上述七个职责模块，避免静态树存在于源码但安装源缺文件。项目运行、PyInstaller 打包和安装包运行均不依赖 Node，也不引入前端构建器。`node --check` 仅是发布机已安装 Node 时可选的开发/发布语法检查；没有 Node 不影响打包或运行，仍需执行 focused WebUI/packaging pytest 套件与完整 pytest 套件。
 
 ## 常见问题
 
