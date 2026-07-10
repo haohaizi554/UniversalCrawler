@@ -1288,7 +1288,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         )
         self.assertIsNotNone(baseline, "missing structured full-suite baseline")
         assert baseline is not None
-        self.assertEqual(int(baseline.group("passed")), 2361)
+        self.assertEqual(int(baseline.group("passed")), 2368)
         self.assertEqual(int(baseline.group("skipped")), 3)
         self.assertEqual(int(baseline.group("warnings")), 7)
         self.assertNotIn("2244 passed", text)
