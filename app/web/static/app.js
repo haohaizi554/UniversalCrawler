@@ -150,8 +150,29 @@ function configureLogCenterHelpers() {
   return logCenterService().configure(logCenterDependencies());
 }
 
+function patchSettingSnapshot(group, key, value) {
+  if (!group || !key) return false;
+  const snapshot = (frontendState.settings_snapshot ||= {});
+  const section = (snapshot[group] ||= {});
+  if (!section || typeof section !== "object" || Array.isArray(section)) return false;
+  section[key] = value;
+  return true;
+}
+
+function patchPlatformSettingSnapshot(platformId, key, value) {
+  if (!platformId || !key) return false;
+  const rows = (frontendState.settings_snapshot || {})["平台设置"];
+  if (!Array.isArray(rows)) return false;
+  const row = rows.find(item => String(item.id || "") === String(platformId));
+  if (!row) return false;
+  row[key] = value;
+  return true;
+}
+
 function syncSettingsAppearance(change = {}) {
-  if (change.appearance) applyAppearance(change.appearance);
+  if (change.applyAppearance) {
+    applyAppearance((frontendState.settings_snapshot || {})["外观设置"] || {});
+  }
   if (change.refreshLanguage) {
     renderSignatures = {};
     renderAll();
@@ -171,6 +192,8 @@ function settingsControllerDependencies() {
     optionLabel,
     byId,
     sendWS: (action, payload) => frontendAction(action, payload),
+    patchSetting: patchSettingSnapshot,
+    patchPlatformSetting: patchPlatformSettingSnapshot,
     syncAppearance: syncSettingsAppearance,
     enhanceSelects,
   };
@@ -186,6 +209,7 @@ function dialogControllerDependencies() {
     frontendAction: (action, payload) => frontendAction(action, payload),
     sendWS: (type, payload) => sendWS(type, payload),
     appendUiLog: message => appendLog(message),
+    patchSetting: patchSettingSnapshot,
     translateText: translateUiText,
     closePreview,
     fetchState: fetchFrontendState,

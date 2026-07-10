@@ -25,6 +25,14 @@
     "日志设置": "nav_log_center.png",
     "外观设置": "action_theme_palette.png",
   };
+  const SETTING_SECTION_GROUPS = Object.freeze({
+    basic: "基础设置",
+    download: "下载设置",
+    playback: "播放设置",
+    logs: "日志设置",
+    appearance: "外观设置",
+    common: "外观设置",
+  });
   const state = {
     currentGroup: "基础设置",
     htmlSignature: "",
@@ -257,7 +265,15 @@
     return !sameGroup;
   }
 
-  function updatePlatformSettingSnapshot(platformId, key, value) {
+  function patchSetting(group, key, value) {
+    return requireDependency("patchSetting")(group, key, value);
+  }
+
+  function patchPlatformSetting(platformId, key, value) {
+    return requireDependency("patchPlatformSetting")(platformId, key, value);
+  }
+
+  function requestPlatformSettingPatches(platformId, key, value) {
     const rows = (currentState().settings_snapshot || {})["平台设置"];
     if (!Array.isArray(rows)) return false;
     const row = rows.find(item => String(item.id || "") === String(platformId || ""));
@@ -267,20 +283,20 @@
       const proxyOptions = row.proxy_options || ["系统代理", "直连", "Clash (7890)", "v2rayN (10809)", "自定义"];
       const options = proxyOptions.map(normalizeSettingOption).filter(option => option.value);
       const optionKnown = options.some(option => String(option.value) === text);
-      row.proxy = text || "系统代理";
-      row.proxy_custom_active = text === "自定义" || (!!text && !optionKnown);
-      if (text && text !== "自定义" && !optionKnown) row.proxy_custom_value = text;
+      patchPlatformSetting(platformId, "proxy", text || "系统代理");
+      patchPlatformSetting(platformId, "proxy_custom_active", text === "自定义" || (!!text && !optionKnown));
+      if (text && text !== "自定义" && !optionKnown) patchPlatformSetting(platformId, "proxy_custom_value", text);
       return true;
     }
     if (key === row.count_config_key || key === "default_count" || key === "max_items") {
-      row.default_count = Number.isFinite(Number(text)) ? Number(text) : text;
+      patchPlatformSetting(platformId, "default_count", Number.isFinite(Number(text)) ? Number(text) : text);
       return true;
     }
     if (key === row.timeout_config_key || key === "timeout" || key === "default_timeout") {
-      row.default_timeout = Number.isFinite(Number(text)) ? Number(text) : text;
+      patchPlatformSetting(platformId, "default_timeout", Number.isFinite(Number(text)) ? Number(text) : text);
       return true;
     }
-    row[key] = value;
+    patchPlatformSetting(platformId, key, value);
     return true;
   }
 
@@ -320,7 +336,10 @@
   }
 
   function updateBasicSetting(key, value) {
+    if (!key) return false;
+    patchSetting("基础设置", key, value);
     requireDependency("sendWS")("update_basic_setting", { key, value });
+    return true;
   }
 
   function notifySideEffects(change) {
@@ -333,35 +352,33 @@
       updateBasicSetting(key, value);
       return true;
     }
-    const snapshot = (currentState().settings_snapshot ||= {});
     if (section === "common" && key === "theme") {
       const dark = String(value).toLowerCase() === "dark";
-      const appearance = (snapshot["外观设置"] ||= {});
-      appearance.follow_system = false;
-      appearance.theme = dark ? "dark" : "light";
+      patchSetting("外观设置", "follow_system", false);
+      patchSetting("外观设置", "theme", dark ? "dark" : "light");
       localStorage.setItem("cached_dark_theme", String(dark));
-      notifySideEffects({ section, key, value, appearance });
+      notifySideEffects({ section, key, value, applyAppearance: true });
       if (normalizeSettingsGroupName(state.currentGroup) === "外观设置") renderSettings(true);
-    }
-    if (section === "appearance" && ["scale", "font_size", "accent", "language"].includes(key)) {
-      const appearance = (snapshot["外观设置"] ||= {});
-      appearance[key] = value;
+    } else if (section === "appearance" && ["scale", "font_size", "accent", "language"].includes(key)) {
+      patchSetting("外观设置", key, value);
       notifySideEffects({
         section,
         key,
         value,
-        appearance,
+        applyAppearance: true,
         refreshLanguage: key === "language",
         renderCurrentPage: key === "font_size" || key === "scale",
       });
-    }
-    if (section === "playback") {
-      const playback = (snapshot["播放设置"] ||= {});
-      playback[key] = key === "image_auto_advance_interval_seconds" ? Number(value || 5) : value;
+    } else if (section === "playback") {
+      const normalizedValue = key === "image_auto_advance_interval_seconds" ? Number(value || 5) : value;
+      patchSetting("播放设置", key, normalizedValue);
       if (normalizeSettingsGroupName(state.currentGroup) === "播放设置") renderSettings(true);
-      notifySideEffects({ section, key, value: playback[key], reschedulePlayback: true });
+      notifySideEffects({ section, key, value: normalizedValue, reschedulePlayback: true });
+    } else if (SETTING_SECTION_GROUPS[section]) {
+      patchSetting(SETTING_SECTION_GROUPS[section], key, value);
+    } else {
+      requestPlatformSettingPatches(section, key, value);
     }
-    updatePlatformSettingSnapshot(section, key, value);
     requireDependency("sendWS")("update_setting", { section, key, value });
     return true;
   }

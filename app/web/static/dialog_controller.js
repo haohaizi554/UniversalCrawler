@@ -5,6 +5,9 @@
     dirCurrentPath: "",
     dirSelectedPath: "",
     dirParentPath: "",
+    generation: 0,
+    directorySequence: 0,
+    focusHandle: null,
     disposed: true,
   };
 
@@ -15,6 +18,8 @@
     state.dirCurrentPath = "";
     state.dirSelectedPath = "";
     state.dirParentPath = "";
+    state.generation += 1;
+    state.directorySequence = 0;
     state.disposed = false;
     return window.UcpDialogController;
   }
@@ -47,6 +52,45 @@
 
   function translateText(value) {
     return typeof dependencies.translateText === "function" ? dependencies.translateText(value) : t(value);
+  }
+
+  function isCurrentGeneration(generation) {
+    return !state.disposed && state.generation === generation;
+  }
+
+  function isCurrentDirectoryOperation(generation, sequence) {
+    return isCurrentGeneration(generation) && state.directorySequence === sequence;
+  }
+
+  function cancelScheduledFocus() {
+    const handle = state.focusHandle;
+    state.focusHandle = null;
+    if (!handle) return;
+    if (handle.kind === "frame" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(handle.id);
+      return;
+    }
+    clearTimeout(handle.id);
+  }
+
+  function scheduleModalFocus(element, isVisible) {
+    cancelScheduledFocus();
+    if (!element) return;
+    const generation = state.generation;
+    const callback = () => {
+      state.focusHandle = null;
+      if (!isCurrentGeneration(generation) || (typeof isVisible === "function" && !isVisible())) return;
+      element.focus({ preventScroll: true });
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      state.focusHandle = { kind: "frame", id: window.requestAnimationFrame(callback) };
+    } else {
+      state.focusHandle = { kind: "timer", id: setTimeout(callback, 0) };
+    }
+  }
+
+  function patchSetting(group, key, value) {
+    return requireDependency("patchSetting")(group, key, value);
   }
 
   function currentDownloadDirectory() {
@@ -161,10 +205,13 @@
   }
 
   async function onChangeDirClicked() {
+    const generation = state.generation;
     await showDirDialog();
+    return isCurrentGeneration(generation);
   }
 
   async function showDirDialog() {
+    const generation = state.generation;
     updateDirStaticText();
     installDirDialogHandlers();
     const modal = byId("dirModal");
@@ -172,18 +219,23 @@
     const startPath = localStorage.getItem("dir_last_browsed") || currentDownloadDirectory();
     if (input) input.value = startPath;
     if (modal) modal.style.display = "flex";
-    requestAnimationFrame(() => input && input.focus({ preventScroll: true }));
+    scheduleModalFocus(input, () => !!modal && modal.style.display === "flex");
     await dirLoadPath(startPath);
+    return isCurrentGeneration(generation);
   }
 
   async function dirLoadPath(path = "") {
+    const generation = state.generation;
+    const sequence = ++state.directorySequence;
     const target = String(path || (byId("dirInput") && byId("dirInput").value) || "").trim();
     setDirBusy(true);
     setDirStatus("正在加载目录...", "loading");
     try {
       const query = target ? `?path=${encodeURIComponent(target)}` : "";
       const response = await fetch(`/api/dir/list${query}`, { cache: "no-store" });
+      if (!isCurrentDirectoryOperation(generation, sequence)) return false;
       const data = await response.json().catch(() => ({}));
+      if (!isCurrentDirectoryOperation(generation, sequence)) return false;
       if (!response.ok || data.error || data.status === "error") {
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
@@ -195,11 +247,14 @@
       if (input) input.value = state.dirCurrentPath;
       renderDirEntries(data);
       setDirStatus("单击选择，双击进入子目录", "ok");
+      return true;
     } catch (error) {
+      if (!isCurrentDirectoryOperation(generation, sequence)) return false;
       renderDirEntries({ drives: [], subdirs: [] });
       setDirStatus(`目录加载失败：${error.message || error}`, "error");
+      return false;
     } finally {
-      setDirBusy(false);
+      if (isCurrentDirectoryOperation(generation, sequence)) setDirBusy(false);
     }
   }
 
@@ -220,6 +275,8 @@
   }
 
   async function confirmDirDialog() {
+    const generation = state.generation;
+    const sequence = ++state.directorySequence;
     const directory = String(state.dirSelectedPath || (byId("dirInput") && byId("dirInput").value) || "").trim();
     if (!directory) {
       setDirStatus("目录路径不能为空", "error");
@@ -233,27 +290,36 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ directory }),
       });
+      if (!isCurrentDirectoryOperation(generation, sequence)) return false;
       const data = await response.json().catch(() => ({}));
+      if (!isCurrentDirectoryOperation(generation, sequence)) return false;
       if (!response.ok || data.error || data.status === "error") {
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
       if (typeof dependencies.closePreview === "function") dependencies.closePreview();
-      const snapshot = (currentState().settings_snapshot ||= {});
-      const basic = (snapshot["基础设置"] ||= {});
-      basic.download_directory = String(data.directory || directory);
-      localStorage.setItem("dir_last_browsed", basic.download_directory);
+      const nextDirectory = String(data.directory || directory);
+      patchSetting("基础设置", "download_directory", nextDirectory);
+      localStorage.setItem("dir_last_browsed", nextDirectory);
       const modal = byId("dirModal");
       if (modal) modal.style.display = "none";
       requireDependency("appendUiLog")(translateText(data.message || "目录已变更"));
-      if (typeof dependencies.fetchState === "function") await dependencies.fetchState();
+      if (typeof dependencies.fetchState === "function") {
+        await dependencies.fetchState();
+        if (!isCurrentDirectoryOperation(generation, sequence)) return false;
+      }
+      return true;
     } catch (error) {
+      if (!isCurrentDirectoryOperation(generation, sequence)) return false;
       setDirStatus(`切换目录失败：${error.message || error}`, "error");
+      return false;
     } finally {
-      setDirBusy(false);
+      if (isCurrentDirectoryOperation(generation, sequence)) setDirBusy(false);
     }
   }
 
   function cancelDirDialog() {
+    cancelScheduledFocus();
+    state.directorySequence += 1;
     const modal = byId("dirModal");
     if (modal) modal.style.display = "none";
   }
@@ -298,18 +364,20 @@
     if (video) video.checked = true;
     if (image) image.checked = true;
     if (modal) modal.style.display = "flex";
-    requestAnimationFrame(() => {
+    scheduleModalFocus(byId("associationConfirmBtn"), () => {
       const confirm = byId("associationConfirmBtn");
-      if (modal && modal.style.display === "flex" && confirm) confirm.focus({ preventScroll: true });
+      return !!modal && modal.style.display === "flex" && !!confirm;
     });
   }
 
   function cancelFileAssociationModal() {
+    cancelScheduledFocus();
     const modal = byId("fileAssociationModal");
     if (modal) modal.style.display = "none";
   }
 
   function confirmFileAssociationModal() {
+    cancelScheduledFocus();
     const video = byId("associationVideo");
     const image = byId("associationImage");
     const includeVideo = !!(video && video.checked);
@@ -413,18 +481,18 @@
     byId("selectionBody").innerHTML = state.selectionItems.map(selectionRowHtml).join("");
     const modal = byId("selectionModal");
     modal.style.display = "flex";
-    requestAnimationFrame(() => {
-      if (modal.style.display === "flex") byId("selectionConfirmBtn").focus({ preventScroll: true });
-    });
+    scheduleModalFocus(byId("selectionConfirmBtn"), () => modal.style.display === "flex");
   }
 
   function confirmSelection() {
+    cancelScheduledFocus();
     const indices = [...document.querySelectorAll("#selectionBody input:checked")].map(input => Number(input.dataset.index));
     requireDependency("sendWS")("select_tasks", { indices });
     byId("selectionModal").style.display = "none";
   }
 
   function cancelSelection() {
+    cancelScheduledFocus();
     requireDependency("sendWS")("select_tasks", { indices: null });
     byId("selectionModal").style.display = "none";
   }
@@ -471,6 +539,9 @@
   function dispose() {
     if (state.disposed) return;
     state.disposed = true;
+    state.generation += 1;
+    state.directorySequence += 1;
+    cancelScheduledFocus();
     state.selectionItems = [];
     state.dirCurrentPath = "";
     state.dirSelectedPath = "";

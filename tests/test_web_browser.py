@@ -447,7 +447,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("function selectAllSelectionItems()", content)
         self.assertIn("function invertSelectionItems()", content)
         self.assertIn('"checkbox"', content)
-        self.assertIn('byId("selectionConfirmBtn").focus({ preventScroll: true })', content)
+        self.assertIn('scheduleModalFocus(byId("selectionConfirmBtn")', content)
         self.assertIn('if (event.key === "Enter") confirmSelection();', content)
         self.assertIn("else cancelSelection();", content)
         self.assertIn("if (handleSelectionModalShortcut(event)) return true;", content)
@@ -806,7 +806,7 @@ class StaticAssetsTests(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn('byId("selectionConfirmBtn").focus({ preventScroll: true })', modal_block)
+        self.assertIn('scheduleModalFocus(byId("selectionConfirmBtn")', modal_block)
         self.assertIn('if (!["Enter", "Escape"].includes(event.key)) return false;', shortcut_block)
         self.assertIn("event.preventDefault();", shortcut_block)
         self.assertIn("event.stopPropagation();", shortcut_block)
@@ -2703,6 +2703,8 @@ class WebUIBrowserTests(unittest.TestCase):
                 optionLabel: value => String(value || ''),
                 byId: id => document.getElementById(id),
                 sendWS: (action, payload) => actions.push({ action, payload }),
+                patchSetting: () => {},
+                patchPlatformSetting: () => {},
                 syncAppearance: () => {},
                 enhanceSelects: () => {}
               });
@@ -2775,6 +2777,283 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["associationDisplay"], "none")
         self.assertEqual(result["directoryDisplay"], "none")
         self.assertEqual(result["selectionHtml"], "")
+
+    def test_11ea_controllers_request_optimistic_patches_without_mutating_snapshots(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            r"""
+            async () => {
+              const settingsState = {
+                settings_snapshot: {
+                  '\u57fa\u7840\u8bbe\u7f6e': { download_directory: 'D:/before' },
+                  '\u4e0b\u8f7d\u8bbe\u7f6e': { max_retries: 3 },
+                  '\u5916\u89c2\u8bbe\u7f6e': { follow_system: true, theme: 'light', scale: '100%' },
+                  '\u64ad\u653e\u8bbe\u7f6e': { image_auto_advance_interval_seconds: 5 },
+                  '\u5e73\u53f0\u8bbe\u7f6e': [{
+                    id: 'demo',
+                    proxy: '\u7cfb\u7edf\u4ee3\u7406',
+                    proxy_config_key: 'proxy_url',
+                    proxy_options: ['\u7cfb\u7edf\u4ee3\u7406', '\u81ea\u5b9a\u4e49']
+                  }]
+                }
+              };
+              const settingsBefore = JSON.stringify(settingsState);
+              const settingPatches = [];
+              const platformPatches = [];
+              window.UcpSettingsController.configure({
+                getState: () => settingsState,
+                t: value => String(value || ''),
+                optionLabel: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                sendWS: () => {},
+                patchSetting: (group, key, value) => settingPatches.push({ group, key, value }),
+                patchPlatformSetting: (platformId, key, value) => platformPatches.push({ platformId, key, value }),
+                syncAppearance: () => {},
+                enhanceSelects: () => {}
+              });
+              window.UcpSettingsController.updateBasic('download_directory', 'D:/basic');
+              window.UcpSettingsController.update('download', 'max_retries', 5);
+              window.UcpSettingsController.update('common', 'theme', 'dark');
+              window.UcpSettingsController.update('appearance', 'scale', '110%');
+              window.UcpSettingsController.update('playback', 'image_auto_advance_interval_seconds', '3');
+              window.UcpSettingsController.update('demo', 'proxy_url', 'http://127.0.0.1:7890');
+
+              const dialogState = {
+                settings_snapshot: { '\u57fa\u7840\u8bbe\u7f6e': { download_directory: 'D:/before' } }
+              };
+              const dialogBefore = JSON.stringify(dialogState);
+              const dialogPatches = [];
+              const originalFetch = window.fetch;
+              window.fetch = () => Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ directory: 'D:/confirmed', message: 'changed' })
+              });
+              window.UcpDialogController.configure({
+                getState: () => dialogState,
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: () => {},
+                sendWS: () => {},
+                appendUiLog: () => {},
+                patchSetting: (group, key, value) => dialogPatches.push({ group, key, value }),
+                closePreview: () => {},
+                fetchState: () => Promise.resolve()
+              });
+              document.getElementById('dirInput').value = 'D:/confirmed';
+              await window.UcpDialogController.confirmDirectory();
+              window.fetch = originalFetch;
+
+              return {
+                settingsUnchanged: JSON.stringify(settingsState) === settingsBefore,
+                dialogUnchanged: JSON.stringify(dialogState) === dialogBefore,
+                settingPatches,
+                platformPatches,
+                dialogPatches
+              };
+            }
+            """
+        )
+
+        self.assertTrue(result["settingsUnchanged"])
+        self.assertTrue(result["dialogUnchanged"])
+        self.assertEqual(
+            result["settingPatches"],
+            [
+                {"group": "\u57fa\u7840\u8bbe\u7f6e", "key": "download_directory", "value": "D:/basic"},
+                {"group": "\u4e0b\u8f7d\u8bbe\u7f6e", "key": "max_retries", "value": 5},
+                {"group": "\u5916\u89c2\u8bbe\u7f6e", "key": "follow_system", "value": False},
+                {"group": "\u5916\u89c2\u8bbe\u7f6e", "key": "theme", "value": "dark"},
+                {"group": "\u5916\u89c2\u8bbe\u7f6e", "key": "scale", "value": "110%"},
+                {"group": "\u64ad\u653e\u8bbe\u7f6e", "key": "image_auto_advance_interval_seconds", "value": 3},
+            ],
+        )
+        self.assertEqual(
+            result["platformPatches"],
+            [
+                {"platformId": "demo", "key": "proxy", "value": "http://127.0.0.1:7890"},
+                {"platformId": "demo", "key": "proxy_custom_active", "value": True},
+                {"platformId": "demo", "key": "proxy_custom_value", "value": "http://127.0.0.1:7890"},
+            ],
+        )
+        self.assertEqual(
+            result["dialogPatches"],
+            [{"group": "\u57fa\u7840\u8bbe\u7f6e", "key": "download_directory", "value": "D:/confirmed"}],
+        )
+
+    def test_11eb_dialog_dispose_ignores_late_directory_response_and_cancels_focus(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              let resolveFetch;
+              let focusCalls = 0;
+              const originalFetch = window.fetch;
+              const input = document.getElementById('dirInput');
+              const originalFocus = input.focus.bind(input);
+              input.focus = () => { focusCalls += 1; };
+              window.fetch = () => new Promise(resolve => { resolveFetch = resolve; });
+              const actions = [];
+              const patches = [];
+              window.UcpDialogController.configure({
+                getState: () => ({ settings_snapshot: { '\u57fa\u7840\u8bbe\u7f6e': { download_directory: 'D:/start' } } }),
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: (action, payload) => actions.push({ action, payload }),
+                sendWS: (type, payload) => actions.push({ type, payload }),
+                appendUiLog: value => actions.push({ log: value }),
+                patchSetting: (group, key, value) => patches.push({ group, key, value })
+              });
+              const pending = window.UcpDialogController.showDirectory();
+              const statusAtDispose = document.getElementById('dirStatus').textContent;
+              const inputAtDispose = input.value;
+              window.UcpDialogController.dispose();
+              await new Promise(resolve => requestAnimationFrame(resolve));
+              resolveFetch({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ current: 'D:/late', parent: 'D:/', drives: [], subdirs: [{ name: 'late', path: 'D:/late' }] })
+              });
+              let pendingError = '';
+              await pending.catch(error => { pendingError = String(error && error.message || error); });
+              const observed = {
+                actions,
+                patches,
+                pendingError,
+                focusCalls,
+                display: document.getElementById('dirModal').style.display,
+                inputValue: input.value,
+                inputAtDispose,
+                status: document.getElementById('dirStatus').textContent,
+                statusAtDispose,
+                listText: document.getElementById('dirList').textContent.trim()
+              };
+              input.focus = originalFocus;
+              window.fetch = originalFetch;
+              return observed;
+            }
+            """
+        )
+
+        self.assertEqual(result["actions"], [])
+        self.assertEqual(result["patches"], [])
+        self.assertEqual(result["pendingError"], "")
+        self.assertEqual(result["focusCalls"], 0)
+        self.assertEqual(result["display"], "none")
+        self.assertEqual(result["inputValue"], result["inputAtDispose"])
+        self.assertEqual(result["status"], result["statusAtDispose"])
+        self.assertEqual(result["listText"], "")
+
+    def test_11ec_dialog_reconfigure_ignores_old_json_continuation(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              let resolveOldJson;
+              const originalFetch = window.fetch;
+              window.fetch = url => {
+                const text = String(url);
+                if (text.includes('old')) {
+                  return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => new Promise(resolve => { resolveOldJson = resolve; })
+                  });
+                }
+                return Promise.resolve({
+                  ok: true,
+                  status: 200,
+                  json: () => Promise.resolve({ current: 'D:/new', parent: 'D:/', drives: [], subdirs: [{ name: 'new', path: 'D:/new' }] })
+                });
+              };
+              const configure = () => window.UcpDialogController.configure({
+                getState: () => ({ settings_snapshot: {} }),
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: () => {},
+                sendWS: () => {},
+                appendUiLog: () => {},
+                patchSetting: () => {}
+              });
+              configure();
+              const oldPending = window.UcpDialogController.loadDirectory('D:/old');
+              await Promise.resolve();
+              configure();
+              await window.UcpDialogController.loadDirectory('D:/new');
+              resolveOldJson({ current: 'D:/old', parent: 'D:/', drives: [], subdirs: [{ name: 'old', path: 'D:/old' }] });
+              await oldPending;
+              const observed = {
+                inputValue: document.getElementById('dirInput').value,
+                listText: document.getElementById('dirList').textContent.trim(),
+                status: document.getElementById('dirStatus').textContent
+              };
+              window.UcpDialogController.dispose();
+              window.fetch = originalFetch;
+              return observed;
+            }
+            """
+        )
+
+        self.assertEqual(result["inputValue"], "D:/new")
+        self.assertEqual(result["listText"], "new")
+        self.assertIn("\u5355\u51fb\u9009\u62e9", result["status"])
+
+    def test_11ed_newer_directory_load_wins_when_old_response_arrives_late(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              let resolveOld;
+              const originalFetch = window.fetch;
+              window.fetch = url => String(url).includes('old')
+                ? new Promise(resolve => { resolveOld = resolve; })
+                : Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: () => Promise.resolve({ current: 'D:/newest', parent: 'D:/', drives: [], subdirs: [{ name: 'newest', path: 'D:/newest' }] })
+                  });
+              window.UcpDialogController.configure({
+                getState: () => ({ settings_snapshot: {} }),
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: () => {},
+                sendWS: () => {},
+                appendUiLog: () => {},
+                patchSetting: () => {}
+              });
+              const oldPending = window.UcpDialogController.loadDirectory('D:/old');
+              await window.UcpDialogController.loadDirectory('D:/newest');
+              resolveOld({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ current: 'D:/old', parent: 'D:/', drives: [], subdirs: [{ name: 'old', path: 'D:/old' }] })
+              });
+              await oldPending;
+              const observed = {
+                inputValue: document.getElementById('dirInput').value,
+                listText: document.getElementById('dirList').textContent.trim()
+              };
+              window.UcpDialogController.dispose();
+              window.fetch = originalFetch;
+              return observed;
+            }
+            """
+        )
+
+        self.assertEqual(result["inputValue"], "D:/newest")
+        self.assertEqual(result["listText"], "newest")
 
     def test_11f_missing_media_validation_keeps_preview_closed(self):
         self._goto_ready()
@@ -3821,7 +4100,7 @@ class WebUIBrowserTests(unittest.TestCase):
               const state = {
                 log_items: [{
                   id: "worker-log",
-                  time: "2026-07-10 09:00:00",
+                  time: formatLocalDateTime(),
                   level: "INFO",
                   source: "GUI",
                   trace_id: "worker-trace",
