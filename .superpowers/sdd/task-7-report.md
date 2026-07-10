@@ -15,6 +15,11 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
   shell and `app.js` had no `configureFeatureModules()` composition function.
 - Initial lifecycle run failed as expected with
   `TypeError: runtime.start is not a function`.
+- Review RED reproduced a pending `/state` v1 response overwriting socket v2.
+- Review RED reproduced the missing public delayed-delta scheduler with
+  `TypeError: runtime.scheduleDelta is not a function`.
+- Review RED reproduced all four missing `window` compatibility functions and
+  verified that the browser could not call `window.fetchFrontendState`.
 
 ## GREEN
 
@@ -25,6 +30,11 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
 - Brief focused suite, excluding the explicitly deferred Task 8 timestamp test:
   354 passed, 1 deselected in 87.71s.
 - Brief focused suite without exclusion: 354 passed, 1 known failure in 89.85s.
+- Review-focused runtime lifecycle and module tests: 16 passed.
+- Review brief focused suite, excluding the explicitly deferred Task 8 test:
+  359 passed, 1 deselected in 71.44s.
+- Review brief focused suite without exclusion: 359 passed, 1 known failure in
+  86.44s.
 - `node --check app/web/static/frontend_runtime.js`: passed.
 - `node --check app/web/static/app.js`: passed.
 - `git diff --check`: passed.
@@ -38,6 +48,14 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
   into `frontend_runtime.js`.
 - Added generation and sequence guards for socket handlers, state/delta/action
   fetches, reconnect/delta timers, and render-frame callbacks.
+- Added cross-transport state freshness: versioned full states are monotonic,
+  and unversioned fetch responses may commit only when their captured operation
+  epoch is still current.
+- Exported generation-aware `scheduleDelta()` and removed the remaining
+  `setTimeout(fetchFrontendDelta, ...)` from `app.js`.
+- Added explicit one-line `window.fetchFrontendState`,
+  `window.fetchFrontendDelta`, `window.scheduleRenderSections`, and
+  `window.sendWS` compatibility delegates.
 - Kept state replacement behind injected `getState`/`replaceState`; runtime does
   not declare or retain a second `frontendState` snapshot.
 - Added one guarded `configureFeatureModules()` call in `DOMContentLoaded`, then
@@ -49,8 +67,8 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
 
 ## Size
 
-- `app/web/static/app.js`: 56,770 bytes (limit: 100,000 bytes).
-- `app/web/static/frontend_runtime.js`: 19,217 bytes.
+- `app/web/static/app.js`: 57,118 bytes (limit: 100,000 bytes).
+- `app/web/static/frontend_runtime.js`: 20,102 bytes.
 
 ## Risks
 
@@ -65,3 +83,4 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
 ## Commit
 
 - `2c595345` - `refactor(web): reduce app entry to composition root`
+- `b323ebf4` - `fix(web): guard frontend runtime freshness`
