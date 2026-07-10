@@ -7,7 +7,6 @@
     currentPlayingId: "",
     isFullscreenMode: false,
     imageAutoAdvanceTimer: null,
-    fullscreenRunOwner: null,
     fullscreenRequest: null,
     fullscreenOwner: null,
     ownedListeners: [],
@@ -24,9 +23,8 @@
     state.currentPlayingId = "";
     state.isFullscreenMode = false;
     state.imageAutoAdvanceTimer = null;
-    state.fullscreenRunOwner = { generation: state.generation };
     state.fullscreenRequest = null;
-    state.fullscreenOwner = state.fullscreenRunOwner;
+    state.fullscreenOwner = null;
     state.ownedListeners = [];
     state.mediaControlsInstalled = false;
     state.disposed = false;
@@ -566,13 +564,23 @@
   function exitFullscreenSafely(owner = state.fullscreenOwner) {
     if (!owner || state.fullscreenOwner !== owner) return Promise.resolve(false);
     if (typeof document.exitFullscreen !== "function") return Promise.resolve(false);
+    const releaseOwner = () => {
+      if (state.fullscreenOwner === owner) state.fullscreenOwner = null;
+      return true;
+    };
     try {
       const result = document.exitFullscreen();
-      if (result && typeof result.then === "function") return result.then(() => true, () => false);
-      return Promise.resolve(true);
+      if (result && typeof result.then === "function") return result.then(releaseOwner, () => false);
+      return Promise.resolve(releaseOwner());
     } catch (_error) {
       return Promise.resolve(false);
     }
+  }
+
+  function cleanupStaleFullscreen(requestToken, panel) {
+    if (state.fullscreenOwner !== null || document.fullscreenElement !== panel) return Promise.resolve(false);
+    state.fullscreenOwner = requestToken;
+    return exitFullscreenSafely(requestToken);
   }
 
   function toggleFullscreen() {
@@ -583,30 +591,28 @@
     if (document.fullscreenElement === panel) {
       return exitFullscreenSafely(state.fullscreenOwner);
     }
-    const requestToken = { generation, operation, owner: state.fullscreenRunOwner };
+    const requestToken = { generation, operation };
     state.fullscreenRequest = requestToken;
-    state.fullscreenOwner = requestToken;
     let request;
     try {
       request = panel.requestFullscreen();
     } catch (error) {
       if (state.fullscreenRequest === requestToken) state.fullscreenRequest = null;
-      if (state.fullscreenOwner === requestToken) state.fullscreenOwner = requestToken.owner;
       if (isCurrentOperation(generation, operation)) appendLog(error.message || String(error));
       return Promise.resolve(false);
     }
     return Promise.resolve(request).then(
       () => {
-        if (state.fullscreenRequest === requestToken) state.fullscreenRequest = null;
-        if (isCurrentOperation(generation, operation) && state.fullscreenOwner === requestToken) return true;
-        if (state.fullscreenOwner === requestToken && document.fullscreenElement === panel) {
-          return exitFullscreenSafely(requestToken);
+        const ownsPendingRequest = state.fullscreenRequest === requestToken;
+        if (ownsPendingRequest) state.fullscreenRequest = null;
+        if (ownsPendingRequest && isCurrentOperation(generation, operation)) {
+          state.fullscreenOwner = requestToken;
+          return true;
         }
-        return false;
+        return cleanupStaleFullscreen(requestToken, panel);
       },
       error => {
         if (state.fullscreenRequest === requestToken) state.fullscreenRequest = null;
-        if (state.fullscreenOwner === requestToken) state.fullscreenOwner = requestToken.owner;
         if (isCurrentOperation(generation, operation)) appendLog(error.message || String(error));
         return false;
       },

@@ -3462,7 +3462,83 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["replacementDisposed"])
         self.assertEqual(result["selections"], ["image-a", "image-b"])
 
-    def test_11efb_stale_fullscreen_request_cannot_exit_current_run_fullscreen(self):
+    def test_11efb_stale_fullscreen_request_exits_when_current_run_has_no_owner(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const panel = document.getElementById('previewPanel');
+              const originalRequestFullscreen = panel.requestFullscreen;
+              const originalExitFullscreen = document.exitFullscreen;
+              const fullscreenDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement');
+              let resolveRequestA;
+              let fullscreenElement = null;
+              let exitCalls = 0;
+              const configure = () => window.UcpPlaybackController.configure({
+                getState: () => ({ completed_items: [], settings_snapshot: {} }),
+                getSelectedCompletedId: () => '',
+                setSelectedCompletedId: () => {},
+                patchCompletedMetadata: () => false,
+                t: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                esc,
+                frontendAction: () => {},
+                appendLog: () => {},
+                renderCompletedDetail: () => {}
+              });
+              Object.defineProperty(document, 'fullscreenElement', {
+                configurable: true,
+                get: () => fullscreenElement
+              });
+              panel.requestFullscreen = () => new Promise(resolve => {
+                resolveRequestA = () => {
+                  fullscreenElement = panel;
+                  resolve();
+                };
+              });
+              document.exitFullscreen = () => {
+                exitCalls += 1;
+                fullscreenElement = null;
+                return Promise.resolve();
+              };
+              try {
+                configure();
+                const requestA = window.UcpPlaybackController.toggleFullscreen();
+                configure();
+
+                resolveRequestA();
+                await requestA;
+                const afterStaleA = {
+                  active: fullscreenElement === panel,
+                  exitCalls
+                };
+
+                window.UcpPlaybackController.dispose();
+                window.UcpPlaybackController.dispose();
+                return {
+                  afterStaleA,
+                  activeAfterDispose: fullscreenElement === panel,
+                  exitCalls
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                panel.requestFullscreen = originalRequestFullscreen;
+                document.exitFullscreen = originalExitFullscreen;
+                if (fullscreenDescriptor) Object.defineProperty(document, 'fullscreenElement', fullscreenDescriptor);
+                else delete document.fullscreenElement;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertFalse(result["afterStaleA"]["active"])
+        self.assertEqual(result["afterStaleA"]["exitCalls"], 1)
+        self.assertFalse(result["activeAfterDispose"])
+        self.assertEqual(result["exitCalls"], 1)
+
+    def test_11efc_stale_fullscreen_request_cannot_exit_current_run_fullscreen(self):
         self._goto_ready()
 
         result = self._page.evaluate(
