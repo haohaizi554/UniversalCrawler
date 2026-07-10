@@ -3,6 +3,7 @@
   const state = {
     generation: 0,
     operation: 0,
+    pendingSourceId: "",
     currentPlayingId: "",
     isFullscreenMode: false,
     imageAutoAdvanceTimer: null,
@@ -16,6 +17,7 @@
     dependencies = Object.freeze({ ...options });
     state.generation += 1;
     state.operation = 0;
+    state.pendingSourceId = "";
     state.currentPlayingId = "";
     state.isFullscreenMode = false;
     state.imageAutoAdvanceTimer = null;
@@ -444,15 +446,26 @@
     setSelectedCompletedId(sourceId);
     const generation = state.generation;
     const operation = ++state.operation;
-    const item = completedItemById(sourceId);
-    if (!item || !item.local_path) {
+    state.pendingSourceId = sourceId;
+    const initialItem = completedItemById(sourceId);
+    if (!initialItem || !initialItem.local_path) {
       if (isCurrentOperation(generation, operation)) {
+        state.pendingSourceId = "";
         appendUiLog("\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u5220\u9664", "", "\u274c ");
       }
       return false;
     }
-    if (!(await validateMediaForPreview(sourceId, generation, operation))) return false;
+    if (!(await validateMediaForPreview(sourceId, generation, operation))) {
+      if (isCurrentOperation(generation, operation)) state.pendingSourceId = "";
+      return false;
+    }
     if (!isCurrentOperation(generation, operation)) return false;
+    const item = completedItemById(sourceId);
+    if (!item || !item.local_path) {
+      state.pendingSourceId = "";
+      return false;
+    }
+    state.pendingSourceId = "";
     state.currentPlayingId = sourceId;
     if (!shouldUseBuiltinPlayer()) {
       clearImageAutoAdvanceTimer();
@@ -541,36 +554,57 @@
     updateFullscreenButtonState();
   }
 
+  function exitFullscreenSafely() {
+    if (typeof document.exitFullscreen !== "function") return Promise.resolve(false);
+    try {
+      const result = document.exitFullscreen();
+      if (result && typeof result.then === "function") return result.then(() => true, () => false);
+      return Promise.resolve(true);
+    } catch (_error) {
+      return Promise.resolve(false);
+    }
+  }
+
   function toggleFullscreen() {
     const panel = byId("previewPanel");
     if (!panel || !panel.requestFullscreen) return;
     const generation = state.generation;
     const operation = state.operation;
     if (document.fullscreenElement === panel) {
-      const exitResult = document.exitFullscreen();
-      if (exitResult && typeof exitResult.catch === "function") exitResult.catch(() => {});
-      return;
+      return exitFullscreenSafely();
     }
-    const request = panel.requestFullscreen();
-    if (request && typeof request.catch === "function") {
-      request.catch(error => {
+    let request;
+    try {
+      request = panel.requestFullscreen();
+    } catch (error) {
+      if (isCurrentOperation(generation, operation)) appendLog(error.message || String(error));
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(request).then(
+      () => {
+        if (isCurrentOperation(generation, operation)) return true;
+        if (document.fullscreenElement === panel) return exitFullscreenSafely();
+        return false;
+      },
+      error => {
         if (isCurrentOperation(generation, operation)) appendLog(error.message || String(error));
-      });
-    }
+        return false;
+      },
+    );
   }
 
   function handleShortcut(event) {
     if (state.disposed || !event || event.key !== "Escape") return false;
     const panel = byId("previewPanel");
     if (!state.isFullscreenMode || document.fullscreenElement !== panel) return false;
-    const exitResult = document.exitFullscreen();
-    if (exitResult && typeof exitResult.catch === "function") exitResult.catch(() => {});
+    void exitFullscreenSafely();
     return true;
   }
 
   function closePreview() {
     if (state.disposed) return;
     state.operation += 1;
+    state.pendingSourceId = "";
     clearImageAutoAdvanceTimer();
     const player = byId("videoPlayer");
     safelyResetPlayer(player);
@@ -585,7 +619,10 @@
 
   function prepareDeleteItem(id) {
     const sourceId = String(id || "");
-    if (sourceId && state.currentPlayingId === sourceId) closePreview();
+    if (!sourceId || (state.pendingSourceId !== sourceId && state.currentPlayingId !== sourceId)) return;
+    state.operation += 1;
+    state.pendingSourceId = "";
+    if (state.currentPlayingId === sourceId) closePreview();
   }
 
   function deleteVideo(id) {
@@ -634,6 +671,7 @@
       } catch (_error) {}
     }
     state.currentPlayingId = "";
+    state.pendingSourceId = "";
     state.isFullscreenMode = false;
     state.imageAutoAdvanceTimer = null;
     dependencies = Object.freeze({});

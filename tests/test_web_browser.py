@@ -802,8 +802,14 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("response.body.cancel()", validate_block)
         self.assertIn("response.status === 404", validate_block)
         self.assertIn("isCurrentOperation(generation, operation)", validate_block)
-        self.assertIn("if (!(await validateMediaForPreview(sourceId, generation, operation))) return false;", play_block)
+        self.assertIn("if (!(await validateMediaForPreview(sourceId, generation, operation))) {", play_block)
         self.assertIn("if (!isCurrentOperation(generation, operation)) return false;", play_block)
+        self.assertIn("const initialItem = completedItemById(sourceId);", play_block)
+        self.assertIn("const item = completedItemById(sourceId);", play_block)
+        self.assertLess(
+            play_block.index("await validateMediaForPreview"),
+            play_block.index("const item = completedItemById(sourceId);"),
+        )
         self.assertIn("appendPlaybackFailure", content)
         self.assertIn("playResult.catch(error =>", play_block)
 
@@ -3281,6 +3287,265 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["videoDisplay"], "none")
         self.assertFalse(result["previewHasImage"])
 
+    def test_11eh_pending_playback_delete_invalidates_validation_continuation(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const player = document.getElementById('videoPlayer');
+              const originalPlay = player.play;
+              const originalPause = player.pause;
+              let resolveValidation;
+              let selectedId = '';
+              let playCalls = 0;
+              const actions = [];
+              const metadataPatches = [];
+              const state = {
+                completed_items: [{
+                  id: 'pending-delete',
+                  title: 'Pending Delete',
+                  filename: 'pending-delete.mp4',
+                  local_path: 'D:/pending-delete.mp4',
+                  content_type: 'video'
+                }],
+                settings_snapshot: {}
+              };
+              window.fetch = () => new Promise(resolve => { resolveValidation = resolve; });
+              player.play = () => { playCalls += 1; return Promise.resolve(); };
+              player.pause = () => {};
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => state,
+                  getSelectedCompletedId: () => selectedId,
+                  setSelectedCompletedId: id => { selectedId = String(id || ''); },
+                  patchCompletedMetadata: (id, metadata) => { metadataPatches.push({ id, metadata }); return true; },
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: (action, payload) => {
+                    actions.push({ action, payload });
+                    if (action === 'delete_item') state.completed_items = [];
+                  },
+                  appendLog: () => {},
+                  renderCompletedDetail: () => {}
+                });
+                const pendingPlay = window.UcpPlaybackController.playCompleted('pending-delete');
+                await Promise.resolve();
+                window.UcpPlaybackController.deleteVideo('pending-delete');
+                resolveValidation(new Response('', { status: 206 }));
+                const playResult = await pendingPlay;
+                return {
+                  playResult,
+                  selectedId,
+                  playCalls,
+                  actions,
+                  metadataPatches,
+                  source: player.getAttribute('src'),
+                  videoDisplay: player.style.display,
+                  previewHasImage: Boolean(document.querySelector('#previewArea .preview-image'))
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                player.play = originalPlay;
+                player.pause = originalPause;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertFalse(result["playResult"])
+        self.assertEqual(result["selectedId"], "pending-delete")
+        self.assertEqual(result["playCalls"], 0)
+        self.assertEqual(result["actions"], [{"action": "delete_item", "payload": {"id": "pending-delete"}}])
+        self.assertEqual(result["metadataPatches"], [])
+        self.assertIsNone(result["source"])
+        self.assertEqual(result["videoDisplay"], "none")
+        self.assertFalse(result["previewHasImage"])
+
+    def test_11ei_playback_reloads_item_after_media_validation(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const player = document.getElementById('videoPlayer');
+              const originalPlay = player.play;
+              const originalPause = player.pause;
+              let resolveValidation;
+              let selectedId = '';
+              let playCalls = 0;
+              const state = {
+                completed_items: [{
+                  id: 'removed-during-validation',
+                  title: 'Removed During Validation',
+                  filename: 'removed.mp4',
+                  local_path: 'D:/removed.mp4',
+                  content_type: 'video'
+                }],
+                settings_snapshot: {}
+              };
+              window.fetch = () => new Promise(resolve => { resolveValidation = resolve; });
+              player.play = () => { playCalls += 1; return Promise.resolve(); };
+              player.pause = () => {};
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => state,
+                  getSelectedCompletedId: () => selectedId,
+                  setSelectedCompletedId: id => { selectedId = String(id || ''); },
+                  patchCompletedMetadata: () => false,
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: () => {},
+                  appendLog: () => {},
+                  renderCompletedDetail: () => {}
+                });
+                const pendingPlay = window.UcpPlaybackController.playCompleted('removed-during-validation');
+                await Promise.resolve();
+                state.completed_items = [];
+                resolveValidation(new Response('', { status: 206 }));
+                const playResult = await pendingPlay;
+                return {
+                  playResult,
+                  selectedId,
+                  playCalls,
+                  source: player.getAttribute('src'),
+                  videoDisplay: player.style.display
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                player.play = originalPlay;
+                player.pause = originalPause;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertFalse(result["playResult"])
+        self.assertEqual(result["selectedId"], "removed-during-validation")
+        self.assertEqual(result["playCalls"], 0)
+        self.assertIsNone(result["source"])
+        self.assertEqual(result["videoDisplay"], "none")
+
+    def test_11ej_fullscreen_completion_after_dispose_exits_without_dom_write(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const panel = document.getElementById('previewPanel');
+              const button = document.getElementById('fullscreenBtn');
+              const originalRequestFullscreen = panel.requestFullscreen;
+              const originalExitFullscreen = document.exitFullscreen;
+              const fullscreenDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement');
+              let fullscreenElement = null;
+              let resolveRequest;
+              let exitCalls = 0;
+              const logs = [];
+              Object.defineProperty(document, 'fullscreenElement', {
+                configurable: true,
+                get: () => fullscreenElement
+              });
+              panel.requestFullscreen = () => new Promise(resolve => {
+                resolveRequest = () => {
+                  fullscreenElement = panel;
+                  resolve();
+                };
+              });
+              document.exitFullscreen = () => {
+                exitCalls += 1;
+                fullscreenElement = null;
+                return Promise.resolve();
+              };
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => ({ completed_items: [], settings_snapshot: {} }),
+                  getSelectedCompletedId: () => '',
+                  setSelectedCompletedId: () => {},
+                  patchCompletedMetadata: () => false,
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: () => {},
+                  appendLog: message => { logs.push(String(message)); },
+                  renderCompletedDetail: () => {}
+                });
+                const request = window.UcpPlaybackController.toggleFullscreen();
+                window.UcpPlaybackController.dispose();
+                button.textContent = 'disposed-marker';
+                resolveRequest();
+                if (request && typeof request.then === 'function') await request;
+                await Promise.resolve();
+                return {
+                  exitCalls,
+                  fullscreenActive: fullscreenElement === panel,
+                  buttonText: button.textContent,
+                  panelFullscreenClass: panel.classList.contains('is-fullscreen'),
+                  logs
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                panel.requestFullscreen = originalRequestFullscreen;
+                document.exitFullscreen = originalExitFullscreen;
+                if (fullscreenDescriptor) Object.defineProperty(document, 'fullscreenElement', fullscreenDescriptor);
+                else delete document.fullscreenElement;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["exitCalls"], 1)
+        self.assertFalse(result["fullscreenActive"])
+        self.assertEqual(result["buttonText"], "disposed-marker")
+        self.assertFalse(result["panelFullscreenClass"])
+        self.assertEqual(result["logs"], [])
+
+    def test_11ek_fullscreen_sync_failure_is_reported_without_throwing(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const panel = document.getElementById('previewPanel');
+              const originalRequestFullscreen = panel.requestFullscreen;
+              const logs = [];
+              panel.requestFullscreen = () => { throw new Error('sync fullscreen failure'); };
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => ({ completed_items: [], settings_snapshot: {} }),
+                  getSelectedCompletedId: () => '',
+                  setSelectedCompletedId: () => {},
+                  patchCompletedMetadata: () => false,
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: () => {},
+                  appendLog: message => { logs.push(String(message)); },
+                  renderCompletedDetail: () => {}
+                });
+                let threw = false;
+                try { window.UcpPlaybackController.toggleFullscreen(); } catch (_error) { threw = true; }
+                return { threw, logs };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                panel.requestFullscreen = originalRequestFullscreen;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertFalse(result["threw"])
+        self.assertTrue(any("sync fullscreen failure" in message for message in result["logs"]))
+
     def test_11f_missing_media_validation_keeps_preview_closed(self):
         self._goto_ready()
 
@@ -4471,7 +4736,7 @@ class WebUIBrowserTests(unittest.TestCase):
               const state = {
                 log_items: [{
                   id: "dispose-log",
-                  time: formatLocalDateTime(),
+                  time: "2026-07-10 10:00:00",
                   level: "INFO",
                   source: "GUI",
                   trace_id: "dispose-trace",
