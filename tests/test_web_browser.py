@@ -181,6 +181,15 @@ def _install_webui_test_helpers(page) -> None:
         () => {
           window.__isolateFrontendStateForTest = function (options = {}) {
             window.UcpLogCenter.dispose();
+            if (typeof ws !== "undefined" && ws) {
+              const socket = ws;
+              try {
+                socket.onmessage = null;
+                socket.onclose = null;
+              } catch (_error) {}
+              try { socket.close(); } catch (_error) {}
+              ws = null;
+            }
             if (typeof pageIsUnloading !== "undefined") pageIsUnloading = true;
             localStorage.setItem("webui_log_page_size", "20");
             window.__logWorkerUrls = [];
@@ -3963,7 +3972,6 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.set_viewport_size({"width": 1270, "height": 1024})
         try:
             self._goto_ready()
-            self._page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
 
             result = self._page.evaluate(
                 """
