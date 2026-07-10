@@ -7,6 +7,9 @@
     currentPlayingId: "",
     isFullscreenMode: false,
     imageAutoAdvanceTimer: null,
+    fullscreenRunOwner: null,
+    fullscreenRequest: null,
+    fullscreenOwner: null,
     ownedListeners: [],
     mediaControlsInstalled: false,
     disposed: true,
@@ -21,6 +24,9 @@
     state.currentPlayingId = "";
     state.isFullscreenMode = false;
     state.imageAutoAdvanceTimer = null;
+    state.fullscreenRunOwner = { generation: state.generation };
+    state.fullscreenRequest = null;
+    state.fullscreenOwner = state.fullscreenRunOwner;
     state.ownedListeners = [];
     state.mediaControlsInstalled = false;
     state.disposed = false;
@@ -159,10 +165,10 @@
     return playbackStateService().imageAutoAdvanceIntervalMs(currentState());
   }
 
-  function clearImageAutoAdvanceTimer() {
-    if (state.imageAutoAdvanceTimer === null) return;
-    clearTimeout(state.imageAutoAdvanceTimer);
-    state.imageAutoAdvanceTimer = null;
+  function clearImageAutoAdvanceTimer(timer = state.imageAutoAdvanceTimer) {
+    if (!timer || state.imageAutoAdvanceTimer !== timer) return;
+    clearTimeout(timer.id);
+    if (state.imageAutoAdvanceTimer === timer) state.imageAutoAdvanceTimer = null;
   }
 
   function scheduleImageAutoAdvance(id) {
@@ -170,7 +176,10 @@
     if (!id || shouldManualSwitchImages()) return;
     const generation = state.generation;
     const operation = state.operation;
-    state.imageAutoAdvanceTimer = setTimeout(() => {
+    const timer = { id: null, generation, operation, sourceId: String(id) };
+    state.imageAutoAdvanceTimer = timer;
+    timer.id = setTimeout(() => {
+      if (state.imageAutoAdvanceTimer !== timer) return;
       state.imageAutoAdvanceTimer = null;
       if (isCurrentOperation(generation, operation, id)) autoplayNextPreview();
     }, imageAutoAdvanceIntervalMs());
@@ -554,7 +563,8 @@
     updateFullscreenButtonState();
   }
 
-  function exitFullscreenSafely() {
+  function exitFullscreenSafely(owner = state.fullscreenOwner) {
+    if (!owner || state.fullscreenOwner !== owner) return Promise.resolve(false);
     if (typeof document.exitFullscreen !== "function") return Promise.resolve(false);
     try {
       const result = document.exitFullscreen();
@@ -571,22 +581,32 @@
     const generation = state.generation;
     const operation = state.operation;
     if (document.fullscreenElement === panel) {
-      return exitFullscreenSafely();
+      return exitFullscreenSafely(state.fullscreenOwner);
     }
+    const requestToken = { generation, operation, owner: state.fullscreenRunOwner };
+    state.fullscreenRequest = requestToken;
+    state.fullscreenOwner = requestToken;
     let request;
     try {
       request = panel.requestFullscreen();
     } catch (error) {
+      if (state.fullscreenRequest === requestToken) state.fullscreenRequest = null;
+      if (state.fullscreenOwner === requestToken) state.fullscreenOwner = requestToken.owner;
       if (isCurrentOperation(generation, operation)) appendLog(error.message || String(error));
       return Promise.resolve(false);
     }
     return Promise.resolve(request).then(
       () => {
-        if (isCurrentOperation(generation, operation)) return true;
-        if (document.fullscreenElement === panel) return exitFullscreenSafely();
+        if (state.fullscreenRequest === requestToken) state.fullscreenRequest = null;
+        if (isCurrentOperation(generation, operation) && state.fullscreenOwner === requestToken) return true;
+        if (state.fullscreenOwner === requestToken && document.fullscreenElement === panel) {
+          return exitFullscreenSafely(requestToken);
+        }
         return false;
       },
       error => {
+        if (state.fullscreenRequest === requestToken) state.fullscreenRequest = null;
+        if (state.fullscreenOwner === requestToken) state.fullscreenOwner = requestToken.owner;
         if (isCurrentOperation(generation, operation)) appendLog(error.message || String(error));
         return false;
       },
@@ -597,7 +617,7 @@
     if (state.disposed || !event || event.key !== "Escape") return false;
     const panel = byId("previewPanel");
     if (!state.isFullscreenMode || document.fullscreenElement !== panel) return false;
-    void exitFullscreenSafely();
+    void exitFullscreenSafely(state.fullscreenOwner);
     return true;
   }
 
@@ -664,16 +684,13 @@
     }
     const panel = lookup("previewPanel");
     if (panel) panel.classList.remove("is-fullscreen");
-    if (panel && document.fullscreenElement === panel && typeof document.exitFullscreen === "function") {
-      try {
-        const result = document.exitFullscreen();
-        if (result && typeof result.catch === "function") result.catch(() => {});
-      } catch (_error) {}
+    const fullscreenOwner = state.fullscreenOwner;
+    if (panel && document.fullscreenElement === panel && fullscreenOwner) {
+      void exitFullscreenSafely(fullscreenOwner);
     }
     state.currentPlayingId = "";
     state.pendingSourceId = "";
     state.isFullscreenMode = false;
-    state.imageAutoAdvanceTimer = null;
     dependencies = Object.freeze({});
   }
 

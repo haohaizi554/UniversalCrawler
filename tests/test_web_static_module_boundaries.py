@@ -78,6 +78,17 @@ def test_list_pages_owns_paging_worker_and_four_state_renderers() -> None:
         assert f"function render{name}() {{ return listPagesService().render{name}(); }}" in app
 
 
+def test_list_pages_owns_copy_diagnostics_action() -> None:
+    module = (STATIC_DIR / "list_pages.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "async function copyDiagnostics" in module
+    assert "copyDiagnostics," in module.split("window.UcpListPages = Object.freeze({", 1)[1]
+    assert "function copyDiagnostics(id) { return listPagesService().copyDiagnostics(id); }" in app
+    wrapper = app.split("function copyDiagnostics(id)", 1)[1].split("function appendLog", 1)[0]
+    assert "fetch(" not in wrapper
+    assert "navigator.clipboard" not in wrapper
+
+
 def test_settings_and_dialog_controllers_own_their_handlers() -> None:
     settings = (STATIC_DIR / "settings_controller.js").read_text(encoding="utf-8")
     dialogs = (STATIC_DIR / "dialog_controller.js").read_text(encoding="utf-8")

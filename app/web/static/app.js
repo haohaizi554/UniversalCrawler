@@ -97,6 +97,12 @@ function listPageDependencies() {
     escAttr,
     byId,
     frontendAction,
+    request: (url, options) => fetch(url, options),
+    writeClipboard: text => {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") return Promise.resolve(false);
+      return navigator.clipboard.writeText(String(text ?? "")).then(() => true);
+    },
+    appendUiLog,
     playCompleted: id => playbackControllerService().playCompleted(id),
     renderStatus: () => {
       renderStatus();
@@ -1108,17 +1114,7 @@ function openDirectory(id) {
   frontendAction("open_directory", { id });
 }
 
-function copyDiagnostics(id) {
-  fetch("/api/frontend/action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "copy_diagnostics", payload: { id } }),
-  }).then(response => response.json()).then(result => {
-    const text = result.data && result.data.text ? result.data.text : "";
-    if (text && navigator.clipboard) navigator.clipboard.writeText(text);
-    appendUiLog(text ? "Trace ID 已复制" : "未找到 Trace ID");
-  });
-}
+function copyDiagnostics(id) { return listPagesService().copyDiagnostics(id); }
 
 function appendLog(message) {
   const now = formatLocalDateTime();

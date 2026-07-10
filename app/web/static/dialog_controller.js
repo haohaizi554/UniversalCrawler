@@ -8,6 +8,7 @@
     generation: 0,
     directorySequence: 0,
     focusHandle: null,
+    ownedListeners: [],
     disposed: true,
   };
 
@@ -20,6 +21,8 @@
     state.dirParentPath = "";
     state.generation += 1;
     state.directorySequence = 0;
+    state.focusHandle = null;
+    state.ownedListeners = [];
     state.disposed = false;
     return window.UcpDialogController;
   }
@@ -62,10 +65,9 @@
     return isCurrentGeneration(generation) && state.directorySequence === sequence;
   }
 
-  function cancelScheduledFocus() {
-    const handle = state.focusHandle;
+  function cancelScheduledFocus(handle = state.focusHandle) {
+    if (!handle || state.focusHandle !== handle) return;
     state.focusHandle = null;
-    if (!handle) return;
     if (handle.kind === "frame" && typeof window.cancelAnimationFrame === "function") {
       window.cancelAnimationFrame(handle.id);
       return;
@@ -77,16 +79,36 @@
     cancelScheduledFocus();
     if (!element) return;
     const generation = state.generation;
+    const handle = { kind: "", id: null, generation };
     const callback = () => {
+      if (state.focusHandle !== handle) return;
       state.focusHandle = null;
       if (!isCurrentGeneration(generation) || (typeof isVisible === "function" && !isVisible())) return;
       element.focus({ preventScroll: true });
     };
     if (typeof window.requestAnimationFrame === "function") {
-      state.focusHandle = { kind: "frame", id: window.requestAnimationFrame(callback) };
+      handle.kind = "frame";
+      state.focusHandle = handle;
+      handle.id = window.requestAnimationFrame(callback);
     } else {
-      state.focusHandle = { kind: "timer", id: setTimeout(callback, 0) };
+      handle.kind = "timer";
+      state.focusHandle = handle;
+      handle.id = setTimeout(callback, 0);
     }
+  }
+
+  function addOwnedListener(target, type, handler, options) {
+    if (!target || typeof target.addEventListener !== "function") return;
+    if (state.ownedListeners.some(listener => listener.target === target && listener.type === type && listener.handler === handler)) return;
+    target.addEventListener(type, handler, options);
+    state.ownedListeners.push({ target, type, handler, options });
+  }
+
+  function detachOwnedListeners() {
+    for (const listener of state.ownedListeners) {
+      listener.target.removeEventListener(listener.type, listener.handler, listener.options);
+    }
+    state.ownedListeners = [];
   }
 
   function patchSetting(group, key, value) {
@@ -112,34 +134,37 @@
     });
   }
 
-  function installDirDialogHandlers() {
-    const input = byId("dirInput");
-    if (input && !input.dataset.bound) {
-      input.dataset.bound = "true";
-      input.addEventListener("keydown", event => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          dirBrowsePath();
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          cancelDirDialog();
-        }
-      });
+  function handleDirInputKeydown(event) {
+    if (state.disposed) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void dirBrowsePath();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelDirDialog();
     }
+  }
+
+  function handleDirListClick(event) {
+    if (state.disposed) return;
+    const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
+    if (!button) return;
+    selectDirPath(button.dataset.dirPath || "");
+  }
+
+  function handleDirListDoubleClick(event) {
+    if (state.disposed) return;
+    const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
+    if (!button) return;
+    void dirLoadPath(button.dataset.dirPath || "");
+  }
+
+  function installDirDialogHandlers() {
+    addOwnedListener(byId("dirInput"), "keydown", handleDirInputKeydown);
     for (const id of ["dirList", "dirDrivesList"]) {
       const list = byId(id);
-      if (!list || list.dataset.bound) continue;
-      list.dataset.bound = "true";
-      list.addEventListener("click", event => {
-        const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
-        if (!button) return;
-        selectDirPath(button.dataset.dirPath || "");
-      });
-      list.addEventListener("dblclick", event => {
-        const button = event.target && event.target.closest ? event.target.closest("[data-dir-path]") : null;
-        if (!button) return;
-        dirLoadPath(button.dataset.dirPath || "");
-      });
+      addOwnedListener(list, "click", handleDirListClick);
+      addOwnedListener(list, "dblclick", handleDirListDoubleClick);
     }
   }
 
@@ -542,6 +567,7 @@
     state.generation += 1;
     state.directorySequence += 1;
     cancelScheduledFocus();
+    detachOwnedListeners();
     state.selectionItems = [];
     state.dirCurrentPath = "";
     state.dirSelectedPath = "";

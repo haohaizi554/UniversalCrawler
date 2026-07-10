@@ -2998,6 +2998,148 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["status"], result["statusAtDispose"])
         self.assertEqual(result["listText"], "")
 
+    def test_11ebb_dialog_directory_listeners_are_owned_and_disposed(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const input = document.getElementById('dirInput');
+              const list = document.getElementById('dirList');
+              const errors = [];
+              const rejections = [];
+              let fetchCalls = 0;
+              const onError = event => { errors.push(String(event.error || event.message || 'error')); event.preventDefault(); };
+              const onRejection = event => { rejections.push(String(event.reason || 'rejection')); event.preventDefault(); };
+              const nextTask = () => new Promise(resolve => {
+                const channel = new MessageChannel();
+                channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+                channel.port2.postMessage(null);
+              });
+              const configure = () => window.UcpDialogController.configure({
+                getState: () => ({ settings_snapshot: {} }),
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: () => {},
+                sendWS: () => {},
+                appendUiLog: () => {}
+              });
+              window.addEventListener('error', onError);
+              window.addEventListener('unhandledrejection', onRejection);
+              window.fetch = () => {
+                fetchCalls += 1;
+                return Promise.resolve({
+                  ok: true,
+                  status: 200,
+                  json: () => Promise.resolve({ current: 'D:/active', parent: 'D:/', drives: [], subdirs: [] })
+                });
+              };
+              try {
+                configure();
+                window.UcpDialogController.installDirectoryHandlers();
+                window.UcpDialogController.installDirectoryHandlers();
+                configure();
+                window.UcpDialogController.installDirectoryHandlers();
+                window.UcpDialogController.installDirectoryHandlers();
+
+                input.value = 'D:/active';
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                await nextTask();
+                const callsWhileActive = fetchCalls;
+
+                window.UcpDialogController.dispose();
+                window.UcpDialogController.dispose();
+                const button = document.createElement('button');
+                button.dataset.dirPath = 'D:/disposed';
+                list.replaceChildren(button);
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                button.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+                await nextTask();
+
+                return { callsWhileActive, callsAfterDispose: fetchCalls, errors, rejections };
+              } finally {
+                window.UcpDialogController.dispose();
+                window.fetch = originalFetch;
+                window.removeEventListener('error', onError);
+                window.removeEventListener('unhandledrejection', onRejection);
+                if (typeof configureDialogControllerHelpers === 'function') configureDialogControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["callsWhileActive"], 1)
+        self.assertEqual(result["callsAfterDispose"], 1)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["rejections"], [])
+
+    def test_11ebc_stale_focus_callback_cannot_clear_current_run_handle(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const originalRequestAnimationFrame = window.requestAnimationFrame;
+              const originalCancelAnimationFrame = window.cancelAnimationFrame;
+              const confirm = document.getElementById('associationConfirmBtn');
+              const originalFocus = confirm.focus.bind(confirm);
+              const frames = [];
+              const cancelled = [];
+              let focusCalls = 0;
+              const configure = () => window.UcpDialogController.configure({
+                getState: () => ({ settings_snapshot: {} }),
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId: id => document.getElementById(id),
+                frontendAction: () => {},
+                sendWS: () => {},
+                appendUiLog: () => {}
+              });
+              window.requestAnimationFrame = callback => {
+                const frame = { id: frames.length + 1, callback };
+                frames.push(frame);
+                return frame.id;
+              };
+              window.cancelAnimationFrame = id => { cancelled.push(id); };
+              confirm.focus = () => { focusCalls += 1; };
+              try {
+                configure();
+                window.UcpDialogController.showAssociation();
+                const frameA = frames.at(-1);
+                configure();
+                window.UcpDialogController.showAssociation();
+                const frameB = frames.at(-1);
+
+                frameA.callback();
+                window.UcpDialogController.dispose();
+                window.UcpDialogController.dispose();
+                frameB.callback();
+
+                return {
+                  staleFrameCancelled: cancelled.includes(frameA.id),
+                  currentFrameCancelled: cancelled.includes(frameB.id),
+                  focusCalls
+                };
+              } finally {
+                window.UcpDialogController.dispose();
+                window.requestAnimationFrame = originalRequestAnimationFrame;
+                window.cancelAnimationFrame = originalCancelAnimationFrame;
+                confirm.focus = originalFocus;
+                if (typeof configureDialogControllerHelpers === 'function') configureDialogControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["staleFrameCancelled"])
+        self.assertTrue(result["currentFrameCancelled"])
+        self.assertEqual(result["focusCalls"], 0)
+
     def test_11ec_dialog_reconfigure_ignores_old_json_continuation(self):
         self._goto_ready()
 
@@ -3243,6 +3385,161 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertEqual(result["metadataPatches"], [])
         self.assertFalse(any("old-video" in message or "文件不存在" in message for message in result["logs"]))
         self.assertIsNone(result["source"])
+
+    def test_11efa_stale_image_timer_cannot_clear_current_run_timer(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const originalSetTimeout = window.setTimeout;
+              const originalClearTimeout = window.clearTimeout;
+              const timers = [];
+              const cleared = [];
+              const selections = [];
+              const item = id => ({
+                id,
+                title: id,
+                filename: `${id}.png`,
+                local_path: `D:/${id}.png`,
+                content_type: 'image'
+              });
+              const configure = ids => window.UcpPlaybackController.configure({
+                getState: () => ({
+                  completed_items: ids.map(item),
+                  settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': { manual_image_switch: false, image_auto_advance_interval_seconds: 1 } }
+                }),
+                getSelectedCompletedId: () => selections.at(-1) || '',
+                setSelectedCompletedId: id => { selections.push(String(id || '')); },
+                patchCompletedMetadata: () => false,
+                t: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                esc,
+                frontendAction: () => {},
+                appendLog: () => {},
+                renderCompletedDetail: () => {}
+              });
+              window.fetch = () => Promise.resolve(new Response('', { status: 206 }));
+              window.setTimeout = callback => {
+                const timer = { id: timers.length + 1, callback };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = id => { cleared.push(id); };
+              try {
+                configure(['image-a', 'image-a-next']);
+                await window.UcpPlaybackController.playCompleted('image-a');
+                const timerA = timers.at(-1);
+
+                configure(['image-b', 'image-b-next']);
+                await window.UcpPlaybackController.playCompleted('image-b');
+                const timerB = timers.at(-1);
+
+                timerA.callback();
+                window.UcpPlaybackController.rescheduleImageAutoAdvance();
+                const replacementB = timers.at(-1);
+                const timerBWasOwned = cleared.includes(timerB.id);
+                window.UcpPlaybackController.dispose();
+
+                return {
+                  timerBWasOwned,
+                  replacementDisposed: cleared.includes(replacementB.id),
+                  selections
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["timerBWasOwned"])
+        self.assertTrue(result["replacementDisposed"])
+        self.assertEqual(result["selections"], ["image-a", "image-b"])
+
+    def test_11efb_stale_fullscreen_request_cannot_exit_current_run_fullscreen(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const panel = document.getElementById('previewPanel');
+              const originalRequestFullscreen = panel.requestFullscreen;
+              const originalExitFullscreen = document.exitFullscreen;
+              const fullscreenDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement');
+              const requests = [];
+              let fullscreenElement = null;
+              let exitCalls = 0;
+              const configure = () => window.UcpPlaybackController.configure({
+                getState: () => ({ completed_items: [], settings_snapshot: {} }),
+                getSelectedCompletedId: () => '',
+                setSelectedCompletedId: () => {},
+                patchCompletedMetadata: () => false,
+                t: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                esc,
+                frontendAction: () => {},
+                appendLog: () => {},
+                renderCompletedDetail: () => {}
+              });
+              Object.defineProperty(document, 'fullscreenElement', {
+                configurable: true,
+                get: () => fullscreenElement
+              });
+              panel.requestFullscreen = () => new Promise(resolve => {
+                requests.push(() => {
+                  fullscreenElement = panel;
+                  resolve();
+                });
+              });
+              document.exitFullscreen = () => {
+                exitCalls += 1;
+                fullscreenElement = null;
+                return Promise.resolve();
+              };
+              try {
+                configure();
+                const requestA = window.UcpPlaybackController.toggleFullscreen();
+                configure();
+                const requestB = window.UcpPlaybackController.toggleFullscreen();
+
+                requests[1]();
+                await requestB;
+                requests[0]();
+                await requestA;
+                const afterStaleA = {
+                  active: fullscreenElement === panel,
+                  exitCalls
+                };
+
+                window.UcpPlaybackController.dispose();
+                await Promise.resolve();
+                return {
+                  afterStaleA,
+                  activeAfterDispose: fullscreenElement === panel,
+                  exitCalls
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                panel.requestFullscreen = originalRequestFullscreen;
+                document.exitFullscreen = originalExitFullscreen;
+                if (fullscreenDescriptor) Object.defineProperty(document, 'fullscreenElement', fullscreenDescriptor);
+                else delete document.fullscreenElement;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["afterStaleA"]["active"])
+        self.assertEqual(result["afterStaleA"]["exitCalls"], 0)
+        self.assertFalse(result["activeAfterDispose"])
+        self.assertEqual(result["exitCalls"], 1)
 
     def test_11eg_playback_controller_dispose_is_idempotent_and_cancels_image_advance(self):
         self._goto_ready()
@@ -5113,6 +5410,118 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["fallbackRendered"])
         self.assertTrue(result["allFallbacksCancelled"])
         self.assertFalse(result["staleFallbackRows"])
+
+    def test_13ga_list_pages_copy_diagnostics_handles_success_failures_and_stale_responses(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const baseDependencies = {
+                getState: () => ({ failed_items: [] }),
+                getSelection: () => '',
+                setSelection: () => {},
+                t: value => String(value || ''),
+                esc,
+                escAttr,
+                byId,
+                frontendAction: () => {},
+                playCompleted: () => {},
+                renderStatus: () => {}
+              };
+              const configure = overrides => window.UcpListPages.configure({ ...baseDependencies, ...overrides });
+              const response = (status, data) => ({
+                ok: status >= 200 && status < 300,
+                status,
+                json: () => Promise.resolve(data)
+              });
+
+              const success = { requests: [], clipboard: [], logs: [] };
+              configure({
+                request: (url, options) => {
+                  success.requests.push({ url, options });
+                  return Promise.resolve(response(200, { data: { text: 'trace-success' } }));
+                },
+                writeClipboard: text => { success.clipboard.push(text); return Promise.resolve(true); },
+                appendUiLog: (label, detail, prefix) => { success.logs.push({ label, detail, prefix }); }
+              });
+              success.returned = await window.UcpListPages.copyDiagnostics('failed-success');
+
+              const http = { clipboard: [], logs: [] };
+              configure({
+                request: () => Promise.resolve(response(503, { error: 'service unavailable' })),
+                writeClipboard: text => { http.clipboard.push(text); return Promise.resolve(true); },
+                appendUiLog: (label, detail, prefix) => { http.logs.push({ label, detail, prefix }); }
+              });
+              http.returned = await window.UcpListPages.copyDiagnostics('failed-http');
+
+              const network = { clipboard: [], logs: [] };
+              configure({
+                request: () => Promise.reject(new Error('offline network')),
+                writeClipboard: text => { network.clipboard.push(text); return Promise.resolve(true); },
+                appendUiLog: (label, detail, prefix) => { network.logs.push({ label, detail, prefix }); }
+              });
+              network.returned = await window.UcpListPages.copyDiagnostics('failed-network');
+
+              let resolveOldRequest;
+              const stale = { clipboard: [], logs: [] };
+              configure({
+                request: () => new Promise(resolve => { resolveOldRequest = resolve; }),
+                writeClipboard: text => { stale.clipboard.push(text); return Promise.resolve(true); },
+                appendUiLog: (label, detail, prefix) => { stale.logs.push({ label, detail, prefix }); }
+              });
+              const oldOperation = window.UcpListPages.copyDiagnostics('failed-stale');
+
+              const current = { clipboard: [], logs: [] };
+              configure({
+                request: () => Promise.resolve(response(200, { data: { text: 'trace-current' } })),
+                writeClipboard: text => { current.clipboard.push(text); return Promise.resolve(true); },
+                appendUiLog: (label, detail, prefix) => { current.logs.push({ label, detail, prefix }); }
+              });
+              resolveOldRequest(response(200, { data: { text: 'trace-stale' } }));
+              stale.returned = await oldOperation;
+              current.returned = await window.UcpListPages.copyDiagnostics('failed-current');
+              window.UcpListPages.dispose();
+              window.UcpListPages.dispose();
+
+              return {
+                success: {
+                  returned: success.returned,
+                  url: success.requests[0]?.url,
+                  method: success.requests[0]?.options?.method,
+                  body: JSON.parse(success.requests[0]?.options?.body || '{}'),
+                  clipboard: success.clipboard,
+                  logs: success.logs
+                },
+                http,
+                network,
+                stale,
+                current
+              };
+            }
+            """
+        )
+
+        self.assertTrue(result["success"]["returned"])
+        self.assertEqual(result["success"]["url"], "/api/frontend/action")
+        self.assertEqual(result["success"]["method"], "POST")
+        self.assertEqual(
+            result["success"]["body"],
+            {"action": "copy_diagnostics", "payload": {"id": "failed-success"}},
+        )
+        self.assertEqual(result["success"]["clipboard"], ["trace-success"])
+        self.assertEqual(len(result["success"]["logs"]), 1)
+        self.assertFalse(result["http"]["returned"])
+        self.assertEqual(result["http"]["clipboard"], [])
+        self.assertTrue(any("HTTP 503" in str(entry.get("detail", "")) for entry in result["http"]["logs"]))
+        self.assertFalse(result["network"]["returned"])
+        self.assertEqual(result["network"]["clipboard"], [])
+        self.assertTrue(any("offline network" in str(entry.get("detail", "")) for entry in result["network"]["logs"]))
+        self.assertFalse(result["stale"]["returned"])
+        self.assertEqual(result["stale"]["clipboard"], [])
+        self.assertEqual(result["stale"]["logs"], [])
+        self.assertTrue(result["current"]["returned"])
+        self.assertEqual(result["current"]["clipboard"], ["trace-current"])
 
     def test_13h_completed_reconciliation_preserves_global_selection_until_explicit_select(self):
         self._goto_ready()

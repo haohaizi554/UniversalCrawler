@@ -15,6 +15,7 @@
     fallbackTimers: { queue: null, completed: null, failed: null },
     rowSignatures: Object.create(null),
     htmlSignatures: Object.create(null),
+    diagnosticsOperation: 0,
     generation: 0,
     disposed: true,
   };
@@ -34,6 +35,7 @@
     state.fallbackTimers = { queue: null, completed: null, failed: null };
     state.rowSignatures = Object.create(null);
     state.htmlSignatures = Object.create(null);
+    state.diagnosticsOperation = 0;
     state.generation += 1;
     state.disposed = false;
     return window.UcpListPages;
@@ -557,6 +559,41 @@
     setHtmlIfChanged("failedSolutions", taskRenderService().failedSolutionsHtml(item));
   }
 
+  function isCurrentDiagnosticsOperation(generation, operation) {
+    return !state.disposed && state.generation === generation && state.diagnosticsOperation === operation;
+  }
+
+  async function copyDiagnostics(id) {
+    const generation = state.generation;
+    const operation = ++state.diagnosticsOperation;
+    try {
+      const response = await requireDependency("request")("/api/frontend/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "copy_diagnostics", payload: { id } }),
+      });
+      if (!isCurrentDiagnosticsOperation(generation, operation)) return false;
+      if (!response || !response.ok) throw new Error(`HTTP ${response ? response.status : "unknown"}`);
+      const result = await response.json();
+      if (!isCurrentDiagnosticsOperation(generation, operation)) return false;
+      const text = String((result.data && result.data.text) || "");
+      if (!text) {
+        requireDependency("appendUiLog")("未找到 Trace ID");
+        return false;
+      }
+      const copied = await requireDependency("writeClipboard")(text);
+      if (!isCurrentDiagnosticsOperation(generation, operation)) return false;
+      if (copied === false) throw new Error("clipboard unavailable");
+      requireDependency("appendUiLog")("Trace ID 已复制");
+      return true;
+    } catch (error) {
+      if (isCurrentDiagnosticsOperation(generation, operation)) {
+        requireDependency("appendUiLog")("复制诊断信息失败", error && (error.message || String(error)), "❌ ");
+      }
+      return false;
+    }
+  }
+
   function navigationOrder() {
     return Array.from(document.querySelectorAll("#queueBody tr[data-id]"))
       .map(row => String((row.dataset && row.dataset.id) || ""))
@@ -567,6 +604,7 @@
     if (state.disposed) return;
     state.disposed = true;
     state.generation += 1;
+    state.diagnosticsOperation += 1;
     PAGED_LISTS.forEach(pageKey => {
       state.sequences[pageKey] = (Number(state.sequences[pageKey]) || 0) + 1;
       state.currentRequests[pageKey] = null;
@@ -599,6 +637,7 @@
     renderActiveDetail,
     renderCompletedDetail,
     renderFailedDetail,
+    copyDiagnostics,
     navigationOrder,
     dispose,
   });
