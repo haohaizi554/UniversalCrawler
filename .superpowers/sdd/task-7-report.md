@@ -20,6 +20,10 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
   `TypeError: runtime.scheduleDelta is not a function`.
 - Review RED reproduced all four missing `window` compatibility functions and
   verified that the browser could not call `window.fetchFrontendState`.
+- Second-review RED reproduced stale timer A clearing run-two timer B before
+  generation validation, so scheduling C did not cancel B and B+C both fetched.
+- The same identity-order audit reproduced stale reconnect and render callbacks
+  releasing the current run's shared handles.
 
 ## GREEN
 
@@ -35,6 +39,11 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
   359 passed, 1 deselected in 71.44s.
 - Review brief focused suite without exclusion: 359 passed, 1 known failure in
   86.44s.
+- Second-review runtime lifecycle and module tests: 17 passed.
+- Second-review brief focused suite, excluding the deferred Task 8 test:
+  360 passed, 1 deselected in 62.94s.
+- Second-review brief focused suite without exclusion: 360 passed, 1 known
+  failure in 69.73s.
 - `node --check app/web/static/frontend_runtime.js`: passed.
 - `node --check app/web/static/app.js`: passed.
 - `git diff --check`: passed.
@@ -56,6 +65,11 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
 - Added explicit one-line `window.fetchFrontendState`,
   `window.fetchFrontendDelta`, `window.scheduleRenderSections`, and
   `window.sendWS` compatibility delegates.
+- Replaced raw delayed-delta and reconnect timer handles with per-schedule token
+  objects; callbacks now verify shared-token identity before clearing handles or
+  evaluating generation/sequence.
+- Added render-frame identity checks so a cancelled old frame cannot release a
+  newer run's frame and break section coalescing.
 - Kept state replacement behind injected `getState`/`replaceState`; runtime does
   not declare or retain a second `frontendState` snapshot.
 - Added one guarded `configureFeatureModules()` call in `DOMContentLoaded`, then
@@ -68,7 +82,7 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
 ## Size
 
 - `app/web/static/app.js`: 57,118 bytes (limit: 100,000 bytes).
-- `app/web/static/frontend_runtime.js`: 20,102 bytes.
+- `app/web/static/frontend_runtime.js`: 20,571 bytes.
 
 ## Risks
 
@@ -84,3 +98,4 @@ Complete. `frontend_runtime.js` owns frontend transport and lifecycle work, whil
 
 - `2c595345` - `refactor(web): reduce app entry to composition root`
 - `b323ebf4` - `fix(web): guard frontend runtime freshness`
+- `bbd0df42` - `fix(web): preserve runtime timer identity`
