@@ -4204,14 +4204,18 @@ class WebUIBrowserTests(unittest.TestCase):
             "global": "completed-explicit",
         })
 
-    def test_13i_list_pages_ignore_stale_typed_errors_and_handle_current_error(self):
+    def test_13i_list_pages_worker_onerror_keeps_worker_and_guards_fallback(self):
         self._goto_ready()
 
         result = self._page.evaluate(
             """
             () => {
               const nativeWorker = window.Worker;
+              const nativeSetTimeout = window.setTimeout;
+              const nativeClearTimeout = window.clearTimeout;
               const workers = [];
+              const timers = [];
+              const clearedTimers = [];
               const selection = { active: "", completed: "", failed: "", queue: "" };
               const state = {
                 settings_snapshot: {},
@@ -4231,6 +4235,14 @@ class WebUIBrowserTests(unittest.TestCase):
                 postMessage(request) { this.requests.push(request); }
                 terminate() { this.terminateCalls += 1; }
                 emit(payload) { this.onmessage?.({ data: payload }); }
+                fail() {
+                  const event = {
+                    defaultPrevented: false,
+                    preventDefault() { this.defaultPrevented = true; }
+                  };
+                  this.onerror?.(event);
+                  return event;
+                }
               }
 
               const configure = () => window.UcpListPages.configure({
@@ -4258,56 +4270,59 @@ class WebUIBrowserTests(unittest.TestCase):
               });
 
               window.Worker = ControlledWorker;
+              window.setTimeout = callback => {
+                const timer = { id: timers.length + 1, callback };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = timerId => { clearedTimers.push(timerId); };
               window.UcpListPages.dispose();
               try {
                 configure();
+                document.getElementById("completedBody").innerHTML = "";
                 window.UcpListPages.renderCompleted();
                 const worker = workers[0];
-                const oldRequest = worker.requests[0];
+                const errorEvent = worker.fail();
+                const fallbacksAfterError = timers.slice();
+                const workerStayedUsable = worker.terminateCalls === 0;
 
                 state.completed_items = [{ id: "completed-current", title: "Completed current", format: "MP4" }];
                 window.UcpListPages.renderCompleted();
-                const currentRequest = worker.requests[1];
-                worker.emit({
-                  type: "error",
-                  pageKey: "completed",
-                  sequence: oldRequest.sequence,
-                  message: "stale failure"
-                });
-                const staleErrorIgnored = worker.terminateCalls === 0;
+                const newerRequest = worker.requests[1] || null;
+                const staleFallback = fallbacksAfterError[0] || null;
+                if (staleFallback) staleFallback.callback();
+                const staleFallbackIgnored = selection.completed === ""
+                  && document.querySelector("#completedBody tr[data-id]") === null;
 
-                worker.emit(resultFor(currentRequest, state.completed_items[0]));
-                const newerResultRendered = selection.completed === "completed-current"
-                  && document.querySelector("#completedBody tr.selected")?.dataset.id === "completed-current";
-
-                state.completed_items = [{ id: "completed-fallback", title: "Completed fallback", format: "MP4" }];
-                window.UcpListPages.renderCompleted();
-                const latestRequest = worker.requests[2];
-                worker.emit({
-                  type: "error",
-                  pageKey: "completed",
-                  sequence: latestRequest.sequence,
-                  message: "current failure"
-                });
-
+                if (newerRequest) worker.emit(resultFor(newerRequest, state.completed_items[0]));
                 return {
-                  staleErrorIgnored,
-                  newerResultRendered,
-                  currentErrorTerminatedWorker: worker.terminateCalls === 1
+                  errorPrevented: errorEvent.defaultPrevented,
+                  workerStayedUsable,
+                  onlyCurrentFallbackScheduled: fallbacksAfterError.length === 1,
+                  staleFallbackCancelled: Boolean(staleFallback && clearedTimers.includes(staleFallback.id)),
+                  staleFallbackIgnored,
+                  newerRequestPosted: Boolean(newerRequest),
+                  newerResultRendered: selection.completed === "completed-current"
+                    && document.querySelector("#completedBody tr.selected")?.dataset.id === "completed-current"
                 };
               } finally {
                 window.UcpListPages.dispose();
                 window.Worker = nativeWorker;
+                window.setTimeout = nativeSetTimeout;
+                window.clearTimeout = nativeClearTimeout;
                 if (typeof configureListPagesHelpers === "function") configureListPagesHelpers();
               }
             }
             """
         )
 
-        self.assertTrue(result["staleErrorIgnored"])
+        self.assertTrue(result["errorPrevented"])
+        self.assertTrue(result["workerStayedUsable"])
+        self.assertTrue(result["onlyCurrentFallbackScheduled"])
+        self.assertTrue(result["staleFallbackCancelled"])
+        self.assertTrue(result["staleFallbackIgnored"])
+        self.assertTrue(result["newerRequestPosted"])
         self.assertTrue(result["newerResultRendered"])
-        self.assertTrue(result["currentErrorTerminatedWorker"])
-
     def test_14_keyboard_arrow_navigation(self):
         """方向键应在可见队列行之间切换。"""
         self._goto_ready()

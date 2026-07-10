@@ -11,6 +11,7 @@
     worker: null,
     workerAvailable: false,
     sequences: { queue: 0, completed: 0, failed: 0 },
+    currentRequests: { queue: null, completed: null, failed: null },
     fallbackTimers: { queue: null, completed: null, failed: null },
     rowSignatures: Object.create(null),
     htmlSignatures: Object.create(null),
@@ -29,6 +30,7 @@
     state.failedPageSize = normalizeTablePageSize(localStorage.getItem("webui_failed_page_size") || 20);
     state.workerAvailable = typeof Worker !== "undefined";
     state.sequences = { queue: 0, completed: 0, failed: 0 };
+    state.currentRequests = { queue: null, completed: null, failed: null };
     state.fallbackTimers = { queue: null, completed: null, failed: null };
     state.rowSignatures = Object.create(null);
     state.htmlSignatures = Object.create(null);
@@ -173,33 +175,12 @@
     }
   }
 
-  function disableListPageWorker(worker) {
-    state.workerAvailable = false;
-    closeListPageWorker(worker);
-    renderQueue();
-    renderCompleted();
-    renderFailed();
-  }
-
-  function typedListPageErrorIsCurrent(payload) {
-    const sequence = Number(payload && payload.sequence);
-    if (!Number.isFinite(sequence) || sequence <= 0) return false;
-    const pageKey = String((payload && payload.pageKey) || "");
-    if (pageKey) {
-      return PAGED_LISTS.includes(pageKey)
-        && sequence === Number(state.sequences[pageKey] || 0);
-    }
-    return PAGED_LISTS.filter(key => sequence === Number(state.sequences[key] || 0)).length === 1;
-  }
-
-  function handleTypedListPageError(payload, worker, generation) {
-    if (
-      state.disposed ||
-      generation !== state.generation ||
-      state.worker !== worker ||
-      !typedListPageErrorIsCurrent(payload)
-    ) return;
-    disableListPageWorker(worker);
+  function scheduleCurrentListPageFallbacks() {
+    PAGED_LISTS.forEach(pageKey => {
+      const request = state.currentRequests[pageKey];
+      if (!request || Number(request.sequence) !== Number(state.sequences[pageKey] || 0)) return;
+      scheduleListPageFallback(request);
+    });
   }
 
   function ensureListPageWorker() {
@@ -209,17 +190,11 @@
     try {
       const worker = new Worker("/static/list_page_worker.js?v=20260708-list-page-worker");
       state.worker = worker;
-      worker.onmessage = event => {
-        const payload = event.data || {};
-        if (payload.type === "error") {
-          handleTypedListPageError(payload, worker, generation);
-          return;
-        }
-        applyListPageResult(payload, worker, generation);
-      };
-      worker.onerror = () => {
+      worker.onmessage = event => applyListPageResult(event.data || {}, worker, generation);
+      worker.onerror = event => {
         if (state.disposed || generation !== state.generation || state.worker !== worker) return;
-        disableListPageWorker(worker);
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        scheduleCurrentListPageFallbacks();
       };
     } catch (_error) {
       state.workerAvailable = false;
@@ -256,6 +231,7 @@
       sequence: state.sequences[pageKey],
       ...requestData,
     };
+    state.currentRequests[pageKey] = request;
     const worker = ensureListPageWorker();
     if (worker) {
       worker.postMessage(request);
@@ -268,13 +244,15 @@
     if (
       state.disposed ||
       generation !== state.generation ||
-      state.worker !== worker ||
+      (worker && state.worker !== worker) ||
       !result ||
       result.type !== "page"
     ) return;
     const pageKey = String(result.pageKey || "");
     if (!PAGED_LISTS.includes(pageKey)) return;
     if (Number(result.sequence) !== Number(state.sequences[pageKey] || 0)) return;
+    clearListPageFallback(pageKey);
+    state.currentRequests[pageKey] = null;
     if (pageKey === "queue") {
       applyQueuePageResult(result);
       return;
@@ -591,6 +569,7 @@
     state.generation += 1;
     PAGED_LISTS.forEach(pageKey => {
       state.sequences[pageKey] = (Number(state.sequences[pageKey]) || 0) + 1;
+      state.currentRequests[pageKey] = null;
     });
     clearListPageFallbacks();
     closeListPageWorker();
