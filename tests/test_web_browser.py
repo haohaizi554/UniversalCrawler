@@ -3963,6 +3963,7 @@ class WebUIBrowserTests(unittest.TestCase):
         self._page.set_viewport_size({"width": 1270, "height": 1024})
         try:
             self._goto_ready()
+            self._page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
 
             result = self._page.evaluate(
                 """
