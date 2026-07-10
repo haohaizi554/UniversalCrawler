@@ -180,17 +180,11 @@ def _install_webui_test_helpers(page) -> None:
         """
         () => {
           window.__isolateFrontendStateForTest = function (options = {}) {
-            window.UcpLogCenter.dispose();
-            if (typeof ws !== "undefined" && ws) {
-              const socket = ws;
-              try {
-                socket.onmessage = null;
-                socket.onclose = null;
-              } catch (_error) {}
-              try { socket.close(); } catch (_error) {}
-              ws = null;
-            }
-            if (typeof pageIsUnloading !== "undefined") pageIsUnloading = true;
+            window.UcpFrontendRuntime.dispose();
+            configureListPagesHelpers();
+            configureSettingsControllerHelpers();
+            configureDialogControllerHelpers();
+            configurePlaybackControllerHelpers();
             localStorage.setItem("webui_log_page_size", "20");
             window.__logWorkerUrls = [];
             const NativeWorker = window.Worker;
@@ -588,35 +582,37 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertEqual(content.count("{"), content.count("}"))
 
     def test_high_frequency_events_use_delta_not_full_state_fetch(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
         content = _static_bundle_content()
-        self.assertIn('case "frontend_delta":', content)
-        self.assertIn("function applyFrontendDelta(", content)
+        self.assertIn('case "frontend_delta":', runtime)
+        self.assertIn("function applyFrontendDelta(", runtime)
         self.assertIn("function patchTableRows(", content)
-        high_event_block = content.split('case "item_found":', 1)[1].split('case "select_tasks":', 1)[0]
+        high_event_block = runtime.split('case "item_found":', 1)[1].split('case "frontend_action_result":', 1)[0]
         self.assertNotIn("fetchFrontendState();", high_event_block)
         self.assertIn("applyLegacyFrontendEvent(type, data);", high_event_block)
 
     def test_frontend_delta_uses_batched_section_rendering(self):
-        content = _static_bundle_content()
-        delta_block = content.split("function applyFrontendDelta(delta)", 1)[1].split(
-            "function removeDeletedFromFrontendState",
+        runtime = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "frontend_runtime.js").read_text(encoding="utf-8")
+        delta_block = runtime.split("function applyFrontendDelta(delta", 1)[1].split(
+            "function patchLegacyProgress",
             1,
         )[0]
-        scheduler_block = content.split("function scheduleRenderSections(sections)", 1)[1].split(
-            "function flushRenderSections()",
+        scheduler_block = runtime.split("function scheduleRenderSections(sections)", 1)[1].split(
+            "function flushRenderSections(",
             1,
         )[0]
 
-        self.assertIn("if (changed.length) scheduleRenderSections(changed)", delta_block)
+        self.assertIn("if (uniqueChanged.length) scheduleRenderSections(uniqueChanged)", delta_block)
         self.assertIn("frontendSectionSignature(value)", delta_block)
         self.assertNotIn("changed.length ? changed : [\"all\"]", delta_block)
-        self.assertNotIn("renderAll();", delta_block)
+        self.assertNotIn("dependencies.renderAll", delta_block)
         self.assertIn("scheduleFrame", scheduler_block)
 
     def test_frontend_delta_rejects_stale_or_discontinuous_versions(self):
-        content = _static_bundle_content()
-        delta_block = content.split("function applyFrontendDelta(delta)", 1)[1].split(
-            "function removeDeletedFromFrontendState",
+        runtime = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "frontend_runtime.js").read_text(encoding="utf-8")
+        delta_block = runtime.split("function applyFrontendDelta(delta", 1)[1].split(
+            "function patchLegacyProgress",
             1,
         )[0]
 
@@ -626,20 +622,24 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('appendUiLog("增量状态基线不连续，正在重新同步...")', delta_block)
 
     def test_frontend_delta_updates_icon_manifest_and_rerenders_current_page(self):
-        content = _static_bundle_content()
-        delta_block = content.split("function applyFrontendDelta(delta)", 1)[1].split(
-            "function removeDeletedFromFrontendState",
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
+        app = (static_dir / "app.js").read_text(encoding="utf-8")
+        delta_block = runtime.split("function applyFrontendDelta(delta", 1)[1].split(
+            "function patchLegacyProgress",
             1,
         )[0]
-        flush_block = content.split("function flushRenderSections()", 1)[1].split(
-            "function applyFrontendDelta(delta)",
+        patch_block = app.split("function patchRuntimeSection(section, value)", 1)[1].split(
+            "function runtimeDependencies()",
             1,
         )[0]
+        render_block = app.split("function renderFrontendSections(sections)", 1)[1].split("function setHtmlIfChanged", 1)[0]
 
-        self.assertIn("updateIconManifest(sections.icon_manifest)", delta_block)
-        self.assertIn("changed.push(\"icon_manifest\")", delta_block)
-        self.assertIn('sections.has("icon_manifest")', flush_block)
-        self.assertIn("renderCurrentPage()", flush_block)
+        self.assertIn("patchSection(key, value", delta_block)
+        self.assertIn('section === "icon_manifest"', patch_block)
+        self.assertIn("updateIconManifest(value)", patch_block)
+        self.assertIn('sections.has("icon_manifest")', render_block)
+        self.assertIn("renderCurrentPage()", render_block)
 
     def test_web_page_teardown_closes_ws_and_log_worker(self):
         content = _static_bundle_content()
@@ -654,8 +654,8 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_settings_snapshot_delta_does_not_rerender_non_settings_page(self):
         content = _static_bundle_content()
-        flush_block = content.split("function flushRenderSections()", 1)[1].split(
-            "function applyFrontendDelta(delta)",
+        flush_block = content.split("function renderFrontendSections(sections)", 1)[1].split(
+            "function setHtmlIfChanged",
             1,
         )[0]
 
@@ -665,11 +665,14 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertNotIn('sections.has("settings_snapshot") && currentPage !== "settings"', flush_block)
 
     def test_deleted_delta_clears_stale_selection_state(self):
-        content = _static_bundle_content()
-        remove_block = content.split("function removeDeletedFromFrontendState(ids)", 1)[1].split(
-            "function applyLegacyFrontendEvent",
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
+        app = (static_dir / "app.js").read_text(encoding="utf-8")
+        remove_block = app.split("function removeDeletedSelectionState(ids)", 1)[1].split(
+            "function patchRuntimeSection",
             1,
         )[0]
+        state_block = runtime.split("function removeDeletedFromState(ids", 1)[1].split("function applyFrontendDelta", 1)[0]
 
         self.assertIn("playbackControllerService().prepareDeleteItem(id)", remove_block)
         self.assertIn('for (const key of ["active", "completed", "failed"])', remove_block)
@@ -677,6 +680,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("selectedVideoId = null", remove_block)
         self.assertIn("playbackControllerService().removePlaybackPosition(id)", remove_block)
         self.assertNotIn("currentPlayingId", remove_block)
+        self.assertIn("nextState[section] = (state[section] || []).filter", state_block)
 
     def test_task_pages_reconcile_stale_selection_before_render(self):
         content = _static_bundle_content()
@@ -718,11 +722,13 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("prepareDeleteItem(id);", controller)
 
     def test_start_crawl_validates_platform_and_connection_before_running_state(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
         content = _static_bundle_content()
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
         ui_state_block = content.split("function setCrawlUiState(isRunning)", 1)[1].split("function startCrawl()", 1)[0]
         start_block = content.split("function startCrawl()", 1)[1].split("function stopCrawl()", 1)[0]
-        stop_block = content.split("function stopCrawl()", 1)[1].split("function sendWS", 1)[0]
-        send_block = content.split("function sendWS(type, data)", 1)[1].split("const defaultSendWS", 1)[0]
+        stop_block = content.split("function stopCrawl()", 1)[1].split("let sendWS", 1)[0]
+        send_block = runtime.split("function send(type, data = {})", 1)[1].split("function bindLifecycleListeners", 1)[0]
 
         self.assertIn('const sourceSelect = byId("sourceSelect")', ui_state_block)
         self.assertIn('const countSelect = byId("videoCountSelect")', ui_state_block)
@@ -895,10 +901,13 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_web_log_display_limit_is_applied_to_local_state(self):
         content = _static_bundle_content()
+        app = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("function uiLogDisplayLimit()", content)
         self.assertIn("function trimFrontendLogItems()", content)
         self.assertIn("frontendState.log_items = frontendState.log_items.slice(-limit);", content)
-        self.assertIn("if (trimFrontendLogItems() && !changed.includes(\"log_items\")) changed.push(\"log_items\");", content)
+        patch_block = app.split("function patchRuntimeSection(section, value)", 1)[1].split("function runtimeDependencies", 1)[0]
+        self.assertIn('if (section === "log_items")', patch_block)
+        self.assertIn("trimFrontendLogItems();", patch_block)
         log_query_items_block = content.split("function logQueryItems()", 1)[1].split(
             "function logQuerySignature",
             1,
@@ -1514,10 +1523,6 @@ class WebUIBrowserTests(unittest.TestCase):
             """
             async () => {
               window.__isolateFrontendStateForTest({ captureLogWorkers: true });
-              if (ws) {
-                try { ws.close(); } catch (_error) {}
-                ws = null;
-              }
               frontendState.log_items = Array.from({ length: 12 }, (_, index) => ({
                 id: `worker-log-${index}`,
                 time: '2026-07-06 03:30:' + String(index % 60).padStart(2, '0'),
@@ -5199,6 +5204,173 @@ class WebUIBrowserTests(unittest.TestCase):
         self.assertTrue(result["staleFallbackIgnored"])
         self.assertTrue(result["newerRequestPosted"])
         self.assertTrue(result["newerResultRendered"])
+
+    def test_13i_frontend_runtime_rejects_stale_async_work_and_disposes_idempotently(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const runtime = window.UcpFrontendRuntime;
+              runtime.dispose();
+
+              const nativeFetch = window.fetch;
+              const NativeWebSocket = window.WebSocket;
+              const nativeRequestAnimationFrame = window.requestAnimationFrame;
+              const nativeCancelAnimationFrame = window.cancelAnimationFrame;
+              const moduleNames = [
+                "UcpLogCenter",
+                "UcpListPages",
+                "UcpSettingsController",
+                "UcpDialogController",
+                "UcpPlaybackController",
+              ];
+              const nativeModules = Object.fromEntries(moduleNames.map(name => [name, window[name]]));
+              const disposeCounts = Object.fromEntries(moduleNames.map(name => [name, 0]));
+              const requests = [];
+              const sockets = [];
+              const frames = [];
+              const renders = [];
+              const logs = [];
+              const settled = [];
+              let state = { version: 0, queue_items: [], log_items: [] };
+
+              class FakeWebSocket {
+                static CONNECTING = 0;
+                static OPEN = 1;
+                static CLOSED = 3;
+
+                constructor(url) {
+                  this.url = url;
+                  this.readyState = FakeWebSocket.CONNECTING;
+                  this.closeCalls = 0;
+                  this.sent = [];
+                  sockets.push(this);
+                }
+
+                close() {
+                  this.closeCalls += 1;
+                  this.readyState = FakeWebSocket.CLOSED;
+                }
+
+                send(payload) {
+                  this.sent.push(payload);
+                }
+              }
+
+              const deferredResponse = url => {
+                let resolve;
+                const promise = new Promise(done => { resolve = done; });
+                requests.push({ url: String(url), resolve });
+                return promise;
+              };
+              const response = payload => ({ ok: true, json: async () => payload });
+
+              try {
+                for (const name of moduleNames) {
+                  window[name] = { dispose: () => { disposeCounts[name] += 1; } };
+                }
+                window.WebSocket = FakeWebSocket;
+                window.fetch = deferredResponse;
+                window.requestAnimationFrame = callback => {
+                  frames.push(callback);
+                  return frames.length;
+                };
+                window.cancelAnimationFrame = () => {};
+
+                const dependencies = {
+                  getState: () => state,
+                  replaceState: nextState => { state = nextState; },
+                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
+                  patchSection: () => [],
+                  renderSections: sections => renders.push(Array.from(sections)),
+                  renderAll: () => renders.push(["all"]),
+                  onConnected: () => {},
+                  onSettled: value => settled.push(value),
+                  appendUiLog: (...parts) => logs.push(parts.join(" ")),
+                };
+
+                runtime.configure(dependencies);
+                const firstStart = runtime.start();
+                const duplicateStart = runtime.start();
+                const firstSocket = sockets[0];
+                const staleMessage = firstSocket.onmessage;
+                runtime.scheduleSections(["queue_items"]);
+                const staleFrame = frames[0];
+
+                runtime.dispose();
+                runtime.dispose();
+                runtime.configure(dependencies);
+                const secondStart = runtime.start();
+                const secondSocket = sockets[1];
+
+                requests[1].resolve(response({ version: 2, queue_items: [{ id: "current" }], log_items: [] }));
+                await secondStart;
+                requests[0].resolve(response({ version: 1, queue_items: [{ id: "stale" }], log_items: [] }));
+                await firstStart;
+                staleMessage({ data: JSON.stringify({
+                  type: "frontend_state",
+                  data: { version: 1, queue_items: [{ id: "stale-socket" }], log_items: [] },
+                }) });
+                staleFrame();
+
+                const staleDelta = runtime.fetchDelta();
+                const currentDelta = runtime.fetchDelta();
+                requests[3].resolve(response({
+                  version: 4,
+                  base_version: 2,
+                  sections: { queue_items: [{ id: "delta-current" }] },
+                  changed_sections: ["queue_items"],
+                }));
+                await currentDelta;
+                requests[2].resolve(response({
+                  version: 3,
+                  base_version: 2,
+                  sections: { queue_items: [{ id: "delta-stale" }] },
+                  changed_sections: ["queue_items"],
+                }));
+                await staleDelta;
+
+                runtime.scheduleSections(["queue_items"]);
+                frames.at(-1)();
+                runtime.dispose();
+                runtime.dispose();
+
+                return {
+                  duplicateStartShared: duplicateStart === firstStart,
+                  fetchCount: requests.length,
+                  socketCount: sockets.length,
+                  firstSocketClosedOnce: firstSocket.closeCalls === 1,
+                  secondSocketClosedOnce: secondSocket.closeCalls === 1,
+                  staleStateIgnored: state.queue_items[0]?.id === "delta-current",
+                  staleFrameIgnored: renders.length === 2 && renders[0][0] === "all" && renders[1][0] === "queue_items",
+                  disposersCalledOncePerRun: Object.values(disposeCounts).every(count => count === 2),
+                  settledCount: settled.length,
+                  logs,
+                };
+              } finally {
+                runtime.dispose();
+                window.fetch = nativeFetch;
+                window.WebSocket = NativeWebSocket;
+                window.requestAnimationFrame = nativeRequestAnimationFrame;
+                window.cancelAnimationFrame = nativeCancelAnimationFrame;
+                for (const name of moduleNames) window[name] = nativeModules[name];
+              }
+            }
+            """
+        )
+
+        self.assertTrue(result["duplicateStartShared"])
+        self.assertEqual(result["fetchCount"], 4)
+        self.assertEqual(result["socketCount"], 2)
+        self.assertTrue(result["firstSocketClosedOnce"])
+        self.assertTrue(result["secondSocketClosedOnce"])
+        self.assertTrue(result["staleStateIgnored"])
+        self.assertTrue(result["staleFrameIgnored"])
+        self.assertTrue(result["disposersCalledOncePerRun"])
+        self.assertEqual(result["settledCount"], 1)
+        self.assertEqual(result["logs"], [])
+
     def test_14_keyboard_arrow_navigation(self):
         """方向键应在可见队列行之间切换。"""
         self._goto_ready()

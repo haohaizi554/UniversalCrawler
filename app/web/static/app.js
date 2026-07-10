@@ -1,8 +1,5 @@
 let frontendState = buildMockState();
 let currentPage = "queue";
-let ws = null;
-let wsReconnectTimer = null;
-let pageIsUnloading = false;
 let platforms = [];
 let selected = {
   active: "",
@@ -12,32 +9,6 @@ let selected = {
 };
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
-
-function cleanupPageResources() {
-  pageIsUnloading = true;
-  if (wsReconnectTimer) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
-  }
-  if (ws) {
-    const socket = ws;
-    ws = null;
-    try {
-      socket.onclose = null;
-      socket.close();
-    } catch (_error) {
-      // The page is leaving; close failures are intentionally ignored.
-    }
-  }
-  if (window.UcpLogCenter) window.UcpLogCenter.dispose();
-  if (window.UcpListPages) window.UcpListPages.dispose();
-  if (window.UcpSettingsController) window.UcpSettingsController.dispose();
-  if (window.UcpDialogController) window.UcpDialogController.dispose();
-  if (window.UcpPlaybackController) window.UcpPlaybackController.dispose();
-}
-
-window.addEventListener("pagehide", cleanupPageResources, { once: true });
-window.addEventListener("beforeunload", cleanupPageResources, { once: true });
 
 function pad2(value) {
   return String(value).padStart(2, "0");
@@ -101,6 +72,11 @@ function dialogControllerService() {
 function playbackControllerService() {
   if (!window.UcpPlaybackController) throw new Error("UcpPlaybackController is unavailable");
   return window.UcpPlaybackController;
+}
+
+function frontendRuntimeService() {
+  if (!window.UcpFrontendRuntime) throw new Error("UcpFrontendRuntime is unavailable");
+  return window.UcpFrontendRuntime;
 }
 
 function listPageDependencies() {
@@ -212,7 +188,7 @@ function dialogControllerDependencies() {
     patchSetting: patchSettingSnapshot,
     translateText: translateUiText,
     closePreview: () => playbackControllerService().closePreview(),
-    fetchState: fetchFrontendState,
+    fetchState: () => frontendRuntimeService().fetchState(),
   };
 }
 
@@ -283,6 +259,103 @@ function configureLogI18nHelpers() {
   return service.configure({ currentLanguage, translateUiText, canonicalUiText });
 }
 
+function replaceFrontendState(nextState) {
+  frontendState = nextState && typeof nextState === "object" ? nextState : buildMockState();
+}
+
+function removeDeletedSelectionState(ids) {
+  const doomed = new Set((ids || []).map(id => String(id)));
+  for (const id of doomed) {
+    playbackControllerService().prepareDeleteItem(id);
+    playbackControllerService().removePlaybackPosition(id);
+  }
+  for (const key of ["active", "completed", "failed"]) {
+    if (doomed.has(String(selected[key] || ""))) selected[key] = "";
+  }
+  if (doomed.has(String(selectedVideoId || ""))) selectedVideoId = null;
+}
+
+function patchRuntimeSection(section, value) {
+  if (section === "log_items") {
+    trimFrontendLogItems();
+    return [];
+  }
+  if (section === "icon_manifest") {
+    updateIconManifest(value);
+    return [];
+  }
+  if (section === "deleted_ids") {
+    removeDeletedSelectionState(value);
+    return [];
+  }
+  if (section === "init_state") {
+    if (value && typeof value.is_crawling === "boolean") setCrawlUiState(value.is_crawling);
+    return [];
+  }
+  if (section === "platforms") {
+    platforms = Array.isArray(value) ? value : [];
+    renderPlatforms();
+    return [];
+  }
+  if (section === "config") {
+    restoreTheme();
+    return [];
+  }
+  if (section === "crawl_state") {
+    setCrawlUiState(!!(value && value.is_running));
+    return [];
+  }
+  if (section === "log") {
+    appendLog((value && value.message) || "");
+    return ["log_items", "app_status"];
+  }
+  if (section === "select_tasks") {
+    showSelectionModal((value && value.items) || []);
+    return [];
+  }
+  if (section === "frontend_action_message") {
+    appendLog(translateUiText(value));
+    return [];
+  }
+  if (section === "frontend_action_error") {
+    appendLog(translateUiText(value));
+    return [];
+  }
+  return [];
+}
+
+function runtimeDependencies() {
+  return {
+    getState: () => frontendState,
+    replaceState: replaceFrontendState,
+    buildMockState,
+    patchSection: patchRuntimeSection,
+    renderSections: renderFrontendSections,
+    renderAll,
+    onConnected: () => {},
+    onSettled: result => {
+      window.__ucrawlFrontendStateLoaded = !!(result && result.loaded);
+      window.__ucrawlFrontendStateSettled = true;
+    },
+    appendUiLog,
+  };
+}
+
+let featureModulesConfigured = false;
+
+function configureFeatureModules() {
+  if (featureModulesConfigured) return;
+  configureI18nHelpers();
+  window.UcpLogI18n.configure({ currentLanguage, translateUiText, canonicalUiText });
+  window.UcpLogCenter.configure(logCenterDependencies());
+  window.UcpListPages.configure(listPageDependencies());
+  window.UcpSettingsController.configure(settingsControllerDependencies());
+  window.UcpDialogController.configure(dialogControllerDependencies());
+  window.UcpPlaybackController.configure(playbackControllerDependencies());
+  window.UcpFrontendRuntime.configure(runtimeDependencies());
+  featureModulesConfigured = true;
+}
+
 async function loadUiTextCatalogs() {
   const service = configureI18nHelpers();
   if (service) return service.loadUiTextCatalogs();
@@ -347,14 +420,6 @@ function applyStaticLanguage() {
   if (window.UcpLogCenter) window.UcpLogCenter.render();
 }
 
-configureI18nHelpers();
-configureLogI18nHelpers();
-configureListPagesHelpers();
-configureLogCenterHelpers();
-configureSettingsControllerHelpers();
-configureDialogControllerHelpers();
-configurePlaybackControllerHelpers();
-
 // Compatibility globals used by a few older browser tests.
 let videos = {};
 let videoOrder = [];
@@ -392,37 +457,11 @@ function updateIconManifest(manifest) {
 }
 
 let renderSignatures = {};
-let frontendSectionSignatures = {};
-let frontendVersion = 0;
-let pendingRenderSections = new Set();
-let renderFrame = null;
-let frontendDeltaTimer = null;
+let scheduleRenderSections = sections => frontendRuntimeService().scheduleSections(sections);
+let fetchFrontendState = () => frontendRuntimeService().fetchState();
+let fetchFrontendDelta = () => frontendRuntimeService().fetchDelta();
 
-
-function scheduleFrame(callback) {
-  const raf = window.requestAnimationFrame || (fn => setTimeout(fn, 16));
-  raf(callback);
-}
-
-function scheduleRenderSections(sections) {
-  // 合并同一帧内的多次状态变更，避免下载进度高频刷新时整页反复重绘。
-  const list = Array.isArray(sections) ? sections : [sections || "all"];
-  for (const section of list) pendingRenderSections.add(section || "all");
-  if (renderFrame) return;
-  renderFrame = true;
-  scheduleFrame(() => {
-    renderFrame = null;
-    flushRenderSections();
-  });
-}
-
-function flushRenderSections() {
-  const sections = new Set(pendingRenderSections);
-  pendingRenderSections.clear();
-  if (!sections.size || sections.has("all")) {
-    renderAll();
-    return;
-  }
+function renderFrontendSections(sections) {
   const previousLanguage = document.documentElement.dataset.language || "zh-CN";
   const itemSections = ["queue_items", "active_downloads", "completed_items", "failed_items"];
   if (sections.has("settings_snapshot")) {
@@ -452,132 +491,6 @@ function flushRenderSections() {
   if ((sections.has("toolbox_items") || sections.has("toolbox_recent_items")) && currentPage === "toolbox") renderToolbox();
   if (sections.has("icon_manifest")) renderCurrentPage();
   if (sections.has("app_status")) renderStatus();
-}
-
-function applyFrontendDelta(delta) {
-  // 后端增量只携带脏 section；基线不连续时退回完整快照重新同步。
-  if (!delta || typeof delta !== "object") return;
-  const localVersion = Number(frontendVersion || 0);
-  const deltaVersion = Number(delta.version || 0);
-  if (!delta.full && deltaVersion && deltaVersion <= localVersion) return;
-  const deltaBaseVersion = Number(delta.base_version || 0);
-  if (!delta.full && deltaBaseVersion > localVersion) {
-    appendUiLog("增量状态基线不连续，正在重新同步...");
-    fetchFrontendState();
-    return;
-  }
-  const sections = delta.sections || {};
-  const requestedChanged = Array.isArray(delta.changed_sections) ? delta.changed_sections.slice() : Object.keys(sections);
-  const changed = [];
-  if (delta.full && sections && Object.keys(sections).length) {
-    frontendState = { ...frontendState, ...sections };
-    rememberFrontendSectionSignatures(Object.keys(sections));
-    changed.push(...requestedChanged);
-  } else {
-    for (const [key, value] of Object.entries(sections)) {
-      if (frontendSectionSignatures[key] === undefined) {
-        frontendSectionSignatures[key] = frontendSectionSignature(frontendState[key]);
-      }
-      const nextSignature = frontendSectionSignature(value);
-      frontendState[key] = value;
-      if (frontendSectionSignatures[key] !== nextSignature) changed.push(key);
-      frontendSectionSignatures[key] = nextSignature;
-    }
-  }
-  if (trimFrontendLogItems() && !changed.includes("log_items")) changed.push("log_items");
-  if (sections.icon_manifest) {
-    updateIconManifest(sections.icon_manifest);
-    if (!changed.includes("icon_manifest")) changed.push("icon_manifest");
-  }
-  if (Array.isArray(delta.deleted_ids) && delta.deleted_ids.length) {
-    removeDeletedFromFrontendState(delta.deleted_ids);
-    for (const section of ["queue_items", "active_downloads", "completed_items", "failed_items"]) {
-      if (!changed.includes(section)) changed.push(section);
-    }
-  }
-  frontendVersion = Number(delta.version || frontendVersion || 0);
-  if (changed.length) scheduleRenderSections(changed);
-}
-
-function frontendSectionSignature(value) {
-  try {
-    return JSON.stringify(value === undefined ? null : value);
-  } catch (error) {
-    return String(value);
-  }
-}
-
-function rememberFrontendSectionSignatures(keys) {
-  for (const key of keys || []) {
-    frontendSectionSignatures[key] = frontendSectionSignature(frontendState[key]);
-  }
-}
-
-function removeDeletedFromFrontendState(ids) {
-  const doomed = new Set(ids.map(id => String(id)));
-  for (const id of doomed) {
-    playbackControllerService().prepareDeleteItem(id);
-    playbackControllerService().removePlaybackPosition(id);
-  }
-  for (const section of ["queue_items", "active_downloads", "completed_items", "failed_items"]) {
-    frontendState[section] = (frontendState[section] || []).filter(item => !doomed.has(String(item.id)));
-    frontendSectionSignatures[section] = frontendSectionSignature(frontendState[section]);
-  }
-  for (const key of ["active", "completed", "failed"]) {
-    if (doomed.has(String(selected[key] || ""))) selected[key] = "";
-  }
-  if (doomed.has(String(selectedVideoId || ""))) selectedVideoId = null;
-}
-
-function applyLegacyFrontendEvent(type, data) {
-  if (type === "video_removed") {
-    removeDeletedFromFrontendState([data.video_id || data.id || ""]);
-    scheduleRenderSections(["queue_items", "active_downloads", "completed_items", "failed_items", "app_status"]);
-    return;
-  }
-  if (type === "clear_videos") {
-    frontendState.queue_items = [];
-    frontendState.active_downloads = [];
-    frontendState.completed_items = [];
-    frontendState.failed_items = [];
-    scheduleRenderSections(["queue_items", "active_downloads", "completed_items", "failed_items", "app_status"]);
-    return;
-  }
-  if (type === "video_state_changed" || type === "task_progress") {
-    patchLegacyProgress(data || {});
-    scheduleRenderSections(["active_downloads", "app_status"]);
-    return;
-  }
-  scheduleFrontendDeltaFetch(300);
-}
-
-function patchLegacyProgress(data) {
-  const videoId = String(data.video_id || data.id || "");
-  if (!videoId) return;
-  const rows = frontendState.active_downloads || [];
-  const row = rows.find(item => String(item.id) === videoId);
-  if (!row) return;
-  if (data.progress !== undefined && data.progress !== null) row.progress = Number(data.progress) || 0;
-  if (data.status) row.status = data.status;
-  if (data.speed) row.speed = data.speed;
-}
-
-function scheduleFrontendDeltaFetch(delayMs = 200) {
-  if (pageIsUnloading) return;
-  if (frontendDeltaTimer) clearTimeout(frontendDeltaTimer);
-  frontendDeltaTimer = setTimeout(fetchFrontendDelta, delayMs);
-}
-
-async function fetchFrontendDelta() {
-  // WebSocket 事件可能被合并，主动拉取 delta 用于补齐最新版本。
-  if (pageIsUnloading) return;
-  try {
-    const response = await fetch(`/api/frontend/delta?since_version=${encodeURIComponent(frontendVersion || 0)}`, { cache: "no-store" });
-    if (!response.ok) return;
-    applyFrontendDelta(await response.json());
-  } catch (error) {
-    appendUiLog("加载增量状态失败", error.message || error);
-  }
 }
 
 function setHtmlIfChanged(id, html, key = id) {
@@ -679,6 +592,7 @@ function installDetailResizeHandlers() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  configureFeatureModules();
   restoreTheme();
   restoreLayoutState();
   installDetailResizeHandlers();
@@ -686,8 +600,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadUiTextCatalogs();
   renderAll();
   loadPlatforms();
-  fetchFrontendState();
-  connectWS();
+  frontendRuntimeService().start();
   dialogControllerService().installDirectoryHandlers();
   playbackControllerService().installMediaControlHandlers();
   playbackControllerService().updateControls();
@@ -787,26 +700,6 @@ function buildMockState() {
   };
 }
 
-async function fetchFrontendState() {
-  try {
-    const response = await fetch("/api/frontend/state", { cache: "no-store" });
-    if (!response.ok) return;
-    const data = await response.json();
-    if (data && data.queue_items) {
-      frontendState = data;
-      trimFrontendLogItems();
-      frontendVersion = Number(data.version || frontendVersion || 0);
-      updateIconManifest(data.icon_manifest);
-      window.__ucrawlFrontendStateLoaded = true;
-      renderAll();
-    }
-  } catch (error) {
-    appendUiLog("加载状态失败", error.message || error);
-  } finally {
-    window.__ucrawlFrontendStateSettled = true;
-  }
-}
-
 async function loadPlatforms() {
   try {
     const response = await fetch("/api/platforms", { cache: "no-store" });
@@ -876,91 +769,6 @@ function configureTopCountForSource(sourceId) {
   enhanceSelects(select.parentElement || document);
   syncCustomSelectForSelect(select);
   setCrawlUiState(crawlRunning);
-}
-
-function connectWS() {
-  if (pageIsUnloading) return;
-  if (ws && [WebSocket.CONNECTING, WebSocket.OPEN].includes(ws.readyState)) return;
-  if (wsReconnectTimer) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
-  }
-  try {
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${location.host}/ws`);
-    ws = socket;
-    socket.onmessage = event => handleServerMessage(JSON.parse(event.data));
-    socket.onclose = () => {
-      if (ws === socket) ws = null;
-      if (pageIsUnloading) return;
-      wsReconnectTimer = setTimeout(() => {
-        wsReconnectTimer = null;
-        connectWS();
-      }, 2000);
-    };
-  } catch (_error) {
-    ws = null;
-  }
-}
-
-function handleServerMessage(message) {
-  const type = message.type;
-  const data = message.data || {};
-  switch (type) {
-    case "init_state":
-      if (data && typeof data.is_crawling === "boolean") {
-        setCrawlUiState(data.is_crawling);
-      }
-      break;
-    case "frontend_state":
-      frontendState = data;
-      trimFrontendLogItems();
-      frontendVersion = Number(data.version || frontendVersion || 0);
-      updateIconManifest(data.icon_manifest);
-      renderAll();
-      break;
-    case "frontend_delta":
-      applyFrontendDelta(data);
-      break;
-    case "platforms":
-      platforms = data;
-      renderPlatforms();
-      break;
-    case "config":
-      restoreTheme();
-      break;
-    case "crawl_state":
-      setCrawlUiState(!!data.is_running);
-      scheduleFrontendDeltaFetch(200);
-      break;
-    case "log":
-      appendLog(data.message || "");
-      scheduleRenderSections(["log_items", "app_status"]);
-      break;
-    case "item_found":
-    case "video_state_changed":
-    case "video_renamed":
-    case "video_removed":
-    case "clear_videos":
-    case "task_started":
-    case "task_progress":
-    case "task_finished":
-    case "task_error":
-    case "scan_result":
-      applyLegacyFrontendEvent(type, data);
-      break;
-    case "select_tasks":
-      showSelectionModal(data.items || []);
-      break;
-    case "frontend_action_result":
-      if (data.frontend_delta) {
-        applyFrontendDelta(data.frontend_delta);
-      }
-      if (data.message) appendLog(translateUiText(data.message));
-      break;
-    default:
-      break;
-  }
 }
 
 function renderAll() {
@@ -1282,49 +1090,14 @@ function stopCrawl() {
   else appendUiLog("前端连接尚未就绪，请稍后重试", "", "⚠️ ");
 }
 
-function sendWS(type, data) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type, data }));
-    return true;
-  }
-  return false;
-}
+let sendWS = (type, data) => frontendRuntimeService().send(type, data);
 
 const defaultSendWS = sendWS;
 
 function frontendAction(action, payload) {
   if (action === "delete_item") playbackControllerService().prepareDeleteItem(payload && (payload.id || payload.video_id));
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    sendWS("frontend_action", {
-      action,
-      payload,
-      frontend_version: Number(frontendVersion || 0),
-    });
-    if (action === "register_file_associations") appendUiLog("正在绑定默认打开方式...");
-    return;
-  }
-  fetch("/api/frontend/action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action,
-      payload,
-      frontend_version: Number(frontendVersion || 0),
-    }),
-  })
-    .then(response => response.json())
-    .then(result => {
-      if (result && result.frontend_delta) {
-        applyFrontendDelta(result.frontend_delta);
-      } else {
-        return fetchFrontendDelta();
-      }
-      return result;
-    })
-    .then(result => {
-      if (result && result.message) appendLog(translateUiText(result.message));
-    })
-    .catch(error => appendLog(translateUiText(error.message || String(error))));
+  frontendRuntimeService().send("frontend_action", { action, payload });
+  if (action === "register_file_associations") appendUiLog("正在绑定默认打开方式...");
 }
 
 function openDirectory(id) {

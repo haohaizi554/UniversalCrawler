@@ -111,3 +111,52 @@ def test_playback_controller_owns_preview_and_media_events() -> None:
     ):
         assert marker in app
         assert marker not in module
+
+
+def test_frontend_runtime_owns_transport_and_render_scheduler() -> None:
+    runtime = (STATIC_DIR / "frontend_runtime.js").read_text(encoding="utf-8")
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for marker in (
+        "function connectWS",
+        "function fetchFrontendState",
+        "function fetchFrontendDelta",
+        "function scheduleRenderSections",
+        "function cleanupPageResources",
+    ):
+        assert marker in runtime
+        assert marker not in app
+    assert "let frontendState" not in runtime
+
+
+def test_frontend_runtime_exports_the_complete_lifecycle_contract() -> None:
+    runtime = (STATIC_DIR / "frontend_runtime.js").read_text(encoding="utf-8")
+    for export in (
+        "configure",
+        "start",
+        "connect",
+        "fetchState",
+        "fetchDelta",
+        "scheduleSections",
+        "handleServerMessage",
+        "send",
+        "dispose",
+    ):
+        assert export in runtime.split("window.UcpFrontendRuntime = Object.freeze({", 1)[1]
+    for guard in ("lifecycleGeneration", "stateFetchSequence", "deltaFetchSequence"):
+        assert guard in runtime
+
+
+def test_app_js_is_a_composition_root_not_a_feature_monolith() -> None:
+    path = STATIC_DIR / "app.js"
+    content = path.read_text(encoding="utf-8")
+    assert path.stat().st_size <= 100_000
+    assert "function configureFeatureModules()" in content
+    assert "window.UcpFrontendRuntime.configure(runtimeDependencies())" in content
+    for marker in (
+        "RUNTIME_LOG_PHRASE_TRANSLATIONS",
+        "function renderLogDetailResult",
+        "function applyListPageResult",
+        "function showSelectionModal",
+        "function setupPlayerEvents",
+    ):
+        assert marker not in content
