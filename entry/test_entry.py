@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import traceback
 from pathlib import Path
@@ -146,8 +145,6 @@ def _run_list() -> int:
         summary,
         list_plugin_directories,
     )
-    import json
-
     s = summary()
     print("=" * 70)
     print(" UCrawl 测试套件 - 注册表")
@@ -188,7 +185,6 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     try:
         from tests.test_launcher import _build_gui, LauncherWindow  # noqa
         from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import Qt, QTimer
     except ImportError as exc:
         sys.stderr.write(f"⚠️  导入 PyQt6 失败: {exc}，回退到 TUI 模式\n")
         return _run_tui(category, no_failfast, verbose)

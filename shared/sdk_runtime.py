@@ -39,7 +39,7 @@ os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
 # 暴露给用户的快捷导入
 from shared.runtime_options import (
-    DEFAULT_CONFIG,
+    DEFAULT_CONFIG,  # noqa: F401 - retained as a public SDK compatibility export
     build_missav_proxy_url,
     compose_runtime_config,
     get_default_save_dir,
@@ -47,7 +47,7 @@ from shared.runtime_options import (
     get_platform_download_defaults,
     infer_content_type,
     infer_content_type_from_url,
-    merge_convenience_params,
+    merge_convenience_params,  # noqa: F401 - retained as a public SDK compatibility export
     validate_config_types,
     validate_direct_download_url,
 )

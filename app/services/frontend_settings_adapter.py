@@ -214,7 +214,7 @@ def build_download_options_snapshot(
     auto_retry = bool(cache_get("download.auto_retry", True))
     image_respects_concurrency = bool(config_get("download", "image_respects_concurrency", False))
     if manager is not None and hasattr(manager, "image_respects_concurrency"):
-        image_respects_concurrency = bool(getattr(manager, "image_respects_concurrency"))
+        image_respects_concurrency = bool(manager.image_respects_concurrency)
     video_only = bool(config_get("download", "video_only", False))
     manager_video_only = getattr(manager, "video_only", None) if manager is not None else None
     if isinstance(manager_video_only, bool):

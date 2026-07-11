@@ -1,7 +1,6 @@
 """实现 `app/debug_logger.py` 对应功能的 Python 模块。"""
 
 import json
-import os
 import re
 import threading
 import multiprocessing
@@ -166,7 +165,7 @@ class DebugLogger:
         """提供 `_write_header` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         header = [
             "=" * 88,
-            f"Universal Crawler Pro Debug Session",
+            "Universal Crawler Pro Debug Session",
             f"Started At : {self._now()}",
             f"Log File   : {self.session_file.name}",
             "=" * 88,

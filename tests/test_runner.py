@@ -16,13 +16,15 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass
 class TestResult:
     """单个测试类别运行结果。"""
+    __test__: ClassVar[bool] = False
+
     category_id: str
     category_name: str
     file_count: int

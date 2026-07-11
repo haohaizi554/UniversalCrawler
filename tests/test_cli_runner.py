@@ -7,10 +7,8 @@
 
 import io
 import os
-import sys
 import tempfile
 import unittest
-from types import MethodType
 from unittest.mock import MagicMock, patch
 
 class CLIRunnerInitTests(unittest.TestCase):
@@ -165,7 +163,6 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
     def test_ask_strategy_exception_defaults_to_all(self):
         """策略抛异常 → 默认全选。"""
         from cli.runner import CLIRunner
-        from cli.selection import RuleSelection
         runner = CLIRunner(
             source="douyin",
             keyword="kw",
@@ -338,7 +335,9 @@ class CLIRunnerRunTests(unittest.TestCase):
                 self.calls += 1
                 return self.calls < 3
 
-        finished = runner._wait_spider(FakeSpider(), timeout=1.0)
+        # 假 spider 只在被轮询时推进状态；冻结时钟可避免 CI 调度暂停被误当成业务超时。
+        with patch("cli.runner.time.monotonic", return_value=0.0), patch("cli.runner.time.sleep"):
+            finished = runner._wait_spider(FakeSpider(), timeout=1.0)
 
         self.assertTrue(finished)
 

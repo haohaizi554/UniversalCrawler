@@ -14,6 +14,8 @@ from app.debug_logger import debug_logger
 from app.exceptions import ExternalToolError
 
 if TYPE_CHECKING:
+    from shared.runtime_options import DomainPolicyEngine
+
     from .m3u8 import N_m3u8DL_RE_Downloader
 
 
@@ -147,11 +149,14 @@ class _LocalHlsProxy:
         root_url: str,
         headers: dict[str, str],
         upstream_proxy: str | None,
+        *,
+        domain_policy: "DomainPolicyEngine | None" = None,
     ) -> None:
         self.downloader = downloader
         self.root_url = root_url
         self.headers = dict(headers)
         self.upstream_proxy = upstream_proxy
+        self.domain_policy = domain_policy
         self.server: _ThreadingHlsProxyServer | None = None
         self.thread: threading.Thread | None = None
         self.base_url = ""
@@ -165,7 +170,8 @@ class _LocalHlsProxy:
         self.server = _ThreadingHlsProxyServer(("127.0.0.1", 0), _HlsProxyHandler)
         self.server.owner = self  # type: ignore[attr-defined]
         host, port = self.server.server_address[:2]
-        self.base_url = f"http://{host}:{port}"
+        host_text = host.decode("ascii") if isinstance(host, bytes) else str(host)
+        self.base_url = f"http://{host_text}:{port}"
         self.url = self.local_url_for(self.root_url)
         self.thread = threading.Thread(target=self.server.serve_forever, name="ucp-hls-proxy", daemon=True)
         self.thread.start()
@@ -198,6 +204,7 @@ class _LocalHlsProxy:
             upstream_url,
             upstream_headers,
             self.upstream_proxy,
+            domain_policy=self.domain_policy,
         )
         if looks_like_hls_playlist(upstream_url, content_type, body):
             text = body.decode("utf-8", errors="replace")
@@ -213,16 +220,18 @@ class _LocalHlsProxy:
             upstream_url,
             upstream_headers,
             self.upstream_proxy,
+            domain_policy=self.domain_policy,
         )
         try:
+            resolved_url = str(getattr(response, "url", "") or upstream_url)
             status = int(getattr(response, "status_code", 0) or 0)
             response_headers = getattr(response, "headers", {}) or {}
             content_type = str(response_headers.get("Content-Type", "") or "")
-            if looks_like_hls_playlist_url(upstream_url, content_type):
+            if looks_like_hls_playlist_url(resolved_url, content_type):
                 body = response_content_bytes(response)
                 text = body.decode("utf-8", errors="replace")
                 self._record_playlist(text)
-                rewritten = rewrite_hls_playlist_for_proxy(text, upstream_url, self.local_url_for)
+                rewritten = rewrite_hls_playlist_for_proxy(text, resolved_url, self.local_url_for)
                 payload = rewritten.encode("utf-8")
                 handler.send_response(200)
                 handler.send_header("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
@@ -247,7 +256,7 @@ class _LocalHlsProxy:
                     handler.send_header(header_name, header_value)
             handler.send_header("Access-Control-Allow-Origin", "*")
             handler.end_headers()
-            self._stream_response_body(handler, upstream_url, response)
+            self._stream_response_body(handler, resolved_url, response)
         finally:
             close = getattr(response, "close", None)
             if callable(close):

@@ -20,6 +20,7 @@ from app.core.anti_detection import build_browser_anti_detection
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
+from shared.runtime_options import PUBLIC_DOMAIN_POLICY, DomainPolicyEngine
 
 from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 from . import hls_proxy as hls_proxy_utils
@@ -780,7 +781,15 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         upstream_proxy: str | None,
     ) -> _LocalHlsProxy:
         proxy_headers = self._headers_for_hls_proxy(video_item, headers)
-        local_proxy = _LocalHlsProxy(self, str(video_item.url), proxy_headers, upstream_proxy).start()
+        # 外部工具只看到 loopback 地址；所有真实上游请求仍由代理逐跳执行公网校验。
+        domain_policy = self._domain_policy_for_item(video_item) or PUBLIC_DOMAIN_POLICY
+        local_proxy = _LocalHlsProxy(
+            self,
+            str(video_item.url),
+            proxy_headers,
+            upstream_proxy,
+            domain_policy=domain_policy,
+        ).start()
         debug_logger.log(
             component="N_m3u8DL_RE_Downloader",
             action="local_hls_proxy_start",
@@ -829,6 +838,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         upstream_url: str,
         headers: dict[str, str],
         upstream_proxy: str | None,
+        *,
+        domain_policy: DomainPolicyEngine | None = None,
     ) -> tuple[int, str, bytes]:
         try:
             from curl_cffi import requests as curl_requests
@@ -837,7 +848,13 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         first_error: Exception | None = None
         for request_headers in self._hls_proxy_header_attempts(headers):
             try:
-                response = self._curl_cffi_get_response(curl_requests, upstream_url, request_headers, upstream_proxy)
+                response = self._hls_proxy_request_response(
+                    curl_requests,
+                    upstream_url,
+                    request_headers,
+                    upstream_proxy,
+                    domain_policy=domain_policy,
+                )
             except Exception as exc:
                 first_error = exc
                 continue
@@ -857,6 +874,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         upstream_url: str,
         headers: dict[str, str],
         upstream_proxy: str | None,
+        *,
+        domain_policy: DomainPolicyEngine | None = None,
     ):
         try:
             from curl_cffi import requests as curl_requests
@@ -866,11 +885,12 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         for request_headers in self._hls_proxy_header_attempts(headers):
             response = None
             try:
-                response = self._curl_cffi_get_response(
+                response = self._hls_proxy_request_response(
                     curl_requests,
                     upstream_url,
                     request_headers,
                     upstream_proxy,
+                    domain_policy=domain_policy,
                 )
             except Exception as exc:
                 first_error = exc
@@ -891,6 +911,76 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             raise first_error
         raise ExternalToolError(f"local HLS proxy upstream request failed for {upstream_url}")
 
+    def _hls_proxy_request_response(
+        self,
+        curl_requests,
+        upstream_url: str,
+        headers: dict[str, str],
+        upstream_proxy: str | None,
+        *,
+        domain_policy: DomainPolicyEngine | None,
+        max_redirects: int = 5,
+    ):
+        """Open one HLS resource while validating every redirect before following it."""
+        current_url = str(upstream_url)
+        request_headers = dict(headers)
+        for redirect_count in range(max(0, int(max_redirects)) + 1):
+            if domain_policy is not None:
+                domain_policy.require_public_url(current_url)
+            response = self._curl_cffi_get_response(
+                curl_requests,
+                current_url,
+                request_headers,
+                upstream_proxy,
+                allow_redirects=False,
+            )
+            status = int(getattr(response, "status_code", 0) or 0)
+            response_headers = getattr(response, "headers", {}) or {}
+            location = response_headers.get("Location") or response_headers.get("location")
+            if status not in DomainPolicyEngine.REDIRECT_STATUS_CODES or not location:
+                return response
+
+            target_url = urllib.parse.urljoin(current_url, str(location))
+            try:
+                if domain_policy is not None:
+                    domain_policy.require_public_url(target_url)
+                if redirect_count >= max_redirects:
+                    raise ExternalToolError("local HLS proxy redirect limit exceeded")
+            except Exception:
+                self._close_hls_proxy_response(response, current_url)
+                raise
+
+            if self._url_origin(current_url) != self._url_origin(target_url):
+                request_headers = {
+                    key: value
+                    for key, value in request_headers.items()
+                    if str(key).lower() not in {"authorization", "cookie", "host", "proxy-authorization"}
+                }
+            self._close_hls_proxy_response(response, current_url)
+            current_url = target_url
+        raise ExternalToolError("local HLS proxy redirect limit exceeded")
+
+    @staticmethod
+    def _url_origin(url: str) -> tuple[str, str, int | None]:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is None:
+            port = 443 if parsed.scheme.lower() == "https" else 80 if parsed.scheme.lower() == "http" else None
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+    @staticmethod
+    def _close_hls_proxy_response(response, url: str) -> None:
+        close = getattr(response, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except (OSError, RuntimeError, AttributeError) as exc:
+            debug_logger.log_exception("M3U8Downloader", "close_redirect_response", exc, details={"url": url})
+
     @staticmethod
     def _hls_proxy_header_attempts(headers: dict[str, str]) -> list[dict[str, str]]:
         primary = dict(headers)
@@ -908,8 +998,14 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         proxy: str | None,
         *,
         stream: bool = False,
+        allow_redirects: bool = True,
     ):
-        kwargs: dict[str, Any] = {"headers": headers, "timeout": 60, "impersonate": "chrome"}
+        kwargs: dict[str, Any] = {
+            "headers": headers,
+            "timeout": 60,
+            "impersonate": "chrome",
+            "allow_redirects": bool(allow_redirects),
+        }
         if proxy:
             kwargs["proxy"] = proxy
         if stream:
@@ -1624,23 +1720,86 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             kwargs.pop("impersonate", None)
             return curl_requests.Session(**kwargs)
 
-    @staticmethod
-    def _curl_cffi_get_text(session, url: str, headers: dict[str, str], *, domain_policy=None) -> str:
-        if domain_policy is not None:
-            domain_policy.require_public_url(url)
-        response = session.get(url, headers=headers, timeout=30)
-        if response.status_code not in (200, 206):
-            raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
-        return response.text
+    @classmethod
+    def _curl_cffi_get_text(cls, session, url: str, headers: dict[str, str], *, domain_policy=None) -> str:
+        response = cls._curl_cffi_session_response(
+            session,
+            url,
+            headers,
+            timeout=30,
+            domain_policy=domain_policy,
+        )
+        try:
+            if response.status_code not in (200, 206):
+                raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
+            return response.text
+        finally:
+            cls._close_hls_proxy_response(response, url)
 
-    @staticmethod
-    def _curl_cffi_get_bytes(session, url: str, headers: dict[str, str], *, domain_policy=None) -> bytes:
-        if domain_policy is not None:
-            domain_policy.require_public_url(url)
-        response = session.get(url, headers=headers, timeout=60)
-        if response.status_code not in (200, 206):
-            raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
-        return bytes(response.content or b"")
+    @classmethod
+    def _curl_cffi_get_bytes(cls, session, url: str, headers: dict[str, str], *, domain_policy=None) -> bytes:
+        response = cls._curl_cffi_session_response(
+            session,
+            url,
+            headers,
+            timeout=60,
+            domain_policy=domain_policy,
+        )
+        try:
+            if response.status_code not in (200, 206):
+                raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
+            return bytes(response.content or b"")
+        finally:
+            cls._close_hls_proxy_response(response, url)
+
+    @classmethod
+    def _curl_cffi_session_response(
+        cls,
+        session,
+        url: str,
+        headers: dict[str, str],
+        *,
+        timeout: float,
+        domain_policy: DomainPolicyEngine | None,
+        max_redirects: int = 5,
+    ):
+        """Use curl_cffi without surrendering redirect validation to the library."""
+        current_url = str(url)
+        request_headers = dict(headers)
+        for redirect_count in range(max(0, int(max_redirects)) + 1):
+            if domain_policy is not None:
+                domain_policy.require_public_url(current_url)
+            response = session.get(
+                current_url,
+                headers=request_headers,
+                timeout=timeout,
+                allow_redirects=False,
+            )
+            status = int(getattr(response, "status_code", 0) or 0)
+            response_headers = getattr(response, "headers", {}) or {}
+            location = response_headers.get("Location") or response_headers.get("location")
+            if status not in DomainPolicyEngine.REDIRECT_STATUS_CODES or not location:
+                return response
+
+            target_url = urllib.parse.urljoin(current_url, str(location))
+            try:
+                if domain_policy is not None:
+                    domain_policy.require_public_url(target_url)
+                if redirect_count >= max_redirects:
+                    raise ExternalToolError("curl_cffi HLS redirect limit exceeded")
+            except Exception:
+                cls._close_hls_proxy_response(response, current_url)
+                raise
+
+            if cls._url_origin(current_url) != cls._url_origin(target_url):
+                request_headers = {
+                    key: value
+                    for key, value in request_headers.items()
+                    if str(key).lower() not in {"authorization", "cookie", "host", "proxy-authorization"}
+                }
+            cls._close_hls_proxy_response(response, current_url)
+            current_url = target_url
+        raise ExternalToolError("curl_cffi HLS redirect limit exceeded")
 
     @classmethod
     def _playwright_fetch_with_policy(cls, page, url: str, *, domain_policy=None) -> bytes:

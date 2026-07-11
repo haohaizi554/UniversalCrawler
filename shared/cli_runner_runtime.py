@@ -633,7 +633,7 @@ class CLIRunner(ControllerSessionMixin):
 
         # 把 videos dict 转为 list（与 GUI 最终状态一致）
         items = []
-        for vid, item in self.videos.items():
+        for item in self.videos.values():
             try:
                 items.append(item.to_dict())
             except Exception as e:

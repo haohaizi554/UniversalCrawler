@@ -87,10 +87,10 @@ class ActiveDownloadsModel(QAbstractTableModel):
         self._language = "zh-CN"
         self._headers = list(self.HEADERS)
 
-    def rowCount(self, _parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, _parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008 - Qt override signature
         return len(self._rows)
 
-    def columnCount(self, _parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, _parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008 - Qt override signature
         return len(self.COLUMNS)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
@@ -313,18 +313,16 @@ class ActiveDownloadsDelegate(QStyledItemDelegate):
         button_size = 34
         x = option.rect.x() + max(6, (option.rect.width() - button_size) // 2)
         y = option.rect.y() + (option.rect.height() - button_size) // 2
-        for index, action in enumerate((action,)):
-            rect = QRect(x, y, button_size, button_size)
-            painter.setPen(QColor(colors["border"]))
-            painter.setBrush(QColor(colors["panel_soft"]))
-            painter.drawRoundedRect(rect, 6, 6)
-            icon = self._action_icons.get(action)
-            if icon is not None:
-                icon.paint(painter, rect.adjusted(8, 8, -8, -8))
-            else:
-                fallback = "X"
-                painter.setPen(QColor(colors["danger"]))
-                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, fallback)
+        rect = QRect(x, y, button_size, button_size)
+        painter.setPen(QColor(colors["border"]))
+        painter.setBrush(QColor(colors["panel_soft"]))
+        painter.drawRoundedRect(rect, 6, 6)
+        icon = self._action_icons.get(action)
+        if icon is not None:
+            icon.paint(painter, rect.adjusted(8, 8, -8, -8))
+        else:
+            painter.setPen(QColor(colors["danger"]))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "X")
         painter.restore()
 
 class ActiveDownloadsTable(QTableView):

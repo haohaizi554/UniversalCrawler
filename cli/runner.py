@@ -368,7 +368,7 @@ class CLIRunner:
         Returns:
             bool: True=正常结束，False=超时
         """
-        deadline = time.time() + timeout if timeout is not None else None
+        deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
             try:
                 running = spider.isRunning()
@@ -382,10 +382,13 @@ class CLIRunner:
             if not running:
                 break
 
-            if deadline is not None and time.time() >= deadline:
-                return False
-
-            time.sleep(0.05)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(0.05, remaining))
+            else:
+                time.sleep(0.05)
         return True
 
     # ---- 主执行流程 ----
@@ -563,7 +566,7 @@ class CLIRunner:
 
         # 把 videos dict 转为 list（与 GUI 最终状态一致）
         items = []
-        for vid, item in self.videos.items():
+        for item in self.videos.values():
             try:
                 items.append(item.to_dict())
             except Exception as e:

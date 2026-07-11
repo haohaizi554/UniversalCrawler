@@ -188,7 +188,6 @@ def iter_plugin_classes() -> list[type[BasePlugin]]:
 
 def discover_builtin_plugin_instances() -> list:
     """Instantiate all discovered plugin classes."""
-    from .base import BasePlugin
     return [cls() for cls in iter_plugin_classes()]
 
 # ---------------------------------------------------------------------------

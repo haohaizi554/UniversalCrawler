@@ -30,12 +30,12 @@ class SnapshotTableModel(QAbstractTableModel):
         self._missing_icon_files: set[str] = set()
         self._language = "zh-CN"
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008, N802 - Qt override signature
         if parent.isValid():
             return 0
         return len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008, N802 - Qt override signature
         if parent.isValid():
             return 0
         return len(self._columns)

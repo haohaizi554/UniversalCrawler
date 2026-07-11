@@ -143,7 +143,7 @@ def _decode_persistent_value(payload: Any) -> Any:
 
 
 try:
-    CachetoolsTTLCache = getattr(import_module("cachetools"), "TTLCache")
+    CachetoolsTTLCache = getattr(import_module("cachetools"), "TTLCache")  # noqa: B009 - optional runtime module
 except Exception:  # pragma: no cover - fallback keeps runtime optional
     CachetoolsTTLCache = None
 

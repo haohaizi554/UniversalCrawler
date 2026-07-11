@@ -3,14 +3,13 @@
 import os
 import re
 import time
-import json
 import requests
 import urllib.parse
 import threading
 import queue
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import Error as PlaywrightError, sync_playwright
 from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
 from app.exceptions import (
     InvalidCookieStateError,
@@ -21,6 +20,7 @@ from app.exceptions import (
     SpiderParseError,
     StreamResolveError,
 )
+from shared.runtime_options import DomainPolicyViolation
 from app.spiders.base import BaseSpider
 from app.spiders.bilibili import input_router
 from app.spiders.bilibili.input_router import BilibiliInputRoute
@@ -869,8 +869,7 @@ class BilibiliSpider(BaseSpider):
                 candidate = f"https://{candidate.lstrip('/')}"
             elif candidate.lower().startswith(("www.bilibili.com/", "bilibili.com/")):
                 candidate = f"https://{candidate.lstrip('/')}"
-        lowered = candidate.lower()
-        if not any(host in lowered for host in self.SHORT_LINK_HOSTS):
+        if not self._url_matches_hosts(candidate, self.SHORT_LINK_HOSTS, allow_subdomains=False):
             return candidate
         try:
             request_timeout = getattr(
@@ -882,18 +881,23 @@ class BilibiliSpider(BaseSpider):
             )
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
             proxies = {"http": proxy, "https": proxy} if proxy else None
+            request_kwargs = self._restricted_public_request_kwargs(
+                candidate,
+                allowed_hosts=(*self.SHORT_LINK_HOSTS, "bilibili.com"),
+            )
             response = requests.get(
                 candidate,
                 headers=HEADERS,
                 timeout=request_timeout,
                 allow_redirects=True,
                 proxies=proxies,
+                **request_kwargs,
             )
             resolved = response.url or candidate
             if hasattr(self, "sig_log"):
                 self.log(f"🔗 [短链解析] {candidate} -> {resolved}")
             return resolved
-        except requests.RequestException as exc:
+        except (requests.RequestException, DomainPolicyViolation) as exc:
             if hasattr(self, "sig_log"):
                 self.log(f"⚠️ [短链解析失败] {exc}")
             return candidate

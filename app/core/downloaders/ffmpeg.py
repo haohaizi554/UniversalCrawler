@@ -265,23 +265,26 @@ class FFmpegDownloader(BaseDownloader):
                 last_progress = 0
                 stderr_queue: queue.Queue[bytes | None] = queue.Queue()
                 stderr_closed = False
+                stderr_pipe = process.stderr
 
-                def _pump_stderr() -> None:
+                def _pump_stderr(
+                    stderr=stderr_pipe,
+                    target_queue: queue.Queue[bytes | None] = stderr_queue,
+                ) -> None:
                     """后台读取 stderr，避免子进程因管道缓冲区写满而卡死。"""
-                    stderr = process.stderr
                     if stderr is None:
-                        stderr_queue.put(None)
+                        target_queue.put(None)
                         return
                     try:
                         while True:
                             line = stderr.readline()
                             if not line:
                                 break
-                            stderr_queue.put(line)
+                            target_queue.put(line)
                     except (OSError, RuntimeError, ValueError) as exc:
                         debug_logger.log_exception("FFmpegDownloader", "stderr_pump", exc)
                     finally:
-                        stderr_queue.put(None)
+                        target_queue.put(None)
 
                 stderr_thread = threading.Thread(
                     target=_pump_stderr,

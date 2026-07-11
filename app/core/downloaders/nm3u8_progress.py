@@ -41,8 +41,8 @@ class _Nm3u8OutputProgress:
         with self._lock:
             self._advance_locked(now)
             percent_match = None
-            for percent_match in self._PERCENT_RE.finditer(text):
-                pass
+            for candidate in self._PERCENT_RE.finditer(text):
+                percent_match = candidate
             if percent_match is not None:
                 try:
                     percent = float(percent_match.group("percent"))
@@ -52,8 +52,8 @@ class _Nm3u8OutputProgress:
                     self._progress = max(0, min(95, int(percent)))
 
             speed_match = None
-            for speed_match in self._SPEED_RE.finditer(text):
-                pass
+            for candidate in self._SPEED_RE.finditer(text):
+                speed_match = candidate
             if speed_match is not None:
                 self._speed_bps = self._parse_speed_match(speed_match)
 
@@ -77,4 +77,3 @@ class _Nm3u8OutputProgress:
             return 0
         unit = str(match.group("unit") or "B").upper()
         return max(0, int(value * cls._UNIT_FACTORS.get(unit, 1)))
-

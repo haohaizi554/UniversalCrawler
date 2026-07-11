@@ -435,7 +435,7 @@ class WindowsFileAssociationService:
         md5 = hashlib.md5(data, usedforsecurity=False).digest()
         part1 = WindowsFileAssociationService._ms_userchoice_hash_1(data, md5)
         part2 = WindowsFileAssociationService._ms_userchoice_hash_2(data, md5)
-        return base64.b64encode(bytes(a ^ b for a, b in zip(part1, part2))).decode("ascii")
+        return base64.b64encode(bytes(a ^ b for a, b in zip(part1, part2, strict=True))).decode("ascii")
 
     @staticmethod
     def _u32(value: int) -> int:

@@ -160,12 +160,7 @@ def find_cookie_file(platform_id: str) -> Path | None:
         Path(__file__).resolve().parent.parent / auth_name,
     ]
 
-    try:
-        from app.config.constants import USER_DATA_ROOT
-
-        candidates.append(Path(USER_DATA_ROOT) / auth_name)
-    except Exception:
-        pass
+    # 统一走运行时路径 API，避免依赖已经移除的静态 USER_DATA_ROOT 常量。
     try:
         from app.utils.runtime_paths import user_data_root
 
@@ -314,6 +309,11 @@ def build_config_summary_lines(platform_id: str, config: dict, platform_name: st
         lines.append(f"  代理:   {config.get('proxy', '')}")
     return lines
 
+def _item_display_title(item: dict) -> str:
+    """将平台返回的空值或非字符串标题归一化为可安全展示的文本。"""
+    return str(item.get("title") or item.get("id") or "未知")
+
+
 def print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
     completed = []
     failed = []
@@ -352,7 +352,7 @@ def print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
     if completed:
         print(f"\n{GREEN}已完成:{RESET}")
         for i, item in enumerate(completed, 1):
-            title = item.get("title", item.get("id", "未知"))
+            title = _item_display_title(item)
             local_path = item.get("local_path", "")
             if len(title) > 60:
                 title = title[:57] + "..."
@@ -362,8 +362,9 @@ def print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
     if failed:
         print(f"\n{RED}失败项目:{RESET}")
         for i, item in enumerate(failed, 1):
-            title = item.get("title", item.get("id", "未知"))
-            error = item.get("meta", {}).get("download_error") or item.get("error", "未知错误")
+            title = _item_display_title(item)
+            meta = item.get("meta")
+            error = (meta.get("download_error") if isinstance(meta, dict) else None) or item.get("error", "未知错误")
             if len(title) > 60:
                 title = title[:57] + "..."
             print(f"  {YELLOW}{i}{RESET}. {title} ({error})")
@@ -371,7 +372,7 @@ def print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
     if other:
         print(f"\n{YELLOW}未完成项目:{RESET}")
         for i, item in enumerate(other, 1):
-            title = item.get("title", item.get("id", "未知")) if isinstance(item, dict) else str(item)
+            title = _item_display_title(item) if isinstance(item, dict) else str(item)
             status = item.get("status", "") if isinstance(item, dict) else ""
             local_path = item.get("local_path", "") if isinstance(item, dict) else ""
             if len(title) > 60:
@@ -465,7 +466,7 @@ def run_interactive_command(args: argparse.Namespace, *, env: InteractiveCommand
             return 1
 
         print(f"\n{BOLD}{BLUE}╔══════════════════════════════════════╗")
-        print(f"║         UCrawl 交互式引导              ║")
+        print("║         UCrawl 交互式引导              ║")
         print(f"╚══════════════════════════════════════╝{RESET}\n")
 
         next_platform_id = None
@@ -562,7 +563,8 @@ def run_interactive_command(args: argparse.Namespace, *, env: InteractiveCommand
                 valid = env.check_cookie_valid(platform_id, cookie_data)
                 cookie_path = env.find_cookie_file(platform_id)
                 if valid:
-                    print(f"  Cookie: {GREEN}✓ 本地有效 ({cookie_path.name}){RESET}")
+                    cookie_name = cookie_path.name if cookie_path is not None else "本地文件"
+                    print(f"  Cookie: {GREEN}✓ 本地有效 ({cookie_name}){RESET}")
                 else:
                     required = REQUIRED_COOKIE_KEY.get(platform_id, "")
                     print(f"  Cookie: {YELLOW}⚠ 本地 Cookie 缺少 {required}，搜索时可能需要重新登录{RESET}")
@@ -648,7 +650,7 @@ def run_interactive_command(args: argparse.Namespace, *, env: InteractiveCommand
             print(f"\n{GREEN}找到 {len(items)} 个结果 ({elapsed:.1f}s):{RESET}\n")
             for i, item in enumerate(items):
                 if isinstance(item, dict):
-                    title = item.get("title", item.get("id", "未知"))
+                    title = _item_display_title(item)
                     content_type = item.get("content_type", "")
                     type_label = {"video": "视频", "gallery": "图集", "image": "图片"}.get(content_type, "")
                     extra = f"  [{type_label}]" if type_label else ""

@@ -16,8 +16,8 @@ from typing import Any, Callable
 
 from app.config.update_trust import (
     UPDATE_PUBLIC_KEY_PEM,
-    UPDATE_TRUSTED_PUBLISHERS,
-    UPDATE_TRUSTED_THUMBPRINTS,
+    UPDATE_TRUSTED_PUBLISHERS,  # noqa: F401 - compatibility re-export for GUI callers
+    UPDATE_TRUSTED_THUMBPRINTS,  # noqa: F401 - compatibility re-export for GUI callers
 )
 from app.services.secure_updater import (
     APP_ID,
@@ -36,6 +36,7 @@ from app.services.secure_updater import (
     compare_semver,
     load_local_update_state,
     log_update_event,
+    open_trusted_url,
     sanitize_filename,
     save_local_update_state,
     validate_asset_url,
@@ -173,8 +174,7 @@ def fetch_latest_release_payload(
         },
     )
     try:
-        # Initial and final URLs are both allowlisted around this stdlib call.
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+        with open_trusted_url(request, timeout=timeout, allowed_hosts={"api.github.com"}) as response:
             final_url = _response_final_url(response, api_url)
             try:
                 validate_asset_url(final_url, {"api.github.com"})
@@ -210,8 +210,8 @@ def fetch_latest_release_page_payload(
         headers={"User-Agent": "UniversalCrawlerPro/update-check"},
     )
     try:
-        # GitHub uses a redirect from /latest to /tag/<version>; the target stays allowlisted.
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+        # GitHub uses a redirect from /latest to /tag/<version>; the handler validates it before following.
+        with open_trusted_url(request, timeout=timeout, allowed_hosts={"github.com"}) as response:
             final_url = _response_final_url(response, page_url)
             try:
                 validate_asset_url(final_url, {"github.com"})
@@ -740,7 +740,7 @@ def _download_metadata_file(url: str, target: Path, *, timeout: float = 8.0, max
     request = urllib.request.Request(url, headers={"User-Agent": "UniversalCrawlerPro/update-check"})
     try:
         # Signed metadata may redirect to GitHub's asset CDN, but nowhere else.
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+        with open_trusted_url(request, timeout=timeout, allowed_hosts=allowed_hosts) as response:
             final_url = _response_final_url(response, url)
             try:
                 validate_asset_url(final_url, allowed_hosts)

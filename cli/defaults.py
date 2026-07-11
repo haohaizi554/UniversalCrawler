@@ -234,11 +234,7 @@ def _try_load_cookie(source: str) -> str | None:
         Path.home() / ".ucrawl" / auth_name,  # 用户目录
         Path(__file__).resolve().parent.parent / auth_name,  # 项目根目录
     ]
-    try:
-        from app.config.constants import USER_DATA_ROOT
-        candidates.append(Path(USER_DATA_ROOT) / auth_name)
-    except Exception:
-        pass
+    # 运行时路径会区分源码运行、安装包和显式环境变量覆盖。
     try:
         from app.utils.runtime_paths import user_data_root
         candidates.append(user_data_root() / auth_name)
@@ -298,11 +294,7 @@ def _try_load_cookies_dict(source: str) -> dict | None:
         Path.home() / ".ucrawl" / auth_name,
         Path(__file__).resolve().parent.parent / auth_name,
     ]
-    try:
-        from app.config.constants import USER_DATA_ROOT
-        candidates.append(Path(USER_DATA_ROOT) / auth_name)
-    except Exception:
-        pass
+    # 与字符串 Cookie 加载使用同一套用户数据目录解析规则。
     try:
         from app.utils.runtime_paths import user_data_root
         candidates.append(user_data_root() / auth_name)

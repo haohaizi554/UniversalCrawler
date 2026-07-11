@@ -112,14 +112,25 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
     def test_fetch_latest_release_page_payload_reads_redirect_tag(self):
         response = _FakeResponse(url="https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.18")
-        with patch("app.services.update_check_service.urllib.request.urlopen", return_value=response):
+        with patch("app.services.update_check_service.open_trusted_url", return_value=response):
             payload = fetch_latest_release_page_payload()
 
         self.assertEqual(payload["tag_name"], "v3.6.18")
         self.assertEqual(payload["html_url"], "https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.18")
 
+    def test_fetch_latest_release_payload_uses_trusted_url_opener(self):
+        response = _FakeResponse(
+            url="https://api.github.com/repos/haohaizi554/UniversalCrawler/releases/latest",
+            body='{"tag_name":"v3.6.18"}',
+        )
+        with patch("app.services.update_check_service.open_trusted_url", return_value=response) as opener:
+            payload = fetch_latest_release_payload()
+
+        self.assertEqual(payload["tag_name"], "v3.6.18")
+        self.assertEqual(opener.call_args.kwargs["allowed_hosts"], {"api.github.com"})
+
     def test_fetch_latest_release_payload_rejects_non_https_source_before_open(self):
-        with patch("app.services.update_check_service.urllib.request.urlopen") as urlopen:
+        with patch("app.services.update_check_service.open_trusted_url") as urlopen:
             with self.assertRaisesRegex(UpdateCheckError, "trusted HTTPS"):
                 fetch_latest_release_payload(api_url="file:///tmp/latest.json")
 
@@ -127,7 +138,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
     def test_fetch_latest_release_page_payload_rejects_untrusted_redirect_host(self):
         response = _FakeResponse(url="https://attacker.example/releases/tag/v9.9.9")
-        with patch("app.services.update_check_service.urllib.request.urlopen", return_value=response):
+        with patch("app.services.update_check_service.open_trusted_url", return_value=response):
             with self.assertRaisesRegex(UpdateCheckError, "trusted HTTPS"):
                 fetch_latest_release_page_payload()
 
@@ -140,7 +151,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
             fp=None,
         )
         response = _FakeResponse(url="https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.19")
-        with patch("app.services.update_check_service.urllib.request.urlopen", side_effect=[forbidden, response]):
+        with patch("app.services.update_check_service.open_trusted_url", side_effect=[forbidden, response]):
             payload = fetch_latest_release_payload()
 
         self.assertEqual(payload["tag_name"], "v3.6.19")
@@ -237,11 +248,11 @@ class UpdateCheckServiceTests(unittest.TestCase):
                         ),
                     )
 
-            def fake_urlopen(request, timeout):
+            def fake_urlopen(request, timeout, **_kwargs):
                 return _FakeBytesResponse(blobs[request.full_url])
 
             with (
-                patch("app.services.update_check_service.urllib.request.urlopen", side_effect=fake_urlopen),
+                patch("app.services.update_check_service.open_trusted_url", side_effect=fake_urlopen),
                 patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
             ):
                 result = check_secure_update(
@@ -356,14 +367,14 @@ class UpdateCheckServiceTests(unittest.TestCase):
                         ),
                     )
 
-            def failing_urlopen(request, timeout):
+            def failing_urlopen(request, timeout, **_kwargs):
                 if request.full_url == signature_url:
                     raise HTTPError(signature_url, 503, "unavailable", None, None)
                 return _FakeBytesResponse(b'{"incomplete": true}')
 
             with (
                 patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
-                patch("app.services.update_check_service.urllib.request.urlopen", side_effect=failing_urlopen),
+                patch("app.services.update_check_service.open_trusted_url", side_effect=failing_urlopen),
             ):
                 result = check_secure_update(
                     "v3.6.17",
@@ -398,7 +409,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
         with (
             patch(
-                "app.services.update_check_service.urllib.request.urlopen",
+                "app.services.update_check_service.open_trusted_url",
                 side_effect=HTTPError(manifest_url, 404, "missing", None, None),
             ),
             patch(
@@ -442,7 +453,7 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
         with (
             patch(
-                "app.services.update_check_service.urllib.request.urlopen",
+                "app.services.update_check_service.open_trusted_url",
                 side_effect=HTTPError(manifest_url, 404, "missing", None, None),
             ),
             patch(
@@ -496,12 +507,12 @@ class UpdateCheckServiceTests(unittest.TestCase):
                         ),
                     )
 
-            def fake_urlopen(request, timeout):
+            def fake_urlopen(request, timeout, **_kwargs):
                 return _FakeBytesResponse(blobs[request.full_url])
 
             with (
                 patch("app.services.update_check_service.user_cache_root", return_value=root / "cache"),
-                patch("app.services.update_check_service.urllib.request.urlopen", side_effect=fake_urlopen),
+                patch("app.services.update_check_service.open_trusted_url", side_effect=fake_urlopen),
                 patch("app.services.update_check_service.fetch_latest_release_payload") as readonly_fetch,
             ):
                 with self.assertRaisesRegex(UpdateCheckError, "signature verification failed"):
@@ -577,6 +588,92 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertIn("跳过此版本", source)
         self.assertNotIn("下载和安装稍后接入", source)
         self.assertNotIn("自动下载和安装流程尚未接入", source)
+
+    def test_update_download_rejects_manifest_version_changed_after_selection(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import VerificationError
+        from app.services.update_check_service import UpdateCheckResult
+        from app.ui.main_window import MainWindow
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            manifest_path, signature_path, public_pem = _signed_manifest(Path(temp_dir))
+            result = UpdateCheckResult(
+                status=UPDATE_STATUS_AVAILABLE,
+                local_version="3.6.17",
+                latest_version="3.8.0",
+                tag_name="v3.8.0",
+                release_name="v3.8.0",
+                html_url="https://github.com/owner/repo/releases/tag/v3.8.0",
+                manifest_path=str(manifest_path),
+                signature_path=str(signature_path),
+            )
+
+            with (
+                patch("app.ui.main_window.UPDATE_PUBLIC_KEY_PEM", public_pem),
+                patch(
+                    "app.ui.main_window.Downloader",
+                    side_effect=AssertionError("download must not start for a changed manifest"),
+                ),
+            ):
+                with self.assertRaisesRegex(VerificationError, "selected update version"):
+                    MainWindow._download_verified_update(result)
+
+    def test_update_download_rechecks_minimum_client_version_before_network(self):
+        from tempfile import TemporaryDirectory
+
+        from app.services.secure_updater import VerificationError
+        from app.services.update_check_service import UpdateCheckResult
+        from app.ui.main_window import MainWindow
+        from tests.test_secure_updater import _signed_manifest
+
+        with TemporaryDirectory() as temp_dir:
+            manifest_path, signature_path, public_pem = _signed_manifest(
+                Path(temp_dir),
+                overrides={"minClientVersion": "3.8.0"},
+            )
+            result = UpdateCheckResult(
+                status=UPDATE_STATUS_AVAILABLE,
+                local_version="3.6.17",
+                latest_version="3.7.0",
+                tag_name="v3.7.0",
+                release_name="v3.7.0",
+                html_url="https://github.com/owner/repo/releases/tag/v3.7.0",
+                manifest_path=str(manifest_path),
+                signature_path=str(signature_path),
+            )
+
+            with (
+                patch("app.ui.main_window.UPDATE_PUBLIC_KEY_PEM", public_pem),
+                patch(
+                    "app.ui.main_window.Downloader",
+                    side_effect=AssertionError("download must not start for an incompatible client"),
+                ),
+            ):
+                with self.assertRaisesRegex(VerificationError, "minimum client version"):
+                    MainWindow._download_verified_update(result)
+
+    def test_main_window_startup_health_passes_update_staging_directory(self):
+        from types import SimpleNamespace
+
+        from app.ui.main_window import MainWindow
+
+        staging_dir = Path("C:/ucrawl-test/update-staging")
+        host = SimpleNamespace(
+            _current_status_version=lambda: "v3.7.0",
+            _display_version=lambda version: version,
+        )
+        with (
+            patch("app.ui.main_window.default_update_staging_dir", return_value=staging_dir, create=True),
+            patch("app.ui.main_window.record_startup_update_health") as record_health,
+        ):
+            MainWindow._record_update_startup_health(host)
+
+        record_health.assert_called_once_with(
+            current_version="3.7.0",
+            staging_dir=staging_dir,
+        )
 
     def test_update_download_dialog_exposes_cancel_error_retry_and_install_controls(self):
         source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")

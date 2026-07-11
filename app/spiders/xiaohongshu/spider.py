@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import quote
@@ -18,6 +17,7 @@ from app.exceptions import SpiderAuthError, SpiderParseError
 from app.spiders.base import BaseSpider
 from app.services.auth_service import AuthService
 from app.utils.user_agents import resolve_user_agent
+from shared.runtime_options import DomainPolicyViolation
 
 from .client import XiaohongshuClient
 from .helpers import (
@@ -233,27 +233,31 @@ class XiaohongshuSpider(BaseSpider):
         }
 
     def _resolve_short_share_url(self, url: str) -> str:
-        lowered = url.lower()
-        if not lowered.startswith(("http://", "https://")):
-            return url.strip()
-        if "xhslink.com" not in lowered and "xhslink.cn" not in lowered:
+        candidate = str(url or "").strip()
+        short_hosts = ("xhslink.com", "xhslink.cn")
+        if not self._url_matches_hosts(candidate, short_hosts, allow_subdomains=False):
             return url.strip()
         try:
             proxy = self._proxy()
             proxies = {"http": proxy, "https": proxy} if proxy else None
+            request_kwargs = self._restricted_public_request_kwargs(
+                candidate,
+                allowed_hosts=(*short_hosts, "xiaohongshu.com"),
+            )
             response = requests.get(
-                url,
+                candidate,
                 headers={"User-Agent": self._user_agent(), "Referer": self.HOME_URL},
                 timeout=self._configured_timeout_seconds(default=30),
                 allow_redirects=True,
                 proxies=proxies,
+                **request_kwargs,
             )
-            resolved = response.url or url
-            self.log(f"🔗 [分享链接解析] {url} -> {resolved}")
+            resolved = response.url or candidate
+            self.log(f"🔗 [分享链接解析] {candidate} -> {resolved}")
             return resolved
-        except requests.RequestException as exc:
+        except (requests.RequestException, DomainPolicyViolation) as exc:
             self.log(f"⚠️ 小红书分享链接解析失败: {exc}")
-            return url.strip()
+            return candidate
 
     def _normalize_keyword(self, raw_text: str) -> str:
         extracted = extract_first_url(raw_text)

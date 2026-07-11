@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Protocol, runtime_checkable
+from typing import ClassVar, Iterable, Protocol, runtime_checkable
 
 TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_DIR.parent
@@ -43,6 +43,8 @@ RECOMMENDED_CATEGORY_IDS = (
 @dataclass
 class TestCategory:
     """测试类别定义。"""
+    __test__: ClassVar[bool] = False
+
 
     id: str
     name: str
@@ -265,6 +267,8 @@ def register_test_files(category_id: str, files: list[str], *, append: bool = Tr
 
 @runtime_checkable
 class TestPlugin(Protocol):
+    __test__: ClassVar[bool] = False
+
     id: str
     name: str
     description: str

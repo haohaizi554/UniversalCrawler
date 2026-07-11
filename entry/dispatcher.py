@@ -344,7 +344,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     """
     try:
         from PyQt6.QtCore import QSize, Qt
-        from PyQt6.QtGui import QFont, QIcon, QKeySequence, QShortcut
+        from PyQt6.QtGui import QKeySequence, QShortcut
         from PyQt6.QtWidgets import (
             QApplication,
             QDialog,
@@ -797,7 +797,7 @@ def prompt_mode_menu() -> Mode | None:
             return _MENU_ITEMS[idx][2]
 
     # 接受完整关键字
-    for key, label, mode in _MENU_ITEMS:
+    for _key, label, mode in _MENU_ITEMS:
         if mode is not None and (raw == mode.value or raw in label.lower()):
             return mode
 
@@ -849,7 +849,7 @@ def _strip_dispatcher_args(argv: Sequence[str]) -> list[str]:
     """
     result = []
     skip_next = False
-    for i, arg in enumerate(argv):
+    for arg in argv:
         if skip_next:
             skip_next = False
             continue

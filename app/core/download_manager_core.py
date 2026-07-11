@@ -636,7 +636,6 @@ class DownloadManagerCore:
             return results
 
         queued_videos = self._remove_queued_tasks(ids)
-        queued_ids = {video.id for video in queued_videos}
         for video in queued_videos:
             # 队列中任务还没创建 worker，只需要回退前端状态并标记用户取消。
             video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
@@ -956,7 +955,7 @@ class DownloadManagerCore:
             except RuntimeError:
                 return True
         if hasattr(worker, "is_running"):
-            return not bool(getattr(worker, "is_running"))
+            return not bool(worker.is_running)
         return False
 
     def _start_stop_guard(self) -> threading.RLock:

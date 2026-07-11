@@ -678,7 +678,7 @@ class AppShell(QWidget):
             translated_source = [tr(str(value), self._language) for value in source]
             if current != translated_source and not all(
                 is_translation_of(text, str(source_value))
-                for text, source_value in zip(current, source)
+                for text, source_value in zip(current, source, strict=True)
             ):
                 source = [source_text_for_translation(value) for value in current]
                 table.setProperty("_i18n_source_headers", source)

@@ -5,17 +5,24 @@
 - 集成测试：main() 的 4 大模式（default/--no-qt/--script/port 冲突）
 """
 
-import io
-import os
-import sys
-import unittest
 import socket
+import sys
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 class WebEntryPortProbeTests(unittest.TestCase):
     """_is_port_in_use / _find_available_port 单测。"""
+
+    def test_port_dialog_entry_is_a_thin_module_delegate(self):
+        import inspect
+
+        from entry.web_entry import _resolve_port_with_dialog
+
+        source = inspect.getsource(_resolve_port_with_dialog)
+        self.assertIn("from entry.web_port_dialog import resolve_port_with_dialog", source)
+        self.assertLess(len(source.splitlines()), 15)
 
     def test_port_in_use_returns_true(self):
         """bind 失败的端口 → _is_port_in_use 返回 True。"""
@@ -197,7 +204,7 @@ class WebEntryArgparseTests(unittest.TestCase):
 
     def test_port_invalid(self):
         """--port abc 必须报错退出码 2。"""
-        from entry.web_entry import _build_argparser, main
+        from entry.web_entry import main
         with patch("sys.stderr"):
             with self.assertRaises(SystemExit) as cm:
                 main(["--port", "abc"])

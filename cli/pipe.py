@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Protocol
+from typing import Any
 
 from cli.selection_base import SelectionStrategy
 
@@ -67,8 +67,9 @@ class PipeSelection(SelectionStrategy):
 
     def _select_from_preloaded(self, n: int) -> list[int]:
         """从预加载的答案中选择。"""
-        if self._call_count < len(self._preloaded):
-            indices = self._preloaded[self._call_count]
+        preloaded = self._preloaded or []
+        if self._call_count < len(preloaded):
+            indices = preloaded[self._call_count]
             self._call_count += 1
             return [i for i in indices if 0 <= i < n]
         else:
@@ -98,24 +99,34 @@ class PipeSelection(SelectionStrategy):
 
     def _parse_json_data(self, data: Any, n: int) -> list[int] | None:
         """解析 JSON 数据为索引列表。"""
+        def _coerce_index(value: Any) -> int | None:
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                return None
+            return index if 0 <= index < n else None
+
         # 格式 1: `[0, 2, 5]`
         if isinstance(data, list):
-            return [int(i) for i in data if 0 <= int(i) < n]
+            indices = [_coerce_index(value) for value in data]
+            return [index for index in indices if index is not None]
 
         # 格式 2: `{"indices": [0, 2, 5]}`
         if isinstance(data, dict):
             if "indices" in data:
-                return [int(i) for i in data["indices"] if 0 <= int(i) < n]
+                indices = [_coerce_index(value) for value in data["indices"]]
+                return [index for index in indices if index is not None]
             if "selected" in data and isinstance(data["selected"], list):
-                return [int(i) for i in data["selected"] if 0 <= int(i) < n]
+                indices = [_coerce_index(value) for value in data["selected"]]
+                return [index for index in indices if index is not None]
             if "items" in data and isinstance(data["items"], list):
-                indices = []
+                selected_indices: list[int] = []
                 for j, it in enumerate(data["items"]):
                     if isinstance(it, dict) and it.get("selected", True):
-                        idx = it.get("index", j)
-                        if 0 <= idx < n:
-                            indices.append(idx)
-                return indices
+                        index = _coerce_index(it.get("index", j))
+                        if index is not None:
+                            selected_indices.append(index)
+                return selected_indices
 
         return None
 

@@ -237,7 +237,6 @@ class ChunkedDownloader(BaseDownloader):
             return False
 
         threads: list[threading.Thread] = []
-        merged = False
         completed = False
         try:
             for index, (start, end) in enumerate(chunks):
@@ -287,7 +286,6 @@ class ChunkedDownloader(BaseDownloader):
                 self._emit_progress(progress_callback, 98, bytes_downloaded=total_size, bytes_total=total_size)
                 # 所有分片成功后再串行合并，保证最终文件只在数据完整时出现。
                 self._merge_temp_files_atomically(temp_files, save_path)
-                merged = True
             except Exception as exc:
                 raise StreamDownloadError(f"分块下载合并失败: {exc}") from exc
             self._emit_progress(progress_callback, 100, bytes_downloaded=total_size, bytes_total=total_size)

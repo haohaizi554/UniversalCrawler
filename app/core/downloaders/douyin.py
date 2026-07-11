@@ -179,9 +179,10 @@ class DouyinDownloader(BaseDownloader):
                 *,
                 bytes_downloaded: int | None = None,
                 bytes_total: int | None = None,
+                _seq: int = seq,
             ) -> None:
                 emit_gallery_progress(
-                    seq,
+                    _seq,
                     progress,
                     file_bytes_downloaded=bytes_downloaded,
                     file_bytes_total=bytes_total,

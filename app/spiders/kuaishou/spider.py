@@ -16,6 +16,7 @@ from app.spiders.kuaishou.parser import KuaishouParser
 from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
 from app.services.auth_service import AuthService
 from app.utils.user_agents import resolve_user_agent
+from shared.runtime_options import DomainPolicyViolation
 
 class KuaishouSpider(BaseSpider):
     """快手爬虫，负责页面滚动扫描、任务选择和流监听。"""
@@ -99,40 +100,54 @@ class KuaishouSpider(BaseSpider):
 
     def _is_kuaishou_url(self, raw_text: str) -> bool:
         """判断输入是否为快手相关 URL。"""
-        lowered = str(raw_text or "").lower()
-        return any(domain in lowered for domain in ("kuaishou.com", "chenzhongtech.com"))
+        return self._url_matches_hosts(
+            str(raw_text or ""),
+            ("kuaishou.com", "chenzhongtech.com"),
+        )
 
     def _is_detail_url(self, raw_text: str) -> bool:
         """识别快手单条作品详情链接。"""
-        lowered = str(raw_text or "").lower()
-        return any(
-            marker in lowered
-            for marker in ("/short-video/", "/fw/photo/", "photoid=", "chenzhongtech.com/fw/photo/")
-        )
+        if not self._is_kuaishou_url(raw_text):
+            return False
+        parsed = urllib.parse.urlparse(str(raw_text or ""))
+        path = parsed.path.lower()
+        query_keys = {key.lower() for key in urllib.parse.parse_qs(parsed.query)}
+        return "/short-video/" in path or "/fw/photo/" in path or "photoid" in query_keys
 
     def _resolve_short_share_url(self, url: str) -> str:
         """将快手短分享链解析为最终详情或主页链接。"""
-        if not self._is_kuaishou_url(url):
+        candidate = str(url or "").strip()
+        if not self._is_kuaishou_url(candidate):
             return url
-        lowered = url.lower()
-        if "v.kuaishou.com" not in lowered and "kuaishou.com/f/" not in lowered:
+        parsed = urllib.parse.urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        is_short_link = host == "v.kuaishou.com" or (
+            host in {"kuaishou.com", "www.kuaishou.com"}
+            and parsed.path.lower().startswith("/f/")
+        )
+        if not is_short_link:
             return url
         try:
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
             proxies = {"http": proxy, "https": proxy} if proxy else None
+            request_kwargs = self._restricted_public_request_kwargs(
+                candidate,
+                allowed_hosts=("kuaishou.com", "chenzhongtech.com"),
+            )
             response = requests.get(
-                url,
+                candidate,
                 headers={"User-Agent": self._user_agent()},
                 timeout=self._configured_timeout_seconds(default=60),
                 allow_redirects=True,
                 proxies=proxies,
+                **request_kwargs,
             )
-            resolved = response.url or url
-            self.log(f"🔗 [分享链接解析] {url} -> {resolved}")
+            resolved = response.url or candidate
+            self.log(f"🔗 [分享链接解析] {candidate} -> {resolved}")
             return resolved
-        except requests.RequestException as exc:
+        except (requests.RequestException, DomainPolicyViolation) as exc:
             self.log(f"⚠️ [分享链接解析失败] {exc}")
-            return url
+            return candidate
 
     def _normalize_keyword(self, raw_text: str) -> str:
         """兼容分享文案、短链和完整快手链接。"""
@@ -195,6 +210,10 @@ class KuaishouSpider(BaseSpider):
     def _fetch_share_detail_via_http(self, detail_url: str) -> tuple[str, str]:
         """通过纯 HTTP 抓取快手分享/详情页，避免弹浏览器。"""
         try:
+            request_kwargs = self._restricted_public_request_kwargs(
+                detail_url,
+                allowed_hosts=("kuaishou.com", "chenzhongtech.com"),
+            )
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
             proxies = {"http": proxy, "https": proxy} if proxy else None
             response = requests.get(
@@ -203,9 +222,10 @@ class KuaishouSpider(BaseSpider):
                 timeout=self._configured_timeout_seconds(default=60),
                 allow_redirects=True,
                 proxies=proxies,
+                **request_kwargs,
             )
             response.raise_for_status()
-        except requests.RequestException as exc:
+        except (requests.RequestException, DomainPolicyViolation) as exc:
             self.log(f"⚠️ 快手分享详情页请求失败: {exc}")
             return "", ""
 
@@ -987,7 +1007,7 @@ class KuaishouSpider(BaseSpider):
             except PlaywrightError:
                 pass
 
-        self.log(f"\n📊 流程结束。")
+        self.log("\n📊 流程结束。")
         self.debug_state(
             action="capture_pipeline_finish",
             message="快手流捕获流水线结束",

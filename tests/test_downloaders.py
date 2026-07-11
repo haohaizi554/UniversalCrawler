@@ -32,6 +32,7 @@ from app.core.downloaders.m3u8 import _LocalHlsProxy, _Nm3u8OutputProgress
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError, MergeError, StreamDownloadError
 from app.models import VideoItem
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
+from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
 
 class DownloaderStrategyTests(unittest.TestCase):
     
@@ -84,6 +85,30 @@ class DownloaderStrategyTests(unittest.TestCase):
             )
 
         session.get.assert_not_called()
+
+    def test_python_hls_policy_rejects_private_redirect_before_following(self):
+        response = Mock()
+        response.status_code = 302
+        response.headers = {"Location": "http://127.0.0.1/private.ts"}
+        response.close = Mock()
+        session = Mock()
+        session.get.return_value = response
+        policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443)),
+            ]
+        )
+
+        with self.assertRaises(DomainPolicyViolation):
+            N_m3u8DL_RE_Downloader._curl_cffi_get_bytes(
+                session,
+                "https://cdn.example/segment.ts",
+                {"Cookie": "session=private"},
+                domain_policy=policy,
+            )
+
+        session.get.assert_called_once()
+        self.assertFalse(session.get.call_args.kwargs["allow_redirects"])
 
     @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.is_available", return_value=False)
     @patch("app.core.downloaders.m3u8.N_m3u8DL_RE_Downloader._python_hls_fallback_available", return_value=True)
@@ -2101,6 +2126,55 @@ https://cdn.example.com/seg2.m4s?token=1
         self.assertIs(result, response)
         self.assertNotIn("stream", mocked_get.call_args.kwargs)
 
+    def test_hls_proxy_rejects_private_upstream_before_curl(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        fake_curl_cffi = types.ModuleType("curl_cffi")
+        fake_curl_cffi.requests = object()
+
+        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+        ) as mocked_get:
+            with self.assertRaises(DomainPolicyViolation):
+                downloader._hls_proxy_open_upstream(
+                    "http://127.0.0.1/private-segment.ts",
+                    {},
+                    None,
+                    domain_policy=DomainPolicyEngine(),
+                )
+
+        mocked_get.assert_not_called()
+
+    def test_hls_proxy_rejects_redirect_to_private_upstream_before_following(self):
+        downloader = N_m3u8DL_RE_Downloader()
+        response = Mock()
+        response.status_code = 302
+        response.headers = {"Location": "http://127.0.0.1/private-segment.ts"}
+        response.close = Mock()
+        fake_curl_cffi = types.ModuleType("curl_cffi")
+        fake_curl_cffi.requests = object()
+        policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443)),
+            ]
+        )
+
+        with patch.dict(sys.modules, {"curl_cffi": fake_curl_cffi}), patch.object(
+            downloader,
+            "_curl_cffi_get_response",
+            return_value=response,
+        ) as mocked_get:
+            with self.assertRaises(DomainPolicyViolation):
+                downloader._hls_proxy_open_upstream(
+                    "https://cdn.example/playlist.m3u8",
+                    {},
+                    None,
+                    domain_policy=policy,
+                )
+
+        mocked_get.assert_called_once()
+        self.assertFalse(mocked_get.call_args.kwargs["allow_redirects"])
+
     def test_response_iter_bytes_prefers_buffered_content_before_iter_content(self):
         class FakeResponse:
             content = b"abcdef"
@@ -2521,8 +2595,8 @@ seg1.ts
             def __init__(self):
                 self.calls = []
 
-            def get(self, url, headers=None, timeout=None):
-                self.calls.append(url)
+            def get(self, url, headers=None, timeout=None, allow_redirects=True):
+                self.calls.append((url, allow_redirects))
                 response = Mock()
                 response.status_code = 200
                 response.text = ""
@@ -2547,7 +2621,7 @@ seg1.ts
             with open(save_path, "rb") as fp:
                 self.assertEqual(fp.read(), b"aaa")
 
-        self.assertEqual(fake_session.calls, ["https://surrit.com/demo/seg1.ts"])
+        self.assertEqual(fake_session.calls, [("https://surrit.com/demo/seg1.ts", False)])
 
     def test_curl_cffi_hls_fallback_downloads_media_segments(self):
         downloader = N_m3u8DL_RE_Downloader()
@@ -2565,8 +2639,8 @@ https://cdn.example.com/seg2.ts
             def __init__(self):
                 self.calls = []
 
-            def get(self, url, headers=None, timeout=None):
-                self.calls.append((url, headers, timeout))
+            def get(self, url, headers=None, timeout=None, allow_redirects=True):
+                self.calls.append((url, headers, timeout, allow_redirects))
                 response = Mock()
                 response.status_code = 200
                 if url.endswith("playlist.m3u8"):
@@ -2605,6 +2679,7 @@ https://cdn.example.com/seg2.ts
         self.assertEqual(fake_session.calls[0][0], "https://surrit.com/demo/playlist.m3u8")
         self.assertEqual(fake_session.calls[1][0], "https://surrit.com/demo/seg1.ts")
         self.assertEqual(fake_session.calls[2][0], "https://cdn.example.com/seg2.ts")
+        self.assertTrue(all(call[3] is False for call in fake_session.calls))
 
     @patch.object(N_m3u8DL_RE_Downloader, "_cleanup_external_temp_files")
     @patch.object(N_m3u8DL_RE_Downloader, "_download_with_yt_dlp_fallback")

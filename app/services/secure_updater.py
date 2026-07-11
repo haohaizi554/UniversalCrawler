@@ -8,7 +8,6 @@ signature checks have succeeded.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import ipaddress
 import json
@@ -24,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
@@ -58,6 +57,53 @@ DEFAULT_MAX_RELEASE_FEED_BYTES = 2_000_000
 DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30.0
 DEFAULT_INSTALL_ATTEMPT_LIMIT = 2
 UrlOpener = Callable[..., Any]
+
+
+class TrustedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """在 urllib 跟随 30x 之前验证目标，阻断更新链路的重定向 SSRF。"""
+
+    def __init__(
+        self,
+        allowed_hosts: set[str] | frozenset[str],
+        *,
+        development_mode: bool = False,
+    ) -> None:
+        super().__init__()
+        self.allowed_hosts = frozenset(str(host).lower() for host in allowed_hosts)
+        self.development_mode = bool(development_mode)
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        validate_asset_url(newurl, self.allowed_hosts, development_mode=self.development_mode)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_trusted_url(
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+    allowed_hosts: set[str] | frozenset[str],
+    development_mode: bool = False,
+) -> Any:
+    """打开受信 URL，并把同一策略应用到每一次 HTTP 重定向。"""
+
+    validate_asset_url(request.full_url, allowed_hosts, development_mode=development_mode)
+    opener = urllib.request.build_opener(
+        TrustedRedirectHandler(allowed_hosts, development_mode=development_mode)
+    )
+    return opener.open(request, timeout=timeout)
+
+
+def _response_final_url(response: Any, fallback: str) -> str:
+    getter = getattr(response, "geturl", None)
+    return str(getter() if callable(getter) else fallback)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -148,7 +194,7 @@ def _compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
         return 1
     if not right:
         return -1
-    for left_part, right_part in zip(left, right):
+    for left_part, right_part in zip(left, right, strict=False):
         left_num = left_part.isdigit()
         right_num = right_part.isdigit()
         if left_num and right_num:
@@ -318,6 +364,24 @@ class PendingInstall:
     log_path: str = ""
 
 
+def _state_semver(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return _normalize_semver_text(raw)
+    except ValueError:
+        return ""
+
+
+def _state_int(value: Any, *, default: int, minimum: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
+
+
 @dataclass
 class LocalUpdateState:
     last_seen_version: str = ""
@@ -342,6 +406,8 @@ class LocalUpdateState:
         _log_update_event("update.install.failed", self.last_install_error, level="ERROR")
         if pending.attempts >= self.install_attempt_limit:
             self.pending_install = None
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
     @classmethod
     def load(cls, path: Path) -> "LocalUpdateState":
@@ -349,14 +415,29 @@ class LocalUpdateState:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return cls()
-        pending_payload = payload.get("pending_install") if isinstance(payload, Mapping) else None
-        pending = PendingInstall(**pending_payload) if isinstance(pending_payload, Mapping) else None
+        if not isinstance(payload, Mapping):
+            return cls()
+        pending_payload = payload.get("pending_install")
+        pending = None
+        if isinstance(pending_payload, Mapping):
+            pending_version = _state_semver(pending_payload.get("version"))
+            if pending_version:
+                pending = PendingInstall(
+                    version=pending_version,
+                    attempts=_state_int(pending_payload.get("attempts"), default=0),
+                    installer_path=str(pending_payload.get("installer_path") or ""),
+                    log_path=str(pending_payload.get("log_path") or ""),
+                )
         return cls(
-            last_seen_version=str(payload.get("last_seen_version") or ""),
-            skipped_version=str(payload.get("skipped_version") or ""),
+            last_seen_version=_state_semver(payload.get("last_seen_version")),
+            skipped_version=_state_semver(payload.get("skipped_version")),
             pending_install=pending,
             last_install_error=str(payload.get("last_install_error") or ""),
-            install_attempt_limit=int(payload.get("install_attempt_limit") or DEFAULT_INSTALL_ATTEMPT_LIMIT),
+            install_attempt_limit=_state_int(
+                payload.get("install_attempt_limit"),
+                default=DEFAULT_INSTALL_ATTEMPT_LIMIT,
+                minimum=1,
+            ),
         )
 
     def save(self, path: Path) -> None:
@@ -367,6 +448,11 @@ class LocalUpdateState:
 def default_update_state_path() -> Path:
     """Return the persisted updater state path used by GUI and helper handoff."""
     return user_cache_root() / "updates" / DEFAULT_UPDATE_STATE_NAME
+
+
+def default_update_staging_dir() -> Path:
+    """Return the shared cache directory for partial and verified update packages."""
+    return user_cache_root() / "updates" / "staging"
 
 
 def load_local_update_state(path: Path | None = None) -> LocalUpdateState:
@@ -509,9 +595,10 @@ class GitHubReleaseClient:
     def fetch_manifest_locations(
         self,
         *,
-        opener: UrlOpener = urllib.request.urlopen,
+        opener: UrlOpener | None = None,
         manual: bool = False,
     ) -> ManifestLocations:
+        effective_opener = opener or self._trusted_opener()
         cache = self._load_cache()
         if not manual and self._is_auto_check_throttled(cache):
             _log_update_event("update.check.throttled", "automatic update check throttled")
@@ -534,7 +621,8 @@ class GitHubReleaseClient:
         request = urllib.request.Request(url, headers=headers)
         _log_update_event("update.check.started", "checking GitHub release", manual=manual)
         try:
-            with opener(request, timeout=self.timeout) as response:
+            with effective_opener(request, timeout=self.timeout) as response:
+                validate_asset_url(_response_final_url(response, url), {"api.github.com"})
                 payload = response.read().decode("utf-8")
                 data = json.loads(payload)
                 etag = str(getattr(response, "headers", {}).get("ETag") or "")
@@ -548,13 +636,13 @@ class GitHubReleaseClient:
                     "GitHub API rate limited; falling back to the public release feed",
                     level="WARN",
                 )
-                return self._fetch_manifest_locations_from_atom(opener=opener, per_page=1)[0]
+                return self._fetch_manifest_locations_from_atom(opener=effective_opener, per_page=1)[0]
             if exc.code == 404:
                 raise DownloadError("GitHub release was not found") from exc
             if exc.code >= 500:
                 raise DownloadError("GitHub release service is temporarily unavailable") from exc
             raise DownloadError(f"GitHub release request failed with HTTP {exc.code}") from exc
-        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError, ManifestError) as exc:
             raise DownloadError(f"GitHub release request failed: {exc}") from exc
         if not isinstance(data, Mapping):
             raise DownloadError("GitHub release response had an unexpected shape")
@@ -572,12 +660,13 @@ class GitHubReleaseClient:
     def fetch_manifest_location_candidates(
         self,
         *,
-        opener: UrlOpener = urllib.request.urlopen,
+        opener: UrlOpener | None = None,
         manual: bool = False,
         per_page: int = 10,
     ) -> tuple[ManifestLocations, ...]:
         """Return signed-manifest locations from recent releases, newest first."""
 
+        effective_opener = opener or self._trusted_opener()
         cache = self._load_cache()
         if not manual and self._is_auto_check_throttled(cache):
             _log_update_event("update.check.throttled", "automatic update check throttled")
@@ -603,7 +692,8 @@ class GitHubReleaseClient:
         request = urllib.request.Request(url, headers=headers)
         _log_update_event("update.check.started", "checking GitHub release candidates", manual=manual)
         try:
-            with opener(request, timeout=self.timeout) as response:
+            with effective_opener(request, timeout=self.timeout) as response:
+                validate_asset_url(_response_final_url(response, url), {"api.github.com"})
                 payload = response.read().decode("utf-8")
                 data = json.loads(payload)
                 etag = str(getattr(response, "headers", {}).get("ETag") or "")
@@ -623,13 +713,13 @@ class GitHubReleaseClient:
                     "GitHub API rate limited; falling back to the public release feed",
                     level="WARN",
                 )
-                return self._fetch_manifest_locations_from_atom(opener=opener, per_page=page_size)
+                return self._fetch_manifest_locations_from_atom(opener=effective_opener, per_page=page_size)
             if exc.code == 404:
                 raise DownloadError("GitHub releases were not found") from exc
             if exc.code >= 500:
                 raise DownloadError("GitHub release service is temporarily unavailable") from exc
             raise DownloadError(f"GitHub release request failed with HTTP {exc.code}") from exc
-        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError, ManifestError) as exc:
             raise DownloadError(f"GitHub release request failed: {exc}") from exc
         if not isinstance(data, list):
             raise DownloadError("GitHub releases response had an unexpected shape")
@@ -653,6 +743,15 @@ class GitHubReleaseClient:
         )
         return tuple(locations)
 
+    @staticmethod
+    def _trusted_opener() -> UrlOpener:
+        allowed_hosts = frozenset({"api.github.com", "github.com"})
+
+        def opener(request: urllib.request.Request, *, timeout: float) -> Any:
+            return open_trusted_url(request, timeout=timeout, allowed_hosts=allowed_hosts)
+
+        return opener
+
     def _fetch_manifest_locations_from_atom(
         self,
         *,
@@ -669,10 +768,11 @@ class GitHubReleaseClient:
         request = urllib.request.Request(feed_url, headers={"User-Agent": self.user_agent})
         try:
             with opener(request, timeout=self.timeout) as response:
+                validate_asset_url(_response_final_url(response, feed_url), {"github.com"})
                 payload = response.read(DEFAULT_MAX_RELEASE_FEED_BYTES + 1)
         except urllib.error.HTTPError as exc:
             raise DownloadError(f"GitHub release feed failed with HTTP {exc.code}") from exc
-        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        except (OSError, TimeoutError, urllib.error.URLError, ManifestError) as exc:
             raise DownloadError(f"GitHub release feed failed: {exc}") from exc
         if len(payload) > DEFAULT_MAX_RELEASE_FEED_BYTES:
             raise DownloadError("GitHub release feed is too large")
@@ -818,7 +918,7 @@ class Downloader:
         allowed_hosts: set[str] | frozenset[str] | None = None,
         development_mode: bool = False,
     ) -> None:
-        self.cache_dir = cache_dir or user_cache_root() / "updates" / "staging"
+        self.cache_dir = cache_dir or default_update_staging_dir()
         self.max_size_bytes = int(max_size_bytes)
         self.timeout_seconds = float(timeout_seconds)
         self.retries = max(0, int(retries))
@@ -829,7 +929,7 @@ class Downloader:
         self,
         asset: UpdateAsset,
         *,
-        opener: UrlOpener = urllib.request.urlopen,
+        opener: UrlOpener | None = None,
         cancel_event: Event | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Path:
@@ -841,10 +941,14 @@ class Downloader:
         target = self.cache_dir / sanitize_filename(asset.name)
         partial = target.with_name(target.name + ".partial")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        effective_opener = opener or self._trusted_opener()
         attempt = 0
         while True:
             try:
-                return self._download_once(asset, target, partial, opener, cancel_event, progress_callback)
+                return self._download_once(asset, target, partial, effective_opener, cancel_event, progress_callback)
+            except ManifestError as exc:
+                partial.unlink(missing_ok=True)
+                raise DownloadError(f"download redirect was rejected: {exc}") from exc
             except DownloadError as exc:
                 if not exc.keep_partial:
                     partial.unlink(missing_ok=True)
@@ -853,6 +957,17 @@ class Downloader:
                 if attempt >= self.retries:
                     raise
                 attempt += 1
+
+    def _trusted_opener(self) -> UrlOpener:
+        def opener(request: urllib.request.Request, *, timeout: float) -> Any:
+            return open_trusted_url(
+                request,
+                timeout=timeout,
+                allowed_hosts=self.allowed_hosts,
+                development_mode=self.development_mode,
+            )
+
+        return opener
 
     def _download_once(
         self,
@@ -1013,11 +1128,7 @@ class PackageVerifier:
         if not any(value and value in self.trusted_thumbprints for value in thumbprints):
             raise VerificationError("Authenticode signer thumbprint is not trusted")
         if self.trusted_publishers and not any(publisher in subject for publisher in self.trusted_publishers):
-            _log_update_event(
-                "update.verify.publisher_unmatched",
-                "Authenticode thumbprint matched but publisher allowlist did not",
-                level="WARN",
-            )
+            raise VerificationError("Authenticode signer publisher is not trusted")
         return
 
     def _verify_macos(self, path: Path, asset: UpdateAsset) -> None:

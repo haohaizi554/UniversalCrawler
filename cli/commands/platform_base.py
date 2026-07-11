@@ -34,13 +34,15 @@ def resolve_platform(name: str) -> str | None:
     """将别名解析为标准平台 ID。"""
     return ALIAS_TO_PLATFORM.get(name.lower())
 
-def add_platform_subparsers(subparsers: argparse._SubParsersAction) -> dict[str, argparse.ArgumentParser]:
+def add_platform_subparsers(
+    subparsers: argparse._SubParsersAction,
+) -> dict[str, dict[str, argparse.ArgumentParser]]:
     """为每个平台添加子命令。
 
     Returns:
         平台名到子命令解析器的字典
     """
-    parsers = {}
+    parsers: dict[str, dict[str, argparse.ArgumentParser]] = {}
 
     for platform_id, info in PLATFORMS.items():
         # 平台主命令
@@ -75,7 +77,7 @@ def add_platform_subparsers(subparsers: argparse._SubParsersAction) -> dict[str,
         # scan 子命令（与通用 scan 命令对齐：扫描本地目录）
         scan_parser = platform_subparsers.add_parser(
             "scan",
-            help=f"扫描本地目录",
+            help="扫描本地目录",
         )
         scan_parser.add_argument("directory", help="要扫描的目录")
         scan_parser.add_argument("--limit", type=int, default=None, help="最多扫描文件数 (默认: 从配置读取，通常 1000)")

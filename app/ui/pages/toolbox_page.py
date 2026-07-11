@@ -55,6 +55,7 @@ class ToolboxPage(PageFrame):
         self.recent_items = list(snapshot.get("toolbox_recent_items") or [])
         self._tool_buttons = {}
         for index, item in enumerate(self.items):
+            tool_id = str(item.get("id") or "")
             button = QToolButton()
             button.setObjectName("ToolCardButton")
             button.setText(f"{item.get('title')}\n{item.get('summary')}")
@@ -67,8 +68,8 @@ class ToolboxPage(PageFrame):
             if icon is not None:
                 button.setIcon(icon)
                 button.setIconSize(QSize(44, 44))
-            button.clicked.connect(lambda _checked=False, tool_id=item.get("id", ""): self._select_tool(tool_id))
-            self._tool_buttons[str(item.get("id", ""))] = button
+            button.clicked.connect(lambda _checked=False, tool_id=tool_id: self._select_tool(tool_id))
+            self._tool_buttons[tool_id] = button
             self.grid.addWidget(button, index // 2, index % 2)
         if self.items:
             self._select_tool(self.items[0].get("id", ""))

@@ -8,7 +8,7 @@ import weakref
 from collections.abc import Callable
 from ctypes import wintypes
 
-from PyQt6.QtCore import QAbstractNativeEventFilter, QEvent, QPoint, QRect, Qt, QTimer
+from PyQt6.QtCore import QAbstractNativeEventFilter, QEvent, QPoint, Qt, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -684,14 +684,14 @@ class FramelessWindowChromeController:
 
     def _system_metric_for_hwnd(self, metric: int, hwnd) -> int:
         try:
-            get_metric_for_dpi = getattr(ctypes.windll.user32, "GetSystemMetricsForDpi")
+            get_metric_for_dpi = ctypes.windll.user32.GetSystemMetricsForDpi
             return int(get_metric_for_dpi(metric, self._window_dpi(hwnd)))
         except Exception:
             return int(ctypes.windll.user32.GetSystemMetrics(metric))
 
     def _window_dpi(self, hwnd) -> int:
         try:
-            get_dpi_for_window = getattr(ctypes.windll.user32, "GetDpiForWindow")
+            get_dpi_for_window = ctypes.windll.user32.GetDpiForWindow
             dpi = int(get_dpi_for_window(hwnd))
             return dpi if dpi > 0 else 96
         except Exception:

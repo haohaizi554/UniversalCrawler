@@ -309,5 +309,5 @@ class WebSessionRegistry:
     def _safe_shutdown_controller(shutdown: Callable[[], Any]) -> None:
         try:
             shutdown()
-        except (RuntimeError, OSError, AttributeError) as exc:
+        except (RuntimeError, OSError, AttributeError):
             logging.getLogger(__name__).warning("Controller shutdown callback failed", exc_info=True)

@@ -1,10 +1,7 @@
 """MissAV spider with two-pass scan and m3u8 sniffing."""
 
 import re
-import os
-import time
 import urllib.parse
-from collections import defaultdict
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 from app.config import DEFAULT_USER_AGENT
 from app.spiders.base import BaseSpider
@@ -193,7 +190,7 @@ class MissAVSpider(BaseSpider):
                         self.log(f"🧠 智能筛选中 (共 {len(scraped_data)} 个候选)...")
                         grouped = self.parser.group_candidates(scraped_data)
 
-                        for code, items in grouped.items():
+                        for _code, items in grouped.items():
                             sorted_items = sorted(
                                 items,
                                 key=lambda x: self.parser.calculate_score(x[0], x[1], verified_chinese, self.priority_list),
@@ -239,8 +236,8 @@ class MissAVSpider(BaseSpider):
                             if "playlist.m3u8" in req.url:
                                 m3u8_url = req.url
                                 m3u8_headers = self._headers_from_request(req)
-                        def handle_response(resp):
-                            nonlocal m3u8_url, m3u8_headers, m3u8_status, m3u8_ready, m3u8_playlist_cache
+                        def handle_response(resp, playlist_cache=m3u8_playlist_cache):
+                            nonlocal m3u8_url, m3u8_headers, m3u8_status, m3u8_ready
                             try:
                                 req = resp.request
                                 req_url = req.url
@@ -261,7 +258,7 @@ class MissAVSpider(BaseSpider):
                                 except (PlaywrightError, UnicodeDecodeError, TypeError, ValueError):
                                     playlist_text = ""
                                 if self._looks_like_hls_playlist(playlist_text):
-                                    m3u8_playlist_cache[req_url] = playlist_text
+                                    playlist_cache[req_url] = playlist_text
                                     m3u8_ready = True
                         def on_popup(popup):
                             
@@ -623,10 +620,17 @@ class MissAVSpider(BaseSpider):
             return ""
         return f"{parsed.scheme}://{parsed.netloc}"
 
-    def _effective_proxy_server(self, configured: object = None) -> str | None:
+    def _effective_proxy_server(
+        self,
+        configured: object = None,
+        *,
+        allow_system_fallback: bool | None = None,
+    ) -> str | None:
         if configured is None:
             configured = (getattr(self, "config", {}) or {}).get("proxy")
-        return super()._effective_proxy_server(configured, allow_system_fallback=True)
+        # MissAV 默认继承系统代理，但仍需遵守基类调用方的显式关闭请求。
+        fallback = True if allow_system_fallback is None else bool(allow_system_fallback)
+        return super()._effective_proxy_server(configured, allow_system_fallback=fallback)
 
     @classmethod
     def _proxy_from_environment(cls) -> str | None:

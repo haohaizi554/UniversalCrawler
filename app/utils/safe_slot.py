@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Any, TypeVar, ParamSpec
+from typing import ParamSpec, TypeVar
 
 from app.debug_logger import debug_logger
 

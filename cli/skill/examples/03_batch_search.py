@@ -34,7 +34,7 @@ def main(controller, **kwargs):
         print(f"  ✅ 找到 {len(result['items'])} 个视频")
 
     # 输出汇总
-    print(f"\n📊 总计:")
+    print("\n📊 总计:")
     print(f"  关键词: {len(results)}")
     total_items = sum(r["count"] for r in results)
     print(f"  视频数: {total_items}")

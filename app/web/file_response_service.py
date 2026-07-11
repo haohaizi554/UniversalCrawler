@@ -67,8 +67,8 @@ class WebFileResponseService:
                 path,
                 approved_roots,
             )
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="file not found")
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="file not found") from exc
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 

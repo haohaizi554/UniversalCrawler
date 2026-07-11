@@ -449,7 +449,7 @@ def _patch_xhshow_get_hash() -> None:
                 payload[128 + idx] = correct_a3_hash[idx] ^ seed_byte
         return payload
 
-    setattr(patched_build, "_ucrawl_xhs_patched", True)
+    setattr(patched_build, "_ucrawl_xhs_patched", True)  # noqa: B010 - marker on a dynamic monkey patch
     CryptoProcessor.build_payload_array = patched_build
 
 

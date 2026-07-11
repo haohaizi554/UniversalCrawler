@@ -1,7 +1,7 @@
 """配置常量模块，集中定义默认 User-Agent、配置文件路径、下载目录、代理地址和主题选项。"""
 
 from __future__ import annotations
-import os
+
 from app.utils.runtime_paths import default_download_root, resolve_user_file
 
 #默认浏览器请求头里的 User-Agent

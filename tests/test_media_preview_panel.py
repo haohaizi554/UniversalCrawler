@@ -574,8 +574,11 @@ class MediaPreviewPanelTests(unittest.TestCase):
             panel.player.setPosition = Mock()
 
             panel._restore_playback_position_later(source_key)
-            QTest.qWait(420)
-            self.app.processEvents()
+            for _ in range(80):
+                if panel.player.setPosition.called:
+                    break
+                QTest.qWait(25)
+                self.app.processEvents()
 
             panel.player.setPosition.assert_called_once_with(30_000)
             panel.cleanup()

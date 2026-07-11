@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 import threading
 from unittest.mock import patch
 
+from app.models.video_item import VideoItem
 from app.spiders.base import BaseSpider
 from app.utils.callback_signal import CallbackSignal
+from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
 
 class _DummySpider(BaseSpider):
     """最小 spider 实现，用于验证 BaseSpider 信号和线程契约。"""
@@ -27,6 +30,55 @@ class _RunImplSpider(BaseSpider):
         self.log("impl")
 
 class BaseSpiderTests(unittest.TestCase):
+    def setUp(self):
+        public_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443))
+            ]
+        )
+        policy_patch = patch("app.spiders.base.PUBLIC_DOMAIN_POLICY", public_policy)
+        policy_patch.start()
+        self.addCleanup(policy_patch.stop)
+
+    def test_restricted_request_hook_rejects_off_platform_redirect(self):
+        spider = _DummySpider(keyword="demo", config={})
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443))
+            ]
+        )
+        request_kwargs = spider._restricted_public_request_kwargs(
+            "https://b23.tv/demo",
+            allowed_hosts=("b23.tv", "bilibili.com"),
+        )
+        hook = request_kwargs["hooks"]["response"]
+        response = SimpleNamespace(
+            status_code=302,
+            url="https://b23.tv/demo",
+            headers={"Location": "https://attacker.example/payload"},
+        )
+
+        with self.assertRaisesRegex(DomainPolicyViolation, "不属于目标平台"):
+            hook(response)
+
+    def test_playwright_navigation_rejects_hostname_resolving_to_loopback(self):
+        spider = _DummySpider(keyword="demo", config={})
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("127.0.0.1", 443))
+            ]
+        )
+        page = SimpleNamespace(
+            url="about:blank",
+            goto=lambda *_args, **_kwargs: self.fail("page.goto must not be called"),
+        )
+
+        with self.assertRaisesRegex(DomainPolicyViolation, "本地或内网"):
+            spider.interruptible_playwright_goto(
+                page,
+                "https://internal.example/private",
+            )
+
     def test_base_spider_runs_without_qt_and_emits_callbacks(self):
         logs: list[str] = []
         items = []
@@ -45,6 +97,37 @@ class BaseSpiderTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "demo")
         self.assertEqual(finished, [True])
+
+    def test_emit_video_marks_discovered_download_as_public_network(self):
+        spider = _DummySpider(keyword="demo", config={})
+        items = []
+        spider.sig_item_found.connect(items.append)
+
+        spider.emit_video(
+            url="https://cdn.example.com/demo.mp4",
+            title="demo",
+            source="douyin",
+            meta={"trace_id": "trace-one", "_network_policy": "local"},
+        )
+
+        self.assertEqual(items[0].meta["_network_policy"], "public")
+
+    def test_emit_videos_marks_every_discovered_download_as_public_network(self):
+        spider = _DummySpider(keyword="demo", config={})
+        batches = []
+        spider.sig_items_found.connect(batches.append)
+        items = [
+            VideoItem(url="https://cdn.example.com/one.mp4", title="one", source="douyin"),
+            VideoItem(url="https://cdn.example.com/two.mp4", title="two", source="douyin"),
+        ]
+
+        emitted = spider.emit_videos(items)
+
+        self.assertEqual(emitted, 2)
+        self.assertEqual(
+            [item.meta["_network_policy"] for item in batches[0]],
+            ["public", "public"],
+        )
 
     def test_base_run_marks_internal_running_state_false_before_finish_signal(self):
         observed: list[bool] = []

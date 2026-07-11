@@ -491,8 +491,6 @@ def _launcher_qss(is_dark: bool) -> str:
     scrollbar_handle = c["scrollbar_handle"]
     log_bg = c["log_bg"]
     danger = c["danger"]
-    mint = ACCENT_MINT if is_dark else "#0F766E"
-
     return QSS + f"""
 QMainWindow {{
     background: {bg};
@@ -711,6 +709,8 @@ def _merge_results(current: TestResult | None, update: TestResult) -> TestResult
     return current
 
 class TestRunnerWorker(threading.Thread):
+    __test__ = False
+
     def __init__(self, category_ids, callback, *, no_failfast=True, verbose=False):
         super().__init__(daemon=True)
         self.category_ids = list(category_ids)

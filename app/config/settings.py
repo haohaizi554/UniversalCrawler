@@ -1176,7 +1176,7 @@ def get_platform_default_values(source: str) -> dict[str, Any]:
     section_obj = getattr(DEFAULT_APP_SETTINGS, section_name)
     result = {field: getattr(section_obj, field) for field in _PLATFORM_RUNTIME_FIELDS.get(source, ())}
     if source == "missav":
-        result["proxy"] = getattr(section_obj, "proxy_url")
+        result["proxy"] = section_obj.proxy_url
     return result
 
 def get_platform_runtime_defaults(source: str, manager: ConfigManager | None = None) -> dict[str, Any]:
@@ -1195,7 +1195,7 @@ def get_platform_runtime_defaults(source: str, manager: ConfigManager | None = N
             return get_platform_default_values(source)
         result = {field: getattr(section_obj, field) for field in _PLATFORM_RUNTIME_FIELDS.get(source, ())}
         if source == "missav":
-            result["proxy"] = getattr(section_obj, "proxy_url")
+            result["proxy"] = section_obj.proxy_url
         return result
 
     lock = getattr(active_manager, "_lock", None)

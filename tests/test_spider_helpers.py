@@ -37,8 +37,28 @@ from app.spiders.missav.task_builder import MissAVTaskBuilder
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.xiaohongshu.spider import XiaohongshuSpider
 from app.spiders.base import BaseSpider
+from shared.runtime_options import DomainPolicyEngine
 
 class SpiderHelperTests(unittest.TestCase):
+
+    def setUp(self):
+        public_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443))
+            ]
+        )
+        policy_patch = patch("app.spiders.base.PUBLIC_DOMAIN_POLICY", public_policy)
+        policy_patch.start()
+        self.addCleanup(policy_patch.stop)
+
+    @staticmethod
+    def _allow_public_test_urls(spider):
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443))
+            ]
+        )
+        return spider
     
     def test_bili_api_snapshots_cookies_under_session_lock(self):
         api = BiliAPI.__new__(BiliAPI)
@@ -117,6 +137,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider.emit_video = Mock()
         spider.api = Mock()
         spider.api.sess = SimpleNamespace(cookies=[])
+        spider._worker_api_for_thread = Mock(return_value=spider.api)
         return spider
 
     def _make_kuaishou_capture_spider(self) -> KuaishouSpider:
@@ -134,7 +155,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider.emit_video = Mock()
         spider.log = Mock()
         spider.debug_state = Mock()
-        return spider
+        return self._allow_public_test_urls(spider)
 
     def _make_kuaishou_capture_page(self):
         """提供 `_make_kuaishou_capture_page` 对应的内部辅助逻辑，供 `SpiderHelperTests` 使用。"""
@@ -1271,6 +1292,7 @@ class SpiderHelperTests(unittest.TestCase):
     def test_kuaishou_normalize_keyword_extracts_url_from_share_text(self, mocked_get):
         """分享文案中的短链应先抽取 URL，再展开为真实详情链接。"""
         spider = KuaishouSpider.__new__(KuaishouSpider)
+        self._allow_public_test_urls(spider)
         spider.log = Mock()
         response = Mock()
         response.url = "https://www.kuaishou.com/short-video/3xj8abcde"
@@ -1280,6 +1302,27 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(normalized, "https://www.kuaishou.com/short-video/3xj8abcde")
         mocked_get.assert_called_once()
+
+    @patch("app.spiders.kuaishou.spider.requests.get")
+    def test_kuaishou_short_link_rejects_host_marker_in_private_url_path(self, mocked_get):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        malicious = "http://127.0.0.1/v.kuaishou.com/abc123"
+
+        result = spider._resolve_short_share_url(malicious)
+
+        self.assertEqual(result, malicious)
+        mocked_get.assert_not_called()
+
+    @patch("app.spiders.kuaishou.spider.requests.get")
+    def test_kuaishou_detail_fetch_rejects_private_url_with_platform_path(self, mocked_get):
+        spider = self._make_kuaishou_capture_spider()
+
+        result = spider._fetch_share_detail_via_http(
+            "http://127.0.0.1/short-video/3xj8abcde"
+        )
+
+        self.assertEqual(result, ("", ""))
+        mocked_get.assert_not_called()
 
     @patch("app.spiders.kuaishou.spider.requests.get")
     def test_kuaishou_try_direct_share_download_emits_without_browser(self, mocked_get):
@@ -1725,6 +1768,13 @@ class SpiderHelperTests(unittest.TestCase):
         with patch.dict(os.environ, {"HTTPS_PROXY": "127.0.0.1:7890"}, clear=True):
             self.assertEqual(spider._effective_proxy_server(), "http://127.0.0.1:7890")
             self.assertIsNone(spider._effective_proxy_server("直连"))
+
+    def test_missav_effective_proxy_honors_base_keyword_override(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+        spider.config = {}
+
+        with patch.dict(os.environ, {"HTTPS_PROXY": "127.0.0.1:7890"}, clear=True):
+            self.assertIsNone(spider._effective_proxy_server(allow_system_fallback=False))
 
     def test_non_proxy_spiders_ignore_environment_proxy_by_default(self):
         for spider_cls in (BaseSpider, BilibiliSpider, DouyinSpider, KuaishouSpider, XiaohongshuSpider):
@@ -2467,6 +2517,7 @@ class SpiderHelperTests(unittest.TestCase):
     @patch("app.spiders.bilibili.spider.requests.get")
     def test_bilibili_producer_routes_resolved_b23_short_link_to_bv_queue(self, mocked_get):
         spider = BilibiliSpider.__new__(BilibiliSpider)
+        self._allow_public_test_urls(spider)
         spider.keyword = "share https://b23.tv/demo123"
         spider.config = {"max_pages": 5}
         spider.raw_bv_queue = Mock()
@@ -2484,6 +2535,7 @@ class SpiderHelperTests(unittest.TestCase):
     def test_bilibili_normalize_keyword_resolves_b23_short_link(self, mocked_get):
         """验证 `test_bilibili_normalize_keyword_resolves_b23_short_link` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         spider = BilibiliSpider.__new__(BilibiliSpider)
+        self._allow_public_test_urls(spider)
         spider.log = Mock()
         mocked_get.return_value.url = "https://www.bilibili.com/video/BV1xx411c7mD"
 
@@ -2495,6 +2547,7 @@ class SpiderHelperTests(unittest.TestCase):
     @patch("app.spiders.bilibili.spider.requests.get")
     def test_bilibili_short_link_resolution_uses_task_timeout(self, mocked_get):
         spider = BilibiliSpider.__new__(BilibiliSpider)
+        self._allow_public_test_urls(spider)
         spider.config = {"timeout": 90}
         spider.log = Mock()
         mocked_get.return_value.url = "https://www.bilibili.com/video/BV1xx411c7mD"
@@ -2503,9 +2556,20 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(mocked_get.call_args.kwargs["timeout"], 90)
 
+    @patch("app.spiders.bilibili.spider.requests.get")
+    def test_bilibili_short_link_rejects_host_marker_in_private_url_path(self, mocked_get):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+        malicious = "http://127.0.0.1/b23.tv/demo123"
+
+        result = spider._resolve_short_share_url(malicious)
+
+        self.assertEqual(result, malicious)
+        mocked_get.assert_not_called()
+
     @patch("app.spiders.xiaohongshu.spider.requests.get")
     def test_xiaohongshu_short_link_resolution_uses_task_timeout(self, mocked_get):
         spider = XiaohongshuSpider.__new__(XiaohongshuSpider)
+        self._allow_public_test_urls(spider)
         spider.config = {"timeout": 90}
         spider.log = Mock()
         spider._proxy = Mock(return_value=None)
@@ -2515,6 +2579,16 @@ class SpiderHelperTests(unittest.TestCase):
         spider._resolve_short_share_url("https://xhslink.com/demo")
 
         self.assertEqual(mocked_get.call_args.kwargs["timeout"], 90)
+
+    @patch("app.spiders.xiaohongshu.spider.requests.get")
+    def test_xiaohongshu_short_link_rejects_host_marker_in_private_url_path(self, mocked_get):
+        spider = XiaohongshuSpider.__new__(XiaohongshuSpider)
+        malicious = "http://127.0.0.1/xhslink.com/demo"
+
+        result = spider._resolve_short_share_url(malicious)
+
+        self.assertEqual(result, malicious)
+        mocked_get.assert_not_called()
 
     def test_bilibili_normalize_keyword_extracts_first_url_from_share_text(self):
         """验证 `test_bilibili_normalize_keyword_extracts_first_url_from_share_text` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

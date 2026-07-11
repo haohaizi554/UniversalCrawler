@@ -54,6 +54,14 @@ class PipeSelectionPreloadTests(unittest.TestCase):
         items = [{"i": 0}, {"i": 1}]
         self.assertEqual(ps.select(items), [])
 
+    def test_preload_helper_without_rounds_defaults_to_all(self):
+        """即使内部辅助方法被复用，也不应对空预加载值解引用。"""
+        from cli.pipe import PipeSelection
+
+        ps = PipeSelection(preloaded_choices=None)
+
+        self.assertEqual(ps._select_from_preloaded(3), [0, 1, 2])
+
 class PipeSelectionStdinTests(unittest.TestCase):
     """从 stdin 读取 JSON 测试。"""
 
@@ -64,6 +72,14 @@ class PipeSelectionStdinTests(unittest.TestCase):
         ps = PipeSelection(input_stream=stdin)
         items = [{"i": i} for i in range(6)]
         self.assertEqual(ps.select(items), [0, 2, 5])
+
+    def test_stdin_ignores_invalid_indices_in_mixed_list(self):
+        from cli.pipe import PipeSelection
+
+        stdin = io.StringIO('[0, "bad", null, 2]\n')
+        ps = PipeSelection(input_stream=stdin)
+
+        self.assertEqual(ps.select([{"i": i} for i in range(3)]), [0, 2])
 
     def test_stdin_reads_dict_format(self):
         """stdin 喂 '{\"indices\": [0, 2]}' → 选 0,2。"""

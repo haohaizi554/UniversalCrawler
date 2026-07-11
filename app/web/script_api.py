@@ -50,7 +50,7 @@ def run_injected_script(script_path: str, controller: Any, **extra) -> int:
 
     # 调用 main(controller, **extra)
     if not hasattr(module, "main"):
-        sys.stderr.write(f"❌ 脚本必须定义 main(controller, **kwargs) 函数\n")
+        sys.stderr.write("❌ 脚本必须定义 main(controller, **kwargs) 函数\n")
         return 1
 
     main_fn = module.main

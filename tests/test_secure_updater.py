@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-import sys
 import threading
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,7 +29,6 @@ from app.services.secure_updater import (
     UpdateAsset,
     UpdateManifest,
     UpdateManifestVerifier,
-    UpdatePolicy,
     VerificationError,
     VersionPolicy,
     compare_semver,
@@ -584,6 +583,21 @@ def test_github_client_rejects_xml_entities_in_release_atom(tmp_path):
         client.fetch_manifest_location_candidates(opener=opener, manual=True)
 
 
+def test_trusted_redirect_handler_rejects_target_before_following():
+    from app.services.secure_updater import TrustedRedirectHandler
+
+    handler = TrustedRedirectHandler({"github.com", "release-assets.githubusercontent.com"})
+    request = urllib.request.Request("https://github.com/owner/repo/releases/download/v/app.exe")
+
+    for target in (
+        "http://github.com/owner/repo/app.exe",
+        "https://127.0.0.1/app.exe",
+        "https://attacker.example/app.exe",
+    ):
+        with pytest.raises(ManifestError):
+            handler.redirect_request(request, None, 302, "Found", {}, target)
+
+
 def test_installer_runner_uses_argv_and_records_nonzero_exit(tmp_path):
     installer = tmp_path / "installer.msi"
     installer.write_bytes(b"installer")
@@ -674,6 +688,24 @@ def test_windows_verifier_rejects_publisher_match_when_thumbprint_mismatches(tmp
     )
 
     with pytest.raises(VerificationError, match="thumbprint"):
+        verifier.verify(installer, asset)
+
+
+def test_windows_verifier_rejects_publisher_mismatch_when_thumbprint_matches(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+    verifier = PackageVerifier(
+        os_name="windows",
+        trusted_publishers=["CN=Expected Publisher"],
+        trusted_thumbprints=["AABBCC"],
+        run_func=_authenticode_run(
+            subject="CN=Unexpected Publisher",
+            sha1="AA BB CC",
+        ),
+    )
+
+    with pytest.raises(VerificationError, match="publisher"):
         verifier.verify(installer, asset)
 
 
@@ -780,10 +812,81 @@ def test_pending_install_state_persists_and_stops_retry_loop(tmp_path):
     assert "installed version did not change" in second_start.last_install_error
 
 
+def test_pending_install_retry_limit_cleans_staging_directory(tmp_path):
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    (staging_dir / "installer.exe").write_bytes(b"stale installer")
+    state = LocalUpdateState(
+        pending_install=PendingInstall(version="3.7.0", attempts=1),
+        install_attempt_limit=2,
+    )
+
+    state.record_startup_health(
+        current_version="3.6.17",
+        staging_dir=staging_dir,
+    )
+
+    assert state.pending_install is None
+    assert not staging_dir.exists()
+
+
 def test_record_skipped_update_persists_version(tmp_path):
     state = record_skipped_update("v3.7.0", path=tmp_path / "state.json")
 
     assert state.skipped_version == "3.7.0"
+
+
+def test_update_state_load_tolerates_unknown_fields_and_invalid_numbers(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "last_seen_version": "3.8.0",
+                "pending_install": {
+                    "version": "3.9.0",
+                    "attempts": "not-a-number",
+                    "installer_path": "installer.exe",
+                    "future_field": True,
+                },
+                "install_attempt_limit": "invalid",
+                "future_root_field": {"enabled": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = LocalUpdateState.load(state_path)
+
+    assert state.last_seen_version == "3.8.0"
+    assert state.install_attempt_limit == 2
+    assert state.pending_install == PendingInstall(
+        version="3.9.0",
+        attempts=0,
+        installer_path="installer.exe",
+        log_path="",
+    )
+
+
+def test_update_state_load_discards_invalid_semver_fields(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "last_seen_version": "broken",
+                "skipped_version": "also-broken",
+                "pending_install": {"version": "not-semver", "attempts": -4},
+                "install_attempt_limit": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = LocalUpdateState.load(state_path)
+
+    assert state.last_seen_version == ""
+    assert state.skipped_version == ""
+    assert state.pending_install is None
+    assert state.install_attempt_limit == 2
 
 
 def test_update_state_atomic_save_preserves_previous_file_on_replace_failure(tmp_path, monkeypatch):

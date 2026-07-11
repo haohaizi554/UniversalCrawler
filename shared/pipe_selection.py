@@ -34,8 +34,9 @@ class PipeSelection(SelectionStrategy):
         return self._read_from_stdin(n)
 
     def _select_from_preloaded(self, n: int) -> list[int]:
-        if self._call_count < len(self._preloaded):
-            indices = self._preloaded[self._call_count]
+        preloaded = self._preloaded or []
+        if self._call_count < len(preloaded):
+            indices = preloaded[self._call_count]
             self._call_count += 1
             return [i for i in indices if 0 <= i < n]
         return list(range(n))
@@ -80,13 +81,13 @@ class PipeSelection(SelectionStrategy):
                 indices = [_coerce_index(i) for i in data["selected"]]
                 return [index for index in indices if index is not None]
             if "items" in data and isinstance(data["items"], list):
-                indices = []
+                selected_indices: list[int] = []
                 for j, it in enumerate(data["items"]):
                     if isinstance(it, dict) and it.get("selected", True):
                         idx = _coerce_index(it.get("index", j))
                         if idx is not None:
-                            indices.append(idx)
-                return indices
+                            selected_indices.append(idx)
+                return selected_indices
 
         return None
 

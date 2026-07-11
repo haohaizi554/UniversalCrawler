@@ -13,6 +13,7 @@ from app.core.guardrails import BudgetExhausted, CrawlBudget, RateLimiter, sanit
 from app.core.guardrails.crawl_budget import RateLimitCancelled
 from app.models import VideoItem
 from app.utils.callback_signal import CallbackSignal
+from shared.runtime_options import PUBLIC_DOMAIN_POLICY, DomainPolicyEngine, DomainPolicyViolation
 
 class BaseSpider(threading.Thread):
     """平台 Spider 的线程基类，统一承接 UI 回调、中断语义和防护栏。"""
@@ -46,6 +47,55 @@ class BaseSpider(threading.Thread):
         self._playwright_pw = None
         self._selection_epoch = 0
         self._interrupt_requested = False
+
+    @staticmethod
+    def _url_matches_hosts(
+        url: str,
+        allowed_hosts: tuple[str, ...] | set[str] | frozenset[str],
+        *,
+        allow_subdomains: bool = True,
+    ) -> bool:
+        """Match the parsed hostname, never a lookalike string in the path/query."""
+        try:
+            parsed = urllib.parse.urlsplit(str(url or "").strip())
+            if parsed.scheme.lower() not in {"http", "https"}:
+                return False
+            host = (parsed.hostname or "").lower().rstrip(".")
+        except (TypeError, ValueError):
+            return False
+        normalized_hosts = {str(item).lower().rstrip(".") for item in allowed_hosts if item}
+        if host in normalized_hosts:
+            return True
+        return allow_subdomains and any(host.endswith(f".{item}") for item in normalized_hosts)
+
+    def _restricted_public_request_kwargs(
+        self,
+        url: str,
+        *,
+        allowed_hosts: tuple[str, ...] | set[str] | frozenset[str],
+    ) -> dict[str, object]:
+        """Validate the initial platform URL and every redirect before Requests follows it."""
+        if not self._url_matches_hosts(url, allowed_hosts):
+            raise DomainPolicyViolation("url 主机不属于目标平台")
+        policy = self._public_domain_policy_engine()
+        policy.require_public_url(url)
+
+        def validate_platform_redirect(response, *args, **kwargs):
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            headers = getattr(response, "headers", {}) or {}
+            location = headers.get("Location") or headers.get("location")
+            if status_code in policy.REDIRECT_STATUS_CODES and location:
+                current_url = str(getattr(response, "url", "") or url)
+                target_url = urllib.parse.urljoin(current_url, str(location))
+                if not self._url_matches_hosts(target_url, allowed_hosts):
+                    raise DomainPolicyViolation("重定向目标不属于目标平台")
+            return policy.validate_redirect_response(response, *args, **kwargs)
+
+        return {"hooks": {"response": validate_platform_redirect}}
+
+    def _public_domain_policy_engine(self) -> DomainPolicyEngine:
+        policy = getattr(self, "_public_domain_policy", PUBLIC_DOMAIN_POLICY)
+        return policy if isinstance(policy, DomainPolicyEngine) else PUBLIC_DOMAIN_POLICY
 
     @property
     def interrupt_requested(self) -> bool:
@@ -234,6 +284,7 @@ class BaseSpider(threading.Thread):
 
         if not self.is_running or self.interrupt_requested:
             return False
+        self._public_domain_policy_engine().require_public_url(url)
         try:
             self.guard_request(cancel_check=lambda: not self.is_running)
         except BudgetExhausted as exc:
@@ -687,9 +738,8 @@ class BaseSpider(threading.Thread):
 
     # Video discovery and dispatch.
     def emit_video(self, url: str, title: str, source: str, meta: dict | None = None):
-        # Emitting a local item is pipeline dispatch, not network I/O. Network
-        # guardrails belong in request/navigation helpers; throttling here
-        # serializes already-parsed batches such as Xiaohongshu image notes.
+        # Spider 发现的资源都会进入网络下载层；统一在发射边界标记公网策略，
+        # 防止某个平台 task builder 漏字段后绕过下载器的逐跳校验。
         clean_meta = sanitize(meta or {})
         item = VideoItem(
             url=str(sanitize(url)),
@@ -700,6 +750,7 @@ class BaseSpider(threading.Thread):
             item.meta = clean_meta
         elif clean_meta:
             item.meta = {"raw_meta": clean_meta}
+        item.meta["_network_policy"] = "public"
         self.ensure_trace_id(item.meta, suffix=item.source)
         self.sig_item_found.emit(item)
 
@@ -714,6 +765,7 @@ class BaseSpider(threading.Thread):
                 item.meta = clean_meta
             elif clean_meta:
                 item.meta = {"raw_meta": clean_meta}
+            item.meta["_network_policy"] = "public"
             self.ensure_trace_id(item.meta, suffix=item.source)
             item.url = str(sanitize(item.url))
             item.title = str(sanitize(item.title))

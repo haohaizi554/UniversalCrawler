@@ -127,6 +127,19 @@ class InteractiveCommandTests(unittest.TestCase):
         self.assertTrue(any("仅单体" in line for line in missav_lines))
         self.assertTrue(any("代理" in line for line in missav_lines))
 
+    def test_download_summary_tolerates_null_titles(self):
+        from cli.commands.interactive import _print_download_summary
+
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            _print_download_summary(
+                [{"title": None, "id": None, "status": "❌ 失败", "error": "network"}],
+                elapsed=1.0,
+                save_dir=r"D:\Downloads\UCP",
+            )
+
+        self.assertIn("未知", output.getvalue())
+
     def test_xiaohongshu_summary_hides_search_page_count(self):
         """小红书交互摘要只暴露目标数量，不再要求用户理解搜索页数。"""
         from cli.commands.interactive import _build_config_summary_lines

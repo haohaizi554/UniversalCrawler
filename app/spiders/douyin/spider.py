@@ -288,7 +288,7 @@ class DouyinSpider(BaseSpider):
                     raise InvalidCookieStateError("Cookie 文件为空")
                 cookie_str = self.auth_service.build_cookie_string(cookies, required_cookie="sessionid_ss")
                 if cookie_str:
-                    self.log(f"👤 加载本地 Cookie 成功 (sessionid_ss 有效)")
+                    self.log("👤 加载本地 Cookie 成功 (sessionid_ss 有效)")
                     return cookie_str
                 self.log("⚠️ 本地 Cookie 缺少 sessionid_ss，可能已过期")
                 raise InvalidCookieStateError("本地抖音 Cookie 缺少 sessionid_ss")
@@ -831,7 +831,7 @@ class DouyinSpider(BaseSpider):
                             'index': i
                         })
                     
-                    self.log(f"🔔 找到多个用户，请选择...")
+                    self.log("🔔 找到多个用户，请选择...")
                     selected_indices = self.ask_user_selection(display_items)
                     
                     if not selected_indices:
@@ -849,14 +849,14 @@ class DouyinSpider(BaseSpider):
         
         # 方法3: 尝试通过 User API 直接获取 (如果输入的是 sec_user_id)
         if len(user_id) > 30:  # sec_user_id 通常较长
-            self.log(f"🔑 尝试作为 sec_user_id 访问...")
+            self.log("🔑 尝试作为 sec_user_id 访问...")
             await self._process_user(params, user_id)
             return
         
         # 方法4: 尝试通过请求用户主页 HTML 提取 sec_user_id
         # 注意：抖音是 SPA，纯 HTTP 请求拿不到渲染数据，此方法仅对短链有效
         try:
-            self.log(f"🔑 尝试请求用户主页获取 sec_user_id...")
+            self.log("🔑 尝试请求用户主页获取 sec_user_id...")
             test_url = f"https://www.douyin.com/user/{user_id}"
             
             async with httpx.AsyncClient(

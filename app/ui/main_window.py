@@ -39,6 +39,9 @@ from app.services.secure_updater import (
     Downloader,
     PackageVerifier,
     UpdateManifestVerifier,
+    VerificationError,
+    compare_semver,
+    default_update_staging_dir,
     record_pending_install,
     record_skipped_update,
     record_startup_update_health,
@@ -525,7 +528,10 @@ class MainWindow(QMainWindow):
     def _record_update_startup_health(self) -> None:
         try:
             current_version = self._display_version(self._current_status_version()).lstrip("vV")
-            record_startup_update_health(current_version=current_version)
+            record_startup_update_health(
+                current_version=current_version,
+                staging_dir=default_update_staging_dir(),
+            )
         except Exception as exc:
             debug_logger.log_exception(
                 "MainWindow",
@@ -878,7 +884,22 @@ class MainWindow(QMainWindow):
         progress_callback=None,
     ) -> _PreparedUpdate:
         verifier = UpdateManifestVerifier(public_key_pem=UPDATE_PUBLIC_KEY_PEM)
-        manifest = verifier.load_verified(result.manifest_path, result.signature_path)
+        manifest = verifier.load_verified(
+            Path(result.manifest_path),
+            Path(result.signature_path),
+        )
+        try:
+            selected_version_matches = compare_semver(manifest.version, result.latest_version) == 0
+        except ValueError as exc:
+            raise VerificationError("signed manifest version does not match selected update version") from exc
+        if not selected_version_matches:
+            raise VerificationError("signed manifest version does not match selected update version")
+        try:
+            client_is_compatible = compare_semver(result.local_version, manifest.min_client_version) >= 0
+        except ValueError as exc:
+            raise VerificationError("signed manifest minimum client version could not be verified") from exc
+        if not client_is_compatible:
+            raise VerificationError("signed manifest minimum client version is newer than this client")
         asset = AssetSelector().select(manifest)
         installer_path = Downloader(
             allowed_hosts=set(DEFAULT_ALLOWED_HOSTS) | set(manifest.trusted_hosts),
