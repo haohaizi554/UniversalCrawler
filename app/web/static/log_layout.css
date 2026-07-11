@@ -1,0 +1,320 @@
+
+.page-grid {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, var(--detail-width, 360px));
+  gap: 14px;
+}
+
+.page-grid > div {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#page-logs .logs-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(340px, clamp(340px, 26vw, 460px));
+  min-height: 0;
+}
+
+#page-logs .logs-table-card {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px 12px;
+  overflow: hidden;
+}
+
+#page-logs .logs-table-card .table-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  position: relative;
+}
+
+#page-logs .logs-table-card table th:first-child,
+#page-logs .logs-table-card table td:first-child {
+  padding-left: 14px;
+}
+
+#page-logs .log-empty-state {
+  position: absolute;
+  inset: 56px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text);
+  text-align: center;
+  pointer-events: none;
+}
+
+#page-logs .log-empty-state[hidden] {
+  display: none;
+}
+
+#page-logs .log-empty-state strong {
+  font-weight: 700;
+}
+
+#page-logs .log-empty-state .log-empty-subtitle {
+  width: min(100%, 520px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  color: var(--text);
+  line-height: 1.35;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  text-wrap: balance;
+}
+
+#page-logs .log-empty-state .log-empty-subtitle span {
+  display: block;
+  max-width: 100%;
+  white-space: normal;
+}
+
+#page-logs .log-tabs {
+  height: 44px;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  margin: 0;
+}
+
+#page-logs .log-tabs .tab {
+  min-width: 92px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-left-width: 0;
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 8px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#page-logs .log-tabs .tab:first-child {
+  border-left-width: 1px;
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+#page-logs .log-tabs .tab:last-child {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+#page-logs .log-tabs .tab.active {
+  position: relative;
+  z-index: 1;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 800;
+}
+
+#page-logs .log-tabs .tab:not(.active):hover {
+  background: var(--panel-soft);
+  border-color: var(--border-strong);
+  color: var(--accent);
+}
+
+#page-logs .log-filters {
+  display: grid;
+  grid-template-columns:
+    minmax(84px, .9fr)
+    minmax(128px, 1.2fr)
+    minmax(84px, .9fr)
+    minmax(108px, 1fr)
+    minmax(112px, 1fr);
+  gap: 10px 8px;
+  align-items: start;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+#page-logs .log-filter-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+#page-logs .log-filter-label {
+  font-size: 13px;
+}
+
+#page-logs .log-filter-field .custom-select,
+#page-logs .log-filter-field input {
+  width: 100%;
+  min-width: 0;
+}
+
+#page-logs .log-filter-field input {
+  flex: 0 0 40px;
+  height: 40px;
+}
+
+#page-logs .log-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+#page-logs .logs-right-column {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+#page-logs .log-inspector-header,
+#page-logs .log-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+#page-logs .log-inspector-header {
+  flex: 0 0 auto;
+  min-height: 48px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+#page-logs .log-inspector-header h2,
+#page-logs .log-card-head h2 {
+  margin: 0;
+  min-width: 0;
+}
+
+#page-logs .log-inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+#page-logs .log-detail-card,
+#page-logs .log-extra-card {
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 14px;
+  margin: 12px 12px 0;
+  overflow: auto;
+}
+
+#page-logs .log-detail-card {
+  flex: 0 0 auto;
+}
+
+#page-logs .log-extra-card {
+  flex: 1 1 auto;
+  margin-bottom: 12px;
+}
+
+#page-logs .log-json-card {
+  min-height: 0;
+}
+
+#page-logs .log-json-card .log-snippet {
+  max-height: min(32vh, 360px);
+  overflow: auto;
+}
+
+#page-logs .log-snippet {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#page-logs .log-detail-readable {
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+@media (max-width: 960px) {
+  #page-logs .log-filters {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}
+
+.page-grid > aside {
+  min-height: 0;
+}
+
+.page-grid > div > .page-head,
+.page-grid > div > .tabs,
+.page-grid > div > .filters,
+.page-grid > div > .controls-panel {
+  flex: 0 0 auto;
+}
+
+.page-grid > div > .table-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.table-shell {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: auto;
+  background: var(--panel);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+th, td {
+  height: 56px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+th {
+  background: var(--panel-soft);
+  font-weight: 700;
+}
+
+td:not(:first-child), th:not(:first-child) { text-align: center; }

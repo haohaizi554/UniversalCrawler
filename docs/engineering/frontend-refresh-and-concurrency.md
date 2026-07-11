@@ -81,6 +81,27 @@
 
 浏览器自动化必须用 selector、事件或可观测状态作为完成条件，例如 `#app-shell` visible、`#page-<id>.active` visible、worker sequence/result、行数、详情文本或按钮状态。禁止用固定 sleep/`wait_for_timeout()` 证明加载、导航或异步 worker 已完成；需要测试模块自身行为时先隔离 live runtime/WebSocket，避免测试 fixture 与真实 state/delta 竞争。
 
+## 前端测试与样式责任边界
+
+大型前端测试按资源成本选择不同的组合方式：
+
+- `tests/test_web_browser.py` 是唯一可收集的 Playwright 聚合入口。`tests/web_browser_cases/` 只保存不继承 `TestCase` 的责任 mixin，`tests/web_browser_support.py` 只拥有一套 uvicorn、Playwright、Chromium context 和 page 生命周期。新增浏览器领域测试不得自行启动第二套服务或浏览器。
+- 统一 GUI/WebUI 契约使用显式领域模块：shell、settings、i18n/logs、task pages、static。它们共享 `unified_frontend_contract_support.py` 的 QApplication、等待和清理基础设施，但不通过聚合入口重新导出测试类，避免 pytest 重复收集。
+- 测试拆分验收必须比较原 `test_*` 方法集合，不能只看总数；新增架构守卫会合法增加测试数量，但原方法缺失或重复均视为失败。
+- 浏览器 case 文件不得以 `test_` 命名，support 模块不得定义测试方法。测试责任模块硬上限 1500 行，超过上限必须继续按变化原因拆分。
+
+WebUI CSS 不使用构建器或 `@import`，由 `index.html` 按固定顺序显式加载：
+
+1. `app.css`：设计令牌、基础控件和应用壳层。
+2. `log_layout.css`：日志双栏、检查器和页面表格壳层。
+3. `task_pages.css`：共享表格交互、已完成页、失败页和任务操作。
+4. `task_runtime.css`：正在下载详情、时间线、趋势、分页和运行态控制。
+5. `media_logs.css`：预览、播放器、媒体控制与日志筛选列。
+6. `settings.css`：设置布局、平台表格、代理和外观控件。
+7. `overlays_responsive.css`：状态栏后置覆盖、弹窗、选择窗口和响应式规则。
+
+CSS link 顺序本身是公共契约。静态测试必须从 `index.html` 解析实际 link 顺序后构建 bundle，不能硬编码只读 `app.css`。打包虽通过 `portable.spec` 递归收录静态目录，`build_installer.py` 仍必须逐项验证七个样式表，避免源码存在而安装源缺失。每个 CSS 文件硬上限 1000 行；拆分时先证明按 link 顺序拼接后的内容哈希与拆分前一致，再做任何视觉重构。
+
 ## UI / Worker / Cache / DB 职责边界
 
 日志中心、失败列表和大表格遵循三层边界。后续改动如果跨过这些边界，必须同时补回归测试。
@@ -285,7 +306,8 @@ python -m pytest tests/test_frontend_event_aggregator.py tests/test_frontend_sta
 python -m pytest tests/test_failed_record_store.py tests/test_frontend_state_service.py::FrontendStateServiceTests::test_failed_snapshot_uses_persisted_worker_snapshot_when_live_page_empty -q
 python -m pytest tests/test_frontend_state_service.py::FrontendStateServiceTests::test_download_options_snapshot_uses_runtime_memory_without_cache_reads -q
 python -m pytest tests/test_request_workers.py tests/test_frontend_snapshot_worker.py tests/test_log_query_worker.py tests/test_log_detail_worker.py tests/test_list_page_worker.py -q
-python -m pytest tests/test_download_manager.py tests/test_unified_frontend_contract.py -q
+python -m pytest tests/test_download_manager.py tests/test_unified_frontend_contract.py tests/test_unified_frontend_shell_contract.py tests/test_unified_frontend_settings_contract.py tests/test_unified_frontend_i18n_logs_contract.py tests/test_unified_frontend_task_pages_contract.py tests/test_unified_frontend_static_contract.py -q
+python -m pytest tests/test_large_frontend_file_boundaries.py tests/test_packaging.py::InstallerScriptTests -q
 node --check app/web/static/log_i18n.js
 node --check app/web/static/frontend_runtime.js
 node --check app/web/static/list_pages.js
@@ -303,9 +325,11 @@ node --check app/web/static/app.js
 - 2026-07-10 focused：`python -m pytest tests/test_web_static_module_boundaries.py tests/test_fastapi_endpoints.py tests/test_web_browser.py tests/test_unified_frontend_contract.py tests/test_packaging.py -q`：`469 passed in 193.76s (0:03:13)`，`0 skipped`，`0 warnings`。
 - 2026-07-10 full：`python -X faulthandler -m pytest -q`：`2368 passed, 3 skipped, 7 warnings in 366.19s (0:06:06)`。
 - 2026-07-11 full：`python -X faulthandler -m pytest -q --timeout=90 --timeout-method=thread --session-timeout=900`：`2447 passed, 3 skipped, 7 warnings in 257.85s (0:04:17)`。单用例和整轮双重超时用于把线程死锁与单纯的套件耗时增长区分开。
+- 2026-07-11 大文件职责拆分后 full：`python -X faulthandler -m pytest -q --timeout=90 --timeout-method=thread --session-timeout=1500`：`2455 passed, 3 skipped, 7 warnings in 252.44s (0:04:12)`。完整收集为 `2458`，等于旧基线加 8 个架构/打包守卫；浏览器测试 `136 passed in 33.40s`，统一前端契约 `144 passed in 51.65s`，打包测试 `103 passed in 49.60s`。
 - skip 数量与 Task 8 前基线同为 3；7 条 warning 为 5 条 pytest collection warning（带 `__init__` 的测试辅助类）和 2 条既有文件尺寸报告 warning，没有新增 warning 类型。
 - 七个职责模块与 `app.js` 均通过 `node --check`；`app.js` 为 `57,118` bytes，满足 `<= 100,000` bytes 的组合根上限。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
+- 性能预算失败不能在一次高负载整轮中直接通过放宽阈值“修复”。本轮 EventBus 吞吐基准在宿主抖动时曾超预算，独立复跑通过后，第二次全量也通过；正确流程是先排除遗留进程和宿主负载、独立复跑，再以完整套件复核，只有可稳定复现时才修改生产代码或预算。
 
 ## GUI use_delta 判定边界
 

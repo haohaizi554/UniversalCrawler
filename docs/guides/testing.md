@@ -96,8 +96,9 @@ python tests/test_launcher.py --gui
 - `tests/test_config_settings.py`：配置段默认值、类型收敛、枚举校验、重载持久化。
 - `tests/test_frontend_state_service.py`：`settings_snapshot()` 快照形状、`update_setting` 热加载、`max_retries=0` 等边界。
 - `tests/test_main_window.py`：GUI 设置变更进入统一前端动作，并刷新 `settings_snapshot` / `download_options` / `app_status`；顶部主题按钮必须同步设置页 Light/Dark 控件；主题快速切换必须 latest-state-wins，不能冻结 `window_root`，也不能触发完整前端快照重绘。
-- `tests/test_unified_frontend_contract.py`：PyQt 设置页控件、WebUI 设置控件、GUI/WebUI 文案与动作契约；平台设置必须覆盖 `max_pages/pages`、`max_items/videos`、MissAV 独立自定义代理输入；全局 GUI QSS 需要用 Qt 实际应用一次，防止样式解析失败导致主题热加载或下拉框高亮失效。
-- `tests/test_unified_frontend_contract.py` 还必须覆盖 GUI 非模态目录选择器、设置页重建后不留下隐藏 top-level 控件、主题热加载只给真实顶层窗口应用根样式、TopBar 主题 busy 按钮保持可点击，以及 Web 自定义下拉框深浅主题文字可读性。
+- `tests/test_unified_frontend_settings_contract.py`：PyQt/WebUI 设置控件、平台数量单位、MissAV 自定义代理、目录选择、主题热加载与 TopBar 设置契约。
+- `tests/test_unified_frontend_i18n_logs_contract.py`：GUI/WebUI 语言切换、日志动态本地化和详情字段契约。
+- `tests/test_unified_frontend_shell_contract.py`、`tests/test_unified_frontend_task_pages_contract.py`、`tests/test_unified_frontend_static_contract.py`：分别覆盖壳层与通用控件、四态列表、Web 静态责任边界。
 - `tests/test_fastapi_endpoints.py`：`create_app()` 直连启动路径必须暴露 `/api/frontend/state` 和 `/api/frontend/delta`，避免与组合式 `rest_router` 漂移。
 - `tests/test_web_browser.py`：WebUI 静态资源必须使用版本化 CSS/JS，并验证移动端设置页无全局横向溢出、Web 顶栏启动数量使用平台 `count_config_key`、主题按钮可同步外观页主题控件。
 
@@ -110,6 +111,8 @@ python tests/test_launcher.py --gui
 - WebUIBrowserTests（15+ 浏览器交互：主题切换、弹窗、键盘、删除等）
 - WebUIAccessibilityTests（按钮可读性、html lang、viewport）
 - WebDesignGuidelinesTests（focus 样式、hover、disabled、错误日志）
+
+`test_web_browser.py` 只保留静态测试和唯一 `WebUIBrowserTests` 聚合类。浏览器交互按职责位于 `tests/web_browser_cases/`，共享 uvicorn/Chromium 生命周期位于 `tests/web_browser_support.py`。case 模块不得继承 `TestCase` 或以 `test_` 命名，避免重复收集和重复启动浏览器。
 
 **依赖**：
 - `pip install playwright`
@@ -137,9 +140,12 @@ python tests/test_launcher.py --gui
 python -m pytest tests/test_web_browser.py -q
 # 2026-07-07 基线：97 passed in 247.64s (0:04:07)
 # 2026-07 早前热运行：97 passed in 185.66s (外部秒表约 187.9s)
+# 2026-07-11 职责拆分后：136 passed in 33.40s
 ```
 
 即浏览器 E2E 从约 420-480 秒降至约 188-248 秒，节省约 172-292 秒，约快 41%-61%。该数字受机器负载、Playwright 首次启动状态和浏览器缓存影响；后续变更若显著回退，应优先检查是否重新引入了固定等待、整页重绘或服务输出阻塞。
+
+2026-07-11 全量基线：`2455 passed, 3 skipped, 7 warnings in 252.44s (0:04:12)`；完整收集 `2458` 个测试。两个大型前端测试入口拆分后，原 279 个测试方法全部保留，另增加 8 个架构与打包守卫。
 
 ## 测试分层
 

@@ -48,6 +48,15 @@ SPLIT_FRONTEND_MODULES = (
     "dialog_controller.js",
     "playback_controller.js",
 )
+SPLIT_FRONTEND_STYLES = (
+    "app.css",
+    "log_layout.css",
+    "task_pages.css",
+    "task_runtime.css",
+    "media_logs.css",
+    "settings.css",
+    "overlays_responsive.css",
+)
 
 
 def _load_update_manifest_tool():
@@ -687,6 +696,12 @@ class InstallerScriptTests(unittest.TestCase):
             "sqlite3.dll",
             "index.html",
             "app.css",
+            "log_layout.css",
+            "task_pages.css",
+            "task_runtime.css",
+            "media_logs.css",
+            "settings.css",
+            "overlays_responsive.css",
             "i18n.js",
             "custom_select.js",
             "media_display.js",
@@ -729,6 +744,25 @@ class InstallerScriptTests(unittest.TestCase):
             expected_missing = {
                 dist_dir / "_internal" / "app" / "web" / "static" / module_name
                 for module_name in SPLIT_FRONTEND_MODULES
+            }
+        self.assertTrue(expected_missing.issubset(missing_paths))
+
+    def test_build_installer_checks_every_split_frontend_stylesheet(self):
+        tool = _load_build_installer_tool()
+        expected_paths = {
+            tool.DIST_DIR / "_internal" / "app" / "web" / "static" / stylesheet
+            for stylesheet in SPLIT_FRONTEND_STYLES
+        }
+        resolved_paths = {resolver() for resolver in tool.REQUIRED_INSTALL_SOURCE_ENTRIES}
+        self.assertTrue(expected_paths.issubset(resolved_paths))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dist_dir = Path(temp_dir)
+            with patch.object(tool, "DIST_DIR", dist_dir):
+                missing_paths = {Path(path) for path in tool._missing_install_source_entries()}
+            expected_missing = {
+                dist_dir / "_internal" / "app" / "web" / "static" / stylesheet
+                for stylesheet in SPLIT_FRONTEND_STYLES
             }
         self.assertTrue(expected_missing.issubset(missing_paths))
 

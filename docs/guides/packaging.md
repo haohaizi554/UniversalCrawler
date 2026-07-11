@@ -208,6 +208,12 @@ version = "x.y.z"
 - `README_EN.md`
 - `_internal/app/web/static/index.html`
 - `_internal/app/web/static/app.css`
+- `_internal/app/web/static/log_layout.css`
+- `_internal/app/web/static/task_pages.css`
+- `_internal/app/web/static/task_runtime.css`
+- `_internal/app/web/static/media_logs.css`
+- `_internal/app/web/static/settings.css`
+- `_internal/app/web/static/overlays_responsive.css`
 - `_internal/app/web/static/app.js`
 - `_internal/UI/icon/nav_settings.png`
 - `favicon.ico`

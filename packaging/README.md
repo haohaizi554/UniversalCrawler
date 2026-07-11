@@ -181,6 +181,12 @@ python packaging/build_release.py
 - `README_EN.md`
 - `_internal/app/web/static/index.html`
 - `_internal/app/web/static/app.css`
+- `_internal/app/web/static/log_layout.css`
+- `_internal/app/web/static/task_pages.css`
+- `_internal/app/web/static/task_runtime.css`
+- `_internal/app/web/static/media_logs.css`
+- `_internal/app/web/static/settings.css`
+- `_internal/app/web/static/overlays_responsive.css`
 - `_internal/app/web/static/log_i18n.js`
 - `_internal/app/web/static/frontend_runtime.js`
 - `_internal/app/web/static/list_pages.js`
@@ -206,10 +212,10 @@ python packaging/build_release.py
 5. 验证 Chromium 运行时可用
 6. 验证 `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 能被找到
 7. 验证下载目录、日志目录和配置目录可正常创建
-8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、`app/web/static/app.css`、七个职责模块 `log_i18n.js`、`frontend_runtime.js`、`list_pages.js`、`log_center.js`、`settings_controller.js`、`dialog_controller.js`、`playback_controller.js`，以及 `app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
+8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、七个有序样式表 `app.css`、`log_layout.css`、`task_pages.css`、`task_runtime.css`、`media_logs.css`、`settings.css`、`overlays_responsive.css`、七个职责脚本 `log_i18n.js`、`frontend_runtime.js`、`list_pages.js`、`log_center.js`、`settings_controller.js`、`dialog_controller.js`、`playback_controller.js`，以及 `app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
 9. 确认产物中未混入用户态配置和 Cookie
 
-`portable.spec` 必须继续递归收录整个 `app/web/static` 树；安装器构建脚本还会逐项校验上述七个职责模块，避免静态树存在于源码但安装源缺文件。项目运行、PyInstaller 打包和安装包运行均不依赖 Node，也不引入前端构建器。`node --check` 仅是发布机已安装 Node 时可选的开发/发布语法检查；没有 Node 不影响打包或运行，仍需执行 focused WebUI/packaging pytest 套件与完整 pytest 套件。
+`portable.spec` 必须继续递归收录整个 `app/web/static` 树；安装器构建脚本还会逐项校验上述七个有序样式表和七个职责脚本，避免静态树存在于源码但安装源缺文件。项目运行、PyInstaller 打包和安装包运行均不依赖 Node，也不引入前端构建器。`node --check` 仅是发布机已安装 Node 时可选的开发/发布语法检查；没有 Node 不影响打包或运行，仍需执行 focused WebUI/packaging pytest 套件与完整 pytest 套件。
 
 ## 常见问题
 

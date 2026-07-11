@@ -84,6 +84,8 @@ GUI 和 WebUI 的配置中心统一读取 `FrontendStateService.settings_snapsho
 
 WebUI 状态刷新约束：`/api/frontend/state` 和 `/api/frontend/delta` 必须在所有 FastAPI 启动路径中同时存在；`app.web.server.create_app()` 与 `app.web.rest_router.build_rest_router()` 的返回结构要保持一致。首屏静态资源使用带版本参数的 `/static/app.css?v=...` 和 `/static/app.js?v=...`，并且真实 `create_app()` 路径必须对首页、`app.css`、`app.js` 返回禁缓存头，避免升级后浏览器继续使用旧 CSS/JS。
 
+WebUI 样式所有权约束：`index.html` 必须按 `app.css`、`log_layout.css`、`task_pages.css`、`task_runtime.css`、`media_logs.css`、`settings.css`、`overlays_responsive.css` 的顺序显式加载。该顺序就是级联契约：核心令牌与壳层最先，日志布局、任务页、运行态、媒体日志、设置和最终浮层/响应式覆盖依次生效。不得改用 `@import`，不得只在测试里拼接 `app.css`，不得在打包校验中漏掉任一责任样式表。
+
 配置中心视觉约束：平台设置在 GUI/WebUI 均使用摘要条 + 表格列。数量列必须区分视频数和页数，短视频/MissAV 显示“20 个视频（推荐）”，Bilibili 显示“1 页（推荐）”；MissAV 代理下拉只承载预设和“自定义”，自定义端点在 GUI/WebUI 中位于代理列下一行，避免宽屏溢出和窄屏横向滚动。
 
 ---

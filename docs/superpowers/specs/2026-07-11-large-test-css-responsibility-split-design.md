@@ -58,6 +58,7 @@ tests/
     __init__.py
     smoke_and_assets.py
     localization_and_logs.py
+    log_center.py
     dialogs_and_keyboard.py
     playback.py
     settings.py
@@ -160,7 +161,9 @@ tests/
 ```text
 app/web/static/
   app.css
+  log_layout.css
   task_pages.css
+  task_runtime.css
   media_logs.css
   settings.css
   overlays_responsive.css
@@ -175,7 +178,13 @@ app/web/static/
   - 继续作为打包和安装器要求的核心入口资产存在。
 
 - `task_pages.css`
-  - 四态任务页、表格、分页、详情栏、队列和失败页。
+  - 共享表格交互、已完成页、失败页和任务操作控件。
+
+- `log_layout.css`
+  - 日志页双栏结构、日志检查器和通用页面表格壳层。
+
+- `task_runtime.css`
+  - 正在下载详情、事件时间线、速度趋势、分页和运行态控制栏。
 
 - `media_logs.css`
   - 播放器、媒体预览、速度图表、日志中心和日志详情。
@@ -192,7 +201,9 @@ app/web/static/
 
 ```html
 <link rel="stylesheet" href="/static/app.css?...">
+<link rel="stylesheet" href="/static/log_layout.css?...">
 <link rel="stylesheet" href="/static/task_pages.css?...">
+<link rel="stylesheet" href="/static/task_runtime.css?...">
 <link rel="stylesheet" href="/static/media_logs.css?...">
 <link rel="stylesheet" href="/static/settings.css?...">
 <link rel="stylesheet" href="/static/overlays_responsive.css?...">
