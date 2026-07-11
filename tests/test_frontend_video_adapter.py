@@ -289,7 +289,12 @@ def test_failure_category_and_solutions_are_data_only():
 def test_failed_item_builds_failure_row_from_injected_log_excerpt():
     item = _item(
         status="failed",
-        meta={"download_error": "403 forbidden", "trace_id": "trace-failed"},
+        local_path="D:/Downloads/demo.mp4.downloading",
+        meta={
+            "download_error": "403 forbidden",
+            "trace_id": "trace-failed",
+            "save_directory": "D:/Downloads",
+        },
     )
 
     row = adapter.failed_item(
@@ -303,6 +308,8 @@ def test_failed_item_builds_failure_row_from_injected_log_excerpt():
     assert row["reason_category"] == "link"
     assert row["reason_label"] == "\u94fe\u63a5\u5931\u8d25"
     assert row["trace_id"] == "trace-failed"
+    assert row["save_directory"] == "D:/Downloads"
+    assert row["local_path"] == "D:/Downloads/demo.mp4.downloading"
     assert row["log_excerpt"] == ["blocked"]
     assert row["actions"] == ["copy_diagnostics", "delete"]
 

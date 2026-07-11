@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.debug_logger import debug_logger
 from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.utils import sanitize_filename
@@ -24,6 +25,17 @@ class ScanResult:
     truncated: bool = False
     original_count: int = 0
 
+
+@dataclass(frozen=True)
+class OrphanDirectorySweepResult:
+    """Result of scanning exactly one directory during bounded recovery."""
+
+    removed_count: int
+    children: tuple[tuple[Path, int], ...]
+    scanned_entries: int
+    truncated: bool = False
+    error: str = ""
+
 class MediaLibraryService:
     """本地媒体库服务，负责扫描、重命名、删除。"""
 
@@ -32,6 +44,9 @@ class MediaLibraryService:
     BILIBILI_TEMP_SUFFIXES = ("_video.m4s", "_audio.m4s")
     HLS_TEMP_ROOT_NAME = ".ucp-nm3u8-tmp"
     HLS_TEMP_DIR_SUFFIXES = ("_curl_cffi_hls", "_playwright_hls")
+    ORPHAN_SWEEP_MAX_DIRECTORIES = 2048
+    ORPHAN_SWEEP_MAX_ENTRIES = 50000
+    ORPHAN_SWEEP_TIME_BUDGET_SECONDS = 3.0
     # 分块下载的 .<最终文件名>.partN 允许被清理，但必须匹配隐藏分片格式，避免误删普通文件。
     _CHUNK_PART_RE = re.compile(r"^\..+\.part\d+$", re.IGNORECASE)
     _ORPHAN_MEDIA_TEMP_SUFFIXES = (
@@ -323,34 +338,129 @@ class MediaLibraryService:
             raise MediaScanError(str(exc)) from exc
 
     @classmethod
-    def sweep_orphan_download_temp_artifacts(cls, directories: list[str | os.PathLike[str]]) -> int:
-        """启动时递归清扫下载残留；只删除白名单临时文件/目录和被扫空的子目录。"""
+    def sweep_orphan_download_temp_directory(
+        cls,
+        directory: str | os.PathLike[str],
+        *,
+        depth: int,
+        max_depth: int = 2,
+        entry_limit: int | None = None,
+    ) -> OrphanDirectorySweepResult:
+        """Scan one directory only and return children for durable traversal."""
+        normalized_depth = max(0, min(int(depth or 0), 2))
+        depth_limit = max(0, min(int(max_depth or 0), 2))
+        limit = max(1, int(entry_limit or cls.ORPHAN_SWEEP_MAX_ENTRIES))
+        try:
+            current_path = Path(directory).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return OrphanDirectorySweepResult(0, (), 0, error=str(exc))
+        if not current_path.is_dir():
+            return OrphanDirectorySweepResult(0, (), 0)
+
         removed = 0
+        scanned_entries = 0
+        truncated = False
+        children: list[tuple[Path, int]] = []
+        try:
+            with os.scandir(current_path) as entries:
+                for entry in entries:
+                    if scanned_entries >= limit:
+                        truncated = True
+                        break
+                    scanned_entries += 1
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            if (
+                                cls._is_safe_orphan_temp_file_name(entry.name)
+                                and cls._remove_temp_path(entry.path)
+                            ):
+                                removed += 1
+                            continue
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        if cls._is_safe_orphan_temp_dir_name(entry.name):
+                            if cls._remove_temp_path(entry.path):
+                                removed += 1
+                            continue
+                        if normalized_depth < depth_limit:
+                            children.append((Path(entry.path).resolve(strict=False), normalized_depth + 1))
+                    except OSError:
+                        continue
+        except OSError as exc:
+            return OrphanDirectorySweepResult(
+                removed,
+                tuple(sorted(children, key=lambda item: str(item[0]))),
+                scanned_entries,
+                truncated=truncated,
+                error=str(exc),
+            )
+        return OrphanDirectorySweepResult(
+            removed,
+            tuple(sorted(children, key=lambda item: str(item[0]))),
+            scanned_entries,
+            truncated=truncated,
+        )
+
+    @classmethod
+    def sweep_orphan_download_temp_artifacts(
+        cls,
+        directories: list[str | os.PathLike[str]],
+        *,
+        max_depth: int = 2,
+    ) -> int:
+        """Bounded startup sweep for known temp names without walking arbitrary trees."""
+        removed = 0
+        depth_limit = max(0, min(int(max_depth or 0), 2))
+        scanned_directories = 0
+        scanned_entries = 0
+        started_at = time.monotonic()
+        truncated = False
         for raw_dir in directories:
+            if truncated:
+                break
             try:
                 root = Path(raw_dir).expanduser().resolve(strict=False)
             except (OSError, RuntimeError, TypeError, ValueError):
                 continue
             if not root.exists() or not root.is_dir():
                 continue
-            for current_root, dirnames, filenames in os.walk(root, topdown=False):
-                current_path = Path(current_root)
-                for filename in filenames:
-                    if not cls._is_safe_orphan_temp_file_name(filename):
-                        continue
-                    if cls._remove_temp_path(current_path / filename):
-                        removed += 1
-                for dirname in dirnames:
-                    path = current_path / dirname
-                    if cls._is_safe_orphan_temp_dir_name(dirname) and cls._remove_temp_path(path):
-                        removed += 1
-                if current_path != root:
-                    try:
-                        # 合集目录被用户手动清空或只剩失败缓存时，子项清完后顺手移除空目录。
-                        current_path.rmdir()
-                        removed += 1
-                    except OSError:
-                        pass
+            pending: list[tuple[Path, int]] = [(root, 0)]
+            while pending:
+                if (
+                    scanned_directories >= cls.ORPHAN_SWEEP_MAX_DIRECTORIES
+                    or scanned_entries >= cls.ORPHAN_SWEEP_MAX_ENTRIES
+                    or time.monotonic() - started_at >= cls.ORPHAN_SWEEP_TIME_BUDGET_SECONDS
+                ):
+                    truncated = True
+                    break
+                current_path, depth = pending.pop()
+                scanned_directories += 1
+                result = cls.sweep_orphan_download_temp_directory(
+                    current_path,
+                    depth=depth,
+                    max_depth=depth_limit,
+                    entry_limit=cls.ORPHAN_SWEEP_MAX_ENTRIES - scanned_entries,
+                )
+                removed += result.removed_count
+                scanned_entries += result.scanned_entries
+                pending.extend(result.children)
+                if result.truncated:
+                    truncated = True
+                    break
+        if truncated:
+            debug_logger.log(
+                component="MediaLibraryService",
+                action="bounded_orphan_temp_sweep",
+                level="WARN",
+                message="Stopped legacy temp cleanup at the production scan budget",
+                status_code="DL_TEMP_SWEEP_BOUNDED",
+                details={
+                    "max_depth": depth_limit,
+                    "scanned_directories": scanned_directories,
+                    "scanned_entries": scanned_entries,
+                    "removed_count": removed,
+                },
+            )
         return removed
 
     def rename_media(self, video: VideoItem, new_title: str, save_dir: str) -> tuple[str, str]:

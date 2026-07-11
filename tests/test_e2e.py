@@ -40,6 +40,13 @@ def _has_fastapi():
     except ImportError:
         return False
 
+
+def _approve_test_directory(client, directory: str) -> None:
+    client.get("/api/ping")
+    cookie_name = client.app.state.web_session_cookie_name
+    session_id = client.cookies.get(cookie_name)
+    client.app.state.web_session_registry.get_or_create(session_id).approve_directory(directory)
+
 # ---- 通用 mock spider ----
 
 class MockVideoItem:
@@ -297,15 +304,17 @@ class RESTAPIEndToEndTests(unittest.TestCase):
     def test_dir_change_lifecycle(self):
         """目录变更：change → list → change back。"""
         with tempfile.TemporaryDirectory() as tmp:
+            _approve_test_directory(self.client, tmp)
             r1 = self.client.post("/api/dir/change", json={"directory": tmp})
             self.assertEqual(r1.json()["status"], "ok")
             # 验证 state 中 current_save_dir 变了
             state = self.client.get("/api/state").json()
-            self.assertEqual(state["current_save_dir"], tmp)
+            self.assertEqual(os.path.normcase(os.path.realpath(state["current_save_dir"])), os.path.normcase(os.path.realpath(tmp)))
 
     def test_scan_then_state(self):
         """扫描后 state 应反映加载的文件数。"""
         with tempfile.TemporaryDirectory() as tmp:
+            _approve_test_directory(self.client, tmp)
             # 创建一个假视频文件
             fpath = os.path.join(tmp, "test.mp4")
             with open(fpath, "wb") as f:
@@ -475,6 +484,7 @@ class FullIntegrationTests(unittest.TestCase):
     def test_full_workflow_no_crawl(self):
         """完整工作流（不含真爬虫）。"""
         with tempfile.TemporaryDirectory() as tmp:
+            _approve_test_directory(self.client, tmp)
             # 1. 切换目录
             r1 = self.client.post("/api/dir/change", json={"directory": tmp})
             self.assertEqual(r1.json()["status"], "ok")
@@ -488,7 +498,10 @@ class FullIntegrationTests(unittest.TestCase):
             r3 = self.client.get("/api/state")
             self.assertEqual(r3.json()["video_count"], 1)
             # 4. 验证 current_save_dir
-            self.assertEqual(r3.json()["current_save_dir"], tmp)
+            self.assertEqual(
+                os.path.normcase(os.path.realpath(r3.json()["current_save_dir"])),
+                os.path.normcase(os.path.realpath(tmp)),
+            )
 
     def test_full_workflow_config_persistence(self):
         """配置持久化工作流（仅验证 PUT 接受 + GET 返回结构正确）。"""

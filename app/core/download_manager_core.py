@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -12,7 +13,9 @@ from app.config import cfg, normalize_download_concurrency
 from app.debug_logger import debug_logger
 from app.exceptions import AppError
 from app.core.media_filter import is_image_like_resource, should_skip_for_video_only
+from app.core.download_path_policy import resolve_task_save_directory
 from app.models import VideoItem
+from app.services.download_recovery_store import DownloadRecoveryStore
 
 class PendingDownloadQueue:
     """Thread-safe FIFO queue with explicit cancellation/snapshot operations."""
@@ -118,6 +121,8 @@ class DownloadManagerCore:
     LIGHTWEIGHT_MIN_CONCURRENT = 10
     LIGHTWEIGHT_CONCURRENCY_CAP = 10
     _GUARD_INIT_LOCK = threading.RLock()
+    _STARTUP_MAINTENANCE_LOCK = threading.RLock()
+    _STARTUP_MAINTENANCE_ROOTS: set[str] = set()
 
     def __init__(self, max_concurrent: int | None = None):
         self.queue = PendingDownloadQueue()
@@ -141,13 +146,70 @@ class DownloadManagerCore:
         self._workers_lock = threading.RLock()
         self._start_stop_lock = threading.RLock()
         self.is_running = True
-        self.dispatcher_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
+        self._download_recovery_store = DownloadRecoveryStore()
+        self._startup_maintenance_done = threading.Event()
+        self._startup_maintenance_thread = threading.Thread(
+            target=self._run_startup_maintenance,
+            daemon=True,
+            name="download-startup-maintenance",
+        )
+        self._startup_maintenance_thread.start()
+        self.dispatcher_thread = threading.Thread(
+            target=self._dispatch_loop,
+            daemon=True,
+            name="download-dispatcher",
+        )
         self.dispatcher_thread.start()
-        # 主进程异常退出后，外部工具和分片下载可能留下临时目录；调度器启动时统一做一次安全清扫。
-        self._sweep_m3u8_orphan_workspaces_on_startup()
 
-    def _sweep_m3u8_orphan_workspaces_on_startup(self) -> None:
+    def _run_startup_maintenance(self) -> None:
+        """Sweep stale workspaces off the UI thread before dispatching new work."""
+        started_at = time.monotonic()
+        stats: dict[str, Any] = {}
+        try:
+            debug_logger.log(
+                component="DownloadManager",
+                action="startup_maintenance_started",
+                message="Started bounded download recovery maintenance",
+                status_code="DL_STARTUP_MAINTENANCE_START",
+            )
+        except Exception:
+            pass
+        try:
+            result = self._sweep_m3u8_orphan_workspaces_on_startup()
+            if isinstance(result, dict):
+                stats = result
+        except Exception as exc:  # pragma: no cover - defensive worker isolation
+            debug_logger.log_exception(
+                "DownloadManager",
+                "startup_maintenance_error",
+                exc,
+            )
+        finally:
+            try:
+                debug_logger.log(
+                    component="DownloadManager",
+                    action="startup_maintenance_completed",
+                    message="Completed bounded download recovery maintenance",
+                    status_code="DL_STARTUP_MAINTENANCE_DONE",
+                    details={
+                        **stats,
+                        "duration_ms": round((time.monotonic() - started_at) * 1000, 2),
+                    },
+                )
+            except Exception:
+                pass
+            finally:
+                self._startup_maintenance_done.set()
+                self._get_dispatch_slot_gate().set()
+
+    def _sweep_m3u8_orphan_workspaces_on_startup(self) -> dict[str, Any]:
         """启动时清理上一轮异常退出留下的下载临时文件和 HLS 工作目录。"""
+        stats: dict[str, Any] = {
+            "removed_count": 0,
+            "recovery_records_consumed": 0,
+            "legacy_directories_scanned": 0,
+            "legacy_scan_pending": False,
+        }
         try:
             download_dir = str(cfg.get("common", "save_directory", "") or "").strip()
         except (OSError, RuntimeError, TypeError, ValueError, AppError) as exc:
@@ -156,15 +218,38 @@ class DownloadManagerCore:
                 "download_temp_sweep_config_error",
                 exc,
             )
-            return
+            return stats
         if not download_dir:
-            return
+            return stats
+
+        maintenance_root = os.path.normcase(os.path.abspath(os.path.expanduser(download_dir)))
+        with self._STARTUP_MAINTENANCE_LOCK:
+            if maintenance_root in self._STARTUP_MAINTENANCE_ROOTS:
+                stats["skipped_duplicate_root"] = True
+                return stats
+            self._STARTUP_MAINTENANCE_ROOTS.add(maintenance_root)
+
+        recovery_store = getattr(self, "_download_recovery_store", None)
+        owned_directories: list[str] = []
+        if recovery_store is not None:
+            try:
+                owned_directories = recovery_store.directories()
+            except Exception as exc:
+                debug_logger.log_exception(
+                    "DownloadManager",
+                    "download_recovery_store_load_error",
+                    exc,
+                )
+                recovery_store = None
+        cleanup_directories = list(dict.fromkeys([download_dir, *owned_directories]))
 
         try:
             from app.core.downloaders.m3u8 import N_m3u8DL_RE_Downloader
 
-            N_m3u8DL_RE_Downloader.sweep_orphaned_workspaces([download_dir])
-        except (OSError, RuntimeError, TypeError, ValueError, ImportError, AppError) as exc:
+            stats["removed_count"] += N_m3u8DL_RE_Downloader.sweep_orphaned_workspaces(
+                cleanup_directories
+            )
+        except Exception as exc:
             debug_logger.log_exception(
                 "DownloadManager",
                 "m3u8_orphan_workspace_sweep_error",
@@ -174,22 +259,91 @@ class DownloadManagerCore:
         try:
             from app.services.file_service import MediaLibraryService
 
-            removed = MediaLibraryService.sweep_orphan_download_temp_artifacts([download_dir])
-            if removed:
-                debug_logger.log(
-                    component="DownloadManager",
-                    action="download_temp_artifact_sweep",
-                    message="Swept stale download temp artifacts at application startup",
-                    status_code="DL_TEMP_SWEEP",
-                    details={"download_dir": download_dir, "removed_count": removed},
+            attempted_recovery_paths = 0
+            for directory in owned_directories:
+                result = MediaLibraryService.sweep_orphan_download_temp_directory(
+                    directory,
+                    depth=0,
+                    max_depth=0,
                 )
-        except (OSError, RuntimeError, TypeError, ValueError, ImportError, AppError) as exc:
+                attempted_recovery_paths += 1
+                stats["removed_count"] += result.removed_count
+                if result.error:
+                    debug_logger.log(
+                        component="DownloadManager",
+                        action="recovery_directory_scan_degraded",
+                        level="WARN",
+                        message="Recovery directory could not be enumerated; the attempt was acknowledged",
+                        status_code="DL_RECOVERY_SCAN_DEGRADED",
+                        details={"directory": str(directory), "error": result.error},
+                    )
+
+            if recovery_store is None:
+                stats["removed_count"] += MediaLibraryService.sweep_orphan_download_temp_artifacts(
+                    [download_dir], max_depth=2
+                )
+            elif recovery_store.needs_legacy_sweep(download_dir):
+                recovery_store.prepare_legacy_sweep(download_dir)
+                deadline = time.monotonic() + MediaLibraryService.ORPHAN_SWEEP_TIME_BUDGET_SECONDS
+                while time.monotonic() < deadline:
+                    frontier_item = recovery_store.next_legacy_sweep_directory(download_dir)
+                    if frontier_item is None:
+                        break
+                    directory, depth = frontier_item
+                    result = MediaLibraryService.sweep_orphan_download_temp_directory(
+                        directory,
+                        depth=depth,
+                        max_depth=2,
+                    )
+                    stats["removed_count"] += result.removed_count
+                    stats["legacy_directories_scanned"] += 1
+                    recovery_store.complete_legacy_sweep_directory(
+                        download_dir,
+                        directory,
+                        result.children,
+                    )
+                    if result.truncated or result.error:
+                        debug_logger.log(
+                            component="DownloadManager",
+                            action="legacy_directory_scan_degraded",
+                            level="WARN",
+                            message="A legacy directory scan was bounded or degraded",
+                            status_code="DL_LEGACY_SCAN_DEGRADED",
+                            details={
+                                "directory": directory,
+                                "truncated": result.truncated,
+                                "error": result.error,
+                                "scanned_entries": result.scanned_entries,
+                            },
+                        )
+                stats["legacy_scan_pending"] = (
+                    recovery_store.next_legacy_sweep_directory(download_dir) is not None
+                )
+            else:
+                result = MediaLibraryService.sweep_orphan_download_temp_directory(
+                    download_dir,
+                    depth=0,
+                    max_depth=0,
+                )
+                stats["removed_count"] += result.removed_count
+
+            if recovery_store is not None and attempted_recovery_paths == len(owned_directories):
+                stats["recovery_records_consumed"] = recovery_store.consume_recovery_records()
+            debug_logger.log(
+                component="DownloadManager",
+                action="download_temp_artifact_sweep",
+                message="Processed stale download temp artifacts at application startup",
+                status_code="DL_TEMP_SWEEP",
+                details={"download_dir": download_dir, **stats},
+            )
+        except Exception as exc:
             debug_logger.log_exception(
                 "DownloadManager",
                 "download_temp_artifact_sweep_error",
                 exc,
                 details={"download_dir": download_dir},
             )
+        return stats
 
     def set_max_concurrent(self, value: int) -> int:
         try:
@@ -404,6 +558,9 @@ class DownloadManagerCore:
         for video in videos:
             if self._log_and_skip_video_only(video):
                 continue
+            if not isinstance(getattr(video, "meta", None), dict):
+                video.meta = {}
+            video.meta["save_directory"] = str(save_dir)
             self._log_queue_task(video, save_dir)
             queued.append((video, save_dir))
 
@@ -532,8 +689,15 @@ class DownloadManagerCore:
 
     def _dispatch_loop(self):
         """调度线程：先占槽，再取队列任务，避免并发缩放时短暂超发 worker。"""
+        startup_maintenance_done = getattr(self, "_startup_maintenance_done", None)
+        while self.is_running and startup_maintenance_done is not None:
+            if startup_maintenance_done.wait(timeout=0.1):
+                break
+        if not self.is_running:
+            return
         while self.is_running:
             slot_acquired = False
+            recovery_registered = False
             worker = None
             video = None
             save_dir = None
@@ -571,11 +735,14 @@ class DownloadManagerCore:
                     slot_acquired = False
                     continue
 
+                self._register_download_directory(video, save_dir)
+                recovery_registered = True
                 worker = self._create_worker(video, save_dir)
                 if video.meta.get("user_cancel_requested"):
                     stop_worker = getattr(worker, "stop", None)
                     if callable(stop_worker):
                         stop_worker()
+                    self._mark_download_recovery_state(video.id, "cancelled")
                     self._clear_dispatching(video)
                     self._release_dispatch_slot("dispatch_slot_task_cancelled_after_create")
                     slot_acquired = False
@@ -605,6 +772,7 @@ class DownloadManagerCore:
                 worker._completion_callback = self._handle_worker_completion
                 with self._start_stop_guard():
                     if not self.is_running:
+                        self._mark_download_recovery_state(video.id, "cancelled")
                         if slot_acquired:
                             self._release_dispatch_slot("dispatch_slot_manager_stopped_before_worker_append")
                             slot_acquired = False
@@ -634,16 +802,67 @@ class DownloadManagerCore:
                     details={"queued_tasks": self.queue.qsize(), "active_workers": active_workers},
                 )
                 if failed_video is not None:
+                    if recovery_registered:
+                        self._mark_download_recovery_state(failed_video.id, "failed")
                     self._emit_task_error(failed_video.id, f"\u8c03\u5ea6\u5931\u8d25: {e}")
             finally:
                 self._clear_dispatching(video)
                 if slot_acquired:
                     self._release_dispatch_slot("dispatch_slot_finally")
 
+    def _register_download_directory(self, video: VideoItem, save_dir: str) -> None:
+        recovery_store = getattr(self, "_download_recovery_store", None)
+        if recovery_store is None:
+            return
+        resolved_save_dir = resolve_task_save_directory(video, save_dir)
+        video.meta["save_directory"] = resolved_save_dir
+        try:
+            meta = video.meta if isinstance(getattr(video, "meta", None), dict) else {}
+            recovery_store.register_task(
+                video_id=video.id,
+                save_directory=resolved_save_dir,
+                source_url=video.url,
+                trace_id=str(meta.get("trace_id") or ""),
+                platform=video.source,
+            )
+        except Exception as exc:
+            debug_logger.log_exception(
+                "DownloadManager",
+                "download_recovery_store_write_error",
+                exc,
+                details={"save_dir": str(resolved_save_dir), "video_id": video.id},
+            )
+            raise
+
+    def _mark_download_recovery_state(self, video_id: str, state: str) -> None:
+        recovery_store = getattr(self, "_download_recovery_store", None)
+        if recovery_store is None:
+            return
+        try:
+            if str(state or "").strip().lower() == "completed":
+                recovery_store.delete_task(video_id)
+            elif str(state or "").strip().lower() == "failed":
+                recovery_store.handoff_failed_task(video_id)
+            else:
+                recovery_store.delete_task(video_id)
+        except Exception as exc:
+            debug_logger.log_exception(
+                "DownloadManager",
+                "download_recovery_store_state_error",
+                exc,
+                details={"video_id": str(video_id), "state": str(state)},
+            )
+
     def _create_worker(self, video: VideoItem, save_dir: str):
         raise NotImplementedError
 
     def _connect_worker_callbacks(self, worker: Any) -> None:
+        worker.sig_finished.connect(
+            lambda video_id: self._mark_download_recovery_state(video_id, "completed")
+        )
+        worker.sig_error.connect(
+            lambda video_id, _error: self._mark_download_recovery_state(video_id, "failed")
+        )
         worker.sig_start.connect(self._emit_task_started)
         worker.sig_progress.connect(self._emit_task_progress)
         worker.sig_finished.connect(self._emit_task_finished)
@@ -876,6 +1095,9 @@ class DownloadManagerCore:
     def stop_all(self):
         with self._start_stop_guard():
             self.is_running = False
+            startup_maintenance_done = getattr(self, "_startup_maintenance_done", None)
+            if startup_maintenance_done is not None:
+                startup_maintenance_done.set()
             self._get_dispatch_slot_gate().set()
             with self._workers_lock:
                 active_workers = len(self.workers)
@@ -915,7 +1137,8 @@ class DownloadManagerCore:
                     details={"video_id": worker.video.id, "timeout_ms": self.WORKER_STOP_TIMEOUT_MS},
                     trace_id=worker.video.meta.get("trace_id"),
                 )
-        if not self.dispatcher_thread.join(timeout=2):
+        self.dispatcher_thread.join(timeout=2)
+        if self.dispatcher_thread.is_alive():
             debug_logger.log(
                 component="DownloadManager",
                 action="stop_all_dispatcher_timeout",

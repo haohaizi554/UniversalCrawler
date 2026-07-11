@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.exceptions import FileOperationError
@@ -197,30 +198,51 @@ class MediaLibraryServiceTests(unittest.TestCase):
         for path in keep_paths:
             self.assertTrue(os.path.exists(path), path)
 
-    def test_sweep_orphan_download_temp_artifacts_recurses_and_prunes_empty_collection_dirs(self):
-        """合集目录可能只剩失败缓存；清扫需要递归删除缓存并移除被扫空的子目录。"""
+    def test_sweep_orphan_download_temp_artifacts_is_bounded_to_two_levels(self):
+        """普通下载最多扫描两层合集目录，不能递归遍历任意用户目录。"""
         base = self.temp_dir.name
         collection_dir = os.path.join(base, "合集")
-        media_dir = os.path.join(base, "保留")
-        empty_collection_dir = os.path.join(base, "空合集")
+        season_dir = os.path.join(collection_dir, "分季")
+        deep_dir = os.path.join(season_dir, "用户目录")
         os.mkdir(collection_dir)
-        os.mkdir(media_dir)
-        os.mkdir(empty_collection_dir)
+        os.mkdir(season_dir)
+        os.mkdir(deep_dir)
         nested_temp = os.path.join(collection_dir, "demo_audio.m4s")
-        nested_media = os.path.join(media_dir, "demo.mp4")
-        for path in (nested_temp, nested_media):
+        second_level_temp = os.path.join(season_dir, "demo.mp4.downloading")
+        too_deep_temp = os.path.join(deep_dir, "keep.mp4.downloading")
+        for path in (nested_temp, second_level_temp, too_deep_temp):
             with open(path, "wb") as fp:
                 fp.write(b"test")
 
         removed = self.service.sweep_orphan_download_temp_artifacts([base])
 
-        self.assertGreaterEqual(removed, 2)
+        self.assertEqual(removed, 2)
         self.assertFalse(os.path.exists(nested_temp))
-        self.assertFalse(os.path.exists(collection_dir))
-        self.assertFalse(os.path.exists(empty_collection_dir))
-        self.assertTrue(os.path.exists(media_dir))
-        self.assertTrue(os.path.exists(nested_media))
+        self.assertFalse(os.path.exists(second_level_temp))
+        self.assertTrue(os.path.exists(too_deep_temp))
+        self.assertTrue(os.path.exists(collection_dir))
+        self.assertTrue(os.path.exists(season_dir))
         self.assertTrue(os.path.exists(base))
+
+    def test_single_directory_sweep_reports_children_without_recursing(self):
+        base = Path(self.temp_dir.name)
+        child = base / "collection"
+        child.mkdir()
+        root_temp = base / "root.mp4.downloading"
+        child_temp = child / "child.mp4.downloading"
+        root_temp.write_bytes(b"partial")
+        child_temp.write_bytes(b"partial")
+
+        result = self.service.sweep_orphan_download_temp_directory(
+            base,
+            depth=0,
+            max_depth=2,
+        )
+
+        self.assertEqual(result.removed_count, 1)
+        self.assertEqual(result.children, ((child.resolve(), 1),))
+        self.assertFalse(root_temp.exists())
+        self.assertTrue(child_temp.exists())
 
     def test_delete_media_removes_bilibili_temp_sidecars_when_final_missing(self):
         base = self.temp_dir.name

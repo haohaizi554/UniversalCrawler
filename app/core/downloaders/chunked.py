@@ -262,14 +262,7 @@ class ChunkedDownloader(BaseDownloader):
             try:
                 self._emit_progress(progress_callback, 98, bytes_downloaded=total_size, bytes_total=total_size)
                 # 所有分片成功后再串行合并，保证最终文件只在数据完整时出现。
-                with open(save_path, "wb") as output_fp:
-                    for temp_file in temp_files:
-                        with open(temp_file, "rb") as input_fp:
-                            while True:
-                                data = input_fp.read(65536)
-                                if not data:
-                                    break
-                                output_fp.write(data)
+                self._merge_temp_files_atomically(temp_files, save_path)
                 merged = True
             except Exception as exc:
                 raise StreamDownloadError(f"分块下载合并失败: {exc}") from exc
@@ -295,9 +288,25 @@ class ChunkedDownloader(BaseDownloader):
                     details={"save_path": save_path, "alive_threads": sum(1 for thread in threads if thread.is_alive())},
                     trace_id=video_item.meta.get("trace_id") if video_item.meta else None,
                 )
-            if not merged and all_threads_stopped:
-                try:
-                    if os.path.exists(save_path):
-                        os.remove(save_path)
-                except OSError:
-                    pass
+    @staticmethod
+    def _merge_temp_files_atomically(temp_files: list[str], save_path: str) -> None:
+        """Build a complete sidecar before atomically publishing the final file."""
+        merging_path = f"{save_path}.merging"
+        try:
+            with open(merging_path, "wb") as output_fp:
+                for temp_file in temp_files:
+                    with open(temp_file, "rb") as input_fp:
+                        while True:
+                            data = input_fp.read(65536)
+                            if not data:
+                                break
+                            output_fp.write(data)
+                output_fp.flush()
+                os.fsync(output_fp.fileno())
+            os.replace(merging_path, save_path)
+        finally:
+            try:
+                if os.path.exists(merging_path):
+                    os.remove(merging_path)
+            except OSError:
+                pass

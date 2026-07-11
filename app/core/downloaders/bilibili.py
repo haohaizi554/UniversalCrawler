@@ -131,7 +131,9 @@ class BilibiliDownloader(BaseDownloader):
         # B站 DASH 音视频分离，临时文件名必须和最终文件同 stem，便于删除失败项时联动清理。
         temp_v = os.path.join(save_dir, f"{base_name}_video.m4s")
         temp_a = os.path.join(save_dir, f"{base_name}_audio.m4s")
-        video_item.meta["download_temp_files"] = [temp_v, temp_a] if audio_url else [temp_v]
+        merging_path = f"{save_path}.merging"
+        stream_temp_files = [temp_v, temp_a] if audio_url else [temp_v]
+        video_item.meta["download_temp_files"] = [*stream_temp_files, merging_path]
         chunk_size = max(cfg.get("download", "chunk_size", 65536), 256 * 1024)
         max_retries = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
         resume_raw = cfg.get("download", "resume_enabled", True)
@@ -170,7 +172,7 @@ class BilibiliDownloader(BaseDownloader):
 
         def cleanup_temp_files() -> None:
             """合并成功、用户停止或失败后清理本任务的音视频分流缓存。"""
-            for temp_path in (temp_v, temp_a):
+            for temp_path in (temp_v, temp_a, merging_path):
                 last_error: OSError | None = None
                 for attempt in range(3):
                     try:
@@ -419,7 +421,12 @@ class BilibiliDownloader(BaseDownloader):
                 write_status="写入完成",
                 merge_status="等待合并",
             )
-            cmd_merge = FFmpegExternalTool.build_merge_command(ffmpeg_path, temp_v, temp_a if audio_url else None, save_path)
+            cmd_merge = FFmpegExternalTool.build_merge_command(
+                ffmpeg_path,
+                temp_v,
+                temp_a if audio_url else None,
+                merging_path,
+            )
             debug_logger.log_command(
                 component="BilibiliDownloader",
                 tool_name="ffmpeg",
@@ -440,7 +447,7 @@ class BilibiliDownloader(BaseDownloader):
             )
             self._run_merge_process(
                 cmd_merge,
-                save_path=save_path,
+                save_path=merging_path,
                 temp_v=temp_v,
                 temp_a=temp_a if audio_url else None,
                 progress_callback=progress_callback,
@@ -449,8 +456,9 @@ class BilibiliDownloader(BaseDownloader):
                 bytes_total=total_bytes or None,
                 trace_id=trace_id,
             )
-            if not os.path.exists(save_path) or os.path.getsize(save_path) <= 0:
+            if not os.path.exists(merging_path) or os.path.getsize(merging_path) <= 0:
                 raise MergeError("Bilibili 音视频合并完成后未生成有效文件")
+            self._publish_merged_file(merging_path, save_path)
             cleanup_temp_files()
             self._emit_progress(
                 progress_callback,
@@ -617,6 +625,11 @@ class BilibiliDownloader(BaseDownloader):
                     merge_status="合并中",
                 )
             time.sleep(0.2)
+
+    @staticmethod
+    def _publish_merged_file(merging_path: str, save_path: str) -> None:
+        """Atomically expose a fully merged file without touching an older target first."""
+        os.replace(merging_path, save_path)
 
     @staticmethod
     def _merge_timeout_seconds() -> int:

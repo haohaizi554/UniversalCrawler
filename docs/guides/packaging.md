@@ -230,6 +230,12 @@ version = "x.y.z"
 9. 安装包开始菜单和桌面快捷方式可用
 10. 卸载流程正常
 11. 开发态落盘仍在项目根 `user_data/`，打包态落盘切到 `%LOCALAPPDATA%`
+12. 把保存目录临时指向一个包含大量无关文件的宽目录，启动 GUI 后窗口仍可拖动、切换和关闭，不出现 Windows“未响应”
+13. 启动日志出现 `DL_STARTUP_MAINTENANCE_START` 和 `DL_STARTUP_MAINTENANCE_DONE`；旧目录迁移未完成时只记录 `legacy_scan_pending=true`，不能阻塞 GUI
+14. 正常关闭 GUI 后进程退出码为 `0`，日志不得出现 `DL_DISPATCHER_STOP_TIMEOUT`；线程超时只能在 `join(timeout)` 后以 `is_alive()` 判定
+14. 下载任务创建前存在恢复账本记录；成功后立即销账，失败目录在下次启动尝试清理后销账
+
+冻结态读取 `%LOCALAPPDATA%` 中的真实配置，不能只在源码态默认 `user_data/` 下验证启动性能。保存根属于用户可控输入，打包验收必须按“大目录、慢磁盘、目录已被删除”三种情况测试。相关复盘见 [打包态启动未响应与递归清理](../postmortems/packaged-startup-recursive-sweep-freeze.md)。
 
 ## 相关文件
 
@@ -242,5 +248,3 @@ version = "x.y.z"
 - [app/utils/runtime_paths.py](../../app/utils/runtime_paths.py)
 - [tests/test_packaging.py](../../tests/test_packaging.py)
 - [docs/guides/windows-file-association.md](windows-file-association.md)
-
-

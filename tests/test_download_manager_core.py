@@ -1,15 +1,19 @@
 """纯 Python 下载调度内核测试。"""
 
+import os
 import queue
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from app.core.download_manager import DownloadManager
 from app.core.download_manager_core import DownloadManagerCore, PendingDownloadQueue
 from app.models import VideoItem
+from app.services.download_recovery_store import DownloadRecoveryStore
 
 class _CallbackSignal:
     def __init__(self):
@@ -58,6 +62,8 @@ class _CoreManager(DownloadManagerCore):
         self.progress = []
         self.finished = []
         self.errors = []
+        self.started_event = threading.Event()
+        self.error_event = threading.Event()
         super().__init__(max_concurrent=1)
 
     def _create_worker(self, video, save_dir):
@@ -65,6 +71,7 @@ class _CoreManager(DownloadManagerCore):
 
     def _emit_task_started(self, video_id: str) -> None:
         self.started.append(video_id)
+        self.started_event.set()
 
     def _emit_task_progress(self, video_id: str, progress: int) -> None:
         self.progress.append((video_id, progress))
@@ -74,6 +81,7 @@ class _CoreManager(DownloadManagerCore):
 
     def _emit_task_error(self, video_id: str, error: str) -> None:
         self.errors.append((video_id, error))
+        self.error_event.set()
 
     def _on_worker_thread_finished(self, worker):
         worker.deleteLater()
@@ -128,6 +136,199 @@ class DownloadManagerCoreTests(unittest.TestCase):
             self.assertFalse(audio_temp.exists())
             self.assertFalse(http_temp.exists())
             self.assertTrue(keep_file.exists())
+
+    def test_startup_sweep_consumes_exact_recovery_paths_even_when_one_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            exact_dir = root / "collection" / "season"
+            exact_dir.mkdir(parents=True)
+            missing_dir = root / "removed-before-restart"
+            stale_temp = exact_dir / "demo.mp4.downloading"
+            stale_temp.write_bytes(b"partial")
+            store = DownloadRecoveryStore(db_path=root / "recovery.sqlite3")
+            store.register_task(video_id="failed", save_directory=exact_dir)
+            store.handoff_failed_task("failed")
+            store.register_task(video_id="interrupted", save_directory=missing_dir)
+            store.mark_legacy_sweep_complete(root)
+            manager = DownloadManagerCore.__new__(DownloadManagerCore)
+            manager._download_recovery_store = store
+            maintenance_root = os.path.normcase(os.path.abspath(root))
+            DownloadManagerCore._STARTUP_MAINTENANCE_ROOTS.discard(maintenance_root)
+
+            with patch("app.core.download_manager_core.cfg.get", return_value=str(root)):
+                stats = manager._sweep_m3u8_orphan_workspaces_on_startup()
+
+            self.assertFalse(stale_temp.exists())
+            self.assertEqual(store.recovery_counts(), {"active": 0, "pending_cleanup": 0})
+            self.assertEqual(stats["recovery_records_consumed"], 2)
+
+    def test_startup_maintenance_does_not_block_manager_construction(self):
+        release_sweep = threading.Event()
+        sweep_started = threading.Event()
+
+        def blocking_sweep(_manager):
+            sweep_started.set()
+            release_sweep.wait(timeout=2.0)
+
+        with patch.object(DownloadManagerCore, "_sweep_m3u8_orphan_workspaces_on_startup", blocking_sweep):
+            started_at = time.monotonic()
+            manager = DownloadManagerCore(max_concurrent=1)
+            elapsed = time.monotonic() - started_at
+            try:
+                self.assertTrue(sweep_started.wait(timeout=0.5))
+                self.assertLess(elapsed, 1.0)
+            finally:
+                release_sweep.set()
+                manager.stop_all()
+
+    def test_dispatch_waits_for_startup_maintenance(self):
+        release_sweep = threading.Event()
+        sweep_started = threading.Event()
+
+        def blocking_sweep(_manager):
+            sweep_started.set()
+            release_sweep.wait(timeout=2.0)
+
+        with patch.object(DownloadManagerCore, "_sweep_m3u8_orphan_workspaces_on_startup", blocking_sweep):
+            manager = _CoreManager()
+            video = VideoItem(url="https://example.com/video.mp4", title="video", source="douyin")
+            try:
+                self.assertTrue(sweep_started.wait(timeout=0.5))
+                self.assertTrue(manager.add_task(video, "downloads"))
+                self.assertFalse(manager.started_event.wait(timeout=0.15))
+                self.assertEqual(manager.started, [])
+
+                release_sweep.set()
+                self.assertTrue(manager.started_event.wait(timeout=1.0))
+                self.assertEqual(manager.started, [video.id])
+            finally:
+                release_sweep.set()
+                manager.stop_all()
+
+    def test_dispatch_persists_path_before_worker_and_deletes_it_on_completion(self):
+        manager = _CoreManager()
+        recovery_store = Mock()
+        manager._download_recovery_store = recovery_store
+        video = VideoItem(
+            url="https://example.com/video.mp4",
+            title="video",
+            source="bilibili",
+        )
+        video.meta["trace_id"] = "trace-1"
+        try:
+            self.assertTrue(manager._startup_maintenance_done.wait(timeout=1.0))
+            self.assertTrue(manager.add_task(video, "downloads"))
+            self.assertTrue(manager.started_event.wait(timeout=1.0))
+
+            recovery_store.register_task.assert_called_once_with(
+                video_id=video.id,
+                save_directory="downloads",
+                source_url=video.url,
+                trace_id="trace-1",
+                platform="bilibili",
+            )
+            recovery_store.delete_task.assert_called_once_with(video.id)
+            self.assertEqual(video.meta["save_directory"], "downloads")
+        finally:
+            manager.stop_all()
+
+    def test_concrete_manager_keeps_core_recovery_callbacks(self):
+        manager = DownloadManager.__new__(DownloadManager)
+        manager._download_recovery_store = Mock()
+        manager._emit_task_started = Mock()
+        manager._emit_task_progress = Mock()
+        manager._emit_task_finished = Mock()
+        manager._emit_task_error = Mock()
+        manager._on_worker_thread_finished = Mock()
+        video = VideoItem(
+            url="https://example.com/video.mp4",
+            title="video",
+            source="bilibili",
+        )
+        worker = _FakeWorker(video, "downloads")
+
+        manager._connect_worker_callbacks(worker)
+        worker.sig_error.emit(video.id, "network")
+
+        manager._download_recovery_store.handoff_failed_task.assert_called_once_with(video.id)
+
+    def test_dispatch_persists_the_exact_collection_directory_before_worker_start(self):
+        with patch.object(
+            DownloadManagerCore,
+            "_sweep_m3u8_orphan_workspaces_on_startup",
+            return_value=None,
+        ):
+            manager = _CoreManager()
+        recovery_store = Mock()
+        manager._download_recovery_store = recovery_store
+        video = VideoItem(
+            url="https://example.com/video.mp4",
+            title="video",
+            source="bilibili",
+        )
+        video.meta.update({"folder_name": "Album", "use_subdir": True})
+        try:
+            self.assertTrue(manager._startup_maintenance_done.wait(timeout=1.0))
+            self.assertTrue(manager.add_task(video, "downloads"))
+            self.assertTrue(manager.started_event.wait(timeout=1.0))
+
+            recovery_store.register_task.assert_called_once_with(
+                video_id=video.id,
+                save_directory=str(Path("downloads") / "Album"),
+                source_url=video.url,
+                trace_id="",
+                platform="bilibili",
+            )
+        finally:
+            manager.stop_all()
+
+    def test_dispatch_fails_closed_when_recovery_path_cannot_be_committed(self):
+        with patch.object(
+            DownloadManagerCore,
+            "_sweep_m3u8_orphan_workspaces_on_startup",
+            return_value=None,
+        ):
+            manager = _CoreManager()
+        manager._download_recovery_store = Mock()
+        manager._download_recovery_store.register_task.side_effect = OSError("disk unavailable")
+        video = VideoItem(
+            url="https://example.com/video.mp4",
+            title="video",
+            source="bilibili",
+        )
+        try:
+            self.assertTrue(manager._startup_maintenance_done.wait(timeout=1.0))
+            self.assertTrue(manager.add_task(video, "downloads"))
+            self.assertTrue(manager.error_event.wait(timeout=1.0))
+
+            self.assertEqual(manager.started, [])
+            self.assertFalse(manager._download_recovery_store.handoff_failed_task.called)
+        finally:
+            manager.stop_all()
+
+    def test_worker_creation_failure_hands_registered_path_to_startup_cleanup(self):
+        with patch.object(
+            DownloadManagerCore,
+            "_sweep_m3u8_orphan_workspaces_on_startup",
+            return_value=None,
+        ):
+            manager = _CoreManager()
+        manager._download_recovery_store = Mock()
+        manager._create_worker = Mock(side_effect=RuntimeError("worker init failed"))
+        video = VideoItem(
+            url="https://example.com/video.mp4",
+            title="video",
+            source="bilibili",
+        )
+        try:
+            self.assertTrue(manager._startup_maintenance_done.wait(timeout=1.0))
+            self.assertTrue(manager.add_task(video, "downloads"))
+            self.assertTrue(manager.error_event.wait(timeout=1.0))
+
+            manager._download_recovery_store.register_task.assert_called_once()
+            manager._download_recovery_store.handoff_failed_task.assert_called_once_with(video.id)
+        finally:
+            manager.stop_all()
 
     def test_pending_download_queue_removes_many_items_in_one_pass(self):
         pending = PendingDownloadQueue()
@@ -329,13 +530,20 @@ class DownloadManagerCoreTests(unittest.TestCase):
         manager._start_stop_lock = threading.RLock()
         manager._dispatch_slot_gate = threading.Event()
         manager.dispatcher_thread = Mock()
-        manager.dispatcher_thread.join.return_value = True
+        manager.dispatcher_thread.join.return_value = None
+        manager.dispatcher_thread.is_alive.return_value = False
         manager.is_running = True
 
-        manager.stop_all()
+        with patch("app.core.download_manager_core.debug_logger.log") as log:
+            manager.stop_all()
 
         self.assertEqual(manager.queue.items, [])
         manager.dispatcher_thread.join.assert_called_once_with(timeout=2)
+        manager.dispatcher_thread.is_alive.assert_called_once_with()
+        self.assertNotIn(
+            "stop_all_dispatcher_timeout",
+            [call.kwargs.get("action") for call in log.call_args_list],
+        )
 
     def test_cancel_task_uses_pending_queue_public_remove_api(self):
         manager = DownloadManagerCore.__new__(DownloadManagerCore)

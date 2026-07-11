@@ -1325,7 +1325,7 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = os.path.join(temp_dir, "demo.mp4")
-            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(save_path).write_bytes(b"merged")
+            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(kwargs["save_path"]).write_bytes(b"merged")
             BilibiliDownloader().download(item, save_path, progress.append, lambda: False)
 
         self.assertEqual(progress, [10, 10, 90, 90, 91, 100])
@@ -1356,14 +1356,15 @@ class DownloaderStrategyTests(unittest.TestCase):
             save_path = os.path.join(temp_dir, "demo.mp4")
             temp_v = os.path.join(temp_dir, "demo_video.m4s")
             temp_a = os.path.join(temp_dir, "demo_audio.m4s")
-            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(save_path).write_bytes(b"merged")
+            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(kwargs["save_path"]).write_bytes(b"merged")
 
             BilibiliDownloader().download(item, save_path, lambda *_args, **_kwargs: None, lambda: False)
 
-            self.assertEqual(item.meta["download_temp_files"], [temp_v, temp_a])
+            self.assertEqual(item.meta["download_temp_files"], [temp_v, temp_a, f"{save_path}.merging"])
             self.assertFalse(os.path.exists(temp_v))
             self.assertFalse(os.path.exists(temp_a))
             self.assertEqual(mocked_build_merge.call_args.args[1:3], (temp_v, temp_a))
+            self.assertEqual(mocked_build_merge.call_args.args[3], f"{save_path}.merging")
 
         self.assertEqual(mocked_get.call_count, 2)
         mocked_run_merge.assert_called_once()
@@ -1404,7 +1405,7 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = os.path.join(temp_dir, "demo.mp4")
-            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(save_path).write_bytes(b"merged")
+            mocked_run_merge.side_effect = lambda *args, **kwargs: Path(kwargs["save_path"]).write_bytes(b"merged")
 
             BilibiliDownloader().download(item, save_path, lambda *_args, **_kwargs: None, lambda: False)
 
@@ -2669,6 +2670,7 @@ https://cdn.example.com/seg2.ts
         manager.is_running = True
         manager.queue = PendingDownloadQueue()
         manager.dispatcher_thread = Mock()
+        manager.dispatcher_thread.is_alive.return_value = False
         manager._workers_lock = threading.Lock()
         worker = Mock()
         worker.video = VideoItem(url="https://example.com/1.mp4", title="demo", source="douyin")

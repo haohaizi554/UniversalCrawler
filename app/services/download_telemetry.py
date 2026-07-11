@@ -163,18 +163,19 @@ class DownloadTelemetryService:
     @staticmethod
     def apply_to_meta(video: VideoItem, snapshot: DownloadProgressSnapshot) -> None:
         """把最新遥测写回 meta，供桌面、Web 和日志详情复用同一份字段。"""
-        meta = video.meta
-        meta["speed_bps"] = snapshot.speed_bps
-        meta["speed"] = snapshot.speed
-        meta["eta"] = snapshot.eta
-        meta["remaining_time"] = snapshot.remaining_time
-        meta["bytes_downloaded"] = snapshot.bytes_downloaded
-        meta["bytes_total"] = snapshot.bytes_total
-        meta["eta_seconds"] = snapshot.eta_seconds
-        meta["telemetry_updated_at"] = snapshot.updated_at
-        trend = list(meta.get("speed_trend") or [])
-        trend.append(snapshot.speed_bps)
-        meta["speed_trend"] = trend[-60:]
+        with video.meta_guard():
+            meta = video.meta
+            meta["speed_bps"] = snapshot.speed_bps
+            meta["speed"] = snapshot.speed
+            meta["eta"] = snapshot.eta
+            meta["remaining_time"] = snapshot.remaining_time
+            meta["bytes_downloaded"] = snapshot.bytes_downloaded
+            meta["bytes_total"] = snapshot.bytes_total
+            meta["eta_seconds"] = snapshot.eta_seconds
+            meta["telemetry_updated_at"] = snapshot.updated_at
+            trend = list(meta.get("speed_trend") or [])
+            trend.append(snapshot.speed_bps)
+            meta["speed_trend"] = trend[-60:]
 
     def lookup(self, video_id: str) -> DownloadProgressSnapshot | None:
         last = self._last_sample.get(video_id)

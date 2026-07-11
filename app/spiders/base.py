@@ -72,7 +72,8 @@ class BaseSpider(threading.Thread):
         """请求线程尽快停止，并唤醒选择等待/关闭被跟踪的浏览器。"""
         self.is_running = False
         self._interrupt_requested = True
-        self._selection_epoch += 1
+        with self._running_guard():
+            self._selection_epoch += 1
         self._resume_event.set()
         self._close_tracked_playwright_browser()
         self.sig_log.emit("🛑 正在停止任务...")
@@ -730,12 +731,15 @@ class BaseSpider(threading.Thread):
         self._selection_result = None
         self._selection_emit_perf_ms = time.perf_counter() * 1000
         self._selection_emit_wall_ms = int(time.time() * 1000)
-        selection_epoch = self._selection_epoch
+        with self._running_guard():
+            selection_epoch = self._selection_epoch
         self.sig_select_tasks.emit(items)
         while self.is_running and not self.interrupt_requested:
             if self._resume_event.wait(timeout=0.2):
                 break
-        if not self.is_running or self.interrupt_requested or selection_epoch != self._selection_epoch:
+        with self._running_guard():
+            selection_cancelled = selection_epoch != self._selection_epoch
+        if not self.is_running or self.interrupt_requested or selection_cancelled:
             return None
         return self._selection_result
 

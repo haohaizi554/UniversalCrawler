@@ -6,10 +6,13 @@ import asyncio
 import inspect
 from typing import Any, Awaitable, Callable
 
+from fastapi import HTTPException
+
 from app.config import cfg
 from app.web.controller_config_service import WebControllerConfigService
 from app.web.logging_utils import log_web_exception
 from app.web.session_runtime import WebSessionContext
+from app.web.controller_route_service import require_valid_video_id
 
 Handler = Callable[[dict[str, Any], WebSessionContext], Awaitable[None]]
 MAX_SCAN_LIMIT = 5000
@@ -220,8 +223,13 @@ class WebSocketMessageDispatcher:
         if not isinstance(video_id, str):
             await self._emit_log(context, "❌ video_id 必须是字符串")
             return
+        try:
+            video_id = require_valid_video_id(video_id)
+        except HTTPException:
+            await self._emit_log(context, "❌ invalid video_id")
+            return
 
-        await context.controller.async_delete_video(video_id, context.approved_roots)
+        await context.controller.async_delete_video(video_id, context.approved_roots_snapshot())
 
     async def _handle_rename_video(self, data: dict[str, Any], context: WebSessionContext) -> None:
         video_id = data.get("video_id", "")
@@ -229,8 +237,13 @@ class WebSocketMessageDispatcher:
         if not isinstance(video_id, str) or not isinstance(new_title, str):
             await self._emit_log(context, "❌ video_id 和 new_title 必须是字符串")
             return
+        try:
+            video_id = require_valid_video_id(video_id)
+        except HTTPException:
+            await self._emit_log(context, "❌ invalid video_id")
+            return
 
-        await context.controller.async_rename_video(video_id, new_title, context.approved_roots)
+        await context.controller.async_rename_video(video_id, new_title, context.approved_roots_snapshot())
 
     async def _handle_download(self, data: dict[str, Any], context: WebSessionContext) -> None:
         payload = await self._normalize_authorized_save_dir(data, context)

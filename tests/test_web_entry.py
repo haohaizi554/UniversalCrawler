@@ -146,6 +146,17 @@ class WebEntryArgparseTests(unittest.TestCase):
         args = parser.parse_args(["--host", "0.0.0.0"])
         self.assertEqual(args.host, "0.0.0.0")
 
+    def test_non_loopback_bind_requires_tls_certificate_and_key(self):
+        from entry.web_entry import _validate_transport_security
+
+        with self.assertRaises(ValueError):
+            _validate_transport_security("0.0.0.0", None, None)
+
+    def test_loopback_bind_allows_http(self):
+        from entry.web_entry import _validate_transport_security
+
+        self.assertEqual(_validate_transport_security("127.0.0.1", None, None), "http")
+
     def test_port_int(self):
         """--port 9000 必须是 int。"""
         from entry.web_entry import _build_argparser

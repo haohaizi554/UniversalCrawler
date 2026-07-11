@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import sqlite3
+from contextlib import closing
 
 from app.services.failed_record_store import FailedRecordStore
 
@@ -32,6 +34,20 @@ def test_failed_record_store_persists_queued_records(tmp_path):
     assert rows[0]["title"] == "broken"
     assert rows[0]["reason"] == "network"
     assert rows[0]["trace_id"] == "trace-1"
+
+
+def test_failed_record_store_uses_wal_and_full_synchronous_durability(tmp_path):
+    db_path = tmp_path / "failed.sqlite3"
+    store = FailedRecordStore(db_path=db_path)
+    try:
+        store.queue_upsert([{"id": "video-durable", "reason": "network"}])
+        assert store.flush(timeout=2)
+    finally:
+        store.shutdown()
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+        assert int(conn.execute("PRAGMA synchronous").fetchone()[0]) == 2
 
 
 def test_failed_record_store_refreshes_memory_snapshot_in_worker(tmp_path):

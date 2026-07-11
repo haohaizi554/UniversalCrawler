@@ -23,7 +23,12 @@ def _create_test_client():
     """创建 FastAPI TestClient（fixture）。"""
     from fastapi.testclient import TestClient
     from app.web.server import create_app
-    return TestClient(create_app())
+    client = TestClient(create_app())
+    client.get("/api/ping")
+    cookie_name = client.app.state.web_session_cookie_name
+    session_id = client.cookies.get(cookie_name)
+    client._ucrawl_context = client.app.state.web_session_registry.get_or_create(session_id)
+    return client
 
 def _is_error_response(data: Any) -> bool:
     """判断响应是否为错误（status=error 或包含 error 字段）。"""
@@ -198,6 +203,7 @@ class ScanEndpointTests(unittest.TestCase):
 
     def test_scan_valid_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
+            self.client._ucrawl_context.approve_directory(tmp)
             r = self.client.post("/api/scan", json={"directory": tmp})
             self.assertEqual(r.status_code, 200)
             data = r.json()
@@ -207,6 +213,7 @@ class ScanEndpointTests(unittest.TestCase):
     def test_scan_with_scan_limit(self):
         """scan_limit 参数支持整数。"""
         with tempfile.TemporaryDirectory() as tmp:
+            self.client._ucrawl_context.approve_directory(tmp)
             r = self.client.post("/api/scan", json={"directory": tmp, "scan_limit": 100})
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json().get("status"), "ok")
@@ -214,6 +221,7 @@ class ScanEndpointTests(unittest.TestCase):
     def test_scan_scan_limit_invalid_type(self):
         """scan_limit 必须是整数。"""
         with tempfile.TemporaryDirectory() as tmp:
+            self.client._ucrawl_context.approve_directory(tmp)
             r = self.client.post("/api/scan", json={"directory": tmp, "scan_limit": "abc"})
             self.assertEqual(r.status_code, 200)
             self.assertTrue(_is_error_response(r.json()))
@@ -221,6 +229,7 @@ class ScanEndpointTests(unittest.TestCase):
     def test_scan_scan_limit_zero(self):
         """scan_limit 必须大于 0。"""
         with tempfile.TemporaryDirectory() as tmp:
+            self.client._ucrawl_context.approve_directory(tmp)
             r = self.client.post("/api/scan", json={"directory": tmp, "scan_limit": 0})
             self.assertEqual(r.status_code, 200)
             self.assertTrue(_is_error_response(r.json()))
@@ -498,6 +507,7 @@ class DirListChangeTests(unittest.TestCase):
 
     def test_dir_list_with_specific_path(self):
         with tempfile.TemporaryDirectory() as tmp:
+            self.client._ucrawl_context.approve_directory(tmp)
             r = self.client.get(f"/api/dir/list?path={tmp}")
             self.assertEqual(r.status_code, 200)
             data = r.json()
@@ -505,7 +515,9 @@ class DirListChangeTests(unittest.TestCase):
 
     def test_dir_list_nonexistent_path(self):
         """Z:\\__definitely_not_exist_12345__ 应当返回 error 字段。"""
-        r = self.client.get("/api/dir/list?path=Z:\\__definitely_not_exist_12345__")
+        path = "Z:\\__definitely_not_exist_12345__"
+        self.client._ucrawl_context.approve_directory(path)
+        r = self.client.get(f"/api/dir/list?path={path}")
         self.assertEqual(r.status_code, 200)
         data = r.json()
         self.assertIn("error", data)
@@ -519,7 +531,9 @@ class DirListChangeTests(unittest.TestCase):
     def test_dir_change_nonexistent(self):
         """不存在的目录可能由 os.path.exists 解释为存在（Windows 路径兼容），
         所以只验证返回是合法 dict 不崩溃。"""
-        r = self.client.post("/api/dir/change", json={"directory": "Z:\\__definitely_not_exist_12345__\\foo"})
+        path = "Z:\\__definitely_not_exist_12345__\\foo"
+        self.client._ucrawl_context.approve_directory(path)
+        r = self.client.post("/api/dir/change", json={"directory": path})
         self.assertEqual(r.status_code, 200)
         self.assertIn("status", r.json())
 
@@ -530,6 +544,7 @@ class DirListChangeTests(unittest.TestCase):
 
     def test_dir_change_valid(self):
         with tempfile.TemporaryDirectory() as tmp:
+            self.client._ucrawl_context.approve_directory(tmp)
             r = self.client.post("/api/dir/change", json={"directory": tmp})
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json().get("status"), "ok")

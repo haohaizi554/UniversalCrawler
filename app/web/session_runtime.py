@@ -79,6 +79,7 @@ class WebSessionContext:
         self.session_token = secrets.token_urlsafe(24)
         self.csrf_token = secrets.token_urlsafe(24)
         self.approved_roots: set[str] = set()
+        self._approved_roots_lock = threading.RLock()
         self.background_tasks: set[asyncio.Task] = set()
         self._background_tasks_lock = threading.RLock()
         self._access_lock = threading.RLock()
@@ -124,12 +125,20 @@ class WebSessionContext:
 
     def approve_directory(self, directory: str) -> str:
         normalized = normalize_directory(directory)
-        self.approved_roots.add(normalized)
+        with self._approved_roots_lock:
+            self.approved_roots.add(normalized)
         return normalized
 
     def is_directory_allowed(self, directory: str) -> bool:
         normalized = normalize_directory(directory)
-        return any(is_within_root(normalized, root) for root in self.approved_roots)
+        with self._approved_roots_lock:
+            roots = tuple(self.approved_roots)
+        return any(is_within_root(normalized, root) for root in roots)
+
+    def approved_roots_snapshot(self) -> tuple[str, ...]:
+        """Return a stable snapshot for worker-thread path validation."""
+        with self._approved_roots_lock:
+            return tuple(self.approved_roots)
 
     def require_directory(self, directory: str) -> str:
         normalized = normalize_directory(directory)

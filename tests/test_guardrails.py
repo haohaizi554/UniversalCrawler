@@ -437,14 +437,10 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             "@staticmethod\n    def _collect_subdirectories",
             1,
         )[0]
-        server_block = server_text.split('async def list_directory(path: str = ""):', 1)[1].split(
-            '@app.post("/api/dir/change")',
-            1,
-        )[0]
         self.assertIn("run_in_executor", service_block)
-        self.assertIn("run_in_executor", server_block)
         self.assertNotIn("os.listdir(", service_block)
-        self.assertNotIn("os.listdir(", server_block)
+        self.assertIn("build_rest_router", server_text)
+        self.assertNotIn("os.listdir(", server_text)
 
     def test_cache_service_sqlite_connections_are_context_managed(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -726,15 +722,10 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             errors="ignore",
         )
         router_block = router_text.split('async def download_latest_log', 1)[1].split("return router", 1)[0]
-        server_block = server_text.split('async def download_latest_log', 1)[1].split(
-            "# ---- WebSocket ----",
-            1,
-        )[0]
-
         self.assertIn("await file_response_service.async_latest_log_response", router_block)
         self.assertIn("await file_response_service.async_latest_error_summary_response", router_block)
-        self.assertIn("run_in_executor", server_block)
-        self.assertNotIn("os.path.exists", server_block)
+        self.assertIn("build_rest_router", server_text)
+        self.assertNotIn("async def download_latest_log", server_text)
 
     def test_start_task_marquee_uses_low_frequency_timer(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -1141,6 +1132,10 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             encoding="utf-8",
             errors="ignore",
         )
+        router_text = (project_root / "app" / "web" / "rest_router.py").read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
 
         self.assertNotIn("async def stream_range", service_text)
         self.assertNotIn("async def stream_range", server_text)
@@ -1148,16 +1143,17 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("def _iter_file_range", service_text)
         self.assertNotIn("def _iter_file_range", server_text)
         self.assertNotIn("def _media_file_info", server_text)
-        media_route_block = server_text.split('@app.get("/api/media/{video_id}")', 1)[1].split(
-            "# ---- 目录浏览 API",
+        media_route_block = router_text.split('@router.get("/api/media/{video_id}")', 1)[1].split(
+            '@router.get("/api/dir/list")',
             1,
         )[0]
-        self.assertIn("composition.file_response_service.get_media", media_route_block)
+        self.assertIn("file_response_service.get_media", media_route_block)
         self.assertIn('alias="Range"', media_route_block)
         self.assertIn("range_header", media_route_block)
-        self.assertIn("require_session_token=False", media_route_block)
+        self.assertNotIn("require_session_token=False", media_route_block)
         self.assertNotIn("StreamingResponse", media_route_block)
         self.assertNotIn("FileResponse", media_route_block)
+        self.assertNotIn('@app.get("/api/media/{video_id}")', server_text)
 
     def test_web_bootstrap_and_rest_getters_use_worker_executor(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -1176,9 +1172,10 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("await _run_controller_worker_call(get_request_context(request).controller.get_config)", rest_router)
         self.assertIn("await _run_controller_worker_call(get_request_context(request).controller.get_state)", rest_router)
 
-        self.assertIn("await _run_controller_worker_call(controller.get_platforms)", server)
-        self.assertIn("await _run_controller_worker_call(controller.get_config)", server)
-        self.assertIn("await _run_controller_worker_call(controller.get_state)", server)
+        self.assertIn("build_rest_router", server)
+        self.assertNotIn('@app.get("/api/platforms")', server)
+        self.assertNotIn('@app.get("/api/config")', server)
+        self.assertNotIn('@app.get("/api/state")', server)
 
     def test_websocket_dispatcher_config_mutations_use_worker_executor(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -1234,10 +1231,6 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             "async def select_tasks",
             1,
         )[0]
-        server_block = server_text.split("async def stop_crawl", 1)[1].split(
-            "async def select_tasks",
-            1,
-        )[0]
 
         self.assertIn("await _run_controller_worker_call(context.controller.stop_crawl)", dispatcher_block)
         self.assertNotIn("context.controller.stop_crawl()", dispatcher_block)
@@ -1245,8 +1238,8 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         self.assertIn("await _run_controller_worker_call(context.controller.stop_crawl)", workflow_block)
         self.assertNotIn(".controller.stop_crawl()", workflow_block)
 
-        self.assertIn("await _run_controller_worker_call(controller.stop_crawl)", server_block)
-        self.assertNotIn("controller.stop_crawl()", server_block)
+        self.assertIn("build_rest_router", server_text)
+        self.assertNotIn("async def stop_crawl", server_text)
 
     def test_websocket_transport_encodes_outbound_messages_off_loop(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

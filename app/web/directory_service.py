@@ -98,7 +98,7 @@ class WebDirectoryService:
                 return error_result("目录不存在", http_status=404, path=path)
             parent_candidate = os.path.dirname(path) if path else ""
             parent = parent_candidate if parent_candidate and context.is_directory_allowed(parent_candidate) else ""
-            drives = [{"name": root, "path": root} for root in sorted(context.approved_roots)]
+            drives = [{"name": root, "path": root} for root in sorted(context.approved_roots_snapshot())]
             return {
                 "current": path,
                 "parent": parent,

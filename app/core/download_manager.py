@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 
 from app.core.download_manager_core import DownloadManagerCore
+from app.core.download_path_policy import resolve_task_save_directory
 from app.core.downloaders import BaseDownloader
 from app.core.downloaders.registry import downloader_registry
 from app.exceptions import DownloaderStoppedError
@@ -42,7 +43,8 @@ class DownloadWorker(threading.Thread):
         super().__init__(daemon=True, name=f"DownloadWorker-{video.id}")
         self.video = video
         self.save_dir = save_dir
-        self.is_running = True
+        self._running_event = threading.Event()
+        self._running_event.set()
         self.sig_start = CallbackSignal()
         self.sig_progress = CallbackSignal()
         self.sig_finished = CallbackSignal()
@@ -55,6 +57,17 @@ class DownloadWorker(threading.Thread):
     def _trace_id(self) -> str | None:
         """读取当前任务的 trace_id，便于串联调试日志。"""
         return self.video.meta.get("trace_id")
+
+    @property
+    def is_running(self) -> bool:
+        return self._running_event.is_set()
+
+    @is_running.setter
+    def is_running(self, value: bool) -> None:
+        if value:
+            self._running_event.set()
+        else:
+            self._running_event.clear()
 
     def _log_context(self, save_dir: str | None = None) -> dict:
         """生成下载日志上下文，统一附带视频 ID、平台与保存目录。"""
@@ -289,33 +302,34 @@ class DownloadWorker(threading.Thread):
         merge_status: str | None = None,
     ) -> None:
         """Persist live downloader phase metadata for the frontend adapter."""
-        meta = self.video.meta
-        changed = False
-        updates = {
-            "download_phase": phase,
-            "phase_message": phase_message,
-            "write_status": write_status,
-            "merge_status": merge_status,
-        }
-        for key, value in updates.items():
-            if value is None:
-                continue
-            text = str(value)
-            if meta.get(key) != text:
-                meta[key] = text
-                changed = True
-        if phase_message:
-            events = list(meta.get("events") or [])
-            event = {
-                "time": time.strftime("%H:%M:%S"),
-                "message": str(phase_message),
+        with self.video.meta_guard():
+            meta = self.video.meta
+            changed = False
+            updates = {
+                "download_phase": phase,
+                "phase_message": phase_message,
+                "write_status": write_status,
+                "merge_status": merge_status,
             }
-            if not events or events[-1].get("message") != event["message"]:
-                events.append(event)
-                meta["events"] = events[-6:]
-                changed = True
-        if changed:
-            meta["phase_updated_at"] = time.time()
+            for key, value in updates.items():
+                if value is None:
+                    continue
+                text = str(value)
+                if meta.get(key) != text:
+                    meta[key] = text
+                    changed = True
+            if phase_message:
+                events = list(meta.get("events") or [])
+                event = {
+                    "time": time.strftime("%H:%M:%S"),
+                    "message": str(phase_message),
+                }
+                if not events or events[-1].get("message") != event["message"]:
+                    events.append(event)
+                    meta["events"] = events[-6:]
+                    changed = True
+            if changed:
+                meta["phase_updated_at"] = time.time()
 
     def stop(self):
         """通知下载器在下一次检查时尽快停止当前任务。"""
@@ -337,17 +351,7 @@ class DownloadWorker(threading.Thread):
 
     def _resolve_save_dir(self) -> str:
         """图集/合集类任务单独落到子目录，避免主目录被大量切碎文件污染。"""
-        save_dir = self.save_dir
-        content_type = self.video.meta.get("content_type", "")
-        is_gallery = self.video.meta.get("is_gallery", False)
-        is_mix = self.video.meta.get("is_mix", False)
-        use_subdir = self.video.meta.get("use_subdir", False)
-        raw_folder_name = str(self.video.meta.get("folder_name") or "").strip()
-        folder_name = sanitize_filename(raw_folder_name) if raw_folder_name else ""
-
-        if folder_name and (is_gallery or content_type == "gallery" or is_mix or use_subdir):
-            return os.path.join(save_dir, folder_name)
-        return save_dir
+        return resolve_task_save_directory(self.video, self.save_dir)
 
     def _infer_extension(self) -> str:
         """根据内容类型和 URL 后缀推断初始扩展名。"""
@@ -515,11 +519,7 @@ class DownloadManager(DownloadManagerCore):
         return DownloadWorker(video, save_dir)
 
     def _connect_worker_callbacks(self, worker) -> None:
-        worker.sig_start.connect(self._emit_task_started)
-        worker.sig_progress.connect(self._emit_task_progress)
-        worker.sig_finished.connect(self._emit_task_finished)
-        worker.sig_error.connect(self._emit_task_error)
-        worker.finished.connect(lambda w=worker: self._on_worker_thread_finished(w))
+        super()._connect_worker_callbacks(worker)
 
     def _emit_task_started(self, video_id: str) -> None:
         self.task_started.emit(video_id)

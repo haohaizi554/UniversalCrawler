@@ -9,7 +9,7 @@ import re
 from collections.abc import Callable, Iterator
 
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app.services.path_policy import PathPolicy
 
@@ -59,11 +59,13 @@ class WebFileResponseService:
         if not path:
             raise HTTPException(status_code=404, detail="file not found")
         try:
+            snapshot_roots = getattr(context, "approved_roots_snapshot", None)
+            approved_roots = snapshot_roots() if callable(snapshot_roots) else tuple(context.approved_roots)
             path, file_size, content_type = await asyncio.get_running_loop().run_in_executor(
                 None,
                 self._media_file_info,
                 path,
-                tuple(context.approved_roots),
+                approved_roots,
             )
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="file not found")
@@ -72,23 +74,28 @@ class WebFileResponseService:
 
         effective_range_header = range_header or request.headers.get("range")
         if effective_range_header:
-            range_match = re.match(r"bytes=(\d+)-(\d*)", effective_range_header)
-            if range_match:
-                start = int(range_match.group(1))
-                end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
-                end = min(end, file_size - 1)
-                chunk_size = end - start + 1
-
-                return StreamingResponse(
-                    self._iter_file_range(path, start, chunk_size),
-                    status_code=206,
-                    media_type=content_type,
+            parsed_range = self._parse_byte_range(effective_range_header, file_size)
+            if parsed_range is None:
+                return Response(
+                    status_code=416,
                     headers={
-                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Content-Range": f"bytes */{file_size}",
                         "Accept-Ranges": "bytes",
-                        "Content-Length": str(chunk_size),
                     },
                 )
+            start, end = parsed_range
+            chunk_size = end - start + 1
+
+            return StreamingResponse(
+                self._iter_file_range(path, start, chunk_size),
+                status_code=206,
+                media_type=content_type,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(chunk_size),
+                },
+            )
 
         return FileResponse(
             path,
@@ -102,6 +109,26 @@ class WebFileResponseService:
     def _media_file_info(self, path: str, approved_roots: tuple[str, ...]) -> tuple[str, int, str]:
         resolved = self._path_policy.resolve_existing_file(path, approved_roots)
         return resolved, os.path.getsize(resolved), self._guess_media_type(resolved)
+
+    @staticmethod
+    def _parse_byte_range(value: str, file_size: int) -> tuple[int, int] | None:
+        """Parse the single byte-range form supported by the media player."""
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", str(value).strip())
+        if match is None or file_size <= 0:
+            return None
+        start_text, end_text = match.groups()
+        if not start_text:
+            if not end_text:
+                return None
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                return None
+            return max(0, file_size - suffix_length), file_size - 1
+        start = int(start_text)
+        requested_end = int(end_text) if end_text else file_size - 1
+        if start >= file_size or requested_end < start:
+            return None
+        return start, min(requested_end, file_size - 1)
 
     @staticmethod
     def _iter_file_range(path: str, start: int, chunk_size: int) -> Iterator[bytes]:

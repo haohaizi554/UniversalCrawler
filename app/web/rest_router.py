@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import os
 from typing import Any, Callable
 
 from fastapi import APIRouter, Header, Query, Request
@@ -13,33 +12,23 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 from app.web.api_result import error_result, finalize_api_result
 from app.web.controller_route_service import require_valid_video_id
 
+
+def _finalize_route_result(payload: Any, *, enforce_statuses: set[int] | None = None) -> Any:
+    """Preserve legacy 200 error bodies except for explicit security boundaries."""
+    if not isinstance(payload, dict) or not (payload.get("status") == "error" or "error" in payload):
+        return payload
+    status_code = int(payload.get("http_status", 400))
+    if status_code in (enforce_statuses or set()):
+        return finalize_api_result(payload)
+    body = dict(payload)
+    body.pop("http_status", None)
+    return body
+
 class _RequestModel(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 class ConfigUpdatesRequest(RootModel[dict[str, dict[str, Any]]]):
     pass
-
-class ScanDirectoryRequest(_RequestModel):
-    directory: str | None = Field(default=None, max_length=4096)
-    scan_limit: int | None = Field(default=None, ge=1, le=5000)
-
-class SearchRequest(_RequestModel):
-    source: str = Field(..., min_length=1, max_length=64)
-    keyword: str = Field(..., min_length=1, max_length=200)
-    save_dir: str | None = Field(default=None, max_length=4096)
-    config: dict[str, Any] = Field(default_factory=dict)
-    selection: dict[str, Any] | None = None
-    timeout: float | None = None
-    run_timeout: float | None = None
-    download: Any = True
-
-class DownloadRequest(_RequestModel):
-    url: str = Field(..., min_length=1, max_length=4096)
-    source: str = Field(..., min_length=1, max_length=64)
-    title: str | None = Field(default=None, max_length=255)
-    save_dir: str | None = Field(default=None, max_length=4096)
-    timeout: float | None = None
-    config: dict[str, Any] = Field(default_factory=dict)
 
 class FrontendActionRequest(_RequestModel):
     action: str = Field(..., min_length=1, max_length=80)
@@ -92,7 +81,7 @@ def build_rest_router(
             errors = await _run_controller_worker_call(controller.update_config, updates.root)
         if errors:
             joined = "; ".join(f"{error.section}.{error.key}: {error.error}" for error in errors)
-            return finalize_api_result(error_result(joined, http_status=400))
+            return _finalize_route_result(error_result(joined, http_status=400))
         return {"status": "ok"}
 
     @router.get("/api/state")
@@ -161,48 +150,51 @@ def build_rest_router(
                         result = dict(result)
                         result["frontend_delta"] = delta
             return result
-        return finalize_api_result(error_result("frontend action is unavailable", http_status=501))
+        return _finalize_route_result(error_result("frontend action is unavailable", http_status=501))
 
     @router.post("/api/scan")
-    async def scan_directory(request: Request, body: ScanDirectoryRequest):
-        return finalize_api_result(await directory_service.scan_directory(request, body.model_dump(exclude_none=True)))
+    async def scan_directory(request: Request, body: dict):
+        result = await directory_service.scan_directory(request, body)
+        return _finalize_route_result(result, enforce_statuses={403})
 
     @router.post("/api/search")
-    async def search(request: Request, body: SearchRequest):
-        return finalize_api_result(
-            await search_service.search(request, body.model_dump(exclude_none=True, exclude_defaults=True))
-        )
+    async def search(request: Request, body: dict):
+        return _finalize_route_result(await search_service.search(request, body))
 
     @router.post("/api/crawl/start")
     async def start_crawl(request: Request, body: dict):
-        return finalize_api_result(await workflow_route_service.start_crawl(request, body))
+        return _finalize_route_result(await workflow_route_service.start_crawl(request, body))
 
     @router.post("/api/crawl/stop")
     async def stop_crawl(request: Request):
-        return finalize_api_result(await workflow_route_service.stop_crawl(request))
+        return _finalize_route_result(await workflow_route_service.stop_crawl(request))
 
     @router.post("/api/crawl/select")
     async def select_tasks(request: Request, body: dict):
-        return finalize_api_result(await workflow_route_service.select_tasks(request, body))
+        return _finalize_route_result(await workflow_route_service.select_tasks(request, body))
 
-    if os.getenv("UCRAWL_DEBUG_ROUTES", "0") == "1":
-        @router.post("/api/debug/trigger-select")
-        async def debug_trigger_select(request: Request):
-            return finalize_api_result(await controller_route_service.trigger_select(request))
+    @router.post("/api/debug/trigger-select")
+    async def debug_trigger_select(request: Request):
+        result = await controller_route_service.trigger_select(request)
+        return _finalize_route_result(result, enforce_statuses={404})
 
     @router.delete("/api/video/{video_id}")
     async def delete_video(request: Request, video_id: str):
-        return finalize_api_result(await controller_route_service.delete_video(request, video_id))
+        result = await controller_route_service.delete_video(request, video_id)
+        return _finalize_route_result(result, enforce_statuses={400, 403})
 
     @router.post("/api/video/rename")
     async def rename_video(request: Request, body: dict):
-        return finalize_api_result(await controller_route_service.rename_video(request, body))
+        result = await controller_route_service.rename_video(request, body)
+        if not isinstance(body.get("video_id"), str) or not isinstance(body.get("new_title"), str):
+            return _finalize_route_result(result)
+        if not body.get("video_id"):
+            return _finalize_route_result(result)
+        return _finalize_route_result(result, enforce_statuses={400, 403})
 
     @router.post("/api/download")
-    async def download_video(request: Request, body: DownloadRequest):
-        return finalize_api_result(
-            await workflow_route_service.direct_download(request, body.model_dump(exclude_none=True, exclude_defaults=True))
-        )
+    async def download_video(request: Request, body: dict):
+        return _finalize_route_result(await workflow_route_service.direct_download(request, body))
 
     @router.get("/api/media/{video_id}")
     async def get_media(request: Request, video_id: str, range_header: str | None = Header(default=None, alias="Range")):
@@ -211,15 +203,17 @@ def build_rest_router(
 
     @router.get("/api/dir/list")
     async def list_directory(request: Request, path: str = ""):
-        return finalize_api_result(await directory_service.list_directory(request, path))
+        result = await directory_service.list_directory(request, path)
+        return _finalize_route_result(result, enforce_statuses={403})
 
     @router.post("/api/dir/change")
     async def change_dir(request: Request):
-        return finalize_api_result(await directory_service.change_dir(request))
+        result = await directory_service.change_dir(request)
+        return _finalize_route_result(result, enforce_statuses={403})
 
     @router.post("/api/dir/pick-native")
     async def pick_native_folder(request: Request):
-        return finalize_api_result(await directory_service.pick_native_folder(request))
+        return _finalize_route_result(await directory_service.pick_native_folder(request))
 
     @router.get("/api/debug/latest-log")
     async def download_latest_log(request: Request):

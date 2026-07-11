@@ -34,6 +34,7 @@ class DownloadManagerDispatchTests(unittest.TestCase):
         manager.task_progress = Mock()
         manager.task_finished = Mock()
         manager.task_error = FakeSignal()
+        manager._download_recovery_store = Mock()
         return manager
 
     def test_add_task_rejects_new_work_when_manager_is_stopped(self):
@@ -77,8 +78,12 @@ class DownloadManagerDispatchTests(unittest.TestCase):
         self.assertFalse(worker._slot_released)
         self.assertEqual(worker.sig_start.targets, [manager._emit_task_started])
         self.assertEqual(worker.sig_progress.targets, [manager._emit_task_progress])
-        self.assertEqual(worker.sig_finished.targets, [manager._emit_task_finished])
-        self.assertEqual(worker.sig_error.targets, [manager._emit_task_error])
+        self.assertEqual(worker.sig_finished.targets[1:], [manager._emit_task_finished])
+        self.assertEqual(worker.sig_error.targets[1:], [manager._emit_task_error])
+        worker.sig_finished.targets[0](item.id)
+        manager._download_recovery_store.delete_task.assert_called_once_with(item.id)
+        worker.sig_error.targets[0](item.id, "network")
+        manager._download_recovery_store.handoff_failed_task.assert_called_once_with(item.id)
         self.assertEqual(len(worker.finished.targets), 1)
         worker.start.assert_called_once()
 

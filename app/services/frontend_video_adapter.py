@@ -301,6 +301,10 @@ def failed_item(
     item_trace_id = trace_id(item)
     category = failure_category(reason)
     failed_at = str(meta.get("failed_at") or failed_at_fallback)
+    local_path = str(item.local_path or "")
+    save_directory = str(meta.get("save_directory") or "")
+    if not save_directory and local_path:
+        save_directory = str(Path(local_path).parent)
     return {
         "id": item.id,
         "title": stage_display_title(
@@ -323,6 +327,8 @@ def failed_item(
         "platform": platform_label(item),
         "platform_id": item.source,
         "source_url": item.url,
+        "save_directory": save_directory,
+        "local_path": local_path,
         "log_excerpt": [entry["message"] for entry in log_excerpt_items],
         "log_excerpt_items": log_excerpt_items,
         "solutions": solutions_for_reason(reason),

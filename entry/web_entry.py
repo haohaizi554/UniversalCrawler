@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import os
 import signal
 import socket
@@ -36,6 +37,27 @@ if str(_ROOT) not in sys.path:
 
 # 顺延查找的最大尝试次数（找不到就报错/弹窗）
 _PORT_PROBE_RANGE = 10
+
+
+def _validate_transport_security(
+    host: str,
+    ssl_certfile: str | None,
+    ssl_keyfile: str | None,
+) -> str:
+    """Require TLS whenever the server can accept traffic from another host."""
+    normalized_host = str(host or "").strip().strip("[]")
+    try:
+        is_loopback = ipaddress.ip_address(normalized_host).is_loopback
+    except ValueError:
+        is_loopback = normalized_host.lower() == "localhost"
+
+    has_cert = bool(ssl_certfile)
+    has_key = bool(ssl_keyfile)
+    if has_cert != has_key:
+        raise ValueError("--ssl-certfile and --ssl-keyfile must be provided together")
+    if not is_loopback and not (has_cert and has_key):
+        raise ValueError("non-loopback Web binding requires HTTPS certificate and key")
+    return "https" if has_cert and has_key else "http"
 
 def _is_port_in_use(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -581,12 +603,18 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--script-strict", action="store_true", help="脚本失败时退出 web 服务")
     parser.add_argument("--script-delay", type=float, default=0.0, help="执行脚本前延迟秒数")
+    parser.add_argument("--ssl-certfile", help="TLS certificate file (required for non-loopback binding)")
+    parser.add_argument("--ssl-keyfile", help="TLS private key file (required for non-loopback binding)")
     return parser
 
 def main(argv: list[str] | None = None) -> int:
     """Web UI 入口。"""
     parser = _build_argparser()
     args = parser.parse_args(argv)
+    try:
+        url_scheme = _validate_transport_security(args.host, args.ssl_certfile, args.ssl_keyfile)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     qt_app = None
     tray = None
@@ -638,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = create_app(lifespan=lifespan)
 
-    url = f"http://localhost:{args.port}"
+    url = f"{url_scheme}://localhost:{args.port}"
     sys.stderr.write("\n  UCrawl Web UI\n")
     sys.stderr.write(f"  {url}\n")
     sys.stderr.write(f"  保存目录: downloads/\n")
@@ -664,7 +692,14 @@ def main(argv: list[str] | None = None) -> int:
 
     import uvicorn
     server = uvicorn.Server(
-        uvicorn.Config(app, host=args.host, port=args.port, log_level="warning")
+        uvicorn.Config(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+            ssl_certfile=args.ssl_certfile,
+            ssl_keyfile=args.ssl_keyfile,
+        )
     )
 
     # 抑制 asyncio ProactorEventLoop 在 Windows 上的连接重置噪音

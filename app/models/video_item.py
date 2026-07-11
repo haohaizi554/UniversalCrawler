@@ -1,5 +1,7 @@
 """Shared media item model for spiders, UI and downloaders."""
 
+import threading
+from copy import deepcopy
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -21,6 +23,7 @@ class VideoItem:
     progress: int = 0
     local_path: str = ""
     meta: dict = field(default_factory=dict)
+    _meta_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         # uuid4 避免高并发下时间戳+随机数方案的碰撞风险。
@@ -35,26 +38,52 @@ class VideoItem:
 
     def build_download_context(self) -> DownloadContext:
         """Build a normalized download context from this item's metadata."""
-        return DownloadContext.from_meta(self.meta)
+        with self.meta_guard():
+            return DownloadContext.from_meta(self.meta)
+
+    def meta_guard(self) -> threading.RLock:
+        """Return the lock shared by worker metadata writes and UI snapshots."""
+        return self._meta_lock
+
+    def __deepcopy__(self, memo: dict) -> "VideoItem":
+        """Copy item data while giving the snapshot an independent metadata lock."""
+        existing = memo.get(id(self))
+        if existing is not None:
+            return existing
+        with self.meta_guard():
+            copied = type(self)(
+                url=deepcopy(self.url, memo),
+                title=deepcopy(self.title, memo),
+                source=deepcopy(self.source, memo),
+            )
+            memo[id(self)] = copied
+            copied.id = deepcopy(self.id, memo)
+            copied.status = deepcopy(self.status, memo)
+            copied.progress = deepcopy(self.progress, memo)
+            copied.local_path = deepcopy(self.local_path, memo)
+            copied.meta = deepcopy(self.meta, memo)
+            return copied
 
     def merge_download_context(self, context: DownloadContext | None = None, **overrides) -> DownloadContext:
         """Merge normalized download context values back into ``meta``."""
-        base_patch = (context or self.build_download_context()).to_meta_patch()
-        for key, value in overrides.items():
-            if value is not None:
-                base_patch[key] = value
-        merged = DownloadContext.from_meta(base_patch)
-        self.meta.update(merged.to_meta_patch())
+        with self.meta_guard():
+            base_patch = (context or DownloadContext.from_meta(self.meta)).to_meta_patch()
+            for key, value in overrides.items():
+                if value is not None:
+                    base_patch[key] = value
+            merged = DownloadContext.from_meta(base_patch)
+            self.meta.update(merged.to_meta_patch())
         return merged
 
     def update_from_dict(self, data: dict):
         """更新 `from_dict` 对应的状态或数据内容，供 `VideoItem` 使用。"""
-        for key, value in data.items():
-            if key not in self.UPDATABLE_FIELDS:
-                continue
-            if key == "meta" and not isinstance(value, dict):
-                continue
-            setattr(self, key, value)
+        with self.meta_guard():
+            for key, value in data.items():
+                if key not in self.UPDATABLE_FIELDS:
+                    continue
+                if key == "meta" and not isinstance(value, dict):
+                    continue
+                setattr(self, key, value)
 
     def to_dict(self) -> dict:
         """统一序列化方法：CLI/SDK/Web/Skill 四层共用，确保字段完全一致。
@@ -64,14 +93,16 @@ class VideoItem:
         - progress: 0-100
         - local_path: 最终本地文件路径
         """
-        return {
-            "id": self.id,
-            "url": self.url,
-            "title": self.title,
-            "source": self.source,
-            "status": self.status,
-            "progress": self.progress,
-            "local_path": self.local_path,
-            "content_type": self.meta.get("content_type", "") if self.meta else "",
-            "meta": dict(self.meta) if self.meta else {},
-        }
+        with self.meta_guard():
+            meta_snapshot = dict(self.meta) if self.meta else {}
+            return {
+                "id": self.id,
+                "url": self.url,
+                "title": self.title,
+                "source": self.source,
+                "status": self.status,
+                "progress": self.progress,
+                "local_path": self.local_path,
+                "content_type": meta_snapshot.get("content_type", ""),
+                "meta": meta_snapshot,
+            }

@@ -6,12 +6,12 @@ import json
 import sqlite3
 import threading
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_data_root
@@ -217,7 +217,7 @@ class FailedRecordStore:
         if not normalized_id:
             return None
         self._init_db()
-        with closing(sqlite3.connect(self._db_path)) as conn:
+        with self._open_connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -235,7 +235,7 @@ class FailedRecordStore:
         if not normalized_id:
             return False
         self._init_db()
-        with closing(sqlite3.connect(self._db_path)) as conn:
+        with self._open_connection() as conn:
             cursor = conn.execute("DELETE FROM failed_records WHERE video_id = ?", (normalized_id,))
             conn.commit()
             deleted = int(cursor.rowcount or 0) > 0
@@ -244,7 +244,7 @@ class FailedRecordStore:
 
     def clear_records(self) -> int:
         self._init_db()
-        with closing(sqlite3.connect(self._db_path)) as conn:
+        with self._open_connection() as conn:
             cursor = conn.execute("DELETE FROM failed_records")
             conn.commit()
             deleted_count = max(0, int(cursor.rowcount or 0))
@@ -257,7 +257,7 @@ class FailedRecordStore:
         cutoff_text = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
         cutoff_ts = cutoff_dt.timestamp()
         self._init_db()
-        with closing(sqlite3.connect(self._db_path)) as conn:
+        with self._open_connection() as conn:
             cursor = conn.execute(
                 """
                 DELETE FROM failed_records
@@ -359,6 +359,13 @@ class FailedRecordStore:
                     self._refreshing = False
                     self._pruning = False
 
+    @contextmanager
+    def _open_connection(self) -> Iterator[sqlite3.Connection]:
+        with closing(sqlite3.connect(self._db_path, timeout=5.0)) as conn:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA synchronous = FULL")
+            yield conn
+
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -366,7 +373,10 @@ class FailedRecordStore:
             if self._initialized:
                 return
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            with closing(sqlite3.connect(self._db_path)) as conn:
+            with closing(sqlite3.connect(self._db_path, timeout=5.0)) as conn:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute("PRAGMA synchronous = FULL")
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS failed_records (
@@ -392,7 +402,7 @@ class FailedRecordStore:
         where_sql, params = self._build_where_clause(query)
         order_sql = "ASC" if query.order == "asc" else "DESC"
         rows: list[sqlite3.Row]
-        with closing(sqlite3.connect(self._db_path)) as conn:
+        with self._open_connection() as conn:
             conn.row_factory = sqlite3.Row
             total_count = int(
                 conn.execute(
@@ -466,7 +476,7 @@ class FailedRecordStore:
         ]
         if not payloads:
             return
-        with closing(sqlite3.connect(self._db_path)) as conn:
+        with self._open_connection() as conn:
             conn.executemany(
                 """
                 INSERT INTO failed_records(
