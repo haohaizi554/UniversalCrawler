@@ -1,8 +1,9 @@
 """Standalone updater helper entrypoint.
 
 The GUI process should spawn this helper after it has downloaded and verified an
-installer.  The helper intentionally verifies hash and OS signature again before
-launching the platform installer, then returns the installer exit code.
+installer. The helper always re-establishes signed-manifest trust and verifies
+the package hash, then applies the configured OS-signature policy immediately
+before launching the platform installer.
 """
 
 from __future__ import annotations
@@ -17,7 +18,12 @@ import sys
 import time
 from pathlib import Path
 
-from app.config.update_trust import UPDATE_PUBLIC_KEY_PEM, UPDATE_TRUSTED_PUBLISHERS, UPDATE_TRUSTED_THUMBPRINTS
+from app.config.update_trust import (
+    UPDATE_PUBLIC_KEY_PEM,
+    UPDATE_REQUIRE_OS_SIGNATURE,
+    UPDATE_TRUSTED_PUBLISHERS,
+    UPDATE_TRUSTED_THUMBPRINTS,
+)
 from app.services.secure_updater import (
     AssetSelector,
     InstallerRunner,
@@ -139,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     verifier = PackageVerifier(
         trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
         trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
+        require_os_signature=UPDATE_REQUIRE_OS_SIGNATURE,
     )
     runner = InstallerRunner(package_verifier=verifier)
     result = runner.run_verified_installer(

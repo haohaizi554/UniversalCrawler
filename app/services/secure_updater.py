@@ -1,9 +1,9 @@
 """Secure desktop updater primitives.
 
 This module keeps update discovery, package verification and installer launch
-out of the GUI layer.  It deliberately does not contain GitHub credentials and
-never executes a downloaded asset until manifest signature, hash and platform
-signature checks have succeeded.
+out of the GUI layer. It deliberately does not contain GitHub credentials and
+never executes a downloaded asset until the signed-manifest constraints and
+the configured platform-signature policy have succeeded.
 """
 
 from __future__ import annotations
@@ -1056,7 +1056,7 @@ class Downloader:
 
 
 class PackageVerifier:
-    """OS-level package signature verifier."""
+    """校验安装包完整性，并按发布策略追加操作系统签名校验。"""
 
     def __init__(
         self,
@@ -1064,17 +1064,26 @@ class PackageVerifier:
         os_name: str | None = None,
         trusted_publishers: list[str] | tuple[str, ...] = (),
         trusted_thumbprints: list[str] | tuple[str, ...] = (),
+        require_os_signature: bool = True,
         verify_func: Callable[[Path, UpdateAsset], None] | None = None,
         run_func: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     ) -> None:
         self.os_name = normalize_os(os_name or sys.platform)
         self.trusted_publishers = tuple(trusted_publishers)
-        self.trusted_thumbprints = tuple(_normalize_certificate_fingerprint(value) for value in trusted_thumbprints if str(value).strip())
+        self.trusted_thumbprints = tuple(
+            _normalize_certificate_fingerprint(value)
+            for value in trusted_thumbprints
+            if str(value).strip()
+        )
+        self.require_os_signature = bool(require_os_signature)
         self._verify_func = verify_func
         self._run = run_func
 
     def verify(self, path: Path, asset: UpdateAsset) -> None:
+        # 哈希来自 Ed25519 签名清单。暂缓 Authenticode 时也必须先证明文件未被替换。
         _verify_file_hash(path, asset)
+        if not self.require_os_signature:
+            return
         if self._verify_func:
             self._verify_func(path, asset)
             return

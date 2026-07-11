@@ -388,7 +388,7 @@ class UpdateCheckDialog(ChromedDialog):
         if text:
             return self._tr(text)
         if self._status == "available":
-            return self._tr("更新前建议关闭正在运行的采集任务。安装包会先完成签名、大小和 SHA-256 校验。")
+            return self._tr("更新前建议关闭正在运行的采集任务。安装包会先完成更新清单签名、大小和 SHA-256 校验。")
         if self._status == "current":
             return self._tr("本地版本与 GitHub 最新 Release 一致，无需更新。")
         if self._status == "local_newer":
@@ -475,7 +475,7 @@ class UpdateDownloadDialog(ChromedDialog):
         self.progress_bar.setValue(0)
         panel_layout.addWidget(self.progress_bar)
 
-        self.detail_label = QLabel(self._tr("安装包会先完成大小、SHA-256 和系统签名校验。"))
+        self.detail_label = QLabel(self._tr("安装包会先完成更新清单签名、大小和 SHA-256 校验。"))
         self.detail_label.setObjectName("DialogStatus")
         self.detail_label.setWordWrap(True)
         self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)

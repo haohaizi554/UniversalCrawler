@@ -5,6 +5,7 @@ import json
 import subprocess
 import threading
 import urllib.request
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -662,6 +663,34 @@ def _authenticode_run(
     return fake_run
 
 
+def test_package_verifier_explicitly_skips_os_signature_after_hash_check(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+    asset = _windows_asset_for_file(installer)
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("Authenticode command must not run when explicitly disabled")
+
+    def unexpected_verify(*_args, **_kwargs):
+        raise AssertionError("OS verification hook must not run when explicitly disabled")
+
+    PackageVerifier(
+        os_name="windows",
+        require_os_signature=False,
+        verify_func=unexpected_verify,
+        run_func=unexpected_run,
+    ).verify(installer, asset)
+
+
+def test_package_verifier_cannot_skip_hash_when_os_signature_is_disabled(tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"tampered")
+    asset = replace(_windows_asset_for_file(installer), sha256="0" * 64)
+
+    with pytest.raises(VerificationError, match="hash"):
+        PackageVerifier(os_name="windows", require_os_signature=False).verify(installer, asset)
+
+
 def test_windows_verifier_rejects_publisher_only_allowlist(tmp_path):
     installer = tmp_path / "installer.exe"
     installer.write_bytes(b"installer")
@@ -928,8 +957,24 @@ def test_update_trust_config_contains_only_public_trust_anchors():
     assert "token" not in source.lower()
     assert "secret" not in source.lower()
     assert "UPDATE_PUBLIC_KEY_PEM" in source
+    assert "UPDATE_REQUIRE_OS_SIGNATURE" in source
     assert "UPDATE_TRUSTED_PUBLISHERS" in source
     assert "UPDATE_TRUSTED_THUMBPRINTS" in source
+
+
+def test_update_trust_config_explicitly_disables_os_signature_for_personal_releases():
+    from app.config.update_trust import UPDATE_REQUIRE_OS_SIGNATURE
+
+    assert UPDATE_REQUIRE_OS_SIGNATURE is False
+
+
+def test_update_entrypoints_pass_shared_os_signature_policy():
+    gui_source = Path("app/ui/main_window.py").read_text(encoding="utf-8")
+    helper_source = Path("entry/updater_helper.py").read_text(encoding="utf-8")
+
+    for source in (gui_source, helper_source):
+        assert "UPDATE_REQUIRE_OS_SIGNATURE" in source
+        assert "require_os_signature=UPDATE_REQUIRE_OS_SIGNATURE" in source
 
 
 def test_updater_helper_loads_asset_from_signed_manifest(tmp_path, monkeypatch):

@@ -28,6 +28,7 @@ from app.services.update_check_service import (
     UPDATE_STATUS_LOCAL_NEWER,
     UPDATE_STATUS_UNTRUSTED,
     UPDATE_PUBLIC_KEY_PEM,
+    UPDATE_REQUIRE_OS_SIGNATURE,
     UPDATE_TRUSTED_PUBLISHERS,
     UPDATE_TRUSTED_THUMBPRINTS,
     UpdateCheckResult,
@@ -655,7 +656,7 @@ class MainWindow(QMainWindow):
             self,
             title="检测到新版本",
             message=self._tr("检测到最新版本 {version}，是否要更新？").format(version=latest_version),
-            details=result.notes or "更新前建议关闭正在运行的采集任务。安装包会先完成签名、大小和 SHA-256 校验。",
+            details=result.notes or "更新前建议关闭正在运行的采集任务。安装包会先完成更新清单签名、大小和 SHA-256 校验。",
             primary_text="下载更新",
             secondary_text="稍后",
             skip_text="" if result.mandatory else "跳过此版本",
@@ -911,6 +912,7 @@ class MainWindow(QMainWindow):
         PackageVerifier(
             trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
             trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
+            require_os_signature=UPDATE_REQUIRE_OS_SIGNATURE,
         ).verify(installer_path, asset)
         return _PreparedUpdate(
             installer_path=str(installer_path),

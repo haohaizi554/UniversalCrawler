@@ -589,6 +589,14 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertNotIn("下载和安装稍后接入", source)
         self.assertNotIn("自动下载和安装流程尚未接入", source)
 
+    def test_update_ui_describes_only_mandatory_verification_layers(self):
+        dialog_source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")
+        main_source = Path("app/ui/main_window.py").read_text(encoding="utf-8")
+        combined = dialog_source + main_source
+
+        self.assertIn("更新清单签名、大小和 SHA-256 校验", combined)
+        self.assertNotIn("系统签名校验", combined)
+
     def test_update_download_rejects_manifest_version_changed_after_selection(self):
         from tempfile import TemporaryDirectory
 

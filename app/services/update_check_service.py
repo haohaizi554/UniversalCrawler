@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from app.config.update_trust import (
     UPDATE_PUBLIC_KEY_PEM,
+    UPDATE_REQUIRE_OS_SIGNATURE,  # noqa: F401 - compatibility re-export for GUI callers
     UPDATE_TRUSTED_PUBLISHERS,  # noqa: F401 - compatibility re-export for GUI callers
     UPDATE_TRUSTED_THUMBPRINTS,  # noqa: F401 - compatibility re-export for GUI callers
 )
