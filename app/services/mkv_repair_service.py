@@ -261,7 +261,7 @@ class MkvPlaybackRepairService:
         except OSError:
             resolved = source.absolute()
         identity = f"{os.path.normcase(str(resolved))}|{stat.st_size}|{stat.st_mtime_ns}"
-        digest = hashlib.sha1(identity.encode("utf-8", "surrogatepass")).hexdigest()[:20]
+        digest = hashlib.sha256(identity.encode("utf-8", "surrogatepass")).hexdigest()[:20]
         return self.cache_root / f"playback_{digest}{self._cache_suffix_for(source)}"
 
     @staticmethod

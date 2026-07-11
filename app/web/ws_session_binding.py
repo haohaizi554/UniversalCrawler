@@ -19,11 +19,25 @@ class WebSocketSessionBinding:
 class WebSocketSessionBinder:
     """负责从 WebSocket 请求恢复会话并完成鉴权。"""
 
-    def __init__(self, session_registry: WebSessionRegistry, *, default_session_id: str) -> None:
+    def __init__(
+        self,
+        session_registry: WebSessionRegistry,
+        *,
+        default_session_id: str,
+        access_token: str | None = None,
+        access_cookie_name: str = "ucrawl_access_token",
+    ) -> None:
         self._session_registry = session_registry
         self._default_session_id = default_session_id
+        self._access_token = str(access_token or "")
+        self._access_cookie_name = access_cookie_name
 
     async def bind(self, ws: WebSocket) -> WebSocketSessionBinding | None:
+        if self._access_token:
+            access_token = ws.cookies.get(self._access_cookie_name)
+            if not secrets.compare_digest(access_token or "", self._access_token):
+                await ws.close(code=1008, reason="invalid access token")
+                return None
         session_id = ws.cookies.get("ucrawl_session") or ws.cookies.get("ucrawl_session_id") or self._default_session_id
         context = self._session_registry.get_or_create(session_id)
         origin = ws.headers.get("origin")

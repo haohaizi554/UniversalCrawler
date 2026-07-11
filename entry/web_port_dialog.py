@@ -49,7 +49,8 @@ def resolve_port_with_dialog(
 
     port = default_port
     while True:
-        if not is_port_in_use("0.0.0.0", port):
+        # The callback probes wildcard occupancy; this module never opens a listener.
+        if not is_port_in_use("0.0.0.0", port):  # nosec B104
             return port
 
         dialog = QDialog()
@@ -298,7 +299,8 @@ def resolve_port_with_dialog(
             if candidate > 65535:
                 break
             attempted += 1
-            if not is_port_in_use("0.0.0.0", candidate):
+            # The callback probes wildcard occupancy; this module never opens a listener.
+            if not is_port_in_use("0.0.0.0", candidate):  # nosec B104
                 suggested = candidate
                 break
 
@@ -378,8 +380,10 @@ def resolve_port_with_dialog(
 
         ok_btn.clicked.connect(dialog.accept)
         cancel_btn.clicked.connect(dialog.reject)
-        QShortcut(QKeySequence(Qt.Key.Key_Escape), dialog, activated=dialog.reject)
-        QShortcut(QKeySequence(Qt.Key.Key_Return), dialog, activated=dialog.accept)
+        escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), dialog)
+        escape_shortcut.activated.connect(dialog.reject)
+        return_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), dialog)
+        return_shortcut.activated.connect(dialog.accept)
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)

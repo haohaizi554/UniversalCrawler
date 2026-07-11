@@ -27,6 +27,50 @@ class RuntimeOptionsTests(unittest.TestCase):
 
         self.assertIn("本地或内网", error)
 
+    def test_domain_policy_rejects_private_redirect_before_requests_follows_it(self):
+        from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
+
+        policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))]
+        )
+        response = SimpleNamespace(
+            status_code=302,
+            url="https://public.example/video.mp4",
+            headers={"Location": "http://127.0.0.1:8080/admin"},
+        )
+
+        with self.assertRaises(DomainPolicyViolation):
+            policy.validate_redirect_response(response)
+
+    def test_domain_policy_allows_relative_redirect_on_public_host(self):
+        from shared.runtime_options import DomainPolicyEngine
+
+        policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))]
+        )
+        response = SimpleNamespace(
+            status_code=302,
+            url="https://public.example/video.mp4",
+            headers={"Location": "/cdn/video.mp4"},
+        )
+
+        self.assertIs(policy.validate_redirect_response(response), response)
+
+    def test_domain_policy_rejects_credentials_and_non_global_cgnat(self):
+        from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
+
+        credentials_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))]
+        )
+        with self.assertRaises(DomainPolicyViolation):
+            credentials_policy.require_public_url("https://user:password@public.example/video.mp4")
+
+        cgnat_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [(2, 1, 6, "", ("100.64.0.10", 443))]
+        )
+        with self.assertRaises(DomainPolicyViolation):
+            cgnat_policy.require_public_url("https://public-looking.example/video.mp4")
+
     def test_merge_convenience_params_sets_folder_name_and_use_subdir(self):
         from shared.runtime_options import merge_convenience_params
 

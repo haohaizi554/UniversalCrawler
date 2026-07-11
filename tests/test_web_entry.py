@@ -10,6 +10,8 @@ import os
 import sys
 import unittest
 import socket
+import tempfile
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 class WebEntryPortProbeTests(unittest.TestCase):
@@ -39,6 +41,22 @@ class WebEntryPortProbeTests(unittest.TestCase):
         s.close()
         # 现在应该可用
         self.assertFalse(_is_port_in_use("127.0.0.1", port))
+
+    def test_port_probe_supports_ipv6_loopback(self):
+        from entry.web_entry import _is_port_in_use
+
+        if not socket.has_ipv6:
+            self.skipTest("IPv6 is unavailable on this host")
+        probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            probe.bind(("::1", 0))
+            port = probe.getsockname()[1]
+        except OSError:
+            self.skipTest("IPv6 loopback is unavailable on this host")
+        finally:
+            probe.close()
+
+        self.assertFalse(_is_port_in_use("::1", port))
 
     def test_find_available_port_same_port(self):
         """start_port 空闲 → 直接返回 start_port。"""
@@ -156,6 +174,19 @@ class WebEntryArgparseTests(unittest.TestCase):
         from entry.web_entry import _validate_transport_security
 
         self.assertEqual(_validate_transport_security("127.0.0.1", None, None), "http")
+
+    def test_tls_paths_must_exist_before_server_start(self):
+        from entry.web_entry import _validate_transport_security
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cert = Path(temp_dir, "cert.pem")
+            key = Path(temp_dir, "key.pem")
+            cert.write_text("certificate", encoding="utf-8")
+            key.write_text("private key", encoding="utf-8")
+            self.assertEqual(_validate_transport_security("192.168.1.25", str(cert), str(key)), "https")
+            key.unlink()
+            with self.assertRaises(ValueError):
+                _validate_transport_security("192.168.1.25", str(cert), str(key))
 
     def test_port_int(self):
         """--port 9000 必须是 int。"""
@@ -303,6 +334,43 @@ class WebEntryMainIntegrationTests(unittest.TestCase):
         self.assertEqual(args.script, "/tmp/fake_script.py")
         self.assertEqual(args.script_arg, ["key1=v1"])
         self.assertTrue(args.script_strict)
+
+    def test_main_lifespan_shuts_down_all_web_session_contexts(self):
+        from fastapi import FastAPI
+        from entry import web_entry
+
+        registry = MagicMock()
+
+        def fake_create_app(*, lifespan, access_token=None):
+            app = FastAPI(lifespan=lifespan)
+            app.state.web_session_registry = registry
+            return app
+
+        class FakeServer:
+            def __init__(self, config):
+                self.app = config.app
+
+            async def serve(self):
+                async with self.app.router.lifespan_context(self.app):
+                    pass
+
+        fake_uvicorn = MagicMock()
+        fake_uvicorn.Config.side_effect = lambda app, **_kwargs: MagicMock(app=app)
+        fake_uvicorn.Server.side_effect = FakeServer
+
+        with (
+            patch("entry.web_entry._is_port_in_use", return_value=False),
+            patch("entry.web_entry.signal.signal"),
+            patch("app.web.server.create_app", side_effect=fake_create_app),
+            patch("app.web.server.controller", None),
+            patch.dict("sys.modules", {"uvicorn": fake_uvicorn}),
+        ):
+            result = web_entry.main(
+                ["--no-qt", "--no-browser", "--host", "127.0.0.1", "--port", "58321"]
+            )
+
+        self.assertEqual(result, 0)
+        registry.shutdown_all.assert_called_once_with(wait=True, timeout=5.0)
 
 if __name__ == "__main__":
     unittest.main()

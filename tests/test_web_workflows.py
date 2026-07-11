@@ -137,6 +137,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.core.plugin_registry.registry.get_plugin", return_value=object()),
             patch("app.core.plugin_registry.registry.get_all_plugins", return_value=[SimpleNamespace(id="douyin")]),
+            patch("app.web.workflows.validate_direct_download_url", return_value=None),
             patch("app.web.workflows.validate_config_types", return_value=None),
             patch("cli.defaults.get_platform_defaults", return_value={}),
             patch("cli.defaults.merge_convenience_params"),
@@ -159,6 +160,34 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("task_finished", event_names)
         self.assertIn("video_state_changed", event_names)
         fake_sdk.close.assert_called_once()
+        self.assertEqual(
+            fake_sdk.download_video.call_args.kwargs["network_policy"],
+            "public",
+        )
+
+    async def test_direct_download_rejects_private_target_before_sdk_or_plugin_dispatch(self):
+        with (
+            patch(
+                "app.web.workflows.validate_direct_download_url",
+                return_value="禁止访问本地或内网地址",
+            ) as validate_url,
+            patch("app.core.plugin_registry.registry.get_plugin") as get_plugin,
+            patch("app.web.workflows.build_sdk") as build_sdk,
+        ):
+            result = await self.service.direct_download(
+                {
+                    "url": "http://127.0.0.1:8080/private",
+                    "source": "douyin",
+                },
+                log_error=True,
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("本地或内网", result["error"])
+        validate_url.assert_called_once_with("http://127.0.0.1:8080/private")
+        get_plugin.assert_not_called()
+        build_sdk.assert_not_called()
+        self.assertNotIn("item_found", [name for name, _ in self.events])
 
     async def test_workflow_progress_gate_throttles_bursts_but_keeps_terminal_progress(self):
         with patch("app.web.workflows.time.monotonic", side_effect=[100.00, 100.05, 100.06]):
@@ -232,6 +261,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.core.plugin_registry.registry.get_plugin", return_value=object()),
             patch("app.core.plugin_registry.registry.get_all_plugins", return_value=[SimpleNamespace(id="douyin")]),
+            patch("app.web.workflows.validate_direct_download_url", return_value=None),
             patch("app.web.workflows.validate_config_types", return_value=None),
             patch("cli.defaults.get_platform_defaults", return_value={}),
             patch("cli.defaults.merge_convenience_params"),

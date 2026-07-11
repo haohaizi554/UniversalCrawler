@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -18,8 +19,8 @@ class DownloadRequest:
     video_item: VideoItem
     save_path: str
     headers: dict[str, str]
-    progress_callback: callable
-    check_stop_func: callable
+    progress_callback: Callable[..., None]
+    check_stop_func: Callable[[], bool]
     max_retries: int
     timeout: int
     chunk_size: int
@@ -40,6 +41,9 @@ class StrategyCapableDownloader(Protocol):
     def _apply_runtime_headers(self, video_item: VideoItem, headers: dict[str, str]) -> None:
         ...
 
+    def _domain_policy_for_item(self, video_item: VideoItem):
+        ...
+
     def _download_http_file(
         self,
         *,
@@ -55,6 +59,7 @@ class StrategyCapableDownloader(Protocol):
         error_message: str = "下载失败",
         proxy: str | None = None,
         trace_id: str | None = None,
+        domain_policy=None,
     ) -> None:
         ...
 
@@ -157,6 +162,7 @@ class HttpDownloadStrategy:
             error_message=request.error_message,
             proxy=request.context.proxy,
             trace_id=request.context.trace_id,
+            domain_policy=downloader._domain_policy_for_item(request.video_item),
         )
         return True
 

@@ -229,7 +229,7 @@ def _build_payload_array(
     payload.extend([ENV_TABLE[index] ^ ENV_CHECKS_DEFAULT[index] for index in range(1, 15)])
 
     a3_source = _a3_hash_source(content_string)
-    a3_md5 = hashlib.md5(a3_source.encode("utf-8")).hexdigest()
+    a3_md5 = hashlib.md5(a3_source.encode("utf-8"), usedforsecurity=False).hexdigest()
     a3_md5_bytes = [int(a3_md5[index : index + 2], 16) for index in range(0, 32, 2)]
     payload.extend(A3_PREFIX + [value ^ seed_byte for value in _custom_hash_v2(ts_bytes + a3_md5_bytes)])
     return payload
@@ -389,7 +389,7 @@ def sign_with_local_algorithm(
         if not a1_value:
             raise XiaohongshuLocalSignatureError("missing a1 cookie for Xiaohongshu signature")
         content_string = _build_sign_string(uri, data, method)
-        digest = hashlib.md5(content_string.encode("utf-8")).hexdigest()
+        digest = hashlib.md5(content_string.encode("utf-8"), usedforsecurity=False).hexdigest()
         payload_array = _build_payload_array(
             digest,
             a1_value,
@@ -440,7 +440,7 @@ def _patch_xhshow_get_hash() -> None:
             sign_state,
         )
         if "{" not in string_param:
-            correct_md5_hex = hashlib.md5(string_param.encode("utf-8")).hexdigest()
+            correct_md5_hex = hashlib.md5(string_param.encode("utf-8"), usedforsecurity=False).hexdigest()
             correct_md5_bytes = [int(correct_md5_hex[i : i + 2], 16) for i in range(0, 32, 2)]
             seed_byte = payload[4]
             ts_bytes = payload[8:16]
@@ -449,7 +449,7 @@ def _patch_xhshow_get_hash() -> None:
                 payload[128 + idx] = correct_a3_hash[idx] ^ seed_byte
         return payload
 
-    patched_build._ucrawl_xhs_patched = True
+    setattr(patched_build, "_ucrawl_xhs_patched", True)
     CryptoProcessor.build_payload_array = patched_build
 
 
@@ -477,7 +477,7 @@ def sign_with_xhshow(
         cookie_dict = client._parse_cookies(cookie_str)
         a1_value = cookie_dict.get("a1", "")
         ts = time.time()
-        digest = hashlib.md5(content_string.encode("utf-8")).hexdigest()
+        digest = hashlib.md5(content_string.encode("utf-8"), usedforsecurity=False).hexdigest()
         payload_array = client.crypto_processor.build_payload_array(
             digest,
             a1_value,

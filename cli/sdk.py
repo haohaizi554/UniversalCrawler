@@ -365,6 +365,7 @@ class UcrawlSDK:
         verbose: bool = False,
         config: dict | None = None,
         progress_callback: Any = None,
+        network_policy: str | None = None,
     ) -> dict[str, Any]:
         """直接下载指定 URL 的视频（与 CLI download 命令对齐）。
 
@@ -424,6 +425,8 @@ class UcrawlSDK:
         # 与 search() 的 _validate_config 对齐：校验已知 config 参数类型
         if config:
             self._validate_config(config)
+        if network_policy not in {None, "public"}:
+            raise ValueError("network_policy 仅支持 public 或 None")
 
         from app.models.video_item import VideoItem
         from app.config import cfg
@@ -492,6 +495,10 @@ class UcrawlSDK:
         import uuid as _uuid
         _source_prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
         item.meta["trace_id"] = f"{_source_prefix}-dl-{_uuid.uuid4().hex[:8]}"
+        if network_policy:
+            # Web 直链入口使用该内部标记，下载器据此逐跳校验重定向；
+            # 普通 CLI/SDK 调用保持原有的本地资源访问能力。
+            item.meta["_network_policy"] = network_policy
 
         # 所有平台特定配置写入 meta（与 GUI spider meta 对齐）
         # 与 GUI spider 结果对齐：content_type 让 DownloadWorker 可正确推断文件扩展名

@@ -12,7 +12,7 @@ from fastapi import Request
 from app.config import cfg
 from app.web.api_result import error_result
 from app.web.logging_utils import log_web_event, log_web_exception
-from app.web.session_runtime import WebSessionContext
+from app.web.session_runtime import WebSessionContext, is_local_host
 
 GetRequestContext = Callable[[Request], WebSessionContext]
 RequireAllowedDirectory = Callable[[WebSessionContext, str], str]
@@ -26,9 +26,11 @@ class WebDirectoryService:
         *,
         get_request_context: GetRequestContext,
         require_allowed_directory: RequireAllowedDirectory,
+        native_folder_picker_enabled: bool = True,
     ) -> None:
         self._get_request_context = get_request_context
         self._require_allowed_directory = require_allowed_directory
+        self._native_folder_picker_enabled = bool(native_folder_picker_enabled)
 
     async def scan_directory(self, request: Request, body: dict | None = None) -> dict:
         context = self._get_request_context(request)
@@ -191,6 +193,15 @@ class WebDirectoryService:
             return error_result(str(exc), http_status=500)
 
     async def pick_native_folder(self, request: Request) -> dict:
+        if not self._native_folder_picker_enabled:
+            # Remote deployments can sit behind a loopback reverse proxy, so
+            # client.host alone is not a sufficient trust signal in this mode.
+            return error_result("native folder picker is disabled for remote deployments", http_status=403)
+        client = getattr(request, "client", None)
+        if not is_local_host(getattr(client, "host", None)):
+            # This endpoint controls a modal dialog on the server desktop. A LAN
+            # browser must never be able to display or spam native server UI.
+            return error_result("native folder picker is available only on this device", http_status=403)
         loop = asyncio.get_running_loop()
         try:
             path = await loop.run_in_executor(None, self._powershell_pick_dir)

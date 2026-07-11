@@ -401,24 +401,25 @@ class FailedRecordStore:
         self._init_db()
         where_sql, params = self._build_where_clause(query)
         order_sql = "ASC" if query.order == "asc" else "DESC"
+        # Both fragments come from fixed column clauses/order enums; user values remain bound parameters.
+        rows_sql = (
+            "SELECT video_id, title, reason, failed_at, status, platform, trace_id, payload_json, updated_at "
+            f"FROM failed_records {where_sql} "
+            "ORDER BY COALESCE(NULLIF(failed_at, ''), printf('%020.6f', updated_at)) "
+            f"{order_sql} LIMIT ? OFFSET ?"
+        )
         rows: list[sqlite3.Row]
         with self._open_connection() as conn:
             conn.row_factory = sqlite3.Row
             total_count = int(
                 conn.execute(
-                    f"SELECT COUNT(*) FROM failed_records {where_sql}",
+                    f"SELECT COUNT(*) FROM failed_records {where_sql}",  # nosec B608
                     params,
                 ).fetchone()[0]
             )
             rows = list(
                 conn.execute(
-                    f"""
-                    SELECT video_id, title, reason, failed_at, status, platform, trace_id, payload_json, updated_at
-                    FROM failed_records
-                    {where_sql}
-                    ORDER BY COALESCE(NULLIF(failed_at, ''), printf('%020.6f', updated_at)) {order_sql}
-                    LIMIT ? OFFSET ?
-                    """,
+                    rows_sql,
                     (*params, query.limit, query.offset),
                 )
             )

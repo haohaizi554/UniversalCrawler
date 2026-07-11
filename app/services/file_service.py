@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -196,6 +197,7 @@ class MediaLibraryService:
 
         for key in self.TEMP_FILE_META_KEYS:
             raw_paths = meta.get(key)
+            iterable: Iterable[object]
             if isinstance(raw_paths, str):
                 iterable = [raw_paths]
             elif isinstance(raw_paths, (list, tuple, set)):
@@ -260,6 +262,7 @@ class MediaLibraryService:
 
         for key in self.TEMP_FILE_META_KEYS:
             raw_paths = meta.get(key)
+            iterable: Iterable[object]
             if isinstance(raw_paths, str):
                 iterable = [raw_paths]
             elif isinstance(raw_paths, (list, tuple, set)):
@@ -267,7 +270,7 @@ class MediaLibraryService:
             else:
                 continue
             for raw_path in iterable:
-                if file_path:
+                if file_path or not isinstance(raw_path, str):
                     continue
                 add_root(temp_root_from_path(raw_path))
 
@@ -492,6 +495,56 @@ class MediaLibraryService:
                 raise FileOperationError(str(exc)) from exc
         raise FileOperationError(str(last_error) if last_error else "重命名文件失败")
 
+    @classmethod
+    def _remove_owned_empty_subdirectory(
+        cls,
+        video: VideoItem,
+        file_path: str,
+        temp_paths: list[str],
+    ) -> bool:
+        """Remove an empty collection/gallery folder without walking upward."""
+        meta = video.meta if isinstance(getattr(video, "meta", None), dict) else {}
+        raw_folder_name = str(meta.get("folder_name") or "").strip()
+        owns_subdirectory = bool(
+            raw_folder_name
+            and (
+                meta.get("use_subdir")
+                or meta.get("is_mix")
+                or meta.get("is_gallery")
+                or str(meta.get("content_type") or "") == "gallery"
+            )
+        )
+        if not owns_subdirectory:
+            return False
+
+        expected_name = sanitize_filename(raw_folder_name)
+        raw_save_directory = str(meta.get("save_directory") or "").strip()
+        candidates: set[Path] = set()
+        if raw_save_directory:
+            candidates.add(Path(os.path.abspath(os.path.expanduser(raw_save_directory))))
+        for raw_path in (file_path, *temp_paths):
+            if raw_path:
+                # abspath normalizes `..` without dereferencing symlinks. Using
+                # Path.resolve here would turn a guarded link into its target
+                # before the is_symlink check below.
+                normalized_path = Path(os.path.abspath(os.path.expanduser(raw_path)))
+                candidates.add(normalized_path.parent)
+
+        removed = False
+        for candidate in candidates:
+            if os.path.normcase(candidate.name) != os.path.normcase(expected_name):
+                continue
+            try:
+                if candidate.is_symlink():
+                    continue
+                # rmdir is intentionally non-recursive: any unrelated file or
+                # nested directory keeps the collection folder intact.
+                candidate.rmdir()
+                removed = True
+            except (FileNotFoundError, OSError):
+                continue
+        return removed
+
     def delete_media(self, video: VideoItem) -> bool:
         """删除媒体最终文件，并联动清理本任务可能留下的下载临时文件。"""
         file_path = video.local_path
@@ -499,4 +552,5 @@ class MediaLibraryService:
         deleted = self._delete_file(file_path, required=True)
         for temp_path in temp_paths:
             deleted = self._delete_file(temp_path, required=False) or deleted
+        deleted = self._remove_owned_empty_subdirectory(video, file_path, temp_paths) or deleted
         return deleted

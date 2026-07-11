@@ -118,6 +118,19 @@ class UpdateCheckServiceTests(unittest.TestCase):
         self.assertEqual(payload["tag_name"], "v3.6.18")
         self.assertEqual(payload["html_url"], "https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.18")
 
+    def test_fetch_latest_release_payload_rejects_non_https_source_before_open(self):
+        with patch("app.services.update_check_service.urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(UpdateCheckError, "trusted HTTPS"):
+                fetch_latest_release_payload(api_url="file:///tmp/latest.json")
+
+        urlopen.assert_not_called()
+
+    def test_fetch_latest_release_page_payload_rejects_untrusted_redirect_host(self):
+        response = _FakeResponse(url="https://attacker.example/releases/tag/v9.9.9")
+        with patch("app.services.update_check_service.urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(UpdateCheckError, "trusted HTTPS"):
+                fetch_latest_release_page_payload()
+
     def test_fetch_latest_release_payload_falls_back_when_api_is_forbidden(self):
         forbidden = HTTPError(
             url="https://api.github.com/repos/haohaizi554/UniversalCrawler/releases/latest",

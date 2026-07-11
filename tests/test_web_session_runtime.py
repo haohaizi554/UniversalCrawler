@@ -106,5 +106,17 @@ class WebSessionRegistryTests(unittest.TestCase):
 
         asyncio.run(run_case())
 
+    def test_shutdown_all_disposes_every_context_including_pinned_sessions(self):
+        default_context = self.registry.get_or_create("__default__")
+        other_context = self.registry.get_or_create("session-a")
+
+        self.registry.shutdown_all(wait=True, timeout=1.0)
+
+        self.assertEqual(self.registry._contexts, {})
+        self.assertTrue(default_context.controller.shutdown_event.is_set())
+        self.assertTrue(other_context.controller.shutdown_event.is_set())
+        self.assertEqual(default_context.controller.shutdown_calls, 1)
+        self.assertEqual(other_context.controller.shutdown_calls, 1)
+
 if __name__ == "__main__":
     unittest.main()

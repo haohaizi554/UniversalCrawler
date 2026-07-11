@@ -38,7 +38,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|http://security.debian.org/debian-security|$APT_SECURITY_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl tini gosu \
+    && apt-get install -y --no-install-recommends ffmpeg curl tini gosu openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-web.txt ./requirements-web.txt
@@ -67,6 +67,6 @@ VOLUME ["/data/user_data", "/data/downloads", "/app/tools"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8000/api/ping || exit 1
+  CMD curl -fkSs https://127.0.0.1:8000/healthz || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ucrawl-entrypoint"]

@@ -12,6 +12,7 @@ from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
+from shared.runtime_options import DomainPolicyViolation
 
 from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 
@@ -64,9 +65,20 @@ class ChunkedDownloader(BaseDownloader):
         timeout = cfg.get("download", "request_timeout", 60)
         retry_count = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
         resume_enabled = self._coerce_bool_setting(cfg.get("download", "resume_enabled", True))
+        domain_policy = self._domain_policy_for_item(video_item)
         try:
-            resp = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True, proxies=proxies)
+            request_kwargs = self._domain_policy_request_kwargs(domain_policy, url)
+            resp = requests.head(
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=True,
+                proxies=proxies,
+                **request_kwargs,
+            )
             resp.raise_for_status()
+        except DomainPolicyViolation as exc:
+            raise StreamDownloadError(f"分块下载地址违反公网访问策略: {exc}") from exc
         except requests.RequestException as exc:
             raise StreamDownloadError(f"分块下载预检查失败: {exc}") from exc
 
@@ -123,6 +135,7 @@ class ChunkedDownloader(BaseDownloader):
                 if stop_event.is_set() or error_event.is_set():
                     return None
                 try:
+                    request_kwargs = self._domain_policy_request_kwargs(domain_policy, url)
                     existing_size = 0
                     if resume_enabled and os.path.exists(temp_file):
                         actual_size = os.path.getsize(temp_file)
@@ -145,7 +158,14 @@ class ChunkedDownloader(BaseDownloader):
                         request_headers["If-Range"] = str(source_etag)
                     with lock:
                         downloaded_bytes[idx] = existing_size if resume_enabled else 0
-                    with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
+                    with requests.get(
+                        url,
+                        headers=request_headers,
+                        stream=True,
+                        timeout=timeout,
+                        proxies=proxies,
+                        **request_kwargs,
+                    ) as response:
                         if response.status_code != 206:
                             raise StreamDownloadError(f"分块请求未返回 206: {response.status_code}")
                         response.raise_for_status()
@@ -180,6 +200,10 @@ class ChunkedDownloader(BaseDownloader):
                 except DownloaderStoppedError:
                     error_event.set()
                     error_holder.append(DownloaderStoppedError("用户停止下载"))
+                    return False
+                except DomainPolicyViolation as exc:
+                    error_event.set()
+                    error_holder.append(StreamDownloadError(f"分块下载地址违反公网访问策略: {exc}"))
                     return False
                 except (requests.RequestException, OSError, ValueError, RuntimeError, StreamDownloadError) as exc:
                     last_error = exc

@@ -552,6 +552,38 @@ def test_github_client_falls_back_to_release_atom_when_api_is_rate_limited(tmp_p
     assert locations[1].signature_url == "https://github.com/owner/repo/releases/download/v3.7.0/latest.json.sig"
 
 
+def test_github_client_rejects_oversized_release_atom(tmp_path):
+    client = GitHubReleaseClient(owner="owner", repo="repo", cache_path=tmp_path / "github.json")
+
+    def opener(request, *, timeout):
+        if request.full_url.startswith("https://api.github.com/"):
+            raise client.http_error(request.full_url, 429, "rate limited")
+        return _BytesResponse(b"x" * 2_000_001)
+
+    with pytest.raises(DownloadError, match="release feed is too large"):
+        client.fetch_manifest_location_candidates(opener=opener, manual=True)
+
+
+def test_github_client_rejects_xml_entities_in_release_atom(tmp_path):
+    client = GitHubReleaseClient(owner="owner", repo="repo", cache_path=tmp_path / "github.json")
+    atom = b"""<?xml version="1.0"?>
+<!DOCTYPE feed [<!ENTITY release "v3.8.0">]>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link rel="alternate" href="https://github.com/owner/repo/releases/tag/v3.8.0" />
+    <title>&release;</title>
+  </entry>
+</feed>"""
+
+    def opener(request, *, timeout):
+        if request.full_url.startswith("https://api.github.com/"):
+            raise client.http_error(request.full_url, 429, "rate limited")
+        return _BytesResponse(atom)
+
+    with pytest.raises(DownloadError, match="unsafe XML"):
+        client.fetch_manifest_location_candidates(opener=opener, manual=True)
+
+
 def test_installer_runner_uses_argv_and_records_nonzero_exit(tmp_path):
     installer = tmp_path / "installer.msi"
     installer.write_bytes(b"installer")

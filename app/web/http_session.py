@@ -6,9 +6,15 @@ import secrets
 from uuid import uuid4
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin, is_local_host
+from app.web.session_runtime import (
+    WebSessionContext,
+    WebSessionRegistry,
+    is_allowed_origin,
+    is_local_host,
+    is_loopback_request_host,
+)
 
 class HttpSessionCoordinator:
     """封装 HTTP 会话中间件、上下文恢复与目录权限代理。"""
@@ -22,6 +28,8 @@ class HttpSessionCoordinator:
         csrf_cookie_name: str,
         session_token_header: str,
         default_session_id: str,
+        access_token: str | None = None,
+        access_cookie_name: str = "ucrawl_access_token",
     ) -> None:
         self._session_registry = session_registry
         self._session_cookie_name = session_cookie_name
@@ -29,8 +37,19 @@ class HttpSessionCoordinator:
         self._csrf_cookie_name = csrf_cookie_name
         self._session_token_header = session_token_header
         self._default_session_id = default_session_id
+        self._access_token = str(access_token or "")
+        self._access_cookie_name = access_cookie_name
 
     async def handle(self, request: Request, call_next):
+        # Container health checks are stateless. /api/ping intentionally keeps
+        # its legacy session-bootstrap behavior for API and media clients.
+        if request.url.path == "/healthz":
+            return await call_next(request)
+
+        access_response = self._enforce_application_access(request)
+        if access_response is not None:
+            return access_response
+
         session_id = request.cookies.get(self._session_cookie_name) or uuid4().hex
         context = self._session_registry.get_or_create(session_id)
         request.state.session_id = session_id
@@ -40,7 +59,8 @@ class HttpSessionCoordinator:
         client = getattr(request, "client", None)
         client_host = getattr(client, "host", None)
         token_valid = self.has_valid_session_token(request, context)
-        if is_api_request and not is_local_host(client_host) and not token_valid:
+        is_public_ping = request.url.path == "/api/ping"
+        if is_api_request and not is_public_ping and not is_local_host(client_host) and not token_valid:
             return JSONResponse({"status": "error", "error": "缺少或无效的会话令牌"}, status_code=403)
 
         if is_api_request and request.method in {"POST", "PUT", "DELETE"}:
@@ -77,6 +97,52 @@ class HttpSessionCoordinator:
                 secure=secure_cookie,
             )
         return response
+
+    def _enforce_application_access(self, request: Request):
+        """Authenticate remote app access before allocating a session context."""
+        if not self._access_token:
+            # Passwordless mode is intended only for an explicitly local URL.
+            # Reject arbitrary Host values so a rebinding domain cannot bootstrap
+            # its own same-origin session against a loopback listener.
+            client = getattr(request, "client", None)
+            if is_loopback_request_host(request.url.hostname, getattr(client, "host", None)):
+                return None
+            return JSONResponse(
+                {"status": "error", "error": "passwordless Web access requires a loopback host"},
+                status_code=421,
+                headers={"Cache-Control": "no-store"},
+            )
+        if request.url.path in {"/api/ping", "/healthz"}:
+            return None
+        if self._has_valid_application_access(request):
+            return None
+
+        query_token = request.query_params.get("access_token")
+        if request.method == "GET" and request.url.path == "/" and query_token:
+            if secrets.compare_digest(str(query_token), self._access_token):
+                response = RedirectResponse(url="/", status_code=303)
+                response.headers["Cache-Control"] = "no-store"
+                response.set_cookie(
+                    self._access_cookie_name,
+                    self._access_token,
+                    httponly=True,
+                    samesite="strict",
+                    secure=request.url.scheme == "https",
+                )
+                return response
+
+        return JSONResponse(
+            {"status": "error", "error": "missing or invalid application access token"},
+            status_code=401,
+            headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
+        )
+
+    def _has_valid_application_access(self, request: Request) -> bool:
+        cookie_token = request.cookies.get(self._access_cookie_name)
+        authorization = str(request.headers.get("authorization") or "")
+        scheme, _, bearer_token = authorization.partition(" ")
+        presented = bearer_token if scheme.lower() == "bearer" else cookie_token
+        return secrets.compare_digest(str(presented or ""), self._access_token)
 
     def get_request_context(self, request: Request) -> WebSessionContext:
         context = getattr(request.state, "session_context", None)

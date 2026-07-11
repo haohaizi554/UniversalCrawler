@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable, Coroutine
 
 from app.models.video_item import VideoItem
 from app.debug_logger import debug_logger
+from shared.runtime_options import validate_direct_download_url
 
-BroadcastFn = Callable[[str, Any], Awaitable[None]]
+BroadcastFn = Callable[[str, Any], Coroutine[Any, Any, Any]]
 
 def get_platform_defaults(source: str) -> dict:
     from cli.defaults import get_platform_defaults as _get_platform_defaults
@@ -85,8 +86,8 @@ class WebWorkflowService:
     def __init__(self, controller, broadcast: BroadcastFn):
         self.controller = controller
         self.broadcast = broadcast
-        self._pending_tasks: set[asyncio.Task] = set()
-        self._pending_progress_tasks: dict[str, asyncio.Task] = {}
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+        self._pending_progress_tasks: dict[str, asyncio.Task[Any]] = {}
         self._progress_throttle_seconds = 0.25
         self._last_progress_emit: dict[str, tuple[int, float]] = {}
         self._progress_broadcast_generation: dict[str, int] = {}
@@ -218,7 +219,7 @@ class WebWorkflowService:
             task = loop.create_task(self.broadcast(event_type, data))
             self._pending_tasks.add(task)
 
-            def _discard(done_task: asyncio.Task) -> None:
+            def _discard(done_task: asyncio.Task[Any]) -> None:
                 self._pending_tasks.discard(done_task)
                 try:
                     done_task.result()
@@ -299,7 +300,7 @@ class WebWorkflowService:
             self._pending_tasks.add(task)
             self._pending_progress_tasks[video_id] = task
 
-            def _discard(done_task: asyncio.Task) -> None:
+            def _discard(done_task: asyncio.Task[Any]) -> None:
                 self._pending_tasks.discard(done_task)
                 if self._pending_progress_tasks.get(video_id) is done_task:
                     self._pending_progress_tasks.pop(video_id, None)
@@ -405,7 +406,6 @@ class WebWorkflowService:
         title = payload.get("title")
         if title is not None and not isinstance(title, str):
             return await self._error("title 必须是字符串", log_error=log_error)
-        title = title or url
         timeout = payload.get("timeout", 300)
         user_config = payload.get("config", {})
 
@@ -413,6 +413,11 @@ class WebWorkflowService:
             return await self._error("url 和 source 必须是字符串", log_error=log_error)
         if not url or not source:
             return await self._error("url 和 source 为必填参数", log_error=log_error)
+        url = url.strip()
+        url_error = validate_direct_download_url(url)
+        if url_error:
+            return await self._error(url_error, log_error=log_error)
+        title = title or url
 
         from app.core.plugin_registry import registry
 
@@ -468,6 +473,7 @@ class WebWorkflowService:
                     timeout=timeout,
                     config=user_config,
                     progress_callback=on_download_progress,
+                    network_policy="public",
                 ),
             )
         except (TypeError, ValueError) as exc:

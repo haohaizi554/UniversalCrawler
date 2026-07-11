@@ -109,7 +109,7 @@ def test_cached_log_detail_result_reuses_persisted_worker_payload():
     assert second.sequence == 2
     assert cache.set_count == 1
     assert len(cache.values) == 1
-    assert next(iter(cache.persist_flags.values())) is True
+    assert next(iter(cache.persist_flags.values())) is False
 
 
 def test_log_detail_export_worker_writes_payload_off_ui_thread(tmp_path):

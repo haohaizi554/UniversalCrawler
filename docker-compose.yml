@@ -16,7 +16,7 @@ services:
     image: ucrawl-web:latest
     container_name: ucrawl-web
     ports:
-      - "${UCRAWL_HOST_PORT:-8000}:8000"
+      - "${UCRAWL_BIND_IP:-127.0.0.1}:${UCRAWL_HOST_PORT:-8000}:8000"
     environment:
       UCRAWL_HOST: 0.0.0.0
       UCRAWL_PORT: 8000
@@ -25,6 +25,10 @@ services:
       UCRAWL_USER_DATA_ROOT: /data/user_data
       UCRAWL_DOWNLOAD_ROOT: /data/downloads
       UCRAWL_TOOL_ROOT: /app/tools
+      UCRAWL_SSL_CERTFILE: ${UCRAWL_SSL_CERTFILE:-}
+      UCRAWL_SSL_KEYFILE: ${UCRAWL_SSL_KEYFILE:-}
+      UCRAWL_WEB_ACCESS_TOKEN: ${UCRAWL_WEB_ACCESS_TOKEN:-}
+      UCRAWL_WEB_ACCESS_TOKEN_FILE: ${UCRAWL_WEB_ACCESS_TOKEN_FILE:-/data/user_data/web-access-token}
       HTTP_PROXY: ${UCRAWL_HTTP_PROXY:-}
       HTTPS_PROXY: ${UCRAWL_HTTPS_PROXY:-}
       NO_PROXY: ${UCRAWL_NO_PROXY:-127.0.0.1,localhost}
@@ -34,7 +38,7 @@ services:
       - ./downloads:/data/downloads
       - ./tools:/app/tools
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/ping"]
+      test: ["CMD", "curl", "-fkSs", "https://127.0.0.1:8000/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

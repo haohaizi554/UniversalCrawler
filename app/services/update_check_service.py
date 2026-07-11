@@ -160,6 +160,10 @@ def fetch_latest_release_payload(
     api_url: str = LATEST_RELEASE_API_URL,
     timeout: float = 8.0,
 ) -> dict[str, Any]:
+    try:
+        validate_asset_url(api_url, {"api.github.com"})
+    except ManifestError as exc:
+        raise UpdateCheckError(f"GitHub release API must use trusted HTTPS: {exc}") from exc
     request = urllib.request.Request(
         api_url,
         headers={
@@ -169,7 +173,13 @@ def fetch_latest_release_payload(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Initial and final URLs are both allowlisted around this stdlib call.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            final_url = _response_final_url(response, api_url)
+            try:
+                validate_asset_url(final_url, {"api.github.com"})
+            except ManifestError as exc:
+                raise UpdateCheckError(f"GitHub release API must use trusted HTTPS: {exc}") from exc
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         if exc.code in {403, 429} and api_url == LATEST_RELEASE_API_URL:
@@ -191,13 +201,22 @@ def fetch_latest_release_page_payload(
     page_url: str = LATEST_RELEASE_PAGE_URL,
     timeout: float = 8.0,
 ) -> dict[str, Any]:
+    try:
+        validate_asset_url(page_url, {"github.com"})
+    except ManifestError as exc:
+        raise UpdateCheckError(f"GitHub release page must use trusted HTTPS: {exc}") from exc
     request = urllib.request.Request(
         page_url,
         headers={"User-Agent": "UniversalCrawlerPro/update-check"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            final_url = response.geturl()
+        # GitHub uses a redirect from /latest to /tag/<version>; the target stays allowlisted.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            final_url = _response_final_url(response, page_url)
+            try:
+                validate_asset_url(final_url, {"github.com"})
+            except ManifestError as exc:
+                raise UpdateCheckError(f"GitHub release page must use trusted HTTPS: {exc}") from exc
             body = response.read(256_000).decode("utf-8", errors="ignore")
     except urllib.error.HTTPError as exc:
         raise UpdateCheckError(f"GitHub release page request failed with HTTP {exc.code}") from exc
@@ -213,6 +232,11 @@ def fetch_latest_release_page_payload(
         "name": tag_name,
         "html_url": html_url,
     }
+
+
+def _response_final_url(response: Any, fallback: str) -> str:
+    getter = getattr(response, "geturl", None)
+    return str(getter() if callable(getter) else fallback)
 
 
 def _release_tag_from_url(url: str) -> str:
@@ -313,6 +337,7 @@ def check_secure_update(
     verifier = UpdateManifestVerifier(public_key_pem=configured_public_key, app_id=app_id, channel=channel)
     selector = AssetSelector(os_name=os_name, arch=arch)
     managed_state = state if state is not None else load_local_update_state()
+    verified_candidates: tuple[UpdateCandidate, ...]
 
     if manifest_path is not None and signature_path is not None:
         try:
@@ -634,10 +659,13 @@ def _metadata_targets(
 
 
 def _sort_candidates_desc(candidates: tuple[UpdateCandidate, ...]) -> tuple[UpdateCandidate, ...]:
+    def compare_candidates(left: UpdateCandidate, right: UpdateCandidate) -> int:
+        return -compare_versions(left.version, right.version)
+
     return tuple(
         sorted(
             candidates,
-            key=cmp_to_key(lambda left, right: -compare_versions(left.version, right.version)),
+            key=cmp_to_key(compare_candidates),
         )
     )
 
@@ -704,10 +732,20 @@ def _result_from_candidate(
 
 
 def _download_metadata_file(url: str, target: Path, *, timeout: float = 8.0, max_bytes: int = 2_000_000) -> Path:
-    validate_asset_url(url, {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"})
+    allowed_hosts = {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+    try:
+        validate_asset_url(url, allowed_hosts)
+    except ManifestError as exc:
+        raise DownloadError(f"metadata URL must use trusted HTTPS: {exc}") from exc
     request = urllib.request.Request(url, headers={"User-Agent": "UniversalCrawlerPro/update-check"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Signed metadata may redirect to GitHub's asset CDN, but nowhere else.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            final_url = _response_final_url(response, url)
+            try:
+                validate_asset_url(final_url, allowed_hosts)
+            except ManifestError as exc:
+                raise DownloadError(f"metadata URL must use trusted HTTPS: {exc}") from exc
             data = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:

@@ -25,7 +25,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from Crypto.PublicKey import ECC
+# ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
+from Crypto.PublicKey import ECC  # nosec B413
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

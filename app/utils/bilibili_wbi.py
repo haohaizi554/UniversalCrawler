@@ -77,7 +77,11 @@ def sign_wbi_params(
     signed_params["wts"] = str(int(time.time() if now is None else now))
     sorted_params = dict(sorted(signed_params.items()))
     query = urllib.parse.urlencode(sorted_params)
-    signed_params["w_rid"] = hashlib.md5(f"{query}{mixin_key}".encode("utf-8")).hexdigest()
+    # Bilibili WBI 协议规定 MD5；这里只生成服务端兼容签名，不作本地安全校验。
+    signed_params["w_rid"] = hashlib.md5(
+        f"{query}{mixin_key}".encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()
     return signed_params
 
 

@@ -117,8 +117,9 @@ def is_temporary_path(path_value: str | os.PathLike[str] | None) -> bool:
     slash_normalized = normalized.replace("\\", "/")
     return (
         "/appdata/local/temp/" in slash_normalized
-        or slash_normalized.startswith("/tmp/")
-        or "/tmp/" in slash_normalized
+        # These are path classifiers only; no file is created from the literals.
+        or slash_normalized.startswith("/tmp/")  # nosec B108
+        or "/tmp/" in slash_normalized  # nosec B108
         or "/temp/tmp" in slash_normalized
     )
 

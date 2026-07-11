@@ -371,6 +371,7 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
                 save_dir="downloads",
                 timeout=1,
                 config={"author": "alice", "proxy": "Clash (7890)", "file_name": "demo"},
+                network_policy="public",
             )
 
         self.assertEqual(result["status"], "ok")
@@ -380,6 +381,7 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         self.assertEqual(result["meta"]["folder_name"], "alice")
         self.assertTrue(result["meta"]["use_subdir"])
         self.assertEqual(result["meta"]["file_name"], "demo")
+        self.assertEqual(result["meta"]["_network_policy"], "public")
 
     def test_sdk_download_timeout_exposes_shutdown_summary(self):
         import cli.sdk as sdk_module

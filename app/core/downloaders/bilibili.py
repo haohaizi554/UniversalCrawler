@@ -19,6 +19,7 @@ from app.exceptions import (
     StreamDownloadError,
 )
 from app.models import VideoItem
+from shared.runtime_options import DomainPolicyViolation
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 
 from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
@@ -256,6 +257,7 @@ class BilibiliDownloader(BaseDownloader):
 
         def download_stream(name: str, path: str) -> None:
             """下载单个流（video/audio），失败时重新获取 CDN URL 后重试。"""
+            domain_policy = self._domain_policy_for_item(video_item)
             for attempt in range(max_retries + 1):
                 if stop_event.is_set():
                     return
@@ -265,7 +267,9 @@ class BilibiliDownloader(BaseDownloader):
                     return
                 # 第一次尝试走代理，重试直连 CDN
                 proxies = {"http": proxy, "https": proxy} if _use_proxy[0] else None
+                discard_partial_on_error = False
                 try:
+                    request_kwargs = self._domain_policy_request_kwargs(domain_policy, url)
                     existing_size = os.path.getsize(path) if resume_enabled and os.path.exists(path) else 0
                     request_headers = dict(headers)
                     if existing_size > 0:
@@ -279,21 +283,35 @@ class BilibiliDownloader(BaseDownloader):
                             details={"url": url, "attempt": attempt + 1, "resume_offset": existing_size},
                             trace_id=trace_id,
                         )
-                    with requests.get(url, headers=request_headers, stream=True, timeout=(15, 120), proxies=proxies) as response:
+                    with requests.get(
+                        url,
+                        headers=request_headers,
+                        stream=True,
+                        timeout=(15, 120),
+                        proxies=proxies,
+                        **request_kwargs,
+                    ) as response:
                         response.raise_for_status()
                         total = int(response.headers.get("content-length", 0))
                         mode = "wb"
                         downloaded = 0
                         resumed = False
-                        if existing_size > 0:
-                            if response.status_code == 206:
+                        if response.status_code == 206:
+                            content_range = response.headers.get("content-range") or response.headers.get("Content-Range")
+                            parsed_range = self._parse_content_range_header(content_range)
+                            if parsed_range is None or parsed_range[0] != existing_size:
+                                discard_partial_on_error = True
+                                raise StreamDownloadError(
+                                    f"Bilibili 断点续传响应范围不匹配: expected {existing_size}, got {content_range!r}"
+                                )
+                            total = parsed_range[2] or (total + existing_size)
+                            if existing_size > 0:
                                 mode = "ab"
                                 downloaded = existing_size
-                                total += existing_size
                                 resumed = True
-                            else:
-                                # CDN 忽略 Range 时不能继续追加旧 m4s，否则合并后音画流会损坏。
-                                existing_size = 0
+                        elif existing_size > 0:
+                            # CDN 忽略 Range 时不能继续追加旧 m4s，否则合并后音画流会损坏。
+                            existing_size = 0
                         debug_logger.log_api(
                             component="BilibiliDownloader",
                             api_name=f"stream_{name}",
@@ -331,8 +349,27 @@ class BilibiliDownloader(BaseDownloader):
                                     with progress_lock:
                                         stream_stats[name]["downloaded"] = downloaded
                                         emit_combined_progress()
+                        if total > 0 and downloaded < total:
+                            raise StreamDownloadError(
+                                f"Bilibili {name} stream ended early: received {downloaded} of {total} bytes"
+                            )
                     return  # 成功，退出重试循环
-                except (requests.ConnectionError, ConnectionResetError, ConnectionAbortedError, OSError) as exc:
+                except DomainPolicyViolation as exc:
+                    stop_event.set()
+                    error_holder.append(StreamDownloadError(f"Bilibili 下载地址违反公网访问策略: {exc}"))
+                    if os.path.exists(path):
+                        os.remove(path)
+                    return
+                except (
+                    requests.ConnectionError,
+                    ConnectionResetError,
+                    ConnectionAbortedError,
+                    OSError,
+                    StreamDownloadError,
+                ) as exc:
+                    if discard_partial_on_error or not resume_enabled or attempt == max_retries:
+                        if os.path.exists(path):
+                            os.remove(path)
                     if attempt < max_retries:
                         wait = (attempt + 1) * 2
                         resume_offset = os.path.getsize(path) if resume_enabled and os.path.exists(path) else 0
@@ -364,9 +401,7 @@ class BilibiliDownloader(BaseDownloader):
                         continue
                     stop_event.set()
                     error_holder.append(exc)
-                    if os.path.exists(path):
-                        os.remove(path)
-                except (requests.RequestException, StreamDownloadError) as exc:
+                except requests.RequestException as exc:
                     stop_event.set()
                     error_holder.append(exc)
                     if os.path.exists(path):

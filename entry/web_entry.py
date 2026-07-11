@@ -57,13 +57,21 @@ def _validate_transport_security(
         raise ValueError("--ssl-certfile and --ssl-keyfile must be provided together")
     if not is_loopback and not (has_cert and has_key):
         raise ValueError("non-loopback Web binding requires HTTPS certificate and key")
+    for option, file_path in (("--ssl-certfile", ssl_certfile), ("--ssl-keyfile", ssl_keyfile)):
+        if file_path and not Path(file_path).expanduser().is_file():
+            raise ValueError(f"{option} does not exist or is not a file: {file_path}")
     return "https" if has_cert and has_key else "http"
 
 def _is_port_in_use(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    normalized_host = str(host or "").strip().strip("[]")
+    try:
+        family = socket.AF_INET6 if ipaddress.ip_address(normalized_host).version == 6 else socket.AF_INET
+    except ValueError:
+        family = socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         try:
-            s.bind((host, port))
+            s.bind((normalized_host, port))
             return False
         except OSError:
             return True
@@ -182,7 +190,8 @@ def _resolve_port_with_dialog(default_port: int) -> int:
 
     port = default_port
     while True:
-        if not _is_port_in_use("0.0.0.0", port):
+        # This probes wildcard occupancy; it does not bind a public listener.
+        if not _is_port_in_use("0.0.0.0", port):  # nosec B104
             return port
 
         # ---- QDialog ----
@@ -448,7 +457,8 @@ def _resolve_port_with_dialog(default_port: int) -> int:
             if cand > 65535:
                 break
             attempted += 1
-            if not _is_port_in_use("0.0.0.0", cand):
+            # This probes wildcard occupancy; it does not bind a public listener.
+            if not _is_port_in_use("0.0.0.0", cand):  # nosec B104
                 suggested = cand
                 break
 
@@ -533,8 +543,10 @@ def _resolve_port_with_dialog(default_port: int) -> int:
         # ---- 事件 ----
         ok_btn.clicked.connect(dlg.accept)
         cancel_btn.clicked.connect(dlg.reject)
-        QShortcut(QKeySequence(Qt.Key.Key_Escape), dlg, activated=dlg.reject)
-        QShortcut(QKeySequence(Qt.Key.Key_Return), dlg, activated=dlg.accept)
+        escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), dlg)
+        escape_shortcut.activated.connect(dlg.reject)
+        return_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), dlg)
+        return_shortcut.activated.connect(dlg.accept)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
@@ -605,6 +617,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--script-delay", type=float, default=0.0, help="执行脚本前延迟秒数")
     parser.add_argument("--ssl-certfile", help="TLS certificate file (required for non-loopback binding)")
     parser.add_argument("--ssl-keyfile", help="TLS private key file (required for non-loopback binding)")
+    parser.add_argument(
+        "--access-token",
+        help="Web access token (prefer UCRAWL_WEB_ACCESS_TOKEN so it is not exposed in process arguments)",
+    )
+    parser.add_argument("--access-token-file", help="Persistent Web access token file for non-loopback binding")
     return parser
 
 def main(argv: list[str] | None = None) -> int:
@@ -620,11 +637,59 @@ def main(argv: list[str] | None = None) -> int:
     tray = None
     shutdown_event = threading.Event()
 
+    from cli import __version__
+    from entry.web_launch_runtime import (
+        build_access_url,
+        build_web_url,
+        resolve_existing_web_url,
+        resolve_web_access_token,
+        try_reuse_existing_instance,
+    )
+    from app.utils.runtime_paths import user_data_root
+
+    token_file = (
+        args.access_token_file
+        or os.getenv("UCRAWL_WEB_ACCESS_TOKEN_FILE")
+        or str(user_data_root() / "web-access-token")
+    )
+    try:
+        access_token = resolve_web_access_token(
+            args.host,
+            args.access_token,
+            token_file=token_file,
+        )
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+
+    port_in_use = _is_port_in_use(args.host, args.port)
+    # A remote access token must never be sent to an unknown process merely
+    # because it occupies the requested port. Local passwordless instances can
+    # still use the convenient same-version reuse probe.
+    if port_in_use and not args.script and access_token is None:
+        reused = try_reuse_existing_instance(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+            resolve_existing_url=lambda host, port: resolve_existing_web_url(
+                host,
+                port,
+                url_scheme,
+                ssl_certfile=args.ssl_certfile,
+                expected_version=__version__,
+            ),
+            browser_opener=lambda existing_url: webbrowser.open(
+                build_access_url(existing_url, access_token)
+            ),
+            stderr=sys.stderr,
+        )
+        if reused:
+            return 0
+
     if not args.no_qt:
         from PyQt6.QtWidgets import QApplication
         qt_app = QApplication.instance() or QApplication(sys.argv)
 
-    if _is_port_in_use(args.host, args.port):
+    if port_in_use:
         if args.no_qt:
             # 无 Qt 模式：自动顺延找可用端口（静默），找不到再报错
             # 修复：之前直接报错退出太粗暴，违反"双击就开"的预期
@@ -660,15 +725,24 @@ def main(argv: list[str] | None = None) -> int:
                 **script_kwargs,
             )
         yield
-        from app.web.server import controller
-        if controller:
-            controller.shutdown()
+        registry = getattr(app.state, "web_session_registry", None)
+        shutdown_all = getattr(registry, "shutdown_all", None)
+        if callable(shutdown_all):
+            shutdown_all(wait=True, timeout=5.0)
+        else:
+            # Compatibility fallback for custom create_app implementations.
+            from app.web.server import controller
+            if controller:
+                controller.shutdown()
 
-    app = create_app(lifespan=lifespan)
+    app = create_app(lifespan=lifespan, access_token=access_token)
 
-    url = f"{url_scheme}://localhost:{args.port}"
+    display_url = build_web_url(args.host, args.port, url_scheme)
+    url = build_access_url(display_url, access_token)
     sys.stderr.write("\n  UCrawl Web UI\n")
-    sys.stderr.write(f"  {url}\n")
+    # Keep credentials out of terminal history and container logs. The token
+    # remains available through the configured environment or persistent file.
+    sys.stderr.write(f"  {display_url}\n")
     sys.stderr.write(f"  保存目录: downloads/\n")
     if args.script:
         sys.stderr.write(f"  启动时注入脚本: {args.script}\n")

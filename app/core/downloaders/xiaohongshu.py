@@ -174,6 +174,7 @@ class XiaohongshuDownloader(BaseDownloader):
                 support_resume=self._coerce_bool_setting(cfg.get("download", "resume_enabled", True)),
                 error_message=f"小红书图片下载失败: {base_name}_{idx}",
                 proxy=video_item.meta.get("proxy"),
+                domain_policy=self._domain_policy_for_item(video_item),
             )
             return idx, target_path
 

@@ -71,6 +71,20 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertTrue(N_m3u8DL_RE_Downloader.is_m3u8_url("https://example.com/master.m3u8"))
         self.assertFalse(N_m3u8DL_RE_Downloader.is_m3u8_url("https://example.com/video.mp4"))
 
+    def test_python_hls_policy_rejects_private_segment_before_fetch(self):
+        from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
+
+        session = Mock()
+        with self.assertRaises(DomainPolicyViolation):
+            N_m3u8DL_RE_Downloader._curl_cffi_get_bytes(
+                session,
+                "http://127.0.0.1:8080/private.ts",
+                {},
+                domain_policy=DomainPolicyEngine(),
+            )
+
+        session.get.assert_not_called()
+
     @patch("app.core.downloaders.m3u8.NM3U8DLREExternalTool.is_available", return_value=False)
     @patch("app.core.downloaders.m3u8.N_m3u8DL_RE_Downloader._python_hls_fallback_available", return_value=True)
     def test_m3u8_downloader_is_available_when_python_hls_fallback_exists(self, _mocked_python, _mocked_external):
@@ -129,6 +143,111 @@ class DownloaderStrategyTests(unittest.TestCase):
                 )
 
             self.assertFalse(Path(save_path).exists())
+            self.assertFalse(Path(save_path + ".downloading").exists())
+
+    @patch("app.core.downloaders.base.time.sleep", return_value=None)
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_downloader_resumes_when_response_ends_before_content_length(
+        self,
+        mocked_get,
+        _mocked_sleep,
+    ):
+        mocked_get.side_effect = [
+            self._make_stream_response([b"12"], headers={"content-length": "4"}),
+            self._make_stream_response(
+                [b"34"],
+                headers={"content-length": "2", "content-range": "bytes 2-3/4"},
+                status_code=206,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            BaseDownloader()._download_http_file(
+                url="https://example.com/demo.mp4",
+                save_path=save_path,
+                headers={},
+                check_stop_func=lambda: False,
+                max_retries=1,
+                support_resume=True,
+            )
+
+            self.assertEqual(Path(save_path).read_bytes(), b"1234")
+
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Range"], "bytes=2-")
+
+    @patch("app.core.downloaders.base.time.sleep", return_value=None)
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_downloader_rejects_unsolicited_partial_response(
+        self,
+        mocked_get,
+        _mocked_sleep,
+    ):
+        mocked_get.return_value = self._make_stream_response(
+            [b"partial"],
+            headers={"content-length": "7", "content-range": "bytes 100-106/1000"},
+            status_code=206,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            with self.assertRaises(StreamDownloadError):
+                BaseDownloader()._download_http_file(
+                    url="https://example.com/demo.mp4",
+                    save_path=save_path,
+                    headers={},
+                    check_stop_func=lambda: False,
+                    max_retries=0,
+                    support_resume=True,
+                )
+
+            self.assertFalse(Path(save_path).exists())
+            self.assertFalse(Path(save_path + ".downloading").exists())
+
+    def test_base_downloader_publishes_with_atomic_replace(self):
+        downloader = BaseDownloader()
+
+        with patch("app.core.downloaders.base.os.replace") as replace, patch(
+            "app.core.downloaders.base.os.remove"
+        ) as remove:
+            downloader._finalize_download("source.downloading", "target.mp4")
+
+        replace.assert_called_once_with("source.downloading", "target.mp4")
+        remove.assert_not_called()
+
+    @patch("app.core.downloaders.base.requests.get")
+    def test_base_downloader_rejects_private_redirect_without_retrying(self, mocked_get):
+        from shared.runtime_options import DomainPolicyEngine
+
+        policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))]
+        )
+        redirect = self._make_stream_response([], status_code=302)
+        redirect.url = "https://public.example/video.mp4"
+        redirect.headers = {"Location": "http://127.0.0.1:8080/admin"}
+
+        def trigger_response_hook(*_args, **kwargs):
+            kwargs["hooks"]["response"](redirect)
+            return redirect
+
+        mocked_get.side_effect = trigger_response_hook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+            with self.assertRaises(StreamDownloadError):
+                BaseDownloader()._download_http_file(
+                    url="https://public.example/video.mp4",
+                    save_path=save_path,
+                    headers={},
+                    check_stop_func=lambda: False,
+                    max_retries=3,
+                    domain_policy=policy,
+                )
+
+            self.assertFalse(Path(save_path + ".downloading").exists())
+
+        self.assertEqual(mocked_get.call_count, 1)
 
     @patch("app.core.downloaders.base.TransferRateLimiter")
     @patch("app.core.downloaders.base.cfg.get")
@@ -1392,11 +1511,15 @@ class DownloaderStrategyTests(unittest.TestCase):
             self._make_stream_response_raising(
                 [first_chunk],
                 incomplete,
-                headers={"content-length": "254909680", "content-type": "video/mp4"},
+                headers={"content-length": "524292", "content-type": "video/mp4"},
             ),
             self._make_stream_response(
                 [b"tail"],
-                headers={"content-length": "4", "content-type": "video/mp4"},
+                headers={
+                    "content-length": "4",
+                    "content-range": "bytes 524288-524291/524292",
+                    "content-type": "video/mp4",
+                },
                 status_code=206,
             ),
         ]
@@ -1417,6 +1540,45 @@ class DownloaderStrategyTests(unittest.TestCase):
             "IncompleteRead should produce a visible stream_retry log before retrying.",
         )
         mocked_run_merge.assert_called_once()
+
+    @patch.object(BilibiliDownloader, "_run_merge_process")
+    @patch("app.core.downloaders.bilibili.time.sleep", return_value=None)
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.build_merge_command", return_value=["ffmpeg", "-i", "video", "output"])
+    @patch("app.core.downloaders.bilibili.FFmpegExternalTool.resolve_executable", return_value="ffmpeg.exe")
+    @patch("app.core.downloaders.bilibili.requests.get")
+    def test_bilibili_retries_short_stream_before_publishing_for_merge(
+        self,
+        mocked_get,
+        _mocked_resolve,
+        _mocked_build_merge,
+        _mocked_sleep,
+        mocked_run_merge,
+    ):
+        mocked_get.side_effect = [
+            self._make_stream_response([b"12"], headers={"content-length": "4"}),
+            self._make_stream_response(
+                [b"34"],
+                headers={"content-length": "2", "content-range": "bytes 2-3/4"},
+                status_code=206,
+            ),
+        ]
+        item = VideoItem(url="https://cdn.example.com/video.m4s", title="Bili short", source="bilibili")
+        item.meta["audio_url"] = None
+        stream_bytes = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = os.path.join(temp_dir, "demo.mp4")
+
+            def finish_merge(*_args, **kwargs):
+                stream_bytes.append(Path(kwargs["temp_v"]).read_bytes())
+                Path(kwargs["save_path"]).write_bytes(b"merged")
+
+            mocked_run_merge.side_effect = finish_merge
+            BilibiliDownloader().download(item, save_path, lambda *_args, **_kwargs: None, lambda: False)
+
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Range"], "bytes=2-")
+        self.assertEqual(stream_bytes, [b"1234"])
 
     @patch("app.core.downloaders.bilibili.requests.get")
     def test_bilibili_play_url_refresh_forwards_proxy_settings(self, mocked_get):

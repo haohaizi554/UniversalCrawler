@@ -1,3 +1,4 @@
+import pickle
 import unittest
 import sqlite3
 import threading
@@ -20,6 +21,20 @@ from app.core.state import CrawlStatus, VideoStatus, parse_video_status, video_s
 from app.models import VideoItem
 from app.services.app_state import AppState
 from app.services.cache_service import CacheService
+
+
+_LEGACY_PICKLE_PROBE_CALLS: list[str] = []
+
+
+def _record_legacy_pickle_load() -> None:
+    """无害探针：只有反序列化旧 pickle 时才会被调用。"""
+    _LEGACY_PICKLE_PROBE_CALLS.append("loaded")
+
+
+class _LegacyPickleProbe:
+    def __reduce__(self):
+        return _record_legacy_pickle_load, ()
+
 
 class StateAndEventTests(unittest.TestCase):
     def test_app_error_exposes_metadata_for_recovery_and_logging(self):
@@ -256,52 +271,29 @@ class StateAndEventTests(unittest.TestCase):
             self.assertTrue(state.should_emit_progress("video-1", 11))
             self.assertTrue(state.should_emit_progress("video-1", 100))
 
-    def test_cache_service_falls_back_to_sqlite_when_diskcache_write_fails(self):
-        class FailingDiskCache:
-            def __init__(self, _path: str) -> None:
-                self.values = {}
-
-            def get(self, key, default=None):
-                return self.values.get(key, default)
-
-            def set(self, _key, _value, *, expire=None):
-                raise RuntimeError("diskcache locked")
-
-            def delete(self, key):
-                self.values.pop(key, None)
-
-            def close(self):
-                return None
-
+    def test_cache_service_persists_values_across_sqlite_instances(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
-            with patch("app.services.cache_service.DiskCache", FailingDiskCache):
-                cache = CacheService(namespace="test-cache-diskcache-fallback", cache_dir=temp_dir)
-                with patch("app.services.cache_service.debug_logger.log_exception") as log_exception:
-                    cache.set("key", "new", persist=True)
+            cache = CacheService(namespace="test-cache-sqlite", cache_dir=temp_dir)
+            cache.set("key", "new", persist=True)
+            cache.close()
 
-                self.assertEqual(cache.get("key"), "new")
-                with cache._memory_lock:
-                    cache._memory_cache.pop("key", None)
-                self.assertEqual(cache.get("key"), "new")
-                log_exception.assert_called_once()
-                self.assertEqual(log_exception.call_args.args[:2], ("CacheService", "write_diskcache"))
+            reloaded = CacheService(namespace="test-cache-sqlite", cache_dir=temp_dir)
+            self.assertEqual(reloaded.get("key"), "new")
+
+    def test_cache_service_does_not_initialize_pickle_backed_diskcache(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-no-diskcache", cache_dir=temp_dir)
+
+            self.assertIsNone(getattr(cache, "_disk_cache", None))
 
     def test_cache_service_does_not_update_memory_when_all_persistent_writes_fail(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             cache = CacheService(namespace="test-cache-consistency", cache_dir=temp_dir)
             cache.set("key", "old")
 
-            if cache._disk_cache is not None:
-                with (
-                    patch.object(cache._disk_cache, "set", side_effect=RuntimeError("disk full")),
-                    patch.object(cache, "_write_sqlite_persistent", side_effect=RuntimeError("sqlite full")),
-                ):
-                    with self.assertRaises(RuntimeError):
-                        cache.set("key", "new", persist=True)
-            else:
-                with patch("app.services.cache_service.sqlite3.connect", side_effect=RuntimeError("disk full")):
-                    with self.assertRaises(RuntimeError):
-                        cache.set("key", "new", persist=True)
+            with patch.object(cache, "_write_sqlite_persistent", side_effect=RuntimeError("sqlite full")):
+                with self.assertRaises(RuntimeError):
+                    cache.set("key", "new", persist=True)
 
             self.assertEqual(cache.get("key"), "old")
 
@@ -324,6 +316,40 @@ class StateAndEventTests(unittest.TestCase):
                 row = conn.execute("SELECT key FROM cache_entries WHERE key = ?", ("bad",)).fetchone()
             self.assertIsNone(row)
 
+    def test_cache_service_never_deserializes_legacy_pickle_rows(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-legacy-pickle", cache_dir=temp_dir)
+            payload = pickle.dumps(_LegacyPickleProbe(), protocol=pickle.HIGHEST_PROTOCOL)
+            with sqlite3.connect(cache._db_path) as conn:
+                conn.execute(
+                    "INSERT INTO cache_entries(key, value, expires_at) VALUES(?, ?, ?)",
+                    ("legacy", payload, None),
+                )
+                conn.commit()
+
+            _LEGACY_PICKLE_PROBE_CALLS.clear()
+            self.assertEqual(cache.get("legacy", "fallback"), "fallback")
+            self.assertEqual(_LEGACY_PICKLE_PROBE_CALLS, [])
+            with sqlite3.connect(cache._db_path) as conn:
+                row = conn.execute("SELECT key FROM cache_entries WHERE key = ?", ("legacy",)).fetchone()
+            self.assertIsNone(row)
+
+    def test_cache_service_safe_format_preserves_parser_value_types(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-safe-types", cache_dir=temp_dir)
+            expected = {
+                "bytes": b"\x00media",
+                "tuple": ("video", 80),
+                "set": {"candidate-a", "candidate-b"},
+                "nested": [{"ok": True, "value": None}],
+            }
+
+            cache.set("parser-result", expected, persist=True)
+            with cache._memory_lock:
+                cache._memory_cache.pop("parser-result", None)
+
+            self.assertEqual(cache.get("parser-result"), expected)
+
     def test_cache_service_delete_failures_are_downgraded(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             cache = CacheService(namespace="test-cache-delete-downgrade", cache_dir=temp_dir)
@@ -331,13 +357,7 @@ class StateAndEventTests(unittest.TestCase):
             with cache._memory_lock:
                 cache._memory_cache["key"] = "memory-value"
 
-            disk_context = (
-                patch.object(cache._disk_cache, "delete", side_effect=RuntimeError("diskcache locked"))
-                if cache._disk_cache is not None
-                else patch("app.services.cache_service.DiskCache", None)
-            )
             with (
-                disk_context,
                 patch("app.services.cache_service.sqlite3.connect", side_effect=sqlite3.Error("sqlite locked")),
                 patch("app.services.cache_service.debug_logger.log_exception") as log_exception,
             ):
@@ -345,8 +365,6 @@ class StateAndEventTests(unittest.TestCase):
 
             self.assertIsNone(cache._memory_cache.get("key"))
             actions = [call.args[1] for call in log_exception.call_args_list]
-            if cache._disk_cache is not None:
-                self.assertIn("delete_diskcache", actions)
             self.assertIn("delete_sqlite", actions)
 
     def test_cache_service_returns_mutation_isolated_values(self):
@@ -359,26 +377,12 @@ class StateAndEventTests(unittest.TestCase):
 
             self.assertEqual(cache.get("key")["nested"]["value"], 1)
 
-    def test_cache_service_close_releases_diskcache_once(self):
-        class FakeDiskCache:
-            instances: list["FakeDiskCache"] = []
-
-            def __init__(self, _path: str) -> None:
-                self.close_count = 0
-                FakeDiskCache.instances.append(self)
-
-            def close(self) -> None:
-                self.close_count += 1
-
+    def test_cache_service_close_is_idempotent(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
-            with patch("app.services.cache_service.DiskCache", FakeDiskCache):
-                cache = CacheService(namespace="test-cache-close", cache_dir=temp_dir)
+            cache = CacheService(namespace="test-cache-close", cache_dir=temp_dir)
 
-                cache.close()
-                cache.close()
-
-        self.assertEqual(FakeDiskCache.instances[0].close_count, 1)
-        self.assertIsNone(cache._disk_cache)
+            cache.close()
+            cache.close()
 
     def test_app_state_shutdown_closes_owned_cache_service(self):
         class CloseableCache:

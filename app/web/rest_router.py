@@ -52,6 +52,10 @@ def build_rest_router(
 
     router = APIRouter()
 
+    @router.get("/healthz", include_in_schema=False)
+    async def healthcheck():
+        return {"status": "ok"}
+
     @router.get("/api/ping")
     async def ping():
         from cli import __version__
@@ -213,7 +217,10 @@ def build_rest_router(
 
     @router.post("/api/dir/pick-native")
     async def pick_native_folder(request: Request):
-        return _finalize_route_result(await directory_service.pick_native_folder(request))
+        return _finalize_route_result(
+            await directory_service.pick_native_folder(request),
+            enforce_statuses={403},
+        )
 
     @router.get("/api/debug/latest-log")
     async def download_latest_log(request: Request):

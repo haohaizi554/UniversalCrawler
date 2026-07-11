@@ -41,6 +41,7 @@ UI_ICON_DIR = resolve_resource_file("UI/icon")
 SESSION_COOKIE_NAME = "ucrawl_session"
 SESSION_TOKEN_COOKIE_NAME = "ucrawl_session_token"
 CSRF_COOKIE_NAME = "ucrawl_csrf_token"
+ACCESS_COOKIE_NAME = "ucrawl_access_token"
 SESSION_TOKEN_HEADER = "X-Ucrawl-Session-Token"
 DEFAULT_SESSION_ID = "default"
 
@@ -64,7 +65,7 @@ def run_cli_search(**kwargs) -> dict:
     )
     return runner.run()
 
-def create_app(lifespan=None) -> FastAPI:
+def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
     app = FastAPI(title="Universal Crawler Pro", version="3.6.17", lifespan=lifespan)
 
@@ -111,6 +112,8 @@ def create_app(lifespan=None) -> FastAPI:
         session_token_header=SESSION_TOKEN_HEADER,
         default_session_id=DEFAULT_SESSION_ID,
         search_runtime_provider=_search_runtime_provider,
+        access_token=access_token,
+        access_cookie_name=ACCESS_COOKIE_NAME,
     )
     publish_app_state(
         app,
@@ -119,6 +122,7 @@ def create_app(lifespan=None) -> FastAPI:
         session_token_cookie_name=SESSION_TOKEN_COOKIE_NAME,
         csrf_cookie_name=CSRF_COOKIE_NAME,
         session_token_header=SESSION_TOKEN_HEADER,
+        access_cookie_name=ACCESS_COOKIE_NAME,
     )
     controller = composition.default_context.controller
 

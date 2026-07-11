@@ -16,6 +16,7 @@ from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
+from shared.runtime_options import DomainPolicyViolation
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
@@ -33,7 +34,7 @@ class FFmpegDownloader(BaseDownloader):
         match = re.match(r"(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})(?:\.(?P<ms>\d+))?", raw.strip())
         if not match:
             return None
-        seconds = int(match.group("h")) * 3600 + int(match.group("m")) * 60 + int(match.group("s"))
+        seconds = float(int(match.group("h")) * 3600 + int(match.group("m")) * 60 + int(match.group("s")))
         fraction = match.group("ms")
         if fraction:
             seconds += float(f"0.{fraction}")
@@ -163,6 +164,7 @@ class FFmpegDownloader(BaseDownloader):
         proxy = video_item.meta.get("proxy")
         proxies = {"http": proxy, "https": proxy} if proxy else None
         request_timeout = cfg.get("download", "request_timeout", 60)
+        domain_policy = self._domain_policy_for_item(video_item)
         expected_duration = None
         raw_duration = video_item.meta.get("duration")
         if isinstance(raw_duration, (int, float)) and raw_duration > 0:
@@ -173,12 +175,14 @@ class FFmpegDownloader(BaseDownloader):
             resolved_url = source_url
             resolved_size = expected_size_bytes
             try:
+                request_kwargs = self._domain_policy_request_kwargs(domain_policy, source_url)
                 resp = requests.head(
                     source_url,
                     headers=headers,
                     timeout=request_timeout,
                     allow_redirects=True,
                     proxies=proxies,
+                    **request_kwargs,
                 )
                 real_url = resp.url
                 content_length = resp.headers.get("content-length")
@@ -340,6 +344,8 @@ class FFmpegDownloader(BaseDownloader):
                     raise ExternalToolError(f"ffmpeg 下载失败 (Code: {process.returncode})")
             except DownloaderStoppedError:
                 raise
+            except DomainPolicyViolation as exc:
+                raise ExternalToolError(f"ffmpeg 下载地址违反公网访问策略: {exc}") from exc
             except (OSError, RuntimeError, ValueError, ExternalToolError) as exc:
                 if attempt < max_retries:
                     time.sleep(3)

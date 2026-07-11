@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import secrets
 import threading
 import time
@@ -12,7 +13,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 SendFactory = Callable[[str], Callable[[str, Any], Any]]
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "testserver", "testclient"}
+TEST_TRANSPORT_HOSTS = {"testserver", "testclient"}
 
 def normalize_directory(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
@@ -47,8 +48,33 @@ def configured_allowed_origins() -> set[str]:
             continue
     return origins
 
+def is_loopback_host(host: str | None) -> bool:
+    normalized = (host or "").strip().lower().strip("[]")
+    if normalized == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(mapped and mapped.is_loopback)
+
+
 def is_local_host(host: str | None) -> bool:
-    return (host or "").strip().lower() in LOCAL_HOSTS
+    normalized = (host or "").strip().lower()
+    return is_loopback_host(normalized) or normalized in TEST_TRANSPORT_HOSTS
+
+
+def is_loopback_request_host(host: str | None, client_host: str | None) -> bool:
+    """Allow synthetic TestClient hosts only for its synthetic client peer."""
+    normalized_host = (host or "").strip().lower()
+    normalized_client = (client_host or "").strip().lower()
+    return is_loopback_host(normalized_host) or (
+        normalized_host in TEST_TRANSPORT_HOSTS
+        and normalized_client in TEST_TRANSPORT_HOSTS
+    )
 
 def is_allowed_origin(origin: str | None, *, expected_origin: str | None = None) -> bool:
     if not origin:
@@ -167,10 +193,13 @@ class WebSessionRegistry:
         self._idle_ttl_seconds = max(float(idle_ttl_seconds), 0.0)
         self._pinned_session_ids = set(pinned_session_ids or ())
         self._monotonic = monotonic or time.monotonic
+        self._closed = False
 
     def get_or_create(self, session_id: str) -> WebSessionContext:
         self.prune()
         with self._lock:
+            if self._closed:
+                raise RuntimeError("Web session registry is shutting down")
             context = self._contexts.get(session_id)
             if context is None:
                 context = WebSessionContext(
@@ -219,11 +248,15 @@ class WebSessionRegistry:
         for _, session_id in eviction_candidates[:overflow]:
             self._dispose_context(session_id)
 
-    def _dispose_context(self, session_id: str) -> None:
+    def _dispose_context(self, session_id: str) -> threading.Thread | None:
         with self._lock:
             context = self._contexts.pop(session_id, None)
         if context is None:
-            return
+            return None
+        return self._dispose_detached_context(context)
+
+    def _dispose_detached_context(self, context: WebSessionContext) -> threading.Thread | None:
+        """Cancel session-owned work, then release its controller off-thread."""
         workflow = getattr(context, "workflow", None)
         cancel_broadcasts = getattr(workflow, "cancel_pending_broadcasts", None)
         if callable(cancel_broadcasts):
@@ -237,12 +270,40 @@ class WebSessionRegistry:
         controller = getattr(context, "controller", None)
         shutdown = getattr(controller, "shutdown", None)
         if callable(shutdown):
-            threading.Thread(
+            thread = threading.Thread(
                 target=self._safe_shutdown_controller,
                 args=(shutdown,),
                 daemon=True,
-                name=f"web-session-shutdown-{session_id}",
-            ).start()
+                name=f"web-session-shutdown-{context.session_id}",
+            )
+            thread.start()
+            return thread
+        return None
+
+    def shutdown_all(self, *, wait: bool = False, timeout: float | None = 5.0) -> None:
+        """Seal the registry and dispose every context, including pinned ones.
+
+        Normal idle eviction deliberately preserves pinned contexts. Process
+        shutdown is different: all controllers own workers and file handles
+        that must be released before the interpreter exits.
+        """
+        with self._lock:
+            self._closed = True
+            contexts = tuple(self._contexts.values())
+            self._contexts.clear()
+
+        threads = [
+            thread
+            for context in contexts
+            if (thread := self._dispose_detached_context(context)) is not None
+        ]
+        if not wait:
+            return
+
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        for thread in threads:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            thread.join(timeout=remaining)
 
     @staticmethod
     def _safe_shutdown_controller(shutdown: Callable[[], Any]) -> None:

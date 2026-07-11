@@ -32,7 +32,9 @@ BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
 BUILD_INSTALLER_TOOL = PACKAGING_DIR / "build_installer.py"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
 REQUIREMENTS_BUILD = PACKAGING_DIR / "requirements-build.txt"
+REQUIREMENTS_RUNTIME = PROJECT_ROOT / "requirements.txt"
 REQUIREMENTS_WEB = PROJECT_ROOT / "requirements-web.txt"
+PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 INSTALLER_FILE = PACKAGING_DIR / "installer.iss"
 PROJECT_META = PACKAGING_DIR / "project_meta.py"
 DOCKERFILE = PROJECT_ROOT / "Dockerfile"
@@ -913,6 +915,23 @@ class ContainerizationAssetTests(unittest.TestCase):
         self.assertIn("ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/ucrawl-entrypoint\"]", source)
         self.assertNotIn("COPY . .", source)
 
+    def test_container_default_transport_matches_non_loopback_tls_policy(self):
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        compose = DOCKER_COMPOSE.read_text(encoding="utf-8")
+        entrypoint = DOCKER_ENTRYPOINT.read_text(encoding="utf-8")
+
+        self.assertIn("openssl", dockerfile)
+        self.assertIn("https://127.0.0.1:8000/healthz", dockerfile)
+        self.assertIn("https://127.0.0.1:8000/healthz", compose)
+        self.assertIn("${UCRAWL_BIND_IP:-127.0.0.1}", compose)
+        self.assertIn("--ssl-certfile", entrypoint)
+        self.assertIn("--ssl-keyfile", entrypoint)
+        self.assertIn("UCRAWL_SSL_CERTFILE", entrypoint)
+        self.assertIn("UCRAWL_SSL_KEYFILE", entrypoint)
+        self.assertIn("openssl req", entrypoint)
+        self.assertIn("must be configured together", entrypoint)
+        self.assertIn("custom TLS certificate or key does not exist", entrypoint)
+
     def test_web_requirements_excludes_desktop_and_test_only_dependencies(self):
         content = REQUIREMENTS_WEB.read_text(encoding="utf-8")
         requirement_lines = {
@@ -926,6 +945,28 @@ class ContainerizationAssetTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("fastapi") for line in requirement_lines))
         self.assertTrue(any(line.startswith("uvicorn") for line in requirement_lines))
         self.assertTrue(any(line.startswith("websockets") for line in requirement_lines))
+
+    def test_runtime_dependency_manifests_enforce_security_floors(self):
+        manifests = {
+            path.name: path.read_text(encoding="utf-8").lower()
+            for path in (REQUIREMENTS_RUNTIME, REQUIREMENTS_WEB, PYPROJECT)
+        }
+        required_floors = (
+            "fastapi>=0.139.0",
+            "starlette>=1.3.1",
+            "requests>=2.34.2",
+            "pygments>=2.20.0",
+            "curl-cffi>=0.15.0",
+            "yt-dlp>=2026.6.9",
+            "urllib3>=2.7.0",
+            "idna>=3.15",
+            "defusedxml>=0.7.1",
+        )
+        for name, content in manifests.items():
+            with self.subTest(manifest=name):
+                self.assertNotIn("diskcache", content)
+                for requirement in required_floors:
+                    self.assertIn(requirement, content)
 
     def test_docker_compose_exposes_healthcheck_and_build_arg(self):
         source = DOCKER_COMPOSE.read_text(encoding="utf-8")

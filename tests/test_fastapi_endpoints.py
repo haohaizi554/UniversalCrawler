@@ -681,7 +681,8 @@ class ServerModuleExportsTests(unittest.TestCase):
         """FastAPI app 必须挂载 /static。"""
         from app.web.server import create_app
         app = create_app()
-        routes = [r.path for r in app.routes]
+        # FastAPI 0.139 起 include_router 可能以无 path 的延迟包装器出现，Mount 本身仍在顶层。
+        routes = [route.path for route in app.routes if hasattr(route, "path")]
         self.assertIn("/static", routes)
 
 class CrossLayerContractTests(unittest.TestCase):

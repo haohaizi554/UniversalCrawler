@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Callable
-from urllib.parse import urlsplit
+from typing import Any, Callable
+from urllib.parse import urljoin, urlsplit
 
 # 兜底配置：当 cfg 不可用时使用（与 GUI AppSettings 默认值对齐）
 _SUPPORTED_PLATFORMS = ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav")
-_FALLBACK_CONFIG = {
+_FALLBACK_CONFIG: dict[str, dict[str, Any]] = {
     "douyin": {
         "max_items": 20,
         "timeout": 10,
@@ -50,7 +50,7 @@ _FALLBACK_CONFIG = {
 # 向后兼容别名
 DEFAULT_CONFIG = _FALLBACK_CONFIG
 
-_TYPE_NAMES = {
+_TYPE_NAMES: dict[type[Any], str] = {
     int: "整数",
     bool: "布尔值",
     str: "字符串",
@@ -59,7 +59,7 @@ _TYPE_NAMES = {
     float: "数字",
 }
 
-_CONFIG_TYPE_RULES = {
+_CONFIG_TYPE_RULES: dict[str, type[Any] | tuple[type[Any], ...]] = {
     "max_items": int,
     "max_pages": int,
     "timeout": (int, float),
@@ -109,6 +109,102 @@ _CONVENIENCE_PARAM_TYPE_RULES = {
     "file_name": str,
     "content_type": str,
 }
+
+
+class DomainPolicyViolation(ValueError):
+    """Raised when a network target crosses the public-address boundary."""
+
+
+class DomainPolicyEngine:
+    """Validate an initial URL and every redirect before the client follows it.
+
+    The engine is deliberately transport-agnostic. ``validate_redirect_response``
+    matches the Requests response-hook protocol, so requests can preserve its
+    normal cookie/auth redirect handling while this policy checks the next hop.
+    """
+
+    REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+
+    def __init__(self, *, resolver: Callable[..., list] | None = None) -> None:
+        self._resolver = resolver
+
+    @staticmethod
+    def _is_unsafe_address(value: str) -> bool:
+        address = ipaddress.ip_address(value)
+        return bool(
+            not address.is_global
+            or address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        )
+
+    def require_public_url(self, url: str) -> str:
+        if not isinstance(url, str):
+            raise DomainPolicyViolation("url 必须是字符串")
+        normalized_url = url.strip()
+        if not normalized_url:
+            raise DomainPolicyViolation("url 不能为空")
+        parts = urlsplit(normalized_url)
+        if parts.scheme.lower() not in {"http", "https"}:
+            raise DomainPolicyViolation("url 仅支持 http/https")
+        if parts.username is not None or parts.password is not None:
+            raise DomainPolicyViolation("url 不允许包含用户名或密码")
+        host = (parts.hostname or "").strip().lower()
+        if not host:
+            raise DomainPolicyViolation("url 缺少主机名")
+        try:
+            port = parts.port
+        except ValueError as exc:
+            raise DomainPolicyViolation("url 端口无效") from exc
+
+        try:
+            host_address = ipaddress.ip_address(host)
+        except ValueError:
+            host_address = None
+        if host_address is not None:
+            if self._is_unsafe_address(host):
+                raise DomainPolicyViolation("禁止访问本地或内网地址")
+            return normalized_url
+
+        resolver = self._resolver or socket.getaddrinfo
+        try:
+            addr_infos = resolver(host, port or None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise DomainPolicyViolation("url 主机名无法解析") from exc
+        if not addr_infos:
+            raise DomainPolicyViolation("url 主机名无法解析")
+        for addr_info in addr_infos:
+            resolved_host = str(addr_info[4][0])
+            try:
+                unsafe = self._is_unsafe_address(resolved_host)
+            except ValueError as exc:
+                raise DomainPolicyViolation("url 主机名解析结果无效") from exc
+            if unsafe:
+                raise DomainPolicyViolation("禁止访问本地或内网地址")
+        return normalized_url
+
+    def validate_redirect_response(self, response: Any, *_args: Any, **_kwargs: Any) -> Any:
+        """Requests hook: reject an unsafe Location before resolve_redirects sends it."""
+        try:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            return response
+        if status_code not in self.REDIRECT_STATUS_CODES:
+            return response
+        headers = getattr(response, "headers", {}) or {}
+        location = headers.get("Location") or headers.get("location")
+        if not location:
+            return response
+        current_url = str(getattr(response, "url", "") or "")
+        target_url = urljoin(current_url, str(location))
+        self.require_public_url(target_url)
+        return response
+
+
+PUBLIC_DOMAIN_POLICY = DomainPolicyEngine()
 
 def get_platform_defaults(source: str) -> dict:
     """获取平台默认配置（与 GUI read_*_run_options 对齐）。
@@ -186,52 +282,10 @@ def validate_config_types(user_config: dict) -> str | None:
 
 def validate_direct_download_url(url: str) -> str | None:
     """统一校验直链下载 URL，避免明显 SSRF/内网探测输入。"""
-    if not isinstance(url, str):
-        return "url 必须是字符串"
-    normalized_url = url.strip()
-    if not normalized_url:
-        return "url 不能为空"
-    parts = urlsplit(normalized_url)
-    if parts.scheme not in {"http", "https"}:
-        return "url 仅支持 http/https"
-    host = (parts.hostname or "").strip().lower()
-    if not host:
-        return "url 缺少主机名"
-    if host in {"localhost", "localhost.localdomain"}:
-        return "禁止访问本地或内网地址"
-
-    def _is_unsafe_ip(value: str) -> bool:
-        ip = ipaddress.ip_address(value)
-        return any(
-            (
-                ip.is_private,
-                ip.is_loopback,
-                ip.is_link_local,
-                ip.is_multicast,
-                ip.is_reserved,
-                ip.is_unspecified,
-            )
-        )
-
     try:
-        if _is_unsafe_ip(host):
-            return "禁止访问本地或内网地址"
-        return None
-    except ValueError:
-        pass
-
-    try:
-        addr_infos = socket.getaddrinfo(host, parts.port or None, type=socket.SOCK_STREAM)
-    except OSError:
-        return "url 主机名无法解析"
-
-    for addr_info in addr_infos:
-        resolved_host = addr_info[4][0]
-        try:
-            if _is_unsafe_ip(resolved_host):
-                return "禁止访问本地或内网地址"
-        except ValueError:
-            continue
+        PUBLIC_DOMAIN_POLICY.require_public_url(url)
+    except DomainPolicyViolation as exc:
+        return str(exc)
     return None
 
 def build_missav_proxy_url(proxy_str: str) -> str:

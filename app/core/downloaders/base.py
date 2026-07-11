@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable, cast
 
 import requests
 
@@ -15,6 +15,11 @@ from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
 from app.utils.user_agents import resolve_user_agent
+from shared.runtime_options import (
+    PUBLIC_DOMAIN_POLICY,
+    DomainPolicyEngine,
+    DomainPolicyViolation,
+)
 
 ProgressCallback = Callable[..., None]
 StopCheck = Callable[[], bool]
@@ -25,7 +30,7 @@ class TransferRateLimiter:
 
     def __init__(self, speed_limit_kb: object) -> None:
         try:
-            normalized = max(0, int(speed_limit_kb or 0))
+            normalized = max(0, int(cast(Any, speed_limit_kb or 0)))
         except (TypeError, ValueError):
             normalized = 0
         self.bytes_per_second = normalized * 1024
@@ -54,6 +59,21 @@ class BaseDownloader:
     """实现 `BaseDownloader` 对应的资源下载与落盘流程。"""
 
     source_id: str | None = None
+
+    @staticmethod
+    def _domain_policy_for_item(video_item: VideoItem) -> DomainPolicyEngine | None:
+        meta = video_item.meta if isinstance(getattr(video_item, "meta", None), dict) else {}
+        return PUBLIC_DOMAIN_POLICY if meta.get("_network_policy") == "public" else None
+
+    @staticmethod
+    def _domain_policy_request_kwargs(
+        domain_policy: DomainPolicyEngine | None,
+        url: str,
+    ) -> dict[str, object]:
+        if domain_policy is None:
+            return {}
+        domain_policy.require_public_url(url)
+        return {"hooks": {"response": domain_policy.validate_redirect_response}}
 
     @classmethod
     def can_handle(cls, video_item: VideoItem) -> bool:
@@ -171,52 +191,6 @@ class BaseDownloader:
             error_message=error_message,
         )
         DEFAULT_DOWNLOAD_STRATEGY_CHAIN.execute(self, request)
-        return
-
-        # 历史内联实现保留在下方作为迁移参照；当前实际路径已经交给策略链管理。
-        from .chunked import ChunkedDownloader
-        from .ffmpeg import FFmpegDownloader
-        from .m3u8 import N_m3u8DL_RE_Downloader
-
-        self._apply_runtime_headers(video_item, headers)
-
-        if N_m3u8DL_RE_Downloader.is_m3u8_url(video_item.url) and N_m3u8DL_RE_Downloader.is_available():
-            N_m3u8DL_RE_Downloader().download(video_item, save_path, progress_callback, check_stop_func)
-            return
-
-        size_mb = float(video_item.meta.get("size_mb", 0) or 0)
-        if size_mb > ChunkedDownloader.SIZE_THRESHOLD_MB:
-            try:
-                ChunkedDownloader().download(video_item, save_path, progress_callback, check_stop_func)
-                return
-            except StreamDownloadError as exc:
-                debug_logger.log(
-                    component=self.__class__.__name__,
-                    action="chunked_fallback",
-                    level="WARN",
-                    message="分块下载不可用，回退到后续下载策略",
-                    status_code="DL_CHUNKED_FALLBACK",
-                    details={"title": video_item.title, "reason": str(exc), "url": video_item.url},
-                    trace_id=video_item.meta.get("trace_id"),
-                )
-
-        if FFmpegDownloader.should_use(video_item) and FFmpegDownloader.is_available():
-            FFmpegDownloader().download(video_item, save_path, progress_callback, check_stop_func)
-            return
-
-        self._download_http_file(
-            url=video_item.url,
-            save_path=save_path,
-            headers=headers,
-            check_stop_func=check_stop_func,
-            progress_callback=progress_callback,
-            max_retries=max_retries,
-            timeout=timeout,
-            chunk_size=chunk_size,
-            support_resume=support_resume,
-            error_message=error_message,
-            proxy=video_item.meta.get("proxy"),
-        )
 
     def _should_resume_download(self, temp_path: str) -> bool:
         """提供 `_should_resume_download` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
@@ -238,18 +212,13 @@ class BaseDownloader:
                 pass
 
     def _finalize_download(self, temp_path: str, save_path: str) -> None:
-        """提供 `_finalize_download` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
-        if os.path.exists(save_path):
-            try:
-                os.remove(save_path)
-            except OSError:
-                pass
-        os.rename(temp_path, save_path)
+        """Atomically publish a completed temporary file over any old target."""
+        os.replace(temp_path, save_path)
 
     @staticmethod
     def _coerce_retry_count(value: object, default: int = 3) -> int:
         try:
-            retry_count = int(value)
+            retry_count = int(cast(Any, value))
         except (TypeError, ValueError):
             retry_count = default
         return max(0, min(retry_count, 10))
@@ -278,6 +247,7 @@ class BaseDownloader:
         error_message: str = "下载失败",
         proxy: str | None = None,
         trace_id: str | None = None,
+        domain_policy: DomainPolicyEngine | None = None,
     ) -> None:
         """按配置执行普通 HTTP 下载，支持基于 `.downloading` 临时文件的续传重试。"""
         # 只在最后 rename 到 save_path，避免失败或中断时把半成品暴露成可播放文件。
@@ -292,7 +262,10 @@ class BaseDownloader:
             if check_stop_func():
                 raise DownloaderStoppedError("用户停止下载")
             existing_size = 0
+            downloaded = 0
+            discard_partial_on_error = False
             try:
+                request_kwargs = self._domain_policy_request_kwargs(domain_policy, url)
                 # 续传依赖上次失败保留下来的临时文件；主动停止会清理它，避免用户取消后误续传。
                 existing_size = self._get_existing_size(temp_path) if support_resume and self._should_resume_download(temp_path) else 0
                 request_headers = headers.copy()
@@ -312,17 +285,25 @@ class BaseDownloader:
                         trace_id=trace_id,
                     )
 
-                with requests.get(url, headers=request_headers, stream=True, timeout=timeout, proxies=proxies) as response:
+                with requests.get(
+                    url,
+                    headers=request_headers,
+                    stream=True,
+                    timeout=timeout,
+                    proxies=proxies,
+                    **request_kwargs,
+                ) as response:
                     response.raise_for_status()
                     total_size = int(response.headers.get("content-length", 0))
-                    if support_resume and existing_size > 0 and response.status_code == 206:
+                    if response.status_code == 206:
                         content_range = response.headers.get("content-range") or response.headers.get("Content-Range")
                         parsed_range = self._parse_content_range_header(content_range)
                         if parsed_range is None or parsed_range[0] != existing_size:
+                            discard_partial_on_error = True
                             raise StreamDownloadError(
                                 f"断点续传响应范围不匹配: expected {existing_size}, got {content_range!r}"
                             )
-                        total_size += existing_size
+                        total_size = parsed_range[2] or (total_size + existing_size)
                     elif support_resume and existing_size > 0 and response.status_code == 200:
                         # 服务端忽略 Range 时必须从头覆盖写入，不能继续 append 已有半截文件。
                         existing_size = 0
@@ -341,12 +322,19 @@ class BaseDownloader:
                                 downloaded += len(chunk)
                                 if progress_callback and total_size > 0:
                                     self._emit_progress(progress_callback, int(downloaded / total_size * 100), bytes_downloaded=downloaded, bytes_total=total_size)
+                    if total_size > 0 and downloaded < total_size:
+                        raise StreamDownloadError(
+                            f"HTTP response ended early: received {downloaded} of {total_size} bytes"
+                        )
                 success = True
                 break
             except DownloaderStoppedError:
                 # 用户主动停止语义是“放弃本次未完成文件”，不同于网络失败后的可续传缓存。
                 self._cleanup_temp_file(temp_path)
                 raise
+            except DomainPolicyViolation as exc:
+                self._cleanup_temp_file(temp_path)
+                raise StreamDownloadError(f"下载地址违反公网访问策略: {exc}") from exc
             except requests.RequestException:
                 if attempt == retry_count:
                     break
@@ -363,6 +351,29 @@ class BaseDownloader:
                         "max_retries": retry_count,
                         "resume_enabled": support_resume,
                         "resume_offset": existing_size,
+                    },
+                    trace_id=trace_id,
+                )
+                time.sleep(1 if retry_count <= 3 else 3)
+            except StreamDownloadError as exc:
+                if discard_partial_on_error or not support_resume or attempt == retry_count:
+                    self._cleanup_temp_file(temp_path)
+                if attempt == retry_count:
+                    raise
+                debug_logger.log(
+                    component=self.__class__.__name__,
+                    action="http_retry",
+                    level="WARN",
+                    message=f"HTTP 下载内容不完整，准备重试 ({attempt + 1}/{retry_count})",
+                    status_code="DL_HTTP_RETRY",
+                    details={
+                        "url": url,
+                        "save_path": save_path,
+                        "attempt": attempt + 1,
+                        "max_retries": retry_count,
+                        "resume_enabled": support_resume,
+                        "resume_offset": 0 if discard_partial_on_error else downloaded,
+                        "error": str(exc),
                     },
                     trace_id=trace_id,
                 )

@@ -387,7 +387,10 @@ class WindowsFileAssociationService:
             if not ctypes.windll.advapi32.ConvertSidToStringSidW(token_user.User.Sid, ctypes.byref(sid_ptr)):
                 raise OSError("ConvertSidToStringSidW failed")
             try:
-                return sid_ptr.value.lower()
+                sid_value = sid_ptr.value
+                if not sid_value:
+                    raise OSError("ConvertSidToStringSidW returned an empty SID")
+                return sid_value.lower()
             finally:
                 ctypes.windll.kernel32.LocalFree(sid_ptr)
         finally:
@@ -428,7 +431,8 @@ class WindowsFileAssociationService:
     ) -> str:
         payload = f"{extension}{user_sid}{prog_id}{filetime_hex}{user_experience}\0".lower()
         data = payload.encode("utf-16le")
-        md5 = hashlib.md5(data).digest()
+        # Windows UserChoice 的兼容哈希固定使用 MD5；它不是完整性或信任判断。
+        md5 = hashlib.md5(data, usedforsecurity=False).digest()
         part1 = WindowsFileAssociationService._ms_userchoice_hash_1(data, md5)
         part2 = WindowsFileAssociationService._ms_userchoice_hash_2(data, md5)
         return base64.b64encode(bytes(a ^ b for a, b in zip(part1, part2))).decode("ascii")

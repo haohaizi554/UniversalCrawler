@@ -70,6 +70,9 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         check_stop_func: StopCheck,
     ) -> None:
         url = video_item.url
+        domain_policy = self._domain_policy_for_item(video_item)
+        if domain_policy is not None:
+            domain_policy.require_public_url(url)
         trace_id = video_item.meta.get("trace_id")
         user_agent_source = video_item.source or "douyin"
         ua = self._resolve_runtime_user_agent(
@@ -1120,19 +1123,30 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         # Python fallback 先合并成裸 TS，再根据目标后缀决定是否 remux，失败时可整目录清理。
         raw_path = temp_dir / f"{target.stem}.ts"
         session = self._make_curl_cffi_session(curl_requests, headers, proxy)
+        domain_policy = self._domain_policy_for_item(video_item)
         playlist_cache = self._playlist_cache_from_meta(video_item)
         try:
             playlist_url = str(video_item.url)
             playlist_text = self._playlist_text_from_cache(playlist_cache, playlist_url)
             if playlist_text is None:
-                playlist_text = self._curl_cffi_get_text(session, playlist_url, headers)
+                playlist_text = self._curl_cffi_get_text(
+                    session,
+                    playlist_url,
+                    headers,
+                    domain_policy=domain_policy,
+                )
             playlist = m3u8.loads(playlist_text, uri=playlist_url)
             if playlist.is_variant:
                 variant = self._choose_m3u8_variant(playlist)
                 playlist_url = variant.absolute_uri
                 playlist_text = self._playlist_text_from_cache(playlist_cache, playlist_url)
                 if playlist_text is None:
-                    playlist_text = self._curl_cffi_get_text(session, playlist_url, headers)
+                    playlist_text = self._curl_cffi_get_text(
+                        session,
+                        playlist_url,
+                        headers,
+                        domain_policy=domain_policy,
+                    )
                 playlist = m3u8.loads(playlist_text, uri=playlist_url)
             if not playlist.segments:
                 raise ExternalToolError("curl_cffi HLS fallback found no media segments")
@@ -1142,7 +1156,12 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             self._write_hls_segments(
                 playlist,
                 raw_path,
-                lambda fetch_url: self._curl_cffi_get_bytes(session, fetch_url, headers),
+                lambda fetch_url: self._curl_cffi_get_bytes(
+                    session,
+                    fetch_url,
+                    headers,
+                    domain_policy=domain_policy,
+                ),
                 progress_callback,
                 check_stop_func,
             )
@@ -1184,6 +1203,11 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         storage_state = video_item.meta.get("browser_storage_state")
         referer = str(video_item.meta.get("referer") or headers.get("Referer") or "")
         user_agent = str(video_item.meta.get("ua") or headers.get("User-Agent") or DEFAULT_USER_AGENT)
+        domain_policy = self._domain_policy_for_item(video_item)
+        if domain_policy is not None:
+            domain_policy.require_public_url(str(video_item.url))
+            if referer:
+                domain_policy.require_public_url(referer)
         playlist_cache = self._playlist_cache_from_meta(video_item)
 
         with sync_playwright() as playwright:
@@ -1217,6 +1241,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                     except PlaywrightError:
                         pass
                 if playlist_text is None:
+                    if domain_policy is not None:
+                        domain_policy.require_public_url(playlist_url)
                     playlist_bytes = self._playwright_fetch_or_goto_bytes(page, playlist_url)
                     playlist_text = playlist_bytes.decode("utf-8", errors="replace")
                 playlist = m3u8.loads(playlist_text, uri=playlist_url)
@@ -1227,6 +1253,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                     if playlist_text is None:
                         playlist_text = self._playlist_text_from_cache(captured_playlist_cache, playlist_url)
                     if playlist_text is None:
+                        if domain_policy is not None:
+                            domain_policy.require_public_url(playlist_url)
                         playlist_bytes = self._playwright_fetch_or_goto_bytes(page, playlist_url)
                         playlist_text = playlist_bytes.decode("utf-8", errors="replace")
                     playlist = m3u8.loads(playlist_text, uri=playlist_url)
@@ -1238,7 +1266,11 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 self._write_hls_segments(
                     playlist,
                     raw_path,
-                    lambda fetch_url: self._playwright_fetch_or_goto_bytes(page, fetch_url),
+                    lambda fetch_url: self._playwright_fetch_with_policy(
+                        page,
+                        fetch_url,
+                        domain_policy=domain_policy,
+                    ),
                     progress_callback,
                     check_stop_func,
                 )
@@ -1554,8 +1586,9 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
     @staticmethod
     def _aes_128_cbc_decrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
         try:
-            from Crypto.Cipher import AES
-            from Crypto.Util.Padding import unpad
+            # ``Crypto`` is supplied by maintained PyCryptodome; B413 only identifies the legacy namespace.
+            from Crypto.Cipher import AES  # nosec B413
+            from Crypto.Util.Padding import unpad  # nosec B413
         except ImportError:
             try:
                 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -1592,18 +1625,28 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             return curl_requests.Session(**kwargs)
 
     @staticmethod
-    def _curl_cffi_get_text(session, url: str, headers: dict[str, str]) -> str:
+    def _curl_cffi_get_text(session, url: str, headers: dict[str, str], *, domain_policy=None) -> str:
+        if domain_policy is not None:
+            domain_policy.require_public_url(url)
         response = session.get(url, headers=headers, timeout=30)
         if response.status_code not in (200, 206):
             raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
         return response.text
 
     @staticmethod
-    def _curl_cffi_get_bytes(session, url: str, headers: dict[str, str]) -> bytes:
+    def _curl_cffi_get_bytes(session, url: str, headers: dict[str, str], *, domain_policy=None) -> bytes:
+        if domain_policy is not None:
+            domain_policy.require_public_url(url)
         response = session.get(url, headers=headers, timeout=60)
         if response.status_code not in (200, 206):
             raise ExternalToolError(f"curl_cffi HLS request failed ({response.status_code}) for {url}")
         return bytes(response.content or b"")
+
+    @classmethod
+    def _playwright_fetch_with_policy(cls, page, url: str, *, domain_policy=None) -> bytes:
+        if domain_policy is not None:
+            domain_policy.require_public_url(url)
+        return cls._playwright_fetch_or_goto_bytes(page, url)
 
     @staticmethod
     def _has_unsupported_hls_encryption(playlist) -> bool:

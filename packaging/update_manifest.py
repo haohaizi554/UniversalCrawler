@@ -15,8 +15,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from Crypto.PublicKey import ECC
-from Crypto.Signature import eddsa
+# ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
+from Crypto.PublicKey import ECC  # nosec B413
+from Crypto.Signature import eddsa  # nosec B413
 
 from app.config.update_trust import UPDATE_PUBLIC_KEY_PEM
 from app.services.secure_updater import APP_ID, DEFAULT_CHANNEL, DEFAULT_MANIFEST_NAME, DEFAULT_SIGNATURE_NAME, UpdateManifestVerifier

@@ -140,6 +140,7 @@ class DouyinDownloader(BaseDownloader):
         save_dir = os.path.dirname(save_path)
         total_files = len(images_data)
         completed = 0
+        domain_policy = self._domain_policy_for_item(video_item)
         downloaded_by_file: dict[int, int] = {}
         total_by_file: dict[int, int] = {}
         progress_by_file: dict[int, int] = {}
@@ -193,6 +194,7 @@ class DouyinDownloader(BaseDownloader):
                     headers,
                     check_stop_func,
                     progress_callback=file_progress_callback,
+                    domain_policy=domain_policy,
                 )
                 progress_by_file.pop(seq, None)
                 completed += 1
@@ -215,6 +217,7 @@ class DouyinDownloader(BaseDownloader):
                     headers,
                     check_stop_func,
                     progress_callback=file_progress_callback,
+                    domain_policy=domain_policy,
                 )
                 progress_by_file.pop(seq, None)
                 completed += 1
@@ -239,6 +242,7 @@ class DouyinDownloader(BaseDownloader):
         headers: dict[str, str],
         check_stop_func: StopCheck,
         progress_callback: ProgressCallback | None = None,
+        domain_policy=None,
     ) -> None:
         """提供 `_download_file` 对应的内部辅助逻辑，供 `DouyinDownloader` 使用。"""
         self._download_http_file(
@@ -252,4 +256,5 @@ class DouyinDownloader(BaseDownloader):
             chunk_size=8192,
             support_resume=self._coerce_bool_setting(cfg.get("download", "resume_enabled", True)),
             error_message=f"文件下载失败: {os.path.basename(save_path)}",
+            domain_policy=domain_policy,
         )

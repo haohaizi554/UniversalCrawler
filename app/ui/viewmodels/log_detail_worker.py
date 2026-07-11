@@ -153,7 +153,8 @@ def build_cached_log_detail_result(
 
     result = build_log_detail_result(request)
     try:
-        cache_service.set(cache_key, result, ttl_seconds=ttl_seconds, persist=True)
+        # 详情结果是短期 UI dataclass，没有跨启动复用价值；只存内存也避免持久化任意 Python 对象。
+        cache_service.set(cache_key, result, ttl_seconds=ttl_seconds, persist=False)
     except Exception as exc:
         debug_logger.log_exception(
             "LogDetailWorker",

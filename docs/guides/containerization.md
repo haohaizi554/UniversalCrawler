@@ -13,8 +13,12 @@
 容器内最终等价于：
 
 ```bash
-python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser
+python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser \
+  --ssl-certfile /data/user_data/tls/web-cert.pem \
+  --ssl-keyfile /data/user_data/tls/web-key.pem
 ```
+
+入口脚本会在首次启动时生成并持久化本地 TLS 证书与 Web 访问口令；生产或局域网部署建议通过环境变量成对挂载受信任证书并设置固定高熵口令。只配置证书或私钥之一、或自定义文件不存在时，容器会直接拒绝启动，避免覆盖操作员提供的证书。
 
 ## 为什么只支持 Web/API 容器
 
@@ -60,7 +64,9 @@ python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser
 - Docker 构建默认使用更适合中国大陆网络的 Debian / PyPI 镜像源，仍可通过环境变量覆盖
 - 数据目录通过卷挂载写入 `/data/user_data` 和 `/data/downloads`
 - 外部工具目录统一挂载到 `/app/tools`，通过 `UCRAWL_TOOL_ROOT` 收口
-- Compose 与镜像都内置 `/api/ping` 健康检查
+- Compose 与镜像都内置无状态 `/healthz` 健康检查
+- 非回环监听强制使用 HTTPS；Compose 默认只把端口发布到宿主机 `127.0.0.1`
+- 远程 Web/API 与 WebSocket 在普通 session 之外还需要应用访问口令
 
 ## 运行时环境变量
 
@@ -70,11 +76,15 @@ python -m entry.web_entry --host 0.0.0.0 --port 8000 --no-qt --no-browser
 |---|---|---|
 | `UCRAWL_HOST` | `0.0.0.0` | Web 服务监听地址 |
 | `UCRAWL_PORT` | `8000` | 容器内部监听端口 |
+| `UCRAWL_BIND_IP` | `127.0.0.1` | Compose 在宿主机发布端口的地址；局域网部署可显式改为 `0.0.0.0` |
 | `UCRAWL_NO_QT` | `1` | 容器内默认关闭 Qt |
 | `UCRAWL_NO_BROWSER` | `1` | 容器内默认不自动拉起浏览器 |
 | `UCRAWL_USER_DATA_ROOT` | `/data/user_data` | 用户数据目录 |
 | `UCRAWL_DOWNLOAD_ROOT` | `/data/downloads` | 下载目录 |
 | `UCRAWL_TOOL_ROOT` | `/app/tools` | 外部工具目录，可挂载 Linux 版 `N_m3u8DL-RE` |
+| `UCRAWL_SSL_CERTFILE` / `UCRAWL_SSL_KEYFILE` | 自动生成 | 自定义 TLS 证书与私钥路径，必须成对提供 |
+| `UCRAWL_WEB_ACCESS_TOKEN` | 自动生成 | 固定 Web 访问口令；留空时从持久化文件读取或首次生成 |
+| `UCRAWL_WEB_ACCESS_TOKEN_FILE` | `/data/user_data/web-access-token` | 自动访问口令的持久化路径 |
 | `UCRAWL_EXTRA_ARGS` | 空 | 透传额外启动参数 |
 | `UCRAWL_APT_MIRROR` | 清华 Debian 源 | Docker build 使用的 Debian 镜像 |
 | `UCRAWL_APT_SECURITY_MIRROR` | 清华 Debian Security 源 | Docker build 使用的安全更新镜像 |
@@ -139,7 +149,7 @@ docker build --build-arg INSTALL_PLAYWRIGHT=1 -t ucrawl-web:playwright .
 ### 启动容器
 
 ```bash
-docker run --rm -p 8000:8000 \
+docker run --rm -p 127.0.0.1:8000:8000 \
   -e UCRAWL_USER_DATA_ROOT=/data/user_data \
   -e UCRAWL_DOWNLOAD_ROOT=/data/downloads \
   -e UCRAWL_TOOL_ROOT=/app/tools \
@@ -165,8 +175,10 @@ tools/
 启动后访问：
 
 ```text
-http://localhost:8000
+https://localhost:8000/?access_token=<Web 访问口令>
 ```
+
+自动生成的口令保存在 `user_data/web-access-token`，也可以显式设置 `UCRAWL_WEB_ACCESS_TOKEN`；启动日志不会打印口令。自动生成的是本地自签名证书，浏览器首次访问会提示确认。用于局域网或公网反向代理时，应挂载受信任证书；入口会在口令校验成功后立即重定向到不含 `access_token` 的地址。
 
 ## 使用 Docker Compose
 
@@ -201,7 +213,7 @@ Compose 默认映射：
 
 镜像和 Compose 都内置健康检查：
 
-- `GET /api/ping`
+- `GET https://127.0.0.1:8000/healthz`
 
 如果健康检查失败，优先检查：
 

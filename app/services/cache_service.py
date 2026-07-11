@@ -1,8 +1,10 @@
-"""前端状态缓存：短期内存缓存 + 可选 diskcache/SQLite 持久化。"""
+"""前端状态缓存：短期内存缓存 + 安全 SQLite 持久化。"""
 
 from __future__ import annotations
 
-import pickle
+import base64
+import json
+import math
 import sqlite3
 import threading
 import time
@@ -15,15 +17,135 @@ from typing import Any
 from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_data_root
 
+
+_PERSISTENT_FORMAT_PREFIX = b"UCACHE2\n"
+_PERSISTENT_TYPE_KEY = "__ucache_type__"
+_MAX_PERSISTENT_PAYLOAD_BYTES = 64 * 1024 * 1024
+_MAX_PERSISTENT_DEPTH = 64
+
+
+def _pack_persistent_value(value: Any, *, depth: int = 0) -> Any:
+    """把缓存值收敛到不会触发对象构造的 JSON 类型树。"""
+    if depth > _MAX_PERSISTENT_DEPTH:
+        raise ValueError("persistent cache value is nested too deeply")
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {_PERSISTENT_TYPE_KEY: "float", "value": repr(value)}
+    if isinstance(value, bytes):
+        return {
+            _PERSISTENT_TYPE_KEY: "bytes",
+            "value": base64.b64encode(value).decode("ascii"),
+        }
+    if isinstance(value, list):
+        return {
+            _PERSISTENT_TYPE_KEY: "list",
+            "items": [_pack_persistent_value(item, depth=depth + 1) for item in value],
+        }
+    if isinstance(value, tuple):
+        return {
+            _PERSISTENT_TYPE_KEY: "tuple",
+            "items": [_pack_persistent_value(item, depth=depth + 1) for item in value],
+        }
+    if isinstance(value, (set, frozenset)):
+        return {
+            _PERSISTENT_TYPE_KEY: "frozenset" if isinstance(value, frozenset) else "set",
+            "items": [_pack_persistent_value(item, depth=depth + 1) for item in value],
+        }
+    if isinstance(value, dict):
+        # 键也按同一白名单编码，避免 JSON 强制把 int/tuple 键转换为字符串。
+        return {
+            _PERSISTENT_TYPE_KEY: "dict",
+            "items": [
+                [
+                    _pack_persistent_value(key, depth=depth + 1),
+                    _pack_persistent_value(item, depth=depth + 1),
+                ]
+                for key, item in value.items()
+            ],
+        }
+    raise TypeError(f"unsupported persistent cache value type: {type(value).__name__}")
+
+
+def _unpack_persistent_value(value: Any, *, depth: int = 0) -> Any:
+    """严格恢复白名单类型；任何未知标签都按损坏缓存处理。"""
+    if depth > _MAX_PERSISTENT_DEPTH:
+        raise ValueError("persistent cache payload is nested too deeply")
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("persistent cache payload contains an untagged container")
+
+    kind = value.get(_PERSISTENT_TYPE_KEY)
+    if kind == "float" and set(value) == {_PERSISTENT_TYPE_KEY, "value"}:
+        special = value.get("value")
+        if special == "nan":
+            return float("nan")
+        if special == "inf":
+            return float("inf")
+        if special == "-inf":
+            return float("-inf")
+        raise ValueError("persistent cache payload contains an invalid float")
+    if kind == "bytes" and set(value) == {_PERSISTENT_TYPE_KEY, "value"}:
+        encoded = value.get("value")
+        if not isinstance(encoded, str):
+            raise ValueError("persistent cache byte payload is not text")
+        return base64.b64decode(encoded, validate=True)
+
+    if set(value) != {_PERSISTENT_TYPE_KEY, "items"} or not isinstance(value.get("items"), list):
+        raise ValueError("persistent cache container has an invalid shape")
+    items = value["items"]
+    if kind == "list":
+        return [_unpack_persistent_value(item, depth=depth + 1) for item in items]
+    if kind == "tuple":
+        return tuple(_unpack_persistent_value(item, depth=depth + 1) for item in items)
+    if kind in {"set", "frozenset"}:
+        unpacked = {_unpack_persistent_value(item, depth=depth + 1) for item in items}
+        return frozenset(unpacked) if kind == "frozenset" else unpacked
+    if kind == "dict":
+        result: dict[Any, Any] = {}
+        for pair in items:
+            if not isinstance(pair, list) or len(pair) != 2:
+                raise ValueError("persistent cache mapping entry has an invalid shape")
+            key = _unpack_persistent_value(pair[0], depth=depth + 1)
+            item = _unpack_persistent_value(pair[1], depth=depth + 1)
+            result[key] = item
+        return result
+    raise ValueError(f"persistent cache payload has an unknown type tag: {kind!r}")
+
+
+def _encode_persistent_value(value: Any) -> bytes:
+    encoded = json.dumps(
+        _pack_persistent_value(value),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    payload = _PERSISTENT_FORMAT_PREFIX + encoded
+    if len(payload) > _MAX_PERSISTENT_PAYLOAD_BYTES:
+        raise ValueError("persistent cache payload is too large")
+    return payload
+
+
+def _decode_persistent_value(payload: Any) -> Any:
+    if isinstance(payload, memoryview):
+        payload = payload.tobytes()
+    if not isinstance(payload, bytes):
+        raise ValueError("persistent cache payload is not bytes")
+    if len(payload) > _MAX_PERSISTENT_PAYLOAD_BYTES:
+        raise ValueError("persistent cache payload is too large")
+    if not payload.startswith(_PERSISTENT_FORMAT_PREFIX):
+        raise ValueError("persistent cache payload uses an unsupported legacy format")
+    decoded = json.loads(payload[len(_PERSISTENT_FORMAT_PREFIX) :].decode("utf-8"))
+    return _unpack_persistent_value(decoded)
+
+
 try:
     CachetoolsTTLCache = getattr(import_module("cachetools"), "TTLCache")
 except Exception:  # pragma: no cover - fallback keeps runtime optional
     CachetoolsTTLCache = None
-
-try:
-    DiskCache = getattr(import_module("diskcache"), "Cache")
-except Exception:  # pragma: no cover - SQLite fallback keeps runtime optional
-    DiskCache = None
 
 class _FallbackTTLCache(dict):
     """cachetools 不可用时的最小 TTL 实现，保证运行时依赖可选。"""
@@ -35,6 +157,8 @@ class _FallbackTTLCache(dict):
         self._expires: dict[str, float] = {}
 
     def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
         if key not in self._expires:
             return False
         if self._expires[key] < time.monotonic():
@@ -83,14 +207,11 @@ class CacheService:
         cache_root = Path(cache_dir or (Path(user_data_root()) / "cache"))
         cache_root.mkdir(parents=True, exist_ok=True)
         self._db_path = cache_root / f"{namespace}.sqlite3"
-        self._disk_cache_path = cache_root / f"{namespace}.diskcache"
         self._operation_lock = threading.RLock()
         self._memory_lock = threading.RLock()
         cache_cls = CachetoolsTTLCache or _FallbackTTLCache
         self._memory_cache = cache_cls(maxsize=memory_maxsize, ttl=memory_ttl_seconds)
         self._db_lock = threading.RLock()
-        self._disk_lock = threading.RLock()
-        self._disk_cache = DiskCache(str(self._disk_cache_path)) if DiskCache is not None else None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -127,7 +248,7 @@ class CacheService:
             return self._clone_value(value)
 
     def set(self, key: str, value: Any, *, ttl_seconds: float | None = None, persist: bool = False) -> None:
-        """写缓存；persist=False 只进内存，persist=True 才写 diskcache/SQLite。"""
+        """写缓存；persist=False 只进内存，persist=True 才写安全 SQLite。"""
         value_snapshot = self._clone_value(value)
         if not persist:
             with self._operation_lock:
@@ -144,17 +265,6 @@ class CacheService:
         with self._operation_lock:
             with self._memory_lock:
                 self._memory_cache.pop(key, None)
-            if self._disk_cache is not None:
-                try:
-                    with self._disk_lock:
-                        self._disk_cache.delete(key)
-                except Exception as exc:
-                    debug_logger.log_exception(
-                        "CacheService",
-                        "delete_diskcache",
-                        exc,
-                        details={"key": key, "cache_path": str(self._disk_cache_path)},
-                    )
             with self._db_lock:
                 try:
                     with closing(sqlite3.connect(self._db_path)) as conn:
@@ -169,38 +279,10 @@ class CacheService:
                     )
 
     def close(self) -> None:
-        with self._disk_lock:
-            disk_cache = self._disk_cache
-            if disk_cache is None:
-                return
-            try:
-                disk_cache.close()
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "CacheService",
-                    "close_diskcache",
-                    exc,
-                    details={"cache_path": str(self._disk_cache_path)},
-                )
-            finally:
-                self._disk_cache = None
+        """保留统一生命周期接口；SQLite 连接均按操作即时关闭。"""
 
     def _read_local_persistent(self, key: str) -> tuple[Any, float | None] | None:
-        """优先读 diskcache，失败或缺依赖时退回 SQLite。"""
-        if self._disk_cache is not None:
-            sentinel = object()
-            try:
-                with self._disk_lock:
-                    value = self._disk_cache.get(key, default=sentinel)
-                if value is not sentinel:
-                    return value, None
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "CacheService",
-                    "read_diskcache",
-                    exc,
-                    details={"key": key, "cache_path": str(self._disk_cache_path)},
-                )
+        """持久化只走受控 SQLite BLOB，不委托第三方对象反序列化器。"""
         return self._read_persistent(key)
 
     def _write_persistent(
@@ -211,23 +293,11 @@ class CacheService:
         ttl_seconds: float | None,
         expires_at: float | None,
     ) -> None:
-        """优先写 diskcache，失败时退回 SQLite，保证缓存层降级可用。"""
-        if self._disk_cache is not None:
-            try:
-                with self._disk_lock:
-                    self._disk_cache.set(key, value, expire=ttl_seconds)
-                return
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "CacheService",
-                    "write_diskcache",
-                    exc,
-                    details={"key": key, "cache_path": str(self._disk_cache_path)},
-                )
-        self._write_sqlite_persistent(key, value, expires_at=expires_at)
+        """先编码为安全类型树，再原子提交到 SQLite。"""
+        payload = _encode_persistent_value(value)
+        self._write_sqlite_persistent(key, payload, expires_at=expires_at)
 
-    def _write_sqlite_persistent(self, key: str, value: Any, *, expires_at: float | None) -> None:
-        payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    def _write_sqlite_persistent(self, key: str, payload: bytes, *, expires_at: float | None) -> None:
         with self._db_lock:
             with closing(sqlite3.connect(self._db_path)) as conn:
                 conn.execute(
@@ -241,15 +311,15 @@ class CacheService:
                 conn.commit()
 
     def _read_persistent(self, key: str) -> tuple[Any, float | None] | None:
-        """读取 SQLite 兜底缓存；发现损坏 pickle 会删除该条避免反复报错。"""
+        """读取 SQLite 兜底缓存；旧格式或损坏条目直接删除，不做对象反序列化。"""
         with self._db_lock:
             with closing(sqlite3.connect(self._db_path)) as conn:
                 row = conn.execute("SELECT value, expires_at FROM cache_entries WHERE key = ?", (key,)).fetchone()
         if row is None:
             return None
         try:
-            return pickle.loads(row[0]), row[1]
-        except (pickle.UnpicklingError, EOFError, AttributeError, ImportError, IndexError, TypeError, ValueError) as exc:
+            return _decode_persistent_value(row[0]), row[1]
+        except (UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
             debug_logger.log_exception(
                 "CacheService",
                 "read_persistent",

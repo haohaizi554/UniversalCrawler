@@ -127,6 +127,59 @@ class MediaLibraryServiceTests(unittest.TestCase):
 
         self.assertFalse(self.service.delete_media(item))
 
+    def test_delete_last_collection_resource_removes_only_the_owned_empty_folder(self):
+        root = Path(self.temp_dir.name)
+        collection = root / "Owned Collection"
+        collection.mkdir()
+        media_path = collection / "episode.mp4"
+        media_path.write_bytes(b"media")
+        item = VideoItem(url="", title="episode", source="bilibili")
+        item.local_path = os.fspath(media_path)
+        item.meta.update({"folder_name": "Owned Collection", "use_subdir": True})
+
+        self.assertTrue(self.service.delete_media(item))
+
+        self.assertFalse(collection.exists())
+        self.assertTrue(root.exists())
+
+    def test_delete_failed_collection_cache_removes_empty_owned_folder_without_final_path(self):
+        root = Path(self.temp_dir.name)
+        collection = root / "Failed Collection"
+        collection.mkdir()
+        cache_path = collection / "episode_audio.m4s"
+        cache_path.write_bytes(b"partial")
+        item = VideoItem(url="", title="episode", source="bilibili")
+        item.meta.update(
+            {
+                "folder_name": "Failed Collection",
+                "use_subdir": True,
+                "download_temp_files": [os.fspath(cache_path)],
+            }
+        )
+
+        self.assertTrue(self.service.delete_media(item))
+
+        self.assertFalse(collection.exists())
+        self.assertTrue(root.exists())
+
+    def test_empty_collection_cleanup_does_not_follow_directory_symlink(self):
+        root = Path(self.temp_dir.name)
+        target = root / "target" / "Owned Collection"
+        target.mkdir(parents=True)
+        link = root / "Owned Collection"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("directory symlinks are unavailable on this host")
+
+        item = VideoItem(url="", title="episode", source="bilibili")
+        item.local_path = os.fspath(link / "missing.mp4")
+        item.meta.update({"folder_name": "Owned Collection", "use_subdir": True})
+
+        self.assertFalse(self.service.delete_media(item))
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(target.exists())
+
     def test_delete_media_removes_bilibili_temp_sidecars(self):
         """删除 B站最终文件时，应同步删除同 stem 的音视频分流缓存。"""
         base = self.temp_dir.name

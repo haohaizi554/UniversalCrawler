@@ -26,12 +26,16 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from email.message import Message
 from pathlib import Path
 from threading import Event
 from typing import Any, Callable, Mapping
 
-from Crypto.PublicKey import ECC
-from Crypto.Signature import eddsa
+# ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
+from Crypto.PublicKey import ECC  # nosec B413
+from Crypto.Signature import eddsa  # nosec B413
+from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
 
 from app.debug_logger import debug_logger
 from app.utils.runtime_paths import user_cache_root, user_logs_root
@@ -50,8 +54,10 @@ DEFAULT_ALLOWED_HOSTS = frozenset(
     }
 )
 DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+DEFAULT_MAX_RELEASE_FEED_BYTES = 2_000_000
 DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30.0
 DEFAULT_INSTALL_ATTEMPT_LIMIT = 2
+UrlOpener = Callable[..., Any]
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -146,16 +152,19 @@ def _compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
         left_num = left_part.isdigit()
         right_num = right_part.isdigit()
         if left_num and right_num:
-            left_value, right_value = int(left_part), int(right_part)
-        else:
-            if left_num:
+            left_number, right_number = int(left_part), int(right_part)
+            if left_number < right_number:
                 return -1
-            if right_num:
+            if left_number > right_number:
                 return 1
-            left_value, right_value = left_part, right_part
-        if left_value < right_value:
+            continue
+        if left_num:
             return -1
-        if left_value > right_value:
+        if right_num:
+            return 1
+        if left_part < right_part:
+            return -1
+        if left_part > right_part:
             return 1
     if len(left) < len(right):
         return -1
@@ -495,12 +504,12 @@ class GitHubReleaseClient:
         self.auto_check_interval_seconds = int(auto_check_interval_seconds)
 
     def http_error(self, url: str, code: int, message: str) -> urllib.error.HTTPError:
-        return urllib.error.HTTPError(url, code, message, hdrs=None, fp=None)
+        return urllib.error.HTTPError(url, code, message, hdrs=Message(), fp=None)
 
     def fetch_manifest_locations(
         self,
         *,
-        opener: Callable[[urllib.request.Request, float], Any] = urllib.request.urlopen,
+        opener: UrlOpener = urllib.request.urlopen,
         manual: bool = False,
     ) -> ManifestLocations:
         cache = self._load_cache()
@@ -563,7 +572,7 @@ class GitHubReleaseClient:
     def fetch_manifest_location_candidates(
         self,
         *,
-        opener: Callable[[urllib.request.Request, float], Any] = urllib.request.urlopen,
+        opener: UrlOpener = urllib.request.urlopen,
         manual: bool = False,
         per_page: int = 10,
     ) -> tuple[ManifestLocations, ...]:
@@ -660,11 +669,19 @@ class GitHubReleaseClient:
         request = urllib.request.Request(feed_url, headers={"User-Agent": self.user_agent})
         try:
             with opener(request, timeout=self.timeout) as response:
-                payload = response.read()
-            root = ET.fromstring(payload)
+                payload = response.read(DEFAULT_MAX_RELEASE_FEED_BYTES + 1)
         except urllib.error.HTTPError as exc:
             raise DownloadError(f"GitHub release feed failed with HTTP {exc.code}") from exc
-        except (OSError, TimeoutError, urllib.error.URLError, ET.ParseError) as exc:
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            raise DownloadError(f"GitHub release feed failed: {exc}") from exc
+        if len(payload) > DEFAULT_MAX_RELEASE_FEED_BYTES:
+            raise DownloadError("GitHub release feed is too large")
+        try:
+            # Atom 只承载 release tag，不需要 DTD/实体；拒绝这些特性可避免实体扩展攻击。
+            root = DefusedET.fromstring(payload)
+        except DefusedXmlException as exc:
+            raise DownloadError(f"GitHub release feed contains unsafe XML: {exc}") from exc
+        except ET.ParseError as exc:
             raise DownloadError(f"GitHub release feed failed: {exc}") from exc
 
         namespace = {"atom": "http://www.w3.org/2005/Atom"}
@@ -812,7 +829,7 @@ class Downloader:
         self,
         asset: UpdateAsset,
         *,
-        opener: Callable[[urllib.request.Request, float], Any] = urllib.request.urlopen,
+        opener: UrlOpener = urllib.request.urlopen,
         cancel_event: Event | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Path:
@@ -842,7 +859,7 @@ class Downloader:
         asset: UpdateAsset,
         target: Path,
         partial: Path,
-        opener: Callable[[urllib.request.Request, float], Any],
+        opener: UrlOpener,
         cancel_event: Event | None,
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> Path:
@@ -899,7 +916,7 @@ class Downloader:
                     handle.write(chunk)
                     if progress_callback:
                         elapsed = max(0.001, time.monotonic() - started)
-                        progress = {
+                        progress: dict[str, Any] = {
                             "bytesDownloaded": downloaded,
                             "totalBytes": asset.size,
                             "percent": round(downloaded / asset.size * 100, 2),
@@ -1006,6 +1023,7 @@ class PackageVerifier:
     def _verify_macos(self, path: Path, asset: UpdateAsset) -> None:
         if not self.trusted_publishers:
             raise VerificationError("macOS updater requires trusted publisher allowlist")
+        results: tuple[subprocess.CompletedProcess[Any], ...]
         if asset.installer_type == "pkg":
             signature_result = self._run(["pkgutil", "--check-signature", str(path)], capture_output=True, text=True, shell=False, timeout=20)
             gatekeeper_result = self._run(["spctl", "-a", "-vv", "-t", "install", str(path)], capture_output=True, text=True, shell=False, timeout=20)
