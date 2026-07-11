@@ -10,10 +10,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+# 文档约定以 ``python packaging/update_manifest.py`` 直接启动；此时 Python
+# 只会自动加入 packaging 目录，需在导入 app/scripts 前补入项目根目录。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
 from Crypto.PublicKey import ECC  # nosec B413

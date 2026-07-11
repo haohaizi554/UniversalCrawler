@@ -16,6 +16,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -831,6 +832,24 @@ class RequirementsBuildTests(unittest.TestCase):
 
 class ReleaseUpdateManifestToolTests(unittest.TestCase):
     """release latest.json/latest.json.sig 生成工具。"""
+
+    def test_cli_help_does_not_depend_on_pythonpath_or_working_directory(self):
+        # 发布机会直接按文档执行该脚本，不应偶然依赖开发环境的 editable install。
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = subprocess.run(
+                [sys.executable, str(UPDATE_MANIFEST_TOOL), "--help"],
+                cwd=temp_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ucrawl-update-manifest", result.stdout)
 
     def test_tool_writes_signed_manifest_that_client_verifier_accepts(self):
         from app.services.secure_updater import UpdateManifestVerifier
