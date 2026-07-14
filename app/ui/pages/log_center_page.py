@@ -1365,7 +1365,10 @@ class LogCenterPage(PageFrame):
         if not result.ok:
             QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{result.error}")
             return
-        QMessageBox.information(self, self._t("导出成功"), f"{self._t('日志详情已导出到：')}{result.path}")
+        # Async completion must not open a native modal dialog: the page may be
+        # closing while this queued result is delivered. Inline feedback keeps
+        # export completion non-blocking and teardown-safe.
+        self._flash_button_text(self.detail_export_button, self._t("导出成功"))
 
     def _apply_level_badge_style(self, level: str) -> None:
         mapping = {

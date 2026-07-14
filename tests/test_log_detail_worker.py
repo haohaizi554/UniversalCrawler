@@ -3,8 +3,12 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from PyQt6.QtWidgets import QApplication, QMessageBox
+
+from app.ui.pages.log_center_page import LogCenterPage
 from app.ui.viewmodels.log_detail_worker import (
     LogDetailExportRequest,
+    LogDetailExportResult,
     LogDetailExportWorker,
     LogDetailRequest,
     LogDetailWorker,
@@ -138,6 +142,38 @@ def test_log_detail_export_worker_writes_payload_off_ui_thread(tmp_path):
     assert target.read_text(encoding="utf-8") == '{"message": "ok"}'
     assert received[-1].sequence == 7
     assert received[-1].ok is True
+
+
+def test_log_detail_export_success_feedback_is_non_modal(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    page = LogCenterPage()
+    information_calls = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *args, **kwargs: information_calls.append((args, kwargs)),
+    )
+    page._detail_export_sequence = 3
+    page._current_detail_result = object()
+
+    try:
+        page._on_log_detail_export_result(
+            LogDetailExportResult(
+                sequence=3,
+                item_id="row-1",
+                path="log_detail.json",
+                ok=True,
+            )
+        )
+        app.processEvents()
+    finally:
+        page._log_query_worker.shutdown()
+        page._log_detail_worker.shutdown()
+        page._log_detail_export_worker.shutdown()
+        page.deleteLater()
+        app.processEvents()
+
+    assert information_calls == []
 
 
 def test_log_center_page_does_not_reintroduce_detail_formatting_fallbacks():
