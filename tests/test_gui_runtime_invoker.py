@@ -40,14 +40,22 @@ class GuiRuntimeInvokerTests(unittest.TestCase):
         deadline_expired = threading.Event()
         deadline = QTimer()
         deadline.setSingleShot(True)
-        signal.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
-        deadline.timeout.connect(lambda: (deadline_expired.set(), loop.quit()))
-        deadline.start(timeout_ms)
-        if start is not None:
-            start()
-        loop.exec()
-        deadline.stop()
-        signal.disconnect(loop.quit)
+        connected = False
+        try:
+            signal.connect(loop.quit, Qt.ConnectionType.QueuedConnection)
+            connected = True
+            deadline.timeout.connect(lambda: (deadline_expired.set(), loop.quit()))
+            deadline.start(timeout_ms)
+            if start is not None:
+                start()
+            loop.exec()
+        finally:
+            deadline.stop()
+            if connected:
+                try:
+                    signal.disconnect(loop.quit)
+                except (TypeError, RuntimeError):
+                    pass
         self.assertFalse(deadline_expired.is_set(), "Qt event delivery exceeded the bounded deadline")
 
     def _invoke_from_worker(self, callback, *, timeout_seconds: float = 1.0):
@@ -64,10 +72,24 @@ class GuiRuntimeInvokerTests(unittest.TestCase):
             finally:
                 notifier.finished.emit()
 
-        worker = threading.Thread(target=_target, name="gui-runtime-invoker-test")
-        self._run_event_loop_until(notifier.finished, start=worker.start)
-        worker.join(timeout=1.0)
-        self.assertFalse(worker.is_alive(), "GUI invoker worker leaked past its bounded join")
+        worker = threading.Thread(target=_target, name="gui-runtime-invoker-test", daemon=True)
+        worker_started = False
+
+        def _start_worker() -> None:
+            nonlocal worker_started
+            worker.start()
+            worker_started = True
+
+        try:
+            self._run_event_loop_until(notifier.finished, start=_start_worker)
+        finally:
+            if worker_started:
+                if worker.is_alive():
+                    # Deliver any queued acknowledgement before falling back to
+                    # invoke_and_wait's own bounded timeout.
+                    self.app.processEvents()
+                worker.join(timeout=max(1.0, max(0.0, float(timeout_seconds)) + 0.5))
+                self.assertFalse(worker.is_alive(), "GUI invoker worker leaked past its bounded join")
         return outcome
 
     def _invoke_from_worker_without_qt_events(self, callback, *, timeout_seconds: float = 0.0):
@@ -84,11 +106,22 @@ class GuiRuntimeInvokerTests(unittest.TestCase):
             finally:
                 finished.set()
 
-        worker = threading.Thread(target=_target, name="gui-runtime-timeout-test")
-        worker.start()
-        self.assertTrue(finished.wait(1.0), "worker did not reach its timeout terminal state")
-        worker.join(timeout=1.0)
-        self.assertFalse(worker.is_alive(), "timed-out GUI invoker worker leaked")
+        worker = threading.Thread(target=_target, name="gui-runtime-timeout-test", daemon=True)
+        worker_started = False
+        terminal_wait = max(1.0, max(0.0, float(timeout_seconds)) + 0.5)
+        try:
+            worker.start()
+            worker_started = True
+            self.assertTrue(
+                finished.wait(terminal_wait),
+                "worker did not reach its timeout terminal state",
+            )
+        finally:
+            if worker_started:
+                # invoke_and_wait owns the deterministic timeout release; daemon
+                # mode is only the last-resort guard if the assertion itself fails.
+                worker.join(timeout=terminal_wait)
+                self.assertFalse(worker.is_alive(), "timed-out GUI invoker worker leaked")
         return outcome
 
     def test_same_thread_invocation_runs_inline(self):
