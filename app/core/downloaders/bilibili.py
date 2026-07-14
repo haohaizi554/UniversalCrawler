@@ -592,6 +592,11 @@ class BilibiliDownloader(BaseDownloader):
 
         reader = threading.Thread(target=read_stderr, daemon=True, name="BilibiliMergeStderrReader")
         reader.start()
+
+        def finish_stderr_reader() -> None:
+            """Give the ffmpeg stderr drain a bounded chance to observe EOF."""
+            reader.join(timeout=1.0)
+
         started_at = time.monotonic()
         last_emit_at = 0.0
         last_progress = 91
@@ -600,7 +605,7 @@ class BilibiliDownloader(BaseDownloader):
         while True:
             return_code = process.poll()
             if return_code is not None:
-                reader.join(timeout=1.0)
+                finish_stderr_reader()
                 if return_code != 0:
                     tail = "\n".join(stderr_tail[-8:])
                     debug_logger.log(
@@ -625,12 +630,17 @@ class BilibiliDownloader(BaseDownloader):
                         process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
+                finish_stderr_reader()
                 raise DownloaderStoppedError("用户停止下载")
 
             elapsed = time.monotonic() - started_at
             if elapsed > merge_timeout:
                 process.kill()
-                process.wait(timeout=2)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                finish_stderr_reader()
                 tail = "\n".join(stderr_tail[-8:])
                 debug_logger.log(
                     component="BilibiliDownloader",

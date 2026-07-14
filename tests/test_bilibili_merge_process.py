@@ -18,10 +18,11 @@ MERGE_COMMAND = ["ffmpeg", "-i", "video.m4s", "output.mp4"]
 
 
 class IterableStderr:
-    """Iterable stderr stream that exposes deterministic reader completion."""
+    """Blocking stderr stream that reaches EOF only after process shutdown."""
 
     def __init__(self, lines: list[str] | tuple[str, ...] = ()) -> None:
         self._lines = tuple(lines)
+        self._released = threading.Event()
         self.completed = threading.Event()
         self.iteration_count = 0
 
@@ -29,8 +30,33 @@ class IterableStderr:
         self.iteration_count += 1
         try:
             yield from self._lines
+            if not self._released.wait(timeout=1.0):
+                raise AssertionError("stderr stayed open after process shutdown")
         finally:
             self.completed.set()
+
+    def release(self) -> None:
+        self._released.set()
+
+
+class TrackingThread(threading.Thread):
+    """Real worker thread that records the production cleanup join."""
+
+    def __init__(self, *args: Any, join_timeouts: list[float | None], **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._join_timeouts = join_timeouts
+
+    def join(self, timeout: float | None = None) -> None:
+        self._join_timeouts.append(timeout)
+        super().join(timeout)
+
+
+class ThreadFactory:
+    def __init__(self) -> None:
+        self.join_timeouts: list[float | None] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> TrackingThread:
+        return TrackingThread(*args, join_timeouts=self.join_timeouts, **kwargs)
 
 
 class FakeProcess:
@@ -53,13 +79,13 @@ class FakeProcess:
         self.kill_calls = 0
 
     def poll(self) -> int | None:
-        assert self.stderr.completed.wait(timeout=1.0), "stderr reader did not finish"
         if not self._poll_results:
             raise AssertionError("unexpected extra poll")
         self.poll_calls += 1
         result = self._poll_results.pop(0)
         if result is not None:
             self.returncode = result
+            self.stderr.release()
         return result
 
     def wait(self, timeout: float | int | None = None) -> int:
@@ -70,6 +96,7 @@ class FakeProcess:
         if isinstance(result, BaseException):
             raise result
         self.returncode = result
+        self.stderr.release()
         return result
 
     def terminate(self) -> None:
@@ -77,6 +104,7 @@ class FakeProcess:
 
     def kill(self) -> None:
         self.kill_calls += 1
+        self.stderr.release()
 
 
 class PopenFactory:
@@ -86,6 +114,7 @@ class PopenFactory:
         self.process = process
         self.error = error
         self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.thread_factory = ThreadFactory()
 
     def __call__(self, *args: Any, **kwargs: Any) -> FakeProcess:
         self.calls.append((args, kwargs))
@@ -116,12 +145,32 @@ def install_merge_runtime(
     factory = PopenFactory(process, error=startup_error)
     sleep_calls: list[float] = []
     startupinfo = object()
-    monkeypatch.setattr(bilibili_module.subprocess, "Popen", factory)
+    monkeypatch.setattr(
+        bilibili_module,
+        "subprocess",
+        SimpleNamespace(
+            Popen=factory,
+            DEVNULL=subprocess.DEVNULL,
+            PIPE=subprocess.PIPE,
+            TimeoutExpired=subprocess.TimeoutExpired,
+        ),
+    )
     monkeypatch.setattr(
         bilibili_module, "build_hidden_startupinfo", lambda: startupinfo
     )
-    monkeypatch.setattr(bilibili_module.time, "monotonic", FakeClock(clock_values))
-    monkeypatch.setattr(bilibili_module.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        bilibili_module,
+        "time",
+        SimpleNamespace(
+            monotonic=FakeClock(clock_values),
+            sleep=sleep_calls.append,
+        ),
+    )
+    monkeypatch.setattr(
+        bilibili_module,
+        "threading",
+        SimpleNamespace(Thread=factory.thread_factory),
+    )
     monkeypatch.setattr(
         bilibili_module,
         "cfg",
@@ -189,6 +238,8 @@ def test_merge_process_success_emits_real_file_progress_and_exits(
     assert process.wait_timeouts == []
     assert process.terminate_calls == process.kill_calls == 0
     assert process.stderr.iteration_count == 1
+    assert process.stderr.completed.is_set()
+    assert factory.thread_factory.join_timeouts == [1.0]
     popen_args, popen_kwargs = factory.calls[0]
     assert popen_args == (MERGE_COMMAND,)
     assert popen_kwargs == {
@@ -206,7 +257,7 @@ def test_merge_process_nonzero_exit_reports_only_last_eight_stderr_lines(
 ):
     stderr_lines = [f"line-{index}\n" for index in range(1, 26)] + ["  \n"]
     process = FakeProcess([9], stderr_lines=stderr_lines)
-    _factory, sleep_calls, _startupinfo = install_merge_runtime(
+    factory, sleep_calls, _startupinfo = install_merge_runtime(
         monkeypatch,
         process=process,
         clock_values=[0.0],
@@ -237,6 +288,8 @@ def test_merge_process_nonzero_exit_reports_only_last_eight_stderr_lines(
     ]
     assert sleep_calls == []
     assert process.terminate_calls == process.kill_calls == 0
+    assert process.stderr.completed.is_set()
+    assert factory.thread_factory.join_timeouts == [1.0]
 
 
 def test_merge_process_stop_terminates_then_kills_when_waits_expire(
@@ -249,7 +302,7 @@ def test_merge_process_stop_terminates_then_kills_when_waits_expire(
             subprocess.TimeoutExpired(MERGE_COMMAND, timeout=2),
         ],
     )
-    _factory, sleep_calls, _startupinfo = install_merge_runtime(
+    factory, sleep_calls, _startupinfo = install_merge_runtime(
         monkeypatch,
         process=process,
         clock_values=[0.0],
@@ -261,6 +314,8 @@ def test_merge_process_stop_terminates_then_kills_when_waits_expire(
     assert process.terminate_calls == 1
     assert process.kill_calls == 1
     assert process.wait_timeouts == [5, 2]
+    assert process.stderr.completed.is_set()
+    assert factory.thread_factory.join_timeouts == [1.0]
     assert sleep_calls == []
 
 
@@ -270,7 +325,7 @@ def test_merge_process_timeout_kills_process_and_reports_stderr(monkeypatch, tmp
         stderr_lines=[" frame stalled \n"],
         wait_results=[-9],
     )
-    _factory, sleep_calls, _startupinfo = install_merge_runtime(
+    factory, sleep_calls, _startupinfo = install_merge_runtime(
         monkeypatch,
         process=process,
         clock_values=[0.0, 30.5],
@@ -290,11 +345,39 @@ def test_merge_process_timeout_kills_process_and_reports_stderr(monkeypatch, tmp
     assert process.terminate_calls == 0
     assert process.kill_calls == 1
     assert process.wait_timeouts == [2]
+    assert process.stderr.completed.is_set()
+    assert factory.thread_factory.join_timeouts == [1.0]
     assert log_events[0]["action"] == "merge_timeout"
     assert log_events[0]["details"] == {
         "timeout_seconds": 30,
         "stderr_tail": "frame stalled",
     }
+    assert sleep_calls == []
+
+
+def test_merge_process_timeout_preserves_merge_error_when_kill_wait_expires(
+    monkeypatch, tmp_path
+):
+    process = FakeProcess(
+        [None],
+        stderr_lines=[" encoder stuck \n"],
+        wait_results=[subprocess.TimeoutExpired(MERGE_COMMAND, timeout=2)],
+    )
+    factory, sleep_calls, _startupinfo = install_merge_runtime(
+        monkeypatch,
+        process=process,
+        clock_values=[0.0, 30.5],
+        timeout_setting=1,
+    )
+
+    with pytest.raises(MergeError, match="30s") as raised:
+        run_merge(tmp_path)
+
+    assert "encoder stuck" in str(raised.value)
+    assert process.kill_calls == 1
+    assert process.wait_timeouts == [2]
+    assert process.stderr.completed.is_set()
+    assert factory.thread_factory.join_timeouts == [1.0]
     assert sleep_calls == []
 
 
