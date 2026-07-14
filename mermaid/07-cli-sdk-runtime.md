@@ -10,23 +10,20 @@ flowchart TB
         WebEntry["web_entry.py"]
     end
 
-    subgraph CLI["cli/ 命令层 (24 文件,4,331行)"]
+    subgraph CLI["cli/ 命令层"]
         Main["cli.main<br/>argparse 子命令"]
         CmdSearch["commands/search.py"]
         CmdDownload["commands/download.py"]
         CmdInteractive["commands/interactive.py"]
         CmdScan["commands/scan.py"]
         CmdPlatforms["commands/platforms.py"]
-        SDK["sdk.py (771 行)<br/>Python API 面向脚本"]
-        Runner["runner.py<br/>CLIRunner"]
-        Selection["selection.py<br/>选择策略"]
+        SDK["sdk.py<br/>Python API 面向脚本"]
     end
 
-    subgraph Shared["shared/ 中立层 (13 文件, 3,697 行)"]
+    subgraph Shared["shared/ 中立层"]
         SearchRt["search_command_runtime"]
         DownloadRt["download_command_runtime"]
-        InteractiveRt["interactive_command_runtime"]
-        SDKRt["sdk_runtime (687 行)"]
+        SDKRt["sdk_runtime"]
         CLIRunnerRt["cli_runner_runtime"]
         SpiderSession["spider_session_runtime"]
         ControllerSession["controller_session"]
@@ -54,12 +51,15 @@ flowchart TB
 
     CmdSearch --> SearchRt
     CmdDownload --> DownloadRt
-    CmdInteractive --> InteractiveRt
+    CmdInteractive --> SDKRt
+    CmdInteractive --> CLIRunnerRt
+    CmdInteractive --> InteractiveSel
+    CmdInteractive --> PipeSel
+    CmdInteractive --> SelectionRt
     SDK --> SDKRt
 
     SearchRt --> CLIRunnerRt
     DownloadRt --> SDKRt
-    InteractiveRt --> SDKRt
     SDKRt --> CLIRunnerRt
     CLIRunnerRt --> SpiderSession
     SpiderSession --> ControllerSession
@@ -90,12 +90,13 @@ flowchart LR
     
     Search --> SearchRt["shared.search_command_runtime"]
     Download --> DownloadRt["shared.download_command_runtime"]
-    Interactive --> InteractiveRt["shared.interactive_command_runtime"]
-    Scan --> ScanRt["shared.scan runtime"]
+    Interactive --> SDKRt
+    Interactive --> Runner
+    Interactive --> Selection
+    Scan --> SDKRt
     
     SearchRt --> Runner["CLIRunner<br/>统一执行器"]
     DownloadRt --> SDKRt["UcrawlSDK<br/>SDK 接口"]
-    InteractiveRt --> SDKRt
     SDKRt --> Runner
     
     Runner --> Spider["Spider 创建 + 启动"]

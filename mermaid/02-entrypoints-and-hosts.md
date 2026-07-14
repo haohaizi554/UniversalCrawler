@@ -114,9 +114,11 @@ flowchart TB
     subgraph Shared["shared/ 中立层 (host-neutral)"]
         SearchRt["search_command_runtime"]
         DownloadRt["download_command_runtime"]
-        InteractiveRt["interactive_command_runtime"]
         SDKRt["sdk_runtime"]
         CLIRunnerRt["cli_runner_runtime"]
+        InteractiveSel["interactive_selection"]
+        PipeSel["pipe_selection"]
+        SelectionRt["selection_runtime"]
         SpiderSession["spider_session_runtime"]
         ControllerSession["controller_session"]
     end
@@ -129,11 +131,14 @@ flowchart TB
 
     CmdSearch --> SearchRt
     CmdDownload --> DownloadRt
-    CmdInteractive --> InteractiveRt
+    CmdInteractive --> SDKRt
+    CmdInteractive --> CLIRunnerRt
+    CmdInteractive --> InteractiveSel
+    CmdInteractive --> PipeSel
+    CmdInteractive --> SelectionRt
 
     SearchRt --> CLIRunnerRt
     DownloadRt --> SDKRt
-    InteractiveRt --> SDKRt
     SDKRt --> CLIRunnerRt
     CLIRunnerRt --> SpiderSession
     SpiderSession --> ControllerSession

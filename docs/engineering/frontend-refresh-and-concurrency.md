@@ -336,6 +336,7 @@ node --check app/web/static/app.js
 - 2026-07-11 大文件职责拆分后 full：`python -X faulthandler -m pytest -q --timeout=90 --timeout-method=thread --session-timeout=1500`：`2455 passed, 3 skipped, 7 warnings in 252.44s (0:04:12)`。完整收集为 `2458`，等于旧基线加 8 个架构/打包守卫；浏览器测试 `136 passed in 33.40s`，统一前端契约 `144 passed in 51.65s`，打包测试 `103 passed in 49.60s`。
 - 2026-07-12 GUI/Web/CLI/TUI/SDK/Skill 对齐收口后 full：`python -m pytest -q`：`2579 passed, 3 skipped, 2 warnings in 251.89s (0:04:11)`，完整收集为 `2582`。完整浏览器套件为 `150 passed in 55.46s`；GUI/Web 运行态压力组为 `155 passed in 7.32s`。本轮新增共享本地化边界、Web 更新链路、安全目录授权、键盘所有权、设置事务、同快照视觉矩阵和快速导航/日志洪峰回归。两条 warning 均来自既有的 app/UI 大文件报告型架构检查，没有新增运行时或收集 warning。
 - 2026-07-14 异步选择反馈、应用级服务就绪和静态模块一致性收口后 full：`python -X faulthandler -m pytest -q --timeout=90 --timeout-method=thread --session-timeout=1500`：`2613 passed, 3 skipped, 2 warnings in 343.22s (0:05:43)`，完整收集为 `2616`。完整浏览器套件为 `153 passed in 59.09s`；新增延迟 worker 回归证明失败列表的选中 ID、DOM 高亮和详情面板无需等待分页 worker 即可同步一致，并补充 Skill 仓库外启动与小红书快捷入口契约。两条 warning 仍仅来自既有的大文件报告型架构检查，没有新增运行时、收集或线程 warning。
+- 2026-07-14 shared/CI 最终收口采用与 GitHub Actions 相同的进程隔离分层：核心组 `2368 passed, 3 skipped in 183.96s (0:03:03)`，Qt 统一前端契约 `149 passed`，浏览器 `153 passed in 56.27s`，性能预算 `4 passed in 4.42s`；四组互不重叠，合计 `2674 passed, 3 skipped`。分层不是缩减测试范围，而是让每 12 个 Qt 契约节点重建一次 QApplication/native 资源，避免单进程长期积累延迟销毁对象。覆盖率门为 `73%`，wheel 隔离安装自检 `9/9`，且安装包不含 `tests/` 或已删除的 shared 旧运行时；独立运行时 venv 的 `pip-audit --strict` 为 `No known vulnerabilities found`。
 - skip 数量与 Task 8 前基线同为 3；当前 2 条 warning 均为既有文件尺寸报告。2026-07-10 基线中的另外 5 条 pytest collection warning 已随测试辅助类治理消除，没有新增 warning 类型。
 - 七个职责模块与 `app.js` 均通过 `node --check`；`app.js` 为 `57,118` bytes，满足 `<= 100,000` bytes 的组合根上限。
 - 后续若新增 GUI/WebUI 热路径改动导致全量测试明显回退，必须先排查同步文件/SQLite/大列表重建、固定 sleep、`processEvents()` pump 或 `use_delta=False` 的非必要回退。
@@ -366,6 +367,7 @@ node --check app/web/static/app.js
 - `LatestRequestWorker` 和 `SequentialRequestWorker` 是 GUI 异步化的通用底座；业务处理函数抛异常时只能记录到 `debug_logger` 并继续消费后续请求，不得让 worker 线程静默退出。
 - `LatestRequestWorker` 是真正的 latest-state-wins：如果某个请求处理期间已经收到更新请求，旧请求即使成功产出结果也不得触发结果回调；页面层的 `sequence` 校验仍保留作为最后一道防线。
 - worker 的结果回调如果遇到普通异常，同样只记录并继续；只有 Qt 对象销毁等 `RuntimeError` 代表生命周期结束时才允许停止 worker。
+- 异步 worker 完成回调不得在宿主页面或窗口可能销毁后打开原生模态 `QMessageBox`。Windows 原生对话框与 Qt 父链析构并发时可能造成 `0xc0000374` 堆损坏，而不是普通 Python 异常。成功反馈必须优先使用按钮短暂文案、状态条或页面内提示；确需展示失败弹窗时必须先确认宿主仍存活，并为关闭期增加回归测试。
 - 新增 GUI 后台任务时优先复用这两个 worker；只有需要独立调度协议、独立队列背压或跨进程执行时才允许新增专用线程结构。
 - 非常驻 GUI 后台任务必须按需创建，不得在主窗口构造期预启动；否则测试和页面重建会堆积空闲线程，增加 Qt 退出和重建时的崩溃风险。检查更新、诊断、文件关联注册等低频动作应在用户触发后创建或提交到既有 worker，并在 `closeEvent` 中回收。
 
@@ -379,8 +381,10 @@ node --check app/web/static/app.js
 
 ## CI 分层契约
 
-- `quality` 在 Linux 上只安装开发检查依赖，执行 compileall、Ruff、JavaScript 语法检查和架构/CI 契约测试；它不安装平台运行时依赖，避免原生可选包阻断静态质量门。
-- `core-tests` 在 Windows 上运行除浏览器外的完整 Python 测试，`browser-tests` 独立安装 Chromium 并运行真实 WebUI 浏览器套件。两组均产出 JUnit 报告，避免单个长任务掩盖失败域。
-- `required-check` 是分支保护使用的稳定聚合门；任一质量、核心或浏览器任务失败都会失败。所有任务必须设置最长期限，并通过 workflow concurrency 取消同分支旧运行。
+- `quality` 在 Linux 上执行 compileall、Ruff、mypy、Bandit、全部 JavaScript 语法检查和架构/CI 契约测试；静态质量门与平台原生运行态解耦。
+- `compatibility` 在 Python 3.10、3.11、3.12、3.13 上分别构建 wheel/sdist，并离开源码树执行无依赖安装、自检和公开导入验证。构建成功但安装后入口失效仍视为失败。
+- `security` 在独立 Windows 虚拟环境中先升级 bootstrap pip，再只安装运行时依赖，并以 `pip-audit --strict` 审计实际解析结果；不得用开发环境中偶然存在的包代替运行时依赖集合，也不得让 runner 自带旧 pip 的漏洞污染项目审计结果。
+- `core-tests` 在 Windows 上先运行非浏览器、非性能、非统一前端契约的核心组，再以 12 个节点一组运行全部 Qt 契约并合并 coverage；性能预算脱离 instrumentation 独立执行。`browser-tests` 独立缓存并安装 Chromium，运行真实 WebUI 浏览器套件。
+- `required-check` 是分支保护使用的稳定聚合门；质量、兼容矩阵、安全审计、核心或浏览器任一任务失败都会失败。所有任务必须设置最长期限，并通过 workflow concurrency 取消同分支旧运行。
 - Docker 工作流使用 Buildx、GitHub Actions cache 和只读仓库权限，并对 Dockerfile、compose、运行入口与 shared 变更触发验证。
-- 本地验收必须至少运行 `python -m ruff check app cli entry shared scripts tests`、全部 JavaScript 的 `node --check`、浏览器套件和 `python -m pytest -q`；CI 不能替代提交前的完整本地回归。
+- 本地验收必须至少运行 `python -m ruff check app cli entry shared scripts tests`、全部 JavaScript 的 `node --check`，并按 workflow 相同边界运行核心组、每组 12 个节点的 Qt 契约、浏览器和性能预算；不得为了追求单条 `python -m pytest -q` 命令而把全部 Qt 原生资源塞进一个长生命周期进程。CI 不能替代提交前的完整本地回归。

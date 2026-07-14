@@ -8,6 +8,7 @@ from count_project import (
     build_largest_chart_rows,
     normalize_repository_url,
     parse_args,
+    scan_project,
     save_report_html,
 )
 
@@ -103,6 +104,18 @@ def test_parse_args_generates_html_by_default(monkeypatch):
     args = parse_args()
 
     assert args.html == "code_report.html"
+
+
+def test_scan_project_excludes_xml_from_code_statistics(tmp_path):
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "coverage.xml").write_text("<coverage>\n  <file />\n</coverage>\n", encoding="utf-8")
+
+    result = scan_project(tmp_path)
+
+    assert result["total_files"] == 2
+    assert result["code_files"] == 1
+    assert "XML" not in result["by_language"]["all"]
+    assert [item["path"] for item in result["largest_files"]] == ["main.py"]
 
 
 def test_chart_rows_compute_widths_and_names():

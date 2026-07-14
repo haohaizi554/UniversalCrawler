@@ -76,9 +76,7 @@ def _prompt_mode_with_qt() -> Mode | None:
         from PyQt6.QtGui import QKeySequence, QShortcut
         from PyQt6.QtWidgets import (
             QApplication,
-            QDialog,
             QFrame,
-            QGraphicsDropShadowEffect,
             QHBoxLayout,
             QLabel,
             QPushButton,
@@ -86,6 +84,8 @@ def _prompt_mode_with_qt() -> Mode | None:
             QVBoxLayout,
             QWidget,
         )
+        from app.ui.dialogs.chromed_dialog import ChromedDialog
+        from app.ui.styles import resolve_is_dark_theme, theme_colors
     except Exception:
         return None
 
@@ -100,33 +100,37 @@ def _prompt_mode_with_qt() -> Mode | None:
     if os.name == "nt" and icon is not None:
         ensure_windows_app_user_model_id(MAIN_APP_USER_MODEL_ID)
 
-    dialog = QDialog()
-    dialog.setWindowTitle("UCrawl · 选择启动模式")
-    dialog.setModal(True)
+    is_dark = resolve_is_dark_theme()
+    dialog = ChromedDialog(
+        title="UCrawl · 选择启动模式",
+        object_name="ModeSelectionDialog",
+        body_margins=(0, 0, 0, 0),
+        body_spacing=0,
+    )
+    dialog.apply_chrome_theme(is_dark)
     dialog.setMinimumSize(QSize(720, 720))
     dialog.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
     if icon is not None:
         dialog.setWindowIcon(icon)
-
-    shadow = QGraphicsDropShadowEffect()
-    shadow.setBlurRadius(28)
-    shadow.setColor(Qt.GlobalColor.gray)
-    shadow.setOffset(0, 6)
-    dialog.setGraphicsEffect(shadow)
+        dialog.chrome_frame.set_icon(icon)
 
     accent_gui = "#3b82f6"
     accent_web = "#10b981"
     accent_int = "#f59e0b"
     accent_cli = "#8b5cf6"
     accent_test = "#ef4444"
-    accent_cancel = "#6b7280"
-    text_primary = "#111827"
-    text_secondary = "#6b7280"
-    bg_soft = "#fafbfc"
+    colors = theme_colors(is_dark)
+    accent_cancel = colors["muted"]
+    text_primary = colors["text"]
+    text_secondary = colors["muted"]
+    bg_soft = colors["panel_soft"]
+    panel = colors["panel"]
+    border = colors["border"]
+    border_strong = colors["border_strong"]
 
     qss = f"""
-        QDialog {{
-            background: #ffffff;
+        QDialog#ModeSelectionDialog {{
+            background: {colors["bg"]};
         }}
         QLabel#heroTitle {{
             color: {text_primary};
@@ -167,14 +171,14 @@ def _prompt_mode_with_qt() -> Mode | None:
         QLabel#cardTagTest {{ background: {accent_test}; }}
         QFrame#cardGui, QFrame#cardWeb, QFrame#cardInt, QFrame#cardCli, QFrame#cardTest {{
             background: {bg_soft};
-            border: 1px solid #e5e7eb;
+            border: 1px solid {border};
             border-radius: 12px;
         }}
-        QFrame#cardGui:hover {{ border: 1.5px solid {accent_gui}; background: #ffffff; }}
-        QFrame#cardWeb:hover {{ border: 1.5px solid {accent_web}; background: #ffffff; }}
-        QFrame#cardInt:hover {{ border: 1.5px solid {accent_int}; background: #ffffff; }}
-        QFrame#cardCli:hover {{ border: 1.5px solid {accent_cli}; background: #ffffff; }}
-        QFrame#cardTest:hover {{ border: 1.5px solid {accent_test}; background: #ffffff; }}
+        QFrame#cardGui:hover {{ border: 1.5px solid {accent_gui}; background: {panel}; }}
+        QFrame#cardWeb:hover {{ border: 1.5px solid {accent_web}; background: {panel}; }}
+        QFrame#cardInt:hover {{ border: 1.5px solid {accent_int}; background: {panel}; }}
+        QFrame#cardCli:hover {{ border: 1.5px solid {accent_cli}; background: {panel}; }}
+        QFrame#cardTest:hover {{ border: 1.5px solid {accent_test}; background: {panel}; }}
         QFrame#cardGui QLabel#cardAccent {{ background: {accent_gui}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardWeb QLabel#cardAccent {{ background: {accent_web}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardInt QLabel#cardAccent {{ background: {accent_int}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
@@ -188,7 +192,7 @@ def _prompt_mode_with_qt() -> Mode | None:
         QPushButton#cancelBtn {{
             background: transparent;
             color: {accent_cancel};
-            border: 1px solid #d1d5db;
+            border: 1px solid {border_strong};
             border-radius: 10px;
             padding: 9px 24px;
             font-size: 13px;
@@ -197,20 +201,20 @@ def _prompt_mode_with_qt() -> Mode | None:
             min-height: 36px;
         }}
         QPushButton#cancelBtn:hover {{
-            background: #f3f4f6;
-            color: #374151;
-            border: 1px solid #9ca3af;
+            background: {bg_soft};
+            color: {text_primary};
+            border: 1px solid {text_secondary};
         }}
     """
-    dialog.setStyleSheet(qss)
+    dialog.setStyleSheet(f"{dialog.styleSheet()}\n{qss}")
 
-    root = QVBoxLayout(dialog)
+    root = dialog.content_layout
     root.setContentsMargins(0, 0, 0, 0)
     root.setSpacing(0)
 
     top_stripe = QFrame()
     top_stripe.setFixedHeight(4)
-    top_stripe.setStyleSheet("background: #3b82f6; border: none;")
+    top_stripe.setStyleSheet(f"background: {colors['accent']}; border: none;")
     root.addWidget(top_stripe)
 
     body = QVBoxLayout()
@@ -224,12 +228,12 @@ def _prompt_mode_with_qt() -> Mode | None:
     icon_circle = QFrame()
     icon_circle.setFixedSize(QSize(64, 64))
     icon_circle.setStyleSheet(
-        """
-        QFrame {
-            background: #dbeafe;
+        f"""
+        QFrame {{
+            background: {colors["accent_soft"]};
             border-radius: 32px;
             border: none;
-        }
+        }}
         """
     )
     icon_circle_layout = QVBoxLayout(icon_circle)

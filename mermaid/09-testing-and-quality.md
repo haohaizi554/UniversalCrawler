@@ -207,6 +207,7 @@ sequenceDiagram
     end
     
     Dev->>CI: git push
-    CI->>CI: python -m unittest discover -s tests
+    CI->>CI: quality + compatibility + security
+    CI->>CI: pytest core / Qt chunks / browser / performance
     CI-->>Dev: CI 结果
 ```

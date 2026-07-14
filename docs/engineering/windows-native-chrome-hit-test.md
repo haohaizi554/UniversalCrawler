@@ -34,6 +34,10 @@ nativeEvent / QAbstractNativeEventFilter
 
 - 主窗口：`app/ui/main_window.py`
 - 自绘标题栏：`app/ui/layout/window_title_bar.py`
+- 共享弹窗基类：`app/ui/dialogs/chromed_dialog.py`
+- 共享窗口框架：`app/ui/layout/window_chrome.py`
+- 共享窗口控制器：`app/ui/layout/window_chrome_controller.py`
+- 启动模式选择器：`entry/mode_selection_ui.py`
 - 回归测试：`tests/test_main_window.py`
 
 相关对象和方法：
@@ -45,6 +49,46 @@ nativeEvent / QAbstractNativeEventFilter
 - `MainWindow._handle_get_min_max_info()`
 - `WindowTitleBar`
 - `WindowChromeButton`
+- `ChromedDialog`
+- `WindowChromeFrame`
+- `FramelessWindowChromeController`
+
+## 启动阶段与独立弹窗的标题栏契约
+
+启动模式选择器虽然出现在主窗口创建之前，但它仍然是应用的顶层 GUI 窗口，必须遵守与主窗口一致的标题栏和主题契约。当前调用链为：
+
+```text
+entry.dispatcher._prompt_mode_with_qt()
+    -> entry.mode_selection_ui._prompt_mode_with_qt()
+    -> ChromedDialog
+    -> WindowChromeFrame + FramelessWindowChromeController
+```
+
+`entry.dispatcher` 只保留延迟导入和薄委托，实际界面只有 `entry.mode_selection_ui` 一份实现。这样既不会让 CLI 和无 Qt 启动路径提前加载 GUI 依赖，也不会出现 dispatcher 与组件各维护一套弹窗的漂移。
+
+### 2026-07-14 启动模式弹窗主题事故
+
+现象：Windows 处于深色系统主题、应用内容使用浅色主题时，启动模式弹窗出现黑色原生标题栏和白色内容区，标题栏也不受应用主题切换控制。
+
+根因不是 Windows 主题 API 本身，而是实际启动路径直接创建了原始 `QDialog`，内容区又使用硬编码浅色 QSS。Windows 原生标题栏跟随操作系统主题，Qt 内容区跟随另一套固定样式，两套真值天然可能冲突。同时，已经拆出的 `entry/mode_selection_ui.py` 当时没有接入 dispatcher 的真实调用链，因此只修改组件文件不会影响用户实际看到的窗口。
+
+修复后，启动模式弹窗统一继承 `ChromedDialog`，由 `resolve_is_dark_theme()` 获取主题真值、由 `theme_colors()` 提供颜色，并同时设置窗口图标和 `WindowChromeFrame` 图标。禁止再为同一入口复制原始 `QDialog` 实现。
+
+必须遵守以下规则：
+
+1. 主窗口之外的顶层弹窗，包括主窗口创建前的启动弹窗，默认使用 `ChromedDialog`；确实需要系统原生标题栏时，必须在代码和本文中说明原因。
+2. 不得把 Windows 原生标题栏与硬编码的 Qt 内容主题组合使用。
+3. 主题真值统一来自 `resolve_is_dark_theme()`，颜色统一来自 `theme_colors()` 或项目设计令牌，不得在弹窗中另建明暗主题判断。
+4. 自绘标题栏弹窗设置图标时，必须同时更新 `QWidget.windowIcon()` 和共享 `WindowChromeFrame` 的图标。
+5. 启动入口继续使用延迟导入，确保 CLI、测试和缺少 PyQt6 的环境不会因导入 GUI 模块而失败。
+6. dispatcher 只负责选择和调度，弹窗结构、样式和交互只能在独立 UI 组件中维护一份。
+
+该问题的回归检查包括：
+
+- 浅色和深色模式下，标题栏、内容区、边框、按钮文字均来自同一主题，不能出现黑白割裂。
+- 关闭按钮、标题栏拖动、窗口缩放、数字快捷键、取消和模式选择均可正常使用。
+- 自动测试应验证 dispatcher 委托到独立组件，并验证组件使用 `ChromedDialog` 和主题令牌，而不是直接构造原始 `QDialog`。
+- 真实 Windows 桌面环境至少各验证一次浅色和深色主题；离屏渲染截图只能作为布局和配色的补充检查。
 
 ## Win32 样式规则
 
@@ -154,6 +198,7 @@ setGeometry(screen.availableGeometry())
 ## 不要做的事
 
 - 不要让 Windows 原生标题栏和 Qt 自绘标题栏同时绘制。
+- 不要让启动弹窗或独立工具窗口绕过 `ChromedDialog` 后再用硬编码 QSS 模拟应用主题。
 - 不要把主窗口最大化做成 `showFullScreen()`。
 - 不要用 `setGeometry()` 模拟最大化。
 - 不要在窗口已显示后反复 `setWindowFlags()`。

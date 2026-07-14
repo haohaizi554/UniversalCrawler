@@ -121,9 +121,9 @@ flowchart LR
     subgraph GitHub["GitHub Actions"]
         subgraph Test["python-tests.yml"]
             T1["checkout 代码"]
-            T2["setup Python 3.10+"]
-            T3["pip install -r requirements.txt"]
-            T4["python -m unittest discover -s tests"]
+            T2["Python 3.10-3.13 包兼容矩阵"]
+            T3["Ruff / mypy / Bandit / pip-audit"]
+            T4["pytest 核心 / Qt 分块 / 浏览器 / 性能"]
         end
 
         subgraph DockerBuild["docker-build.yml"]

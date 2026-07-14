@@ -270,15 +270,22 @@ class DispatcherQtDialogTests(unittest.TestCase):
         cls.app = _qt_app()
 
     def test_qt_dialog_construct(self):
-        """弹窗函数可以引用（不真的 exec 会阻塞）。"""
+        """真实入口必须委托给独立的模式选择 UI 实现。"""
         from entry import dispatcher
-        # 验证 _prompt_mode_with_qt 函数存在
         self.assertTrue(hasattr(dispatcher, "_prompt_mode_with_qt"))
-        # 验证它需要 PyQt6
         import inspect
         src = inspect.getsource(dispatcher._prompt_mode_with_qt)
-        self.assertIn("QApplication", src)
-        self.assertIn("QDialog", src)
+        self.assertIn("entry.mode_selection_ui", src)
+
+    def test_mode_selection_uses_shared_chrome_and_theme_tokens(self):
+        """启动模式弹窗不得使用原生标题栏或写死浅色窗口背景。"""
+        from entry import mode_selection_ui
+        import inspect
+
+        src = inspect.getsource(mode_selection_ui._prompt_mode_with_qt)
+        self.assertIn("ChromedDialog", src)
+        self.assertIn("theme_colors", src)
+        self.assertNotIn("dialog = QDialog()", src)
 
     def test_load_app_icon_meipass(self):
         """_load_app_icon 在 _MEIPASS 模式下能找到图标。"""
