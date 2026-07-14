@@ -47,7 +47,8 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn('PYTHONFAULTHANDLER: "1"', source)
         self.assertIn("python -m playwright install chromium", source)
         self.assertIn("python -m coverage run", source)
-        self.assertIn("python -m coverage report --fail-under=", source)
+        self.assertIn("python -m coverage report --fail-under=70", source)
+        self.assertNotIn("python -m coverage report --fail-under=35", source)
 
     def test_python_workflow_covers_declared_python_compatibility(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"

@@ -201,7 +201,7 @@ jobs:
 
           python -m coverage xml -o artifacts/coverage.xml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m coverage report --fail-under=35
+          python -m coverage report --fail-under=70
 
       - name: Run performance budgets without instrumentation
         run: python -X faulthandler -m pytest tests/test_performance_benchmarks.py -q
