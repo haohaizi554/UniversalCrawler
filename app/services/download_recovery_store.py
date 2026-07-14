@@ -6,11 +6,20 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from app.utils.runtime_paths import user_data_root
+
+
+@dataclass(frozen=True)
+class _RecoveryBatch:
+    directories: tuple[str, ...]
+    active_records: tuple[tuple[str, str], ...]
+    pending_records: tuple[tuple[str, str], ...]
 
 
 class DownloadRecoveryStore:
@@ -72,20 +81,23 @@ class DownloadRecoveryStore:
             raise ValueError("video_id is empty")
         normalized_directory = self._normalize_directory(save_directory)
         now = float(self._clock())
+        generation = uuid.uuid4().hex
         self._ensure_initialized()
         with closing(self._connect()) as conn, conn:
             conn.execute(
                 """
                 INSERT INTO download_task_paths(
-                    video_id, save_directory, source_url, trace_id, platform, state, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'active', ?)
+                    video_id, save_directory, source_url, trace_id, platform, state, updated_at,
+                    generation
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
                 ON CONFLICT(video_id) DO UPDATE SET
                     save_directory = excluded.save_directory,
                     source_url = excluded.source_url,
                     trace_id = excluded.trace_id,
                     platform = excluded.platform,
                     state = 'active',
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    generation = excluded.generation
                 """,
                 (
                     normalized_video_id,
@@ -94,6 +106,7 @@ class DownloadRecoveryStore:
                     str(trace_id or ""),
                     str(platform or ""),
                     now,
+                    generation,
                 ),
             )
 
@@ -102,18 +115,20 @@ class DownloadRecoveryStore:
         normalized_video_id = str(video_id or "").strip()
         if not normalized_video_id:
             return False
+        generation = uuid.uuid4().hex
         self._ensure_initialized()
         with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 """
-                INSERT INTO pending_cleanup_directories(save_directory, updated_at)
-                SELECT save_directory, ?
+                INSERT INTO pending_cleanup_directories(save_directory, updated_at, generation)
+                SELECT save_directory, ?, ?
                 FROM download_task_paths
                 WHERE video_id = ?
                 ON CONFLICT(save_directory) DO UPDATE SET
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    generation = excluded.generation
                 """,
-                (float(self._clock()), normalized_video_id),
+                (float(self._clock()), generation, normalized_video_id),
             )
             conn.execute(
                 "DELETE FROM download_task_paths WHERE video_id = ?",
@@ -134,13 +149,32 @@ class DownloadRecoveryStore:
             )
             return int(cursor.rowcount or 0) > 0
 
-    def consume_recovery_records(self) -> int:
-        """Acknowledge every path after startup cleanup attempted it once."""
+    def consume_recovery_records(self, batch: _RecoveryBatch | None = None) -> int:
+        """Acknowledge only records represented by the completed cleanup batch."""
         self._ensure_initialized()
         with closing(self._connect()) as conn, conn:
-            active = conn.execute("DELETE FROM download_task_paths").rowcount or 0
-            pending = conn.execute("DELETE FROM pending_cleanup_directories").rowcount or 0
-            return max(0, int(active)) + max(0, int(pending))
+            if batch is None:
+                active = conn.execute("DELETE FROM download_task_paths").rowcount or 0
+                pending = conn.execute("DELETE FROM pending_cleanup_directories").rowcount or 0
+                return max(0, int(active)) + max(0, int(pending))
+
+            consumed = 0
+            for video_id, generation in batch.active_records:
+                cursor = conn.execute(
+                    "DELETE FROM download_task_paths WHERE video_id = ? AND generation = ?",
+                    (video_id, generation),
+                )
+                consumed += max(0, int(cursor.rowcount or 0))
+            for save_directory, generation in batch.pending_records:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM pending_cleanup_directories
+                    WHERE save_directory = ? AND generation = ?
+                    """,
+                    (save_directory, generation),
+                )
+                consumed += max(0, int(cursor.rowcount or 0))
+            return consumed
 
     def task_path(self, video_id: str) -> dict[str, Any] | None:
         normalized_video_id = str(video_id or "").strip()
@@ -159,25 +193,51 @@ class DownloadRecoveryStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def directories(self) -> list[str]:
-        """Return only unresolved paths; no historical directory index is kept."""
+    def recovery_batch(self) -> _RecoveryBatch:
+        """Snapshot unresolved records so startup cleanup can acknowledge them exactly once."""
         self._ensure_initialized()
         with closing(self._connect()) as conn:
-            rows = list(
+            active_rows = list(
                 conn.execute(
                     """
-                    SELECT save_directory, MIN(updated_at) AS first_seen
-                    FROM (
-                        SELECT save_directory, updated_at FROM download_task_paths
-                        UNION ALL
-                        SELECT save_directory, updated_at FROM pending_cleanup_directories
-                    )
-                    GROUP BY save_directory
-                    ORDER BY first_seen ASC, save_directory ASC
+                    SELECT video_id, save_directory, generation, updated_at
+                    FROM download_task_paths
                     """
                 )
             )
-        return [str(row[0]) for row in rows]
+            pending_rows = list(
+                conn.execute(
+                    """
+                    SELECT save_directory, generation, updated_at
+                    FROM pending_cleanup_directories
+                    """
+                )
+            )
+        ordered_entries = [
+            (float(updated_at), str(save_directory), "active", str(video_id))
+            for video_id, save_directory, _generation, updated_at in active_rows
+        ]
+        ordered_entries.extend(
+            (float(updated_at), str(save_directory), "pending", str(save_directory))
+            for save_directory, _generation, updated_at in pending_rows
+        )
+        ordered_entries.sort()
+        directories = tuple(dict.fromkeys(entry[1] for entry in ordered_entries))
+        return _RecoveryBatch(
+            directories=directories,
+            active_records=tuple(
+                (str(video_id), str(generation))
+                for video_id, _save_directory, generation, _updated_at in active_rows
+            ),
+            pending_records=tuple(
+                (str(save_directory), str(generation))
+                for save_directory, generation, _updated_at in pending_rows
+            ),
+        )
+
+    def directories(self) -> list[str]:
+        """Return only unresolved paths; no historical directory index is kept."""
+        return list(self.recovery_batch().directories)
 
     def recovery_counts(self) -> dict[str, int]:
         self._ensure_initialized()
@@ -345,13 +405,15 @@ class DownloadRecoveryStore:
                         trace_id TEXT NOT NULL DEFAULT '',
                         platform TEXT NOT NULL DEFAULT '',
                         state TEXT NOT NULL,
-                        updated_at REAL NOT NULL
+                        updated_at REAL NOT NULL,
+                        generation TEXT NOT NULL
                     );
                     CREATE INDEX IF NOT EXISTS idx_download_task_paths_state_updated
                     ON download_task_paths(state, updated_at);
                     CREATE TABLE IF NOT EXISTS pending_cleanup_directories (
                         save_directory TEXT PRIMARY KEY,
-                        updated_at REAL NOT NULL
+                        updated_at REAL NOT NULL,
+                        generation TEXT NOT NULL
                     );
                     CREATE TABLE IF NOT EXISTS maintenance_state (
                         root TEXT PRIMARY KEY,
@@ -367,6 +429,38 @@ class DownloadRecoveryStore:
                     );
                     """
                 )
+                task_columns = {
+                    str(row[1]) for row in conn.execute("PRAGMA table_info(download_task_paths)")
+                }
+                if "generation" not in task_columns:
+                    conn.execute(
+                        "ALTER TABLE download_task_paths ADD COLUMN generation TEXT NOT NULL DEFAULT ''"
+                    )
+                pending_columns = {
+                    str(row[1])
+                    for row in conn.execute("PRAGMA table_info(pending_cleanup_directories)")
+                }
+                if "generation" not in pending_columns:
+                    conn.execute(
+                        """
+                        ALTER TABLE pending_cleanup_directories
+                        ADD COLUMN generation TEXT NOT NULL DEFAULT ''
+                        """
+                    )
+                conn.execute(
+                    """
+                    UPDATE download_task_paths
+                    SET generation = lower(hex(randomblob(16)))
+                    WHERE generation = ''
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE pending_cleanup_directories
+                    SET generation = lower(hex(randomblob(16)))
+                    WHERE generation = ''
+                    """
+                )
                 legacy_handoff_exists = conn.execute(
                     """
                     SELECT 1 FROM sqlite_master
@@ -376,12 +470,15 @@ class DownloadRecoveryStore:
                 if legacy_handoff_exists is not None:
                     conn.execute(
                         """
-                        INSERT INTO pending_cleanup_directories(save_directory, updated_at)
-                        SELECT save_directory, MAX(updated_at)
+                        INSERT INTO pending_cleanup_directories(
+                            save_directory, updated_at, generation
+                        )
+                        SELECT save_directory, MAX(updated_at), lower(hex(randomblob(16)))
                         FROM failed_path_handoffs
                         GROUP BY save_directory
                         ON CONFLICT(save_directory) DO UPDATE SET
-                            updated_at = MAX(updated_at, excluded.updated_at)
+                            updated_at = MAX(updated_at, excluded.updated_at),
+                            generation = excluded.generation
                         """
                     )
                     conn.execute("DROP TABLE failed_path_handoffs")

@@ -21,19 +21,25 @@ def _tracker(
     *,
     timers: list[FakeTimer] | None = None,
     events: list[tuple[str, dict]] | None = None,
+    retry_calls: list[tuple[str, str]] | None = None,
     retry_result: bool = True,
     max_retries: int = 2,
 ) -> MetadataRetryTracker:
     timers = timers if timers is not None else []
     events = events if events is not None else []
+    retry_calls = retry_calls if retry_calls is not None else []
 
     def timer_factory(delay, callback):  # noqa: ANN001
         timer = FakeTimer(delay, callback)
         timers.append(timer)
         return timer
 
+    def retry_callback(video_id: str, source_path: str) -> bool:
+        retry_calls.append((video_id, source_path))
+        return retry_result
+
     return MetadataRetryTracker(
-        retry_callback=lambda _video_id, _source_path: retry_result,
+        retry_callback=retry_callback,
         event_callback=lambda topic, payload: events.append((topic, payload)),
         key_factory=lambda video_id, source_path: f"{video_id}\0{source_path.replace(chr(92), '/')}",
         max_retries_provider=lambda: max_retries,
@@ -69,6 +75,30 @@ def test_schedule_deduplicates_and_emits_retry_event() -> None:
     timers[0].callback()
 
     assert tracker.timers == {}
+    assert events == [
+        ("videos.metadata", {"video_id": "v1", "metadata": False, "retry": True, "scheduled": True})
+    ]
+
+
+def test_schedule_replaces_stale_path_timer_after_file_rename() -> None:
+    timers: list[FakeTimer] = []
+    events: list[tuple[str, dict]] = []
+    retry_calls: list[tuple[str, str]] = []
+    tracker = _tracker(timers=timers, events=events, retry_calls=retry_calls)
+
+    tracker.schedule("v1", "D:/old.mp4")
+    tracker.schedule("v1", "D:/renamed.mp4")
+
+    assert len(timers) == 2
+    assert timers[0].cancelled is True
+    assert timers[1].started is True
+
+    timers[0].callback()
+    assert retry_calls == []
+    assert events == []
+
+    timers[1].callback()
+    assert retry_calls == [("v1", "D:/renamed.mp4")]
     assert events == [
         ("videos.metadata", {"video_id": "v1", "metadata": False, "retry": True, "scheduled": True})
     ]

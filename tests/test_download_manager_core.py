@@ -162,6 +162,45 @@ class DownloadManagerCoreTests(unittest.TestCase):
             self.assertEqual(store.recovery_counts(), {"active": 0, "pending_cleanup": 0})
             self.assertEqual(stats["recovery_records_consumed"], 2)
 
+    def test_startup_sweep_preserves_tasks_registered_while_cleanup_runs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            old_dir = root / "old"
+            new_dir = root / "new"
+            old_dir.mkdir()
+            new_dir.mkdir()
+            store = DownloadRecoveryStore(db_path=root / "recovery.sqlite3")
+            store.register_task(video_id="old", save_directory=old_dir)
+            store.mark_legacy_sweep_complete(root)
+            manager = DownloadManagerCore.__new__(DownloadManagerCore)
+            manager._download_recovery_store = store
+            maintenance_root = os.path.normcase(os.path.abspath(root))
+            DownloadManagerCore._STARTUP_MAINTENANCE_ROOTS.discard(maintenance_root)
+            registered_during_scan = False
+
+            def scan_directory(*_args, **_kwargs):
+                nonlocal registered_during_scan
+                if not registered_during_scan:
+                    registered_during_scan = True
+                    store.register_task(video_id="new", save_directory=new_dir)
+                return SimpleNamespace(
+                    removed_count=0,
+                    error="",
+                    children=[],
+                    truncated=False,
+                    scanned_entries=0,
+                )
+
+            with patch("app.core.download_manager_core.cfg.get", return_value=str(root)), patch(
+                "app.services.file_service.MediaLibraryService.sweep_orphan_download_temp_directory",
+                side_effect=scan_directory,
+            ):
+                stats = manager._sweep_m3u8_orphan_workspaces_on_startup()
+
+            self.assertIsNone(store.task_path("old"))
+            self.assertIsNotNone(store.task_path("new"))
+            self.assertEqual(stats["recovery_records_consumed"], 1)
+
     def test_startup_maintenance_does_not_block_manager_construction(self):
         release_sweep = threading.Event()
         sweep_started = threading.Event()

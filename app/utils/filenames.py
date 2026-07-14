@@ -3,12 +3,24 @@
 import re
 from typing import Any
 
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
 def sanitize_filename(name: str) -> str:
     """Strip invalid Windows filename characters and trim length."""
     safe_name = re.sub(r'[\x00-\x1f\x7f\\/:*?"<>|]', "_", str(name)).strip()
     safe_name = safe_name.rstrip(". ")
     safe_name = safe_name[:200]
     safe_name = safe_name.rstrip(". ")
+    stem = safe_name.partition(".")[0].rstrip(". ").upper()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        safe_name = f"_{safe_name}"
     return safe_name or "untitled"
 
 def build_media_filename(title: str, source: str, extension: str = ".mp4", meta: dict[str, Any] | None = None) -> str:

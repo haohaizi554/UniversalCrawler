@@ -113,6 +113,81 @@ def test_failed_tasks_share_one_pending_cleanup_directory_until_it_is_consumed()
         assert store.directories() == []
 
 
+def test_snapshot_consume_preserves_records_registered_during_cleanup() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        old_dir = root / "old"
+        new_dir = root / "new"
+        old_dir.mkdir()
+        new_dir.mkdir()
+        store = DownloadRecoveryStore(db_path=root / "recovery.sqlite3")
+        store.register_task(video_id="old-active", save_directory=old_dir)
+        store.register_task(video_id="old-failed", save_directory=old_dir)
+        assert store.handoff_failed_task("old-failed")
+        batch = store.recovery_batch()
+
+        store.register_task(video_id="new-active", save_directory=new_dir)
+        store.register_task(video_id="new-failed", save_directory=old_dir)
+        assert store.handoff_failed_task("new-failed")
+
+        assert store.consume_recovery_records(batch) == 1
+        assert store.task_path("new-active") is not None
+        assert store.recovery_counts() == {"active": 1, "pending_cleanup": 1}
+        assert set(store.directories()) == {
+            os.path.normcase(str(old_dir.resolve())),
+            os.path.normcase(str(new_dir.resolve())),
+        }
+
+
+def test_existing_ledger_without_generation_column_migrates_in_place() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        db_path = root / "recovery.sqlite3"
+        save_dir = os.path.normcase(str((root / "downloads").resolve()))
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE download_task_paths (
+                    video_id TEXT PRIMARY KEY,
+                    save_directory TEXT NOT NULL,
+                    source_url TEXT NOT NULL DEFAULT '',
+                    trace_id TEXT NOT NULL DEFAULT '',
+                    platform TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE TABLE pending_cleanup_directories (
+                    save_directory TEXT PRIMARY KEY,
+                    updated_at REAL NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO download_task_paths(
+                    video_id, save_directory, state, updated_at
+                ) VALUES ('legacy-active', ?, 'active', 1.0)
+                """,
+                (save_dir,),
+            )
+            conn.execute(
+                """
+                INSERT INTO pending_cleanup_directories(save_directory, updated_at)
+                VALUES (?, 2.0)
+                """,
+                (save_dir,),
+            )
+            conn.commit()
+
+        store = DownloadRecoveryStore(db_path=db_path)
+        batch = store.recovery_batch()
+
+        assert batch.directories == (save_dir,)
+        assert all(generation for _key, generation in batch.active_records)
+        assert all(generation for _key, generation in batch.pending_records)
+        assert store.consume_recovery_records(batch) == 2
+
+
 def test_legacy_sweep_frontier_survives_restart_and_is_consumed_by_use() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)

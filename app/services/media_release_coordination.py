@@ -50,7 +50,7 @@ def publish_media_release_request(
         reason=reason,
     )
     path = _request_file()
-    tmp_path = path.with_suffix(".tmp")
+    tmp_path = path.with_name(f".{path.name}.{request.request_id}.tmp")
     payload = {
         "request_id": request.request_id,
         "local_path": request.local_path,

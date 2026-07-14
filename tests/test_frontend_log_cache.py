@@ -179,6 +179,64 @@ def test_worker_log_cache_survives_refresh_failure():
     assert len(items) == 100
 
 
+def test_refresh_now_serializes_with_background_refresh() -> None:
+    cache_service = FakeCacheService()
+    first_reader_entered = threading.Event()
+    second_reader_entered = threading.Event()
+    release_first_reader = threading.Event()
+    state_lock = threading.Lock()
+    active_readers = 0
+    max_active_readers = 0
+    read_calls = 0
+
+    def reader(*, limit):
+        nonlocal active_readers, max_active_readers, read_calls
+        with state_lock:
+            read_calls += 1
+            call_number = read_calls
+            active_readers += 1
+            max_active_readers = max(max_active_readers, active_readers)
+        if call_number == 1:
+            first_reader_entered.set()
+            release_first_reader.wait(timeout=2.0)
+        else:
+            second_reader_entered.set()
+        with state_lock:
+            active_readers -= 1
+        return [{"message": f"read-{call_number}", "limit": limit}]
+
+    cache = FrontendLogCache(
+        cache_service=cache_service,
+        reader=reader,
+        limit_provider=lambda: 100,
+        worker_enabled=True,
+        ttl_seconds=0,
+    )
+    foreground_done = threading.Event()
+
+    try:
+        cache.request_refresh(100)
+        assert first_reader_entered.wait(timeout=1.0)
+
+        foreground = threading.Thread(
+            target=lambda: (cache.refresh_now(100), foreground_done.set()),
+            daemon=True,
+        )
+        foreground.start()
+        second_entered_before_release = second_reader_entered.wait(timeout=0.2)
+        release_first_reader.set()
+
+        assert foreground_done.wait(timeout=2.0)
+        foreground.join(timeout=1.0)
+        assert cache.wait_for_idle(timeout=2.0)
+    finally:
+        release_first_reader.set()
+        cache.shutdown()
+
+    assert second_entered_before_release is False
+    assert max_active_readers == 1
+
+
 def test_log_cache_invalidate_downgrades_cache_delete_failure():
     class FailingDeleteCache(FakeCacheService):
         def delete(self, key):

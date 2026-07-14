@@ -377,6 +377,19 @@ class StateAndEventTests(unittest.TestCase):
 
             self.assertEqual(cache.get("key")["nested"]["value"], 1)
 
+    def test_cache_service_rejects_values_that_cannot_be_isolated(self):
+        class UncopyableValue:
+            def __deepcopy__(self, _memo):
+                raise RuntimeError("copy disabled")
+
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            cache = CacheService(namespace="test-cache-clone-failure", cache_dir=temp_dir)
+
+            with self.assertRaises(TypeError):
+                cache.set("unsafe", UncopyableValue())
+
+            self.assertIsNone(cache.get("unsafe"))
+
     def test_cache_service_close_is_idempotent(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             cache = CacheService(namespace="test-cache-close", cache_dir=temp_dir)

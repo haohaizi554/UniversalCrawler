@@ -230,10 +230,12 @@ class DownloadManagerCore:
             self._STARTUP_MAINTENANCE_ROOTS.add(maintenance_root)
 
         recovery_store = getattr(self, "_download_recovery_store", None)
+        recovery_batch = None
         owned_directories: list[str] = []
         if recovery_store is not None:
             try:
-                owned_directories = recovery_store.directories()
+                recovery_batch = recovery_store.recovery_batch()
+                owned_directories = list(recovery_batch.directories)
             except Exception as exc:
                 debug_logger.log_exception(
                     "DownloadManager",
@@ -328,7 +330,9 @@ class DownloadManagerCore:
                 stats["removed_count"] += result.removed_count
 
             if recovery_store is not None and attempted_recovery_paths == len(owned_directories):
-                stats["recovery_records_consumed"] = recovery_store.consume_recovery_records()
+                stats["recovery_records_consumed"] = recovery_store.consume_recovery_records(
+                    recovery_batch
+                )
             debug_logger.log(
                 component="DownloadManager",
                 action="download_temp_artifact_sweep",

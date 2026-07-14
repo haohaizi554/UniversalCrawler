@@ -26,6 +26,8 @@ class MetadataRetryTracker:
         self._timer_factory = timer_factory
         self._lock = threading.RLock()
         self._timers: dict[str, Any] = {}
+        self._timer_sources: dict[str, str] = {}
+        self._timer_tokens: dict[str, object] = {}
         self._empty_failures: dict[str, int] = {}
 
     @property
@@ -69,16 +71,34 @@ class MetadataRetryTracker:
         key = str(video_id or "")
         if not key:
             return
+        source = str(source_path or "")
+        token = object()
         with self._lock:
-            if key in self._timers:
+            previous_timer = self._timers.get(key)
+            if previous_timer is not None and self._timer_sources.get(key) == source:
                 return
-            timer = self._timer_factory(self._retry_delay_seconds(), lambda: self._fire(key, source_path))
+            timer = self._timer_factory(
+                self._retry_delay_seconds(),
+                lambda: self._fire(key, source, token),
+            )
             try:
                 timer.daemon = True
             except Exception:
                 pass
             self._timers[key] = timer
+            self._timer_sources[key] = source
+            self._timer_tokens[key] = token
+        if previous_timer is not None:
+            previous_timer.cancel()
+        try:
             timer.start()
+        except Exception:
+            with self._lock:
+                if self._timer_tokens.get(key) is token:
+                    self._timers.pop(key, None)
+                    self._timer_sources.pop(key, None)
+                    self._timer_tokens.pop(key, None)
+            raise
 
     def cancel(self, video_id: str) -> None:
         key = str(video_id or "")
@@ -86,6 +106,8 @@ class MetadataRetryTracker:
             return
         with self._lock:
             timer = self._timers.pop(key, None)
+            self._timer_sources.pop(key, None)
+            self._timer_tokens.pop(key, None)
         if timer is not None:
             timer.cancel()
 
@@ -93,15 +115,21 @@ class MetadataRetryTracker:
         with self._lock:
             timers = list(self._timers.values())
             self._timers.clear()
+            self._timer_sources.clear()
+            self._timer_tokens.clear()
             if clear_failures:
                 self._empty_failures.clear()
         for timer in timers:
             timer.cancel()
 
-    def _fire(self, video_id: str, source_path: str) -> None:
+    def _fire(self, video_id: str, source_path: str, token: object) -> None:
         """Timer 触发后执行回调，并把是否成功排期写回前端事件。"""
         with self._lock:
+            if self._timer_tokens.get(video_id) is not token:
+                return
             self._timers.pop(video_id, None)
+            self._timer_sources.pop(video_id, None)
+            self._timer_tokens.pop(video_id, None)
         retried = self._retry_callback(video_id, source_path)
         self._event_callback(
             "videos.metadata",

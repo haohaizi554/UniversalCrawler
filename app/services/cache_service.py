@@ -347,5 +347,5 @@ class CacheService:
     def _clone_value(value: Any) -> Any:
         try:
             return deepcopy(value)
-        except Exception:
-            return value
+        except Exception as exc:
+            raise TypeError("cache values must support isolated deep copies") from exc

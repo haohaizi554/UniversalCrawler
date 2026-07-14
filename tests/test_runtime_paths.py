@@ -104,6 +104,15 @@ class RuntimePathsTests(unittest.TestCase):
                 runtime_paths.is_temporary_path(r"D:\Downloads\UniversalCrawlerPro")
             )
 
+    def test_is_temporary_path_does_not_match_nested_user_tmp_directory(self):
+        with patch("app.utils.runtime_paths.tempfile.gettempdir", return_value="/var/system-temp"):
+            self.assertFalse(runtime_paths.is_temporary_path("/home/demo/project/tmp/downloads"))
+            self.assertFalse(runtime_paths.is_temporary_path(r"D:\projects\tmp\downloads"))
+
+    def test_is_temporary_path_matches_posix_tmp_root(self):
+        with patch("app.utils.runtime_paths.tempfile.gettempdir", return_value="/var/system-temp"):
+            self.assertTrue(runtime_paths.is_temporary_path("/tmp/job-123"))
+
     def test_resolve_user_file_keeps_absolute_and_expands_relative_path(self):
         """验证 `test_resolve_user_file_keeps_absolute_and_expands_relative_path` 对应场景是否符合预期，供 `RuntimePathsTests` 使用。"""
         absolute_path = Path(r"D:\Data\demo.txt")

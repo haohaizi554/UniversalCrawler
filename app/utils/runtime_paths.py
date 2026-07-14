@@ -114,14 +114,15 @@ def is_temporary_path(path_value: str | os.PathLike[str] | None) -> bool:
     except (OSError, TypeError, ValueError):
         pass
 
-    slash_normalized = normalized.replace("\\", "/")
-    return (
-        "/appdata/local/temp/" in slash_normalized
+    def _matches_known_temp_root(candidate: str) -> bool:
+        candidate = candidate.replace("\\", "/").casefold().rstrip("/")
+        if candidate.endswith("/appdata/local/temp") or "/appdata/local/temp/" in candidate:
+            return True
+        root_relative = candidate[2:] if len(candidate) >= 3 and candidate[1:3] == ":/" else candidate
         # These are path classifiers only; no file is created from the literals.
-        or slash_normalized.startswith("/tmp/")  # nosec B108
-        or "/tmp/" in slash_normalized  # nosec B108
-        or "/temp/tmp" in slash_normalized
-    )
+        return root_relative == "/tmp" or root_relative.startswith("/tmp/")  # nosec B108
+
+    return _matches_known_temp_root(raw_path) or _matches_known_temp_root(normalized)
 
 def resolve_user_file(path_value: str | os.PathLike[str]) -> Path:
     """解析并确定 `user_file` 对应的最终结果。"""

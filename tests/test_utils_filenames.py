@@ -29,6 +29,13 @@ class FilenameUtilsTests(unittest.TestCase):
         self.assertEqual(sanitize_filename("   "), "untitled")
         self.assertEqual(sanitize_filename(None), "None")
 
+    def test_sanitize_filename_prefixes_windows_reserved_device_names(self):
+        for value in ("CON", "aux.txt", "LPT1.log", "com9.mp4", "NUL"):
+            with self.subTest(value=value):
+                self.assertTrue(sanitize_filename(value).startswith("_"))
+
+        self.assertEqual(sanitize_filename("company.mp4"), "company.mp4")
+
     def test_build_media_filename_appends_missav_subtitle_tag(self):
         """验证 `test_build_media_filename_appends_missav_subtitle_tag` 对应场景是否符合预期，供 `FilenameUtilsTests` 使用。"""
         result = build_media_filename(

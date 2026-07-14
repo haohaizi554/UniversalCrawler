@@ -149,6 +149,7 @@ class FrontendLogCache:
         self._at = 0.0
         self._limit = 0
         self._lock = threading.RLock()
+        self._refresh_lock = threading.RLock()
         self._reader = reader
         self._tail_reader = _TailLogFileReader(log_path_provider) if log_path_provider is not None else None
         self._known_cache_keys: set[str] = set()
@@ -200,18 +201,19 @@ class FrontendLogCache:
 
     def invalidate(self, *, limit: Any | None = None) -> None:
         normalized_limit = self._current_limit() if limit is None else self.normalize_limit(limit)
-        with self._lock:
-            self._items = []
-            self._at = 0.0
-            self._limit = 0
-            known_cache_keys = list(self._known_cache_keys)
-            self._known_cache_keys.clear()
-        if self._tail_reader is not None:
-            self._tail_reader.reset()
-        self._delete_cache_key("frontend.file_log_cache")
-        self._delete_cache_key(self.cache_key(normalized_limit))
-        for key in known_cache_keys:
-            self._delete_cache_key(key)
+        with self._refresh_lock:
+            with self._lock:
+                self._items = []
+                self._at = 0.0
+                self._limit = 0
+                known_cache_keys = list(self._known_cache_keys)
+                self._known_cache_keys.clear()
+            if self._tail_reader is not None:
+                self._tail_reader.reset()
+            self._delete_cache_key("frontend.file_log_cache")
+            self._delete_cache_key(self.cache_key(normalized_limit))
+            for key in known_cache_keys:
+                self._delete_cache_key(key)
 
     def resize_limit(self, limit: Any) -> None:
         normalized_limit = self.normalize_limit(limit)
@@ -294,6 +296,10 @@ class FrontendLogCache:
         return 0
 
     def _refresh_from_source(self, read_limit: int) -> None:
+        with self._refresh_lock:
+            self._refresh_from_source_locked(read_limit)
+
+    def _refresh_from_source_locked(self, read_limit: int) -> None:
         """从缓存或文件源刷新项目，并清掉旧 tail 指纹缓存。"""
         cache_key, tail_state = self._cache_key_for_read(read_limit)
         if self._tail_reader is not None:
