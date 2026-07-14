@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.services.icon_registry import action_icon_file, ui_icon_path
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import action_icon_file
 from app.ui.layout.island import IslandCard
 from app.ui.styles.table_rows import (
     bind_qtablewidget_row_selection,

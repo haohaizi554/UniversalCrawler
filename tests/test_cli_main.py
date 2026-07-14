@@ -42,17 +42,46 @@ class CliSearchSubcommandTests(unittest.TestCase):
         """search --source douyin kw 必须能解析（handler 不会被调用，因为不 mock）。"""
         from cli.main import main
         # 避免真跑爬虫：mock CLIRunner
-        with patch("cli.runner.CLIRunner") as MockRunner:
+        with patch("cli.commands.search.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok", "items": [], "logs": []}
             result = main(["search", "--source", "douyin", "kw"])
         # 必须有 exit code（不一定 0，因为 mock 不完整；但不能崩）
         self.assertIn(result, (0, 1, 2))
 
+    def test_search_accepts_legacy_keyword_option(self):
+        """文档长期公开的 --keyword 形式应继续兼容。"""
+        from cli.main import main
+
+        with patch("cli.commands.search.handle_search_command", return_value=0) as handler:
+            result = main(["search", "--source", "douyin", "--keyword", "测试"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(handler.call_args.args[0].keyword, "测试")
+
+    def test_search_rejects_conflicting_keyword_forms(self):
+        """位置参数与 --keyword 同时给出不同值时必须报参数错误。"""
+        from cli.main import main
+
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
+            main(["search", "--source", "douyin", "位置值", "--keyword", "选项值"])
+
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_search_invalid_select_returns_error_without_starting_runner(self):
+        """CLI 拼写错误必须在启动爬虫前失败。"""
+        from cli.main import main
+
+        with patch("cli.commands.search.CLIRunner") as runner:
+            result = main(["search", "--source", "douyin", "测试", "--select", "frist"])
+
+        self.assertEqual(result, 1)
+        runner.assert_not_called()
+
     def test_search_supports_xiaohongshu_source(self):
         """通用 search 入口必须允许 xiaohongshu，与 GUI/SDK/插件能力保持一致。"""
         from cli.main import main
-        with patch("cli.runner.CLIRunner") as MockRunner:
+        with patch("cli.commands.search.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok", "items": [], "logs": []}
             result = main(["search", "--source", "xiaohongshu", "kw"])
@@ -96,9 +125,21 @@ class CliSearchSubcommandTests(unittest.TestCase):
         MockRunner.assert_called_once()
         # selection_strategy 必须是 PipeSelection(preloaded=[[0],[1,2],[3,4]])
         sel = MockRunner.call_args.kwargs.get("selection_strategy")
-        from cli.pipe import PipeSelection
+        from shared.pipe_selection import PipeSelection
         self.assertIsInstance(sel, PipeSelection)
         self.assertEqual(sel._preloaded, [[0], [1, 2], [3, 4]])
+
+    def test_search_invalid_preload_choice_does_not_start_runner(self):
+        """预加载规则中的拼写错误必须在 runner 启动前失败。"""
+        from cli.main import main
+
+        with patch("cli.commands.search.CLIRunner") as runner:
+            result = main(
+                ["search", "--source", "douyin", "测试", "--preload-choices", "0|frist"]
+            )
+
+        self.assertEqual(result, 1)
+        runner.assert_not_called()
 
     def test_search_max_items_int(self):
         """--max-items 必须是整数。"""
@@ -170,6 +211,16 @@ class CliPlatformAliasTests(unittest.TestCase):
         self.assertEqual(call_args.source, "bilibili")
         self.assertEqual(call_args.keyword, "BV1xxx")
 
+    def test_xiaohongshu_alias_routes_to_search(self):
+        """ucrawl xhs search kw must reuse the common search handler."""
+        from cli.main import main
+
+        with patch("cli.commands.search.handle_search_command", return_value=0) as mock_handler:
+            main(["xhs", "search", "test"])
+        call_args = mock_handler.call_args[0][0]
+        self.assertEqual(call_args.source, "xiaohongshu")
+        self.assertEqual(call_args.keyword, "test")
+
     def test_missav_alias_routes_to_search(self):
         """ucrawl missav search ABC-123 必须派发到 search。"""
         from cli.main import main
@@ -240,6 +291,7 @@ class CliInteractiveSubcommandTests(unittest.TestCase):
         from cli.main import main
         with patch("cli.commands.interactive.handle_interactive_command", return_value=0) as mock:
             result = main(["interactive"])
+        self.assertEqual(result, 0)
         mock.assert_called_once()
 
     def test_interactive_alias_i(self):
@@ -247,6 +299,7 @@ class CliInteractiveSubcommandTests(unittest.TestCase):
         from cli.main import main
         with patch("cli.commands.interactive.handle_interactive_command", return_value=0) as mock:
             result = main(["i"])
+        self.assertEqual(result, 0)
         mock.assert_called_once()
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 新架构支持：
 - 通用命令：search, scan, download, platforms
-- 平台别名：douyin, bilibili, kuaishou, missav
+- 平台别名：douyin, xiaohongshu, bilibili, kuaishou, missav
 - 交互式选择：TTY 和 stdin 管道
 """
 
@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         description="""UCrawl 通用爬虫 - 命令行/脚本/AI 工具
 
 用法:
-  ucrawl search --source <平台> --keyword <关键词> [选项]
+  ucrawl search --source <平台> <关键词> [选项]
   ucrawl <平台> search <关键词> [选项]
   ucrawl scan <目录> [选项]
   ucrawl download <video_id> [选项]
@@ -85,11 +85,12 @@ def main(argv: list[str] | None = None) -> int:
 
 示例:
   # 通用命令
-  ucrawl search --source douyin --keyword "测试" --max-items 10
-  ucrawl search --source bilibili --keyword "BV1xxx" --select "0,2,5"
+  ucrawl search --source douyin "测试" --max-items 10
+  ucrawl search --source bilibili "BV1xxx" --select "0,2,5"
 
   # 平台别名
   ucrawl douyin search "测试" --max-items 10
+  ucrawl xhs search "测试" --max-items 10
   ucrawl bilibili search "BV1xxx" --select "0,2,5"
   ucrawl missav search "ABC-123" --individual-only
 
@@ -146,12 +147,19 @@ def main(argv: list[str] | None = None) -> int:
     add_interactive_arguments(interactive_parser)
     interactive_parser.set_defaults(_handler=handle_interactive_command)
 
-    # 平台别名 (douyin, bilibili, kuaishou, missav)
+    # 平台别名 (douyin, xiaohongshu, bilibili, kuaishou, missav)
     from cli.commands.platform_base import add_platform_subparsers
     add_platform_subparsers(subparsers)
 
     # 解析
     args = parser.parse_args(argv)
+
+    if getattr(args, "main_command", None) == "search":
+        from shared.search_command_runtime import resolve_keyword
+        try:
+            args.keyword = resolve_keyword(args)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.version:
         from cli import __version__

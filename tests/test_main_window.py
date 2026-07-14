@@ -387,6 +387,8 @@ class MainWindowTests(unittest.TestCase):
         window._submit_frontend_action.assert_not_called()
 
     def test_update_check_request_uses_latest_worker(self):
+        from cli import __version__
+
         window = self._make_window()
         worker = self.CapturingUpdateCheckWorker()
         window._update_check_worker = worker
@@ -398,15 +400,31 @@ class MainWindowTests(unittest.TestCase):
         window._show_update_check_error = Mock()
         window._current_status_version = Mock(return_value="v3.6.17")
 
-        MainWindow._on_update_check_requested(window, "")
+        MainWindow._on_update_check_requested(window, "v0.0.1")
 
         self.assertTrue(window._update_check_running)
         window._set_status_bar_update_checking.assert_called_once_with(True)
         self.assertEqual(len(worker.requests), 1)
         self.assertEqual(worker.requests[0].sequence, 1)
-        self.assertEqual(worker.requests[0].local_version, "v3.6.17")
+        self.assertEqual(worker.requests[0].local_version, __version__)
         window._show_basic_message.assert_not_called()
         window._show_update_check_error.assert_not_called()
+
+    def test_update_download_worker_drops_signals_after_shutdown_begins(self):
+        window = self._make_window()
+        window._update_download_lock = threading.RLock()
+        window._update_download_sequence = 4
+        window._update_download_shutdown = True
+        signal = Mock()
+
+        emitted = MainWindow._emit_update_download_event(
+            window,
+            signal,
+            {"sequence": 4, "message": "late result"},
+        )
+
+        self.assertFalse(emitted)
+        signal.emit.assert_not_called()
 
     def test_update_check_worker_is_created_lazily(self):
         window = self._make_window()
@@ -1115,7 +1133,41 @@ class MainWindowTests(unittest.TestCase):
         window.sig_change_dir.emit.assert_called_once()
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
 
-    def test_update_setting_applies_playback_runtime_hook(self):
+    def test_config_observer_then_action_finish_scans_changed_directory_once(self):
+        window = self._make_window()
+        window.sig_change_dir = Mock()
+        window.refresh_frontend_state = Mock()
+        window._frontend_state_service = Mock()
+        window._frontend_state_service._config_events_drive_runtime = True
+
+        def _get_dir(obj):
+            return obj.__dict__.get("_test_current_save_dir", "")
+
+        def _set_dir(obj, value):
+            obj.__dict__["_test_current_save_dir"] = value
+
+        payload = {"key": "download_directory", "value": "D:/Videos/Downloads"}
+        action_result = {
+            "status": "ok",
+            "data": {
+                "section": "common",
+                "config_key": "save_directory",
+                "directory": "D:/Videos/Downloads",
+                "value": "D:/Videos/Downloads",
+            },
+        }
+
+        with patch.object(MainWindow, "current_save_dir", new=property(_get_dir, _set_dir)):
+            window.current_save_dir = "D:/old"
+            MainWindow._apply_common_setting(window, "save_directory", "D:/Videos/Downloads")
+            MainWindow._finish_setting_update(window, payload, action_result)
+
+            self.assertEqual(window.current_save_dir, "D:/Videos/Downloads")
+
+        window.sig_change_dir.emit.assert_called_once()
+        window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
+
+    def test_update_setting_finish_does_not_repeat_playback_runtime_hook(self):
         window = self._make_window()
         window.refresh_frontend_state = Mock()
         window.app_shell = SimpleNamespace(apply_playback_settings=Mock())
@@ -1140,7 +1192,7 @@ class MainWindowTests(unittest.TestCase):
                 result={"status": "ok", "data": {"section": "playback", "key": "autoplay_next", "value": False}},
             ),
         )
-        window.app_shell.apply_playback_settings.assert_called_once()
+        window.app_shell.apply_playback_settings.assert_not_called()
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
 
     def test_update_setting_refreshes_logs_for_logging_runtime_hook(self):
@@ -1291,7 +1343,7 @@ class MainWindowTests(unittest.TestCase):
                 result={"status": "ok", "data": {"section": "common", "key": "theme", "value": "dark"}},
             ),
         )
-        window.sig_theme_changed.emit.assert_called_once_with(True)
+        window.sig_theme_changed.emit.assert_not_called()
         window._apply_runtime_setting_after_update.assert_called_once_with("common", "theme", "dark")
         window.refresh_frontend_state.assert_called_once_with(topics={"settings.update"})
 
@@ -1943,6 +1995,12 @@ class MainWindowTests(unittest.TestCase):
         window.saveState = Mock(return_value=b"state")
         window.is_fullscreen_mode = True
         window._update_check_worker = self.CapturingUpdateCheckWorker()
+        window._update_download_lock = threading.RLock()
+        window._update_download_sequence = 7
+        window._update_download_shutdown = False
+        window._update_download_cancel_event = Mock()
+        window._update_download_thread = Mock()
+        window._update_download_thread.is_alive.return_value = True
         event = Mock()
 
         MainWindow.closeEvent(window, event)
@@ -1950,6 +2008,12 @@ class MainWindowTests(unittest.TestCase):
         window._remove_frameless_resize_event_filter.assert_called_once()
         window._remove_windows_native_frame_filter.assert_called_once()
         self.assertTrue(window._update_check_worker.shutdown_called)
+        self.assertTrue(window._update_download_shutdown)
+        self.assertEqual(window._update_download_sequence, 8)
+        window._update_download_cancel_event.set.assert_called_once_with()
+        window._update_download_thread.join.assert_called_once_with(
+            timeout=MainWindow.UPDATE_DOWNLOAD_SHUTDOWN_JOIN_SECONDS,
+        )
         self.assertFalse(mock_save_ui_state.call_args.kwargs["is_fs"])
         event.accept.assert_called_once()
 
@@ -2378,4 +2442,3 @@ class MainWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

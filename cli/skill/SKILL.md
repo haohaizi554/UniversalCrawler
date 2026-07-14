@@ -1,13 +1,13 @@
 ---
 name: "ucrawl"
-description: "通用视频爬虫工具 (CLI / SDK / REST API / AI Skill)。支持抖音/B站/快手/MissAV 四平台，可通过 CLI 命令、Python SDK、REST API 三种方式调用，并能处理合集/多用户的二次选择场景。Invoke when user wants to search/download videos from these platforms, batch crawl, integrate crawler into existing service, or call crawler from LLM/script."
+description: "通用视频爬虫工具 (CLI / SDK / REST API / AI Skill)。支持抖音/小红书/B站/快手/MissAV 五平台，可通过 CLI 命令、Python SDK、REST API 三种方式调用，并能处理合集/多用户的二次选择场景。Invoke when user wants to search/download videos from these platforms, batch crawl, integrate crawler into existing service, or call crawler from LLM/script."
 version: 3.6.17
 author: UCrawl Team
 ---
 
 # UCrawl - 通用视频爬虫
 
-从多个视频平台（抖音、B站、快手、MissAV）搜索、获取元数据、下载视频。支持**合集展开**和**二次选择**的复杂交互场景。
+从多个视频平台（抖音、小红书、B站、快手、MissAV）搜索、获取元数据、下载视频。支持**合集展开**和**二次选择**的复杂交互场景。
 
 **CLI / SDK / REST API / 桌面 GUI 四层输入输出完全一致。**
 
@@ -22,9 +22,9 @@ author: UCrawl Team
 
 ## 关键能力
 
-1. **4 个平台统一接口**：抖音（douyin）、B站（bilibili）、快手（kuaishou）、MissAV（missav）
+1. **5 个平台统一接口**：抖音（douyin）、小红书（xiaohongshu）、B站（bilibili）、快手（kuaishou）、MissAV（missav）
 2. **4 种调用方式**：
-   - CLI：`ucrawl search --source douyin --keyword "测试"`
+   - CLI：`ucrawl search --source douyin "测试"`
    - Python SDK：`from ucrawl import UcrawlSDK; sdk.search(...)`
    - REST API 同步搜索：`POST /api/search`
    - REST API 异步爬取：`POST /api/crawl/start` + WebSocket 交互
@@ -39,13 +39,19 @@ author: UCrawl Team
 
 ### 方式 1：CLI（最快）
 
+关键词推荐使用位置参数：`ucrawl search --source <平台> <关键词>`。
+`--keyword <关键词>` 仅作为历史兼容入口；两者冲突时命令会失败。
+显式选择规则必须合法，非法 token 或完全越界会返回错误，绝不会静默全选。
+
 ```bash
 # 通用命令
-ucrawl search --source douyin --keyword "测试" --max-items 10
+ucrawl search --source douyin "测试" --max-items 10
 
-# 平台别名（支持短别名：dy/bili/bl/ks/miss）
+# 平台别名（支持短别名：dy/xhs/bili/bl/ks/miss）
 ucrawl douyin search "测试" --max-items 10
 ucrawl dy search "测试" --max-items 10          # dy = douyin
+ucrawl xiaohongshu search "测试" --max-items 10
+ucrawl xhs search "测试" --max-items 10         # xhs = xiaohongshu
 ucrawl bilibili search "BV1xxx" --select "0,2,5"
 ucrawl bili search "BV1xxx" --select "0,2,5"    # bili/bl = bilibili
 ucrawl kuaishou search "测试"
@@ -58,16 +64,16 @@ ucrawl douyin search "测试" --config '{"max_items":50}'
 ucrawl missav search "ABC-123" --config '{"proxy":"http://127.0.0.1:7890"}'
 
 # 二次选择：指定索引
-ucrawl search --source bilibili --keyword "BV1xxx" --select "0,2,5"
+ucrawl search --source bilibili "BV1xxx" --select "0,2,5"
 
 # 二次选择：预加载（合集场景多次选择）
-ucrawl search --source bilibili --keyword "BV1xxx" --preload-choices "0|1,2|3"
+ucrawl search --source bilibili "BV1xxx" --preload-choices "0|1,2|3"
 
 # 强制 stdin 管道（适合被其他脚本调用）
-echo '[0,2,5]' | ucrawl search --source douyin --keyword "测试" --pipe
+echo '[0,2,5]' | ucrawl search --source douyin "测试" --pipe
 
 # 输出 JSON 给 jq 处理
-ucrawl search --source missav --keyword "ABC-123" | jq '.items[].url'
+ucrawl search --source missav "ABC-123" | jq '.items[].url'
 
 # 扫描本地目录
 ucrawl scan "./downloads" --limit 500
@@ -76,17 +82,17 @@ ucrawl scan "./downloads" --limit 500
 ucrawl scan "./downloads" --quiet
 
 # 只搜索不下载（获取元数据，不触发下载）
-ucrawl search --source douyin --keyword "测试" --no-download
+ucrawl search --source douyin "测试" --no-download
 
 # 搜索时传入平台特定配置（与 CLI download --config 和 SDK config 对齐）
-ucrawl search --source douyin --keyword "测试" --config '{"max_items":50}'
-ucrawl search --source missav --keyword "ABC-123" --config '{"proxy":"http://127.0.0.1:7890"}'
+ucrawl search --source douyin "测试" --config '{"max_items":50}'
+ucrawl search --source missav "ABC-123" --config '{"proxy":"http://127.0.0.1:7890"}'
 
 # 搜索时使用便捷参数（与 GUI spider build_download_meta 对齐，避免手写 JSON）
-ucrawl search --source douyin --keyword "测试" --cookie "sessionid=xxx"
-ucrawl search --source bilibili --keyword "BV1xxx" --referer "https://www.bilibili.com"
-ucrawl search --source kuaishou --keyword "测试" --download-strategy m3u8
-ucrawl search --source douyin --keyword "测试" --ua "Mozilla/5.0 ..."
+ucrawl search --source douyin "测试" --cookie "sessionid=xxx"
+ucrawl search --source bilibili "BV1xxx" --referer "https://www.bilibili.com"
+ucrawl search --source kuaishou "测试" --download-strategy m3u8
+ucrawl search --source douyin "测试" --ua "Mozilla/5.0 ..."
 
 # 下载指定视频（需先搜索获取 URL）
 ucrawl download "视频标题" --url "https://..." --source douyin
@@ -238,7 +244,7 @@ curl -X POST http://localhost:8000/api/search \
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `source` | string | 是 | 平台：`douyin` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**，与 GUI 下拉框对齐） |
+| `source` | string | 是 | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**，与 GUI 下拉框对齐） |
 | `keyword` | string | 是 | 搜索关键词 / 视频链接 / 用户 ID（**必须是字符串，自动去除前后空白**，与 GUI QLineEdit `.strip()` 对齐） |
 | `save_dir` | string | 否 | 保存目录（默认使用服务端配置，**必须是字符串或 null**，与 GUI QFileDialog 对齐） |
 | `config` | object | 否 | 平台特定参数（**必须是 JSON 对象**，与 GUI Qt 控件类型安全对齐） |
@@ -308,7 +314,7 @@ curl -X POST http://localhost:8000/api/crawl/start \
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `source` | string | 是 | 平台：`douyin` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**，与 GUI 下拉框对齐） |
+| `source` | string | 是 | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**，与 GUI 下拉框对齐） |
 | `keyword` | string | 是 | 搜索关键词 / 视频链接 / 用户 ID（**必须是字符串，自动去除前后空白**，同 `/api/search` 的 keyword） |
 | `config` | object | 否 | 平台特定参数（**必须是 JSON 对象**，同 `/api/search` 的 config） |
 | `selection` | object \| null | 否 | 二次选择策略（**必须是 JSON 对象或 null**，无效策略会返回错误，同 `/api/search` 的 selection） |
@@ -429,7 +435,7 @@ curl -X POST http://localhost:8000/api/download \
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `url` | string | 是 | 视频 URL |
-| `source` | string | 是 | 平台：`douyin` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**） |
+| `source` | string | 是 | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`（**必须是字符串，无效平台会返回错误**） |
 | `title` | string | 否 | 视频标题（默认使用 URL） |
 | `save_dir` | string \| null | 否 | 保存目录（默认使用服务端配置，**必须是字符串或 null**） |
 | `timeout` | float | 否 | 下载超时秒数（默认 300，**必须是数字**，与 CLI 和 SDK 对齐） |
@@ -555,7 +561,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `source` / `-s` | 是 | 平台：`douyin` / `bilibili` / `kuaishou` / `missav`（CLI 平台别名也支持短名：`dy` / `bili` / `bl` / `ks` / `miss`） |
+| `source` / `-s` | 是 | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav`（通用 `search` 支持全部平台；平台别名支持 `dy` / `xhs` / `bili` / `bl` / `ks` / `miss`） |
 | `keyword` | 是 | 搜索关键词 / 视频链接 / 用户 ID |
 | `save-dir` / `-d` | 否 | 保存目录（默认：从配置读取） |
 | `--config` | 否 | 平台特定配置（JSON 字符串，如 `'{"max_items":50}'`，与 CLI download --config 和 SDK config 对齐） |
@@ -611,7 +617,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 
 | 参数 | 必填 | 类型 | 说明 |
 |---|---|---|---|
-| `source` | 是 | str | 平台 ID（douyin/bilibili/kuaishou/missav） |
+| `source` | 是 | str | 平台 ID（douyin/xiaohongshu/bilibili/kuaishou/missav） |
 | `keyword` | 是 | str | 搜索关键词 / 链接 / 用户 ID |
 | `save_dir` | 否 | str \| None | 保存目录（None=从配置读取，与 GUI 对齐） |
 | `selection` | 否 | SelectionStrategy \| str \| list[int] \| dict \| None | 二次选择策略（None=AutoSelection，"all"/"first"/"last"=快捷策略，list[int]=指定索引，dict=与 REST API 对齐） |
@@ -625,7 +631,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | 参数 | 必填 | 类型 | 说明 |
 |---|---|---|---|
 | `url` | 是 | str | 视频 URL |
-| `source` | 是 | str | 平台 ID（douyin/bilibili/kuaishou/missav） |
+| `source` | 是 | str | 平台 ID（douyin/xiaohongshu/bilibili/kuaishou/missav） |
 | `title` | 否 | str | 视频标题（默认使用 URL，与 CLI download 对齐） |
 | `save_dir` | 否 | str \| None | 保存目录（None=从配置读取，与 GUI 对齐） |
 | `timeout` | 否 | float | 下载超时秒数（默认 300，与 CLI download --timeout 和 REST API /api/download timeout 对齐） |
@@ -921,7 +927,7 @@ REST API 在参数校验失败或执行异常时返回：
 ```json
 {"status": "error", "error": "source 和 keyword 必须是字符串"}
 {"status": "error", "error": "source 和 keyword 为必填参数"}
-{"status": "error", "error": "无效平台: youtube。支持: ['douyin', 'bilibili', 'kuaishou', 'missav']"}
+{"status": "error", "error": "无效平台: youtube。支持: ['douyin', 'xiaohongshu', 'bilibili', 'kuaishou', 'missav']"}
 {"status": "error", "error": "config 必须是 JSON 对象"}
 {"status": "error", "error": "selection 必须是 JSON 对象或 null"}
 {"status": "error", "error": "无效选择策略。支持: ['all', 'first', 'last', 'rule', 'preload', 'interactive', 'pipe']"}
@@ -949,7 +955,7 @@ REST API 在参数校验失败或执行异常时返回：
 {"status": "error", "error": "config.individual_only 必须是布尔值，收到 str"}
 {"status": "error", "error": "config.priority 必须是字符串，收到 int"}
 {"status": "error", "error": "download 必须是布尔值"}
-{"status": "error", "error": "无效平台: xxx。支持: ['douyin', 'bilibili', 'kuaishou', 'missav']"}
+{"status": "error", "error": "无效平台: xxx。支持: ['douyin', 'xiaohongshu', 'bilibili', 'kuaishou', 'missav']"}
 {"status": "error", "error": "启动爬虫异常: ..."}
 {"status": "error", "error": "scan_limit 必须大于 0"}
 {"status": "error", "error": "scan_limit 必须是整数"}
@@ -1037,7 +1043,7 @@ pip install .
 - **下载失败 progress=0**：所有层（GUI/CLI/SDK/Web）在下载失败时统一将 progress 重置为 0，与 REST API `/api/download` 错误路径对齐
 - **REST API/WebSocket download 异常广播**：当 `POST /api/download` 或 WebSocket `download` 消息触发 SDK 异常（TypeError/ValueError/Exception）时，会广播 `task_error` + `video_state_changed` + `log` 事件，与正常下载失败流程对齐，确保前端能正确更新 UI
 - **索引范围语法**：`--select`/`--exclude` 和交互式输入均支持 `-` 和 `:` 作为范围分隔符（如 `0,2-5` 或 `0,2:5`）
-- **直接下载 content_type 推断**：SDK `download_video()` 和 REST API/WebSocket `download` 在直接下载时不经过 spider，`content_type` 由文件扩展名推断（视频文件→"video"，图片文件→"image"，无法推断→空字符串），与 GUI spider 设置的 content_type 对齐。推断逻辑由 `cli.defaults.infer_content_type()` 统一实现
+- **直接下载 content_type 推断**：SDK `download_video()` 和 REST API/WebSocket `download` 在直接下载时不经过 spider，`content_type` 由文件扩展名推断（视频文件→"video"，图片文件→"image"，无法推断→空字符串），与 GUI spider 设置的 content_type 对齐。推断逻辑由 `shared.runtime_options.infer_content_type()` 统一实现
 - **CLI scan/platforms --quiet**：`ucrawl scan` 和 `ucrawl platforms` 命令支持 `--quiet`/`-q` 标志（与 search/download 命令对齐），静默模式下不输出 SDK 内部日志到 stderr
 - **SDK progress_callback**：`UcrawlSDK.download_video()` 和函数式 `download_video()` 支持 `progress_callback` 参数（签名 `callback(progress: int) -> None`，进度范围 0-100），与 GUI DownloadManager 的 `task_progress` 信号对齐。REST API `/api/download` 和 WebSocket `download` 通过此回调实时广播 `task_progress` 和 `video_state_changed` 事件，让 WebSocket 客户端能显示下载进度（与 GUI 实时进度条对齐）
 - **WebSocket 事件增强**：`task_finished` 事件新增 `content_type` 和 `title` 字段；`video_state_changed` 事件在完成/失败状态时新增 `local_path` 和 `content_type` 字段；`task_started` 事件新增 `title` 和 `content_type` 字段（与 `task_finished` 对齐）；`task_error` 事件新增 `local_path`、`content_type` 和 `title` 字段（与 `task_finished` 对齐）。这些增强让 WebSocket 客户端无需额外请求即可获取完整下载结果和错误信息，与 GUI 直接读取 VideoItem 对象的行为对齐
@@ -1045,9 +1051,9 @@ pip install .
 - **SDK download_video cookie 自动加载**：SDK `download_video()` 通过 `get_platform_download_defaults()` 自动加载本地 cookie 文件（与 GUI spider 启动时通过 AuthService 自动加载对齐），确保需要登录的平台（douyin/bilibili/kuaishou）在 CLI/SDK/API 环境下也能正常下载。用户通过 `config` 显式传入的 cookie 优先级高于自动加载的 cookie
 - **SDK download_video meta 字段扩展**：SDK `download_video()` 的 meta 复制列表新增 `folder_name` 和 `use_subdir` 字段（与 GUI Bilibili spider 通过 `build_download_meta` 设置的 `folder_name`/`use_subdir` 对齐），支持通过 `config` 传入子目录结构控制
 - **SDK download_video meta 字段全面对齐**：SDK `download_video()` 的 meta 复制列表进一步扩展，新增 `audio_url`（B站 DASH 音频流）、`aweme_id`（抖音视频 ID）、`bvid`/`cid`（B站视频 ID）、`file_name`/`preferred_filename`（文件名控制）、`is_gallery`/`is_mix`（图集/合集标记），与 GUI spider `build_download_meta` 和 `DownloadWorker` 读取的 meta 字段完全对齐。`validate_config_types` 同步新增这些字段的类型校验。interactive 命令的 `download_config` 提取列表同步扩展。CLI download 命令新增 `--file-name` 便捷参数
-- **ucrawl 包导出补全**：`ucrawl` 包新增导出 `GUISelection` 和 `is_selection_strategy`（从 `cli.selection` 透传），确保 SDK 用户可通过 `from ucrawl import GUISelection, is_selection_strategy` 使用
+- **ucrawl 包导出补全**：`ucrawl` 包导出 `GUISelection` 和 `is_selection_strategy`；实现分别来自 GUI 策略和 `shared.selection_base`，确保 SDK 用户可通过 `from ucrawl import GUISelection, is_selection_strategy` 使用
 - **SDK download_video meta 字段补全 images_data/size_mb/media_label**：SDK `download_video()` 的 meta 复制列表新增 `images_data`（抖音图集数据，DouyinDownloader 读取）、`size_mb`（文件大小 MB，BaseDownloader 分块下载策略）、`media_label`（媒体类型标签，GUI spider 日志使用），与 GUI spider 和下载器读取的 meta 字段完全对齐。`validate_config_types` 同步新增这些字段的类型校验（`images_data`: list, `size_mb`: int/float, `media_label`: str）。interactive 命令的 `download_config` 提取列表同步扩展
 - **SDK download_video meta 字段补全 duration/mix_title/create_time/author/has_live_photo**：SDK `download_video()` 的 meta 复制列表新增 `duration`（视频时长秒数，ChunkedDownloader/FFmpegDownloader 读取，与 GUI spider DouyinParser 对齐）、`mix_title`（合集标题，与 GUI spider DouyinSpider._process_mix 对齐）、`create_time`（创建时间戳，与 GUI spider DouyinParser 对齐）、`author`（作者名，与 GUI spider DouyinParser 对齐，用作 folder_name）、`has_live_photo`（是否包含实况照片，与 GUI spider DouyinParser 对齐）。`validate_config_types` 同步新增这些字段的类型校验（`duration`: int/float, `mix_title`: str, `create_time`: int, `author`: str, `has_live_photo`: bool）。interactive 命令的 `download_config` 提取列表同步扩展。SKILL.md 通用下载参数同步补全 `duration`/`file_name`/`preferred_filename`/`mix_title`/`create_time`/`author`/`has_live_photo`
-- **REST API/WebSocket 便捷参数对齐**：REST API `/api/search`、`/api/crawl/start`、`/api/download`、WebSocket `start_crawl`、`download` 消息新增便捷参数支持（与 CLI `--cookie`/`--download-strategy`/`--referer`/`--ua`/`--folder-name`/`--use-subdir`/`--file-name`/`--content-type`/`--max-items`/`--max-pages`/`--proxy`/`--individual-only`/`--priority` 对齐）。便捷参数作为请求体的顶层字段传入，优先级高于 `config` 字典中的同名参数（与 CLI 独立参数优先级高于 `--config` 的语义一致）。合并逻辑由 `cli.defaults.merge_convenience_params()` 统一实现，确保 CLI/REST API/WebSocket 三层行为一致
+- **REST API/WebSocket 便捷参数对齐**：REST API `/api/search`、`/api/crawl/start`、`/api/download`、WebSocket `start_crawl`、`download` 消息新增便捷参数支持（与 CLI `--cookie`/`--download-strategy`/`--referer`/`--ua`/`--folder-name`/`--use-subdir`/`--file-name`/`--content-type`/`--max-items`/`--max-pages`/`--proxy`/`--individual-only`/`--priority` 对齐）。便捷参数作为请求体的顶层字段传入，优先级高于 `config` 字典中的同名参数（与 CLI 独立参数优先级高于 `--config` 的语义一致）。合并逻辑由 `shared.runtime_options.merge_convenience_params()` 统一实现，确保 CLI/REST API/WebSocket 三层行为一致
 - **MissAVTaskBuilder download_strategy 对齐**：MissAVTaskBuilder 的 `build_download_meta` 新增 `download_strategy="m3u8"` 字段（与 KuaishouTaskBuilder 对齐，MissAV 视频始终使用 m3u8 下载策略）
-- **REST API `/api/crawl/start` 便捷参数对齐**：REST API `/api/crawl/start` 新增便捷参数支持（与 `/api/search` 和 WebSocket `start_crawl` 对齐），支持 `cookie`/`download_strategy`/`referer`/`ua`/`folder_name`/`use_subdir`/`file_name`/`content_type`/`max_items`/`max_pages`/`proxy`/`individual_only`/`priority` 作为请求体顶层字段传入，优先级高于 `config` 字典。合并逻辑由 `cli.defaults.merge_convenience_params()` 统一实现，确保 REST API `/api/crawl/start` 与 `/api/search` 和 WebSocket `start_crawl` 三层行为完全一致
+- **REST API `/api/crawl/start` 便捷参数对齐**：REST API `/api/crawl/start` 新增便捷参数支持（与 `/api/search` 和 WebSocket `start_crawl` 对齐），支持 `cookie`/`download_strategy`/`referer`/`ua`/`folder_name`/`use_subdir`/`file_name`/`content_type`/`max_items`/`max_pages`/`proxy`/`individual_only`/`priority` 作为请求体顶层字段传入，优先级高于 `config` 字典。合并逻辑由 `shared.runtime_options.merge_convenience_params()` 统一实现，确保 REST API `/api/crawl/start` 与 `/api/search` 和 WebSocket `start_crawl` 三层行为完全一致

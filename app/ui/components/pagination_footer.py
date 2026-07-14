@@ -6,7 +6,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from app.ui.components.combo_popup import ThemedComboBox, fit_combo_width_to_contents
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 
 
 class PaginationFooter(QWidget):

@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any
 
-from shared.selection_runtime import SelectionStrategy
+from shared.selection_base import SelectionStrategy
 
 class PipeSelection(SelectionStrategy):
     """stdin 管道选择策略。"""

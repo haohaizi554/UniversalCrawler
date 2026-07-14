@@ -5,14 +5,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.debug_logger import debug_logger
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.viewmodels import log_filtering
 from app.ui.viewmodels.latest_worker import LatestRequestWorker
-from app.ui.viewmodels.log_classification import cache_classification_facts, drop_classification_facts
-from app.ui.viewmodels.log_display import decorate_log_item
-from app.ui.viewmodels.log_i18n import localize_log_text
-from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope, derive_scope_reason
-from app.ui.viewmodels.log_platforms import PlatformUiMeta
+from shared.log_classification import cache_classification_facts, drop_classification_facts
+from shared.log_display import decorate_log_item
+from shared.log_i18n import localize_log_text
+from shared.log_pipeline_rules import derive_event_stage, derive_log_scope, derive_scope_reason
+from shared.log_platforms import PlatformUiMeta
 from app.ui.viewmodels.pagination_state import clamp_page, page_for_match, page_slice, total_pages
 
 

@@ -6,8 +6,9 @@ from typing import Any
 from app.config.settings import DEFAULT_OPEN_MODE, open_mode_label, playback_player_label
 from app.services.frontend_video_adapter import active_chunk_progress_label, active_detail_fields
 from app.services import frontend_toolbox_adapter as toolbox_adapter
-from app.services.frontend_page_definitions import PAGE_DEFINITIONS
-from app.services.icon_registry import icon_manifest
+from shared.frontend_page_definitions import PAGE_DEFINITIONS
+from shared.icon_contract import icon_manifest
+from shared.log_contract import log_contract
 
 
 def build_mock_snapshot(
@@ -227,6 +228,7 @@ def build_mock_snapshot(
         "toolbox_items": toolbox_adapter.toolbox_items(),
         "toolbox_recent_items": toolbox_adapter.toolbox_recent_items(),
         "icon_manifest": icon_manifest(),
+        "log_contract": log_contract(),
         "app_status": {
             "running_state": "\u8fd0\u884c\u4e2d",
             "status_indicator": "running",

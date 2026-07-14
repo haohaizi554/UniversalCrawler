@@ -1,6 +1,7 @@
 ﻿import json
 import threading
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -224,6 +225,14 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertIn("settings_contract", delta["changed_sections"])
         self.assertTrue(any(event["topic"] == "settings.platform_auth" for event in delta["events"]))
 
+    def test_refresh_platform_auth_status_rejects_string_boolean(self):
+        service = FrontendStateService()
+
+        result = service.handle_action("refresh_platform_auth_status", {"force": "false"})
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("boolean", result["message"])
+
 
     def test_update_basic_directory_accepts_quoted_file_path_and_persists_json(self):
         with TemporaryDirectory(dir=Path.cwd()) as temp_dir:
@@ -282,6 +291,30 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(manager.get("common", "theme"), "dark")
             self.assertTrue(manager.get("appearance", "follow_system"))
+
+    def test_manual_theme_update_is_one_cross_section_config_commit(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            manager.set("appearance", "follow_system", True)
+            service = FrontendStateService(config_manager=manager)
+            record_event = Mock(wraps=service.record_event)
+            service.record_event = record_event  # type: ignore[method-assign]
+
+            result = service.handle_action(
+                "update_basic_setting",
+                {"key": "theme", "value": "dark", "manual": True},
+            )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(manager.get("appearance", "follow_system"))
+            self.assertEqual(manager.get("common", "theme"), "dark")
+            settings_events = [
+                call
+                for call in record_event.call_args_list
+                if call.args and call.args[0] == "settings.update"
+            ]
+            self.assertEqual(len(settings_events), 1)
+            self.assertEqual(len(settings_events[0].args[1]["changes"]), 2)
 
     def test_update_basic_last_source_persists_from_backend_action(self):
         with TemporaryDirectory() as temp_dir:
@@ -540,6 +573,181 @@ class FrontendStateServiceTests(unittest.TestCase):
                 )
                 self.assertEqual(result["status"], "ok")
                 request_prune.assert_called_with(14)
+
+    def test_update_setting_applies_runtime_and_records_change_exactly_once(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            download_manager = SimpleNamespace(set_runtime_options=Mock())
+            controller = SimpleNamespace(_dl_manager=download_manager)
+            service = FrontendStateService(controller=controller, config_manager=manager)
+            runtime_apply = Mock(wraps=service._apply_runtime_setting)
+            record_event = Mock(wraps=service.record_event)
+            service._apply_runtime_setting = runtime_apply  # type: ignore[method-assign]
+            service.record_event = record_event  # type: ignore[method-assign]
+
+            result = service.handle_action(
+                "update_setting",
+                {"section": "download", "key": "request_timeout", "value": 120},
+            )
+            self.assertTrue(manager.event_bus.wait_for_async_idle(timeout=1.0))
+
+            self.assertEqual(result["status"], "ok")
+            runtime_apply.assert_called_once_with("download", "request_timeout", 120)
+            settings_events = [
+                call
+                for call in record_event.call_args_list
+                if call.args and call.args[0] == "settings.update"
+            ]
+            self.assertEqual(len(settings_events), 1)
+
+    def test_update_setting_reports_observer_runtime_failure_after_persisting(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            download_manager = SimpleNamespace(
+                set_runtime_options=Mock(side_effect=RuntimeError("runtime apply exploded")),
+            )
+            controller = SimpleNamespace(_dl_manager=download_manager)
+            service = FrontendStateService(controller=controller, config_manager=manager)
+
+            result = service.handle_action(
+                "update_setting",
+                {"section": "download", "key": "request_timeout", "value": 120},
+            )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("persisted but runtime apply failed", result["message"])
+            self.assertIn("runtime apply exploded", result["message"])
+            self.assertEqual(manager.get("download", "request_timeout"), 120)
+            download_manager.set_runtime_options.assert_called_once()
+
+    def test_update_download_options_reports_observer_runtime_failure_after_persisting(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            download_manager = SimpleNamespace(
+                set_runtime_options=Mock(side_effect=RuntimeError("runtime apply exploded")),
+            )
+            controller = SimpleNamespace(_dl_manager=download_manager)
+            service = FrontendStateService(controller=controller, config_manager=manager)
+
+            result = service.handle_action(
+                "update_download_options",
+                {"max_concurrent": 4, "max_retries": 3},
+            )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("persisted but runtime apply failed", result["message"])
+            self.assertIn("runtime apply exploded", result["message"])
+            self.assertEqual(
+                manager.get("download", "max_concurrent"),
+                result["data"]["max_concurrent"],
+            )
+            download_manager.set_runtime_options.assert_called_once()
+
+    def test_update_setting_waits_for_gui_runtime_failure_after_persisting(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            window = SimpleNamespace(
+                _apply_playback_runtime_settings=Mock(
+                    side_effect=RuntimeError("GUI runtime apply exploded"),
+                ),
+            )
+            controller = SimpleNamespace(window=window)
+            service = FrontendStateService(controller=controller, config_manager=manager)
+            service._gui_runtime_invoker = SimpleNamespace(
+                invoke=lambda callback: callback(),
+                invoke_and_wait=lambda callback, **_kwargs: callback(),
+            )
+
+            with patch.object(service, "_is_qt_gui_thread", return_value=False):
+                result = service.handle_action(
+                    "update_setting",
+                    {"section": "playback", "key": "autoplay_next", "value": False},
+                )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("persisted but runtime apply failed", result["message"])
+            self.assertIn("GUI runtime apply exploded", result["message"])
+            self.assertFalse(manager.get("playback", "autoplay_next"))
+            window._apply_playback_runtime_settings.assert_called_once_with()
+
+    def test_update_setting_reports_gui_runtime_ack_timeout_after_persisting(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            window = SimpleNamespace(_apply_playback_runtime_settings=Mock())
+            service = FrontendStateService(
+                controller=SimpleNamespace(window=window),
+                config_manager=manager,
+            )
+            service._gui_runtime_invoker = SimpleNamespace(
+                invoke_and_wait=Mock(
+                    side_effect=TimeoutError("GUI runtime apply acknowledgement timed out")
+                ),
+            )
+
+            with patch.object(service, "_is_qt_gui_thread", return_value=False):
+                result = service.handle_action(
+                    "update_setting",
+                    {"section": "playback", "key": "autoplay_next", "value": False},
+                )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("acknowledgement timed out", result["message"])
+            self.assertFalse(manager.get("playback", "autoplay_next"))
+            window._apply_playback_runtime_settings.assert_not_called()
+
+    def test_config_runtime_failure_capture_is_thread_local(self):
+        service = FrontendStateService()
+        barrier = threading.Barrier(2)
+        captured: dict[str, list[tuple[str, str, Exception]]] = {}
+
+        def _capture(name: str, *, fail: bool) -> None:
+            with service._capture_config_runtime_failures() as failures:
+                barrier.wait(timeout=2)
+                if fail:
+                    service._record_config_runtime_failure(
+                        "playback",
+                        "autoplay_next",
+                        RuntimeError(f"{name} failed"),
+                    )
+                barrier.wait(timeout=2)
+                captured[name] = list(failures)
+
+        failed_thread = threading.Thread(target=_capture, args=("failed",), kwargs={"fail": True})
+        healthy_thread = threading.Thread(target=_capture, args=("healthy",), kwargs={"fail": False})
+        failed_thread.start()
+        healthy_thread.start()
+        failed_thread.join(timeout=3)
+        healthy_thread.join(timeout=3)
+
+        self.assertFalse(failed_thread.is_alive())
+        self.assertFalse(healthy_thread.is_alive())
+        self.assertEqual(len(captured["failed"]), 1)
+        self.assertEqual(str(captured["failed"][0][2]), "failed failed")
+        self.assertEqual(captured["healthy"], [])
+
+    def test_config_commit_dispatches_gui_playback_and_platform_runtime_once(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            window = SimpleNamespace(
+                _apply_playback_runtime_settings=Mock(),
+                _apply_platform_runtime_setting=Mock(),
+            )
+            controller = SimpleNamespace(window=window)
+            service = FrontendStateService(controller=controller, config_manager=manager)
+
+            playback_result = service.handle_action(
+                "update_setting",
+                {"section": "playback", "key": "autoplay_next", "value": False},
+            )
+            platform_result = service.handle_action(
+                "update_setting",
+                {"section": "bilibili", "key": "max_pages", "value": 2},
+            )
+
+            self.assertEqual(playback_result["status"], "ok")
+            self.assertEqual(platform_result["status"], "ok")
+            window._apply_playback_runtime_settings.assert_called_once_with()
+            window._apply_platform_runtime_setting.assert_called_once_with("bilibili", "max_pages", 2)
 
     def test_logging_retention_cleanup_runs_on_frontend_service_initialization(self):
         with TemporaryDirectory() as temp_dir:
@@ -1385,6 +1593,38 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(failed["log_excerpt_items"][0]["icon_file"], "log_level_error.png")
         self.assertTrue(all(solution.get("icon_file") for solution in failed["solutions"]))
 
+    def test_failed_snapshot_exposes_shared_language_display_projection(self):
+        item = VideoItem(url="https://example.com", title="failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        item.meta["error"] = "下载任务失败"
+        item.meta["trace_id"] = "trace-failed-projection"
+        item.meta["failed_at"] = "2026-07-12 18:34:48"
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            manager.set("appearance", "language", "en-US")
+            service = FrontendStateService(
+                SimpleNamespace(videos={item.id: item}),
+                config_manager=manager,
+            )
+            service.record_log(
+                "Bilibili 流请求建立成功",
+                level="ERROR",
+                source="Downloader",
+                trace_id="trace-failed-projection",
+            )
+            try:
+                failed = service.get_snapshot(sections=frozenset({"failed_items"}))["failed_items"][0]
+            finally:
+                service.destroy()
+
+        self.assertEqual(failed["display_language"], "en-US")
+        self.assertEqual(failed["reason_detail_display"], "Download task failed")
+        self.assertEqual(
+            failed["log_excerpt_display_items"][0]["message_display"],
+            "Bilibili stream request established",
+        )
+        self.assertTrue(all("title_display" in solution for solution in failed["solutions_display"]))
+
     def test_failed_snapshot_keeps_richer_trace_excerpt_when_log_refresh_is_shorter(self):
         # 失败页详情不能因为后续日志缓存短暂只返回最后一条，就把已保存的
         # 完整 trace 摘要覆盖成更短版本。
@@ -1523,7 +1763,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                         "id": "persisted-failed",
                         "title": "persisted failed",
                         "reason": "network",
-                        "failed_at": "2026-07-06 12:00:00",
+                        "failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "Failed",
                         "platform": "Bilibili",
                         "trace_id": "trace-persisted",
@@ -1603,7 +1843,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                         "id": "persisted-demo",
                         "title": "Demo",
                         "reason": "network",
-                        "failed_at": "2026-07-06 12:00:00",
+                        "failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "Failed",
                         "platform": "Bilibili",
                         "trace_id": "trace-123",
@@ -1643,7 +1883,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                         "id": "persisted-copy",
                         "title": "Persisted failure",
                         "reason": "network",
-                        "failed_at": "2026-07-06 12:00:00",
+                        "failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "Failed",
                         "platform": "Bilibili",
                         "trace_id": "trace-persisted-copy",
@@ -1670,7 +1910,7 @@ class FrontendStateServiceTests(unittest.TestCase):
                         "id": "persisted-delete",
                         "title": "Persisted failure",
                         "reason": "network",
-                        "failed_at": "2026-07-06 12:00:00",
+                        "failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "Failed",
                         "platform": "Bilibili",
                         "trace_id": "trace-delete",
@@ -1693,10 +1933,21 @@ class FrontendStateServiceTests(unittest.TestCase):
     def test_clear_failed_records_action_removes_all_persisted_records(self):
         with TemporaryDirectory() as temp_dir:
             store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
+            failed_at = datetime.now()
             store.queue_upsert(
                 [
-                    {"id": "persisted-a", "title": "A", "reason": "network", "failed_at": "2026-07-06 12:00:00"},
-                    {"id": "persisted-b", "title": "B", "reason": "network", "failed_at": "2026-07-06 12:01:00"},
+                    {
+                        "id": "persisted-a",
+                        "title": "A",
+                        "reason": "network",
+                        "failed_at": (failed_at - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                    {
+                        "id": "persisted-b",
+                        "title": "B",
+                        "reason": "network",
+                        "failed_at": failed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    },
                 ]
             )
             self.assertTrue(store.flush(timeout=2))
@@ -1868,6 +2119,19 @@ class FrontendStateServiceTests(unittest.TestCase):
         association_service.set_current_user_defaults.assert_called_once_with(include_video=True, include_image=True)
         association_service.diagnose_current_user.assert_called_once_with(include_video=True, include_image=True)
 
+    def test_register_file_associations_rejects_string_boolean(self):
+        association_factory = Mock()
+        service = FrontendStateService(association_service_factory=association_factory)
+
+        result = service.handle_action(
+            "register_file_associations",
+            {"include_video": "false", "include_image": True},
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("boolean", result["message"])
+        association_factory.assert_not_called()
+
     def test_run_tool_rejects_unknown_tool_id(self):
         result = FrontendStateService().handle_action("run_tool", {"tool_id": "not_real"})
 
@@ -1932,6 +2196,20 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertIn(("download", "image_respects_concurrency", False), config.set_calls)
         manager.set_max_concurrent.assert_called_once_with(5)
         cache.set.assert_called_once_with("download.auto_retry", True, persist=False)
+
+    def test_update_download_options_rejects_string_boolean(self):
+        with TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(str(Path(temp_dir) / "config.json"))
+            service = FrontendStateService(config_manager=manager)
+
+            result = service.handle_action(
+                "update_download_options",
+                {"video_only": "false"},
+            )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("boolean", result["message"])
+            self.assertFalse(manager.get("download", "video_only"))
 
     def test_update_download_options_caps_regular_concurrency_for_image_fast_lane(self):
         class FakeConfig:
@@ -2241,6 +2519,44 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertFalse(delta["full"])
         self.assertIn("active_downloads", delta["changed_sections"])
         self.assertIn("app_status", delta["sections"])
+
+    def test_get_delta_serializes_version_and_snapshot_projection(self):
+        service = FrontendStateService()
+        base_version = service.frontend_version
+        service.record_event("videos.update", {"video_id": "v1", "progress": 10})
+        projected_version = service.frontend_version
+        worker_started = threading.Event()
+        worker_finished = threading.Event()
+
+        def publish_newer_state() -> None:
+            worker_started.set()
+            service.record_event("videos.update", {"video_id": "v1", "progress": 20})
+            worker_finished.set()
+
+        worker = threading.Thread(target=publish_newer_state)
+
+        def build_racing_snapshot(*, sections=None, **_kwargs):
+            worker.start()
+            self.assertTrue(worker_started.wait(timeout=1))
+            concurrent_finished = worker_finished.wait(timeout=0.1)
+            return {
+                "active_downloads": [],
+                "app_status": {
+                    "observed_version": service.frontend_version,
+                    "concurrent_finished": concurrent_finished,
+                },
+                "version": service.frontend_version,
+            }
+
+        with patch.object(service, "get_snapshot", side_effect=build_racing_snapshot):
+            delta = service.get_delta(base_version)
+
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(delta["version"], projected_version)
+        self.assertEqual(delta["sections"]["app_status"]["observed_version"], delta["version"])
+        self.assertFalse(delta["sections"]["app_status"]["concurrent_finished"])
+        self.assertGreater(service.get_delta(delta["version"])["version"], delta["version"])
 
     def test_app_state_changed_is_queued_until_delta_flush(self):
         service = FrontendStateService()

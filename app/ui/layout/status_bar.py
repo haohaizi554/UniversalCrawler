@@ -4,8 +4,9 @@ from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QPainter
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from app.services.icon_registry import action_icon_file, ui_icon_path
-from app.ui.localization import normalize_language, tr
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import action_icon_file
+from shared.localization import normalize_language, tr
 from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon
 

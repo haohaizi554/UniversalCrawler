@@ -7,12 +7,53 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.config.settings import AppSettings
+from app.exceptions import ConfigValidationError
 from app.services.frontend_settings_adapter import platform_settings_rows
-from app.ui.localization import tr
+from shared.localization import tr
 from app.web.controller_config_service import WebControllerConfigService
 
 
 class SettingsContractAuditTests(unittest.TestCase):
+    def test_every_visible_non_platform_setting_is_allowed_by_web_config_api(self) -> None:
+        visible_settings = {
+            "common": {
+                "save_directory",
+                "filename_template",
+                "open_after_download",
+                "show_browser_window",
+                "default_open_mode",
+                "theme",
+            },
+            "download": {
+                "max_concurrent",
+                "image_respects_concurrency",
+                "request_timeout",
+                "max_retries",
+                "resume_enabled",
+                "speed_limit_kb",
+                "video_only",
+            },
+            "playback": {
+                "default_player",
+                "remember_position",
+                "autoplay_next",
+                "image_auto_advance_interval_seconds",
+                "manual_image_switch",
+            },
+            "logging": {
+                "retention_days",
+                "failed_record_retention_days",
+                "ui_log_max_display_count",
+                "auto_copy_trace_on_error",
+            },
+            "appearance": {"language", "follow_system", "accent", "scale", "font_size"},
+        }
+
+        for section, keys in visible_settings.items():
+            for key in keys:
+                with self.subTest(section=section, key=key):
+                    self.assertTrue(WebControllerConfigService.is_web_config_allowed(section, key))
+
     def test_gui_preserves_explicit_zero_retry_setting(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
@@ -62,6 +103,14 @@ class SettingsContractAuditTests(unittest.TestCase):
                         WebControllerConfigService.is_web_config_allowed(row["id"], key),
                         f"settings snapshot exposes {row['id']}.{key}, but PUT /api/config rejects it",
                     )
+
+    def test_frontend_setting_action_rejects_hidden_config_fields(self) -> None:
+        with self.assertRaises(ConfigValidationError):
+            WebControllerConfigService.authorize_frontend_action_payload(
+                "update_setting",
+                {"section": "douyin", "key": "user_agent", "value": "unsafe"},
+                approved_roots=None,
+            )
 
 
 if __name__ == "__main__":

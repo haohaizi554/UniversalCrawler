@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.ui.viewmodels.failed_page_projection import failed_log_time_display, prepare_failed_item_for_display
+from shared.failed_page_projection import failed_log_time_display, prepare_failed_item_for_display
 
 
 def test_failed_page_projection_localizes_dynamic_display_fields() -> None:

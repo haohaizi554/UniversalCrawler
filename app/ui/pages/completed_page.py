@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 from app.ui.components.media_preview_panel import MediaPreviewPanel
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.components.smart_wrap_label import SmartWrapLabel
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.ui.viewmodels.list_page_worker import (
     ListPageRequest,

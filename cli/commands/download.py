@@ -9,9 +9,9 @@ import argparse
 import sys
 
 from app.core.plugin_registry import registry
-from cli.defaults import build_missav_proxy_url, get_default_save_dir, validate_config_types
-from cli.sdk import UcrawlSDK
 from shared import download_command_runtime as runtime
+from shared.runtime_options import build_missav_proxy_url, get_default_save_dir, validate_config_types
+from shared.sdk_runtime import UcrawlSDK
 
 def _runtime_env() -> runtime.DownloadCommandEnv:
     """装配真实依赖；共享 runtime 通过该对象与测试替身解耦。"""

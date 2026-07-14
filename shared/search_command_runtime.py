@@ -27,7 +27,8 @@ class SearchCommandEnv:
 
 def add_search_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", "-s", required=True, choices=["douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"], help="平台 ID")
-    parser.add_argument("keyword", help="搜索关键词 / 链接 / 用户 ID")
+    parser.add_argument("keyword", nargs="?", help="搜索关键词 / 链接 / 用户 ID")
+    parser.add_argument("--keyword", dest="keyword_option", help="搜索关键词 / 链接 / 用户 ID（兼容旧脚本）")
     parser.add_argument("--save-dir", "-d", default=None, help="保存目录 (默认: 从配置读取，通常为 downloads)")
     parser.add_argument("--max-items", type=int, default=None, help="最大资源数 (各平台默认: douyin=20, xiaohongshu=20, bilibili=30, kuaishou=20, missav=全部)")
     parser.add_argument("--max-pages", type=int, default=None, help="翻页数 (仅 bilibili, 默认 1)")
@@ -63,6 +64,17 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_selection_strategy(args: argparse.Namespace, *, env: SearchCommandEnv):
     return env.selection_factory.from_cli_args(args, default_strategy="rule_all")
+
+def resolve_keyword(args: argparse.Namespace) -> str:
+    """Resolve the positional/legacy option keyword without ambiguity."""
+    positional = str(getattr(args, "keyword", "") or "").strip()
+    option = str(getattr(args, "keyword_option", "") or "").strip()
+    if positional and option and positional != option:
+        raise ValueError("keyword 位置参数与 --keyword 的值冲突")
+    keyword = positional or option
+    if not keyword:
+        raise ValueError("keyword 不能为空")
+    return keyword
 
 def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
     source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
@@ -110,6 +122,10 @@ def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
     )
 
 def validate_args(args: argparse.Namespace, *, env: SearchCommandEnv) -> str | None:
+    try:
+        resolve_keyword(args)
+    except ValueError as exc:
+        return f"❌ {exc}"
     config_json = getattr(args, "config", None)
     if config_json:
         try:
@@ -138,11 +154,14 @@ def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tu
         return 1, {"status": "error", "error": error.removeprefix("❌ ").strip()}
 
     config = build_config(args, env=env)
-    strategy = build_selection_strategy(args, env=env)
+    try:
+        strategy = build_selection_strategy(args, env=env)
+    except (TypeError, ValueError) as exc:
+        return 1, {"status": "error", "error": str(exc)}
     source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
     runner = env.CLIRunner_cls(
         source=source,
-        keyword=args.keyword,
+        keyword=resolve_keyword(args),
         save_dir=getattr(args, "save_dir", None) or env.get_default_save_dir(),
         selection_strategy=strategy,
         config=config,

@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from app.debug_logger import debug_logger
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.viewmodels.latest_worker import LatestRequestWorker
 from app.ui.viewmodels.sequential_worker import SequentialRequestWorker
-from app.ui.viewmodels.log_classification import (
+from shared.log_classification import (
     derive_result_type,
     normalized_event_code,
     normalized_raw_level,
@@ -21,16 +21,16 @@ from app.ui.viewmodels.log_classification import (
     result_display_text,
     result_nature_text,
 )
-from app.ui.viewmodels.log_detail_payloads import (
+from shared.log_detail_payloads import (
     build_log_detail_payload,
     extract_trace_id,
     format_json_text,
     normalize_detail_payload,
 )
-from app.ui.viewmodels.log_display import format_platform_label, scope_display_text, stage_display_text
-from app.ui.viewmodels.log_i18n import localize_log_event_code, localize_log_payload, localize_log_text
-from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope
-from app.ui.viewmodels.log_platforms import PlatformUiMeta
+from shared.log_display import format_platform_label, scope_display_text, stage_display_text
+from shared.log_i18n import localize_log_event_code, localize_log_payload, localize_log_text
+from shared.log_pipeline_rules import derive_event_stage, derive_log_scope
+from shared.log_platforms import PlatformUiMeta
 
 
 @dataclass(frozen=True)

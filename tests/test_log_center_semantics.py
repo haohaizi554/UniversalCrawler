@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 
 from app.ui.viewmodels import log_filtering
-from app.ui.viewmodels.log_classification import derive_result_type, result_display_text
-from app.ui.viewmodels.log_display import decorate_log_item
-from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope
+from shared.log_classification import derive_result_type, result_display_text
+from shared.log_display import decorate_log_item
+from shared.log_pipeline_rules import derive_event_stage, derive_log_scope
 
 SEMANTIC_WARN_SAMPLE = {
     "id": "__semantic_test_warn__",

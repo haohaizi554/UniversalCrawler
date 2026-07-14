@@ -40,7 +40,7 @@ def _has_fastapi():
 
 def _sdk_invalid_source(source):
     """触发 SDK 拒绝非法 source。"""
-    from cli.sdk import UcrawlSDK
+    from shared.sdk_runtime import UcrawlSDK
     sdk = UcrawlSDK(save_dir=".")
     try:
         sdk.search(source, "kw")
@@ -50,7 +50,7 @@ def _sdk_invalid_source(source):
 
 def _sdk_invalid_keyword_type(keyword):
     """触发 SDK 拒绝非法 keyword 类型。"""
-    from cli.sdk import UcrawlSDK
+    from shared.sdk_runtime import UcrawlSDK
     sdk = UcrawlSDK(save_dir=".")
     try:
         sdk.search("douyin", keyword)
@@ -59,7 +59,7 @@ def _sdk_invalid_keyword_type(keyword):
         return e
 
 def _sdk_invalid_timeout(timeout):
-    from cli.sdk import UcrawlSDK
+    from shared.sdk_runtime import UcrawlSDK
     sdk = UcrawlSDK(save_dir=".")
     try:
         sdk.search("douyin", "kw", timeout=timeout)
@@ -119,13 +119,14 @@ class PlatformEnumContractTests(unittest.TestCase):
     """平台 ID 在 CLI/SDK/API 三层完全一致。"""
 
     def test_sdk_platforms_match_registry(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         from app.core.plugin_registry import registry
         sdk_ids = set(UcrawlSDK.PLATFORMS)
         reg_ids = {p.id for p in registry.get_all_plugins()}
         # SDK 至少包含核心平台
         for p in ("douyin", "bilibili", "kuaishou", "missav"):
             self.assertIn(p, sdk_ids)
+            self.assertIn(p, reg_ids)
 
     @unittest.skipUnless(_has_fastapi(), "FastAPI not available")
     def test_api_platforms_match_registry(self):
@@ -139,7 +140,7 @@ class PlatformEnumContractTests(unittest.TestCase):
 
     def test_sdk_platforms_subsume_api_platforms(self):
         """SDK.PLATFORMS 应至少覆盖 API 返回的所有 ID。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk_ids = set(UcrawlSDK.PLATFORMS)
         if not _has_fastapi():
             self.skipTest("FastAPI not available")
@@ -254,8 +255,9 @@ class SelectionStrategyContractTests(unittest.TestCase):
 
     def test_sdk_accepts_all_strategies(self):
         """SDK._resolve_selection 应能处理所有有效 strategy 名称。"""
-        from cli.sdk import UcrawlSDK
-        from cli.selection import RuleSelection, PipeSelection
+        from shared.sdk_runtime import UcrawlSDK
+        from shared.pipe_selection import PipeSelection
+        from shared.selection_runtime import RuleSelection
         sdk = UcrawlSDK(save_dir=".")
         for s in self.VALID_STRATEGIES:
             with self.subTest(strategy=s):
@@ -287,7 +289,7 @@ class SelectionStrategyContractTests(unittest.TestCase):
                     self.fail(f"SDK rejected valid strategy {s}: {e}")
 
     def test_sdk_rejects_invalid_strategy(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(ValueError) as cm:
             sdk._resolve_selection({"strategy": "invalid_xyz"})
@@ -333,7 +335,7 @@ class ConfigValidationContractTests(unittest.TestCase):
     """config 校验契约。"""
 
     def test_sdk_rejects_non_dict_config(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk.search("douyin", "kw", max_items="not_int")
@@ -353,25 +355,25 @@ class DownloadValidationContractTests(unittest.TestCase):
     """download_video 校验契约。"""
 
     def test_sdk_rejects_invalid_url_type(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk.download_video(url=123, source="douyin")
 
     def test_sdk_rejects_empty_url(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(ValueError):
             sdk.download_video(url="", source="douyin")
 
     def test_sdk_rejects_non_int_timeout(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk.download_video(url="http://x", source="douyin", timeout="abc")
 
     def test_sdk_rejects_zero_timeout(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(ValueError):
             sdk.download_video(url="http://x", source="douyin", timeout=0)
@@ -390,25 +392,25 @@ class ScanValidationContractTests(unittest.TestCase):
     """scan_directory 校验契约。"""
 
     def test_sdk_scan_rejects_non_string(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk.scan_directory(123)
 
     def test_sdk_scan_rejects_empty(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(ValueError):
             sdk.scan_directory("")
 
     def test_sdk_scan_rejects_zero_limit(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(ValueError):
             sdk.scan_directory(".", scan_limit=0)
 
     def test_sdk_scan_rejects_string_limit(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk.scan_directory(".", scan_limit="abc")
@@ -425,34 +427,34 @@ class SelectionDictContractTests(unittest.TestCase):
     """selection 字典格式契约（与 API 对齐）。"""
 
     def test_sdk_rule_strategy_with_select(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         resolved = sdk._resolve_selection({"strategy": "rule", "select": "0,2"})
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         self.assertIsInstance(resolved, RuleSelection)
 
     def test_sdk_preload_choices(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         resolved = sdk._resolve_selection({"strategy": "preload", "choices": [[0, 1], [2]]})
-        from cli.selection import PipeSelection
+        from shared.pipe_selection import PipeSelection
         self.assertIsInstance(resolved, PipeSelection)
         self.assertEqual(resolved._preloaded, [[0, 1], [2]])
 
     def test_sdk_rule_select_must_be_string(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk._resolve_selection({"strategy": "rule", "select": [0, 1]})
 
     def test_sdk_preload_choices_must_be_list(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk._resolve_selection({"strategy": "preload", "choices": "not a list"})
 
     def test_sdk_preload_choices_must_be_2d(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises(TypeError):
             sdk._resolve_selection({"strategy": "preload", "choices": [0, 1]})  # 1D list
@@ -463,11 +465,11 @@ class SDKOutputStructureTests(unittest.TestCase):
 
     def test_search_returns_dict(self):
         """成功调用返回 dict。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         from unittest.mock import patch as _patch, MagicMock
         sdk = UcrawlSDK(save_dir=".")
         fake_result = {"status": "ok", "items": []}
-        with _patch("cli.sdk.CLIRunner") as mock_runner:
+        with _patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = fake_result
             result = sdk.search("douyin", "kw")
         self.assertIsInstance(result, dict)
@@ -477,7 +479,7 @@ class ListPlatformsContractTests(unittest.TestCase):
     """list_platforms 输出契约。"""
 
     def test_sdk_list_platforms(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         result = sdk.list_platforms()
         self.assertIsInstance(result, list)
@@ -498,7 +500,7 @@ class ListPlatformsContractTests(unittest.TestCase):
     @unittest.skipUnless(_has_fastapi(), "FastAPI not available")
     def test_sdk_list_platforms_matches_api(self):
         """SDK.list_platforms() 的字段名必须与 API 一致。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         from fastapi.testclient import TestClient
         from app.web.server import create_app
         sdk = UcrawlSDK(save_dir=".")

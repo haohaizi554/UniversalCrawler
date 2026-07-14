@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from app.debug_logger import debug_logger
 from app.services.mkv_repair_service import MkvPlaybackRepairService
 from app.services.playback_position_service import PlaybackPositionService
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.task_runtime import LongTaskRunner, ShortTaskRunner, TaskCancelToken
 
 @dataclass(slots=True)

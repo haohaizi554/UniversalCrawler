@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from types import MethodType
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
+
+from shared.selection_base import SelectionStrategy, is_selection_strategy
 
 _EXTERNAL_STRATEGY_BUILDERS: dict[str, Callable[[], Any]] = {}
 _RESERVED_EXTENSION_STRATEGIES = ("interactive", "gui", "pipe")
+_INDEX_TOKEN_PATTERN = re.compile(r"^-?\d+$")
+_INDEX_RANGE_PATTERN = re.compile(r"^\d+[-:]\d+$")
 
 def _build_interactive_strategy():
     from shared.interactive_selection import InteractiveTTYSelection
@@ -42,45 +47,6 @@ def _build_extension_strategy(name: str):
             f"选择策略 {name} 未注册。可用扩展策略: {', '.join(get_registered_selection_strategy_names()) or '无'}"
         )
     return builder()
-
-class SelectionStrategy(Protocol):
-    """二次选择策略协议。
-
-    Spider 调用 ask_user_selection(items) 时由本策略决定返回哪些索引。
-
-    Attributes:
-        策略名: 用于日志输出
-    """
-
-    @property
-    def strategy_name(self) -> str:
-        """策略名称。"""
-        ...
-
-    def select(self, items: list, prompt: str = "") -> list[int] | None:
-        """决定选择哪些项目。
-
-        Args:
-            items: 候选项列表，每项通常包含 {"title": ..., "index": ...} 等
-            prompt: 提示文本 (来自 spider 的 self.log 消息)
-
-        Returns:
-            选中的索引列表 (list[int])，或 None 表示取消
-        """
-        ...
-
-def is_selection_strategy(obj) -> bool:
-    """检查对象是否是有效的 SelectionStrategy 实例（duck-type check）。
-
-    由于 SelectionStrategy 是 Protocol 且未 @runtime_checkable，
-    isinstance() 会抛 TypeError。SDK/REST API 需要用 duck-type 判断。
-    """
-    return (
-        obj is not None
-        and hasattr(obj, "select")
-        and hasattr(obj, "strategy_name")
-        and callable(getattr(obj, "select", None))
-    )
 
 def _parse_index_list(s: str, max_count: int) -> list[int]:
     """解析逗号分隔的索引字符串，支持范围 (如 "0,2-5" 或 "0,2:5")。
@@ -116,6 +82,63 @@ def _parse_index_list(s: str, max_count: int) -> list[int]:
             except ValueError:
                 continue
     return sorted(indices)
+
+def _validate_index_rule(rule: str | None, *, name: str) -> None:
+    """Reject malformed explicit rules before a crawler can start."""
+    if rule is None:
+        return
+    if not isinstance(rule, str):
+        raise TypeError(f"{name} 规则必须是字符串或 None")
+    if not rule.strip():
+        raise ValueError(f"{name} 规则不能为空")
+    for raw_token in rule.split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if _INDEX_TOKEN_PATTERN.fullmatch(token) or _INDEX_RANGE_PATTERN.fullmatch(token):
+            continue
+        raise ValueError(f"{name} 规则包含无效索引: {token}")
+
+def normalize_preloaded_choices(choices: object) -> list[list[int]]:
+    """Validate the SDK/pipe two-dimensional selection payload."""
+    if not isinstance(choices, list):
+        raise TypeError("preload 的 choices 必须是二维数组")
+    normalized: list[list[int]] = []
+    for round_index, round_choices in enumerate(choices):
+        if not isinstance(round_choices, list):
+            raise TypeError(f"preload 的 choices[{round_index}] 必须是数组")
+        normalized_round: list[int] = []
+        for choice_index, value in enumerate(round_choices):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(
+                    f"preload 的 choices[{round_index}][{choice_index}] 必须是整数"
+                )
+            if value < 0:
+                raise ValueError(
+                    f"preload 的 choices[{round_index}][{choice_index}] 不能为负数"
+                )
+            normalized_round.append(value)
+        normalized.append(normalized_round)
+    return normalized
+
+def parse_preloaded_choices(rule: str) -> list[list[int]]:
+    """Parse the CLI ``0|1,2||3`` syntax without swallowing typos."""
+    if not isinstance(rule, str) or not rule.strip():
+        raise ValueError("--preload-choices 不能为空")
+    rounds: list[list[int]] = []
+    for round_index, token in enumerate(rule.split("|")):
+        values: list[int] = []
+        for raw_value in token.split(","):
+            value = raw_value.strip()
+            if not value:
+                continue
+            if not value.isdigit():
+                raise ValueError(
+                    f"--preload-choices 第 {round_index + 1} 轮包含无效索引: {value}"
+                )
+            values.append(int(value))
+        rounds.append(values)
+    return rounds
 
 def build_selection_prompt(selection_round: int, item_count: int) -> str:
     """构建统一的二次选择提示文案。"""
@@ -201,6 +224,8 @@ class RuleSelection(SelectionStrategy):
         first: bool = False,
         last: bool = False,
     ):
+        _validate_index_rule(select, name="select")
+        _validate_index_rule(exclude, name="exclude")
         # 关键：不能用 self.select 命名属性，会覆盖下面的 select() 方法
         self._select_rule = select
         self.exclude = exclude
@@ -228,12 +253,13 @@ class RuleSelection(SelectionStrategy):
         else:
             base = _parse_index_list(self._select_rule, n)
             if not base:
-                # select 解析后为空 → 默认全选
-                base = list(range(n))
+                raise ValueError(f"select 规则没有命中有效范围 0-{n - 1}: {self._select_rule}")
 
         # 2. 排除
         if self.exclude:
             excluded = set(_parse_index_list(self.exclude, n))
+            if not excluded:
+                raise ValueError(f"exclude 规则没有命中有效范围 0-{n - 1}: {self.exclude}")
             base = [i for i in base if i not in excluded]
 
         return base
@@ -263,28 +289,8 @@ class SelectionStrategyFactory:
         if raw is None:
             return []
         if isinstance(raw, str):
-            rounds: list[list[int]] = []
-            for token in raw.split("|"):
-                indices = []
-                for part in token.split(","):
-                    part = part.strip()
-                    if not part:
-                        continue
-                    try:
-                        indices.append(int(part))
-                    except ValueError:
-                        continue
-                rounds.append(indices)
-            return rounds
-        if not isinstance(raw, (list, tuple)):
-            raise TypeError("preload 的 choices 必须是二维数组")
-
-        rounds = []
-        for idx, round_choices in enumerate(raw):
-            if not isinstance(round_choices, (list, tuple)):
-                raise TypeError(f"preload 的 choices[{idx}] 必须是数组，收到 {type(round_choices).__name__}")
-            rounds.append([int(i) for i in round_choices])
-        return rounds
+            return parse_preloaded_choices(raw)
+        return normalize_preloaded_choices(raw)
 
     @classmethod
     def _default_strategy(cls, default_strategy: str):

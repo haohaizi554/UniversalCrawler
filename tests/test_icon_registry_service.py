@@ -3,14 +3,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from app.services.icon_registry import (
+from app.services.icon_registry import resolve_ui_icon_path, ui_icon_path
+from shared.icon_contract import (
     FALLBACK_ICON_FILE,
     PLATFORM_ICON_FILES,
     icon_manifest,
     platform_icon_file,
-    resolve_ui_icon_path,
     safe_icon_file,
-    ui_icon_path,
 )
 from app.utils.qt_runtime import resolve_icon_path
 

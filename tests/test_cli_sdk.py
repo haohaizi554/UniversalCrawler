@@ -1,4 +1,4 @@
-"""cli.sdk UcrawlSDK 单测。
+"""shared.sdk_runtime UcrawlSDK 单测。
 
 测试维度：
 - 单元测试：参数校验、selection 解析、资源接口幂等
@@ -15,7 +15,7 @@ class UcrawlSDKInitTests(unittest.TestCase):
 
     def test_init_with_defaults(self):
         """无参初始化必须能跑。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK()
         self.assertIsNotNone(sdk.save_dir)
         self.assertFalse(sdk.verbose)
@@ -23,25 +23,25 @@ class UcrawlSDKInitTests(unittest.TestCase):
 
     def test_init_with_save_dir(self):
         """显式 save_dir 必须被保存。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir="/tmp/test_dl")
         self.assertEqual(sdk.save_dir, "/tmp/test_dl")
 
     def test_init_invalid_save_dir_type(self):
         """save_dir 非 str/None 必须抛 TypeError。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         with self.assertRaises(TypeError):
             UcrawlSDK(save_dir=123)
 
     def test_init_invalid_config_type(self):
         """config 非 dict/None 必须抛 TypeError。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         with self.assertRaises(TypeError):
             UcrawlSDK(config="not a dict")
 
     def test_context_manager(self):
         """with 语句必须正确 enter/exit。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         with UcrawlSDK() as sdk:
             self.assertIsNotNone(sdk)
         sdk.close()
@@ -50,69 +50,74 @@ class UcrawlSDKSelectionResolveTests(unittest.TestCase):
     """_resolve_selection 测试。"""
 
     def setUp(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         self.sdk = UcrawlSDK()
 
     def test_none_returns_auto(self):
         """selection=None → AutoSelection。"""
-        from cli.selection import AutoSelection
+        from shared.selection_runtime import AutoSelection
         self.assertIsInstance(self.sdk._resolve_selection(None), AutoSelection)
 
     def test_str_all(self):
         """'all' → RuleSelection(all_items=True)。"""
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         s = self.sdk._resolve_selection("all")
         self.assertIsInstance(s, RuleSelection)
         self.assertTrue(s.all)
 
     def test_str_first(self):
         """'first' → RuleSelection(first=True)。"""
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         s = self.sdk._resolve_selection("first")
         self.assertTrue(s.first)
 
     def test_str_last(self):
         """'last' → RuleSelection(last=True)。"""
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         s = self.sdk._resolve_selection("last")
         self.assertTrue(s.last)
 
     def test_str_indices(self):
         """'0,2,5' → RuleSelection(select='0,2,5')。"""
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         s = self.sdk._resolve_selection("0,2,5")
         # RuleSelection.select 是方法，规则存储在 _select_rule 属性中
         self.assertEqual(s._select_rule, "0,2,5")
 
+    def test_str_selection_typo_raises(self):
+        """未知快捷词不能被当作索引规则并在运行时意外全选。"""
+        with self.assertRaisesRegex(ValueError, "frist"):
+            self.sdk._resolve_selection("frist")
+
     def test_str_interactive(self):
         """'interactive' → InteractiveTTYSelection。"""
-        from cli.selection import InteractiveTTYSelection
+        from shared.interactive_selection import InteractiveTTYSelection
         s = self.sdk._resolve_selection("interactive")
         self.assertIsInstance(s, InteractiveTTYSelection)
 
     def test_str_pipe(self):
         """'pipe' → PipeSelection。"""
-        from cli.selection import PipeSelection
+        from shared.pipe_selection import PipeSelection
         s = self.sdk._resolve_selection("pipe")
         self.assertIsInstance(s, PipeSelection)
 
     def test_list_returns_preload(self):
         """list[int] → PipeSelection(preloaded_choices=[[...]])。"""
-        from cli.selection import PipeSelection
+        from shared.pipe_selection import PipeSelection
         s = self.sdk._resolve_selection([0, 2, 5])
         self.assertIsInstance(s, PipeSelection)
         self.assertEqual(s._preloaded, [[0, 2, 5]])
 
     def test_dict_strategy_all(self):
         """{"strategy": "all"} → RuleSelection(all=True)。"""
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         s = self.sdk._resolve_selection({"strategy": "all"})
         self.assertIsInstance(s, RuleSelection)
         self.assertTrue(s.all)
 
     def test_dict_strategy_rule(self):
         """{"strategy": "rule", "select": "0,2"} → RuleSelection。"""
-        from cli.selection import RuleSelection
+        from shared.selection_runtime import RuleSelection
         s = self.sdk._resolve_selection({"strategy": "rule", "select": "0,2"})
         # RuleSelection.select 是方法，规则存储在 _select_rule 属性中
         self.assertEqual(s._select_rule, "0,2")
@@ -124,7 +129,7 @@ class UcrawlSDKSelectionResolveTests(unittest.TestCase):
 
     def test_dict_strategy_preload(self):
         """{"strategy": "preload", "choices": [[0], [1, 2]]} → PipeSelection。"""
-        from cli.selection import PipeSelection
+        from shared.pipe_selection import PipeSelection
         s = self.sdk._resolve_selection({"strategy": "preload", "choices": [[0], [1, 2]]})
         self.assertIsInstance(s, PipeSelection)
         self.assertEqual(s._preloaded, [[0], [1, 2]])
@@ -133,6 +138,13 @@ class UcrawlSDKSelectionResolveTests(unittest.TestCase):
         """{"strategy": "preload", "choices": [1, 2]} → TypeError（必须二维）。"""
         with self.assertRaises(TypeError):
             self.sdk._resolve_selection({"strategy": "preload", "choices": [1, 2]})
+
+    def test_dict_strategy_preload_rejects_non_integer_indices(self):
+        """预加载二维数组中的字符串和 bool 不能延迟到运行时。"""
+        with self.assertRaises(TypeError):
+            self.sdk._resolve_selection({"strategy": "preload", "choices": [[0, "1"]]})
+        with self.assertRaises(TypeError):
+            self.sdk._resolve_selection({"strategy": "preload", "choices": [[True]]})
 
     def test_dict_strategy_unknown_raises(self):
         """{"strategy": "unknown"} → ValueError。"""
@@ -148,18 +160,18 @@ class UcrawlSDKSearchValidationTests(unittest.TestCase):
     """search() 参数校验测试（不真跑爬虫）。"""
 
     def setUp(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         self.sdk = UcrawlSDK()
 
     def test_search_invalid_source_type(self):
         """source 非 str → TypeError。"""
-        with patch("cli.runner.CLIRunner") as mock:
+        with patch("shared.sdk_runtime.CLIRunner"):
             with self.assertRaises(TypeError):
                 self.sdk.search(123, "kw")
 
     def test_search_invalid_keyword_type(self):
         """keyword 非 str → TypeError。"""
-        with patch("cli.runner.CLIRunner") as mock:
+        with patch("shared.sdk_runtime.CLIRunner"):
             with self.assertRaises(TypeError):
                 self.sdk.search("douyin", 123)
 
@@ -182,6 +194,11 @@ class UcrawlSDKSearchValidationTests(unittest.TestCase):
         """timeout='abc' → TypeError。"""
         with self.assertRaises(TypeError):
             self.sdk.search("douyin", "kw", timeout="abc")
+
+    def test_search_bool_timeout_is_not_numeric(self):
+        """bool 是 int 的子类，但不能作为超时值进入范围校验。"""
+        with self.assertRaises(TypeError):
+            self.sdk.search("douyin", "kw", run_timeout=True)
 
     def test_search_negative_timeout(self):
         """timeout=0 → ValueError。"""
@@ -210,11 +227,11 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
 
     def test_search_returns_runner_result(self):
         """search() 必须原样返回 CLIRunner.run() 的结果。"""
-        from cli.sdk import UcrawlSDK
-        from cli.selection import RuleSelection
+        from shared.sdk_runtime import UcrawlSDK
+        from shared.selection_runtime import RuleSelection
         sdk = UcrawlSDK()
         expected = {"status": "ok", "items": [], "logs": []}
-        with patch("cli.sdk.CLIRunner") as MockRunner:
+        with patch("shared.sdk_runtime.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = expected
             result = sdk.search("douyin", "kw")
@@ -222,9 +239,9 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
 
     def test_search_merges_default_config(self):
         """SDK 的 default_config 必须合并到 CLIRunner 的 config。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(config={"max_items": 99, "timeout": 5})
-        with patch("cli.sdk.CLIRunner") as MockRunner:
+        with patch("shared.sdk_runtime.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok"}
             sdk.search("douyin", "kw", max_items=10)
@@ -235,9 +252,9 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
 
     def test_search_skips_none_config_values(self):
         """None 值的 config key 必须被过滤（不覆盖默认值）。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK()
-        with patch("cli.sdk.CLIRunner") as MockRunner:
+        with patch("shared.sdk_runtime.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok"}
             sdk.search("douyin", "kw", max_items=None)
@@ -247,9 +264,9 @@ class UcrawlSDKSearchFunctionalTests(unittest.TestCase):
 
     def test_search_missav_proxy_normalized(self):
         """missav 平台的 proxy 字段必须用 build_missav_proxy_url 转换。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK()
-        with patch("cli.sdk.CLIRunner") as MockRunner:
+        with patch("shared.sdk_runtime.CLIRunner") as MockRunner:
             instance = MockRunner.return_value
             instance.run.return_value = {"status": "ok"}
             sdk.search("missav", "ABC", proxy="Clash (7890)")
@@ -261,14 +278,14 @@ class UcrawlSDKCloseTests(unittest.TestCase):
 
     def test_close_idempotent(self):
         """close() 必须幂等（多次调用不报错）。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK()
         sdk.close()
         sdk.close()  # 不应该抛异常
 
     def test_close_keeps_compatibility_interface(self):
         """close() 保留兼容接口且可重复调用。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK()
         sdk.close()
         sdk.close()

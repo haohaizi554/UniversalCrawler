@@ -263,6 +263,9 @@ def validate_config_types(user_config: dict) -> str | None:
 
     for key, expected in _CONFIG_TYPE_RULES.items():
         val = user_config.get(key)
+        numeric_types = expected if isinstance(expected, tuple) else (expected,)
+        if val is not None and isinstance(val, bool) and any(t in (int, float) for t in numeric_types):
+            return f"config.{key} 必须是数字，收到 bool"
         if val is not None and not isinstance(val, expected):
             # 元组类型（如 (int, float)）由 isinstance 直接支持，无需特殊处理
             # bool 是 int 的子类，需要排除

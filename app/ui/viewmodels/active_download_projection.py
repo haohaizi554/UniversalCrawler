@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.ui.localization import normalize_language, platform_display_name, tr
+from shared.localization import normalize_language, platform_display_name, tr
 
 _EVENT_PATTERNS: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
     "en-US": (

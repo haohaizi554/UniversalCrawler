@@ -19,9 +19,17 @@ import os
 import sys
 from pathlib import Path
 
-from cli.defaults import get_platform_defaults, get_default_save_dir, build_missav_proxy_url
-from cli.sdk import UcrawlSDK
-from cli.runner import CLIRunner
+from shared.cli_runner_runtime import CLIRunner
+from shared.interactive_selection import InteractiveTTYSelection
+from shared.pipe_selection import PipeSelection
+from shared.runtime_options import (
+    build_missav_proxy_url,
+    get_default_save_dir,
+    get_platform_defaults,
+    validate_config_types,
+)
+from shared.sdk_runtime import UcrawlSDK
+from shared.selection_runtime import RuleSelection, parse_preloaded_choices
 from app.config import cfg
 from app.utils.runtime_paths import is_temporary_path
 
@@ -333,6 +341,72 @@ def _build_config_summary_lines(platform_id: str, config: dict, platform_name: s
         lines.append(f"  代理:   {config.get('proxy', '')}")
     return lines
 
+def _finalize_interactive_config(args: argparse.Namespace, platform_id: str, config: dict) -> dict:
+    """Apply every non-interactive override before rendering confirmation."""
+    finalized = dict(config)
+    config_json = getattr(args, "config", None)
+    if config_json:
+        try:
+            parsed = json.loads(config_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"--config JSON 解析失败: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("--config 必须是 JSON 对象")
+        config_err = validate_config_types(parsed)
+        if config_err:
+            raise ValueError(config_err)
+        finalized.update({key: value for key, value in parsed.items() if value is not None})
+
+    value_overrides = {
+        "cookie": "cookie",
+        "download_strategy": "download_strategy",
+        "referer": "referer",
+        "ua": "ua",
+        "folder_name": "folder_name",
+        "file_name": "file_name",
+        "content_type": "content_type",
+        "proxy": "proxy",
+        "priority": "priority",
+    }
+    for arg_name, config_name in value_overrides.items():
+        value = getattr(args, arg_name, None)
+        if value:
+            finalized[config_name] = value
+
+    if getattr(args, "use_subdir", None):
+        finalized["use_subdir"] = True
+    if finalized.get("folder_name") and not finalized.get("use_subdir"):
+        finalized["use_subdir"] = True
+    if getattr(args, "individual_only", None):
+        finalized["individual_only"] = True
+    if platform_id == "missav" and finalized.get("proxy") is not None:
+        finalized["proxy"] = build_missav_proxy_url(finalized["proxy"])
+    return finalized
+
+def _build_interactive_selection(args: argparse.Namespace):
+    """Build the TUI selection strategy with the same strict CLI contract."""
+    if getattr(args, "pipe", False):
+        return PipeSelection()
+    if getattr(args, "preload_choices", None):
+        return PipeSelection(preloaded_choices=parse_preloaded_choices(args.preload_choices))
+    if (
+        getattr(args, "select", None)
+        or getattr(args, "exclude", None)
+        or getattr(args, "select_all", False)
+        or getattr(args, "first", False)
+        or getattr(args, "last", False)
+    ):
+        return RuleSelection(
+            select=getattr(args, "select", None),
+            exclude=getattr(args, "exclude", None),
+            all_items=getattr(args, "select_all", False),
+            first=getattr(args, "first", False),
+            last=getattr(args, "last", False),
+        )
+    # GUISelection can cross a QApplication boundary from the worker thread.
+    # The TUI keeps its stable one-based terminal selection instead.
+    return InteractiveTTYSelection()
+
 def _item_display_title(item: dict) -> str:
     """将平台返回的空值或非字符串标题归一化为可安全展示的文本。"""
     return str(item.get("title") or item.get("id") or "未知")
@@ -573,6 +647,12 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
             _persist_save_dir(save_dir)
             print(f"  {GREEN}✓ {save_dir}{RESET}\n")
 
+            try:
+                config = _finalize_interactive_config(args, platform_id, config)
+            except (TypeError, ValueError) as exc:
+                sys.stderr.write(f"❌ {exc}\n")
+                return 1
+
             print(f"{BOLD}步骤 5/5: 确认执行{RESET}")
             cookie_data = _load_cookie(platform_id)
             if _AUTH_FILE_MAP.get(platform_id) is None:
@@ -611,97 +691,16 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
                     continue
                 return 0
 
-            config_json = getattr(args, "config", None)
-            if config_json:
-                try:
-                    user_config = json.loads(config_json)
-                    if isinstance(user_config, dict):
-                        filtered = {k: v for k, v in user_config.items() if v is not None}
-                        config.update(filtered)
-                except json.JSONDecodeError:
-                    pass
-                try:
-                    parsed = json.loads(config_json)
-                    if not isinstance(parsed, dict):
-                        sys.stderr.write("❌ --config 必须是 JSON 对象\n")
-                        return 1
-                except json.JSONDecodeError as e:
-                    sys.stderr.write(f"❌ --config JSON 解析失败: {e}\n")
-                    return 1
-                from cli.defaults import validate_config_types
-                config_err = validate_config_types(parsed)
-                if config_err:
-                    sys.stderr.write(f"❌ {config_err}\n")
-                    return 1
-
-            if getattr(args, "cookie", None):
-                config["cookie"] = args.cookie
-            if getattr(args, "download_strategy", None):
-                config["download_strategy"] = args.download_strategy
-            if getattr(args, "referer", None):
-                config["referer"] = args.referer
-            if getattr(args, "ua", None):
-                config["ua"] = args.ua
-            if getattr(args, "folder_name", None):
-                config["folder_name"] = args.folder_name
-            if getattr(args, "use_subdir", None):
-                config["use_subdir"] = True
-            # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
-            # GUI BilibiliSpider 设置 "use_subdir": bool(folder_name)，
-            # 即有 folder_name 就自动使用子目录。CLI 用户只传 --folder-name 不传 --use-subdir 时，
-            # 应与 GUI 行为一致，自动启用子目录
-            if config.get("folder_name") and not config.get("use_subdir"):
-                config["use_subdir"] = True
-            if getattr(args, "file_name", None):
-                config["file_name"] = args.file_name
-            if getattr(args, "content_type", None):
-                config["content_type"] = args.content_type
-            # 与 CLI search/download --proxy 对齐：代理便捷参数合并到 config
-            if getattr(args, "proxy", None):
-                config["proxy"] = args.proxy
-            # 与 CLI search/download --individual-only/--priority 对齐：MissAV 专属便捷参数合并到 config
-            if getattr(args, "individual_only", None):
-                config["individual_only"] = True
-            if getattr(args, "priority", None):
-                config["priority"] = args.priority
-            # 与 CLI search/download 和 REST API/SDK 对齐：统一转换 missav proxy
-            if platform_id == "missav" and "proxy" in config and config["proxy"] is not None:
-                config["proxy"] = build_missav_proxy_url(config["proxy"])
-
             run_timeout = getattr(args, "run_timeout", None)
             if run_timeout is not None and run_timeout <= 0:
                 sys.stderr.write("❌ --run-timeout 必须大于 0\n")
                 return 1
 
-            from cli.selection import RuleSelection, PipeSelection, InteractiveTTYSelection
-            if getattr(args, "pipe", False):
-                selection = PipeSelection()
-            elif getattr(args, "preload_choices", None):
-                rounds = []
-                for token in args.preload_choices.split("|"):
-                    indices = []
-                    for part in token.split(","):
-                        part = part.strip()
-                        if part:
-                            try:
-                                indices.append(int(part))
-                            except ValueError:
-                                pass
-                    rounds.append(indices)
-                selection = PipeSelection(preloaded_choices=rounds)
-            elif getattr(args, "select", None) or getattr(args, "exclude", None) or getattr(args, "select_all", False) or getattr(args, "first", False) or getattr(args, "last", False):
-                selection = RuleSelection(
-                    select=getattr(args, "select", None),
-                    exclude=getattr(args, "exclude", None),
-                    all_items=getattr(args, "select_all", False),
-                    first=getattr(args, "first", False),
-                    last=getattr(args, "last", False),
-                )
-            else:
-                # GUISelection 在 CLI 交互式引导里会从 worker 线程触发 QApplication 边界，
-                # 运行时证据表明会导致多平台统一出现 0xC0000005 native crash。
-                # 这里先回退到稳定的 TTY 选择流程，保留 1 基索引和全选/取消等交互能力。
-                selection = InteractiveTTYSelection()
+            try:
+                selection = _build_interactive_selection(args)
+            except (TypeError, ValueError) as exc:
+                sys.stderr.write(f"❌ {exc}\n")
+                return 1
 
             download = not getattr(args, "no_download", False)
             if run_timeout:

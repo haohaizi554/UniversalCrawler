@@ -92,6 +92,67 @@ class InteractiveCommandTests(unittest.TestCase):
         runner.run.assert_called_once()
         self.assertTrue(sdk.close.called)
 
+    def test_confirmation_renders_the_normalized_runner_config(self):
+        """确认页必须展示合并后的最终配置，不能确认一套、执行另一套。"""
+        from cli.commands.interactive import handle_interactive_command
+
+        args = self._make_args()
+        args.config = '{"max_items": 7, "timeout": 90}'
+        sdk = Mock()
+        sdk.list_platforms.return_value = [
+            {"id": "douyin", "name": "抖音", "search_placeholder": "输入关键词"},
+        ]
+        runner = Mock()
+        runner.run.return_value = {"status": "ok", "elapsed": 0.1, "items": []}
+        output = io.StringIO()
+
+        with patch("cli.commands.interactive.UcrawlSDK", return_value=sdk), patch(
+            "cli.commands.interactive.CLIRunner", return_value=runner
+        ) as runner_cls, patch(
+            "cli.commands.interactive.get_default_save_dir", return_value=r"D:\Downloads\UCP"
+        ), patch("cli.commands.interactive._is_temp_dir", return_value=False), patch(
+            "cli.commands.interactive._load_cookie", return_value={"sessionid_ss": "cookie"}
+        ), patch("cli.commands.interactive._check_cookie_valid", return_value=True), patch(
+            "cli.commands.interactive._find_cookie_file", return_value=Path("dy_auth.json")
+        ), patch("cli.commands.interactive.cfg.set"), patch(
+            "builtins.input", side_effect=["1", "测试关键词", "1", "", "y", ""]
+        ), patch("sys.stdout", output):
+            exit_code = handle_interactive_command(args)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("视频数: 7", output.getvalue())
+        self.assertEqual(runner_cls.call_args.kwargs["config"]["max_items"], 7)
+        self.assertEqual(runner_cls.call_args.kwargs["config"]["timeout"], 90)
+
+    def test_interactive_invalid_selection_rule_returns_error_without_runner(self):
+        """TUI 的显式选择拼写错误必须结构化失败，而不是抛 traceback。"""
+        from cli.commands.interactive import handle_interactive_command
+
+        args = self._make_args()
+        args.select = "frist"
+        sdk = Mock()
+        sdk.list_platforms.return_value = [
+            {"id": "douyin", "name": "抖音", "search_placeholder": "输入关键词"},
+        ]
+        error = io.StringIO()
+
+        with patch("cli.commands.interactive.UcrawlSDK", return_value=sdk), patch(
+            "cli.commands.interactive.CLIRunner"
+        ) as runner_cls, patch(
+            "cli.commands.interactive.get_default_save_dir", return_value=r"D:\Downloads\UCP"
+        ), patch("cli.commands.interactive._is_temp_dir", return_value=False), patch(
+            "cli.commands.interactive._load_cookie", return_value={"sessionid_ss": "cookie"}
+        ), patch("cli.commands.interactive._check_cookie_valid", return_value=True), patch(
+            "cli.commands.interactive._find_cookie_file", return_value=Path("dy_auth.json")
+        ), patch("cli.commands.interactive.cfg.set"), patch(
+            "builtins.input", side_effect=["1", "测试关键词", "1", "", "y"]
+        ), patch("sys.stderr", error):
+            result = handle_interactive_command(args)
+
+        self.assertEqual(result, 1)
+        self.assertIn("frist", error.getvalue())
+        runner_cls.assert_not_called()
+
     def test_persist_save_dir_skips_temporary_directory(self):
         """系统临时目录只用于当前会话，不应写回全局配置。"""
         from cli.commands.interactive import _persist_save_dir
@@ -244,7 +305,7 @@ class InteractiveCommandTests(unittest.TestCase):
     def test_interactive_defaults_to_tty_selection_to_avoid_gui_crash(self):
         """未显式指定规则时，交互式引导默认使用 TTY 选择，避免 GUISelection native crash。"""
         from cli.commands.interactive import handle_interactive_command
-        from cli.selection import InteractiveTTYSelection
+        from shared.interactive_selection import InteractiveTTYSelection
 
         sdk = Mock()
         sdk.list_platforms.return_value = [

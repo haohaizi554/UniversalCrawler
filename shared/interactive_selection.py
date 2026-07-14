@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from shared.selection_runtime import SelectionStrategy
+from shared.selection_base import SelectionStrategy
 
 class InteractiveTTYSelection(SelectionStrategy):
     """TTY 交互式选择策略。"""

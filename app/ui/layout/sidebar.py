@@ -5,10 +5,11 @@ from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from app.core.plugin_registry import registry
-from app.services.frontend_state_service import PAGE_DEFINITIONS
-from app.services.icon_registry import nav_icon_file, platform_icon_file, ui_icon_path
+from shared.frontend_page_definitions import PAGE_DEFINITIONS
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import nav_icon_file, platform_icon_file
 from app.ui.components.combo_popup import PolishedComboBox, polish_combo_popup
-from app.ui.localization import normalize_language, platform_display_name, tr
+from shared.localization import normalize_language, platform_display_name, tr
 from app.ui.layout.island import IslandCard
 from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon

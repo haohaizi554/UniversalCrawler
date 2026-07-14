@@ -17,6 +17,7 @@ import argparse
 
 # 平台 ID 映射
 PLATFORMS = {
+    "xiaohongshu": {"name": "小红书", "aliases": ["xiaohongshu", "xhs"]},
     "douyin": {"name": "抖音", "aliases": ["dy", "douyin"]},
     "bilibili": {"name": "B站", "aliases": ["bilibili", "bili", "bl"]},
     "kuaishou": {"name": "快手", "aliases": ["kuaishou", "ks"]},
@@ -108,6 +109,8 @@ def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
     # 平台特定参数（默认值由 DEFAULT_CONFIG 统一管理，此处 default=None）
     if platform_id == "douyin":
         parser.add_argument("--max-items", type=int, default=None, help="最大视频数 (默认 20)")
+    elif platform_id == "xiaohongshu":
+        parser.add_argument("--max-items", type=int, default=None, help="最大笔记数 (默认 20)")
     elif platform_id == "bilibili":
         parser.add_argument("--max-pages", type=int, default=None, help="翻页数 (默认 1)")
         parser.add_argument("--max-items", type=int, default=None, help="最大视频数 (默认 30)")

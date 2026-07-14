@@ -1,4 +1,4 @@
-from app.ui.viewmodels.log_classification import (
+from shared.log_classification import (
     CLASSIFICATION_FACTS_KEY,
     cache_classification_facts,
     classification_facts,
@@ -11,7 +11,7 @@ from app.ui.viewmodels.log_classification import (
     result_display_text,
     result_nature_text,
 )
-from app.ui.viewmodels.log_pipeline_rules import (
+from shared.log_pipeline_rules import (
     derive_event_stage,
     derive_log_scope,
     derive_scope_reason,

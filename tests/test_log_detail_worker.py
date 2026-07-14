@@ -11,7 +11,7 @@ from app.ui.viewmodels.log_detail_worker import (
     build_cached_log_detail_result,
     build_log_detail_result,
 )
-from app.ui.viewmodels.log_platforms import builtin_platform_metas
+from shared.log_platforms import builtin_platform_metas
 
 
 def _request(item, **overrides):

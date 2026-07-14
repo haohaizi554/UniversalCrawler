@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.ui.i18n_catalogs import CATALOGS
+from shared.i18n_catalogs import CATALOGS
 
 SUPPORTED_LANGUAGES = ("zh-CN", "en-US", "zh-TW")
 
@@ -87,6 +87,11 @@ def tr(text: str, language: str | None) -> str:
     if day_match and normalized == "zh-TW":
         recommended = "（推薦）" if day_match.group(2) else ""
         return f"{day_match.group(1)} 天{recommended}"
+    today_match = re.fullmatch(r"今天\s+(.+)", value)
+    if today_match and normalized == "en-US":
+        return f"Today {today_match.group(1)}"
+    if today_match and normalized == "zh-TW":
+        return f"今天 {today_match.group(1)}"
     if normalized == "en-US":
         match = re.fullmatch(r"共\s*(\d+)\s*项", value)
         if match:

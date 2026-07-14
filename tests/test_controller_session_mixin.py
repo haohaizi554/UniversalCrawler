@@ -2,8 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.controllers import session_mixin
-from app.controllers.session_mixin import ControllerSessionMixin
+from shared import controller_session as session_mixin
+from shared.controller_session import ControllerSessionMixin
 from app.models import VideoItem
 
 class _DummyController(ControllerSessionMixin):

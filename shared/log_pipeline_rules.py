@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.ui.viewmodels.log_classification import (
+from shared.log_classification import (
     classification_facts,
     derive_result_type,
     is_performance_log,

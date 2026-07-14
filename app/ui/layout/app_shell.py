@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 
 from app.ui.components.combo_popup import fit_combo_width_to_contents, refresh_themed_combo_boxes
 from app.ui.layout.island import IslandCard
-from app.ui.localization import is_translation_of, normalize_language, source_text_for_translation, tr
+from shared.localization import is_translation_of, normalize_language, source_text_for_translation, tr
 from app.ui.layout.sidebar import SidebarWidget
 from app.ui.layout.status_bar import StatusBarWidget
 from app.ui.layout.top_bar import TopBarWidget
@@ -395,6 +395,8 @@ class AppShell(QWidget):
             return True
         if page_id == "logs":
             return "log_items" in changed_sections
+        if page_id == "toolbox":
+            return bool({"toolbox_items", "toolbox_recent_items"} & changed_sections)
         if page_id == "active" and {"settings_snapshot", "download_options"} & changed_sections:
             return True
         if page_id == "settings" and {"settings_snapshot", "settings_contract"} & changed_sections:

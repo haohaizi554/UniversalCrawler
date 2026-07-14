@@ -23,7 +23,7 @@ from app.controllers.download_controller_mixin import DownloadControllerMixin
 from app.controllers.event_bridge import DomainEventBridge
 from app.core.event_bus import EventBus
 from app.controllers.media_host_controller_mixin import MediaHostControllerMixin
-from app.controllers.media_library_mixin import MediaLibraryMixin
+from app.services.media_library_runtime import MediaLibraryMixin
 from app.core.download_manager import DownloadManager
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
@@ -440,4 +440,3 @@ class ApplicationController(
             return
         self._host().release_media_playback()
         self._set_current_playing_id(None)
-

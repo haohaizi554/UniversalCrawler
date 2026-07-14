@@ -267,6 +267,18 @@ class FrontendEventAggregator:
                     sections.update(dirty_sections)
             return frozenset(sections)
 
+    def delta_since(
+        self,
+        base_version: int,
+    ) -> tuple[FrontendDirtyState, frozenset[str], tuple[str, ...]]:
+        """Return one version-consistent view of dirty sections and deletions."""
+        with self._lock:
+            return (
+                self.peek(),
+                self.sections_since(base_version),
+                self.deleted_ids_since(base_version),
+            )
+
     def deleted_ids_since(self, base_version: int) -> tuple[str, ...]:
         with self._lock:
             try:
@@ -344,4 +356,3 @@ class FrontendEventAggregator:
     def _remember_deleted_value(self, video_id: str, version: int) -> None:
         self._deleted_ids.add(str(video_id))
         self._deleted_history.append((version, str(video_id)))
-

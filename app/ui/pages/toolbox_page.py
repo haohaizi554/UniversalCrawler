@@ -4,8 +4,10 @@ from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import QGridLayout, QLabel, QPushButton, QSplitter, QTextEdit, QToolButton, QVBoxLayout, QWidget
 
 from app.services.icon_registry import ui_icon_path
+from shared.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame
 from app.utils.qt_runtime import load_qt_icon
+
 
 class ToolboxPage(PageFrame):
     tool_requested = pyqtSignal(str)
@@ -24,12 +26,14 @@ class ToolboxPage(PageFrame):
         self.detail.setMaximumWidth(460)
         detail_layout = QVBoxLayout(self.detail)
         detail_layout.setContentsMargins(14, 0, 0, 0)
-        detail_layout.addWidget(QLabel("最近使用"))
+        self.recent_title = QLabel("最近使用")
+        detail_layout.addWidget(self.recent_title)
         self.recent = QTextEdit()
         self.recent.setReadOnly(True)
         self.recent.setMaximumHeight(160)
         detail_layout.addWidget(self.recent)
-        detail_layout.addWidget(QLabel("工具详情"))
+        self.detail_title = QLabel("工具详情")
+        detail_layout.addWidget(self.detail_title)
         self.detail_text = QTextEdit()
         self.detail_text.setReadOnly(True)
         detail_layout.addWidget(self.detail_text, 1)
@@ -45,25 +49,45 @@ class ToolboxPage(PageFrame):
         self.recent_items: list[dict] = []
         self.current_tool_id = ""
         self._tool_buttons: dict[str, QToolButton] = {}
+        self._language = "zh-CN"
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._language:
+            return
+        self._language = normalized
+        self.recent_title.setText(self._t("最近使用"))
+        self.detail_title.setText(self._t("工具详情"))
+        self.open_button.setText(self._t("打开工具"))
+        self._render_tool_cards()
+        self._render_recent()
+
+    def _t(self, text: object) -> str:
+        return tr(str(text or ""), self._language)
 
     def render(self, snapshot: dict) -> None:
+        self.items = list(snapshot.get("toolbox_items") or [])
+        self.recent_items = list(snapshot.get("toolbox_recent_items") or [])
+        self._render_tool_cards()
+        self._render_recent()
+
+    def _render_tool_cards(self) -> None:
+        previous_tool_id = self.current_tool_id
         while self.grid.count():
             child = self.grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        self.items = list(snapshot.get("toolbox_items") or [])
-        self.recent_items = list(snapshot.get("toolbox_recent_items") or [])
         self._tool_buttons = {}
         for index, item in enumerate(self.items):
             tool_id = str(item.get("id") or "")
             button = QToolButton()
             button.setObjectName("ToolCardButton")
-            button.setText(f"{item.get('title')}\n{item.get('summary')}")
+            button.setText(f"{self._t(item.get('title'))}\n{self._t(item.get('summary'))}")
             button.setCheckable(True)
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             button.setMinimumHeight(102)
             button.setMinimumWidth(260)
-            button.setToolTip(str(item.get("summary") or ""))
+            button.setToolTip(self._t(item.get("summary")))
             icon = load_qt_icon([ui_icon_path(item.get("icon_file", ""))])
             if icon is not None:
                 button.setIcon(icon)
@@ -71,9 +95,11 @@ class ToolboxPage(PageFrame):
             button.clicked.connect(lambda _checked=False, tool_id=tool_id: self._select_tool(tool_id))
             self._tool_buttons[tool_id] = button
             self.grid.addWidget(button, index // 2, index % 2)
-        if self.items:
-            self._select_tool(self.items[0].get("id", ""))
-        self._render_recent()
+        available_ids = {str(item.get("id") or "") for item in self.items}
+        selected_id = previous_tool_id if previous_tool_id in available_ids else ""
+        if not selected_id and self.items:
+            selected_id = str(self.items[0].get("id") or "")
+        self._select_tool(selected_id)
 
     def _select_tool(self, tool_id: str) -> None:
         self.current_tool_id = tool_id
@@ -83,22 +109,27 @@ class ToolboxPage(PageFrame):
         self.detail_text.setPlainText(
             "\n".join(
                 [
-                    f"工具: {item.get('title', '')}",
+                    f"{self._t('工具')}: {self._t(item.get('title'))}",
                     "",
-                    f"说明: {item.get('summary', '')}",
+                    f"{self._t('说明')}: {self._t(item.get('summary'))}",
                     "",
-                    f"输入示例: {item.get('input_example', '')}",
+                    f"{self._t('输入示例')}: {self._t(item.get('input_example'))}",
                     "",
-                    f"输出示例: {item.get('output_example', '')}",
+                    f"{self._t('输出示例')}: {self._t(item.get('output_example'))}",
                 ]
             )
         )
 
     def _render_recent(self) -> None:
         if not self.recent_items:
-            self.recent.setPlainText("暂无最近使用记录")
+            self.recent.setPlainText(self._t("暂无最近使用记录"))
             return
-        self.recent.setPlainText("\n".join(f"{item.get('title', '')}  {item.get('last_used', '')}" for item in self.recent_items))
+        self.recent.setPlainText(
+            "\n".join(
+                f"{self._t(item.get('title'))}  {self._t(item.get('last_used'))}"
+                for item in self.recent_items
+            )
+        )
 
     def _emit_current_tool(self) -> None:
         if self.current_tool_id:

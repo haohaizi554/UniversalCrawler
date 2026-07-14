@@ -7,8 +7,9 @@ from typing import Any
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt6.QtGui import QIcon
 
-from app.services.icon_registry import platform_icon_file, queue_status_icon_file, ui_icon_path
-from app.ui.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import platform_icon_file, queue_status_icon_file
+from shared.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
 from app.utils.qt_runtime import load_qt_icon
 
 SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 2

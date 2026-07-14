@@ -1,63 +1,22 @@
-"""通用 search 命令：ucrawl search --source douyin --keyword "测试"."""
+"""通用 search 命令：ucrawl search --source douyin "测试"."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 
-import cli.runner as cli_runner_module
-from cli.defaults import build_missav_proxy_url, get_default_save_dir, get_platform_defaults, validate_config_types
-from cli.runner import CLIRunner
-from cli.selection import (
-    InteractiveTTYSelection,
-    PipeSelection,
-    RuleSelection,
-)
 from shared import search_command_runtime as runtime
-
-class SelectionStrategyFactory:
-    """CLI 本地选择策略工厂，保留旧 cli.selection 类的可替换性。"""
-
-    @staticmethod
-    def from_cli_args(args: argparse.Namespace, *, default_strategy: str = "rule_all"):
-        if getattr(args, "interactive", False):
-            return InteractiveTTYSelection()
-        if getattr(args, "pipe", False):
-            return PipeSelection()
-        if getattr(args, "preload_choices", None):
-            rounds = []
-            for token in args.preload_choices.split("|"):
-                indices = []
-                for part in token.split(","):
-                    part = part.strip()
-                    if not part:
-                        continue
-                    try:
-                        indices.append(int(part))
-                    except ValueError:
-                        pass
-                rounds.append(indices)
-            return PipeSelection(preloaded_choices=rounds)
-        return RuleSelection(
-            select=getattr(args, "select", None),
-            exclude=getattr(args, "exclude", None),
-            all_items=getattr(args, "select_all", False) or getattr(args, "select", None) is None,
-            first=getattr(args, "first", False),
-            last=getattr(args, "last", False),
-        )
-
-def _looks_mock(obj) -> bool:
-    module_name = str(getattr(obj, "__module__", ""))
-    type_module = str(getattr(type(obj), "__module__", ""))
-    return module_name.startswith("unittest.mock") or type_module.startswith("unittest.mock")
+from shared.cli_runner_runtime import CLIRunner
+from shared.runtime_options import (
+    build_missav_proxy_url,
+    get_default_save_dir,
+    get_platform_defaults,
+    validate_config_types,
+)
+from shared.selection_runtime import SelectionStrategyFactory
 
 def _runner_class():
-    """测试可能 monkeypatch 两处 CLIRunner；这里优先返回被替换的对象。"""
-
-    if _looks_mock(CLIRunner):
-        return CLIRunner
-    if _looks_mock(cli_runner_module.CLIRunner):
-        return cli_runner_module.CLIRunner
+    """Return the shared runner through this command-local test seam."""
     return CLIRunner
 
 def _runtime_env() -> runtime.SearchCommandEnv:
@@ -80,9 +39,11 @@ def add_search_arguments(parser: argparse.ArgumentParser) -> None:
         choices=["douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"],
         help="平台 ID",
     )
+    parser.add_argument("keyword", nargs="?", help="搜索关键词 / 链接 / 用户 ID")
     parser.add_argument(
-        "keyword",
-        help="搜索关键词 / 链接 / 用户 ID",
+        "--keyword",
+        dest="keyword_option",
+        help="搜索关键词 / 链接 / 用户 ID（兼容旧脚本；推荐使用位置参数）",
     )
     parser.add_argument(
         "--save-dir", "-d",

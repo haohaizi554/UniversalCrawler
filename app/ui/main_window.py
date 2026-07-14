@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 import threading
 import time
@@ -29,21 +26,17 @@ from app.services.update_check_service import (
     UPDATE_STATUS_UNTRUSTED,
     UPDATE_PUBLIC_KEY_PEM,
     UPDATE_REQUIRE_OS_SIGNATURE,
-    UPDATE_TRUSTED_PUBLISHERS,
-    UPDATE_TRUSTED_THUMBPRINTS,
+    PreparedUpdate,
     UpdateCheckResult,
     check_secure_update,
+    launch_prepared_update,
+    prepare_verified_update,
 )
 from app.services.secure_updater import (
-    AssetSelector,
-    DEFAULT_ALLOWED_HOSTS,
     Downloader,
     PackageVerifier,
     UpdateManifestVerifier,
-    VerificationError,
-    compare_semver,
     default_update_staging_dir,
-    record_pending_install,
     record_skipped_update,
     record_startup_update_health,
 )
@@ -54,7 +47,7 @@ from app.ui.dialogs.update_check import UpdateCheckDialog, UpdateDownloadDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.layout.window_chrome import WindowChromeFrame
 from app.ui.layout.window_chrome_controller import FramelessWindowChromeController, _NCCALCSIZE_PARAMS  # noqa: F401
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
@@ -161,6 +154,7 @@ class MainWindow(QMainWindow):
         "failed": "failed_items",
     }
     VISIBLE_SCOPED_SECTIONS = frozenset(PAGE_SECTION_BY_ID.values()) | frozenset({"log_items"})
+    UPDATE_DOWNLOAD_SHUTDOWN_JOIN_SECONDS = 0.25
 
     sig_start_crawl = pyqtSignal(str, str, dict)
     sig_stop_crawl = pyqtSignal()
@@ -301,6 +295,8 @@ class MainWindow(QMainWindow):
         self._update_check_running = False
         self._update_check_lock = threading.RLock()
         self._update_download_sequence = 0
+        self._update_download_lock = threading.RLock()
+        self._update_download_shutdown = False
         self._update_download_thread: threading.Thread | None = None
         self._update_download_cancel_event: threading.Event | None = None
         self._update_download_dialog: UpdateDownloadDialog | None = None
@@ -487,6 +483,7 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.media_panel.sig_auto_next_preview, self.sig_auto_next_preview.emit)
 
     def _on_update_check_requested(self, version_text: str = "") -> None:
+        del version_text
         if not self._try_begin_update_check():
             self._show_basic_message(
                 "检查更新",
@@ -494,7 +491,9 @@ class MainWindow(QMainWindow):
             )
             return
         self._set_status_bar_update_checking(True)
-        local_version = version_text or self._current_status_version()
+        from cli import __version__
+
+        local_version = str(__version__).strip()
         self._last_update_check_local_version = local_version
         worker = self._ensure_update_check_worker()
         self._update_check_sequence = int(self.__dict__.get("_update_check_sequence", 0) or 0) + 1
@@ -690,15 +689,18 @@ class MainWindow(QMainWindow):
         self.append_log(f"已跳过更新版本: {version}")
 
     def _begin_update_download(self, result: UpdateCheckResult) -> None:
-        old_cancel_event = self.__dict__.get("_update_download_cancel_event")
-        if old_cancel_event is not None:
-            old_cancel_event.set()
-        self._update_download_sequence = int(self.__dict__.get("_update_download_sequence", 0) or 0) + 1
-        sequence = self._update_download_sequence
-        cancel_event = threading.Event()
-        self._last_update_result = result
-        self._prepared_update = None
-        self._update_download_cancel_event = cancel_event
+        with self._update_download_lock:
+            if self._update_download_shutdown:
+                return
+            old_cancel_event = self.__dict__.get("_update_download_cancel_event")
+            if old_cancel_event is not None:
+                old_cancel_event.set()
+            self._update_download_sequence = int(self.__dict__.get("_update_download_sequence", 0) or 0) + 1
+            sequence = self._update_download_sequence
+            cancel_event = threading.Event()
+            self._last_update_result = result
+            self._prepared_update = None
+            self._update_download_cancel_event = cancel_event
 
         previous_dialog = self.__dict__.get("_update_download_dialog")
         if previous_dialog is not None:
@@ -727,6 +729,18 @@ class MainWindow(QMainWindow):
         self._update_download_thread = worker
         worker.start()
 
+    def _emit_update_download_event(self, signal: object, payload: dict[str, object]) -> bool:
+        """Drop worker events once shutdown starts or the request is superseded."""
+        sequence = int(payload.get("sequence") or 0)
+        with self._update_download_lock:
+            if self._update_download_shutdown or sequence != self._update_download_sequence:
+                return False
+            emitter = getattr(signal, "emit", None)
+            if not callable(emitter):
+                return False
+            emitter(payload)
+            return True
+
     def _run_update_download(
         self,
         sequence: int,
@@ -737,21 +751,33 @@ class MainWindow(QMainWindow):
             prepared = self._download_verified_update(
                 result,
                 cancel_event=cancel_event,
-                progress_callback=lambda progress: self._update_download_progress.emit(
-                    {"sequence": sequence, "progress": progress}
+                progress_callback=lambda progress: self._emit_update_download_event(
+                    self._update_download_progress,
+                    {"sequence": sequence, "progress": progress},
                 ),
             )
         except Exception as exc:
             message = "已取消下载。" if cancel_event.is_set() else str(exc)
-            self._update_download_failed.emit({"sequence": sequence, "message": message})
+            self._emit_update_download_event(
+                self._update_download_failed,
+                {"sequence": sequence, "message": message},
+            )
             return
         if cancel_event.is_set():
-            self._update_download_failed.emit({"sequence": sequence, "message": "已取消下载。"})
+            self._emit_update_download_event(
+                self._update_download_failed,
+                {"sequence": sequence, "message": "已取消下载。"},
+            )
             return
-        self._update_download_finished.emit({"sequence": sequence, "prepared": prepared})
+        self._emit_update_download_event(
+            self._update_download_finished,
+            {"sequence": sequence, "prepared": prepared},
+        )
 
     def _on_update_download_progress(self, payload: object) -> None:
         if not isinstance(payload, dict):
+            return
+        if self._update_download_shutdown:
             return
         if int(payload.get("sequence") or 0) != self._update_download_sequence:
             return
@@ -761,6 +787,8 @@ class MainWindow(QMainWindow):
 
     def _on_update_download_finished(self, payload: object) -> None:
         if not isinstance(payload, dict):
+            return
+        if self._update_download_shutdown:
             return
         if int(payload.get("sequence") or 0) != self._update_download_sequence:
             return
@@ -777,6 +805,8 @@ class MainWindow(QMainWindow):
 
     def _on_update_download_failed(self, payload: object) -> None:
         if not isinstance(payload, dict):
+            return
+        if self._update_download_shutdown:
             return
         if int(payload.get("sequence") or 0) != self._update_download_sequence:
             return
@@ -816,54 +846,17 @@ class MainWindow(QMainWindow):
         if not isinstance(prepared, _PreparedUpdate):
             self._show_update_check_error("更新安装包尚未准备好。")
             return
-        log_path = Path(prepared.log_path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        helper_module = "entry.updater_helper"
-        argv = [
-            sys.executable,
-            "-m",
-            helper_module,
-            "--installer",
-            prepared.installer_path,
-            "--manifest",
-            prepared.manifest_path,
-            "--signature",
-            prepared.signature_path,
-            "--version",
-            prepared.version,
-            "--log-path",
-            prepared.log_path,
-            "--restart-argv-json",
-            json.dumps(self._restart_argv_after_update()),
-            "--wait-pid",
-            str(os.getpid()),
-        ]
-        helper_exe = Path(sys.executable).with_name("updater_helper.exe")
-        if getattr(sys, "frozen", False) and helper_exe.exists():
-            argv = [
-                str(helper_exe),
-                "--installer",
-                prepared.installer_path,
-                "--manifest",
-                prepared.manifest_path,
-                "--signature",
-                prepared.signature_path,
-                "--version",
-                prepared.version,
-                "--log-path",
-                prepared.log_path,
-                "--restart-argv-json",
-                json.dumps(self._restart_argv_after_update()),
-                "--wait-pid",
-                str(os.getpid()),
-            ]
         try:
-            record_pending_install(
-                version=prepared.version,
-                installer_path=prepared.installer_path,
-                log_path=prepared.log_path,
+            launch_prepared_update(
+                PreparedUpdate(
+                    installer_path=prepared.installer_path,
+                    manifest_path=prepared.manifest_path,
+                    signature_path=prepared.signature_path,
+                    version=prepared.version,
+                    log_path=prepared.log_path,
+                ),
+                restart_argv=self._restart_argv_after_update(),
             )
-            subprocess.Popen(argv, shell=False)
         except Exception as exc:
             self._show_update_check_error(str(exc))
             self.append_log(f"更新安装程序启动失败: {exc}", level="ERROR")
@@ -884,42 +877,22 @@ class MainWindow(QMainWindow):
         cancel_event: threading.Event | None = None,
         progress_callback=None,
     ) -> _PreparedUpdate:
-        verifier = UpdateManifestVerifier(public_key_pem=UPDATE_PUBLIC_KEY_PEM)
-        manifest = verifier.load_verified(
-            Path(result.manifest_path),
-            Path(result.signature_path),
-        )
-        try:
-            selected_version_matches = compare_semver(manifest.version, result.latest_version) == 0
-        except ValueError as exc:
-            raise VerificationError("signed manifest version does not match selected update version") from exc
-        if not selected_version_matches:
-            raise VerificationError("signed manifest version does not match selected update version")
-        try:
-            client_is_compatible = compare_semver(result.local_version, manifest.min_client_version) >= 0
-        except ValueError as exc:
-            raise VerificationError("signed manifest minimum client version could not be verified") from exc
-        if not client_is_compatible:
-            raise VerificationError("signed manifest minimum client version is newer than this client")
-        asset = AssetSelector().select(manifest)
-        installer_path = Downloader(
-            allowed_hosts=set(DEFAULT_ALLOWED_HOSTS) | set(manifest.trusted_hosts),
-        ).download(
-            asset,
+        prepared = prepare_verified_update(
+            result,
+            public_key_pem=UPDATE_PUBLIC_KEY_PEM,
+            require_os_signature=UPDATE_REQUIRE_OS_SIGNATURE,
+            manifest_verifier_cls=UpdateManifestVerifier,
+            downloader_cls=Downloader,
+            package_verifier_cls=PackageVerifier,
             cancel_event=cancel_event,
             progress_callback=progress_callback,
         )
-        PackageVerifier(
-            trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
-            trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
-            require_os_signature=UPDATE_REQUIRE_OS_SIGNATURE,
-        ).verify(installer_path, asset)
         return _PreparedUpdate(
-            installer_path=str(installer_path),
-            manifest_path=str(result.manifest_path),
-            signature_path=str(result.signature_path),
-            version=manifest.version,
-            log_path=str(installer_path.with_name("updater-install.log")),
+            installer_path=prepared.installer_path,
+            manifest_path=prepared.manifest_path,
+            signature_path=prepared.signature_path,
+            version=prepared.version,
+            log_path=prepared.log_path,
         )
 
     def _show_basic_message(
@@ -1224,37 +1197,31 @@ class MainWindow(QMainWindow):
         if config_key == "download_directory":
             config_key = "save_directory"
         value = data.get("value", payload.get("value"))
+        frontend_state_service = self.__dict__.get("_frontend_state_service")
+        config_observer_owns_runtime = (
+            getattr(frontend_state_service, "_config_events_drive_runtime", False) is True
+        )
         if normalized_section == "common" and config_key == "save_directory":
             directory = str(data.get("directory") or value or "")
-            if directory:
+            if directory and not config_observer_owns_runtime:
                 changed = directory != self.current_save_dir
                 self.current_save_dir = directory
                 if changed:
                     self.sig_change_dir.emit()
-        if normalized_section == "common" and config_key == "theme":
-            theme_value = str(value or "light").lower()
-            is_dark = theme_value == "dark"
-            source = str(payload.get("source") or "")
-            theme_toggle_ui_applied = payload.get("ui_applied") is True and source in {
-                "theme_toggle",
-                "system_palette",
-            }
-            if theme_toggle_ui_applied:
-                try:
-                    payload_sequence = int(payload.get("theme_sequence") or 0)
-                except (TypeError, ValueError):
-                    payload_sequence = 0
-                current_sequence = int(self.__dict__.get("_theme_transition_sequence", 0) or 0)
-                if source == "theme_toggle" and payload_sequence and payload_sequence != current_sequence:
-                    return
-                if self.is_dark_theme != is_dark:
-                    self.is_dark_theme = is_dark
-                    self._apply_theme_stylesheet(refresh_frontend_snapshot=False)
-                    self.sig_theme_changed.emit(is_dark)
+            if config_observer_owns_runtime:
                 return
-            if self.is_dark_theme != is_dark:
-                self.is_dark_theme = is_dark
-                self.sig_theme_changed.emit(is_dark)
+        if normalized_section == "common" and config_key == "theme":
+            source = str(payload.get("source") or "")
+            if payload.get("ui_applied") is True and source in {"theme_toggle", "system_palette"}:
+                if source == "theme_toggle":
+                    try:
+                        payload_sequence = int(payload.get("theme_sequence") or 0)
+                    except (TypeError, ValueError):
+                        payload_sequence = 0
+                    current_sequence = int(self.__dict__.get("_theme_transition_sequence", 0) or 0)
+                    if payload_sequence and payload_sequence != current_sequence:
+                        return
+                return
         extra_topics = self._apply_runtime_setting_after_update(normalized_section, config_key, value)
         self.refresh_frontend_state(topics={"settings.update", *extra_topics})
 
@@ -2154,9 +2121,26 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         # 退出顺序先停调度器/worker，再销毁 service 和 event bus，避免后台
         # 线程在 QObject 已释放后继续回调主窗口。
-        update_cancel_event = self.__dict__.get("_update_download_cancel_event")
+        update_download_lock = self.__dict__.get("_update_download_lock")
+        if update_download_lock is None:
+            update_download_lock = threading.RLock()
+            self._update_download_lock = update_download_lock
+        with update_download_lock:
+            self._update_download_shutdown = True
+            self._update_download_sequence = int(self.__dict__.get("_update_download_sequence", 0) or 0) + 1
+            update_cancel_event = self.__dict__.get("_update_download_cancel_event")
         if update_cancel_event is not None:
             update_cancel_event.set()
+        update_download_thread = self.__dict__.get("_update_download_thread")
+        is_alive = getattr(update_download_thread, "is_alive", None)
+        join = getattr(update_download_thread, "join", None)
+        if (
+            update_download_thread is not threading.current_thread()
+            and callable(is_alive)
+            and is_alive()
+            and callable(join)
+        ):
+            join(timeout=self.UPDATE_DOWNLOAD_SHUTDOWN_JOIN_SECONDS)
         self._ui_update_scheduler.stop()
         snapshot_worker = self.__dict__.get("_frontend_snapshot_worker")
         if snapshot_worker is not None:
@@ -2661,33 +2645,34 @@ class MainWindow(QMainWindow):
         self._submit_frontend_action(action, payload)
 
     def _apply_runtime_setting_after_update(self, section: str, key: str, value) -> set[str]:
+        """Return extra refresh topics after the config commit observer applied runtime state."""
+        del key, value
         section = str(section or "")
-        key = str(key or "")
         topics: set[str] = set()
-        if section == "common" and key == "theme":
-            self._apply_appearance_runtime_settings(key)
-        elif section == "appearance":
-            self._apply_appearance_runtime_settings(key)
-        elif section == "playback":
-            self._apply_playback_runtime_settings()
-        elif section == "logging":
+        if section == "logging":
             topics.add("logs.append")
-        elif key in {"max_items", "max_pages", "search_max_pages"}:
-            current_plugin_id = str(getattr(getattr(self, "current_plugin", None), "id", "") or "")
-            if section and section == current_plugin_id:
-                top_bar = getattr(self, "top_bar", None)
-                if top_bar is not None:
-                    try:
-                        top_bar.configure_for_platform(section, get_platform_runtime_defaults(section))
-                        top_bar.set_video_count(int(value))
-                    except (TypeError, ValueError, AttributeError) as exc:
-                        debug_logger.log_exception(
-                            "MainWindow",
-                            "sync_top_quantity_after_setting",
-                            exc,
-                            details={"section": section, "key": key, "value": value},
-                        )
         return topics
+
+    @safe_slot
+    def _apply_platform_runtime_setting(self, section: str, key: str, value) -> None:
+        if str(key or "") not in {"max_items", "max_pages", "search_max_pages"}:
+            return
+        current_plugin_id = str(getattr(getattr(self, "current_plugin", None), "id", "") or "")
+        if not section or str(section) != current_plugin_id:
+            return
+        top_bar = getattr(self, "top_bar", None)
+        if top_bar is None:
+            return
+        try:
+            top_bar.configure_for_platform(str(section), get_platform_runtime_defaults(str(section)))
+            top_bar.set_video_count(int(value))
+        except (TypeError, ValueError, AttributeError) as exc:
+            debug_logger.log_exception(
+                "MainWindow",
+                "sync_top_quantity_after_setting",
+                exc,
+                details={"section": section, "key": key, "value": value},
+            )
 
     @safe_slot
     def _apply_common_setting(self, key: str, value) -> None:
@@ -2695,7 +2680,10 @@ class MainWindow(QMainWindow):
         if key == "save_directory":
             directory = str(value or cfg.get("common", "save_directory", self.current_save_dir) or "")
             if directory:
+                changed = directory != self.current_save_dir
                 self.current_save_dir = directory
+                if changed:
+                    self.sig_change_dir.emit()
                 self.refresh_frontend_state(topics={"settings.update"})
             return
         if key in {"theme", "dark_theme"}:

@@ -10,7 +10,7 @@ from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from app.ui.dialogs.chromed_dialog import ChromedDialog
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 
 
 class UpdateStatusIcon(QWidget):

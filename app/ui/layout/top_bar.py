@@ -7,10 +7,11 @@ from PyQt6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, Q
 
 from app.config import platform_count_options, platform_note_count_options, platform_page_count_options
 from app.core.plugin_registry import registry
-from app.services.icon_registry import action_icon_file, ui_icon_path
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import action_icon_file
 from app.ui.components.combo_popup import PolishedComboBox, fit_combo_width_to_contents, polish_combo_popup
 from app.ui.components.start_task_button import StartTaskButton
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon
 

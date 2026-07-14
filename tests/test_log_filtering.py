@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.ui.viewmodels import log_filtering
-from app.ui.viewmodels.log_platforms import builtin_platform_metas
+from shared.log_platforms import builtin_platform_metas
 
 
 def _platform_context():

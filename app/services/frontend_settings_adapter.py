@@ -264,17 +264,30 @@ def apply_manager_concurrency(manager: Any | None, max_concurrent: Any) -> int:
     return normalize_download_concurrency(normalized)
 
 
-def persist_download_options(config_set, cache_set, options: Mapping[str, Any]) -> None:
+def persist_download_options(
+    config_set,
+    cache_set,
+    options: Mapping[str, Any],
+    *,
+    config_set_many=None,
+) -> None:
     max_retries = options.get("max_retries", 3)
     try:
         max_retries = int(max_retries)
     except (TypeError, ValueError):
         max_retries = 3
+    config_values = {
+        "max_concurrent": normalize_download_concurrency(options.get("max_concurrent")),
+        "max_retries": max(0, min(max_retries, 10)),
+        "video_only": bool(options.get("video_only", False)),
+        "image_respects_concurrency": bool(options.get("image_respects_concurrency", False)),
+    }
+    if callable(config_set_many):
+        config_set_many("download", config_values)
+    else:
+        for key, value in config_values.items():
+            config_set("download", key, value)
     cache_set("download.auto_retry", bool(options.get("auto_retry", True)), persist=False)
-    config_set("download", "max_concurrent", normalize_download_concurrency(options.get("max_concurrent")))
-    config_set("download", "max_retries", max(0, min(max_retries, 10)))
-    config_set("download", "video_only", bool(options.get("video_only", False)))
-    config_set("download", "image_respects_concurrency", bool(options.get("image_respects_concurrency", False)))
 
 
 def platform_settings_rows(

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
-from app.controllers.media_library_mixin import MediaLibraryMixin
+from app.services.media_library_runtime import MediaLibraryMixin
 from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import ScanResult
@@ -82,4 +82,3 @@ class MediaLibraryMixinTests(unittest.TestCase):
         self.assertEqual(item.title, "新标题")
         self.assertEqual(item.local_path, "D:/downloads/new.mp4")
         self.assertIn("重命名", controller._rename_outcome_message(outcome))
-

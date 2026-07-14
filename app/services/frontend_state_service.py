@@ -11,8 +11,9 @@ import os
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from copy import deepcopy
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,9 +22,9 @@ from typing import Any
 from PyQt6.QtCore import QCoreApplication, QObject, QThread, Qt, pyqtSignal
 
 from app.config import cfg
-from app.config.settings import CURRENT_FILENAME_TEMPLATE
+from app.config.settings import CURRENT_FILENAME_TEMPLATE, get_setting_default
 from app.core.plugins.run_options import build_missav_proxy_url
-from app.exceptions import ConfigValidationError
+from app.exceptions import ConfigValidationError, ConfigWriteError
 from app.debug_logger import debug_logger
 from app.core.plugin_registry import registry
 from app.core.state import VideoStatus, parse_video_status
@@ -44,15 +45,17 @@ from app.services import frontend_log_adapter as log_adapter
 from app.services import frontend_status_adapter as status_adapter
 from app.services import frontend_toolbox_adapter as toolbox_adapter
 from app.services import frontend_video_adapter as video_adapter
-from app.services.icon_registry import icon_manifest
-from app.services.frontend_page_definitions import PAGE_DEFINITIONS
+from shared.icon_contract import icon_manifest
+from shared.log_contract import log_contract
+from shared.frontend_page_definitions import PAGE_DEFINITIONS
 from app.services.frontend_log_cache import FrontendLogCache
 from app.services.media_metadata_service import MediaMetadata, MediaMetadataService
 from app.services.metadata_probe_queue import MetadataProbeQueue
 from app.services.metadata_retry_tracker import MetadataRetryTracker
 from app.utils.filenames import sanitize_filename
 from app.utils.safe_slot import safe_slot
-from app.ui.viewmodels.settings_catalog import GROUP_HINTS
+from shared.settings_metadata import GROUP_DESCRIPTIONS, GROUP_HINTS, GROUP_ICONS
+from shared.failed_page_projection import prepare_failed_item_for_display
 
 QUEUE_STATUSES = video_adapter.QUEUE_STATUSES
 UI_TITLE_STAGE_META_KEY = "ui_title_stage"
@@ -69,6 +72,33 @@ class _GuiRuntimeInvoker(QObject):
 
     def invoke(self, callback: Callable[[], None]) -> None:
         self.call_requested.emit(callback)
+
+    def invoke_and_wait(self, callback: Callable[[], None], *, timeout_seconds: float) -> None:
+        """Run on the Qt thread and return only after success or a bounded failure."""
+        if QThread.currentThread() == self.thread():
+            callback()
+            return
+        completed = threading.Event()
+        cancelled = threading.Event()
+        failures: list[Exception] = []
+
+        def _run_with_ack() -> None:
+            if cancelled.is_set():
+                completed.set()
+                return
+            try:
+                callback()
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                completed.set()
+
+        self.call_requested.emit(_run_with_ack)
+        if not completed.wait(max(0.0, float(timeout_seconds))):
+            cancelled.set()
+            raise TimeoutError("GUI runtime apply acknowledgement timed out")
+        if failures:
+            raise failures[0]
 
     def _run(self, callback: Callable[[], None]) -> None:
         callback()
@@ -100,6 +130,7 @@ class FrontendStateService:
     PLATFORM_AUTH_REFRESH_TTL_SECONDS = 60.0
     APP_STATE_PENDING_EVENTS_LIMIT = 4096
     APP_STATE_ASYNC_DELIVERY_TIMEOUT_SECONDS = 0.2
+    GUI_RUNTIME_APPLY_TIMEOUT_SECONDS = 1.0
 
     def __init__(
         self,
@@ -117,6 +148,7 @@ class FrontendStateService:
     ) -> None:
         self.controller = controller
         self.config = config_manager
+        self._config_runtime_capture_local = threading.local()
         self._owns_app_state = app_state is None
         self.app_state = app_state if app_state is not None else AppState()
         self.cache_service = cache_service or self.app_state.cache_service
@@ -179,15 +211,18 @@ class FrontendStateService:
             "app_state.changed",
             self._queue_app_state_change,
         )
-        subscribe_async = getattr(self.config, "subscribe_async", None)
         subscribe = getattr(self.config, "subscribe", None)
-        self._config_event_handler = (
-            subscribe_async("config.changed", self._on_config_changed)
-            if callable(subscribe_async)
-            else subscribe("config.changed", self._on_config_changed)
-            if callable(subscribe)
-            else None
-        )
+        subscribe_async = getattr(self.config, "subscribe_async", None)
+        # Setting actions already run on a frontend worker or Web executor.  Keep
+        # the commit observer synchronous so runtime side effects finish exactly
+        # once before the action result is returned.
+        if callable(subscribe):
+            self._config_event_handler = subscribe("config.changed", self._on_config_changed)
+        elif callable(subscribe_async):
+            self._config_event_handler = subscribe_async("config.changed", self._on_config_changed)
+        else:
+            self._config_event_handler = None
+        self._config_events_drive_runtime = self._config_event_handler is not None
         self._wire_failed_record_store()
         self._apply_logging_runtime_settings(cleanup_old_logs=True)
         self.flush_pending_app_state_events()
@@ -291,12 +326,13 @@ class FrontendStateService:
     def record_log(self, message: str, *, level: str = "INFO", source: str = "GUI", trace_id: str = "") -> None:
         if self._destroyed:
             return
-        self.app_state.record_log(message, level=level, source=source, trace_id=trace_id)
-        self._event_aggregator.record(
-            "logs.append",
-            {"message": message, "level": level, "source": source, "trace_id": trace_id},
-            sections=sections_for_topic("logs.append"),
-        )
+        with self._delta_lock:
+            self.app_state.record_log(message, level=level, source=source, trace_id=trace_id)
+            self._event_aggregator.record(
+                "logs.append",
+                {"message": message, "level": level, "source": source, "trace_id": trace_id},
+                sections=sections_for_topic("logs.append"),
+            )
 
     def upsert_video(self, item: VideoItem) -> None:
         if self._destroyed:
@@ -338,7 +374,8 @@ class FrontendStateService:
         self._cancel_all_metadata_retries()
         self._cancel_metadata_probe_queue()
         self._clear_metadata_empty_failures()
-        self._event_aggregator.reset()
+        with self._delta_lock:
+            self._event_aggregator.reset()
 
     def destroy(self) -> None:
         """退订所有 EventBus 订阅，释放资源。应在 FSS 不再使用时调用。"""
@@ -396,21 +433,22 @@ class FrontendStateService:
     def record_event(self, topic: str, payload: Mapping[str, Any] | None = None) -> None:
         if self._destroyed:
             return
-        normalized = str(topic or "")
-        payload_dict = dict(payload or {})
-        self._materialize_stage_title_for_event(normalized, payload_dict)
-        if normalized == "log":
-            message = str(payload_dict.get("message") or "")
-            if message:
-                self.record_log(
-                    message,
-                    level=str(payload_dict.get("level") or "INFO"),
-                    source=str(payload_dict.get("source") or "Web"),
-                    trace_id=str(payload_dict.get("trace_id") or ""),
-                )
-            return
-        sections = self._sections_for_recorded_event(normalized, payload_dict)
-        self._event_aggregator.record(normalized, payload_dict, sections=sections)
+        with self._delta_lock:
+            normalized = str(topic or "")
+            payload_dict = dict(payload or {})
+            self._materialize_stage_title_for_event(normalized, payload_dict)
+            if normalized == "log":
+                message = str(payload_dict.get("message") or "")
+                if message:
+                    self.record_log(
+                        message,
+                        level=str(payload_dict.get("level") or "INFO"),
+                        source=str(payload_dict.get("source") or "Web"),
+                        trace_id=str(payload_dict.get("trace_id") or ""),
+                    )
+                return
+            sections = self._sections_for_recorded_event(normalized, payload_dict)
+            self._event_aggregator.record(normalized, payload_dict, sections=sections)
 
     def _queue_app_state_change(self, payload: Any) -> None:
         """把 AppState 事件排入本地队列，避免事件总线线程直接重建前端快照。"""
@@ -435,14 +473,14 @@ class FrontendStateService:
             self._pending_app_state_events.clear()
             self._pending_app_state_events_overflowed = False
 
-        if overflowed:
-            self._event_aggregator.record(
-                "app_state.resync_required",
-                {"overflowed": True},
-                sections=ALL_FRONTEND_SECTIONS,
-            )
-        for event_payload in events:
-            self._record_app_state_change(event_payload)
+            if overflowed:
+                self._event_aggregator.record(
+                    "app_state.resync_required",
+                    {"overflowed": True},
+                    sections=ALL_FRONTEND_SECTIONS,
+                )
+            for event_payload in events:
+                self._record_app_state_change(event_payload)
 
     def _wait_for_app_state_async_delivery(self) -> None:
         event_bus = getattr(self.app_state, "event_bus", None)
@@ -497,6 +535,7 @@ class FrontendStateService:
                 "toolbox_items": self.toolbox_items(),
                 "toolbox_recent_items": self.toolbox_recent_items(),
                 "icon_manifest": icon_manifest(),
+                "log_contract": log_contract(),
             }
         parts = dict(self._static_snapshot_cache)
         parts["download_options"] = self.download_options_snapshot()
@@ -505,22 +544,18 @@ class FrontendStateService:
     @staticmethod
     def _settings_contract_payload(settings_snapshot: Mapping[str, Any]) -> dict[str, Any]:
         order = [str(key) for key in settings_snapshot.keys()]
-        descriptions = {
-            "基础设置": "下载目录、文件命名和打开行为",
-            "下载设置": "并发、超时、重试和下载策略",
-            "平台设置": "认证状态、爬取数量和代理入口",
-            "播放设置": "播放器、断点续播和预览行为",
-            "日志设置": "保留策略、显示上限和错误追踪",
-            "外观设置": "语言、主题、界面缩放和字体",
-        }
         return {
             "group_order": order,
             "group_descriptions": {
-                group: descriptions.get(group, "")
+                group: GROUP_DESCRIPTIONS.get(group, "")
                 for group in order
             },
             "group_hints": {
                 group: GROUP_HINTS.get(group, "")
+                for group in order
+            },
+            "group_icons": {
+                group: GROUP_ICONS.get(group, "nav_settings.png")
                 for group in order
             },
         }
@@ -583,6 +618,15 @@ class FrontendStateService:
 
         if want_failed and failed_items and not failed_items_from_store:
             self._queue_failed_records(failed_items)
+        if want_failed and failed_items:
+            try:
+                display_language = str(self.config.get("appearance", "language", "zh-CN") or "zh-CN")
+            except (AttributeError, TypeError, ValueError):
+                display_language = "zh-CN"
+            failed_items = [
+                prepare_failed_item_for_display(item, language=display_language)
+                for item in failed_items
+            ]
 
         sections: dict[str, Any] = {}
         if only is None or "queue_items" in only:
@@ -615,6 +659,7 @@ class FrontendStateService:
         static_keys = frozenset({
             "pages",
             "icon_manifest",
+            "log_contract",
             "toolbox_items",
             "toolbox_recent_items",
             "settings_snapshot",
@@ -665,9 +710,8 @@ class FrontendStateService:
                 base_version = int(since_version or 0)
             except (TypeError, ValueError):
                 base_version = 0
-            dirty = self._event_aggregator.peek()
+            dirty, history_sections, deleted_ids = self._event_aggregator.delta_since(base_version)
             current_version = dirty.version
-            history_sections = self._event_aggregator.sections_since(base_version)
             requested_sections = history_sections
             if sections is not None:
                 requested_sections = history_sections | frozenset(sections)
@@ -692,7 +736,7 @@ class FrontendStateService:
                 "full": full,
                 "changed_sections": sorted(requested_sections),
                 "sections": snapshot_sections,
-                "deleted_ids": [] if full else list(self._event_aggregator.deleted_ids_since(base_version)),
+                "deleted_ids": [] if full else list(deleted_ids),
                 "events": list(dirty.pending_events)[-self.FRONTEND_DELTA_EVENTS_LIMIT:],
                 "priority": dirty.priority.name.lower(),
                 "metrics": self.frontend_metrics(),
@@ -725,6 +769,19 @@ class FrontendStateService:
         if handler is None:
             return FrontendActionResult("error", f"unknown frontend action: {action}").to_dict()
         return handler(payload).to_dict()
+
+    @staticmethod
+    def _strict_boolean(payload: Mapping[str, Any], key: str, *, default: bool) -> bool:
+        value = payload.get(key, default)
+        if not isinstance(value, bool):
+            raise ConfigValidationError(f"{key} must be a boolean")
+        return value
+
+    @classmethod
+    def _validate_boolean_fields(cls, payload: Mapping[str, Any], keys: Sequence[str]) -> None:
+        for key in keys:
+            if key in payload:
+                cls._strict_boolean(payload, key, default=False)
 
     def queue_item_ids(self) -> set[str]:
         queued_ids = self._queued_video_ids()
@@ -866,30 +923,92 @@ class FrontendStateService:
             self._dispatch_gui_runtime_setting("_apply_appearance_runtime_settings", key)
         elif section == "playback":
             self._dispatch_gui_runtime_setting("_apply_playback_runtime_settings")
+        elif key in {"max_items", "max_pages", "search_max_pages"}:
+            self._dispatch_gui_runtime_setting("_apply_platform_runtime_setting", section, key, value)
+
+    @contextmanager
+    def _capture_config_runtime_failures(
+        self,
+    ) -> Iterator[list[tuple[str, str, Exception]]]:
+        """Capture synchronous config-observer failures for the current action thread."""
+        captures = getattr(self._config_runtime_capture_local, "captures", None)
+        if captures is None:
+            captures = []
+            self._config_runtime_capture_local.captures = captures
+        failures: list[tuple[str, str, Exception]] = []
+        captures.append(failures)
+        try:
+            yield failures
+        finally:
+            captures.pop()
+            if not captures:
+                del self._config_runtime_capture_local.captures
+
+    def _record_config_runtime_failure(self, section: str, key: str, exc: Exception) -> None:
+        captures = getattr(self._config_runtime_capture_local, "captures", None)
+        if captures:
+            captures[-1].append((str(section), str(key), exc))
+
+    @staticmethod
+    def _runtime_failure_message(prefix: str, failures: Sequence[tuple[str, str, Exception]]) -> str:
+        section, key, exc = failures[0]
+        suffix = f" ({section}.{key})" if section and key else ""
+        return f"{prefix} persisted but runtime apply failed{suffix}: {exc}"
 
     @safe_slot
     def _on_config_changed(self, payload: Any) -> None:
         if not isinstance(payload, Mapping):
             return
-        section = str(payload.get("section") or "")
-        key = str(payload.get("key") or "")
-        value = payload.get("value")
-        if not section or not key:
+        raw_changes = payload.get("changes")
+        candidates = raw_changes if isinstance(raw_changes, (list, tuple)) else (payload,)
+        changes = [
+            {
+                "section": str(change.get("section") or ""),
+                "key": str(change.get("key") or ""),
+                "value": change.get("value"),
+            }
+            for change in candidates
+            if isinstance(change, Mapping) and change.get("section") and change.get("key")
+        ]
+        if not changes:
             return
-        try:
-            self._apply_runtime_setting(section, key, value)
-        except Exception as exc:
-            debug_logger.log_exception(
-                "FrontendStateService",
-                "config_changed_runtime_apply",
-                exc,
-                details={"section": section, "key": key},
-            )
-        if self._platform_auth_config_affects_status(section, key):
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for change in changes:
+            grouped.setdefault(change["section"], []).append(change)
+        for section, section_changes in grouped.items():
+            runtime_changes = section_changes
+            if section in {"download", "playback"}:
+                runtime_changes = [section_changes[-1]]
+            elif section == "logging":
+                retention_change = next(
+                    (change for change in section_changes if change["key"] == "retention_days"),
+                    None,
+                )
+                runtime_changes = [retention_change or section_changes[-1]]
+            for change in runtime_changes:
+                try:
+                    self._apply_runtime_setting(section, change["key"], change["value"])
+                except Exception as exc:
+                    self._record_config_runtime_failure(section, change["key"], exc)
+                    debug_logger.log_exception(
+                        "FrontendStateService",
+                        "config_changed_runtime_apply",
+                        exc,
+                        details={"section": section, "key": change["key"]},
+                    )
+
+        if any(self._platform_auth_config_affects_status(change["section"], change["key"]) for change in changes):
             self._invalidate_platform_auth_cache()
         else:
             self._static_snapshot_cache = None
-        self.record_event("settings.update", {"section": section, "key": key})
+        event_payload = {"section": changes[-1]["section"], "key": changes[-1]["key"]}
+        if len(changes) > 1:
+            event_payload["changes"] = [
+                {"section": change["section"], "key": change["key"]}
+                for change in changes
+            ]
+        self.record_event("settings.update", event_payload)
 
     def _dispatch_gui_runtime_setting(self, method_name: str, *args: Any) -> bool:
         """把窗口运行时设置派发到 GUI 线程，避免后台配置回调直接触碰 Qt 对象。"""
@@ -901,22 +1020,21 @@ class FrontendStateService:
             return False
 
         def _call() -> None:
-            try:
-                method(*args)
-            except Exception as exc:
-                debug_logger.log_exception(
-                    "FrontendStateService",
-                    method_name,
-                    exc,
-                    details={"args": list(args)},
-                )
+            method(*args)
 
         if self._is_qt_gui_thread():
             _call()
-        elif callable(getattr(target, "invoke_on_ui_thread", None)):
-            target.invoke_on_ui_thread(_call)
         elif self._gui_runtime_invoker is not None:
-            self._gui_runtime_invoker.invoke(_call)
+            self._gui_runtime_invoker.invoke_and_wait(
+                _call,
+                timeout_seconds=self.GUI_RUNTIME_APPLY_TIMEOUT_SECONDS,
+            )
+        elif callable(getattr(target, "invoke_on_ui_thread", None)):
+            completion = target.invoke_on_ui_thread(_call)
+            wait_for_result = getattr(completion, "result", None)
+            if not callable(wait_for_result):
+                raise RuntimeError("GUI runtime dispatcher did not provide a completion acknowledgement")
+            wait_for_result(timeout=self.GUI_RUNTIME_APPLY_TIMEOUT_SECONDS)
         else:
             _call()
         return True
@@ -1317,7 +1435,11 @@ class FrontendStateService:
         return True
 
     def _action_refresh_platform_auth_status(self, payload: Mapping[str, Any]) -> FrontendActionResult:
-        refreshed = self.refresh_platform_auth_status(force=bool(payload.get("force", False)))
+        try:
+            force = self._strict_boolean(payload, "force", default=False)
+        except ConfigValidationError as exc:
+            return FrontendActionResult("error", str(exc))
+        refreshed = self.refresh_platform_auth_status(force=force)
         return FrontendActionResult(
             "ok",
             "平台认证状态已刷新" if refreshed else "",
@@ -2153,23 +2275,43 @@ class FrontendStateService:
         return FrontendActionResult("ok", "download paused", {"video_id": video_id, "scope": result})
 
     def _action_update_download_options(self, payload: Mapping[str, Any]) -> FrontendActionResult:
-        options = settings_adapter.normalize_download_options_payload(
-            payload,
-            self.config.get,
-            self._download_runtime_get,
-        )
+        try:
+            self._validate_boolean_fields(
+                payload,
+                ("auto_retry", "video_only", "image_respects_concurrency"),
+            )
+            options = settings_adapter.normalize_download_options_payload(
+                payload,
+                self.config.get,
+                self._download_runtime_get,
+            )
+        except (ConfigValidationError, TypeError, ValueError) as exc:
+            return FrontendActionResult("error", f"download options update failed: {exc}")
         manager = self._dl_manager()
-        options["max_concurrent"] = settings_adapter.apply_manager_concurrency(
-            manager,
-            options["max_concurrent"],
-        )
-        settings_adapter.persist_download_options(
-            self.config.set,
-            self.cache_service.set,
-            options,
-        )
+        if not self._config_events_drive_runtime:
+            options["max_concurrent"] = settings_adapter.apply_manager_concurrency(
+                manager,
+                options["max_concurrent"],
+            )
+        runtime_failures: list[tuple[str, str, Exception]] = []
+        try:
+            with self._capture_config_runtime_failures() as runtime_failures:
+                settings_adapter.persist_download_options(
+                    self.config.set,
+                    self.cache_service.set,
+                    options,
+                    config_set_many=getattr(self.config, "set_many", None),
+                )
+        except (ConfigValidationError, ConfigWriteError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            return FrontendActionResult("error", f"download options update failed: {exc}")
         self._download_runtime_options["auto_retry"] = bool(options.get("auto_retry", True))
-        if callable(getattr(manager, "set_runtime_options", None)):
+        if runtime_failures:
+            return FrontendActionResult(
+                "error",
+                self._runtime_failure_message("download options", runtime_failures),
+                options,
+            )
+        if not self._config_events_drive_runtime and callable(getattr(manager, "set_runtime_options", None)):
             try:
                 self._apply_runtime_setting("download", "download_options", None)
             except Exception as exc:
@@ -2185,17 +2327,18 @@ class FrontendStateService:
                     },
                 )
                 return FrontendActionResult("error", f"download options persisted but runtime apply failed: {exc}")
-        self._static_snapshot_cache = None
-        self.record_event(
-            "settings.update",
-            {
-                "section": "download",
-                "max_concurrent": options["max_concurrent"],
-                "video_only": options["video_only"],
-                "image_respects_concurrency": options["image_respects_concurrency"],
-                "download_options": True,
-            },
-        )
+        if not self._config_events_drive_runtime:
+            self._static_snapshot_cache = None
+            self.record_event(
+                "settings.update",
+                {
+                    "section": "download",
+                    "max_concurrent": options["max_concurrent"],
+                    "video_only": options["video_only"],
+                    "image_respects_concurrency": options["image_respects_concurrency"],
+                    "download_options": True,
+                },
+            )
         return FrontendActionResult("ok", "download options updated", options)
 
     def _action_update_setting(self, payload: Mapping[str, Any]) -> FrontendActionResult:
@@ -2208,6 +2351,12 @@ class FrontendStateService:
             section = "common"
         if not section or not key:
             return FrontendActionResult("error", "setting section and key are required")
+        try:
+            default = get_setting_default(section, key)
+        except ConfigValidationError:
+            default = None
+        if isinstance(default, bool) and not isinstance(value, bool):
+            return FrontendActionResult("error", f"{section}.{key} must be a boolean")
         if section == "common":
             return self._action_update_basic_setting({"key": key, "value": value})
         if section == "download" and key in {"max_concurrent", "max_retries", "video_only", "image_respects_concurrency"}:
@@ -2236,17 +2385,20 @@ class FrontendStateService:
                     elif key == "proxy_url":
                         self.config.set("missav", "proxy_app", "自定义")
                 current_value = self.config.get("missav", key)
-                self._static_snapshot_cache = None
-                self.record_event("settings.update", {"section": section, "key": key})
+                if not self._config_events_drive_runtime:
+                    self._static_snapshot_cache = None
+                    self.record_event("settings.update", {"section": section, "key": key})
                 return FrontendActionResult(
                     "ok",
                     "setting updated",
                     {"section": section, "key": key, "value": current_value, "proxy_url": proxy_url},
                 )
-            self.config.set(section, key, value)
-            current_value = self.config.get(section, key)
-            self._apply_runtime_setting(section, key, current_value)
-        except ConfigValidationError as exc:
+            with self._capture_config_runtime_failures() as runtime_failures:
+                self.config.set(section, key, value)
+                current_value = self.config.get(section, key)
+                if not self._config_events_drive_runtime:
+                    self._apply_runtime_setting(section, key, current_value)
+        except (ConfigValidationError, ConfigWriteError) as exc:
             return FrontendActionResult("error", str(exc), {"section": section, "key": key})
         except Exception as exc:
             debug_logger.log_exception(
@@ -2260,11 +2412,18 @@ class FrontendStateService:
                 f"setting persisted but runtime apply failed: {exc}",
                 {"section": section, "key": key},
             )
-        if self._platform_auth_config_affects_status(section, key):
-            self._invalidate_platform_auth_cache()
-        else:
-            self._static_snapshot_cache = None
-        self.record_event("settings.update", {"section": section, "key": key})
+        if runtime_failures:
+            return FrontendActionResult(
+                "error",
+                self._runtime_failure_message("setting", runtime_failures),
+                {"section": section, "key": key, "value": current_value},
+            )
+        if not self._config_events_drive_runtime:
+            if self._platform_auth_config_affects_status(section, key):
+                self._invalidate_platform_auth_cache()
+            else:
+                self._static_snapshot_cache = None
+            self.record_event("settings.update", {"section": section, "key": key})
         return FrontendActionResult(
             "ok",
             "setting updated",
@@ -2333,15 +2492,35 @@ class FrontendStateService:
         }
         if config_key not in allowed:
             return FrontendActionResult("error", f"unknown basic setting: {key}")
+        try:
+            default = get_setting_default("common", config_key)
+        except ConfigValidationError:
+            default = None
+        if isinstance(default, bool) and not isinstance(value, bool):
+            return FrontendActionResult("error", f"common.{config_key} must be a boolean")
         if config_key == "save_directory" and value is None:
             value = payload.get("directory")
+        runtime_failures: list[tuple[str, str, Exception]] = []
         try:
-            if config_key == "theme" and bool(payload.get("manual", True)):
-                self.config.set("appearance", "follow_system", False)
-            self.config.set("common", config_key, value)
-            current_value = self.config.get("common", config_key)
-            self._apply_runtime_setting("common", config_key, current_value)
-        except ConfigValidationError as exc:
+            with self._capture_config_runtime_failures() as runtime_failures:
+                manual = self._strict_boolean(payload, "manual", default=True)
+                manual_theme = config_key == "theme" and manual
+                set_batch = getattr(self.config, "set_batch", None)
+                if manual_theme and callable(set_batch):
+                    set_batch(
+                        {
+                            "appearance": {"follow_system": False},
+                            "common": {config_key: value},
+                        }
+                    )
+                else:
+                    if manual_theme:
+                        self.config.set("appearance", "follow_system", False)
+                    self.config.set("common", config_key, value)
+                current_value = self.config.get("common", config_key)
+                if not self._config_events_drive_runtime:
+                    self._apply_runtime_setting("common", config_key, current_value)
+        except (ConfigValidationError, ConfigWriteError) as exc:
             return FrontendActionResult("error", str(exc), {"key": key or config_key})
         except Exception as exc:
             debug_logger.log_exception(
@@ -2355,11 +2534,18 @@ class FrontendStateService:
                 f"setting persisted but runtime apply failed: {exc}",
                 {"key": key or config_key},
             )
+        if runtime_failures:
+            return FrontendActionResult(
+                "error",
+                self._runtime_failure_message("setting", runtime_failures),
+                {"section": "common", "key": key or config_key, "config_key": config_key, "value": current_value},
+            )
         controller = self.controller
         if config_key == "save_directory" and controller is not None and hasattr(controller, "current_save_dir"):
             controller.current_save_dir = str(current_value)
-        self._static_snapshot_cache = None
-        self.record_event("settings.update", {"section": "common", "key": config_key})
+        if not self._config_events_drive_runtime:
+            self._static_snapshot_cache = None
+            self.record_event("settings.update", {"section": "common", "key": config_key})
         data = {"section": "common", "key": key or config_key, "config_key": config_key, "value": current_value}
         if config_key == "save_directory":
             data["directory"] = current_value
@@ -2411,8 +2597,11 @@ class FrontendStateService:
         return FrontendActionResult("ok", "tool queued", {"tool_id": tool_id})
 
     def _action_register_file_associations(self, payload: Mapping[str, Any]) -> FrontendActionResult:
-        include_video = bool(payload.get("include_video", True))
-        include_image = bool(payload.get("include_image", True))
+        try:
+            include_video = self._strict_boolean(payload, "include_video", default=True)
+            include_image = self._strict_boolean(payload, "include_image", default=True)
+        except ConfigValidationError as exc:
+            return FrontendActionResult("error", str(exc))
         if not include_video and not include_image:
             return FrontendActionResult("error", "no file type selected")
         try:

@@ -26,9 +26,10 @@ from PyQt6.QtWidgets import (
 )
 
 from app.config.settings import download_concurrency_options, normalize_download_concurrency
-from app.services.icon_registry import action_icon_file, platform_icon_file, ui_icon_path
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import action_icon_file, platform_icon_file
 from app.ui.components.combo_popup import ThemedComboBox
-from app.ui.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
+from shared.localization import is_translation_of, normalize_language, platform_display_name, source_text_for_translation, tr
 from app.ui.components.smart_wrap_label import SmartWrapLabel
 from app.ui.pages.common import PageFrame
 from app.ui.viewmodels.active_download_projection import prepare_active_item_for_display

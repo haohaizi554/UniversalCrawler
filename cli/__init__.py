@@ -4,7 +4,7 @@
 
 1. **命令行工具** (安装后可用 `ucrawl` 命令)
    ```bash
-   ucrawl search --source douyin --keyword "测试"
+   ucrawl search --source douyin "测试"
    ucrawl douyin search "测试" --max-items 20
    ```
 
@@ -24,24 +24,32 @@
    让 Claude / LLM 可直接调用本工具。
 """
 
-from cli.sdk import (
+import sys
+
+import app.ui.gui_selection_strategy as _gui_selection_module
+from shared import cli_runner_runtime as _runner_module
+from shared import interactive_selection as _interactive_module
+from shared import pipe_selection as _pipe_module
+from shared import runtime_options as _defaults_module
+from shared import sdk_runtime as _sdk_module
+from shared import selection_runtime as _selection_base_module
+
+from shared.sdk_runtime import (
     UcrawlSDK,
     search,
     list_platforms,
     scan_directory,
     download_video,
 )
-from cli.runner import CLIRunner
-from cli.selection import (
-    SelectionStrategy,
+from shared.cli_runner_runtime import CLIRunner
+from shared.selection_base import SelectionStrategy, is_selection_strategy
+from shared.selection_runtime import (
     RuleSelection,
-    InteractiveTTYSelection,
-    GUISelection,
-    PipeSelection,
-    PipeOutput,
     AutoSelection,
-    is_selection_strategy,
 )
+from shared.interactive_selection import InteractiveTTYSelection
+from shared.pipe_selection import PipeOutput, PipeSelection
+from app.ui.gui_selection_strategy import GUISelection
 
 __all__ = [
     # SDK 类
@@ -65,3 +73,20 @@ __all__ = [
 ]
 
 __version__ = "3.6.17"
+
+# Preserve the historical import surface without keeping duplicate adapter
+# files. Internal code imports shared modules directly; these aliases exist only
+# at the public package boundary and point at the canonical implementation.
+_PUBLIC_MODULE_ALIASES = {
+    "defaults": _defaults_module,
+    "gui_selection": _gui_selection_module,
+    "interactive": _interactive_module,
+    "pipe": _pipe_module,
+    "runner": _runner_module,
+    "sdk": _sdk_module,
+    "selection": sys.modules[__name__],
+    "selection_base": _selection_base_module,
+}
+for _module_name, _module in _PUBLIC_MODULE_ALIASES.items():
+    sys.modules.setdefault(f"{__name__}.{_module_name}", _module)
+    setattr(sys.modules[__name__], _module_name, _module)

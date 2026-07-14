@@ -3,10 +3,11 @@ from __future__ import annotations
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from app.services.icon_registry import action_icon_file, ui_icon_path
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import action_icon_file
 from app.ui.components.pagination_footer import PaginationFooter
 from app.ui.layout.island import IslandCard
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
 from app.utils.qt_runtime import load_qt_icon

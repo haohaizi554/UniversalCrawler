@@ -6,7 +6,7 @@ import sys
 import threading
 
 from app.config import cfg
-from app.ui.localization import normalize_language
+from shared.localization import normalize_language
 from shared.interactive_selection import InteractiveTTYSelection
 
 class _QtMainThreadInvoker:

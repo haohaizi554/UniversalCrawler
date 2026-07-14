@@ -1,4 +1,4 @@
-from app.ui.viewmodels.log_detail_payloads import (
+from shared.log_detail_payloads import (
     build_log_detail_payload,
     extract_trace_id,
     normalize_detail_payload,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.icon_registry import tool_icon_file
+from shared.icon_contract import tool_icon_file
 
 
 TOOLBOX_DEFINITIONS: tuple[dict[str, str], ...] = (

@@ -9,7 +9,8 @@ from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLineEdit, QSizePolicy, QToolButton
 
 from app.debug_logger import debug_logger
-from app.services.icon_registry import action_icon_file, ui_icon_path
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import action_icon_file
 from app.ui.components.focus_state import bind_focus_property
 from app.utils.qt_runtime import load_qt_icon
 

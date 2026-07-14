@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import threading
 
-from app.ui.viewmodels.log_platforms import builtin_platform_metas
-from app.ui.viewmodels.log_classification import CLASSIFICATION_FACTS_KEY
+from shared.log_platforms import builtin_platform_metas
+from shared.log_classification import CLASSIFICATION_FACTS_KEY
 from app.ui.viewmodels.log_query_worker import LogQueryRequest, LogQueryWorker, query_log_items
 
 

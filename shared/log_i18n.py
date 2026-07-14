@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.ui.localization import normalize_language, platform_display_name, tr
+from shared.localization import normalize_language, platform_display_name, tr
 
 
 _EMOJI_PREFIX_PATTERN = r"[\U0001F300-\U0001FAFF\u2600-\u27BF\u2139\ufe0e\ufe0f]*"
@@ -366,6 +366,7 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("无效平台", "Invalid platform", "無效平台"),
     ("支持", "supported", "支援"),
     ("保存配置失败", "Failed to save configuration", "儲存設定失敗"),
+    ("该配置项不允许通过 Web 修改", "This setting cannot be changed from the WebUI", "此設定不允許透過 WebUI 修改"),
     ("使用代理", "Using proxy", "使用代理"),
     ("爬虫错误", "Crawler error", "爬蟲錯誤"),
     ("加载本地 Cookie 成功", "Loaded local Cookie successfully", "載入本機 Cookie 成功"),

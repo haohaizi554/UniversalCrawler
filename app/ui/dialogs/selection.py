@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 
 from app.ui.components.theme_checkbox import ThemeCheckBox
 from app.ui.dialogs.chromed_dialog import ChromedDialog
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 from app.ui.styles.table_rows import install_click_only_row_selection, install_stable_vertical_scrollbar
 
 _ROW_HEIGHT = 34

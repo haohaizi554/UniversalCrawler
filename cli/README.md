@@ -8,15 +8,19 @@ UCrawl 提供 4 种调用方式，统一封装在 `cli/` 模块下。
 
 ```bash
 # 通用命令
-ucrawl search --source douyin --keyword "测试" --max-items 10
+ucrawl search --source douyin "测试" --max-items 10
 
 # 平台别名
 ucrawl douyin search "测试"
 
 # 二次选择
-ucrawl search --source bilibili --keyword "BV1xxx" --select "0,2,5"
-ucrawl search --source bilibili --keyword "BV1xxx" --preload-choices "0|1,2|3"
+ucrawl search --source bilibili "BV1xxx" --select "0,2,5"
+ucrawl search --source bilibili "BV1xxx" --preload-choices "0|1,2|3"
 ```
+
+`keyword` 的规范形式是 `source` 后的位置参数。历史脚本中的
+`--keyword "测试"` 继续兼容；两种形式同时出现且值不一致时会直接报错。
+显式 `--select` / `--exclude` 规则包含拼写错误或完全越界时会失败，绝不会退化为全选。
 
 ### 2. Python SDK
 

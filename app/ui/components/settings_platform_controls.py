@@ -6,7 +6,7 @@ from typing import Any
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLineEdit, QSizePolicy, QWidget
 
-from app.ui.viewmodels.settings_catalog import PLATFORM_COUNT_OPTIONS, PROXY_OPTIONS, TIMEOUT_OPTIONS
+from shared.settings_metadata import PLATFORM_COUNT_OPTIONS, PROXY_OPTIONS, TIMEOUT_OPTIONS
 from app.ui.viewmodels.settings_options import (
     compact_proxy_options,
     current_combo_value,

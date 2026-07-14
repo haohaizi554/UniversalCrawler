@@ -5,16 +5,16 @@ AI/LLM 调用方式：
 2. 或直接 exec() 此脚本：`python ucrawl_skill.py --source douyin --keyword "测试"`
 """
 
-import os
 import sys
+from pathlib import Path
 
 # 把项目根目录加入 sys.path
-ROOT = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(ROOT)
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+project_root = str(PROJECT_ROOT)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-from cli.main import main
+from cli.main import main  # noqa: E402 - sys.path bootstrap must precede the import.
 
 if __name__ == "__main__":
     sys.exit(main())

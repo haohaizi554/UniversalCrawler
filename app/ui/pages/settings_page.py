@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.services.icon_registry import platform_icon_file, ui_icon_path
+from app.services.icon_registry import ui_icon_path
+from shared.icon_contract import platform_icon_file
 from app.ui.components.combo_popup import apply_themed_combo_box, polish_combo_popup
 from app.ui.components.settings_controls import SettingsComboBox, SegmentedControl, UiSwitch
 from app.ui.components.settings_form import SettingsFormBuilder
@@ -31,11 +32,8 @@ from app.ui.components.settings_platform_controls import (
     build_platform_proxy_widget,
     build_platform_timeout_combo,
 )
-from app.ui.localization import normalize_language, platform_display_name, tr
-from app.ui.pages.common import PageFrame
-from app.ui.styles.settings_page import generate_settings_page_stylesheet
-from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
-from app.ui.viewmodels.settings_catalog import (
+from shared.localization import normalize_language, platform_display_name, tr
+from shared.settings_metadata import (
     CONCURRENCY_OPTIONS,
     GROUP_DESCRIPTIONS,
     GROUP_HINTS,
@@ -50,6 +48,9 @@ from app.ui.viewmodels.settings_catalog import (
     TIMEOUT_OPTIONS,
     UI_LOG_MAX_DISPLAY_OPTIONS,
 )
+from app.ui.pages.common import PageFrame
+from app.ui.styles.settings_page import generate_settings_page_stylesheet
+from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
 from app.ui.viewmodels.settings_options import (
     current_combo_int_value,
     current_combo_value,

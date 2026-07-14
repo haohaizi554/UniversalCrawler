@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.ui.viewmodels.log_i18n import localize_log_text
+from shared.localization import normalize_language
+from shared.log_i18n import localize_log_text
 
 
 def prepare_failed_item_for_display(item: dict[str, Any], *, language: str) -> dict[str, Any]:
     """Build failed-page display fields in the list worker, before Qt widgets render."""
 
+    language = normalize_language(language)
     row = dict(item)
+    row["display_language"] = language
     row["reason_detail_display"] = localize_log_text(
         row.get("reason_detail") or row.get("reason") or "",
         language,

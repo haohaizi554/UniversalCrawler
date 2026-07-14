@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayou
 
 from app.ui.components.theme_checkbox import ThemeCheckBox
 from app.ui.dialogs.chromed_dialog import ChromedDialog
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,7 +9,7 @@ import argparse
 import json
 import sys
 
-from cli.sdk import UcrawlSDK
+from shared.sdk_runtime import UcrawlSDK
 
 def add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("directory", help="要扫描的目录")

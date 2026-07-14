@@ -1,4 +1,4 @@
-"""Static catalog data used by the settings page."""
+"""Presentation-neutral metadata shared by GUI and WebUI settings views."""
 
 from __future__ import annotations
 
@@ -9,6 +9,24 @@ GROUP_ICONS = {
     "播放设置": "action_play.png",
     "日志设置": "nav_log_center.png",
     "外观设置": "action_theme_palette.png",
+}
+
+GROUP_DESCRIPTIONS = {
+    "基础设置": "下载目录、文件命名和打开行为",
+    "下载设置": "并发、超时、重试和下载策略",
+    "平台设置": "认证状态、爬取数量和代理入口",
+    "播放设置": "播放器、断点续播和预览行为",
+    "日志设置": "保留策略、显示上限和错误追踪",
+    "外观设置": "语言、主题、界面缩放和字体",
+}
+
+GROUP_HINTS = {
+    "基础设置": "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。",
+    "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
+    "平台设置": "认证状态自动检测；代理仅对需要的平台开放。",
+    "播放设置": "播放设置只影响本地预览，不影响下载文件。",
+    "日志设置": "UI展示数量只影响日志中心显示，不影响日志文件本身。",
+    "外观设置": "外观设置会即时生效，并保存到本地配置。",
 }
 
 PLATFORM_FALLBACK_LETTERS = {
@@ -26,12 +44,10 @@ FILENAME_TEMPLATES = [
     {"value": "platform_title_date", "label": "平台_标题_日期"},
     {"value": "platform_title_index", "label": "平台_标题_序号"},
 ]
-
 OPEN_MODE_OPTIONS = [
     {"value": "builtin_player", "label": "内置播放器"},
     {"value": "system_default", "label": "系统默认打开方式"},
 ]
-
 CONCURRENCY_OPTIONS = [
     {"value": "1", "label": "1"},
     {"value": "3", "label": "3（推荐）"},
@@ -103,7 +119,6 @@ SETTING_DESCRIPTIONS = {
     "界面缩放": "调整界面缩放比例。",
     "字体大小": "调整界面文字大小。",
 }
-
 SETTING_SHORT_DESCRIPTIONS = {
     "下载目录": "保存下载文件的位置",
     "文件命名规则": "从预设模板中选择",
@@ -133,22 +148,4 @@ SETTING_SHORT_DESCRIPTIONS = {
     "主题色": "界面强调色",
     "界面缩放": "界面比例",
     "字体大小": "文字大小",
-}
-
-GROUP_DESCRIPTIONS = {
-    "基础设置": "下载目录、文件命名和打开行为",
-    "下载设置": "并发、超时、重试和下载策略",
-    "平台设置": "认证状态、爬取数量和代理入口",
-    "播放设置": "播放器、断点续播和预览行为",
-    "日志设置": "保留策略、显示上限和错误追踪",
-    "外观设置": "语言、主题、界面缩放和字体",
-}
-
-GROUP_HINTS = {
-    "基础设置": "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。",
-    "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
-    "平台设置": "认证状态自动检测；代理仅对需要的平台开放。",
-    "播放设置": "播放设置只影响本地预览，不影响下载文件。",
-    "日志设置": "UI展示数量只影响日志中心显示，不影响日志文件本身。",
-    "外观设置": "外观设置会即时生效，并保存到本地配置。",
 }

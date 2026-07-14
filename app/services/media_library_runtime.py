@@ -35,7 +35,7 @@ class MediaRenameOutcome:
     error: str | None = None
 
 class MediaLibraryMixin:
-    """Shared media-library orchestration for GUI/Web controllers."""
+    """Shared media-library orchestration for GUI and Web hosts."""
 
     def _resolve_scan_limit(self, scan_limit: int | None = None) -> int:
         return scan_limit if scan_limit is not None else cfg.get("download", "local_scan_limit", 1000)

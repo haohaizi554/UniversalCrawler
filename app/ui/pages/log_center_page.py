@@ -44,20 +44,18 @@ from app.ui.components.log_inspector_sections import (
     build_log_kv_row,
     build_log_stack_section,
 )
-from app.ui.localization import normalize_language, tr
+from shared.localization import normalize_language, tr
+from shared.log_contract import LOG_CATEGORY_LABELS
 from app.ui.pages.common import PageFrame, SnapshotActionDelegate, SnapshotActionTable
 from app.ui.styles.themes import resolve_is_dark_theme, theme_colors
-from app.ui.viewmodels.log_pipeline_rules import (
+from shared.log_pipeline_rules import (
     is_crawl_pipeline_log,
     is_download_boundary_log,
     is_download_component_source,
     is_platform_root_crawl_log,
 )
-from app.ui.viewmodels.log_platforms import (
-    PlatformUiMeta,
-    builtin_platform_metas,
-    load_platform_options,
-)
+from shared.log_platforms import PlatformUiMeta
+from app.ui.viewmodels.log_platforms import load_builtin_platform_metas, load_platform_options
 from app.ui.viewmodels.log_query_worker import (
     LogQueryRequest,
     LogQueryResult,
@@ -76,14 +74,7 @@ from app.ui.viewmodels.pagination_state import parse_page_size
 from app.utils.safe_slot import safe_slot
 
 
-LOG_CATEGORIES = {
-    "all": "全部日志",
-    "crawl": "采集日志",
-    "download": "下载日志",
-    "system": "系统日志",
-    "performance": "性能日志",
-    "error": "异常日志",
-}
+LOG_CATEGORIES = LOG_CATEGORY_LABELS
 LOG_TAB_HEIGHT = 34
 LOG_TAB_MIN_WIDTH = 92
 LOG_TAB_TEXT_PADDING = 34
@@ -144,7 +135,7 @@ class LogCenterPage(PageFrame):
         self._tab_buttons: dict[str, QPushButton] = {}
         self._log_action_buttons: dict[str, QPushButton] = {}
         self._platform_options: list[PlatformUiMeta] = []
-        self._platform_meta_by_id: dict[str, PlatformUiMeta] = builtin_platform_metas()
+        self._platform_meta_by_id: dict[str, PlatformUiMeta] = load_builtin_platform_metas()
         self._platform_option_ids: tuple[str, ...] = ()
         self._page_size = 20
         self._current_page = 1

@@ -1,11 +1,11 @@
-from app.ui.viewmodels.log_display import (
+from shared.log_display import (
     decorate_log_item,
     format_platform_label,
     resolve_item_platform_id,
     scope_display_text,
     stage_display_text,
 )
-from app.ui.viewmodels.log_platforms import builtin_platform_metas
+from shared.log_platforms import builtin_platform_metas
 
 
 def _platform_context():

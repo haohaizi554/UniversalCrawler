@@ -2,12 +2,8 @@ import builtins
 import sys
 from pathlib import Path
 
-from app.ui.viewmodels.log_platforms import (
-    PlatformUiMeta,
-    builtin_platform_metas,
-    load_platform_options,
-    platform_icon_file_for_id,
-)
+from app.ui.viewmodels.log_platforms import load_builtin_platform_metas, load_platform_options
+from shared.log_platforms import PlatformUiMeta, builtin_platform_metas, platform_icon_file_for_id
 
 
 def test_builtin_log_platforms_cover_supported_sources():
@@ -31,7 +27,7 @@ def test_log_platform_icons_resolve_from_pyinstaller_bundle(tmp_path, monkeypatc
     monkeypatch.chdir(work_dir)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
 
-    metas = builtin_platform_metas()
+    metas = load_builtin_platform_metas()
 
     assert metas["bilibili"].icon_path == str(bundle_icon)
     assert platform_icon_file_for_id("bilibili", metas["bilibili"]) == "platform_bilibili.png"

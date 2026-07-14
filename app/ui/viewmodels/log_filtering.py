@@ -3,15 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from app.ui.viewmodels.log_classification import (
+from shared.log_classification import (
     classification_facts,
     derive_result_type,
     normalized_raw_level,
     result_display_text,
 )
-from app.ui.viewmodels.log_display import resolve_item_platform_id
-from app.ui.viewmodels.log_pipeline_rules import derive_event_stage, derive_log_scope
-from app.ui.viewmodels.log_platforms import PlatformUiMeta, builtin_platform_metas
+from shared.log_display import resolve_item_platform_id
+from shared.log_pipeline_rules import derive_event_stage, derive_log_scope
+from shared.log_platforms import PlatformUiMeta, builtin_platform_metas
 
 
 ALL_LABELS = {"", "all", "\u5168\u90e8"}

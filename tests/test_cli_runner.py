@@ -1,4 +1,4 @@
-"""cli.runner CLIRunner 单元 + 集成测试。
+"""shared.cli_runner_runtime.CLIRunner 单元 + 集成测试。
 
 测试维度：
 - 单元测试：参数初始化、_apply_video_state、_make_ask_user_selection
@@ -16,7 +16,7 @@ class CLIRunnerInitTests(unittest.TestCase):
 
     def test_init_with_minimal_args(self):
         """最小参数初始化。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         runner = CLIRunner(source="douyin", keyword="kw")
         self.assertEqual(runner.source, "douyin")
         self.assertEqual(runner.keyword, "kw")
@@ -29,7 +29,7 @@ class CLIRunnerInitTests(unittest.TestCase):
 
     def test_init_with_all_args(self):
         """全参数初始化。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         runner = CLIRunner(
             source="bilibili",
             keyword="BV1xxx",
@@ -49,14 +49,14 @@ class CLIRunnerInitTests(unittest.TestCase):
 
     def test_init_default_save_dir(self):
         """save_dir 默认值。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         runner = CLIRunner(source="douyin", keyword="kw")
         # save_dir 必须是字符串（默认或从 cfg 读取）
         self.assertIsInstance(runner.save_dir, str)
 
     def test_init_config_copy(self):
         """config 必须是副本（避免外部修改污染）。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         original = {"max_items": 10}
         runner = CLIRunner(source="douyin", keyword="kw", config=original)
         original["max_items"] = 999
@@ -65,8 +65,8 @@ class CLIRunnerInitTests(unittest.TestCase):
 
     def test_init_default_selection_strategy(self):
         """未指定 selection_strategy 时默认 AutoSelection。"""
-        from cli.runner import CLIRunner
-        from cli.selection import AutoSelection
+        from shared.cli_runner_runtime import CLIRunner
+        from shared.selection_runtime import AutoSelection
         runner = CLIRunner(source="douyin", keyword="kw")
         self.assertIsInstance(runner.selection_strategy, AutoSelection)
 
@@ -74,7 +74,7 @@ class CLIRunnerApplyStateTests(unittest.TestCase):
     """_apply_video_state 测试。"""
 
     def setUp(self):
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         self.runner = CLIRunner(source="douyin", keyword="kw")
         # 注入假 video
         self.fake_item = MagicMock()
@@ -139,8 +139,8 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
     """_make_ask_user_selection monkey-patch 测试。"""
 
     def setUp(self):
-        from cli.runner import CLIRunner
-        from cli.selection import RuleSelection
+        from shared.cli_runner_runtime import CLIRunner
+        from shared.selection_runtime import RuleSelection
         self.runner = CLIRunner(
             source="douyin",
             keyword="kw",
@@ -162,7 +162,7 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
 
     def test_ask_strategy_exception_defaults_to_all(self):
         """策略抛异常 → 默认全选。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         runner = CLIRunner(
             source="douyin",
             keyword="kw",
@@ -173,9 +173,9 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
         result = ask(MagicMock(), items)
         self.assertEqual(result, [0, 1, 2])
 
-    def test_patch_spider_connects_item_found_callback_directly(self):
-        """Spider 去 Qt 化后，CLI 应直接绑定 item_found 回调。"""
-        from cli.runner import CLIRunner
+    def test_patch_spider_only_installs_selection_bridge(self):
+        """Signal ownership belongs to SpiderSession; the runner only patches selection."""
+        from shared.cli_runner_runtime import CLIRunner
 
         runner = CLIRunner(source="douyin", keyword="kw")
         spider = MagicMock()
@@ -186,11 +186,13 @@ class CLIRunnerAskUserSelectionTests(unittest.TestCase):
 
         runner._patch_spider(spider)
 
-        spider.sig_item_found.connect.assert_called_once_with(runner._on_item_found)
+        self.assertTrue(callable(spider.ask_user_selection))
+        spider.sig_item_found.connect.assert_not_called()
+        spider.sig_log.connect.assert_not_called()
 
     def test_connect_download_signals_binds_callbacks_directly(self):
         """下载链去 Qt 化后，CLI 应直接绑定纯 Python 回调。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
 
         runner = CLIRunner(source="douyin", keyword="kw")
         runner._dl_manager = MagicMock()
@@ -207,7 +209,7 @@ class CLIRunnerRunTests(unittest.TestCase):
 
     def test_run_unknown_source(self):
         """未知平台 → 返回 status=error。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         runner = CLIRunner(source="unknown_platform_xyz", keyword="kw")
         result = runner.run()
         self.assertEqual(result["status"], "error")
@@ -215,8 +217,8 @@ class CLIRunnerRunTests(unittest.TestCase):
 
     def test_run_with_mock_spider(self):
         """用 mock spider 跑完整流程。"""
-        from cli.runner import CLIRunner
-        from cli.selection import RuleSelection
+        from shared.cli_runner_runtime import CLIRunner
+        from shared.selection_runtime import RuleSelection
         from app.core.plugin_registry import registry
 
         # 注册 mock plugin
@@ -290,8 +292,8 @@ class CLIRunnerRunTests(unittest.TestCase):
 
     def test_run_invalid_spider_constructor(self):
         """spider 构造抛异常 → 返回 status=error。"""
-        from cli.runner import CLIRunner
-        from cli.selection import RuleSelection
+        from shared.cli_runner_runtime import CLIRunner
+        from shared.selection_runtime import RuleSelection
         from app.core.plugin_registry import registry
 
         class BrokenPlugin:
@@ -323,7 +325,7 @@ class CLIRunnerRunTests(unittest.TestCase):
 
     def test_wait_spider_polls_until_worker_finishes(self):
         """等待 spider 时应轮询纯 Python 线程状态直到结束。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
 
         runner = CLIRunner(source="douyin", keyword="kw", verbose=False)
 
@@ -336,14 +338,16 @@ class CLIRunnerRunTests(unittest.TestCase):
                 return self.calls < 3
 
         # 假 spider 只在被轮询时推进状态；冻结时钟可避免 CI 调度暂停被误当成业务超时。
-        with patch("cli.runner.time.monotonic", return_value=0.0), patch("cli.runner.time.sleep"):
+        with patch("shared.cli_runner_runtime.time.monotonic", return_value=0.0), patch(
+            "shared.cli_runner_runtime.time.sleep"
+        ):
             finished = runner._wait_spider(FakeSpider(), timeout=1.0)
 
         self.assertTrue(finished)
 
     def test_run_non_timeout_path_does_not_block_on_spider_wait(self):
         """无 timeout 时 run() 应通过事件泵等待，而不是直接阻塞 wait()。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         from app.core.plugin_registry import registry
 
         class DummySignal:
@@ -408,7 +412,7 @@ class CLIRunnerBuildResultTests(unittest.TestCase):
 
     def test_build_result_has_required_keys(self):
         """_build_result 必须返回完整结构。"""
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
         runner = CLIRunner(source="douyin", keyword="kw")
         runner.videos = {"v1": MagicMock(id="v1", status="✅ 完成", progress=100, local_path="", title="t", source="douyin", url="u", meta={})}
         runner.logs = ["log1"]

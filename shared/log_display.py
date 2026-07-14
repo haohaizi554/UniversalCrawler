@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from app.ui.viewmodels.log_classification import (
+from shared.log_classification import (
     classification_facts,
     derive_result_type,
     normalized_event_code,
@@ -10,7 +10,7 @@ from app.ui.viewmodels.log_classification import (
     normalized_status_code,
     result_display_text,
 )
-from app.ui.viewmodels.log_platforms import PlatformUiMeta, builtin_platform_metas, platform_icon_file_for_id
+from shared.log_platforms import PlatformUiMeta, builtin_platform_metas, platform_icon_file_for_id
 
 
 def stage_display_text(stage: str) -> str:

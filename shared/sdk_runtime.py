@@ -33,6 +33,7 @@ import sys
 from typing import Any
 
 from shared.cli_runner_runtime import CLIRunner
+from shared.selection_base import SelectionStrategy, is_selection_strategy
 
 # 保持 CLI/SDK 输出实时刷新，便于长任务反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
@@ -52,10 +53,8 @@ from shared.runtime_options import (
     validate_direct_download_url,
 )
 from shared.selection_runtime import (
-    SelectionStrategy,
     AutoSelection,
     SelectionStrategyFactory,
-    is_selection_strategy,
 )
 
 def _discover_platform_ids() -> tuple[str, ...]:
@@ -119,9 +118,8 @@ class UcrawlSDK:
         """Return the runner class used by SDK search flows.
 
         The shared runtime defaults to the shared runner implementation. Host-
-        specific facade modules can override this hook to preserve patch seams
-        such as ``patch("cli.runner.CLIRunner")`` without keeping the real
-        implementation under ``cli/``.
+        specific public packages can override this hook to preserve patch seams
+        without keeping another runner implementation outside ``shared/``.
         """
         return CLIRunner
 
@@ -203,7 +201,10 @@ class UcrawlSDK:
         # 与 CLI --run-timeout 对齐：run_timeout 优先，timeout 向后兼容
         effective_run_timeout = run_timeout if run_timeout is not None else timeout
         # 与 REST API 对齐：校验 timeout 类型
-        if effective_run_timeout is not None and not isinstance(effective_run_timeout, (int, float)):
+        if effective_run_timeout is not None and (
+            isinstance(effective_run_timeout, bool)
+            or not isinstance(effective_run_timeout, (int, float))
+        ):
             raise TypeError("timeout/run_timeout 必须是数字或 None")
         # 与 REST API 对齐：校验 timeout 值
         if effective_run_timeout is not None and effective_run_timeout <= 0:
@@ -252,7 +253,7 @@ class UcrawlSDK:
         """校验已知 config 参数类型，与 CLI argparse type 对齐。
 
         仅校验已知参数，未知参数透传给 spider（保持前向兼容）。
-        委托给 cli.defaults.validate_config_types 统一实现，
+        委托给 shared.runtime_options.validate_config_types 统一实现，
         确保 CLI/SDK/REST API 三层校验逻辑完全一致。
         """
         err = validate_config_types(config)
@@ -280,6 +281,7 @@ class UcrawlSDK:
         verbose: bool = False,
         config: dict | None = None,
         progress_callback: Any = None,
+        network_policy: str | None = None,
     ) -> dict[str, Any]:
         """直接下载指定 URL 的视频（与 CLI download 命令对齐）。
 
@@ -295,6 +297,8 @@ class UcrawlSDK:
             progress_callback: 下载进度回调函数 (None=不回调，与 GUI DownloadManager 信号对齐)
                 签名: callback(progress: int) -> None
                 progress 范围 0-100，与 GUI/WebController task_progress 事件对齐
+            network_policy: 内部网络策略。Web 公网直链入口传 ``"public"``，
+                普通 CLI/SDK 调用保持 ``None`` 以支持本地资源。
 
         Returns:
             dict: {"status": "ok"/"error", "video_id": ..., "title": ..., "local_path": ..., ...}
@@ -313,33 +317,32 @@ class UcrawlSDK:
         # 与 CLI download 命令对齐：校验参数
         if not isinstance(url, str) or not isinstance(source, str):
             raise TypeError("url 和 source 必须是字符串")
+        if not isinstance(title, str):
+            raise TypeError("title 必须是字符串")
+        if save_dir is not None and not isinstance(save_dir, str):
+            raise TypeError("save_dir 必须是字符串或 None")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise TypeError("timeout 必须是数字")
+        if not isinstance(verbose, bool):
+            raise TypeError("verbose 必须是布尔值")
+        if config is not None and not isinstance(config, dict):
+            raise TypeError("config 必须是字典或 None")
         url = url.strip()
         if not url or not source:
             raise ValueError("url 和 source 不能为空")
-        url_error = validate_direct_download_url(url)
-        if url_error:
-            raise ValueError(url_error)
-        if not isinstance(title, str):
-            raise TypeError("title 必须是字符串")
+        if timeout <= 0:
+            raise ValueError("timeout 必须大于 0")
+        if network_policy not in {None, "public"}:
+            raise ValueError("network_policy 仅支持 public 或 None")
+        if network_policy == "public":
+            url_error = validate_direct_download_url(url)
+            if url_error:
+                raise ValueError(url_error)
         # 与 REST API /api/download 对齐：校验 source 是否为有效平台 ID
         from app.core.plugin_registry import registry
         if not registry.get_plugin(source):
             valid_ids = [p.id for p in registry.get_all_plugins()]
             raise ValueError(f"无效平台: {source}。支持: {valid_ids}")
-        # 与 REST API /api/download 对齐：save_dir 必须是字符串
-        if save_dir is not None and not isinstance(save_dir, str):
-            raise TypeError("save_dir 必须是字符串或 None")
-        # 与 REST API /api/search 对齐：timeout 必须是数字
-        if not isinstance(timeout, (int, float)):
-            raise TypeError("timeout 必须是数字")
-        if timeout <= 0:
-            raise ValueError("timeout 必须大于 0")
-        # 与 search() 的 download 校验对齐：verbose 必须是布尔值
-        if not isinstance(verbose, bool):
-            raise TypeError("verbose 必须是布尔值")
-        # 与 REST API /api/download 对齐：config 必须是字典或 None
-        if config is not None and not isinstance(config, dict):
-            raise TypeError("config 必须是字典或 None")
         # 与 search() 的 _validate_config 对齐：校验已知 config 参数类型
         if config:
             self._validate_config(config)
@@ -401,6 +404,10 @@ class UcrawlSDK:
         import uuid as _uuid
         _source_prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
         item.meta["trace_id"] = f"{_source_prefix}-dl-{_uuid.uuid4().hex[:8]}"
+        if network_policy:
+            # Web 直链入口使用该内部标记，下载器据此逐跳校验重定向；
+            # 普通 CLI/SDK 调用保持原有的本地资源访问能力。
+            item.meta["_network_policy"] = network_policy
 
         # 所有平台特定配置写入 meta（与 GUI spider meta 对齐）
         # 与 GUI spider 结果对齐：content_type 让 DownloadWorker 可正确推断文件扩展名
@@ -637,7 +644,7 @@ class UcrawlSDK:
             raise TypeError("directory 必须是字符串")
         if not directory:
             raise ValueError("directory 不能为空")
-        if scan_limit is not None and not isinstance(scan_limit, int):
+        if scan_limit is not None and (isinstance(scan_limit, bool) or not isinstance(scan_limit, int)):
             raise TypeError("scan_limit 必须是整数或 None")
         # 与 REST API /api/scan 对齐：scan_limit 必须大于 0
         if scan_limit is not None and scan_limit <= 0:

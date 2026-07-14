@@ -46,7 +46,7 @@ GUI 配置中心和 WebUI 设置页必须消费同一份 `FrontendStateService.s
 
 - 源语言为 `zh-CN`。
 - 派生语言目录位于 `app/ui/i18n/en-US.json` 和 `app/ui/i18n/zh-TW.json`。
-- GUI 侧通过 `app.ui.localization.tr()` 翻译。
+- GUI 与 WebUI 的 Python 投影统一通过 `shared.localization.tr()` 翻译；表示层不得保留同名转发模块。
 - WebUI 首屏可以保留本地兜底词典，但启动后必须通过 `/api/i18n/{language}` 加载共享语言目录并覆盖兜底值。
 - `app.web.server.create_app()` 和 `app.web.rest_router.build_rest_router()` 都必须暴露 `/api/i18n/{language}`。
 

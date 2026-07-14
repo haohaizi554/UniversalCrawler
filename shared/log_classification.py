@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from app.ui.viewmodels.log_detail_payloads import parse_structured_detail_text
+from shared.log_detail_payloads import parse_structured_detail_text
 
 CLASSIFICATION_FACTS_KEY = "_classification_facts"
 

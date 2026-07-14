@@ -27,16 +27,16 @@ pip install .
 
 ```bash
 # 通用命令
-ucrawl search --source douyin --keyword "测试" --max-items 10
+ucrawl search --source douyin "测试" --max-items 10
 
 # 平台别名（更短）
 ucrawl douyin search "测试" --max-items 10
 
 # 漂亮输出
-ucrawl search --source missav --keyword "ABC-123" --pretty
+ucrawl search --source missav "ABC-123" --pretty
 
 # JSON 输出（适合管道）
-ucrawl search --source bilibili --keyword "测试" --json | jq '.items[].title'
+ucrawl search --source bilibili "测试" | jq '.items[].title'
 ```
 
 ### 完整参数
@@ -49,7 +49,7 @@ ucrawl search --help
 
 | 参数 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `--source` / `-s` | ✅ | - | 平台：`douyin` / `bilibili` / `kuaishou` / `missav` |
+| `--source` / `-s` | ✅ | - | 平台：`douyin` / `xiaohongshu` / `bilibili` / `kuaishou` / `missav` |
 | `keyword` | ✅ | - | 搜索关键词 / 视频链接 / 用户 ID |
 | `--save-dir` / `-d` | ❌ | `downloads` | 保存目录 |
 | `--max-items` | ❌ | 平台默认 | 最大视频数 |
@@ -59,6 +59,10 @@ ucrawl search --help
 | `--proxy` | ❌ | `http://127.0.0.1:7890` | 代理 URL（仅 MissAV） |
 | `--run-timeout` | ❌ | 无 | 整体超时秒 |
 
+`keyword` 推荐使用位置参数。`--keyword <值>` 继续兼容历史脚本；如果两种形式
+同时出现且值不一致，命令会以参数错误退出。显式选择规则中的非法 token 或
+完全越界索引会直接报错，绝不会退化为全选。
+
 ### 二次选择参数
 
 二次选择是爬虫扫描出候选后让用户选择要下载哪些的流程。CLI 提供 3 种选择模式：
@@ -67,27 +71,27 @@ ucrawl search --help
 
 ```bash
 # 全选（默认）
-ucrawl search --source bilibili --keyword "测试"
+ucrawl search --source bilibili "测试"
 
 # 只选第一个
-ucrawl search --source bilibili --keyword "测试" --first
+ucrawl search --source bilibili "测试" --first
 
 # 只选最后一个
-ucrawl search --source bilibili --keyword "测试" --last
+ucrawl search --source bilibili "测试" --last
 
 # 指定索引（支持范围）
-ucrawl search --source bilibili --keyword "测试" --select "0,2,5"
-ucrawl search --source bilibili --keyword "测试" --select "0,2-5"
+ucrawl search --source bilibili "测试" --select "0,2,5"
+ucrawl search --source bilibili "测试" --select "0,2-5"
 
 # 排除索引
-ucrawl search --source bilibili --keyword "测试" --all --exclude "1,3"
+ucrawl search --source bilibili "测试" --all --exclude "1,3"
 ```
 
 #### 模式 B：TTY 交互
 
 ```bash
 # 强制 TTY 交互（即使 stdin 是管道也用交互）
-ucrawl search --source bilibili --keyword "测试" --interactive
+ucrawl search --source bilibili "测试" --interactive
 ```
 
 运行后显示：
@@ -110,20 +114,20 @@ ucrawl search --source bilibili --keyword "测试" --interactive
 
 ```bash
 # 强制管道（适合脚本控制）
-ucrawl search --source bilibili --keyword "测试" --pipe
+ucrawl search --source bilibili "测试" --pipe
 ```
 
 stdin 接受 JSON 格式：
 
 ```bash
 # 简单格式
-echo '[0,2,5]' | ucrawl search --source bilibili --keyword "测试" --pipe
+echo '[0,2,5]' | ucrawl search --source bilibili "测试" --pipe
 
 # 详细格式
-echo '{"indices": [0,2,5]}' | ucrawl search --source bilibili --keyword "测试" --pipe
+echo '{"indices": [0,2,5]}' | ucrawl search --source bilibili "测试" --pipe
 
 # 完整格式
-echo '{"items": [{"index": 0, "selected": true}, {"index": 1, "selected": false}]}' | ucrawl search --source bilibili --keyword "测试" --pipe
+echo '{"items": [{"index": 0, "selected": true}, {"index": 1, "selected": false}]}' | ucrawl search --source bilibili "测试" --pipe
 ```
 
 #### 模式 D：预加载（合集场景多次选择）
@@ -132,7 +136,7 @@ echo '{"items": [{"index": 0, "selected": true}, {"index": 1, "selected": false}
 
 ```bash
 # 第 1 轮选 0，第 2 轮选 1,2，第 3 轮选 3,4
-ucrawl search --source bilibili --keyword "BV1xxx合集" --preload-choices "0|1,2|3,4"
+ucrawl search --source bilibili "BV1xxx合集" --preload-choices "0|1,2|3,4"
 ```
 
 ### 返回结构
@@ -342,7 +346,7 @@ LLM 调用示例：
 ```
 User: 帮我搜索抖音上"测试"关键词的 10 个视频
 LLM: 激活 ucrawl skill
-LLM: 执行 `ucrawl search --source douyin --keyword "测试" --max-items 10`
+LLM: 执行 `ucrawl search --source douyin "测试" --max-items 10`
 LLM: 找到以下视频：[返回结果]
 ```
 
@@ -387,7 +391,7 @@ result = sdk.search("bilibili", "BV1xxx合集", selection=sel)
 CLI 版本：
 
 ```bash
-ucrawl search --source bilibili --keyword "BV1xxx合集" --preload-choices "0,1,2||5"
+ucrawl search --source bilibili "BV1xxx合集" --preload-choices "0,1,2||5"
 ```
 
 ## 性能与限制
@@ -449,7 +453,7 @@ print(f"下载 {len(result['items'])} 个视频")
 ```bash
 ucrawl search \
     --source bilibili \
-    --keyword "BV1xxx合集标题" \
+    "BV1xxx合集标题" \
     --max-pages 1 \
     --preload-choices "0,1,2,3|0,1" \
     --save-dir "downloads/合集"
@@ -460,7 +464,7 @@ ucrawl search \
 ```bash
 ucrawl search \
     --source missav \
-    --keyword "ABC" \
+    "ABC" \
     --individual-only \
     --priority "中文字幕优先" \
     --proxy http://127.0.0.1:7890 \
@@ -471,7 +475,7 @@ ucrawl search \
 
 ```bash
 # crontab -e
-0 2 * * * cd /path/to/ucrawl && ucrawl search --source douyin --keyword "每日更新" --max-items 50 --save-dir "/data/crawl/$(date +\%Y\%m\%d)" >> /var/log/ucrawl.log 2>&1
+0 2 * * * cd /path/to/ucrawl && ucrawl search --source douyin "每日更新" --max-items 50 --save-dir "/data/crawl/$(date +\%Y\%m\%d)" >> /var/log/ucrawl.log 2>&1
 ```
 
 ## 进阶：自定义 Selection 策略

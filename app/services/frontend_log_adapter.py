@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from app.models import VideoItem
+from shared.log_display import decorate_log_item
+from shared.log_platforms import builtin_platform_metas
 
 LOG_ENTRY_RE = re.compile(
     r"^\[(?P<time>[^\]]+)\]\s+\[(?P<level>[^\]]+)\]\s+(?P<source>[^/]+?)\s*/\s*(?P<action>.+)$"
@@ -152,23 +154,17 @@ def enrich_log_item(item: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _decorate_log_display_fields(item: Mapping[str, Any]) -> dict[str, Any]:
-    """Reuse the GUI log table display model for WebUI snapshots when available."""
+    """Decorate one log row through the frontend-neutral display contract."""
     row = dict(item or {})
-    try:
-        from app.ui.viewmodels.log_display import decorate_log_item
-        from app.ui.viewmodels.log_platforms import builtin_platform_metas
-
-        metas = builtin_platform_metas()
-        return decorate_log_item(
-            row,
-            platform_options=list(metas.values()),
-            platform_meta_by_id=metas,
-            log_scope=str(row.get("category") or "system"),
-            event_stage=str(row.get("event_stage") or row.get("stage") or "step"),
-            scope_reason="frontend_log_adapter",
-        )
-    except Exception:
-        return row
+    metas = builtin_platform_metas()
+    return decorate_log_item(
+        row,
+        platform_options=list(metas.values()),
+        platform_meta_by_id=metas,
+        log_scope=str(row.get("category") or "system"),
+        event_stage=str(row.get("event_stage") or row.get("stage") or "step"),
+        scope_reason="frontend_log_adapter",
+    )
 
 
 def parse_debug_log_text(text: str, *, limit: int) -> list[dict[str, Any]]:

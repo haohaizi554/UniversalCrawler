@@ -9,7 +9,7 @@ import argparse
 import json
 import sys
 
-from cli.sdk import UcrawlSDK
+from shared.sdk_runtime import UcrawlSDK
 
 def add_platforms_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--describe", metavar="ID", help="显示指定平台的详细参数")
