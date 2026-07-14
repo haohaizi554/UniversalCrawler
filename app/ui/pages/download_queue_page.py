@@ -10,6 +10,7 @@ from app.ui.layout.island import IslandCard
 from shared.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
+from app.utils.qt_lifecycle import connect_destroyed_cleanup
 from app.utils.qt_runtime import load_qt_icon
 
 class DownloadQueuePage(PageFrame):
@@ -34,6 +35,7 @@ class DownloadQueuePage(PageFrame):
         self._page_sequence = 0
         self._page_worker: ListPageWorker | None = None
         self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
+        connect_destroyed_cleanup(self, self._shutdown_page_worker)
 
         self.table_island = IslandCard(object_name="QueueTableIsland")
         self.table_island.content_layout.setContentsMargins(10, 10, 10, 10)
@@ -238,8 +240,12 @@ class DownloadQueuePage(PageFrame):
         lines = [f"{self._t(item.get('status', '待下载'))}: {item.get('title', '')}" for item in reversed(recent)]
         self.event_body.setText("\n".join(lines))
 
+    def _shutdown_page_worker(self) -> None:
+        worker = self._page_worker
+        self._page_worker = None
+        if worker is not None:
+            worker.shutdown()
+
     def deleteLater(self) -> None:
-        if self._page_worker is not None:
-            self._page_worker.shutdown()
-            self._page_worker = None
+        self._shutdown_page_worker()
         super().deleteLater()

@@ -22,6 +22,7 @@ from shared.localization import normalize_language, tr
 from app.ui.pages.common import PageFrame, SnapshotActionTable
 from shared.failed_page_projection import prepare_failed_item_for_display
 from app.ui.viewmodels.list_page_worker import ListPageRequest, ListPageResult, ListPageWorker
+from app.utils.qt_lifecycle import connect_destroyed_cleanup, guarded_qt_callback
 from app.utils.qt_runtime import load_qt_icon
 
 
@@ -216,6 +217,7 @@ class FailedPage(PageFrame):
         self._page_request_preserves_selection = False
         self._page_worker: ListPageWorker | None = None
         self._page_result_ready.connect(self._apply_page_result, Qt.ConnectionType.QueuedConnection)
+        connect_destroyed_cleanup(self, self._shutdown_page_worker)
         self.table.selectionModel().currentChanged.connect(self._on_table_selection_changed)
         self.table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
         self.table.action_requested.connect(self._on_table_action)
@@ -610,8 +612,20 @@ class FailedPage(PageFrame):
     def _reset_log_scroll_to_top(self) -> None:
         self.log_list.adjustSize()
         self._reset_log_scroll_to_top_now()
-        QTimer.singleShot(0, self._reset_log_scroll_to_top_now)
-        QTimer.singleShot(0, lambda: QTimer.singleShot(0, self._reset_log_scroll_to_top_now))
+        QTimer.singleShot(
+            0,
+            guarded_qt_callback(self, lambda page: page._reset_log_scroll_to_top_now()),
+        )
+        QTimer.singleShot(
+            0,
+            guarded_qt_callback(self, lambda page: page._schedule_final_log_scroll_reset()),
+        )
+
+    def _schedule_final_log_scroll_reset(self) -> None:
+        QTimer.singleShot(
+            0,
+            guarded_qt_callback(self, lambda page: page._reset_log_scroll_to_top_now()),
+        )
 
     def _reset_log_scroll_to_top_now(self) -> None:
         bar = self.log_scroll.verticalScrollBar()
@@ -654,8 +668,12 @@ class FailedPage(PageFrame):
             self._render_selected_detail()
         return ok
 
+    def _shutdown_page_worker(self) -> None:
+        worker = self._page_worker
+        self._page_worker = None
+        if worker is not None:
+            worker.shutdown()
+
     def deleteLater(self) -> None:
-        if self._page_worker is not None:
-            self._page_worker.shutdown()
-            self._page_worker = None
+        self._shutdown_page_worker()
         super().deleteLater()

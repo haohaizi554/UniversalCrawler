@@ -58,6 +58,7 @@ from app.ui.viewmodels.settings_options import (
     platform_proxy_policy,
 )
 from app.ui.viewmodels.settings_platform_layout import platform_column_widths
+from app.utils.qt_lifecycle import guarded_qt_callback
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.safe_slot import safe_slot
 
@@ -1600,7 +1601,13 @@ class SettingsPage(PageFrame):
         self.action_feedback.setVisible(True)
         self.action_feedback.style().unpolish(self.action_feedback)
         self.action_feedback.style().polish(self.action_feedback)
-        QTimer.singleShot(6000, lambda label=self.action_feedback: label.setVisible(False))
+        QTimer.singleShot(
+            6000,
+            guarded_qt_callback(
+                self.action_feedback,
+                lambda label: label.setVisible(False),
+            ),
+        )
 
     def _apply_settings_page_style(self) -> None:
         if getattr(self, "_applying_style", False):
