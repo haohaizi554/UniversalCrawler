@@ -16,6 +16,7 @@ import pytest
 from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 
+from app.services.update_check_service import compare_versions
 from app.services.secure_updater import (
     AssetSelector,
     DownloadError,
@@ -27,6 +28,7 @@ from app.services.secure_updater import (
     MetadataNotFoundError,
     PackageVerifier,
     PendingInstall,
+    SemVer,
     UpdateAsset,
     UpdateManifest,
     UpdateManifestVerifier,
@@ -107,6 +109,77 @@ def _signed_manifest(
 def test_semver_compares_numeric_segments_and_prerelease():
     assert compare_semver("1.10.0", "1.9.9") > 0
     assert compare_semver("1.0.0", "1.0.0-rc.1") > 0
+
+
+@pytest.mark.parametrize(
+    ("lower", "higher"),
+    [
+        ("1.0.0-alpha", "1.0.0-alpha.1"),
+        ("1.0.0-alpha.1", "1.0.0-alpha.beta"),
+        ("1.0.0-alpha.beta", "1.0.0-beta"),
+        ("1.0.0-beta", "1.0.0-beta.2"),
+        ("1.0.0-beta.2", "1.0.0-beta.11"),
+        ("1.0.0-beta.11", "1.0.0-rc.1"),
+        ("1.0.0-rc.1", "1.0.0"),
+    ],
+)
+def test_semver_follows_standard_prerelease_precedence_table(lower, higher):
+    assert compare_semver(lower, higher) == -1
+    assert compare_semver(higher, lower) == 1
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("1.0.0+20130313144700", "1.0.0+exp.sha.5114f85"),
+        ("1.0.0-beta.2+build.7", "1.0.0-beta.2+build.99"),
+    ],
+)
+def test_semver_build_metadata_does_not_affect_precedence(left, right):
+    assert compare_semver(left, right) == 0
+
+
+def test_semver_parse_accepts_optional_v_and_preserves_identifiers():
+    assert SemVer.parse("v2.10.3-alpha.7+build.9") == SemVer(
+        major=2,
+        minor=10,
+        patch=3,
+        prerelease=("alpha", "7"),
+        build="build.9",
+    )
+    assert compare_semver("V2.10.3", "2.10.3") == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "1",
+        "1.2",
+        "1.2.3.4",
+        "1.2.x",
+        "1.2.3-",
+        "1.2.3+",
+    ],
+)
+def test_semver_parse_rejects_malformed_values(value):
+    with pytest.raises(ValueError, match="invalid semver"):
+        SemVer.parse(value)
+
+
+@pytest.mark.parametrize(
+    ("local", "latest", "expected"),
+    [
+        ("3.10", "3.9", 1),
+        ("v3.6", "3.6.0", 0),
+        ("release-2.7", "v2.10", -1),
+    ],
+)
+def test_compare_versions_uses_numeric_fallback_for_non_semver_versions(
+    local, latest, expected
+):
+    assert compare_versions(local, latest) == expected
 
 
 def test_version_policy_rejects_stable_prerelease_and_downgrade():
