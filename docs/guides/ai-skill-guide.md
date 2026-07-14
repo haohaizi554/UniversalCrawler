@@ -13,7 +13,7 @@ UCrawl 提供了符合 Claude / LLM skill 规范的封装，让 LLM 可以直接
 ```
 name: "ucrawl"
 description: "通用视频爬虫工具 (CLI / SDK / REST API / AI Skill)。
-支持抖音/B站/快手/MissAV 四平台，可通过 CLI 命令、Python 函数、
+支持抖音/小红书/B站/快手/MissAV 五平台，可通过 CLI 命令、Python 函数、
 web 服务启动时注入脚本三种方式调用，并能处理合集/多用户的二次选择场景。
 Invoke when user wants to search/download videos from these platforms,
 batch crawl, integrate crawler into existing service, or call crawler from LLM/script."
@@ -34,7 +34,7 @@ batch crawl, integrate crawler into existing service, or call crawler from LLM/s
 ```
 User: 帮我搜索抖音上"测试"关键词的 10 个视频
 LLM: 激活 ucrawl skill
-LLM: 执行 `python -m cli search --source douyin --keyword "测试" --max-items 10`
+LLM: 执行 `python -m cli search --source douyin "测试" --max-items 10`
 LLM: 找到以下视频：[返回结果]
 ```
 
@@ -43,7 +43,7 @@ LLM: 找到以下视频：[返回结果]
 ```
 User: 下载 B 站 BV1xxx 合集的前 5 个视频
 LLM: 激活 ucrawl skill
-LLM: 执行 `python -m cli search --source bilibili --keyword "BV1xxx" --select "0,1,2,3,4"`
+LLM: 执行 `python -m cli search --source bilibili "BV1xxx" --select "0,1,2,3,4"`
 LLM: 正在下载... 已完成 [视频列表]
 ```
 
@@ -74,7 +74,7 @@ LLM 调用时可以传递以下参数：
 
 | 参数 | 说明 | 示例 |
 |---|---|---|
-| `source` | 平台 ID | `douyin`, `bilibili`, `kuaishou`, `missav` |
+| `source` | 平台 ID | `douyin`, `xiaohongshu`, `bilibili`, `kuaishou`, `missav` |
 | `keyword` | 搜索关键词 | `测试`, `BV1xxx`, `ABC-123` |
 | `max-items` | 最大视频数 | `10`, `20`, `50` |
 | `selection` | 选择策略 | `all`, `first`, `0,2,5` |
@@ -110,10 +110,10 @@ LLM 调用时可以传递以下参数：
 
 ```bash
 # 选择第 0, 2, 5 项
-python -m cli search --source bilibili --keyword "BV1xxx" --select "0,2,5"
+python -m cli search --source bilibili "BV1xxx" --select "0,2,5"
 
 # 合集场景：预加载多轮选择
-python -m cli search --source bilibili --keyword "BV1xxx" --preload-choices "0|1,2|3"
+python -m cli search --source bilibili "BV1xxx" --preload-choices "0|1,2|3"
 ```
 
 ## 错误处理

@@ -74,7 +74,7 @@ ucrawl-gui = "entry.gui_entry:main"
 ucrawl-test-gui = "entry.test_entry:main"
 
 [tool.setuptools.packages.find]
-include = ["app*", "cli*", "entry*", "shared*", "ucrawl*", "scripts*", "UI*", "tests*"]
+include = ["app*", "cli*", "entry*", "shared*", "ucrawl*", "scripts*", "UI*"]
 exclude = ["docs*", "packaging*"]
 
 [tool.setuptools.package-data]
@@ -92,7 +92,40 @@ UI = [
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["F821", "F822", "F823"]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+"app/core/lib/douyin/**/*.py" = ["E402", "E741", "F401", "F541"]
+"scripts/capture_frontend_visual_matrix.py" = ["E402"]
+"tests/**/*.py" = ["E402", "F401"]
+
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "shared/runtime_adapters.py",
+    "shared/frontend_page_definitions.py",
+    "shared/icon_contract.py",
+    "shared/log_contract.py",
+    "shared/settings_metadata.py",
+    "shared/failed_page_projection.py",
+    "shared/log_classification.py",
+    "shared/log_detail_payloads.py",
+    "shared/log_display.py",
+    "shared/log_i18n.py",
+    "shared/log_pipeline_rules.py",
+    "shared/log_platforms.py",
+    "shared/localization.py",
+    "shared/i18n_catalogs.py",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"

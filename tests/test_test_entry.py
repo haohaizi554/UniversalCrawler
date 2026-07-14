@@ -66,6 +66,10 @@ class TestEntryCliArgsTests(unittest.TestCase):
         ns = self.mod._parse_args(["-v"])
         self.assertTrue(ns.verbose)
 
+    def test_parse_args_self_check(self):
+        ns = self.mod._parse_args(["--self-check"])
+        self.assertTrue(ns.self_check)
+
     def test_parse_args_plugin_dir(self):
         ns = self.mod._parse_args(["--plugin-dir", "id1:我的测试:tests/plugins"])
         self.assertEqual(ns.plugin_dir, ["id1:我的测试:tests/plugins"])
@@ -138,6 +142,18 @@ class TestEntryRunListTests(unittest.TestCase):
             "misc",
         ]:
             self.assertIn(cat_id, out, f"missing category: {cat_id}")
+
+    def test_installed_distribution_routes_to_release_self_check(self):
+        from entry import test_entry
+
+        with (
+            mock.patch.object(test_entry, "_source_suite_available", return_value=False),
+            mock.patch("entry.release_self_check.run", return_value=0) as run_self_check,
+        ):
+            rc = test_entry.main(["--self-check", "--verbose"])
+
+        self.assertEqual(rc, 0)
+        run_self_check.assert_called_once_with(verbose=True, list_only=False)
 
 class TestEntryApplyPluginArgsTests(unittest.TestCase):
     """--plugin-dir / --plugin 命令行注册。"""

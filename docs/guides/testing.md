@@ -153,8 +153,9 @@ python -m pytest tests/test_web_browser.py -q
 
 适合对象：
 
-- `cli/selection_base.py` / `cli/pipe.py` / `cli/interactive.py`
-- `cli/defaults.py` / `cli/runner.py` / `cli/sdk.py`
+- `shared/selection_base.py` / `shared/pipe_selection.py` / `shared/interactive_selection.py`
+- `shared/runtime_options.py` / `shared/cli_runner_runtime.py` / `shared/sdk_runtime.py`
+- `cli/__init__.py` 的历史模块路径兼容别名（别名必须直接指向上述 canonical 模块）
 - `entry/dispatcher.py` / `entry/web_entry.py`
 - `app/core/download_manager.py`（纯逻辑）
 - 配置与文件名工具
@@ -257,8 +258,8 @@ python -m pytest tests/test_web_browser.py -q
 
 适合对象：
 
-- `cli/pipe.py` 的 PipeSelection（stdin 读 JSON）
-- `cli/pipe.py` 的 PipeOutput（stdout 写 JSON）
+- `shared/pipe_selection.py` 的 PipeSelection（stdin 读 JSON）
+- `shared/pipe_selection.py` 的 PipeOutput（stdout 写 JSON）
 - 多轮预加载（合集场景）
 
 特征：

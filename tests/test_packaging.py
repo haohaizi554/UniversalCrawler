@@ -131,12 +131,12 @@ class SpecFileExistenceTests(unittest.TestCase):
     def test_update_manifest_tool_exists(self):
         self.assertTrue(UPDATE_MANIFEST_TOOL.exists(), f"missing: {UPDATE_MANIFEST_TOOL}")
 
-    def test_console_test_launcher_is_backed_by_packaged_tests(self):
+    def test_console_test_launcher_keeps_public_entrypoint_without_shipping_tests(self):
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
         self.assertIn('ucrawl-test = "entry.test_entry:main"', pyproject)
-        self.assertIn('"tests*"', pyproject)
-        self.assertNotIn('exclude = ["docs*", "packaging*", "tests*"]', pyproject)
+        self.assertNotIn('"tests*"', pyproject)
+        self.assertTrue((PROJECT_ROOT / "entry" / "release_self_check.py").exists())
 
     def test_spec_file_syntax_valid(self):
         """spec 文件必须能被 Python 编译。"""

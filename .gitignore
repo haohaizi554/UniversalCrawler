@@ -99,5 +99,6 @@ Desktop.ini
 *.orig
 .worktrees/
 .superpowers/
+docx/
 
 人工测试.txt

@@ -13,7 +13,7 @@ from app.services.app_state import AppState
 from app.services.cache_service import CacheService
 from app.services.frontend_event_aggregator import FrontendEventAggregator
 from app.services.frontend_state_service import FrontendStateService
-from app.ui.viewmodels.log_platforms import builtin_platform_metas
+from shared.log_platforms import builtin_platform_metas
 from app.ui.viewmodels.log_query_worker import LogQueryRequest, query_log_items
 
 pytestmark = pytest.mark.benchmark

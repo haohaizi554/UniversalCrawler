@@ -9,7 +9,13 @@ on:
       - "Dockerfile"
       - "docker-compose.yml"
       - "docker/**"
+      - "app/**"
+      - "cli/**"
+      - "entry/**"
+      - "shared/**"
+      - "UI/**"
       - "requirements-web.txt"
+      - "pyproject.toml"
       - ".dockerignore"
       - ".github/workflows/docker-build.yml"
   pull_request:
@@ -17,20 +23,45 @@ on:
       - "Dockerfile"
       - "docker-compose.yml"
       - "docker/**"
+      - "app/**"
+      - "cli/**"
+      - "entry/**"
+      - "shared/**"
+      - "UI/**"
       - "requirements-web.txt"
+      - "pyproject.toml"
       - ".dockerignore"
       - ".github/workflows/docker-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Validate Compose Config
         run: docker compose -f docker-compose.yml config
 
       - name: Build Image
-        run: docker build --build-arg INSTALL_PLAYWRIGHT=0 -t ucrawl-web:test .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ucrawl-web:test
+          build-args: INSTALL_PLAYWRIGHT=0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

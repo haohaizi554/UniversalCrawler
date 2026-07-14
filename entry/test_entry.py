@@ -35,6 +35,11 @@ _TESTS_DIR = _ROOT / "tests"
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
+
+def _source_suite_available() -> bool:
+    """Return whether the development test launcher is present in this install."""
+    return (_TESTS_DIR / "test_launcher.py").is_file()
+
 # 检测 PyQt6 是否可用（模块级）
 try:
     import PyQt6.QtWidgets  # noqa: F401
@@ -85,6 +90,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--verbose", "-v",
         action="store_true",
         help="详细输出",
+    )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="运行安装包自检，而不是源码测试套件",
     )
     parser.add_argument(
         "--plugin-dir",
@@ -386,6 +396,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         2 = 参数错误 / 不可恢复
     """
     args = _parse_args(argv)
+
+    if args.self_check or not _source_suite_available():
+        from entry.release_self_check import run as run_release_self_check
+
+        return run_release_self_check(verbose=args.verbose, list_only=args.list)
 
     # 处理 --plugin-dir / --plugin（在导入 launcher 前注册）
     if args.plugin_dir or args.plugin:

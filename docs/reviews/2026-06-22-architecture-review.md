@@ -453,10 +453,10 @@ pyproject.toml (version)
 
 | Workflow | 触发 | 内容 |
 |----------|------|------|
-| `python-tests.yml` | push/PR | Ubuntu + Python 3.13，`compileall` + `unittest discover` |
-| `docker-build.yml` | Docker 相关路径 | `docker compose config` + `docker build` |
+| `python-tests.yml` | push/PR | Linux 静态门禁、Python 3.10-3.13 包兼容、Windows 安全审计、核心测试与 Chromium E2E |
+| `docker-build.yml` | Docker 相关路径 | `docker compose config` + Buildx 构建与 GHA 缓存 |
 
-当前 CI **未**运行分类测试启动器、pytest、lint 或 Windows 构建。
+> 2026-07-14 更新：上述 CI 已改为 pytest 分层执行，并接入 Ruff、mypy、Bandit、pip-audit、wheel/sdist 烟测、架构守卫和必需任务聚合。质量任务不在 Linux 安装完整运行时依赖，避免可选 GSSAPI 系统包阻断静态检查。
 
 ### 8.4 测试基础设施
 
@@ -504,24 +504,25 @@ pyproject.toml (version)
 
 ## 10. 已知演进点与风险
 
-### 10.1 代码收敛进行中
+### 10.1 Shared 收敛状态（2026-07-14 更新）
 
 | 现象 | 说明 |
 |------|------|
-| `shared/controller_session` vs `app/controllers/session_mixin` | Web 侧仍使用 app 副本，桌面已迁 shared |
-| `cli/runner.py` vs `shared/cli_runner_runtime.py` | 双 `CLIRunner` 并存，SDK 需感知实际激活版本 |
-| `app/web/server.py` 直接引 `cli.runner` | `shared/runtime_adapters.run_cli_search` 尚未全面替换 |
+| `shared/controller_session.py` | GUI/Web 共用唯一会话状态机，旧 `app/controllers/session_mixin.py` 已删除 |
+| `shared/cli_runner_runtime.py` | 唯一 `CLIRunner` 实现；旧 `cli/runner.py` 等适配文件已删除 |
+| `shared/runtime_adapters.run_cli_search` | Web 入口直接复用 shared 适配器，不再本地复制搜索函数 |
+| `cli` 历史模块路径 | 仅在包边界注册指向 canonical shared 模块的零逻辑别名，并由对象身份测试保护 |
 
-**影响**：功能正常，但重构时需注意导入路径与行为一致性。
+**约束**：内部代码必须直接导入 `shared`；不得重新创建薄转发文件。对外历史导入兼容只能位于包边界，且公开对象必须与 canonical 对象保持身份一致。
 
 ### 10.2 工程化漂移
 
 | 现象 | 说明 |
 |------|------|
-| CI 用 `unittest discover` | 本地推荐 `pytest` + 分类启动器，覆盖范围不一致 |
-| CI 仅 Ubuntu | GUI / PyQt6 / Windows 打包无自动化验证 |
-| 无 lint / typecheck 门禁 | `requirements-dev.txt` 列出 ruff/mypy 但未接入 CI |
-| Python 版本分散 | pyproject ≥3.10，Docker 3.12，CI 3.13 |
+| 测试分层 | pytest 按架构、核心、Chromium E2E 分层，最终由 Required CI 聚合 |
+| 平台覆盖 | 静态检查在 Linux，运行时与浏览器回归在 Windows，Docker 独立 Buildx 验证 |
+| 静态与安全门禁 | Ruff、mypy、Bandit、pip-audit 均由 CI 执行 |
+| Python 兼容 | wheel/sdist 在 Python 3.10、3.11、3.12、3.13 四版本构建并离开源码树烟测 |
 
 ### 10.3 平台与交付边界
 
@@ -593,4 +594,3 @@ pyproject.toml (version)
 ---
 
 *本文档随仓库架构演进更新；结构调整时请同步修订本节与 [../guides/architecture.md](../guides/architecture.md)。*
-

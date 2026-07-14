@@ -46,7 +46,8 @@ try:
     )
 
     from app.config import cfg
-    from app.services.icon_registry import action_icon_file, ui_icon_path
+    from app.services.icon_registry import ui_icon_path
+    from shared.icon_contract import action_icon_file
     from app.ui.layout.status_bar import StatusDotIndicator
     from app.ui.layout.window_chrome import WindowChromeFrame
     from app.ui.layout.window_chrome_controller import FramelessWindowChromeController

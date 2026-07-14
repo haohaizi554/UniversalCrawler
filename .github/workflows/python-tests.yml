@@ -1,4 +1,4 @@
-name: Python Tests
+name: Python CI
 
 on:
   push:
@@ -6,33 +6,268 @@ on:
       - main
       - master
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONFAULTHANDLER: "1"
+  PYTHONUNBUFFERED: "1"
+  PYTHONUTF8: "1"
 
 jobs:
-  test:
-    runs-on: windows-latest
-    env:
-      QT_QPA_PLATFORM: offscreen
-      PYTHONFAULTHANDLER: "1"
-      PYTHONUNBUFFERED: "1"
-
+  quality:
+    name: Static and architecture
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Install Dependencies
+      - name: Install quality dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Compile sources
+        run: python -m compileall app cli entry shared scripts tests main.py
+
+      - name: Ruff
+        run: python -m ruff check app cli entry shared scripts tests
+
+      - name: Mypy shared contracts
+        run: python -m mypy
+
+      - name: Bandit high-severity findings
+        run: python -m bandit -q -lll -r app cli entry shared -x tests
+
+      - name: Validate browser JavaScript
+        shell: bash
+        run: find app/web/static -type f -name '*.js' -print0 | xargs -0 -n 1 node --check
+
+      - name: Architecture contracts
+        run: |
+          mkdir -p artifacts
+          python -X faulthandler -m pytest tests/architecture tests/test_ci_workflow.py -q --junitxml=artifacts/quality.xml
+
+      - name: Upload quality report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quality-report
+          path: artifacts/quality.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  compatibility:
+    name: Package compatibility (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install build frontend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "build>=1.2,<2.0"
+
+      - name: Build wheel and source distribution
+        run: python -m build
+
+      - name: Install wheel without source-tree fallback
+        shell: bash
+        run: |
+          python -m pip install --no-deps --force-reinstall dist/*.whl
+          cd "$RUNNER_TEMP"
+          python -c "from importlib.metadata import version; import shared.runtime_adapters; import shared.selection_runtime; assert version('ucrawl') == '3.6.17'"
+          python -m entry.test_entry --self-check --verbose
+
+      - name: Upload package artifacts
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  security:
+    name: Runtime dependency audit
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Create isolated audit environment
+        shell: pwsh
+        run: |
+          python -m venv .audit-venv
+          .\.audit-venv\Scripts\python -m pip install --upgrade pip
+          .\.audit-venv\Scripts\python -m pip install -r requirements.txt pip-audit~=2.9.0
+
+      - name: Audit resolved runtime dependencies
+        shell: pwsh
+        run: .\.audit-venv\Scripts\python -m pip_audit --local --skip-editable --strict --progress-spinner off
+
+  core-tests:
+    name: Core tests (Windows, Python 3.13)
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install runtime and test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pytest~=8.4.2 pytest-asyncio~=1.2.0
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run core suite
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          python -m coverage erase
+          python -m coverage run --branch --source=app,cli,entry,shared --omit="app/core/lib/*" -m pytest -q --ignore=tests/test_web_browser.py --ignore=tests/test_performance_benchmarks.py --junitxml=artifacts/core-tests.xml
+          python -m coverage xml -o artifacts/coverage.xml
+          python -m coverage report --fail-under=35
+
+      - name: Run performance budgets without instrumentation
+        run: python -X faulthandler -m pytest tests/test_performance_benchmarks.py -q
+
+      - name: Upload core report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-tests-report
+          path: |
+            artifacts/core-tests.xml
+            artifacts/coverage.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  browser-tests:
+    name: Browser tests (Chromium)
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Restore Playwright Chromium cache
+        uses: actions/cache@v5
+        with:
+          path: .cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Chromium runtime
+        run: |
           python -m playwright install chromium
 
-      - name: Compile Sources
-        run: python -m compileall app tests main.py
+      - name: Run browser suite
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          python -X faulthandler -m pytest tests/test_web_browser.py -q --junitxml=artifacts/browser-tests.xml
 
-      - name: Run Tests
-        run: python -X faulthandler -m pytest -q
+      - name: Upload browser report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-tests-report
+          path: |
+            artifacts/browser-tests.xml
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  required-check:
+    name: Required CI
+    if: always()
+    needs:
+      - quality
+      - compatibility
+      - security
+      - core-tests
+      - browser-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify required jobs
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          COMPATIBILITY_RESULT: ${{ needs.compatibility.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          CORE_RESULT: ${{ needs.core-tests.result }}
+          BROWSER_RESULT: ${{ needs.browser-tests.result }}
+        shell: bash
+        run: |
+          test "$QUALITY_RESULT" = "success"
+          test "$COMPATIBILITY_RESULT" = "success"
+          test "$SECURITY_RESULT" = "success"
+          test "$CORE_RESULT" = "success"
+          test "$BROWSER_RESULT" = "success"
