@@ -11,8 +11,8 @@ from functools import partial
 from typing import Any, Callable
 
 from app.config import cfg
-from app.controllers.media_library_mixin import MediaLibraryMixin, MediaRenameOutcome
-from app.controllers.session_mixin import ControllerSessionMixin
+from app.services.media_library_runtime import MediaLibraryMixin, MediaRenameOutcome
+from shared.controller_session import ControllerSessionMixin
 from app.core.download_manager import DownloadManager
 from app.core.media_filter import should_skip_for_video_only
 from app.core.plugin_registry import registry
@@ -22,8 +22,12 @@ from app.models import VideoItem
 from app.services.file_service import MediaLibraryService
 from app.services.frontend_event_aggregator import FrontendEventPriority, priority_for_topic, sections_for_topic
 from app.services.frontend_state_service import FrontendStateService
-from app.services.icon_registry import icon_manifest
-from app.web.controller_config_service import ConfigWriteError, WebControllerConfigService
+from shared.icon_contract import icon_manifest
+from app.web.controller_config_service import (
+    DIRECTORY_NOT_AUTHORIZED_MESSAGE,
+    ConfigWriteError,
+    WebControllerConfigService,
+)
 
 DELTA_ONLY_LEGACY_TOPICS = frozenset(
     {
@@ -641,7 +645,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             def ask_user_selection_sync(spider_self, items):
                 """同步版 ask_user_selection：直接调 selection_strategy，不走 Qt 信号。
                 与 CLI CLIRunner._make_ask_user_selection 完全对齐。"""
-                from cli.selection_base import build_selection_prompt
+                from shared.selection_runtime import build_selection_prompt
 
                 call_count[0] += 1
                 try:
@@ -1129,9 +1133,21 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             "data": {"video_id": video_id, "deleted": outcome.deleted},
         }
 
-    async def async_delete_video(self, video_id: str, _approved_roots=None):
+    async def async_delete_video(self, video_id: str, approved_roots: tuple[str, ...] | None = None):
         """异步删除：文件 I/O 在线程池中执行，状态事件在当前协程内直接发送。"""
         import asyncio
+        video = self._video_lookup(video_id)
+        if video is not None and video.local_path:
+            try:
+                WebControllerConfigService.authorize_path(video.local_path, approved_roots)
+            except PermissionError as exc:
+                await self._send_recorded_frontend_event("log", {"message": f"❌ 删除文件失败: {exc}"})
+                return {
+                    "status": "error",
+                    "message": str(exc),
+                    "http_status": 403,
+                    "data": {"video_id": video_id, "code": "directory_not_authorized"},
+                }
         context = self._begin_delete_video(video_id)
         if context is None:
             return {"status": "ok", "message": "already deleted", "data": {"video_id": video_id, "missing": True}}
@@ -1168,7 +1184,12 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         )
         return {"status": "ok"}
 
-    async def async_rename_video(self, video_id: str, new_title: str, _approved_roots=None) -> dict:
+    async def async_rename_video(
+        self,
+        video_id: str,
+        new_title: str,
+        approved_roots: tuple[str, ...] | None = None,
+    ) -> dict:
         """异步版重命名：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。"""
         import asyncio
         video = self._video_lookup(video_id)
@@ -1179,6 +1200,17 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             return {"status": "error", "message": "标题不能为空"}
         if not video.local_path:
             return {"status": "error", "message": "文件不存在，无法重命名"}
+        try:
+            WebControllerConfigService.authorize_path(video.local_path, approved_roots)
+            WebControllerConfigService.authorize_path(self.current_save_dir, approved_roots)
+        except PermissionError as exc:
+            await self._send_recorded_frontend_event("log", {"message": f"❌ 重命名失败: {exc}"})
+            return {
+                "status": "error",
+                "message": str(exc),
+                "http_status": 403,
+                "data": {"video_id": video_id, "code": "directory_not_authorized"},
+            }
         try:
             old_path, new_path = await asyncio.get_running_loop().run_in_executor(
                 None, self.file_service.rename_media, video, normalized_title, self.current_save_dir
@@ -1207,39 +1239,9 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     def get_config(self) -> dict:
         return cfg.settings.to_dict()
 
-    def update_config(self, updates: dict):
-        errors: list[ConfigWriteError] = []
-        for section, values in updates.items():
-            if not isinstance(values, dict):
-                continue
-            section_name = str(section)
-            for key, value in values.items():
-                key_name = str(key)
-                if not WebControllerConfigService.is_web_config_allowed(section_name, key_name):
-                    errors.append(
-                        ConfigWriteError(
-                            section=section_name,
-                            key=key_name,
-                            value=value,
-                            error="该配置项不允许通过 Web 修改",
-                        )
-                    )
-                    continue
-                result = self.handle_frontend_action(
-                    "update_setting",
-                    {"section": section_name, "key": key_name, "value": value},
-                )
-                if isinstance(result, dict) and result.get("status") == "ok":
-                    continue
-                errors.append(
-                    ConfigWriteError(
-                        section=section_name,
-                        key=key_name,
-                        value=value,
-                        error=str((result or {}).get("message") or "配置更新失败"),
-                    )
-                )
-        return errors
+    def update_config(self, updates: dict, approved_roots: tuple[str, ...] | None = None):
+        service = WebControllerConfigService(action_handler=self.handle_frontend_action)
+        return service.update_config(updates, approved_roots=approved_roots)
 
     async def _run_api_operation(self, operation: str, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         del operation
@@ -1252,8 +1254,12 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
                 return await result
             return result
 
-    async def async_update_config(self, updates: dict) -> list[ConfigWriteError]:
-        return await self._run_api_operation("update_config", self.update_config, updates)
+    async def async_update_config(
+        self,
+        updates: dict,
+        approved_roots: tuple[str, ...] | None = None,
+    ) -> list[ConfigWriteError]:
+        return await self._run_api_operation("update_config", self.update_config, updates, approved_roots)
 
     # ---- 平台信息 ----
 
@@ -1301,15 +1307,41 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     def handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
         return self.frontend_state_service.handle_action(action, payload or {})
 
-    async def async_handle_frontend_action(self, action: str, payload: dict | None = None) -> dict:
+    async def async_handle_frontend_action(
+        self,
+        action: str,
+        payload: dict | None = None,
+        approved_roots: tuple[str, ...] | None = None,
+    ) -> dict:
         """Web 前端动作统一入口；删除动作走异步文件服务，其余复用状态服务。"""
-        normalized_payload = payload or {}
+        try:
+            normalized_payload = WebControllerConfigService.authorize_frontend_action_payload(
+                action,
+                payload or {},
+                approved_roots,
+            )
+        except (ConfigValidationError, PermissionError, ValueError) as exc:
+            is_directory_error = isinstance(exc, PermissionError)
+            return {
+                "status": "error",
+                "message": str(exc) or DIRECTORY_NOT_AUTHORIZED_MESSAGE,
+                "http_status": 403 if is_directory_error else 400,
+                "data": {
+                    "code": "directory_not_authorized"
+                    if is_directory_error
+                    else "config_not_allowed"
+                },
+            }
 
         async def _delete() -> dict:
             video_id = str(normalized_payload.get("id") or normalized_payload.get("video_id") or "")
             if not video_id:
                 return {"status": "error", "message": "missing video id"}
-            result = await self.async_delete_video(video_id)
+            result = (
+                await self.async_delete_video(video_id, approved_roots)
+                if approved_roots is not None
+                else await self.async_delete_video(video_id)
+            )
             if isinstance(result, dict):
                 return result
             return {"status": "ok", "message": "deleted", "data": {"video_id": video_id}}

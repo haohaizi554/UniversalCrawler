@@ -19,20 +19,21 @@
   <script src="/static/settings_render.js?v=20260705-i18n-surface" defer></script>
   <script src="/static/task_render.js?v=20260705-i18n-surface" defer></script>
   <script src="/static/playback_state.js?v=20260701-playback-state" defer></script>
-  <script src="/static/log_i18n.js?v=20260710-app-split" defer></script>
-  <script src="/static/frontend_runtime.js?v=20260710-app-split" defer></script>
-  <script src="/static/list_pages.js?v=20260710-app-split" defer></script>
-  <script src="/static/log_center.js?v=20260710-app-split" defer></script>
-  <script src="/static/settings_controller.js?v=20260710-app-split" defer></script>
-  <script src="/static/dialog_controller.js?v=20260710-app-split" defer></script>
-  <script src="/static/playback_controller.js?v=20260710-app-split" defer></script>
-  <script src="/static/app.js?v=20260710-app-split" defer></script>
+  <script src="/static/log_i18n.js?v=20260714-state-sync" defer></script>
+  <script src="/static/frontend_runtime.js?v=20260714-state-sync" defer></script>
+  <script src="/static/list_pages.js?v=20260714-state-sync" defer></script>
+  <script src="/static/log_center.js?v=20260714-state-sync" defer></script>
+  <script src="/static/settings_controller.js?v=20260714-state-sync" defer></script>
+  <script src="/static/dialog_controller.js?v=20260714-state-sync" defer></script>
+  <script src="/static/playback_controller.js?v=20260714-state-sync" defer></script>
+  <script src="/static/app.js?v=20260714-state-sync" defer></script>
 </head>
 <body>
   <main id="app-shell" class="app-body">
     <aside id="leftPanel" class="sidebar" aria-label="页面导航">
       <section class="platform-island" aria-label="平台选择">
         <select id="sourceSelect" class="source-select" aria-label="平台选择"></select>
+        <button id="platformRetry" class="icon-btn platform-retry" type="button" onclick="loadPlatforms()" title="重试" aria-label="重试" hidden><img src="/ui-icon/action_refresh.png" alt="" /></button>
       </section>
       <nav class="nav-island" aria-label="页面导航">
         <button class="nav-item active" data-page="queue" onclick="switchPage('queue')"><img src="/ui-icon/nav_download_queue.png" alt="" /><b>下载队列</b><span id="countQueue">0</span></button>
@@ -58,6 +59,11 @@
         <button id="changeDirBtn" class="btn btn-dir" onclick="onChangeDirClicked()"><img src="/ui-icon/action_open_directory.png" alt="" />更改目录</button>
         <button id="themeBtn" class="btn btn-theme" onclick="toggleTheme()" title="切换主题"></button>
       </header>
+
+      <div id="frontendStateBanner" class="frontend-state-banner" data-state="loading" role="status" aria-live="polite">
+        <span id="frontendStateMessage">正在加载应用状态...</span>
+        <button id="frontendStateRetry" class="btn" type="button" onclick="retryFrontendStateLoad()" hidden>重试</button>
+      </div>
 
       <section class="page-stack" id="rightPanel">
       <section class="page active" id="page-queue" data-page="queue">
@@ -270,9 +276,33 @@
     <span class="status-metric status-metric-main"><span class="status-caption" data-status-caption="下载速度">下载速度:</span><span id="statusDownload" class="status-value">0 B/s</span></span>
     <span class="status-metric"><span class="status-caption" data-status-caption="已完成">已完成:</span><span id="statusCompleted" class="status-value">0</span></span>
     <span class="status-metric"><span class="status-caption" data-status-caption="失败">失败:</span><span id="statusFailed" class="status-value">0</span></span>
-    <span id="statusVersion">v3.6.17</span>
+    <button id="statusVersion" class="status-version-button" type="button" onclick="showUpdateCheckModal()" title="检查更新">v3.6.17</button>
     <button id="statusHelpBtn" class="status-help-btn" type="button" title="打开项目主页" aria-label="打开项目主页" onclick="window.open('https://github.com/haohaizi554/UniversalCrawler', '_blank', 'noopener')"><img src="/ui-icon/action_help.png" alt="" /></button>
   </footer>
+
+  <div id="updateModal" class="modal update-modal" tabindex="-1" role="dialog" aria-modal="true" aria-busy="false" aria-labelledby="updateTitle" aria-describedby="updateStatus">
+    <div class="modal-box update-modal-box">
+      <div class="update-modal-head">
+        <div>
+          <h2 id="updateTitle">检查更新</h2>
+          <p id="updateStatus" data-status="idle">正在检查最新版本...</p>
+        </div>
+        <button id="updateCloseIcon" class="icon-btn" type="button" onclick="closeUpdateCheckModal()" aria-label="关闭">×</button>
+      </div>
+      <div class="update-version-grid">
+        <div><span id="updateLocalLabel">当前版本</span><strong id="updateLocalVersion">--</strong></div>
+        <span aria-hidden="true">→</span>
+        <div><span id="updateLatestLabel">Release 版本</span><strong id="updateLatestVersion">--</strong></div>
+      </div>
+      <div id="updateNotes" class="update-notes"></div>
+      <div class="modal-actions">
+        <button id="updateReleaseLink" class="btn" type="button" onclick="openUpdateReleasePage()" hidden>查看发布页</button>
+        <button id="updatePrepareBtn" class="btn btn-primary" type="button" onclick="prepareWebUpdate()" hidden>下载并验证</button>
+        <button id="updateInstallBtn" class="btn btn-primary" type="button" onclick="installWebUpdate()" hidden>安装并重启</button>
+        <button id="updateCloseBtn" class="btn btn-primary" type="button" onclick="closeUpdateCheckModal()">确定</button>
+      </div>
+    </div>
+  </div>
 
   <div id="dirModal" class="modal dir-modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dirTitle" aria-describedby="dirStatus">
     <div class="modal-box dir-modal-box">

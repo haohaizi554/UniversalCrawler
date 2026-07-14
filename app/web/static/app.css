@@ -25,6 +25,8 @@
   --warning: #f59e0b;
   --input: #ffffff;
   --shadow: 0 8px 24px rgba(15, 23, 42, .06);
+  --completed-card-radius: 8px;
+  --failed-card-radius: 10px;
 }
 
 [data-theme="dark"] {
@@ -55,6 +57,10 @@
 }
 
 * { box-sizing: border-box; }
+
+[hidden] {
+  display: none !important;
+}
 
 * {
   scrollbar-width: thin;
@@ -484,7 +490,9 @@ select option:hover {
   padding: 10px 12px;
   flex: 0 0 auto;
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 6px;
 }
 
 .platform-island .custom-select,
@@ -715,4 +723,50 @@ select option:hover {
 #page-queue .event-strip {
   flex: 0 0 auto;
   margin-top: 0;
+}
+
+.platform-island.has-platform-retry .custom-select,
+.platform-island.has-platform-retry .source-select {
+  width: 142px;
+  min-width: 142px;
+  max-width: 142px;
+}
+
+.platform-retry {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 34px;
+}
+
+.platform-retry img {
+  width: 17px;
+  height: 17px;
+}
+
+.frontend-state-banner {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.frontend-state-banner[hidden] {
+  display: none;
+}
+
+.frontend-state-banner[data-state="error"] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+}
+
+.frontend-state-banner .btn {
+  flex: 0 0 auto;
+  min-width: max-content;
 }

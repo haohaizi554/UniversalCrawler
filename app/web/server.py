@@ -14,6 +14,7 @@ from app.utils.runtime_paths import resolve_resource_file
 from app.web.rest_router import build_rest_router
 from app.web.session_runtime import configured_allowed_origins
 from app.web.ws_router import build_ws_router
+from shared.runtime_adapters import run_cli_search
 
 # WebController 在 create_app() 中延迟初始化
 controller = None
@@ -47,23 +48,6 @@ DEFAULT_SESSION_ID = "default"
 
 # 确保 MIME 类型已注册
 mimetypes.init()
-
-def run_cli_search(**kwargs) -> dict:
-    """Run a CLI search with normalized Web/API arguments."""
-    from cli.runner import CLIRunner
-
-    runner = CLIRunner(
-        source=kwargs["source"],
-        keyword=kwargs["keyword"],
-        save_dir=kwargs.get("save_dir") or "downloads",
-        selection_strategy=kwargs.get("selection_strategy"),
-        config=kwargs.get("config") or {},
-        verbose=False,
-        log_to_stderr=False,
-        timeout=kwargs.get("timeout"),
-        download=bool(kwargs.get("download", True)),
-    )
-    return runner.run()
 
 def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
     """创建 FastAPI 应用实例。"""

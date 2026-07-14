@@ -37,7 +37,7 @@ from app.ui.viewmodels.active_download_projection import (
     localize_active_event_message,
     prepare_active_item_for_display,
 )
-from app.ui.viewmodels.failed_page_projection import prepare_failed_item_for_display
+from shared.failed_page_projection import prepare_failed_item_for_display
 from tests.frontend_static_assets import css_bundle_from_index
 
 def _html_bundle() -> str:

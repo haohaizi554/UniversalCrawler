@@ -259,6 +259,24 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(result["message"], "permission denied")
         controller.async_delete_video.assert_awaited_once_with("video-1")
 
+    def test_async_frontend_delete_action_forwards_approved_roots(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        controller.async_delete_video = AsyncMock(return_value={"status": "ok"})
+
+        result = asyncio.run(
+            controller.async_handle_frontend_action(
+                "delete_item",
+                {"id": "video-1"},
+                approved_roots=("C:/allowed",),
+            )
+        )
+
+        self.assertEqual(result["status"], "ok")
+        controller.async_delete_video.assert_awaited_once_with("video-1", ("C:/allowed",))
+
     def test_async_frontend_action_runs_sync_handler_off_event_loop_thread(self):
         import asyncio
         from app.web.controller import WebController
@@ -272,7 +290,10 @@ class WebControllerRuntimeTests(unittest.TestCase):
 
         async def run_action():
             main_thread = threading.get_ident()
-            result = await controller.async_handle_frontend_action("update_setting", {"key": "theme"})
+            result = await controller.async_handle_frontend_action(
+                "update_setting",
+                {"section": "common", "key": "theme", "value": "dark"},
+            )
             return main_thread, result
 
         controller.handle_frontend_action = fake_handle
@@ -301,6 +322,37 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertIs(controller._video_lookup(item.id), item)
         controller.file_service.delete_media.assert_called_once_with(item)
 
+    def test_async_delete_video_rejects_media_outside_approved_roots(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        controller.file_service.delete_media = Mock(return_value=True)
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root, TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as outside_root:
+            item.local_path = str(Path(outside_root) / "outside.mp4")
+
+            result = asyncio.run(controller.async_delete_video(item.id, (allowed_root,)))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result.get("http_status"), 403)
+        self.assertIn("授权", result["message"])
+        self.assertIs(controller._video_lookup(item.id), item)
+        controller.file_service.delete_media.assert_not_called()
+
+    def test_async_delete_video_allows_media_inside_approved_root(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        controller.file_service.delete_media = Mock(return_value=True)
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root:
+            item.local_path = str(Path(allowed_root) / "inside.mp4")
+
+            result = asyncio.run(controller.async_delete_video(item.id, (allowed_root,)))
+
+        self.assertEqual(result["status"], "ok")
+        controller.file_service.delete_media.assert_called_once_with(item)
+
     def test_async_rename_video_delegates_file_check_to_executor_service(self):
         import asyncio
 
@@ -317,6 +369,38 @@ class WebControllerRuntimeTests(unittest.TestCase):
             "new title",
             controller.current_save_dir,
         )
+
+    def test_async_rename_video_rejects_media_outside_approved_roots(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        controller.file_service.rename_media = Mock()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root, TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as outside_root:
+            item.local_path = str(Path(outside_root) / "outside.mp4")
+
+            result = asyncio.run(controller.async_rename_video(item.id, "new title", (allowed_root,)))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result.get("http_status"), 403)
+        self.assertIn("授权", result["message"])
+        controller.file_service.rename_media.assert_not_called()
+
+    def test_async_rename_video_allows_media_inside_approved_root(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root:
+            item.local_path = str(Path(allowed_root) / "inside.mp4")
+            controller.current_save_dir = allowed_root
+            renamed_path = str(Path(allowed_root) / "renamed.mp4")
+            controller.file_service.rename_media = Mock(return_value=(item.local_path, renamed_path))
+
+            result = asyncio.run(controller.async_rename_video(item.id, "new title", (allowed_root,)))
+
+        self.assertEqual(result["status"], "ok")
+        controller.file_service.rename_media.assert_called_once()
 
     def test_get_media_path_returns_record_path_without_disk_probe(self):
         controller, item = self._controller_with_video()

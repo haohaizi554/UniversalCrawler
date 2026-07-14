@@ -121,7 +121,7 @@ class SearchEntryConsistencyTests(unittest.TestCase):
         return runner_cls.call_args.kwargs
 
     def _sdk_search_runner_kwargs(self):
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         runner_cls = Mock()
         runner_cls.__module__ = "unittest.mock"
@@ -342,7 +342,7 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         self.assertEqual(api_config, expected_config)
 
     def test_sdk_download_applies_same_bridge_to_internal_meta(self):
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         with patch(
             "app.core.plugin_registry.registry.get_plugin",
@@ -384,7 +384,7 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         self.assertEqual(result["meta"]["_network_policy"], "public")
 
     def test_sdk_download_timeout_exposes_shutdown_summary(self):
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         class _SlowDownloadManager:
             def __init__(self, max_concurrent=3):
@@ -503,7 +503,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
         exit_code, cli_result = run_search_command(cli_args, env=cli_env)
         self.assertEqual(exit_code, 0)
 
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         sdk_runner = Mock()
         sdk_runner.__module__ = "unittest.mock"
@@ -589,11 +589,11 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
         self.assertEqual(cli_exit_code, 1)
         self.assertIsNone(cli_error)
 
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         sdk_instance = Mock()
         sdk_instance.download_video.return_value = expected
-        with patch("cli.sdk.UcrawlSDK", return_value=sdk_instance):
+        with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk_instance):
             sdk_result = sdk_module.download_video(
                 url="https://example.com/video.mp4",
                 source="douyin",

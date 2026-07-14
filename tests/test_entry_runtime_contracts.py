@@ -26,7 +26,7 @@ def _get_session_context(client):
 class CliSearchFacadeContractTests(unittest.TestCase):
     def test_handle_search_command_delegates_to_shared_runtime_and_emits_result(self):
         from cli.commands.search import handle_search_command
-        from cli.runner import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner
 
         args = argparse.Namespace(pretty=True)
 
@@ -85,12 +85,12 @@ class CliDownloadFacadeContractTests(unittest.TestCase):
 
 class CliSdkFacadeContractTests(unittest.TestCase):
     def test_module_search_delegates_and_closes_sdk(self):
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         sdk = Mock()
         sdk.search.return_value = {"status": "ok"}
 
-        with patch("cli.sdk.UcrawlSDK", return_value=sdk) as sdk_cls:
+        with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk) as sdk_cls:
             result = sdk_module.search("douyin", "kw", save_dir="downloads", download=False, timeout=12)
 
         self.assertEqual(result, {"status": "ok"})
@@ -107,13 +107,13 @@ class CliSdkFacadeContractTests(unittest.TestCase):
         sdk.close.assert_called_once()
 
     def test_module_download_video_delegates_and_closes_sdk(self):
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         sdk = Mock()
         sdk.download_video.return_value = {"status": "ok", "local_path": "demo.mp4"}
         progress_cb = Mock()
 
-        with patch("cli.sdk.UcrawlSDK", return_value=sdk) as sdk_cls:
+        with patch("shared.sdk_runtime.UcrawlSDK", return_value=sdk) as sdk_cls:
             result = sdk_module.download_video(
                 url="https://example.com/video",
                 source="douyin",
@@ -140,14 +140,14 @@ class CliSdkFacadeContractTests(unittest.TestCase):
         sdk.close.assert_called_once()
 
     def test_module_scan_and_list_platforms_delegate_and_close_sdk(self):
-        import cli.sdk as sdk_module
+        import shared.sdk_runtime as sdk_module
 
         scan_sdk = Mock()
         scan_sdk.scan_directory.return_value = {"status": "ok", "items": []}
         list_sdk = Mock()
         list_sdk.list_platforms.return_value = [{"id": "douyin"}]
 
-        with patch("cli.sdk.UcrawlSDK", side_effect=[scan_sdk, list_sdk]):
+        with patch("shared.sdk_runtime.UcrawlSDK", side_effect=[scan_sdk, list_sdk]):
             scan_result = sdk_module.scan_directory("downloads", scan_limit=10)
             platform_result = sdk_module.list_platforms()
 
@@ -158,27 +158,22 @@ class CliSdkFacadeContractTests(unittest.TestCase):
         list_sdk.list_platforms.assert_called_once_with()
         list_sdk.close.assert_called_once()
 
-    def test_get_runner_class_prefers_cli_sdk_patch_seam(self):
-        import cli.sdk as sdk_module
+    def test_get_runner_class_uses_cli_sdk_patch_seam(self):
+        import shared.sdk_runtime as sdk_module
 
         runner_sentinel = Mock()
         runner_sentinel.__module__ = "unittest.mock"
 
-        with patch.object(sdk_module, "CLIRunner", runner_sentinel), patch("cli.runner.CLIRunner", object()):
+        with patch.object(sdk_module, "CLIRunner", runner_sentinel):
             runner_cls = sdk_module.UcrawlSDK()._get_runner_class()
 
         self.assertIs(runner_cls, runner_sentinel)
 
-    def test_get_runner_class_falls_back_to_cli_runner_patch_seam(self):
-        import cli.sdk as sdk_module
+    def test_cli_package_exports_the_shared_runner(self):
+        from cli import CLIRunner
+        from shared.cli_runner_runtime import CLIRunner as SharedCLIRunner
 
-        runner_sentinel = Mock()
-        runner_sentinel.__module__ = "unittest.mock"
-
-        with patch.object(sdk_module, "CLIRunner", sdk_module.SharedCLIRunner), patch("cli.runner.CLIRunner", runner_sentinel):
-            runner_cls = sdk_module.UcrawlSDK()._get_runner_class()
-
-        self.assertIs(runner_cls, runner_sentinel)
+        self.assertIs(CLIRunner, SharedCLIRunner)
 
 class FastApiWorkflowRouteContractTests(unittest.TestCase):
     @classmethod

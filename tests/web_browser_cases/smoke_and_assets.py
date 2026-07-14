@@ -80,6 +80,150 @@ class SmokeAndAssetsCases:
         self.assertIn(before, {"light", "dark"})
         self.assertEqual(after, "light" if before == "dark" else "dark")
 
+    def test_07a_theme_toggle_is_single_flight_and_latest_intent_wins(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const requests = [];
+              const pending = [];
+              const baseVersion = Number(frontendState.version || 0);
+              const settingsForTheme = theme => ({
+                ...(frontendState.settings_snapshot || {}),
+                '\u5916\u89c2\u8bbe\u7f6e': {
+                  ...((frontendState.settings_snapshot || {})['\u5916\u89c2\u8bbe\u7f6e'] || {}),
+                  follow_system: false,
+                  theme
+                }
+              });
+              window.fetch = (url, options = {}) => {
+                if (String(url).includes('/api/frontend/action')) {
+                  const body = JSON.parse(options.body || '{}');
+                  requests.push(body);
+                  return new Promise(resolve => pending.push(theme => resolve(new Response(JSON.stringify({
+                    status: 'ok',
+                    frontend_delta: {
+                      full: true,
+                      version: baseVersion + requests.length,
+                      changed_sections: ['settings_snapshot'],
+                      sections: { settings_snapshot: settingsForTheme(theme) }
+                    }
+                  }), { status: 200, headers: { 'Content-Type': 'application/json' } }))));
+                }
+                return originalFetch(url, options);
+              };
+              try {
+                applyTheme(false);
+                toggleTheme();
+                toggleTheme();
+                const afterClicks = {
+                  requestCount: requests.length,
+                  theme: document.documentElement.dataset.theme,
+                  busy: document.getElementById('themeBtn').getAttribute('aria-busy')
+                };
+                if (!pending.length) return { afterClicks, requests, finalTheme: document.documentElement.dataset.theme };
+                pending.shift()('dark');
+                await new Promise((resolve, reject) => {
+                  const deadline = performance.now() + 3000;
+                  const tick = () => {
+                    if (pending.length) return resolve();
+                    if (performance.now() > deadline) return reject(new Error('latest theme request was not dispatched'));
+                    requestAnimationFrame(tick);
+                  };
+                  tick();
+                });
+                pending.shift()('light');
+                await new Promise((resolve, reject) => {
+                  const deadline = performance.now() + 3000;
+                  const tick = () => {
+                    if (document.getElementById('themeBtn').getAttribute('aria-busy') === 'false') return resolve();
+                    if (performance.now() > deadline) return reject(new Error('theme transaction did not settle'));
+                    requestAnimationFrame(tick);
+                  };
+                  tick();
+                });
+                return {
+                  afterClicks,
+                  requests,
+                  finalTheme: document.documentElement.dataset.theme,
+                  finalBusy: document.getElementById('themeBtn').getAttribute('aria-busy')
+                };
+              } finally {
+                window.fetch = originalFetch;
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["afterClicks"]["requestCount"], 1, result)
+        self.assertEqual(result["afterClicks"]["theme"], "light", result)
+        self.assertEqual(result["afterClicks"]["busy"], "true", result)
+        self.assertEqual(
+            [request["payload"]["value"] for request in result["requests"]],
+            ["dark", "light"],
+        )
+        self.assertEqual(result["finalTheme"], "light")
+        self.assertEqual(result["finalBusy"], "false")
+
+    def test_07aa_theme_toggle_failure_rolls_back_to_server_state(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const serverState = structuredClone(frontendState);
+              serverState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'] = {
+                ...(serverState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'] || {}),
+                follow_system: false,
+                theme: 'light'
+              };
+              window.fetch = async (url, options = {}) => {
+                if (String(url).includes('/api/frontend/action')) {
+                  return new Response(JSON.stringify({ status: 'error', message: 'persist failed' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                  });
+                }
+                if (String(url).includes('/api/frontend/state')) {
+                  return new Response(JSON.stringify(serverState), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                  });
+                }
+                return originalFetch(url, options);
+              };
+              try {
+                applyTheme(false);
+                toggleTheme();
+                const optimisticTheme = document.documentElement.dataset.theme;
+                await new Promise((resolve, reject) => {
+                  const deadline = performance.now() + 3000;
+                  const tick = () => {
+                    if (document.getElementById('themeBtn').getAttribute('aria-busy') === 'false') return resolve();
+                    if (performance.now() > deadline) return reject(new Error('failed theme transaction did not settle'));
+                    requestAnimationFrame(tick);
+                  };
+                  tick();
+                });
+                return {
+                  optimisticTheme,
+                  finalTheme: document.documentElement.dataset.theme,
+                  cachedTheme: localStorage.getItem('cached_theme'),
+                  stateTheme: frontendState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'].theme
+                };
+              } finally {
+                window.fetch = originalFetch;
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["optimisticTheme"], "dark")
+        self.assertEqual(result["finalTheme"], "light")
+        self.assertEqual(result["cachedTheme"], "light")
+        self.assertEqual(result["stateTheme"], "light")
+
     def test_07b_appearance_theme_segment_disables_follow_system(self):
         self._goto_ready()
 

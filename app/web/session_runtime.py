@@ -106,6 +106,8 @@ class WebSessionContext:
         self.csrf_token = secrets.token_urlsafe(24)
         self.approved_roots: set[str] = set()
         self._approved_roots_lock = threading.RLock()
+        self._prepared_update_lock = threading.RLock()
+        self._prepared_update: Any = None
         self.background_tasks: set[asyncio.Task] = set()
         self._background_tasks_lock = threading.RLock()
         self._access_lock = threading.RLock()
@@ -165,6 +167,25 @@ class WebSessionContext:
         """Return a stable snapshot for worker-thread path validation."""
         with self._approved_roots_lock:
             return tuple(self.approved_roots)
+
+    def store_prepared_update(self, prepared: Any) -> None:
+        with self._prepared_update_lock:
+            self._prepared_update = prepared
+
+    def prepared_update_snapshot(self) -> Any:
+        with self._prepared_update_lock:
+            return self._prepared_update
+
+    def take_prepared_update(self) -> Any:
+        """Atomically consume the verified package so it can launch only once."""
+        with self._prepared_update_lock:
+            prepared = self._prepared_update
+            self._prepared_update = None
+            return prepared
+
+    def clear_prepared_update(self) -> None:
+        with self._prepared_update_lock:
+            self._prepared_update = None
 
     def require_directory(self, directory: str) -> str:
         normalized = normalize_directory(directory)

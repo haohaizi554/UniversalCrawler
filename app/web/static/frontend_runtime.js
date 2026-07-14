@@ -2,6 +2,19 @@
   const MODULE_DISPOSERS = (
     "UcpLogCenter UcpListPages UcpSettingsController UcpDialogController UcpPlaybackController"
   ).split(" ");
+  const actionClientId = (() => {
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+      if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+        const values = new Uint32Array(4);
+        window.crypto.getRandomValues(values);
+        return Array.from(values, value => value.toString(16).padStart(8, "0")).join("");
+      }
+    } catch (_error) {
+      // Fall through to a page-local identifier for legacy WebViews.
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  })();
 
   let dependencies = Object.freeze({});
   let configured = false;
@@ -18,6 +31,7 @@
   let frontendSectionSignatures = {};
   let pendingRenderSections = new Set();
   let pendingActionSequences = new Set();
+  let pendingActionRequests = new Map();
   let renderFrame = null;
   let ws = null;
   let wsReconnectTimer = null;
@@ -278,21 +292,24 @@
     const sequence = ++stateFetchSequence;
     const operationEpoch = stateOperationEpoch;
     let loaded = false;
+    let failure = "";
     try {
       const response = await fetch("/api/frontend/state", { cache: "no-store" });
-      if (!isCurrentGeneration(generation) || sequence !== stateFetchSequence || !response.ok) return false;
+      if (!isCurrentGeneration(generation) || sequence !== stateFetchSequence) return false;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (!isCurrentGeneration(generation) || sequence !== stateFetchSequence) return false;
       loaded = applyFullState(data, { source: "fetch", generation, sequence, operationEpoch });
       return loaded;
     } catch (error) {
+      failure = error && (error.message || String(error));
       if (isCurrentGeneration(generation) && sequence === stateFetchSequence) {
-        appendUiLog("加载状态失败", error.message || error);
+        appendUiLog("加载状态失败", failure);
       }
       return false;
     } finally {
       if (isCurrentGeneration(generation) && sequence === stateFetchSequence && typeof dependencies.onSettled === "function") {
-        dependencies.onSettled({ loaded, settled: true });
+        dependencies.onSettled({ loaded, settled: true, error: failure });
       }
     }
   }
@@ -398,8 +415,18 @@
         applyLegacyFrontendEvent(type, data);
         return true;
       case "frontend_action_result":
-        if (data.status && data.status !== "ok") fetchFrontendState();
         if (data.frontend_delta) applyFrontendDelta(data.frontend_delta, generation);
+        {
+          const requestId = typeof data.request_id === "string" ? data.request_id : "";
+          if (requestId && !pendingActionRequests.has(requestId)) return true;
+          if (requestId) {
+            const sequence = pendingActionRequests.get(requestId);
+            pendingActionRequests.delete(requestId);
+            pendingActionSequences.delete(sequence);
+          }
+        }
+        if (data.status && data.status !== "ok") fetchFrontendState();
+        else if (!data.frontend_delta) fetchFrontendDelta();
         if (data.message) patchSection("frontend_action_message", data.message, { source: "socket", type });
         return true;
       default:
@@ -408,7 +435,7 @@
     }
   }
 
-  async function sendFrontendAction(data, generation, sequence) {
+  async function sendFrontendAction(data, generation, sequence, requestId) {
     try {
       const response = await fetch("/api/frontend/action", {
         method: "POST",
@@ -418,35 +445,69 @@
       if (!isCurrentGeneration(generation) || !pendingActionSequences.has(sequence)) return;
       const result = await response.json();
       if (!isCurrentGeneration(generation) || !pendingActionSequences.has(sequence)) return;
-      if (result && result.frontend_delta) applyFrontendDelta(result.frontend_delta, generation);
-      else await fetchFrontendDelta();
+      if (result && result.request_id && result.request_id !== requestId) return;
+      if (result && result.status && result.status !== "ok") {
+        await fetchFrontendState();
+      } else if (result && result.frontend_delta) {
+        applyFrontendDelta(result.frontend_delta, generation);
+      } else {
+        await fetchFrontendDelta();
+      }
       if (isCurrentGeneration(generation) && pendingActionSequences.has(sequence) && result && result.message) {
         patchSection("frontend_action_message", result.message, { source: "fetch", sequence });
       }
+      return result;
     } catch (error) {
       if (isCurrentGeneration(generation) && pendingActionSequences.has(sequence)) {
         patchSection("frontend_action_error", error.message || String(error), { source: "fetch", sequence });
+        await fetchFrontendState();
       }
+      return { status: "error", message: error.message || String(error) };
     } finally {
       pendingActionSequences.delete(sequence);
+      pendingActionRequests.delete(requestId);
     }
+  }
+
+  function requestAction(action, payload = {}) {
+    if (!active) return Promise.resolve({ status: "error", message: "frontend runtime is not active" });
+    const generation = lifecycleGeneration;
+    const sequence = ++actionSequence;
+    const requestId = `${actionClientId}:${generation}:${sequence}`;
+    pendingActionSequences.add(sequence);
+    pendingActionRequests.set(requestId, sequence);
+    return sendFrontendAction(
+      {
+        action: String(action || ""),
+        payload: payload && typeof payload === "object" ? payload : {},
+        frontend_version: Number(frontendVersion || 0),
+        request_id: requestId,
+      },
+      generation,
+      sequence,
+      requestId,
+    );
   }
 
   function send(type, data = {}) {
     if (!active) return false;
+    const generation = lifecycleGeneration;
+    const sequence = type === "frontend_action" ? ++actionSequence : 0;
+    const requestId = type === "frontend_action" ? `${actionClientId}:${generation}:${sequence}` : "";
     const payload = type === "frontend_action"
-      ? { ...data, frontend_version: Number(frontendVersion || 0) }
+      ? { ...data, frontend_version: Number(frontendVersion || 0), request_id: requestId }
       : data;
+    if (type === "frontend_action") {
+      pendingActionSequences.add(sequence);
+      pendingActionRequests.set(requestId, sequence);
+    }
     const WebSocketType = window.WebSocket;
     if (ws && WebSocketType && ws.readyState === WebSocketType.OPEN) {
       ws.send(JSON.stringify({ type, data: payload }));
       return true;
     }
     if (type !== "frontend_action") return false;
-    const generation = lifecycleGeneration;
-    const sequence = ++actionSequence;
-    pendingActionSequences.add(sequence);
-    void sendFrontendAction(payload, generation, sequence);
+    void sendFrontendAction(payload, generation, sequence, requestId);
     return true;
   }
 
@@ -495,6 +556,7 @@
     deltaFetchSequence += 1;
     socketSequence += 1;
     pendingActionSequences.clear();
+    pendingActionRequests.clear();
     pendingRenderSections.clear();
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer.id);
@@ -532,6 +594,7 @@
     scheduleSections: scheduleRenderSections,
     handleServerMessage,
     send,
+    requestAction,
     dispose,
   });
 })();

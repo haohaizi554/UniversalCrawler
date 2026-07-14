@@ -8,7 +8,7 @@ LOG_CATEGORY_LABELS: dict[str, str] = {
     "download": "下载日志",
     "system": "系统日志",
     "performance": "性能日志",
-    "error": "异常日志",
+    "error": "错误日志",
 }
 
 

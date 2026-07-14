@@ -51,8 +51,8 @@ class WebControllerRouteService:
             video_id = require_valid_video_id(video_id)
         except HTTPException:
             return error_result("invalid video_id", http_status=400)
-        await context.controller.async_delete_video(video_id, context.approved_roots_snapshot())
-        return {"status": "ok"}
+        result = await context.controller.async_delete_video(video_id, context.approved_roots_snapshot())
+        return result if isinstance(result, dict) else {"status": "ok"}
 
     async def rename_video(self, request: Request, body: dict) -> dict:
         context = self._get_request_context(request)

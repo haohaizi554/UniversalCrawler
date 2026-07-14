@@ -149,6 +149,18 @@
     return next;
   }
 
+  function syncSelectedTableRow(tbodyId, selectedId) {
+    const tbody = byId(tbodyId);
+    if (!tbody) return false;
+    let found = false;
+    Array.from(tbody.querySelectorAll("tr[data-id]")).forEach(row => {
+      const selected = String(row.dataset.id || "") === String(selectedId || "");
+      row.classList.toggle("selected", selected);
+      found = found || selected;
+    });
+    return found;
+  }
+
   function selectedTaskItem(domain, items) {
     const id = selected(domain);
     return (Array.isArray(items) ? items : []).find(item => String((item || {}).id || "") === id) || null;
@@ -505,7 +517,9 @@
 
   function renderFailed() {
     const items = Array.isArray(currentState().failed_items) ? currentState().failed_items : [];
-    const selectedId = selected("failed");
+    const selectedId = reconcileSelectedTask("failed", items);
+    syncSelectedTableRow("failedBody", selectedId);
+    renderFailedDetail();
     submitListPageRequest("failed", {
       items,
       page: state.failedPage,
@@ -536,7 +550,9 @@
 
   function selectFailed(id) {
     setSelected("failed", id);
-    renderFailed();
+    const visible = syncSelectedTableRow("failedBody", id);
+    renderFailedDetail();
+    if (!visible) renderFailed();
   }
 
   function setFailedPage(delta) {

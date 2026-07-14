@@ -701,6 +701,15 @@
     justify-content: stretch;
   }
 
+  .setting-control-cluster.has-trailing-action {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting-control-cluster.has-trailing-action .setting-action {
+    width: 100%;
+    min-width: 0;
+  }
+
   .setting-platform {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
@@ -742,11 +751,11 @@
 
 .setting-action {
   height: 38px;
-  flex: 0 0 94px;
-  min-width: 94px;
-  width: 94px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  min-width: max-content;
+  width: auto;
+  max-width: 100%;
+  padding-inline: 14px;
   white-space: nowrap;
 }
 

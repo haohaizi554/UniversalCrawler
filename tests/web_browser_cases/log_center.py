@@ -121,7 +121,7 @@ class LogCenterCases:
         self._goto_ready()
 
         result = self._page.evaluate(
-            """
+            r"""
             async () => {
               window.__isolateFrontendStateForTest({ captureLogWorkers: true });
               frontendState.log_items = Array.from({ length: 12 }, (_, index) => ({
@@ -659,6 +659,66 @@ class LogCenterCases:
         self.assertFalse(result["secondPrevDisabled"])
         self.assertTrue(result["secondNextDisabled"])
 
+    def test_13bb_large_log_batch_survives_rapid_navigation_with_bounded_dom(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            r"""
+            async () => {
+              window.__isolateFrontendStateForTest();
+              window.__setLogFiltersForTest({ category: 'all', level: '全部', time: '全部', platform: '全部', trace: '', keyword: '' });
+              frontendState.settings_snapshot = {
+                ...(frontendState.settings_snapshot || {}),
+                '日志设置': {
+                  ...((frontendState.settings_snapshot || {})['日志设置'] || {}),
+                  ui_log_max_display_count: 500
+                }
+              };
+              frontendState.log_items = Array.from({ length: 1200 }, (_, index) => ({
+                id: `stress-log-${index + 1}`,
+                time: '2026-07-12 20:30:00',
+                level: index % 17 === 0 ? 'ERROR' : 'INFO',
+                source: index % 2 ? 'GUI' : 'Downloader',
+                trace_id: `stress-trace-${index % 100}`,
+                message_summary: `stress message ${index + 1}`,
+                message: `stress message ${index + 1}`,
+                detail: { index },
+                stack: ''
+              }));
+              switchPage('logs');
+              const started = performance.now();
+              renderLogs();
+              await window.__waitForLogRender({ rows: 20, total: 1200, matched: 500, visible: 20, timeoutMs: 8000 });
+              const initialRenderMs = performance.now() - started;
+
+              const pages = ['failed', 'queue', 'logs'];
+              for (let index = 0; index < 90; index += 1) switchPage(pages[index % pages.length]);
+              switchPage('logs');
+              setLogPage(24);
+              await window.__waitForLogRender({ rows: 20, total: 1200, matched: 500, visible: 20, text: '第 25 / 25 页', timeoutMs: 8000 });
+
+              const rows = Array.from(document.querySelectorAll('#logBody tr'));
+              return {
+                initialRenderMs,
+                rowCount: rows.length,
+                uniqueRowCount: new Set(rows.map(row => row.dataset.key)).size,
+                indicator: document.getElementById('logPageIndicator').textContent,
+                total: document.getElementById('logTotal').textContent,
+                visibleModals: Array.from(document.querySelectorAll('.modal')).filter(modal => getComputedStyle(modal).display !== 'none').length,
+                horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth
+              };
+            }
+            """
+        )
+
+        self.assertLess(result["initialRenderMs"], 8000)
+        self.assertEqual(result["rowCount"], 20)
+        self.assertEqual(result["uniqueRowCount"], 20)
+        self.assertEqual(result["indicator"], "第 25 / 25 页")
+        self.assertEqual(result["total"], "共 1200 条 / 匹配 500 条 / 当前显示 20 条")
+        self.assertEqual(result["visibleModals"], 0)
+        self.assertLessEqual(result["horizontalOverflow"], 1)
+
     def test_13c_log_center_empty_state_matches_gui(self):
         self._goto_ready()
 
@@ -1091,3 +1151,91 @@ class LogCenterCases:
         self.assertTrue(result["detailTerminatedOnce"])
         self.assertTrue(result["fallbackCancelled"])
         self.assertFalse(result["fallbackRendered"])
+
+    def test_13f_log_detail_worker_constructor_failure_keeps_readable_summary(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              const nativeWorker = window.Worker;
+              const state = {
+                log_items: [{
+                  id: 'constructor-failure-log',
+                  time: '2026-07-12 20:21:22',
+                  level: 'ERROR',
+                  source: 'Downloader',
+                  trace_id: 'trace-constructor-failure',
+                  message_summary: 'Readable selected summary',
+                  message: 'Readable selected summary',
+                  detail: { description: 'detail should remain worker-owned' },
+                  stack: ''
+                }],
+                settings_snapshot: {}
+              };
+              class QueryOnlyWorker {
+                constructor(url) {
+                  this.url = String(url);
+                  if (this.url.includes('log_detail_worker')) throw new Error('detail worker unavailable');
+                }
+                postMessage(request) {
+                  queueMicrotask(() => this.onmessage?.({
+                    data: { type: 'result', result: window.UcpLogDisplay.queryLogItems(request) }
+                  }));
+                }
+                terminate() {}
+              }
+              window.Worker = QueryOnlyWorker;
+              window.UcpLogCenter.dispose();
+              try {
+                window.UcpLogCenter.configure({
+                  getState: () => state,
+                  getLanguage: () => 'en-US',
+                  t: value => ({
+                    '\u65e5\u5fd7\u8be6\u60c5': 'Log details',
+                    '\u8be6\u7ec6\u4fe1\u606f': 'Details',
+                    '\u590d\u5236': 'Copy',
+                    '\u5bfc\u51fa': 'Export',
+                    '\u91cd\u8bd5': 'Retry',
+                    '\u65e5\u5fd7\u8be6\u60c5\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u8bd5': 'Log details are temporarily unavailable. Retry.'
+                  }[String(value)] || String(value)),
+                  esc,
+                  escAttr,
+                  byId,
+                  writeClipboard: () => Promise.resolve(true),
+                  runOperation: () => {},
+                  onFiltersChange: () => {}
+                });
+                byId('logTimeFilter').value = 'all';
+                window.UcpLogCenter.syncFiltersFromDom();
+                switchPage('logs');
+                await new Promise((resolve, reject) => {
+                  const deadline = performance.now() + 3000;
+                  const tick = () => {
+                    const retry = document.getElementById('logDetailRetry');
+                    if (retry) return resolve();
+                    if (performance.now() > deadline) return reject(new Error('unavailable log detail fallback was not rendered'));
+                    requestAnimationFrame(tick);
+                  };
+                  tick();
+                });
+                const root = document.getElementById('logDetail');
+                return {
+                  text: root.textContent,
+                  retryVisible: !document.getElementById('logDetailRetry').hidden,
+                  readableJson: Boolean(root.querySelector('.log-detail-readable')),
+                  enabledActions: Array.from(root.querySelectorAll('.log-inspector-actions button')).filter(button => !button.disabled).length
+                };
+              } finally {
+                window.UcpLogCenter.dispose();
+                window.Worker = nativeWorker;
+              }
+            }
+            """
+        )
+
+        self.assertIn("Readable selected summary", result["text"])
+        self.assertIn("Log details are temporarily unavailable", result["text"])
+        self.assertTrue(result["retryVisible"])
+        self.assertFalse(result["readableJson"])
+        self.assertEqual(result["enabledActions"], 0)

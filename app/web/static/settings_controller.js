@@ -1,30 +1,6 @@
 (function () {
   let dependencies = Object.freeze({});
   const SETTINGS_GROUP_ORDER_FALLBACK = ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"];
-  const SETTINGS_GROUP_DESCRIPTIONS_FALLBACK = {
-    "基础设置": "下载目录、命名规则和打开行为",
-    "下载设置": "并发、超时、重试和下载策略",
-    "平台设置": "认证状态、爬取数量和代理入口",
-    "播放设置": "播放器、进度记忆和预览行为",
-    "日志设置": "保留策略、展示数量和错误追踪",
-    "外观设置": "语言、主题色、缩放和字体",
-  };
-  const SETTINGS_GROUP_HINTS_FALLBACK = {
-    "基础设置": "路径支持粘贴和选择，命名规则使用预设模板，避免非法文件名。",
-    "下载设置": "并发越高不一定越快，建议根据网络和磁盘性能调整。",
-    "平台设置": "认证状态自动检测；代理仅对需要的平台开放。",
-    "播放设置": "播放设置只影响本地预览，不影响下载文件。",
-    "日志设置": "UI 显示数量只影响日志中心显示，不影响日志文件本身。",
-    "外观设置": "外观设置会即时生效，并保存到本地配置。",
-  };
-  const SETTINGS_GROUP_ICONS = {
-    "基础设置": "action_open_directory.png",
-    "下载设置": "action_download.png",
-    "平台设置": "platform_web.png",
-    "播放设置": "action_play.png",
-    "日志设置": "nav_log_center.png",
-    "外观设置": "action_theme_palette.png",
-  };
   const SETTING_SECTION_GROUPS = Object.freeze({
     basic: "基础设置",
     download: "下载设置",
@@ -98,6 +74,7 @@
       order,
       descriptions: contract.group_descriptions || {},
       hints: contract.group_hints || {},
+      icons: contract.group_icons || {},
     };
   }
 
@@ -174,7 +151,7 @@
   }
 
   function settingGroupIconFile(group) {
-    return SETTINGS_GROUP_ICONS[group] || "nav_settings.png";
+    return settingsContract().icons[group] || "nav_settings.png";
   }
 
   function hasFocusedDescendant(element) {
@@ -192,12 +169,8 @@
     state.currentGroup = normalizeSettingsGroupName(state.currentGroup);
     if (!orderedGroups.includes(state.currentGroup)) state.currentGroup = orderedGroups[0] || "基础设置";
     const currentValue = settings[state.currentGroup] || {};
-    const description = contract.descriptions[state.currentGroup]
-      || SETTINGS_GROUP_DESCRIPTIONS_FALLBACK[state.currentGroup]
-      || "";
-    const hint = contract.hints[state.currentGroup]
-      || SETTINGS_GROUP_HINTS_FALLBACK[state.currentGroup]
-      || "";
+    const description = contract.descriptions[state.currentGroup] || "";
+    const hint = contract.hints[state.currentGroup] || "";
     const title = document.querySelector("#page-settings .page-head h1");
     if (title) title.textContent = t("配置中心");
     const subtitle = document.querySelector("#page-settings .page-head p");
@@ -372,6 +345,9 @@
     } else if (section === "playback") {
       const normalizedValue = key === "image_auto_advance_interval_seconds" ? Number(value || 5) : value;
       patchSetting("播放设置", key, normalizedValue);
+      if (key === "remember_position" && normalizedValue === false) {
+        window.UcpPlaybackState?.clearPlaybackPositions(localStorage);
+      }
       if (normalizeSettingsGroupName(state.currentGroup) === "播放设置") renderSettings(true);
       notifySideEffects({ section, key, value: normalizedValue, reschedulePlayback: true });
     } else if (SETTING_SECTION_GROUPS[section]) {

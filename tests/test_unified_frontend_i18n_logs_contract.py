@@ -542,7 +542,7 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         self.assertNotIn("System logs", tab_text)
 
     def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
-        from app.ui.viewmodels.log_i18n import localize_log_payload, localize_log_text
+        from shared.log_i18n import localize_log_payload, localize_log_text
 
         shell = self._make_shell()
         shell.show_page("logs")
@@ -886,7 +886,7 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         import ast
         import re
 
-        from app.ui.viewmodels import log_i18n
+        from shared import log_i18n
 
         gui_source = Path(log_i18n.__file__).read_text(encoding="utf-8")
         gui_tree = ast.parse(gui_source)

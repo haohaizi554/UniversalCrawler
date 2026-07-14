@@ -69,6 +69,27 @@ const FALLBACK_UI_TEXT = {
     "增量状态基线不连续，正在重新同步...": "State update is out of sync. Resyncing...",
     "加载增量状态失败": "Failed to load incremental state",
     "加载状态失败": "Failed to load state",
+    "正在加载应用状态...": "Loading application state...",
+    "检查更新": "Check for updates",
+    "正在检查更新...": "Checking for updates...",
+    "检查更新失败": "Update check failed",
+    "检测到新版本": "New version available",
+    "当前已经是最新版本": "You are up to date",
+    "Release 版本": "Release version",
+    "当前版本高于最新发布版本": "The current version is newer than the latest release",
+    "检测到版本，但安全更新清单未通过验证": "A release was found, but its secure update manifest could not be verified",
+    "未提供更新说明": "No release notes were provided",
+    "查看发布页": "View release",
+    "下载并验证": "Download and verify",
+    "正在下载并验证更新...": "Downloading and verifying update...",
+    "更新包已下载并通过验证": "The update package was downloaded and verified",
+    "更新下载失败": "Update download failed",
+    "安装包": "Installer",
+    "安装并重启": "Install and restart",
+    "正在启动安装程序...": "Starting installer...",
+    "安装程序已启动，应用即将重启": "The installer started; the application will restart shortly",
+    "请勿关闭安装程序窗口": "Do not close the installer window",
+    "启动安装程序失败": "Failed to start installer",
     "检测中": "Checking",
     "请输入主页链接、分享链接或合集链接": "Enter a profile, shared, or collection link",
     "未选择有效模式": "No valid mode selected",
@@ -327,6 +348,7 @@ const FALLBACK_UI_TEXT = {
     "来源": "Source",
     "消息摘要": "Summary",
     "日志详情": "Log details",
+    "日志详情暂时不可用，请重试": "Log details are temporarily unavailable. Retry.",
     "线程": "Thread",
     "消息": "Message",
     "详细信息": "Details",
@@ -480,6 +502,27 @@ const FALLBACK_UI_TEXT = {
     "增量状态基线不连续，正在重新同步...": "增量狀態基線不連續，正在重新同步...",
     "加载增量状态失败": "載入增量狀態失敗",
     "加载状态失败": "載入狀態失敗",
+    "正在加载应用状态...": "正在載入應用程式狀態...",
+    "检查更新": "檢查更新",
+    "正在检查更新...": "正在檢查更新...",
+    "检查更新失败": "檢查更新失敗",
+    "检测到新版本": "偵測到新版本",
+    "当前已经是最新版本": "目前已是最新版本",
+    "Release 版本": "Release 版本",
+    "当前版本高于最新发布版本": "目前版本高於最新發佈版本",
+    "检测到版本，但安全更新清单未通过验证": "偵測到版本，但安全更新清單未通過驗證",
+    "未提供更新说明": "未提供更新說明",
+    "查看发布页": "查看發佈頁",
+    "下载并验证": "下載並驗證",
+    "正在下载并验证更新...": "正在下載並驗證更新...",
+    "更新包已下载并通过验证": "更新套件已下載並通過驗證",
+    "更新下载失败": "更新下載失敗",
+    "安装包": "安裝程式",
+    "安装并重启": "安裝並重新啟動",
+    "正在启动安装程序...": "正在啟動安裝程式...",
+    "安装程序已启动，应用即将重启": "安裝程式已啟動，應用程式即將重新啟動",
+    "请勿关闭安装程序窗口": "請勿關閉安裝程式視窗",
+    "启动安装程序失败": "啟動安裝程式失敗",
     "检测中": "檢測中",
     "请输入主页链接、分享链接或合集链接": "請輸入主頁連結、分享連結或合集連結",
     "未选择有效模式": "未選擇有效模式",
@@ -738,6 +781,7 @@ const FALLBACK_UI_TEXT = {
     "来源": "來源",
     "消息摘要": "訊息摘要",
     "日志详情": "日誌詳情",
+    "日志详情暂时不可用，请重试": "日誌詳情暫時無法使用，請重試。",
     "线程": "執行緒",
     "消息": "訊息",
     "详细信息": "詳細資訊",
@@ -1095,6 +1139,8 @@ function translateUiCore(text, lang = currentLanguage()) {
   }
   match = text.match(/^(.+)\s+今天\s+(.+)$/);
   if (match) return `${translateUiCore(match[1].trim(), lang)}  ${translateUiCore("今天", lang)} ${match[2]}`;
+  match = text.match(/^今天\s+(.+)$/);
+  if (match) return `${translateUiCore("今天", lang)} ${match[1]}`;
   return text;
 }
 
@@ -1223,18 +1269,6 @@ function applyStaticLanguage() {
     refreshQueueButton.title = t("立即刷新");
     refreshQueueButton.setAttribute("aria-label", t("立即刷新"));
   }
-  const logTabLabels = {
-    all: "全部日志",
-    crawl: "采集日志",
-    download: "下载日志",
-    system: "系统日志",
-    performance: "性能日志",
-    error: "错误日志",
-  };
-  document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => {
-    const label = logTabLabels[button.dataset.logTab];
-    if (label) button.textContent = t(label);
-  });
   if (typeof syncLogTabLabels === "function") syncLogTabLabels();
   const logFilterLabels = ["日志级别", "时间范围", "平台", "Trace ID", "关键词搜索"];
   document.querySelectorAll("#page-logs .log-filter-label").forEach((label, index) => {

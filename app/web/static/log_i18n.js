@@ -28,47 +28,13 @@
       : String(value || "");
   }
 
-const LOG_TAB_LABELS = {
-  all: "全部日志",
-  crawl: "采集日志",
-  download: "下载日志",
-  system: "系统日志",
-  performance: "性能日志",
-  error: "错误日志",
-};
-
-const LOG_TAB_TRANSLATIONS = {
-  "zh-CN": {
-    all: "全部日志",
-    crawl: "采集日志",
-    download: "下载日志",
-    system: "系统日志",
-    performance: "性能日志",
-    error: "错误日志",
-  },
-  "en-US": {
-    all: "All logs",
-    crawl: "Crawl logs",
-    download: "Download logs",
-    system: "System logs",
-    performance: "Performance logs",
-    error: "Error logs",
-  },
-  "zh-TW": {
-    all: "全部日誌",
-    crawl: "採集日誌",
-    download: "下載日誌",
-    system: "系統日誌",
-    performance: "性能日誌",
-    error: "錯誤日誌",
-  },
-};
-
 function localizedLogTabLabel(category) {
   const key = String(category || "all");
-  const language = currentLanguage();
-  const table = LOG_TAB_TRANSLATIONS[language] || LOG_TAB_TRANSLATIONS["zh-CN"];
-  return table[key] || translateUiText(LOG_TAB_LABELS[key] || key);
+  const state = typeof dependencies.getState === "function" ? dependencies.getState() || {} : {};
+  const labels = state.log_contract && state.log_contract.category_labels
+    ? state.log_contract.category_labels
+    : {};
+  return translateUiText(labels[key] || key);
 }
 
 const STRUCTURED_LOG_SEGMENT_ALIASES = {
@@ -368,6 +334,7 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "无效平台", en: "Invalid platform", tw: "無效平台" },
   { zh: "支持", en: "supported", tw: "支援" },
   { zh: "保存配置失败", en: "Failed to save configuration", tw: "儲存設定失敗" },
+  { zh: "该配置项不允许通过 Web 修改", en: "This setting cannot be changed from the WebUI", tw: "此設定不允許透過 WebUI 修改" },
   { zh: "使用代理", en: "Using proxy", tw: "使用代理" },
   { zh: "爬虫错误", en: "Crawler error", tw: "爬蟲錯誤" },
   { zh: "加载本地 Cookie 成功", en: "Loaded local Cookie successfully", tw: "載入本機 Cookie 成功" },

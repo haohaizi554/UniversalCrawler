@@ -75,6 +75,29 @@ class UnifiedFrontendShellContractTests(_UnifiedFrontendContractTestCase):
         failed_render.assert_not_called()
         self.assertEqual(shell.current_page_id, "failed")
 
+    def test_rapid_failed_page_navigation_does_not_spawn_transient_windows(self):
+        shell = self._make_shell()
+        shell.show()
+        self.app.processEvents()
+        baseline_top_levels = {id(widget) for widget in self.app.topLevelWidgets()}
+        navigation = ("failed", "queue", "failed", "logs", "failed", "completed", "failed")
+
+        for _ in range(20):
+            for page_id in navigation:
+                QTest.mouseClick(shell.sidebar._items[page_id], Qt.MouseButton.LeftButton)
+            self.app.processEvents()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+        unexpected_visible_windows = [
+            widget.objectName() or type(widget).__name__
+            for widget in self.app.topLevelWidgets()
+            if id(widget) not in baseline_top_levels and widget.isVisible()
+        ]
+        self.assertEqual(unexpected_visible_windows, [])
+        self.assertEqual(shell.current_page_id, "failed")
+        self.assertIs(shell.stack.currentWidget(), shell.pages["failed"])
+        self.assertTrue(shell.status_island.isVisible())
+
     def test_switching_away_from_completed_releases_media_fullscreen_window(self):
         shell = self._make_shell()
         shell.show_page("completed")
@@ -131,6 +154,60 @@ class UnifiedFrontendShellContractTests(_UnifiedFrontendContractTestCase):
         placeholder = shell.top_bar.inp_search.placeholderText()
         self.assertIn("BV ID", placeholder)
         self.assertNotEqual("Enter a profile, shared, or collection link...", placeholder)
+
+    def test_gui_toolbox_renders_tool_and_recent_delta_sections_while_visible(self):
+        shell = self._make_shell()
+        snapshot = FrontendStateService.mock_snapshot()
+        shell.render(snapshot)
+        shell.show_page("toolbox")
+        toolbox = shell.pages["toolbox"]
+
+        snapshot["toolbox_items"] = [
+            {
+                "id": "delta-tool",
+                "title": "增量工具",
+                "summary": "增量工具说明",
+                "input_example": "输入",
+                "output_example": "输出",
+                "icon_file": "nav_toolbox.png",
+            }
+        ]
+        shell.render(snapshot, changed_sections={"toolbox_items"})
+        self.app.processEvents()
+
+        self.assertEqual(list(toolbox._tool_buttons), ["delta-tool"])
+        self.assertIn("增量工具", toolbox.detail_text.toPlainText())
+
+        snapshot["toolbox_recent_items"] = [
+            {"id": "delta-tool", "title": "增量工具", "last_used": "刚刚"}
+        ]
+        shell.render(snapshot, changed_sections={"toolbox_recent_items"})
+        self.app.processEvents()
+
+        self.assertIn("增量工具", toolbox.recent.toPlainText())
+        self.assertIn("刚刚", toolbox.recent.toPlainText())
+
+    def test_gui_toolbox_hot_language_change_rebuilds_dynamic_content(self):
+        shell = self._make_shell()
+        shell.show_page("toolbox")
+        toolbox = shell.pages["toolbox"]
+
+        shell.apply_language("en-US")
+        self.app.processEvents()
+
+        self.assertEqual(toolbox.open_button.text(), "Open tool")
+        self.assertIn("Tool: Link parser", toolbox.detail_text.toPlainText())
+        self.assertIn("Description:", toolbox.detail_text.toPlainText())
+        self.assertIn("Today", toolbox.recent.toPlainText())
+        self.assertNotIn("工具:", toolbox.detail_text.toPlainText())
+
+        shell.apply_language("zh-TW")
+        self.app.processEvents()
+
+        self.assertEqual(toolbox.open_button.text(), "開啟工具")
+        self.assertIn("工具: 連結解析", toolbox.detail_text.toPlainText())
+        self.assertIn("說明:", toolbox.detail_text.toPlainText())
+        self.assertNotIn("Link parser", toolbox.detail_text.toPlainText())
 
     def test_gui_log_query_submission_hands_snapshot_batch_to_worker_without_ui_clone(self):
         shell = self._make_shell()
@@ -220,7 +297,7 @@ class UnifiedFrontendShellContractTests(_UnifiedFrontendContractTestCase):
         self.assertTrue(settings.findChildren(SegmentedControl))
 
     def test_settings_catalog_keeps_real_group_icons_and_hints(self):
-        from app.ui.viewmodels.settings_catalog import GROUP_HINTS, GROUP_ICONS
+        from shared.settings_metadata import GROUP_HINTS, GROUP_ICONS
 
         groups = ["基础设置", "下载设置", "平台设置", "播放设置", "日志设置", "外观设置"]
         self.assertEqual(set(groups), set(GROUP_ICONS))

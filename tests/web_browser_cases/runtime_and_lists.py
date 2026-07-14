@@ -3,6 +3,271 @@
 from __future__ import annotations
 
 class RuntimeAndListCases:
+    def test_platform_api_failure_restores_full_snapshot_platforms_and_retry(self):
+        context = self._browser.new_context(viewport={"width": 1280, "height": 720})
+        self.addCleanup(context.close)
+        page = context.new_page()
+        self.addCleanup(page.close)
+        page.add_init_script(
+            "Object.defineProperty(window, 'WebSocket', { value: undefined, configurable: true });"
+        )
+        page.route("**/api/platforms", lambda route: route.abort("failed"))
+        page.goto(self._server_url, wait_until="domcontentloaded")
+        page.wait_for_selector("#app-shell", state="visible", timeout=5000)
+        page.wait_for_function("window.__ucrawlFrontendStateLoaded === true", timeout=5000)
+        page.wait_for_function(
+            "(document.querySelector('#sourceSelect')?.options.length || 0) >= 5",
+            timeout=5000,
+        )
+
+        result = page.evaluate(
+            """
+            () => ({
+              ids: Array.from(document.querySelectorAll('#sourceSelect option')).map(option => option.value),
+              retryVisible: !document.getElementById('platformRetry')?.hidden,
+              loadState: document.getElementById('sourceSelect')?.dataset.loadState || ''
+            })
+            """
+        )
+        self.assertEqual(
+            result["ids"],
+            ["douyin", "xiaohongshu", "kuaishou", "missav", "bilibili"],
+        )
+        self.assertTrue(result["retryVisible"])
+        self.assertEqual(result["loadState"], "degraded")
+
+    def test_failed_detail_consumes_shared_display_projection(self):
+        self._goto_ready()
+        self._page.evaluate(
+            """
+            () => {
+              window.__isolateFrontendStateForTest();
+              frontendState.failed_items = [{
+                id: 'failed-old',
+                title: 'Old failure',
+                reason_detail_display: 'Old reason detail',
+                status: 'failed'
+              }];
+              selected.failed = 'failed-old';
+              switchPage('failed');
+              renderFailed();
+            }
+            """
+        )
+        self._page.wait_for_selector(
+            "#failedBody tr[data-id='failed-old'].selected",
+            state="visible",
+            timeout=5000,
+        )
+        self._page.evaluate(
+            """
+            () => {
+              window.Worker = class DeferredListWorker {
+                postMessage() {}
+                terminate() {}
+              };
+              configureListPagesHelpers();
+              frontendState.failed_items = [{
+                id: 'failed-projected',
+                title: 'Projected failure',
+                failed_at: '2026-07-12 18:34:48',
+                failed_at_table: '07-12 18:34',
+                reason: '原始原因',
+                reason_detail: '原始原因详情',
+                reason_detail_display: 'Projected reason detail',
+                platform: 'Bilibili',
+                platform_id: 'bilibili',
+                trace_id: 'trace-projected',
+                status_label: '失败',
+                log_excerpt_items: [{ level: 'ERROR', time: 'raw-time', message: '原始日志' }],
+                log_excerpt_display_items: [{
+                  level: 'ERROR',
+                  time_display: '18:34:48',
+                  message_display: 'Projected log message'
+                }],
+                solutions: [{ title: '原始建议', description: '原始说明' }],
+                solutions_display: [{
+                  title_display: 'Projected solution',
+                  description_display: 'Projected solution description',
+                  icon_file: 'action_help.png'
+                }]
+              }];
+              const appearance = frontendState.settings_snapshot['外观设置'] || {};
+              appearance.language = 'en-US';
+              applyAppearance(appearance);
+              renderFailed();
+            }
+            """
+        )
+
+        detail = self._page.text_content("#failedDetail")
+        solutions = self._page.text_content("#failedSolutions")
+        self.assertEqual(self._page.evaluate("selected.failed"), "failed-projected")
+        self.assertIn("Projected reason detail", detail)
+        self.assertIn("Projected log message", detail)
+        self.assertIn("18:34:48", detail)
+        self.assertNotIn("原始原因详情", detail)
+        self.assertNotIn("原始日志", detail)
+        self.assertIn("Projected solution", solutions)
+        self.assertIn("Projected solution description", solutions)
+        self.assertNotIn("原始建议", solutions)
+
+    def test_00a_status_version_opens_update_check_dialog(self):
+        self._goto_ready()
+        self._page.evaluate(
+            """() => {
+              const appearance = frontendState.settings_snapshot['外观设置'] || {};
+              appearance.language = 'en-US';
+              applyAppearance(appearance);
+              renderCurrentPage();
+            }"""
+        )
+        self._page.route(
+            "**/api/update/check",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=(
+                    '{"status":"available","local_version":"3.6.17",'
+                    '"latest_version":"3.6.18","notes":"verified release",'
+                    '"html_url":"https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.18",'
+                    '"candidates":[{"version":"3.6.18"}],"can_prepare":true}'
+                ),
+            ),
+        )
+        self._page.route(
+            "**/api/update/prepare",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status":"ready","version":"3.6.18","installer_name":"ucrawl-update.exe"}',
+            ),
+        )
+        self._page.route(
+            "**/api/update/install",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status":"installing","version":"3.6.18"}',
+            ),
+        )
+
+        self._page.click("#statusVersion")
+        self._page.wait_for_selector("#updateModal", state="visible", timeout=5000)
+        dialog = self._page.evaluate(
+            """
+            () => ({
+              busy: document.getElementById('updateModal').getAttribute('aria-busy'),
+              local: document.getElementById('updateLocalVersion').textContent,
+              latest: document.getElementById('updateLatestVersion').textContent,
+              localLabel: document.getElementById('updateLocalLabel').textContent,
+              latestLabel: document.getElementById('updateLatestLabel').textContent,
+              notes: document.getElementById('updateNotes').textContent,
+              status: document.getElementById('updateStatus').dataset.status,
+            })
+            """
+        )
+        self.assertEqual(dialog["busy"], "false")
+        self.assertIn("3.6.17", dialog["local"])
+        self.assertIn("3.6.18", dialog["latest"])
+        self.assertEqual(dialog["localLabel"], "Current version")
+        self.assertEqual(dialog["latestLabel"], "Release version")
+        self.assertEqual(dialog["notes"], "verified release")
+        self.assertEqual(dialog["status"], "available")
+
+        self.assertTrue(self._page.is_visible("#updatePrepareBtn"))
+        self.assertFalse(self._page.is_visible("#updateInstallBtn"))
+        self._page.click("#updatePrepareBtn")
+        self._page.wait_for_function(
+            "document.getElementById('updateStatus').dataset.status === 'ready'",
+            timeout=5000,
+        )
+        self.assertIn("ucrawl-update.exe", self._page.text_content("#updateNotes"))
+        self.assertTrue(self._page.is_visible("#updateInstallBtn"))
+        self._page.click("#updateInstallBtn")
+        self._page.wait_for_function(
+            "document.getElementById('updateStatus').dataset.status === 'installing' && document.getElementById('updateInstallBtn').hidden",
+            timeout=5000,
+        )
+
+        self._page.evaluate("document.getElementById('updateCloseBtn').disabled = false; document.getElementById('updateCloseIcon').disabled = false")
+        self._page.press("body", "Escape")
+        self._page.wait_for_selector("#updateModal", state="hidden", timeout=5000)
+        self.assertEqual(self._page.evaluate("document.activeElement?.id"), "statusVersion")
+
+    def test_00_initial_state_never_exposes_mock_tasks_while_loading_or_after_failure(self):
+        page = self._context.new_page()
+        self.addCleanup(page.close)
+        page.add_init_script(
+            """
+            (() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.WebSocket = class PendingWebSocket {
+                static CONNECTING = 0;
+                static OPEN = 1;
+                constructor() { this.readyState = 0; }
+                close() {}
+                send() {}
+              };
+              window.fetch = (url, options) => String(url).includes('/api/frontend/state')
+                ? new Promise(() => {})
+                : nativeFetch(url, options);
+            })();
+            """
+        )
+        page.goto(self._server_url, wait_until="domcontentloaded")
+        page.wait_for_selector("#app-shell", state="visible", timeout=5000)
+        page.wait_for_selector("#frontendStateBanner[data-state='loading']", state="visible", timeout=5000)
+
+        loading_state = page.evaluate(
+            """
+            () => ({
+              queueRows: document.querySelectorAll('#queueBody tr[data-id]').length,
+              completedRows: document.querySelectorAll('#completedBody tr[data-id]').length,
+              failedRows: document.querySelectorAll('#failedBody tr[data-id]').length,
+              startDisabled: document.getElementById('startBtn').disabled,
+              pageBlocked: document.getElementById('rightPanel').getAttribute('aria-busy'),
+            })
+            """
+        )
+        self.assertEqual(loading_state["queueRows"], 0)
+        self.assertEqual(loading_state["completedRows"], 0)
+        self.assertEqual(loading_state["failedRows"], 0)
+        self.assertTrue(loading_state["startDisabled"])
+        self.assertEqual(loading_state["pageBlocked"], "true")
+
+        failed_page = self._context.new_page()
+        self.addCleanup(failed_page.close)
+        failed_page.add_init_script(
+            """
+            window.WebSocket = class PendingWebSocket {
+              static CONNECTING = 0;
+              static OPEN = 1;
+              constructor() { this.readyState = 0; }
+              close() {}
+              send() {}
+            };
+            """
+        )
+        failed_page.route(
+            "**/api/frontend/state",
+            lambda route: route.fulfill(status=503, content_type="application/json", body='{"status":"error"}'),
+        )
+        failed_page.goto(self._server_url, wait_until="domcontentloaded")
+        failed_page.wait_for_selector("#frontendStateBanner[data-state='error']", state="visible", timeout=5000)
+        failure_state = failed_page.evaluate(
+            """
+            () => ({
+              taskRows: document.querySelectorAll('#queueBody tr[data-id], #completedBody tr[data-id], #failedBody tr[data-id]').length,
+              retryVisible: !document.getElementById('frontendStateRetry').hidden,
+              startDisabled: document.getElementById('startBtn').disabled,
+            })
+            """
+        )
+        self.assertEqual(failure_state["taskRows"], 0)
+        self.assertTrue(failure_state["retryVisible"])
+        self.assertTrue(failure_state["startDisabled"])
+
     def test_11ea_controllers_request_optimistic_patches_without_mutating_snapshots(self):
         self._goto_ready()
 
@@ -1082,55 +1347,7 @@ class RuntimeAndListCases:
         self.assertTrue(result["currentTimerCleared"])
         self.assertTrue(result["exactlyOneDeltaRequest"])
 
-    def test_13l_runtime_compatibility_globals_delegate_to_the_public_service(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            async () => {
-              const nativeRuntime = window.UcpFrontendRuntime;
-              const calls = [];
-              window.UcpFrontendRuntime = Object.freeze({
-                ...nativeRuntime,
-                fetchState: (...args) => { calls.push(["fetchState", ...args]); return Promise.resolve("state"); },
-                fetchDelta: (...args) => { calls.push(["fetchDelta", ...args]); return Promise.resolve("delta"); },
-                scheduleSections: (...args) => { calls.push(["scheduleSections", ...args]); return "sections"; },
-                send: (...args) => { calls.push(["send", ...args]); return true; },
-              });
-              try {
-                const types = Object.fromEntries([
-                  "fetchFrontendState",
-                  "fetchFrontendDelta",
-                  "scheduleRenderSections",
-                  "sendWS",
-                ].map(name => [name, typeof window[name]]));
-                const values = [
-                  await window.fetchFrontendState("state-arg"),
-                  await window.fetchFrontendDelta("delta-arg"),
-                  window.scheduleRenderSections(["queue_items"]),
-                  window.sendWS("crawl_state", { running: true }),
-                ];
-                return { types, values, calls };
-              } finally {
-                window.UcpFrontendRuntime = nativeRuntime;
-              }
-            }
-            """
-        )
-
-        self.assertEqual(set(result["types"].values()), {"function"})
-        self.assertEqual(result["values"], ["state", "delta", "sections", True])
-        self.assertEqual(
-            result["calls"],
-            [
-                ["fetchState", "state-arg"],
-                ["fetchDelta", "delta-arg"],
-                ["scheduleSections", ["queue_items"]],
-                ["send", "crawl_state", {"running": True}],
-            ],
-        )
-
-    def test_13m_stale_callbacks_preserve_current_reconnect_and_render_handles(self):
+    def test_13ka_rest_action_error_refetches_full_state_for_optimistic_rollback(self):
         self._goto_ready()
 
         result = self._page.evaluate(
@@ -1140,45 +1357,31 @@ class RuntimeAndListCases:
               runtime.dispose();
               const nativeFetch = window.fetch;
               const NativeWebSocket = window.WebSocket;
-              const nativeSetTimeout = window.setTimeout;
-              const nativeClearTimeout = window.clearTimeout;
-              const nativeRequestAnimationFrame = window.requestAnimationFrame;
-              const nativeCancelAnimationFrame = window.cancelAnimationFrame;
-              const timers = [];
-              const clearedTimers = [];
-              const frames = [];
-              const cancelledFrames = [];
-              const sockets = [];
-              const renderedSections = [];
-              let state = { version: 0, queue_items: [], log_items: [] };
+              let state = { version: 0, queue_items: [], log_items: [], settings_snapshot: {} };
+              const urls = [];
 
               class FakeWebSocket {
                 static CONNECTING = 0;
                 static OPEN = 1;
                 static CLOSED = 3;
-                constructor() {
-                  this.readyState = FakeWebSocket.CONNECTING;
-                  sockets.push(this);
-                }
+                constructor() { this.readyState = FakeWebSocket.CONNECTING; }
                 close() { this.readyState = FakeWebSocket.CLOSED; }
                 send() {}
               }
 
               const response = payload => ({ ok: true, json: async () => payload });
-              window.fetch = () => Promise.resolve(response({ version: 0, queue_items: [], log_items: [] }));
+              window.fetch = url => {
+                const text = String(url);
+                urls.push(text);
+                if (text.includes('/api/frontend/action')) {
+                  return Promise.resolve(response({ status: 'error', message: 'save failed' }));
+                }
+                if (text.includes('/api/frontend/delta')) {
+                  return Promise.resolve(response({ version: 1, changed_sections: [], sections: {} }));
+                }
+                return Promise.resolve(response({ version: 1, queue_items: [], log_items: [], settings_snapshot: {} }));
+              };
               window.WebSocket = FakeWebSocket;
-              window.setTimeout = callback => {
-                const timer = { id: timers.length + 1, callback };
-                timers.push(timer);
-                return timer.id;
-              };
-              window.clearTimeout = id => clearedTimers.push(id);
-              window.requestAnimationFrame = callback => {
-                const frame = { id: frames.length + 1, callback };
-                frames.push(frame);
-                return frame.id;
-              };
-              window.cancelAnimationFrame = id => cancelledFrames.push(id);
 
               try {
                 runtime.configure({
@@ -1186,60 +1389,34 @@ class RuntimeAndListCases:
                   replaceState: nextState => { state = nextState; },
                   buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
                   patchSection: () => [],
-                  renderSections: sections => renderedSections.push(Array.from(sections)),
+                  renderSections: () => {},
                   renderAll: () => {},
                   onConnected: () => {},
                   onSettled: () => {},
                   appendUiLog: () => {},
                 });
-
                 await runtime.start();
-                const oldSocket = sockets[0];
-                runtime.scheduleSections(["run1"]);
-                const oldFrame = frames[0];
-                oldSocket.onclose();
-                const oldReconnect = timers[0];
-                runtime.dispose();
-
-                await runtime.start();
-                const currentSocket = sockets[1];
-                runtime.scheduleSections(["run2"]);
-                const currentFrame = frames[1];
-                currentSocket.onclose();
-                const currentReconnect = timers[1];
-
-                oldFrame.callback();
-                runtime.scheduleSections(["run2-extra"]);
-                oldReconnect.callback();
-                const replacementSocket = runtime.connect();
-                replacementSocket.onclose();
-                const replacementReconnect = timers[2];
-
-                currentReconnect.callback();
-                replacementReconnect.callback();
-                currentFrame.callback();
-                if (frames[2]) frames[2].callback();
+                urls.length = 0;
+                runtime.send('frontend_action', {
+                  action: 'update_setting',
+                  payload: { section: 'download', key: 'max_retries', value: 5 },
+                });
+                for (let index = 0; index < 20 && urls.length < 2; index += 1) await Promise.resolve();
 
                 return {
-                  oldFrameCancelled: cancelledFrames.includes(oldFrame.id),
-                  currentFramePreserved: frames.length === 2,
-                  currentReconnectCleared: clearedTimers.includes(currentReconnect.id),
-                  renderedOnce: renderedSections.length === 1,
+                  requestedAction: urls.some(url => url.includes('/api/frontend/action')),
+                  requestedState: urls.some(url => url.endsWith('/api/frontend/state')),
+                  requestedDelta: urls.some(url => url.includes('/api/frontend/delta')),
                 };
               } finally {
                 runtime.dispose();
                 window.fetch = nativeFetch;
                 window.WebSocket = NativeWebSocket;
-                window.setTimeout = nativeSetTimeout;
-                window.clearTimeout = nativeClearTimeout;
-                window.requestAnimationFrame = nativeRequestAnimationFrame;
-                window.cancelAnimationFrame = nativeCancelAnimationFrame;
               }
             }
             """
         )
 
-        self.assertTrue(result["oldFrameCancelled"])
-        self.assertTrue(result["currentFramePreserved"])
-        self.assertTrue(result["currentReconnectCleared"])
-        self.assertTrue(result["renderedOnce"])
+        self.assertTrue(result["requestedAction"])
+        self.assertTrue(result["requestedState"])
+        self.assertFalse(result["requestedDelta"])

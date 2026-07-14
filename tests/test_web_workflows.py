@@ -44,8 +44,8 @@ class WebWorkflowHelpersTests(unittest.TestCase):
         from app.web.workflows import merge_default_config
 
         with (
-            patch("cli.defaults.get_platform_defaults", return_value={"proxy": "Clash (7890)", "timeout": 10}),
-            patch("cli.defaults.build_missav_proxy_url", return_value="http://127.0.0.1:7890"),
+            patch("app.web.workflows.get_platform_defaults", return_value={"proxy": "Clash (7890)", "timeout": 10}),
+            patch("app.web.workflows.build_missav_proxy_url", return_value="http://127.0.0.1:7890"),
         ):
             merged = merge_default_config("missav", {"timeout": 20})
 
@@ -84,7 +84,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.core.plugin_registry.registry.get_plugin", return_value=object()),
             patch("app.web.workflows.validate_config_types", return_value=None),
             patch("app.web.workflows.merge_default_config", return_value={"max_items": 20}),
-            patch("cli.defaults.merge_convenience_params") as merge_params,
+            patch("app.web.workflows.merge_convenience_params") as merge_params,
         ):
             result = await self.service.start_crawl(
                 {
@@ -139,9 +139,9 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.core.plugin_registry.registry.get_all_plugins", return_value=[SimpleNamespace(id="douyin")]),
             patch("app.web.workflows.validate_direct_download_url", return_value=None),
             patch("app.web.workflows.validate_config_types", return_value=None),
-            patch("cli.defaults.get_platform_defaults", return_value={}),
-            patch("cli.defaults.merge_convenience_params"),
-            patch("cli.sdk.UcrawlSDK", return_value=fake_sdk),
+            patch("app.web.workflows.get_platform_defaults", return_value={}),
+            patch("app.web.workflows.merge_convenience_params"),
+            patch("app.web.workflows.UcrawlSDK", return_value=fake_sdk),
         ):
             result = await self.service.direct_download(
                 {
@@ -263,9 +263,9 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.core.plugin_registry.registry.get_all_plugins", return_value=[SimpleNamespace(id="douyin")]),
             patch("app.web.workflows.validate_direct_download_url", return_value=None),
             patch("app.web.workflows.validate_config_types", return_value=None),
-            patch("cli.defaults.get_platform_defaults", return_value={}),
-            patch("cli.defaults.merge_convenience_params"),
-            patch("cli.sdk.UcrawlSDK", return_value=fake_sdk),
+            patch("app.web.workflows.get_platform_defaults", return_value={}),
+            patch("app.web.workflows.merge_convenience_params"),
+            patch("app.web.workflows.UcrawlSDK", return_value=fake_sdk),
         ):
             result = await self.service.direct_download(
                 {

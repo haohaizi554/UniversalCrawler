@@ -11,6 +11,11 @@ from tests.unified_frontend_contract_support import (
 
 
 class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
+    def test_hidden_attribute_cannot_be_overridden_by_component_display_rules(self):
+        css = _css_bundle()
+
+        self.assertIn("[hidden] {\n  display: none !important;\n}", css)
+
     def test_web_page_headers_and_removed_controls_match_contract(self):
         content = _html_bundle()
 
@@ -135,8 +140,8 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn(".failed-log-row", css)
         self.assertIn(".failed-solution-row", css)
         self.assertIn(".failed-status-chip", css)
-        self.assertIn("#page-failed th:nth-child(4), #page-failed td:nth-child(4) { width: 82px; }", css)
-        self.assertIn("#page-failed th:nth-child(5), #page-failed td:nth-child(5) { width: 72px; }", css)
+        self.assertIn("#page-failed th:nth-child(4), #page-failed td:nth-child(4) { width: 102px; }", css)
+        self.assertIn("#page-failed th:nth-child(5), #page-failed td:nth-child(5) { width: 84px; }", css)
         failed_log_fn = content.split("function failedLogRowHtml", 1)[1].split("function solutionRowHtml", 1)[0]
         self.assertIn("log-level", failed_log_fn)
         self.assertNotIn("<img", failed_log_fn)
@@ -330,7 +335,7 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn('default_open_mode: "builtin_player"', content)
         self.assertIn('default_player: "builtin_player"', content)
         self.assertIn('settingSelect("\\u624b\\u52a8\\u64ad\\u653e\\u65b9\\u5f0f", "default_player"', content)
-        self.assertIn("\\u81ea\\u52a8\\u6253\\u5f00\\u5f00\\u542f\\u65f6\\u4f7f\\u7528", content)
+        self.assertIn("\\u81ea\\u52a8\\u6253\\u5f00\\uff0c\\u5f00\\u542f\\u65f6\\u4f7f\\u7528", content)
         self.assertIn("\\u70b9\\u51fb\\u64ad\\u653e\\u952e\\u65f6\\u4f7f\\u7528", content)
         self.assertIn('requireDependency("frontendAction")("open_file"', content)
         self.assertIn("shouldUseBuiltinPlayer", content)
@@ -394,14 +399,15 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn("switchSettingsGroup", content)
         self.assertIn("settings-shell", content)
         self.assertIn("settings-nav-btn", content)
-        self.assertIn("SETTINGS_GROUP_ICONS", content)
+        self.assertNotIn("SETTINGS_GROUP_ICONS", content)
+        self.assertIn("contract.group_icons", content)
         self.assertIn("function settingGroupIconFile", content)
         self.assertIn("settingGroupIconFile(group)", content)
         self.assertIn("settingGroupIconFile(state.currentGroup)", content)
         self.assertIn("settings-detail-icon", content)
-        self.assertIn('action_open_directory.png', content)
-        self.assertIn('action_theme_palette.png', content)
-        self.assertIn("SETTINGS_GROUP_HINTS_FALLBACK", content)
+        self.assertNotIn("SETTINGS_GROUP_HINTS_FALLBACK", content)
+        self.assertNotIn("SETTINGS_GROUP_DESCRIPTIONS_FALLBACK", content)
+        self.assertIn("contract.hints[state.currentGroup]", content)
         self.assertIn("settings-hint-card", content)
         self.assertIn("has-trailing-action", content)
         self.assertIn("settingRowClassForKey", content)
@@ -466,7 +472,10 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn("#page-settings .page-head {\n  flex-direction: column;", css)
         self.assertIn("align-items: flex-start;", css)
         self.assertIn(".setting-control-cluster.has-trailing-action", css)
-        self.assertIn("flex: 0 0 94px", css)
+        setting_action = css.rsplit("\n.setting-action {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-width: max-content", setting_action)
+        self.assertIn("width: auto", setting_action)
+        self.assertNotIn("width: 94px", setting_action)
         self.assertIn(".platform-summary", css)
         self.assertIn(".platform-name-cell", css)
         self.assertIn(".platform-name-cell img", css)
@@ -658,6 +667,23 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn("*::-webkit-scrollbar-button", css)
         self.assertIn("background-clip: content-box", css)
         self.assertIn("margin: 0 4px;", css)
+
+    def test_completed_and_failed_cards_use_gui_semantic_radii(self):
+        css = _css_bundle()
+
+        self.assertIn("--completed-card-radius: 8px;", css)
+        self.assertIn("--failed-card-radius: 10px;", css)
+        completed = css.split("#page-completed .completed-table-card", 1)[1].split("}", 1)[0]
+        completed_info = css.split("#page-completed .completed-info-card", 1)[1].split("}", 1)[0]
+        failed_table = css.split("#page-failed .failed-table-card", 1)[1].split("}", 1)[0]
+        failed_details = css.split(
+            "#page-failed .failed-detail-card,\n#page-failed .failed-solutions-card",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("border-radius: var(--completed-card-radius);", completed)
+        self.assertIn("border-radius: var(--completed-card-radius);", completed_info)
+        self.assertIn("border-radius: var(--failed-card-radius);", failed_table)
+        self.assertIn("border-radius: var(--failed-card-radius);", failed_details)
 
     def test_web_custom_select_logic_is_split_into_component(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"

@@ -68,6 +68,22 @@
   color: var(--muted);
 }
 
+.status-version-button {
+  border: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-version-button:hover,
+.status-version-button:focus-visible {
+  color: var(--accent);
+  background: var(--panel-soft);
+  outline: none;
+}
+
 .status-help-btn {
   width: 24px;
   height: 24px;
@@ -117,6 +133,68 @@
   justify-content: flex-end;
   gap: 10px;
   margin-top: 14px;
+}
+
+.update-modal-box {
+  width: min(620px, 92vw);
+}
+
+.update-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.update-modal-head h2,
+.update-modal-head p {
+  margin: 0;
+}
+
+.update-modal-head p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.update-modal-head p[data-status="error"] {
+  color: var(--danger);
+}
+
+.update-version-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.update-version-grid div {
+  display: grid;
+  gap: 6px;
+}
+
+.update-version-grid span {
+  color: var(--muted);
+}
+
+.update-version-grid strong {
+  overflow-wrap: anywhere;
+}
+
+.update-notes {
+  min-height: 54px;
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .dir-modal-box {
@@ -556,12 +634,47 @@
     flex: 1 1 100%;
     min-width: 0;
   }
+
+  #page-active .page-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 32%);
+    gap: 10px;
+  }
+
+  #page-active th:first-child,
+  #page-active td:first-child {
+    min-width: 160px;
+  }
+
+  #page-active th:nth-child(4),
+  #page-active td:nth-child(4),
+  #page-active th:nth-child(5),
+  #page-active td:nth-child(5) {
+    display: none;
+  }
 }
 
 @media (max-width: 980px) {
-  body { overflow: auto; height: auto; min-height: 100vh; }
+  body { overflow: hidden; height: 100dvh; min-height: 0; }
   .top-bar { flex-wrap: wrap; height: auto; }
-  .app-body, .page-grid { display: block; }
+  .app-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .page-grid { display: block; }
+  #page-failed .failed-right-column {
+    margin-top: 14px;
+    overflow: visible;
+  }
+  #page-failed .failed-detail-card,
+  #page-failed .failed-solutions-card {
+    flex: none;
+    height: auto;
+    overflow: visible;
+  }
+  #page-failed .failed-detail-card { min-height: 180px; }
+  #page-failed .failed-solutions-card { min-height: 120px; }
   .sidebar {
     width: auto;
     flex: 0 0 auto;
@@ -587,14 +700,23 @@
     height: 28px;
     margin: 6px 4px;
   }
-  .right-column {
-    display: block;
+  .right-column { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  .nav-item {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: max-content;
+    scroll-snap-align: start;
   }
-  .nav-item { min-width: 130px; scroll-snap-align: start; }
-  .page-stack { min-height: 720px; }
+  .nav-item b {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .page-stack { min-height: 0; overflow: auto; }
+  .page { height: 100%; overflow: auto; }
   .settings-grid, .tool-grid { grid-template-columns: 1fr; }
   .detail-panel { margin-top: 14px; }
   .status-bar {
+    flex: 0 0 auto;
     overflow-x: auto;
     justify-content: flex-start;
   }

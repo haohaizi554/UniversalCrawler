@@ -171,7 +171,7 @@ tr.selected:hover td {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--completed-card-radius);
   background: var(--panel);
   padding: 10px 12px 12px;
   overflow: hidden;
@@ -201,7 +201,7 @@ tr.selected:hover td {
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--completed-card-radius);
   background: var(--panel);
   padding: 14px;
 }
@@ -222,8 +222,8 @@ tr.selected:hover td {
 
 #page-failed th:nth-child(2), #page-failed td:nth-child(2) { width: 112px; }
 #page-failed th:nth-child(3), #page-failed td:nth-child(3) { width: 150px; }
-#page-failed th:nth-child(4), #page-failed td:nth-child(4) { width: 82px; }
-#page-failed th:nth-child(5), #page-failed td:nth-child(5) { width: 72px; }
+#page-failed th:nth-child(4), #page-failed td:nth-child(4) { width: 102px; }
+#page-failed th:nth-child(5), #page-failed td:nth-child(5) { width: 84px; }
 #page-failed td:nth-child(3) { text-align: center; }
 
 #page-failed tr.selected td {
@@ -242,7 +242,7 @@ tr.selected:hover td {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--failed-card-radius);
   background: var(--panel);
   padding: 10px 12px 12px;
   overflow: hidden;
@@ -268,7 +268,7 @@ tr.selected:hover td {
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--failed-card-radius);
   background: var(--panel);
   padding: 14px;
 }

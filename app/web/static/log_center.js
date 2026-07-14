@@ -553,6 +553,21 @@
     return { sequence, itemId: "", language: getLanguage(), item: null, detailJson: "{}", detailDisplayText: "{}", fullJson: "{}", stack: "", filename: "log_detail_current.json" };
   }
 
+  function unavailableLogDetailResult(item, sequence = state.detailSequence) {
+    return {
+      sequence,
+      itemId: logItemId(item),
+      language: getLanguage(),
+      item,
+      unavailable: true,
+      detailJson: "{}",
+      detailDisplayText: "{}",
+      fullJson: "{}",
+      stack: "",
+      filename: "log_detail_current.json",
+    };
+  }
+
   function ensureLogDetailWorker() {
     if (!state.detailWorkerAvailable || state.disposed) return null;
     if (state.detailWorker) return state.detailWorker;
@@ -602,7 +617,7 @@
     state.detail = { signature, result: null, pending: true };
     const worker = ensureLogDetailWorker();
     if (!worker) {
-      state.detail = { signature, result: emptyLogDetailResult(sequence), pending: false };
+      state.detail = { signature, result: unavailableLogDetailResult(item, sequence), pending: false };
       return;
     }
     worker.postMessage(buildLogDetailRequest(item, sequence));
@@ -634,10 +649,24 @@
     `;
   }
 
+  function renderUnavailableLogDetail(item) {
+    const root = byId("logDetail");
+    if (!root) return;
+    root.innerHTML = `
+      <div class="log-inspector-header"><h2>${esc(t("\u65e5\u5fd7\u8be6\u60c5"))}</h2><div class="log-inspector-actions"><button class="btn" type="button" disabled>${esc(t("\u590d\u5236"))}</button><button class="btn" type="button" disabled>${esc(t("\u5bfc\u51fa"))}</button></div></div>
+      <div class="log-detail-card">${logDetailSummaryHtml(item)}</div>
+      <div class="log-extra-card log-detail-unavailable" role="status"><p>${esc(t("\u65e5\u5fd7\u8be6\u60c5\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u8bd5"))}</p><button id="logDetailRetry" class="btn" type="button" onclick="window.UcpLogCenter.retryDetail()">${esc(t("\u91cd\u8bd5"))}</button></div>
+    `;
+  }
+
   function renderLogDetailResult(result) {
     const item = result && result.item ? result.item : null;
     if (!item) {
       renderEmptyLogDetail();
+      return;
+    }
+    if (result.unavailable) {
+      renderUnavailableLogDetail(item);
       return;
     }
     const stack = String(result.stack || "").trim();
@@ -674,11 +703,21 @@
     if (typeof dependencies.writeClipboard === "function") dependencies.writeClipboard("", message, detail);
   }
 
+  function retryDetail() {
+    if (state.disposed) return;
+    closeLogDetailWorker();
+    state.detailWorkerAvailable = typeof Worker !== "undefined";
+    state.detailWorkerRetryAttempted = false;
+    state.detailSequence += 1;
+    state.detail = { signature: "", result: null, pending: false };
+    renderLogDetail();
+  }
+
   function copyDetail() {
     const item = currentLogDetailItem();
     if (!item) return reportMessage(t("\u6682\u65e0\u65e5\u5fd7"));
     const result = currentLogDetailResult();
-    if (!result) {
+    if (!result || result.unavailable) {
       submitLogDetail(item);
       return reportMessage(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
     }
@@ -689,7 +728,7 @@
     const item = currentLogDetailItem();
     if (!item) return reportMessage(t("\u6682\u65e0\u65e5\u5fd7"));
     const result = currentLogDetailResult();
-    if (!result) {
+    if (!result || result.unavailable) {
       submitLogDetail(item);
       return reportMessage(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
     }
@@ -700,7 +739,7 @@
     const item = currentLogDetailItem();
     if (!item) return reportMessage(t("\u6682\u65e0\u65e5\u5fd7"));
     const result = currentLogDetailResult();
-    if (!result) {
+    if (!result || result.unavailable) {
       submitLogDetail(item);
       return reportMessage(t("\u8be6\u7ec6\u4fe1\u606f\u6b63\u5728\u51c6\u5907"));
     }
@@ -820,6 +859,7 @@
     copyDetail,
     copyJson,
     exportDetail,
+    retryDetail,
     runOperation,
     dispose,
   });

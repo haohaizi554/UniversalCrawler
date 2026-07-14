@@ -300,6 +300,12 @@ def main(argv: list[str] | None = None) -> int:
                 controller.shutdown()
 
     app = create_app(lifespan=lifespan, access_token=access_token)
+    original_args = list(argv) if argv is not None else list(sys.argv[1:])
+    app.state.web_restart_argv = (
+        [sys.executable, *original_args]
+        if getattr(sys, "frozen", False)
+        else [sys.executable, "-m", "entry.web_entry", *original_args]
+    )
 
     display_url = build_web_url(args.host, args.port, url_scheme)
     url = build_access_url(display_url, access_token)
@@ -339,6 +345,12 @@ def main(argv: list[str] | None = None) -> int:
             ssl_keyfile=args.ssl_keyfile,
         )
     )
+
+    def _request_web_shutdown() -> None:
+        shutdown_event.set()
+        server.should_exit = True
+
+    app.state.web_shutdown_callback = _request_web_shutdown
 
     # 抑制 asyncio ProactorEventLoop 在 Windows 上的连接重置噪音
     # 根因：远程服务器关闭连接后，asyncio 回调中调用 socket.shutdown()，

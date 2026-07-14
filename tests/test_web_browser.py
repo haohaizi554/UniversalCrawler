@@ -6,9 +6,11 @@ import unittest
 from pathlib import Path
 
 from tests.web_browser_cases.dialogs_and_keyboard import DialogsAndKeyboardCases as _DialogsAndKeyboardCases
+from tests.web_browser_cases.frontend_runtime import FrontendRuntimeCases as _FrontendRuntimeCases
 from tests.web_browser_cases.localization_and_logs import LocalizationCases as _LocalizationCases
 from tests.web_browser_cases.log_center import LogCenterCases as _LogCenterCases
 from tests.web_browser_cases.playback import PlaybackCases as _PlaybackCases
+from tests.web_browser_cases.responsive_layout import ResponsiveLayoutCases as _ResponsiveLayoutCases
 from tests.web_browser_cases.runtime_and_lists import RuntimeAndListCases as _RuntimeAndListCases
 from tests.web_browser_cases.settings import SettingsCases as _SettingsCases
 from tests.web_browser_cases.smoke_and_assets import SmokeAndAssetsCases as _SmokeAndAssetsCases
@@ -195,7 +197,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/custom_select.js?v=20260707-placement-stable', content)
         self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
-        self.assertIn('/static/app.js?v=20260710-app-split', content)
+        self.assertIn('/static/app.js?v=20260714-state-sync', content)
 
     def test_split_frontend_scripts_share_cache_version_and_load_order(self):
         import re
@@ -219,7 +221,7 @@ class StaticAssetsTests(unittest.TestCase):
         split_scripts = [(name, version) for name, version in scripts if name in expected_names]
 
         self.assertEqual([name for name, _version in split_scripts], expected_names)
-        self.assertEqual({version for _name, version in split_scripts}, {"20260710-app-split"})
+        self.assertEqual({version for _name, version in split_scripts}, {"20260714-state-sync"})
 
     def test_video_end_autoplays_next_preview(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -566,6 +568,23 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('data.status && data.status !== "ok"', result_block)
         self.assertIn("fetchFrontendState();", result_block)
 
+    def test_frontend_actions_correlate_results_and_ignore_stale_socket_replies(self):
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        runtime = (static_dir / "frontend_runtime.js").read_text(encoding="utf-8")
+        result_block = runtime.split('case "frontend_action_result":', 1)[1].split(
+            "default:",
+            1,
+        )[0]
+
+        self.assertIn("pendingActionRequests", runtime)
+        self.assertIn("request_id: requestId", runtime)
+        self.assertIn("actionClientId", runtime)
+        self.assertIn("`${actionClientId}:${generation}:${sequence}`", runtime)
+        self.assertIn("!pendingActionRequests.has(requestId)", result_block)
+        self.assertIn("pendingActionRequests.delete(requestId)", result_block)
+        self.assertLess(result_block.index("applyFrontendDelta"), result_block.index("!pendingActionRequests.has(requestId)"))
+        self.assertIn("fetchFrontendDelta();", result_block)
+
     def test_interaction_map_does_not_keep_stale_fixed_bug_claims(self):
         from pathlib import Path
 
@@ -898,7 +917,9 @@ class WebUIBrowserTests(
     _DialogsAndKeyboardCases,
     _PlaybackCases,
     _SettingsCases,
+    _ResponsiveLayoutCases,
     _RuntimeAndListCases,
+    _FrontendRuntimeCases,
     _WebUIBrowserTestBase,
 ):
     """??????? Chromium ???????? WebUI ??????"""

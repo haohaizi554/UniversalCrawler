@@ -319,6 +319,8 @@ class SettingsCases:
                 hasCluster: Boolean(cluster),
                 selectWidth: selectRect ? selectRect.width : 0,
                 actionWidth: actionRect ? actionRect.width : 0,
+                actionClientWidth: action?.clientWidth || 0,
+                actionScrollWidth: action?.scrollWidth || 0,
                 actionText: action?.textContent?.trim() || '',
                 actionTitle: action?.getAttribute('title') || '',
                 actionAria: action?.getAttribute('aria-label') || ''
@@ -329,7 +331,8 @@ class SettingsCases:
 
         self.assertTrue(result["hasCluster"])
         self.assertGreaterEqual(result["selectWidth"], 140)
-        self.assertLessEqual(result["actionWidth"], 104)
+        self.assertLessEqual(result["actionWidth"], 180)
+        self.assertLessEqual(result["actionScrollWidth"], result["actionClientWidth"] + 1)
         self.assertIn("绑定默认打开方式", result["actionText"])
         self.assertIn("默认打开方式", result["actionTitle"])
         self.assertEqual(result["actionTitle"], result["actionAria"])
@@ -553,6 +556,35 @@ class SettingsCases:
         self.assertEqual(result["speed_limit_kb"]["label"], "下载速度限制（KB/s）")
         self.assertIn("限制最大下载速度", result["speed_limit_kb"]["description"])
 
+    def test_11kaa_basic_setting_descriptions_follow_english_language(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              applyAppearance({
+                theme: 'dark',
+                accent: 'green',
+                scale: '100%',
+                font_size: 'medium',
+                language: 'en-US'
+              });
+              window.UcpSettingsController.switchGroup('\\u57fa\\u7840\\u8bbe\\u7f6e');
+              switchPage('settings');
+              window.UcpSettingsController.render(true);
+              const control = document.querySelector('#page-settings [data-setting="default_open_mode"]');
+              const row = control?.closest('.setting-row');
+              return {
+                label: row?.querySelector('.setting-label strong')?.textContent?.trim() || '',
+                description: row?.querySelector('.setting-label em')?.textContent?.trim() || ''
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["label"], "Completed-download open mode")
+        self.assertEqual(result["description"], "Used when auto-open is enabled")
+
     def test_11kb_log_setting_labels_match_gui(self):
         self._goto_ready()
 
@@ -644,3 +676,55 @@ class SettingsCases:
         self.assertIn("结束后播放下一项", result["autoplay_next"]["description"])
         self.assertEqual(result["manual_image_switch"]["label"], "图片只手动切换")
         self.assertIn("关闭图片自动轮播", result["manual_image_switch"]["description"])
+
+    def test_11n_disabling_remember_position_clears_web_playback_cache(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            r"""
+            () => {
+              const actions = [];
+              const state = {
+                settings_snapshot: {
+                  '播放设置': { remember_position: true }
+                },
+                settings_contract: { group_order: ['播放设置'] }
+              };
+              localStorage.setItem('ucp_playback_position_first', '12');
+              localStorage.setItem('ucp_playback_position_second', '34');
+              localStorage.setItem('unrelated_setting', 'keep');
+              window.UcpSettingsController.configure({
+                getState: () => state,
+                t: value => String(value || ''),
+                optionLabel: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                sendWS: (action, payload) => actions.push({ action, payload }),
+                patchSetting: (group, key, value) => { state.settings_snapshot[group][key] = value; },
+                patchPlatformSetting: () => {},
+                syncAppearance: () => {},
+                enhanceSelects: () => {}
+              });
+
+              window.UcpSettingsController.update('playback', 'remember_position', false);
+
+              return {
+                actions,
+                playbackKeys: Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
+                  .filter(key => key && key.startsWith('ucp_playback_position_')),
+                unrelated: localStorage.getItem('unrelated_setting')
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["playbackKeys"], [])
+        self.assertEqual(result["unrelated"], "keep")
+        self.assertEqual(
+            result["actions"],
+            [
+                {
+                    "action": "update_setting",
+                    "payload": {"section": "playback", "key": "remember_position", "value": False},
+                }
+            ],
+        )

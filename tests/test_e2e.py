@@ -102,14 +102,14 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_search_returns_expected_structure(self):
         """成功调用应返回 dict 包含 status 和 items。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         fake_result = {
             "status": "ok",
             "items": [{"id": "v1", "title": "测试", "url": "http://x", "source": "douyin"}],
             "total": 1,
         }
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = fake_result
             result = sdk.search("douyin", "测试")
         self.assertEqual(result["status"], "ok")
@@ -118,10 +118,10 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_search_propagates_runner_error(self):
         """runner 返回 error 时，SDK 透传。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         fake_result = {"status": "error", "error": "网络超时"}
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = fake_result
             result = sdk.search("douyin", "kw")
         self.assertEqual(result["status"], "error")
@@ -129,9 +129,9 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_search_calls_runner_with_correct_args(self):
         """SDK 传给 runner 的参数必须正确。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir="/tmp/save")
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             sdk.search("douyin", "kw", max_items=50, download=False)
         # 验证 runner 配置
@@ -144,9 +144,9 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_sdk_merges_platform_defaults(self):
         """SDK 应合并平台默认配置。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             sdk.search("douyin", "kw", max_items=99)
         call_config = mock_runner.call_args.kwargs["config"]
@@ -155,9 +155,9 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_sdk_missav_proxy_conversion(self):
         """MissAV 的 proxy 字段应被 build_missav_proxy_url 转换。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             sdk.search("missav", "ABC", proxy="http://127.0.0.1:7890")
         call_config = mock_runner.call_args.kwargs["config"]
@@ -166,10 +166,10 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_search_with_preloaded_pipe_selection(self):
         """合集场景：preload_choices 必须传给 PipeSelection。"""
-        from cli.sdk import UcrawlSDK
-        from cli.selection import PipeSelection
+        from shared.sdk_runtime import UcrawlSDK
+        from shared.pipe_selection import PipeSelection
         sdk = UcrawlSDK(save_dir=".")
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             sdk.search("bilibili", "BVxxx",
                        selection=PipeSelection(preloaded_choices=[[0, 1], [2]]))
@@ -179,10 +179,10 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_search_with_rule_selection_string(self):
         """'0,2,5' 字符串应被解析为 RuleSelection。"""
-        from cli.sdk import UcrawlSDK
-        from cli.selection import RuleSelection
+        from shared.sdk_runtime import UcrawlSDK
+        from shared.selection_runtime import RuleSelection
         sdk = UcrawlSDK(save_dir=".")
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             sdk.search("douyin", "kw", selection="0,2,5")
         call_strategy = mock_runner.call_args.kwargs["selection_strategy"]
@@ -191,9 +191,9 @@ class SDKEndToEndTests(unittest.TestCase):
 
     def test_search_with_dict_selection(self):
         """dict 格式 selection 应被正确解析。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             sdk.search("douyin", "kw", selection={"strategy": "first"})
         call_strategy = mock_runner.call_args.kwargs["selection_strategy"]
@@ -294,6 +294,7 @@ class RESTAPIEndToEndTests(unittest.TestCase):
         """配置生命周期：GET → PUT → GET。"""
         # GET 初始配置
         r1 = self.client.get("/api/config").json()
+        self.assertIsInstance(r1, dict)
         # PUT 更新
         r2 = self.client.put("/api/config", json={"douyin": {"max_items": 77}})
         self.assertEqual(r2.json()["status"], "ok")
@@ -338,33 +339,33 @@ class ConfigPersistenceTests(unittest.TestCase):
     """配置文件持久化测试。"""
 
     def test_get_default_save_dir(self):
-        from cli.defaults import get_default_save_dir
+        from shared.runtime_options import get_default_save_dir
         save_dir = get_default_save_dir()
         self.assertIsInstance(save_dir, str)
         self.assertGreater(len(save_dir), 0)
 
     def test_get_platform_defaults_douyin(self):
-        from cli.defaults import get_platform_defaults
+        from shared.runtime_options import get_platform_defaults
         defaults = get_platform_defaults("douyin")
         self.assertIsInstance(defaults, dict)
 
     def test_get_platform_defaults_bilibili(self):
-        from cli.defaults import get_platform_defaults
+        from shared.runtime_options import get_platform_defaults
         defaults = get_platform_defaults("bilibili")
         self.assertIsInstance(defaults, dict)
 
     def test_get_platform_defaults_kuaishou(self):
-        from cli.defaults import get_platform_defaults
+        from shared.runtime_options import get_platform_defaults
         defaults = get_platform_defaults("kuaishou")
         self.assertIsInstance(defaults, dict)
 
     def test_get_platform_defaults_missav(self):
-        from cli.defaults import get_platform_defaults
+        from shared.runtime_options import get_platform_defaults
         defaults = get_platform_defaults("missav")
         self.assertIsInstance(defaults, dict)
 
     def test_get_platform_defaults_unknown(self):
-        from cli.defaults import get_platform_defaults
+        from shared.runtime_options import get_platform_defaults
         defaults = get_platform_defaults("unknown_xyz_999")
         # 未知平台应返回空 dict 或抛出 ValueError
         # 取决于具体实现
@@ -379,7 +380,7 @@ class SDKResourceManagementTests(unittest.TestCase):
 
     def test_sdk_context_manager(self):
         """用 with 语句管理 SDK。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         with UcrawlSDK(save_dir=".") as sdk:
             self.assertIsNotNone(sdk)
         # 退出 with 块后 close 应被调用
@@ -388,7 +389,7 @@ class SDKResourceManagementTests(unittest.TestCase):
 
     def test_sdk_close_is_idempotent(self):
         """close 多次调用不应抛异常。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         sdk.close()
         sdk.close()  # 第二次不应抛
@@ -396,15 +397,15 @@ class SDKResourceManagementTests(unittest.TestCase):
 
     def test_sdk_functional_search(self):
         """函数式 search API。"""
-        from cli.sdk import search
-        with patch("cli.sdk.CLIRunner") as mock_runner:
+        from shared.sdk_runtime import search
+        with patch("shared.sdk_runtime.CLIRunner") as mock_runner:
             mock_runner.return_value.run.return_value = {"status": "ok", "items": []}
             result = search("douyin", "kw")
         self.assertEqual(result["status"], "ok")
 
     def test_sdk_functional_list_platforms(self):
         """函数式 list_platforms API。"""
-        from cli.sdk import list_platforms
+        from shared.sdk_runtime import list_platforms
         result = list_platforms()
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0)
@@ -418,7 +419,7 @@ class SDKDownloadEndToEndTests(unittest.TestCase):
 
     def test_download_returns_ok_with_local_path(self):
         """下载流程能完成（不会抛异常到 SDK 层）。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         # 模拟内部实现：补丁 DownloadManager 类
         with patch("app.core.download_manager.DownloadManager") as mock_dm:
@@ -429,7 +430,7 @@ class SDKDownloadEndToEndTests(unittest.TestCase):
 
     def test_download_validation_error(self):
         """参数校验失败应抛异常。"""
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         sdk = UcrawlSDK(save_dir=".")
         with self.assertRaises((TypeError, ValueError)):
             sdk.download_video(url="", source="douyin")
@@ -443,8 +444,8 @@ class CrossEntryConsistencyTests(unittest.TestCase):
 
     def test_all_three_layers_list_same_platforms(self):
         """CLI/SDK/API 返回的平台列表应完全一致。"""
-        from cli.sdk import UcrawlSDK
-        from cli.defaults import get_platform_defaults
+        from shared.sdk_runtime import UcrawlSDK
+        from shared.runtime_options import get_platform_defaults
         sdk = UcrawlSDK(save_dir=".")
         sdk_platforms = {p["id"] for p in sdk.list_platforms()}
         # CLI platforms 命令（验证 get_platform_defaults 不抛）
@@ -456,7 +457,7 @@ class CrossEntryConsistencyTests(unittest.TestCase):
 
     @unittest.skipUnless(_has_fastapi(), "FastAPI not available")
     def test_api_platforms_in_sdk_platforms(self):
-        from cli.sdk import UcrawlSDK
+        from shared.sdk_runtime import UcrawlSDK
         from fastapi.testclient import TestClient
         from app.web.server import create_app
         sdk = UcrawlSDK(save_dir=".")

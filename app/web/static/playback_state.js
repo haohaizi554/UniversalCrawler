@@ -73,6 +73,16 @@
     } catch (_error) {}
   }
 
+  function clearPlaybackPositions(storage) {
+    if (!storage) return;
+    try {
+      for (let index = storage.length - 1; index >= 0; index -= 1) {
+        const key = storage.key(index);
+        if (key && key.startsWith(PLAYBACK_POSITION_PREFIX)) storage.removeItem(key);
+      }
+    } catch (_error) {}
+  }
+
   function isImageItem(item) {
     const type = String(item && item.content_type || "").toLowerCase();
     const path = String(item && (item.local_path || item.filename || item.title) || "").toLowerCase();
@@ -117,6 +127,7 @@
     legacyPlaybackPositionKey,
     removePlaybackPosition,
     cleanupPlaybackPositions,
+    clearPlaybackPositions,
     isImageItem,
     hasDisplayDuration,
     isRealResolution,

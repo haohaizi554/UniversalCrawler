@@ -76,8 +76,11 @@ def test_resolve_existing_web_url_only_accepts_matching_ucrawl_instance():
         def read(self, *_args):
             return json.dumps(self._payload).encode("utf-8")
 
-    accepted = lambda *_args, **_kwargs: _Response({"status": "ok", "version": "3.6.17"})
-    rejected = lambda *_args, **_kwargs: _Response({"status": "ok", "version": "3.6.16"})
+    def accepted(*_args, **_kwargs):
+        return _Response({"status": "ok", "version": "3.6.17"})
+
+    def rejected(*_args, **_kwargs):
+        return _Response({"status": "ok", "version": "3.6.16"})
 
     assert resolve_existing_web_url(
         "127.0.0.1",

@@ -8,24 +8,27 @@ from typing import Any, Callable, Coroutine
 
 from app.models.video_item import VideoItem
 from app.debug_logger import debug_logger
-from shared.runtime_options import validate_direct_download_url
+from shared.interactive_selection import InteractiveTTYSelection
+from shared.pipe_selection import PipeSelection
+from shared.runtime_options import (
+    build_missav_proxy_url,
+    get_platform_defaults,
+    infer_content_type,
+    infer_content_type_from_url,
+    merge_convenience_params,
+    validate_config_types,
+    validate_direct_download_url,
+)
+from shared.sdk_runtime import UcrawlSDK
+from shared.selection_runtime import RuleSelection
 
 BroadcastFn = Callable[[str, Any], Coroutine[Any, Any, Any]]
 
-def get_platform_defaults(source: str) -> dict:
-    from cli.defaults import get_platform_defaults as _get_platform_defaults
-
-    return _get_platform_defaults(source)
-
 def build_sdk(save_dir: str):
-    from cli.sdk import UcrawlSDK
-
     return UcrawlSDK(save_dir=save_dir)
 
 def build_selection_strategy(selection_dict: dict | None):
     """从 Web 端 selection 参数构建 SelectionStrategy 实例。"""
-    from cli.selection import InteractiveTTYSelection, PipeSelection, RuleSelection
-
     if not selection_dict:
         return RuleSelection(all_items=True)
 
@@ -66,19 +69,11 @@ def build_selection_strategy(selection_dict: dict | None):
 
 def merge_default_config(source: str, user_config: dict) -> dict:
     """合并平台默认配置与用户配置。"""
-    from cli.defaults import build_missav_proxy_url
-
     merged = get_platform_defaults(source)
     merged.update({k: v for k, v in user_config.items() if v is not None})
     if source == "missav" and "proxy" in merged and merged["proxy"] is not None:
         merged["proxy"] = build_missav_proxy_url(merged["proxy"])
     return merged
-
-def validate_config_types(user_config: dict) -> str | None:
-    """委托 CLI defaults 统一校验 config 类型。"""
-    from cli.defaults import validate_config_types as shared_validate
-
-    return shared_validate(user_config)
 
 class WebWorkflowService:
     """统一 WebUI REST / WS 工作流，减少路由层重复。"""
@@ -160,8 +155,6 @@ class WebWorkflowService:
             self.controller._pending_selection_strategy = None
 
         merged_config = merge_default_config(source, user_config)
-        from cli.defaults import merge_convenience_params
-
         try:
             merge_convenience_params(payload, merged_config, source)
         except ValueError as exc:
@@ -207,8 +200,6 @@ class WebWorkflowService:
         item = VideoItem(url=url, title=title, source=source, status="⏳ 等待中", progress=0)
         prefix = {"douyin": "dy", "bilibili": "bilibili", "kuaishou": "ks", "missav": "missav", "xiaohongshu": "xhs"}.get(source, source)
         item.meta["trace_id"] = debug_logger.new_trace_id(f"{prefix}_dl")
-        from cli.defaults import infer_content_type_from_url
-
         pre_ct = infer_content_type_from_url(url)
         if pre_ct:
             item.meta["content_type"] = pre_ct
@@ -375,8 +366,6 @@ class WebWorkflowService:
             pending_item.meta = {}
         content_type = result.get("content_type", "")
         if not content_type and local_path:
-            from cli.defaults import infer_content_type
-
             content_type = infer_content_type(local_path)
             result["content_type"] = content_type
         if content_type:
@@ -442,8 +431,6 @@ class WebWorkflowService:
             return await self._error("timeout 必须大于 0", log_error=log_error)
 
         effective_save_dir = save_dir or self.controller.current_save_dir
-        from cli.defaults import merge_convenience_params
-
         merged_config = get_platform_defaults(source)
         merged_config.update({k: v for k, v in user_config.items() if v is not None})
         try:

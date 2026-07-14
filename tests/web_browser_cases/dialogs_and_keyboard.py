@@ -522,8 +522,97 @@ class DialogsAndKeyboardCases:
             });
         """)
         # 焦点不在输入框
+        self._page.wait_for_selector(
+            "#page-queue.active #queueBody tr[data-id='x1'].selected",
+            state="visible",
+            timeout=5000,
+        )
         self._page.evaluate("document.body.focus()")
         self._page.keyboard.press("Delete")
         self._page.wait_for_function("() => window._deletedIds?.length === 1", timeout=5000)
         deleted = self._page.evaluate("window._deletedIds")
         self.assertEqual(deleted, ["x1"])
+
+    def test_15b_hidden_page_selection_cannot_trigger_delete(self):
+        self._goto_ready()
+        self._page.evaluate(
+            """
+            () => {
+              window.__isolateFrontendStateForTest();
+              window._deletedIds = [];
+              frontendState.queue_items = [{id: 'hidden-queue', title: 'Hidden queue item'}];
+              window.UcpListPages.renderQueue();
+              selectedVideoId = 'hidden-queue';
+              updateSelection(null, 'hidden-queue');
+              window.UcpPlaybackController.configure({
+                ...playbackControllerDependencies(),
+                frontendAction: (action, payload) => {
+                  if (action === 'delete_item') window._deletedIds.push(payload.id);
+                }
+              });
+              switchPage('logs');
+              document.body.focus();
+            }
+            """
+        )
+
+        self._page.keyboard.press("Delete")
+
+        deleted = self._page.evaluate("window._deletedIds")
+        self.assertEqual(deleted, [])
+
+    def test_15c_arrow_navigation_is_owned_by_the_visible_task_page(self):
+        self._goto_ready()
+        self._page.evaluate(
+            """
+            () => {
+              window.__isolateFrontendStateForTest();
+              frontendState.queue_items = [
+                {id: 'queue-a', title: 'Queue A'},
+                {id: 'queue-b', title: 'Queue B'},
+              ];
+              frontendState.failed_items = [
+                {id: 'failed-a', title: 'Failed A', status: 'failed'},
+                {id: 'failed-b', title: 'Failed B', status: 'failed'},
+              ];
+              selectedVideoId = 'queue-a';
+              selected.failed = 'failed-a';
+              window.UcpListPages.renderQueue();
+              window.UcpListPages.renderFailed();
+              switchPage('failed');
+              document.body.focus();
+            }
+            """
+        )
+        self._page.wait_for_function(
+            "() => document.querySelectorAll('#failedBody tr[data-id]').length === 2",
+            timeout=5000,
+        )
+        self._page.evaluate(
+            """
+            () => {
+              window.Worker = class DeferredListWorker {
+                postMessage() {}
+                terminate() {}
+              };
+              configureListPagesHelpers();
+              selected.failed = 'failed-a';
+            }
+            """
+        )
+
+        self._page.keyboard.press("ArrowDown")
+        self._page.wait_for_function("() => selected.failed === 'failed-b'", timeout=5000)
+
+        result = self._page.evaluate(
+            """
+            () => ({
+              failedSelection: selected.failed,
+              queueSelection: selectedVideoId,
+              selectedRow: document.querySelector('#failedBody tr.selected')?.dataset.id || '',
+            })
+            """
+        )
+        self.assertEqual(result["failedSelection"], "failed-b")
+        self.assertEqual(result["queueSelection"], "queue-a")
+        self.assertEqual(result["selectedRow"], "failed-b")

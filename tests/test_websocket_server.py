@@ -62,6 +62,10 @@ class WebsocketServerTests(unittest.TestCase):
             patch("app.web.server.asyncio.create_task", lambda coro: coro.close()),
         ):
             client = TestClient(create_app())
+        # WebSocket 与 HTTP 共用同一会话令牌。先走公开 ping，让中间件
+        # 建立 session cookie；测试不得依赖 localhost 鉴权旁路。
+        response = client.get("/api/ping")
+        self.assertEqual(response.status_code, 200)
         return client
 
     def test_websocket_sends_init_state_platforms_and_config(self):

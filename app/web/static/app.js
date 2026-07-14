@@ -1,6 +1,7 @@
-let frontendState = buildMockState();
+let frontendState = buildInitialState();
 let currentPage = "queue";
 let platforms = [];
+let platformLoadDegraded = false;
 let selected = {
   active: "",
   completed: "",
@@ -10,6 +11,33 @@ let selected = {
 let systemThemeListenerRegistered = false;
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
+let frontendLoadState = "loading";
+
+function buildInitialState() {
+  return {
+    version: 0,
+    pages: [],
+    queue_items: [],
+    active_downloads: [],
+    completed_items: [],
+    failed_items: [],
+    log_items: [],
+    settings_snapshot: {},
+    settings_contract: {},
+    download_options: {},
+    toolbox_items: [],
+    toolbox_recent_items: [],
+    app_status: {
+      running_state: "加载中",
+      download_speed: "0 B/s",
+      queue_count: 0,
+      active_count: 0,
+      completed_count: 0,
+      failed_count: 0,
+      version: "v3.6.17",
+    },
+  };
+}
 
 function pad2(value) {
   return String(value).padStart(2, "0");
@@ -263,11 +291,14 @@ function configureI18nHelpers() {
 function configureLogI18nHelpers() {
   const service = logI18nService();
   if (!service) return null;
-  return service.configure({ currentLanguage, translateUiText, canonicalUiText });
+  return service.configure({ currentLanguage, translateUiText, canonicalUiText, getState: () => frontendState });
 }
 
 function replaceFrontendState(nextState) {
-  frontendState = nextState && typeof nextState === "object" ? nextState : buildMockState();
+  frontendState = nextState && typeof nextState === "object" ? nextState : buildInitialState();
+  refreshDegradedPlatformsFromSnapshot();
+  window.__ucrawlFrontendStateLoaded = true;
+  setFrontendLoadState("ready");
 }
 
 function removeDeletedSelectionState(ids) {
@@ -300,8 +331,7 @@ function patchRuntimeSection(section, value) {
     return [];
   }
   if (section === "platforms") {
-    platforms = Array.isArray(value) ? value : [];
-    renderPlatforms();
+    acceptPlatformList(value, { degraded: false, persist: true });
     return [];
   }
   if (section === "config") {
@@ -341,8 +371,10 @@ function runtimeDependencies() {
     renderAll,
     onConnected: () => {},
     onSettled: result => {
-      window.__ucrawlFrontendStateLoaded = !!(result && result.loaded);
+      const loaded = !!(result && result.loaded) || window.__ucrawlFrontendStateLoaded;
+      window.__ucrawlFrontendStateLoaded = loaded;
       window.__ucrawlFrontendStateSettled = true;
+      setFrontendLoadState(loaded ? "ready" : "error", result && result.error);
     },
     appendUiLog,
   };
@@ -353,7 +385,12 @@ let featureModulesConfigured = false;
 function configureFeatureModules() {
   if (featureModulesConfigured) return;
   configureI18nHelpers();
-  window.UcpLogI18n.configure({ currentLanguage, translateUiText, canonicalUiText });
+  window.UcpLogI18n.configure({
+    currentLanguage,
+    translateUiText,
+    canonicalUiText,
+    getState: () => frontendState,
+  });
   window.UcpLogCenter.configure(logCenterDependencies());
   window.UcpListPages.configure(listPageDependencies());
   window.UcpSettingsController.configure(settingsControllerDependencies());
@@ -609,6 +646,7 @@ document.addEventListener("DOMContentLoaded", () => {
   installDetailResizeHandlers();
   restoreQueueControls();
   loadUiTextCatalogs();
+  setFrontendLoadState("loading");
   renderAll();
   loadPlatforms();
   frontendRuntimeService().start();
@@ -620,6 +658,36 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.key === "Enter") startCrawl();
   });
 });
+
+function setFrontendLoadState(state, detail = "") {
+  frontendLoadState = ["loading", "ready", "error"].includes(state) ? state : "error";
+  const banner = byId("frontendStateBanner");
+  const message = byId("frontendStateMessage");
+  const retry = byId("frontendStateRetry");
+  const panel = byId("rightPanel");
+  if (banner) {
+    banner.dataset.state = frontendLoadState;
+    banner.hidden = frontendLoadState === "ready";
+  }
+  if (message) {
+    const label = frontendLoadState === "error" ? t("加载状态失败") : t("正在加载应用状态...");
+    message.textContent = detail && frontendLoadState === "error" ? `${label}: ${detail}` : label;
+  }
+  if (retry) {
+    retry.textContent = t("重试");
+    retry.hidden = frontendLoadState !== "error";
+  }
+  if (panel) panel.setAttribute("aria-busy", frontendLoadState === "loading" ? "true" : "false");
+  setCrawlUiState(crawlRunning);
+}
+
+function retryFrontendStateLoad() {
+  setFrontendLoadState("loading");
+  window.__ucrawlFrontendStateSettled = false;
+  return frontendRuntimeService().fetchState();
+}
+
+window.retryFrontendStateLoad = retryFrontendStateLoad;
 
 function buildMockState() {
   return {
@@ -712,17 +780,92 @@ function buildMockState() {
 }
 
 async function loadPlatforms() {
+  setPlatformLoadState("loading");
   try {
     const response = await fetch("/api/platforms", { cache: "no-store" });
-    platforms = await response.json();
-    renderPlatforms();
-  } catch (_error) {
-    platforms = [
-      { id: "douyin", name: "抖音", search_placeholder: "输入：主页链接、分享链接或合集链接..." },
-      { id: "bilibili", name: "Bilibili", search_placeholder: "\u8f93\u5165\uff1aBV\u53f7\u3001UP\u4e3bID\u3001\u5408\u96c6\u94fe\u63a5\u3001\u4e3b\u9875\u94fe\u63a5\u3001\u89c6\u9891\u94fe\u63a5\u3001\u5206\u4eab\u94fe\u63a5\u6216\u5173\u952e\u8bcd..." },
-    ];
-    renderPlatforms();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const rows = normalizePlatformList(await response.json());
+    if (!rows.length) throw new Error("empty platform list");
+    acceptPlatformList(rows, { degraded: false, persist: true });
+  } catch (error) {
+    const fallback = firstPlatformFallback();
+    acceptPlatformList(fallback, { degraded: true, persist: false });
+    appendUiLog("平台列表加载失败", error.message || error, "⚠️ ");
   }
+}
+
+const PLATFORM_CACHE_KEY = "webui_platforms_cache_v1";
+
+function normalizePlatformList(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.flatMap(item => {
+    if (!item || typeof item !== "object") return [];
+    const id = String(item.id || "").trim();
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [{ ...item, id, name: String(item.name || id) }];
+  });
+}
+
+function snapshotPlatformList() {
+  const rows = (frontendState.settings_snapshot || {})["平台设置"];
+  if (!Array.isArray(rows)) return [];
+  return normalizePlatformList(rows.map(row => ({
+    id: row.id,
+    name: row.name,
+    icon_file: (iconManifest.platforms || {})[String(row.id || "").toLowerCase()] || "platform_web.png",
+  })));
+}
+
+function cachedPlatformList() {
+  try {
+    return normalizePlatformList(JSON.parse(localStorage.getItem(PLATFORM_CACHE_KEY) || "[]"));
+  } catch (_error) {
+    localStorage.removeItem(PLATFORM_CACHE_KEY);
+    return [];
+  }
+}
+
+function firstPlatformFallback() {
+  const candidates = [normalizePlatformList(platforms), cachedPlatformList(), snapshotPlatformList()];
+  return candidates.find(rows => rows.length) || [];
+}
+
+function setPlatformLoadState(state) {
+  const select = byId("sourceSelect");
+  const retry = byId("platformRetry");
+  const island = select?.closest(".platform-island");
+  if (select) select.dataset.loadState = state;
+  if (retry) {
+    retry.hidden = state !== "degraded";
+    retry.setAttribute("aria-busy", state === "loading" ? "true" : "false");
+  }
+  if (island) island.classList.toggle("has-platform-retry", state === "degraded");
+}
+
+function acceptPlatformList(value, { degraded = false, persist = false } = {}) {
+  const rows = normalizePlatformList(value);
+  if (rows.length || !platforms.length) platforms = rows;
+  platformLoadDegraded = Boolean(degraded);
+  if (persist && rows.length) {
+    try {
+      localStorage.setItem(PLATFORM_CACHE_KEY, JSON.stringify(rows));
+    } catch (_error) {
+      // Storage failure must not hide the live platform registry.
+    }
+  }
+  renderPlatforms();
+  setPlatformLoadState(platformLoadDegraded ? "degraded" : "ready");
+}
+
+function refreshDegradedPlatformsFromSnapshot() {
+  if (!platformLoadDegraded) return;
+  const rows = snapshotPlatformList();
+  if (!rows.length) return;
+  platforms = rows;
+  renderPlatforms();
+  setPlatformLoadState("degraded");
 }
 
 function renderPlatforms() {
@@ -992,7 +1135,7 @@ function renderToolDetail() {
   const recent = frontendState.toolbox_recent_items || [];
   byId("toolDetail").innerHTML = `
     <h2>${esc(t("最近使用"))}</h2>
-    <div class="recent-list">${recent.length ? recent.map(row => `${esc(t(row.title || ""))}  ${esc(t(row.last_used || ""))}`).join("\n") : esc(t("暂无最近使用记录"))}</div>
+    <div class="recent-list">${recent.length ? recent.map(row => `${esc(t(row.title || ""))}  ${esc(translateUiText(row.last_used || ""))}`).join("\n") : esc(t("暂无最近使用记录"))}</div>
     <h2>${esc(t("工具详情"))}</h2>
     ${kvHtml([["工具", t(item.title || "")], ["说明", t(item.summary || "")], ["输入示例", t(item.input_example || "")], ["输出示例", t(item.output_example || "")]])}
     <button class="btn btn-primary" onclick="frontendAction('run_tool',{tool_id:'${escAttr(item.id || "")}'})">${esc(t("打开工具"))}</button>
@@ -1021,6 +1164,186 @@ function renderStatus() {
   byId("statusVersion").textContent = status.version || "v3.6.17";
 }
 
+let updateCheckSequence = 0;
+let updateReleaseUrl = "";
+let selectedUpdateVersion = "";
+
+function trustedUpdateReleaseUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    const trustedPath = url.pathname.toLowerCase().startsWith("/haohaizi554/universalcrawler/releases/");
+    return url.protocol === "https:" && url.hostname === "github.com" && trustedPath ? url.href : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function updateCheckStatusLabel(result) {
+  const status = String((result && result.status) || "error");
+  const latest = String((result && result.latest_version) || "");
+  if (status === "available") return `${t("检测到新版本")} v${latest.replace(/^v/i, "")}`;
+  if (status === "current") return t("当前已经是最新版本");
+  if (status === "local_newer") return t("当前版本高于最新发布版本");
+  if (status === "untrusted") return t("检测到版本，但安全更新清单未通过验证");
+  return t("检查更新失败");
+}
+
+async function showUpdateCheckModal() {
+  const modal = byId("updateModal");
+  if (!modal) return;
+  const sequence = ++updateCheckSequence;
+  updateReleaseUrl = "";
+  selectedUpdateVersion = "";
+  modal.style.display = "flex";
+  modal.setAttribute("aria-busy", "true");
+  byId("updateTitle").textContent = t("检查更新");
+  byId("updateLocalLabel").textContent = t("当前版本");
+  byId("updateLatestLabel").textContent = t("Release 版本");
+  byId("updateReleaseLink").textContent = t("查看发布页");
+  byId("updatePrepareBtn").textContent = t("下载并验证");
+  byId("updateInstallBtn").textContent = t("安装并重启");
+  byId("updateCloseBtn").textContent = t("确定");
+  byId("updateCloseIcon").setAttribute("aria-label", t("关闭"));
+  byId("updateStatus").dataset.status = "checking";
+  byId("updateStatus").textContent = t("正在检查更新...");
+  byId("updateLocalVersion").textContent = byId("statusVersion").textContent || "--";
+  byId("updateLatestVersion").textContent = "--";
+  byId("updateNotes").textContent = "";
+  byId("updateReleaseLink").hidden = true;
+  byId("updatePrepareBtn").hidden = true;
+  byId("updateInstallBtn").hidden = true;
+  byId("statusVersion").disabled = true;
+  byId("updateCloseBtn").focus({ preventScroll: true });
+  try {
+    const response = await fetch("/api/update/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ local_version: byId("statusVersion").textContent || "" }),
+    });
+    const result = await response.json();
+    if (sequence !== updateCheckSequence) return;
+    if (!response.ok || !result || result.status === "error") {
+      throw new Error((result && (result.message || result.error)) || `HTTP ${response.status}`);
+    }
+    byId("updateStatus").dataset.status = String(result.status || "current");
+    byId("updateStatus").textContent = updateCheckStatusLabel(result);
+    byId("updateLocalVersion").textContent = result.local_version || "--";
+    byId("updateLatestVersion").textContent = result.latest_version || "--";
+    byId("updateNotes").textContent = result.notes || t("未提供更新说明");
+    updateReleaseUrl = trustedUpdateReleaseUrl(result.html_url);
+    byId("updateReleaseLink").hidden = !updateReleaseUrl;
+    selectedUpdateVersion = String(result.latest_version || "");
+    byId("updatePrepareBtn").hidden = !(result.status === "available" && result.can_prepare);
+  } catch (error) {
+    if (sequence !== updateCheckSequence) return;
+    byId("updateStatus").dataset.status = "error";
+    byId("updateStatus").textContent = t("检查更新失败");
+    byId("updateNotes").textContent = String(error && (error.message || error) || "");
+  } finally {
+    if (sequence === updateCheckSequence) {
+      modal.setAttribute("aria-busy", "false");
+      byId("statusVersion").disabled = false;
+    }
+  }
+}
+
+async function prepareWebUpdate() {
+  const modal = byId("updateModal");
+  const button = byId("updatePrepareBtn");
+  if (!modal || !button || !selectedUpdateVersion || modal.getAttribute("aria-busy") === "true") return;
+  const sequence = ++updateCheckSequence;
+  modal.setAttribute("aria-busy", "true");
+  button.disabled = true;
+  byId("updateStatus").dataset.status = "preparing";
+  byId("updateStatus").textContent = t("正在下载并验证更新...");
+  try {
+    const response = await fetch("/api/update/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        local_version: byId("updateLocalVersion").textContent || "",
+        selected_version: selectedUpdateVersion,
+      }),
+    });
+    const result = await response.json();
+    if (sequence !== updateCheckSequence) return;
+    if (!response.ok || !result || result.status !== "ready") {
+      throw new Error((result && (result.message || result.error)) || `HTTP ${response.status}`);
+    }
+    byId("updateStatus").dataset.status = "ready";
+    byId("updateStatus").textContent = t("更新包已下载并通过验证");
+    byId("updateNotes").textContent = `${t("安装包")}: ${result.installer_name || "--"}`;
+    button.hidden = true;
+    byId("updateInstallBtn").hidden = false;
+  } catch (error) {
+    if (sequence !== updateCheckSequence) return;
+    byId("updateStatus").dataset.status = "error";
+    byId("updateStatus").textContent = t("更新下载失败");
+    byId("updateNotes").textContent = String(error && (error.message || error) || "");
+  } finally {
+    if (sequence === updateCheckSequence) {
+      modal.setAttribute("aria-busy", "false");
+      button.disabled = false;
+    }
+  }
+}
+
+async function installWebUpdate() {
+  const modal = byId("updateModal");
+  const button = byId("updateInstallBtn");
+  if (!modal || !button || button.hidden || modal.getAttribute("aria-busy") === "true") return;
+  const sequence = ++updateCheckSequence;
+  modal.setAttribute("aria-busy", "true");
+  button.disabled = true;
+  byId("updateStatus").dataset.status = "installing";
+  byId("updateStatus").textContent = t("正在启动安装程序...");
+  try {
+    const response = await fetch("/api/update/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const result = await response.json();
+    if (sequence !== updateCheckSequence) return;
+    if (!response.ok || !result || result.status !== "installing") {
+      throw new Error((result && (result.message || result.error)) || `HTTP ${response.status}`);
+    }
+    byId("updateStatus").dataset.status = "installing";
+    byId("updateStatus").textContent = t("安装程序已启动，应用即将重启");
+    byId("updateNotes").textContent = t("请勿关闭安装程序窗口");
+    button.hidden = true;
+    byId("updateCloseBtn").disabled = true;
+    byId("updateCloseIcon").disabled = true;
+  } catch (error) {
+    if (sequence !== updateCheckSequence) return;
+    byId("updateStatus").dataset.status = "error";
+    byId("updateStatus").textContent = t("启动安装程序失败");
+    byId("updateNotes").textContent = String(error && (error.message || error) || "");
+    modal.setAttribute("aria-busy", "false");
+    button.disabled = false;
+  }
+}
+
+function closeUpdateCheckModal() {
+  const modal = byId("updateModal");
+  if (!modal || modal.style.display === "none") return;
+  updateCheckSequence += 1;
+  modal.style.display = "none";
+  modal.setAttribute("aria-busy", "false");
+  byId("statusVersion").disabled = false;
+  byId("statusVersion").focus({ preventScroll: true });
+}
+
+function openUpdateReleasePage() {
+  if (updateReleaseUrl) window.open(updateReleaseUrl, "_blank", "noopener");
+}
+
+window.showUpdateCheckModal = showUpdateCheckModal;
+window.closeUpdateCheckModal = closeUpdateCheckModal;
+window.openUpdateReleasePage = openUpdateReleasePage;
+window.prepareWebUpdate = prepareWebUpdate;
+window.installWebUpdate = installWebUpdate;
+
 function switchPage(pageId) {
   currentPage = pageId;
   document.querySelectorAll(".nav-item").forEach(button => button.classList.toggle("active", button.dataset.page === pageId));
@@ -1047,20 +1370,23 @@ function kvHtml(pairs, wrapKeys = new Set()) {
 
 function setCrawlUiState(isRunning) {
   crawlRunning = !!isRunning;
+  const stateReady = frontendLoadState === "ready";
   const startBtn = byId("startBtn");
   const stopBtn = byId("stopBtn");
   const searchInput = byId("searchInput");
   const sourceSelect = byId("sourceSelect");
   const countSelect = byId("videoCountSelect");
   if (startBtn) {
-    startBtn.disabled = crawlRunning;
+    startBtn.disabled = crawlRunning || !stateReady;
     startBtn.classList.toggle("is-running", crawlRunning);
     startBtn.setAttribute("aria-busy", crawlRunning ? "true" : "false");
   }
-  if (stopBtn) stopBtn.disabled = !crawlRunning;
+  if (stopBtn) stopBtn.disabled = !crawlRunning || !stateReady;
   [searchInput, sourceSelect, countSelect].forEach(control => {
-    if (control) control.disabled = crawlRunning;
+    if (control) control.disabled = crawlRunning || !stateReady;
   });
+  const changeDirBtn = byId("changeDirBtn");
+  if (changeDirBtn) changeDirBtn.disabled = !stateReady;
   syncCustomSelectForSelect(sourceSelect);
   syncCustomSelectForSelect(countSelect);
 }
@@ -1151,17 +1477,58 @@ window.showSelectionModal = items => dialogControllerService().showSelection(ite
 window.confirmSelection = () => dialogControllerService().confirmSelection();
 window.cancelSelection = () => dialogControllerService().cancelSelection();
 
-function toggleTheme() {
-  const dark = document.documentElement.dataset.theme !== "dark";
+let themeToggleInFlight = false;
+let pendingThemeValue = "";
+
+function applyOptimisticTheme(theme) {
+  const dark = theme === "dark";
   applyTheme(dark);
-  localStorage.setItem("cached_theme", dark ? "dark" : "light");
+  localStorage.setItem("cached_theme", theme);
   localStorage.setItem("cached_dark_theme", String(dark));
-  updateSetting("common", "theme", dark ? "dark" : "light");
+}
+
+function setThemeToggleBusy(busy) {
+  const button = byId("themeBtn");
+  if (button) button.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
+async function commitPendingTheme() {
+  if (themeToggleInFlight) return;
+  themeToggleInFlight = true;
+  setThemeToggleBusy(true);
+  try {
+    while (pendingThemeValue) {
+      const target = pendingThemeValue;
+      pendingThemeValue = "";
+      const runtime = frontendRuntimeService();
+      const result = typeof runtime.requestAction === "function"
+        ? await runtime.requestAction("update_setting", { section: "common", key: "theme", value: target })
+        : { status: "error", message: "theme action acknowledgement unavailable" };
+      if (!result || result.status !== "ok") {
+        pendingThemeValue = "";
+        applyAppearance((frontendState.settings_snapshot || {})["外观设置"] || {});
+        break;
+      }
+      if (pendingThemeValue === target) pendingThemeValue = "";
+      applyOptimisticTheme(pendingThemeValue || target);
+    }
+  } finally {
+    themeToggleInFlight = false;
+    setThemeToggleBusy(false);
+  }
+}
+
+function toggleTheme() {
+  const effectiveTheme = pendingThemeValue || document.documentElement.dataset.theme || "light";
+  pendingThemeValue = effectiveTheme === "dark" ? "light" : "dark";
+  applyOptimisticTheme(pendingThemeValue);
+  void commitPendingTheme();
 }
 
 function restoreTheme() {
   const cached = localStorage.getItem("cached_theme");
   applyTheme(cached === "dark");
+  setThemeToggleBusy(false);
 }
 
 function applyAppearance(appearance = {}) {
@@ -1280,21 +1647,48 @@ function updateSelection(oldId, newId) {
 }
 function renderQueueCompat() { renderQueue(); }
 
+function visibleTaskNavigationContext() {
+  const contexts = {
+    queue: { bodyId: "queueBody", selectedId: selectedVideoId, select: selectVideo },
+    active: { bodyId: "activeBody", selectedId: selected.active, select: selectActive },
+    completed: { bodyId: "completedBody", selectedId: selected.completed, select: selectCompleted },
+    failed: { bodyId: "failedBody", selectedId: selected.failed, select: selectFailed },
+  };
+  const context = contexts[currentPage];
+  if (!context) return null;
+  const body = byId(context.bodyId);
+  if (!body || !body.closest(".page.active")) return null;
+  return {
+    ...context,
+    order: Array.from(body.querySelectorAll("tr[data-id]"))
+      .map(row => String(row.dataset.id || ""))
+      .filter(Boolean),
+  };
+}
+
 document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && byId("updateModal")?.style.display === "flex") {
+    event.preventDefault();
+    closeUpdateCheckModal();
+    return;
+  }
   if (dialogControllerService().handleShortcut(event)) return;
   if (playbackControllerService().handleShortcut(event)) return;
-  const navigationOrder = queueNavigationOrder();
-  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && navigationOrder.length > 0) {
+  const navigation = visibleTaskNavigationContext();
+  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && navigation && navigation.order.length > 0) {
     const tag = document.activeElement && document.activeElement.tagName;
     if (["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
     event.preventDefault();
-    const current = selectedVideoId ? navigationOrder.indexOf(selectedVideoId) : -1;
+    const current = navigation.selectedId ? navigation.order.indexOf(String(navigation.selectedId)) : -1;
     const next = event.key === "ArrowDown"
-      ? (current < navigationOrder.length - 1 ? current + 1 : 0)
-      : (current > 0 ? current - 1 : navigationOrder.length - 1);
-    selectVideo(navigationOrder[next]);
+      ? (current < navigation.order.length - 1 ? current + 1 : 0)
+      : (current > 0 ? current - 1 : navigation.order.length - 1);
+    navigation.select(navigation.order[next]);
   }
-  if (event.key === "Delete" && selectedVideoId && document.activeElement === document.body) {
+  const selectedQueueRow = selectedVideoId
+    ? document.querySelector(`#page-queue.active #queueBody tr[data-id="${cssEscape(selectedVideoId)}"]`)
+    : null;
+  if (event.key === "Delete" && currentPage === "queue" && selectedQueueRow && document.activeElement === document.body) {
     playbackControllerService().deleteVideo(selectedVideoId);
   }
 }, true);

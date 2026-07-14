@@ -342,11 +342,11 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
         url = f"http://{host}:{port}"
         server_output: list[str] = []
         while time.time() < deadline:
-            try:
-                with socket.create_connection((host, port), timeout=1):
-                    break
-            except (OSError, ConnectionRefusedError):
-                time.sleep(0.2)
+            if proc.poll() is not None:
+                break
+            if _webui_server_responds(url, timeout=1.0):
+                break
+            time.sleep(0.05)
         else:
             # 失败时打印 stderr 便于排查
             try:
@@ -359,6 +359,18 @@ def _running_server(host: str = "127.0.0.1", port: int = 0):
             stderr_handle.close()
             raise RuntimeError(
                 f"Server failed to start on {url}\n"
+                f"stderr: {''.join(server_output)[:1500]}"
+            )
+        if proc.poll() is not None:
+            try:
+                stderr_handle.flush()
+                server_output.append(stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:])
+            except OSError:
+                pass
+            stdout_handle.close()
+            stderr_handle.close()
+            raise RuntimeError(
+                f"Server exited before becoming ready on {url}\n"
                 f"stderr: {''.join(server_output)[:1500]}"
             )
         try:

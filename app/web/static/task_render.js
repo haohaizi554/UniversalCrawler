@@ -292,9 +292,9 @@
     const level = failedLogLevel(entry);
     return `
       <div class="failed-log-row">
-        <span class="log-time">${escapeHtml(failedLogTime(entry.time))}</span>
+        <span class="log-time">${escapeHtml(entry.time_display || failedLogTime(entry.time))}</span>
         <span class="log-level log-level-${failedLogLevelClass(level)}">${escapeHtml(level)}</span>
-        <span class="log-message">${escapeHtml(translate(entry.message || ""))}</span>
+        <span class="log-message">${escapeHtml(entry.message_display || translate(entry.message || ""))}</span>
       </div>
     `;
   }
@@ -303,9 +303,14 @@
     return `
       <div class="failed-solution-row">
         <img src="${iconFileUrl(solution.icon_file || "action_help.png")}" alt="" />
-        <span><strong>${escapeHtml(translate(solution.title || "\u5efa\u8bae"))}</strong><small>${escapeHtml(translate(solution.description || ""))}</small></span>
+        <span><strong>${escapeHtml(solution.title_display || translate(solution.title || "\u5efa\u8bae"))}</strong><small>${escapeHtml(solution.description_display || translate(solution.description || ""))}</small></span>
       </div>
     `;
+  }
+
+  function usesFailedDisplayProjection(item) {
+    const language = String((item || {}).display_language || "");
+    return !language || language === activeLanguage();
   }
 
   function failedRow(item, selectedId) {
@@ -325,13 +330,16 @@
     if (!item) return `<h2>${escapeHtml(translate("\u9519\u8bef\u8be6\u60c5"))}</h2><p>${escapeHtml(translate("\u6682\u65e0\u5931\u8d25\u4efb\u52a1"))}</p>`;
     const current = manifest();
     const platformIconFile = (current.platforms || {})[String(item.platform_id || "").toLowerCase()] || "platform_web.png";
-    const logItems = item.log_excerpt_items || (item.log_excerpt || []).map(message => ({ level: "INFO", time: "", message, icon_file: "log_level_info.png" }));
+    const useProjection = usesFailedDisplayProjection(item);
+    const logItems = useProjection && Array.isArray(item.log_excerpt_display_items)
+      ? item.log_excerpt_display_items
+      : (item.log_excerpt_items || (item.log_excerpt || []).map(message => ({ level: "INFO", time: "", message, icon_file: "log_level_info.png" })));
     return `
       <h2>${escapeHtml(translate("\u9519\u8bef\u8be6\u60c5"))}</h2>
       <div class="failed-summary">
         ${detailRowHtml("\u6807\u9898", item.title)}
         ${detailRowHtml("\u5931\u8d25\u65f6\u95f4", item.failed_at)}
-        ${detailRowHtml("\u5931\u8d25\u539f\u56e0", item.reason_detail || item.reason, item.reason_icon_file || "status_error_warning.png")}
+        ${detailRowHtml("\u5931\u8d25\u539f\u56e0", useProjection ? (item.reason_detail_display || item.reason_detail || item.reason) : (item.reason_detail || item.reason), item.reason_icon_file || "status_error_warning.png")}
         ${detailRowHtml("\u5e73\u53f0", item.platform, platformIconFile)}
         ${detailRowHtml("Trace ID", item.trace_id)}
       </div>
@@ -341,7 +349,9 @@
   }
 
   function failedSolutionsHtml(item) {
-    const solutions = item && item.solutions ? item.solutions : [];
+    const solutions = item && usesFailedDisplayProjection(item) && Array.isArray(item.solutions_display)
+      ? item.solutions_display
+      : (item && item.solutions ? item.solutions : []);
     return `
       <h2>${escapeHtml(translate("\u53ef\u80fd\u7684\u89e3\u51b3\u65b9\u6848"))}</h2>
       <div class="failed-solution-list">${solutions.length ? solutions.map(solutionRowHtml).join("") : `<div class="empty-note">${escapeHtml(translate("\u6682\u65e0\u5efa\u8bae"))}</div>`}</div>
@@ -373,6 +383,7 @@
     failedLogTime,
     failedLogRowHtml,
     solutionRowHtml,
+    usesFailedDisplayProjection,
     failedRow,
     failedDetailHtml,
     failedSolutionsHtml,
