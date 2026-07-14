@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import threading
 import unittest
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from fastapi import WebSocketDisconnect
 
+from app.web.session_runtime import WebSessionContext, normalize_directory
 from app.web.ws_dispatcher import WebSocketMessageDispatcher
 from app.web.ws_runtime import WebSocketRuntime
 
@@ -41,6 +43,41 @@ class _OneMessageWebSocket:
             return self.messages.pop(0)
         raise WebSocketDisconnect()
 
+
+class _RecordingMutationController:
+    def __init__(self, current_save_dir: str) -> None:
+        self.current_save_dir = current_save_dir
+        self.changed_directories: list[str] = []
+        self.deleted_videos: list[tuple[str, tuple[str, ...]]] = []
+        self.renamed_videos: list[tuple[str, str, tuple[str, ...]]] = []
+
+    async def async_change_dir(self, directory: str) -> dict:
+        self.current_save_dir = directory
+        self.changed_directories.append(directory)
+        return {"status": "ok"}
+
+    async def async_delete_video(self, video_id: str, approved_roots: tuple[str, ...]) -> dict:
+        self.deleted_videos.append((video_id, approved_roots))
+        return {"status": "ok"}
+
+    async def async_rename_video(
+        self,
+        video_id: str,
+        new_title: str,
+        approved_roots: tuple[str, ...],
+    ) -> dict:
+        self.renamed_videos.append((video_id, new_title, approved_roots))
+        return {"status": "ok"}
+
+
+class _RecordingMutationWorkflow:
+    def __init__(self) -> None:
+        self.downloads: list[tuple[dict, bool]] = []
+
+    async def direct_download(self, payload: dict, *, log_error: bool) -> dict:
+        self.downloads.append((dict(payload), log_error))
+        return {"status": "ok"}
+
 class WebSocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_connection_refreshes_and_releases_session_lease(self):
         manager = _FakeConnectionManager()
@@ -72,6 +109,159 @@ class WebSocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WebSocketMessageDispatcherTests(unittest.IsolatedAsyncioTestCase):
+    def _mutation_context(self, approved_root: str):
+        sent = []
+        controller = _RecordingMutationController(approved_root)
+        workflow = _RecordingMutationWorkflow()
+
+        def send_factory(_session_id):
+            async def send(event_type, data):
+                sent.append((event_type, data))
+                return True
+
+            return send
+
+        context = WebSessionContext(
+            "mutation-test",
+            send_factory=send_factory,
+            controller_factory=lambda _loop, _send: controller,
+            workflow_factory=lambda _controller, _send: workflow,
+        )
+        return context, controller, workflow, sent
+
+    async def test_unknown_message_types_return_protocol_errors(self):
+        dispatcher = WebSocketMessageDispatcher()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as approved_root:
+            for message_type in ("", "unknown_mutation"):
+                with self.subTest(message_type=message_type):
+                    context, controller, workflow, sent = self._mutation_context(approved_root)
+
+                    await dispatcher.handle({"type": message_type, "data": {}}, context)
+
+                    self.assertEqual(sent[0][0], "error")
+                    self.assertIn("unknown message type", sent[0][1]["message"])
+                    self.assertEqual(controller.changed_directories, [])
+                    self.assertEqual(controller.deleted_videos, [])
+                    self.assertEqual(controller.renamed_videos, [])
+                    self.assertEqual(workflow.downloads, [])
+
+    async def test_mutation_handlers_reject_invalid_field_types(self):
+        dispatcher = WebSocketMessageDispatcher()
+        cases = (
+            ("change_dir", {"directory": 123}),
+            ("delete_video", {"video_id": 123}),
+            ("rename_video", {"video_id": "video_1", "new_title": []}),
+            ("download", {"save_dir": 123}),
+        )
+        with TemporaryDirectory(ignore_cleanup_errors=True) as approved_root:
+            for message_type, data in cases:
+                with self.subTest(message_type=message_type):
+                    context, controller, workflow, sent = self._mutation_context(approved_root)
+
+                    await dispatcher.handle({"type": message_type, "data": data}, context)
+
+                    self.assertEqual([event_type for event_type, _data in sent], ["log"])
+                    self.assertIn("必须是字符串", sent[0][1]["message"])
+                    self.assertEqual(controller.changed_directories, [])
+                    self.assertEqual(controller.deleted_videos, [])
+                    self.assertEqual(controller.renamed_videos, [])
+                    self.assertEqual(workflow.downloads, [])
+
+    async def test_directory_mutations_reject_paths_outside_session_roots(self):
+        dispatcher = WebSocketMessageDispatcher()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            workspace = Path(temp_dir)
+            approved_root = workspace / "approved"
+            outside_root = workspace / "outside"
+            approved_root.mkdir()
+            outside_root.mkdir()
+            cases = (
+                ("change_dir", {"directory": str(outside_root)}),
+                ("download", {"url": "https://example.invalid/video", "save_dir": str(outside_root)}),
+            )
+            for message_type, data in cases:
+                with self.subTest(message_type=message_type):
+                    context, controller, workflow, sent = self._mutation_context(str(approved_root))
+
+                    await dispatcher.handle({"type": message_type, "data": data}, context)
+
+                    self.assertEqual([event_type for event_type, _data in sent], ["log"])
+                    self.assertIn("授权", sent[0][1]["message"])
+                    self.assertEqual(controller.changed_directories, [])
+                    self.assertEqual(workflow.downloads, [])
+
+    async def test_video_mutations_reject_invalid_ids(self):
+        dispatcher = WebSocketMessageDispatcher()
+        cases = (
+            ("delete_video", {"video_id": "../outside"}),
+            ("rename_video", {"video_id": "nested/video", "new_title": "renamed"}),
+        )
+        with TemporaryDirectory(ignore_cleanup_errors=True) as approved_root:
+            for message_type, data in cases:
+                with self.subTest(message_type=message_type):
+                    context, controller, _workflow, sent = self._mutation_context(approved_root)
+
+                    await dispatcher.handle({"type": message_type, "data": data}, context)
+
+                    self.assertEqual([event_type for event_type, _data in sent], ["log"])
+                    self.assertIn("invalid video_id", sent[0][1]["message"])
+                    self.assertEqual(controller.deleted_videos, [])
+                    self.assertEqual(controller.renamed_videos, [])
+
+    async def test_authorized_directory_mutations_forward_normalized_paths(self):
+        dispatcher = WebSocketMessageDispatcher()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as approved_root:
+            nested = Path(approved_root) / "nested"
+            nested.mkdir()
+            unnormalized = str(nested / ".." / nested.name)
+            normalized = normalize_directory(unnormalized)
+            context, controller, workflow, sent = self._mutation_context(approved_root)
+
+            await dispatcher.handle(
+                {"type": "change_dir", "data": {"directory": unnormalized}},
+                context,
+            )
+            download_data = {
+                "url": "https://example.invalid/video",
+                "source": "douyin",
+                "save_dir": unnormalized,
+            }
+            await dispatcher.handle({"type": "download", "data": download_data}, context)
+
+            self.assertEqual(controller.changed_directories, [normalized])
+            self.assertEqual(controller.current_save_dir, normalized)
+            self.assertEqual(
+                workflow.downloads,
+                [({**download_data, "save_dir": normalized}, True)],
+            )
+            self.assertEqual(download_data["save_dir"], unnormalized)
+            self.assertEqual(sent, [])
+
+    async def test_valid_video_mutations_forward_session_roots(self):
+        dispatcher = WebSocketMessageDispatcher()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as approved_root:
+            context, controller, _workflow, sent = self._mutation_context(approved_root)
+            approved_roots = context.approved_roots_snapshot()
+
+            await dispatcher.handle(
+                {"type": "delete_video", "data": {"video_id": "video_01"}},
+                context,
+            )
+            await dispatcher.handle(
+                {
+                    "type": "rename_video",
+                    "data": {"video_id": "video-02", "new_title": "Renamed title"},
+                },
+                context,
+            )
+
+            self.assertEqual(controller.deleted_videos, [("video_01", approved_roots)])
+            self.assertEqual(
+                controller.renamed_videos,
+                [("video-02", "Renamed title", approved_roots)],
+            )
+            self.assertEqual(sent, [])
+
     async def test_scan_without_directory_authorizes_current_save_directory(self):
         dispatcher = WebSocketMessageDispatcher()
         sent = []
