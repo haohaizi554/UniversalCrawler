@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import argparse
 
-from cli.commands.search import add_search_arguments, handle_search_command
+from cli.commands.search import handle_search_command
+from shared.search_command_runtime import add_search_arguments
 
 def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None:
     """为每个平台添加 search 子命令。"""

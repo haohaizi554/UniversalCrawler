@@ -141,7 +141,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.web.workflows.validate_config_types", return_value=None),
             patch("app.web.workflows.get_platform_defaults", return_value={}),
             patch("app.web.workflows.merge_convenience_params"),
-            patch("app.web.workflows.UcrawlSDK", return_value=fake_sdk),
+            patch("app.web.workflows.build_sdk", return_value=fake_sdk),
         ):
             result = await self.service.direct_download(
                 {
@@ -265,7 +265,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.web.workflows.validate_config_types", return_value=None),
             patch("app.web.workflows.get_platform_defaults", return_value={}),
             patch("app.web.workflows.merge_convenience_params"),
-            patch("app.web.workflows.UcrawlSDK", return_value=fake_sdk),
+            patch("app.web.workflows.build_sdk", return_value=fake_sdk),
         ):
             result = await self.service.direct_download(
                 {

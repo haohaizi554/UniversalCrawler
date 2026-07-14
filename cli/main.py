@@ -118,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="main_command", title="子命令")
 
     # search
-    from cli.commands.search import add_search_arguments, handle_search_command
+    from cli.commands.search import handle_search_command
+    from shared.search_command_runtime import add_search_arguments
     search_parser = subparsers.add_parser("search", help="搜索并下载 (通用命令)")
     add_search_arguments(search_parser)
     search_parser.set_defaults(_handler=handle_search_command)
@@ -130,7 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     scan_parser.set_defaults(_handler=handle_scan_command)
 
     # download
-    from cli.commands.download import add_download_arguments, handle_download_command
+    from cli.commands.download import handle_download_command
+    from shared.download_command_runtime import add_download_arguments
     download_parser = subparsers.add_parser("download", help="下载指定视频")
     add_download_arguments(download_parser)
     download_parser.set_defaults(_handler=handle_download_command)

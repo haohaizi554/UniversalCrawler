@@ -19,13 +19,10 @@ from shared.runtime_options import (
     validate_config_types,
     validate_direct_download_url,
 )
-from shared.sdk_runtime import UcrawlSDK
+from shared.runtime_adapters import build_sdk
 from shared.selection_runtime import RuleSelection
 
 BroadcastFn = Callable[[str, Any], Coroutine[Any, Any, Any]]
-
-def build_sdk(save_dir: str):
-    return UcrawlSDK(save_dir=save_dir)
 
 def build_selection_strategy(selection_dict: dict | None):
     """从 Web 端 selection 参数构建 SelectionStrategy 实例。"""
@@ -443,7 +440,7 @@ class WebWorkflowService:
         pending_item = self._create_pending_item(url, source, title or url)
         await self._broadcast_download_started(pending_item)
 
-        sdk = build_sdk(effective_save_dir)
+        sdk = build_sdk(save_dir=effective_save_dir)
         loop = asyncio.get_running_loop()
         try:
             def on_download_progress(pct: int) -> None:

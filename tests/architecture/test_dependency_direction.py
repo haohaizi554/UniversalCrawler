@@ -76,6 +76,28 @@ def _module_imports(path: Path) -> list[str]:
     return imports
 
 
+def _top_level_definitions(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def _direct_imports(path: Path) -> set[tuple[str, str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    imports: set[tuple[str, str, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level != 0 or not node.module:
+            continue
+        imports.update(
+            (node.module, alias.name, alias.asname or alias.name)
+            for alias in node.names
+        )
+    return imports
+
+
 def _imports_under(root: str, forbidden: str) -> list[tuple[str, str]]:
     root_path = PROJECT_ROOT / root
     if not root_path.exists():
@@ -117,6 +139,63 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
 
         self.assertNotIn("run_cli_search", local_definitions)
         self.assertIn("shared.runtime_adapters", _module_imports(path))
+
+    def test_cli_command_contracts_have_one_shared_implementation(self) -> None:
+        search_path = PROJECT_ROOT / "cli" / "commands" / "search.py"
+        download_path = PROJECT_ROOT / "cli" / "commands" / "download.py"
+
+        self.assertTrue(
+            {"add_search_arguments", "_print_pretty"}.isdisjoint(
+                _top_level_definitions(search_path),
+            )
+        )
+        self.assertTrue(
+            {"add_download_arguments", "_print_pretty"}.isdisjoint(
+                _top_level_definitions(download_path),
+            )
+        )
+        self.assertIn(
+            ("shared.search_command_runtime", "add_search_arguments", "add_search_arguments"),
+            _direct_imports(search_path),
+        )
+        self.assertIn(
+            ("shared.search_command_runtime", "print_pretty", "_print_pretty"),
+            _direct_imports(search_path),
+        )
+        self.assertIn(
+            ("shared.download_command_runtime", "add_download_arguments", "add_download_arguments"),
+            _direct_imports(download_path),
+        )
+        self.assertIn(
+            ("shared.download_command_runtime", "print_pretty", "_print_pretty"),
+            _direct_imports(download_path),
+        )
+
+    def test_hosts_import_shared_command_and_sdk_contracts_directly(self) -> None:
+        main_imports = _direct_imports(PROJECT_ROOT / "cli" / "main.py")
+        alias_imports = _direct_imports(PROJECT_ROOT / "cli" / "commands" / "_alias.py")
+        workflow_path = PROJECT_ROOT / "app" / "web" / "workflows.py"
+
+        self.assertIn(
+            ("shared.search_command_runtime", "add_search_arguments", "add_search_arguments"),
+            main_imports,
+        )
+        self.assertIn(
+            ("shared.download_command_runtime", "add_download_arguments", "add_download_arguments"),
+            main_imports,
+        )
+        self.assertIn(
+            ("shared.search_command_runtime", "add_search_arguments", "add_search_arguments"),
+            alias_imports,
+        )
+        self.assertNotIn("build_sdk", _top_level_definitions(workflow_path))
+        self.assertIn(
+            ("shared.runtime_adapters", "build_sdk", "build_sdk"),
+            _direct_imports(workflow_path),
+        )
+
+    def test_dead_interactive_command_runtime_is_removed(self) -> None:
+        self.assertFalse((PROJECT_ROOT / "shared" / "interactive_command_runtime.py").exists())
 
     def test_ui_does_not_import_core_downloaders(self) -> None:
         self.assertEqual(_imports_under("app/ui", "app.core.downloaders"), [])
