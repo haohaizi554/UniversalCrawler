@@ -1,4 +1,5 @@
 import json
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -43,7 +44,12 @@ class _FakeWorkflowService:
     def __init__(self, controller, broadcast):
         self.controller = controller
         self.broadcast = broadcast
-        self.start_crawl = AsyncMock()
+        self.start_crawl_completed = threading.Event()
+
+        async def _start_crawl(*_args, **_kwargs):
+            self.start_crawl_completed.set()
+
+        self.start_crawl = AsyncMock(side_effect=_start_crawl)
         self.select_tasks = AsyncMock()
         self.direct_download = AsyncMock()
         type(self).instances.append(self)
@@ -87,9 +93,13 @@ class WebsocketServerTests(unittest.TestCase):
             ws.receive_text()
             ws.receive_text()
             ws.receive_text()
+            workflow = _FakeWorkflowService.instances[-1]
             ws.send_text(json.dumps({"type": "start_crawl", "data": {"source": "douyin", "keyword": "demo"}}))
+            self.assertTrue(
+                workflow.start_crawl_completed.wait(timeout=1.0),
+                "WebSocket start_crawl was not dispatched before the bounded deadline",
+            )
 
-        workflow = _FakeWorkflowService.instances[-1]
         workflow.start_crawl.assert_awaited_once_with({"source": "douyin", "keyword": "demo"}, log_error=True)
 
     def test_websocket_invalid_change_theme_broadcasts_log(self):
