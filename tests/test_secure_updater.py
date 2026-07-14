@@ -33,9 +33,11 @@ from app.services.secure_updater import (
     VerificationError,
     VersionPolicy,
     compare_semver,
+    log_update_event,
     record_pending_install,
     record_skipped_update,
     record_startup_update_health,
+    validate_asset_url,
 )
 
 
@@ -311,6 +313,51 @@ def test_downloader_uses_real_urlopen_against_loopback_http_server(tmp_path):
         thread.join(timeout=2)
 
     assert target.read_bytes() == data
+
+
+def test_development_mode_only_relaxes_asset_urls_for_local_sources():
+    validate_asset_url("http://127.0.0.1:8765/installer.exe", frozenset(), development_mode=True)
+    validate_asset_url("file:///C:/tmp/installer.exe", frozenset(), development_mode=True)
+
+    with pytest.raises(ManifestError, match="not trusted"):
+        validate_asset_url(
+            "https://attacker.example/installer.exe",
+            {"github.com"},
+            development_mode=True,
+        )
+    with pytest.raises(ManifestError, match="must use https"):
+        validate_asset_url(
+            "http://github.com/owner/repo/installer.exe",
+            {"github.com"},
+            development_mode=True,
+        )
+    with pytest.raises(ManifestError, match="must use https"):
+        validate_asset_url(
+            "file://attacker.example/share/installer.exe",
+            {"github.com"},
+            development_mode=True,
+        )
+
+
+def test_update_event_filters_all_credential_field_names(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        "app.services.secure_updater.debug_logger.log",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    log_update_event(
+        "UPDATE_TEST",
+        "safe message",
+        password="password-value",
+        api_key="api-key-value",
+        credential="credential-value",
+        authorization="bearer-value",
+        cookie="cookie-value",
+        release_version="3.6.17",
+    )
+
+    assert captured["details"] == {"release_version": "3.6.17"}
 
 
 def test_downloader_resumes_existing_partial_file_with_range(tmp_path):

@@ -29,6 +29,7 @@ from app.config.settings import (
     speed_limit_options,
     ui_log_max_display_options,
 )
+from app.exceptions import ConfigWriteError
 from app.utils.runtime_paths import resolve_user_file
 
 class ConfigManagerTests(unittest.TestCase):
@@ -88,6 +89,31 @@ class ConfigManagerTests(unittest.TestCase):
             self.assertTrue(reloaded.get("common", "dark_theme"))
             self.assertEqual("douyin", reloaded.get("common", "last_source"))
 
+    def test_set_batch_commits_cross_section_changes_with_one_save_and_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+            manager.set("appearance", "follow_system", True)
+            events = []
+            manager.subscribe("config.changed", events.append)
+
+            with mock.patch.object(manager, "save", wraps=manager.save) as save_mock:
+                manager.set_batch(
+                    {
+                        "appearance": {"follow_system": False},
+                        "common": {"theme": "dark"},
+                    }
+                )
+
+            save_mock.assert_called_once_with()
+            self.assertEqual(len(events), 1)
+            self.assertEqual(len(events[0]["changes"]), 2)
+            self.assertFalse(manager.get("appearance", "follow_system"))
+            self.assertEqual(manager.get("common", "theme"), "dark")
+            reloaded = ConfigManager(config_path)
+            self.assertFalse(reloaded.get("appearance", "follow_system"))
+            self.assertEqual(reloaded.get("common", "theme"), "dark")
+
     def test_subscribe_async_does_not_block_config_writer(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = f"{temp_dir}/config.json"
@@ -144,6 +170,41 @@ class ConfigManagerTests(unittest.TestCase):
             sleep_mock.assert_called_once()
             reloaded = ConfigManager(config_path)
             self.assertEqual(reloaded.get("common", "theme"), "dark")
+
+    def test_save_uses_a_unique_same_directory_temporary_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            manager = ConfigManager(str(config_path))
+
+            with mock.patch(
+                "app.config.settings.tempfile.NamedTemporaryFile",
+                wraps=tempfile.NamedTemporaryFile,
+            ) as named_temporary_file:
+                manager.set("common", "theme", "dark")
+
+            kwargs = named_temporary_file.call_args.kwargs
+            self.assertFalse(kwargs["delete"])
+            self.assertEqual(Path(kwargs["dir"]), config_path.parent)
+            self.assertTrue(kwargs["prefix"].startswith(f".{config_path.name}."))
+            self.assertEqual(kwargs["suffix"], ".tmp")
+
+    def test_set_rolls_back_memory_and_skips_event_when_atomic_replace_never_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            manager = ConfigManager(config_path)
+            events = []
+            manager.subscribe("config.changed", events.append)
+
+            with mock.patch("app.config.settings.time_module.sleep"):
+                with mock.patch.object(Path, "replace", side_effect=PermissionError("locked forever")):
+                    with self.assertRaises(ConfigWriteError):
+                        manager.set("common", "theme", "dark")
+
+            self.assertEqual(manager.get("common", "theme"), "light")
+            self.assertEqual(events, [])
+            self.assertFalse(Path(config_path + ".tmp").exists())
+            reloaded = ConfigManager(config_path)
+            self.assertEqual(reloaded.get("common", "theme"), "light")
 
     def test_auth_section_defaults_and_persistence(self):
         """验证 `test_auth_section_defaults_and_persistence` 对应场景是否符合预期，供 `ConfigManagerTests` 使用。"""

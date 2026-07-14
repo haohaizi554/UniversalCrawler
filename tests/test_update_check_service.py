@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 from Crypto.PublicKey import ECC
@@ -11,12 +11,14 @@ from app.services.update_check_service import (
     UPDATE_STATUS_AVAILABLE,
     UPDATE_STATUS_CURRENT,
     UPDATE_STATUS_LOCAL_NEWER,
+    PreparedUpdate,
     UpdateCheckError,
     check_for_update,
     check_secure_update,
     compare_versions,
     fetch_latest_release_page_payload,
     fetch_latest_release_payload,
+    launch_prepared_update,
     normalize_version,
 )
 
@@ -574,20 +576,57 @@ class UpdateCheckServiceTests(unittest.TestCase):
 
     def test_main_window_update_flow_uses_secure_manifest_path(self):
         source = Path("app/ui/main_window.py").read_text(encoding="utf-8")
+        service_source = Path("app/services/update_check_service.py").read_text(encoding="utf-8")
+        combined = source + service_source
 
         self.assertIn("check_secure_update", source)
         self.assertIn("_download_verified_update", source)
         self.assertIn("_cancel_update_download", source)
-        self.assertIn("entry.updater_helper", source)
-        self.assertIn('"--wait-pid"', source)
-        self.assertIn('"--manifest"', source)
-        self.assertIn('"--signature"', source)
-        self.assertNotIn('"--asset-json"', source)
-        self.assertIn("shell=False", source)
+        self.assertIn("launch_prepared_update", source)
+        self.assertIn("entry.updater_helper", service_source)
+        self.assertIn('"--wait-pid"', service_source)
+        self.assertIn('"--manifest"', service_source)
+        self.assertIn('"--signature"', service_source)
+        self.assertNotIn('"--asset-json"', combined)
+        self.assertIn("shell=False", service_source)
         self.assertIn("record_skipped_update", source)
         self.assertIn("跳过此版本", source)
         self.assertNotIn("下载和安装稍后接入", source)
         self.assertNotIn("自动下载和安装流程尚未接入", source)
+
+    def test_launch_prepared_update_uses_verified_server_side_paths(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            installer = root / "update.exe"
+            manifest = root / "latest.json"
+            signature = root / "latest.json.sig"
+            for path in (installer, manifest, signature):
+                path.write_bytes(b"verified")
+            prepared = PreparedUpdate(
+                installer_path=os.fspath(installer),
+                manifest_path=os.fspath(manifest),
+                signature_path=os.fspath(signature),
+                version="3.6.18",
+                log_path=os.fspath(root / "install.log"),
+            )
+            popen = Mock()
+            with patch("app.services.update_check_service.record_pending_install") as record_pending:
+                launch_prepared_update(
+                    prepared,
+                    restart_argv=["CrawlerWebPortal.exe", "--port", "8000"],
+                    popen=popen,
+                )
+
+        argv = popen.call_args.args[0]
+        self.assertIn("entry.updater_helper", argv)
+        self.assertIn("--manifest", argv)
+        self.assertIn(os.fspath(manifest), argv)
+        self.assertIn("--signature", argv)
+        self.assertIn(os.fspath(signature), argv)
+        self.assertEqual(popen.call_args.kwargs, {"shell": False})
+        record_pending.assert_called_once()
 
     def test_update_ui_describes_only_mandatory_verification_layers(self):
         dialog_source = Path("app/ui/dialogs/update_check.py").read_text(encoding="utf-8")

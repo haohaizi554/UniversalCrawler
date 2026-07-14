@@ -26,6 +26,7 @@ from app.spiders.bilibili.parser import BilibiliParser
 from app.spiders.bilibili.task_builder import BilibiliTaskBuilder
 from app.spiders import parser_cache
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER, make_mixin_key, sign_wbi_params
+from app.core.lib.douyin.encrypt.aBogus import ABogus
 from app.spiders.douyin.parser import DouyinItemParser
 from app.spiders.douyin.spider import DouyinSpider
 from app.spiders.douyin.task_builder import DouyinTaskBuilder
@@ -298,6 +299,27 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(make_mixin_key(img_key, sub_key), "ea1db124af3c7062474693fa704f4ff8")
         self.assertEqual(signed["wts"], "1700000000")
         self.assertEqual(signed["w_rid"], "efcb2ff452f5bc617792e9bc1c092c4f")
+
+    def test_bilibili_wbi_filters_reserved_characters_before_url_encoding(self):
+        img_key = "7cd084941338484aae1ad9425b84077c"
+        sub_key = "4932caff0ff746eab6f01bf08b70ac45"
+
+        signed = sign_wbi_params(
+            {"keyword": "it's (fine)!*"},
+            img_key,
+            sub_key,
+            now=1700000000,
+        )
+
+        self.assertEqual(signed["keyword"], "its fine")
+        self.assertEqual(signed["w_rid"], "473dbe79ddbefe17581b7119b97fd4a4")
+
+    def test_abogus_sm3_uses_utf8_bytes_for_non_ascii_parameters(self):
+        text = "keyword=中文&emoji=测试"
+
+        expected = ABogus.sm3_to_array(list(text.encode("utf-8")))
+
+        self.assertEqual(ABogus.sm3_to_array(text), expected)
 
     def test_bilibili_parser_rejects_incomplete_video_info(self):
         """验证 `test_bilibili_parser_rejects_incomplete_video_info` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

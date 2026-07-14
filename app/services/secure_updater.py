@@ -1299,9 +1299,24 @@ def default_installer_types(os_name: str) -> tuple[str, ...]:
     return ()
 
 
+def _is_local_development_asset_url(parsed: urllib.parse.ParseResult) -> bool:
+    """Allow development fixtures without turning the flag into an SSRF bypass."""
+    if parsed.scheme == "file":
+        return (parsed.netloc or "").lower() in {"", "localhost"} and bool(parsed.path)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_asset_url(url: str, allowed_hosts: set[str] | frozenset[str], *, development_mode: bool = False) -> None:
     parsed = urllib.parse.urlparse(str(url or ""))
-    if development_mode and parsed.scheme in {"file", "http", "https"}:
+    if development_mode and _is_local_development_asset_url(parsed):
         return
     if parsed.scheme != "https":
         raise ManifestError("asset URL must use https")
@@ -1382,8 +1397,31 @@ def _verify_file_hash(path: Path, asset: UpdateAsset) -> None:
         raise VerificationError("installer hash does not match manifest")
 
 
+_SENSITIVE_UPDATE_DETAIL_MARKERS = (
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "passwd",
+    "privatekey",
+    "secret",
+    "sessionkey",
+    "token",
+)
+
+
+def _is_sensitive_update_detail_key(key: Any) -> bool:
+    compact = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+    return any(marker in compact for marker in _SENSITIVE_UPDATE_DETAIL_MARKERS)
+
+
 def _log_update_event(event: str, message: str, *, level: str = "INFO", **details: Any) -> None:
-    safe_details = {key: value for key, value in details.items() if "token" not in key.lower() and "secret" not in key.lower()}
+    safe_details = {
+        key: value
+        for key, value in details.items()
+        if not _is_sensitive_update_detail_key(key)
+    }
     debug_logger.log(
         component="Updater",
         action=event,

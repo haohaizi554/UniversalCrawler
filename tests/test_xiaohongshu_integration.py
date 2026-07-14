@@ -36,6 +36,23 @@ from app.spiders.xiaohongshu.spider import XiaohongshuSpider
 from app.spiders.xiaohongshu.task_builder import XiaohongshuTaskBuilder
 
 class XiaohongshuHelperTests(unittest.TestCase):
+    def test_generate_b1_preserves_bytes_before_first_percent_escape(self):
+        fingerprint = {
+            key: ""
+            for key in (
+                "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x42", "x43",
+                "x44", "x45", "x46", "x48", "x49", "x50", "x51", "x52", "x82",
+            )
+        }
+        with (
+            patch.object(xhs_sign_module, "_rc4_crypt", return_value=b"A\x00"),
+            patch.object(xhs_sign_module, "_custom_b64", return_value="encoded") as mocked_b64,
+        ):
+            result = xhs_sign_module._generate_b1(fingerprint)
+
+        self.assertEqual(result, "encoded")
+        self.assertEqual(bytes(mocked_b64.call_args.args[0]), b"A\x00")
+
     def test_build_search_id_returns_non_empty_token(self):
         token = build_search_id()
         self.assertTrue(token)

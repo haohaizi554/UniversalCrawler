@@ -18,7 +18,7 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
-from cli.pipe import PipeSelection, PipeOutput
+from shared.pipe_selection import PipeSelection, PipeOutput
 
 class PipeSelectionBasicTests(unittest.TestCase):
     """PipeSelection 基础行为。"""

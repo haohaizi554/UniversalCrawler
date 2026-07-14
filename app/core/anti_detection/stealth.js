@@ -113,11 +113,17 @@
     const ctx = copy.getContext("2d");
     if (ctx) {
       ctx.drawImage(canvas, 0, 0);
-      const width = Math.max(1, Math.min(1, copy.width));
-      const height = Math.max(1, Math.min(1, copy.height));
+      const width = Math.max(1, Math.min(32, copy.width));
+      const height = Math.max(1, Math.min(32, copy.height));
       try {
         const imageData = ctx.getImageData(0, 0, width, height);
-        imageData.data[0] = (imageData.data[0] + 1) % 255;
+        const pixelCount = width * height;
+        const sampleCount = Math.min(8, pixelCount);
+        for (let sample = 0; sample < sampleCount; sample += 1) {
+          const pixel = (sample * 97) % pixelCount;
+          const red = pixel * 4;
+          imageData.data[red] = (imageData.data[red] + 1 + (sample % 2)) % 256;
+        }
         ctx.putImageData(imageData, 0, 0);
       } catch (_) {
         // Cross-origin canvases can throw; keep the original behavior.

@@ -49,7 +49,7 @@ class EventBus:
         self._history: deque[dict[str, Any]] = deque(maxlen=100)
         self._topic_publish_times: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self._async_queue: queue.Queue[_AsyncTask | _AsyncTaskKey | None] = queue.Queue(maxsize=1024)
-        self._async_priority_overflow: deque[_AsyncTask] = deque()
+        self._async_priority_overflow: deque[_AsyncTask | _AsyncTaskKey] = deque()
         self._async_pending_latest: dict[tuple[int, str, str, str], _AsyncTask] = {}
         self._async_enqueued_latest_keys: set[tuple[int, str, str, str]] = set()
         self._async_inflight = 0
@@ -258,15 +258,17 @@ class EventBus:
             self._async_enqueued_latest_keys.add(key)
             self._async_inflight += 1
             self._async_idle_condition.notify_all()
-        try:
-            self._async_queue.put_nowait(_AsyncTaskKey(key))
-        except queue.Full:
-            with self._locked("async.latest.full"):
-                self._async_pending_latest.pop(key, None)
-                self._async_enqueued_latest_keys.discard(key)
-                self._async_inflight = max(0, self._async_inflight - 1)
-                self._async_idle_condition.notify_all()
-            self._logger.warning("EventBus async handler queue full for topic %s", topic)
+            try:
+                self._async_queue.put_nowait(_AsyncTaskKey(key))
+            except queue.Full:
+                # The marker and pending payload are one logical item. Preserve
+                # both under the same lock so a stale rollback cannot remove a
+                # newer payload published by another thread.
+                self._async_priority_overflow.append(_AsyncTaskKey(key))
+                self._logger.warning(
+                    "EventBus async handler queue full; preserved latest state for topic %s",
+                    topic,
+                )
         return True
 
     def _track_async_task_enqueued(self) -> None:

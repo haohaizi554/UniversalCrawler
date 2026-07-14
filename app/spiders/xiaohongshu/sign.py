@@ -355,11 +355,7 @@ def _generate_b1(fingerprint: dict[str, Any]) -> str:
     compact = json.dumps(b1_fp, separators=(",", ":"), ensure_ascii=False)
     cipher_text = _rc4_crypt(B1_SECRET_KEY.encode(), compact.encode("utf-8")).decode("latin1")
     encoded = urllib.parse.quote(cipher_text, safe="!*'()~_-")
-    byte_values: list[int] = []
-    for chunk in encoded.split("%")[1:]:
-        byte_values.append(int(chunk[:2], 16))
-        byte_values.extend(ord(char) for char in chunk[2:])
-    return _custom_b64(bytearray(byte_values))
+    return _custom_b64(bytearray(urllib.parse.unquote_to_bytes(encoded)))
 
 
 def _sign_xs_common(cookie_dict: dict[str, str]) -> str:

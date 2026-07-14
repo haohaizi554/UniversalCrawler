@@ -56,6 +56,8 @@ class RateLimiter:
         cancel_check: Callable[[], bool] | None = None,
     ) -> bool:
         needed = max(0.01, float(tokens))
+        if needed > self.burst:
+            raise ValueError(f"requested tokens ({needed}) exceed bucket capacity ({self.burst})")
         while True:
             with self._lock:
                 acquired, wait_seconds = self._refill_locked(needed)

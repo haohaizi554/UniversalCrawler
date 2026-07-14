@@ -73,7 +73,8 @@ class MissAVSpider(BaseSpider):
             if not is_single_video_mode:
                 target_url = self.parser.inject_url_params(target_url, enable_individual)
                 self.log(f"🔧 修正后 URL: {target_url}")
-            if not self.is_running: return
+            if not self.is_running:
+                return
             # 启动浏览器
             with sync_playwright() as p:
                 self._track_playwright_instance(p)
@@ -220,7 +221,8 @@ class MissAVSpider(BaseSpider):
                     # ================= 5. 详情页嗅探 (playlist.m3u8) =================
                     success_count = 0
                     for i, idx in enumerate(selected_indices):
-                        if not self.is_running: break
+                        if not self.is_running:
+                            break
                         task = final_tasks[idx]
                         target_page_url = task['url']
                         title = task['title']
@@ -281,13 +283,16 @@ class MissAVSpider(BaseSpider):
                                     break
                                 page.mouse.click(400, 300)
                                 self.interruptible_sleep(2)  # 修复 BUG-168
-                                if not m3u8_url: page.mouse.click(400, 300)
+                                if not m3u8_url:
+                                    page.mouse.click(400, 300)
                             except PlaywrightError:
                                 pass
                             for _ in range(self.M3U8_SNIFF_SECONDS):
-                                if m3u8_ready or not self.is_running: break
+                                if m3u8_ready or not self.is_running:
+                                    break
                                 self.interruptible_sleep(1)  # 修复 BUG-168
-                            if not self.is_running: break
+                            if not self.is_running:
+                                break
                             if m3u8_url and m3u8_ready:
                                 trace_id = self.new_trace_id("m3u8")
                                 download_headers = self._download_headers_for_context(

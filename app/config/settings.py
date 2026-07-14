@@ -7,9 +7,10 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time as time_module
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -921,39 +922,48 @@ class ConfigManager:
         import logging
         logger = logging.getLogger(__name__)
         target_file = Path(self.filename)
-        temp_file = Path(self.filename + ".tmp")
         parent = target_file.parent
         parent.mkdir(parents=True, exist_ok=True)
         last_permission_error: PermissionError | None = None
 
         for attempt in range(4):
+            temp_file: Path | None = None
             try:
                 # Windows can briefly deny replace() while another GUI/Web process
                 # or security scanner observes config.json, so write a fresh temp
                 # file and retry the atomic swap before giving up.
-                with open(temp_file, "w", encoding="utf-8") as fp:
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    dir=parent,
+                    prefix=f".{target_file.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as fp:
                     json.dump(self.settings.to_dict(), fp, indent=4, ensure_ascii=False)
+                    fp.flush()
+                    os.fsync(fp.fileno())
+                    temp_file = Path(fp.name)
                 temp_file.replace(target_file)
                 return
             except PermissionError as exc:
                 last_permission_error = exc
-                try:
-                    temp_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 if attempt < 3:
                     time_module.sleep(0.05 * (attempt + 1))
                     continue
                 break
             except (OSError, TypeError, ValueError) as exc:
                 raise ConfigWriteError(str(exc)) from exc
+            finally:
+                if temp_file is not None:
+                    try:
+                        temp_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
         if last_permission_error is not None:
-            try:
-                temp_file.unlink(missing_ok=True)
-            except OSError:
-                pass
             logger.warning(f"[ConfigManager] 保存配置失败 (Permission denied): {last_permission_error}")
+            raise ConfigWriteError(str(last_permission_error)) from last_permission_error
 
     @property
     def data(self) -> dict[str, Any]:
@@ -973,19 +983,31 @@ class ConfigManager:
     def set(self, section: str, key: str, value: Any) -> None:
         payload = None
         with self._lock:
-            payload = self._set_unlocked(section, key, value)
+            original_data = self.settings.to_dict()
+            try:
+                payload = self._set_unlocked(section, key, value)
+            except Exception:
+                self._apply_data(original_data)
+                raise
         if payload is not None:
             self.event_bus.publish("config.changed", payload)
 
     def set_many(self, section: str, values: dict[str, Any]) -> None:
+        self.set_batch({section: values})
+
+    def set_batch(self, updates: Mapping[str, Mapping[str, Any]]) -> None:
+        """Atomically persist related settings across one or more sections."""
         payloads: list[dict[str, Any]] = []
         with self._lock:
             original_data = self.settings.to_dict()
             try:
-                for key, value in (values or {}).items():
-                    payload = self._set_unlocked(section, str(key), value, persist=False)
-                    if payload is not None:
-                        payloads.append(payload)
+                for section, values in (updates or {}).items():
+                    if not isinstance(values, Mapping):
+                        raise ConfigValidationError(f"{section} 必须是对象")
+                    for key, value in values.items():
+                        payload = self._set_unlocked(str(section), str(key), value, persist=False)
+                        if payload is not None:
+                            payloads.append(payload)
                 if payloads:
                     self.save()
             except Exception:
@@ -1116,15 +1138,18 @@ class ConfigManager:
                 return fallback
 
         with self._lock:
-            if proxy_app:
-                self.settings.missav.proxy_app = proxy_app
-                self.settings.missav.proxy_type = _infer_proxy_type(proxy_app, proxy_url)
-            if proxy_url or proxy_app in {"\u76f4\u8fde", "\u7cfb\u7edf\u4ee3\u7406"}:
-                self.settings.missav.proxy_url = proxy_url
-            resolved_port = _infer_port(proxy_url, self.settings.missav.proxy_port)
-            if resolved_port:
-                self.settings.missav.proxy_port = resolved_port
-            self._save_unlocked()
+            fallback_port = self.settings.missav.proxy_port
+        values: dict[str, Any] = {}
+        if proxy_app:
+            values["proxy_app"] = proxy_app
+            values["proxy_type"] = _infer_proxy_type(proxy_app, proxy_url)
+        if proxy_url or proxy_app in {"\u76f4\u8fde", "\u7cfb\u7edf\u4ee3\u7406"}:
+            values["proxy_url"] = proxy_url
+        resolved_port = _infer_port(proxy_url, fallback_port)
+        if resolved_port:
+            values["proxy_port"] = resolved_port
+        if values:
+            self.set_many("missav", values)
 
 def _build_default_settings() -> AppSettings:
     """构建一份已标准化的默认配置快照，供无状态读取场景复用。"""

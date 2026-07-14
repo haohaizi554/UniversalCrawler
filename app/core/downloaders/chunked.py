@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import threading
 import time
 
@@ -87,6 +89,7 @@ class ChunkedDownloader(BaseDownloader):
             raise StreamDownloadError("无法获取文件大小，回退到普通下载")
         accept_ranges = resp.headers.get("accept-ranges", "").lower()
         source_etag = resp.headers.get("etag") or resp.headers.get("ETag")
+        source_last_modified = resp.headers.get("last-modified") or resp.headers.get("Last-Modified")
         # 这里必须先确认服务端显式支持 Range；否则多线程分块会把整文件重复下载多份。
         if "bytes" not in accept_ranges:
             raise StreamDownloadError("服务器不支持 Range 分块下载")
@@ -110,6 +113,15 @@ class ChunkedDownloader(BaseDownloader):
         base_name = os.path.basename(save_path)
         # 分片临时文件隐藏在目标目录下，删除媒体时可以按 `.<filename>.partN` 精准清理。
         temp_files = [os.path.join(temp_dir, f".{base_name}.part{i}") for i in range(chunk_count)]
+        manifest_file = os.path.join(temp_dir, f".{base_name}.parts.json")
+        resume_manifest = {
+            "version": 1,
+            "url": str(getattr(resp, "url", "") or url),
+            "total_size": total_size,
+            "etag": str(source_etag or ""),
+            "last_modified": str(source_last_modified or ""),
+            "chunks": [[start, end] for start, end in chunks],
+        }
 
         downloaded_bytes = [0] * chunk_count
         # 所有 Range 线程共享一个 limiter，配置含义是“单任务总速度”，不是每个分片各自一份额度。
@@ -121,11 +133,57 @@ class ChunkedDownloader(BaseDownloader):
 
         def cleanup_temp_files() -> None:
             """只清理本次分配出的分片文件，避免误删同目录其他下载缓存。"""
-            for temp_file in temp_files:
+            for temp_file in [*temp_files, manifest_file]:
                 try:
                     os.remove(temp_file)
                 except OSError:
                     pass
+
+        def record_error(exc: Exception) -> None:
+            with lock:
+                error_holder.append(exc)
+            error_event.set()
+
+        def has_matching_resume_manifest() -> bool:
+            if not source_etag and not source_last_modified:
+                return False
+            try:
+                with open(manifest_file, encoding="utf-8") as fp:
+                    return json.load(fp) == resume_manifest
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                return False
+
+        if not resume_enabled or not has_matching_resume_manifest():
+            cleanup_temp_files()
+
+        if resume_enabled:
+            manifest_parent = temp_dir or "."
+            os.makedirs(manifest_parent, exist_ok=True)
+            manifest_temp: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    prefix=f".{base_name}.parts.",
+                    suffix=".tmp",
+                    dir=manifest_parent,
+                    delete=False,
+                ) as fp:
+                    manifest_temp = fp.name
+                    json.dump(resume_manifest, fp, separators=(",", ":"), ensure_ascii=True)
+                    fp.flush()
+                    os.fsync(fp.fileno())
+                os.replace(manifest_temp, manifest_file)
+                manifest_temp = None
+            except OSError as exc:
+                cleanup_temp_files()
+                raise StreamDownloadError(f"无法创建分片续传清单: {exc}") from exc
+            finally:
+                if manifest_temp:
+                    try:
+                        os.remove(manifest_temp)
+                    except OSError:
+                        pass
 
         def download_chunk(idx: int, start_byte: int, end_byte: int, temp_file: str) -> bool | None:
             chunk_length = end_byte - start_byte + 1
@@ -198,12 +256,10 @@ class ChunkedDownloader(BaseDownloader):
                             )
                     return True
                 except DownloaderStoppedError:
-                    error_event.set()
-                    error_holder.append(DownloaderStoppedError("用户停止下载"))
+                    record_error(DownloaderStoppedError("用户停止下载"))
                     return False
                 except DomainPolicyViolation as exc:
-                    error_event.set()
-                    error_holder.append(StreamDownloadError(f"分块下载地址违反公网访问策略: {exc}"))
+                    record_error(StreamDownloadError(f"分块下载地址违反公网访问策略: {exc}"))
                     return False
                 except (requests.RequestException, OSError, ValueError, RuntimeError, StreamDownloadError) as exc:
                     last_error = exc
@@ -228,12 +284,14 @@ class ChunkedDownloader(BaseDownloader):
                         )
                         time.sleep(1 if retry_count <= 3 else 3)
                         continue
-                    error_event.set()
-                    error_holder.append(exc)
+                    record_error(exc)
+                    return False
+                except Exception as exc:
+                    debug_logger.log_exception("ChunkedDownloader", "download_chunk", exc)
+                    record_error(StreamDownloadError(f"分片线程异常: {type(exc).__name__}: {exc}"))
                     return False
             if last_error is not None:
-                error_event.set()
-                error_holder.append(last_error)
+                record_error(last_error)
             return False
 
         threads: list[threading.Thread] = []
@@ -284,6 +342,16 @@ class ChunkedDownloader(BaseDownloader):
 
             try:
                 self._emit_progress(progress_callback, 98, bytes_downloaded=total_size, bytes_total=total_size)
+                for temp_file, (start, end) in zip(temp_files, chunks):
+                    expected_size = end - start + 1
+                    try:
+                        actual_size = os.path.getsize(temp_file)
+                    except OSError as exc:
+                        raise StreamDownloadError(f"分片文件缺失: {temp_file}") from exc
+                    if actual_size != expected_size:
+                        raise StreamDownloadError(
+                            f"分片合并前校验失败: {temp_file}, expected {expected_size}, got {actual_size}"
+                        )
                 # 所有分片成功后再串行合并，保证最终文件只在数据完整时出现。
                 self._merge_temp_files_atomically(temp_files, save_path)
             except Exception as exc:

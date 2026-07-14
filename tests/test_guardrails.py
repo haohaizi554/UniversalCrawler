@@ -107,6 +107,15 @@ class CrawlBudgetGuardrailTests(unittest.TestCase):
 
 
 class RateLimiterGuardrailTests(unittest.TestCase):
+    def test_rate_limiter_rejects_request_larger_than_bucket_capacity(self) -> None:
+        clock = ManualClock()
+        limiter = RateLimiter(1.0, burst=1.0, monotonic=clock.monotonic, sleep=clock.sleep)
+
+        with self.assertRaises(ValueError):
+            limiter.acquire(2.0, cancel_check=lambda: True)
+
+        self.assertEqual(clock.sleeps, [])
+
     def test_rate_limiter_allows_burst_within_capacity(self) -> None:
         clock = ManualClock()
         limiter = RateLimiter(1.0, burst=2.0, monotonic=clock.monotonic, sleep=clock.sleep)
@@ -182,6 +191,18 @@ class RateLimiterGuardrailTests(unittest.TestCase):
 class PIIDetectionGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_masked_count()
+
+    def test_pii_detection_limits_hostile_container_depth(self) -> None:
+        value: Any = "13800138000"
+        for _ in range(1200):
+            value = [value]
+
+        masked = sanitize(value)
+
+        current = masked
+        for _ in range(64):
+            current = current[0]
+        self.assertEqual(current, "<max-depth-exceeded>")
 
     def test_pii_detection_phone_number(self) -> None:
         masked = sanitize_text("请联系 +86 13800138000 或 13900139000")
@@ -641,7 +662,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             encoding="utf-8",
             errors="ignore",
         )
-        library_text = (project_root / "app" / "controllers" / "media_library_mixin.py").read_text(
+        library_text = (project_root / "app" / "services" / "media_library_runtime.py").read_text(
             encoding="utf-8",
             errors="ignore",
         )
@@ -658,7 +679,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             encoding="utf-8",
             errors="ignore",
         )
-        library_text = (project_root / "app" / "controllers" / "media_library_mixin.py").read_text(
+        library_text = (project_root / "app" / "services" / "media_library_runtime.py").read_text(
             encoding="utf-8",
             errors="ignore",
         )
@@ -677,7 +698,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
         allowed_controller_io_helpers = {
             "app/controllers/media_host_controller_mixin.py": {"_playback_file_exists"},
-            "app/controllers/media_library_mixin.py": {"_rename_video_io"},
+            "app/services/media_library_runtime.py": {"_rename_video_io"},
         }
         for relative_path, allowed_helpers in allowed_controller_io_helpers.items():
             text = (project_root / relative_path).read_text(encoding="utf-8", errors="ignore")
@@ -876,7 +897,6 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         paths.extend(
             [
                 project_root / "app" / "ui" / "gui_selection_strategy.py",
-                project_root / "app" / "ui" / "localization.py",
             ]
         )
         offenders: list[str] = []
@@ -924,7 +944,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
 
     def test_runtime_i18n_catalog_is_static_and_matches_json_sources(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
-        from app.ui.i18n_catalogs import CATALOGS
+        from shared.i18n_catalogs import CATALOGS
 
         expected = {"zh-CN": {}, "en-US": {}, "zh-TW": {}}
         for language in ("en-US", "zh-TW"):
@@ -932,7 +952,7 @@ class UIAsyncGuardrailTests(unittest.TestCase):
             raw = json.loads(path.read_text(encoding="utf-8"))
             expected[language] = {str(key): str(value) for key, value in raw.items()}
 
-        catalog_source = (project_root / "app" / "ui" / "i18n_catalogs.py").read_text(encoding="utf-8")
+        catalog_source = (project_root / "shared" / "i18n_catalogs.py").read_text(encoding="utf-8")
         longest_line = max((len(line) for line in catalog_source.splitlines()), default=0)
 
         self.assertEqual(CATALOGS, expected)
@@ -1205,10 +1225,9 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         )
         self.assertNotIn("cfg.set(", source_block)
 
-        self.assertIn(
-            "await _run_controller_worker_call(self._config_service.update_single_config, section, key, value)",
-            save_block,
-        )
+        self.assertIn("await _run_controller_worker_call(", save_block)
+        self.assertIn("self._config_service.update_single_config,", save_block)
+        self.assertIn("approved_roots=approved_roots", save_block)
         self.assertNotIn("self._config_service.update_single_config(section, key, value)", save_block)
 
     def test_web_stop_crawl_handlers_use_worker_executor(self) -> None:
@@ -1272,18 +1291,21 @@ class UIAsyncGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(row=row):
                 self.assertIn(row, text)
-        full_command = "python -X faulthandler -m pytest -q"
+        full_command = (
+            "python -X faulthandler -m pytest -q --timeout=90 "
+            "--timeout-method=thread --session-timeout=1500"
+        )
         self.assertIn(full_command, text)
         baseline = re.search(
-            rf"full：`{re.escape(full_command)}`：`(?P<passed>\d+) passed, "
+            rf"2026-07-14[^\n]*full：`{re.escape(full_command)}`：`(?P<passed>\d+) passed, "
             r"(?P<skipped>\d+) skipped, (?P<warnings>\d+) warnings in [^`]+`",
             text,
         )
         self.assertIsNotNone(baseline, "missing structured full-suite baseline")
         assert baseline is not None
-        self.assertEqual(int(baseline.group("passed")), 2368)
+        self.assertEqual(int(baseline.group("passed")), 2613)
         self.assertEqual(int(baseline.group("skipped")), 3)
-        self.assertEqual(int(baseline.group("warnings")), 7)
+        self.assertEqual(int(baseline.group("warnings")), 2)
         self.assertNotIn("2244 passed", text)
         self.assertIn("app.spiders.parser_cache.cached_parser_result()", text)
 

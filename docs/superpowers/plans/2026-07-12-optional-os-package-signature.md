@@ -187,7 +187,7 @@ Expected: PASS。
 - Modify: `app/ui/main_window.py:654-659`
 - Modify: `app/ui/i18n/en-US.json:483,490`
 - Modify: `app/ui/i18n/zh-TW.json:483,490`
-- Modify: `app/ui/i18n_catalogs.py:511-519,1070-1077`
+- Modify: `shared/i18n_catalogs.py`
 - Test: `tests/test_update_check_service.py:575-590`
 - Test: `tests/test_guardrails.py:925-939`
 
@@ -222,7 +222,7 @@ Expected: FAIL，源码仍包含“系统签名校验”。
 安装包会先完成更新清单签名、大小和 SHA-256 校验。
 ```
 
-英文使用 `signed update manifest, size, and SHA-256`，繁体使用 `更新清單簽章、大小和 SHA-256 校驗`。同步更新 JSON 与 `i18n_catalogs.py`，确保运行时静态 catalog 与 JSON 完全相同。
+英文使用 `signed update manifest, size, and SHA-256`，繁体使用 `更新清單簽章、大小和 SHA-256 校驗`。同步更新 JSON 与 `shared/i18n_catalogs.py`，确保运行时静态 catalog 与 JSON 完全相同。
 
 - [ ] **Step 4: 运行文案和静态 catalog 一致性测试**
 

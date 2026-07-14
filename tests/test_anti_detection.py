@@ -95,6 +95,14 @@ class AntiDetectionTests(unittest.TestCase):
         for token in expected_tokens:
             self.assertIn(token, script)
 
+    def test_stealth_canvas_noise_samples_a_bounded_surface(self):
+        script = load_stealth_script()
+
+        self.assertNotIn("Math.min(1, copy.width)", script)
+        self.assertNotIn("Math.min(1, copy.height)", script)
+        self.assertIn("Math.min(32, copy.width)", script)
+        self.assertIn("Math.min(32, copy.height)", script)
+
     def test_anti_detection_context_applies_stealth_script_to_playwright_context(self):
         browser_context = Mock()
         anti_context = build_browser_anti_detection(

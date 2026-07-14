@@ -158,6 +158,41 @@ class EventBusHandlerIsolationTests(unittest.TestCase):
 
 
 class EventBusAsyncBackpressureTests(unittest.TestCase):
+    def test_latest_state_survives_a_full_async_queue(self) -> None:
+        bus = EventBus()
+        bus._async_queue = Queue(maxsize=1)
+        bus._async_queue.put_nowait(None)
+
+        def handler(_payload) -> None:
+            return None
+
+        try:
+            self.assertTrue(
+                bus._enqueue_latest_async_handler(
+                    "videos.update",
+                    {"video_id": "v1", "progress": 10},
+                    handler,
+                )
+            )
+            self.assertTrue(
+                bus._enqueue_latest_async_handler(
+                    "videos.update",
+                    {"video_id": "v1", "progress": 20},
+                    handler,
+                )
+            )
+
+            key = bus._async_latest_key("videos.update", {"video_id": "v1"}, handler)
+            self.assertIsNotNone(key)
+            self.assertEqual(bus._async_pending_latest[key].payload["progress"], 20)
+            queued_key = bus._async_priority_overflow.popleft()
+            resolved = bus._resolve_async_task(queued_key)
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved.payload["progress"], 20)
+            bus._track_async_task_finished()
+        finally:
+            bus._drain_async_queue()
+
     def test_async_queue_preserves_download_terminal_event_when_full(self) -> None:
         bus = EventBus()
         bus._async_queue = Queue(maxsize=1)

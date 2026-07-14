@@ -521,7 +521,8 @@ class DouyinSpider(BaseSpider):
         all_items = []
         # 详情接口一次只接一个 aweme_id，这里串行拉取并逐条转换为统一的 VideoItem。
         for vid in ids:
-            if not self.is_running: break
+            if not self.is_running:
+                break
             api.detail_id = vid
             data = await api.run(single_page=True, data_key="aweme_detail")
             if data:
@@ -679,7 +680,8 @@ class DouyinSpider(BaseSpider):
 
         all_data = []
         for i in range(max_pages):
-            if not self.is_running: break
+            if not self.is_running:
+                break
             self.log(f"   📄 搜索第 {i + 1} 页...")
 
             await search_api.run_single(data_key="data")
@@ -698,7 +700,8 @@ class DouyinSpider(BaseSpider):
                 status_code="DOUYIN_SEARCH_PAGE",
             )
 
-            if not raw_list: break
+            if not raw_list:
+                break
 
             for item in raw_list:
                 if 'aweme_info' in item:

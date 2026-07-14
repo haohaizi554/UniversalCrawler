@@ -126,6 +126,7 @@ class BaseSpider(threading.Thread):
             self._selection_epoch += 1
         self._resume_event.set()
         self._close_tracked_playwright_browser()
+        self._stop_tracked_playwright_instance()
         self.sig_log.emit("🛑 正在停止任务...")
 
     def _track_playwright_browser(self, browser) -> None:
@@ -169,6 +170,23 @@ class BaseSpider(threading.Thread):
             )
         finally:
             self._clear_playwright_browser(browser)
+
+    def _stop_tracked_playwright_instance(self, playwright=None) -> None:
+        """Stop the tracked Playwright driver so its helper process cannot leak."""
+        with self._playwright_guard():
+            playwright = playwright or self._playwright_pw
+            if playwright is None:
+                return
+        try:
+            playwright.stop()
+        except Exception as exc:
+            debug_logger.log_exception(
+                self.__class__.__name__,
+                "stop_tracked_playwright_instance",
+                exc,
+            )
+        finally:
+            self._clear_playwright_instance(playwright)
 
     def is_playwright_browser_tracked(self) -> bool:
         """Return whether a Playwright browser is currently tracked for cleanup."""
@@ -824,5 +842,6 @@ class BaseSpider(threading.Thread):
             self.log("🛑 浏览器已关闭，无法继续需要网页的操作")
             return False
         self.log(f"⏸️ 抓取已停止，已保留 {collected_count} 个{label}，准备生成清单...")
+        self._interrupt_requested = False
         self.is_running = True
         return True

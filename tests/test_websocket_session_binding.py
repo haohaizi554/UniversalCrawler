@@ -26,16 +26,15 @@ class WebSocketSessionBinderTests(unittest.IsolatedAsyncioTestCase):
             pinned_session_ids={"default"},
         )
 
-    async def test_bind_accepts_legacy_local_clients_without_origin(self):
+    async def test_bind_rejects_local_clients_without_session_token(self):
         registry = self._registry()
         binder = WebSocketSessionBinder(registry, default_session_id="default")
         ws = _FakeWebSocket()
 
         binding = await binder.bind(ws)
 
-        self.assertIsNotNone(binding)
-        self.assertEqual(binding.session_id, "default")
-        self.assertIsNone(ws.closed)
+        self.assertIsNone(binding)
+        self.assertEqual(ws.closed, (1008, "invalid session token"))
 
     async def test_bind_uses_http_session_cookie_name(self):
         registry = self._registry()

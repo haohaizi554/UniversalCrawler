@@ -297,9 +297,9 @@ class XGnarly:
         obj = {
             1: 1,
             2: envcode,
-            3: md5(query_string.encode()).hexdigest(),
-            4: md5(body.encode()).hexdigest(),
-            5: md5(user_agent.encode()).hexdigest(),
+            3: md5(query_string.encode(), usedforsecurity=False).hexdigest(),
+            4: md5(body.encode(), usedforsecurity=False).hexdigest(),
+            5: md5(user_agent.encode(), usedforsecurity=False).hexdigest(),
             6: timestamp_ms // 1000,
             7: 1508145731,
             8: int((timestamp_ms * 1000) % 2147483648),

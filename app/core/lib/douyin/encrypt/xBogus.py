@@ -123,7 +123,7 @@ class XBogus:
         else:
             raise TypeError
 
-        md5_hash = md5()
+        md5_hash = md5(usedforsecurity=False)
         md5_hash.update(bytes(array))
         return md5_hash.hexdigest()
 
@@ -177,7 +177,7 @@ class XBogus:
         ua_key = ["\u0000", "\u0001", chr(params)]
         value = self.handle_ua(ua_key, user_agent.encode("utf-8"))
         value = b64encode(value)
-        return list(md5(value).digest())
+        return list(md5(value, usedforsecurity=False).digest())
 
     def generate_x_bogus(
         self, query: list, params: int, user_agent: str, timestamp: int

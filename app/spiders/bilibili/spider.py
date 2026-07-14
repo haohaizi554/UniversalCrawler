@@ -669,7 +669,8 @@ class BilibiliSpider(BaseSpider):
             valid_idx = 0
             self.log("⚡ 流水线已建立: 扫描 -> 解析 -> 聚合 同时进行中...")
             while True:
-                if not self.is_running: break
+                if not self.is_running:
+                    break
                 try:
                     info = self.parsed_info_queue.get(timeout=0.5)
                     # 主线程只维护展示项和二次选择所需缓存，避免后台线程直接碰 UI 数据。
@@ -1139,7 +1140,8 @@ class BilibiliSpider(BaseSpider):
         executor = ThreadPoolExecutor(max_workers=api_workers, thread_name_prefix="bili-detail")
         try:
             while True:
-                if not self.is_running: break
+                if not self.is_running:
+                    break
                 try:
                     bvid = self.raw_bv_queue.get(timeout=0.5)
                     future = executor.submit(process_one, bvid)

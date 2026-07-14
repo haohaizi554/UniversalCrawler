@@ -12,6 +12,19 @@ class _StopSpider(BaseSpider):
         return None
 
 class SpiderStopPlaywrightTests(unittest.TestCase):
+    def test_stop_closes_browser_and_stops_tracked_playwright_runtime(self):
+        spider = _StopSpider("kw", {})
+        browser = Mock()
+        playwright = Mock()
+        spider._track_playwright_browser(browser)
+        spider._track_playwright_instance(playwright)
+
+        spider.stop()
+
+        browser.close.assert_called_once_with()
+        playwright.stop.assert_called_once_with()
+        self.assertIsNone(spider._playwright_pw)
+
     def test_interruptible_page_wait_returns_false_after_stop(self):
         spider = _StopSpider("kw", {})
         page = Mock()
@@ -27,6 +40,13 @@ class SpiderStopPlaywrightTests(unittest.TestCase):
         spider = _StopSpider("kw", {})
         spider.stop()
         self.assertFalse(spider.revive_for_partial_selection(3, requires_browser=True))
+
+    def test_revive_clears_previous_interrupt_request(self):
+        spider = _StopSpider("kw", {})
+        spider.stop()
+
+        self.assertTrue(spider.revive_for_partial_selection(3))
+        self.assertFalse(spider.interrupt_requested)
 
 if __name__ == "__main__":
     unittest.main()

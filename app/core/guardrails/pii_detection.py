@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,41 +17,53 @@ BANK_CARD_RE = re.compile(
 )
 
 _masked_count = {"phone": 0, "id_card": 0, "email": 0, "bank_card": 0}
+_masked_count_lock = threading.Lock()
+MAX_SANITIZE_DEPTH = 64
+MAX_DEPTH_SENTINEL = "<max-depth-exceeded>"
 
 
 def sanitize(value: Any) -> Any:
+    return _sanitize(value, depth=0)
+
+
+def _sanitize(value: Any, *, depth: int) -> Any:
+    if depth >= MAX_SANITIZE_DEPTH:
+        return MAX_DEPTH_SENTINEL
     if isinstance(value, str):
         return sanitize_text(value)
     if isinstance(value, Mapping):
-        return {key: sanitize(item) for key, item in value.items()}
+        return {key: _sanitize(item, depth=depth + 1) for key, item in value.items()}
     if isinstance(value, list):
-        return [sanitize(item) for item in value]
+        return [_sanitize(item, depth=depth + 1) for item in value]
     if isinstance(value, tuple):
-        return tuple(sanitize(item) for item in value)
+        return tuple(_sanitize(item, depth=depth + 1) for item in value)
     return value
 
 
 def sanitize_text(value: str) -> str:
     text, phone_count = PHONE_RE.subn(_mask_phone, value)
-    _masked_count["phone"] += phone_count
     text, id_card_count = ID_CARD_RE.subn(_mask_id_card, text)
-    _masked_count["id_card"] += id_card_count
     text, email_count = EMAIL_RE.subn(_mask_email, text)
-    _masked_count["email"] += email_count
     text, bank_card_count = BANK_CARD_RE.subn(_mask_bank_card, text)
-    _masked_count["bank_card"] += bank_card_count
+    with _masked_count_lock:
+        _masked_count["phone"] += phone_count
+        _masked_count["id_card"] += id_card_count
+        _masked_count["email"] += email_count
+        _masked_count["bank_card"] += bank_card_count
     return text
 
 
 def get_masked_count() -> dict[str, int]:
     """Return PII masking count snapshot (for monitoring/audit)."""
-    return dict(_masked_count)
+    with _masked_count_lock:
+        return dict(_masked_count)
 
 
 def reset_masked_count() -> None:
     """Reset PII masking counters (for test isolation)."""
-    for key in _masked_count:
-        _masked_count[key] = 0
+    with _masked_count_lock:
+        for key in _masked_count:
+            _masked_count[key] = 0
 
 
 def _mask_phone(match: re.Match[str]) -> str:

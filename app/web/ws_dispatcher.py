@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from functools import partial
 from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
 
 from app.config import cfg
+from app.exceptions import ConfigValidationError
 from app.web.controller_config_service import WebControllerConfigService
 from app.web.logging_utils import log_web_exception
 from app.web.session_runtime import WebSessionContext
@@ -73,6 +75,20 @@ class WebSocketMessageDispatcher:
 
     async def _emit_log(self, context: WebSessionContext, message: str) -> None:
         await context.send("log", {"message": message})
+
+    async def _send_frontend_action_error(
+        self,
+        context: WebSessionContext,
+        message: str,
+        code: str,
+        *,
+        request_id: str = "",
+    ) -> None:
+        result = {"status": "error", "message": message, "data": {"code": code}}
+        if request_id:
+            result["request_id"] = request_id
+        await context.send("frontend_action_result", result)
+        await self._emit_log(context, f"❌ {message}")
 
     @staticmethod
     def _set_config_values(section: str, values: dict[str, Any]) -> None:
@@ -140,8 +156,9 @@ class WebSocketMessageDispatcher:
                 await self._emit_log(context, f"❌ scan_limit 不能大于 {MAX_SCAN_LIMIT}")
                 return
 
+        target_directory = directory or context.controller.current_save_dir
         try:
-            normalized_directory = context.require_directory(directory) if directory else None
+            normalized_directory = context.require_directory(target_directory)
         except PermissionError as exc:
             await self._emit_log(context, f"❌ {exc}")
             return
@@ -205,16 +222,49 @@ class WebSocketMessageDispatcher:
                 handler = getattr(context.controller, "handle_frontend_action", None)
             if callable(handler):
                 payload = {"section": section, "key": key, "value": value}
+                approved_roots_getter = getattr(context, "approved_roots_snapshot", None)
+                approved_roots = approved_roots_getter() if callable(approved_roots_getter) else None
+                try:
+                    payload = self._config_service.authorize_frontend_action_payload(
+                        "update_setting",
+                        payload,
+                        approved_roots,
+                    )
+                except (ConfigValidationError, PermissionError, ValueError) as exc:
+                    await self._emit_log(context, f"❌ 保存配置失败: {exc}")
+                    return
+                handler_accepts_roots = self._config_service.handler_accepts_approved_roots(handler)
                 if inspect.iscoroutinefunction(handler):
-                    result = await handler("update_setting", payload)
+                    result = (
+                        await handler("update_setting", payload, approved_roots=approved_roots)
+                        if handler_accepts_roots
+                        else await handler("update_setting", payload)
+                    )
                 else:
-                    result = await _run_controller_worker_call(handler, "update_setting", payload)
+                    if handler_accepts_roots:
+                        call = partial(
+                            handler,
+                            "update_setting",
+                            payload,
+                            approved_roots=approved_roots,
+                        )
+                    else:
+                        call = partial(handler, "update_setting", payload)
+                    result = await _run_controller_worker_call(call)
                 if inspect.isawaitable(result):
                     result = await result
                 if isinstance(result, dict) and result.get("status") != "ok":
                     await self._emit_log(context, f"❌ 保存配置失败: {result.get('message') or '未知错误'}")
                 return
-            error = await _run_controller_worker_call(self._config_service.update_single_config, section, key, value)
+            approved_roots_getter = getattr(context, "approved_roots_snapshot", None)
+            approved_roots = approved_roots_getter() if callable(approved_roots_getter) else None
+            error = await _run_controller_worker_call(
+                self._config_service.update_single_config,
+                section,
+                key,
+                value,
+                approved_roots=approved_roots,
+            )
             if error:
                 await self._emit_log(context, f"❌ 保存配置失败: {error}")
 
@@ -255,35 +305,119 @@ class WebSocketMessageDispatcher:
         """执行前端动作后尽量返回 delta，旧客户端仍可回退到完整 frontend_state。"""
         action = data.get("action", "")
         payload = data.get("payload", {}) or {}
+        request_id = ""
+        if "request_id" in data:
+            raw_request_id = data.get("request_id")
+            if not isinstance(raw_request_id, str) or len(raw_request_id) > 80:
+                await self._send_frontend_action_error(
+                    context,
+                    "request_id 必须是不超过 80 个字符的字符串",
+                    "invalid_request_id",
+                )
+                return
+            request_id = raw_request_id
         try:
             frontend_version = int(data.get("frontend_version") or 0)
         except (TypeError, ValueError):
             frontend_version = 0
         if not isinstance(action, str) or not isinstance(payload, dict):
-            await self._emit_log(context, "❌ frontend_action 参数非法")
+            await self._send_frontend_action_error(
+                context,
+                "frontend_action 参数非法",
+                "invalid_frontend_action",
+                request_id=request_id,
+            )
             return
         handler = getattr(context.controller, "async_handle_frontend_action", None)
+        handler_accepts_roots = callable(handler) and self._config_service.handler_accepts_approved_roots(handler)
+        if not handler_accepts_roots:
+            fallback = getattr(context.controller, "handle_frontend_action", None)
+            if not callable(handler):
+                handler = fallback
+                handler_accepts_roots = callable(handler) and self._config_service.handler_accepts_approved_roots(
+                    handler
+                )
         if not callable(handler):
-            handler = getattr(context.controller, "handle_frontend_action", None)
-        if not callable(handler):
-            await self._emit_log(context, "❌ frontend action 不可用")
+            await self._send_frontend_action_error(
+                context,
+                "frontend action 不可用",
+                "frontend_action_unavailable",
+                request_id=request_id,
+            )
+            return
+        approved_roots_getter = getattr(context, "approved_roots_snapshot", None)
+        approved_roots = approved_roots_getter() if callable(approved_roots_getter) else None
+        try:
+            payload = self._config_service.authorize_frontend_action_payload(action, payload, approved_roots)
+        except (ConfigValidationError, PermissionError, ValueError) as exc:
+            is_directory_error = isinstance(exc, PermissionError)
+            is_value_error = isinstance(exc, ValueError)
+            result = {
+                "status": "error",
+                "message": str(exc),
+                "data": {
+                    "code": (
+                        "directory_not_authorized"
+                        if is_directory_error
+                        else "invalid_config_value"
+                        if is_value_error
+                        else "config_not_allowed"
+                    )
+                },
+            }
+            if request_id:
+                result["request_id"] = request_id
+            await context.send("frontend_action_result", result)
+            await self._emit_log(context, f"❌ {exc}")
             return
         if inspect.iscoroutinefunction(handler):
-            result = await handler(action, payload)
+            result = (
+                await handler(action, payload, approved_roots=approved_roots)
+                if handler_accepts_roots
+                else await handler(action, payload)
+            )
         else:
-            result = await _run_controller_worker_call(handler, action, payload)
+            if handler_accepts_roots:
+                call = partial(
+                    handler,
+                    action,
+                    payload,
+                    approved_roots=approved_roots,
+                )
+            else:
+                call = partial(handler, action, payload)
+            result = await _run_controller_worker_call(call)
         if inspect.isawaitable(result):
             result = await result
-        await context.send("frontend_action_result", result)
+        if request_id and isinstance(result, dict):
+            result = dict(result)
+            result["request_id"] = request_id
         delta_getter = getattr(context.controller, "get_frontend_delta", None)
         if callable(delta_getter):
-            delta = await _run_controller_worker_call(delta_getter, frontend_version)
+            try:
+                delta = await _run_controller_worker_call(delta_getter, frontend_version)
+            except Exception as exc:
+                log_web_exception(
+                    "WebSocketMessageDispatcher",
+                    "build_frontend_action_delta",
+                    exc,
+                    context={"action": action, "frontend_version": frontend_version},
+                )
+                await context.send("frontend_action_result", result)
+                return
             if isinstance(delta, dict) and (
                 delta.get("full")
                 or int(delta.get("version") or 0) != frontend_version
             ):
+                if isinstance(result, dict):
+                    result = dict(result)
+                    result["frontend_delta"] = delta
+                await context.send("frontend_action_result", result)
                 await context.send("frontend_delta", delta)
+            else:
+                await context.send("frontend_action_result", result)
             return
+        await context.send("frontend_action_result", result)
         getter = getattr(context.controller, "get_frontend_state", None)
         if callable(getter):
             snapshot = await _run_controller_worker_call(getter)

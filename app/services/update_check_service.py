@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -22,22 +25,27 @@ from app.config.update_trust import (
 )
 from app.services.secure_updater import (
     APP_ID,
+    DEFAULT_ALLOWED_HOSTS,
     DEFAULT_CHANNEL,
     DEFAULT_MANIFEST_NAME,
     DEFAULT_SIGNATURE_NAME,
     AssetSelector,
     DownloadError,
+    Downloader,
     GitHubReleaseClient,
     LocalUpdateState,
     ManifestError,
     ManifestLocations,
     MetadataNotFoundError,
+    PackageVerifier,
     UpdateManifestVerifier,
+    VerificationError,
     VersionPolicy,
     compare_semver,
     load_local_update_state,
     log_update_event,
     open_trusted_url,
+    record_pending_install,
     sanitize_filename,
     save_local_update_state,
     validate_asset_url,
@@ -113,6 +121,114 @@ class UpdateCheckResult:
                     signature_path=candidate.signature_path,
                 )
         raise ValueError(f"unknown update candidate version: {version}")
+
+
+@dataclass(frozen=True)
+class PreparedUpdate:
+    installer_path: str
+    manifest_path: str
+    signature_path: str
+    version: str
+    log_path: str
+
+
+def prepare_verified_update(
+    result: UpdateCheckResult,
+    *,
+    public_key_pem: str = UPDATE_PUBLIC_KEY_PEM,
+    require_os_signature: bool = UPDATE_REQUIRE_OS_SIGNATURE,
+    manifest_verifier_cls=UpdateManifestVerifier,
+    downloader_cls=Downloader,
+    package_verifier_cls=PackageVerifier,
+    cancel_event=None,
+    progress_callback=None,
+) -> PreparedUpdate:
+    """Download one selected update after revalidating every signed constraint."""
+
+    verifier = manifest_verifier_cls(public_key_pem=public_key_pem)
+    manifest = verifier.load_verified(Path(result.manifest_path), Path(result.signature_path))
+    try:
+        selected_version_matches = compare_semver(manifest.version, result.latest_version) == 0
+    except ValueError as exc:
+        raise VerificationError("signed manifest version does not match selected update version") from exc
+    if not selected_version_matches:
+        raise VerificationError("signed manifest version does not match selected update version")
+    try:
+        client_is_compatible = compare_semver(result.local_version, manifest.min_client_version) >= 0
+    except ValueError as exc:
+        raise VerificationError("signed manifest minimum client version could not be verified") from exc
+    if not client_is_compatible:
+        raise VerificationError("signed manifest minimum client version is newer than this client")
+    asset = AssetSelector().select(manifest)
+    installer_path = downloader_cls(
+        allowed_hosts=set(DEFAULT_ALLOWED_HOSTS) | set(manifest.trusted_hosts),
+    ).download(
+        asset,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
+    )
+    package_verifier_cls(
+        trusted_publishers=UPDATE_TRUSTED_PUBLISHERS,
+        trusted_thumbprints=UPDATE_TRUSTED_THUMBPRINTS,
+        require_os_signature=require_os_signature,
+    ).verify(installer_path, asset)
+    return PreparedUpdate(
+        installer_path=str(installer_path),
+        manifest_path=str(result.manifest_path),
+        signature_path=str(result.signature_path),
+        version=manifest.version,
+        log_path=str(installer_path.with_name("updater-install.log")),
+    )
+
+
+def launch_prepared_update(
+    prepared: PreparedUpdate,
+    *,
+    restart_argv: list[str],
+    popen: Callable[..., Any] = subprocess.Popen,
+) -> Any:
+    """Launch the updater helper using only server-side verified paths."""
+
+    installer_path = Path(prepared.installer_path)
+    manifest_path = Path(prepared.manifest_path)
+    signature_path = Path(prepared.signature_path)
+    for path, label in (
+        (installer_path, "installer"),
+        (manifest_path, "manifest"),
+        (signature_path, "signature"),
+    ):
+        if not path.is_file():
+            raise UpdateCheckError(f"prepared update {label} is missing")
+    log_path = Path(prepared.log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    argv = [
+        sys.executable,
+        "-m",
+        "entry.updater_helper",
+        "--installer",
+        os.fspath(installer_path),
+        "--manifest",
+        os.fspath(manifest_path),
+        "--signature",
+        os.fspath(signature_path),
+        "--version",
+        prepared.version,
+        "--log-path",
+        os.fspath(log_path),
+        "--restart-argv-json",
+        json.dumps([str(item) for item in restart_argv]),
+        "--wait-pid",
+        str(os.getpid()),
+    ]
+    helper_exe = Path(sys.executable).with_name("updater_helper.exe")
+    if getattr(sys, "frozen", False) and helper_exe.is_file():
+        argv = [os.fspath(helper_exe), *argv[3:]]
+    record_pending_install(
+        version=prepared.version,
+        installer_path=os.fspath(installer_path),
+        log_path=os.fspath(log_path),
+    )
+    return popen(argv, shell=False)
 
 
 def normalize_version(value: Any) -> str:

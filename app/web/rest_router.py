@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import asdict
+from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Header, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
+from app.exceptions import ConfigValidationError
+from app.services import update_check_service
 from app.web.api_result import error_result, finalize_api_result
+from app.web.controller_config_service import WebControllerConfigService
 from app.web.controller_route_service import require_valid_video_id
+from app.web.session_runtime import is_local_host
 
 
 def _finalize_route_result(payload: Any, *, enforce_statuses: set[int] | None = None) -> Any:
@@ -34,10 +41,32 @@ class FrontendActionRequest(_RequestModel):
     action: str = Field(..., min_length=1, max_length=80)
     payload: dict[str, Any] = Field(default_factory=dict)
     frontend_version: int | None = Field(default=0, ge=0)
+    request_id: str = Field(default="", max_length=80)
+
+class UpdateCheckRequest(_RequestModel):
+    local_version: str = Field(default="", max_length=40)
+
+class UpdatePrepareRequest(UpdateCheckRequest):
+    selected_version: str = Field(default="", max_length=40)
+
+class UpdateInstallRequest(_RequestModel):
+    pass
 
 
-async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
-    return await asyncio.get_running_loop().run_in_executor(None, func, *args)
+def _public_update_result(result: Any) -> dict[str, Any]:
+    """Expose release metadata without leaking server-side verification paths."""
+    payload = asdict(result)
+    payload.pop("manifest_path", None)
+    payload.pop("signature_path", None)
+    for candidate in payload.get("candidates", []):
+        if isinstance(candidate, dict):
+            candidate.pop("manifest_path", None)
+            candidate.pop("signature_path", None)
+    return payload
+
+
+async def _run_controller_worker_call(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    return await asyncio.get_running_loop().run_in_executor(None, partial(func, *args, **kwargs))
 
 def build_rest_router(
     *,
@@ -77,15 +106,17 @@ def build_rest_router(
 
     @router.put("/api/config")
     async def update_config(request: Request, updates: ConfigUpdatesRequest):
-        controller = get_request_context(request).controller
+        context = get_request_context(request)
+        controller = context.controller
+        approved_roots = context.approved_roots_snapshot()
         handler = getattr(controller, "async_update_config", None)
         if callable(handler):
-            errors = await handler(updates.root)
+            errors = await handler(updates.root, approved_roots)
         else:
-            errors = await _run_controller_worker_call(controller.update_config, updates.root)
+            errors = await _run_controller_worker_call(controller.update_config, updates.root, approved_roots)
         if errors:
             joined = "; ".join(f"{error.section}.{error.key}: {error.error}" for error in errors)
-            return _finalize_route_result(error_result(joined, http_status=400))
+            return _finalize_route_result(error_result(joined, http_status=400), enforce_statuses={400})
         return {"status": "ok"}
 
     @router.get("/api/state")
@@ -122,7 +153,7 @@ def build_rest_router(
 
     @router.get("/api/i18n/{language}")
     async def get_i18n_catalog(language: str):
-        from app.ui.localization import SUPPORTED_LANGUAGES, TRANSLATIONS
+        from shared.localization import SUPPORTED_LANGUAGES, TRANSLATIONS
 
         normalized = str(language or "").strip()
         if normalized not in SUPPORTED_LANGUAGES or normalized == "zh-CN":
@@ -131,19 +162,71 @@ def build_rest_router(
 
     @router.post("/api/frontend/action")
     async def frontend_action(request: Request, body: FrontendActionRequest):
-        controller = get_request_context(request).controller
+        context = get_request_context(request)
+        controller = context.controller
+        approved_roots = context.approved_roots_snapshot()
+        try:
+            payload = WebControllerConfigService.authorize_frontend_action_payload(
+                body.action,
+                body.payload,
+                approved_roots,
+            )
+        except (ConfigValidationError, PermissionError, ValueError) as exc:
+            is_directory_error = isinstance(exc, PermissionError)
+            is_value_error = isinstance(exc, ValueError)
+            error_payload = {
+                "status": "error",
+                "message": str(exc),
+                "http_status": 403 if is_directory_error else 400,
+                "data": {
+                    "code": (
+                        "directory_not_authorized"
+                        if is_directory_error
+                        else "invalid_config_value"
+                        if is_value_error
+                        else "config_not_allowed"
+                    )
+                },
+            }
+            if body.request_id:
+                error_payload["request_id"] = body.request_id
+            return _finalize_route_result(
+                error_payload,
+                enforce_statuses={400, 403},
+            )
         handler = getattr(controller, "async_handle_frontend_action", None)
-        if not callable(handler):
-            handler = getattr(controller, "handle_frontend_action", None)
+        handler_accepts_roots = callable(handler) and WebControllerConfigService.handler_accepts_approved_roots(handler)
+        if not handler_accepts_roots:
+            fallback = getattr(controller, "handle_frontend_action", None)
+            if not callable(handler):
+                handler = fallback
+                handler_accepts_roots = callable(handler) and WebControllerConfigService.handler_accepts_approved_roots(
+                    handler
+                )
         try:
             frontend_version = int(body.frontend_version or 0)
         except (TypeError, ValueError):
             frontend_version = 0
         if callable(handler):
-            result = handler(body.action, body.payload)
-            if inspect.isawaitable(result):
-                result = await result
+            if inspect.iscoroutinefunction(handler):
+                result = (
+                    await handler(body.action, payload, approved_roots=approved_roots)
+                    if handler_accepts_roots
+                    else await handler(body.action, payload)
+                )
+            else:
+                result = await _run_controller_worker_call(
+                    handler,
+                    body.action,
+                    payload,
+                    **({"approved_roots": approved_roots} if handler_accepts_roots else {}),
+                )
+                if inspect.isawaitable(result):
+                    result = await result
             if isinstance(result, dict):
+                result = dict(result)
+                if body.request_id:
+                    result["request_id"] = body.request_id
                 delta_getter = getattr(controller, "get_frontend_delta", None)
                 if callable(delta_getter):
                     try:
@@ -151,10 +234,112 @@ def build_rest_router(
                     except Exception:
                         delta = None
                     if isinstance(delta, dict):
-                        result = dict(result)
                         result["frontend_delta"] = delta
-            return result
+            return _finalize_route_result(result, enforce_statuses={403})
         return _finalize_route_result(error_result("frontend action is unavailable", http_status=501))
+
+    @router.post("/api/update/check")
+    async def check_update(request: Request, _body: UpdateCheckRequest):
+        from cli import __version__
+
+        local_version = str(__version__).strip()
+        try:
+            result = await _run_controller_worker_call(update_check_service.check_secure_update, local_version)
+        except Exception as exc:
+            return _finalize_route_result(
+                error_result(str(exc) or "update check failed", http_status=502, error_key="message"),
+                enforce_statuses={502},
+            )
+        payload = _public_update_result(result)
+        client = getattr(request, "client", None)
+        payload["can_prepare"] = bool(
+            is_local_host(getattr(client, "host", None))
+            and result.status == update_check_service.UPDATE_STATUS_AVAILABLE
+            and result.candidates
+        )
+        return payload
+
+    @router.post("/api/update/prepare")
+    async def prepare_update(request: Request, body: UpdatePrepareRequest):
+        client = getattr(request, "client", None)
+        if not is_local_host(getattr(client, "host", None)):
+            return _finalize_route_result(
+                error_result("update preparation is available only on this device", http_status=403, error_key="message"),
+                enforce_statuses={403},
+            )
+        from cli import __version__
+
+        context = get_request_context(request)
+        context.clear_prepared_update()
+        local_version = str(__version__).strip()
+        try:
+            result = await _run_controller_worker_call(update_check_service.check_secure_update, local_version)
+            if result.status != update_check_service.UPDATE_STATUS_AVAILABLE or not result.candidates:
+                return _finalize_route_result(
+                    error_result(
+                        "no verified update candidate is available",
+                        http_status=409,
+                        error_key="message",
+                    ),
+                    enforce_statuses={409},
+                )
+            selected_version = str(body.selected_version or result.candidates[0].version).strip()
+            try:
+                selected_result = result.for_version(selected_version)
+            except ValueError as exc:
+                return _finalize_route_result(
+                    error_result(str(exc), http_status=400, error_key="message"),
+                    enforce_statuses={400},
+                )
+            prepared = await _run_controller_worker_call(update_check_service.prepare_verified_update, selected_result)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _finalize_route_result(
+                error_result(str(exc) or "update preparation failed", http_status=502, error_key="message"),
+                enforce_statuses={502},
+            )
+        context.store_prepared_update(prepared)
+        return {
+            "status": "ready",
+            "version": prepared.version,
+            "installer_name": Path(prepared.installer_path).name,
+        }
+
+    @router.post("/api/update/install")
+    async def install_update(request: Request, _body: UpdateInstallRequest):
+        client = getattr(request, "client", None)
+        if not is_local_host(getattr(client, "host", None)):
+            return _finalize_route_result(
+                error_result("update installation is available only on this device", http_status=403, error_key="message"),
+                enforce_statuses={403},
+            )
+        restart_argv = list(getattr(request.app.state, "web_restart_argv", []) or [])
+        shutdown_callback = getattr(request.app.state, "web_shutdown_callback", None)
+        if not restart_argv or not callable(shutdown_callback):
+            return _finalize_route_result(
+                error_result("web update restart handoff is unavailable", http_status=503, error_key="message"),
+                enforce_statuses={503},
+            )
+        context = get_request_context(request)
+        prepared = context.take_prepared_update()
+        if prepared is None:
+            return _finalize_route_result(
+                error_result("no verified update package is ready", http_status=409, error_key="message"),
+                enforce_statuses={409},
+            )
+        try:
+            await _run_controller_worker_call(
+                update_check_service.launch_prepared_update,
+                prepared,
+                restart_argv=restart_argv,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            context.store_prepared_update(prepared)
+            return _finalize_route_result(
+                error_result(str(exc) or "update installer launch failed", http_status=500, error_key="message"),
+                enforce_statuses={500},
+            )
+        shutdown_callback()
+        return {"status": "installing", "version": prepared.version}
 
     @router.post("/api/scan")
     async def scan_directory(request: Request, body: dict):

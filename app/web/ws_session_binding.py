@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 
-from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin, is_local_host
+from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin
 
 @dataclass(slots=True)
 class WebSocketSessionBinding:
@@ -48,9 +48,7 @@ class WebSocketSessionBinder:
         if origin and not is_allowed_origin(origin, expected_origin=expected_origin):
             await ws.close(code=1008, reason="forbidden origin")
             return None
-        client = getattr(ws, "client", None)
-        client_host = getattr(client, "host", None)
-        if not token_valid and (origin or not is_local_host(client_host)):
+        if not token_valid:
             await ws.close(code=1008, reason="invalid session token")
             return None
 

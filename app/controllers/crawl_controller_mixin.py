@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from functools import partial
 
 from app.core.events import (
     DomainEvent,
@@ -136,9 +137,9 @@ class CrawlControllerMixin:
         """Open the modal selection dialog outside the EventBus publish stack."""
         selected_items = list(items)
         if session_id is None:
-            callback = lambda: self._on_spider_select_tasks(selected_items)
+            callback = partial(self._on_spider_select_tasks, selected_items)
         else:
-            callback = lambda: self._on_spider_select_tasks(selected_items, session_id)
+            callback = partial(self._on_spider_select_tasks, selected_items, session_id)
         self._host()._queue_on_ui(callback)
 
     def _create_spider(self, source_id: str, keyword: str, config: dict):
