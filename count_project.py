@@ -1,5 +1,6 @@
 import os
 import argparse
+import subprocess
 from collections import defaultdict
 from html import escape
 from pathlib import Path
@@ -48,6 +49,49 @@ EXCLUDE_FILE_NAMES = {
     "Pipfile.lock",
     "composer.lock",
 }
+
+
+def normalize_repository_url(remote_url: str) -> str:
+    """Return a browser-friendly repository URL for common Git remote formats."""
+    normalized = str(remote_url or "").strip().rstrip("/")
+    if not normalized:
+        return ""
+
+    if normalized.startswith("git@"):
+        host_part, separator, repository_path = normalized.partition(":")
+        if not separator or not repository_path:
+            return ""
+        host = host_part.split("@", 1)[-1]
+        normalized = f"https://{host}/{repository_path}"
+    elif normalized.startswith("ssh://git@"):
+        ssh_target = normalized.removeprefix("ssh://git@")
+        host, separator, repository_path = ssh_target.partition("/")
+        if not separator or not repository_path:
+            return ""
+        normalized = f"https://{host}/{repository_path}"
+    elif not normalized.startswith(("https://", "http://")):
+        return ""
+
+    return normalized.removesuffix(".git").rstrip("/")
+
+
+def detect_repository_url(root: Path) -> str:
+    """Read origin from Git without requiring network access."""
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    if completed.returncode != 0:
+        return ""
+    return normalize_repository_url(completed.stdout)
 
 
 # =========================
@@ -380,6 +424,7 @@ def scan_project(root: Path) -> dict:
 
     return {
         "root": str(root),
+        "repository_url": detect_repository_url(root),
         "total_dirs": total_dirs,
         "total_files": total_files,
         "code_files": code_files,
@@ -598,6 +643,37 @@ def build_largest_chart_rows(result: dict, limit: int = 10) -> list[dict]:
             "width": percent(item["total"], max_total),
         })
     return rows
+
+
+GITHUB_MARK_PATH = (
+    "M12 .7C5.7.7.9 5.5.9 11.8c0 4.9 3.1 9.1 7.4 10.6.6.1.8-.3.8-.6v-2.1"
+    "c-3 .7-3.7-1.3-3.7-1.3-.5-1.2-1.2-1.5-1.2-1.5-1-.7.1-.7.1-.7 1.1.1 1.7 1.1"
+    " 1.7 1.1 1 1.7 2.7 1.2 3.4.9.1-.8.4-1.2.7-1.5-2.4-.3-4.9-1.2-4.9-5.3"
+    " 0-1.2.4-2.1 1.1-2.9-.1-.3-.5-1.4.1-2.9 0 0 .9-.3 3 1.1a10.4 10.4 0 0 1"
+    " 5.5 0c2.1-1.4 3-1.1 3-1.1.6 1.5.2 2.6.1 2.9.7.8 1.1 1.8 1.1 2.9"
+    " 0 4.1-2.5 5-4.9 5.3.4.3.7 1 .7 2v3c0 .4.2.8.8.6a11.1 11.1 0 0 0"
+    " 7.4-10.6C23.1 5.5 18.3.7 12 .7Z"
+)
+
+
+def render_repository_link(repository_url: str) -> str:
+    normalized_url = normalize_repository_url(repository_url)
+    if not normalized_url:
+        return ""
+
+    display_text = normalized_url.removeprefix("https://").removeprefix("http://")
+    safe_url = escape(normalized_url, quote=True)
+    safe_text = escape(display_text)
+    safe_label = escape(f"打开 GitHub 仓库：{display_text}", quote=True)
+    return f"""
+<a class="hero-repository" href="{safe_url}" target="_blank"
+   rel="noopener noreferrer" aria-label="{safe_label}" title="{safe_url}">
+<svg class="github-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+<path d="{GITHUB_MARK_PATH}"></path>
+</svg>
+<span>{safe_text}</span>
+</a>
+"""
 
 
 def render_kpi_card(label: str, value: int, hint: str, icon: str) -> str:
@@ -913,8 +989,18 @@ body {
     line-height: 1.75;
     text-wrap: pretty;
 }
+.hero-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    max-width: 100%;
+}
 .hero-path {
     display: inline-flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    width: fit-content;
     max-width: 100%;
     padding: 9px 12px;
     color: rgba(255, 255, 255, 0.88);
@@ -922,6 +1008,37 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 999px;
     overflow-wrap: anywhere;
+}
+.hero-repository {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 9px 12px;
+    color: #ffffff;
+    background: rgba(15, 23, 42, 0.36);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: 999px;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+    transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.hero-repository:hover {
+    background: rgba(15, 23, 42, 0.56);
+    border-color: rgba(255, 255, 255, 0.44);
+    transform: translateY(-1px);
+}
+.hero-repository:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 3px;
+}
+.github-logo {
+    width: 19px;
+    height: 19px;
+    flex: 0 0 19px;
+    fill: currentColor;
 }
 .hero-stat {
     align-self: end;
@@ -1316,6 +1433,11 @@ tr:last-child td {
     .hero {
         padding: 24px;
     }
+    .hero-path,
+    .hero-repository {
+        width: 100%;
+        border-radius: 14px;
+    }
     .bar-row,
     .file-bar-row {
         grid-template-columns: 1fr;
@@ -1372,7 +1494,10 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
 <div class="hero-content">
 <h1 class="hero-title">项目代码量统计报告</h1>
 <p class="hero-subtitle">静态代码规模、语言分布、测试占比与大文件风险概览</p>
+<div class="hero-meta">
 <div class="hero-path">{escape(str(result["root"]))}</div>
+{render_repository_link(str(result.get("repository_url") or ""))}
+</div>
 </div>
 <aside class="hero-stat">
 <div class="hero-stat-label">Effective LOC</div>

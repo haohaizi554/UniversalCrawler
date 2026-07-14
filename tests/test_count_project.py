@@ -6,6 +6,7 @@ from count_project import (
     _build_table,
     build_language_chart_rows,
     build_largest_chart_rows,
+    normalize_repository_url,
     parse_args,
     save_report_html,
 )
@@ -30,6 +31,7 @@ def test_build_table_uses_rich_table_when_available():
 def test_save_report_html_writes_escaped_report(tmp_path):
     result = {
         "root": "D:/demo/<project>",
+        "repository_url": "https://github.com/example/demo-project",
         "total_dirs": 1,
         "total_files": 2,
         "code_files": 1,
@@ -68,11 +70,31 @@ def test_save_report_html_writes_escaped_report(tmp_path):
     assert "最大文件 Top 10" in html
     assert 'class="insights"' in html
     assert "D:/demo/&lt;project&gt;" in html
+    assert 'class="hero-repository"' in html
+    assert 'href="https://github.com/example/demo-project"' in html
+    assert 'aria-label="打开 GitHub 仓库：github.com/example/demo-project"' in html
+    assert "github.com/example/demo-project" in html
+    assert "width: fit-content;" in html
     assert "app/&lt;main&gt;.py" in html
     assert "tests/&lt;main&gt;_test.py" in html
     assert '<span class="badge badge-prod">PROD</span>' in html
     assert '<span class="badge badge-test">TEST</span>' in html
     assert 'class="text path"' in html
+
+
+def test_normalize_repository_url_supports_github_https_and_ssh():
+    assert (
+        normalize_repository_url("https://github.com/example/demo-project.git")
+        == "https://github.com/example/demo-project"
+    )
+    assert (
+        normalize_repository_url("git@github.com:example/demo-project.git")
+        == "https://github.com/example/demo-project"
+    )
+    assert (
+        normalize_repository_url("ssh://git@github.com/example/demo-project.git")
+        == "https://github.com/example/demo-project"
+    )
 
 
 def test_parse_args_generates_html_by_default(monkeypatch):
