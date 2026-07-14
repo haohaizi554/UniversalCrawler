@@ -78,7 +78,15 @@
   function syncForSelect(select) {
     const wrapper = select && select.closest(".custom-select");
     if (!wrapper) return;
+    if (select.hidden && openCustomSelect === wrapper) close(wrapper);
+    wrapper.hidden = select.hidden;
+    wrapper.setAttribute("aria-disabled", String(select.disabled));
     wrapper.style.setProperty("--option-count", String(Math.max(1, select.options.length)));
+    if (select.dataset.menuShowAll === "true") {
+      wrapper.style.setProperty("--select-menu-max-height", `${naturalMenuHeight(select)}px`);
+    } else {
+      wrapper.style.removeProperty("--select-menu-max-height");
+    }
     Array.from(select.options).forEach(option => {
       const rawLabel = "originalLabel" in option.dataset ? option.dataset.originalLabel : option.textContent || "";
       option.dataset.originalLabel = helpers.canonical(rawLabel);
@@ -177,9 +185,14 @@
     });
   }
 
-  function menuEstimatedHeight(select) {
+  function naturalMenuHeight(select) {
     const count = Math.max(1, select ? select.options.length : 1);
-    return Math.min(236, count * 36 + 4);
+    return count * 36 + 4;
+  }
+
+  function menuEstimatedHeight(select) {
+    const naturalHeight = naturalMenuHeight(select);
+    return select?.dataset.menuShowAll === "true" ? naturalHeight : Math.min(236, naturalHeight);
   }
 
   function menuBoundary(wrapper, viewportWidth, viewportHeight) {

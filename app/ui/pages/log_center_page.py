@@ -82,9 +82,15 @@ LOG_TAB_ROW_HEIGHT = 48
 LOG_ACTION_BUTTON_TEXT_PADDING = 28
 LOG_INSPECTOR_BUTTON_TEXT_PADDING = 24
 LOG_DETAIL_KEY_TEXT_PADDING = 10
+LOG_TIME_COLUMN_MIN_WIDTH = 144
+LOG_TIME_COLUMN_SAMPLE = "0000-00-00 00:00:00"
 
 class LogCenterTableDelegate(SnapshotActionDelegate):
     """日志中心表格 delegate：source_display 支持按行居中对齐。"""
+
+    def _content_rect(self, rect: QRect) -> QRect:
+        left, right = self._cell_padding
+        return rect.adjusted(left, 0, -right, 0)
 
     def _paint_icon_text(self, painter, option, index) -> None:
         if self._column_key(index) != "source_display":
@@ -92,14 +98,12 @@ class LogCenterTableDelegate(SnapshotActionDelegate):
             return
         model = index.model()
         row = model.row_at(index.row()) if hasattr(model, "row_at") else None
-        if str((row or {}).get("source_display_align") or "").lower() != "center":
-            super()._paint_icon_text(painter, option, index)
-            return
+        center_content = str((row or {}).get("source_display_align") or "").lower() == "center"
 
         icon = index.data(Qt.ItemDataRole.DecorationRole)
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         painter.save()
-        rect = option.rect.adjusted(8, 0, -8, 0)
+        rect = self._content_rect(option.rect)
         icon_size = 16
         gap = 6
         has_icon = isinstance(icon, QIcon) and not icon.isNull()
@@ -107,13 +111,23 @@ class LogCenterTableDelegate(SnapshotActionDelegate):
         display_text = option.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, available_text_width)
         text_width = min(available_text_width, option.fontMetrics.horizontalAdvance(display_text))
         content_width = (icon_size + gap if has_icon else 0) + text_width
-        x = rect.x() + max(0, (rect.width() - content_width) // 2)
+        x = rect.x() + max(0, (rect.width() - content_width) // 2) if center_content else rect.x()
         if isinstance(icon, QIcon) and not icon.isNull():
             icon_rect = QRect(x, rect.y() + max(0, (rect.height() - icon_size) // 2), icon_size, icon_size)
             icon.paint(painter, icon_rect)
-            text_rect = QRect(icon_rect.right() + gap, rect.y(), text_width + 2, rect.height())
+            text_rect = QRect(
+                icon_rect.right() + gap,
+                rect.y(),
+                max(text_width + 2, available_text_width if not center_content else text_width + 2),
+                rect.height(),
+            )
         else:
-            text_rect = QRect(x, rect.y(), text_width + 2, rect.height())
+            text_rect = QRect(
+                x,
+                rect.y(),
+                max(text_width + 2, rect.width() if not center_content else text_width + 2),
+                rect.height(),
+            )
         painter.setPen(option.palette.color(option.palette.ColorRole.Text))
         painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), display_text)
         painter.restore()
@@ -680,7 +694,7 @@ class LogCenterPage(PageFrame):
             columns=["time", "level_display", "source_display", "trace_id", "message_summary"],
             icon_columns={"source_display"},
             row_height=32,
-            cell_padding=(8, 5),
+            cell_padding=(4, 4),
             suppress_native_selection=True,
         )
         self.table.setObjectName("LogItemsTable")
@@ -825,7 +839,11 @@ class LogCenterPage(PageFrame):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 178)
+        time_width = max(
+            LOG_TIME_COLUMN_MIN_WIDTH,
+            self.table.fontMetrics().horizontalAdvance(LOG_TIME_COLUMN_SAMPLE) + 16,
+        )
+        self.table.setColumnWidth(0, time_width)
         self.table.setColumnWidth(1, 82)
         self.table.setColumnWidth(2, 188)
         self.table.setColumnWidth(3, 140)

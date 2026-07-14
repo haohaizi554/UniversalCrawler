@@ -3,9 +3,15 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from PyQt6.QtCore import QRect
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from app.ui.pages.log_center_page import LogCenterPage
+from app.ui.pages.log_center_page import (
+    LOG_TIME_COLUMN_MIN_WIDTH,
+    LOG_TIME_COLUMN_SAMPLE,
+    LogCenterPage,
+)
+from app.ui.styles.themes import generate_log_center_stylesheet
 from app.ui.viewmodels.log_detail_worker import (
     LogDetailExportRequest,
     LogDetailExportResult,
@@ -174,6 +180,32 @@ def test_log_detail_export_success_feedback_is_non_modal(monkeypatch):
         app.processEvents()
 
     assert information_calls == []
+
+
+def test_log_center_table_uses_four_pixel_cell_padding():
+    app = QApplication.instance() or QApplication([])
+    page = LogCenterPage()
+
+    try:
+        delegate = page.table.itemDelegate()
+        assert delegate._cell_padding == (4, 4)
+        assert delegate._content_rect(QRect(10, 2, 100, 32)) == QRect(14, 2, 92, 32)
+        expected_time_width = max(
+            LOG_TIME_COLUMN_MIN_WIDTH,
+            page.table.fontMetrics().horizontalAdvance(LOG_TIME_COLUMN_SAMPLE) + 16,
+        )
+        assert page.table.columnWidth(0) == expected_time_width
+
+        stylesheet = generate_log_center_stylesheet(False)
+        item_rule = stylesheet.split("QTableView#LogItemsTable::item {", 1)[1].split("}", 1)[0]
+        assert "padding-left: 0px;" in item_rule
+        assert "padding-right: 0px;" in item_rule
+    finally:
+        page._log_query_worker.shutdown()
+        page._log_detail_worker.shutdown()
+        page._log_detail_export_worker.shutdown()
+        page.deleteLater()
+        app.processEvents()
 
 
 def test_log_center_page_does_not_reintroduce_detail_formatting_fallbacks():

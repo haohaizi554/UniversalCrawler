@@ -155,8 +155,9 @@ QTableView#LogItemsTable {{
     color: {c["text"]};
 }}
 QTableView#LogItemsTable::item {{
-    padding-left: 10px;
-    padding-right: 10px;
+    /* Horizontal content padding is owned by LogCenterTableDelegate. */
+    padding-left: 0px;
+    padding-right: 0px;
     font-size: 13px;
     font-weight: 400;
     color: {c["text"]};

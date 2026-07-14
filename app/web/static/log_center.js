@@ -202,10 +202,32 @@
     if (next) next.textContent = t("\u4e0b\u4e00\u9875");
   }
 
-  function iconFileUrl(file) {
-    const manifest = currentState().icon_manifest || {};
+  function currentIconManifest() {
+    if (typeof dependencies.getIconManifest === "function") return dependencies.getIconManifest() || {};
+    return currentState().icon_manifest || {};
+  }
+
+  function iconAssetUrl(file) {
+    const manifest = currentIconManifest();
     const route = String(manifest.route || "/ui-icon").replace(/\/+$/, "");
-    return `${escAttr(route)}/${escAttr(file || manifest.fallback || "view_grid.png")}`;
+    return `${route}/${String(file || manifest.fallback || "view_grid.png").replace(/^\/+/, "")}`;
+  }
+
+  function iconFileUrl(file) {
+    return escAttr(iconAssetUrl(file));
+  }
+
+  function syncLogPlatformFilterIcons() {
+    const select = byId("logPlatformFilter");
+    if (!select) return;
+    const manifest = currentIconManifest();
+    Array.from(select.options).forEach(option => {
+      const scope = String(option.dataset.iconScope || "");
+      const key = String(option.dataset.iconKey || "");
+      const iconFile = scope && key && manifest[scope] ? manifest[scope][key] : "";
+      if (iconFile) option.dataset.icon = iconAssetUrl(iconFile);
+      else delete option.dataset.icon;
+    });
   }
 
   function logLevelCellHtml(item) {
@@ -788,6 +810,7 @@
 
   function syncLogFilterControls() {
     document.querySelectorAll("#logTabs [data-log-tab]").forEach(button => button.classList.toggle("active", button.dataset.logTab === state.filters.category));
+    syncLogPlatformFilterIcons();
     for (const [id, key, fallback] of [["logLevelFilter", "level", "all"], ["logTimeFilter", "time", "30m"], ["logPlatformFilter", "platform", "all"]]) {
       const node = byId(id);
       const value = selectValueOrFallback(node, normalizeLogFilterValue(key, state.filters[key]), fallback);

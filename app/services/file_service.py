@@ -8,11 +8,14 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from app.debug_logger import debug_logger
 from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.utils import sanitize_filename
+
+T = TypeVar("T")
 
 # 本地媒体文件管理服务
 @dataclass
@@ -76,17 +79,23 @@ class MediaLibraryService:
         self.image_extensions = tuple(ext.lower() for ext in image_extensions)
         self.all_media_extensions = self.video_extensions + self.image_extensions
 
-    def _delete_file(self, file_path: str, *, required: bool) -> bool:
-        """删除单个文件；required=True 时把失败传播给调用方，辅助临时文件则尽量清理。"""
-        if not file_path or not os.path.exists(file_path):
-            return False
+    @staticmethod
+    def _run_file_mutation_with_retry(
+        operation: Callable[[], T],
+        *,
+        error_message: str,
+        required: bool,
+        missing_ok: bool = False,
+    ) -> T | None:
+        """Run one file mutation with the project's bounded Windows lock retry policy."""
         last_error: OSError | None = None
         for attempt in range(3):
             try:
-                os.remove(file_path)
-                return True
-            except FileNotFoundError:
-                return False
+                return operation()
+            except FileNotFoundError as exc:
+                if missing_ok or not required:
+                    return None
+                raise FileOperationError(str(exc)) from exc
             except PermissionError as exc:
                 last_error = exc
                 if attempt < 2:
@@ -96,10 +105,22 @@ class MediaLibraryService:
             except OSError as exc:
                 if required:
                     raise FileOperationError(str(exc)) from exc
-                return False
+                return None
         if required:
-            raise FileOperationError(str(last_error) if last_error else "Failed to delete file")
-        return False
+            raise FileOperationError(str(last_error) if last_error else error_message)
+        return None
+
+    def _delete_file(self, file_path: str, *, required: bool) -> bool:
+        """删除单个文件；required=True 时把失败传播给调用方，辅助临时文件则尽量清理。"""
+        if not file_path or not os.path.exists(file_path):
+            return False
+        result = self._run_file_mutation_with_retry(
+            lambda: os.remove(file_path) is None,
+            error_message="Failed to delete file",
+            required=required,
+            missing_ok=True,
+        )
+        return bool(result)
 
     @staticmethod
     def _normalized_abs(path: str) -> str:
@@ -480,20 +501,18 @@ class MediaLibraryService:
             # Windows 下文件名大小写不敏感，因此需要按 lower() 比较是否真的是同一路径。
             raise FileOperationError(f"文件名 '{safe_name}' 已存在")
 
-        last_error: OSError | None = None
-        for attempt in range(3):
-            try:
-                os.rename(old_path, new_path)
-                return old_path, new_path
-            except PermissionError as exc:
-                last_error = exc
-                if attempt < 2:
-                    time.sleep(0.1)
-                    continue
-                break
-            except OSError as exc:
-                raise FileOperationError(str(exc)) from exc
-        raise FileOperationError(str(last_error) if last_error else "重命名文件失败")
+        def _rename() -> tuple[str, str]:
+            os.rename(old_path, new_path)
+            return old_path, new_path
+
+        result = self._run_file_mutation_with_retry(
+            _rename,
+            error_message="重命名文件失败",
+            required=True,
+        )
+        if result is None:
+            raise FileOperationError("重命名文件失败")
+        return result
 
     @classmethod
     def _remove_owned_empty_subdirectory(

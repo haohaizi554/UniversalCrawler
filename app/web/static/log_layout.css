@@ -41,7 +41,7 @@
 
 #page-logs .logs-table-card table th:first-child,
 #page-logs .logs-table-card table td:first-child {
-  padding-left: 14px;
+  padding-left: 4px;
 }
 
 #page-logs .log-empty-state {

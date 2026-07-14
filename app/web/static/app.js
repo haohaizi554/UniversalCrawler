@@ -147,6 +147,7 @@ function configureListPagesHelpers() {
 function logCenterDependencies() {
   return {
     getState: () => frontendState,
+    getIconManifest: () => iconManifest,
     getLanguage: currentLanguage,
     t,
     esc,

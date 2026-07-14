@@ -12,7 +12,7 @@ flowchart LR
     Resolve --> Plugin["plugin.get_downloader_class()"]
     Plugin --> Downloader["平台下载器"]
     Downloader --> Chain["DownloadStrategyChain"]
-    Chain --> FileOps["FileOpPolicy<br/>落盘/重命名/修正扩展名"]
+    Chain --> FileOps["MediaLibraryService<br/>统一文件变更重试入口"]
     FileOps --> Result["local_path / content_type / status"]
 
     style Context fill:#fff3e0,color:#e65100

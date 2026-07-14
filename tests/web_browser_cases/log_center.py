@@ -3,6 +3,54 @@
 from __future__ import annotations
 
 class LogCenterCases:
+    def test_09bb_platform_filter_uses_gui_icon_contract_and_alignment(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              switchPage("logs");
+              renderLogs();
+              const select = document.getElementById("logPlatformFilter");
+              const wrapper = select.closest(".custom-select");
+              const button = wrapper.querySelector(".custom-select-button");
+              button.click();
+              const menu = wrapper.querySelector(".custom-select-menu");
+              const rows = Array.from(wrapper.querySelectorAll(".custom-select-option"));
+              const labelLefts = rows.map(row => row.querySelector(".custom-select-label").getBoundingClientRect().left);
+              const menuRect = menu.getBoundingClientRect();
+              const lastRowRect = rows.at(-1).getBoundingClientRect();
+              return {
+                optionIcons: Array.from(select.options).map(option => option.dataset.icon || ""),
+                buttonIcon: button.querySelector(".custom-select-icon")?.getAttribute("src") || "",
+                menuIconCount: wrapper.querySelectorAll(".custom-select-menu .custom-select-icon").length,
+                rowCount: rows.length,
+                labelLeftSpread: labelLefts.length ? Math.max(...labelLefts) - Math.min(...labelLefts) : 0,
+                menuClientHeight: menu.clientHeight,
+                menuScrollHeight: menu.scrollHeight,
+                lastRowBottom: lastRowRect.bottom,
+                menuBottom: menuRect.bottom,
+              };
+            }
+            """
+        )
+
+        expected_icons = [
+            "/ui-icon/platform_web.png",
+            "/ui-icon/platform_douyin.png",
+            "/ui-icon/platform_bilibili.png",
+            "/ui-icon/platform_kuaishou.png",
+            "/ui-icon/platform_missav.png",
+            "/ui-icon/platform_xiaohongshu.png",
+            "/ui-icon/nav_settings.png",
+        ]
+        self.assertEqual(result["optionIcons"], expected_icons)
+        self.assertEqual(result["buttonIcon"], expected_icons[0])
+        self.assertEqual(result["menuIconCount"], result["rowCount"])
+        self.assertLessEqual(result["labelLeftSpread"], 1.0)
+        self.assertLessEqual(result["menuScrollHeight"], result["menuClientHeight"] + 1)
+        self.assertLessEqual(result["lastRowBottom"], result["menuBottom"] + 1)
+
     def test_09c_language_switch_keeps_log_filter_values_and_labels(self):
         self._goto_ready()
 
@@ -830,6 +878,113 @@ class LogCenterCases:
         self.assertGreaterEqual(result["summaryHeaderWidth"], 82)
         self.assertGreaterEqual(result["summaryCellWidth"], 82)
         self.assertLessEqual(result["detailWidth"], 360)
+
+    def test_13ca_log_level_badge_stays_inside_its_webui_table_cell(self):
+        self._page.set_viewport_size({"width": 1270, "height": 1024})
+        try:
+            self._goto_ready()
+            result = self._page.evaluate(
+                """
+                async () => {
+                  window.__isolateFrontendStateForTest();
+                  frontendState.log_items = [{
+                    id: 'log-level-layout',
+                    time: '2026-07-14 18:10:28',
+                    level: 'INFO',
+                    source: 'GUI',
+                    source_display: '系统 · Web 控制器',
+                    trace_id: 'web_scan_start',
+                    message_summary: 'Web 端开始扫描本地媒体目录（异步）',
+                    message: 'Web 端开始扫描本地媒体目录（异步）'
+                  }];
+                  window.__setLogFiltersForTest({ category: 'all', level: '全部', time: '全部', platform: '全部', trace: '', keyword: '' });
+                  switchPage('logs');
+                  renderLogs();
+                  await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: 'Web 端开始扫描本地媒体目录' });
+                  const cell = document.querySelector('#logBody tr:first-child td:nth-child(2)');
+                  const badge = cell.querySelector('.log-level-badge');
+                  const cellRect = cell.getBoundingClientRect();
+                  const badgeRect = badge.getBoundingClientRect();
+                  const style = getComputedStyle(cell);
+                  return {
+                    cellLeft: cellRect.left,
+                    cellRight: cellRect.right,
+                    cellWidth: cellRect.width,
+                    badgeLeft: badgeRect.left,
+                    badgeRight: badgeRect.right,
+                    badgeWidth: badgeRect.width,
+                    paddingLeft: parseFloat(style.paddingLeft),
+                    paddingRight: parseFloat(style.paddingRight),
+                    overflow: style.overflow,
+                  };
+                }
+                """
+            )
+        finally:
+            self._page.set_viewport_size({"width": 1280, "height": 720})
+
+        self.assertGreaterEqual(result["badgeLeft"], result["cellLeft"] + result["paddingLeft"] - 0.5)
+        self.assertLessEqual(result["badgeRight"], result["cellRight"] - result["paddingRight"] + 0.5)
+        self.assertGreaterEqual(
+            result["cellWidth"],
+            result["badgeWidth"] + result["paddingLeft"] + result["paddingRight"] - 0.5,
+        )
+
+    def test_13cb_log_time_column_shows_full_timestamp_at_gui_width(self):
+        self._page.set_viewport_size({"width": 1270, "height": 1024})
+        timestamp = "2026-07-14 19:16:23"
+        try:
+            self._goto_ready()
+            result = self._page.evaluate(
+                """
+                async timestamp => {
+                  window.__isolateFrontendStateForTest();
+                  frontendState.log_items = [{
+                    id: 'log-time-layout',
+                    time: timestamp,
+                    level: 'INFO',
+                    source: 'GUI',
+                    source_display: '系统 · Web 控制器',
+                    trace_id: 'web_scan_start',
+                    message_summary: 'Web 端开始扫描本地媒体目录（异步）',
+                    message: 'Web 端开始扫描本地媒体目录（异步）'
+                  }];
+                  window.__setLogFiltersForTest({ category: 'all', level: '全部', time: '全部', platform: '全部', trace: '', keyword: '' });
+                  switchPage('logs');
+                  renderLogs();
+                  await window.__waitForLogRender({ rows: 1, total: 1, matched: 1, visible: 1, text: timestamp });
+                  const cell = document.querySelector('#logBody tr:first-child td:first-child');
+                  const cellRect = cell.getBoundingClientRect();
+                  const style = getComputedStyle(cell);
+                  const range = document.createRange();
+                  range.selectNodeContents(cell);
+                  const textRect = range.getBoundingClientRect();
+                  return {
+                    text: cell.textContent.trim(),
+                    cellWidth: cellRect.width,
+                    cellRight: cellRect.right,
+                    textRight: textRect.right,
+                    clientWidth: cell.clientWidth,
+                    scrollWidth: cell.scrollWidth,
+                    paddingLeft: parseFloat(style.paddingLeft),
+                    paddingRight: parseFloat(style.paddingRight),
+                  };
+                }
+                """,
+                timestamp,
+            )
+        finally:
+            self._page.set_viewport_size({"width": 1280, "height": 720})
+
+        self.assertEqual(result["text"], timestamp)
+        self.assertAlmostEqual(result["cellWidth"], 144, delta=0.5)
+        self.assertEqual(result["paddingLeft"], 4)
+        self.assertEqual(result["paddingRight"], 4)
+        self.assertLessEqual(result["scrollWidth"], result["clientWidth"] + 1)
+        self.assertLessEqual(
+            result["textRight"],
+            result["cellRight"] - result["paddingRight"] + 0.5,
+        )
 
     def test_13c_log_detail_copy_export_actions_match_gui(self):
         self._goto_ready()

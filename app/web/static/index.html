@@ -211,7 +211,18 @@
               <div class="filters log-filters">
                 <div class="log-filter-field"><span class="log-filter-label">日志级别</span><select id="logLevelFilter" aria-label="日志级别" onchange="syncLogFiltersFromDom()"><option value="all">全部</option><option value="INFO">INFO</option><option value="SUCCESS">SUCCESS</option><option value="WARN">WARN</option><option value="ERROR">ERROR</option><option value="CMD">CMD</option></select></div>
                 <div class="log-filter-field"><span class="log-filter-label">时间范围</span><select id="logTimeFilter" aria-label="时间范围" onchange="syncLogFiltersFromDom()"><option value="30m" selected>近 30 分钟</option><option value="1h">近 1 小时</option><option value="24h">近 24 小时</option><option value="all">全部</option></select></div>
-                <div class="log-filter-field"><span class="log-filter-label">平台</span><select id="logPlatformFilter" aria-label="平台" onchange="syncLogFiltersFromDom()"><option value="all">全部</option><option value="抖音">抖音</option><option value="Bilibili">Bilibili</option><option value="快手">快手</option><option value="MissAV">MissAV</option><option value="小红书">小红书</option><option value="系统">系统</option></select></div>
+                <div class="log-filter-field">
+                  <span class="log-filter-label">平台</span>
+                  <select id="logPlatformFilter" aria-label="平台" data-menu-show-all="true" onchange="syncLogFiltersFromDom()">
+                    <option value="all" data-icon-scope="platforms" data-icon-key="web">全部</option>
+                    <option value="抖音" data-icon-scope="platforms" data-icon-key="douyin">抖音</option>
+                    <option value="Bilibili" data-icon-scope="platforms" data-icon-key="bilibili">Bilibili</option>
+                    <option value="快手" data-icon-scope="platforms" data-icon-key="kuaishou">快手</option>
+                    <option value="MissAV" data-icon-scope="platforms" data-icon-key="missav">MissAV</option>
+                    <option value="小红书" data-icon-scope="platforms" data-icon-key="xiaohongshu">小红书</option>
+                    <option value="系统" data-icon-scope="nav" data-icon-key="settings">系统</option>
+                  </select>
+                </div>
                 <div class="log-filter-field"><span class="log-filter-label">Trace ID</span><input id="logTraceFilter" aria-label="Trace ID" placeholder="请输入 Trace ID" oninput="syncLogFiltersFromDom()" /></div>
                 <div class="log-filter-field"><span class="log-filter-label">关键词搜索</span><input id="logKeywordFilter" aria-label="关键词搜索" placeholder="请输入关键词..." oninput="syncLogFiltersFromDom()" /></div>
               </div>

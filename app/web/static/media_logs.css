@@ -175,11 +175,11 @@
 .filters input { flex: 1 1 128px; }
 
 /* Keep fixed log columns compact so the message summary remains visible at 1270px. */
-#page-logs th:nth-child(1), #page-logs td:nth-child(1) { width: 136px; }
-#page-logs th:nth-child(2), #page-logs td:nth-child(2) { width: 78px; }
+#page-logs th:nth-child(1), #page-logs td:nth-child(1) { width: max(144px, 17ch); }
+#page-logs th:nth-child(2), #page-logs td:nth-child(2) { width: 82px; }
 #page-logs th:nth-child(3), #page-logs td:nth-child(3) { width: 144px; }
 #page-logs th:nth-child(4), #page-logs td:nth-child(4) { width: 88px; }
 #page-logs th, #page-logs td {
   height: 32px;
-  padding: 5px 8px;
+  padding: 4px;
 }

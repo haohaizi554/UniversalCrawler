@@ -188,6 +188,12 @@ select option:hover {
   color: #fff;
 }
 
+select:disabled {
+  background-image: none;
+  padding-right: 12px;
+  cursor: not-allowed;
+}
+
 .custom-select {
   position: relative;
   display: inline-block;
@@ -275,6 +281,11 @@ select option:hover {
 .custom-select.is-disabled .custom-select-button {
   cursor: not-allowed;
   opacity: .72;
+  padding-right: 12px;
+}
+
+.custom-select.is-disabled .custom-select-button::after {
+  content: none;
 }
 
 .custom-select-menu {
@@ -284,7 +295,7 @@ select option:hover {
   top: 0;
   bottom: auto;
   z-index: 50;
-  max-height: min(236px, calc(var(--option-count, 6) * 36px + 4px));
+  max-height: min(var(--select-menu-max-height, 236px), calc(var(--option-count, 6) * 36px + 4px));
   overflow: auto;
   padding: 0;
   border: 2px solid var(--accent);
@@ -385,11 +396,6 @@ select option:hover {
   border-color: var(--accent);
   background: var(--input);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 72%);
-}
-
-.setting-row:focus-within {
-  border-color: color-mix(in srgb, var(--accent), transparent 32%);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 84%);
 }
 
 .source-select { min-width: 176px; }

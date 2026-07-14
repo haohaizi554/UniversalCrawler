@@ -159,6 +159,16 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("task_started", event_names)
         self.assertIn("task_finished", event_names)
         self.assertIn("video_state_changed", event_names)
+        event_payloads = {name: data for name, data in self.events if name in {"task_started", "task_finished"}}
+        for event_name in ("task_started", "task_finished"):
+            event_payload = event_payloads[event_name]
+            self.assertEqual(event_payload["event_type"], event_name)
+            self.assertEqual(event_payload["entity_id"], result["video_id"])
+            self.assertIsInstance(event_payload["timestamp_ms"], int)
+        state_payloads = [data for name, data in self.events if name == "video_state_changed"]
+        self.assertEqual(state_payloads[0]["status_code"], "downloading")
+        self.assertEqual(state_payloads[-1]["status_code"], "completed")
+        self.assertTrue(all(data["entity_id"] == result["video_id"] for data in state_payloads))
         fake_sdk.close.assert_called_once()
         self.assertEqual(
             fake_sdk.download_video.call_args.kwargs["network_policy"],
@@ -280,6 +290,14 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         event_names = [name for name, _ in self.events]
         self.assertIn("task_error", event_names)
         self.assertIn("log", event_names)
+        task_error = next(data for name, data in self.events if name == "task_error")
+        self.assertEqual(task_error["event_type"], "task_error")
+        self.assertEqual(task_error["entity_id"], task_error["video_id"])
+        self.assertIsInstance(task_error["timestamp_ms"], int)
+        terminal_state = [data for name, data in self.events if name == "video_state_changed"][-1]
+        self.assertEqual(terminal_state["event_type"], "video_state_changed")
+        self.assertEqual(terminal_state["status_code"], "failed")
+        self.assertEqual(terminal_state["entity_id"], task_error["video_id"])
         fake_sdk.close.assert_called_once()
 
 if __name__ == "__main__":

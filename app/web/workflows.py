@@ -6,6 +6,13 @@ import asyncio
 import time
 from typing import Any, Callable, Coroutine
 
+from app.core.events import (
+    build_task_error_event,
+    build_task_finished_event,
+    build_task_started_event,
+    build_video_state_event,
+)
+from app.core.state import VideoStatus
 from app.models.video_item import VideoItem
 from app.debug_logger import debug_logger
 from shared.interactive_selection import InteractiveTTYSelection
@@ -194,7 +201,7 @@ class WebWorkflowService:
         return {"status": "ok"}
 
     def _create_pending_item(self, url: str, source: str, title: str) -> VideoItem:
-        item = VideoItem(url=url, title=title, source=source, status="⏳ 等待中", progress=0)
+        item = VideoItem(url=url, title=title, source=source, status=VideoStatus.PENDING.label, progress=0)
         prefix = {"douyin": "dy", "bilibili": "bilibili", "kuaishou": "ks", "missav": "missav", "xiaohongshu": "xhs"}.get(source, source)
         item.meta["trace_id"] = debug_logger.new_trace_id(f"{prefix}_dl")
         pre_ct = infer_content_type_from_url(url)
@@ -275,11 +282,11 @@ class WebWorkflowService:
         existing = self._pending_progress_tasks.get(video_id)
         if existing is not None and not existing.done():
             existing.cancel()
-        payload = {
-            "video_id": video_id,
-            "status": pending_item.status,
-            "progress": normalized,
-        }
+        payload = build_video_state_event(
+            video_id,
+            pending_item,
+            requested_progress=normalized,
+        ).to_payload()
 
         def _schedule() -> None:
             if self._progress_broadcast_generation.get(video_id, 0) != generation:
@@ -312,48 +319,39 @@ class WebWorkflowService:
         else:
             self.controller.videos[pending_item.id] = pending_item
         await self.broadcast("item_found", self.controller._video_item_to_dict(pending_item))
-        pending_item.status = "⏳ 下载中..."
-        await self.broadcast("task_started", {
-            "video_id": pending_item.id,
-            "local_path": "",
-            "title": pending_item.title,
-            "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-        })
-        await self.broadcast("video_state_changed", {
-            "video_id": pending_item.id,
-            "status": "⏳ 下载中...",
-            "progress": 0,
-        })
+        pending_item.status = VideoStatus.DOWNLOADING.label
+        await self.broadcast(
+            "task_started",
+            build_task_started_event(pending_item.id, pending_item).to_payload(),
+        )
+        await self.broadcast(
+            "video_state_changed",
+            build_video_state_event(pending_item.id, pending_item, requested_progress=0).to_payload(),
+        )
 
     async def _broadcast_download_error(self, pending_item: VideoItem, error_msg: str) -> None:
         self._cancel_pending_progress_broadcast(pending_item.id)
         if "超时" in error_msg:
-            pending_item.status = "❌ 超时"
+            pending_item.status = VideoStatus.TIMED_OUT.label
         else:
-            pending_item.status = "❌ 失败"
+            pending_item.status = VideoStatus.FAILED.label
         pending_item.progress = 0
         if pending_item.meta is None:
             pending_item.meta = {}
         pending_item.meta["download_error"] = error_msg
-        await self.broadcast("task_error", {
-            "video_id": pending_item.id,
-            "error": error_msg,
-            "local_path": pending_item.local_path or "",
-            "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-            "title": pending_item.title,
-        })
-        await self.broadcast("video_state_changed", {
-            "video_id": pending_item.id,
-            "status": pending_item.status,
-            "progress": 0,
-            "local_path": pending_item.local_path or "",
-            "content_type": pending_item.meta.get("content_type", "") if pending_item.meta else "",
-        })
+        await self.broadcast(
+            "task_error",
+            build_task_error_event(pending_item.id, pending_item, error_msg).to_payload(),
+        )
+        await self.broadcast(
+            "video_state_changed",
+            build_video_state_event(pending_item.id, pending_item, requested_progress=0).to_payload(),
+        )
         await self._emit_log(f"❌ 下载失败: {error_msg}")
 
     async def _broadcast_download_success(self, pending_item: VideoItem, result: dict) -> dict:
         self._cancel_pending_progress_broadcast(pending_item.id)
-        pending_item.status = "✅ 完成"
+        pending_item.status = VideoStatus.COMPLETED.label
         pending_item.progress = 100
         local_path = result.get("local_path", "")
         if local_path:
@@ -369,19 +367,14 @@ class WebWorkflowService:
             pending_item.meta["content_type"] = content_type
         pending_item.meta.update(result.get("meta", {}))
         result["video_id"] = pending_item.id
-        await self.broadcast("task_finished", {
-            "video_id": pending_item.id,
-            "local_path": local_path,
-            "content_type": content_type,
-            "title": pending_item.title,
-        })
-        await self.broadcast("video_state_changed", {
-            "video_id": pending_item.id,
-            "status": "✅ 完成",
-            "progress": 100,
-            "local_path": local_path,
-            "content_type": content_type,
-        })
+        await self.broadcast(
+            "task_finished",
+            build_task_finished_event(pending_item.id, pending_item).to_payload(),
+        )
+        await self.broadcast(
+            "video_state_changed",
+            build_video_state_event(pending_item.id, pending_item, requested_progress=100).to_payload(),
+        )
         await self._emit_log(f"✅ 下载完成: {pending_item.title}")
         return result
 

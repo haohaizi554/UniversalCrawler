@@ -434,6 +434,142 @@ class SettingsCases:
             self.assertEqual(sample["labelColor"], sample["optionColor"], sample)
             self.assertGreaterEqual(sample["contrast"], 4.5, sample)
 
+    def test_11ib_open_custom_select_does_not_highlight_parent_setting_row(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              __STABLE_PLATFORM_SETTINGS__
+              window.UcpSettingsController.switchGroup('\u5e73\u53f0\u8bbe\u7f6e');
+              switchPage('settings');
+              window.UcpSettingsController.render(true);
+              await new Promise(resolve => requestAnimationFrame(resolve));
+              const select = document.querySelector('#page-settings select.platform-count');
+              const wrapper = select?.closest('.custom-select');
+              const button = wrapper?.querySelector('.custom-select-button');
+              const row = wrapper?.closest('.setting-row');
+              const rowStyle = () => {
+                const style = getComputedStyle(row);
+                return {
+                  borderColor: style.borderColor,
+                  boxShadow: style.boxShadow,
+                  backgroundColor: style.backgroundColor,
+                };
+              };
+              const before = rowStyle();
+              button.focus();
+              button.click();
+              await new Promise(resolve => requestAnimationFrame(resolve));
+              const buttonStyle = getComputedStyle(button);
+              return {
+                before,
+                after: rowStyle(),
+                isOpen: wrapper.classList.contains('open'),
+                buttonBorderColor: buttonStyle.borderColor,
+                rowBorderColor: getComputedStyle(row).borderColor,
+              };
+            }
+            """.replace("__STABLE_PLATFORM_SETTINGS__", _stable_platform_settings_snapshot_js())
+        )
+
+        self.assertTrue(result["isOpen"])
+        self.assertEqual(result["after"], result["before"])
+        self.assertNotEqual(result["buttonBorderColor"], result["rowBorderColor"])
+
+    def test_11ic_disabled_custom_select_has_no_dropdown_affordance(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const host = document.createElement('div');
+              host.innerHTML = `
+                <select class="hidden-disabled-select" hidden disabled>
+                  <option selected>5 秒（推荐）</option>
+                </select>
+                <select class="visible-disabled-select" disabled>
+                  <option selected>系统代理</option>
+                </select>
+              `;
+              document.body.appendChild(host);
+              window.UcpCustomSelect.enhance(host);
+
+              const sample = selector => {
+                const select = host.querySelector(selector);
+                const wrapper = select.closest('.custom-select');
+                const button = wrapper.querySelector('.custom-select-button');
+                return {
+                  selectHidden: select.hidden,
+                  wrapperHidden: wrapper.hidden,
+                  wrapperDisplay: getComputedStyle(wrapper).display,
+                  buttonDisabled: button.disabled,
+                  arrowContent: getComputedStyle(button, '::after').content,
+                };
+              };
+              const samples = {
+                hidden: sample('.hidden-disabled-select'),
+                visible: sample('.visible-disabled-select'),
+              };
+              host.remove();
+
+              const state = {
+                settings_snapshot: {
+                  '\u64ad\u653e\u8bbe\u7f6e': {
+                    default_player: 'builtin_player',
+                    remember_position: true,
+                    autoplay_next: true,
+                    manual_image_switch: true,
+                    image_auto_advance_interval_seconds: 5,
+                    _options: {
+                      image_auto_advance_interval_seconds: [
+                        { value: '1', label: '1 \u79d2' },
+                        { value: '5', label: '5 \u79d2\uff08\u63a8\u8350\uff09' },
+                      ],
+                    },
+                  },
+                },
+                settings_contract: { group_order: ['\u64ad\u653e\u8bbe\u7f6e'] },
+              };
+              window.UcpSettingsController.configure({
+                getState: () => state,
+                t: value => String(value || ''),
+                optionLabel: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                sendWS: () => true,
+                patchSetting: () => {},
+                patchPlatformSetting: () => {},
+                syncAppearance: () => {},
+                enhanceSelects: root => window.UcpCustomSelect.enhance(root),
+              });
+              window.UcpSettingsController.switchGroup('\u64ad\u653e\u8bbe\u7f6e');
+              switchPage('settings');
+              window.UcpSettingsController.render(true);
+              await new Promise(resolve => requestAnimationFrame(resolve));
+              const playbackSelect = document.querySelector('#page-settings .image-auto-interval');
+              const playbackWrapper = playbackSelect?.closest('.custom-select');
+              samples.playback = {
+                selectHidden: playbackSelect?.hidden || false,
+                selectDisabled: playbackSelect?.disabled || false,
+                wrapperHidden: playbackWrapper?.hidden || false,
+                wrapperDisplay: playbackWrapper ? getComputedStyle(playbackWrapper).display : '',
+              };
+              return samples;
+            }
+            """
+        )
+
+        self.assertTrue(result["hidden"]["selectHidden"])
+        self.assertTrue(result["hidden"]["wrapperHidden"])
+        self.assertEqual(result["hidden"]["wrapperDisplay"], "none")
+        self.assertTrue(result["visible"]["buttonDisabled"])
+        self.assertFalse(result["visible"]["wrapperHidden"])
+        self.assertIn(result["visible"]["arrowContent"], ("none", "normal"))
+        self.assertTrue(result["playback"]["selectHidden"])
+        self.assertTrue(result["playback"]["selectDisabled"])
+        self.assertTrue(result["playback"]["wrapperHidden"])
+        self.assertEqual(result["playback"]["wrapperDisplay"], "none")
+
     def test_11j_settings_select_opens_up_near_panel_bottom(self):
         original_viewport = self._page.viewport_size
         self._page.set_viewport_size({"width": 1280, "height": 520})

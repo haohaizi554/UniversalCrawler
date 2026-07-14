@@ -171,15 +171,14 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    subgraph Web["app/web/ (27 文件, 4,559 行)"]
+    subgraph Web["app/web/"]
         Entry["web_entry.py<br/>启动入口"]
-        Server["server.py<br/>FastAPI 应用 + CORS"]
+        Server["server.py<br/>FastAPI 应用 + CORS + 静态资源"]
         Comp["app_composition.py<br/>组合根"]
-        Ctrl["controller.py<br/>WebController (1,056 行)"]
+        Ctrl["controller.py<br/>WebController"]
         
         subgraph Routes["路由层"]
             REST["rest_router.py"]
-            Static["static_router.py"]
             WSRouter["ws_router.py"]
             WorkflowRoute["workflow_route_service.py"]
         end
@@ -193,7 +192,7 @@ flowchart TB
         end
         
         subgraph Services["服务层"]
-            Workflow["workflow_download_service.py<br/>workflow_launch_service.py"]
+            Workflow["workflows.py<br/>爬取与直下工作流"]
             SearchSvc["search_service.py"]
             DirSvc["directory_service.py"]
             FileResp["file_response_service.py"]
@@ -207,10 +206,10 @@ flowchart TB
             HTTPSession["http_session.py"]
         end
         
-        subgraph Static["静态前端"]
-            HTML["index.html (198 行)"]
+        subgraph StaticAssets["静态前端"]
+            HTML["index.html"]
             JS["app.js"]
-            CSS["app.css (798 行)"]
+            CSS["app.css"]
         end
     end
 
@@ -224,5 +223,5 @@ flowchart TB
 
     style Ctrl fill:#fff3e0,color:#e65100
     style WSRuntime fill:#e1f5fe,color:#01579b
-    style Static fill:#c8e6c9,color:#1a5e20
+    style StaticAssets fill:#c8e6c9,color:#1a5e20
 ```

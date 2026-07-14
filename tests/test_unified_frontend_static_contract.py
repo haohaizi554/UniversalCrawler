@@ -206,8 +206,8 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn("border-radius: 8px", log_filters_css)
         self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(340px, clamp(340px, 26vw, 460px));", css)
         for expected_width in (
-            "#page-logs th:nth-child(1), #page-logs td:nth-child(1) { width: 136px; }",
-            "#page-logs th:nth-child(2), #page-logs td:nth-child(2) { width: 78px; }",
+            "#page-logs th:nth-child(1), #page-logs td:nth-child(1) { width: max(144px, 17ch); }",
+            "#page-logs th:nth-child(2), #page-logs td:nth-child(2) { width: 82px; }",
             "#page-logs th:nth-child(3), #page-logs td:nth-child(3) { width: 144px; }",
             "#page-logs th:nth-child(4), #page-logs td:nth-child(4) { width: 88px; }",
         ):
@@ -216,7 +216,7 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertIn("#page-logs .log-filter-field input", css)
         self.assertIn("flex: 0 0 40px", css)
         self.assertIn("#page-logs th, #page-logs td {\n  height: 32px;", css)
-        self.assertIn("padding: 5px 8px;", css)
+        self.assertIn("padding: 4px;", css)
         self.assertIn("#page-logs .log-filter-label", i18n_js)
         for elem_id in ("logTotal", "logPrevPage", "logPageIndicator", "logPageSize", "logNextPage"):
             self.assertIn(f'id="{elem_id}"', logs_page)
