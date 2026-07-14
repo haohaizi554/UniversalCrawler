@@ -1,19 +1,240 @@
 """测试模块，覆盖 `tests/test_application_controller.py` 对应功能的行为与回归场景。"""
 
 import os
+import sys
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from app.controllers import application_controller as application_controller_module
 from app.controllers.application_controller import ApplicationController
 from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import ScanResult
 
 class ApplicationControllerTests(unittest.TestCase):
+
+    @staticmethod
+    def _signal_double(name: str):
+        return SimpleNamespace(connect=Mock(name=f"{name}.connect"))
+
+    def _start_controller_with_doubles(self, launch_args):
+        """Run the real composition root while replacing only external boundaries."""
+        module = application_controller_module
+        previous_excepthook = sys.excepthook
+        cfg_had_event_bus = hasattr(module.cfg, "event_bus")
+        previous_cfg_event_bus = getattr(module.cfg, "event_bus", None)
+
+        self.addCleanup(setattr, sys, "excepthook", previous_excepthook)
+
+        def _restore_cfg_event_bus() -> None:
+            if cfg_had_event_bus:
+                module.cfg.event_bus = previous_cfg_event_bus
+            elif hasattr(module.cfg, "event_bus"):
+                delattr(module.cfg, "event_bus")
+
+        self.addCleanup(_restore_cfg_event_bus)
+
+        app = SimpleNamespace(
+            setApplicationName=Mock(name="app.setApplicationName"),
+            setOrganizationName=Mock(name="app.setOrganizationName"),
+            setWindowIcon=Mock(name="app.setWindowIcon"),
+            aboutToQuit=self._signal_double("app.aboutToQuit"),
+        )
+        file_service = object()
+        debug_service = object()
+        spider_session = object()
+        event_bus = SimpleNamespace(
+            publish=Mock(name="event_bus.publish"),
+            subscribe=Mock(name="event_bus.subscribe"),
+            subscribe_async=Mock(name="event_bus.subscribe_async"),
+        )
+        cache_service = object()
+        app_state = SimpleNamespace(
+            event_bus=event_bus,
+            cache_service=cache_service,
+            videos={},
+            set_current_playing_id=Mock(name="app_state.set_current_playing_id"),
+        )
+        window = SimpleNamespace(
+            show=Mock(name="window.show"),
+            set_frontend_state_service=Mock(name="window.set_frontend_state_service"),
+            sig_start_crawl=self._signal_double("window.sig_start_crawl"),
+            sig_stop_crawl=self._signal_double("window.sig_stop_crawl"),
+            sig_change_dir=self._signal_double("window.sig_change_dir"),
+            sig_play_video=self._signal_double("window.sig_play_video"),
+            sig_delete_video=self._signal_double("window.sig_delete_video"),
+            sig_clear_queue=self._signal_double("window.sig_clear_queue"),
+            sig_copy_trace_id=self._signal_double("window.sig_copy_trace_id"),
+            sig_switch_preview=self._signal_double("window.sig_switch_preview"),
+            sig_auto_next_preview=self._signal_double("window.sig_auto_next_preview"),
+            bind_video_rename=Mock(name="window.bind_video_rename"),
+        )
+        host = SimpleNamespace(current_save_dir="D:/downloads")
+        spider_bridge = SimpleNamespace(sig_event=self._signal_double("spider_bridge.sig_event"))
+        download_bridge = SimpleNamespace(sig_event=self._signal_double("download_bridge.sig_event"))
+        download_manager = SimpleNamespace(
+            task_started=self._signal_double("download_manager.task_started"),
+            task_progress=self._signal_double("download_manager.task_progress"),
+            task_finished=self._signal_double("download_manager.task_finished"),
+            task_error=self._signal_double("download_manager.task_error"),
+        )
+        frontend_state_service = object()
+        media_release_timer = SimpleNamespace(
+            setInterval=Mock(name="media_release_timer.setInterval"),
+            timeout=self._signal_double("media_release_timer.timeout"),
+            start=Mock(name="media_release_timer.start"),
+        )
+        timer_factory = Mock(name="QTimer", return_value=media_release_timer)
+        timer_factory.singleShot = Mock(name="QTimer.singleShot")
+        project_root = Path("D:/test-project")
+        icon = object()
+
+        with ExitStack() as stack:
+            app_factory = stack.enter_context(patch.object(module, "QApplication", return_value=app))
+            install_root = stack.enter_context(patch.object(module, "install_root", return_value=project_root))
+            file_service_factory = stack.enter_context(
+                patch.object(module, "MediaLibraryService", return_value=file_service)
+            )
+            debug_service_factory = stack.enter_context(
+                patch.object(module, "DebugArtifactsService", return_value=debug_service)
+            )
+            spider_session_factory = stack.enter_context(
+                patch.object(module, "SpiderSession", return_value=spider_session)
+            )
+            event_bus_factory = stack.enter_context(patch.object(module, "EventBus", return_value=event_bus))
+            cache_service_factory = stack.enter_context(
+                patch.object(module, "CacheService", return_value=cache_service)
+            )
+            app_state_factory = stack.enter_context(patch.object(module, "AppState", return_value=app_state))
+            window_factory = stack.enter_context(patch.object(module, "MainWindow", return_value=window))
+            host_factory = stack.enter_context(patch.object(module, "DesktopHostAdapter", return_value=host))
+            spider_bridge_factory = stack.enter_context(
+                patch.object(module, "DomainEventBridge", return_value=spider_bridge)
+            )
+            download_bridge_factory = stack.enter_context(
+                patch.object(ApplicationController, "EVENT_BRIDGE_CLASS", return_value=download_bridge)
+            )
+            download_manager_factory = stack.enter_context(
+                patch.object(module, "DownloadManager", return_value=download_manager)
+            )
+            frontend_service_factory = stack.enter_context(
+                patch.object(module, "FrontendStateService", return_value=frontend_state_service)
+            )
+            stack.enter_context(patch.object(module, "QTimer", timer_factory))
+            ensure_app_id = stack.enter_context(patch.object(module, "ensure_windows_app_user_model_id"))
+            load_icon = stack.enter_context(patch.object(module, "load_qt_icon", return_value=icon))
+            debug_log = stack.enter_context(patch.object(module.debug_logger, "log"))
+            cfg_get = stack.enter_context(patch.object(module.cfg, "get", return_value=6))
+
+            controller = ApplicationController(launch_args)
+
+            install_root.assert_called_once_with()
+            app_factory.assert_called_once_with(module.sys.argv)
+            file_service_factory.assert_called_once_with(
+                ApplicationController.VIDEO_EXTENSIONS,
+                ApplicationController.IMAGE_EXTENSIONS,
+            )
+            debug_service_factory.assert_called_once_with()
+            spider_session_factory.assert_called_once_with(module.registry)
+            event_bus_factory.assert_called_once_with()
+            cache_service_factory.assert_called_once_with(namespace="frontend_state")
+            app_state_factory.assert_called_once_with(event_bus=event_bus, cache_service=cache_service)
+            self.assertIs(module.cfg.event_bus, event_bus)
+            self.assertIs(controller.event_bus, event_bus)
+            self.assertIs(controller.app_state, app_state)
+
+            app.setApplicationName.assert_called_once_with("Universal Crawler Pro")
+            app.setOrganizationName.assert_called_once_with("UCP")
+            ensure_app_id.assert_called_once_with(module.MAIN_APP_USER_MODEL_ID)
+            load_icon.assert_called_once_with(["favicon.ico"], fallback_names=["Web.ico"])
+            app.setWindowIcon.assert_called_once_with(icon)
+
+            window_factory.assert_called_once_with(app_state=app_state, event_bus=event_bus)
+            window.show.assert_called_once_with()
+            host_factory.assert_called_once_with(window)
+            app.aboutToQuit.connect.assert_called_once_with(controller.shutdown)
+
+            spider_bridge_factory.assert_called_once_with()
+            download_bridge_factory.assert_called_once_with()
+            self.assertEqual(spider_bridge.sig_event.connect.call_count, 1)
+            self.assertEqual(download_bridge.sig_event.connect.call_count, 1)
+            self.assertEqual(
+                spider_bridge.sig_event.connect.call_args.args[1],
+                module.Qt.ConnectionType.QueuedConnection,
+            )
+            self.assertEqual(
+                download_bridge.sig_event.connect.call_args.args[1],
+                module.Qt.ConnectionType.QueuedConnection,
+            )
+            self.assertEqual(
+                [call_.args[0] for call_ in event_bus.subscribe_async.call_args_list],
+                ["spider.domain_event", "download.domain_event"],
+            )
+            self.assertEqual(
+                [call_.args[1] for call_ in event_bus.subscribe_async.call_args_list],
+                [controller._spider_domain_event_handler, controller._download_domain_event_handler],
+            )
+            event_bus.subscribe.assert_not_called()
+
+            app_state.set_current_playing_id.assert_called_once_with(None)
+            self.assertIs(controller.videos, app_state.videos)
+            self.assertIsNone(controller.current_spider)
+            timer_factory.assert_called_once_with()
+            media_release_timer.setInterval.assert_called_once_with(
+                ApplicationController.MEDIA_RELEASE_POLL_INTERVAL_MS
+            )
+            media_release_timer.timeout.connect.assert_called_once_with(
+                controller._poll_external_media_release_requests
+            )
+            media_release_timer.start.assert_called_once_with()
+
+            cfg_get.assert_called_once_with("download", "max_concurrent", 3)
+            download_manager_factory.assert_called_once_with(max_concurrent=6)
+            frontend_service_factory.assert_called_once_with(
+                controller,
+                app_state=app_state,
+                cache_service=cache_service,
+            )
+            window.set_frontend_state_service.assert_called_once_with(frontend_state_service)
+
+            for signal_name, handler_name in (
+                ("task_started", "_emit_task_started_event"),
+                ("task_progress", "_emit_task_progress_event"),
+                ("task_finished", "_emit_task_finished_event"),
+                ("task_error", "_emit_task_error_event"),
+            ):
+                getattr(download_manager, signal_name).connect.assert_called_once_with(
+                    getattr(controller, handler_name)
+                )
+
+            for signal_name, handler_name in (
+                ("sig_start_crawl", "on_start_crawl"),
+                ("sig_stop_crawl", "on_stop_crawl"),
+                ("sig_change_dir", "on_dir_changed"),
+                ("sig_play_video", "play_video"),
+                ("sig_delete_video", "on_delete_video"),
+                ("sig_clear_queue", "on_clear_queue"),
+                ("sig_copy_trace_id", "copy_trace_id_for_video"),
+                ("sig_switch_preview", "switch_preview"),
+                ("sig_auto_next_preview", "autoplay_next_preview"),
+            ):
+                getattr(window, signal_name).connect.assert_called_once_with(
+                    getattr(controller, handler_name)
+                )
+            window.bind_video_rename.assert_called_once_with(controller.on_rename_video)
+            self.assertEqual(debug_log.call_count, 2)
+
+        return SimpleNamespace(
+            controller=controller,
+            timer_factory=timer_factory,
+            project_root=project_root,
+        )
     
     def _make_controller(self) -> ApplicationController:
         """提供 `_make_controller` 对应的内部辅助逻辑，供 `ApplicationControllerTests` 使用。"""
@@ -56,6 +277,31 @@ class ApplicationControllerTests(unittest.TestCase):
         )
         controller.current_spider = None
         return controller
+
+    def test_init_without_launch_media_wires_runtime_and_schedules_scan(self):
+        runtime = self._start_controller_with_doubles([])
+
+        self.assertEqual(runtime.controller.project_root, runtime.project_root)
+        self.assertEqual(runtime.controller.launch_media_paths, [])
+        self.assertIsNone(runtime.controller._pending_launch_media_path)
+        runtime.timer_factory.singleShot.assert_called_once_with(
+            200,
+            runtime.controller.scan_local_dir,
+        )
+
+    def test_init_with_launch_media_wires_runtime_and_schedules_open(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_path = Path(temp_dir) / "launch.mp4"
+            media_path.write_bytes(b"video")
+
+            runtime = self._start_controller_with_doubles([str(media_path)])
+
+        self.assertEqual(runtime.controller.launch_media_paths, [str(media_path.resolve())])
+        self.assertIsNone(runtime.controller._pending_launch_media_path)
+        runtime.timer_factory.singleShot.assert_called_once_with(
+            800,
+            runtime.controller._open_first_launch_media,
+        )
 
     def test_collect_launch_media_paths_filters_flags_and_unsupported_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
