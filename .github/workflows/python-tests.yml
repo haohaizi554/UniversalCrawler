@@ -142,7 +142,7 @@ jobs:
         run: .\.audit-venv\Scripts\python -m pip_audit --local --skip-editable --strict --progress-spinner off
 
   core-tests:
-    name: Core tests (Windows, Python 3.13)
+    name: Full test suite / Core + performance (Windows, Python 3.13)
     needs: quality
     runs-on: windows-latest
     timeout-minutes: 30
@@ -167,12 +167,12 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      - name: Run core suite
+      - name: Run all non-browser tests with coverage
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python -m coverage erase
-          python -m coverage run --branch --source=app,cli,entry,shared --omit="app/core/lib/*" -m pytest -q --ignore=tests/test_web_browser.py --ignore=tests/test_performance_benchmarks.py --junitxml=artifacts/core-tests.xml
+          python -m coverage run --branch --source=app,cli,entry,shared --omit="app/core/lib/*" -m pytest tests -q --ignore=tests/test_web_browser.py --ignore=tests/test_performance_benchmarks.py --junitxml=artifacts/core-tests.xml
           python -m coverage xml -o artifacts/coverage.xml
           python -m coverage report --fail-under=35
 
@@ -191,7 +191,7 @@ jobs:
           retention-days: 14
 
   browser-tests:
-    name: Browser tests (Chromium)
+    name: Full test suite / Browser (Chromium)
     needs: quality
     runs-on: windows-latest
     timeout-minutes: 25

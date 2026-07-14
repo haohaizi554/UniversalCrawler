@@ -3,8 +3,44 @@
 from __future__ import annotations
 
 import functools
+import importlib.util
 
 import pytest
+
+
+def _qt_runtime_available() -> bool:
+    """Return whether fixtures may safely import desktop worker classes."""
+
+    try:
+        return importlib.util.find_spec("PyQt6") is not None
+    except (ImportError, ValueError):
+        # Some tests temporarily replace modules with spec-less fakes. Treat
+        # those environments like the dependency-light Linux quality job.
+        return False
+
+
+def _background_worker_cleanup_targets() -> tuple[tuple[type[object], str], ...]:
+    """Resolve thread-owning classes only when the optional Qt runtime exists.
+
+    Architecture checks intentionally install only ``requirements-dev.txt``.
+    Keeping these imports behind the capability check prevents a global
+    autouse fixture from turning every lightweight test into a desktop test.
+    """
+
+    if not _qt_runtime_available():
+        return ()
+
+    from app.core.event_bus import EventBus
+    from app.services.frontend_state_service import FrontendStateService
+    from app.ui.viewmodels.latest_worker import LatestRequestWorker
+    from app.ui.viewmodels.sequential_worker import SequentialRequestWorker
+
+    return (
+        (EventBus, "shutdown"),
+        (FrontendStateService, "destroy"),
+        (LatestRequestWorker, "shutdown"),
+        (SequentialRequestWorker, "shutdown"),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -29,11 +65,6 @@ def cleanup_test_owned_background_workers(monkeypatch):
     the owning service reachable from its own thread. A long full-suite run can
     otherwise accumulate hundreds of workers before the first native Qt test.
     """
-    from app.core.event_bus import EventBus
-    from app.services.frontend_state_service import FrontendStateService
-    from app.ui.viewmodels.latest_worker import LatestRequestWorker
-    from app.ui.viewmodels.sequential_worker import SequentialRequestWorker
-
     tracked: list[tuple[object, str]] = []
 
     def track_instances(owner_type, cleanup_method: str) -> None:
@@ -46,10 +77,8 @@ def cleanup_test_owned_background_workers(monkeypatch):
 
         monkeypatch.setattr(owner_type, "__init__", tracked_init)
 
-    track_instances(EventBus, "shutdown")
-    track_instances(FrontendStateService, "destroy")
-    track_instances(LatestRequestWorker, "shutdown")
-    track_instances(SequentialRequestWorker, "shutdown")
+    for owner_type, cleanup_method in _background_worker_cleanup_targets():
+        track_instances(owner_type, cleanup_method)
 
     yield
 

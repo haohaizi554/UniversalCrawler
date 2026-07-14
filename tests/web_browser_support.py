@@ -246,7 +246,7 @@ def _install_webui_test_helpers(page) -> None:
             while (Date.now() < deadline) {
               const rowNodes = Array.from(document.querySelectorAll("#logBody tr"));
               const rows = rowNodes.length;
-              const counts = (document.getElementById("logTotal")?.textContent || "").match(/\d+/g) || [];
+              const counts = (document.getElementById("logTotal")?.textContent || "").match(/\\d+/g) || [];
               const total = counts.length >= 3 ? Number(counts[0]) : null;
               const matched = counts.length >= 3 ? Number(counts[1]) : null;
               const visible = counts.length >= 3 ? Number(counts[2]) : null;

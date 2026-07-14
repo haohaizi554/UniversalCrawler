@@ -536,7 +536,7 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         self.assertEqual(logs._tab_buttons["download"].text(), "\u4e0b\u8f7d\u65e5\u5fd7 0")
         self.assertEqual(logs._tab_buttons["system"].text(), "\u7cfb\u7edf\u65e5\u5fd7 0")
         self.assertEqual(logs._tab_buttons["performance"].text(), "\u6027\u80fd\u65e5\u5fd7 1")
-        self.assertEqual(logs._tab_buttons["error"].text(), "\u5f02\u5e38\u65e5\u5fd7 0")
+        self.assertEqual(logs._tab_buttons["error"].text(), "\u9519\u8bef\u65e5\u5fd7 0")
         self.assertNotIn("All logs", tab_text)
         self.assertNotIn("Download logs", tab_text)
         self.assertNotIn("System logs", tab_text)

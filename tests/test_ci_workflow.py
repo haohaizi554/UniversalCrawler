@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import builtins
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +92,26 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
             core_block,
         )
 
+    def test_full_suite_is_visible_and_partitioned_without_coverage_gaps(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
+        source = workflow.read_text(encoding="utf-8")
+        core_block = source.split("  core-tests:", 1)[1].split("  browser-tests:", 1)[0]
+        browser_block = source.split("  browser-tests:", 1)[1].split("  required-check:", 1)[0]
+        coverage_line = next(
+            line for line in core_block.splitlines() if "coverage run" in line
+        )
+
+        self.assertIn(
+            "name: Full test suite / Core + performance (Windows, Python 3.13)",
+            core_block,
+        )
+        self.assertIn("name: Full test suite / Browser (Chromium)", browser_block)
+        self.assertIn("-m pytest tests -q", coverage_line)
+        self.assertIn("--ignore=tests/test_web_browser.py", coverage_line)
+        self.assertIn("--ignore=tests/test_performance_benchmarks.py", coverage_line)
+        self.assertIn("pytest tests/test_performance_benchmarks.py", core_block)
+        self.assertIn("pytest tests/test_web_browser.py", browser_block)
+
     def test_required_check_aggregates_all_blocking_jobs(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")
@@ -106,6 +128,22 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("requirements-dev.txt", quality_block)
         self.assertNotIn("requirements.txt", quality_block.replace("requirements-dev.txt", ""))
         self.assertNotIn("playwright install", quality_block)
+
+    def test_quality_fixtures_do_not_import_qt_workers_without_qt_runtime(self) -> None:
+        from tests import conftest
+
+        real_import = builtins.__import__
+
+        def reject_qt_worker_imports(name, *args, **kwargs):
+            if name.startswith(("app.services.frontend_state_service", "app.ui.viewmodels")):
+                self.fail(f"quality-only test imported Qt worker module: {name}")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            mock.patch.object(conftest, "_qt_runtime_available", return_value=False),
+            mock.patch("builtins.__import__", side_effect=reject_qt_worker_imports),
+        ):
+            self.assertEqual(conftest._background_worker_cleanup_targets(), ())
 
     def test_docker_workflow_uses_buildx_cache_and_bounded_execution(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "docker-build.yml"
