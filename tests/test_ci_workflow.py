@@ -112,6 +112,17 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("pytest tests/test_performance_benchmarks.py", core_block)
         self.assertIn("pytest tests/test_web_browser.py", browser_block)
 
+    def test_qt_contracts_run_in_bounded_process_shards(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
+        source = workflow.read_text(encoding="utf-8")
+        core_block = source.split("  core-tests:", 1)[1].split("  browser-tests:", 1)[0]
+
+        self.assertIn("--ignore-glob=tests/test_unified_frontend_*.py", core_block)
+        self.assertIn("--collect-only -q", core_block)
+        self.assertIn("$uiChunkSize = 12", core_block)
+        self.assertIn("coverage run --append", core_block)
+        self.assertIn("artifacts/ui-contract-*.xml", core_block)
+
     def test_required_check_aggregates_all_blocking_jobs(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")

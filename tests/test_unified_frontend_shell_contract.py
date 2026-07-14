@@ -551,8 +551,10 @@ class UnifiedFrontendShellContractTests(_UnifiedFrontendContractTestCase):
 
     def test_main_window_directory_picker_uses_native_folder_picker(self):
         window = MainWindow()
-        self.addCleanup(window.deleteLater)
+        # addCleanup 按后进先出执行：先走正式 closeEvent 停止 worker，再延迟销毁并处理事件。
         self.addCleanup(self.app.processEvents)
+        self.addCleanup(window.deleteLater)
+        self.addCleanup(window.close)
         window.set_current_save_dir = Mock()
 
         with patch(
