@@ -1563,6 +1563,10 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(progress, [10, 10, 90, 90, 91, 100])
         self.assertEqual(mocked_get.call_count, 1)
+        self.assertEqual(
+            mocked_get.call_args.kwargs["proxies"],
+            {"http": None, "https": None},
+        )
         mocked_build_merge.assert_called_once()
         self.assertIsNone(mocked_build_merge.call_args.args[2])
         mocked_run_merge.assert_called_once()

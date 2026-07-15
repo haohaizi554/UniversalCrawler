@@ -91,9 +91,15 @@ class DialogsAndKeyboardCases:
         self._page.evaluate(
             """
             () => {
+              window.__isolateFrontendStateForTest();
               window.__selectionCloseMessages = [];
               window.sendWS = (type, payload) => window.__selectionCloseMessages.push({ type, payload });
               sendWS = window.sendWS;
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot["外观设置"] = {
+                ...(frontendState.settings_snapshot["外观设置"] || {}),
+                language: 'en-US'
+              };
               document.documentElement.dataset.language = 'en-US';
               applyStaticLanguage();
               showSelectionModal([{ title: 'first' }, { title: 'second' }]);

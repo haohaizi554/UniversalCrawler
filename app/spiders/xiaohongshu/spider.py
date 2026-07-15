@@ -17,6 +17,7 @@ from app.exceptions import SpiderAuthError, SpiderParseError
 from app.spiders.base import BaseSpider
 from app.services.auth_service import AuthService
 from app.utils.user_agents import resolve_user_agent
+from shared.network_proxy import requests_proxy_mapping
 from shared.runtime_options import DomainPolicyViolation
 
 from .client import XiaohongshuClient
@@ -240,7 +241,7 @@ class XiaohongshuSpider(BaseSpider):
             return url.strip()
         try:
             proxy = self._proxy()
-            proxies = {"http": proxy, "https": proxy} if proxy else None
+            proxies = requests_proxy_mapping(proxy)
             request_kwargs = self._restricted_public_request_kwargs(
                 candidate,
                 allowed_hosts=(*short_hosts, "xiaohongshu.com"),

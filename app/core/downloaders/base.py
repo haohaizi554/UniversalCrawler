@@ -20,6 +20,7 @@ from shared.runtime_options import (
     DomainPolicyEngine,
     DomainPolicyViolation,
 )
+from shared.network_proxy import requests_proxy_mapping
 
 ProgressCallback = Callable[..., None]
 StopCheck = Callable[[], bool]
@@ -253,7 +254,7 @@ class BaseDownloader:
         # 只在最后 rename 到 save_path，避免失败或中断时把半成品暴露成可播放文件。
         temp_path = save_path + ".downloading"
         success = False
-        proxies = {"http": proxy, "https": proxy} if proxy else None
+        proxies = requests_proxy_mapping(proxy)
         retry_count = self._coerce_retry_count(max_retries)
         rate_limiter = TransferRateLimiter(cfg.get("download", "speed_limit_kb", 0))
 

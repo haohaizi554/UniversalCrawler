@@ -614,6 +614,35 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(mocked_log_exception.call_args.args[:2], ("DouyinSpider", "user_search"))
         self.assertEqual(mocked_log_exception.call_args.kwargs["details"], {"user_id": "testuser"})
 
+    @patch("app.spiders.douyin.spider.httpx.AsyncClient")
+    @patch("app.core.lib.douyin.interface.search.Search")
+    def test_douyin_user_page_fallback_does_not_inherit_system_proxy(
+        self,
+        mock_search_class,
+        mock_async_client,
+    ):
+        spider = DouyinSpider.__new__(DouyinSpider)
+        spider.log = Mock()
+        spider.config = {}
+        search = Mock()
+        search.run = AsyncMock(return_value=[])
+        mock_search_class.return_value = search
+        response = Mock(text="")
+        response.raise_for_status = Mock()
+        client = AsyncMock()
+        client.get.return_value = response
+        mock_async_client.return_value.__aenter__ = AsyncMock(return_value=client)
+        mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        asyncio.run(
+            spider._process_user_search(
+                SimpleNamespace(cookie_str="", proxy=""),
+                "testuser",
+            )
+        )
+
+        self.assertFalse(mock_async_client.call_args.kwargs["trust_env"])
+
     def test_kuaishou_parser_extracts_cache_key(self):
         """验证 `test_kuaishou_parser_extracts_cache_key` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         parser = KuaishouParser()
@@ -1262,6 +1291,56 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertFalse(result)
         spider._wait_for_manual_login.assert_called_once_with(page, context, "ks_auth.json")
 
+    def test_kuaishou_user_cookie_values_only_reads_main_site_scope(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        context = Mock()
+        context.cookies.return_value = [
+            {"name": "userId", "value": "main-site-user", "domain": ".kuaishou.com"},
+        ]
+
+        values = spider._user_cookie_values(context)
+
+        self.assertEqual(values, {"main-site-user"})
+        context.cookies.assert_called_once_with("https://www.kuaishou.com/")
+
+    def test_kuaishou_confirmed_login_persists_refreshed_storage_state(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider._goto_with_retry = Mock(return_value=True)
+        spider._is_logged_in = Mock(return_value=True)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value={"uid"})
+        spider._persist_authenticated_state = Mock(return_value=True)
+        spider.log = Mock()
+        page = Mock()
+        context = Mock()
+
+        result = spider._ensure_login(page, context, "ks_auth.json")
+
+        self.assertTrue(result)
+        spider._persist_authenticated_state.assert_called_once_with(context, "ks_auth.json")
+
+    def test_kuaishou_avatar_without_main_site_cookie_is_not_authenticated(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.is_running = True
+        spider._goto_with_retry = Mock(return_value=True)
+        spider._is_logged_in = Mock(return_value=True)
+        spider._refresh_logged_in_state = Mock(return_value=False)
+        spider._user_cookie_values = Mock(return_value=set())
+        spider._persist_authenticated_state = Mock(return_value=True)
+        spider._open_login_entry = Mock()
+        spider._wait_for_manual_login = Mock(return_value=False)
+        spider.log = Mock()
+
+        result = spider._ensure_login(
+            Mock(),
+            Mock(),
+            "ks_auth.json",
+            allow_manual_login=False,
+        )
+
+        self.assertFalse(result)
+        spider._persist_authenticated_state.assert_not_called()
+
     @patch("app.spiders.kuaishou.spider.os.path.exists", return_value=True)
     def test_kuaishou_invalid_cookie_keeps_page_for_manual_login(self, _mock_exists):
         """验证 `test_kuaishou_invalid_cookie_keeps_page_for_manual_login` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1380,6 +1459,10 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(normalized, "https://www.kuaishou.com/short-video/3xj8abcde")
         mocked_get.assert_called_once()
+        self.assertEqual(
+            mocked_get.call_args.kwargs["proxies"],
+            {"http": None, "https": None},
+        )
 
     @patch("app.spiders.kuaishou.spider.requests.get")
     def test_kuaishou_short_link_rejects_host_marker_in_private_url_path(self, mocked_get):
@@ -1509,6 +1592,61 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(retry_session.kwargs, {"headless": True, "allow_manual_login": False})
         spider._emit_finished.assert_called_once()
 
+    def test_kuaishou_browser_session_restores_full_state_during_context_creation(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.config = {}
+        spider.is_running = True
+        spider._playwright_launch_kwargs = Mock(return_value={"headless": True})
+        spider._playwright_context_kwargs = Mock(return_value={"user_agent": "ua"})
+        storage_state = {
+            "cookies": [{"name": "userId", "value": "uid"}],
+            "origins": [{"origin": "https://www.kuaishou.com", "localStorage": []}],
+        }
+        spider._load_saved_storage_state = Mock(return_value=storage_state)
+        spider._load_saved_cookies = Mock()
+        spider._apply_stealth_to_context = Mock()
+        spider._ensure_login = Mock(return_value=False)
+        spider._entry_url_for_login = Mock(return_value=None)
+        spider._track_playwright_browser = Mock()
+        spider._close_tracked_playwright_browser = Mock()
+        playwright = Mock()
+        browser = playwright.chromium.launch.return_value
+
+        result = spider._run_browser_session(
+            playwright,
+            "ks_auth.json",
+            headless=True,
+            allow_manual_login=False,
+        )
+
+        self.assertEqual(result, "login_required")
+        browser.new_context.assert_called_once_with(user_agent="ua", storage_state=storage_state)
+        spider._load_saved_cookies.assert_not_called()
+
+    def test_kuaishou_invalid_saved_state_falls_back_to_clean_context(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.user_agent = "ua"
+        spider.log = Mock()
+        spider._playwright_context_kwargs = Mock(return_value={"user_agent": "ua"})
+        storage_state = {"cookies": [{"name": "broken"}], "origins": []}
+        spider._load_saved_storage_state = Mock(return_value=storage_state)
+        spider._apply_stealth_to_context = Mock()
+        browser = Mock()
+        clean_context = Mock()
+        browser.new_context.side_effect = [PlaywrightError("invalid cookie"), clean_context]
+
+        context = spider._create_browser_context(browser, "ks_auth.json")
+
+        self.assertIs(context, clean_context)
+        self.assertEqual(
+            browser.new_context.call_args_list,
+            [
+                unittest.mock.call(user_agent="ua", storage_state=storage_state),
+                unittest.mock.call(user_agent="ua"),
+            ],
+        )
+        spider.log.assert_any_call("⚠️ 已保存登录态不兼容，改用空白浏览器上下文重新登录")
+
     def test_kuaishou_capture_single_detail_page_returns_false_when_not_detail_url(self):
         """非单条详情页不应误走分享直下逻辑。"""
         spider = self._make_kuaishou_capture_spider()
@@ -1544,6 +1682,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider._is_logged_in = Mock(return_value=True)
         spider._refresh_logged_in_state = Mock(return_value=False)
         spider._user_cookie_values = Mock(return_value={"uid"})
+        spider._persist_authenticated_state = Mock(return_value=True)
         spider.log = Mock()
         page = Mock()
         context = Mock()
@@ -1564,6 +1703,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider._is_logged_in = Mock(return_value=False)
         spider._user_cookie_values = Mock(return_value={"uid"})
         spider._refresh_logged_in_state = Mock(return_value=True)
+        spider._persist_authenticated_state = Mock(return_value=True)
         spider._wait_for_manual_login = Mock()
         spider._open_login_entry = Mock()
         spider.log = Mock()

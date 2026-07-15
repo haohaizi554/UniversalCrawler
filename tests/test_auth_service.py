@@ -30,6 +30,52 @@ class AuthServiceTests(unittest.TestCase):
 
         self.assertEqual(cookie_dict, {"SESSDATA": "xyz"})
 
+    def test_extract_cookie_dict_for_url_filters_wrong_domain_and_expired_cookie(self):
+        payload = {
+            "cookies": [
+                {
+                    "name": "userId",
+                    "value": "identity-only",
+                    "domain": "id.kuaishou.com",
+                    "path": "/",
+                    "expires": 2000,
+                },
+                {
+                    "name": "userId",
+                    "value": "expired-main-site",
+                    "domain": ".kuaishou.com",
+                    "path": "/",
+                    "expires": 900,
+                },
+                {
+                    "name": "did",
+                    "value": "device",
+                    "domain": ".kuaishou.com",
+                    "path": "/",
+                    "expires": 2000,
+                },
+            ]
+        }
+
+        cookie_dict = self.service.extract_cookie_dict_for_url(
+            payload,
+            "https://www.kuaishou.com/",
+            now=1000,
+        )
+
+        self.assertEqual(cookie_dict, {"did": "device"})
+
+    def test_extract_cookie_dict_for_url_keeps_legacy_cookie_without_scope(self):
+        payload = {"cookies": [{"name": "sessionid_ss", "value": "legacy"}]}
+
+        cookie_dict = self.service.extract_cookie_dict_for_url(
+            payload,
+            "https://www.douyin.com/",
+            now=1000,
+        )
+
+        self.assertEqual(cookie_dict, {"sessionid_ss": "legacy"})
+
     def test_build_cookie_string_requires_target_cookie_when_requested(self):
         """验证 `test_build_cookie_string_requires_target_cookie_when_requested` 对应场景是否符合预期，供 `AuthServiceTests` 使用。"""
         cookie_str = self.service.build_cookie_string(
@@ -62,6 +108,34 @@ class AuthServiceTests(unittest.TestCase):
 
         self.assertTrue(restored)
         context.add_cookies.assert_called_once_with([{"name": "userId", "value": "1001"}])
+
+    def test_load_playwright_storage_state_preserves_origin_local_storage(self):
+        payload = {
+            "cookies": [{"name": "userId", "value": "1001", "domain": ".kuaishou.com", "path": "/"}],
+            "origins": [
+                {
+                    "origin": "https://www.kuaishou.com",
+                    "localStorage": [{"name": "device-id", "value": "device-1"}],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = f"{temp_dir}/auth.json"
+            self.service.save_json_file(file_path, payload)
+
+            restored = self.service.load_playwright_storage_state(file_path)
+
+        self.assertEqual(restored, payload)
+
+    def test_load_playwright_storage_state_upgrades_legacy_cookie_list(self):
+        payload = [{"name": "userId", "value": "1001", "domain": ".kuaishou.com", "path": "/"}]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = f"{temp_dir}/auth.json"
+            self.service.save_json_file(file_path, payload)
+
+            restored = self.service.load_playwright_storage_state(file_path)
+
+        self.assertEqual(restored, {"cookies": payload, "origins": []})
 
     @patch("app.services.auth_service.time.sleep", return_value=None)
     def test_wait_for_cookie_and_persist_saves_context_state(self, _mock_sleep):

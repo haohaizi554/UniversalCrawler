@@ -1945,10 +1945,10 @@ class FrontendStateService:
         requirement = settings_adapter.PLATFORM_AUTH_REQUIREMENTS.get(str(plugin_id or "").strip().lower())
         if not requirement:
             return (plugin_id, "no-rule")
-        file_key, _cookie_names = requirement
+        file_key, _cookie_names, auth_url = requirement
         raw_path = str(auth_cfg.get(file_key) or "").strip()
         if not raw_path:
-            return (plugin_id, file_key, "")
+            return (plugin_id, file_key, auth_url, "")
         path = Path(raw_path).expanduser()
         try:
             normalized_path = str(path.resolve(strict=False)).casefold()
@@ -1957,8 +1957,8 @@ class FrontendStateService:
         try:
             stat = path.stat()
         except OSError:
-            return (plugin_id, file_key, normalized_path, False, 0, 0)
-        return (plugin_id, file_key, normalized_path, True, int(stat.st_mtime_ns), int(stat.st_size))
+            return (plugin_id, file_key, auth_url, normalized_path, False, 0, 0)
+        return (plugin_id, file_key, auth_url, normalized_path, True, int(stat.st_mtime_ns), int(stat.st_size))
 
     def _platform_auth_cache_has_expired(self) -> bool:
         if not self._platform_auth_cache:
@@ -2036,7 +2036,7 @@ class FrontendStateService:
         try:
             from cli import __version__
         except Exception:
-            __version__ = "3.6.21"
+            __version__ = "3.6.17"
 
         if any(value is None for value in (queue_count, active_count, completed_count, failed_count)):
             counts = self._video_bucket_counts()

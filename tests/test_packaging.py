@@ -29,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 SPEC_FILE = PACKAGING_DIR / "portable.spec"
 UPDATE_MANIFEST_TOOL = PACKAGING_DIR / "update_manifest.py"
+PLAYWRIGHT_BUNDLE_TOOL = PACKAGING_DIR / "playwright_bundle.py"
 BUILD_RELEASE_TOOL = PACKAGING_DIR / "build_release.py"
 BUILD_INSTALLER_TOOL = PACKAGING_DIR / "build_installer.py"
 RUNTIME_HOOK = PACKAGING_DIR / "runtime_hook.py"
@@ -64,6 +65,15 @@ SPLIT_FRONTEND_STYLES = (
 
 def _load_update_manifest_tool():
     spec = importlib.util.spec_from_file_location("ucrawl_update_manifest_tool", UPDATE_MANIFEST_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_playwright_bundle_tool():
+    spec = importlib.util.spec_from_file_location("ucrawl_playwright_bundle_tool", PLAYWRIGHT_BUNDLE_TOOL)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     sys.modules[spec.name] = module
@@ -304,6 +314,17 @@ class SpecDataFilesTests(unittest.TestCase):
         datas = self._spec_globals["datas"]
         self.assertTrue(any(d[1] == "UI/icon" for d in datas), "UI/icon not packaged")
 
+    def test_datas_includes_anti_detection_stealth_script(self):
+        """浏览器反检测脚本必须进入 _internal 的运行时资源目录。"""
+        datas = self._spec_globals["datas"]
+        expected_source = (PROJECT_ROOT / "app" / "core" / "anti_detection" / "stealth.js").resolve()
+        stealth_entries = [
+            (Path(source).resolve(), target)
+            for source, target in datas
+            if target == "app/core/anti_detection"
+        ]
+        self.assertIn((expected_source, "app/core/anti_detection"), stealth_entries)
+
     def test_datas_includes_ffmpeg(self):
         """ffmpeg.exe 必须打包。"""
         datas = self._spec_globals["datas"]
@@ -352,6 +373,63 @@ class SpecDataFilesTests(unittest.TestCase):
         binary_names = [Path(item[0]).name for item in binaries]
         self.assertIn("_sqlite3.pyd", binary_names)
         self.assertIn("sqlite3.dll", binary_names)
+
+
+class PlaywrightBundleTests(unittest.TestCase):
+    def test_resolver_selects_only_current_chromium_runtime_directories(self):
+        tool = _load_playwright_bundle_tool()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache = root / "ms-playwright"
+            cache.mkdir()
+            for name in (
+                "chromium-1200",
+                "chromium_headless_shell-1200",
+                "ffmpeg-1011",
+                "winldd-1007",
+                "chromium-1091",
+                "firefox-1497",
+                "webkit-2227",
+            ):
+                (cache / name).mkdir()
+            manifest = root / "browsers.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "browsers": [
+                            {"name": "chromium", "revision": "1200"},
+                            {"name": "chromium-headless-shell", "revision": "1200"},
+                            {"name": "ffmpeg", "revision": "1011"},
+                            {"name": "winldd", "revision": "1007"},
+                            {"name": "firefox", "revision": "1497"},
+                            {"name": "webkit", "revision": "2227"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            selected = tool.resolve_playwright_browser_directories(
+                cache,
+                browser_manifest_path=manifest,
+            )
+
+        self.assertEqual(
+            [path.name for path in selected],
+            [
+                "chromium-1200",
+                "chromium_headless_shell-1200",
+                "ffmpeg-1011",
+                "winldd-1007",
+            ],
+        )
+
+    def test_portable_spec_never_packages_the_entire_playwright_cache(self):
+        source = SPEC_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("resolve_playwright_browser_directories", source)
+        self.assertNotIn('datas.append((str(browser_root), "ms-playwright"))', source)
+
 
 class SpecExcludesTests(unittest.TestCase):
     """excludes 配置。"""
@@ -905,6 +983,49 @@ class ReleaseUpdateManifestToolTests(unittest.TestCase):
         self.assertIn("generate-manifest-key", source)
         self.assertIn("verify_with_config", source)
 
+    def test_asset_spec_accepts_windows_utf8_bom(self):
+        tool = _load_update_manifest_tool()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "assets.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "key": "windows-x64",
+                            "path": "installer.exe",
+                            "url": "https://github.com/owner/repo/releases/download/v1/installer.exe",
+                            "os": "windows",
+                            "arch": "x64",
+                            "installerType": "inno",
+                        }
+                    ]
+                ),
+                encoding="utf-8-sig",
+            )
+
+            specs = tool._parse_asset_specs(path)
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].key, "windows-x64")
+
+    def test_manifest_generation_rejects_assets_above_client_limit(self):
+        tool = _load_update_manifest_tool()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "installer.exe"
+            installer.write_bytes(b"oversized")
+            spec = tool.ReleaseAssetSpec(
+                key="windows-x64",
+                path=installer,
+                url="https://github.com/owner/repo/releases/download/v1/installer.exe",
+                os="windows",
+                arch="x64",
+                installer_type="inno",
+            )
+
+            with patch.object(tool, "DEFAULT_MAX_DOWNLOAD_BYTES", 8):
+                with self.assertRaisesRegex(ValueError, "configured update limit"):
+                    tool._asset_payload(spec)
+
 
 class ContainerizationAssetTests(unittest.TestCase):
     """容器化交付资产测试。"""
@@ -1155,6 +1276,7 @@ class PyprojectEntryPointsTests(unittest.TestCase):
         self.assertIn("UI*", package_find["include"])
         self.assertIn("icon/*.png", package_data["UI"])
         self.assertIn("web/static/*", package_data["app"])
+        self.assertIn("core/anti_detection/*.js", package_data["app"])
         self.assertTrue((PROJECT_ROOT / "UI" / "__init__.py").is_file())
         packaged_icon = PROJECT_ROOT / "app" / "web" / "static" / "webui-icon.ico"
         root_icon = PROJECT_ROOT / "Web.ico"

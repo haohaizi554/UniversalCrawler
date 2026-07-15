@@ -19,8 +19,9 @@ from app.exceptions import (
     StreamDownloadError,
 )
 from app.models import VideoItem
-from shared.runtime_options import DomainPolicyViolation
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
+from shared.network_proxy import explicit_requests_proxies, requests_proxy_mapping
+from shared.runtime_options import DomainPolicyViolation
 
 from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
 from .external import FFmpegExternalTool, build_hidden_startupinfo
@@ -42,6 +43,7 @@ class BilibiliDownloader(BaseDownloader):
         B站 CDN URL 签名有时效，重试时必须重新获取。
         返回 (video_url, audio_url)，失败返回 (None, None)。
         """
+        effective_proxies = explicit_requests_proxies(proxies)
         for fnval in (4048, 80):
             endpoint = "https://api.bilibili.com/x/player/wbi/playurl"
             params = {
@@ -58,10 +60,16 @@ class BilibiliDownloader(BaseDownloader):
                     request_get=requests.get,
                     headers=headers,
                     timeout=15,
-                    proxies=proxies,
+                    proxies=effective_proxies,
                 )
                 request_endpoint = endpoint if signed else "https://api.bilibili.com/x/player/playurl"
-                resp = requests.get(request_endpoint, params=signed_params, headers=headers, timeout=15, proxies=proxies)
+                resp = requests.get(
+                    request_endpoint,
+                    params=signed_params,
+                    headers=headers,
+                    timeout=15,
+                    proxies=effective_proxies,
+                )
                 data = resp.json()
                 if data.get("code") == 0 and "data" in data:
                     dash = data["data"].get("dash", {})
@@ -218,7 +226,7 @@ class BilibiliDownloader(BaseDownloader):
             if not bvid or not cid:
                 return False
             # API 请求仍走代理（如果配置了），但 CDN 下载不走代理
-            api_proxies = {"http": proxy, "https": proxy} if proxy else None
+            api_proxies = requests_proxy_mapping(proxy)
             new_v, new_a = BilibiliDownloader._fetch_bilibili_play_url(
                 bvid, cid, headers, trace_id, proxies=api_proxies,
             )
@@ -262,7 +270,7 @@ class BilibiliDownloader(BaseDownloader):
                 if not url:
                     return
                 # 第一次尝试走代理，重试直连 CDN
-                proxies = {"http": proxy, "https": proxy} if _use_proxy[0] else None
+                proxies = requests_proxy_mapping(proxy if _use_proxy[0] else None)
                 discard_partial_on_error = False
                 try:
                     request_kwargs = self._domain_policy_request_kwargs(domain_policy, url)

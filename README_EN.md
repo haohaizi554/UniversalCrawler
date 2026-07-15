@@ -6,7 +6,7 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img alt="PyQt6" src="https://img.shields.io/badge/Framework-PyQt6-41CD52?logo=qt&logoColor=white" />
   <img alt="FastAPI" src="https://img.shields.io/badge/Web_UI-FastAPI-009688?logo=fastapi&logoColor=white" />
-  <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.21-7C3AED" />
+  <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.17-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
   <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20registry-informational" />
@@ -17,7 +17,7 @@
 
 **Universal Crawler Pro** is a multi-platform media crawling and downloading tool built specifically for the **Windows desktop environment**. Based on **Python + PyQt6 + Playwright + FastAPI**, it provides a complete desktop workflow covering **site access and data sniffing**, **resource parsing and selection**, **unified download scheduling**, and **local asset management and preview**, while also supporting **remote control through Web UI**.
 
-The current source repository directory is `UniversalCrawlerProplus/`. The Python package and CLI entry name is `ucrawl`, while desktop distribution continues to expose `UniversalCrawlerPro.exe` and `CrawlerWebPortal.exe` as the two packaged entry points. The current project version is **v3.6.21**.
+The current source repository directory is `UniversalCrawlerProplus/`. The Python package and CLI entry name is `ucrawl`, while desktop distribution continues to expose `UniversalCrawlerPro.exe` and `CrawlerWebPortal.exe` as the two packaged entry points. The current project version is **v3.6.17**.
 
 It is neither a thin shell around a webpage nor a pile of scattered scripts. It is a desktop-grade media crawling workstation designed around **maintainability, extensibility, debuggability, and distributable packaging**.
 

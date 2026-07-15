@@ -2,7 +2,7 @@
 
 这里收纳项目的架构、开发、运行、修复和复盘文档。文档正文统一使用中文，文件名统一使用小写英文 slug；阶段性报告和复盘使用日期前缀，便于按时间排序。
 
-当前文档基线对应源码版本 `3.6.21`，包名与命令行为 `ucrawl`。日常运行优先参考 `main.py`、`entry.gui_entry`、`entry.web_entry`、`entry.cli_entry` 和 `entry.test_entry`；历史复盘中的旧入口或旧流程仅作为问题背景保留。
+当前文档基线对应源码版本 `3.6.17`，包名与命令行为 `ucrawl`。日常运行优先参考 `main.py`、`entry.gui_entry`、`entry.web_entry`、`entry.cli_entry` 和 `entry.test_entry`；历史复盘中的旧入口或旧流程仅作为问题背景保留。
 
 ## 快速入口
 

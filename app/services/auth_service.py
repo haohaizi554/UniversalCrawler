@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.exceptions import CookieLoadError, CookieSaveError
 
@@ -97,6 +98,57 @@ class AuthService:
         return result
 
     @classmethod
+    def extract_cookie_dict_for_url(
+        cls,
+        payload: list[dict] | dict | None,
+        url: str,
+        *,
+        now: float | None = None,
+    ) -> dict[str, str]:
+        """按浏览器域名、路径、Secure 与过期规则筛出目标 URL 可用的 Cookie。"""
+        if isinstance(payload, dict) and "cookies" not in payload:
+            return cls.extract_cookie_dict(payload)
+        parsed = urlsplit(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return {}
+        request_path = parsed.path or "/"
+        current_time = time.time() if now is None else float(now)
+        result: dict[str, str] = {}
+        for cookie in cls.extract_cookie_list(payload):
+            if not isinstance(cookie, dict):
+                continue
+            domain = str(cookie.get("domain") or "").strip().lower().rstrip(".")
+            if domain:
+                include_subdomains = domain.startswith(".")
+                normalized_domain = domain.lstrip(".")
+                domain_matches = host == normalized_domain or (
+                    include_subdomains and host.endswith(f".{normalized_domain}")
+                )
+                if not domain_matches:
+                    continue
+            cookie_path = str(cookie.get("path") or "/")
+            if not request_path.startswith(cookie_path):
+                continue
+            if bool(cookie.get("secure")) and parsed.scheme.lower() != "https":
+                continue
+            try:
+                expires = float(cookie.get("expires", -1) or -1)
+            except (TypeError, ValueError):
+                expires = -1
+            if expires > 0 and expires <= current_time:
+                continue
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if not name or value is None:
+                continue
+            safe_name = cls._safe_to_string(name)
+            safe_value = cls._safe_to_string(value)
+            if safe_name is not None and safe_value is not None:
+                result[safe_name] = safe_value
+        return result
+
+    @classmethod
     def build_cookie_string(cls, payload: list[dict] | dict | None, required_cookie: str | None = None) -> str:
         """缺少 required_cookie 时返回空串，避免携带不完整登录态发起请求。"""
         cookie_dict = cls.extract_cookie_dict(payload)
@@ -105,13 +157,31 @@ class AuthService:
         return "; ".join(f"{name}={value}" for name, value in cookie_dict.items())
 
     def restore_playwright_cookies(self, context, file_path: str) -> bool:
-        
+        """兼容仍需向已创建 context 注入 Cookie 的旧调用方。"""
         payload = self.load_json_file(file_path)
         cookies = self.extract_cookie_list(payload)
         if not cookies:
             return False
         context.add_cookies(cookies)
         return True
+
+    def load_playwright_storage_state(self, file_path: str) -> dict[str, list[dict]] | None:
+        """读取可直接交给 ``browser.new_context`` 的完整登录态。
+
+        新版文件保留 Playwright 的 cookies 和 origins/localStorage；旧版裸 Cookie
+        列表会补成合法 storage_state，避免升级后要求用户重新登录。
+        """
+        payload = self.load_json_file(file_path)
+        cookies = self.extract_cookie_list(payload)
+        if not cookies:
+            return None
+        origins = payload.get("origins", []) if isinstance(payload, dict) else []
+        if not isinstance(origins, list):
+            origins = []
+        return {
+            "cookies": list(cookies),
+            "origins": list(origins),
+        }
 
     def wait_for_cookie_and_persist(
         self,

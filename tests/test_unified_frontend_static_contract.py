@@ -11,6 +11,14 @@ from tests.unified_frontend_contract_support import (
 
 
 class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
+    def test_web_update_dialog_exposes_latest_log_in_a_browser_tab(self):
+        content = _html_bundle()
+
+        self.assertIn('id="updateViewLogBtn"', content)
+        self.assertIn('onclick="openUpdateLog()"', content)
+        self.assertIn('function openUpdateLog()', content)
+        self.assertIn('window.open("/api/debug/latest-log", "_blank", "noopener")', content)
+
     def test_hidden_attribute_cannot_be_overridden_by_component_display_rules(self):
         css = _css_bundle()
 

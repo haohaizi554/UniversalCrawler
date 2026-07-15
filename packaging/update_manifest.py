@@ -22,12 +22,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # ``Crypto`` 来自仍在维护的 PyCryptodome 包，而非已废弃的 PyCrypto。
-from Crypto.PublicKey import ECC  # nosec B413
-from Crypto.Signature import eddsa  # nosec B413
+from Crypto.PublicKey import ECC  # noqa: E402  # nosec B413
+from Crypto.Signature import eddsa  # noqa: E402  # nosec B413
 
-from app.config.update_trust import UPDATE_PUBLIC_KEY_PEM
-from app.services.secure_updater import APP_ID, DEFAULT_CHANNEL, DEFAULT_MANIFEST_NAME, DEFAULT_SIGNATURE_NAME, UpdateManifestVerifier
-from scripts.update_bootstrap import default_manifest_private_key_path
+from app.config.update_trust import UPDATE_PUBLIC_KEY_PEM  # noqa: E402
+from app.services.secure_updater import (  # noqa: E402
+    APP_ID,
+    DEFAULT_CHANNEL,
+    DEFAULT_MANIFEST_NAME,
+    DEFAULT_MAX_DOWNLOAD_BYTES,
+    DEFAULT_SIGNATURE_NAME,
+    UpdateManifestVerifier,
+)
+from scripts.update_bootstrap import default_manifest_private_key_path  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -52,11 +59,16 @@ def _asset_payload(spec: ReleaseAssetSpec) -> dict[str, Any]:
     path = Path(spec.path)
     if not path.is_file():
         raise FileNotFoundError(f"release asset does not exist: {path}")
+    size = path.stat().st_size
+    if size > DEFAULT_MAX_DOWNLOAD_BYTES:
+        raise ValueError(
+            f"release asset exceeds configured update limit ({size} > {DEFAULT_MAX_DOWNLOAD_BYTES}): {path}"
+        )
     return {
         "name": path.name,
         "url": str(spec.url),
         "sha256": _sha256_file(path),
-        "size": path.stat().st_size,
+        "size": size,
         "installerType": str(spec.installer_type),
         "os": str(spec.os),
         "arch": str(spec.arch),
@@ -164,7 +176,7 @@ def write_signed_manifest(
 
 
 def _parse_asset_specs(path: Path) -> list[ReleaseAssetSpec]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(payload, list):
         raise ValueError("asset spec file must be a JSON array")
     specs: list[ReleaseAssetSpec] = []

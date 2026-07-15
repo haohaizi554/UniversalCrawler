@@ -19,6 +19,7 @@ from Crypto.Signature import eddsa
 from app.services.update_check_service import compare_versions
 from app.services.secure_updater import (
     AssetSelector,
+    DEFAULT_MAX_DOWNLOAD_BYTES,
     DownloadError,
     Downloader,
     GitHubReleaseClient,
@@ -273,6 +274,14 @@ def test_downloader_rejects_size_limit_and_hash_mismatch(tmp_path):
         downloader.download(asset, opener=lambda _request, timeout: _BytesResponse(data))
 
     assert not (tmp_path / "installer.exe").exists()
+
+
+def test_default_download_limit_accepts_large_production_installer_metadata():
+    assert DEFAULT_MAX_DOWNLOAD_BYTES == 2 * 1024 * 1024 * 1024
+
+    downloader = Downloader(cache_dir=Path("unused-update-cache"))
+    assert downloader.max_size_bytes == DEFAULT_MAX_DOWNLOAD_BYTES
+    assert downloader.max_size_bytes > 1_035_581_576
 
 
 def test_downloader_honors_explicit_trusted_hosts(tmp_path):

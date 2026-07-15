@@ -10,6 +10,7 @@ _packaging_dir = Path(SPEC).resolve().parent
 if str(_packaging_dir) not in sys.path:
     sys.path.insert(0, str(_packaging_dir))
 from project_meta import APP_DISPLAY_NAME, APP_ICON_NAME, APP_NAME, UPDATER_HELPER_NAME, WEBUI_DISPLAY_NAME, WEBUI_ICON_NAME, WEBUI_NAME
+from playwright_bundle import resolve_playwright_browser_directories
 
 project_root = Path(SPEC).resolve().parents[1]
 main_script = project_root / "main.py"
@@ -36,6 +37,7 @@ datas += optional_tree(project_root / "ffmpeg.exe", ".")
 datas += optional_tree(project_root / "ffprobe.exe", ".")
 datas += optional_tree(project_root / "N_m3u8DL-RE.exe", ".")
 datas += optional_tree(project_root / "app" / "core" / "lib" / "douyin" / "js", "app/core/lib/douyin/js")
+datas += optional_tree(project_root / "app" / "core" / "anti_detection" / "stealth.js", "app/core/anti_detection")
 datas += optional_tree(project_root / "app" / "web" / "static", "app/web/static")
 datas += optional_tree(project_root / "UI" / "icon", "UI/icon")
 # 包含 docs（用于 README / 帮助文档），但排除 INTERACTION_MAP.md（太大且非运行时所需）
@@ -51,8 +53,8 @@ datas += optional_tree(project_root / "cli", "cli")
 datas += optional_tree(project_root / "shared", "shared")
 datas += optional_tree(project_root / "ucrawl", "ucrawl")
 
-if browser_root.exists():
-    datas.append((str(browser_root), "ms-playwright"))
+for browser_dir in resolve_playwright_browser_directories(browser_root):
+    datas.append((str(browser_dir), f"ms-playwright/{browser_dir.name}"))
 
 # 所有运行时导入的项目子包都需列入 hiddenimports，防止 PyInstaller 静态扫描
 # 漏掉 entry/ 等动态加载模块。

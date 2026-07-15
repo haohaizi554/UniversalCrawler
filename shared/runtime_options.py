@@ -11,6 +11,12 @@ import socket
 from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
 
+from shared.resilient_dns import install_resilient_dns
+
+# 公网策略和实际传输必须看到同一批解析结果。这里统一安装后，GUI、Web、CLI、SDK
+# 以及 requests/httpx 都能在系统 DNS 临时失效时复用经 TLS 校验的 DoH 回退地址。
+install_resilient_dns()
+
 # 配置中心不可用时使用的最小平台兜底。
 _SUPPORTED_PLATFORMS = ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav")
 _FALLBACK_CONFIG: dict[str, dict[str, Any]] = {

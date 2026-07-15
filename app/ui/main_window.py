@@ -557,7 +557,7 @@ class MainWindow(QMainWindow):
         text = getattr(label, "text", None)
         if callable(text):
             return str(text())
-        return "v3.6.21"
+        return "v3.6.17"
 
     def _record_update_startup_health(self) -> None:
         try:
@@ -752,7 +752,7 @@ class MainWindow(QMainWindow):
         dialog.cancel_requested.connect(self._cancel_update_download)
         dialog.retry_requested.connect(self._retry_update_download)
         dialog.install_requested.connect(self._install_prepared_update)
-        dialog.view_log_requested.connect(self.sig_open_latest_log.emit)
+        dialog.view_log_requested.connect(lambda: self._handle_log_action("open_latest"))
         self._update_download_dialog = dialog
         dialog.show()
 

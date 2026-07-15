@@ -351,6 +351,29 @@ class BaseSpiderTests(unittest.TestCase):
         spider.config = {"show_browser_window": "headless"}
         self.assertTrue(spider._browser_headless())
 
+    def test_playwright_launch_kwargs_enable_bootstrapped_dns_over_https(self):
+        spider = _DummySpider(keyword="demo", config={})
+
+        kwargs = spider._playwright_launch_kwargs(headless=True)
+
+        args = kwargs["args"]
+        self.assertIn("--dns-over-https-mode=automatic", args)
+        template_arg = next(arg for arg in args if arg.startswith("--dns-over-https-templates="))
+        self.assertIn("dns.alidns.com", template_arg)
+        self.assertIn("223.5.5.5", template_arg)
+        self.assertIn("--disable-blink-features=AutomationControlled", args)
+
+    def test_playwright_launch_kwargs_preserve_explicit_dns_override(self):
+        spider = _DummySpider(keyword="demo", config={})
+
+        kwargs = spider._playwright_launch_kwargs(
+            headless=False,
+            args=["--dns-over-https-mode=off"],
+        )
+
+        self.assertIn("--dns-over-https-mode=off", kwargs["args"])
+        self.assertFalse(any(arg == "--dns-over-https-mode=automatic" for arg in kwargs["args"]))
+
     def test_stop_closes_tracked_playwright_browser_from_control_thread(self):
         spider = _DummySpider(keyword="demo", config={})
 

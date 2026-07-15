@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ucrawl"
-version = "3.6.21"
+version = "3.6.17"
 description = "UCrawl - 通用爬虫 (CLI / SDK / REST API / AI Skill)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -80,6 +80,7 @@ exclude = ["docs*", "packaging*"]
 [tool.setuptools.package-data]
 ucrawl = []
 app = [
+    "core/anti_detection/*.js",
     "web/static/*",
 ]
 cli = [

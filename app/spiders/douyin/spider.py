@@ -818,6 +818,7 @@ class DouyinSpider(BaseSpider):
                 timeout=self._configured_timeout_seconds(default=60),
                 follow_redirects=True,
                 proxy=params.proxy or None,
+                trust_env=False,
             ) as client:
                 resp = await client.get(test_url)
                 resp.raise_for_status()

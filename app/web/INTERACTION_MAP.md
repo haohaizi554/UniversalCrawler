@@ -5703,7 +5703,7 @@ document.getElementById('queueBody').innerHTML = '';
 taskkill /F /IM python.exe /T  # 杀掉旧 3 个 Python 进程
 Start-Process -FilePath "python" -ArgumentList "-m entry.web_entry" -WorkingDirectory "<项目根目录>" -WindowStyle Hidden
 curl.exe -s http://localhost:8000/api/ping
-# 返回: {"status":"ok","version":"3.6.21"} ✅
+# 返回: {"status":"ok","version":"3.6.17"} ✅
 ```
 
 11. **CORS `allow_origins=["*"]` + `allow_credentials=True` 是非法组合**——必须 `allow_credentials=False`
@@ -5911,7 +5911,7 @@ pip install .
 
 | 测试 | 命令 | 结果 |
 |---|---|---|
-| CLI 启动 | `python -m cli --version` | `ucrawl 3.6.21` ✅ |
+| CLI 启动 | `python -m cli --version` | `ucrawl 3.6.17` ✅ |
 | 列出平台 | `python -m cli platforms --pretty` | 4 个平台 ✅ |
 | 搜索帮助 | `python -m cli search --help` | 完整参数列表 ✅ |
 | 扫描目录 | `python -m cli scan "./sample-dir" --limit 5 --pretty` | 成功返回 1 个文件 ✅ |

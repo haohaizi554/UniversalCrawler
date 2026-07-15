@@ -17,6 +17,7 @@ from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
 from shared.runtime_options import DomainPolicyViolation
+from shared.network_proxy import requests_proxy_mapping
 
 from .base import BaseDownloader, ProgressCallback, StopCheck
 from .external import FFmpegExternalTool, build_hidden_startupinfo
@@ -178,7 +179,7 @@ class FFmpegDownloader(BaseDownloader):
         if not ffmpeg:
             raise ExternalToolNotFoundError("未找到 ffmpeg.exe")
         proxy = video_item.meta.get("proxy")
-        proxies = {"http": proxy, "https": proxy} if proxy else None
+        proxies = requests_proxy_mapping(proxy)
         request_timeout = cfg.get("download", "request_timeout", 60)
         domain_policy = self._domain_policy_for_item(video_item)
         if domain_policy is not None:

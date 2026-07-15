@@ -1293,6 +1293,63 @@ class MainWindowTests(unittest.TestCase):
                 window.sig_open_latest_log.emit.assert_not_called()
                 window.sig_open_error_summary.emit.assert_not_called()
 
+    def test_update_download_dialog_view_log_uses_frontend_action_worker(self):
+        class _Signal:
+            def __init__(self):
+                self._slots = []
+
+            def connect(self, slot):
+                self._slots.append(slot)
+
+            def emit(self):
+                for slot in tuple(self._slots):
+                    slot()
+
+        class _Dialog:
+            instance = None
+
+            def __init__(self, *_args, **_kwargs):
+                type(self).instance = self
+                self.cancel_requested = _Signal()
+                self.retry_requested = _Signal()
+                self.install_requested = _Signal()
+                self.view_log_requested = _Signal()
+
+            def show(self):
+                return None
+
+        class _Thread:
+            def __init__(self, **_kwargs):
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+        window = self._make_window()
+        window._update_download_lock = threading.Lock()
+        window._update_download_shutdown = False
+        window._display_version = lambda value: str(value)
+        window._current_ui_language = lambda: "zh-CN"
+        window._cancel_update_download = Mock()
+        window._retry_update_download = Mock()
+        window._install_prepared_update = Mock()
+        window._handle_log_action = Mock()
+        result = SimpleNamespace(
+            latest_version="3.6.21",
+            asset_name="UniversalCrawlerPro_Setup_3.6.21.exe",
+            html_url="https://github.com/haohaizi554/UniversalCrawler/releases/tag/v3.6.21",
+        )
+
+        with (
+            patch("app.ui.main_window.UpdateDownloadDialog", _Dialog),
+            patch("app.ui.main_window.threading.Thread", _Thread),
+        ):
+            MainWindow._begin_update_download(window, result)
+
+        self.assertIsNotNone(_Dialog.instance)
+        _Dialog.instance.view_log_requested.emit()
+        window._handle_log_action.assert_called_once_with("open_latest")
+
     def test_log_refresh_action_throttles_rapid_repeated_clicks(self):
         window = self._make_window()
         window._pending_refresh_topics = set()

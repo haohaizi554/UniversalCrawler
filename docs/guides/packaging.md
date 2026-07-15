@@ -31,6 +31,8 @@
 - 打包态用户数据不得回写进仓库
 - 开发态与打包态路径必须继续遵守 `runtime_paths.py` 规范
 - 外部工具必须显式随包交付，不依赖用户手工补环境
+- Playwright 只打包当前依赖声明的 Chromium revision，禁止复制整份机器级浏览器缓存
+- 热更新 Release 必须同时发布安装包、`latest.json` 与 `latest.json.sig`
 
 ## 元数据与路径收口
 
@@ -120,6 +122,11 @@ dist/UniversalCrawlerPro/
 - `N_m3u8DL-RE.exe`
 - `ms-playwright/`
 
+`ms-playwright/` 由 `packaging/playwright_bundle.py` 按当前 Playwright 的
+`browsers.json` 精确选择 Chromium、headless shell、FFmpeg 与平台辅助程序。
+构建脚本不得直接复制 `%LOCALAPPDATA%\ms-playwright` 整目录，否则旧 Chromium、
+Firefox 和 WebKit revision 会让发布物随发布机历史持续膨胀。
+
 便携版 EXE 为冻结运行时，用户数据应写入 `%LOCALAPPDATA%\UniversalCrawlerPro`（见 `runtime_paths.py`）。仅源码开发态默认使用项目根目录 `user_data/`。
 
 ### 安装包
@@ -145,6 +152,11 @@ dist/installer/
 ```bash
 python packaging/build_release.py
 ```
+
+一键构建只生成便携目录和安装包。公开热更新前还必须按
+[更新安全文档](../update.md) 生成并验签 `latest.json` 与 `latest.json.sig`。
+清单生成器会拒绝超过客户端 `DEFAULT_MAX_DOWNLOAD_BYTES`（当前 `2 GiB`）的资产，
+因此不要通过伪造清单大小或移除下载边界绕过体积问题。
 
 ## 版本同步规则
 

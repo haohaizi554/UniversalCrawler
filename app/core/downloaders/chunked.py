@@ -14,6 +14,7 @@ from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
 from app.exceptions import DownloaderStoppedError, StreamDownloadError
 from app.models import VideoItem
+from shared.network_proxy import requests_proxy_mapping
 from shared.runtime_options import DomainPolicyViolation
 
 from .base import BaseDownloader, ProgressCallback, StopCheck, TransferRateLimiter
@@ -63,7 +64,7 @@ class ChunkedDownloader(BaseDownloader):
             "Referer": video_item.meta.get("referer", "https://www.douyin.com/"),
         }
         proxy = video_item.meta.get("proxy")
-        proxies = {"http": proxy, "https": proxy} if proxy else None
+        proxies = requests_proxy_mapping(proxy)
         timeout = cfg.get("download", "request_timeout", 60)
         retry_count = self._coerce_retry_count(cfg.get("download", "max_retries", 3))
         resume_enabled = self._coerce_bool_setting(cfg.get("download", "resume_enabled", True))

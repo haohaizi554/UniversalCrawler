@@ -22,6 +22,7 @@ if __package__ in (None, ""):
         WEBUI_EXE_NAME,
         WEBUI_ICON_NAME,
     )
+    from playwright_bundle import resolve_playwright_browser_directories
 else:
     from .project_meta import (
         APP_DISPLAY_NAME,
@@ -35,6 +36,7 @@ else:
         WEBUI_EXE_NAME,
         WEBUI_ICON_NAME,
     )
+    from .playwright_bundle import resolve_playwright_browser_directories
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC_FILE = PROJECT_ROOT / "packaging" / "portable.spec"
@@ -105,11 +107,10 @@ def ensure_prerequisites() -> None:
     missing = [str(path) for path in REQUIRED_FILES if not path.exists()]
     if missing:
         raise SystemExit("缺少必要文件:\n- " + "\n- ".join(missing))
-    if not BROWSER_DIR.exists():
-        raise SystemExit(
-            "未检测到 Playwright 浏览器目录，请先执行 `playwright install chromium`。\n"
-            f"期望路径: {BROWSER_DIR}"
-        )
+    try:
+        resolve_playwright_browser_directories(BROWSER_DIR)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 def clean_previous_outputs() -> None:
     """清理 dist 根目录（不只是 APP_NAME 子目录），避免残留干扰新构建。"""

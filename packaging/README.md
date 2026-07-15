@@ -90,6 +90,11 @@
 python packaging/build_portable.py
 ```
 
+构建器通过 `playwright_bundle.py` 读取当前 Playwright 自带的 `browsers.json`，
+只收集当前 Chromium revision。不要把 `%LOCALAPPDATA%\ms-playwright` 整目录加入
+`portable.spec`；该缓存会保留历史 Chromium、Firefox 和 WebKit，导致构建结果依赖
+发布机使用历史并持续膨胀。
+
 ### 典型产物
 
 - `dist/UniversalCrawlerPro/UniversalCrawlerPro.exe`
@@ -226,6 +231,9 @@ python packaging/build_release.py
 ```bash
 playwright install chromium
 ```
+
+如果目录存在但仍报缺失，通常是当前 Playwright 所需 revision 未安装，而目录里只有
+旧版本缓存。仍应执行上面的命令，不要通过恢复“复制整个缓存目录”绕过检查。
 
 ### 未找到 `ISCC.exe`
 

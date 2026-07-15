@@ -11,11 +11,13 @@ import requests
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from app.config import DEFAULT_USER_AGENT, cfg, get_setting_default
+from app.exceptions import CookieLoadError, CookieSaveError
 from app.spiders.base import BaseSpider
 from app.spiders.kuaishou.parser import KuaishouParser
 from app.spiders.kuaishou.task_builder import KuaishouTaskBuilder
 from app.services.auth_service import AuthService
 from app.utils.user_agents import resolve_user_agent
+from shared.network_proxy import requests_proxy_mapping
 from shared.runtime_options import DomainPolicyViolation
 
 class KuaishouSpider(BaseSpider):
@@ -58,15 +60,50 @@ class KuaishouSpider(BaseSpider):
         self.log(f"🌍 使用代理: {proxy}")
         return {"server": proxy}
 
-    def _load_saved_cookies(self, context, auth_file: str) -> None:
-        """把已保存登录态恢复到浏览器上下文；失败时保留手工登录回退。"""
+    def _load_saved_storage_state(self, auth_file: str) -> dict[str, list[dict]] | None:
+        """读取完整 Playwright 状态，供创建有头或无头 context 时复用。"""
         if not os.path.exists(auth_file):
-            return
+            return None
         try:
-            if self.auth_service.restore_playwright_cookies(context, auth_file):
-                self.log("📂 加载本地 Cookie 成功")
-        except (OSError, TypeError, ValueError, PlaywrightError):
-            self.log("⚠️ 本地 Cookie 加载失败，继续尝试页面登录")
+            storage_state = self.auth_service.load_playwright_storage_state(auth_file)
+        except (CookieLoadError, OSError, TypeError, ValueError):
+            self.log("⚠️ 本地登录态加载失败，继续尝试页面登录")
+            return None
+        if storage_state:
+            self.log("📂 加载本地登录态成功")
+        return storage_state
+
+    def _create_browser_context(self, browser, auth_file: str):
+        """统一创建上下文，确保有头和无头模式恢复完全相同的 storage_state。"""
+        context_kwargs = self._playwright_context_kwargs(
+            user_agent=self._user_agent(),
+            viewport={"width": 1280, "height": 800},
+            referer="https://www.kuaishou.com/",
+        )
+        storage_state = self._load_saved_storage_state(auth_file)
+        if storage_state:
+            context_kwargs["storage_state"] = storage_state
+        try:
+            context = browser.new_context(**context_kwargs)
+        except PlaywrightError:
+            if not storage_state:
+                raise
+            # 旧 Playwright 版本或历史 Cookie 字段可能无法被当前内核接受；清空状态后
+            # 仍应允许用户重新登录，不能让模式切换直接终止整个爬虫。
+            self.log("⚠️ 已保存登录态不兼容，改用空白浏览器上下文重新登录")
+            context_kwargs.pop("storage_state", None)
+            context = browser.new_context(**context_kwargs)
+        self._apply_stealth_to_context(context)
+        return context
+
+    def _persist_authenticated_state(self, context, auth_file: str) -> bool:
+        """在关闭当前浏览器前原子发布最新 Cookie 与 origin/localStorage。"""
+        try:
+            self.auth_service.save_json_file(auth_file, context.storage_state())
+            return True
+        except (CookieSaveError, OSError, TypeError, ValueError, PlaywrightError) as exc:
+            self.log(f"⚠️ 快手登录态保存失败: {exc}")
+            return False
 
     def _goto_with_retry(self, page, url: str, *, description: str, attempts: int = 2) -> bool:
         """显式重试单次导航，并在每次尝试之间检查停止请求。"""
@@ -129,7 +166,7 @@ class KuaishouSpider(BaseSpider):
             return url
         try:
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
-            proxies = {"http": proxy, "https": proxy} if proxy else None
+            proxies = requests_proxy_mapping(proxy)
             request_kwargs = self._restricted_public_request_kwargs(
                 candidate,
                 allowed_hosts=("kuaishou.com", "chenzhongtech.com"),
@@ -215,7 +252,7 @@ class KuaishouSpider(BaseSpider):
                 allowed_hosts=("kuaishou.com", "chenzhongtech.com"),
             )
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
-            proxies = {"http": proxy, "https": proxy} if proxy else None
+            proxies = requests_proxy_mapping(proxy)
             response = requests.get(
                 detail_url,
                 headers=self._build_detail_request_headers(),
@@ -317,10 +354,10 @@ class KuaishouSpider(BaseSpider):
         return False
 
     def _user_cookie_values(self, context) -> set[str]:
-        """读取浏览器上下文中的快手 userId Cookie 值。"""
+        """只读取主站实际可携带的 userId，排除 id 子域同名 Cookie。"""
         values: set[str] = set()
         try:
-            for cookie in context.cookies():
+            for cookie in context.cookies("https://www.kuaishou.com/"):
                 if cookie.get("name") == "userId" and cookie.get("value"):
                     values.add(str(cookie["value"]))
         except PlaywrightError:
@@ -336,8 +373,7 @@ class KuaishouSpider(BaseSpider):
             current_user_ids = self._user_cookie_values(context)
             has_new_user_cookie = bool(current_user_ids - initial_user_ids)
             if current_user_ids and (has_new_user_cookie or self._is_logged_in(page)):
-                self.auth_service.save_json_file(auth_file, context.storage_state())
-                return True
+                return self._persist_authenticated_state(context, auth_file)
             self.interruptible_page_wait(page, 1000)
         return False
 
@@ -357,15 +393,16 @@ class KuaishouSpider(BaseSpider):
         try:
             if not self._goto_with_retry(page, target_url, description="页面访问"):
                 raise PlaywrightError(f"cannot open {target_url}")
-            if not self._is_logged_in(page):
+            has_site_cookie = bool(self._user_cookie_values(context))
+            if not (has_site_cookie and self._is_logged_in(page)):
                 if has_loaded_cookie:
                     self.log("ℹ️ 已加载本地 Cookie，尝试刷新页面重新校验登录态")
-                    if self._refresh_logged_in_state(page, target_url):
+                    if self._refresh_logged_in_state(page, target_url) and self._user_cookie_values(context):
                         self.log("✅ 刷新后检测到登录状态")
-                        return True
+                        return self._persist_authenticated_state(context, auth_file)
                 raise PlaywrightError("not logged in")
             self.log("✅ 检测到登录状态")
-            return True
+            return self._persist_authenticated_state(context, auth_file)
         except PlaywrightError:
             self.log("⚠️ 首页访问或登录态检查失败，继续尝试在当前页面恢复登录")
             if os.path.exists(auth_file):
@@ -1041,15 +1078,7 @@ class KuaishouSpider(BaseSpider):
         )
         self._track_playwright_browser(browser)
         try:
-            context = browser.new_context(
-                **self._playwright_context_kwargs(
-                    user_agent=self._user_agent(),
-                    viewport={"width": 1280, "height": 800},
-                    referer="https://www.kuaishou.com/",
-                )
-            )
-            self._apply_stealth_to_context(context)
-            self._load_saved_cookies(context, auth_file)
+            context = self._create_browser_context(browser, auth_file)
             page = context.new_page()
             return self._ensure_login(page, context, auth_file, entry_url=entry_url, allow_manual_login=True)
         finally:
@@ -1072,16 +1101,7 @@ class KuaishouSpider(BaseSpider):
         )
         self._track_playwright_browser(browser)
         try:
-            context = browser.new_context(
-                **self._playwright_context_kwargs(
-                    user_agent=self._user_agent(),
-                    # 快手浏览器上下文优先使用本平台 UA，避免复制粘贴到抖音配置导致行为漂移。
-                    viewport={"width": 1280, "height": 800},
-                    referer="https://www.kuaishou.com/",
-                )
-            )
-            self._apply_stealth_to_context(context)
-            self._load_saved_cookies(context, auth_file)
+            context = self._create_browser_context(browser, auth_file)
             page = context.new_page()
             if not self._ensure_login(
                 page,

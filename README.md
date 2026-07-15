@@ -6,7 +6,7 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" />
   <img alt="PyQt6" src="https://img.shields.io/badge/Framework-PyQt6-41CD52?logo=qt&logoColor=white" />
   <img alt="FastAPI" src="https://img.shields.io/badge/Web_UI-FastAPI-009688?logo=fastapi&logoColor=white" />
-  <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.21-7C3AED" />
+  <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.17-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
   <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20registry-informational" />
@@ -17,7 +17,7 @@
 
 **Universal Crawler Pro** 是一款专为 **Windows 桌面环境** 打造的多平台媒体采集与下载工具。项目基于 **Python + PyQt6 + Playwright + FastAPI** 构建，提供从 **站点访问与数据嗅探**、**资源解析与勾选**、**统一下载调度** 到 **本地资产管理与播放预览** 的完整桌面工作流，同时支持 **Web UI 远程操控**。
 
-当前源码仓库目录以 `UniversalCrawlerProplus/` 为准，Python 包与命令行入口名为 `ucrawl`，桌面端打包产物继续沿用 `UniversalCrawlerPro.exe` 与 `CrawlerWebPortal.exe` 两个入口。当前版本号为 **v3.6.21**。
+当前源码仓库目录以 `UniversalCrawlerProplus/` 为准，Python 包与命令行入口名为 `ucrawl`，桌面端打包产物继续沿用 `UniversalCrawlerPro.exe` 与 `CrawlerWebPortal.exe` 两个入口。当前版本号为 **v3.6.17**。
 
 它不是一个套壳网页，也不是一堆零散脚本的堆叠，而是一个围绕 **可维护性、可扩展性、可调试性、可打包分发** 设计出来的桌面端采集工作站。
 

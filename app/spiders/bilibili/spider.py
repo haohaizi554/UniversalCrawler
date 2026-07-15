@@ -31,6 +31,7 @@ from app.models import VideoItem
 from app.services.auth_service import AuthService
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER
 from app.utils.user_agents import resolve_user_agent
+from shared.network_proxy import configure_requests_session, requests_proxy_mapping
 
 HEADERS = {
     'User-Agent': resolve_user_agent(
@@ -54,7 +55,7 @@ class BiliAPI:
 
     def __init__(self, cookie_path, parser: BilibiliParser):
         """配置持久会话、解析器、认证服务和 Cookie。"""
-        self.sess = requests.Session()
+        self.sess = configure_requests_session(requests.Session())
         self._session_lock = threading.RLock()
         with self._session_guard():
             self.sess.headers.update(HEADERS)
@@ -883,7 +884,7 @@ class BilibiliSpider(BaseSpider):
                 ),
             )
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
-            proxies = {"http": proxy, "https": proxy} if proxy else None
+            proxies = requests_proxy_mapping(proxy)
             request_kwargs = self._restricted_public_request_kwargs(
                 candidate,
                 allowed_hosts=(*self.SHORT_LINK_HOSTS, "bilibili.com"),
@@ -1619,7 +1620,7 @@ class BilibiliSpider(BaseSpider):
             default=cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout"))
         )
         proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
-        proxies = {"http": proxy, "https": proxy} if proxy else None
+        proxies = requests_proxy_mapping(proxy)
         headers = {
             **HEADERS,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

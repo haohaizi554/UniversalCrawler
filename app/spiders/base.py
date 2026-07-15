@@ -585,9 +585,17 @@ class BaseSpider(threading.Thread):
     ) -> dict:
         """集中生成 browser.launch 参数，确保所有平台共享反自动化启动参数。"""
         from app.core.anti_detection.models import AUTOMATION_CONTROLLED_ARG
+        from shared.resilient_dns import chromium_resilient_dns_args
 
         kwargs = {"headless": headless, **extra}
         launch_args = list(args or [])
+        has_dns_override = any(
+            item.startswith("--dns-over-https-mode=")
+            or item.startswith("--dns-over-https-templates=")
+            for item in launch_args
+        )
+        if not has_dns_override:
+            launch_args.extend(chromium_resilient_dns_args())
         if AUTOMATION_CONTROLLED_ARG not in launch_args:
             launch_args.append(AUTOMATION_CONTROLLED_ARG)
         kwargs["args"] = launch_args

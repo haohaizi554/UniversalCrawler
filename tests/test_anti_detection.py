@@ -1,11 +1,29 @@
 """Tests for shared anti-detection runtime helpers."""
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.core.anti_detection import build_browser_anti_detection, load_stealth_script, resolve_user_agent
 
 class AntiDetectionTests(unittest.TestCase):
+    def test_stealth_loader_uses_the_shared_runtime_resource_resolver(self):
+        from app.core.anti_detection import stealth
+
+        with tempfile.TemporaryDirectory() as tmp:
+            packaged_script = Path(tmp) / "stealth.js"
+            packaged_script.write_text("window.__packagedStealth = true;", encoding="utf-8")
+            stealth.load_stealth_script.cache_clear()
+            try:
+                with patch.object(stealth, "resolve_resource_file", return_value=packaged_script) as resolver:
+                    loaded = stealth.load_stealth_script()
+            finally:
+                stealth.load_stealth_script.cache_clear()
+
+        self.assertEqual(loaded, "window.__packagedStealth = true;")
+        resolver.assert_called_once_with("app/core/anti_detection/stealth.js")
+
     def test_build_browser_anti_detection_prefers_runtime_config(self):
         context = build_browser_anti_detection(
             "kuaishou",

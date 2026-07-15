@@ -39,11 +39,11 @@ from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
 from app.services.auth_service import AuthService
 
-PLATFORM_AUTH_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "douyin": ("douyin_cookie_file", ("sessionid_ss",)),
-    "bilibili": ("bilibili_cookie_file", ("SESSDATA",)),
-    "kuaishou": ("kuaishou_cookie_file", ("userId",)),
-    "xiaohongshu": ("xiaohongshu_cookie_file", ("web_session", "a1")),
+PLATFORM_AUTH_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "douyin": ("douyin_cookie_file", ("sessionid_ss",), "https://www.douyin.com/"),
+    "bilibili": ("bilibili_cookie_file", ("SESSDATA",), "https://www.bilibili.com/"),
+    "kuaishou": ("kuaishou_cookie_file", ("userId",), "https://www.kuaishou.com/"),
+    "xiaohongshu": ("xiaohongshu_cookie_file", ("web_session", "a1"), "https://www.xiaohongshu.com/"),
 }
 
 
@@ -55,7 +55,7 @@ def platform_auth_snapshot(plugin_id: str, auth_cfg: Mapping[str, Any]) -> dict[
             "auth_detail": "该平台暂无 Cookie 检测规则",
             "auth_cookie_file": "",
         }
-    file_key, cookie_names = requirement
+    file_key, cookie_names, auth_url = requirement
     cookie_file = str(auth_cfg.get(file_key) or "")
     if not cookie_file:
         return {
@@ -72,7 +72,7 @@ def platform_auth_snapshot(plugin_id: str, auth_cfg: Mapping[str, Any]) -> dict[
         }
     try:
         payload = AuthService().load_json_file(str(path))
-        cookie_dict = AuthService.extract_cookie_dict(payload)
+        cookie_dict = AuthService.extract_cookie_dict_for_url(payload, auth_url)
     except Exception as exc:
         debug_logger.log_exception(
             "FrontendSettingsAdapter",

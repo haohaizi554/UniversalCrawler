@@ -231,7 +231,7 @@ def test_search_notes_runs_real_post_with_compact_unicode_json(
     )
     assert call["kwargs"]["headers"]["X-S"] == "XYS_unit-signature"
     assert call["kwargs"]["timeout"] == 17
-    assert call["kwargs"]["proxies"] is None
+    assert call["kwargs"]["proxies"] == {"http": None, "https": None}
     assert response.raise_for_status_calls == 1
     assert response.json_calls == 1
 
@@ -316,7 +316,7 @@ def test_html_detail_uses_http_and_parser_boundaries_then_adds_security_context(
             "kwargs": {
                 "headers": dict(session.headers),
                 "timeout": 17,
-                "proxies": None,
+                "proxies": {"http": None, "https": None},
             },
         }
     ]

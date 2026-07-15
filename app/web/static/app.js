@@ -41,7 +41,7 @@ function buildInitialState() {
       active_count: 0,
       completed_count: 0,
       failed_count: 0,
-      version: "v3.6.21",
+      version: "v3.6.17",
     },
   };
 }
@@ -783,7 +783,7 @@ function buildMockState() {
       { id: "video_to_audio", title: "视频转音频", last_used: "今天 17:35" },
       { id: "metadata_viewer", title: "元数据查看", last_used: "今天 14:10" },
     ],
-    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.21" },
+    app_status: { running_state: "空闲中", download_speed: "0 B/s", completed_count: 128, failed_count: 7, version: "v3.6.17" },
   };
 }
 
@@ -1197,7 +1197,7 @@ function renderStatus() {
   byId("statusDownload").textContent = status.download_speed || "0 B/s";
   byId("statusCompleted").textContent = String(status.completed_count || 0);
   byId("statusFailed").textContent = String(failedCount);
-  byId("statusVersion").textContent = status.version || "v3.6.21";
+  byId("statusVersion").textContent = status.version || "v3.6.17";
 }
 
 let updateCheckSequence = 0;
@@ -1263,6 +1263,7 @@ async function showUpdateCheckModal() {
   byId("updateTitle").textContent = t("检查更新");
   byId("updateLocalLabel").textContent = t("当前版本");
   byId("updateLatestLabel").textContent = t("Release 版本");
+  byId("updateViewLogBtn").textContent = t("查看日志");
   byId("updateReleaseLink").textContent = t("查看发布页");
   byId("updatePrepareBtn").textContent = t("下载并验证");
   byId("updateInstallBtn").textContent = t("安装并重启");
@@ -1416,9 +1417,14 @@ function openUpdateReleasePage() {
   if (updateReleaseUrl) window.open(updateReleaseUrl, "_blank", "noopener");
 }
 
+function openUpdateLog() {
+  window.open("/api/debug/latest-log", "_blank", "noopener");
+}
+
 window.showUpdateCheckModal = showUpdateCheckModal;
 window.closeUpdateCheckModal = closeUpdateCheckModal;
 window.openUpdateReleasePage = openUpdateReleasePage;
+window.openUpdateLog = openUpdateLog;
 window.prepareWebUpdate = prepareWebUpdate;
 window.installWebUpdate = installWebUpdate;
 

@@ -19,6 +19,11 @@ asset。客户端不会内置 GitHub token、PAT、client secret 或长期凭证
 GUI 只会选择 manifest 中精确匹配当前 `os + arch + installerType` 的 asset。
 不会按文件名猜测“看起来像”的安装包。
 
+安装包实际字节数必须不超过客户端 `DEFAULT_MAX_DOWNLOAD_BYTES`（当前 `2 GiB`）。
+`packaging/update_manifest.py` 在签名前执行同一边界检查；发布端不得生成一个客户端
+必然拒绝的清单，也不得在 manifest 中填写虚假大小，因为下载完成后仍会复核实际大小
+和 SHA-256。
+
 ## Multiple Version Candidates
 
 手动检查更新时，客户端会读取最近的 GitHub Releases，并只把同时包含

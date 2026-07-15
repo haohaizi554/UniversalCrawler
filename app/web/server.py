@@ -68,7 +68,7 @@ mimetypes.init()
 
 def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
     """创建 FastAPI 应用实例。"""
-    app = FastAPI(title="Universal Crawler Pro", version="3.6.21", lifespan=lifespan)
+    app = FastAPI(title="Universal Crawler Pro", version="3.6.17", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,

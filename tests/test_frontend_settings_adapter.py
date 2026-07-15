@@ -1,14 +1,52 @@
 ﻿from types import SimpleNamespace
 from unittest.mock import Mock
 
+import json
+import time
+
 from app.services.frontend_settings_adapter import (
     build_download_options_snapshot,
     build_settings_snapshot,
     normalize_download_options_payload,
     persist_download_options,
+    platform_auth_snapshot,
     platform_count_contract,
     platform_proxy_contract,
 )
+
+
+def test_kuaishou_auth_snapshot_rejects_expired_main_site_cookie(tmp_path):
+    cookie_file = tmp_path / "ks_auth.json"
+    cookie_file.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "userId",
+                        "value": "identity-only",
+                        "domain": "id.kuaishou.com",
+                        "path": "/",
+                        "expires": time.time() + 3600,
+                    },
+                    {
+                        "name": "userId",
+                        "value": "expired-main-site",
+                        "domain": ".kuaishou.com",
+                        "path": "/",
+                        "expires": time.time() - 3600,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = platform_auth_snapshot(
+        "kuaishou",
+        {"kuaishou_cookie_file": str(cookie_file)},
+    )
+
+    assert snapshot["auth_status"] == "未认证"
 
 
 def test_platform_count_contract_uses_platform_specific_units_and_defaults():

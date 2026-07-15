@@ -11,6 +11,7 @@ import requests
 from app.debug_logger import debug_logger
 
 from app.exceptions import SpiderParseError
+from shared.network_proxy import configure_requests_session, requests_proxy_mapping
 
 from .helpers import build_search_id, extract_note_detail_from_html
 from .sign import sign_xiaohongshu_headers
@@ -30,8 +31,8 @@ class XiaohongshuClient:
         self.cookie_str = cookie_str
         self.host = "https://edith.xiaohongshu.com"
         self.domain = "https://www.xiaohongshu.com"
-        self.proxies = {"http": proxy, "https": proxy} if proxy else None
-        self.session = requests.Session()
+        self.proxies = requests_proxy_mapping(proxy)
+        self.session = configure_requests_session(requests.Session())
         self.session.headers.update(
             {
                 "User-Agent": user_agent,
