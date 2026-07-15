@@ -186,6 +186,14 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("uvicorn", lines)
         self.assertIn("yt-dlp", lines)
 
+    def test_setuptools_security_floor_covers_pysec_2026_3447(self) -> None:
+        requirements = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn("setuptools~=83.0.0", requirements)
+        self.assertNotIn("setuptools~=81.0.0", requirements)
+        self.assertIn('requires = ["setuptools>=83.0.0", "wheel"]', pyproject)
+
 
 if __name__ == "__main__":
     unittest.main()
