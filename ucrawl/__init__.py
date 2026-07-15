@@ -25,7 +25,7 @@ from shared.interactive_selection import InteractiveTTYSelection
 from shared.pipe_selection import PipeOutput, PipeSelection
 from app.ui.gui_selection_strategy import GUISelection
 
-__version__ = "3.6.17"
+__version__ = "3.6.21"
 
 __all__ = [
     "UcrawlSDK",

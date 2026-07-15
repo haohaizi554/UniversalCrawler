@@ -30,7 +30,7 @@ python -m entry.web_entry --no-qt
 
 **响应**：
 ```json
-{"status": "ok", "version": "3.6.17"}
+{"status": "ok", "version": "3.6.21"}
 ```
 
 ### 平台
