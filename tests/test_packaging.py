@@ -968,7 +968,10 @@ class ContainerizationAssetTests(unittest.TestCase):
     def test_web_app_factory_starts_when_pyqt6_is_not_installed(self):
         script = r'''
 import importlib.abc
+import asyncio
 import sys
+
+from httpx import ASGITransport, AsyncClient
 
 class BlockPyQt6(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -979,7 +982,17 @@ class BlockPyQt6(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockPyQt6())
 from app.web.server import create_app
 application = create_app()
-assert any(getattr(route, "path", "") == "/healthz" for route in application.routes)
+
+async def assert_healthcheck_available():
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/healthz")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "ok"}
+
+asyncio.run(assert_healthcheck_available())
 '''
         result = subprocess.run(
             [sys.executable, "-c", script],
