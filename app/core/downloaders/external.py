@@ -179,6 +179,10 @@ class FFmpegExternalTool:
             "aac_adtstoasc",
             "-bufsize",
             "10M",
+            # 下载器实际写入 ``*.mp4.downloading``；显式 muxer 避免临时后缀
+            # 让 ffmpeg 把有效视频流误判为未知输出格式。
+            "-f",
+            "mp4",
             save_path,
         ])
         return cmd
@@ -198,7 +202,9 @@ class FFmpegExternalTool:
             command.extend(["-map", "0:v:0", "-map", "1:a:0?"])
         else:
             command.extend(["-map", "0:v:0?"])
-        command.extend(["-c", "copy", "-movflags", "+faststart", save_path])
+        # Bilibili 先写入 ``*.mp4.merging`` 再原子替换最终文件。该临时后缀无法让
+        # ffmpeg 自动推断容器，因此必须显式指定 MP4 muxer。
+        command.extend(["-c", "copy", "-movflags", "+faststart", "-f", "mp4", save_path])
         return command
 
 class NM3U8DLREExternalTool:

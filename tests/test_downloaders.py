@@ -557,9 +557,22 @@ class DownloaderStrategyTests(unittest.TestCase):
                 "copy",
                 "-movflags",
                 "+faststart",
+                "-f",
+                "mp4",
                 "output.mp4",
             ],
         )
+
+    def test_ffmpeg_external_tool_build_merge_command_declares_mp4_for_atomic_sidecar(self):
+        """原子合并临时名不是媒体扩展名时，必须显式告诉 ffmpeg 使用 MP4 muxer。"""
+        command = FFmpegExternalTool.build_merge_command(
+            "ffmpeg.exe",
+            "video.m4s",
+            "audio.m4s",
+            "output.mp4.merging",
+        )
+
+        self.assertEqual(command[-3:], ["-f", "mp4", "output.mp4.merging"])
 
     def test_ffmpeg_external_tool_build_download_command_contains_headers_and_target(self):
         """验证 `test_ffmpeg_external_tool_build_download_command_contains_headers_and_target` 对应场景是否符合预期，供 `DownloaderStrategyTests` 使用。"""
@@ -580,6 +593,17 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(command[command.index("-rw_timeout") + 1], "30000000")
         self.assertIn("Referer: https://www.douyin.com/\r\n", command)
         self.assertEqual(command[-1], "video.mp4")
+
+    def test_ffmpeg_external_tool_build_download_command_declares_mp4_for_atomic_temp(self):
+        """普通 ffmpeg 下载同样写入非媒体后缀，不能依赖文件名推断 muxer。"""
+        command = FFmpegExternalTool.build_download_command(
+            "ffmpeg.exe",
+            "https://cdn.example.com/master.m3u8",
+            "video.mp4.downloading",
+            {"User-Agent": "ua-demo"},
+        )
+
+        self.assertEqual(command[-3:], ["-f", "mp4", "video.mp4.downloading"])
 
     @patch("app.core.downloaders.ffmpeg.requests.head")
     @patch("app.core.downloaders.ffmpeg.subprocess.Popen")

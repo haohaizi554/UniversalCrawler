@@ -286,6 +286,20 @@ def test_failure_category_and_solutions_are_data_only():
     assert solutions[0]["title"] == "\u91cd\u65b0\u83b7\u53d6\u94fe\u63a5"
 
 
+def test_ffmpeg_output_format_error_is_tool_failure_not_file_lock():
+    reason = (
+        "Bilibili 音视频合并失败: Unable to choose an output format for "
+        "'video.mp4.merging'; Error opening output file: Invalid argument"
+    )
+
+    category = adapter.failure_category(reason)
+    solutions = adapter.solutions_for_reason(reason)
+
+    assert category["key"] == "tool"
+    assert category["label"] == "工具异常"
+    assert all(solution["title"] != "释放文件占用" for solution in solutions)
+
+
 def test_failed_item_builds_failure_row_from_injected_log_excerpt():
     item = _item(
         status="failed",

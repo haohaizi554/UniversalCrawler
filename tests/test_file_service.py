@@ -233,6 +233,7 @@ class MediaLibraryServiceTests(unittest.TestCase):
             os.path.join(base, "demo_video.m4s"),
             os.path.join(base, "demo_audio.m4s"),
             os.path.join(base, "demo.mp4.downloading"),
+            os.path.join(base, "demo.mp4.merging"),
             os.path.join(base, ".demo.mp4.part0"),
         ]
         keep_paths = [

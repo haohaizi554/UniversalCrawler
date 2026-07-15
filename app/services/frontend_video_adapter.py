@@ -521,6 +521,31 @@ def format_event_clock(value: Any) -> str:
     return raw
 
 
+def _is_file_lock_reason(reason: str, lowered: str) -> bool:
+    """仅把明确的锁或权限错误归为文件占用，不能被普通英文 ``file`` 路径触发。"""
+    return any(
+        token in lowered
+        for token in (
+            "permission denied",
+            "permissionerror",
+            "access denied",
+            "file in use",
+            "being used by another process",
+            "sharing violation",
+            "occupied",
+            "winerror 32",
+        )
+    ) or any(token in reason for token in ("占用", "权限", "拒绝访问", "另一个程序正在使用"))
+
+
+def _is_external_tool_reason(reason: str, lowered: str) -> bool:
+    """识别外部媒体工具及其 muxer/容器错误，供失败标签和建议共用。"""
+    return any(
+        token in lowered
+        for token in ("ffmpeg", "m3u8", "external", "tool", "avformatcontext", "muxer", "output format")
+    ) or any(token in reason for token in ("外部工具", "合并"))
+
+
 def default_active_events(item: VideoItem, *, now: Callable[[], datetime] | None = None) -> list[dict[str, str]]:
     clock = now or datetime.now
     current = clock().strftime("%H:%M:%S")
@@ -543,11 +568,11 @@ def failure_category(reason: str) -> dict[str, str]:
         token in reason for token in ("\u8fde\u63a5", "\u7f51\u7edc", "\u62d2\u7edd", "\u5931\u6548", "\u94fe\u63a5")
     ):
         return {"key": "link", "label": "\u94fe\u63a5\u5931\u8d25", "icon_file": "action_trace_link.png"}
-    if any(token in lowered for token in ("permission", "occupied", "file")) or any(token in reason for token in ("\u5360\u7528", "\u6743\u9650", "\u6587\u4ef6")):
+    if _is_file_lock_reason(reason, lowered):
         return {"key": "file", "label": "\u6587\u4ef6\u5360\u7528", "icon_file": "status_locked.png"}
     if any(token in lowered for token in ("parse", "parser", "extract", "decode")) or any(token in reason for token in ("\u89e3\u6790", "\u63d0\u53d6")):
         return {"key": "parse", "label": "\u89e3\u6790\u5931\u8d25", "icon_file": "action_code.png"}
-    if any(token in lowered for token in ("ffmpeg", "m3u8", "external", "tool")) or any(token in reason for token in ("\u5916\u90e8\u5de5\u5177", "\u5408\u5e76")):
+    if _is_external_tool_reason(reason, lowered):
         return {"key": "tool", "label": "\u5de5\u5177\u5f02\u5e38", "icon_file": "action_repair.png"}
     return {"key": "unknown", "label": "\u4efb\u52a1\u5931\u8d25", "icon_file": "status_error_warning.png"}
 
@@ -569,10 +594,14 @@ def solutions_for_reason(reason: str) -> list[dict[str, str]]:
             {"title": "\u91cd\u65b0\u83b7\u53d6\u94fe\u63a5", "description": "\u8bf7\u91cd\u65b0\u590d\u5236\u6700\u65b0\u7684\u5206\u4eab\u94fe\u63a5\u5e76\u91cd\u8bd5\u4efb\u52a1\u3002", "icon_file": "action_trace_link.png"},
             {"title": "\u68c0\u67e5\u7f51\u7edc", "description": "\u786e\u8ba4\u4ee3\u7406\u3001DNS \u548c\u7f51\u7edc\u73af\u5883\u6b63\u5e38\uff0c\u5fc5\u8981\u65f6\u5207\u6362\u7f51\u7edc\u540e\u91cd\u8bd5\u3002", "icon_file": "status_network_warning.png"},
         ]
-    if any(token in lowered for token in ("permission", "occupied", "file")) or any(token in reason for token in ("\u5360\u7528", "\u6743\u9650", "\u6587\u4ef6")):
+    if _is_file_lock_reason(reason, lowered):
         return [
             {"title": "\u91ca\u653e\u6587\u4ef6\u5360\u7528", "description": "\u5173\u95ed\u6b63\u5728\u64ad\u653e\u6216\u5360\u7528\u76ee\u6807\u6587\u4ef6\u7684\u7a0b\u5e8f\u540e\u91cd\u8bd5\u3002", "icon_file": "status_locked.png"},
             {"title": "\u66f4\u6539\u76ee\u5f55", "description": "\u5c1d\u8bd5\u5207\u6362\u5230\u6709\u5199\u5165\u6743\u9650\u7684\u4fdd\u5b58\u76ee\u5f55\u3002", "icon_file": "action_open_directory.png"},
+        ]
+    if _is_external_tool_reason(reason, lowered):
+        return [
+            {"title": "\u67e5\u770b Trace ID", "description": "\u5728\u65e5\u5fd7\u4e2d\u5fc3\u6309 Trace ID \u8fc7\u6ee4\uff0c\u5b9a\u4f4d\u540c\u4e00\u4efb\u52a1\u7684\u4e0a\u4e0b\u6e38\u65e5\u5fd7\u3002", "icon_file": "action_search.png"},
         ]
     return [
         {"title": "\u91cd\u65b0\u83b7\u53d6\u94fe\u63a5", "description": "\u8bf7\u91cd\u65b0\u590d\u5236\u6700\u65b0\u7684\u5206\u4eab\u94fe\u63a5\u5e76\u91cd\u8bd5\u4efb\u52a1\u3002", "icon_file": "action_trace_link.png"},

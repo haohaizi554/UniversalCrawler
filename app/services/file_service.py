@@ -65,6 +65,7 @@ class MediaLibraryService:
     )
     _EXPLICIT_TEMP_SUFFIXES = (
         ".downloading",
+        ".merging",
         ".tmp",
         ".part",
         ".aria2",
@@ -138,6 +139,8 @@ class MediaLibraryService:
         if not lower_name:
             return False
         if lower_name.endswith(".downloading"):
+            return True
+        if lower_name.endswith(".merging"):
             return True
         if lower_name.endswith(cls.BILIBILI_TEMP_SUFFIXES):
             return True
