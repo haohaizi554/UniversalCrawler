@@ -9,7 +9,7 @@ from app.ui.styles.themes import theme_colors
 
 
 class UiSwitch(QCheckBox):
-    """Pill toggle switch without native checkbox chrome."""
+    """不使用原生复选框外观的胶囊开关。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -136,11 +136,11 @@ class SegmentedControl(QWidget):
 
 
 class SettingsComboBox(ThemedComboBox):
-    """Stable settings combo that keeps the active accent while the popup is open."""
+    """弹层打开时保持强调色状态稳定的设置下拉框。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        # The settings stylesheet owns the control chrome; the shared helper owns popup behavior.
+        # 设置页样式负责控件外观，共享 helper 只负责弹层行为，避免两套 QSS 相互覆盖。
         self.setStyleSheet("")
         self.setProperty("themedComboControlStyle", "false")
         self.setProperty("comboPopupClampToControl", "true")

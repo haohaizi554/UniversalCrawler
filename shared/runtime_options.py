@@ -1,10 +1,7 @@
-"""CLI 默认配置与校验工具。
+"""跨入口运行默认值、配置合并、校验与下载元数据工具。
 
-与 GUI read_*_run_options 对齐：从 cfg 持久化配置读取平台默认值。
-CLI/SDK/REST API 三层共用，确保默认值来源一致。
-
-本模块不依赖 PyQt6 控件，仅依赖 cfg（ConfigManager），
-因此可在无 GUI 环境下安全使用。
+CLI、SDK 和 Web 通过本模块读取配置中心中的持久化平台值，并在配置系统不可用
+时采用代码兜底。模块不依赖 PyQt6 控件，可在无图形环境中使用。
 """
 
 from __future__ import annotations
@@ -14,7 +11,7 @@ import socket
 from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
 
-# 兜底配置：当 cfg 不可用时使用（与 GUI AppSettings 默认值对齐）
+# 配置中心不可用时使用的最小平台兜底。
 _SUPPORTED_PLATFORMS = ("douyin", "xiaohongshu", "bilibili", "kuaishou", "missav")
 _FALLBACK_CONFIG: dict[str, dict[str, Any]] = {
     "douyin": {
@@ -47,7 +44,8 @@ _FALLBACK_CONFIG: dict[str, dict[str, Any]] = {
     },
 }
 
-# 向后兼容别名
+# 公开 SDK 兼容导出。必须保持直接别名而非复制，使 DEFAULT_CONFIG 与
+# _FALLBACK_CONFIG 始终是同一对象，兼容依赖对象身份或原地修改的调用方。
 DEFAULT_CONFIG = _FALLBACK_CONFIG
 
 _TYPE_NAMES: dict[type[Any], str] = {
@@ -112,15 +110,15 @@ _CONVENIENCE_PARAM_TYPE_RULES = {
 
 
 class DomainPolicyViolation(ValueError):
-    """Raised when a network target crosses the public-address boundary."""
+    """网络目标越过公共地址边界时抛出。"""
 
 
 class DomainPolicyEngine:
-    """Validate an initial URL and every redirect before the client follows it.
+    """在客户端访问前校验初始 URL 及每一次重定向。
 
-    The engine is deliberately transport-agnostic. ``validate_redirect_response``
-    matches the Requests response-hook protocol, so requests can preserve its
-    normal cookie/auth redirect handling while this policy checks the next hop.
+    本引擎刻意与传输实现解耦。``validate_redirect_response`` 匹配 Requests
+    响应钩子协议，因此 requests 可保留正常的 Cookie/认证重定向处理，同时
+    由本策略逐跳检查下一个地址。
     """
 
     REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
@@ -186,8 +184,40 @@ class DomainPolicyEngine:
                 raise DomainPolicyViolation("禁止访问本地或内网地址")
         return normalized_url
 
+    def resolve_public_addresses(self, url: str) -> tuple[str, ...]:
+        """返回刚完成校验的地址集合，供传输层固定 DNS 解析结果。"""
+        normalized_url = self.require_public_url(url)
+        parts = urlsplit(normalized_url)
+        host = str(parts.hostname or "")
+        try:
+            host_address = ipaddress.ip_address(host)
+        except ValueError:
+            host_address = None
+        if host_address is not None:
+            return (str(host_address),)
+
+        resolver = self._resolver or socket.getaddrinfo
+        try:
+            addr_infos = resolver(host, parts.port or None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise DomainPolicyViolation("url 主机名无法解析") from exc
+        addresses: list[str] = []
+        for addr_info in addr_infos:
+            address = str(addr_info[4][0])
+            try:
+                unsafe = self._is_unsafe_address(address)
+            except ValueError as exc:
+                raise DomainPolicyViolation("url 主机名解析结果无效") from exc
+            if unsafe:
+                raise DomainPolicyViolation("禁止访问本地或内网地址")
+            if address not in addresses:
+                addresses.append(address)
+        if not addresses:
+            raise DomainPolicyViolation("url 主机名无法解析")
+        return tuple(addresses)
+
     def validate_redirect_response(self, response: Any, *_args: Any, **_kwargs: Any) -> Any:
-        """Requests hook: reject an unsafe Location before resolve_redirects sends it."""
+        """Requests 钩子：在 resolve_redirects 发出请求前拒绝不安全的 Location。"""
         try:
             status_code = int(getattr(response, "status_code", 0) or 0)
         except (TypeError, ValueError):
@@ -207,15 +237,15 @@ class DomainPolicyEngine:
 PUBLIC_DOMAIN_POLICY = DomainPolicyEngine()
 
 def get_platform_defaults(source: str) -> dict:
-    """获取平台默认配置（与 GUI read_*_run_options 对齐）。
+    """获取平台运行默认配置。
 
     优先从配置中心读取持久化配置；若配置系统不可用，则回退到
     `app.config.settings` 中声明的默认配置快照，避免 CLI 层维护重复常量。
 
-    Args:
+    参数：
         source: 平台 ID (douyin/xiaohongshu/bilibili/kuaishou/missav)
 
-    Returns:
+    返回：
         dict: 平台默认配置（新 dict，可安全修改）
     """
     if source not in _FALLBACK_CONFIG:
@@ -228,7 +258,7 @@ def get_platform_defaults(source: str) -> dict:
         return dict(_FALLBACK_CONFIG[source])
 
 def get_default_save_dir() -> str:
-    """获取默认保存目录（与 GUI MainWindow.current_save_dir 对齐）。
+    """获取共享默认保存目录。
 
     优先从 cfg 读取，兜底使用 DEFAULT_DOWNLOAD_DIR。
     """
@@ -247,15 +277,14 @@ def get_default_save_dir() -> str:
         return "downloads"
 
 def validate_config_types(user_config: dict) -> str | None:
-    """校验 config 中已知参数的类型（与 CLI argparse type 和 SDK _validate_config 对齐）。
+    """校验 config 中已知参数的类型。
 
     仅校验已知参数，未知参数透传给 spider（保持前向兼容）。
-    与 REST API _validate_config_types 逻辑完全一致。
 
-    Args:
+    参数：
         user_config: 用户传入的 config 字典
 
-    Returns:
+    返回：
         str | None: 错误信息（None 表示校验通过）
     """
     if not isinstance(user_config, dict):
@@ -292,9 +321,9 @@ def validate_direct_download_url(url: str) -> str | None:
     return None
 
 def build_missav_proxy_url(proxy_str: str) -> str:
-    """构建 MissAV 代理 URL（与 GUI build_missav_proxy_url 完全一致）。
+    """通过纯 core 辅助函数构建 MissAV 代理 URL。
 
-    委托给纯 core 辅助函数，避免 CLI 为了一个字符串归一化引入 Qt UI 依赖。
+    委托可避免调用入口为字符串归一化引入 Qt UI 依赖。
     """
     from app.core.plugins.run_options import build_missav_proxy_url as _build
     return _build(proxy_str)
@@ -316,11 +345,11 @@ def _apply_runtime_config_bridges(
     if source == "missav" and "proxy" in config and config["proxy"] is not None:
         config["proxy"] = proxy_normalizer(config["proxy"])
 
-    # 与 GUI BilibiliSpider 对齐：传入 folder_name 时自动启用 use_subdir
+    # folder_name 只有在启用子目录时才会被路径策略消费。
     if config.get("folder_name") and not config.get("use_subdir"):
         config["use_subdir"] = True
 
-    # 与 GUI DouyinParser 对齐：author 可桥接为 folder_name
+    # 解析器只提供 author 时，将其桥接为可消费的目录名。
     if config.get("author") and not config.get("folder_name"):
         config["folder_name"] = config["author"]
         if not config.get("use_subdir"):
@@ -329,17 +358,17 @@ def _apply_runtime_config_bridges(
     return config
 
 def infer_content_type(local_path: str) -> str:
-    """根据文件扩展名推断 content_type（与 GUI spider 设置对齐）。
+    """根据文件扩展名推断 content_type。
 
     直接下载（download_video）不经过 spider，content_type 由文件扩展名推断：
     - 视频文件 → "video"
     - 图片文件 → "image"
     - 无法推断 → 空字符串
 
-    Args:
+    参数：
         local_path: 本地文件路径
 
-    Returns:
+    返回：
         str: content_type ("video" / "image" / "")
     """
     if not local_path:
@@ -360,7 +389,7 @@ def infer_content_type(local_path: str) -> str:
     return ""
 
 def infer_content_type_from_url(url: str) -> str:
-    """根据 URL 推断 content_type（与 GUI spider 下载前设置对齐）。
+    """根据 URL 推断下载前的 content_type 提示。
 
     SDK download_video 不经过 spider，需要在下载前从 URL 推断 content_type，
     以便 DownloadWorker._infer_extension 能正确推断文件扩展名。
@@ -369,10 +398,10 @@ def infer_content_type_from_url(url: str) -> str:
     - URL 含 m3u8 → "video"
     - 无法推断 → 空字符串（下载后再由 infer_content_type 从文件签名推断）
 
-    Args:
+    参数：
         url: 视频/图片 URL
 
-    Returns:
+    返回：
         str: content_type ("video" / "image" / "")
     """
     if not url:
@@ -391,7 +420,7 @@ def infer_content_type_from_url(url: str) -> str:
             return "image"
     return ""
 
-# 平台 → auth 文件名映射（与 app/config/settings.py AuthSettings 对齐）
+# 直接下载可读取的本地认证文件名。
 _AUTH_FILE_MAP = {
     "douyin":   "dy_auth.json",
     "xiaohongshu": "xhs_auth.json",
@@ -401,15 +430,14 @@ _AUTH_FILE_MAP = {
 }
 
 def _try_load_cookie(source: str) -> str | None:
-    """尝试加载本地 cookie 文件并构建 cookie 字符串（与 GUI spider 对齐）。
+    """尝试加载本地认证文件并构建 Cookie 字符串。
 
-    GUI spider 启动时会通过 AuthService 自动加载本地 cookie 文件，
-    SDK download_video 不经过 spider，需要手动加载以确保需要登录的平台能正常下载。
+    ``download_video`` 不经过 spider 的认证准备阶段，因此在这里补充本地会话。
 
-    Args:
+    参数：
         source: 平台 ID (douyin/bilibili/kuaishou/missav)
 
-    Returns:
+    返回：
         str | None: cookie 字符串，如果无可用 cookie 则返回 None
     """
     import json
@@ -419,7 +447,7 @@ def _try_load_cookie(source: str) -> str | None:
     if auth_name is None:
         return None
 
-    # 查找 cookie 文件（与 interactive 命令 _find_cookie_file 对齐）
+    # 候选顺序兼容工作目录、旧用户目录、源码目录和当前 user_data_root。
     candidates = [
         Path(auth_name),                    # 当前工作目录
         Path.home() / ".ucrawl" / auth_name,  # 用户目录
@@ -449,7 +477,7 @@ def _try_load_cookie(source: str) -> str | None:
     except (json.JSONDecodeError, OSError):
         return None
 
-    # 构建 cookie 字符串（与 GUI AuthService.build_cookie_string 对齐）
+    # 优先使用 AuthService 支持的完整 Cookie 数据形状。
     try:
         from app.services.auth_service import AuthService
         return AuthService.build_cookie_string(data)
@@ -460,16 +488,15 @@ def _try_load_cookie(source: str) -> str | None:
         return None
 
 def _try_load_cookies_dict(source: str) -> dict | None:
-    """尝试加载本地 cookie 文件并构建 cookie dict（与 GUI BilibiliSpider 对齐）。
+    """尝试加载本地认证文件并构建 Cookie 字典。
 
-    BilibiliSpider 通过 self.api.sess.cookies 获取 cookie dict，
-    SDK download_video 不经过 spider，需要手动加载以确保 BilibiliDownloader
-    能使用 cookies dict 刷新 CDN URL。
+    BilibiliDownloader 使用该字典刷新 CDN URL；直接下载没有 spider session
+    可提供它，因此需从磁盘认证数据恢复。
 
-    Args:
+    参数：
         source: 平台 ID (douyin/bilibili/kuaishou/missav)
 
-    Returns:
+    返回：
         dict | None: cookie name→value 字典，如果无可用 cookie 则返回 None
     """
     import json
@@ -479,7 +506,7 @@ def _try_load_cookies_dict(source: str) -> dict | None:
     if auth_name is None:
         return None
 
-    # 查找 cookie 文件（与 _try_load_cookie 对齐）
+    # 与 Cookie 字符串加载器共享相同的兼容路径顺序。
     candidates = [
         Path(auth_name),
         Path.home() / ".ucrawl" / auth_name,
@@ -531,38 +558,35 @@ def merge_convenience_params(
 ) -> dict:
     """将 REST API/WebSocket 请求体中的便捷参数合并到 config 字典。
 
-    与 CLI search/download 命令的便捷参数对齐：
-    CLI 有 --cookie/--download-strategy/--referer/--ua 等便捷参数，
-    REST API/WebSocket 也应支持这些参数作为顶层字段，避免用户手写 JSON config。
+    REST API/WebSocket 接受 cookie、download_strategy、referer、ua 等顶层便捷
+    字段，避免调用方手写嵌套 JSON config。
 
-    合并优先级（与 CLI 对齐）：
+    合并优先级：
     1. 平台默认值 (get_platform_defaults)
     2. config 字典中的值
-    3. 便捷参数（优先级最高，与 CLI 独立参数语义一致）
+    3. 顶层便捷参数
 
-    合并后会对便捷参数进行类型校验（与 CLI argparse type 和 _validate_config_types 对齐），
-    防止 REST API/WebSocket 便捷参数绕过类型校验。
+    顶层便捷参数在合并后单独校验，防止它们绕过 config schema。
 
-    Args:
+    参数：
         body: REST API/WebSocket 请求体
         config: 已合并平台默认值的 config 字典（会被就地修改）
         source: 平台 ID（用于校验平台特定参数）
 
-    Returns:
+    返回：
         dict: 合并后的 config 字典
     """
-    # 与 CLI search --max-items/--max-pages/--timeout 对齐
+    # 通用爬取限制可直接覆盖已合并配置。
     if body.get("max_items") is not None:
         config["max_items"] = body["max_items"]
     if body.get("max_pages") is not None:
         config["max_pages"] = body["max_pages"]
     if body.get("timeout") is not None and isinstance(body["timeout"], int):
-        # 注意：REST API 顶层 timeout 是整体超时（run_timeout），
-        # 这里的 timeout 是 spider HTTP 超时（与 CLI --timeout 对齐）
-        # 仅在明确为 int 类型时才视为 spider HTTP 超时（float 视为 run_timeout）
+        # REST 顶层 timeout 也可表达整体上限；只有 int 在这里解释为 spider
+        # HTTP 超时，float 留给调用层作为 run_timeout 处理。
         config["timeout"] = body["timeout"]
 
-    # 与 CLI search --individual-only/--priority/--proxy 对齐（MissAV 专属）
+    # MissAV 的筛选与代理便捷字段。
     if body.get("individual_only") is not None:
         config["individual_only"] = body["individual_only"]
     if body.get("priority") is not None:
@@ -570,7 +594,7 @@ def merge_convenience_params(
     if body.get("proxy") is not None:
         config["proxy"] = body["proxy"]
 
-    # 与 CLI search/download --cookie/--download-strategy/--referer/--ua 对齐
+    # 下载请求头、认证与策略字段。
     if body.get("cookie") is not None:
         config["cookie"] = body["cookie"]
     if body.get("download_strategy") is not None:
@@ -580,25 +604,21 @@ def merge_convenience_params(
     if body.get("ua") is not None:
         config["ua"] = body["ua"]
 
-    # 与 CLI search/download --folder-name/--use-subdir 对齐
+    # 下载路径结构字段。
     if body.get("folder_name") is not None:
         config["folder_name"] = body["folder_name"]
     if body.get("use_subdir") is not None:
         config["use_subdir"] = body["use_subdir"]
 
-    # 与 CLI search/download --file-name 对齐
+    # 显式文件名字段。
     if body.get("file_name") is not None:
         config["file_name"] = body["file_name"]
 
-    # 与 CLI search/download --content-type 对齐
+    # 媒体内容类型字段。
     if body.get("content_type") is not None:
         config["content_type"] = body["content_type"]
 
-    # 与 CLI argparse type 和 _validate_config_types 对齐：
-    # 合并后校验便捷参数类型，防止 REST API/WebSocket 便捷参数绕过类型校验。
-    # CLI 通过 argparse 自动校验参数类型（如 type=int, action="store_true"），
-    # REST API/WebSocket 的 _validate_config_types 只校验 config 字典，
-    # 便捷参数在 _validate_config_types 之后通过本函数合并，需要额外校验。
+    # 便捷字段在 config 校验之后合并，必须在此补做自身类型校验。
     _conv_err = _validate_convenience_param_types(body)
     if _conv_err:
         raise ValueError(_conv_err)
@@ -655,14 +675,12 @@ def compose_runtime_config(
 def _validate_convenience_param_types(body: dict) -> str | None:
     """校验 REST API/WebSocket 请求体中便捷参数的类型。
 
-    与 CLI argparse type 和 validate_config_types 对齐：
-    CLI 通过 argparse 自动校验参数类型，REST API/WebSocket 需要显式校验，
-    防止便捷参数绕过 _validate_config_types 的类型校验。
+    Web 请求不经过 argparse，因此需要显式拒绝绕过 config schema 的错误类型。
 
-    Args:
+    参数：
         body: REST API/WebSocket 请求体
 
-    Returns:
+    返回：
         str | None: 错误信息（None 表示校验通过）
     """
     for key, expected in _CONVENIENCE_PARAM_TYPE_RULES.items():
@@ -681,16 +699,15 @@ def _validate_convenience_param_types(body: dict) -> str | None:
     return None
 
 def get_platform_download_defaults(source: str) -> dict:
-    """获取平台下载默认 meta 字段（与 GUI spider build_download_meta 对齐）。
+    """获取直接下载所需的平台默认元数据。
 
-    GUI spider 在 emit_video 时通过 build_download_meta 设置平台特定的
-    ua、referer 等字段。SDK download_video 不经过 spider，需要手动设置
-    这些默认值，确保下载器能正确构建 HTTP 请求头。
+    ``download_video`` 不经过 spider 的任务构造阶段，需要在这里提供 ua、
+    referer 和可用的本地认证数据，让下载器能够构建请求并刷新受保护 URL。
 
-    Args:
+    参数：
         source: 平台 ID (douyin/bilibili/kuaishou/missav)
 
-    Returns:
+    返回：
         dict: 平台下载默认 meta 字段（新 dict，可安全修改）
     """
     try:
@@ -703,15 +720,14 @@ def get_platform_download_defaults(source: str) -> dict:
         )
         cfg = None
 
-    # 与各 spider 的 HEADERS 和 build_download_meta 对齐：
+    # 请求头来源与各平台下载器的服务端要求一致：
     # - DouyinDownloader 默认 ua=cfg.get("douyin","user_agent",DEFAULT_USER_AGENT), referer="https://www.douyin.com/"
     # - BilibiliDownloader 默认 ua=cfg.get("bilibili","user_agent",DEFAULT_USER_AGENT), referer="https://www.bilibili.com"
     # - KuaishouDownloader 默认 ua=cfg.get("kuaishou","user_agent",DEFAULT_USER_AGENT), referer="https://www.kuaishou.com/"
     # - MissAVDownloader 默认 referer="https://missav.ai/"
     #
-    # cookie 字段：GUI spider 在搜索阶段通过 AuthService 自动加载本地 cookie，
-    # SDK download_video 不经过 spider，需要从本地 cookie 文件加载（与 GUI 对齐）。
-    # 如果本地无 cookie 文件则不设置（spider 会自动弹出登录窗口，SDK 无法弹出窗口）。
+    # 直接下载没有登录交互；本地无认证文件时不注入 cookie，由下载器返回实际
+    # 鉴权结果。
     _PLATFORM_DEFAULTS = {
         "douyin": {
             "ua": cfg.get("douyin", "user_agent", DEFAULT_USER_AGENT) if cfg else DEFAULT_USER_AGENT,
@@ -736,18 +752,13 @@ def get_platform_download_defaults(source: str) -> dict:
 
     result = dict(_PLATFORM_DEFAULTS.get(source, {}))
 
-    # 与 GUI spider 对齐：自动加载本地 cookie（与 interactive 命令 _load_cookie 对齐）
-    # GUI spider 启动时会自动加载本地 cookie 文件，SDK download_video 也应如此，
-    # 确保需要登录的平台（douyin/bilibili/kuaishou）能正常下载。
-    # 仅在用户未通过 config 显式传入 cookie 时才自动加载（用户 config 优先级最高）。
+    # 这里返回的是低优先级默认值；调用配置在上层合并后仍可覆盖本地 cookie。
     _cookie = _try_load_cookie(source)
     if _cookie:
         result["cookie"] = _cookie
 
-    # 与 GUI BilibiliSpider 对齐：bilibili 平台额外加载 cookies dict
-    # BilibiliSpider 通过 self.api.sess.cookies 获取 cookie dict，
-    # BilibiliDownloader 优先读取 cookies dict 用于刷新 CDN URL。
-    # SDK download_video 不经过 spider，需要手动加载以确保 CDN 刷新可用。
+    # BilibiliDownloader 刷新 CDN URL 时优先消费 cookies 字典，故除字符串外再
+    # 提供结构化认证数据。
     if source == "bilibili":
         _cookies_dict = _try_load_cookies_dict(source)
         if _cookies_dict:

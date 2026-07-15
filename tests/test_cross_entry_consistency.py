@@ -10,7 +10,7 @@ def _create_test_client():
 
     client = TestClient(create_app())
     # 建立 session 并获取 token
-    client.get("/api/ping")
+    client.get("/api/session/bootstrap")
     cookie_name = client.app.state.web_session_cookie_name
     session_id = client.cookies.get(cookie_name)
     context = client.app.state.web_session_registry.get_or_create(session_id)
@@ -306,6 +306,9 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         ), patch(
             "app.web.workflows.build_sdk",
             return_value=fake_sdk,
+        ), patch(
+            "app.web.workflows.validate_direct_download_url",
+            return_value=None,
         ):
             client = _create_test_client()
             response = client.post(
@@ -362,6 +365,9 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         ), patch(
             "app.core.download_manager.DownloadManager",
             _FakeDownloadManager,
+        ), patch(
+            "shared.sdk_runtime.validate_direct_download_url",
+            return_value=None,
         ):
             sdk = sdk_module.UcrawlSDK(save_dir="downloads")
             result = sdk.download_video(
@@ -619,6 +625,9 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
         ), patch(
             "app.web.workflows.build_sdk",
             return_value=fake_sdk,
+        ), patch(
+            "app.web.workflows.validate_direct_download_url",
+            return_value=None,
         ):
             client = _create_test_client()
             api_result = client.post(

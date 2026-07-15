@@ -1,4 +1,4 @@
-"""异常定义模块，集中声明 `app/exceptions/spider.py` 使用的异常类型。"""
+"""区分爬虫认证、登录态持久化、内容解析和流地址解析失败。"""
 
 from .base import AppError
 

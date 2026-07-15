@@ -738,6 +738,7 @@ class PlaybackCases:
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               const originalFetch = window.fetch.bind(window);
               window.fetch = (url, options) => {
                 if (String(url).includes('/api/media/missing-media')) {
@@ -786,6 +787,7 @@ class PlaybackCases:
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               const originalFetch = window.fetch.bind(window);
               const player = document.getElementById('videoPlayer');
               window.fetch = () => Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), {

@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/xGnarly.py` 对应的接口、加密、提取或工具逻辑。"""
+"""生成 TikTok 请求使用的 X-Gnarly 签名。"""
 
-# app/core/lib/douyin/encrypt/xGnarly.py
 from hashlib import md5
 from random import randint
 from time import time
@@ -13,6 +12,7 @@ except ImportError:
     USERAGENT = DEFAULT_USER_AGENT
 
 class XGnarly:
+    """复现网页端 X-Gnarly 的随机状态、ChaCha 加密和自定义编码。"""
     
     _AA = [
         0xFFFFFFFF,
@@ -116,16 +116,12 @@ class XGnarly:
     )
 
     def __init__(self):
-        """
-        初始化 XGnarly 实例，并创建其唯一的 PRNG 状态。
-        """
+        """为当前签名器创建独立且可连续推进的 PRNG 状态。"""
         self.St = None
         self._init_prng_state()
 
     def _init_prng_state(self):
-        """
-        设置 PRNG 的初始状态，此状态将在此实例的生命周期内持续存在。
-        """
+        """混合当前毫秒时间与随机字节，初始化实例级 PRNG 状态。"""
         now_ms = int(time() * 1000)
         self.kt = [
             self._AA[44],
@@ -145,23 +141,23 @@ class XGnarly:
             randint(0, self._AA[77]),
             randint(0, self._AA[77]),
         ]
-        self.St = self._AA[88]  # position pointer, starts at 0
+        self.St = self._AA[88]  # 块内读取位置从 0 开始
 
-    # ── BIT HELPERS ────────────────────────────────────────
+    # 32 位运算
     @classmethod
     def _u32(cls, x: int) -> int:
-        """提供 `_u32` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """截断为 JavaScript 无符号 32 位整数。"""
         return x & cls._MASK32
 
     @classmethod
     def _rotl(cls, x: int, n: int) -> int:
-        """提供 `_rotl` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """在 32 位范围内循环左移。"""
         return cls._u32(((x << n) & cls._MASK32) | (x >> (32 - n)))
 
-    # ── CHACHA CORE ────────────────────────────────────────
+    # ChaCha 核心
     @classmethod
     def _quarter(cls, st: list[int], a: int, b: int, c: int, d: int):
-        """提供 `_quarter` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """执行一组 ChaCha 四分之一轮运算。"""
         st[a] = cls._u32(st[a] + st[b])
         st[d] = cls._rotl(st[d] ^ st[a], 16)
         st[c] = cls._u32(st[c] + st[d])
@@ -173,7 +169,7 @@ class XGnarly:
 
     @classmethod
     def _chacha_block(cls, state: list[int], rounds: int) -> list[int]:
-        """提供 `_chacha_block` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """按指定轮数生成一个 ChaCha 密钥流块。"""
         w = state.copy()
         r = 0
         while r < rounds:
@@ -194,10 +190,10 @@ class XGnarly:
         return w
 
     def _bump_counter(self):
-        """提供 `_bump_counter` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """推进状态计数器，避免重复使用同一个随机块。"""
         self.kt[12] = self._u32(self.kt[12] + 1)
 
-    # ── JS-faithful PRNG (rand) ────────────────────────────
+    # 与网页端一致的伪随机数序列
     def rand(self) -> float:
         
         e = self._chacha_block(self.kt, 8)
@@ -210,26 +206,26 @@ class XGnarly:
             self.St += 1
         return (t + 4294967296 * r) / (2**53)
 
-    # ── UTILITIES ──────────────────────────────────────────
+    # 字节转换
     @staticmethod
     def _num_to_bytes(val: int) -> list[int]:
-        """提供 `_num_to_bytes` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """按协议选择 2 或 4 字节的大端表示。"""
         if val < 65535:
             return [(val >> 8) & 0xFF, val & 0xFF]
         return [(val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF]
 
     @staticmethod
     def _be_int_from_str(s: str) -> int:
-        """提供 `_be_int_from_str` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """取 UTF-8 前四字节并按大端组合为 32 位整数。"""
         b = s.encode("utf-8")[:4]
         acc = 0
         for x in b:
             acc = (acc << 8) | x
         return acc & XGnarly._MASK32
 
-    # ── MESSAGE ENCRYPTION ──────────────────────────────
+    # 消息加密
     def _encrypt_chacha(self, key_words: list[int], rounds: int, data: list[int]):
-        """提供 `_encrypt_chacha` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """按小端 32 位字对载荷原地执行 ChaCha 异或。"""
         n_full = len(data) // 4
         leftover = len(data) % 4
         words = [0] * ((len(data) + 3) // 4)
@@ -276,13 +272,13 @@ class XGnarly:
                 data[base + c] = (w >> (8 * c)) & 0xFF
 
     def _ab22(self, key12_words: list[int], rounds: int, s: str) -> str:
-        """提供 `_ab22` 对应的内部辅助逻辑，供 `XGnarly` 使用。"""
+        """用固定常量与 12 个密钥字组成状态并加密载荷。"""
         state = self._OT + key12_words
         data = [ord(ch) for ch in s]
         self._encrypt_chacha(state, rounds, data)
         return "".join(chr(x) for x in data)
 
-    # ── MAIN API ───────────────────────────────────────────
+    # 签名入口
     def generate(
         self,
         query_string: str,
@@ -294,6 +290,7 @@ class XGnarly:
         
         timestamp_ms = int(time() * 1000)
 
+        # MD5 在此仅用于协议摘要，不承担密码学安全用途。
         obj = {
             1: 1,
             2: envcode,
@@ -335,6 +332,7 @@ class XGnarly:
             payload.extend(val_bytes)
         base_str = "".join(chr(x) for x in payload)
 
+        # 每次签名生成 12 个密钥字；其低 4 位还共同决定加密轮数。
         key_words = []
         key_bytes = []
         round_accum = 0
@@ -354,6 +352,7 @@ class XGnarly:
 
         enc = self._ab22(key_words, rounds, base_str)
 
+        # 密钥字节的插入位置由密文和密钥共同决定，解码端依赖该布局还原。
         insert_pos = 0
         for b in key_bytes:
             insert_pos = (insert_pos + b) % (len(enc) + 1)
@@ -368,6 +367,7 @@ class XGnarly:
             + enc[insert_pos:]
         )
 
+        # 协议使用自定义字母表，并且只编码完整的三字节块。
         out = []
         full_len = (len(final_str) // 3) * 3
         for i in range(0, full_len, 3):

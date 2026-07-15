@@ -1,4 +1,4 @@
-"""MissAV spider with two-pass scan and m3u8 sniffing."""
+"""MissAV 两遍列表扫描与 m3u8 嗅探实现。"""
 
 import re
 import urllib.parse
@@ -8,6 +8,7 @@ from app.spiders.base import BaseSpider
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.missav.task_builder import MissAVTaskBuilder
 from app.utils.user_agents import resolve_user_agent
+from shared.runtime_options import DomainPolicyViolation
 
 class MissAVSpider(BaseSpider):
     """MissAV 爬虫，先扫列表再进入详情页嗅探 m3u8。"""
@@ -17,18 +18,24 @@ class MissAVSpider(BaseSpider):
     GRID_READY_TIMEOUT_MS = 30000
     PLAYER_READY_TIMEOUT_MS = 30000
     M3U8_SNIFF_SECONDS = 45
+    PAGE_HOSTS = ("missav.ai",)
     URL_TRAILING_PUNCTUATION = " \t\r\n`'\"，。！？；：、,.!?;:)]}）】》>"
 
     def __init__(self, keyword: str, config: dict):
-        """初始化当前实例并准备运行所需的状态，供 `MissAVSpider` 使用。"""
+        """配置候选解析器和 HLS 下载任务装配器。"""
         super().__init__(keyword, config)
         self.parser = MissAVParser()
         self.task_builder = MissAVTaskBuilder()
 
+    def _require_missav_page_url(self, url: str) -> str:
+        """拒绝指向 MissAV 站点之外的用户浏览器入口。"""
+        if not self._url_matches_hosts(url, self.PAGE_HOSTS):
+            raise DomainPolicyViolation("MissAV 页面链接不属于受支持的平台域名")
+        return self._public_domain_policy_engine().require_public_url(url)
+
     def run(self):
-        """执行当前对象或脚本的主流程，供 `MissAVSpider` 使用。"""
+        """执行候选扫描、版本筛选、用户选择和详情页 HLS 嗅探。"""
         try:
-            # 配置解析 (保持不变)
             proxy_server = self._effective_proxy_server()
             if proxy_server:
                 self.log(f"🌍 使用代理: {proxy_server}")
@@ -47,7 +54,6 @@ class MissAVSpider(BaseSpider):
                 configured_user_agent=configured_ua or DEFAULT_USER_AGENT,
                 default_user_agent=DEFAULT_USER_AGENT,
             )
-            # 路由解析 (保持不变)
             target_url = ""
             is_single_video_mode = False
             is_search_mode = False
@@ -73,9 +79,9 @@ class MissAVSpider(BaseSpider):
             if not is_single_video_mode:
                 target_url = self.parser.inject_url_params(target_url, enable_individual)
                 self.log(f"🔧 修正后 URL: {target_url}")
+            self._require_missav_page_url(target_url)
             if not self.is_running:
                 return
-            # 启动浏览器
             with sync_playwright() as p:
                 self._track_playwright_instance(p)
                 browser = p.chromium.launch(
@@ -106,17 +112,17 @@ class MissAVSpider(BaseSpider):
                         return
                     if "Just a moment" in page.title():
                         self.log("🛡️ 检测到 Cloudflare，等待通过...")
-                        self.interruptible_sleep(5)  # 修复 BUG-168: 可中断 sleep
+                        self.interruptible_sleep(5)
                         if not self.interruptible_wait_for_load_state(
                             page,
                             "domcontentloaded",
                             timeout=browser_timeout_ms,
                         ):
                             return
-                    # 头像跳转
+                    # 搜索页可能优先返回演员卡片，转入其主页后才能扫描完整作品列表。
                     if is_search_mode and self.is_running:
                         try:
-                            self.interruptible_sleep(2)  # 修复 BUG-168
+                            self.interruptible_sleep(2)
                             links = page.query_selector_all('a[href*="/actresses/"]')
                             valid_actress_link = None
                             for link in links:
@@ -145,7 +151,6 @@ class MissAVSpider(BaseSpider):
                     if not self.is_running:
                         self._close_tracked_playwright_browser(browser)
                         return
-                    # 数据采集
                     final_tasks = []
                     if is_single_video_mode:
                         title = page.title().replace('| MissAV', '').strip()
@@ -154,7 +159,7 @@ class MissAVSpider(BaseSpider):
                         scraped_data = {}
                         verified_chinese = set()
                         base_url = page.url
-                        # --- Pass 1: 主遍历 ---
+                        # 第一遍收集全部候选，用户中途停止时仍可保留已经得到的部分结果。
                         self.log("📜 开始第一遍扫描 (获取所有视频)...")
                         self._scan_pages(page, scraped_data, is_chinese_pass=False)
 
@@ -164,8 +169,7 @@ class MissAVSpider(BaseSpider):
                             self.log("❌ 未找到任何视频")
                             self._close_tracked_playwright_browser(browser)
                             return
-                        # --- Pass 2: 中文校验 (仅当未停止时执行) ---
-                        # 只有当还在运行时，才去扫第二遍
+                        # 第二遍只校验中文字幕；停止后跳过，避免为补充标签继续发起页面请求。
                         if self.is_running:
                             self.log("🇨🇳 开始第二遍扫描 (校验中文字幕)...")
                             chinese_url = self.parser.add_chinese_filter(base_url)
@@ -187,7 +191,7 @@ class MissAVSpider(BaseSpider):
                         if not self.revive_for_partial_selection(len(scraped_data), "个候选结果"):
                             self._close_tracked_playwright_browser(browser)
                             return
-                        # --- 智能分组打分 ---
+                        # 同番号的不同版本先分组再打分，最终只保留用户偏好最高的一项。
                         self.log(f"🧠 智能筛选中 (共 {len(scraped_data)} 个候选)...")
                         grouped = self.parser.group_candidates(scraped_data)
 
@@ -201,7 +205,6 @@ class MissAVSpider(BaseSpider):
                             final_title = self.parser.generate_display_title(best_url, best_title, verified_chinese)
                             final_tasks.append({'title': final_title, 'url': best_url})
 
-                    # ================= 4. 用户交互 =================
                     if not final_tasks:
                         self.log("❌ 筛选后无有效结果")
                         self._close_tracked_playwright_browser(browser)
@@ -209,16 +212,14 @@ class MissAVSpider(BaseSpider):
                     final_tasks = self._trim_final_tasks(final_tasks)
                     self.log(f"🔔 扫描完成，共 {len(final_tasks)} 个最佳版本")
 
-                    # 弹窗选择
                     selected_indices = self.ask_user_selection(final_tasks)
-                    # 如果此时返回 None，说明用户在弹窗里点了“取消”
                     if not selected_indices:
                         self.log("❌ 用户取消下载")
                         self._close_tracked_playwright_browser(browser)
                         return
                     self.log(f"✅ 选中 {len(selected_indices)} 个，开始嗅探 m3u8...")
 
-                    # ================= 5. 详情页嗅探 (playlist.m3u8) =================
+                    # 每个选择项单独进入详情页嗅探 playlist.m3u8，避免跨作品复用过期流地址。
                     success_count = 0
                     for i, idx in enumerate(selected_indices):
                         if not self.is_running:
@@ -232,6 +233,7 @@ class MissAVSpider(BaseSpider):
                         m3u8_status = None
                         m3u8_ready = False
                         m3u8_playlist_cache = {}
+                        # 监听器闭包只归属当前详情页，并在 finally 中移除，防止迟到响应污染下一项。
                         def handle_request(req):
                             
                             nonlocal m3u8_url, m3u8_headers
@@ -276,13 +278,13 @@ class MissAVSpider(BaseSpider):
                             if not self.interruptible_playwright_goto(page, target_page_url, timeout=browser_timeout_ms):
                                 break
                             if "Just a moment" in page.title():
-                                self.interruptible_sleep(10)  # 修复 BUG-168
+                                self.interruptible_sleep(10)
                             try:
                                 self.interruptible_wait_for_selector(page, ".plyr", timeout=self.PLAYER_READY_TIMEOUT_MS)
                                 if not self.is_running or self.interrupt_requested:
                                     break
                                 page.mouse.click(400, 300)
-                                self.interruptible_sleep(2)  # 修复 BUG-168
+                                self.interruptible_sleep(2)
                                 if not m3u8_url:
                                     page.mouse.click(400, 300)
                             except PlaywrightError:
@@ -290,7 +292,7 @@ class MissAVSpider(BaseSpider):
                             for _ in range(self.M3U8_SNIFF_SECONDS):
                                 if m3u8_ready or not self.is_running:
                                     break
-                                self.interruptible_sleep(1)  # 修复 BUG-168
+                                self.interruptible_sleep(1)
                             if not self.is_running:
                                 break
                             if m3u8_url and m3u8_ready:
@@ -384,7 +386,7 @@ class MissAVSpider(BaseSpider):
                                 context.remove_listener("page", on_popup)
                             except PlaywrightError:
                                 pass
-                        self.interruptible_sleep(1)  # 修复 BUG-168
+                        self.interruptible_sleep(1)
                     if self.is_running:
                         self.log(f"🎉 任务结束，成功提交: {success_count}")
                     else:

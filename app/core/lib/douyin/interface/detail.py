@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/detail.py` 对应的接口、加密、提取或工具逻辑。"""
+"""获取单个抖音作品的详情数据。"""
 
-# app/core/lib/douyin/interface/detail.py
 from typing import Callable
 from typing import TYPE_CHECKING
 from typing import Union
@@ -12,7 +11,6 @@ try:
     from ..translation import _
 except ImportError:
     def _(x):
-        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 if TYPE_CHECKING:
@@ -22,6 +20,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Detail(API):
+    """按 aweme_id 请求抖音作品详情。"""
     
     def __init__(
             self,
@@ -30,7 +29,6 @@ class Detail(API):
             proxy: str = None,
             detail_id: str = ...,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Detail` 使用。"""
         super().__init__(params, cookie, proxy)
         self.detail_id = detail_id
         self.api = f"{self.domain}aweme/v1/web/aweme/detail/"
@@ -61,7 +59,6 @@ class Detail(API):
             *args,
             **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `Detail` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -99,7 +96,6 @@ class Detail(API):
             )
 
 async def test():
-    # 模拟 Params 类
     
     class MockParams:
         
@@ -109,10 +105,8 @@ async def test():
         logger = None
         ab = None
         console = None
-        client = None  # 需要 mock 一个 client
+        client = None
 
-    # 这里的 test 代码很难独立运行，因为它依赖 tools/parameter.py 和 tools/session.py 的完整初始化
-    # 所以我们暂时注释掉具体的执行部分，只保留类定义检查
     pass
 
 if __name__ == "__main__":

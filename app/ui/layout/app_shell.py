@@ -33,7 +33,7 @@ from app.ui.pages.settings_page import SettingsPage
 from app.ui.pages.toolbox_page import ToolboxPage
 
 class AppShell(QWidget):
-    """Top-level GUI shell for the unified 7-page structure."""
+    """承载七页结构的顶层 `GUI shell`。"""
 
     page_changed = pyqtSignal(str)
     delete_requested = pyqtSignal(str)
@@ -751,7 +751,7 @@ class AppShell(QWidget):
                 release()
 
     def cleanup_media(self) -> None:
-        """Release media players; only pages that define ``cleanup`` are torn down."""
+        """释放媒体播放器；仅销毁显式实现 `cleanup` 的页面资源。"""
         for page in self.pages.values():
             cleanup = getattr(page, "cleanup", None)
             if callable(cleanup):

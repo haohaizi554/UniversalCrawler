@@ -1,4 +1,4 @@
-"""Crash-resilient SQLite ledger for download paths and startup maintenance."""
+"""下载路径恢复账本：在 SQLite 中持久化任务归属和启动清理进度。"""
 
 from __future__ import annotations
 
@@ -23,12 +23,10 @@ class _RecoveryBatch:
 
 
 class DownloadRecoveryStore:
-    """Persist path ownership before workers create temporary artifacts.
+    """下载 worker 创建临时文件前持久化目录归属。
 
-    Active task rows are removed immediately after success. Failed or interrupted
-    tasks hand their exact output directory to a deduplicated cleanup queue. The
-    queue is consumed only after startup maintenance has attempted that path,
-    regardless of whether an artifact was found.
+    成功任务立即删账；失败或中断任务在同一事务中移交到去重清理队列。
+    启动清理只有在尝试过该目录后才按 generation 确认，避免误删并发写入的新记录。
     """
 
     LEGACY_SWEEP_VERSION = 2
@@ -75,7 +73,7 @@ class DownloadRecoveryStore:
         trace_id: str = "",
         platform: str = "",
     ) -> None:
-        """Commit task ownership before dispatch and return after durable commit."""
+        """调度 worker 前提交任务归属；返回时 SQLite 已完成持久化提交。"""
         normalized_video_id = str(video_id or "").strip()
         if not normalized_video_id:
             raise ValueError("video_id is empty")
@@ -111,7 +109,7 @@ class DownloadRecoveryStore:
             )
 
     def handoff_failed_task(self, video_id: str) -> bool:
-        """Move one active task to the deduplicated startup cleanup queue."""
+        """在同一事务中把活动任务移入去重清理队列，避免目录归属在两步之间丢失。"""
         normalized_video_id = str(video_id or "").strip()
         if not normalized_video_id:
             return False
@@ -137,7 +135,7 @@ class DownloadRecoveryStore:
             return int(cursor.rowcount or 0) > 0
 
     def delete_task(self, video_id: str) -> bool:
-        """Delete a completed task immediately; completed rows never age out."""
+        """成功任务立即删账，不把已完成目录保留成长期历史索引。"""
         normalized_video_id = str(video_id or "").strip()
         if not normalized_video_id:
             return False
@@ -150,7 +148,7 @@ class DownloadRecoveryStore:
             return int(cursor.rowcount or 0) > 0
 
     def consume_recovery_records(self, batch: _RecoveryBatch | None = None) -> int:
-        """Acknowledge only records represented by the completed cleanup batch."""
+        """传入 batch 时只确认 generation 未变化的记录；batch=None 仅用于显式清空。"""
         self._ensure_initialized()
         with closing(self._connect()) as conn, conn:
             if batch is None:
@@ -194,7 +192,7 @@ class DownloadRecoveryStore:
         return dict(row) if row is not None else None
 
     def recovery_batch(self) -> _RecoveryBatch:
-        """Snapshot unresolved records so startup cleanup can acknowledge them exactly once."""
+        """连同 generation 截取未解决记录，供启动清理完成后做条件确认。"""
         self._ensure_initialized()
         with closing(self._connect()) as conn:
             active_rows = list(
@@ -236,7 +234,7 @@ class DownloadRecoveryStore:
         )
 
     def directories(self) -> list[str]:
-        """Return only unresolved paths; no historical directory index is kept."""
+        """只返回尚未处理的目录，不维护历史下载目录索引。"""
         return list(self.recovery_batch().directories)
 
     def recovery_counts(self) -> dict[str, int]:
@@ -259,7 +257,7 @@ class DownloadRecoveryStore:
         return row is None or int(row[0] or 0) < self.LEGACY_SWEEP_VERSION
 
     def prepare_legacy_sweep(self, directory: str | os.PathLike[str]) -> bool:
-        """Initialize a resumable depth-bounded migration frontier for one root."""
+        """为单个根目录初始化可续跑、限制深度的旧临时文件扫描前沿。"""
         normalized = self._normalize_directory(directory)
         self._ensure_initialized()
         with closing(self._connect()) as conn, conn:
@@ -315,7 +313,7 @@ class DownloadRecoveryStore:
         directory: str | os.PathLike[str],
         children: Iterable[tuple[str | os.PathLike[str], int]],
     ) -> None:
-        """Persist discovered children and consume one attempted frontier row."""
+        """同一事务写入已发现子目录、消费当前前沿，并在队列清空时标记完成。"""
         normalized_root = self._normalize_directory(root)
         normalized_directory = self._normalize_directory(directory)
         if not self._is_within_root(normalized_directory, normalized_root):
@@ -391,6 +389,7 @@ class DownloadRecoveryStore:
         with self._init_lock:
             if self._initialized:
                 return
+            # 只有建表和迁移全部完成后才发布 _initialized，失败时后续调用仍会重试。
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(self._db_path, timeout=5.0)) as conn:
                 conn.execute("PRAGMA busy_timeout = 5000")

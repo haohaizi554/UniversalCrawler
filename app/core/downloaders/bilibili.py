@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/bilibili.py` 对应资源的落盘或外部工具调用流程。"""
+"""Bilibili 音视频流下载、CDN 刷新与 FFmpeg 合并流程。"""
 
 from __future__ import annotations
 
@@ -28,8 +28,6 @@ from .external import FFmpegExternalTool, build_hidden_startupinfo
 class BilibiliDownloader(BaseDownloader):
     """下载 Bilibili DASH 音视频双流，并用 ffmpeg 合并为最终媒体文件。"""
     source_id = "bilibili"
-
-    # ---- B站 play_url API 重刷新 ----
 
     @staticmethod
     def _fetch_bilibili_play_url(
@@ -91,8 +89,6 @@ class BilibiliDownloader(BaseDownloader):
                 )
                 continue
         return None, None
-
-    # ---- 主下载流程 ----
 
     def download(
         self,
@@ -493,7 +489,11 @@ class BilibiliDownloader(BaseDownloader):
             )
             if not os.path.exists(merging_path) or os.path.getsize(merging_path) <= 0:
                 raise MergeError("Bilibili 音视频合并完成后未生成有效文件")
-            self._publish_merged_file(merging_path, save_path)
+            self._publish_merged_file(
+                merging_path,
+                save_path,
+                check_stop_func=check_stop_func,
+            )
             cleanup_temp_files()
             self._emit_progress(
                 progress_callback,
@@ -594,7 +594,7 @@ class BilibiliDownloader(BaseDownloader):
         reader.start()
 
         def finish_stderr_reader() -> None:
-            """Give the ffmpeg stderr drain a bounded chance to observe EOF."""
+            """限时等待 ffmpeg 标准错误读取线程收到文件结束信号。"""
             reader.join(timeout=1.0)
 
         started_at = time.monotonic()
@@ -672,8 +672,15 @@ class BilibiliDownloader(BaseDownloader):
             time.sleep(0.2)
 
     @staticmethod
-    def _publish_merged_file(merging_path: str, save_path: str) -> None:
-        """Atomically expose a fully merged file without touching an older target first."""
+    def _publish_merged_file(
+        merging_path: str,
+        save_path: str,
+        *,
+        check_stop_func: StopCheck | None = None,
+    ) -> None:
+        """完整合并后再原子发布文件，发布成功前不触碰旧目标。"""
+        if check_stop_func is not None and check_stop_func():
+            raise DownloaderStoppedError("User stopped download before Bilibili publication")
         os.replace(merging_path, save_path)
 
     @staticmethod

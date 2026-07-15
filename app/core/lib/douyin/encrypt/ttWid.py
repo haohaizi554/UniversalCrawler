@@ -1,11 +1,11 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/ttWid.py` 对应的接口、加密、提取或工具逻辑。"""
+"""请求并解析抖音与 TikTok 的 ttwid Cookie。"""
 
-# app/core/lib/douyin/encrypt/ttWid.py
 from asyncio import run
 from http import cookies
 from json import dumps
 from typing import TYPE_CHECKING, Union
 
+# 独立导入时保留最小占位，避免工具包缺失直接阻断模块加载。
 try:
     from ..tools import PARAMS_HEADERS, PARAMS_HEADERS_TIKTOK, request_params
 except ImportError:
@@ -13,17 +13,14 @@ except ImportError:
     PARAMS_HEADERS_TIKTOK = {}
     
     async def request_params(*args, **kwargs):
-        """Fallback async request stub used when the real helper is unavailable."""
 
         pass
 
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
+    # 翻译层不可用时保留原文，避免兼容分支影响请求流程。
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -35,6 +32,7 @@ if TYPE_CHECKING:
 __all__ = ["TtWid", "TtWidTikTok"]
 
 class TtWid:
+    """从抖音注册接口的 Set-Cookie 中提取 ttwid。"""
     
     NAME = "ttwid"
     API = "https://ttwid.bytedance.com/ttwid/union/register/"
@@ -67,7 +65,7 @@ class TtWid:
     def extract(
         logger: Union["BaseLogger", "LoggerManager", "Logger"], headers, key: str
     ) -> dict | None:
-        
+        """解析指定 Cookie 键；响应未携带该键时记录失败并返回 None。"""
         if c := headers.get("Set-Cookie"):
             cookie_jar = cookies.SimpleCookie()
             cookie_jar.load(c)
@@ -76,6 +74,7 @@ class TtWid:
         logger.error(f"获取 {key} 参数失败！")
 
 class TtWidTikTok(TtWid):
+    """从 TikTok 校验接口的 Set-Cookie 中提取 ttwid。"""
     
     API = "https://www.tiktok.com/ttwid/check/"
     DATA = dumps(
@@ -120,27 +119,13 @@ async def test():
     
     class Logger:
         
-        """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
         def error(self, msg):
-            """Print an error message to the console."""
-
             print(msg)
         
         def info(self, msg, *args):
-            """Print an informational message to the console."""
-
             print(msg)
 
     print("抖音", await TtWid.get_tt_wid(Logger(), PARAMS_HEADERS, proxy=None))
-    # print(
-    #     "TikTok",
-    #     await TtWidTikTok.get_tt_wid(
-    #         Logger(),
-    #         PARAMS_HEADERS_TIKTOK,
-    #         cookie="ttwid=",
-    #         proxy="http://localhost:10809",
-    #     ),
-    # )
 
 if __name__ == "__main__":
     run(test())

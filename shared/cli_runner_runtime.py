@@ -1,22 +1,9 @@
-"""CLIRunner：CLI 核心执行器，完全对齐 GUI ApplicationController 的行为。
+"""CLI 爬取、选择与下载的同步执行运行时。
 
-GUI 流程（ApplicationController）：
-1. on_start_crawl → _create_spider → _bind_spider_signals → spider.start()
-2. spider.run() 中调用 self.ask_user_selection(items)
-3. _on_spider_select_tasks → window.show_selection_dialog → spider.resume_from_ui(indices)
-4. spider.run() 中调用 self.emit_video(url, title, source, meta) → sig_item_found
-5. _on_spider_item_found → videos[id]=item + window.add_video_row + dl_manager.add_task(item, save_dir)
-6. dl_manager → DownloadWorker → sig_start/sig_progress/sig_finished/sig_error
-7. _on_task_started/progress/finished/error → _apply_video_state + window.update_video_status
-8. spider.run() 结束 → sig_finished → _on_spider_finished → set_crawl_running_state(False)
-
-CLI 对齐方式：
-- 步骤 2-3：monkey-patch ask_user_selection 为同步版，直接调 selection_strategy.select()
-- 步骤 4-5：sig_item_found → 收集 item + dl_manager.add_task(item, save_dir)
-- 步骤 6-7：dl_manager 信号 → 更新 item 状态（status/progress/local_path）
-- 步骤 8：sig_finished → 标记完成
-
-关键差异：CLI 没有 window，所有 UI 更新都变成内存状态更新。
+``CLIRunner`` 通过 ``SpiderSession`` 创建并绑定 spider，把二次选择桥接为同步
+策略，并可把发现的项目交给 ``DownloadManager``。与事件循环驱动的桌面端不
+同，``run()`` 会等待 spider 和可选下载阶段结束，再返回包含最终项目状态、
+日志、选择次数与耗时的结果字典。
 """
 
 from __future__ import annotations
@@ -39,7 +26,7 @@ def _video_status_enum():
     return VideoStatus
 
 class CLIRunner(ControllerSessionMixin):
-    """CLI 核心执行器：完全对齐 GUI ApplicationController 的行为。"""
+    """在无窗口环境中执行一次可等待、可取消的爬取任务。"""
 
     DOWNLOAD_LOG_COMPONENT = "CLIRunner"
     DOWNLOAD_FINISHED_STATUS_CODE = "CLI_DL_FINISH"
@@ -61,7 +48,7 @@ class CLIRunner(ControllerSessionMixin):
     ):
         """初始化 CLI 执行器。
 
-        Args:
+        参数：
             source: 平台 ID (douyin/bilibili/kuaishou/missav)
             keyword: 搜索关键词 / 链接 / 用户 ID
             save_dir: 保存目录
@@ -70,10 +57,10 @@ class CLIRunner(ControllerSessionMixin):
             verbose: 是否输出详细信息
             log_to_stderr: spider 日志是否输出到 stderr
             timeout: 超时秒数 (None=无限)
-            download: 是否触发下载 (True=与 GUI 一致自动下载, False=只收集不下载)
+            download: 是否把发现的项目加入下载队列；False 时只收集结果
         """
         self.source = source
-        # 与 GUI inp_search.text().strip() 对齐：去除前后空白
+        # 入口边界统一去除关键词两端空白，避免插件收到空白伪关键词。
         self.keyword = keyword.strip() if isinstance(keyword, str) else keyword
         self.save_dir = save_dir
         self.config = dict(config or {})
@@ -83,8 +70,8 @@ class CLIRunner(ControllerSessionMixin):
         self.timeout = timeout
         self.download = download
 
-        # 运行状态（与 GUI ApplicationController 对称）
-        self.videos: dict[str, Any] = {}    # video_id → VideoItem（与 GUI self.videos 对称）
+        # 这些状态共同构成 run() 的返回快照。
+        self.videos: dict[str, Any] = {}    # 以视频 ID 建立到 `VideoItem` 的索引。
         self.logs: list[str] = []           # spider 日志
         self.selection_count: int = 0       # ask_user_selection 调用次数
         self.error: str | None = None
@@ -92,23 +79,18 @@ class CLIRunner(ControllerSessionMixin):
         self._spider = None
         self._dl_manager = None
         self._spider_session = SpiderSession()
-        self._cancelled: bool = False       # 用户取消标志（与 SKILL.md "cancelled" 状态对齐）
+        self._cancelled: bool = False       # 选择或 stop() 触发的取消状态
         self._progress_logged_pct: dict[str, int] = {}
         self._last_download_heartbeat_at: float = 0.0
 
     def _log(self, msg: str) -> None:
-        """CLI 内部日志。"""
         if self.verbose:
             sys.stderr.write(f"[CLI] {msg}\n")
             sys.stderr.flush()
 
     def _debug_log(self, action: str, message: str, status_code: str,
                    level: str | None = None, details: dict | None = None) -> None:
-        """结构化日志（与 GUI ApplicationController 和 WebController 对齐）。
-
-        使用 debug_logger 记录关键事件，便于 CLI 问题排查。
-        不影响 GUI/Web 的日志行为。
-        """
+        """尽力写入共享结构化日志；诊断设施不可用时不影响任务。"""
         try:
             from app.debug_logger import debug_logger
             debug_logger.log(
@@ -120,29 +102,19 @@ class CLIRunner(ControllerSessionMixin):
                 details=details or {},
             )
         except Exception:
-            pass  # debug_logger 不可用时不影响 CLI 功能
-
-    # ---- 与 GUI ApplicationController._connect_window_signals 对称 ----
+            pass  # 诊断日志不是 CLI 执行成功的前置条件。
 
     def _on_log(self, msg: str) -> None:
-        """spider.sig_log 回调（与 GUI window.append_log 对称）。"""
+        """缓存 spider 日志，并按配置实时转发到 stderr。"""
         self.logs.append(str(msg))
         if self.log_to_stderr:
             sys.stderr.write(f"{msg}\n")
             sys.stderr.flush()
 
     def _on_item_found(self, item) -> None:
-        """spider.sig_item_found 回调（与 GUI _on_spider_item_found 完全对齐）。
+        """记录单个发现项，并按 ``download`` 决定是否立即入队。
 
-        GUI 行为：
-        1. item.status = "⏳ 等待中"
-        2. item.progress = 0
-        3. self.videos[item.id] = item
-        4. window.add_video_row(item)
-        5. dl_manager.add_task(item, save_dir)
-
-        CLI/SDK/API 差异：download=False 时状态为 "📋 已收集"（只搜索不下载），
-        与 GUI 的 "⏳ 等待中" 区分开，避免误导用户以为正在等待下载。
+        只收集时使用“已收集”状态，避免把没有下载计划的项目展示为等待下载。
         """
         if self.download:
             self._prepare_pending_item(item)
@@ -152,10 +124,10 @@ class CLIRunner(ControllerSessionMixin):
         self.videos[item.id] = item
 
         if self.download and self._dl_manager:
-            # 与 GUI 完全一致：立即入队下载
+            # 发现回调直接入队，确保 run() 等待的是本次任务产生的全部下载。
             self._dl_manager.add_task(item, self.save_dir)
 
-        # 与 GUI/Web 对齐：记录 item 发现日志
+        # 结构化事件供各前端使用同一条诊断记录。
         self._debug_log("item_found", "CLI 发现可下载资源", "CLI_ITEM_FOUND",
                          details={"video_id": item.id, "title": item.title, "source": item.source})
 
@@ -191,22 +163,17 @@ class CLIRunner(ControllerSessionMixin):
                             details={"video_id": item.id, "title": item.title, "source": item.source})
 
     def _on_select_tasks(self, items: list) -> None:
-        """spider.sig_select_tasks 回调（与 GUI _on_spider_select_tasks 对称）。
+        """处理仍通过信号发出的选择请求，并把索引恢复给 spider。
 
-        GUI 行为：window.show_selection_dialog(items) → spider.resume_from_ui(indices)
-        CLI 行为：selection_strategy.select(items) → spider.resume_from_ui(indices)
-
-        注意：由于 ask_user_selection 被 monkey-patch 为同步版，
-        sig_select_tasks 信号不会被 emit（同步版直接返回 indices）。
-        但为了安全，这里也处理信号触发的情况。
+        正常路径已把 ``ask_user_selection`` 替换为同步策略；该回调保留给未使用
+        替换路径的插件。
         """
         self._do_select_and_resume(items)
 
     def _do_select_and_resume(self, items: list) -> None:
-        """执行二次选择并恢复 spider 线程。"""
         _prompt, indices = self._run_selection(items, strategy=self.selection_strategy)
 
-        # 与 GUI _on_spider_select_tasks 完全一致：调 resume_from_ui
+        # resume_from_ui 是 spider 对信号式选择的恢复协议。
         if self._spider:
             self._spider.resume_from_ui(indices)
 
@@ -230,14 +197,12 @@ class CLIRunner(ControllerSessionMixin):
         return prompt, indices
 
     def _on_finished(self) -> None:
-        """spider.sig_finished 回调（与 GUI _on_spider_finished 对称）。"""
+        """记录 spider 完成并释放活动引用。"""
         self.finished = True
-        self._spider = None  # 与 GUI/Web 一致：清空 spider 引用
+        self._spider = None  # 完成后不保留线程对象引用。
         self._log("✅ 爬虫任务结束")
-        # 与 GUI/Web 对齐：记录爬虫完成日志
+        # 完成事件与启动事件共享同一结构化日志通道。
         self._debug_log("crawl_finished", "CLI 爬虫任务结束", "CLI_CRAWL_FINISH")
-
-    # ---- 与 GUI ApplicationController._connect_download_signals 对称 ----
 
     def _after_task_started(self, video_id: str, item) -> None:
         self._progress_logged_pct.pop(video_id, None)
@@ -301,7 +266,6 @@ class CLIRunner(ControllerSessionMixin):
 
     @staticmethod
     def _render_progress_bar(progress: int, width: int = 18) -> str:
-        """渲染简易文本进度条。"""
         progress = max(0, min(100, int(progress)))
         filled = round(progress / 100 * width)
         return "[" + "#" * filled + "-" * (width - filled) + "]"
@@ -351,17 +315,12 @@ class CLIRunner(ControllerSessionMixin):
         sys.stderr.write("⏱️ 下载进行中: " + " | ".join(active_items[:3]) + "\n")
         sys.stderr.flush()
 
-    # ---- monkey-patch ask_user_selection ----
-
     def _make_ask_user_selection(self):
         """生成同步版的 ask_user_selection 闭包。
 
-        GUI 行为：ask_user_selection → sig_select_tasks.emit(items) → wait(_resume_event)
-        CLI 行为：ask_user_selection → selection_strategy.select(items) → 直接返回 indices
-
-        关键：spider 线程调用 ask_user_selection 时，不再走 Qt 信号+事件等待，
-        而是直接同步调用 selection_strategy.select()，返回选中的索引列表。
-        这样 spider 线程不需要被 _resume_event 阻塞。
+        spider 线程直接调用 ``selection_strategy.select()`` 并取得索引，不依赖 Qt
+        信号或事件循环。取消结果会同步记录到 runner，供 ``run()`` 返回
+        ``cancelled``。
         """
         runner = self
         bridge = None
@@ -397,16 +356,14 @@ class CLIRunner(ControllerSessionMixin):
 
         return ask_user_selection_sync
 
-    # ---- 绑定信号 ----
-
     def _patch_spider(self, spider) -> None:
         """只负责 monkey-patch 选择行为，信号绑定统一交给 SpiderSession。"""
         from types import MethodType
-        # 替换 ask_user_selection 为同步版
+        # 仅替换交互边界；生命周期与信号连接仍由 SpiderSession 管理。
         spider.ask_user_selection = MethodType(self._make_ask_user_selection(), spider)
 
     def _connect_download_signals(self):
-        """绑定下载管理器回调（与 GUI _connect_download_signals 语义一致）。"""
+        """绑定用于维护返回快照的下载状态回调。"""
         if self._dl_manager:
             self._dl_manager.task_started.connect(self._on_task_started)
             self._dl_manager.task_progress.connect(self._on_task_progress)
@@ -416,7 +373,7 @@ class CLIRunner(ControllerSessionMixin):
     def _wait_spider(self, spider, timeout: float | None = None) -> bool:
         """等待 spider 结束。
 
-        Returns:
+        返回：
             bool: True=正常结束，False=超时
         """
         deadline = time.time() + timeout if timeout is not None else None
@@ -424,7 +381,7 @@ class CLIRunner(ControllerSessionMixin):
             try:
                 running = spider.isRunning()
             except Exception:
-                # 兜底：如果 spider 不支持 isRunning，则退回原生 wait
+                # 非 QThread 兼容实现可只暴露原生 wait()。
                 if timeout is not None:
                     return bool(spider.wait(int(timeout * 1000)))
                 spider.wait()
@@ -439,37 +396,17 @@ class CLIRunner(ControllerSessionMixin):
             time.sleep(0.05)
         return True
 
-    # ---- 主执行流程 ----
-
     def run(self) -> dict:
-        """执行爬虫并返回结果（与 GUI on_start_crawl 流程完全对齐）。
+        """执行任务并返回稳定的 CLI 结果字典。
 
-        GUI 流程：
-        1. _create_spider(source_id, keyword, config)
-        2. window.append_log("🟢 启动任务 | 模式: ...")
-        3. window.set_crawl_running_state(True)
-        4. self.current_spider = spider
-        5. _bind_spider_signals(spider)
-        6. spider.start()
-        7. (等待 spider 完成)
-        8. _on_spider_finished → set_crawl_running_state(False)
-
-        Returns:
-            dict: {
-                "status": "ok" | "error" | "timeout" | "cancelled",
-                "source": "douyin",
-                "keyword": "...",
-                "save_dir": "...",
-                "items": [...],          # 视频项目列表（含最终 status/progress/local_path）
-                "logs": [...],           # spider 日志
-                "selection_count": 0,    # 二次选择调用次数
-                "elapsed": 12.3,         # 耗时 (秒)
-                "error": "..."           # 错误信息 (如果失败)
-            }
+        ``status`` 为 ``ok``、``error``、``timeout`` 或 ``cancelled``。返回值还含
+        source、keyword、save_dir、items、logs、selection_count、elapsed 与
+        error。``timeout`` 限制 spider 阶段；下载模式会在 spider 结束后继续等待
+        队列清空，并把仍未完成的项目标记为超时。
         """
         start = time.time()
 
-        # 步骤 1：创建 spider（与 GUI _create_spider 一致）
+        # 先解析插件并创建 spider；构造失败以结构化错误返回。
         from app.core.plugin_registry import registry
 
         plugin = registry.get_plugin(self.source)
@@ -481,7 +418,7 @@ class CLIRunner(ControllerSessionMixin):
         try:
             _, spider = self._spider_session.create_spider(self.source, self.keyword, self.config)
         except Exception as exc:
-            # 与 WebController start_crawl 对齐：捕获 spider 创建异常，返回结构化错误
+            # 创建异常属于调用结果，不泄漏为未分类的线程启动异常。
             self._log(f"❌ 创建爬虫失败: {exc}")
             return {
                 "status": "error",
@@ -489,7 +426,7 @@ class CLIRunner(ControllerSessionMixin):
             }
         self._spider = spider
 
-        # 步骤 2：创建下载管理器（与 GUI ApplicationController.__init__ 一致）
+        # 下载管理器必须在绑定发现回调前就绪，避免早到项目无法入队。
         if self.download:
             from app.config import cfg
             from app.core.download_manager import DownloadManager
@@ -498,7 +435,7 @@ class CLIRunner(ControllerSessionMixin):
             )
             self._connect_download_signals()
 
-        # 步骤 3：绑定信号 + monkey-patch（与 GUI _bind_spider_signals 一致）
+        # SpiderSession 统一绑定生命周期回调，并注入同步选择边界。
         self._spider_session.bind_spider(
             spider,
             SpiderSessionBindings(
@@ -511,9 +448,9 @@ class CLIRunner(ControllerSessionMixin):
             ),
         )
 
-        # 步骤 4：启动 spider（与 GUI on_start_crawl 一致）
+        # 所有回调安装完成后再启动 spider。
         self._log(f"🟢 启动任务 | 模式: {plugin.name} | 关键词: {self.keyword}")
-        # 与 GUI/Web 对齐：记录爬虫启动日志
+        # 启动记录包含可诊断的活动配置摘要。
         self._debug_log("start_crawl", "CLI 启动爬虫任务", "CLI_CRAWL_START",
                          details={
                              "keyword": self.keyword,
@@ -523,41 +460,41 @@ class CLIRunner(ControllerSessionMixin):
                          })
         spider.start()
 
-        # 步骤 5：等待 spider 完成（与 GUI 事件循环等待一致）
+        # ``timeout`` 只约束 spider；超时后给已入队下载一个有限清理窗口。
         if self.timeout is not None:
             finished_in_time = self._wait_spider(spider, timeout=self.timeout)
             if not finished_in_time:
                 self._log(f"spider 超过 {self.timeout}s 未完成，强制停止")
                 spider.stop()
                 spider.wait(5000)
-                # 等待下载完成（给 30s 缓冲）
+                # 给超时前已入队的下载最多 30 秒完成。
                 dl_timed_out = self._wait_downloads(timeout=30)
-                # 清理：停止仍在运行的下载线程（与 GUI shutdown 一致）
+                # 清理仍在运行的下载线程，避免 run() 返回后遗留后台任务。
                 if self._dl_manager:
                     self._dl_manager.stop_all()
-                # 超时检测：标记仍在下载中的项目
+                # 调用方需要从项目状态识别未在清理窗口内完成的下载。
                 if dl_timed_out:
                     video_status = _video_status_enum()
                     for item in self.videos.values():
                         if item.status in (video_status.DOWNLOADING.label, video_status.PENDING.label):
                             item.status = video_status.TIMED_OUT.label
                             item.meta["download_error"] = "下载超时 (30s)"
-                # 与 GUI _on_spider_finished 对齐：清空 spider 引用，避免悬空引用
+                # 超时返回前释放 spider 引用。
                 self._spider = None
                 return self._build_result("timeout", start, f"timeout after {self.timeout}s")
         else:
             self._wait_spider(spider)
 
-        # 步骤 6：等待下载完成（GUI 中下载是异步的，CLI 需要等所有下载结束）
+        # CLI 返回最终项目快照，因此下载模式需等待队列，最长 300 秒。
         download_timed_out = False
         if self.download and self._dl_manager:
             download_timed_out = self._wait_downloads(timeout=300)
 
-        # 清理 DownloadManager 资源（与 GUI shutdown 对齐）
+        # 无论队列是否超时，都在构造结果前停止下载管理器。
         if self._dl_manager:
             self._dl_manager.stop_all()
 
-        # 超时检测：标记仍在下载中的项目（与 CLI download 命令和 SDK download_video 对齐）
+        # 300 秒后仍处于等待或下载中的项目明确标记为超时。
         if download_timed_out:
             video_status = _video_status_enum()
             for item in self.videos.values():
@@ -570,7 +507,7 @@ class CLIRunner(ControllerSessionMixin):
         elapsed = round(time.time() - start, 2)
         self._log(f"spider 已结束, 耗时 {elapsed}s, 收集到 {len(self.videos)} 个项目, 二次选择 {self.selection_count} 次")
 
-        # 用户取消：返回 "cancelled" 状态（与 SKILL.md 文档对齐）
+        # 取消是独立终态，不与一般错误合并。
         if self._cancelled:
             self._log("用户取消操作")
             return self._build_result("cancelled", start, "用户取消")
@@ -583,7 +520,7 @@ class CLIRunner(ControllerSessionMixin):
         GUI 中下载是异步的（用户可以看到进度条实时更新），
         CLI 中需要等所有下载结束才能返回最终结果。
 
-        Returns:
+        返回：
             bool: 是否超时 (True=超时, False=正常完成)
         """
         if not self._dl_manager:
@@ -628,10 +565,10 @@ class CLIRunner(ControllerSessionMixin):
                     pass
 
     def _build_result(self, status: str, start_time: float, error: str | None = None) -> dict:
-        """构建返回结果（items 包含最终 status/progress/local_path，与 GUI 最终状态一致）。"""
+        """构建包含最终 status、progress 与 local_path 的结果快照。"""
         elapsed = round(time.time() - start_time, 2)
 
-        # 把 videos dict 转为 list（与 GUI 最终状态一致）
+        # 对外结果保持列表形状，内部仍按 video_id 去重。
         items = []
         for item in self.videos.values():
             try:
@@ -653,7 +590,7 @@ class CLIRunner(ControllerSessionMixin):
         return result
 
     def stop(self) -> None:
-        """中途停止爬虫（与 GUI on_stop_crawl 对齐）。"""
+        """标记取消并停止当前 spider 与下载管理器。"""
         self._cancelled = True
         if self._spider and self._spider.isRunning():
             self._spider_session.stop_session(self._spider)
@@ -671,9 +608,9 @@ def run_search(
 ) -> dict:
     """便捷函数：启动一次爬虫并返回结果。
 
-    与 UcrawlSDK.search() 参数对齐：支持 timeout（整体超时秒数）。
+    ``timeout`` 是整次 spider 阶段的上限，并原样传给 ``CLIRunner``。
 
-    Example:
+    示例：
         result = run_search("douyin", "测试关键词", max_items=20, save_dir="downloads")
         result = run_search("douyin", "测试关键词", timeout=60)
     """

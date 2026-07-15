@@ -1,4 +1,4 @@
-"""Windows default-app registration helpers."""
+"""Windows 当前用户默认应用注册与 UserChoice 诊断。"""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class AssociationDiagnostics:
     message: str = ""
 
 class WindowsFileAssociationService:
-    """Register supported media types and set explicit current-user defaults."""
+    """在 HKCU 注册受支持媒体类型，并显式设置当前用户默认应用。"""
 
     def __init__(self, *, app_name: str = APP_NAME) -> None:
         self.app_name = app_name
@@ -163,7 +163,7 @@ class WindowsFileAssociationService:
         include_video: bool = True,
         include_image: bool = True,
     ) -> AssociationDiagnostics:
-        """Inspect current-user registration and default choices without changing them."""
+        """只读检查当前用户注册、Capabilities 与 UserChoice，不修改注册表。"""
         if os.name != "nt":
             return AssociationDiagnostics(
                 available=False,
@@ -207,7 +207,7 @@ class WindowsFileAssociationService:
         )
 
     def open_default_apps_settings(self) -> bool:
-        """Open Windows Settings on this app's Default Apps page when possible."""
+        """优先打开本应用的 Windows 默认应用页，不支持定向 URI 时退回通用页面。"""
         if os.name != "nt":
             return False
         startfile = getattr(os, "startfile", None)

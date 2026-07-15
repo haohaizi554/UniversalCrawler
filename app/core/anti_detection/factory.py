@@ -1,4 +1,4 @@
-"""Factory helpers for anti-detection runtime selection."""
+"""根据运行配置创建反检测策略。"""
 
 from __future__ import annotations
 

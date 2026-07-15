@@ -1,4 +1,4 @@
-"""Local HLS proxy used by the N_m3u8DL-RE downloader."""
+"""供 N_m3u8DL-RE 下载器使用的本地受控 HLS 代理。"""
 
 from __future__ import annotations
 
@@ -66,6 +66,17 @@ def response_iter_bytes(response, chunk_size: int = 256 * 1024):
             except TypeError:
                 yield from iter_content(chunk_size)
                 return
+
+
+def curl_resolve_options(url: str, addresses: tuple[str, ...]) -> dict[Any, list[str]]:
+    """把 curl 固定到已通过策略校验的公网地址，防止解析结果漂移。"""
+    from curl_cffi.const import CurlOpt
+
+    parts = urllib.parse.urlsplit(str(url or ""))
+    host = str(parts.hostname or "").encode("idna").decode("ascii")
+    port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+    pinned = [f"[{address}]" if ":" in address else address for address in addresses]
+    return {CurlOpt.RESOLVE: [f"{host}:{port}:{','.join(pinned)}"]}
 
 
 def looks_like_hls_media_resource(url: str) -> bool:
@@ -143,6 +154,12 @@ class _HlsProxyHandler(http.server.BaseHTTPRequestHandler):
 
 
 class _LocalHlsProxy:
+    """把本地 HTTP 服务绑定到 loopback，并代理调用方编码进本地 URL 的上游地址。
+
+    上游 URL 的来源约束和首跳凭据投递范围由调用方负责；跨源重定向时会剥离
+    Authorization、Cookie、Host 和 Proxy-Authorization 等敏感头。
+    """
+
     def __init__(
         self,
         downloader: "N_m3u8DL_RE_Downloader",
@@ -216,6 +233,15 @@ class _LocalHlsProxy:
 
     def serve(self, handler: http.server.BaseHTTPRequestHandler, upstream_url: str) -> None:
         upstream_headers = self.downloader._headers_for_hls_proxy_upstream(upstream_url, self.headers)
+        # ffmpeg 可能通过代理随机定位 MP4 数据；必须转发 Range 条件头，
+        # 否则每次请求都会退化为默认的 ``bytes=0-``，导致拖动和续传失效。
+        request_headers = getattr(handler, "headers", {})
+        get_request_header = getattr(request_headers, "get", None)
+        if callable(get_request_header):
+            for header_name in ("Range", "If-Range"):
+                header_value = str(get_request_header(header_name, "") or "").strip()
+                if header_value:
+                    upstream_headers[header_name] = header_value
         response = self.downloader._hls_proxy_open_upstream(
             upstream_url,
             upstream_headers,

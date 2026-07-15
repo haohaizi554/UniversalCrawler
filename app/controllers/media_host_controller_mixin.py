@@ -15,7 +15,7 @@ from app.services.media_release_coordination import normalize_media_path
 from app.ui.task_runtime import ShortTaskRunner
 
 class _UiCallbackInvoker(QObject):
-    """Marshal background callbacks back onto the Qt main thread."""
+    """把后台回调转发到 Qt 主线程。"""
 
     callback_requested = pyqtSignal(object)
 
@@ -30,7 +30,7 @@ class _UiCallbackInvoker(QObject):
         callback()
 
 class MediaHostControllerMixin:
-    """Host-backed media library and playback orchestration."""
+    """协调宿主中的媒体库与播放流程。"""
 
     CLEAR_QUEUE_DETAIL_LOG_LIMIT = 200
 
@@ -77,7 +77,7 @@ class MediaHostControllerMixin:
         self.current_playing_id = video_id
 
     def _clear_local_items(self) -> None:
-        """Clear cached local media and host rows before a rescan."""
+        """重新扫描前清空本地媒体缓存和宿主行。"""
         self._host().clear_video_rows()
         app_state = getattr(self, "app_state", None)
         if app_state is not None:
@@ -87,7 +87,7 @@ class MediaHostControllerMixin:
             self.videos.clear()
 
     def _append_scanned_items(self, result) -> None:
-        """Populate scanned media rows through a single replace publish."""
+        """通过一次整体替换发布扫描结果。"""
         items = self._cache_scanned_items(result)
         if not items:
             return
@@ -106,7 +106,7 @@ class MediaHostControllerMixin:
                 add_row(item)
 
     def scan_local_dir(self):
-        """Scan the current save directory and restore local media into the host."""
+        """扫描当前保存目录，并把本地媒体恢复到宿主。"""
         host = self._host()
         directory = host.current_save_dir
         host.announce_scan_start(directory)
@@ -119,6 +119,7 @@ class MediaHostControllerMixin:
         )
 
         self._clear_local_items()
+        # 目录切换会让多次扫描并发收尾；`generation` 只允许最新任务提交结果。
         generation = int(getattr(self, "_local_scan_generation", 0) or 0) + 1
         self._local_scan_generation = generation
         previous_token = getattr(self, "_local_scan_token", None)
@@ -183,7 +184,7 @@ class MediaHostControllerMixin:
         debug_logger.log_exception("ApplicationController", "scan_local_dir", exc, context={"directory": directory})
 
     def on_dir_changed(self):
-        """React to directory changes and refresh the host media list."""
+        """目录变化后刷新宿主媒体列表。"""
         host = self._host()
         host.announce_directory_changed(host.current_save_dir)
         debug_logger.log(
@@ -196,7 +197,7 @@ class MediaHostControllerMixin:
         self.scan_local_dir()
 
     def on_rename_video(self, item):
-        """Rename a media item and keep host state in sync."""
+        """重命名媒体项，并同步宿主状态。"""
         if item.column() != 0:
             return
         vid = item.data(Qt.ItemDataRole.UserRole)
@@ -286,7 +287,7 @@ class MediaHostControllerMixin:
                 item.setText(video.title)
 
     def on_delete_video(self, row_idx, vid):
-        """Delete a media item and reconcile host/download queue state."""
+        """删除媒体项，并协调宿主与下载队列状态。"""
         if self._video_lookup(vid) is None:
             self._remove_video_row_from_host(row_idx, vid)
             return
@@ -435,7 +436,7 @@ class MediaHostControllerMixin:
         return QThread.currentThread() == app.thread()
 
     def on_clear_queue(self) -> None:
-        """Remove queued items without blocking the Qt main thread."""
+        """在不阻塞 Qt 主线程的前提下移除队列项。"""
         if self._should_clear_queue_in_background():
             invoker = self._ensure_ui_callback_invoker()
 
@@ -448,7 +449,7 @@ class MediaHostControllerMixin:
                         return
                     self._cancel_queue_items(ids)
                     removed_ids = self._remove_queue_items_from_state(ids)
-                except Exception as exc:  # pragma: no cover - defensive UI recovery path
+                except Exception as exc:  # pragma: no cover - UI 防御性恢复路径
                     message = str(exc)
                     debug_logger.log_exception(
                         "MediaHostControllerMixin",
@@ -669,7 +670,7 @@ class MediaHostControllerMixin:
             refresh(force=False, topics={"videos.remove_many"})
 
     def play_video(self, vid):
-        """Preview a local media item through the host adapter."""
+        """通过宿主适配器预览本地媒体项。"""
         video = self._video_lookup(vid) if vid else None
         if not video:
             self._host().report_missing_media()
@@ -734,6 +735,7 @@ class MediaHostControllerMixin:
         exists: bool,
         generation: int | None = None,
     ) -> None:
+        # 文件探测可能乱序返回；只接受最新 `generation`，且路径仍须与当前资源一致。
         if generation is not None and generation != int(getattr(self, "_playback_file_check_generation", 0) or 0):
             return
         video = self._video_lookup(video_id)
@@ -745,7 +747,7 @@ class MediaHostControllerMixin:
         self._start_video_playback(video_id, video)
 
     def _start_video_playback(self, video_id: str, video: VideoItem) -> None:
-        """Run the actual playback branch after any path probe has completed."""
+        """路径探测完成后进入实际播放分支。"""
         self._set_current_playing_id(video_id)
         self._host().announce_playback(video.title)
 
@@ -784,11 +786,11 @@ class MediaHostControllerMixin:
         subprocess.Popen(["xdg-open", file_path])
 
     def switch_preview(self, direction: int) -> None:
-        """Switch to the previous or next preview item in host table order."""
+        """按宿主表格顺序切换到上一个或下一个预览项。"""
         self._switch_preview(direction, wrap=True)
 
     def autoplay_next_preview(self) -> None:
-        """Advance to the next preview item after playback, without wrapping."""
+        """播放结束后前进到下一项，不循环到队首。"""
         if not bool(cfg.get("playback", "autoplay_next", True)):
             return
         self._switch_preview(1, wrap=False, auto_advance=True)
@@ -807,5 +809,4 @@ class MediaHostControllerMixin:
         self.play_video(next_video_id)
 
     def _is_image_file(self, file_path: str) -> bool:
-        """Return whether the given local path should be previewed as an image."""
         return os.path.splitext(file_path)[1].lower() in self.IMAGE_EXTENSIONS

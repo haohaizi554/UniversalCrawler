@@ -1,4 +1,4 @@
-"""Application controller package and historical module aliases."""
+"""应用控制器包，并保留历史模块别名。"""
 
 import sys
 

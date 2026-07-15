@@ -1,4 +1,4 @@
-"""Qt-backed selection strategy kept inside the UI layer."""
+"""UI 层内部基于 Qt 的任务选择策略。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from shared.localization import normalize_language
 from shared.interactive_selection import InteractiveTTYSelection
 
 class _QtMainThreadInvoker:
-    """Small queued-signal invoker for running callables on the Qt main thread."""
+    """通过 Qt 的 `queued signal` 将可调用对象投递到主线程。"""
 
     def __init__(self, app):
         from PyQt6.QtCore import QObject, Qt, pyqtSignal
@@ -32,7 +32,7 @@ class _QtMainThreadInvoker:
         self._invoker.requested.emit(callback)
 
 class GUISelection:
-    """GUI dialog selection strategy with TTY fallback when Qt is unavailable."""
+    """优先使用 GUI 对话框；Qt 不可用时回退到 TTY 选择。"""
 
     def __init__(self):
         self._fallback = None

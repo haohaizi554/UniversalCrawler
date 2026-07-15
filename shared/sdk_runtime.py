@@ -1,29 +1,14 @@
-"""Python SDK 入口：让用户可以 `from ucrawl import UcrawlSDK` 直接调用。
+"""可通过 ``from ucrawl import UcrawlSDK`` 使用的 Python SDK 运行时。
 
-设计目标：
-- 一次实例化，多次 search
-- 支持上下文管理器 (with UcrawlSDK() as sdk:)
-- 复用 CLIRunner
-- 与 GUI 默认配置完全一致（从 cfg 持久化配置读取默认值）
+搜索调用复用 ``CLIRunner``，并通过 ``shared.runtime_options`` 读取持久化配置
+及代码兜底值；这些来源与优先级是共享契约，不代表 SDK 与任一前端拥有完全
+相同的交互行为。直接下载不经过 spider，因此其下载元数据在本模块内组装。
 
-使用示例：
+示例：
     >>> from ucrawl import UcrawlSDK
-    >>>
-    >>> # 1. 简单搜索
     >>> sdk = UcrawlSDK(save_dir="downloads")
     >>> result = sdk.search("douyin", "测试关键词", max_items=20)
-    >>> for item in result["items"]:
-    ...     print(item["title"], item["url"])
-    >>>
-    >>> # 2. 用规则选择器
-    >>> from ucrawl import RuleSelection
-    >>> sel = RuleSelection(select="0,2,5")  # 只选 0/2/5
-    >>> result = sdk.search("missav", "ABC-123", selection=sel)
-    >>>
-    >>> # 3. 批量 (合集场景) 用 PipeSelection 预加载多次选择
-    >>> from ucrawl import PipeSelection
-    >>> sel = PipeSelection(preloaded_choices=[[0, 1], [2, 3]])  # 第一次选 0,1; 第二次选 2,3
-    >>> result = sdk.search("bilibili", "合集BVxxx", selection=sel)
+    >>> [item["title"] for item in result["items"]]
 """
 
 from __future__ import annotations
@@ -38,9 +23,9 @@ from shared.selection_base import SelectionStrategy, is_selection_strategy
 # 保持 CLI/SDK 输出实时刷新，便于长任务反馈
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
-# 暴露给用户的快捷导入
+# 下列导入属于既有 SDK 的公开兼容表面。
 from shared.runtime_options import (
-    DEFAULT_CONFIG,  # noqa: F401 - retained as a public SDK compatibility export
+    DEFAULT_CONFIG,  # noqa: F401 - 作为公开 SDK 兼容导出保留。
     build_missav_proxy_url,
     compose_runtime_config,
     get_default_save_dir,
@@ -48,7 +33,7 @@ from shared.runtime_options import (
     get_platform_download_defaults,
     infer_content_type,
     infer_content_type_from_url,
-    merge_convenience_params,  # noqa: F401 - retained as a public SDK compatibility export
+    merge_convenience_params,  # noqa: F401 - 作为公开 SDK 兼容导出保留。
     validate_config_types,
     validate_direct_download_url,
 )
@@ -58,7 +43,7 @@ from shared.selection_runtime import (
 )
 
 def _discover_platform_ids() -> tuple[str, ...]:
-    """Keep SDK platform enum aligned with the runtime plugin registry."""
+    """从插件注册表生成平台枚举；注册表不可用时返回内置兜底集合。"""
     try:
         from app.core.plugin_registry import registry
 
@@ -69,7 +54,7 @@ def _discover_platform_ids() -> tuple[str, ...]:
 class UcrawlSDK:
     """UCrawl Python SDK。
 
-    Attributes:
+    属性：
         save_dir: 默认保存目录
         verbose: 是否输出 spider 日志
     """
@@ -84,17 +69,17 @@ class UcrawlSDK:
     ):
         """初始化 SDK。
 
-        Args:
-            save_dir: 默认保存目录 (None=从 cfg 配置读取，与 GUI 对齐)
+        参数：
+            save_dir: 默认保存目录；None 时从共享运行时配置读取
             verbose: 是否输出 spider 日志到 stderr (默认 False)
             config: 全局默认配置 (会被 search() 的 config 参数覆盖)
         """
         self.save_dir = save_dir or get_default_save_dir()
-        # 与 search()/download_video() 对齐：校验 save_dir 类型
+        # 在回退到默认目录后仍校验调用方显式传入的原始类型。
         if save_dir is not None and not isinstance(save_dir, str):
             raise TypeError("save_dir 必须是字符串或 None")
         self.verbose = verbose
-        # 与 search() 对齐：校验 config 类型（必须在 dict() 转换之前，避免字符串被当作可迭代对象）
+        # 必须先校验再 dict()，避免把字符串等可迭代对象误当配置映射。
         if config is not None and not isinstance(config, dict):
             raise TypeError("config 必须是字典或 None")
         self.default_config = dict(config or {})
@@ -107,19 +92,14 @@ class UcrawlSDK:
         return False
 
     def close(self):
-        """清理 SDK 资源。
-
-        当前 SDK/CLI 已完全不依赖 Qt 事件循环，因此 close() 仅保留幂等接口，
-        便于兼容既有调用方和上下文管理器用法。
-        """
+        """保留幂等清理接口；当前实例不持有跨调用的运行资源。"""
         return None
 
     def _get_runner_class(self):
-        """Return the runner class used by SDK search flows.
+        """返回 SDK 搜索流程使用的执行器类。
 
-        The shared runtime defaults to the shared runner implementation. Host-
-        specific public packages can override this hook to preserve patch seams
-        without keeping another runner implementation outside ``shared/``.
+        共享运行时默认使用 shared 中的执行器实现。宿主专用的公开包可覆盖此
+        钩子以保留补丁接缝，无需在 ``shared/`` 之外再维护一份执行器实现。
         """
         return CLIRunner
 
@@ -136,7 +116,7 @@ class UcrawlSDK:
     ) -> dict[str, Any]:
         """执行一次搜索并返回结果。
 
-        Args:
+        参数：
             source: 平台 ID (douyin/bilibili/kuaishou/missav)
             keyword: 搜索关键词 / 链接 / 用户 ID
             save_dir: 本次调用的保存目录 (None=使用 SDK 默认值)
@@ -146,14 +126,13 @@ class UcrawlSDK:
                 - "first" → 只选第一个
                 - "last" → 只选最后一个
                 - list[int] → 指定索引 (如 [0, 2, 5])
-                - dict → 与 REST API 对齐 (如 {"strategy": "all"}, {"strategy": "rule", "select": "0,2,5"})
+                - dict → 策略描述 (如 {"strategy": "all"} 或 rule 配置)
                 - SelectionStrategy 实例 → 完整控制
-            timeout: 整体超时秒数 (None=无限)。已弃用，建议使用 run_timeout。
-                注意：若需设置 spider HTTP 超时，请通过 config 传入 timeout 关键字，
-                如 ``sdk.search(..., run_timeout=60, **{"timeout": 10})``。
-            download: 是否触发下载 (True=与 GUI 一致自动下载, False=只收集不下载)
-            run_timeout: 整体超时秒数 (None=无限)，与 CLI --run-timeout 对齐。
-                优先级高于 timeout 参数。
+            timeout: 已弃用的整体运行超时；仅在 run_timeout 为 None 时生效
+            download: True 时下载发现项，False 时只收集
+            run_timeout: 整体运行超时，优先于兼容参数 timeout
+                spider 的 HTTP 请求超时是 ``config["timeout"]``，与这两个整体
+                运行超时参数相互独立
             **config: 平台特定参数
 
                 douyin:
@@ -172,10 +151,10 @@ class UcrawlSDK:
                     priority (str): "中文字幕优先" / "无码流出优先"
                     proxy (str): 代理 URL (默认从 cfg 读取)
 
-        Returns:
+        返回：
             dict: 详细结果 (见 CLIRunner.run() 的返回结构)
 
-        Example:
+        示例：
             >>> sdk = UcrawlSDK(save_dir="downloads")
             >>> result = sdk.search("douyin", "测试", max_items=10)
             >>> print(f"找到 {len(result['items'])} 个项目")
@@ -185,46 +164,39 @@ class UcrawlSDK:
             >>> sel = PipeSelection(preloaded_choices=[[0], [1, 2]])
             >>> result = sdk.search("bilibili", "BVxxxx", selection=sel)
         """
-        # 与 CLI argparse 和 REST API 对齐：校验 source 和 keyword
+        # SDK 在创建运行器前完成公共参数校验，错误直接抛给调用方。
         if not isinstance(source, str) or not isinstance(keyword, str):
             raise TypeError("source 和 keyword 必须是字符串")
-        # 与 GUI inp_search.text().strip() 对齐：去除前后空白
         keyword = keyword.strip()
         if not source or not keyword:
             raise ValueError("source 和 keyword 不能为空")
-        # 与 CLI argparse choices 对齐：校验 source 是否为有效平台 ID
+        # 有效平台以当前插件注册表为准，而不是静态 PLATFORMS 快照。
         from app.core.plugin_registry import registry
         if not registry.get_plugin(source):
             valid_ids = [p.id for p in registry.get_all_plugins()]
             raise ValueError(f"无效平台: {source}。支持: {valid_ids}")
 
-        # 与 CLI --run-timeout 对齐：run_timeout 优先，timeout 向后兼容
+        # ``run_timeout`` 是新名称；只有未提供时才读取旧 ``timeout`` 参数。
         effective_run_timeout = run_timeout if run_timeout is not None else timeout
-        # 与 REST API 对齐：校验 timeout 类型
         if effective_run_timeout is not None and (
             isinstance(effective_run_timeout, bool)
             or not isinstance(effective_run_timeout, (int, float))
         ):
             raise TypeError("timeout/run_timeout 必须是数字或 None")
-        # 与 REST API 对齐：校验 timeout 值
         if effective_run_timeout is not None and effective_run_timeout <= 0:
             raise ValueError("timeout/run_timeout 必须大于 0")
-        # 与 REST API 对齐：校验 download 类型
         if not isinstance(download, bool):
             raise TypeError("download 必须是布尔值")
-        # 与 REST API 对齐：校验 save_dir 类型
         if save_dir is not None and not isinstance(save_dir, str):
             raise TypeError("save_dir 必须是字符串或 None")
-        # 与 CLI argparse type=int/str/bool 对齐：校验已知 config 参数类型
+        # 仅已知配置键受类型约束，插件私有键继续透传。
         self._validate_config(config)
 
-        # 把 selection 转换为 Strategy
+        # 所有受支持的选择描述在进入运行器前转换为策略对象。
         strategy = self._resolve_selection(selection)
 
-        # 合并 config (cfg 持久化默认 + 全局默认 + 本次)
-        # 与 GUI read_*_run_options 对齐：优先使用 cfg 中的用户设置
-        # 与 CLI _build_config 对齐：过滤 None 值，避免覆盖默认值
-        # （CLI argparse 只在用户显式提供参数时才设置，不会用 None 覆盖默认）
+        # 配置优先级为持久化/兜底平台默认、SDK 实例默认、本次调用配置。
+        # 本次显式传入 None 的键最终删除，不能意外恢复较低优先级的值。
         explicit_none_keys = {k for k, v in config.items() if v is None}
         merged_config = compose_runtime_config(
             source,
@@ -250,22 +222,14 @@ class UcrawlSDK:
         return runner.run()
 
     def _validate_config(self, config: dict):
-        """校验已知 config 参数类型，与 CLI argparse type 对齐。
-
-        仅校验已知参数，未知参数透传给 spider（保持前向兼容）。
-        委托给 shared.runtime_options.validate_config_types 统一实现，
-        确保 CLI/SDK/REST API 三层校验逻辑完全一致。
-        """
+        """用共享 schema 校验已知配置键，并保留未知插件键。"""
         err = validate_config_types(config)
         if err:
-            # 从 "config.xxx 必须是xxx，收到 xxx" 格式中提取字段名和类型信息
+            # SDK 异常不重复 shared 校验器已添加的 ``config.`` 前缀。
             raise TypeError(err.replace("config.", "", 1))
 
     def _resolve_selection(self, selection) -> SelectionStrategy:
-        """把 selection 参数解析为 Strategy 实例。
-
-        与 REST API _build_selection_strategy 对齐：支持 {"strategy": "all"} 格式。
-        """
+        """把字符串、索引列表、策略字典或对象解析为 SelectionStrategy。"""
         strategy = SelectionStrategyFactory.from_value(selection, default_strategy="auto")
         if is_selection_strategy(strategy):
             return strategy
@@ -283,38 +247,39 @@ class UcrawlSDK:
         progress_callback: Any = None,
         network_policy: str | None = None,
     ) -> dict[str, Any]:
-        """直接下载指定 URL 的视频（与 CLI download 命令对齐）。
+        """直接下载指定 URL，并返回下载与清理状态。
 
-        Args:
+        参数：
             url: 视频 URL
             source: 平台 ID (douyin/bilibili/kuaishou/missav)
             title: 视频标题（默认使用 URL）
             save_dir: 保存目录 (None=使用 SDK 默认值)
             timeout: 下载超时秒数 (默认 300)
-            verbose: 是否输出下载进度到 stderr (默认 False，与 CLI download 命令对齐)
-            config: 平台特定配置 (None=使用平台默认值，与 REST API /api/download 的 config 对齐)
+            verbose: 是否输出下载进度到 stderr
+            config: 平台特定配置；None 时使用共享平台默认值
                 missav: proxy (str) — 代理 URL
-            progress_callback: 下载进度回调函数 (None=不回调，与 GUI DownloadManager 信号对齐)
+            progress_callback: 下载进度回调函数；None 时不回调
                 签名: callback(progress: int) -> None
-                progress 范围 0-100，与 GUI/WebController task_progress 事件对齐
-            network_policy: 内部网络策略。Web 公网直链入口传 ``"public"``，
-                普通 CLI/SDK 调用保持 ``None`` 以支持本地资源。
+                progress 范围为 0-100
+            network_policy: 内部信任边界。Web 公网直链入口使用 ``"public"``，
+                先拒绝本地/私有目标，再把策略写入元数据供下载器逐跳校验重定向；
+                普通 CLI/SDK 调用保持 ``None``，以明确保留本地资源访问能力
 
-        Returns:
+        返回：
             dict: {"status": "ok"/"error", "video_id": ..., "title": ..., "local_path": ..., ...}
 
-        Example:
+        示例：
             >>> sdk = UcrawlSDK(save_dir="downloads")
             >>> result = sdk.download_video("https://...", "douyin", title="测试视频")
             >>> if result["status"] == "ok":
             ...     print(f"下载完成: {result['local_path']}")
             >>>
-            >>> # 带进度回调（与 GUI 实时进度对齐）
+            >>> # 带进度回调
             >>> def on_progress(pct):
             ...     print(f"进度: {pct}%")
             >>> result = sdk.download_video("https://...", "douyin", progress_callback=on_progress)
         """
-        # 与 CLI download 命令对齐：校验参数
+        # 直接下载在创建 VideoItem 前拒绝无效的公共参数。
         if not isinstance(url, str) or not isinstance(source, str):
             raise TypeError("url 和 source 必须是字符串")
         if not isinstance(title, str):
@@ -335,15 +300,16 @@ class UcrawlSDK:
         if network_policy not in {None, "public"}:
             raise ValueError("network_policy 仅支持 public 或 None")
         if network_policy == "public":
+            # 公网入口必须在任何网络 IO 前执行首跳 SSRF 校验。
             url_error = validate_direct_download_url(url)
             if url_error:
                 raise ValueError(url_error)
-        # 与 REST API /api/download 对齐：校验 source 是否为有效平台 ID
+        # 下载器来源必须来自当前插件注册表。
         from app.core.plugin_registry import registry
         if not registry.get_plugin(source):
             valid_ids = [p.id for p in registry.get_all_plugins()]
             raise ValueError(f"无效平台: {source}。支持: {valid_ids}")
-        # 与 search() 的 _validate_config 对齐：校验已知 config 参数类型
+        # 配置仍允许插件私有键，仅共享键执行类型校验。
         if config:
             self._validate_config(config)
 
@@ -352,7 +318,7 @@ class UcrawlSDK:
         from app.core.download_manager import DownloadManager
         import time
 
-        # 与 CLI/SDK 对齐：title 为空时使用 URL
+        # URL 是空标题时唯一稳定且可追踪的展示值。
         effective_title = title or url
 
         item = VideoItem(
@@ -363,8 +329,8 @@ class UcrawlSDK:
             progress=0,
         )
 
-        # 与 search() 对齐：始终合并平台默认配置（GUI read_*_run_options 总是返回平台默认值）
-        # 合并顺序：平台默认 → self.default_config → 本次 config（与 search() 完全一致）
+        # 元数据配置来源按平台持久化/兜底默认、SDK 实例默认、本次 config 合并；
+        # 高优先级的显式 None 会删除同名低优先级值。
         explicit_none_keys = {k for k, v in (config or {}).items() if v is None}
         merged = compose_runtime_config(
             source,
@@ -376,63 +342,43 @@ class UcrawlSDK:
             proxy_normalizer=build_missav_proxy_url,
         )
 
-        # 与 GUI spider build_download_meta 对齐：设置平台默认 ua/referer
-        # GUI spider 在 emit_video 时通过 build_download_meta 设置平台特定的 ua、referer，
-        # SDK download_video 不经过 spider，需要手动设置这些默认值，
-        # 确保下载器能正确构建 HTTP 请求头（如 BilibiliDownloader 需要 Referer 验证）
+        # 直接下载绕过 spider 的任务元数据构造器，因此补入平台请求头和本地认证
+        # 默认值。已有 merged 键优先，确保调用配置不会被推导值覆盖。
         platform_defaults = get_platform_download_defaults(source)
         for key, val in platform_defaults.items():
-            # 用户 config 优先级高于平台默认值（与 GUI spider 行为一致：
-            # spider 的 build_download_meta 也会被用户 config 覆盖）
             if key not in merged:
                 merged[key] = val
 
-        # 与 GUI spider 结果对齐：下载前从 URL 推断 content_type
-        # GUI spider 在创建 VideoItem 时就设置 content_type（如 "video"/"gallery"/"image"），
-        # SDK download_video 不经过 spider，需要从 URL 推断，
-        # 以便 DownloadWorker._infer_extension 能正确推断文件扩展名
+        # 未提供 content_type 时从 URL 提供下载前提示；仍无法判断则在落盘后
+        # 根据本地路径再次推断。
         if "content_type" not in merged or not merged["content_type"]:
             url_content_type = infer_content_type_from_url(url)
             if url_content_type:
                 merged["content_type"] = url_content_type
 
-        # 与 GUI spider build_download_meta 对齐：设置 trace_id
-        # GUI spider 在 emit_video 时通过 build_download_meta 始终设置 trace_id，
-        # DownloadWorker._trace_id() 依赖此字段做日志关联。
-        # SDK download_video 不经过 spider，需要自动生成 trace_id，
-        # 格式与 GUI spider 对齐：{source_prefix}-dl-{uuid8}
+        # 直接下载没有 spider 生成的 trace_id，需在入队前创建以关联下载日志。
         import uuid as _uuid
         _source_prefix = {"douyin": "dy", "bilibili": "bili", "kuaishou": "ks", "missav": "miss"}.get(source, source)
         item.meta["trace_id"] = f"{_source_prefix}-dl-{_uuid.uuid4().hex[:8]}"
         if network_policy:
-            # Web 直链入口使用该内部标记，下载器据此逐跳校验重定向；
-            # 普通 CLI/SDK 调用保持原有的本地资源访问能力。
+            # 首跳校验后仍需把策略传给下载器，覆盖后续每次重定向。
             item.meta["_network_policy"] = network_policy
 
-        # 所有平台特定配置写入 meta（与 GUI spider meta 对齐）
-        # 与 GUI spider 结果对齐：content_type 让 DownloadWorker 可正确推断文件扩展名
-        # cookie 让下载器可从 item.meta 读取（kuaishou.py/douyin.py/bilibili.py 读取 cookie/cookies）
-        # proxy 让下载器可从 item.meta 读取（missav 代理等场景）
-        # download_strategy 让下载器可选择下载策略（与 GUI spider build_download_meta 对齐）
-        # audio_url/bvid/cid 让 BilibiliDownloader 可处理 DASH 格式音视频分离下载
-        # aweme_id 让 DouyinDownloader 可关联抖音视频 ID
-        # file_name/preferred_filename 让 DownloadWorker 可使用指定文件名
-        # is_gallery/is_mix 让 DownloadWorker 可正确处理图集/合集路径
-        # images_data 让 DouyinDownloader 可下载图集（与 GUI spider DouyinTaskBuilder.build_items 对齐）
-        # size_mb 让 BaseDownloader 可选择分块下载策略（与 GUI spider 设置对齐）
-        # media_label 让日志可显示媒体类型标签（与 GUI spider build_download_meta 对齐）
+        # 只把下载器与路径策略消费的白名单字段复制到 item.meta。其值来自上面的
+        # 合并配置、平台下载默认值及 content_type 推断，避免把任意配置泄漏给
+        # 下载任务。
         for key in (
             "referer", "ua", "content_type", "cookie", "cookies", "proxy",
             "download_strategy", "folder_name", "use_subdir",
             "audio_url", "aweme_id", "bvid", "cid",
             "file_name", "preferred_filename", "is_gallery", "is_mix",
             "images_data", "size_mb", "media_label",
-            # 与 GUI spider DouyinParser 和下载器对齐的额外字段
-            "duration",        # 视频时长秒数（ChunkedDownloader/FFmpegDownloader 读取，与 GUI spider DouyinParser 对齐）
-            "mix_title",       # 合集标题（与 GUI spider DouyinSpider._process_mix 对齐）
-            "create_time",     # 创建时间（与 GUI spider DouyinParser 对齐）
-            "author",          # 作者名（与 GUI spider DouyinParser 对齐，用作 folder_name）
-            "has_live_photo",  # 是否包含实况照片（与 GUI spider DouyinParser 对齐）
+            # 解析器可直接提供、且下载器或路径策略会消费的补充字段。
+            "duration",        # 分块/FFmpeg 下载器使用的视频时长
+            "mix_title",       # 合集路径标题
+            "create_time",     # 媒体创建时间
+            "author",          # 可作为 folder_name 来源的作者名
+            "has_live_photo",  # 实况照片标记
         ):
             if key in merged:
                 item.meta[key] = merged[key]
@@ -440,10 +386,10 @@ class UcrawlSDK:
         save_dir = save_dir or self.save_dir
         dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
 
-        # 与 search() 对齐：记录开始时间，返回 elapsed 字段
+        # elapsed 覆盖入队、等待和停止下载管理器的完整调用时段。
         start_time = time.time()
 
-        # 与 CLI download 命令对齐：连接下载信号
+        # 信号回调维护同步返回所需的状态，并可转发进度。
         result_holder = {"status": "pending", "error": None}
         stop_summary = None
 
@@ -454,7 +400,7 @@ class UcrawlSDK:
                 if verbose:
                     sys.stderr.write(f"⏳ 开始下载: {item.title}\n")
                     sys.stderr.flush()
-                # 与 GUI DownloadManager task_started 信号对齐：通过回调通知调用方
+                # 首次回调 0，使调用方能建立自己的进度状态。
                 if progress_callback:
                     try:
                         progress_callback(0)
@@ -469,7 +415,7 @@ class UcrawlSDK:
                     sys.stderr.flush()
                     if pct >= 100:
                         sys.stderr.write("\n")
-                # 与 GUI DownloadManager task_progress 信号对齐：通过回调通知调用方
+                # 用户回调异常不能中断下载管理器的工作线程。
                 if progress_callback:
                     try:
                         progress_callback(pct)
@@ -508,7 +454,7 @@ class UcrawlSDK:
         dl_manager.add_task(item, save_dir)
 
         try:
-            # 等待下载完成（与 CLI _wait_download 对齐）
+            # timeout 从任务入队后开始限制队列与活动 worker 的完成时间。
             deadline = time.time() + timeout
             timed_out = False
             while time.time() < deadline:
@@ -525,15 +471,14 @@ class UcrawlSDK:
             else:
                 timed_out = True
 
-            # 超时检测：与 GUI（无超时）不同，CLI/SDK 有超时机制，需明确标记
-            # 与 CLIRunner.run() 对齐：超时返回 "timeout" 而非 "error"，让调用方可区分超时与其他错误
+            # 超时是独立终态，调用方可与下载器错误区分。
             if timed_out and result_holder["status"] == "pending":
                 item.status = "❌ 超时"
                 item.meta["download_error"] = f"下载超时 ({timeout}s)"
                 result_holder["status"] = "timeout"
                 result_holder["error"] = f"下载超时 ({timeout}s)"
         finally:
-            # 与 GUI shutdown 对齐：无论成功/失败/异常，都清理 DownloadManager 资源
+            # 所有退出路径都停止 DownloadManager；摘要会暴露未停止的 worker。
             stop_summary = dl_manager.stop_all()
 
         shutdown = {
@@ -557,14 +502,14 @@ class UcrawlSDK:
                 }
             )
 
-        # 与 search() 对齐：计算耗时
+        # 清理完成后再冻结耗时，确保返回值覆盖资源释放阶段。
         elapsed = round(time.time() - start_time, 2)
 
-        # 与 GUI spider 结果对齐：直接下载不经过 spider，根据文件扩展名推断 content_type
+        # URL 未提供类型线索时，使用最终本地路径补全 content_type。
         detected_content_type = item.meta.get("content_type", "") if item.meta else ""
         if not detected_content_type and item.local_path:
             detected_content_type = infer_content_type(item.local_path)
-            # 同步到 item.meta，确保 to_dict() 也包含此字段
+            # 同步到元数据，令结果中的顶层字段与 meta 来源一致。
             if detected_content_type and item.meta is not None:
                 item.meta["content_type"] = detected_content_type
 
@@ -577,18 +522,17 @@ class UcrawlSDK:
                 "local_path": item.local_path,
                 "title": item.title,
                 "save_dir": save_dir,
-                # 与 search() 返回的 item.to_dict() 对齐：包含 content_type 和 meta
+                # content_type 与 meta 是直接下载的公开结果字段。
                 "content_type": detected_content_type,
                 "meta": dict(item.meta) if item.meta else {},
                 "shutdown": shutdown,
-                # 与 search() 返回结构对齐：包含 elapsed 字段
                 "elapsed": elapsed,
             }
         else:
             error_msg = item.meta.get("download_error", item.status)
             if not shutdown["all_workers_stopped"] or not shutdown["dispatcher_stopped"]:
                 error_msg = f"{error_msg}；后台任务仍在停止中"
-            # 与 CLIRunner.run() 对齐：超时返回 "timeout"，其他错误返回 "error"
+            # 保留 timeout/error 区分，不把停止阶段的附加信息改写成新终态。
             result_status = result_holder["status"]
             return {
                 "status": result_status,
@@ -598,13 +542,11 @@ class UcrawlSDK:
                 "title": item.title,
                 "error": error_msg,
                 "save_dir": save_dir,
-                # 与成功结果对齐：始终包含 local_path（即使为空字符串）
+                # 失败结果也固定提供 local_path，未落盘时为空字符串。
                 "local_path": item.local_path or "",
-                # 与 search() 返回的 item.to_dict() 对齐：包含 content_type 和 meta
                 "content_type": detected_content_type,
                 "meta": dict(item.meta) if item.meta else {},
                 "shutdown": shutdown,
-                # 与 search() 返回结构对齐：包含 elapsed 字段
                 "elapsed": elapsed,
             }
 
@@ -632,28 +574,27 @@ class UcrawlSDK:
     def scan_directory(self, directory: str, scan_limit: int | None = None) -> dict:
         """扫描本地目录，返回文件清单。
 
-        Args:
+        参数：
             directory: 要扫描的目录
-            scan_limit: 最多扫描多少个文件 (None=从配置读取, 与 GUI/Web 一致)
+            scan_limit: 最多扫描多少个文件；None 时读取共享下载配置
 
-        Returns:
+        返回：
             dict: {"status": "ok", "items": [...], "total_count": N, "message": "...", ...}
         """
-        # 与 search()/download_video() 对齐：参数校验抛异常，而非返回 error dict
+        # 调用参数错误直接抛异常；扫描过程错误才进入结构化结果。
         if not isinstance(directory, str):
             raise TypeError("directory 必须是字符串")
         if not directory:
             raise ValueError("directory 不能为空")
         if scan_limit is not None and (isinstance(scan_limit, bool) or not isinstance(scan_limit, int)):
             raise TypeError("scan_limit 必须是整数或 None")
-        # 与 REST API /api/scan 对齐：scan_limit 必须大于 0
         if scan_limit is not None and scan_limit <= 0:
             raise ValueError("scan_limit 必须大于 0")
 
         from app.config import cfg
         from app.services.file_service import MediaLibraryService
 
-        # 与 GUI/WebController 对齐：scan_limit 从配置读取
+        # 未显式指定时采用持久化本地媒体扫描上限，并对损坏配置兜底。
         if scan_limit is None:
             scan_limit = cfg.get("download", "local_scan_limit", 1000)
             try:
@@ -661,8 +602,7 @@ class UcrawlSDK:
             except (ValueError, TypeError):
                 scan_limit = 1000
 
-        # MediaLibraryService 接受 video_extensions 和 image_extensions
-        # 与 GUI/WebController 扩展名列表完全一致
+        # 扩展名集合定义 SDK 扫描对 MediaLibraryService 的输入边界。
         video_exts = (
             ".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm",
             ".m3u8", ".ts",
@@ -676,12 +616,12 @@ class UcrawlSDK:
             result = service.scan_directory(directory, max_scan_count=scan_limit)
             items = []
             for item in result.items:
-                # 与 REST API /api/scan 完全一致：先设状态再序列化
+                # 本地扫描项在序列化前标记为已完成，避免呈现为待下载任务。
                 item.status = "✅ 本地"
                 item.progress = 100
                 items.append(item.to_dict())
 
-            # 与 REST API /api/scan 和 /api/dir/change 对齐：包含 message 字段
+            # message 是给直接调用者展示的扫描摘要。
             msg = f"已加载 {result.total_count} 个本地文件 (视频: {result.video_count}, 图片: {result.image_count})"
             if result.truncated:
                 msg = f"文件过多 ({result.original_count}个)，仅加载最新的 {result.total_count} 个。"
@@ -700,10 +640,8 @@ class UcrawlSDK:
                 "message": msg,
             }
         except Exception as e:
-            # 与成功响应对齐：错误响应也包含 directory 字段
+            # 失败结果保留 directory，便于调用方关联原始请求。
             return {"status": "error", "error": str(e), "directory": directory}
-
-# ========== 便捷函数 (函数式 API) ==========
 
 def search(
     source: str,
@@ -717,12 +655,12 @@ def search(
 ) -> dict:
     """函数式 API：直接搜索，等价于 UcrawlSDK().search()。
 
-    Example:
+    示例：
         >>> from ucrawl import search
         >>> result = search("douyin", "测试", max_items=10)
         >>> result = search("bilibili", "BV1xxx", run_timeout=60, download=False)
     """
-    # save_dir=None 让 SDK 从 cfg 读取默认值（与 GUI 对齐）
+    # save_dir=None 由 SDK 通过共享运行时配置解析默认目录。
     sdk = UcrawlSDK(save_dir=save_dir)
     try:
         return sdk.search(source, keyword, save_dir=save_dir, selection=selection,
@@ -733,7 +671,7 @@ def search(
 def list_platforms() -> list[dict]:
     """列出所有可用平台。
 
-    Example:
+    示例：
         >>> from ucrawl import list_platforms
         >>> for p in list_platforms():
         ...     print(p["id"], p["name"])
@@ -747,7 +685,7 @@ def list_platforms() -> list[dict]:
 def scan_directory(directory: str, scan_limit: int | None = None) -> dict:
     """扫描本地目录。
 
-    Example:
+    示例：
         >>> from ucrawl import scan_directory
         >>> result = scan_directory("D:/downloads", scan_limit=500)
     """
@@ -769,7 +707,7 @@ def download_video(
 ) -> dict:
     """函数式 API：直接下载指定 URL 的视频，等价于 UcrawlSDK().download_video()。
 
-    Example:
+    示例：
         >>> from ucrawl import download_video
         >>> result = download_video("https://...", "douyin", title="测试视频")
         >>> result = download_video("https://...", "missav", title="ABC-123", config={"proxy": "http://127.0.0.1:7890"})

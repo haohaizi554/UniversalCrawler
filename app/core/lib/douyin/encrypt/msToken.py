@@ -1,6 +1,4 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/msToken.py` 对应的接口、加密、提取或工具逻辑。"""
-
-# app/core/lib/douyin/encrypt/msToken.py
+"""生成本地 msToken，或通过 SDK 接口换取服务端令牌。"""
 
 from asyncio import run
 from json import dumps
@@ -10,7 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, Union
 from urllib.parse import quote
 
-# 调整引用路径
+# 工具包不可用时保留最小占位，避免独立导入直接失败。
 try:
     from ..tools import PARAMS_HEADERS, PARAMS_HEADERS_TIKTOK, USERAGENT, request_params
 except ImportError:
@@ -19,7 +17,6 @@ except ImportError:
     USERAGENT = ""
     
     async def request_params(*args, **kwargs):
-        """Fallback async request stub used when the real helper is unavailable."""
 
         pass
 
@@ -29,10 +26,8 @@ from .xBogus import XBogusTikTok
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
+    # 翻译层不可用时保留原文，避免兼容分支影响令牌请求。
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -44,9 +39,9 @@ if TYPE_CHECKING:
 __all__ = ["MsToken", "MsTokenTikTok"]
 
 class MsToken:
+    """提供抖音 msToken 的本地占位值与服务端获取流程。"""
     
     NAME = "msToken"
-    # API = "https://mssdk.bytedance.com/web/report"
     API = "https://mssdk.bytedance.com/web/common"
     DATA = {
         "magic": 538969122,
@@ -104,9 +99,7 @@ class MsToken:
 
     @staticmethod
     def get_fake_ms_token(key="msToken", size=156) -> dict:
-        """
-        根据传入长度产生随机字符串
-        """
+        """生成满足字符集和长度约束的占位 msToken，不保证服务端认可。"""
         base_str = digits + ascii_uppercase + ascii_lowercase
         length = len(base_str) - 1
         return {key: "".join(base_str[randint(0, length)] for _ in range(size))}
@@ -120,7 +113,7 @@ class MsToken:
         proxy: str,
         **kwargs,
     ) -> dict | None:
-        """提供 `_get_ms_token` 对应的内部辅助逻辑，供 `MsToken` 使用。"""
+        """提交 SDK 载荷并从 Set-Cookie 提取 msToken；请求失败返回 None。"""
         if response := await request_params(
             logger,
             cls.API,
@@ -171,6 +164,7 @@ class MsToken:
         )
 
 class MsTokenTikTok(MsToken):
+    """使用 TikTok SDK 上报接口获取 msToken。"""
     
     REFERER = "https://www.tiktok.com/"
     API = "https://mssdk-ttp2.tiktokw.us/web/report"
@@ -246,6 +240,7 @@ class MsTokenTikTok(MsToken):
         
         params = {cls.NAME: token}
         if token:
+            # 查询参数、Cookie 和 X-Bogus 必须绑定同一个已有 msToken。
             headers |= {"Cookie": f"{cls.NAME}={token}"}
             params["X-Bogus"] = quote(
                 XBogusTikTok().get_x_bogus(
@@ -265,15 +260,10 @@ async def test():
     
     class Logger:
         
-        """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
         def error(self, msg):
-            """Print an error message to the console."""
-
             print(msg)
         
         def info(self, msg, *args):
-            """Print an informational message to the console."""
-
             print(msg)
 
     print("抖音", await MsToken.get_real_ms_token(Logger(), PARAMS_HEADERS, proxy=None))

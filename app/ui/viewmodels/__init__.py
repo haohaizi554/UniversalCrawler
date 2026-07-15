@@ -1,4 +1,4 @@
-"""View-model helpers for GUI pages."""
+"""提供 GUI 页面使用的 view-model 工具。"""
 
 import sys
 

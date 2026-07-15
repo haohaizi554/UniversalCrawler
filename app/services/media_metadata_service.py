@@ -1,4 +1,4 @@
-"""Lightweight local media metadata probing for completed downloads."""
+"""已完成下载的轻量本地媒体元数据探测。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,11 @@ class _CacheKey:
 
 
 class MediaMetadataService:
-    """异步探测本地媒体元数据，避免完成列表渲染时被 ffprobe/系统 Shell 阻塞。"""
+    """异步探测本地媒体元数据，避免完成列表渲染时被 ffprobe/系统 Shell 阻塞。
+
+    同一路径只去重正在执行的探测，``max_workers`` 只限制执行并发；不同路径的
+    待执行任务以及按路径保存的缓存都没有全局数量上限。
+    """
 
     DURATION_RE = re.compile(r"Duration:\s*(?P<clock>\d{2}:\d{2}:\d{2})(?:\.\d+)?")
     RESOLUTION_RE = re.compile(r"Video:.*?,\s*(?P<w>\d{2,5})x(?P<h>\d{2,5})(?:[,\s\[])")
@@ -96,7 +100,7 @@ class MediaMetadataService:
             try:
                 try:
                     metadata = self.probe(key.path)
-                except Exception as exc:  # pragma: no cover - defensive worker isolation
+                except Exception as exc:  # pragma: no cover - 隔离后台工作线程的意外失败
                     debug_logger.log_exception(
                         "MediaMetadataService",
                         "probe_worker_error",
@@ -151,7 +155,7 @@ class MediaMetadataService:
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def is_probe_deferred(self, path: str | Path) -> bool:
-        """Return true when a missing result is still being retried or throttled."""
+        """空结果仍在 worker 中或短期退避窗口内时返回 True，避免重复提交探测。"""
 
         key = self._cache_key(path)
         if key is None:

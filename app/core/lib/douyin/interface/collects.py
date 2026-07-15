@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/collects.py` 对应的接口、加密、提取或工具逻辑。"""
+"""读取抖音收藏夹、合集、短剧和音乐。"""
 
-# app/core/lib/douyin/interface/collects.py
 from typing import TYPE_CHECKING, Callable, Union
 from .collection import Collection
 from .template import API
@@ -8,10 +7,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -20,6 +16,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Collects(API):
+    """列出当前登录账号创建的收藏夹。"""
     
     def __init__(
         self,
@@ -31,7 +28,6 @@ class Collects(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Collects` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.cursor = cursor
         self.count = count
@@ -64,7 +60,6 @@ class Collects(API):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `Collects` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -81,6 +76,7 @@ class Collects(API):
         )
 
 class CollectsDetail(Collection, API):
+    """分页读取指定收藏夹中的作品。"""
     
     def __init__(
         self,
@@ -94,7 +90,6 @@ class CollectsDetail(Collection, API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `CollectsDetail` 使用。"""
         super().__init__(params, cookie, proxy, None, *args, **kwargs)
         self.collects_id = collects_id
         self.pages = pages or params.max_pages
@@ -130,7 +125,6 @@ class CollectsDetail(Collection, API):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `CollectsDetail` 使用。"""
         await super(Collection, self).run(
             referer,
             single_page,
@@ -149,6 +143,7 @@ class CollectsDetail(Collection, API):
         return self.response
 
 class CollectsMix(API):
+    """列出当前账号收藏的抖音合集。"""
     
     def __init__(
         self,
@@ -160,7 +155,6 @@ class CollectsMix(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `CollectsMix` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.cursor = cursor
         self.count = count
@@ -194,7 +188,6 @@ class CollectsMix(API):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `CollectsMix` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -212,6 +205,7 @@ class CollectsMix(API):
         )
 
 class CollectsSeries(CollectsMix):
+    """列出当前账号收藏的短剧。"""
     
     def __init__(
         self,
@@ -223,7 +217,6 @@ class CollectsSeries(CollectsMix):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `CollectsSeries` 使用。"""
         super().__init__(
             params,
             cookie,
@@ -251,7 +244,6 @@ class CollectsSeries(CollectsMix):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `CollectsSeries` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -268,6 +260,7 @@ class CollectsSeries(CollectsMix):
         )
 
 class CollectsMusic(CollectsMix):
+    """列出当前账号收藏的音乐。"""
     
     def __init__(
         self,
@@ -279,7 +272,6 @@ class CollectsMusic(CollectsMix):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `CollectsMusic` 使用。"""
         super().__init__(
             params,
             cookie,
@@ -307,7 +299,6 @@ class CollectsMusic(CollectsMix):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `CollectsMusic` 使用。"""
         return await super().run(
             referer,
             single_page,

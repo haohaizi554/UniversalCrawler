@@ -1,10 +1,8 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/session.py` 对应的接口、加密、提取或工具逻辑。"""
+"""创建 httpx 客户端，并统一参数接口的请求与响应转换。"""
 
-# app/core/lib/douyin/tools/session.py
 from typing import TYPE_CHECKING, Union, Any
 from httpx import AsyncClient, AsyncHTTPTransport, Client, HTTPTransport
 
-# 调整引用路径：常量现在位于当前包的 __init__.py 中
 try:
     from . import TIMEOUT, USERAGENT
 except ImportError:
@@ -18,7 +16,6 @@ from .capture import capture_error_params
 from .retry import Retry
 
 if TYPE_CHECKING:
-    # 占位符，防止静态类型检查报错
     BaseLogger = Any
     LoggerManager = Any
     Logger = Any
@@ -33,7 +30,7 @@ def create_client(
     *args,
     **kwargs,
 ) -> AsyncClient:
-    """创建 `client` 对应的对象、资源或结构。"""
+    """创建默认跟随重定向且不读取系统代理的 AsyncClient。"""
     verify = kwargs.pop("verify", True)
     trust_env = kwargs.pop("trust_env", False)
     client_kwargs = {
@@ -74,7 +71,7 @@ async def request_params(
     proxy: str = None,
     **kwargs,
 ):
-    
+    """建立短生命周期客户端并返回指定形式的响应数据。"""
     verify = kwargs.pop("verify", True)
     trust_env = kwargs.pop("trust_env", False)
     client_kwargs = {
@@ -82,7 +79,6 @@ async def request_params(
         or {
             "User-Agent": useragent,
             "Content-Type": "application/json; charset=utf-8",
-            # "Referer": "https://www.douyin.com/"
         },
         "follow_redirects": True,
         "timeout": timeout,
@@ -122,7 +118,7 @@ async def request(
     resp="json",
     **kwargs,
 ):
-    
+    """执行一次同步 httpx 请求，并按 resp 转换响应。"""
     response = client.request(method, url, **kwargs)
     response.raise_for_status()
     match resp:

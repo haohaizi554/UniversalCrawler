@@ -1,8 +1,7 @@
-"""Downloader registry backed by the plugin system.
+"""由插件系统驱动的下载器注册表。
 
-Bridge: populates itself from ``BasePlugin.get_downloader_class()`` so one
-``get_downloader_class()`` override per plugin eliminates all hardcoded
-import lists in download dispatch code.
+注册表通过 ``BasePlugin.get_downloader_class()`` 收集实现；每个插件只需覆盖
+一次该方法，下载分发层便无需维护硬编码导入清单。
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class DownloaderRegistry:
-    """Lazily-built index of plugin-provided downloader classes."""
+    """按需构建插件下载器类索引。"""
 
     def __init__(self) -> None:
         self._downloaders: dict[str, type[BaseDownloader]] = {}
@@ -54,7 +53,7 @@ class DownloaderRegistry:
         return list(self._downloaders.values())
 
     def resolve(self, video_item: VideoItem) -> type[BaseDownloader] | None:
-        """Find a downloader whose ``can_handle()`` matches *video_item*."""
+        """查找 ``can_handle()`` 能处理 ``video_item`` 的下载器。"""
         self._ensure_loaded()
         for downloader_cls in self._downloaders.values():
             if downloader_cls.can_handle(video_item):

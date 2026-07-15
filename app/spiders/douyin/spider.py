@@ -1,4 +1,4 @@
-"""爬虫实现模块，负责 `app/spiders/douyin/spider.py` 对应平台的采集、解析或任务装配逻辑。"""
+"""抖音登录、输入路由、作品解析与任务提交实现。"""
 
 import os
 import asyncio
@@ -9,10 +9,8 @@ import time
 import traceback
 import httpx
 
-# Playwright 用于扫码登录
 from playwright.sync_api import Error as PlaywrightError
 
-# UCP 基础类
 from app.config import cfg, get_setting_default
 from app.debug_logger import debug_logger
 from app.exceptions import InvalidCookieStateError, LoginCancelledError, LoginTimeoutError, SpiderAuthError
@@ -22,14 +20,12 @@ from app.spiders.douyin.task_builder import DouyinTaskBuilder
 from app.models import VideoItem
 from app.services.auth_service import AuthService
 from app.core.anti_detection import build_browser_anti_detection
+from shared import playwright_network_guard
+from shared.runtime_options import PUBLIC_DOMAIN_POLICY
 
-# ================= DouK-Downloader 核心库引入 =================
-# 1. 工具与配置
 from app.core.lib.douyin.tools.parameter import Parameter
-# 注意：这里我们不再需要 ColorfulConsole 的实际逻辑，只需要 Parameter 引用它
 from app.core.lib.douyin.tools import USERAGENT
 
-# 2. 接口 (策略模式)
 from app.core.lib.douyin.interface.search import Search
 from app.core.lib.douyin.interface.detail import Detail
 from app.core.lib.douyin.interface.account import Account
@@ -54,7 +50,11 @@ def _run_login_process(auth_file, user_agent, result_queue, proxy_server=None, t
             )
             launch_kwargs = anti_context.browser_launch_kwargs(headless=False)
             browser = p.chromium.launch(**launch_kwargs)
-            context = browser.new_context(**anti_context.browser_context_kwargs())
+            context_kwargs = anti_context.browser_context_kwargs()
+            # Service Worker 可能绕过常规路由拦截；禁用后登录页请求仍受公网策略约束。
+            context_kwargs["service_workers"] = "block"
+            context = browser.new_context(**context_kwargs)
+            playwright_network_guard.install_public_network_guard(context, PUBLIC_DOMAIN_POLICY)
             anti_context.apply_to_context(context)
             page = context.new_page()
 
@@ -72,7 +72,6 @@ def _run_login_process(auth_file, user_agent, result_queue, proxy_server=None, t
                 cookies = context.cookies()
                 if auth_service.has_cookie(cookies, "sessionid_ss"):
                     try:
-                        # 确保目录存在
                         directory = os.path.dirname(auth_file)
                         if directory:
                             os.makedirs(directory, exist_ok=True)
@@ -99,17 +98,15 @@ def _run_login_process(auth_file, user_agent, result_queue, proxy_server=None, t
                 browser.close()
             except (PlaywrightError, RuntimeError, AttributeError) as exc:
                 debug_logger.log_exception("DouyinLoginProcess", "close_browser", exc)
-# ================= 适配器类 =================
-
 class MockSettings:
-    """模拟 DouK 的 Settings 类，用于欺骗 Parameter 初始化"""
+    """为 DouK ``Parameter`` 提供最小 Settings 占位对象。"""
 
     def __init__(self):
-        """提供最小化的设置对象占位符，满足底层参数对象初始化。"""
+        """不注入额外设置，仅满足底层构造协议。"""
         pass
 
 class MockCookie:
-    """模拟 DouK 的 Cookie 类，实际 cookie 通过参数注入"""
+    """适配 DouK Cookie 接口，实际值由运行参数注入。"""
 
     def __init__(self):
         """声明 DouK 侧登录态检查依赖的关键 Cookie 名称。"""
@@ -120,7 +117,7 @@ class MockCookie:
         return {}
 
 class MockLogger:
-    """将 DouK 的日志重定向到 UCP 的信号系统"""
+    """把 DouK 日志重定向到 UCP 信号系统。"""
 
     def __init__(self, root, console):
         """保存控制台适配器，供底层库把日志转发到 UI。"""
@@ -132,7 +129,6 @@ class MockLogger:
         pass
 
     def info(self, msg, output=True, **kwargs):
-        # 只有当 output=True 时才发送到 UI，避免刷屏
         """把普通日志按需转发到界面，避免高频无效输出刷屏。"""
         if output and self.console:
             self.console.print(str(msg))
@@ -148,16 +144,14 @@ class MockLogger:
             self.console.error(str(msg))
 
     def debug(self, msg, **kwargs):
-        # 调试信息默认不发送到 UI，防止卡死
         """保留调试方法签名，但默认不把细碎日志推给界面。"""
         pass
 
 class SignalConsole:
-    """
-    [CRITICAL FIX]
-    完全重写的控制台适配器。
-    绝不能继承 rich.console.Console，否则在 QThread 中会导致 0xC0000409 栈溢出崩溃。
-    这里只实现 Parameter 类需要的接口。
+    """只实现 ``Parameter`` 所需的控制台接口。
+
+    这里不能继承 ``rich.console.Console``，否则在 QThread 中可能触发
+    ``0xC0000409`` 栈溢出崩溃。
     """
 
     def __init__(self, signal_func):
@@ -165,7 +159,6 @@ class SignalConsole:
         self.signal_func = signal_func
 
     def print(self, *args, **kwargs):
-        # 过滤掉 rich 的样式参数，只保留内容
         """把控制台普通输出转换成纯文本并发送给界面。"""
         msg = " ".join(str(a) for a in args)
         self.signal_func(msg)
@@ -190,7 +183,6 @@ class SignalConsole:
         pass
 
     def input(self, prompt="", **kwargs):
-        # 爬虫模式下不支持控制台输入，直接返回空
         """兼容底层交互接口，爬虫线程中始终返回空输入。"""
         return ""
 
@@ -227,12 +219,6 @@ class DouyinSpider(BaseSpider):
         return items[:limit]
 
     def run(self):
-        # [修改] 确保 multiprocessing 支持打包环境
-        # try:
-        #     from multiprocessing import freeze_support
-        #     freeze_support()
-        # except: pass
-
         """完成登录态准备后启动异步主流程，并在结束时统一发出完成信号。"""
         self.log(f"🚀 启动抖音任务 | 目标: {self.keyword}")
         self.debug_state(
@@ -327,9 +313,7 @@ class DouyinSpider(BaseSpider):
             p.join(timeout=1)
 
         try:
-            # multiprocessing.Queue.empty() is explicitly unreliable between
-            # processes; read with a short timeout so a just-flushed child result
-            # is not mistaken for "no return value".
+            # multiprocessing.Queue.empty() 跨进程并不可靠；短超时读取可接住刚刷新的子进程结果。
             res = result_queue.get(timeout=2)
         except queue_module.Empty as exc:
             exitcode = getattr(p, "exitcode", None)
@@ -340,7 +324,6 @@ class DouyinSpider(BaseSpider):
 
         if res == "success":
             self.log("✅ 扫码登录成功！")
-            # 重新读取文件
             try:
                 cookies = self.auth_service.load_json_file(self.auth_file)
                 if not cookies:
@@ -357,7 +340,7 @@ class DouyinSpider(BaseSpider):
                 return ""
         if res == "timeout":
             raise LoginTimeoutError("等待抖音扫码登录超时 (120秒)")
-        # res 包含具体的错误信息
+        # 除约定状态外，子进程会把具体错误文本放入结果队列。
         self.log(f"❌ 登录失败详情: {res}")
         raise SpiderAuthError(f"抖音登录失败: {res}")
 
@@ -377,7 +360,11 @@ class DouyinSpider(BaseSpider):
         return "; ".join([f"{c['name']}={c['value']}" for c in cookies_list])
 
     def _build_runtime_params(self, cookie_str: str):
-        """构造 DouK 运行参数，统一集中在一个入口便于后续继续拆分。"""
+        """构造满足 DouK 下限的命名长度参数，并直接注入抖音 Cookie。
+
+        ``browser_info`` 为空，因此请求头沿用 DouK 默认 UA；``download=False`` 固定为
+        只解析任务，由本项目下载器负责实际下载。
+        """
         console_adapter = SignalConsole(self.log)
         settings_mock = MockSettings()
         proxy_str = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy")) or ""
@@ -390,14 +377,14 @@ class DouyinSpider(BaseSpider):
             cookie_tiktok="",
             root="",
             accounts_urls=[], accounts_urls_tiktok=[], mix_urls=[], mix_urls_tiktok=[],
-            folder_name="Download",  # 有效文件夹名
-            name_format="create_time type nickname desc",  # 有效格式
-            desc_length=64,  # >= 16
-            name_length=128,  # >= 32
+            folder_name="Download",  # ``Parameter`` 要求非空目录名。
+            name_format="create_time type nickname desc",  # 使用 DouK 支持的命名字段。
+            desc_length=64,  # 满足 ``Parameter`` 不低于 16 的约束。
+            name_length=128,  # 满足 ``Parameter`` 不低于 32 的约束。
             date_format="%Y-%m-%d %H:%M:%S",
             split="-",
             music=False, folder_mode=False,
-            truncate=50,  # >= 25
+            truncate=50,  # 满足 ``Parameter`` 不低于 25 的约束。
             storage_format="",
             dynamic_cover=False, static_cover=False,
             proxy=proxy_str, proxy_tiktok="", twc_tiktok="",
@@ -483,6 +470,7 @@ class DouyinSpider(BaseSpider):
         try:
             await self._async_main_body(cookie_str)
         finally:
+            # 路由取消或异常也必须关闭异步客户端，避免连接池跨事件循环残留。
             params = getattr(self, "_active_douyin_params", None)
             if params is not None:
                 close_result = params.close_client()
@@ -556,7 +544,6 @@ class DouyinSpider(BaseSpider):
 
         all_data = []
         page = 0
-        # [修复] 使用 finished 属性判断循环，而不是 has_more
         # 账号主页是分页接口，需要持续拉取直到接口声明 finished 或达到条目上限。
         while self.is_running and not account_api.finished:
             page += 1
@@ -604,13 +591,10 @@ class DouyinSpider(BaseSpider):
         self.log(f"📀 识别到合集 ID: {mix_id}")
         mix_api = Mix(params, mix_id=mix_id)
 
-        # [DEBUG] 保存第一页原始数据（调试时取消注释）
-        # debug_saved = False
-
         all_data = []
         mix_title = None
 
-        # [修复] 使用 finished 属性判断循环，调用 run_single 时传入 data_key
+        # ``finished`` 是合集接口的权威终止信号，空响应不能替代分页状态。
         while self.is_running and not mix_api.finished:
             await mix_api.run_single(data_key="aweme_list")
             raw_list = mix_api.response
@@ -626,18 +610,6 @@ class DouyinSpider(BaseSpider):
                 status_code="DOUYIN_MIX_PAGE",
             )
 
-            # [DEBUG] 保存第一页原始响应，并提取合集名称（调试时取消注释）
-            # if not debug_saved and raw_list:
-            #     try:
-            #         import json
-            #         debug_file = f"debug_mix_{mix_id}.json"
-            #         with open(debug_file, 'w', encoding='utf-8') as f:
-            #             json.dump(raw_list, f, ensure_ascii=False, indent=2)
-            #         self.log(f"📝 [DEBUG] 已保存合集原始数据: {debug_file}")
-            #         debug_saved = True
-            #     except Exception as e:
-            #         self.log(f"⚠️ [DEBUG] 保存失败: {e}")
-
             # 只要拿到第一页数据就尽量抽取合集名，后续下载器可据此创建子目录。
             if mix_title is None and raw_list and isinstance(raw_list, list) and len(raw_list) > 0:
                 first_item = raw_list[0]
@@ -650,7 +622,7 @@ class DouyinSpider(BaseSpider):
             for aweme in raw_list:
                 item = self.parser.parse_aweme(aweme)
                 if item:
-                    # 标记为合集作品，设置合集名称作为文件夹名
+                    # 下载器依赖 folder_name 聚合同一合集，缺失标题时使用稳定 ID 兜底。
                     item.meta['is_mix'] = True
                     item.meta['mix_title'] = mix_title or f"合集_{mix_id}"
                     item.meta['folder_name'] = mix_title or f"合集_{mix_id}"
@@ -671,12 +643,12 @@ class DouyinSpider(BaseSpider):
         self._handle_selection(all_data, f"合集 {mix_title or mix_id}")
 
     async def _process_search(self, params, keyword: str):
-        """提供 `_process_search` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""
+        """分页搜索作品，并在数量或平台终止信号到达时停止。"""
         max_items = self._max_items_limit()
         max_pages = 9999 if max_items >= 9999 else max(1, min(100, math.ceil(max_items / 10)))
         self.log(f"🔍 搜索关键词: {keyword} (最多 {max_items if max_items < 9999 else 'max'} 个视频)")
 
-        search_api = Search(params, keyword=keyword, type=0)  # 0=综合
+        search_api = Search(params, keyword=keyword, type=0)  # 综合搜索通道
 
         all_data = []
         for i in range(max_pages):
@@ -711,7 +683,7 @@ class DouyinSpider(BaseSpider):
                         if max_items < 9999 and len(all_data) >= max_items:
                             break
 
-            # [修复] 使用 finished 属性判断
+            # ``finished`` 比当前页是否为空更可靠，同时受本地资源上限约束。
             if search_api.finished or (max_items < 9999 and len(all_data) >= max_items):
                 break
             await asyncio.sleep(1)
@@ -731,18 +703,13 @@ class DouyinSpider(BaseSpider):
         return normalized
 
     async def _process_user_search(self, params, user_id: str):
-        """通过用户ID/抖音号搜索用户，然后获取用户主页作品"""
+        """通过用户 ID 或抖音号搜索用户，再获取其主页作品。"""
         from app.core.lib.douyin.interface.search import Search
         
         self.log(f"🔍 正在搜索用户: {user_id}")
         
-        # 方法1: 尝试直接访问用户主页 (抖音号)
-        # 抖音用户主页格式: https://www.douyin.com/user/MS4wLjABAAAA... (sec_user_id)
-        # 或者: https://v.douyin.com/xxx/ (短链)
-        
-        # 方法2: 使用用户搜索
         try:
-            search_api = Search(params, keyword=user_id, channel=2)  # 2=用户搜索
+            search_api = Search(params, keyword=user_id, channel=2)  # 用户搜索通道
             await search_api.run(single_page=True)
         except (RuntimeError, ValueError, TypeError, KeyError) as e:
             self.log(f"❌ 搜索异常: {e}")
@@ -787,24 +754,7 @@ class DouyinSpider(BaseSpider):
             status_code="DOUYIN_USER_SEARCH",
         )
         
-        # [DEBUG] 保存搜索 API 返回的原始数据（调试时取消注释）
-        # try:
-        #     import json
-        #     debug_file = f"debug_search_{user_id}.json"
-        #     with open(debug_file, 'w', encoding='utf-8') as f:
-        #         json.dump({
-        #             'user_id': user_id,
-        #             'response': raw_list,
-        #             'response_type': str(type(raw_list)),
-        #             'response_len': len(raw_list) if raw_list else 0
-        #         }, f, ensure_ascii=False, indent=2)
-        #     self.log(f"📝 [DEBUG] 已保存搜索 API 返回: {debug_file}")
-        # except Exception as e:
-        #     self.log(f"⚠️ [DEBUG] 保存失败: {e}")
-        
-        # 检查是否有搜索结果
         if normalized_items:
-            # 有搜索结果，解析用户信息
             self.log(f"✅ 找到 {len(normalized_items)} 个匹配用户")
             
             users = []
@@ -820,13 +770,12 @@ class DouyinSpider(BaseSpider):
                     })
             
             if users:
-                # 如果只找到一个用户，直接获取其作品
+                # 单个结果无需二次交互；多个同名结果先交给用户确认。
                 if len(users) == 1:
                     user = users[0]
                     self.log(f"👤 找到用户: {user['nickname']} (粉丝: {user['follower_count']}, 作品: {user['aweme_count']})")
                     await self._process_user(params, user['sec_uid'])
                 else:
-                    # 多个用户，让用户选择
                     display_items = []
                     for i, u in enumerate(users[:10]):
                         display_items.append({
@@ -847,17 +796,15 @@ class DouyinSpider(BaseSpider):
                         await self._process_user(params, user['sec_uid'])
                 return
         
-        # 搜索无结果，尝试其他方法
         self.log("⚠️ 用户搜索无结果，尝试其他方法...")
         
-        # 方法3: 尝试通过 User API 直接获取 (如果输入的是 sec_user_id)
-        if len(user_id) > 30:  # sec_user_id 通常较长
+        # 较长标识更可能是 sec_user_id，可直接进入主页作品接口。
+        if len(user_id) > 30:
             self.log("🔑 尝试作为 sec_user_id 访问...")
             await self._process_user(params, user_id)
             return
         
-        # 方法4: 尝试通过请求用户主页 HTML 提取 sec_user_id
-        # 注意：抖音是 SPA，纯 HTTP 请求拿不到渲染数据，此方法仅对短链有效
+        # 最后尝试从主页 HTML 提取 sec_user_id；SPA 未渲染时通常拿不到该字段。
         try:
             self.log("🔑 尝试请求用户主页获取 sec_user_id...")
             test_url = f"https://www.douyin.com/user/{user_id}"
@@ -894,7 +841,7 @@ class DouyinSpider(BaseSpider):
         self.log("   3. 在抖音 APP 中复制分享链接")
 
     def _handle_selection(self, items: list[VideoItem], title_hint: str):
-        """提供 `_handle_selection` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""
+        """裁剪候选、等待用户选择，再提交确认后的资源。"""
         items = self._trim_items(items, title_hint)
         if not items:
             self.log("❌ 未找到有效视频")
@@ -921,7 +868,7 @@ class DouyinSpider(BaseSpider):
         self._submit_tasks(final_items)
 
     def _submit_tasks(self, items: list[VideoItem]):
-        """提供 `_submit_tasks` 对应的内部辅助逻辑，供 `DouyinSpider` 使用。"""
+        """展开图集等逻辑资源，并逐项发射实际下载任务。"""
         self.debug_state(
             action="submit_tasks_enter",
             message="进入抖音任务提交阶段",

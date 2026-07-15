@@ -1,11 +1,9 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/mix.py` 对应的接口、加密、提取或工具逻辑。"""
+"""获取抖音合集作品，并可从作品详情补出 mix_id。"""
 
-# app/core/lib/douyin/interface/mix.py
 from typing import Callable
 from typing import TYPE_CHECKING
 from typing import Union
 
-# 调整引用路径
 from ..extract import Extractor
 from .detail import Detail
 from .template import API
@@ -13,10 +11,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -25,6 +20,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Mix(API):
+    """分页获取合集作品；只给 detail_id 时先查询作品详情定位合集。"""
     
     def __init__(
         self,
@@ -38,7 +34,6 @@ class Mix(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Mix` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.mix_title = None
         self.mix_id = mix_id
@@ -81,7 +76,6 @@ class Mix(API):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `Mix` 使用。"""
         await self.__get_mix_id()
         if not self.mix_id:
             self.log.warning(_("获取合集 ID 失败"))
@@ -102,7 +96,7 @@ class Mix(API):
         )
 
     async def __get_mix_id(self):
-        """提供 `__get_mix_id` 对应的内部辅助逻辑，供 `Mix` 使用。"""
+        """未显式传入 mix_id 时，从指定作品详情中提取。"""
         if not self.mix_id:
             self.mix_id = Extractor.extract_mix_id(await self.detail.run())
 

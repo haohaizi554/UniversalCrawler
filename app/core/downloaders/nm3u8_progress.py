@@ -1,4 +1,4 @@
-"""N_m3u8DL-RE console progress parsing utilities."""
+"""解析 N_m3u8DL-RE 控制台进度输出。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import time
 
 
 class _Nm3u8OutputProgress:
-    """Parse N_m3u8DL-RE console progress into UI-friendly telemetry."""
+    """把 N_m3u8DL-RE 控制台输出转换为前端可消费的进度遥测。"""
 
     _PERCENT_RE = re.compile(r"(?P<percent>\d+(?:\.\d+)?)%")
     _SPEED_RE = re.compile(

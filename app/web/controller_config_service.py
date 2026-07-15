@@ -1,4 +1,4 @@
-"""Configuration persistence helpers for WebController."""
+"""WebController 的配置持久化辅助逻辑。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class ConfigWriteError:
     error: str
 
 class WebControllerConfigService:
-    """Owns config read/write side effects used by WebController."""
+    """集中处理 WebController 使用的配置读写副作用。"""
 
     def __init__(self, action_handler: Callable[[str, Mapping[str, Any]], dict[str, Any]] | None = None) -> None:
         self._action_handler = action_handler
@@ -128,7 +128,7 @@ class WebControllerConfigService:
 
     @classmethod
     def validate_config_value(cls, section: str, key: str, value: Any) -> Any:
-        """Reject ambiguous boolean values at the Web trust boundary."""
+        """在 Web 信任边界拒绝含义不明确的布尔值。"""
         normalized_section = "common" if section == "basic" else str(section or "").strip()
         normalized_key = "save_directory" if key == "download_directory" else str(key or "").strip()
         if normalized_section == "appearance" and normalized_key == "theme":

@@ -233,6 +233,62 @@ class SettingsCases:
         self.assertGreater(result["platformBodyWidth"], result["platformBefore"])
         self.assertLessEqual(abs(result["platformBodyWidth"] - result["panelInnerWidth"]), 2)
 
+    def test_11haa_platform_hint_follows_rows_and_disabled_proxy_has_no_arrow(self):
+        original_viewport = self._page.viewport_size
+        self._page.set_viewport_size({"width": 1920, "height": 1080})
+        try:
+            self._goto_ready()
+            result = self._page.evaluate(
+                """
+            async () => {
+              __STABLE_PLATFORM_SETTINGS__
+              window.UcpSettingsController.switchGroup('\u5e73\u53f0\u8bbe\u7f6e');
+              switchPage('settings');
+              window.UcpSettingsController.render(true);
+              await new Promise(resolve => requestAnimationFrame(resolve));
+
+              const rows = Array.from(document.querySelectorAll('#page-settings .setting-platform:not(.setting-platform-header)'));
+              const lastRow = rows.at(-1);
+              const hint = document.querySelector('#page-settings .settings-hint-card');
+              const disabled = Array.from(document.querySelectorAll('#page-settings select.platform-proxy:disabled'));
+              const enabled = Array.from(document.querySelectorAll('#page-settings select.platform-proxy:not(:disabled)'));
+              const inspect = select => {
+                const wrapper = select.closest('.custom-select');
+                const button = wrapper?.querySelector('.custom-select-button');
+                button?.click();
+                return {
+                  buttonDisabled: Boolean(button?.disabled),
+                  wrapperDisabled: Boolean(wrapper?.classList.contains('is-disabled')),
+                  opened: Boolean(wrapper?.classList.contains('open')),
+                  arrowContent: button ? getComputedStyle(button, '::after').content : '',
+                };
+              };
+              const lastRect = lastRow?.getBoundingClientRect();
+              const hintRect = hint?.getBoundingClientRect();
+              return {
+                rowCount: rows.length,
+                hintGap: lastRect && hintRect ? hintRect.top - lastRect.bottom : 999,
+                disabled: disabled.map(inspect),
+                enabledArrow: enabled.length
+                  ? getComputedStyle(enabled[0].closest('.custom-select').querySelector('.custom-select-button'), '::after').content
+                  : '',
+              };
+            }
+                """.replace("__STABLE_PLATFORM_SETTINGS__", _stable_platform_settings_snapshot_js())
+            )
+        finally:
+            self._page.set_viewport_size(original_viewport)
+
+        self.assertGreaterEqual(result["rowCount"], 4)
+        self.assertGreaterEqual(result["hintGap"], 8)
+        self.assertLessEqual(result["hintGap"], 32)
+        self.assertGreaterEqual(len(result["disabled"]), 2)
+        self.assertTrue(all(sample["buttonDisabled"] for sample in result["disabled"]))
+        self.assertTrue(all(sample["wrapperDisabled"] for sample in result["disabled"]))
+        self.assertTrue(all(not sample["opened"] for sample in result["disabled"]))
+        self.assertTrue(all(sample["arrowContent"] in ("none", "normal") for sample in result["disabled"]))
+        self.assertNotIn(result["enabledArrow"], ("none", "normal", ""))
+
     def test_11hb_settings_controls_expose_backend_setting_keys(self):
         self._goto_ready()
 
@@ -299,6 +355,135 @@ class SettingsCases:
         }
         for group, keys in expected.items():
             self.assertTrue(keys.issubset(set(result[group])), (group, result[group]))
+
+    def test_11hc_settings_sections_round_trip_through_live_web_transport(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const fetchSnapshot = async () => {
+                const response = await fetch(`/api/frontend/state?settings_audit=${Date.now()}`, {
+                  cache: 'no-store',
+                });
+                if (!response.ok) throw new Error(`settings snapshot failed: ${response.status}`);
+                const payload = await response.json();
+                return payload.settings_snapshot || {};
+              };
+              const fetchConfig = async () => {
+                const response = await fetch(`/api/config?settings_audit=${Date.now()}`, {
+                  cache: 'no-store',
+                });
+                if (!response.ok) throw new Error(`settings config failed: ${response.status}`);
+                return response.json();
+              };
+              const waitForValue = async (spec, expected, label) => {
+                const deadline = performance.now() + 7000;
+                let actual;
+                while (performance.now() < deadline) {
+                  actual = await spec.read(await fetchSnapshot());
+                  if (String(actual) === String(expected)) return actual;
+                  await new Promise(resolve => setTimeout(resolve, 40));
+                }
+                throw new Error(`${label}: expected ${expected}, received ${actual}`);
+              };
+              const differentOption = (snapshot, group, key) => {
+                const current = snapshot[group]?.[key];
+                const options = snapshot[group]?._options?.[key] || [];
+                const option = options.find(item => String(item?.value) !== String(current));
+                if (!option) throw new Error(`No alternate option for ${group}.${key}`);
+                return option.value;
+              };
+              const apply = (spec, value) => {
+                if (spec.basic) return window.UcpSettingsController.updateBasic(spec.key, value);
+                return window.UcpSettingsController.update(spec.section, spec.key, value);
+              };
+
+              switchPage('settings');
+              const originalSnapshot = await fetchSnapshot();
+              const originalConfig = await fetchConfig();
+              const originalPlatformCount = Number(originalConfig.bilibili?.max_pages || 1);
+              const platformTarget = originalPlatformCount === 1 ? 2 : 1;
+
+              const specs = [
+                {
+                  name: 'basic.filename_template',
+                  basic: true,
+                  key: 'filename_template',
+                  original: originalSnapshot['\u57fa\u7840\u8bbe\u7f6e'].filename_template,
+                  target: differentOption(originalSnapshot, '\u57fa\u7840\u8bbe\u7f6e', 'filename_template'),
+                  read: snapshot => snapshot['\u57fa\u7840\u8bbe\u7f6e']?.filename_template,
+                },
+                {
+                  name: 'download.request_timeout',
+                  section: 'download',
+                  key: 'request_timeout',
+                  original: originalSnapshot['\u4e0b\u8f7d\u8bbe\u7f6e'].request_timeout,
+                  target: differentOption(originalSnapshot, '\u4e0b\u8f7d\u8bbe\u7f6e', 'request_timeout'),
+                  read: snapshot => snapshot['\u4e0b\u8f7d\u8bbe\u7f6e']?.request_timeout,
+                },
+                {
+                  name: 'playback.autoplay_next',
+                  section: 'playback',
+                  key: 'autoplay_next',
+                  original: originalSnapshot['\u64ad\u653e\u8bbe\u7f6e'].autoplay_next,
+                  target: !originalSnapshot['\u64ad\u653e\u8bbe\u7f6e'].autoplay_next,
+                  read: snapshot => snapshot['\u64ad\u653e\u8bbe\u7f6e']?.autoplay_next,
+                },
+                {
+                  name: 'logging.auto_copy_trace_on_error',
+                  section: 'logging',
+                  key: 'auto_copy_trace_on_error',
+                  original: originalSnapshot['\u65e5\u5fd7\u8bbe\u7f6e'].auto_copy_trace_on_error,
+                  target: !originalSnapshot['\u65e5\u5fd7\u8bbe\u7f6e'].auto_copy_trace_on_error,
+                  read: snapshot => snapshot['\u65e5\u5fd7\u8bbe\u7f6e']?.auto_copy_trace_on_error,
+                },
+                {
+                  name: 'appearance.accent',
+                  section: 'appearance',
+                  key: 'accent',
+                  original: originalSnapshot['\u5916\u89c2\u8bbe\u7f6e'].accent,
+                  target: differentOption(originalSnapshot, '\u5916\u89c2\u8bbe\u7f6e', 'accent'),
+                  read: snapshot => snapshot['\u5916\u89c2\u8bbe\u7f6e']?.accent,
+                },
+                {
+                  name: 'platform.bilibili.max_pages',
+                  section: 'bilibili',
+                  key: 'max_pages',
+                  original: originalPlatformCount,
+                  target: platformTarget,
+                  read: async () => (await fetchConfig()).bilibili?.max_pages,
+                },
+              ];
+
+              const observed = [];
+              let failure = null;
+              try {
+                for (const spec of specs) {
+                  if (!apply(spec, spec.target)) throw new Error(`Controller rejected ${spec.name}`);
+                  const persisted = await waitForValue(spec, spec.target, `${spec.name} persist`);
+                  observed.push({ name: spec.name, target: spec.target, persisted });
+                }
+              } catch (error) {
+                failure = error;
+              } finally {
+                for (const spec of [...specs].reverse()) {
+                  apply(spec, spec.original);
+                  await waitForValue(spec, spec.original, `${spec.name} restore`);
+                }
+              }
+              if (failure) throw failure;
+              return observed;
+            }
+            """
+        )
+
+        self.assertEqual(len(result), 6)
+        self.assertEqual(
+            {item["name"].split(".", 1)[0] for item in result},
+            {"basic", "download", "playback", "logging", "appearance", "platform"},
+        )
+        self.assertTrue(all(str(item["target"]) == str(item["persisted"]) for item in result), result)
 
     def test_11i_default_open_mode_row_keeps_select_readable(self):
         self._goto_ready()

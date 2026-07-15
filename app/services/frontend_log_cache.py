@@ -71,6 +71,7 @@ class _TailLogFileReader:
         self._path_key = state.path_key
         self._offset = state.offset
         self._items = deepcopy(items[-limit:])
+        self._ensure_ids(self._items, prefix=self._row_id_prefix(state.path_key, 0))
         self._initialized = True
 
     def read(self, *, limit: int) -> list[dict[str, Any]]:
@@ -87,9 +88,14 @@ class _TailLogFileReader:
             return self._read_tail_window(path, path_key, size, limit=limit)
         if size == self._offset:
             return deepcopy(self._items[-limit:])
-        text = self._read_range(path, self._offset, size - self._offset)
+        start_offset = self._offset
+        text = self._read_range(path, start_offset, size - start_offset)
         self._offset = size
-        parsed = log_adapter.parse_debug_log_text(text, limit=limit)
+        parsed = log_adapter.parse_debug_log_text(
+            text,
+            limit=limit,
+            id_prefix=self._row_id_prefix(path_key, start_offset),
+        )
         if parsed:
             self._items = [*self._items, *parsed][-limit:]
         return deepcopy(self._items[-limit:])
@@ -101,7 +107,11 @@ class _TailLogFileReader:
         while True:
             start = max(0, size - window)
             text = self._read_range(path, start, size - start)
-            items = log_adapter.parse_debug_log_text(text, limit=limit)
+            items = log_adapter.parse_debug_log_text(
+                text,
+                limit=limit,
+                id_prefix=self._row_id_prefix(path_key, start),
+            )
             if len(items) >= limit or start == 0 or window >= self.MAX_WINDOW_BYTES:
                 break
             window = min(size, window * 2)
@@ -123,9 +133,19 @@ class _TailLogFileReader:
             return ""
         return data.decode("utf-8", errors="replace")
 
+    @staticmethod
+    def _row_id_prefix(path_key: str, offset: int) -> str:
+        digest = sha256(path_key.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"file-log:{digest}:{max(0, int(offset))}"
+
+    @staticmethod
+    def _ensure_ids(items: list[dict[str, Any]], *, prefix: str) -> None:
+        for index, item in enumerate(items):
+            item.setdefault("id", f"{prefix}:{index}")
+
 
 class FrontendLogCache:
-    """把文件尾读结果缓存起来，让状态快照只做内存合并。"""
+    """用 TTL/文件指纹缓存尾读结果；可选 worker 将磁盘 IO 移出快照线程。"""
 
     def __init__(
         self,
@@ -200,6 +220,7 @@ class FrontendLogCache:
             return self._at
 
     def invalidate(self, *, limit: Any | None = None) -> None:
+        """同时清空内存、尾读状态和已知持久键，避免日志轮转后的旧分片再次回填。"""
         normalized_limit = self._current_limit() if limit is None else self.normalize_limit(limit)
         with self._refresh_lock:
             with self._lock:

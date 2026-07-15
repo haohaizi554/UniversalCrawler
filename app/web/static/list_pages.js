@@ -185,7 +185,7 @@
     try {
       worker.terminate();
     } catch (_error) {
-      // Browser teardown is best-effort.
+      // 浏览器销毁 Worker 只能尽力而为。
     }
   }
 
@@ -208,6 +208,8 @@
       worker.onerror = event => {
         if (state.disposed || generation !== state.generation || state.worker !== worker) return;
         if (event && typeof event.preventDefault === "function") event.preventDefault();
+        state.workerAvailable = false;
+        closeListPageWorker(worker);
         scheduleCurrentListPageFallbacks();
       };
     } catch (_error) {
@@ -264,6 +266,7 @@
     ) return;
     const pageKey = String(result.pageKey || "");
     if (!PAGED_LISTS.includes(pageKey)) return;
+    // Worker 与同步回退可能乱序返回，只接收最新 sequence，避免旧分页覆盖当前选择状态。
     if (Number(result.sequence) !== Number(state.sequences[pageKey] || 0)) return;
     clearListPageFallback(pageKey);
     state.currentRequests[pageKey] = null;
@@ -496,6 +499,7 @@
     renderCompleted();
   }
 
+  // 手动翻页或调整分页大小时清空旧选择，否则 selectedIdMovesPage 会把页码拉回旧条目。
   function setCompletedPage(delta) {
     state.completedPage += Number(delta) || 0;
     setSelected("completed", "");
@@ -515,7 +519,7 @@
     setHtmlIfChanged("completedDetail", taskRenderService().completedDetailHtml(item));
   }
 
-  function renderFailed() {
+  function renderFailed(options = {}) {
     const items = Array.isArray(currentState().failed_items) ? currentState().failed_items : [];
     const selectedId = reconcileSelectedTask("failed", items);
     syncSelectedTableRow("failedBody", selectedId);
@@ -526,7 +530,7 @@
       pageSize: state.failedPageSize,
       selectedId,
       selectFirst: true,
-      selectedIdMovesPage: Boolean(selectedId),
+      selectedIdMovesPage: options.selectedIdMovesPage !== false && Boolean(selectedId),
     });
   }
 
@@ -555,10 +559,11 @@
     if (!visible) renderFailed();
   }
 
+  // 手动翻页或调整分页大小时清空旧选择，否则 selectedIdMovesPage 会把页码拉回旧条目。
   function setFailedPage(delta) {
     state.failedPage += Number(delta) || 0;
     setSelected("failed", "");
-    renderFailed();
+    renderFailed({ selectedIdMovesPage: false });
   }
 
   function setFailedPageSize(value) {
@@ -566,7 +571,7 @@
     state.failedPage = 1;
     setSelected("failed", "");
     localStorage.setItem("webui_failed_page_size", String(state.failedPageSize));
-    renderFailed();
+    renderFailed({ selectedIdMovesPage: false });
   }
 
   function renderFailedDetail() {

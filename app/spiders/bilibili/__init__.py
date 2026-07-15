@@ -1,4 +1,4 @@
-"""包初始化模块，为 `app/spiders/bilibili` 提供统一导出或包级说明。"""
+"""Bilibili 平台爬取实现。"""
 
 from .parser import BilibiliParser
 from .spider import BilibiliSpider

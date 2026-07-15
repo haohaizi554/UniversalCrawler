@@ -1,10 +1,8 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/link/requester.py` 对应的接口、加密、提取或工具逻辑。"""
+"""展开抖音和 TikTok 文本中的短链，并按需读取响应内容。"""
 
-# app/core/lib/douyin/link/requester.py
 from re import compile
 from typing import TYPE_CHECKING
 
-# 调整引用路径
 try:
     from ..tools import (
         TIMEOUT,
@@ -14,11 +12,11 @@ try:
         wait,
     )
 except ImportError:
-    # 简单的 Mock 防止导入错误
+    # 独立加载该文件时保留最小兼容层，避免工具包导入失败阻断链接解析。
     TIMEOUT = 10
 
     class DownloaderError(Exception):
-        """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
+        """表示链接响应类型不在调用方支持范围内。"""
         pass
 
     class Retry:
@@ -30,22 +28,20 @@ except ImportError:
             return func
 
     def capture_error_request(func):
-        
         return func
 
     async def wait():
-        
         pass
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, get, head
-    # [FIX] 修正 Parameter 导入路径
     from ..tools.parameter import Parameter
 
 __all__ = ["Requester"]
 
 class Requester:
-    
+    """识别文本 URL，并通过异步客户端跟随目标平台的重定向。"""
+
     URL = compile(r"(https?://[^\s\"<>\\^`{|}，。；！？、【】《》]+)")
 
     def __init__(
@@ -54,7 +50,7 @@ class Requester:
             client: "AsyncClient",
             headers: dict[str, str],
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Requester` 使用。"""
+        """复用调用方提供的客户端、日志器和重试配置。"""
         self.client = client
         self.headers = headers
         self.log = params.logger
@@ -71,7 +67,7 @@ class Requester:
             text: str,
             proxy: str = None,
     ) -> str:
-        """执行当前对象或脚本的主流程，供 `Requester` 使用。"""
+        """逐个展开文本 URL，并以空格连接有效结果。"""
         urls = self.URL.finditer(text)
         if not urls:
             return ""
@@ -95,15 +91,12 @@ class Requester:
             content="url",
             proxy: str = None,
     ):
-        
         self.log.info(f"URL: {url}", False)
-        # 简单判断是否需要处理（抖音短链通常是 v.douyin.com）
+        # 非目标域名原样返回，避免链接解析器向任意站点发起请求。
         if "douyin.com" not in url and "tiktok.com" not in url:
-            # 如果不是目标域名，直接返回原链接，避免无效请求
             return url
 
         match (content in {"url", "headers"}, bool(proxy)):
-            # 这里简化逻辑，统一使用 client 的异步方法
             case _:
                 response = await self.client.get(url, follow_redirects=True)
 

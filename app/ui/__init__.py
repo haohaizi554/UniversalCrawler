@@ -1,4 +1,4 @@
-"""Desktop UI package and stable historical localization imports."""
+"""桌面 UI 包，并保留稳定的本地化导入入口。"""
 
 import sys
 

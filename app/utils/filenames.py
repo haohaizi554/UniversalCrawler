@@ -1,5 +1,4 @@
-"""Filename cleanup helpers."""
-#文件名规范化处理
+"""处理 Windows 兼容的媒体文件名。"""
 import re
 from typing import Any
 
@@ -13,7 +12,7 @@ _WINDOWS_RESERVED_NAMES = {
 }
 
 def sanitize_filename(name: str) -> str:
-    """Strip invalid Windows filename characters and trim length."""
+    """移除 Windows 文件名非法字符并限制长度。"""
     safe_name = re.sub(r'[\x00-\x1f\x7f\\/:*?"<>|]', "_", str(name)).strip()
     safe_name = safe_name.rstrip(". ")
     safe_name = safe_name[:200]
@@ -24,7 +23,7 @@ def sanitize_filename(name: str) -> str:
     return safe_name or "untitled"
 
 def build_media_filename(title: str, source: str, extension: str = ".mp4", meta: dict[str, Any] | None = None) -> str:
-    """Build a normalized media filename while preserving platform-specific suffixes."""
+    """生成规范化媒体文件名，同时保留平台特有后缀。"""
     meta = meta or {}
     raw_name = title
     if source == "missav":

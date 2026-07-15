@@ -1,4 +1,4 @@
-"""Task builder for MissAV download items."""
+"""MissAV 下载任务装配。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from app.spiders.base_task_builder import BaseTaskBuilder
 
 
 class MissAVTaskBuilder(BaseTaskBuilder):
-    """Build normalized metadata for MissAV HLS tasks."""
+    """为 MissAV HLS 任务构造规范化下载元数据。"""
 
     def build_download_meta(
         self,

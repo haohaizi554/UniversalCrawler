@@ -1,8 +1,7 @@
-"""Unified frontend state adapter for GUI and WebUI.
+"""GUI/WebUI 统一前端状态适配层。
 
-This service is intentionally transport-agnostic.  GUI widgets and the Web
-static app should consume the same snapshot shape instead of reading spiders,
-downloaders, parsers, or task builders directly.
+本服务不依赖具体传输；GUI 组件和 Web 静态端只消费同形快照，
+不直接读取 spider、downloader、parser 或任务构建器。
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-from PyQt6.QtCore import QCoreApplication, QObject, QThread, Qt, pyqtSignal
 
 from app.config import cfg
 from app.config.settings import CURRENT_FILENAME_TEMPLATE, get_setting_default
@@ -63,45 +60,21 @@ UI_TITLE_TEMPLATE_META_KEY = "ui_title_template"
 DOWNLOAD_AUTO_RETRY_CACHE_KEY = "download.auto_retry"
 
 
-class _GuiRuntimeInvoker(QObject):
-    call_requested = pyqtSignal(object)
+class _HeadlessGuiRuntimeAdapter:
+    """Web 运行时未安装 Qt 时使用的直接调用适配器；它不声称拥有 QObject。"""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.call_requested.connect(self._run, Qt.ConnectionType.QueuedConnection)
+    @staticmethod
+    def is_gui_thread() -> bool:
+        return threading.current_thread() is threading.main_thread()
 
-    def invoke(self, callback: Callable[[], None]) -> None:
-        self.call_requested.emit(callback)
+    @staticmethod
+    def create_invoker() -> None:
+        return None
 
-    def invoke_and_wait(self, callback: Callable[[], None], *, timeout_seconds: float) -> None:
-        """Run on the Qt thread and return only after success or a bounded failure."""
-        if QThread.currentThread() == self.thread():
-            callback()
-            return
-        completed = threading.Event()
-        cancelled = threading.Event()
-        failures: list[Exception] = []
+    @staticmethod
+    def owns_qobject(_value: Any) -> bool:
+        return False
 
-        def _run_with_ack() -> None:
-            if cancelled.is_set():
-                completed.set()
-                return
-            try:
-                callback()
-            except Exception as exc:
-                failures.append(exc)
-            finally:
-                completed.set()
-
-        self.call_requested.emit(_run_with_ack)
-        if not completed.wait(max(0.0, float(timeout_seconds))):
-            cancelled.set()
-            raise TimeoutError("GUI runtime apply acknowledgement timed out")
-        if failures:
-            raise failures[0]
-
-    def _run(self, callback: Callable[[], None]) -> None:
-        callback()
 
 TOOLBOX_DEFINITIONS = toolbox_adapter.TOOLBOX_DEFINITIONS
 
@@ -145,6 +118,7 @@ class FrontendStateService:
         media_metadata_service: MediaMetadataService | None = None,
         frontend_event_emitter: Callable[[str, dict[str, Any]], None] | None = None,
         failed_record_store: FailedRecordStore | None = None,
+        gui_runtime_adapter: Any | None = None,
     ) -> None:
         self.controller = controller
         self.config = config_manager
@@ -165,6 +139,9 @@ class FrontendStateService:
         self.failed_record_store = failed_record_store or FailedRecordStore()
         self._failed_record_write_signatures: dict[str, tuple[Any, ...]] = {}
         self._failed_log_excerpt_cache: dict[str, tuple[tuple[str, str, str], list[dict[str, Any]]]] = {}
+        self._gui_runtime_adapter = (
+            gui_runtime_adapter if gui_runtime_adapter is not None else _HeadlessGuiRuntimeAdapter()
+        )
         self._gui_runtime_invoker = self._create_gui_runtime_invoker()
         self._file_log_cache_store = FrontendLogCache(
             cache_service=self.cache_service,
@@ -213,9 +190,8 @@ class FrontendStateService:
         )
         subscribe = getattr(self.config, "subscribe", None)
         subscribe_async = getattr(self.config, "subscribe_async", None)
-        # Setting actions already run on a frontend worker or Web executor.  Keep
-        # the commit observer synchronous so runtime side effects finish exactly
-        # once before the action result is returned.
+        # 设置动作本就在 frontend worker 或 Web executor 上执行；提交观察器保持同步，
+        # 这样运行时副作用会在动作返回前恰好完成一次。
         if callable(subscribe):
             self._config_event_handler = subscribe("config.changed", self._on_config_changed)
         elif callable(subscribe_async):
@@ -223,6 +199,11 @@ class FrontendStateService:
         else:
             self._config_event_handler = None
         self._config_events_drive_runtime = self._config_event_handler is not None
+        self._config_external_sync_started = False
+        start_external_sync = getattr(self.config, "start_external_sync", None)
+        if callable(start_external_sync):
+            start_external_sync()
+            self._config_external_sync_started = True
         self._wire_failed_record_store()
         self._apply_logging_runtime_settings(cleanup_old_logs=True)
         self.flush_pending_app_state_events()
@@ -283,22 +264,11 @@ class FrontendStateService:
             return
         self.record_event("failed_records.refresh", {"count": int(count)})
 
-    @staticmethod
-    def _is_qt_gui_thread() -> bool:
-        app = QCoreApplication.instance()
-        if app is None:
-            return threading.current_thread() is threading.main_thread()
-        return QThread.currentThread() == app.thread()
+    def _is_qt_gui_thread(self) -> bool:
+        return bool(self._gui_runtime_adapter.is_gui_thread())
 
-    @staticmethod
-    def _create_gui_runtime_invoker() -> _GuiRuntimeInvoker | None:
-        app = QCoreApplication.instance()
-        if app is None:
-            return None
-        invoker = _GuiRuntimeInvoker()
-        if invoker.thread() != app.thread():
-            invoker.moveToThread(app.thread())
-        return invoker
+    def _create_gui_runtime_invoker(self):
+        return self._gui_runtime_adapter.create_invoker()
 
     def bind_controller(self, controller: Any) -> None:
         if self._destroyed:
@@ -365,6 +335,7 @@ class FrontendStateService:
         self.app_state.clear_videos()
 
     def invalidate_refresh_caches(self) -> None:
+        """同时失效静态、认证、日志与元数据缓存，并提升版本要求前端全量重同步。"""
         if self._destroyed:
             return
         self._invalidate_file_log_cache()
@@ -402,6 +373,18 @@ class FrontendStateService:
                         exc,
                     )
             self._config_event_handler = None
+        if self._config_external_sync_started:
+            stop_external_sync = getattr(self.config, "stop_external_sync", None)
+            if callable(stop_external_sync):
+                try:
+                    stop_external_sync()
+                except Exception as exc:
+                    debug_logger.log_exception(
+                        "FrontendStateService",
+                        "destroy.stop_external_config_sync",
+                        exc,
+                    )
+            self._config_external_sync_started = False
         self._metadata_retry_tracker.cancel_all(clear_failures=True)
         self._cancel_metadata_probe_queue(close=True)
         with self._delta_lock:
@@ -451,7 +434,7 @@ class FrontendStateService:
             self._event_aggregator.record(normalized, payload_dict, sections=sections)
 
     def _queue_app_state_change(self, payload: Any) -> None:
-        """把 AppState 事件排入本地队列，避免事件总线线程直接重建前端快照。"""
+        """先排队隔离事件线程；超限时丢最旧事件并标记全量重同步，形成有界背压。"""
         if self._destroyed:
             return
         queued_payload = dict(payload) if isinstance(payload, dict) else payload
@@ -462,7 +445,7 @@ class FrontendStateService:
             self._pending_app_state_events.append(queued_payload)
 
     def flush_pending_app_state_events(self) -> None:
-        """构建快照/增量前清空 AppState 待处理事件，保证版本号不落后于状态。"""
+        """构建快照/增量前清空 AppState 队列；若曾溢出，先发布全量重同步标记。"""
 
         self._wait_for_app_state_async_delivery()
         with self._delta_lock:
@@ -523,6 +506,7 @@ class FrontendStateService:
         return sections_for_topic(normalized)
 
     def _static_snapshot_parts(self) -> dict[str, Any]:
+        # 静态快照内嵌认证状态；TTL 到期必须整体失效，否则设置页会继续展示旧登录态。
         if self._static_snapshot_cache is not None and self._platform_auth_cache_has_expired():
             self._static_snapshot_cache = None
         if self._static_snapshot_cache is None:
@@ -930,7 +914,7 @@ class FrontendStateService:
     def _capture_config_runtime_failures(
         self,
     ) -> Iterator[list[tuple[str, str, Exception]]]:
-        """Capture synchronous config-observer failures for the current action thread."""
+        """在线程局部栈中收集同步配置观察器异常，使当前动作能报告持久化后应用失败。"""
         captures = getattr(self._config_runtime_capture_local, "captures", None)
         if captures is None:
             captures = []
@@ -1008,7 +992,14 @@ class FrontendStateService:
                 {"section": change["section"], "key": change["key"]}
                 for change in changes
             ]
-        self.record_event("settings.update", event_payload)
+        # WebController 注入的 emitter 由 WebSocketBridge 驱动；仅记录脏 section
+        # 只会提升服务端版本，无法唤醒因外部进程改配置而等待中的浏览器。
+        if callable(self._frontend_event_emitter):
+            self._emit_frontend_event("settings.update", event_payload)
+        else:
+            self.record_event("settings.update", event_payload)
+        if payload.get("external"):
+            self._dispatch_gui_runtime_setting("_on_external_config_changed", event_payload)
 
     def _dispatch_gui_runtime_setting(self, method_name: str, *args: Any) -> bool:
         """把窗口运行时设置派发到 GUI 线程，避免后台配置回调直接触碰 Qt 对象。"""
@@ -1024,7 +1015,10 @@ class FrontendStateService:
 
         if self._is_qt_gui_thread():
             _call()
-        elif self._gui_runtime_invoker is not None:
+        elif (
+            self._gui_runtime_invoker is not None
+            and self._gui_runtime_adapter.owns_qobject(getattr(method, "__self__", target))
+        ):
             self._gui_runtime_invoker.invoke_and_wait(
                 _call,
                 timeout_seconds=self.GUI_RUNTIME_APPLY_TIMEOUT_SECONDS,
@@ -1659,21 +1653,11 @@ class FrontendStateService:
             return "--"
         return datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
 
-    @staticmethod
-    def _format_size(size_bytes: int) -> str:
-        return video_adapter.format_size(size_bytes)
-
-    @staticmethod
-    def _format_from_path(path: Path | None) -> str:
-        return video_adapter.format_from_path(path)
-
-    @staticmethod
-    def _content_type_from_path(path: Path | None) -> str:
-        return video_adapter.content_type_from_path(path)
-
-    @staticmethod
-    def _default_speed_trend(progress: int) -> list[float]:
-        return video_adapter.default_speed_trend(progress)
+    # 这些转换没有服务层状态，直接复用 adapter，避免两边逐渐产生不同规则。
+    _format_size = staticmethod(video_adapter.format_size)
+    _format_from_path = staticmethod(video_adapter.format_from_path)
+    _content_type_from_path = staticmethod(video_adapter.content_type_from_path)
+    _default_speed_trend = staticmethod(video_adapter.default_speed_trend)
 
     def _active_events(
         self,
@@ -1734,12 +1718,9 @@ class FrontendStateService:
         return [self._enrich_log_item(item) for item in merged]
 
     def _ui_log_display_limit(self) -> int:
-        try:
-            raw_value = self.config.get("logging", "ui_log_max_display_count", 300)
-            limit = int(raw_value)
-        except (TypeError, ValueError, AttributeError):
-            limit = 300
-        return max(100, min(limit, 5000))
+        config = getattr(self, "config", None)
+        raw_value = config.get("logging", "ui_log_max_display_count", 300) if config is not None else 300
+        return FrontendLogCache.normalize_limit(raw_value)
 
     @staticmethod
     def _file_log_cache_key(limit: int) -> str:
@@ -1761,7 +1742,7 @@ class FrontendStateService:
         )
 
     def refresh_file_log_cache(self, *, timeout: float | None = None) -> list[dict[str, Any]]:
-        """Synchronously refresh parsed file logs for tests and maintenance tasks."""
+        """供测试和维护任务同步刷新解析后的文件日志；正常快照路径使用后台 worker。"""
         items = self._file_log_cache_store.refresh_now(self._ui_log_display_limit())
         if timeout is not None:
             self._file_log_cache_store.wait_for_idle(timeout)

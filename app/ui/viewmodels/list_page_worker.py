@@ -46,7 +46,7 @@ def preferred_visible_selection(
     result_id: str,
     visible_items: Sequence[Mapping[str, Any]],
 ) -> str:
-    """Keep a newer UI selection when a background list result arrives."""
+    """后台列表结果到达时保留 UI 中更新的选择。"""
     visible_ids = {item_stable_id(item) for item in visible_items}
     for candidate in (str(current_id or ""), str(result_id or "")):
         if candidate and candidate in visible_ids:

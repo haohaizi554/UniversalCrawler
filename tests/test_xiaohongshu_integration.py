@@ -34,6 +34,7 @@ from app.spiders.xiaohongshu.sign import (
 )
 from app.spiders.xiaohongshu.spider import XiaohongshuSpider
 from app.spiders.xiaohongshu.task_builder import XiaohongshuTaskBuilder
+from shared.runtime_options import DomainPolicyEngine
 
 class XiaohongshuHelperTests(unittest.TestCase):
     def test_generate_b1_preserves_bytes_before_first_percent_escape(self):
@@ -376,6 +377,11 @@ class XiaohongshuAuthTests(unittest.TestCase):
     @patch("app.spiders.xiaohongshu.spider.requests.get")
     def test_normalize_keyword_resolves_share_short_url(self, mocked_get):
         spider = XiaohongshuSpider("test", {})
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda *_args, **_kwargs: [
+                (None, None, None, None, ("93.184.216.34", 443))
+            ]
+        )
         mocked_get.return_value.url = (
             "https://www.xiaohongshu.com/explore/66fad51c000000001b0224b8"
             "?xsec_token=demo-token&xsec_source=pc_search"
@@ -699,6 +705,51 @@ class XiaohongshuAuthTests(unittest.TestCase):
 
         mocked_collect_search_refs.assert_called_once_with(mocked_build_client.return_value, "test_creator")
         mocked_handle_multi_refs.assert_called_once()
+
+    def test_run_uses_home_bootstrap_for_external_or_lookalike_urls(self):
+        untrusted_urls = (
+            "https://evil.example/path",
+            "https://notxiaohongshu.com/explore/demo",
+            "https://xiaohongshu.com.evil.example/explore/demo",
+            "https://www.xiaohongshu.com@evil.example/explore/demo",
+            "http://xhslink.com.evil.example/a/demo",
+            "https://evil.example/xiaohongshu.com/explore/demo",
+        )
+
+        for input_url in untrusted_urls:
+            with self.subTest(input_url=input_url):
+                spider = XiaohongshuSpider(input_url, {})
+                with patch.object(spider, "_normalize_keyword", return_value=input_url), patch.object(
+                    spider,
+                    "_ensure_cookie_string",
+                    return_value="",
+                ) as mocked_ensure_cookie:
+                    spider.run()
+
+                mocked_ensure_cookie.assert_called_once_with(spider.HOME_URL)
+
+    def test_run_preserves_supported_bootstrap_hosts(self):
+        supported_urls = (
+            "https://xiaohongshu.com/explore/demo",
+            "HTTPS://www.xiaohongshu.com/explore/demo",
+            "https://creator.xiaohongshu.com/user/profile/demo",
+            "https://xhslink.com/a/demo",
+            "https://m.xhslink.com/a/demo",
+            "http://xhslink.cn/a/demo",
+            "https://m.xhslink.cn/a/demo",
+        )
+
+        for input_url in supported_urls:
+            with self.subTest(input_url=input_url):
+                spider = XiaohongshuSpider(input_url, {})
+                with patch.object(spider, "_normalize_keyword", return_value=input_url), patch.object(
+                    spider,
+                    "_ensure_cookie_string",
+                    return_value="",
+                ) as mocked_ensure_cookie:
+                    spider.run()
+
+                mocked_ensure_cookie.assert_called_once_with(input_url)
 
     @patch.object(XiaohongshuSpider, "_handle_note_url")
     @patch.object(XiaohongshuSpider, "_ensure_cookie_string", return_value="a1=demo")

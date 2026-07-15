@@ -1,4 +1,4 @@
-"""Shared media item model for spiders, UI and downloaders."""
+"""定义采集器、UI 与下载器共享的媒体项模型。"""
 
 import threading
 from copy import deepcopy
@@ -8,10 +8,9 @@ from uuid import uuid4
 from app.models.download_context import DownloadContext
 from app.utils.filenames import build_media_filename
 
-#视频媒体项的数据模型定义，统一封装 “待下载 / 已下载的视频项” 的数据结构和基础操作
 @dataclass
 class VideoItem:
-    """Represents one queued or downloaded media item."""
+    """表示一个待下载或已完成的媒体项。"""
 
     UPDATABLE_FIELDS = {"url", "title", "source", "status", "progress", "local_path", "meta"}
 
@@ -27,7 +26,6 @@ class VideoItem:
 
     def __post_init__(self):
         # uuid4 避免高并发下时间戳+随机数方案的碰撞风险。
-        """在数据类初始化后补充派生字段和规范化处理，供 `VideoItem` 使用。"""
         self.id = uuid4().hex
         if self.title:
             self.title = self.title.strip()
@@ -37,16 +35,16 @@ class VideoItem:
         return build_media_filename(self.title or f"{self.source}_{self.id}", self.source, extension, self.meta)
 
     def build_download_context(self) -> DownloadContext:
-        """Build a normalized download context from this item's metadata."""
+        """在 meta 锁内构建规范化下载上下文。"""
         with self.meta_guard():
             return DownloadContext.from_meta(self.meta)
 
     def meta_guard(self) -> threading.RLock:
-        """Return the lock shared by worker metadata writes and UI snapshots."""
+        """返回 worker 写入与 UI 快照共用的 meta 锁，避免读取半更新状态。"""
         return self._meta_lock
 
     def __deepcopy__(self, memo: dict) -> "VideoItem":
-        """Copy item data while giving the snapshot an independent metadata lock."""
+        """复制数据但不共享 meta 锁，避免快照反向阻塞原对象。"""
         existing = memo.get(id(self))
         if existing is not None:
             return existing
@@ -65,7 +63,7 @@ class VideoItem:
             return copied
 
     def merge_download_context(self, context: DownloadContext | None = None, **overrides) -> DownloadContext:
-        """Merge normalized download context values back into ``meta``."""
+        """把规范化下载上下文合并回 ``meta``。"""
         with self.meta_guard():
             base_patch = (context or DownloadContext.from_meta(self.meta)).to_meta_patch()
             for key, value in overrides.items():
@@ -76,7 +74,7 @@ class VideoItem:
         return merged
 
     def update_from_dict(self, data: dict):
-        """更新 `from_dict` 对应的状态或数据内容，供 `VideoItem` 使用。"""
+        """只接收白名单字段，避免外部 payload 写入任意属性。"""
         with self.meta_guard():
             for key, value in data.items():
                 if key not in self.UPDATABLE_FIELDS:
@@ -86,13 +84,7 @@ class VideoItem:
                 setattr(self, key, value)
 
     def to_dict(self) -> dict:
-        """统一序列化方法：CLI/SDK/Web/Skill 四层共用，确保字段完全一致。
-
-        与 GUI ApplicationController 的最终状态对齐：
-        - status: ⏳ 等待中 / ⏳ 下载中... / ✅ 完成 / ❌ 失败
-        - progress: 0-100
-        - local_path: 最终本地文件路径
-        """
+        """在同一 meta 锁内生成跨入口快照，避免并发更新产生混合状态。"""
         with self.meta_guard():
             meta_snapshot = dict(self.meta) if self.meta else {}
             return {

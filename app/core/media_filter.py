@@ -1,4 +1,4 @@
-"""Shared media-type predicates used by controllers and download dispatch."""
+"""控制器与下载分发层共用的媒体类型判定规则。"""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _url_path(value: Any) -> str:
 
 
 def is_video_like_resource(item: VideoItem | Any | None) -> bool:
-    """Return True when an item points at a video payload."""
+    """判断项目是否指向视频载荷。"""
     if item is None:
         return False
     meta = _item_meta(item)
@@ -54,7 +54,7 @@ def is_video_like_resource(item: VideoItem | Any | None) -> bool:
 
 
 def is_image_like_resource(item: VideoItem | Any | None) -> bool:
-    """Return True for image, cover, and gallery-style resources."""
+    """判断项目是否属于图片、封面或图集资源。"""
     if item is None:
         return False
     meta = _item_meta(item)
@@ -67,5 +67,5 @@ def is_image_like_resource(item: VideoItem | Any | None) -> bool:
 
 
 def should_skip_for_video_only(item: VideoItem | Any | None) -> bool:
-    """Return True when the global video-only policy should suppress the item."""
+    """判断全局“仅视频”策略是否应过滤当前项目。"""
     return is_image_like_resource(item) and not is_video_like_resource(item)

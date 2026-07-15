@@ -1,4 +1,4 @@
-"""打包辅助脚本，负责 `packaging/runtime_hook.py` 相关的构建、发布或运行时处理。"""
+"""修正 PyInstaller 冻结进程的标准流与 Windows 应用标识。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ if sys.stderr is None:
     sys.stderr = _NullStream()  # type: ignore[assignment]
 
 def _resolve_bundle_root() -> Path:
-    """提供 `_resolve_bundle_root` 对应的内部辅助逻辑。"""
     if hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS).resolve()
     return Path(__file__).resolve().parent
@@ -39,9 +38,8 @@ browser_root = bundle_root / "ms-playwright"
 if browser_root.exists():
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
 
-# Windows 任务栏图标 / 窗口分组：两个 EXE 都用主图标的 AppUserModelID
-# 这样 Windows 任务栏能正确显示 EXE 自带的 favicon.ico 图标资源，
-# 并让两个 EXE 在任务栏独立分组（用户切换窗口时不会合并）
+# Windows shell 按可执行文件分配不同 AppUserModelID：Web 门户与主程序保持
+# 独立任务栏分组，其他冻结入口使用通用 ID。
 if os.name == "nt":
     try:
         import ctypes
@@ -54,4 +52,4 @@ if os.name == "nt":
             app_id = "ucrawl.universalcrawlerpro.app"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
-        pass  # 旧版 Windows 不支持，忽略
+        pass  # Shell 标识是可选集成，设置失败不得阻断冻结应用启动。

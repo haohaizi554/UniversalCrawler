@@ -1,4 +1,4 @@
-"""包初始化模块，为 `app/config` 提供统一导出或包级说明。"""
+"""集中导出配置模型、默认值和全局配置管理器。"""
 
 from .constants import DEFAULT_USER_AGENT
 from .settings import (

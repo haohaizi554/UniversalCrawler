@@ -1,4 +1,4 @@
-"""打包辅助脚本，负责 `packaging/build_release.py` 相关的构建、发布或运行时处理。"""
+"""编排便携版与安装器构建，并在冻结前执行发布信任预检。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def _run_build(script_name: str) -> None:
 
 
 def _validate_production_trust(*, config_path: Path = UPDATE_TRUST_CONFIG) -> None:
-    """Fail before freezing a production client with incomplete public trust."""
+    """公开信任配置不完整时在冻结生产客户端前失败，避免产出无法验证更新的版本。"""
 
     values = runpy.run_path(str(config_path))
     public_key = str(values.get("UPDATE_PUBLIC_KEY_PEM") or "")
@@ -31,7 +31,6 @@ def _validate_production_trust(*, config_path: Path = UPDATE_TRUST_CONFIG) -> No
         raise SystemExit("生产更新证书指纹未配置，拒绝构建签名 Release。")
 
 def main() -> None:
-    """作为脚本入口组织整体执行流程。"""
     _run_build("build_portable.py")
     _run_build("build_installer.py")
     if os.environ.get("UCRAWL_SIGN_WINDOWS") == "1":

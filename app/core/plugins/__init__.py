@@ -1,12 +1,10 @@
-"""Package init — exports stable API symbols for plugin consumers."""
+"""向插件调用方导出稳定的公共接口。"""
 
 from .base import BasePlugin
 from .registry import PluginRegistry, registry
 
-# NOTE: Concrete plugin classes (DouyinPlugin, …) are NOT listed here.
-# They are auto-registered via __init_subclass__ SPI when their module is
-# imported and can be looked up through ``registry.get_plugin(id)``.
-# Importing them explicitly is neither required nor encouraged.
+# 具体插件类不在这里逐项导出。模块导入时，插件会通过 ``__init_subclass__``
+# 自动注册到 SPI，调用方应使用 ``registry.get_plugin(id)`` 查询，避免形成硬编码依赖。
 
 __all__ = [
     "BasePlugin",

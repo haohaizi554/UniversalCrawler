@@ -22,7 +22,7 @@ from app.web.server import create_app
 class WebSecurityHardeningTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(create_app())
-        self.client.get("/api/ping")
+        self.client.get("/api/session/bootstrap")
         cookie_name = self.client.app.state.web_session_cookie_name
         session_id = self.client.cookies.get(cookie_name)
         self.context = self.client.app.state.web_session_registry.get_or_create(session_id)
@@ -507,13 +507,25 @@ class WebSecurityHardeningTests(unittest.TestCase):
             follow_redirects=False,
         )
 
-        contexts_before_ping = len(remote_client.app.state.web_session_registry._contexts)
-        self.assertEqual(remote_client.get("/healthz").status_code, 200)
+        registry = remote_client.app.state.web_session_registry
+        contexts_before_ping = len(registry._contexts)
+        session_cookie_names = {
+            remote_client.app.state.web_session_cookie_name,
+            remote_client.app.state.web_session_token_cookie_name,
+            remote_client.app.state.web_csrf_cookie_name,
+        }
+
+        health_response = remote_client.get("/healthz")
+        self.assertEqual(health_response.status_code, 200)
+        self.assertTrue(session_cookie_names.isdisjoint(health_response.cookies.keys()))
         self.assertEqual(
-            len(remote_client.app.state.web_session_registry._contexts),
+            len(registry._contexts),
             contexts_before_ping,
         )
-        self.assertEqual(remote_client.get("/api/ping").status_code, 200)
+        ping_response = remote_client.get("/api/ping")
+        self.assertEqual(ping_response.status_code, 200)
+        self.assertTrue(session_cookie_names.isdisjoint(ping_response.cookies.keys()))
+        self.assertEqual(len(registry._contexts), contexts_before_ping)
         self.assertEqual(remote_client.get("/").status_code, 401)
         self.assertEqual(remote_client.get("/?access_token=wrong").status_code, 401)
 

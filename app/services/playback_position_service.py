@@ -1,4 +1,4 @@
-"""Persistent playback position index for local media previews."""
+"""本地媒体预览的播放位置索引，跨进程启动持久化。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class PlaybackPositionEntry:
 
 
 class PlaybackPositionService:
-    """Store resume positions and prune entries that no longer match a file."""
+    """按规范化路径保存续播点；文件大小或 mtime 变化后立即淘汰旧位置。"""
 
     SCHEMA_VERSION = 1
 
@@ -191,6 +191,11 @@ class PlaybackPositionService:
         return removed
 
     def _write_locked(self) -> None:
+        """在进程内锁下写同目录临时 JSON，再替换索引文件。
+
+        原子替换只保证单次替换不暴露半写文件；本服务没有跨进程互斥或读改写合并，
+        多个进程写同一索引时仍可能由后写者覆盖先写者。
+        """
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
             "version": self.SCHEMA_VERSION,

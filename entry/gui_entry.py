@@ -5,8 +5,6 @@
 - Windows 上启动**不弹黑窗**（与 console_scripts 区别）
 - 透传到 `app.controllers.application_controller.ApplicationController`
 
-历史对应：原 `main.py` (44 行)
-
 调用链：
     ucrawl-gui (gui_script) -> entry.gui_entry:main() -> ApplicationController.run()
 """
@@ -113,10 +111,10 @@ def _handle_association_helper(argv: Sequence[str]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """GUI 入口：启动 PyQt6 桌面应用。
 
-    Args:
+    参数：
         argv: 命令行参数（透传给 ApplicationController，保留向后兼容）
 
-    Returns:
+    返回：
         退出码
     """
     import multiprocessing

@@ -200,7 +200,7 @@ def _decorate_log_row(item: Mapping[str, Any], request: LogQueryRequest) -> dict
 
 
 class LogQueryWorker:
-    """Latest-state-wins worker for expensive log filtering, sorting and paging."""
+    """以最新状态为准，处理高开销的日志筛选、排序与分页。"""
 
     def __init__(self, on_result: Callable[[LogQueryResult], None]) -> None:
         self._worker = LatestRequestWorker(

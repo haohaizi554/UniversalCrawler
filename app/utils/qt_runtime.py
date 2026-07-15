@@ -1,4 +1,4 @@
-"""Qt runtime helpers shared by GUI, Web tray, and entry adapters."""
+"""提供 GUI、Web 托盘与入口适配器共用的 Qt 运行时工具。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def resolve_icon_path(
     *,
     fallback_names: Iterable[str] = (),
 ) -> Path | None:
-    """Resolve the first existing icon path in bundle/project roots."""
+    """从打包目录和项目目录中解析首个存在的图标路径。"""
     preferred = list(preferred_names)
     names = preferred + [name for name in fallback_names if name not in preferred]
     for root in _icon_search_roots():
@@ -41,7 +41,7 @@ def load_qt_icon(
     *,
     fallback_names: Iterable[str] = (),
 ) -> "QIcon | None":
-    """Load a QIcon after QApplication has been created."""
+    """在 QApplication 创建后加载 QIcon。"""
     from PyQt6.QtGui import QIcon
 
     path = resolve_icon_path(preferred_names, fallback_names=fallback_names)
@@ -53,7 +53,7 @@ def load_qt_icon(
         return None
 
 def ensure_windows_app_user_model_id(app_id: str) -> None:
-    """Set Windows AppUserModelID so taskbar grouping/icon resolution is stable."""
+    """设置 Windows AppUserModelID，稳定任务栏分组与图标解析。"""
     if os.name != "nt":
         return
     try:

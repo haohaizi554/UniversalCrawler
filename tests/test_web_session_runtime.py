@@ -81,6 +81,69 @@ class WebSessionRegistryTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - start, 0.2)
         release_shutdown.set()
 
+    def test_disposal_concurrency_and_queue_are_bounded(self):
+        release_shutdown = threading.Event()
+        workers_started = threading.Event()
+        state_lock = threading.Lock()
+        active_shutdowns = 0
+        max_active_shutdowns = 0
+        started_shutdowns = 0
+        completed_shutdowns = 0
+
+        class _BlockingController(_FakeController):
+            def shutdown(inner_self):
+                nonlocal active_shutdowns
+                nonlocal max_active_shutdowns
+                nonlocal started_shutdowns
+                nonlocal completed_shutdowns
+                with state_lock:
+                    active_shutdowns += 1
+                    started_shutdowns += 1
+                    max_active_shutdowns = max(max_active_shutdowns, active_shutdowns)
+                    if started_shutdowns >= 2:
+                        workers_started.set()
+                release_shutdown.wait(timeout=2)
+                time.sleep(0.02)
+                with state_lock:
+                    active_shutdowns -= 1
+                    completed_shutdowns += 1
+                inner_self.shutdown_calls += 1
+                inner_self.shutdown_event.set()
+
+        registry = WebSessionRegistry(
+            send_factory=lambda _session_id: lambda _event_type, _data=None: None,
+            controller_factory=lambda _loop, _send: _BlockingController(),
+            workflow_factory=lambda controller, _send: object(),
+            max_contexts=20,
+            idle_ttl_seconds=10.0,
+            monotonic=lambda: 100.0,
+        )
+        contexts = [registry.get_or_create(f"session-{index}") for index in range(11)]
+
+        for context in contexts[:10]:
+            registry._dispose_context(context.session_id)
+
+        self.assertTrue(workers_started.wait(timeout=1))
+        extra_disposal_finished = threading.Event()
+
+        def dispose_extra_context():
+            registry._dispose_context(contexts[-1].session_id)
+            extra_disposal_finished.set()
+
+        producer = threading.Thread(target=dispose_extra_context, daemon=True)
+        producer.start()
+        try:
+            self.assertFalse(extra_disposal_finished.wait(timeout=0.1))
+            with state_lock:
+                self.assertLessEqual(max_active_shutdowns, 2)
+        finally:
+            release_shutdown.set()
+            producer.join(timeout=1)
+            registry.shutdown_all(wait=True, timeout=2.0)
+
+        self.assertFalse(producer.is_alive())
+        self.assertEqual(completed_shutdowns, len(contexts))
+
     def test_prune_keeps_context_with_active_websocket(self):
         context = self.registry.get_or_create("session-active")
         context.mark_websocket_connected()

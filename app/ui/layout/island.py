@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 class IslandCard(QFrame):
-    """Rounded surface card used to group related UI into visual islands."""
+    """把相关控件组织为视觉分区的圆角表面。"""
 
     def __init__(self, *, object_name: str = "IslandCard", parent: QWidget | None = None) -> None:
         super().__init__(parent)

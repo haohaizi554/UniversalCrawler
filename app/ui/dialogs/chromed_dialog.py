@@ -1,4 +1,4 @@
-"""Base dialog with the shared app-drawn titlebar chrome."""
+"""提供使用应用自绘标题栏的对话框基类。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.ui.styles import apply_dialog_theme, theme_colors
 
 
 class ChromedDialog(QDialog):
-    """QDialog base that reuses the app titlebar instead of native chrome."""
+    """复用应用标题栏、替代原生窗口 chrome 的 QDialog 基类。"""
 
     def __init__(
         self,

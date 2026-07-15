@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/comment_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+"""分页获取 TikTok 作品评论及评论回复。"""
 
-# app/core/lib/douyin/interface/comment_tiktok.py
 from typing import TYPE_CHECKING
 from typing import Union
 from .comment import Comment, Reply
@@ -9,10 +8,7 @@ from .template import APITikTok
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -21,6 +17,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class CommentTikTok(Comment, APITikTok):
+    """使用 TikTok 字段与接口抓取作品一级评论。"""
     
     def __init__(
         self,
@@ -33,7 +30,6 @@ class CommentTikTok(Comment, APITikTok):
         count=20,
         count_reply=3,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `CommentTikTok` 使用。"""
         super().__init__(
             params, cookie, proxy, detail_id, pages, cursor, count, count_reply
         )
@@ -55,6 +51,7 @@ class CommentTikTok(Comment, APITikTok):
         }
 
 class ReplyTikTok(Reply, CommentTikTok, APITikTok):
+    """使用 TikTok 回复接口抓取指定评论的回复。"""
     
     def __init__(
         self,
@@ -69,7 +66,6 @@ class ReplyTikTok(Reply, CommentTikTok, APITikTok):
         progress=None,
         task_id=None,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `ReplyTikTok` 使用。"""
         super().__init__(
             params,
             cookie,

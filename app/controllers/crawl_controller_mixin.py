@@ -21,7 +21,7 @@ from app.models import VideoItem
 from shared.spider_session_runtime import SpiderSession, SpiderSessionBindings
 
 class CrawlControllerMixin:
-    """Shared crawl-session orchestration for host-backed controllers."""
+    """协调宿主控制器中的爬取会话与状态流转。"""
 
     def _video_only_mode_enabled(self) -> bool:
         manager_value = getattr(getattr(self, "dl_manager", None), "video_only", None)
@@ -127,6 +127,7 @@ class CrawlControllerMixin:
     def _dispatch_spider_event(self, event: DomainEvent) -> None:
         session_id = self._event_payload(event).get("session_id")
         active_session_id = getattr(self, "_active_spider_session_id", None)
+        # 旧 worker 可能在新任务启动后才送达收尾事件；会话令牌可防止其改写新任务状态。
         if session_id is not None and session_id != active_session_id:
             return
         handler = self._spider_event_handlers().get(event.event_type)
@@ -134,7 +135,7 @@ class CrawlControllerMixin:
             handler(event)
 
     def _schedule_spider_selection(self, items: list, session_id: str | None = None) -> None:
-        """Open the modal selection dialog outside the EventBus publish stack."""
+        """将模态选择框延后到 EventBus 发布栈之外，避免同步回调重入。"""
         selected_items = list(items)
         if session_id is None:
             callback = partial(self._on_spider_select_tasks, selected_items)
@@ -143,7 +144,7 @@ class CrawlControllerMixin:
         self._host()._queue_on_ui(callback)
 
     def _create_spider(self, source_id: str, keyword: str, config: dict):
-        """Create a spider via shared session runtime and surface host-visible failures."""
+        """通过共享会话运行时创建 Spider，并向宿主呈现创建失败。"""
         spider_session = getattr(self, "spider_session", SpiderSession(registry))
         try:
             return spider_session.create_spider(source_id, keyword, config)
@@ -162,7 +163,7 @@ class CrawlControllerMixin:
             return plugin, None
 
     def _build_spider_session_bindings(self, session_id: str | None = None) -> SpiderSessionBindings:
-        """Build host callbacks for the shared spider runtime."""
+        """为共享 Spider 运行时构造宿主回调。"""
         if session_id is None:
             return SpiderSessionBindings(
                 on_log=self._emit_spider_log_event,
@@ -180,7 +181,7 @@ class CrawlControllerMixin:
         )
 
     def _bind_spider_signals(self, spider) -> None:
-        """Bind spider lifecycle callbacks through the unified host event bridge."""
+        """经统一宿主事件桥绑定 Spider 生命周期回调。"""
         spider_session = getattr(self, "spider_session", SpiderSession(registry))
         spider_session.bind_spider(spider, self._build_spider_session_bindings())
 
@@ -198,7 +199,7 @@ class CrawlControllerMixin:
         self.current_spider = None
 
     def on_start_crawl(self, keyword, source_id, config):
-        """Create, bind and start a crawl task through the shared spider session."""
+        """通过共享 Spider 会话创建、绑定并启动爬取任务。"""
         self._cleanup_dead_spider()
         if self._has_active_spider():
             self._host().notify_crawl_already_running()
@@ -213,6 +214,7 @@ class CrawlControllerMixin:
             spider.ui_trace_id = debug_logger.new_trace_id(f"{source_id}-crawl")
             spider.source_id = source_id
             self.current_spider = spider
+            # 每次启动都换用新令牌，使上一会话的迟到回调在分派边界被丢弃。
             self._active_spider_session_id = uuid.uuid4().hex
             self._active_spider_bindings = self._build_spider_session_bindings(
                 self._active_spider_session_id
@@ -234,7 +236,7 @@ class CrawlControllerMixin:
             self._active_spider_session_id = None
 
     def _log_crawl_start(self, plugin_name: str, keyword: str, source_id: str, config: dict) -> None:
-        """Record the effective crawl input for later debugging and audit."""
+        """记录实际生效的爬取输入，供排障和审计使用。"""
         debug_logger.log(
             component="ApplicationController",
             action="start_crawl",
@@ -249,11 +251,11 @@ class CrawlControllerMixin:
         )
 
     def _on_spider_item_found(self, item):
-        """Append a newly discovered item into the host and queue it for download."""
+        """把单个新资源交给统一的批量接收路径。"""
         self._on_spider_items_found([item])
 
     def _on_spider_items_found(self, items):
-        """Append discovered items and enqueue them with one batched queue wakeup."""
+        """接收一批资源，并尽量用一次队列唤醒完成下载入队。"""
         accepted_items: list[VideoItem] = []
         for item in list(items or []):
             if self._should_skip_for_video_only(item):
@@ -287,6 +289,7 @@ class CrawlControllerMixin:
 
         save_dir = self._host().current_save_dir
         add_tasks = getattr(self.dl_manager, "add_tasks", None)
+        # 批量提交可压低下载队列唤醒和 UI 通知频率；旧实现不支持时才逐项回退。
         if callable(add_tasks):
             add_tasks(accepted_items, save_dir)
         else:
@@ -308,23 +311,25 @@ class CrawlControllerMixin:
         )
 
     def _on_spider_select_tasks(self, items, session_id: str | None = None):
-        """Resume spider processing using the host-provided selection result."""
+        """把宿主选择结果回填给暂停中的 Spider。"""
         spider = self.current_spider
         if not spider:
             return
         if session_id is not None and session_id != getattr(self, "_active_spider_session_id", None):
             return
         selected = self._host().show_selection_dialog(items)
+        # 模态框期间事件循环仍可能完成停止或启动新任务，回填前必须再次核对会话身份。
         if spider is not self.current_spider:
             return
         if session_id is not None and session_id != getattr(self, "_active_spider_session_id", None):
             return
         if selected is None:
             self._stop_spider_after_selection_cancel(spider)
+        # 即使取消已传播 stop，也要释放 Spider 的选择等待点，使 worker 能进入统一收尾。
         spider.resume_from_ui(selected)
 
     def _stop_spider_after_selection_cancel(self, spider) -> None:
-        """Treat dialog cancellation as an explicit crawl stop request."""
+        """把关闭选择框视为显式停止请求，并向 Spider 传播取消。"""
         if getattr(spider, "interrupt_requested", False):
             return
         spider_session = getattr(self, "spider_session", SpiderSession(registry))
@@ -340,7 +345,7 @@ class CrawlControllerMixin:
         )
 
     def _on_spider_finished(self):
-        """Reset host crawl state when the current spider session ends."""
+        """当前 Spider 会话结束后重置宿主爬取状态。"""
         spider = self.current_spider
         bindings = getattr(self, "_active_spider_bindings", None)
         if spider is not None and bindings is not None:
@@ -357,7 +362,8 @@ class CrawlControllerMixin:
         self.current_spider = None
 
     def on_stop_crawl(self):
-        """Request the active spider session to stop and report that to the host."""
+        """请求停止当前 Spider 会话，并把停止状态同步给宿主。"""
+        # 先关闭模态选择框，避免用户停止后界面仍阻塞在旧会话；Spider 的等待点由 stop 负责唤醒。
         dismiss = getattr(self._host(), "dismiss_selection_dialog", None)
         if callable(dismiss):
             dismiss()

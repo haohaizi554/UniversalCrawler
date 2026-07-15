@@ -156,7 +156,7 @@ def tr(text: str, language: str | None) -> str:
 
 
 def platform_display_name(platform_id: object = "", language: str | None = None, *, fallback: object = "") -> str:
-    """Return the translated display label for a platform without changing its business id."""
+    """返回平台的翻译展示标签，不改变其业务 ID。"""
     normalized_language = normalize_language(language)
     key = str(platform_id or "").strip().lower()
     fallback_text = str(fallback or "").strip()

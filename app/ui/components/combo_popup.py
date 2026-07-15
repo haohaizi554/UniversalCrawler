@@ -57,7 +57,7 @@ def _combo_colors(combo: QComboBox) -> dict[str, str]:
 
 
 def themed_combo_stylesheet(combo: QComboBox, *, radius: int = 8, horizontal_padding: int = 8) -> str:
-    """Return a compact control stylesheet shared by every GUI combo box."""
+    """返回所有 GUI 下拉框共用的紧凑控件样式。"""
     colors = _combo_colors(combo)
     return f"""
     QComboBox {{
@@ -179,7 +179,7 @@ def apply_themed_combo_box(
     visible_rows: int | None = None,
     control_style: bool = True,
 ) -> QComboBox:
-    """Make an existing combo use the shared themed popup and optional control chrome."""
+    """让既有下拉框使用共享主题弹层及可选控件外观。"""
     combo.setProperty("themedCombo", "true")
     combo.setProperty("themedComboManaged", "true")
     combo.setProperty("themedComboControlStyle", "true" if control_style else "false")
@@ -194,7 +194,7 @@ def apply_themed_combo_box(
 
 
 def refresh_themed_combo_boxes(root: QWidget | QComboBox | None) -> None:
-    """Refresh managed combo QSS after a theme, font, or palette change."""
+    """主题、字体或 palette 变化后刷新受管下拉框的 QSS。"""
     if root is None:
         return
 
@@ -235,7 +235,7 @@ def refresh_themed_combo_boxes(root: QWidget | QComboBox | None) -> None:
 
 
 class NoFocusItemDelegate(QStyledItemDelegate):
-    """Paint combo popup rows without Qt's native black focus rectangle."""
+    """绘制下拉行时移除 Qt 原生黑色焦点框。"""
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         clean_option = QStyleOptionViewItem(option)
@@ -325,7 +325,7 @@ class NoFocusItemDelegate(QStyledItemDelegate):
 
 
 class ComboPopupEventFilter(QObject):
-    """Lock fully expanded combo popups so hidden scrolling cannot create blank space."""
+    """锁定完全展开的弹层，避免隐藏滚动仍制造底部空白。"""
 
     def __init__(self, view: QAbstractItemView) -> None:
         super().__init__(view)
@@ -484,7 +484,7 @@ def _lock_popup_widget(popup: QWidget, target_width: int, target_height: int = 0
 
 
 def polish_combo_popup(combo: QComboBox, *, visible_rows: int | None = None, row_height: int | None = None) -> None:
-    """Keep combo popup selection aligned and remove native focus chrome."""
+    """统一弹层选中行对齐，并移除原生焦点外观。"""
     combo.setProperty("themedCombo", "true")
     view = combo.view()
     if view is None:
@@ -655,7 +655,8 @@ def polish_combo_popup(combo: QComboBox, *, visible_rows: int | None = None, row
         delegate = NoFocusItemDelegate(view)
         combo.setItemDelegate(delegate)
         view.setItemDelegate(delegate)
-        combo._no_focus_item_delegate = delegate  # Keep the Python wrapper alive for Qt painting.
+        # 保留 Python 包装对象的强引用，否则 Qt 绘制时 delegate 可能已被回收。
+        combo._no_focus_item_delegate = delegate
         view._no_focus_item_delegate = delegate
     if hasattr(view, "setUniformItemSizes"):
         view.setUniformItemSizes(True)
@@ -730,7 +731,7 @@ def polish_combo_popup(combo: QComboBox, *, visible_rows: int | None = None, row
 
 
 def schedule_combo_popup_repolish(combo: QComboBox) -> None:
-    """Re-apply popup geometry after Qt/Windows finishes native popup layout."""
+    """等待 Qt/Windows 完成本地弹层布局后，分阶段重校 geometry。"""
     combo_ref = weakref.ref(combo)
     for delay in (0, 30, 90, 180, 360):
         QTimer.singleShot(delay, lambda combo_ref=combo_ref: _repolish_combo_popup_later(combo_ref))
@@ -766,7 +767,7 @@ def _repolish_combo_popup_later(combo_ref: weakref.ReferenceType[QComboBox]) -> 
 
 
 class PolishedComboBox(QComboBox):
-    """QComboBox variant with aligned, no-focus-rect popup rows."""
+    """弹层行对齐且不绘制原生焦点框的 QComboBox。"""
 
     def showPopup(self) -> None:  # noqa: N802
         polish_combo_popup(self)
@@ -776,7 +777,7 @@ class PolishedComboBox(QComboBox):
 
 
 class ThemedComboBox(PolishedComboBox):
-    """Shared combo box for GUI controls that must follow theme and popup policy."""
+    """统一遵循主题与弹层策略的共享下拉框。"""
 
     def __init__(self, parent=None, *, row_height: int = DEFAULT_ROW_HEIGHT) -> None:
         super().__init__(parent)

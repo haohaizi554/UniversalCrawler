@@ -48,6 +48,7 @@ class ResponsiveLayoutCases:
         self._page.evaluate(
             """
             () => {
+              window.__isolateFrontendStateForTest();
               frontendState.active_downloads = [{
                 id: 'active-narrow',
                 title: 'A production download title that must remain readable at narrow desktop widths',
@@ -101,6 +102,7 @@ class ResponsiveLayoutCases:
         self._page.evaluate(
             """
             () => {
+              window.__isolateFrontendStateForTest();
               frontendState.failed_items = [{
                 id: 'failed-responsive',
                 title: 'Responsive failure detail',

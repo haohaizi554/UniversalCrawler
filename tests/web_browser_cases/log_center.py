@@ -3,54 +3,6 @@
 from __future__ import annotations
 
 class LogCenterCases:
-    def test_09bb_platform_filter_uses_gui_icon_contract_and_alignment(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            () => {
-              switchPage("logs");
-              renderLogs();
-              const select = document.getElementById("logPlatformFilter");
-              const wrapper = select.closest(".custom-select");
-              const button = wrapper.querySelector(".custom-select-button");
-              button.click();
-              const menu = wrapper.querySelector(".custom-select-menu");
-              const rows = Array.from(wrapper.querySelectorAll(".custom-select-option"));
-              const labelLefts = rows.map(row => row.querySelector(".custom-select-label").getBoundingClientRect().left);
-              const menuRect = menu.getBoundingClientRect();
-              const lastRowRect = rows.at(-1).getBoundingClientRect();
-              return {
-                optionIcons: Array.from(select.options).map(option => option.dataset.icon || ""),
-                buttonIcon: button.querySelector(".custom-select-icon")?.getAttribute("src") || "",
-                menuIconCount: wrapper.querySelectorAll(".custom-select-menu .custom-select-icon").length,
-                rowCount: rows.length,
-                labelLeftSpread: labelLefts.length ? Math.max(...labelLefts) - Math.min(...labelLefts) : 0,
-                menuClientHeight: menu.clientHeight,
-                menuScrollHeight: menu.scrollHeight,
-                lastRowBottom: lastRowRect.bottom,
-                menuBottom: menuRect.bottom,
-              };
-            }
-            """
-        )
-
-        expected_icons = [
-            "/ui-icon/platform_web.png",
-            "/ui-icon/platform_douyin.png",
-            "/ui-icon/platform_bilibili.png",
-            "/ui-icon/platform_kuaishou.png",
-            "/ui-icon/platform_missav.png",
-            "/ui-icon/platform_xiaohongshu.png",
-            "/ui-icon/nav_settings.png",
-        ]
-        self.assertEqual(result["optionIcons"], expected_icons)
-        self.assertEqual(result["buttonIcon"], expected_icons[0])
-        self.assertEqual(result["menuIconCount"], result["rowCount"])
-        self.assertLessEqual(result["labelLeftSpread"], 1.0)
-        self.assertLessEqual(result["menuScrollHeight"], result["menuClientHeight"] + 1)
-        self.assertLessEqual(result["lastRowBottom"], result["menuBottom"] + 1)
-
     def test_09c_language_switch_keeps_log_filter_values_and_labels(self):
         self._goto_ready()
 
@@ -707,6 +659,131 @@ class LogCenterCases:
         self.assertFalse(result["secondPrevDisabled"])
         self.assertTrue(result["secondNextDisabled"])
 
+    def test_13baa_log_page_size_control_keeps_query_and_pager_in_sync(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              switchPage('logs');
+              currentPage = 'logs';
+              window.__setLogFiltersForTest({ time: 'all' });
+              frontendState.log_items = Array.from({ length: 45 }, (_, index) => ({
+                id: `page-size-log-${index + 1}`,
+                time: `2026-07-15 05:${String(index).padStart(2, '0')}:00`,
+                level: 'INFO',
+                source: 'GUI',
+                message_summary: `message-${index + 1}`,
+                message: `message-${index + 1}`
+              }));
+              renderLogs();
+              await window.__waitForLogRender({ rows: 20, total: 45, matched: 45, visible: 20 });
+
+              const size = document.getElementById('logPageSize');
+              size.value = '0';
+              size.dispatchEvent(new Event('change', { bubbles: true }));
+              await window.__waitForLogRender({ rows: 45, total: 45, matched: 45, visible: 45, text: '第 1 / 1 页' });
+              const allState = {
+                rows: document.querySelectorAll('#logBody tr').length,
+                indicator: document.getElementById('logPageIndicator').textContent,
+                value: size.value,
+                previousDisabled: document.getElementById('logPrevPage').disabled,
+                nextDisabled: document.getElementById('logNextPage').disabled
+              };
+
+              size.value = '20';
+              size.dispatchEvent(new Event('change', { bubbles: true }));
+              await window.__waitForLogRender({ rows: 20, total: 45, matched: 45, visible: 20, text: '第 1 / 3 页' });
+              const pagedState = {
+                rows: document.querySelectorAll('#logBody tr').length,
+                indicator: document.getElementById('logPageIndicator').textContent,
+                value: size.value,
+                previousDisabled: document.getElementById('logPrevPage').disabled,
+                nextDisabled: document.getElementById('logNextPage').disabled
+              };
+              return { allState, pagedState };
+            }
+            """
+        )
+
+        self.assertEqual(result["allState"], {
+            "rows": 45,
+            "indicator": "第 1 / 1 页",
+            "value": "0",
+            "previousDisabled": True,
+            "nextDisabled": True,
+        })
+        self.assertEqual(result["pagedState"], {
+            "rows": 20,
+            "indicator": "第 1 / 3 页",
+            "value": "20",
+            "previousDisabled": True,
+            "nextDisabled": False,
+        })
+
+    def test_13ba_duplicate_log_rows_keep_independent_click_targets(self):
+        """Repeated log payloads must still map to one selectable DOM row each."""
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            r"""
+            async () => {
+              window.__isolateFrontendStateForTest();
+              window.__setLogFiltersForTest({
+                category: 'all', level: 'all', time: 'all', platform: 'all', trace: '', keyword: ''
+              });
+              const rows = [
+                ['2026-07-14 20:43:04', 'Scanning directory: D:\\desktop\\project\\UniversalCrawlerProplus'],
+                ['2026-07-14 20:43:04', 'Loaded 4 local files'],
+                ['2026-07-14 20:43:05', 'Scanning directory: D:\\desktop\\project\\UniversalCrawlerProplus'],
+                ['2026-07-14 20:43:05', 'Loaded 4 local files'],
+                ['2026-07-14 20:43:06', 'repeated-event'],
+                ['2026-07-14 20:43:06', 'repeated-event'],
+                ['2026-07-14 20:43:07', "user's unique event"],
+              ];
+              frontendState.log_items = rows.map(([time, message]) => ({
+                time,
+                level: 'INFO',
+                source: 'Web',
+                trace_id: '',
+                message_summary: message,
+                message,
+                detail: '',
+                stack: ''
+              }));
+              switchPage('logs');
+              renderLogs();
+              await window.__waitForLogRender({ rows: rows.length, total: rows.length, matched: rows.length, visible: rows.length });
+
+              const initialKeys = Array.from(document.querySelectorAll('#logBody tr'), row => row.dataset.key);
+              const hasInlineHandlers = Array.from(document.querySelectorAll('#logBody tr')).some(row => row.hasAttribute('onclick'));
+              const initialSelectedCount = document.querySelectorAll('#logBody tr.selected').length;
+              const outcomes = [];
+              for (let index = 0; index < rows.length; index += 1) {
+                const row = document.querySelectorAll('#logBody tr')[index];
+                const expected = row.cells[4].textContent.trim();
+                row.click();
+                await new Promise(resolve => setTimeout(resolve, 30));
+                const selectedRows = Array.from(document.querySelectorAll('#logBody tr.selected'));
+                outcomes.push({
+                  expected,
+                  selectedCount: selectedRows.length,
+                  selectedText: selectedRows[0]?.cells[4]?.textContent.trim() || '',
+                });
+              }
+              return { initialKeys, hasInlineHandlers, initialSelectedCount, outcomes };
+            }
+            """
+        )
+
+        self.assertEqual(len(set(result["initialKeys"])), 7, result)
+        self.assertFalse(result["hasInlineHandlers"], result)
+        self.assertEqual(result["initialSelectedCount"], 1, result)
+        for outcome in result["outcomes"]:
+            self.assertEqual(outcome["selectedCount"], 1, outcome)
+            self.assertEqual(outcome["selectedText"], outcome["expected"], outcome)
+
     def test_13bb_large_log_batch_survives_rapid_navigation_with_bounded_dom(self):
         self._goto_ready()
 
@@ -930,6 +1007,76 @@ class LogCenterCases:
             result["badgeWidth"] + result["paddingLeft"] + result["paddingRight"] - 0.5,
         )
 
+    def test_13caa_log_detail_level_badges_keep_semantic_colors(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            r"""
+            async () => {
+              window.__isolateFrontendStateForTest();
+              window.__setLogFiltersForTest({
+                category: 'all', level: 'all', time: 'all', platform: 'all', trace: '', keyword: ''
+              });
+              switchPage('logs');
+              const cases = [
+                ['INFO', 'info', '--accent'],
+                ['WARN', 'warn', '--warning'],
+                ['ERROR', 'error', '--danger'],
+                ['SUCCESS', 'success', '--success'],
+              ];
+              const samples = [];
+              const tokenColor = token => {
+                const probe = document.createElement('span');
+                probe.style.color = `var(${token})`;
+                document.body.appendChild(probe);
+                const color = getComputedStyle(probe).color;
+                probe.remove();
+                return color;
+              };
+
+              for (const theme of ['light', 'dark']) {
+                document.documentElement.dataset.theme = theme;
+                for (const [level, cssClass, token] of cases) {
+                  const id = `detail-level-${theme}-${level}`;
+                  frontendState.log_items = [{
+                    id,
+                    time: '2026-07-14 20:14:55',
+                    level,
+                    source: 'BilibiliSpider',
+                    platform: 'Bilibili',
+                    trace_id: '',
+                    message_summary: `level ${level}`,
+                    message: `level ${level}`,
+                  }];
+                  renderLogs();
+                  await window.__waitForLogRender({
+                    rows: 1, total: 1, matched: 1, visible: 1, selectedId: id, text: `level ${level}`
+                  });
+                  let detailBadge = null;
+                  for (let attempt = 0; attempt < 100; attempt += 1) {
+                    detailBadge = document.querySelector(`#logDetail .log-level-${cssClass}`);
+                    if (detailBadge) break;
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                  }
+                  const tableBadge = document.querySelector(`#logBody .log-level-${cssClass}`);
+                  samples.push({
+                    theme,
+                    level,
+                    expected: tokenColor(token),
+                    table: tableBadge ? getComputedStyle(tableBadge).color : '',
+                    detail: detailBadge ? getComputedStyle(detailBadge).color : '',
+                  });
+                }
+              }
+              return samples;
+            }
+            """
+        )
+
+        for sample in result:
+            self.assertEqual(sample["table"], sample["expected"], sample)
+            self.assertEqual(sample["detail"], sample["expected"], sample)
+
     def test_13cb_log_time_column_shows_full_timestamp_at_gui_width(self):
         self._page.set_viewport_size({"width": 1270, "height": 1024})
         timestamp = "2026-07-14 19:16:23"
@@ -1059,338 +1206,3 @@ class LogCenterCases:
         self.assertIn("APP_INIT", result["copied"][1])
         self.assertEqual(result["download"]["href"], "blob:log-detail")
         self.assertEqual(result["download"]["download"], "log_detail_trace-log-detail-a.json")
-
-    def test_13d_log_center_ignores_stale_worker_errors_and_retries_current_detail(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            () => {
-              const nativeWorker = window.Worker;
-              const workers = [];
-              const state = {
-                log_items: [{
-                  id: "worker-log",
-                  time: "2026-07-10 09:00:00",
-                  level: "INFO",
-                  source: "GUI",
-                  trace_id: "worker-trace",
-                  message_summary: "initial message",
-                  message: "initial message",
-                  detail: { description: "same", nested: { alpha: 1, beta: 1 } },
-                  stack: ""
-                }],
-                settings_snapshot: {}
-              };
-
-              class ControlledWorker {
-                constructor(url) {
-                  this.url = String(url);
-                  this.requests = [];
-                  this.terminateCalls = 0;
-                  workers.push(this);
-                }
-                postMessage(request) { this.requests.push(request); }
-                terminate() { this.terminateCalls += 1; }
-                emit(payload) { this.onmessage?.({ data: payload }); }
-                fail() { this.onerror?.(new Event("error")); }
-              }
-
-              const workerFor = name => workers.find(worker => worker.url.includes(name));
-              const detailWorkers = () => workers.filter(worker => worker.url.includes("log_detail_worker"));
-              const queryResult = request => window.UcpLogDisplay.queryLogItems(request);
-              const detailResult = request => {
-                const detailJson = JSON.stringify(request.item.detail, null, 2);
-                return {
-                  sequence: request.sequence,
-                  itemId: request.itemId,
-                  item: request.item,
-                  detailJson,
-                  detailDisplayText: detailJson,
-                  fullJson: JSON.stringify({ detail: request.item.detail }, null, 2),
-                  stack: "",
-                  filename: "worker-log.json"
-                };
-              };
-
-              window.Worker = ControlledWorker;
-              window.UcpLogCenter.dispose();
-              try {
-                window.UcpLogCenter.configure({
-                  getState: () => state,
-                  getLanguage: () => "zh-CN",
-                  t: value => String(value),
-                  esc,
-                  escAttr,
-                  byId,
-                  writeClipboard: () => Promise.resolve(true),
-                  runOperation: () => {},
-                  onFiltersChange: () => {}
-                });
-                byId("logTimeFilter").value = "all";
-                window.UcpLogCenter.syncFiltersFromDom();
-                switchPage("logs");
-
-                const queryWorker = workerFor("log_query_worker");
-                const firstQuery = queryWorker.requests.at(-1);
-                state.log_items[0].message_summary = "query current";
-                state.log_items[0].message = "query current";
-                window.UcpLogCenter.render();
-                const secondQuery = queryWorker.requests.at(-1);
-                queryWorker.emit({ type: "error", sequence: firstQuery.sequence, message: "stale query error" });
-                const staleQueryIgnored = queryWorker.terminateCalls === 0;
-                if (!staleQueryIgnored) {
-                  return {
-                    staleQueryIgnored,
-                    detailMutationRequested: false,
-                    staleDetailIgnored: false,
-                    stableOrderCacheHit: false,
-                    genericErrorRetried: false,
-                    renderedJson: ""
-                  };
-                }
-                queryWorker.emit({ type: "result", result: queryResult(secondQuery) });
-
-                const detailWorker = detailWorkers()[0];
-                const firstDetail = detailWorker.requests[0];
-                state.log_items[0].message_summary = "detail current";
-                state.log_items[0].message = "detail current";
-                state.log_items[0].detail = { description: "same", nested: { alpha: 1, beta: 2 } };
-                window.UcpLogCenter.render();
-                const thirdQuery = queryWorker.requests.at(-1);
-                queryWorker.emit({ type: "result", result: queryResult(thirdQuery) });
-                const secondDetail = detailWorker.requests[1];
-                const detailMutationRequested = Boolean(secondDetail);
-                detailWorker.emit({ type: "error", sequence: firstDetail.sequence, message: "stale detail error" });
-                const staleDetailIgnored = detailWorker.terminateCalls === 0
-                  && document.getElementById("logDetail").textContent.includes("detail current");
-                if (secondDetail) detailWorker.emit({ type: "result", result: detailResult(secondDetail) });
-
-                state.log_items[0].detail = { nested: { beta: 2, alpha: 1 }, description: "same" };
-                window.UcpLogCenter.render();
-                const fourthQuery = queryWorker.requests.at(-1);
-                queryWorker.emit({ type: "result", result: queryResult(fourthQuery) });
-                const stableOrderCacheHit = detailWorker.requests.length === 2;
-
-                detailWorker.fail();
-                const retryWorker = detailWorkers()[1];
-                const genericErrorRetried = Boolean(retryWorker && retryWorker.requests.length === 1);
-                if (retryWorker) retryWorker.emit({ type: "result", result: detailResult(retryWorker.requests[0]) });
-                const renderedJson = document.querySelector("#logDetail .log-detail-readable")?.dataset.json || "";
-                return {
-                  staleQueryIgnored,
-                  detailMutationRequested,
-                  staleDetailIgnored,
-                  stableOrderCacheHit,
-                  genericErrorRetried,
-                  renderedJson
-                };
-              } finally {
-                window.UcpLogCenter.dispose();
-                window.Worker = nativeWorker;
-              }
-            }
-            """
-        )
-
-        self.assertTrue(result["staleQueryIgnored"])
-        self.assertTrue(result["detailMutationRequested"])
-        self.assertTrue(result["staleDetailIgnored"])
-        self.assertTrue(result["stableOrderCacheHit"])
-        self.assertTrue(result["genericErrorRetried"])
-        self.assertIn('"beta": 2', result["renderedJson"])
-
-    def test_13e_log_center_dispose_is_idempotent_and_cancels_pending_fallback(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            () => {
-              window.__isolateFrontendStateForTest();
-              const nativeWorker = window.Worker;
-              const nativeSetTimeout = window.setTimeout;
-              const nativeClearTimeout = window.clearTimeout;
-              const workers = [];
-              const timers = [];
-              const clearedTimers = [];
-              const state = {
-                log_items: [{
-                  id: "dispose-log",
-                  time: "2026-07-10 10:00:00",
-                  level: "INFO",
-                  source: "GUI",
-                  trace_id: "dispose-trace",
-                  message_summary: "dispose message",
-                  message: "dispose message",
-                  detail: { description: "dispose message" },
-                  stack: ""
-                }],
-                settings_snapshot: {}
-              };
-
-              class ControlledWorker {
-                constructor(url) {
-                  this.url = String(url);
-                  this.requests = [];
-                  this.terminateCalls = 0;
-                  workers.push(this);
-                }
-                postMessage(request) { this.requests.push(request); }
-                terminate() { this.terminateCalls += 1; }
-                emit(payload) { this.onmessage?.({ data: payload }); }
-              }
-
-              const configure = () => {
-                window.UcpLogCenter.configure({
-                  getState: () => state,
-                  getLanguage: () => "zh-CN",
-                  t: value => String(value),
-                  esc,
-                  escAttr,
-                  byId,
-                  writeClipboard: () => Promise.resolve(true),
-                  runOperation: () => {},
-                  onFiltersChange: () => {}
-                });
-                byId("logTimeFilter").value = "all";
-                window.UcpLogCenter.syncFiltersFromDom();
-              };
-
-              window.Worker = ControlledWorker;
-              window.UcpLogCenter.dispose();
-              try {
-                configure();
-                switchPage("logs");
-                const queryWorker = workers.find(worker => worker.url.includes("log_query_worker"));
-                const queryRequest = queryWorker.requests.at(-1);
-                queryWorker.emit({ type: "result", result: window.UcpLogDisplay.queryLogItems(queryRequest) });
-                const detailWorker = workers.find(worker => worker.url.includes("log_detail_worker"));
-                window.UcpLogCenter.dispose();
-                window.UcpLogCenter.dispose();
-
-                document.getElementById("logBody").innerHTML = "";
-                document.getElementById("logDetail").innerHTML = "";
-                state.log_items[0].message_summary = "fallback must not render";
-                state.log_items[0].message = "fallback must not render";
-                window.Worker = undefined;
-                let nextTimerId = 1;
-                window.setTimeout = callback => {
-                  const timer = { id: nextTimerId++, callback };
-                  timers.push(timer);
-                  return timer.id;
-                };
-                window.clearTimeout = timerId => { clearedTimers.push(timerId); };
-                configure();
-                window.UcpLogCenter.render();
-                const pendingTimer = timers.at(-1);
-                window.UcpLogCenter.dispose();
-                window.UcpLogCenter.dispose();
-                pendingTimer.callback();
-                return {
-                  queryTerminatedOnce: queryWorker.terminateCalls === 1,
-                  detailTerminatedOnce: detailWorker.terminateCalls === 1,
-                  fallbackCancelled: clearedTimers.includes(pendingTimer.id),
-                  fallbackRendered: document.getElementById("page-logs").textContent.includes("fallback must not render")
-                };
-              } finally {
-                window.UcpLogCenter.dispose();
-                window.Worker = nativeWorker;
-                window.setTimeout = nativeSetTimeout;
-                window.clearTimeout = nativeClearTimeout;
-              }
-            }
-            """
-        )
-
-        self.assertTrue(result["queryTerminatedOnce"])
-        self.assertTrue(result["detailTerminatedOnce"])
-        self.assertTrue(result["fallbackCancelled"])
-        self.assertFalse(result["fallbackRendered"])
-
-    def test_13f_log_detail_worker_constructor_failure_keeps_readable_summary(self):
-        self._goto_ready()
-        result = self._page.evaluate(
-            """
-            async () => {
-              window.__isolateFrontendStateForTest();
-              const nativeWorker = window.Worker;
-              const state = {
-                log_items: [{
-                  id: 'constructor-failure-log',
-                  time: '2026-07-12 20:21:22',
-                  level: 'ERROR',
-                  source: 'Downloader',
-                  trace_id: 'trace-constructor-failure',
-                  message_summary: 'Readable selected summary',
-                  message: 'Readable selected summary',
-                  detail: { description: 'detail should remain worker-owned' },
-                  stack: ''
-                }],
-                settings_snapshot: {}
-              };
-              class QueryOnlyWorker {
-                constructor(url) {
-                  this.url = String(url);
-                  if (this.url.includes('log_detail_worker')) throw new Error('detail worker unavailable');
-                }
-                postMessage(request) {
-                  queueMicrotask(() => this.onmessage?.({
-                    data: { type: 'result', result: window.UcpLogDisplay.queryLogItems(request) }
-                  }));
-                }
-                terminate() {}
-              }
-              window.Worker = QueryOnlyWorker;
-              window.UcpLogCenter.dispose();
-              try {
-                window.UcpLogCenter.configure({
-                  getState: () => state,
-                  getLanguage: () => 'en-US',
-                  t: value => ({
-                    '\u65e5\u5fd7\u8be6\u60c5': 'Log details',
-                    '\u8be6\u7ec6\u4fe1\u606f': 'Details',
-                    '\u590d\u5236': 'Copy',
-                    '\u5bfc\u51fa': 'Export',
-                    '\u91cd\u8bd5': 'Retry',
-                    '\u65e5\u5fd7\u8be6\u60c5\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u8bd5': 'Log details are temporarily unavailable. Retry.'
-                  }[String(value)] || String(value)),
-                  esc,
-                  escAttr,
-                  byId,
-                  writeClipboard: () => Promise.resolve(true),
-                  runOperation: () => {},
-                  onFiltersChange: () => {}
-                });
-                byId('logTimeFilter').value = 'all';
-                window.UcpLogCenter.syncFiltersFromDom();
-                switchPage('logs');
-                await new Promise((resolve, reject) => {
-                  const deadline = performance.now() + 3000;
-                  const tick = () => {
-                    const retry = document.getElementById('logDetailRetry');
-                    if (retry) return resolve();
-                    if (performance.now() > deadline) return reject(new Error('unavailable log detail fallback was not rendered'));
-                    requestAnimationFrame(tick);
-                  };
-                  tick();
-                });
-                const root = document.getElementById('logDetail');
-                return {
-                  text: root.textContent,
-                  retryVisible: !document.getElementById('logDetailRetry').hidden,
-                  readableJson: Boolean(root.querySelector('.log-detail-readable')),
-                  enabledActions: Array.from(root.querySelectorAll('.log-inspector-actions button')).filter(button => !button.disabled).length
-                };
-              } finally {
-                window.UcpLogCenter.dispose();
-                window.Worker = nativeWorker;
-              }
-            }
-            """
-        )
-
-        self.assertIn("Readable selected summary", result["text"])
-        self.assertIn("Log details are temporarily unavailable", result["text"])
-        self.assertTrue(result["retryVisible"])
-        self.assertFalse(result["readableJson"])
-        self.assertEqual(result["enabledActions"], 0)

@@ -1,8 +1,7 @@
-"""Re-export stable downloader API symbols.
+"""导出稳定的下载器公共接口。
 
-Concrete platform downloaders are discovered at runtime via the plugin
-bridge ``downloader_registry.resolve()``.  Explicit imports from this
-module are only needed for type-hinting / base-class references.
+各平台下载器由插件桥接器 ``downloader_registry.resolve()`` 在运行时发现；
+本模块中的显式导入仅用于类型标注和基类引用，不承担注册职责。
 """
 
 from .base import BaseDownloader, ProgressCallback, StopCheck

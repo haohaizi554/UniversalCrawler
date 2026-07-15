@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/missav.py` 对应资源的落盘或外部工具调用流程。"""
+"""MissAV HLS 下载入口，负责代理、请求头和外部工具回退。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .base import BaseDownloader, ProgressCallback, StopCheck
 from .m3u8 import N_m3u8DL_RE_Downloader
 
 class MissAVDownloader(BaseDownloader):
-    """实现 `MissAVDownloader` 对应的资源下载与落盘流程。"""
+    """为 MissAV HLS 任务补齐代理与 Referer，并委托外部下载器。"""
     source_id = "missav"
 
     def download(

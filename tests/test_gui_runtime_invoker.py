@@ -7,7 +7,7 @@ import unittest
 
 from PyQt6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
 
-from app.services.frontend_state_service import _GuiRuntimeInvoker
+from app.ui.gui_runtime_adapter import GuiRuntimeInvoker
 
 
 class _WorkerNotifier(QObject):
@@ -33,7 +33,7 @@ class GuiRuntimeInvokerTests(unittest.TestCase):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
 
     def setUp(self) -> None:
-        self.invoker = _GuiRuntimeInvoker()
+        self.invoker = GuiRuntimeInvoker()
 
     def _run_event_loop_until(self, signal, *, start=None, timeout_ms: int = 1000) -> None:
         loop = QEventLoop()

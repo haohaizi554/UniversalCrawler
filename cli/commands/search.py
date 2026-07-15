@@ -1,4 +1,4 @@
-"""CLI host wiring for the shared search command runtime."""
+"""装配 CLI 宿主与共享搜索运行时。"""
 
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ __all__ = ["_print_pretty", "add_search_arguments", "handle_search_command"]
 
 
 def _runner_class():
-    """Return the shared runner through this command-local test seam."""
+    """通过命令模块内的测试接缝返回共享执行器。"""
     return CLIRunner
 
 
 def _runtime_env() -> runtime.SearchCommandEnv:
-    """Bind host dependencies without duplicating shared command behavior."""
+    """显式装配宿主依赖，避免命令层复制共享行为。"""
     return runtime.SearchCommandEnv(
         CLIRunner_cls=_runner_class(),
         selection_factory=SelectionStrategyFactory,
@@ -39,17 +39,14 @@ def _runtime_env() -> runtime.SearchCommandEnv:
 
 
 def _build_selection_strategy(args: argparse.Namespace):
-    """Build a selection strategy through the shared runtime."""
     return runtime.build_selection_strategy(args, env=_runtime_env())
 
 
 def _build_config(args: argparse.Namespace) -> dict:
-    """Build platform configuration through the shared runtime."""
     return runtime.build_config(args, env=_runtime_env())
 
 
 def handle_search_command(args: argparse.Namespace) -> int:
-    """Execute the shared search workflow with CLI host dependencies."""
     exit_code, result = runtime.run_search_command(args, env=_runtime_env())
     runtime.emit_result(result, pretty=getattr(args, "pretty", False))
     return exit_code

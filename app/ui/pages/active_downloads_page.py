@@ -89,10 +89,10 @@ class ActiveDownloadsModel(QAbstractTableModel):
         self._language = "zh-CN"
         self._headers = list(self.HEADERS)
 
-    def rowCount(self, _parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008 - Qt override signature
+    def rowCount(self, _parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008 - Qt 重写签名
         return len(self._rows)
 
-    def columnCount(self, _parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008 - Qt override signature
+    def columnCount(self, _parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008 - Qt 重写签名
         return len(self.COLUMNS)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
@@ -576,7 +576,7 @@ class EventTimelineWidget(QWidget):
         painter.end()
 
 class WideHitCheckBox(QCheckBox):
-    """Checkbox whose whole visual rectangle toggles the checked state."""
+    """整个可视矩形都可切换状态的复选框。"""
 
     def hitButton(self, pos) -> bool:  # type: ignore[override]
         return self.rect().contains(pos)

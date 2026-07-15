@@ -1,4 +1,4 @@
-"""异常定义模块，集中声明 `app/exceptions/config.py` 使用的异常类型。"""
+"""区分配置读取、写入和校验失败，便于调用方选择恢复策略。"""
 
 from .base import AppError
 

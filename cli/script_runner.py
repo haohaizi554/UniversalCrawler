@@ -1,6 +1,6 @@
-"""启动时脚本注入：python web_main.py --script my_automation.py
+"""启动时脚本注入：ucrawl-web --script my_automation.py
 
-在 web 服务启动后自动调用指定脚本，传入 WebController 实例。
+在 Web 服务启动后自动调用指定脚本，传入 WebController 实例。
 脚本可调用 SDK 操作或直接通过 controller 操作。
 
 脚本模板 (my_automation.py)::
@@ -25,19 +25,18 @@ from typing import Any
 def run_injected_script(script_path: str, controller: Any, **extra) -> int:
     """加载并执行注入脚本。
 
-    Args:
+    参数：
         script_path: 脚本路径 (绝对或相对)
         controller: WebController 实例
         **extra: 额外参数 (命令行 --script-arg 传入)
 
-    Returns:
+    返回：
         脚本 main() 函数的返回值
     """
     if not os.path.exists(script_path):
         sys.stderr.write(f"❌ 脚本不存在: {script_path}\n")
         return 1
 
-    # 加载模块
     spec = importlib.util.spec_from_file_location("injected_script", script_path)
     if spec is None or spec.loader is None:
         sys.stderr.write(f"❌ 无法加载脚本: {script_path}\n")
@@ -46,7 +45,6 @@ def run_injected_script(script_path: str, controller: Any, **extra) -> int:
     sys.stderr.write(f"[注入] 加载脚本: {script_path}\n")
     spec.loader.exec_module(module)
 
-    # 调用 main(controller, **extra)
     if not hasattr(module, "main"):
         sys.stderr.write("❌ 脚本必须定义 main(controller, **kwargs) 函数\n")
         return 1
@@ -60,8 +58,8 @@ def run_injected_script(script_path: str, controller: Any, **extra) -> int:
 def parse_script_args(argv: list[str] | None = None) -> argparse.Namespace:
     """解析 --script 和 --script-arg 参数。
 
-    Example:
-        python web_main.py --script my.py --script-arg name=alice --script-arg count=5
+    示例：
+        ucrawl-web --script my.py --script-arg name=alice --script-arg count=5
     """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--script", help="启动后自动执行的脚本路径")
@@ -90,7 +88,6 @@ def parse_kv_args(items: list[str]) -> dict:
     return result
 
 def _auto_convert(v: str):
-    """自动类型转换。"""
     if v.lower() in ("true", "false"):
         return v.lower() == "true"
     try:

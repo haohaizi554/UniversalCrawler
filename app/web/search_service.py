@@ -14,7 +14,7 @@ from shared.runtime_options import merge_convenience_params
 
 @dataclass(frozen=True, slots=True)
 class SearchRouteRuntime:
-    """描述 search 路由运行时依赖。"""
+    """描述搜索路由的运行时依赖。"""
 
     build_selection_strategy: Callable[[dict | None], Any]
     merge_default_config: Callable[[str, dict], dict]

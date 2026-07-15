@@ -1,1 +1,1 @@
-"""Package marker for shared GUI/WebUI assets shipped in Python wheels."""
+"""Python wheel 中 GUI/WebUI 共用资源的包标记。"""

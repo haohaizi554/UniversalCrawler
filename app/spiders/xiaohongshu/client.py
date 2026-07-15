@@ -1,4 +1,4 @@
-"""HTTP client for XiaoHongShu web APIs."""
+"""小红书 Web API 的 HTTP 客户端。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .helpers import build_search_id, extract_note_detail_from_html
 from .sign import sign_xiaohongshu_headers
 
 class XiaohongshuClient:
-    """Signed XHS web-api client."""
+    """带请求签名的小红书 Web API 客户端。"""
 
     def __init__(
         self,
@@ -238,7 +238,8 @@ class XiaohongshuClient:
         return payload if isinstance(payload, dict) else {}
 
     def probe_login_status(self) -> bool | None:
-        """Return True for logged-in, False for confirmed guest, None for probe failure."""
+        """已登录返回 True，确认游客态返回 False，探测失败返回 None。"""
+        # 网络或解析故障不能当成游客态，否则调用方会误触发登录回退并覆盖可用 Cookie。
         try:
             payload = self.query_self()
         except requests.HTTPError:
@@ -248,7 +249,7 @@ class XiaohongshuClient:
         return self._self_info_indicates_login(payload)
 
     def check_cookie_ready(self) -> bool:
-        """Guest and login flows both need at least the a1 cookie for signing."""
+        """游客态和登录态签名都至少需要 ``a1`` Cookie。"""
         return "a1=" in self.cookie_str
 
     def close(self) -> None:

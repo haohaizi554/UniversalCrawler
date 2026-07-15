@@ -1,3 +1,11 @@
+"""把日志事实映射到流水线边界、范围、原因与事件阶段。
+
+输入是可能含新旧字段的日志字典，字段读取统一委托 ``classification_facts``。
+这些函数包含有意排序的首命中规则：排除项和强语义必须位于来源/文本等宽泛
+启发式之前，不能在整理词表时随意换序。布尔谓词默认 False；未知 scope、
+reason 和 stage 分别回退为 ``system``、``fallback_system`` 和 ``step``。
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,6 +19,7 @@ from shared.log_classification import (
 
 
 def is_download_component_source(source: str) -> bool:
+    """判断归一化来源名是否属于已知下载执行组件。"""
     source = str(source or "").strip().lower()
     if not source:
         return False
@@ -37,9 +46,12 @@ def is_download_component_source(source: str) -> bool:
     return any(token in source for token in tokens)
 
 def is_download_boundary_log(item: dict[str, Any]) -> bool:
-    """Return True only after the pipeline has crossed into download execution.
+    """仅在日志已越过爬取到下载执行的边界后返回 True。
 
-    Must recognize both structured event codes and Chinese generated messages.
+    输入先归一化为 source/action/status/event/message/detail。爬取交接状态和动作
+    必须最先排除；随后依次接受下载状态前缀、动作、受来源约束的生成消息、强
+    下载组件及 downloader 边界词。把宽泛来源判断移到排除项之前会把
+    ``TASK_EMIT``/``ITEM_FOUND`` 误归为下载日志。未命中时返回 False。
     """
     facts = classification_facts(item)
     source = facts["source_lower"]
@@ -189,6 +201,10 @@ def is_download_boundary_log(item: dict[str, Any]) -> bool:
             "STREAM_AUDIO",
             "STREAM_VIDEO",
             "START_DOWNLOAD",
+            "DOWNLOAD START",
+            "DOWNLOAD STARTED",
+            "DOWNLOAD OK",
+            "DOWNLOAD COMPLETE",
             "DL_START",
             "DL_QUEUE",
             "DL_DISPATCH",
@@ -218,7 +234,7 @@ def is_download_boundary_log(item: dict[str, Any]) -> bool:
     return False
 
 def is_platform_root_crawl_log(item: dict[str, Any]) -> bool:
-    """Platform root source logs are crawl logs unless they cross download boundary."""
+    """识别平台根来源的爬取日志；下载边界排除始终拥有更高优先级。"""
     if is_download_boundary_log(item):
         return False
 
@@ -318,7 +334,7 @@ def is_platform_root_crawl_log(item: dict[str, Any]) -> bool:
     return False
 
 def is_crawl_pipeline_log(item: dict[str, Any]) -> bool:
-    """Return True for search/parse/extract/discovery logs before download boundary."""
+    """识别搜索、解析、提取和发现阶段；已越过下载边界时固定返回 False。"""
     if is_download_boundary_log(item):
         return False
 
@@ -336,6 +352,9 @@ def is_crawl_pipeline_log(item: dict[str, Any]) -> bool:
     crawl_status_prefixes = (
         "APP_CRAWL",
         "APP_ITEM_FOUND",
+        "WEB_CRAWL",
+        "WEB_ITEM_FOUND",
+        "WEB_SPIDER_FINISH",
         "BILI_SPIDER",
         "BILI_ROUTE",
         "BILI_PARSE",
@@ -352,6 +371,9 @@ def is_crawl_pipeline_log(item: dict[str, Any]) -> bool:
         "run_start",
         "run_finish",
         "start_crawl",
+        "stop_crawl",
+        "crawl_finished",
+        "_on_spider_finished_enter",
         "item_found",
         "download_queue_ready",
         "emit_download_task",
@@ -442,6 +464,11 @@ def is_crawl_pipeline_log(item: dict[str, Any]) -> bool:
     return False
 
 def derive_scope_reason(item: dict[str, Any]) -> str:
+    """返回 scope 判定原因，按性能、下载、配置、平台爬取、一般爬取取首项。
+
+    未命中语义规则时保留 ``legacy_<category>`` 供诊断；连旧分类也没有则回退
+    ``fallback_system``。该顺序与 ``derive_log_scope`` 的边界优先级配套。
+    """
     if is_performance_log(item):
         return "performance_token"
 
@@ -464,6 +491,13 @@ def derive_scope_reason(item: dict[str, Any]) -> str:
     return "fallback_system"
 
 def derive_log_scope(item: dict[str, Any]) -> str:
+    """返回 error、performance、crawl、download 或 system。
+
+    显式/强错误优先于其他范围，其次是性能；ApplicationController 事件先按其
+    结构化状态细分。其余日志依次判定下载边界、系统配置和爬取语义，再处理旧
+    category。旧 category 只是低优先级提示，不能覆盖新的边界规则；最终回退
+    system。上述首命中顺序不可随意调整。
+    """
     facts = classification_facts(item)
 
     raw_level = facts["raw_level"]
@@ -574,6 +608,13 @@ def derive_log_scope(item: dict[str, Any]) -> str:
     return "system"
 
 def derive_event_stage(item: dict[str, Any]) -> str:
+    """按首命中规则返回事件阶段，未知事件回退 ``step``。
+
+    error、performance、config 先处理；随后从 init/scan/login 到爬取、请求、
+    入队、下载与收尾阶段逐步匹配。具体阶段必须位于通用 ``success/FINISH`` 和
+    ``START`` 判断之前，否则 merge、release 等事件会被过早吞并。规则顺序是
+    输出契约的一部分。
+    """
     facts = classification_facts(item)
     result_type = derive_result_type(item)
 

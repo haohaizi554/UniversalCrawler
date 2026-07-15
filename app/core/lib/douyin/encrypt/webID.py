@@ -1,28 +1,25 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/webID.py` 对应的接口、加密、提取或工具逻辑。"""
+"""向抖音 WebId 接口申请浏览器标识。"""
 
-# app/core/lib/douyin/encrypt/webID.py
 from asyncio import run
 from typing import TYPE_CHECKING, Union
 
-# 调整引用路径
+# 工具包不可用时仍允许模块被导入；占位请求不会访问网络。
 try:
     from ..tools import PARAMS_HEADERS, request_params
 except ImportError:
     PARAMS_HEADERS = {}
 
     async def request_params(*args, **kwargs):
-        
         pass
 
 try:
     from ..translation import _
 except ImportError:
+    # 翻译层不可用时保留原文，避免兼容分支影响请求流程。
     def _(x):
-        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 if TYPE_CHECKING:
-    # 由于 record 模块尚未移植，这里使用 Any 占位
     from typing import Any
 
     BaseLogger = Any
@@ -32,6 +29,7 @@ if TYPE_CHECKING:
 __all__ = ["WebId"]
 
 class WebId:
+    """提交 UA 与页面来源并读取接口返回的 web_id。"""
     
     NAME = "webid"
     API = "https://mcs.zijieapi.com/webid"
@@ -65,20 +63,14 @@ class WebId:
         logger.error(_("获取 {name} 参数失败！").format(name=cls.NAME))
 
 async def test():
-    # 模拟 Logger
     
     class Logger:
         
-        """封装 `Logger` 的日志记录、格式化或输出逻辑。"""
         def error(self, msg):
-            """Print an error message to the console."""
-
             print(msg)
 
         
         def info(self, msg, *args):
-            """Print an informational message to the console."""
-
             print(msg)
 
     print(await WebId.get_web_id(Logger(), PARAMS_HEADERS, proxy=None))

@@ -1,2 +1,1 @@
-"""Reusable GUI layout primitives for the 7-page frontend shell."""
-
+"""提供七页前端 shell 复用的 GUI 布局组件。"""

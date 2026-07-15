@@ -1,9 +1,8 @@
-"""Formatting helpers."""
-#数据格式化
+"""提供面向 UI 的数据格式化函数。"""
 import math
 
 def format_size(size_bytes):
-    """Render a byte count as a human-friendly string."""
+    """把字节数格式化为便于阅读的容量文本。"""
     if size_bytes == 0:
         return "0 B"
     if size_bytes < 0:

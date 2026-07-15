@@ -1,4 +1,4 @@
-"""Downloader for XiaoHongShu media items."""
+"""小红书媒体项目下载器。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.utils.filenames import sanitize_filename
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
 class XiaohongshuDownloader(BaseDownloader):
-    """Handle XHS videos and gallery downloads."""
+    """处理小红书视频与图集下载。"""
 
     source_id = "xiaohongshu"
     GALLERY_IMAGE_WORKER_CAP = 10

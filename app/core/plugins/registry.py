@@ -1,4 +1,4 @@
-"""Plugin registry with SPI, entry-point, and external-directory support."""
+"""支持 SPI、Python 入口点与外部目录的插件注册表。"""
 
 from __future__ import annotations
 
@@ -9,20 +9,11 @@ if TYPE_CHECKING:
     from .base import BasePlugin
 
 class PluginRegistry:
-    """Central plugin registry.
+    """线程安全的中心插件注册表。
 
-    Supports three discovery sources:
-    1. **Builtin SPI** — ``BasePlugin.__init_subclass__`` auto-registers
-       all concrete subclasses in ``app.core.plugins.definitions``.
-    2. **Entry points** — packages installed with ``ucrawl.plugins`` group.
-    3. **External directory** — ``.py`` files scanned from a user-configured
-       directory (hot-reload capable).
-
-    Unlike the old hardcoded-import approach, adding a new platform requires
-    **zero changes** to this file — just author a ``BasePlugin`` subclass
-    somewhere that gets imported at startup.
-
-    Thread-safe (``threading.RLock``).
+    支持内置 SPI、``ucrawl.plugins`` 入口点和可热重载的用户外部目录三种来源。
+    新平台只需提供一个启动时可导入的 ``BasePlugin`` 子类，无需修改本注册表。
+    所有读写通过 ``threading.RLock`` 串行化。
     """
 
     def __init__(
@@ -34,29 +25,23 @@ class PluginRegistry:
         self._lock = threading.RLock()
         self._plugins: dict[str, BasePlugin] = {}
 
-        # Set external dir BEFORE auto-discover so external plugins are found.
+        # 必须先设置外部目录，再执行自动发现，否则首次快照会漏掉用户插件。
         if external_plugin_dir is not None:
             from .discovery import set_external_plugin_dir
 
             set_external_plugin_dir(external_plugin_dir)
 
-        # None = auto-discover builtins + entry-point + external (eager).
-        # Explicit list = seed with those (empty list = no defaults).
+        # ``None`` 表示立即发现全部来源；显式列表只以给定插件初始化，空列表则不加载默认项。
         if plugins is None:
             self._ensure_loaded()
         else:
             for plugin in plugins:
                 self.register(plugin)
 
-    # ------------------------------------------------------------------
-    # Registration
-    # ------------------------------------------------------------------
+    # 注册与注销
 
     def register(self, plugin: BasePlugin) -> None:
-        """Register a plugin instance.
-
-        Raises ``ValueError`` on duplicate ``id``.
-        """
+        """注册插件实例；平台 ID 重复时抛出 ``ValueError``。"""
         with self._lock:
             self._register_unlocked(plugin)
 
@@ -66,55 +51,47 @@ class PluginRegistry:
         self._plugins[plugin.id] = plugin
 
     def unregister(self, plugin_id: str) -> bool:
-        """Remove a plugin by id.  Returns ``True`` if removed."""
+        """按 ID 移除插件，并返回是否确实移除了实例。"""
         with self._lock:
             return self._plugins.pop(plugin_id, None) is not None
 
     def register_from_class(self, plugin_cls: type[BasePlugin]) -> BasePlugin:
-        """Instantiate *plugin_cls* and register it.  Returns the instance."""
+        """实例化 ``plugin_cls``、完成注册并返回该实例。"""
         instance = plugin_cls()
         self.register(instance)
         return instance
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
+    # 查询稳定快照
 
     def get_all_plugins(self) -> list[BasePlugin]:
-        """Return a snapshot of all registered plugins."""
+        """返回当前全部插件的稳定快照。"""
         with self._lock:
             return list(self._plugins.values())
 
     def get_plugin(self, plugin_id: str) -> BasePlugin | None:
-        """Look up a plugin by id."""
+        """按平台 ID 查询插件实例。"""
         with self._lock:
             return self._plugins.get(plugin_id)
 
     def get_plugin_class(self, plugin_id: str) -> type[BasePlugin] | None:
-        """Look up a **plugin class** by id.
-
-        Returns ``None`` if the id is not registered.
-        """
+        """按平台 ID 查询插件类；未注册时返回 ``None``。"""
         from .base import BasePlugin as _BP
 
         return _BP.get_subclass(plugin_id)
 
-    # ------------------------------------------------------------------
-    # Aggregate discovery  (lazy — only when first queried)
-    # ------------------------------------------------------------------
+    # 首次查询时才执行的汇总发现
 
     def _ensure_loaded(self) -> None:
-        """Discover and register plugins from all sources.
+        """发现并登记所有来源的插件。
 
-        Aggregates builtin SPI + entry-point + external plugins.
-        Called once on first init (unless user passed an explicit plugin
-        list).  Subsequent calls are no-ops (hot-reload uses a separate path).
+        未显式传入插件列表时只在首次查询执行一次；后续调用直接返回，外部目录
+        的热重载由独立路径负责。
         """
         if self._plugins:
             return
 
         with self._lock:
-            if self._plugins:  # double-check
+            if self._plugins:  # 获取锁后再次检查，避免两个线程重复导入插件模块。
                 return
             from .discovery import discover_builtin_plugin_instances as _di
 
@@ -122,7 +99,7 @@ class PluginRegistry:
                 self._register_unlocked(plugin)
 
     def _hot_reload_external(self) -> None:
-        """Discover external-directory plugins, registering new/changed ones."""
+        """发现外部目录中新增或变化的插件并完成注册。"""
         from .discovery import discover_external_plugins as _discover_ext
 
         for plugin_cls in _discover_ext():
@@ -130,33 +107,25 @@ class PluginRegistry:
             if pid and pid not in self._plugins:
                 self._register_unlocked(plugin_cls())
 
-    # ------------------------------------------------------------------
-    # Hot-reload
-    # ------------------------------------------------------------------
+    # 外部插件热重载
 
     def reload_plugins(self) -> list[str]:
-        """Hot-reload external plugins.  Returns ids of newly registered plugins.
-
-        Use this at runtime to pick up new ``.py`` files or changes in the
-        external plugin directory without restarting the app.
-        """
+        """热重载外部插件并返回新注册的 ID，无需重启应用即可接收文件变化。"""
         with self._lock:
             before = set(self._plugins.keys())
             self._hot_reload_external()
             after = set(self._plugins.keys())
         return list(after - before)
 
-    # ------------------------------------------------------------------
-    # Convenience wrappers on get_all_plugins (auto-load)
-    # ------------------------------------------------------------------
+    # 自动触发发现的便捷查询
 
     def get_plugin_safe(self, plugin_id: str) -> BasePlugin | None:
-        """Like ``get_plugin`` but triggers auto-discovery on first call."""
+        """与 ``get_plugin`` 相同，但首次调用前会自动发现插件。"""
         self._ensure_loaded()
         return self.get_plugin(plugin_id)
 
     def get_all_plugins_safe(self) -> list[BasePlugin]:
-        """Like ``get_all_plugins`` but triggers auto-discovery on first call."""
+        """与 ``get_all_plugins`` 相同，但首次调用前会自动发现插件。"""
         self._ensure_loaded()
         return self.get_all_plugins()
 
@@ -164,11 +133,9 @@ class PluginRegistry:
         n = len(self._plugins)
         return f"<PluginRegistry ({n} plugins)>"
 
-# Module-level singleton.  Created without auto-discover — callers that want
-# the full set must call ``get_plugin_safe`` / ``get_all_plugins_safe`` (or
-# ``_ensure_loaded``).
-#
-# Keeping lazy avoids import-time side effects (Qt settings builders, …).
+# 模块级单例故意不在导入时自动发现。需要完整插件集的调用方应使用
+# ``get_plugin_safe`` / ``get_all_plugins_safe``；延迟加载可避免 Qt 设置构建器等
+# 模块在导入阶段提前产生副作用。
 registry = PluginRegistry()
 
 __all__ = [

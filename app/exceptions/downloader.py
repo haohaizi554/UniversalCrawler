@@ -1,4 +1,4 @@
-"""异常定义模块，集中声明 `app/exceptions/downloader.py` 使用的异常类型。"""
+"""描述下载停止、外部工具故障、媒体合并及流传输失败。"""
 
 from .base import AppError
 

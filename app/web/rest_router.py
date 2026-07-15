@@ -21,7 +21,7 @@ from app.web.session_runtime import is_local_host
 
 
 def _finalize_route_result(payload: Any, *, enforce_statuses: set[int] | None = None) -> Any:
-    """Preserve legacy 200 error bodies except for explicit security boundaries."""
+    """除明确的安全边界外，保留旧接口以 200 返回错误正文的约定。"""
     if not isinstance(payload, dict) or not (payload.get("status") == "error" or "error" in payload):
         return payload
     status_code = int(payload.get("http_status", 400))
@@ -54,7 +54,7 @@ class UpdateInstallRequest(_RequestModel):
 
 
 def _public_update_result(result: Any) -> dict[str, Any]:
-    """Expose release metadata without leaking server-side verification paths."""
+    """公开版本元数据，但不泄露服务端校验路径。"""
     payload = asdict(result)
     payload.pop("manifest_path", None)
     payload.pop("signature_path", None)
@@ -77,7 +77,6 @@ def build_rest_router(
     directory_service,
     file_response_service,
 ) -> APIRouter:
-    """构建 Web HTTP 路由。"""
 
     router = APIRouter()
 

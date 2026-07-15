@@ -166,6 +166,7 @@ const FALLBACK_UI_TEXT = {
     "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "Effective after registration for future system opens. If Windows blocks it, the app opens Default Apps settings for confirmation.",
     "确定": "OK",
     "取消": "Cancel",
+    "关闭": "Close",
     "绑定": "Bind",
     "并发数": "Concurrency",
     "图片受并发数限制": "Limit images by concurrency",
@@ -599,6 +600,7 @@ const FALLBACK_UI_TEXT = {
     "生效方式：注册成功后会立即影响之后的系统打开行为；若 Windows 拦截，程序会打开默认应用设置页供你确认。": "生效方式：註冊成功後會立即影響之後的系統開啟行為；若 Windows 攔截，程式會開啟預設應用程式設定頁供你確認。",
     "确定": "確定",
     "取消": "取消",
+    "关闭": "關閉",
     "绑定": "綁定",
     "并发数": "並發數",
     "图片受并发数限制": "圖片受並發數限制",
@@ -1342,6 +1344,11 @@ function applyStaticLanguage() {
   const selectionHeadCells = document.querySelectorAll(".selection-table thead th");
   if (selectionHeadCells[0]) selectionHeadCells[0].textContent = t("选择");
   if (selectionHeadCells[1]) selectionHeadCells[1].textContent = t("视频标题 / 描述");
+  const selectionCloseBtn = helpers.byId("selectionCloseBtn");
+  if (selectionCloseBtn) {
+    selectionCloseBtn.title = t("关闭");
+    selectionCloseBtn.setAttribute("aria-label", t("关闭"));
+  }
   const selectionButtons = {
     selectionAllBtn: "全选",
     selectionInvertBtn: "反选",

@@ -1,6 +1,7 @@
 """测试模块，覆盖 `tests/test_main_window.py` 对应功能的行为与回归场景。"""
 
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -396,6 +397,7 @@ class MainWindowTests(unittest.TestCase):
         window._update_check_running = False
         window._update_check_lock = threading.RLock()
         window._set_status_bar_update_checking = Mock()
+        window._show_update_check_loading = Mock()
         window._show_basic_message = Mock()
         window._show_update_check_error = Mock()
         window._current_status_version = Mock(return_value="v3.6.17")
@@ -404,11 +406,28 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertTrue(window._update_check_running)
         window._set_status_bar_update_checking.assert_called_once_with(True)
+        window._show_update_check_loading.assert_called_once_with(__version__)
         self.assertEqual(len(worker.requests), 1)
         self.assertEqual(worker.requests[0].sequence, 1)
         self.assertEqual(worker.requests[0].local_version, __version__)
         window._show_basic_message.assert_not_called()
         window._show_update_check_error.assert_not_called()
+
+    def test_update_check_loading_dialog_is_shown_before_worker_submission(self):
+        events: list[str] = []
+        window = self._make_window()
+        worker = Mock()
+        worker.submit.side_effect = lambda _request: events.append("submit")
+        window._update_check_worker = worker
+        window._update_check_sequence = 0
+        window._update_check_running = False
+        window._update_check_lock = threading.RLock()
+        window._set_status_bar_update_checking = Mock()
+        window._show_update_check_loading = Mock(side_effect=lambda _version: events.append("show"))
+
+        MainWindow._on_update_check_requested(window, "v0.0.1")
+
+        self.assertEqual(events, ["show", "submit"])
 
     def test_update_download_worker_drops_signals_after_shutdown_begins(self):
         window = self._make_window()
@@ -1981,8 +2000,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(window._native_maximize_requested)
         window.window_title_bar.set_maximized.assert_called_once_with(True)
 
-    @patch("app.ui.main_window.cfg.save_ui_state")
-    def test_close_event_never_persists_legacy_main_fullscreen_state(self, mock_save_ui_state):
+    def _make_close_event_window(self):
         window = self._make_window()
         window._connections = Mock()
         window._remove_frameless_resize_event_filter = Mock()
@@ -2002,8 +2020,17 @@ class MainWindowTests(unittest.TestCase):
         window._update_download_thread = Mock()
         window._update_download_thread.is_alive.return_value = True
         event = Mock()
+        return window, event
+
+    @patch("app.ui.main_window.cfg.save_ui_state")
+    def test_close_event_never_persists_legacy_main_fullscreen_state(self, mock_save_ui_state):
+        window, event = self._make_close_event_window()
 
         MainWindow.closeEvent(window, event)
+
+        save_done = window.__dict__.get("_ui_state_save_done")
+        self.assertIsNotNone(save_done)
+        self.assertTrue(save_done.wait(timeout=1.0))
 
         window._remove_frameless_resize_event_filter.assert_called_once()
         window._remove_windows_native_frame_filter.assert_called_once()
@@ -2015,6 +2042,70 @@ class MainWindowTests(unittest.TestCase):
             timeout=MainWindow.UPDATE_DOWNLOAD_SHUTDOWN_JOIN_SECONDS,
         )
         self.assertFalse(mock_save_ui_state.call_args.kwargs["is_fs"])
+        event.accept.assert_called_once()
+
+    @patch("app.ui.main_window.cfg.save_ui_state")
+    def test_close_event_captures_ui_state_without_waiting_for_persistence(self, mock_save_ui_state):
+        window, event = self._make_close_event_window()
+        caller_thread = threading.get_ident()
+        capture_threads = []
+        persist_started = threading.Event()
+        release_persist = threading.Event()
+
+        window.saveGeometry.side_effect = lambda: capture_threads.append(threading.get_ident()) or b"geometry"
+        window.saveState.side_effect = lambda: capture_threads.append(threading.get_ident()) or b"state"
+
+        def persist_ui_state(**_kwargs):
+            persist_started.set()
+            release_persist.wait(timeout=2.0)
+
+        mock_save_ui_state.side_effect = persist_ui_state
+
+        try:
+            started_at = time.perf_counter()
+            MainWindow.closeEvent(window, event)
+            elapsed = time.perf_counter() - started_at
+
+            self.assertLess(elapsed, 0.4)
+            self.assertEqual(capture_threads, [caller_thread, caller_thread])
+            self.assertTrue(persist_started.wait(timeout=0.4))
+            self.assertFalse(window._ui_state_save_done.is_set())
+            self.assertFalse(window._ui_state_save_thread.daemon)
+            event.accept.assert_called_once()
+        finally:
+            release_persist.set()
+            done = window.__dict__.get("_ui_state_save_done")
+            if done is not None:
+                done.wait(timeout=1.0)
+            worker = window.__dict__.get("_ui_state_save_thread")
+            if worker is not None:
+                worker.join(timeout=1.0)
+
+        self.assertEqual(
+            mock_save_ui_state.call_args.kwargs,
+            {
+                "geometry": b"geometry",
+                "state": b"state",
+                "main_splitter": b"",
+                "right_splitter": b"",
+                "is_fs": False,
+            },
+        )
+
+    @patch("app.ui.main_window.debug_logger.log_exception")
+    @patch("app.ui.main_window.cfg.save_ui_state")
+    def test_close_event_records_async_ui_state_persistence_failure(self, mock_save_ui_state, mock_log_exception):
+        window, event = self._make_close_event_window()
+        failure = RuntimeError("config lock timeout")
+        mock_save_ui_state.side_effect = failure
+
+        MainWindow.closeEvent(window, event)
+
+        save_done = window.__dict__.get("_ui_state_save_done")
+        self.assertIsNotNone(save_done)
+        self.assertTrue(save_done.wait(timeout=1.0))
+        self.assertIs(window.__dict__.get("_ui_state_save_error"), failure)
+        mock_log_exception.assert_called_once_with("MainWindow", "persist_ui_state", failure)
         event.accept.assert_called_once()
 
     def test_native_event_unhandled_returns_false_without_super_call(self):

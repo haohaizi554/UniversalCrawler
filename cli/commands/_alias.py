@@ -15,7 +15,6 @@ from cli.commands.search import handle_search_command
 from shared.search_command_runtime import add_search_arguments
 
 def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """为每个平台添加 search 子命令。"""
     for source in ["douyin", "bilibili", "kuaishou", "missav"]:
         platform_parser = subparsers.add_parser(
             source,
@@ -38,7 +37,6 @@ def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None
         search_parser.set_defaults(source=source)
 
 def handle_platform_alias(args: argparse.Namespace) -> int:
-    """处理平台子命令。"""
     # 如果用户没指定子命令 (比如 `ucrawl douyin "测试"`)，当作 search
     if not hasattr(args, "_platform_source") or getattr(args, "source", None) is None:
         return 2  # argparse 会显示帮助

@@ -15,7 +15,10 @@ def guarded_qt_callback(
     owner: QObjectT,
     callback: Callable[[QObjectT], None],
 ) -> Callable[[], None]:
-    """Return a timer-safe callback that does not retain its QObject owner."""
+    """用弱引用包装延迟回调，避免 QTimer 闭包延长 QObject 生命周期。
+
+    调用前同时检查 Python 包装对象与底层 C++ 对象，防止访问已被 Qt 销毁的实例。
+    """
 
     owner_ref = weakref.ref(owner)
 
@@ -29,7 +32,7 @@ def guarded_qt_callback(
 
 
 def connect_destroyed_cleanup(owner: QObject, cleanup: Callable[[], None]) -> None:
-    """Run cleanup when Qt destroys owner, without retaining bound owners."""
+    """在 Qt 销毁 owner 时清理资源，并避免信号连接强持有绑定对象。"""
 
     bound_owner = getattr(cleanup, "__self__", None)
     if bound_owner is not None:

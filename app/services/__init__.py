@@ -1,4 +1,4 @@
-"""应用服务层。"""
+"""应用服务入口；保留 frontend_page_definitions 历史子模块别名供旧调用方兼容。"""
 
 import sys
 

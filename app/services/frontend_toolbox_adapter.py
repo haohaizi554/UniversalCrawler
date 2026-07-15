@@ -1,4 +1,4 @@
-"""Static toolbox catalog and snapshot helpers."""
+"""工具箱静态目录及其快照投影；定义不依赖前端运行时状态。"""
 
 from __future__ import annotations
 

@@ -152,6 +152,23 @@ input::selection {
   color: #fff;
 }
 
+.search-input:disabled,
+.search-input[readonly] {
+  background: var(--input);
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  opacity: 1;
+}
+
+.search-input:-webkit-autofill,
+.search-input:-webkit-autofill:hover,
+.search-input:-webkit-autofill:focus,
+.search-input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px var(--input) inset;
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+}
+
 select {
   color-scheme: light;
   appearance: none;
@@ -429,6 +446,11 @@ select:disabled {
 .btn:not(:disabled):hover, .nav-item:hover, .tab:hover { background: var(--panel-soft); border-color: var(--border-strong); }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .btn-primary { position: relative; overflow: hidden; background: var(--accent); border-color: var(--accent); color: white; font-weight: 700; }
+.btn-primary:not(:disabled):hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
 .btn-primary.is-running:disabled {
   opacity: 1;
   cursor: wait;

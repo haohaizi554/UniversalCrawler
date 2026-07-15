@@ -10,7 +10,7 @@ from shared.localization import normalize_language, tr
 
 
 class PaginationFooter(QWidget):
-    """Shared footer for table pages with count, page controls and page size."""
+    """表格页共用的计数、翻页与每页数量控件。"""
 
     page_requested = pyqtSignal(int)
     page_size_changed = pyqtSignal(int)

@@ -382,7 +382,7 @@ class LogCenterPage(PageFrame):
             self.detail_message_value.viewport().update()
 
     def _configure_message_editor_wrap(self) -> None:
-        """Force message editor to wrap long words, URLs, paths and trace ids."""
+        """让消息编辑器对长单词、URL、路径和 trace_id 强制换行。"""
         if not hasattr(self, "detail_message_value"):
             return
 
@@ -1383,9 +1383,8 @@ class LogCenterPage(PageFrame):
         if not result.ok:
             QMessageBox.warning(self, self._t("导出失败"), f"{self._t('无法写入文件：')}{result.error}")
             return
-        # Async completion must not open a native modal dialog: the page may be
-        # closing while this queued result is delivered. Inline feedback keeps
-        # export completion non-blocking and teardown-safe.
+        # 队列结果到达时页面可能正在销毁；异步完成回调不能再打开原生模态框，
+        # 行内反馈可保持非阻塞，并避免销毁期间访问失效窗口。
         self._flash_button_text(self.detail_export_button, self._t("导出成功"))
 
     def _apply_level_badge_style(self, level: str) -> None:

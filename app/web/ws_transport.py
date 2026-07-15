@@ -1,4 +1,4 @@
-"""WebSocket transport adapter with bounded per-connection backpressure."""
+"""WebSocket 传输适配器，为每个连接提供有界背压。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class OutboundMessage:
 
 @dataclass(slots=True)
 class WebSocketConnection:
-    """一个浏览器连接的发送状态；同一 session 可以同时有多个标签页。"""
+    """一个浏览器连接的发送状态；同一会话可以同时有多个标签页。"""
 
     ws: WebSocket
     session_id: str
@@ -44,7 +44,7 @@ class WebSocketConnection:
     })
 
 class ConnectionManager:
-    """管理 WebSocket 连接，并用有界队列吸收前端刷新背压。"""
+    """管理 WebSocket 连接，以独立有界队列隔离慢标签页造成的刷新背压。"""
 
     def __init__(self, *, max_queue_size: int = 256) -> None:
         self.active_connections: dict[str, list[WebSocketConnection]] = {}
@@ -127,7 +127,7 @@ class ConnectionManager:
         return accepted
 
     async def _build_message_async(self, event_type: str, data: Any) -> OutboundMessage:
-        """JSON 序列化可能较重，放到 executor 避免阻塞事件循环。"""
+        """JSON 序列化可能较重，放入线程池以免阻塞事件循环。"""
         return await asyncio.get_running_loop().run_in_executor(None, self._build_message, event_type, data)
 
     def _build_message(self, event_type: str, data: Any) -> OutboundMessage:
@@ -156,7 +156,7 @@ class ConnectionManager:
 
     @staticmethod
     def _coalesce_key(event_type: str, data: Any) -> tuple[str, str]:
-        """高频消息按事件类型和实体 ID 合并，frontend_delta 始终 latest wins。"""
+        """高频消息按事件类型和实体 ID 合并；frontend_delta 只保留最新值。"""
         if event_type == "frontend_delta":
             return (event_type, "frontend")
         if isinstance(data, dict):
@@ -166,7 +166,7 @@ class ConnectionManager:
         return (event_type, "")
 
     async def _enqueue(self, conn: WebSocketConnection, message: OutboundMessage) -> bool:
-        """有界入队：低优先级先合并/丢弃，关键事件尽量腾出空间。"""
+        """有界入队：防止慢连接无限积压，低优先级先合并或丢弃，关键事件优先腾出空间。"""
         async with conn.queue_lock:
             if message.priority == FrontendEventPriority.NOISY and self._replace_coalesced(conn, message):
                 conn.metrics["coalesced"] += 1

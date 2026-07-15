@@ -38,7 +38,7 @@ class FrontendSnapshotResult:
 
 
 def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapshotResult:
-    """在线程中构建 GUI 快照或 delta 合并结果。"""
+    """在线程中构建 GUI 快照或合并 `delta` 结果。"""
 
     started = time.perf_counter()
     if request.use_delta and request.cached_snapshot:
@@ -81,7 +81,7 @@ def build_frontend_snapshot(request: FrontendSnapshotRequest) -> FrontendSnapsho
 
 
 def _build_delta_snapshot(request: FrontendSnapshotRequest, started: float) -> FrontendSnapshotResult:
-    """基于缓存快照应用 service delta，缺失显式 section 时再补取。"""
+    """在缓存快照上应用服务端 `delta`，显式请求的 `section` 缺失时再补取。"""
 
     sections = request.sections
     cached = dict(request.cached_snapshot or {})
@@ -112,8 +112,8 @@ def _build_delta_snapshot(request: FrontendSnapshotRequest, started: float) -> F
     snapshot.update(dict(delta_sections))
     missing_explicit_sections = _missing_explicit_sections(sections, delta_sections)
     if missing_explicit_sections:
-        # 调用方明确要求某些 section，但 delta 没带回来时，补一次局部 snapshot，
-        # 避免页面因为“无变化”而保留旧 section。
+        # 调用方明确请求的 `section` 未出现在 `delta` 中时，再补取局部快照，
+        # 防止“无变化”误保留该 `section` 的旧值。
         explicit_snapshot = request.service.get_snapshot(mock=request.mock, sections=frozenset(missing_explicit_sections))
         snapshot.update({key: value for key, value in explicit_snapshot.items() if key in missing_explicit_sections})
 
@@ -142,7 +142,7 @@ def _snapshot_result(
     skip_render: bool,
     started: float,
 ) -> FrontendSnapshotResult:
-    """补充页面索引元数据，方便 AppShell 局部 patch 而不是重建整表。"""
+    """补充页面索引元数据，供 `AppShell` 局部更新而不是重建整表。"""
 
     page_item_rows, completed_item_ids = _page_item_indexes(snapshot)
     return FrontendSnapshotResult(
@@ -225,7 +225,7 @@ def _changed_section_candidates(
 
 
 def _section_signature(value: Any) -> str:
-    """给 section 内容做轻量签名，用于跳过没有变化的渲染。"""
+    """为 `section` 内容生成轻量签名，用于跳过没有变化的渲染。"""
 
     try:
         payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
@@ -257,7 +257,7 @@ def _remember_section_signatures(
 
 
 class FrontendSnapshotWorker:
-    """GUI 快照 worker：构建快照、delta 合并和 section diff 都离开主线程。"""
+    """GUI 快照 `worker`：快照构建、`delta` 合并和 `section diff` 均离开主线程。"""
 
     def __init__(self, on_result: Callable[[FrontendSnapshotResult], None]) -> None:
         self._worker = LatestRequestWorker(

@@ -1,4 +1,4 @@
-"""配置模块，负责 `app/config/settings.py` 对应的配置常量、读取或校验逻辑。"""
+"""统一管理 GUI、WebUI 与命令行共用的持久化配置。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time as time_module
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,12 @@ from app.core.event_bus import EventBus
 from app.exceptions import ConfigReadError, ConfigValidationError, ConfigWriteError
 from app.utils.runtime_paths import is_temporary_path, resolve_user_file
 
-CURRENT_FILENAME_TEMPLATE = "current"   #当前命名格式
-DEFAULT_OPEN_MODE = "builtin_player"    #默认打开方式
+CURRENT_FILENAME_TEMPLATE = "current"
+DEFAULT_OPEN_MODE = "builtin_player"
 LOCK_WARN_SECONDS = 1.0
+CONFIG_FILE_LOCK_TIMEOUT_SECONDS = 3.0
+CONFIG_FILE_LOCK_STALE_SECONDS = 30.0
+CONFIG_EXTERNAL_SYNC_INTERVAL_SECONDS = 0.5
 
 FILENAME_TEMPLATE_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": CURRENT_FILENAME_TEMPLATE, "label": "\u9ed8\u8ba4"},
@@ -162,9 +166,9 @@ PROXY_APP_OPTIONS: tuple[dict[str, str], ...] = (
     {"value": "\u81ea\u5b9a\u4e49", "label": "\u81ea\u5b9a\u4e49 HTTP/SOCKS5 \u7aef\u70b9"},
 )
 _INVALID_PATH_CHARS_RE = re.compile(r'[<>:"|?*\x00-\x1f]')
-_QUOTE_CHARS = "\"'`\u201c\u201d\u2018\u2019"   #字符串里的双引号
+_QUOTE_CHARS = "\"'`\u201c\u201d\u2018\u2019"
 
-#获取选项
+# 选项元数据由桌面端和 WebUI 共用，避免两个前端各自维护不同枚举。
 def filename_template_options() -> list[dict[str, str]]:
     return [dict(option) for option in FILENAME_TEMPLATE_OPTIONS]
 
@@ -205,7 +209,7 @@ def download_concurrency_options() -> list[dict[str, str]]:
 
 
 def normalize_download_concurrency(value: int | str | None, default: int = 3) -> int:
-    """Normalize regular download concurrency to the supported production choices."""
+    """把任意输入收敛为下载调度器实际支持的并发档位。"""
     try:
         numeric = int(value if value is not None else default)
     except (TypeError, ValueError):
@@ -254,7 +258,7 @@ def ui_log_max_display_options() -> list[dict[str, str]]:
 
 
 def normalize_ui_log_max_display_count(value: Any, default: int = UI_LOG_MAX_DISPLAY_DEFAULT) -> int:
-    """Normalize UI log display count to the supported lightweight choices."""
+    """限制日志展示量，避免前端一次渲染过多行而阻塞交互。"""
     try:
         numeric = int(value if value is not None else default)
     except (TypeError, ValueError):
@@ -279,7 +283,7 @@ def _option_label(options: tuple[dict[str, str], ...], value: Any, fallback: str
     return value_text
 
 
-def filename_template_label(value: Any) -> str: #获取显示标签，校验一下
+def filename_template_label(value: Any) -> str:
     return _option_label(FILENAME_TEMPLATE_OPTIONS, value, CURRENT_FILENAME_TEMPLATE)
 
 
@@ -310,37 +314,39 @@ def language_label(value: Any) -> str:
     return _option_label(LANGUAGE_OPTIONS, value, "zh-CN")
 
 
-def _strip_path_quotes(value: Any) -> str:  #清洗用户输入的路径：去掉路径首尾的引号和空格
-    text = str(value or "").strip() #""是空字符串    #.strip()去掉首尾换行制表符
-    while len(text) >= 2 and text[0] in _QUOTE_CHARS and text[-1] in _QUOTE_CHARS:  #text[-1]最后一个字符
-        text = text[1:-1].strip()   #左闭右开
+def _strip_path_quotes(value: Any) -> str:
+    text = str(value or "").strip()
+    while len(text) >= 2 and text[0] in _QUOTE_CHARS and text[-1] in _QUOTE_CHARS:
+        text = text[1:-1].strip()
     return text
 
 
 def _file_url_to_path(value: str) -> str:
-    parsed = urlparse(value)    #解析 URL
+    parsed = urlparse(value)
     if parsed.scheme.lower() != "file":
         return value
-    path_text = unquote(parsed.path or "")  #解析%编码
-    if parsed.netloc:   #拼回去netloc
+    path_text = unquote(parsed.path or "")
+    if parsed.netloc:
         path_text = f"//{parsed.netloc}{path_text}"
     if os.name == "nt" and path_text.startswith("/") and len(path_text) > 3 and path_text[2] == ":":
         path_text = path_text[1:]
     return path_text
 
 
-def _path_has_invalid_segment(path: Path) -> bool:  #检查是否包含非法字符
+def _path_has_invalid_segment(path: Path) -> bool:
+    """只检查普通路径段，跳过盘符、根目录等系统组成部分。"""
     for index, part in enumerate(path.parts):
         if not part or part in {os.sep, os.altsep, path.anchor, path.drive}:
             continue
-        if index == 0 and part.endswith(":"):   #C:
+        if index == 0 and part.endswith(":"):
             continue
         if _INVALID_PATH_CHARS_RE.search(part):
             return True
     return False
 
 
-def normalize_download_directory_input(value: Any, *, create: bool = False) -> str: #*表示后面一个必须关键字传参
+def normalize_download_directory_input(value: Any, *, create: bool = False) -> str:
+    """把粘贴路径、file URL 或误传的文件路径统一解析为下载目录。"""
     text = _strip_path_quotes(value)
     if not text:
         raise ConfigValidationError("\u4e0b\u8f7d\u76ee\u5f55\u4e0d\u80fd\u4e3a\u7a7a")
@@ -352,9 +358,9 @@ def normalize_download_directory_input(value: Any, *, create: bool = False) -> s
     if not trailing_separator and candidate.suffix and not (candidate.exists() and candidate.is_dir()):
         candidate = candidate.parent
     if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate  #cwd:current working directory，当前工作目录
+        candidate = Path.cwd() / candidate
     try:
-        normalized = candidate.resolve(strict=False)    #规范化路径
+        normalized = candidate.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise ConfigValidationError(f"\u4e0b\u8f7d\u76ee\u5f55\u8def\u5f84\u65e0\u6cd5\u89e3\u6790: {value}") from exc
     if _path_has_invalid_segment(normalized):
@@ -370,7 +376,7 @@ def normalize_download_directory_input(value: Any, *, create: bool = False) -> s
 
 
 def normalize_platform_timeout(value: Any, *, default: int = 60) -> int:
-    """Normalize crawler API/http timeout and migrate the historical 10s default."""
+    """规范平台请求超时，并迁移早期过短的 10 秒默认值。"""
     try:
         timeout = int(value)
     except (TypeError, ValueError):
@@ -381,8 +387,8 @@ def normalize_platform_timeout(value: Any, *, default: int = 60) -> int:
 
 
 @dataclass
-class CommonSettings:   #默认设置
-    """封装 `CommonSettings` 对应的配置数据与访问逻辑。"""
+class CommonSettings:
+    """保存下载目录、命名、打开行为和主题等跨平台通用设置。"""
     save_directory: str = DEFAULT_DOWNLOAD_DIR
     last_source: str = "kuaishou"
     filename_template: str = CURRENT_FILENAME_TEMPLATE
@@ -415,15 +421,15 @@ class CommonSettings:   #默认设置
 
 @dataclass
 class MissAVSettings:
-    """封装 `MissAVSettings` 对应的配置数据与访问逻辑。"""
-    proxy_type: str = "clash"          # clash / v2ray / custom
+    """保存 MissAV 的代理入口、抓取数量和筛选偏好。"""
+    proxy_type: str = "clash"  # 支持 Clash、V2Ray 和自定义代理。
     proxy_app: str = "Clash (7890)"
     proxy_port: int = 7890
     proxy_url: str = DEFAULT_MISSAV_PROXY_URL
     max_items: int = 20
     search_max_pages: int = 1
     timeout: int = 60
-    priority: str = "中文字幕优先"    #筛选优先级
+    priority: str = "中文字幕优先"
     individual_only: bool = False
 
     def normalize(self) -> None:
@@ -436,13 +442,13 @@ class MissAVSettings:
 
 @dataclass
 class BilibiliSettings:
-    """封装 `BilibiliSettings` 对应的配置数据与访问逻辑。"""
+    """保存 Bilibili 鉴权文件、抓取上限和 API 并发参数。"""
     auth_file: str = "bili_auth.json"
     user_agent: str = DEFAULT_USER_AGENT
     max_pages: int = 1
     max_items: int = 9999
     timeout: int = 60
-    api_workers: int = 8    #请求并发数
+    api_workers: int = 8
 
     def normalize(self) -> None:
 
@@ -454,7 +460,7 @@ class BilibiliSettings:
 
 @dataclass
 class DouyinSettings:
-    """封装 `DouyinSettings` 对应的配置数据与访问逻辑。"""
+    """保存抖音搜索范围和请求超时。"""
     user_agent: str = DEFAULT_USER_AGENT
     search_max_pages: int = 1
     max_items: int = 20
@@ -468,16 +474,16 @@ class DouyinSettings:
 
 @dataclass
 class XiaohongshuSettings:
-    """封装 `XiaohongshuSettings` 对应的配置数据与访问逻辑。"""
+    """保存小红书鉴权、分页、详情并发和筛选参数。"""
 
     user_agent: str = DEFAULT_USER_AGENT
     max_items: int = 20
     search_max_pages: int = 5
     timeout: int = 30
     request_interval: float = 0.15
-    detail_request_interval: float = 0.0   #解析间隔基数
+    detail_request_interval: float = 0.0
     sort: str = "general"
-    note_type: int = 0  #0全部，1图文，2视频
+    note_type: int = 0  # 0 表示全部，1 表示图文，2 表示视频。
 
     def normalize(self) -> None:
 
@@ -500,7 +506,7 @@ class XiaohongshuSettings:
 
 @dataclass
 class KuaishouSettings:
-    """封装 `KuaishouSettings` 对应的配置数据与访问逻辑。"""
+    """保存快手抓取上限和请求超时。"""
     user_agent: str = DEFAULT_USER_AGENT
     max_items: int = 20
     timeout: int = 60
@@ -512,7 +518,7 @@ class KuaishouSettings:
 
 @dataclass
 class AuthSettings:
-    """封装 `AuthSettings` 对应的配置数据与访问逻辑。"""
+    """集中保存各平台 Cookie 文件的位置。"""
     bilibili_cookie_file: str = "bili_auth.json"
     kuaishou_cookie_file: str = "ks_auth.json"
     douyin_cookie_file: str = "dy_auth.json"
@@ -527,7 +533,7 @@ class AuthSettings:
 
 @dataclass
 class DownloadSettings:
-    """封装 `DownloadSettings` 对应的配置数据与访问逻辑。"""
+    """保存下载并发、重试、断点续传和图片快速通道参数。"""
     max_concurrent: int = 3
     local_scan_limit: int = 1000
     max_retries: int = 3
@@ -617,7 +623,7 @@ class AppearanceSettings:
 
 @dataclass
 class UISettings:
-    """封装 `UISettings` 对应的配置数据与访问逻辑。"""
+    """保存桌面窗口几何与分割器状态。"""
     geometry: str = ""
     window_state: str = ""
     splitter_state: str = ""
@@ -626,8 +632,8 @@ class UISettings:
     is_fullscreen_mode: bool = False
 
 @dataclass
-class AppSettings:  #变量名: 类型 = 默认值规则
-    """封装 `AppSettings` 对应的配置数据与访问逻辑。"""
+class AppSettings:
+    """聚合所有配置分区，并统一执行启动时校验与迁移。"""
     common: CommonSettings = field(default_factory=CommonSettings)
     missav: MissAVSettings = field(default_factory=MissAVSettings)
     bilibili: BilibiliSettings = field(default_factory=BilibiliSettings)
@@ -702,8 +708,8 @@ class _InstrumentedRLock:
         self.release()
 
 class ConfigManager:
-    """管理 `ConfigManager` 对应的对象生命周期、状态或调度流程。"""
-    SECTION_MODELS = {  #映射表
+    """协调内存配置、磁盘持久化和不同前端进程之间的变更通知。"""
+    SECTION_MODELS = {
         "common": CommonSettings,
         "missav": MissAVSettings,
         "bilibili": BilibiliSettings,
@@ -718,34 +724,249 @@ class ConfigManager:
         "ui": UISettings,
     }
 
-    def __init__(self, filename: str = DEFAULT_CONFIG_FILE, event_bus: EventBus | None = None):    #python不需要提前声明字段
-        """初始化当前实例并准备运行所需的状态，供 `ConfigManager` 使用。"""
-        self._lock = _InstrumentedRLock("ConfigManager")  #线程锁
+    def __init__(self, filename: str = DEFAULT_CONFIG_FILE, event_bus: EventBus | None = None):
+        """加载磁盘配置，并准备线程内与跨进程同步所需的状态。"""
+        self._lock = _InstrumentedRLock("ConfigManager")
         self.event_bus = event_bus or EventBus()
         self.filename = str(resolve_user_file(filename))
-        # 确保用户数据目录存在（项目目录下的 user_data/），没有文件夹就创建
+        self._file_lock_path = Path(f"{self.filename}.lock")
+        self._transaction_local = threading.local()
+        self._disk_signature: tuple[int, int, int] | None = None
+        self._external_sync_guard = threading.Lock()
+        self._external_sync_refcount = 0
+        self._external_sync_stop = threading.Event()
+        self._external_sync_thread: threading.Thread | None = None
+        # 配置文件可能位于首次启动才创建的用户目录中。
         Path(self.filename).parent.mkdir(parents=True, exist_ok=True)
         self.settings = AppSettings()
         self.last_load_error: ConfigReadError | None = None
         self._load_from_disk()
         self.settings.normalize()
+        self._disk_signature = self._current_disk_signature()
 
     def subscribe(self, topic: str, handler: Callable[[Any], None]) -> Callable[[Any], None]:
         return self.event_bus.subscribe(topic, handler)
 
     def subscribe_async(self, topic: str, handler: Callable[[Any], None]) -> Callable[[Any], None]:
-        """Subscribe a config listener without running it on the config writer thread."""
+        """异步通知监听器，避免配置写线程被界面刷新或磁盘操作拖住。"""
         return self.event_bus.subscribe_async(topic, handler)
 
     def unsubscribe(self, topic: str, handler: Callable[[Any], None] | None = None) -> None:
         self.event_bus.unsubscribe(topic, handler)
 
+    def _current_disk_signature(self) -> tuple[int, int, int] | None:
+        try:
+            stat = Path(self.filename).stat()
+        except OSError:
+            return None
+        return (int(stat.st_mtime_ns), int(stat.st_size), int(stat.st_ctime_ns))
+
+    def _transaction_depth(self) -> int:
+        return int(getattr(self._transaction_local, "depth", 0) or 0)
+
+    @contextmanager
+    def _exclusive_file_lock(self):
+        """用 30 秒租约式协作锁尽量串行化 GUI、WebUI 等进程的配置写入。
+
+        超过租期的锁文件会被其他进程删除，即使原持有者仍在运行，因此不提供绝对
+        的跨进程互斥保证。
+        """
+        if self._transaction_depth() > 0:
+            yield
+            return
+
+        deadline = time_module.monotonic() + CONFIG_FILE_LOCK_TIMEOUT_SECONDS
+        descriptor: int | None = None
+        while descriptor is None:
+            try:
+                descriptor = os.open(
+                    self._file_lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+                os.write(descriptor, f"{os.getpid()} {time_module.time()}".encode("ascii"))
+            except FileExistsError as exc:
+                try:
+                    age = time_module.time() - self._file_lock_path.stat().st_mtime
+                    if age >= CONFIG_FILE_LOCK_STALE_SECONDS:
+                        self._file_lock_path.unlink(missing_ok=True)
+                        continue
+                except OSError:
+                    pass
+                if time_module.monotonic() >= deadline:
+                    raise ConfigWriteError(f"timed out waiting for config lock: {self._file_lock_path}") from exc
+                time_module.sleep(0.02)
+            except OSError as exc:
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    finally:
+                        descriptor = None
+                        try:
+                            self._file_lock_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                raise ConfigWriteError(str(exc)) from exc
+
+        self._transaction_local.depth = 1
+        try:
+            yield
+        finally:
+            self._transaction_local.depth = 0
+            try:
+                os.close(descriptor)
+            finally:
+                try:
+                    self._file_lock_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _read_disk_data_unlocked(self) -> dict[str, Any]:
+        try:
+            with open(self.filename, "r", encoding="utf-8") as fp:
+                saved_data = json.load(fp)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ConfigReadError(str(exc)) from exc
+        if not isinstance(saved_data, dict):
+            raise ConfigReadError("config root must be an object")
+        return saved_data
+
+    def _replace_settings_from_data_unlocked(
+        self,
+        saved_data: dict[str, Any],
+        *,
+        normalize_temporary_paths: bool = False,
+    ) -> None:
+        previous = self.settings
+        self.settings = AppSettings()
+        try:
+            self._apply_data(
+                saved_data,
+                normalize_temporary_paths=normalize_temporary_paths,
+            )
+            self.settings.normalize()
+        except Exception:
+            self.settings = previous
+            raise
+
+    @classmethod
+    def _diff_settings_data(
+        cls,
+        old_data: Mapping[str, Any],
+        new_data: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        changes: list[dict[str, Any]] = []
+        for section in cls.SECTION_MODELS:
+            old_section = old_data.get(section, {})
+            new_section = new_data.get(section, {})
+            if not isinstance(old_section, Mapping) or not isinstance(new_section, Mapping):
+                continue
+            for key, value in new_section.items():
+                old_value = old_section.get(key)
+                if old_value != value:
+                    changes.append(
+                        {
+                            "section": section,
+                            "key": str(key),
+                            "value": value,
+                            "old_value": old_value,
+                        }
+                    )
+        return changes
+
+    def _refresh_from_disk_unlocked(self, *, force: bool = False) -> list[dict[str, Any]]:
+        signature = self._current_disk_signature()
+        if signature is None:
+            return []
+        if not force and signature == self._disk_signature:
+            return []
+        old_data = self.settings.to_dict()
+        saved_data = self._read_disk_data_unlocked()
+        self._replace_settings_from_data_unlocked(saved_data)
+        self.last_load_error = None
+        self._disk_signature = self._current_disk_signature()
+        return self._diff_settings_data(old_data, self.settings.to_dict())
+
+    @staticmethod
+    def _combined_change_payload(
+        changes: list[dict[str, Any]],
+        *,
+        external: bool = False,
+    ) -> dict[str, Any] | None:
+        if not changes:
+            return None
+        payload = dict(changes[-1])
+        if len(changes) > 1:
+            payload["changes"] = [dict(change) for change in changes]
+        if external:
+            payload["external"] = True
+        return payload
+
+    def reload_if_changed(self) -> bool:
+        payload: dict[str, Any] | None = None
+        with self._lock:
+            try:
+                changes = self._refresh_from_disk_unlocked()
+            except (ConfigReadError, ConfigValidationError) as exc:
+                self.last_load_error = ConfigReadError(str(exc))
+                return False
+            payload = self._combined_change_payload(changes, external=True)
+        if payload is not None:
+            self.event_bus.publish("config.changed", payload)
+            return True
+        return False
+
+    @property
+    def external_sync_running(self) -> bool:
+        with self._external_sync_guard:
+            return bool(self._external_sync_thread and self._external_sync_thread.is_alive())
+
+    def start_external_sync(
+        self,
+        *,
+        interval_seconds: float = CONFIG_EXTERNAL_SYNC_INTERVAL_SECONDS,
+    ) -> None:
+        """按引用计数启动磁盘轮询，使多个前端共享同一条同步线程。"""
+        interval = max(0.02, float(interval_seconds or CONFIG_EXTERNAL_SYNC_INTERVAL_SECONDS))
+        with self._external_sync_guard:
+            self._external_sync_refcount += 1
+            if self._external_sync_thread and self._external_sync_thread.is_alive():
+                return
+            local_stop = threading.Event()
+            self._external_sync_stop = local_stop
+
+            def _watch() -> None:
+                while not local_stop.wait(interval):
+                    try:
+                        self.reload_if_changed()
+                    except Exception:
+                        logging.getLogger(__name__).exception("external config sync failed")
+
+            self._external_sync_thread = threading.Thread(
+                target=_watch,
+                name="ConfigExternalSync",
+                daemon=True,
+            )
+            self._external_sync_thread.start()
+
+    def stop_external_sync(self) -> None:
+        thread: threading.Thread | None = None
+        with self._external_sync_guard:
+            if self._external_sync_refcount > 0:
+                self._external_sync_refcount -= 1
+            if self._external_sync_refcount > 0:
+                return
+            thread = self._external_sync_thread
+            self._external_sync_thread = None
+            self._external_sync_stop.set()
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
     def _load_from_disk(self) -> None:
-        with self._lock:    #加锁
-            self._load_from_disk_unlocked() #执行完自动解锁
+        with self._lock:
+            self._load_from_disk_unlocked()
 
     def _load_from_disk_unlocked(self) -> None:
-        """提供 `_load_from_disk` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
+        """读取配置；文件缺失时创建默认值，损坏时备份并重建。"""
         try:
             with open(self.filename, "r", encoding="utf-8") as fp:
                 saved_data = json.load(fp)
@@ -766,8 +987,13 @@ class ConfigManager:
         except ConfigValidationError:
             self._reset_config()
 
-    def _apply_data(self, saved_data: dict[str, Any]) -> None:
-        """提供 `_apply_data` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
+    def _apply_data(
+        self,
+        saved_data: dict[str, Any],
+        *,
+        normalize_temporary_paths: bool = True,
+    ) -> None:
+        """按分区模型恢复已知字段，忽略旧版本遗留的未知字段。"""
         for section_name, section_model in self.SECTION_MODELS.items():
             raw_section = saved_data.get(section_name, {})
             if raw_section is None:
@@ -775,8 +1001,8 @@ class ConfigManager:
             if not isinstance(raw_section, dict):
                 raise ConfigValidationError(f"{section_name} 必须是对象")
             if section_name == "common":
-                raw_section = self._migrate_common_section(raw_section) #旧配置格式转换成新配置格式
-                if is_temporary_path(raw_section.get("save_directory", "")):
+                raw_section = self._migrate_common_section(raw_section)
+                if normalize_temporary_paths and is_temporary_path(raw_section.get("save_directory", "")):
                     raw_section["save_directory"] = DEFAULT_DOWNLOAD_DIR
 
             current = getattr(self.settings, section_name)
@@ -799,7 +1025,7 @@ class ConfigManager:
         return migrated
 
     def _coerce_value(self, key: str, value: Any, default_value: Any) -> Any:
-        """提供 `_coerce_value` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
+        """依据 dataclass 默认值恢复 JSON 标量类型，并拒绝含糊的数值输入。"""
         if value is None:
             return default_value
         expected_type = type(default_value)
@@ -895,7 +1121,7 @@ class ConfigManager:
         return value
 
     def _reset_config(self) -> None:
-        """提供 `_reset_config` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
+        """先保留损坏配置副本，再用经过规范化的默认配置重建文件。"""
         backup_name = f"{self.filename}.bak.{int(time_module.time())}"
         if os.path.exists(self.filename):
             try:
@@ -907,7 +1133,7 @@ class ConfigManager:
         self.save()
 
     def _normalize_section(self, section: str) -> None:
-        """提供 `_normalize_section` 对应的内部辅助逻辑，供 `ConfigManager` 使用。"""
+        """仅规范刚发生变化的分区，避免无关设置被旧值覆盖。"""
         section_obj = getattr(self.settings, section, None)
         normalize = getattr(section_obj, "normalize", None)
         if callable(normalize):
@@ -915,7 +1141,8 @@ class ConfigManager:
 
     def save(self) -> None:
         with self._lock:
-            self._save_unlocked()
+            with self._exclusive_file_lock():
+                self._save_unlocked()
 
     def _save_unlocked(self) -> None:
 
@@ -929,9 +1156,8 @@ class ConfigManager:
         for attempt in range(4):
             temp_file: Path | None = None
             try:
-                # Windows can briefly deny replace() while another GUI/Web process
-                # or security scanner observes config.json, so write a fresh temp
-                # file and retry the atomic swap before giving up.
+                # Windows 上 GUI、WebUI 或安全软件可能短暂占用 config.json；
+                # 每次重试都写入新的临时文件，再执行原子替换，避免留下半份 JSON。
                 with tempfile.NamedTemporaryFile(
                     "w",
                     encoding="utf-8",
@@ -945,6 +1171,7 @@ class ConfigManager:
                     os.fsync(fp.fileno())
                     temp_file = Path(fp.name)
                 temp_file.replace(target_file)
+                self._disk_signature = self._current_disk_signature()
                 return
             except PermissionError as exc:
                 last_permission_error = exc
@@ -981,13 +1208,26 @@ class ConfigManager:
             return default if value is None else value
 
     def set(self, section: str, key: str, value: Any) -> None:
-        payload = None
+        payload: dict[str, Any] | None = None
         with self._lock:
-            original_data = self.settings.to_dict()
+            rollback_data = self.settings.to_dict()
+            rollback_disk_signature = self._disk_signature
             try:
-                payload = self._set_unlocked(section, key, value)
+                with self._exclusive_file_lock():
+                    external_changes = self._refresh_from_disk_unlocked(force=True)
+                    rollback_data = self.settings.to_dict()
+                    rollback_disk_signature = self._disk_signature
+                    local_change = self._set_unlocked(section, key, value)
+                    changes = [*external_changes]
+                    if local_change is not None:
+                        changes.append(local_change)
+                    payload = self._combined_change_payload(
+                        changes,
+                        external=bool(external_changes),
+                    )
             except Exception:
-                self._apply_data(original_data)
+                self._replace_settings_from_data_unlocked(rollback_data)
+                self._disk_signature = rollback_disk_signature
                 raise
         if payload is not None:
             self.event_bus.publish("config.changed", payload)
@@ -996,27 +1236,36 @@ class ConfigManager:
         self.set_batch({section: values})
 
     def set_batch(self, updates: Mapping[str, Mapping[str, Any]]) -> None:
-        """Atomically persist related settings across one or more sections."""
-        payloads: list[dict[str, Any]] = []
+        """在同一次进程间协作租约内校验并提交多个分区，失败时回滚本实例状态。"""
+        payload: dict[str, Any] | None = None
         with self._lock:
-            original_data = self.settings.to_dict()
+            rollback_data = self.settings.to_dict()
+            rollback_disk_signature = self._disk_signature
             try:
-                for section, values in (updates or {}).items():
-                    if not isinstance(values, Mapping):
-                        raise ConfigValidationError(f"{section} 必须是对象")
-                    for key, value in values.items():
-                        payload = self._set_unlocked(str(section), str(key), value, persist=False)
-                        if payload is not None:
-                            payloads.append(payload)
-                if payloads:
-                    self.save()
+                with self._exclusive_file_lock():
+                    external_changes = self._refresh_from_disk_unlocked(force=True)
+                    rollback_data = self.settings.to_dict()
+                    rollback_disk_signature = self._disk_signature
+                    local_changes: list[dict[str, Any]] = []
+                    for section, values in (updates or {}).items():
+                        if not isinstance(values, Mapping):
+                            raise ConfigValidationError(f"{section} 必须是对象")
+                        for key, value in values.items():
+                            change = self._set_unlocked(str(section), str(key), value, persist=False)
+                            if change is not None:
+                                local_changes.append(change)
+                    if local_changes:
+                        self.save()
+                    payload = self._combined_change_payload(
+                        [*external_changes, *local_changes],
+                        external=bool(external_changes),
+                    )
             except Exception:
-                self._apply_data(original_data)
+                self._replace_settings_from_data_unlocked(rollback_data)
+                self._disk_signature = rollback_disk_signature
                 raise
-        if payloads:
-            combined = dict(payloads[-1])
-            combined["changes"] = payloads
-            self.event_bus.publish("config.changed", combined)
+        if payload is not None:
+            self.event_bus.publish("config.changed", payload)
 
     def _set_unlocked(self, section: str, key: str, value: Any, *, persist: bool = True) -> dict[str, Any] | None:
 
@@ -1050,14 +1299,25 @@ class ConfigManager:
         right_splitter: Any,
         is_fs: bool,
     ) -> None:
-        """保存 `ui_state` 对应的数据、配置或文件，供 `ConfigManager` 使用。"""
+        """在同一次进程间协作租约中保存窗口几何、分栏和全屏状态。"""
         with self._lock:
-            self.settings.ui.geometry = self._encode_ui_state(geometry)
-            self.settings.ui.window_state = self._encode_ui_state(state)
-            self.settings.ui.main_splitter_state = self._encode_ui_state(main_splitter)
-            self.settings.ui.right_splitter_state = self._encode_ui_state(right_splitter)
-            self.settings.ui.is_fullscreen_mode = is_fs
-            self.save()
+            rollback_data = self.settings.to_dict()
+            rollback_disk_signature = self._disk_signature
+            try:
+                with self._exclusive_file_lock():
+                    self._refresh_from_disk_unlocked(force=True)
+                    rollback_data = self.settings.to_dict()
+                    rollback_disk_signature = self._disk_signature
+                    self.settings.ui.geometry = self._encode_ui_state(geometry)
+                    self.settings.ui.window_state = self._encode_ui_state(state)
+                    self.settings.ui.main_splitter_state = self._encode_ui_state(main_splitter)
+                    self.settings.ui.right_splitter_state = self._encode_ui_state(right_splitter)
+                    self.settings.ui.is_fullscreen_mode = is_fs
+                    self.save()
+            except Exception:
+                self._replace_settings_from_data_unlocked(rollback_data)
+                self._disk_signature = rollback_disk_signature
+                raise
 
     @staticmethod
     def _encode_ui_state(value: Any) -> str:
@@ -1102,7 +1362,7 @@ class ConfigManager:
         return str(value)
 
     def update_missav_proxy(self, proxy_app: str = "", port: int | str = 0, url: str = "") -> None:
-        """Update MissAV proxy fields while keeping old two-argument callers safe."""
+        """更新 MissAV 代理字段，并兼容仍按两个参数调用的旧入口。"""
         if isinstance(port, str) and not url:
             url = port
             port = 0

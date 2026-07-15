@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/user.py` 对应的接口、加密、提取或工具逻辑。"""
+"""获取抖音账号的完整公开资料。"""
 
-# app/core/lib/douyin/interface/user.py
 from typing import TYPE_CHECKING, Callable, Type, Coroutine
 from typing import Union
 
@@ -9,10 +8,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -21,6 +17,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class User(API):
+    """按 sec_user_id 请求账号主页资料。"""
     
     def __init__(
         self,
@@ -31,14 +28,12 @@ class User(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `User` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.sec_user_id = sec_user_id
         self.api = f"{self.domain}aweme/v1/web/user/profile/other/"
         self.text = _("账号")
 
     async def run(self, *args, **kwargs):
-        """执行当前对象或脚本的主流程，供 `User` 使用。"""
         return await super().run(
             single_page=True,
             data_key="user",

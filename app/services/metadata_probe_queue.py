@@ -6,7 +6,11 @@ from typing import Any
 
 
 class MetadataProbeQueue:
-    """完成文件元数据探测的防抖队列，批量触发重试回调。"""
+    """完成文件元数据探测的防抖队列，批量触发重试回调。
+
+    请求只按 key 保留末值，批大小只限制单次 ``drain`` 的处理量；``_pending`` 没有
+    全局容量上限，不同 key 仍可能持续在内存积压。
+    """
 
     def __init__(
         self,
@@ -46,7 +50,7 @@ class MetadataProbeQueue:
             return self._closed
 
     def queue(self, video_id: str, source_path: str) -> None:
-        """入队同一 video/path 的最新探测请求，并按延迟合并批处理。"""
+        """入队同一 video/path 的最新探测请求，并按延迟合并批处理；不限制全局 key 数量。"""
         video_id = str(video_id or "")
         source_path = str(source_path or "")
         if not video_id or not source_path:

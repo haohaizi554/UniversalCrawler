@@ -63,7 +63,7 @@ class AntiDetectionContext:
         return headers
 
     def apply_to_context(self, context: Any) -> None:
-        """Apply bundled stealth scripts to a Playwright browser context."""
+        """把内置隐匿脚本注入 Playwright 浏览器上下文。"""
         from .stealth import apply_stealth_to_context
 
         apply_stealth_to_context(context)

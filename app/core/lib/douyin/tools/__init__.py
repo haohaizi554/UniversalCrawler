@@ -1,13 +1,12 @@
-"""包初始化模块，为 `app/core/lib/douyin/tools` 提供统一导出或包级说明。"""
+"""汇总抖音抓取流程共用的网络常量、数据索引与工具函数。"""
 
-# app/core/lib/douyin/tools/__init__.py
 import asyncio
 from random import randint
 
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.utils.user_agents import resolve_user_agent
 
-# --- Colors (Rich Console Styles) ---
+# Rich 控制台样式
 MASTER = "b #fff200"
 PROMPT = "b turquoise2"
 GENERAL = "b bright_white"
@@ -17,13 +16,13 @@ WARNING = "b bright_yellow"
 INFO = "b bright_green"
 DEBUG = "b dark_orange"
 
-# --- Network Constants ---
+# 网络参数
 RETRY = 5
 TIMEOUT = 10
 MAX_WORKERS = 4
 COOKIE_UPDATE_INTERVAL = 15 * 60
 
-# --- Headers & UserAgent ---
+# 请求头与 UA
 USERAGENT = resolve_user_agent(
     "douyin",
     None,
@@ -71,7 +70,7 @@ BLANK_HEADERS = {
     "User-Agent": USERAGENT,
 }
 
-# --- Indices (用于提取数据的索引) ---
+# 数据提取索引
 VIDEO_INDEX: int = -1
 VIDEO_TIKTOK_INDEX: int = 0
 IMAGE_INDEX: int = -1
@@ -95,12 +94,12 @@ SEARCH_AVATAR_INDEX: int = 0
 MUSIC_COLLECTION_COVER_INDEX: int = 0
 MUSIC_COLLECTION_DOWNLOAD_INDEX: int = 0
 
-# --- Assets ---
+# 静态资源
 BLANK_PREVIEW = "static/images/blank.png"
 
-# --- Functions ---
+# 通用函数
 async def wait() -> None:
-    
+    """随机短暂停顿，避免短链请求形成固定时间间隔。"""
     await asyncio.sleep(randint(5, 20) * 0.1)
 
 from .cleaner import Cleaner
@@ -120,8 +119,3 @@ from .timer import run_time
 from .truncate import beautify_string, trim_string, truncate_string
 from .capture import capture_error_params, capture_error_request
 from .session import request_params, create_client
-# from .browser import Browser
-# from .choose import choose
-# from .list_pop import safe_pop
-# from .rename_compatible import RenameCompatible
-# from .progress import FakeProgress

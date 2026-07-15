@@ -13,7 +13,7 @@ def _dialog_check_icon_url() -> str:
 
 
 def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
-    """Scoped QSS for modal dialogs that must not fall back to native widget colors."""
+    """为不能回退到原生控件颜色的模态框生成局部 QSS。"""
     check_icon_url = _dialog_check_icon_url()
     return f"""
     QDialog {{
@@ -120,6 +120,18 @@ def themed_dialog_stylesheet(colors: dict[str, str]) -> str:
         background: transparent;
         font-size: 18px;
         font-weight: 700;
+    }}
+    QProgressBar#UpdateCheckBusyBar {{
+        min-height: 8px;
+        max-height: 8px;
+        border: 1px solid {colors["border"]};
+        border-radius: 4px;
+        background: {colors["panel_soft"]};
+        color: transparent;
+    }}
+    QProgressBar#UpdateCheckBusyBar::chunk {{
+        border-radius: 3px;
+        background: {colors["accent"]};
     }}
     QFrame#UpdateDetailCard {{
         background: {colors["panel_soft"]};

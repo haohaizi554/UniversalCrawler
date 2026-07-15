@@ -54,7 +54,7 @@ def test_log_center_owns_workers_and_render_pipeline() -> None:
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     for marker in (
         'new Worker("/static/log_query_worker.js?v=20260707-log-worker")',
-        'new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")',
+        'new Worker("/static/log_detail_worker.js?v=20260714-log-detail-parity")',
         "function renderLogQueryResult",
         "function renderLogDetailResult",
         "function syncLogFiltersFromDom",

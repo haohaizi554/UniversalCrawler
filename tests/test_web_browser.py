@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
 from tests.web_browser_cases.dialogs_and_keyboard import DialogsAndKeyboardCases as _DialogsAndKeyboardCases
 from tests.web_browser_cases.frontend_runtime import FrontendRuntimeCases as _FrontendRuntimeCases
+from tests.web_browser_cases.frontend_runtime_state import FrontendRuntimeStateCases as _FrontendRuntimeStateCases
 from tests.web_browser_cases.localization_and_logs import LocalizationCases as _LocalizationCases
 from tests.web_browser_cases.log_center import LogCenterCases as _LogCenterCases
+from tests.web_browser_cases.log_center_workers import LogCenterWorkerCases as _LogCenterWorkerCases
+from tests.web_browser_cases.log_semantics import LogSemanticsCases as _LogSemanticsCases
+from tests.web_browser_cases.network_guard import NetworkGuardCases as _NetworkGuardCases
 from tests.web_browser_cases.playback import PlaybackCases as _PlaybackCases
 from tests.web_browser_cases.responsive_layout import ResponsiveLayoutCases as _ResponsiveLayoutCases
 from tests.web_browser_cases.runtime_and_lists import RuntimeAndListCases as _RuntimeAndListCases
@@ -21,6 +26,32 @@ from tests.web_browser_support import (
     _static_bundle_content,
     _wait_for_webui_ready,
 )
+
+
+def _javascript_function_block(
+    source: str,
+    function_name: str,
+    *,
+    before_function: str | None = None,
+) -> str:
+    declaration = re.search(
+        rf"(?m)^(?P<indent>[ \t]*)function\s+{re.escape(function_name)}\s*\(",
+        source,
+    )
+    if declaration is None:
+        raise AssertionError(f"missing JavaScript function: {function_name}")
+
+    following_source = source[declaration.end():]
+    next_name = re.escape(before_function) if before_function else r"[A-Za-z_$][\w$]*"
+    next_declaration = re.search(
+        rf"(?m)^{re.escape(declaration.group('indent'))}function\s+{next_name}\s*\(",
+        following_source,
+    )
+    if before_function and next_declaration is None:
+        raise AssertionError(f"missing JavaScript function: {before_function}")
+    end = declaration.end() + next_declaration.start() if next_declaration else len(source)
+    return source[declaration.start():end]
+
 
 # ============================================================
 # 静态资源测试（不需要 Playwright）
@@ -38,6 +69,16 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
         self.assertTrue(content.lower().startswith("<!doctype html>"))
 
+    def test_index_html_uses_webui_favicon(self):
+        index = (Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            '<link rel="icon" href="/webui-icon.ico?v=20260714-webui" type="image/x-icon" />',
+            index,
+        )
+
     def test_index_html_required_ids(self):
         """所有 JS 引用的 id 必须在 HTML 中存在。"""
         content = _static_bundle_content()
@@ -50,7 +91,7 @@ class StaticAssetsTests(unittest.TestCase):
             "dirModal", "dirInput", "dirList", "dirDrivesList",
             "fileAssociationModal", "associationVideo", "associationImage",
             "associationCancelBtn", "associationConfirmBtn",
-            "selectionModal", "selectionBody", "selectionHeader",
+            "selectionModal", "selectionBody", "selectionHeader", "selectionCloseBtn",
             "playBtn", "prevBtn", "nextBtn", "seekSlider", "timeLabel",
             "fullscreenBtn", "previewArea",
             "tableWrap", "topBar", "queueBody",
@@ -59,6 +100,20 @@ class StaticAssetsTests(unittest.TestCase):
             # JS 用 getElementById('xxx') 引用
             self.assertIn(f'id="{elem_id}"', content,
                          f"missing id in HTML: {elem_id}")
+
+    def test_search_input_declares_theme_safe_browser_fill_contract(self):
+        static_root = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        css = (static_root / "app.css").read_text(encoding="utf-8")
+
+        search_input = re.search(r'<input\s+id="searchInput"[^>]*>', html)
+        self.assertIsNotNone(search_input)
+        self.assertIn('autocomplete="off"', search_input.group(0))
+        self.assertIn(".search-input:-webkit-autofill", css)
+        self.assertIn("-webkit-box-shadow: 0 0 0 1000px var(--input) inset", css)
+        self.assertIn("-webkit-text-fill-color: var(--text)", css)
+        self.assertIn(".search-input:disabled", css)
+        self.assertIn(".search-input[readonly]", css)
 
     def test_completed_preview_controls_are_visible_not_compat_hidden(self):
         html_path = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "index.html"
@@ -242,6 +297,9 @@ class StaticAssetsTests(unittest.TestCase):
 
     def test_platform_settings_static_contract_matches_gui(self):
         content = _static_bundle_content()
+        platform_limits = (
+            Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "platform_limits.js"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("configureTopCountForSource", content)
         self.assertIn('count_config_key || "max_items"', content)
@@ -256,7 +314,12 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("[\"pages\", \"notes\"].includes", content)
         self.assertNotIn("<option>100</option>", content)
         self.assertIn("个视频", content)
-        self.assertIn("1 页（推荐）", content)
+        self.assertIn('defaultValue: "1"', platform_limits)
+        self.assertIn('options: [["1", true]', platform_limits)
+        self.assertIn(
+            r'label: recommended ? `${countOptionLabel(value, unit)}\uff08\u63a8\u8350\uff09`',
+            platform_limits,
+        )
 
     def test_no_console_error_patterns(self):
         """不应有明显错误模式。"""
@@ -369,18 +432,31 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn("nextState[section] = (state[section] || []).filter", state_block)
 
     def test_task_pages_reconcile_stale_selection_before_render(self):
-        content = _static_bundle_content()
-        self.assertIn("function reconcileSelectedTask(key, items)", content)
-        self.assertIn("function selectedTaskItem(key, items)", content)
+        static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
+        list_pages = (static_dir / "list_pages.js").read_text(encoding="utf-8")
+        self.assertIn("function reconcileSelectedTask(domain, items)", list_pages)
+        self.assertIn("function selectedTaskItem(domain, items)", list_pages)
 
-        active_block = content.split("function renderActive()", 1)[1].split("function currentDownloadOptions()", 1)[0]
-        completed_block = content.split("function renderCompleted()", 1)[1].split("function selectCompleted", 1)[0]
-        failed_block = content.split("function renderFailed()", 1)[1].split("function selectFailed", 1)[0]
+        active_block = _javascript_function_block(
+            list_pages,
+            "renderActive",
+            before_function="currentDownloadOptions",
+        )
+        completed_block = _javascript_function_block(
+            list_pages,
+            "renderCompleted",
+            before_function="selectCompleted",
+        )
+        failed_block = _javascript_function_block(
+            list_pages,
+            "renderFailed",
+            before_function="selectFailed",
+        )
         for block, key in ((active_block, "active"), (completed_block, "completed"), (failed_block, "failed")):
             self.assertIn(f'reconcileSelectedTask("{key}"', block)
-        self.assertIn('selectedTaskItem("active"', content)
-        self.assertIn('selectedTaskItem("completed"', content)
-        self.assertIn('selectedTaskItem("failed"', content)
+        self.assertIn('selectedTaskItem("active"', list_pages)
+        self.assertIn('selectedTaskItem("completed"', list_pages)
+        self.assertIn('selectedTaskItem("failed"', list_pages)
 
     def test_toolbox_reconciles_stale_selection_before_render(self):
         content = _static_bundle_content()
@@ -745,7 +821,7 @@ class StaticAssetsTests(unittest.TestCase):
             1,
         )[0]
 
-        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', content)
+        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260714-log-detail-parity")', content)
         self.assertIn("function ensureLogDetailWorker()", log_center)
         self.assertIn("function receiveLogDetailResult(result)", log_center)
         self.assertIn("function submitLogDetail(item)", log_center)
@@ -762,18 +838,9 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
         list_pages = (static_dir / "list_pages.js").read_text(encoding="utf-8")
-        render_queue_block = list_pages.split("function renderQueue()", 1)[1].split(
-            "function applyQueuePageResult",
-            1,
-        )[0]
-        render_completed_block = list_pages.split("function renderCompleted()", 1)[1].split(
-            "function applyCompletedPageResult",
-            1,
-        )[0]
-        render_failed_block = list_pages.split("function renderFailed()", 1)[1].split(
-            "function applyFailedPageResult",
-            1,
-        )[0]
+        render_queue_block = _javascript_function_block(list_pages, "renderQueue")
+        render_completed_block = _javascript_function_block(list_pages, "renderCompleted")
+        render_failed_block = _javascript_function_block(list_pages, "renderFailed")
 
         self.assertIn("function normalizeTablePageSize(value)", list_pages)
         self.assertIn('new Worker("/static/list_page_worker.js?v=20260708-list-page-worker")', list_pages)
@@ -845,6 +912,7 @@ class StaticAssetsTests(unittest.TestCase):
         content = _static_bundle_content()
 
         self.assertIn(".btn:not(:disabled):hover", content)
+        self.assertIn(".btn-primary:not(:disabled):hover", content)
         self.assertIn(".btn-dir:not(:disabled):hover", content)
         self.assertIn(".modal-actions .btn:not(:disabled):hover", content)
         self.assertNotIn(".btn:hover, .nav-item:hover, .tab:hover", content)
@@ -913,12 +981,16 @@ class WebSocketMessageTypesTests(unittest.TestCase):
 class WebUIBrowserTests(
     _SmokeAndAssetsCases,
     _LocalizationCases,
+    _LogSemanticsCases,
+    _NetworkGuardCases,
     _LogCenterCases,
+    _LogCenterWorkerCases,
     _DialogsAndKeyboardCases,
     _PlaybackCases,
     _SettingsCases,
     _ResponsiveLayoutCases,
     _RuntimeAndListCases,
+    _FrontendRuntimeStateCases,
     _FrontendRuntimeCases,
     _WebUIBrowserTestBase,
 ):

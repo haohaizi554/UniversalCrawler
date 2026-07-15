@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 class DebugControllerMixin:
-    """Debug artifact actions for host-backed desktop controllers."""
+    """为桌面宿主提供调试产物操作。"""
 
     def open_latest_log(self):
         """打开最新的脱敏调试日志文件。"""

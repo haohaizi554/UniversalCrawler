@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/ffmpeg.py` 对应资源的落盘或外部工具调用流程。"""
+"""通过 FFmpeg 拉取媒体流，并把子进程进度转换为统一下载事件。"""
 
 from __future__ import annotations
 
@@ -88,9 +88,8 @@ class FFmpegDownloader(BaseDownloader):
                 else:
                     try:
                         raw_out_time = int(value)
-                        # Newer FFmpeg progress output may emit microseconds for both
-                        # out_time_us and out_time_ms keys. Prefer the microsecond scale,
-                        # and fall back to millisecond scale only for small legacy values.
+            # 新版 FFmpeg 可能在 out_time_us 与 out_time_ms 中都输出微秒值；
+            # 默认按微秒换算，仅对旧版本产生的较小数值回退到毫秒尺度。
                         if key == "out_time_ms" and raw_out_time < 1_000_000:
                             out_time_seconds = raw_out_time / 1000
                         else:
@@ -133,6 +132,23 @@ class FFmpegDownloader(BaseDownloader):
         size_mb = video_item.meta.get("size_mb", 0)
         return bool(size_mb > cls.SIZE_THRESHOLD_MB or duration_sec > cls.DURATION_THRESHOLD_SEC)
 
+    @staticmethod
+    def _start_validated_media_proxy(
+        video_item: VideoItem,
+        headers: dict[str, str],
+        upstream_proxy: str | None,
+    ):
+        """通过本地受控代理隔离 ffmpeg，禁止其直接访问未经校验的上游地址。"""
+        # HLS 下载器已依赖 FFmpegExternalTool 做封装转换；此处延迟导入协议无关的
+        # 本地代理，避免两个模块在初始化阶段形成循环依赖。
+        from .m3u8 import N_m3u8DL_RE_Downloader
+
+        return N_m3u8DL_RE_Downloader()._start_local_hls_proxy(
+            video_item,
+            headers,
+            upstream_proxy,
+        )
+
     def download(
         self,
         video_item: VideoItem,
@@ -165,6 +181,8 @@ class FFmpegDownloader(BaseDownloader):
         proxies = {"http": proxy, "https": proxy} if proxy else None
         request_timeout = cfg.get("download", "request_timeout", 60)
         domain_policy = self._domain_policy_for_item(video_item)
+        if domain_policy is not None:
+            domain_policy.require_public_url(original_url)
         expected_duration = None
         raw_duration = video_item.meta.get("duration")
         if isinstance(raw_duration, (int, float)) and raw_duration > 0:
@@ -224,17 +242,30 @@ class FFmpegDownloader(BaseDownloader):
             video_item.meta["download_temp_files"] = temp_files
         for attempt in range(max_retries + 1):
             attempt_completed = False
+            local_proxy = None
             stderr_tail: deque[str] = deque(maxlen=12)
-            current_url, current_expected_size = _resolve_stream_url(original_url)
+            if domain_policy is None:
+                current_url, current_expected_size = _resolve_stream_url(original_url)
+            else:
+            # 额外的 HEAD 预检会在受控代理之外重新打开 DNS 与重定向链路，
+            # 既破坏已完成的地址校验，也不会增加安全性，因此直接省略。
+                current_url, current_expected_size = original_url, None
             url = current_url
             if current_expected_size:
                 expected_size_bytes = current_expected_size
+            command_headers = headers
+            command_proxy = proxy
+            if domain_policy is not None:
+                local_proxy = self._start_validated_media_proxy(video_item, headers, proxy)
+                url = local_proxy.url
+                command_headers = {"User-Agent": user_agent}
+                command_proxy = None
             cmd = FFmpegExternalTool.build_download_command(
                 ffmpeg,
                 url,
                 temp_path,
-                headers,
-                proxy=proxy,
+                command_headers,
+                proxy=command_proxy,
                 timeout_seconds=request_timeout,
             )
             debug_logger.log_command(
@@ -271,7 +302,11 @@ class FFmpegDownloader(BaseDownloader):
                     stderr=stderr_pipe,
                     target_queue: queue.Queue[bytes | None] = stderr_queue,
                 ) -> None:
-                    """后台读取 stderr，避免子进程因管道缓冲区写满而卡死。"""
+                    """持续读取 stderr，避免操作系统管道阻塞子进程。
+
+                    ``stderr_queue`` 没有容量上限；主线程消费滞后时，已读取的数据仍
+                    可能在内存中积压。
+                    """
                     if stderr is None:
                         target_queue.put(None)
                         return
@@ -392,6 +427,8 @@ class FFmpegDownloader(BaseDownloader):
                         stderr_thread.join(timeout=1)
                     except RuntimeError as exc:
                         debug_logger.log_exception("FFmpegDownloader", "join_stderr_thread", exc)
+                if local_proxy is not None:
+                    local_proxy.stop()
                 if not attempt_completed:
                     try:
                         for cleanup_path in (temp_path, save_path):

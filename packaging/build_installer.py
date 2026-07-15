@@ -1,4 +1,4 @@
-"""打包辅助脚本，负责 `packaging/build_installer.py` 相关的构建、发布或运行时处理。"""
+"""构建 Inno Setup 安装器，并在可选签名后校验发布产物。"""
 
 from __future__ import annotations
 import os
@@ -52,7 +52,7 @@ WIZARD_IMAGE = PROJECT_ROOT / "packaging" / "wizard_image.bmp"
 WIZARD_SMALL_IMAGE = PROJECT_ROOT / "packaging" / "wizard_small_image.bmp"
 APP_ICON = PROJECT_ROOT / APP_ICON_NAME
 WEBUI_ICON = PROJECT_ROOT / WEBUI_ICON_NAME
-# The installer consumes the portable build; fail early if a stale dist misses shared GUI/WebUI assets.
+# 安装器直接消费便携版目录；若旧 dist 缺少 GUI/WebUI 共用资源，应在编译前失败。
 REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: DIST_DIR / APP_EXE_NAME,
     lambda: DIST_DIR / WEBUI_EXE_NAME,
@@ -95,11 +95,9 @@ REQUIRED_INSTALL_SOURCE_ENTRIES = (
 )
 
 def get_setup_exe_path() -> Path:
-    """返回当前版本对应的安装包输出路径。"""
     return OUTPUT_DIR / f"{INSTALLER_BASENAME}.exe"
 
 def _resolve_iscc_from_registry() -> str | None:
-    """提供 `_resolve_iscc_from_registry` 对应的内部辅助逻辑。"""
     if sys.platform != "win32":
         return None
     try:
@@ -145,7 +143,6 @@ def _resolve_iscc_from_registry() -> str | None:
     return None
 
 def _query_registry_value(winreg_module, key, value_name: str) -> str | None:
-    """提供 `_query_registry_value` 对应的内部辅助逻辑。"""
     try:
         value, _ = winreg_module.QueryValueEx(key, value_name)
     except OSError:
@@ -153,7 +150,6 @@ def _query_registry_value(winreg_module, key, value_name: str) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 def resolve_iscc() -> str | None:
-    """解析并确定 `iscc` 对应的最终结果。"""
     common_candidates = [
         Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
         Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
@@ -166,7 +162,6 @@ def resolve_iscc() -> str | None:
     return shutil.which("ISCC.exe") or shutil.which("iscc")
 
 def _missing_install_source_entries() -> list[str]:
-    """Return required portable-build entries missing from the installer source."""
     missing: list[str] = []
     for resolver in REQUIRED_INSTALL_SOURCE_ENTRIES:
         path = resolver()
@@ -209,7 +204,7 @@ def ensure_prerequisites() -> str:
 
 
 def maybe_sign_windows_installer(setup_exe: Path) -> None:
-    """Optionally run production signing after Inno emits the installer."""
+    """仅在 Inno 产出最终安装器后执行可选生产签名，避免后续写入使签名失效。"""
 
     if os.environ.get("UCRAWL_SIGN_WINDOWS") != "1":
         print("未设置 UCRAWL_SIGN_WINDOWS=1，跳过生产签名。")
@@ -229,7 +224,6 @@ def maybe_sign_windows_installer(setup_exe: Path) -> None:
 
 
 def main() -> None:
-    """作为脚本入口组织整体执行流程。"""
     iscc = ensure_prerequisites()
     setup_exe = get_setup_exe_path()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

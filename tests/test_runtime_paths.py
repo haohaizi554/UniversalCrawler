@@ -35,6 +35,7 @@ class RuntimePathsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir) / "UniversalCrawlerProplus"
             project_root.mkdir()
+            (project_root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
             with patch("app.utils.runtime_paths.is_frozen", return_value=False), patch(
                 "app.utils.runtime_paths.project_root",
                 return_value=project_root,
@@ -46,6 +47,29 @@ class RuntimePathsTests(unittest.TestCase):
                 result = runtime_paths.user_data_root()
                 self.assertEqual(result, project_root / "user_data")
                 self.assertTrue(result.exists())
+
+    def test_user_data_root_uses_local_appdata_for_wheel_install(self):
+        """An unfrozen wheel import must not write user data into site-packages."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            site_packages = Path(temp_dir) / "venv" / "Lib" / "site-packages"
+            site_packages.mkdir(parents=True)
+            local_appdata = Path(temp_dir) / "local-appdata"
+            with patch("app.utils.runtime_paths.is_frozen", return_value=False), patch(
+                "app.utils.runtime_paths.project_root",
+                return_value=site_packages,
+            ), patch.dict(
+                "app.utils.runtime_paths.os.environ",
+                {
+                    "LOCALAPPDATA": str(local_appdata),
+                    runtime_paths.USER_DATA_ROOT_ENV: "",
+                },
+                clear=False,
+            ):
+                self.assertFalse(runtime_paths.is_development_runtime())
+                result = runtime_paths.user_data_root()
+
+        self.assertEqual(result, local_appdata / runtime_paths.APP_DIR_NAME)
+        self.assertNotEqual(result, site_packages / "user_data")
 
     def test_user_data_root_creates_directory_under_local_appdata_when_frozen(self):
         """打包交付态使用 LOCALAPPDATA/UniversalCrawlerPro。"""

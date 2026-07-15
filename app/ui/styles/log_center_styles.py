@@ -1,10 +1,9 @@
-"""Log center stylesheet generation."""
+"""生成日志中心页面样式。"""
 
 from __future__ import annotations
 
 
-# Keep this module free of Qt imports and theme lookups. The caller owns color
-# resolution; this module owns only the page-specific QSS contract.
+# 本模块不导入 Qt，也不查询主题；调用方解析颜色，本模块只维护页面级 QSS 契约。
 def generate_log_center_stylesheet(c: dict[str, str]) -> str:
     return f"""
 QWidget#LogCenterPage {{
@@ -155,7 +154,7 @@ QTableView#LogItemsTable {{
     color: {c["text"]};
 }}
 QTableView#LogItemsTable::item {{
-    /* Horizontal content padding is owned by LogCenterTableDelegate. */
+    /* 水平内容边距由 LogCenterTableDelegate 统一绘制。 */
     padding-left: 0px;
     padding-right: 0px;
     font-size: 13px;

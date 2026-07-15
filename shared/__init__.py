@@ -1,1 +1,1 @@
-"""Shared runtime helpers consumed by both `app` and `cli` layers."""
+"""供 `app` 与 `cli` 层共同使用的运行时辅助模块。"""

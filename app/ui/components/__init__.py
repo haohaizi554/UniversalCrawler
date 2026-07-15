@@ -1,4 +1,4 @@
-"""UI components and stable historical component imports."""
+"""导出 UI 组件，并保留稳定的兼容导入入口。"""
 
 import sys
 

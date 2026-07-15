@@ -27,7 +27,7 @@ class FrontendActionResult:
 
 
 class FrontendActionWorker:
-    """Sequential worker for GUI actions that may touch disk, cache, or OS APIs."""
+    """按序执行可能访问磁盘、缓存或 OS API 的 GUI 动作。"""
 
     def __init__(self, on_result: Callable[[FrontendActionResult], None]) -> None:
         self._worker = SequentialRequestWorker(

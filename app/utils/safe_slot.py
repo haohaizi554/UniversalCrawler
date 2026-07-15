@@ -1,4 +1,4 @@
-"""Helpers for defensive Qt slot wrappers."""
+"""提供 Qt 槽函数的防御性异常边界。"""
 
 from __future__ import annotations
 
@@ -27,13 +27,13 @@ def _slot_kwarg_summary(name: str, value: Any) -> Any:
 
 
 def safe_slot(fn: Callable[P, R]) -> Callable[P, R | None]:
-    """Log exceptions raised by Qt slots instead of letting them escape Qt."""
+    """记录 Qt 槽函数异常，避免异常穿透事件循环。"""
 
     @functools.wraps(fn)
     def _wrapped(*args: P.args, **kwargs: P.kwargs) -> R | None:
         try:
             return fn(*args, **kwargs)
-        except Exception as exc:  # pragma: no cover - defensive GUI boundary
+        except Exception as exc:  # pragma: no cover - GUI 防御边界
             debug_logger.log_exception(
                 getattr(fn, "__module__", "QtSlot"),
                 getattr(fn, "__qualname__", getattr(fn, "__name__", "slot")),

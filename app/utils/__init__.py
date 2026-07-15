@@ -1,5 +1,3 @@
-"""Utility exports."""
-
 from .filenames import build_media_filename, sanitize_filename
 from .formatting import format_size
 

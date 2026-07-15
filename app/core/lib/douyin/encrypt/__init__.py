@@ -1,6 +1,5 @@
-"""包初始化模块，为 `app/core/lib/douyin/encrypt` 提供统一导出或包级说明。"""
+"""生成抖音与 TikTok 请求所需的签名和设备标识。"""
 
-#app/core/lib/douyin/encrypt/__init__.py
 from .aBogus import ABogus
 from .device_id import DeviceId
 from .msToken import MsToken, MsTokenTikTok

@@ -10,7 +10,7 @@ from app.models import VideoItem
 
 @dataclass(frozen=True)
 class DownloadProgressSnapshot:
-    """Immutable snapshot of one video's live download metrics."""
+    """单次下载遥测的不可变快照，保证 GUI/Web 读取同一份采样结果。"""
 
     video_id: str
     progress: int

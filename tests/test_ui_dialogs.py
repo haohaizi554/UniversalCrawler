@@ -83,19 +83,17 @@ class DispatcherParseModeArgTests(unittest.TestCase):
         self.assertIsNone(parse_mode_arg(["--port", "8000"]))
 
     def test_parse_mode_unknown(self):
-        from entry.dispatcher import parse_mode_arg
-        # 未知 mode 返回 None，stderr 写警告
-        with patch("sys.stderr") as mock_stderr:
-            result = parse_mode_arg(["--mode", "invalid_xyz"])
-        self.assertIsNone(result)
-        # 验证 stderr.write 被调用
-        self.assertTrue(mock_stderr.write.called)
+        from entry.dispatcher import _ModeArgumentError, parse_mode_arg
+
+        with self.assertRaisesRegex(_ModeArgumentError, "unknown mode"):
+            parse_mode_arg(["--mode", "invalid_xyz"])
 
     def test_parse_mode_value_with_space(self):
         """--mode 后是另一个 --flag 应该不算 mode value。"""
-        from entry.dispatcher import parse_mode_arg
-        # "--mode" 后面跟另一个选项，不算 mode
-        self.assertIsNone(parse_mode_arg(["--mode", "--port", "8000"]))
+        from entry.dispatcher import _ModeArgumentError, parse_mode_arg
+
+        with self.assertRaisesRegex(_ModeArgumentError, "requires a value"):
+            parse_mode_arg(["--mode", "--port", "8000"])
 
 class DispatcherParseEnvModeTests(unittest.TestCase):
     """环境变量解析。"""

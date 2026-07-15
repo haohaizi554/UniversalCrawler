@@ -1,4 +1,4 @@
-"""Reusable frameless window chrome for app windows and dialogs."""
+"""为应用窗口与对话框提供可复用的无边框 chrome。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from app.ui.styles import build_palette, theme_colors
 
 
 class WindowChromeFrame(QWidget):
-    """Shared Qt-rendered titlebar plus a themed content host."""
+    """组合共享 Qt 自绘标题栏与主题化内容宿主。"""
 
     def __init__(
         self,

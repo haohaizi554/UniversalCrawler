@@ -62,6 +62,7 @@ BaseSpider 后台线程
 - 不要在 GUI 线程直接运行 Playwright 登录。
 - 不要依赖 `Queue.empty()` 判断登录结果。
 - 登录窗口可以显式显示，静默采集发现 cookie 失效时应切回显式登录，再继续采集。
+- 由外部输入或页面跳转决定目标地址的代码必须遵守 [公网网络边界工程约束](playwright-public-network-guard.md)：平台 hostname 先授权，Playwright 在创建 Page 前安装 context 级守卫并阻止 Service Worker，直接 HLS 传输还要固定已验证 DNS 地址。
 
 ### 平台请求
 

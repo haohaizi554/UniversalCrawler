@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QObject, pyqtSignal
 
 class DomainEventBridge(QObject):
-    """Marshal pure-Python domain events back onto the Qt UI thread."""
+    """把纯 Python 领域事件转发到 Qt UI 线程。"""
 
     sig_event = pyqtSignal(object)

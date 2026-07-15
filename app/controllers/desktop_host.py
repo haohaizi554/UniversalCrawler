@@ -6,7 +6,7 @@ from app.models import VideoItem
 
 
 class _UiMethodInvoker:
-    """Queue host callbacks onto the Qt main thread when available."""
+    """在 Qt 可用时把宿主回调排入主线程。"""
 
     def __init__(self, app) -> None:
         from PyQt6.QtCore import QObject, Qt, pyqtSignal
@@ -26,7 +26,10 @@ class _UiMethodInvoker:
 
 
 class DesktopHostAdapter:
-    """Thin adapter that isolates direct MainWindow side effects from controllers."""
+    """隔离控制器对 MainWindow 的直接副作用。
+    需要同步返回值的方法直接访问窗口，只能由 GUI 线程调用；无返回值的异步宿主方法
+    才通过 `_run_on_ui` 投递。
+    """
 
     def __init__(self, window) -> None:
         self.window = window
@@ -168,7 +171,7 @@ class DesktopHostAdapter:
         self._ensure_ui_invoker(app).invoke(callback)
 
     def _queue_on_ui(self, callback) -> None:
-        """Always defer a callback to the Qt event loop when a GUI app exists."""
+        """存在 GUI 应用时始终把回调延后到 Qt 事件循环执行。"""
         app = self._qt_app()
         if app is None:
             callback()
@@ -185,7 +188,7 @@ class DesktopHostAdapter:
     def _qt_app():
         try:
             from PyQt6.QtWidgets import QApplication
-        except ImportError:  # pragma: no cover - optional desktop dependency
+        except ImportError:  # pragma: no cover - 可选桌面依赖
             return None
         return QApplication.instance()
 
@@ -193,6 +196,6 @@ class DesktopHostAdapter:
     def _is_qt_main_thread(app) -> bool:
         try:
             from PyQt6.QtCore import QThread
-        except ImportError:  # pragma: no cover - optional desktop dependency
+        except ImportError:  # pragma: no cover - 可选桌面依赖
             return True
         return QThread.currentThread() == app.thread()

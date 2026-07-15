@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 
 class SmartWrapLabel(QLabel):
-    """Selectable label that wraps paths and URLs at useful segment boundaries."""
+    """可选择文本，并在路径和 URL 的有效分段边界换行。"""
 
     BREAK = "\u200b"
     ELLIPSIS = "..."

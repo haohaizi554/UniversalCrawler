@@ -30,8 +30,7 @@ fi
 
 mkdir -p "$USER_DATA_ROOT" "$DOWNLOAD_ROOT" "$TOOL_ROOT" "$TLS_DIR"
 
-# A non-loopback listener is rejected without TLS. Generate a persistent local
-# certificate when the operator has not mounted a trusted certificate pair.
+# 非回环地址必须启用 TLS；未挂载可信证书时生成并复用本地证书，避免每次启动改变指纹。
 if [ "$MANAGED_TLS" = "1" ] && { [ ! -f "$SSL_CERTFILE" ] || [ ! -f "$SSL_KEYFILE" ]; }; then
     cert_tmp="$SSL_CERTFILE.tmp.$$"
     key_tmp="$SSL_KEYFILE.tmp.$$"
@@ -69,8 +68,7 @@ if [ "${UCRAWL_NO_BROWSER:-1}" != "0" ]; then
 fi
 
 if [ -n "${UCRAWL_EXTRA_ARGS:-}" ]; then
-    # Intentionally relies on shell word splitting so callers can pass
-    # multiple flags through a single environment variable.
+    # 此处有意保留 shell 分词，使单个环境变量可以传入多个启动参数。
     # shellcheck disable=SC2086
     set -- "$@" ${UCRAWL_EXTRA_ARGS}
 fi

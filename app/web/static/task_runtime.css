@@ -125,8 +125,8 @@
   line-height: 1.32;
 }
 
-.kv span:nth-child(odd) { color: var(--muted); }
-.kv span:nth-child(even) { min-width: 0; overflow-wrap: anywhere; word-break: normal; }
+.kv > span:nth-child(odd) { color: var(--muted); }
+.kv > span:nth-child(even) { min-width: 0; overflow-wrap: anywhere; word-break: normal; }
 .kv-value.smart-wrap { overflow-wrap: normal; word-break: normal; line-height: 1.28; }
 
 .event-list, .log-snippet, .recent-list {

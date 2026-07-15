@@ -1,5 +1,4 @@
-// app/core/lib/douyin/js/a_bogus.js
-// All the content in this article is only for learning and communication use, not for any other purpose, strictly prohibited for commercial use and illegal use, otherwise all the consequences are irrelevant to the author!
+// 本实现仅用于协议兼容性研究，请勿用于违法用途。
 function rc4_encrypt(plaintext, key) {
     var s = [];
     for (var i = 0; i < 256; i++) {
@@ -231,35 +230,25 @@ function get_long_int(round, long_str) {
 
 function gener_random(random, option) {
     return [
-        (random & 255 & 170) | option[0] & 85, // 163
-        (random & 255 & 85) | option[0] & 170, //87
-        (random >> 8 & 255 & 170) | option[1] & 85, //37
-        (random >> 8 & 255 & 85) | option[1] & 170, //41
+        (random & 255 & 170) | option[0] & 85,
+        (random & 255 & 85) | option[0] & 170,
+        (random >> 8 & 255 & 170) | option[1] & 85,
+        (random >> 8 & 255 & 85) | option[1] & 170,
     ]
 }
 
-//////////////////////////////////////////////
 function generate_rc4_bb_str(url_search_params, user_agent, window_env_str, suffix = "cus", Arguments = [0, 1, 14]) {
     let sm3 = new SM3()
     let start_time = Date.now()
-    /**
-     * 进行3次加密处理
-     * 1: url_search_params两次sm3之的结果
-     * 2: 对后缀两次sm3之的结果
-     * 3: 对ua处理之后的结果
-     */
-        // url_search_params两次sm3之的结果
+    // 查询串、固定后缀和 UA 分别参与摘要，网页端只取约定字节写入载荷。
     let url_search_params_list = sm3.sum(sm3.sum(url_search_params + suffix))
-    // 对后缀两次sm3之的结果
     let cus = sm3.sum(sm3.sum(suffix))
-    // 对ua处理之后的结果
     let ua = sm3.sum(result_encrypt(rc4_encrypt(user_agent, String.fromCharCode.apply(null, [0.00390625, 1, 14])), "s3"))
-    //
     let end_time = Date.now()
-    // b
+    // 字段编号和字节序属于 a_bogus 载荷协议，调整顺序会导致校验失败。
     let b = {
-        8: 3, // 固定
-        10: end_time, //3次加密结束时间
+        8: 3,
+        10: end_time,
         15: {
             "aid": 6383,
             "pageId": 6241,
@@ -285,12 +274,11 @@ function generate_rc4_bb_str(url_search_params, user_agent, window_env_str, suff
             "dump": true,
             "rpU": ""
         },
-        16: start_time, //3次加密开始时间
-        18: 44, //固定
+        16: start_time,
+        18: 44,
         19: [1, 0, 1, 5],
     }
 
-    //3次加密开始时间
     b[20] = (b[16] >> 24) & 255
     b[21] = (b[16] >> 16) & 255
     b[22] = (b[16] >> 8) & 255
@@ -298,8 +286,6 @@ function generate_rc4_bb_str(url_search_params, user_agent, window_env_str, suff
     b[24] = (b[16] / 256 / 256 / 256 / 256) >> 0
     b[25] = (b[16] / 256 / 256 / 256 / 256 / 256) >> 0
 
-    // 参数Arguments [0, 1, 14, ...]
-    // let Arguments = [0, 1, 14]
     b[26] = (Arguments[0] >> 24) & 255
     b[27] = (Arguments[0] >> 16) & 255
     b[28] = (Arguments[0] >> 8) & 255
@@ -315,39 +301,15 @@ function generate_rc4_bb_str(url_search_params, user_agent, window_env_str, suff
     b[36] = (Arguments[2] >> 8) & 255
     b[37] = Arguments[2] & 255
 
-    // (url_search_params + "cus") 两次sm3之的结果
-    /**let url_search_params_list = [
-     91, 186,  35,  86, 143, 253,   6,  76,
-     34,  21, 167, 148,   7,  42, 192, 219,
-     188,  20, 182,  85, 213,  74, 213, 147,
-     37, 155,  93, 139,  85, 118, 228, 213
-     ]*/
     b[38] = url_search_params_list[21]
     b[39] = url_search_params_list[22]
 
-    // ("cus") 对后缀两次sm3之的结果
-    /**
-     * let cus = [
-     136, 101, 114, 147,  58,  77, 207, 201,
-     215, 162, 154,  93, 248,  13, 142, 160,
-     105,  73, 215, 241,  83,  58,  51,  43,
-     255,  38, 168, 141, 216, 194,  35, 236
-     ]*/
     b[40] = cus[21]
     b[41] = cus[22]
 
-    // 对ua处理之后的结果
-    /**
-     * let ua = [
-     129, 190,  70, 186,  86, 196, 199,  53,
-     99,  38,  29, 209, 243,  17, 157,  69,
-     147, 104,  53,  23, 114, 126,  66, 228,
-     135,  30, 168, 185, 109, 156, 251,  88
-     ]*/
     b[42] = ua[23]
     b[43] = ua[24]
 
-    //3次加密结束时间
     b[44] = (b[10] >> 24) & 255
     b[45] = (b[10] >> 16) & 255
     b[46] = (b[10] >> 8) & 255
@@ -357,7 +319,6 @@ function generate_rc4_bb_str(url_search_params, user_agent, window_env_str, suff
     b[50] = (b[10] / 256 / 256 / 256 / 256 / 256) >> 0
 
 
-    // object配置项
     b[51] = b[15]['pageId']
     b[52] = (b[15]['pageId'] >> 24) & 255
     b[53] = (b[15]['pageId'] >> 16) & 255
@@ -370,15 +331,7 @@ function generate_rc4_bb_str(url_search_params, user_agent, window_env_str, suff
     b[59] = (b[15]['aid'] >> 16) & 255
     b[60] = (b[15]['aid'] >> 24) & 255
 
-    // 中间进行了环境检测
-    // 代码索引:  2496 索引值:  17 （索引64关键条件）
-    // '1536|747|1536|834|0|30|0|0|1536|834|1536|864|1525|747|24|24|Win32'.charCodeAt()得到65位数组
-    /**
-     * let window_env_list = [49, 53, 51, 54, 124, 55, 52, 55, 124, 49, 53, 51, 54, 124, 56, 51, 52, 124, 48, 124, 51,
-     * 48, 124, 48, 124, 48, 124, 49, 53, 51, 54, 124, 56, 51, 52, 124, 49, 53, 51, 54, 124, 56,
-     * 54, 52, 124, 49, 53, 50, 53, 124, 55, 52, 55, 124, 50, 52, 124, 50, 52, 124, 87, 105, 110,
-     * 51, 50]
-     */
+    // 浏览器窗口环境按字符编码写入，长度也参与末尾异或校验。
     let window_env_list = [];
     for (let index = 0; index < window_env_str.length; index++) {
         window_env_list.push(window_env_str.charCodeAt(index))
@@ -412,10 +365,7 @@ function generate_random_str() {
 }
 
 function generate_a_bogus(url_search_params, user_agent) {
-    /**
-     * url_search_params："device_platform=webapp&aid=6383&channel=channel_pc_web&update_version_code=170400&pc_client_type=1&version_code=170400&version_name=17.4.0&cookie_enabled=true&screen_width=1536&screen_height=864&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=123.0.0.0&browser_online=true&engine_name=Blink&engine_version=123.0.0.0&os_name=Windows&os_version=10&cpu_core_num=16&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=50&webid=7362810250930783783&msToken=VkDUvz1y24CppXSl80iFPr6ez-3FiizcwD7fI1OqBt6IICq9RWG7nCvxKb8IVi55mFd-wnqoNkXGnxHrikQb4PuKob5Q-YhDp5Um215JzlBszkUyiEvR"
-     * user_agent："Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-     */
+    // 必须使用最终请求查询串和同一请求的 UA，否则摘要与服务端看到的内容不一致。
     let result_str = generate_random_str() + generate_rc4_bb_str(
         url_search_params,
         user_agent,
@@ -423,9 +373,3 @@ function generate_a_bogus(url_search_params, user_agent) {
     );
     return result_encrypt(result_str, "s4") + "=";
 }
-
-//测试调用
-// console.log(generate_a_bogus(
-//     "device_platform=webapp&aid=6383&channel=channel_pc_web&update_version_code=170400&pc_client_type=1&version_code=170400&version_name=17.4.0&cookie_enabled=true&screen_width=1536&screen_height=864&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=123.0.0.0&browser_online=true&engine_name=Blink&engine_version=123.0.0.0&os_name=Windows&os_version=10&cpu_core_num=16&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=50&webid=7362810250930783783&msToken=VkDUvz1y24CppXSl80iFPr6ez-3FiizcwD7fI1OqBt6IICq9RWG7nCvxKb8IVi55mFd-wnqoNkXGnxHrikQb4PuKob5Q-YhDp5Um215JzlBszkUyiEvR",
-//     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-// ));

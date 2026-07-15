@@ -1,11 +1,9 @@
-"""Production update trust bootstrap and signing automation.
+"""生产更新信任引导与签名自动化。
 
-The updater client may ship public trust anchors, but the signing material must
-live outside the repository.  This module keeps those two worlds separate: it
-creates or reads local release keys, injects only public values into
-``app/config/update_trust.py``, signs Windows installers through external tools,
-and provides a repository scanner that fails before sensitive files reach a
-commit.
+更新客户端可以携带公开信任锚，但签名材料必须存放在仓库外。本模块隔离这两
+个边界：创建或读取本地发布密钥，只向 ``app/config/update_trust.py`` 注入
+公开值，通过外部工具签名 Windows 安装器，并在敏感文件进入提交前让仓库
+扫描失败。
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-# ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
+# ``Crypto`` 来自仍在维护的 PyCryptodome 包，而非已废弃的 PyCrypto。
 from Crypto.PublicKey import ECC  # nosec B413
 
 
@@ -39,7 +37,7 @@ SECRET_ENV_DIR = "UCRAWL_RELEASE_SECRETS_DIR"
 
 
 class BootstrapError(RuntimeError):
-    """Raised when release bootstrap cannot continue safely."""
+    """发布引导无法安全继续时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -87,7 +85,7 @@ def _path_is_inside(child: Path, parent: Path) -> bool:
 
 
 def release_secrets_dir(*, project_root: Path = PROJECT_ROOT, create: bool = True) -> Path:
-    """Return the local release secret root and reject repo-contained paths."""
+    """返回本地发布密钥根目录，并拒绝仓库内部路径。"""
 
     raw = os.environ.get(SECRET_ENV_DIR)
     root = Path(raw).expanduser() if raw else Path.home() / ".ucrawl" / "release-secrets"
@@ -125,11 +123,10 @@ def generate_manifest_key(
     write_public_key_to_config: bool = False,
     config_path: Path = DEFAULT_CONFIG_PATH,
 ) -> ManifestKeyResult:
-    """Create the Ed25519 manifest keypair outside the repo.
+    """在仓库外创建 Ed25519 清单密钥对。
 
-    Existing private keys are intentionally preserved unless ``rotate`` is set.
-    The public key is derived again when missing, which keeps recovery possible
-    without exposing the private key contents in logs.
+    除非设置 ``rotate``，否则刻意保留现有私钥。公钥缺失时可重新派生，既能
+    恢复发布流程，也不会在日志中暴露私钥内容。
     """
 
     secret_root = release_secrets_dir(project_root=project_root, create=True)
@@ -216,7 +213,7 @@ def _assert_update_trust_config_safe(path: Path) -> None:
 
 
 def inject_public_key(*, public_key_path: Path, config_path: Path = DEFAULT_CONFIG_PATH) -> None:
-    """Write only the Ed25519 public key into the production trust config."""
+    """只把 Ed25519 公钥写入生产信任配置。"""
 
     public_pem = Path(public_key_path).read_text(encoding="utf-8").strip()
     if "BEGIN PUBLIC KEY" not in public_pem or "PRIVATE KEY" in public_pem:
@@ -230,7 +227,7 @@ def inject_public_key(*, public_key_path: Path, config_path: Path = DEFAULT_CONF
 
 
 def normalize_fingerprint(value: Any) -> str:
-    """Normalize SHA1/SHA256 certificate fingerprints for allowlist matching."""
+    """归一化 SHA1/SHA256 证书指纹，供允许列表匹配。"""
 
     return re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
 
@@ -323,7 +320,7 @@ def discover_windows_cert(
     cert_subject: str | None = None,
     run_func: RunFunc = subprocess.run,
 ) -> WindowsTrustInfo:
-    """Discover a usable production code signing certificate from Windows stores."""
+    """从 Windows 证书存储中发现可用的生产代码签名证书。"""
 
     _windows_required(run_func)
     sha1 = normalize_fingerprint(cert_sha1 or os.environ.get("UCRAWL_SIGN_CERT_SHA1") or "")
@@ -387,7 +384,7 @@ def extract_windows_trust(
     installer: Path,
     run_func: RunFunc = subprocess.run,
 ) -> WindowsTrustInfo:
-    """Read Authenticode signer identity and normalized SHA1/SHA256 fingerprints."""
+    """读取 Authenticode 签名者身份及归一化的 SHA1/SHA256 指纹。"""
 
     _windows_required(run_func)
     result = run_func(
@@ -475,7 +472,7 @@ def sign_windows_installer(
     signtool_path: Path | None = None,
     run_func: RunFunc = subprocess.run,
 ) -> WindowsTrustInfo:
-    """Sign and verify a Windows installer using signtool with argv lists."""
+    """使用 argv 列表调用 signtool，对 Windows 安装器签名并验证。"""
 
     _windows_required(run_func)
     installer = Path(installer)
@@ -520,7 +517,7 @@ def inject_windows_trust(
     config_path: Path = DEFAULT_CONFIG_PATH,
     run_func: RunFunc = subprocess.run,
 ) -> WindowsTrustInfo:
-    """Inject the signed installer's public Windows trust anchors."""
+    """注入已签名安装器的公开 Windows 信任锚。"""
 
     info = extract_windows_trust(installer=installer, run_func=run_func)
     config = Path(config_path)
@@ -610,7 +607,7 @@ def _scan_text_for_sensitive_markers(text: str, *, label: str) -> list[SecretFin
 
 
 def scan_repository_for_secrets(*, project_root: Path = PROJECT_ROOT) -> list[SecretFinding]:
-    """Scan tracked files, diffs and untracked paths without printing values."""
+    """扫描已跟踪文件、差异和未跟踪路径，但不打印敏感值。"""
 
     project_root = _resolve_no_strict(project_root)
     findings: list[SecretFinding] = []
@@ -666,7 +663,7 @@ def generate_dev_windows_cert(
     dev_config_path: Path = DEFAULT_DEV_CONFIG_PATH,
     run_func: RunFunc = subprocess.run,
 ) -> WindowsTrustInfo:
-    """Create a self-signed development cert without touching production trust."""
+    """创建自签名开发证书，不触碰生产信任配置。"""
 
     _windows_required(run_func)
     script = r"""
@@ -709,7 +706,7 @@ $sha256 = [System.BitConverter]::ToString(
 
 
 def production_bootstrap(*, installer: Path, project_root: Path = PROJECT_ROOT) -> None:
-    """Run the release-machine bootstrap flow; fail closed when certs are absent."""
+    """执行发布机引导流程；缺少证书时按失败关闭原则终止。"""
 
     release_secrets_dir(project_root=project_root, create=True)
     result = generate_manifest_key(project_root=project_root, write_public_key_to_config=True)

@@ -12,12 +12,12 @@ from app.core.events import (
 )
 
 class DownloadControllerMixin:
-    """Shared download bridge and event routing for host-backed controllers."""
+    """集中处理下载事件桥接与宿主事件路由。"""
 
     EVENT_BRIDGE_CLASS = DomainEventBridge
 
     def _connect_download_signals(self):
-        """Connect download manager callbacks through the unified download bridge."""
+        """把下载管理器回调接入统一下载事件桥。"""
         self._last_download_progress: dict[str, int] = {}
         self._download_progress_lock = threading.RLock()
         self.dl_manager.task_started.connect(self._emit_task_started_event)
@@ -77,6 +77,7 @@ class DownloadControllerMixin:
         except (TypeError, ValueError):
             return
         app_state = getattr(self, "app_state", None)
+        # 先按状态服务的频率门限削峰，再在锁内去重，避免并发进度回调淹没 Qt 事件队列。
         if app_state is not None and not app_state.should_emit_progress(video_id, normalized):
             return
         with self._download_progress_guard():

@@ -1,4 +1,4 @@
-"""界面模块，封装 `app/ui/components/download_queue_panel.py` 对应的窗口、对话框或界面组件逻辑。"""
+"""维护下载队列表格及其行级交互。"""
 
 from __future__ import annotations
 
@@ -24,12 +24,11 @@ from app.models import VideoItem
 from app.ui.styles.table_rows import bind_qtablewidget_row_selection
 
 class DownloadQueuePanel(QFrame):
-    """下载队列表面板，封装表格的增删改查和交互绑定。"""
+    """以 video_id 维护队列表格行及播放、删除绑定。"""
 
     _DIGIT_RE = re.compile(r"(\d+)")
 
     def __init__(self, current_save_dir: str, style_provider: QWidget):
-        """初始化当前实例并准备运行所需的状态，供 `DownloadQueuePanel` 使用。"""
         super().__init__()
         self.setObjectName("ContentPanel")
         self._style_provider = style_provider
@@ -76,7 +75,6 @@ class DownloadQueuePanel(QFrame):
         layout.addWidget(self.table)
 
     def set_current_save_dir(self, save_dir: str) -> None:
-        """设置 `current_save_dir` 对应的值或运行状态，供 `DownloadQueuePanel` 使用。"""
         self.lbl_full_path.setText(save_dir)
         self.lbl_full_path.setToolTip(save_dir)
 
@@ -95,7 +93,7 @@ class DownloadQueuePanel(QFrame):
 
     @classmethod
     def build_sort_key(cls, title: str, video_id: str = "") -> tuple:
-        """Natural sort key for visible media rows."""
+        """排序契约：数字片段按整数比较，文本片段按 `casefold()` 结果比较，最后以 `video_id` 稳定兜底。"""
         tokens: list[tuple[int, object]] = []
         for part in cls._DIGIT_RE.split((title or "").strip()):
             if not part:
@@ -107,7 +105,7 @@ class DownloadQueuePanel(QFrame):
         return (*tokens, (2, video_id))
 
     def reorder_video_row(self, video_item: VideoItem) -> int:
-        """Move an existing row to the position implied by the title sort key."""
+        """按标题排序键把既有行移动到对应位置。"""
         current_row = self.find_row_by_video_id(video_item.id)
         if current_row == -1:
             return -1
@@ -121,7 +119,6 @@ class DownloadQueuePanel(QFrame):
         return insert_row
 
     def _populate_row(self, row: int, video_item: VideoItem) -> None:
-        """Populate a row after insert or reorder."""
         if self._on_play is None or self._on_delete is None:
             raise RuntimeError("video row callbacks must be configured before populating rows")
 
@@ -172,7 +169,6 @@ class DownloadQueuePanel(QFrame):
         return self.table.rowCount()
 
     def update_video_status(self, video_id: str, status: str, progress: int | None = None) -> None:
-        """更新 `video_status` 对应的状态或数据内容，供 `DownloadQueuePanel` 使用。"""
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item and item.data(Qt.ItemDataRole.UserRole) == video_id:
@@ -236,7 +232,7 @@ class DownloadQueuePanel(QFrame):
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def get_adjacent_video_id(self, current_video_id: str | None, direction: int, *, wrap: bool = True) -> str | None:
-        """Return the previous/next video id according to current table order."""
+        """按当前表格顺序返回相邻视频 ID。"""
         video_order = []
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
@@ -257,7 +253,7 @@ class DownloadQueuePanel(QFrame):
         return video_order[next_index]
 
     def select_video_by_id(self, video_id: str) -> bool:
-        """Select the row for a media id and scroll it into view."""
+        """选中媒体 ID 对应行并滚动到可见区域。"""
         row = self.find_row_by_video_id(video_id)
         if row == -1:
             return False

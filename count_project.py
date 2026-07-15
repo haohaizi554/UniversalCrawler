@@ -37,9 +37,7 @@ EXCLUDE_DIRS = {
 }
 
 
-# =========================
-# 不计入代码量的文件
-# =========================
+# 锁文件和生成清单不代表项目维护的源码，不计入代码量。
 
 EXCLUDE_FILE_NAMES = {
     "package-lock.json",
@@ -52,7 +50,7 @@ EXCLUDE_FILE_NAMES = {
 
 
 def normalize_repository_url(remote_url: str) -> str:
-    """Return a browser-friendly repository URL for common Git remote formats."""
+    """将常见 Git 远程地址规范化为浏览器可访问的仓库 URL。"""
     normalized = str(remote_url or "").strip().rstrip("/")
     if not normalized:
         return ""
@@ -76,7 +74,7 @@ def normalize_repository_url(remote_url: str) -> str:
 
 
 def detect_repository_url(root: Path) -> str:
-    """Read origin from Git without requiring network access."""
+    """从本地 Git 配置读取 origin，不发起网络请求。"""
     try:
         completed = subprocess.run(
             ["git", "config", "--get", "remote.origin.url"],
@@ -94,9 +92,7 @@ def detect_repository_url(root: Path) -> str:
     return normalize_repository_url(completed.stdout)
 
 
-# =========================
-# 测试目录识别规则
-# =========================
+# 目录名匹配用于识别不同技术栈的测试代码。
 
 TEST_DIR_NAMES = {
     "test",
@@ -107,9 +103,7 @@ TEST_DIR_NAMES = {
 }
 
 
-# =========================
-# 代码文件后缀
-# =========================
+# 只统计能够可靠归类的源码与工程配置文件。
 
 CODE_EXTS = {
     ".py": "Python",
@@ -143,9 +137,7 @@ CODE_EXTS = {
 }
 
 
-# =========================
-# 单行注释识别
-# =========================
+# 这些前缀仅用于粗略 LOC 统计，不承担完整语法解析。
 
 COMMENT_PREFIXES = {
     ".py": ["#"],

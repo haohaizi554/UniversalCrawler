@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/kuaishou.py` 对应资源的落盘或外部工具调用流程。"""
+"""快手视频下载与 Cookie/请求头适配流程。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from app.models import VideoItem
 from .base import BaseDownloader, ProgressCallback, StopCheck
 
 class KuaishouDownloader(BaseDownloader):
-    """实现 `KuaishouDownloader` 对应的资源下载与落盘流程。"""
+    """为快手任务补齐运行时请求头和 Cookie 后复用通用流下载。"""
     source_id = "kuaishou"
 
     def download(

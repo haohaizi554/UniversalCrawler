@@ -24,7 +24,7 @@ MIN_ACCESS_TOKEN_LENGTH = 20
 
 
 def is_loopback_bind_host(host: str) -> bool:
-    """Return whether a bind host can only accept local-machine traffic."""
+    """判断绑定主机是否只能接收本机流量。"""
     normalized = str(host or "").strip().strip("[]")
     try:
         return ipaddress.ip_address(normalized).is_loopback
@@ -47,10 +47,10 @@ def resolve_web_access_token(
     environ: Mapping[str, str] | None = None,
     token_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
 ) -> str | None:
-    """Resolve the access secret used by non-loopback Web deployments.
+    """解析非回环 Web 部署使用的访问密钥。
 
-    Local-only launches stay passwordless. Remote launches reuse a protected
-    token file so restarting the app does not invalidate bookmarked access.
+    仅本机启动保持无密码；远程启动复用受保护的 token 文件，避免应用重启后
+    已保存的访问地址失效。
     """
     environment = os.environ if environ is None else environ
     supplied = configured_token or environment.get("UCRAWL_WEB_ACCESS_TOKEN")
@@ -75,7 +75,7 @@ def resolve_web_access_token(
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        # A concurrent launcher won creation; its token is the source of truth.
+        # 另一启动进程已抢先完成独占创建；其 token 才是跨进程协议的可信结果。
         return _wait_for_persisted_access_token(path)
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
         stream.write(generated)
@@ -96,15 +96,14 @@ def _wait_for_persisted_access_token(
     attempts: int = 20,
     delay: float = 0.025,
 ) -> str:
-    """Wait briefly while another launcher finishes its exclusive token write."""
+    """短暂等待另一启动进程完成独占 token 写入。"""
     value = initial_value
     for attempt in range(max(1, attempts)):
         if value:
             try:
                 return _validate_access_token(value)
             except ValueError:
-                # An exclusive creator may have flushed only part of the line;
-                # treat a short value as in-progress until the retry budget ends.
+                # 独占创建者可能只刷新了部分行；重试预算耗尽前，短值一律视为仍在写入。
                 pass
         if attempt:
             time.sleep(delay)
@@ -116,7 +115,7 @@ def _wait_for_persisted_access_token(
 
 
 def build_access_url(base_url: str, access_token: str | None) -> str:
-    """Add the one-time HTTP bootstrap query used to establish an access cookie."""
+    """添加一次性 HTTP 引导查询，用于建立访问 Cookie。"""
     if not access_token:
         return base_url
     parts = urlsplit(base_url)
@@ -126,9 +125,9 @@ def build_access_url(base_url: str, access_token: str | None) -> str:
 
 
 def build_web_url(host: str, port: int, scheme: str) -> str:
-    """Build a browser URL from a bind address without using non-routable wildcards."""
+    """从绑定地址构造浏览器 URL，并避开不可路由的通配地址。"""
     normalized = str(host or "").strip().strip("[]")
-    # The wildcard literal is normalized into a browser URL; no socket is bound here.
+    # 此处只把通配字面量归一化为浏览器 URL，不会实际绑定套接字。
     if normalized in {"", str(ipaddress.IPv4Address(0)), "127.0.0.1", "localhost"}:
         browser_host = "localhost"
     elif normalized in {"::", "::1"}:
@@ -153,7 +152,7 @@ def resolve_existing_web_url(
     timeout: float = 0.6,
     urlopen_func: Callable[..., Any] = urllib.request.urlopen,
 ) -> str | None:
-    """Return the base URL only when the occupied port is this UCrawl version."""
+    """仅当占用端口的是当前 UCrawl 版本时返回基础 URL。"""
     base_url = build_web_url(host, port, scheme)
     request = urllib.request.Request(
         f"{base_url}/api/ping",
@@ -203,7 +202,6 @@ def try_reuse_existing_instance(
     return True
 
 def print_startup_banner(url: str, *, script: str | None = None, stderr=None) -> None:
-    """输出 Web 启动横幅。"""
     stderr = stderr or sys.stderr
     stderr.write("\n  UCrawl Web UI\n")
     stderr.write(f"  {url}\n")
@@ -290,5 +288,4 @@ def run_server_with_qt(
     server_thread.join(timeout=5)
 
 def run_server_without_qt(*, serve_async: Callable[[], Coroutine[Any, Any, None]]) -> None:
-    """无 Qt 模式下直接在主线程运行 asyncio。"""
     asyncio.run(serve_async())

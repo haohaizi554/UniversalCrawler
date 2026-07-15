@@ -1,4 +1,4 @@
-"""Central download queue and worker dispatch logic."""
+"""下载队列、工作线程分发及前端状态投影的主协调器。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from app.debug_logger import debug_logger
 class DownloadWorker(threading.Thread):
     """执行单个下载任务，并把进度、完成、失败事件回传给管理器。"""
 
-    # 文件类型签名映射
     FILE_SIGNATURES = {
         b'\x89PNG': '.png',
         b'\xff\xd8\xff': '.jpg',
@@ -30,7 +29,7 @@ class DownloadWorker(threading.Thread):
         b'\x00\x00\x00\x1cftyp': '.mp4',
         b'\x00\x00\x00\x20ftyp': '.mp4',
         b'ID3': '.mp3',
-        b'\xff\xfb': '.mp3',  # MPEG audio
+        b'\xff\xfb': '.mp3',  # MPEG 音频
         b'\xff\xf3': '.mp3',
         b'\xff\xf2': '.mp3',
         b'OggS': '.ogg',
@@ -39,7 +38,6 @@ class DownloadWorker(threading.Thread):
     }
 
     def __init__(self, video: VideoItem, save_dir: str):
-        """保存任务对象与目标目录，并初始化线程控制状态。"""
         super().__init__(daemon=True, name=f"DownloadWorker-{video.id}")
         self.video = video
         self.save_dir = save_dir
@@ -55,7 +53,6 @@ class DownloadWorker(threading.Thread):
         self._path_reservations: list[str] = []
 
     def _trace_id(self) -> str | None:
-        """读取当前任务的 trace_id，便于串联调试日志。"""
         return self.video.meta.get("trace_id")
 
     @property
@@ -100,7 +97,6 @@ class DownloadWorker(threading.Thread):
         )
 
     def run(self):
-        """完成下载前的路径准备、下载执行以及结束后的收尾工作。"""
         completion_reason = "thread_finished"
         try:
             if not self.is_running:
@@ -224,14 +220,13 @@ class DownloadWorker(threading.Thread):
                 self.finished.emit()
 
     def _select_downloader(self) -> BaseDownloader:
-        """通过桥梁 `downloader_registry` 选择平台下载器（不再靠硬编码元组）。"""
         cls = downloader_registry.resolve(self.video)
         if cls is not None:
             return cls()
         raise ValueError(f"Unknown source: {self.video.source}")
 
     def _emit_progress_if_changed(self):
-        """Return a progress callback that coalesces duplicate percentages."""
+        """合并相同百分比，避免高频进度回调反复触发前端重绘。"""
         from app.services.download_telemetry import get_download_telemetry_service
 
         telemetry = get_download_telemetry_service()
@@ -301,7 +296,7 @@ class DownloadWorker(threading.Thread):
         write_status: str | None = None,
         merge_status: str | None = None,
     ) -> None:
-        """Persist live downloader phase metadata for the frontend adapter."""
+        """记录下载阶段元数据，供前端适配器生成实时任务快照。"""
         with self.video.meta_guard():
             meta = self.video.meta
             changed = False
@@ -354,7 +349,6 @@ class DownloadWorker(threading.Thread):
         return resolve_task_save_directory(self.video, self.save_dir)
 
     def _infer_extension(self) -> str:
-        """根据内容类型和 URL 后缀推断初始扩展名。"""
         content_type = self.video.meta.get("content_type", "")
         if content_type == "gallery":
             return ".jpeg"
@@ -373,7 +367,7 @@ class DownloadWorker(threading.Thread):
         return ".mp4"
 
     def _generate_filename(self, ext):
-        """Generate a filename using the persisted frontend naming rule."""
+        """按已持久化的前端命名规则生成文件名。"""
         from datetime import datetime
 
         from app.config import cfg
@@ -415,7 +409,7 @@ class DownloadWorker(threading.Thread):
         return f"{safe_name}{ext}"
 
     def _remember_output_path(self, filepath: str) -> None:
-        """Persist the current output filename for frontend stage snapshots."""
+        """保存当前输出文件名，使前端阶段快照与实际落盘目标一致。"""
         if not isinstance(getattr(self.video, "meta", None), dict):
             self.video.meta = {}
         filename = os.path.basename(filepath)
@@ -505,10 +499,7 @@ class DownloadWorker(threading.Thread):
             return None
 
 class DownloadManager(DownloadManagerCore):
-    """维护下载队列、并发槽位以及工作线程生命周期。"""
-
     def __init__(self, max_concurrent: int | None = None):
-        """初始化任务队列，并启动后台派发线程。"""
         self.task_started = CallbackSignal()
         self.task_progress = CallbackSignal()
         self.task_finished = CallbackSignal()

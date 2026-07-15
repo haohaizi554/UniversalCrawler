@@ -8,16 +8,16 @@
    ucrawl douyin search "测试" --max-items 20
    ```
 
-2. **Python SDK** (import 即可用)
+2. **Python SDK**（导入后即可用）
    ```python
    from ucrawl import UcrawlSDK
    sdk = UcrawlSDK(save_dir="downloads")
    result = sdk.search(source="douyin", keyword="测试")
    ```
 
-3. **REST API 注入** (在 web 服务启动时执行)
+3. **REST API 注入**（在 Web 服务启动时执行）
    ```bash
-   python web_main.py --script my_automation.py
+   ucrawl-web --script my_automation.py
    ```
 
 4. **AI Skill 封装** (在 `cli/skill/SKILL.md` 中定义)
@@ -74,9 +74,8 @@ __all__ = [
 
 __version__ = "3.6.17"
 
-# Preserve the historical import surface without keeping duplicate adapter
-# files. Internal code imports shared modules directly; these aliases exist only
-# at the public package boundary and point at the canonical implementation.
+# 这些别名只在公开包边界保留历史导入路径，并统一指向 shared 中的规范实现；
+# 内部代码直接导入 shared 模块，避免继续维护重复适配文件。
 _PUBLIC_MODULE_ALIASES = {
     "defaults": _defaults_module,
     "gui_selection": _gui_selection_module,

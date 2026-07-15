@@ -1,8 +1,7 @@
-"""Generate and sign updater release manifests.
+"""生成并签名更新发布清单。
 
-This script is intended for release machines only.  It reads a local Ed25519
-private key, computes asset size/SHA-256, writes `latest.json`, and signs the
-exact manifest bytes to `latest.json.sig`.
+本脚本仅供发布机使用。签名覆盖最终写入 ``latest.json`` 的精确 UTF-8 字节，
+包括排序、缩进和末尾换行；``latest.json.sig`` 保存这些字节的 Ed25519 签名。
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
+# ``Crypto`` 来自仍在维护的 PyCryptodome 包，而非已废弃的 PyCrypto。
 from Crypto.PublicKey import ECC  # nosec B413
 from Crypto.Signature import eddsa  # nosec B413
 
@@ -117,6 +116,17 @@ def write_signed_manifest(
     trusted_hosts: list[str] | tuple[str, ...] = (),
     verify_with_config: bool = True,
 ) -> tuple[Path, Path]:
+    """写入清单、签名并可选地用客户端信任锚回读验证。
+
+    写入顺序固定为清单、签名、验证：序列化后的 ``manifest_bytes`` 先原样写入
+    ``latest.json``，随后同一字节串被签名并写入 ``latest.json.sig``。验证失败
+    时只删除签名，保留清单供发布诊断；私钥读取或签名失败也可能留下已写入的
+    清单。
+
+    本函数不承担发布原子性。发布流水线应在暂存目录调用它，并且仅在成功返回
+    后把清单与签名作为一对原子地切换到对外发布位置，避免客户端观察到半套
+    文件或跨版本组合。
+    """
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     payload = build_manifest_payload(
@@ -235,7 +245,7 @@ def _verify_with_configured_public_key(
     app_id: str,
     channel: str,
 ) -> None:
-    """Verify release output through the same public trust anchor as clients."""
+    """使用与客户端相同的公开信任锚验证发布输出，防止发布端与消费端规则漂移。"""
 
     if not str(UPDATE_PUBLIC_KEY_PEM or "").strip():
         raise RuntimeError(

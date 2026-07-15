@@ -61,7 +61,39 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
+          load: true
           tags: ucrawl-web:test
           build-args: INSTALL_PLAYWRIGHT=0
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke Test Image
+        shell: bash
+        run: |
+          container_name=ucrawl-smoke
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container_name" || true
+            fi
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker run --detach \
+            --name "$container_name" \
+            --publish 127.0.0.1:18443:8000 \
+            ucrawl-web:test
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --insecure --silent --show-error \
+              --max-time 2 https://127.0.0.1:18443/healthz; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "container did not become healthy after 30 attempts" >&2
+          exit 1

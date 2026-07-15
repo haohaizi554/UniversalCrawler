@@ -1,4 +1,4 @@
-"""Shared XiaoHongShu parsing helpers."""
+"""小红书共享解析辅助函数。"""
 
 from __future__ import annotations
 
@@ -51,13 +51,13 @@ class CreatorLookupInfo:
     keyword: str
 
 def extract_url_params_to_dict(url: str) -> dict[str, str]:
-    """Parse query params into a flat dict."""
+    """把查询参数解析成单值字典。"""
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
     return {key: values[-1] for key, values in params.items() if values}
 
 def extract_first_url(raw_text: str) -> str:
-    """Extract the first URL from copied share text, or return the stripped input."""
+    """从复制的分享文案提取首个 URL；没有 URL 时返回清理后的原文。"""
     raw = str(raw_text or "").strip()
     match = re.search(r"https?://[^\s`，。！？；;,)）\]'\"]+", raw)
     candidate = match.group(0) if match else raw
@@ -87,7 +87,7 @@ def parse_creator_lookup_input(text: str) -> CreatorLookupInfo | None:
     return None
 
 def parse_note_info_from_note_url(url: str) -> NoteUrlInfo:
-    """Parse note id and xsec tokens from a Xiaohongshu note URL."""
+    """从小红书笔记 URL 解析笔记 ID 和 xsec 参数。"""
     parsed = urlparse(url.strip())
     note_id = parsed.path.rstrip("/").split("/")[-1]
     params = extract_url_params_to_dict(url)
@@ -98,7 +98,7 @@ def parse_note_info_from_note_url(url: str) -> NoteUrlInfo:
     )
 
 def parse_creator_info_from_url(url: str) -> CreatorUrlInfo:
-    """Parse creator id and xsec tokens from a Xiaohongshu profile URL or raw user id."""
+    """从小红书作者 URL 或原始用户 ID 解析作者与 xsec 参数。"""
     raw = url.strip()
     if len(raw) == 24 and all(ch in "0123456789abcdef" for ch in raw.lower()):
         return CreatorUrlInfo(user_id=raw, xsec_token="", xsec_source="")
@@ -114,7 +114,7 @@ def parse_creator_info_from_url(url: str) -> CreatorUrlInfo:
     )
 
 def extract_note_detail_from_html(note_id: str, html: str) -> dict[str, Any] | None:
-    """Extract note detail from XHS HTML initial state."""
+    """从小红书 HTML 初始状态中提取笔记详情。"""
     if "noteDetailMap" not in html:
         return None
     match = re.search(r"window\.__INITIAL_STATE__=(\{.*\})</script>", html, re.S)
@@ -133,7 +133,7 @@ def extract_note_detail_from_html(note_id: str, html: str) -> dict[str, Any] | N
     return None
 
 def sanitize_note_title(note: dict[str, Any]) -> str:
-    """Build a stable title for UI selection and file naming."""
+    """生成适合 UI 选择列表和文件命名的稳定标题。"""
     title = str(note.get("title") or "").strip()
     if title:
         if sanitize_filename(title) != "untitled":
@@ -146,12 +146,12 @@ def sanitize_note_title(note: dict[str, Any]) -> str:
     return note_id
 
 def note_author_name(note: dict[str, Any]) -> str:
-    """Extract author nickname with graceful fallback."""
+    """提取作者昵称，缺失时使用兜底名称。"""
     user = note.get("user") or {}
     return str(user.get("nickname") or user.get("nick_name") or "未知作者")
 
 def extract_video_candidates(note: dict[str, Any]) -> list[str]:
-    """Extract video stream URLs from an XHS note detail."""
+    """从小红书笔记详情提取视频流候选 URL。"""
     if str(note.get("type", "")).lower() != "video":
         return []
     video_dict = note.get("video") or {}
@@ -193,7 +193,7 @@ def extract_video_candidates(note: dict[str, Any]) -> list[str]:
     return deduped
 
 def extract_image_entries(note: dict[str, Any]) -> list[dict[str, str]]:
-    """Extract image urls from an XHS note detail."""
+    """从小红书笔记详情提取图片 URL。"""
     result: list[dict[str, str]] = []
     for image in note.get("image_list") or []:
         if not isinstance(image, dict):
@@ -204,7 +204,7 @@ def extract_image_entries(note: dict[str, Any]) -> list[dict[str, str]]:
     return result
 
 def build_note_summary(note: dict[str, Any]) -> str:
-    """Build a concise note summary for the selection UI."""
+    """为选择界面生成简洁的笔记摘要。"""
     title = sanitize_note_title(note)
     author = note_author_name(note)
     note_type = str(note.get("type") or "normal")

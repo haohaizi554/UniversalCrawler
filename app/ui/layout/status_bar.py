@@ -11,7 +11,7 @@ from app.ui.styles.themes import theme_colors
 from app.utils.qt_runtime import load_qt_icon
 
 class StatusDotIndicator(QWidget):
-    """Painted status light: idle / running / error."""
+    """自绘空闲、运行与错误状态灯。"""
 
     def __init__(self, parent: QWidget | None = None, *, is_dark: bool = False) -> None:
         super().__init__(parent)
@@ -48,7 +48,7 @@ class StatusDotIndicator(QWidget):
         painter.end()
 
 class StatusBarWidget(QFrame):
-    """Unified bottom status bar."""
+    """统一的底部状态栏。"""
 
     PROJECT_URL = "https://github.com/haohaizi554/UniversalCrawler"
     METRIC_VALUE_WIDTH = 88

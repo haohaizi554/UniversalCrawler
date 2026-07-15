@@ -1,4 +1,4 @@
-"""Token-bucket rate limiting profiles for crawler guardrails."""
+"""爬虫护栏使用的令牌桶限速配置。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class RateLimitProfile:
 
 
 class RateLimiter:
-    """Thread-safe token bucket with optional interruptible waiting."""
+    """线程安全的令牌桶，等待配额时可响应取消请求。"""
 
     def __init__(
         self,

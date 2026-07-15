@@ -1,4 +1,4 @@
-"""包初始化模块，为 `app/spiders/missav` 提供统一导出或包级说明。"""
+"""MissAV 平台爬取实现。"""
 
 from .parser import MissAVParser
 from .spider import MissAVSpider

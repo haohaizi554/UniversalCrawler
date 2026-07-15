@@ -1,4 +1,4 @@
-"""Compatibility exports for shared User-Agent rotation helpers."""
+"""保留 User-Agent 轮换工具的兼容导出路径。"""
 
 from app.utils.user_agents import (
     UserAgentRotator,

@@ -1,4 +1,4 @@
-"""HLS downloader backed by N_m3u8DL-RE with a MissAV yt-dlp fallback."""
+"""以 N_m3u8DL-RE 为主、yt-dlp 为 MissAV 兜底的 HLS 下载器。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from typing import Any, Callable
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.core.anti_detection import build_browser_anti_detection
 from app.debug_logger import debug_logger
+from shared import playwright_network_guard
 from app.exceptions import DownloaderStoppedError, ExternalToolError, ExternalToolNotFoundError
 from app.models import VideoItem
 from shared.runtime_options import PUBLIC_DOMAIN_POLICY, DomainPolicyEngine
@@ -36,12 +37,12 @@ from .external import (
 
 try:
     from playwright.sync_api import Error as PlaywrightError
-except ImportError:  # pragma: no cover - optional browser fallback
+except ImportError:  # pragma: no cover - 可选浏览器回退路径
     PlaywrightError = RuntimeError
 
 
 class N_m3u8DL_RE_Downloader(BaseDownloader):
-    """Download HLS streams with N_m3u8DL-RE, falling back for stricter MissAV CDNs."""
+    """使用 N_m3u8DL-RE 下载 HLS；遇到限制更严的 MissAV CDN 时启用兜底链路。"""
 
     NM3U8_TEMP_ROOT_NAME = ".ucp-nm3u8-tmp"
     NM3U8_TEMP_DIR_PREFIX = "ucp-"
@@ -90,7 +91,6 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
         self._emit_progress(progress_callback, 0)
         download_succeeded = False
-        process = None
         browser_fallback_error: Exception | None = None
 
         # MissAV 的 surrit CDN 对请求头/浏览器指纹敏感，优先尝试更像浏览器的下载路径。
@@ -256,52 +256,19 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 return
             raise ExternalToolNotFoundError("N_m3u8DL-RE executable not found")
 
-        creation_flags = build_no_window_flags()
-        output_reader: threading.Thread | None = None
-        temp_workspace: Path | None = None
         try:
-            # N_m3u8DL-RE 的分片缓存统一放入受控工作目录，异常退出后可由启动清扫安全删除。
-            temp_workspace = self._create_nm3u8_temp_workspace(save_path)
-            cmd = NM3U8DLREExternalTool.build_download_command(
-                executable,
-                url,
+            self._download_with_nm3u8_external(
+                video_item,
                 save_path,
+                executable,
                 ua,
                 referer,
-                proxy=proxy,
-                extra_headers=headers,
-                thread_count=thread_count,
-                tmp_dir=str(temp_workspace),
-            )
-            debug_logger.log_command(
-                component="N_m3u8DL_RE_Downloader",
-                tool_name="N_m3u8DL-RE",
-                command_args=cmd,
-                message="Preparing N_m3u8DL-RE HLS download",
-                context={
-                    "title": video_item.title,
-                    "save_path": save_path,
-                    "source_url": url,
-                    "tmp_dir": str(temp_workspace),
-                },
-                trace_id=trace_id,
-            )
-            output_progress = _Nm3u8OutputProgress(default_progress=0)
-            process = self._popen_nm3u8_process(cmd, creation_flags)
-            output_reader = self._start_nm3u8_output_reader(process, output_progress, trace_id)
-            self._wait_external_process_with_file_progress(
-                process,
-                save_path,
-                check_stop_func,
+                proxy,
+                headers,
+                thread_count,
                 progress_callback,
-                0,
-                progress_provider=output_progress.snapshot,
-                temp_paths=[temp_workspace],
+                check_stop_func,
             )
-
-            if process.returncode != 0:
-                raise ExternalToolError(f"N_m3u8DL-RE exited abnormally (Code: {process.returncode})")
-
             download_succeeded = True
             try:
                 self._emit_progress(progress_callback, 100)
@@ -376,10 +343,6 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                     ) from fallback_exc
             raise ExternalToolError(f"N_m3u8DL-RE failed: {exc}") from exc
         finally:
-            self._join_nm3u8_output_reader(output_reader)
-            if process is not None and process.poll() is None:
-                ExternalToolRunner.terminate_process(process)
-            self._cleanup_nm3u8_temp_workspace(temp_workspace, trace_id=trace_id)
             if not download_succeeded:
                 # 外部工具可能直接写目标目录旁的 .part/.tmp，失败时做一次目标名前缀清理。
                 self._cleanup_external_temp_files(save_path)
@@ -495,7 +458,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
     @classmethod
     def sweep_orphaned_workspaces(cls, download_dirs: list[str | os.PathLike[str]]) -> int:
-        """Remove stale HLS workspaces once at application startup, before tasks run."""
+        """应用启动后、任务运行前清理一次遗留的 HLS 工作目录。"""
         cleaned_count = 0
         errors: list[dict[str, str]] = []
 
@@ -515,7 +478,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             try:
                 if not base_dir.exists() or not base_dir.is_dir():
                     continue
-                # 既扫统一根目录，也扫旧版 fallback 留在目标目录下的 *_hls 目录。
+                # 既扫统一根目录，也扫旧版回退路径（fallback）留在目标目录下的 *_hls 目录。
                 candidates = [base_dir / cls.NM3U8_TEMP_ROOT_NAME]
                 candidates.extend(
                     child
@@ -772,6 +735,10 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
 
     @classmethod
     def _should_use_local_hls_proxy(cls, video_item: VideoItem) -> bool:
+        if cls._domain_policy_for_item(video_item) is not None:
+        # 这是网络安全边界：任务元数据不得把公网任务重新切回外部工具直连，
+        # 否则会绕过逐跳重定向与目标地址校验。
+            return True
         return cls._should_try_curl_cffi_first(video_item) and not bool(video_item.meta.get("disable_local_hls_proxy"))
 
     def _start_local_hls_proxy(
@@ -921,18 +888,21 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         domain_policy: DomainPolicyEngine | None,
         max_redirects: int = 5,
     ):
-        """Open one HLS resource while validating every redirect before following it."""
+        """读取单个 HLS 资源，并在跟随前逐跳校验每次重定向。"""
         current_url = str(upstream_url)
         request_headers = dict(headers)
         for redirect_count in range(max(0, int(max_redirects)) + 1):
+            curl_options = None
             if domain_policy is not None:
-                domain_policy.require_public_url(current_url)
+                addresses = domain_policy.resolve_public_addresses(current_url)
+                curl_options = hls_proxy_utils.curl_resolve_options(current_url, addresses)
             response = self._curl_cffi_get_response(
                 curl_requests,
                 current_url,
                 request_headers,
                 upstream_proxy,
                 allow_redirects=False,
+                curl_options=curl_options,
             )
             status = int(getattr(response, "status_code", 0) or 0)
             response_headers = getattr(response, "headers", {}) or {}
@@ -999,6 +969,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         *,
         stream: bool = False,
         allow_redirects: bool = True,
+        curl_options: dict[Any, Any] | None = None,
     ):
         kwargs: dict[str, Any] = {
             "headers": headers,
@@ -1008,6 +979,8 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         }
         if proxy:
             kwargs["proxy"] = proxy
+        if curl_options:
+            kwargs["curl_options"] = curl_options
         if stream:
             kwargs["stream"] = True
         try:
@@ -1216,7 +1189,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
-        # Python fallback 先合并成裸 TS，再根据目标后缀决定是否 remux，失败时可整目录清理。
+        # Python 回退路径（fallback）先合并成裸 TS，再根据目标后缀决定是否 remux，失败时可整目录清理。
         raw_path = temp_dir / f"{target.stem}.ts"
         session = self._make_curl_cffi_session(curl_requests, headers, proxy)
         domain_policy = self._domain_policy_for_item(video_item)
@@ -1294,7 +1267,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
-        # Playwright fallback 也使用独立目录，避免浏览器上下文失败时污染最终输出路径。
+        # Playwright 回退路径（fallback）也使用独立目录，避免浏览器上下文失败时污染最终输出路径。
         raw_path = temp_dir / f"{target.stem}.ts"
         storage_state = video_item.meta.get("browser_storage_state")
         referer = str(video_item.meta.get("referer") or headers.get("Referer") or "")
@@ -1320,7 +1293,11 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 context_kwargs: dict[str, Any] = anti_context.browser_context_kwargs()
                 if isinstance(storage_state, dict) and storage_state:
                     context_kwargs["storage_state"] = storage_state
+                if domain_policy is not None:
+                    context_kwargs["service_workers"] = "block"
                 context = browser.new_context(**context_kwargs)
+                if domain_policy is not None:
+                    playwright_network_guard.install_public_network_guard(context, domain_policy)
                 anti_context.apply_to_context(context)
                 self._add_cookie_header_to_context(context, headers.get("Cookie"), video_item.url, referer)
                 page = context.new_page()
@@ -1631,7 +1608,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
                 segment_bytes = fetch_bytes(segment.absolute_uri)
                 decoded_segment = self._decrypt_hls_segment(segment, segment_bytes, fetch_bytes, key_cache)
                 output.write(decoded_segment)
-                # Python/browser fallback 已经拿到整段数据，只能在段之间施加背压；
+                # Python/浏览器回退路径（fallback）已经拿到整段数据，只能在段之间施加背压；
                 # 外部工具与 yt-dlp 路径则使用各自的原生限速参数。
                 rate_limiter.throttle(len(decoded_segment), check_stop_func)
                 bytes_written += len(decoded_segment)
@@ -1682,7 +1659,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
     @staticmethod
     def _aes_128_cbc_decrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
         try:
-            # ``Crypto`` is supplied by maintained PyCryptodome; B413 only identifies the legacy namespace.
+            # ``Crypto`` 实际由持续维护的 PyCryptodome 提供；B413 只识别到了兼容命名空间。
             from Crypto.Cipher import AES  # nosec B413
             from Crypto.Util.Padding import unpad  # nosec B413
         except ImportError:
@@ -1697,7 +1674,7 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         try:
             return unpad(AES.new(key, AES.MODE_CBC, iv).decrypt(data), 16)
         except ValueError:
-            # Some HLS producers already align MPEG-TS packets without PKCS7 padding.
+            # 部分 HLS 生产端已按 MPEG-TS 包边界对齐，数据本身不含 PKCS7 填充。
             return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
 
     @staticmethod
@@ -1763,18 +1740,31 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
         domain_policy: DomainPolicyEngine | None,
         max_redirects: int = 5,
     ):
-        """Use curl_cffi without surrendering redirect validation to the library."""
+        """使用 curl_cffi 发起请求，但仍由本项目掌控并逐跳校验重定向。"""
         current_url = str(url)
         request_headers = dict(headers)
         for redirect_count in range(max(0, int(max_redirects)) + 1):
+            request_kwargs: dict[str, Any] = {
+                "headers": request_headers,
+                "timeout": timeout,
+                "allow_redirects": False,
+            }
+            original_curl_options: dict[Any, Any] | None = None
             if domain_policy is not None:
-                domain_policy.require_public_url(current_url)
-            response = session.get(
-                current_url,
-                headers=request_headers,
-                timeout=timeout,
-                allow_redirects=False,
-            )
+                addresses = domain_policy.resolve_public_addresses(current_url)
+                session_curl_options = getattr(session, "curl_options", None)
+                if not isinstance(session_curl_options, dict):
+                    raise ExternalToolError("curl_cffi session cannot enforce pinned DNS resolution")
+                original_curl_options = session_curl_options
+                session.curl_options = {
+                    **session_curl_options,
+                    **hls_proxy_utils.curl_resolve_options(current_url, addresses),
+                }
+            try:
+                response = session.get(current_url, **request_kwargs)
+            finally:
+                if original_curl_options is not None:
+                    session.curl_options = original_curl_options
             status = int(getattr(response, "status_code", 0) or 0)
             response_headers = getattr(response, "headers", {}) or {}
             location = response_headers.get("Location") or response_headers.get("location")
@@ -1897,24 +1887,37 @@ class N_m3u8DL_RE_Downloader(BaseDownloader):
             elif status.get("status") == "finished":
                 self._emit_progress(progress_callback, 95)
 
-        params = self._yt_dlp_params(str(target), ydl_headers, proxy, progress_hook)
+        local_proxy: _LocalHlsProxy | None = None
+        source_url = video_item.url
+        yt_dlp_proxy = proxy
+        if self._should_use_local_hls_proxy(video_item):
+            local_proxy = self._start_local_hls_proxy(video_item, headers, proxy)
+            source_url = local_proxy.url
+            yt_dlp_proxy = None
+            ydl_headers = {"User-Agent": str(headers.get("User-Agent") or DEFAULT_USER_AGENT)}
+
+        params = self._yt_dlp_params(str(target), ydl_headers, yt_dlp_proxy, progress_hook)
         try:
-            self._run_yt_dlp(video_item.url, dict(params))
-        except YoutubeDLError as exc:
-            params.pop("impersonate", None)
             try:
-                self._run_yt_dlp(video_item.url, dict(params))
-            except YoutubeDLError as retry_exc:
-                raise ExternalToolError(f"yt-dlp fallback failed: {retry_exc}") from retry_exc
-            else:
-                debug_logger.log(
-                    component="N_m3u8DL_RE_Downloader",
-                    action="yt_dlp_impersonation_retry",
-                    message="yt-dlp fallback succeeded without impersonation",
-                    status_code="M3U8_YTDLP_RETRY_OK",
-                    details={"initial_error": str(exc)},
-                    trace_id=video_item.meta.get("trace_id"),
-                )
+                self._run_yt_dlp(source_url, dict(params))
+            except YoutubeDLError as exc:
+                params.pop("impersonate", None)
+                try:
+                    self._run_yt_dlp(source_url, dict(params))
+                except YoutubeDLError as retry_exc:
+                    raise ExternalToolError(f"yt-dlp fallback failed: {retry_exc}") from retry_exc
+                else:
+                    debug_logger.log(
+                        component="N_m3u8DL_RE_Downloader",
+                        action="yt_dlp_impersonation_retry",
+                        message="yt-dlp fallback succeeded without impersonation",
+                        status_code="M3U8_YTDLP_RETRY_OK",
+                        details={"initial_error": str(exc)},
+                        trace_id=video_item.meta.get("trace_id"),
+                    )
+        finally:
+            if local_proxy is not None:
+                local_proxy.stop()
 
         if not target.exists() or target.stat().st_size <= 0:
             raise ExternalToolError("yt-dlp fallback did not create a valid output file")

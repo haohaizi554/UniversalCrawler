@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/extract/extractor.py` 对应的接口、加密、提取或工具逻辑。"""
+"""把抖音与 TikTok 原始响应转换为统一的数据记录。"""
 
-# app/core/lib/douyin/extract/extractor.py
 from datetime import datetime
 from json import dumps
 from time import localtime, strftime
@@ -8,7 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-# 调整引用路径
+# 最小依赖环境下使用索引占位值，保证提取器可被导入并显式暴露缺失字段。
 try:
     from ..tools import (
         AUTHOR_COVER_INDEX,
@@ -35,20 +34,16 @@ try:
         DownloaderError,
     )
 except ImportError:
-    # 默认值，防止导入失败
     VIDEO_INDEX = -1
     VIDEO_TIKTOK_INDEX = 0
     IMAGE_INDEX = -1
     IMAGE_TIKTOK_INDEX = -1
 
     class DownloaderError(Exception):
-        """Fallback error type used when the real downloader exception cannot be imported."""
 
         pass
 
-# 这里其实是 tools.function.condition_filter，我们在 tools/__init__.py 中并没有导出它
-# 为了兼容，我们需要在这里重新定义或者从正确的地方导入
-# 假设 condition_filter 是一个简单的过滤器，默认返回 True
+# 尚未接入外部筛选器时不过滤作品，保持现有数据流。
 def condition_filter(data: dict) -> bool:
     """默认不过滤任何作品，供上层按需覆写筛选条件。"""
     return True
@@ -56,10 +51,8 @@ def condition_filter(data: dict) -> bool:
 try:
     from ..translation import _
 except ImportError:
-
+    # 独立导入时保留原文，避免翻译层缺失阻断提取流程。
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -193,7 +186,10 @@ class Extractor:
         tiktok=False,
         **kwargs,
     ) -> list[dict]:
-        """根据提取类型分发到对应处理流程。"""
+        """``type_`` 必须命中 ``self.type`` 分发表；未知键抛出 ``DownloaderError``。
+
+        命中后的处理器统一接收 ``data, recorder, tiktok, **kwargs``。
+        """
         if type_ not in self.type.keys():
             raise DownloaderError
         return await self.type[type_](data, recorder, tiktok, **kwargs)
@@ -243,7 +239,7 @@ class Extractor:
     def __condition_filter(
         container: SimpleNamespace,
     ):
-        """自定义筛选作品"""
+        """仅保留通过 condition_filter 的作品。"""
         result = [i for i in container.all_data if condition_filter(i)]
         container.all_data = result
 
@@ -251,7 +247,7 @@ class Extractor:
         self,
         data: list[dict],
     ):
-        """汇总作品数量"""
+        """记录筛选完成后的作品数量。"""
         self.log.info(_("筛选处理后作品数量: {count}").format(count=len(data)))
 
     def __extract_batch(
@@ -259,7 +255,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ) -> None:
-        """批量提取作品信息"""
+        """把一条抖音作品响应展开为统一记录。"""
         container.cache = container.template.copy()
         self.__extract_detail_info(container.cache, data)
         self.__extract_account_info(container, data)
@@ -275,7 +271,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ) -> None:
-        """批量提取作品信息"""
+        """把一条 TikTok 作品响应映射为统一记录。"""
         container.cache = container.template.copy()
         self.__extract_detail_info_tiktok(container.cache, data)
         self.__extract_account_info_tiktok(container, data)
@@ -303,7 +299,6 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ):
-        # TODO: 尚未适配 TikTok 额外信息
         """为 TikTok 额外字段预留出口，当前先写入空值保持结构一致。"""
         item["extra"] = ""
 
@@ -324,14 +319,8 @@ class Extractor:
         pass
 
     def __extract_description(self, data: SimpleNamespace) -> str:
-        # 2023/11/11: 抖音不再折叠过长的作品描述
-        """提取作品描述文本，并保留后续兼容长描述逻辑的扩展点。"""
+        """读取作品描述；缺失时由调用方回退到作品 ID。"""
         return self.safe_extract(data, "desc")
-        # if len(desc := self.safe_extract(data, "desc")) < 107:
-        #     return desc
-        # long_desc = self.safe_extract(data, "share_info.share_link_desc")
-        # return long_desc.split(
-        #     "  ", 1)[-1].split("  %s", 1)[0].replace("# ", "#")
 
     def __clean_description(self, desc: str) -> str:
         """清理描述中的多余空白和不需要的格式噪声。"""
@@ -388,7 +377,6 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ) -> None:
-        # 作品分类
         """判断抖音作品是视频、图集还是实况，并进入对应提取分支。"""
         if images := self.safe_extract(data, "images"):
             self.__extract_image_info(item, data, images)
@@ -420,7 +408,6 @@ class Extractor:
         data: SimpleNamespace,
         tiktok=False,
     ):
-        # item["ratio"] = self.safe_extract(data, "video.ratio")
         """补充分享链接等衍生字段，方便后续导出和回查来源。"""
         item["share_url"] = self.__generate_link(
             item["type"],
@@ -628,17 +615,13 @@ class Extractor:
         data: SimpleNamespace,
         type_=_("视频"),
     ) -> None:
-        """提供 `__extract_video_info_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取 TikTok 视频的分辨率、时长、下载地址和封面。"""
         item["type"] = type_
-        # item["downloads"] = self.safe_extract(
-        #     data,
-        #     "video.playAddr",
-        # )  # 视频文件大小优先
         item["height"], item["width"], item["downloads"] = (
             self.__extract_video_download_tiktok(
                 data,
             )
-        )  # 视频分辨率优先
+        )
         item["duration"] = self.time_conversion_tiktok(
             self.safe_extract(
                 data,
@@ -656,7 +639,7 @@ class Extractor:
         self,
         data: SimpleNamespace,
     ) -> tuple[int, int, str]:
-        """提供 `__extract_video_download_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """从 TikTok 码率列表中选择综合质量最高的下载地址。"""
         bitrate_info: list[SimpleNamespace] = self.safe_extract(
             data,
             "video.bitrateInfo",
@@ -673,6 +656,7 @@ class Extractor:
                 )
                 for i in bitrate_info
             ]
+            # 先比较分辨率，再比较码率和体积，避免仅按文件大小误选低清版本。
             bitrate_info.sort(
                 key=lambda x: (
                     max(
@@ -731,7 +715,7 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ):
-        """作品标签"""
+        """提取抖音作品描述中关联的话题名称。"""
         text = [
             self.safe_extract(i, "hashtag_name")
             for i in self.safe_extract(data, "text_extra", [])
@@ -743,7 +727,7 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ):
-        """作品标签"""
+        """提取 TikTok 作品描述中关联的话题名称。"""
         text = [
             self.safe_extract(i, "hashtagName")
             for i in self.safe_extract(data, "textExtra", [])
@@ -756,13 +740,11 @@ class Extractor:
         data: SimpleNamespace,
         has=False,
     ) -> None:
-        """提供 `__extract_cover` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取抖音视频封面；非视频记录统一写入空值。"""
         if has:
-            # 动态封面图链接
             item["dynamic_cover"] = self.safe_extract(
                 data, f"video.dynamic_cover.url_list[{DYNAMIC_COVER_INDEX}]"
             )
-            # 静态封面图链接
             item["static_cover"] = self.safe_extract(
                 data, f"video.cover.url_list[{STATIC_COVER_INDEX}]"
             )
@@ -775,11 +757,9 @@ class Extractor:
         data: SimpleNamespace,
         has=False,
     ) -> None:
-        """提供 `__extract_cover_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取 TikTok 视频封面；非视频记录统一写入空值。"""
         if has:
-            # 动态封面图链接
             item["dynamic_cover"] = self.safe_extract(data, "video.dynamicCover")
-            # 静态封面图链接
             item["static_cover"] = self.safe_extract(data, "video.cover")
         else:
             item["dynamic_cover"], item["static_cover"] = "", ""
@@ -790,7 +770,7 @@ class Extractor:
         data: SimpleNamespace,
         tiktok=False,
     ) -> None:
-        """提供 `__extract_music` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按平台字段提取配乐作者、标题和下载地址。"""
         if music_data := self.safe_extract(data, "music"):
             if tiktok:
                 author = self.safe_extract(music_data, "authorName")
@@ -802,7 +782,7 @@ class Extractor:
                 url = self.safe_extract(
                     music_data,
                     f"play_url.url_list[{MUSIC_INDEX}]",
-                )  # 部分作品的音乐无法下载
+                )
 
         else:
             author, title, url = "", "", ""
@@ -811,7 +791,7 @@ class Extractor:
         item["music_url"] = url
 
     def __extract_statistics(self, item: dict, data: SimpleNamespace) -> None:
-        """提供 `__extract_statistics` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取抖音互动统计，缺失字段以 -1 标记。"""
         data = self.safe_extract(data, "statistics")
         for i in self.statistics_keys:
             item[i] = self.safe_extract(
@@ -825,7 +805,7 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ) -> None:
-        """提供 `__extract_statistics_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """把 TikTok 驼峰统计字段映射到统一键名。"""
         data = self.safe_extract(data, "stats")
         for i, j in enumerate(self.statistics_keys_tiktok):
             item[self.statistics_keys[i]] = self.safe_extract(
@@ -839,7 +819,7 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ) -> None:
-        """提供 `__extract_tags` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取抖音视频标签；接口无标签时写入空列表。"""
         if not (t := self.safe_extract(data, "video_tag")):
             item["tag"] = []
         else:
@@ -850,7 +830,7 @@ class Extractor:
         item: dict,
         data: SimpleNamespace,
     ) -> None:
-        """提供 `__extract_tags_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取 TikTok 话题标签；接口无标签时写入空列表。"""
         if not (t := self.safe_extract(data, "textExtra")):
             item["tag"] = []
         else:
@@ -862,11 +842,10 @@ class Extractor:
         data: SimpleNamespace,
         key="author",
     ) -> None:
-        """提供 `__extract_account_info` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取抖音作者标识、签名和展示名称。"""
         data = self.safe_extract(data, key)
         container.cache["uid"] = self.safe_extract(data, "uid")
         container.cache["sec_uid"] = self.safe_extract(data, "sec_uid")
-        # container.cache["short_id"] = self.safe_extract(data, "short_id")
         container.cache["unique_id"] = self.safe_extract(
             data,
             "unique_id",
@@ -881,7 +860,7 @@ class Extractor:
         data: SimpleNamespace,
         key="author",
     ) -> None:
-        """提供 `__extract_account_info_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """把 TikTok 作者字段映射到统一账号键名。"""
         data = self.safe_extract(data, key)
         container.cache["uid"] = self.safe_extract(data, "id")
         container.cache["sec_uid"] = self.safe_extract(data, "secUid")
@@ -895,7 +874,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ) -> None:
-        """提供 `__extract_nickname_info` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """同作者批次复用预处理名称，否则逐条清洗作者昵称。"""
         if container.same:
             container.cache["nickname"] = container.name
             container.cache["mark"] = container.mark or container.name
@@ -923,7 +902,7 @@ class Extractor:
         str,
         str,
     ]:
-        
+        """校验账号或合集归属，并生成后续存储使用的 ID、名称和标记。"""
         if isinstance(data, dict):
             info = (
                 self.get_user_info_tiktok(data) if tiktok else self.get_user_info(data)
@@ -1010,7 +989,7 @@ class Extractor:
         id_: str,
         key: str,
     ):
-        """从多个数据返回对象"""
+        """按嵌套字段值从响应列表中定位目标记录，未命中时抛出异常。"""
         for item in data:
             item = self.generate_data_object(item)
             if id_ == self.safe_extract(item, key):
@@ -1025,7 +1004,7 @@ class Extractor:
         mark: str,
         title: str = None,  # TikTok 合辑需要直接传入标题
     ):
-        """提供 `__extract_pretreatment_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """从目标记录提取 ID，并清洗名称与用户自定义标记。"""
         id_ = self.safe_extract(item, id_)
         name = self.cleaner.filter_name(
             title
@@ -1047,7 +1026,7 @@ class Extractor:
         container: SimpleNamespace,
         tiktok: bool,
     ) -> None:
-        """提供 `__platform_classify_detail` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按平台选择字段映射，将每条作品追加到统一容器。"""
         if tiktok:
             [
                 self.__extract_batch_tiktok(
@@ -1071,7 +1050,7 @@ class Extractor:
         recorder,
         tiktok: bool,
     ) -> list[dict]:
-        """提供 `__detail` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取作品详情、清除无 ID 记录并写入 recorder。"""
         container = SimpleNamespace(
             all_data=[],
             template={
@@ -1100,7 +1079,7 @@ class Extractor:
         tiktok: bool,
         source=False,
     ) -> list[dict]:
-        """提供 `__comment` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """清洗并记录评论；source=True 时直接返回上游已清洗的数据。"""
         if not any(data):
             return []
         container = SimpleNamespace(
@@ -1129,7 +1108,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__extract_comments_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取评论文本、图片、贴纸、回复关系和作者信息。"""
         container.cache = container.template.copy()
         container.cache["create_timestamp"] = self.safe_extract(data, "create_time")
         container.cache["create_time"] = self.__format_date(
@@ -1158,7 +1137,7 @@ class Extractor:
 
     @classmethod
     def extract_reply_ids(cls, data: list[dict]) -> list[str]:
-        """提取 `reply_ids` 对应的关键信息，供 `Extractor` 使用。"""
+        """返回存在回复的一级评论 ID，供回复接口继续分页。"""
         container = SimpleNamespace(
             reply_ids=[],
             cache=None,
@@ -1178,7 +1157,7 @@ class Extractor:
 
     @staticmethod
     def __filter_reply_ids(container: SimpleNamespace):
-        """提供 `__filter_reply_ids` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """仅收集 reply_comment_total 大于零的评论 ID。"""
         if container.cache["reply_comment_total"] > 0:
             container.reply_ids.append(container.cache["cid"])
 
@@ -1189,7 +1168,7 @@ class Extractor:
         tiktok: bool,
         *args,
     ) -> list[dict]:
-        """提供 `__live` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按平台字段提取直播间信息，不写入 recorder。"""
         container = SimpleNamespace(all_data=[])
         if tiktok:
             [
@@ -1208,7 +1187,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__extract_live_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """兼容直播页与分享回流两种抖音响应结构。"""
         if data := self.safe_extract(
             data, f"data.data[{LIVE_DATA_INDEX}]"
         ) or self.safe_extract(data, "data.room"):
@@ -1241,7 +1220,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__extract_live_data_tiktok` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取 TikTok 直播状态、主播信息和拉流地址。"""
         data = self.safe_extract(data, "data")
         live_data = {
             "create_time": datetime.fromtimestamp(t)
@@ -1265,7 +1244,7 @@ class Extractor:
         recorder,
         tiktok: bool,
     ) -> list[dict]:
-        """提供 `__user` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取账号资料、移除无 sec_uid 记录并写入 recorder。"""
         container = SimpleNamespace(
             all_data=[],
             cache=None,
@@ -1288,7 +1267,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__extract_user_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """把抖音账号资料展开为可存储的扁平记录。"""
         container.cache = container.template.copy()
         container.cache["avatar"] = self.safe_extract(
             data, f"avatar_larger.url_list[{AVATAR_LARGER_INDEX}]"
@@ -1345,7 +1324,7 @@ class Extractor:
         tiktok: bool,
         tab: int,
     ) -> list[dict]:
-        """提供 `__search` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按 tab 分派综合、用户或直播搜索结果。"""
         if tab in {0, 1}:
             return await self.__search_general(data, recorder)
         elif tab == 2:
@@ -1358,7 +1337,7 @@ class Extractor:
         data: list[dict],
         recorder,
     ) -> list[dict]:
-        """提供 `__search_general` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """归一化综合或视频搜索结果并写入 recorder。"""
         container = SimpleNamespace(
             all_data=[],
             cache=None,
@@ -1379,7 +1358,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__search_result_classify` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """识别不同搜索卡片，并将其中的作品展开为统一记录。"""
         if d := self.safe_extract(data, "aweme_info"):
             self.__extract_batch(container, d)
         elif d := self.safe_extract(data, "aweme_mix_info.mix_items"):
@@ -1388,12 +1367,6 @@ class Extractor:
             [self.__extract_batch(container, i) for i in d]
         elif d := self.safe_extract(data, f"user_list[{SEARCH_USER_INDEX}].items"):
             [self.__extract_batch(container, i) for i in d]
-        # elif d := self.safe_extract(data, "user_list.user_info"):
-        #     pass
-        # elif d := self.safe_extract(data, "music_list"):
-        #     pass
-        # elif d := self.safe_extract(data, "common_aladdin"):
-        #     pass
         else:
             self.log.error(f"Unreported search results: {data}", False)
 
@@ -1402,7 +1375,7 @@ class Extractor:
         data: list[dict],
         recorder,
     ) -> list[dict]:
-        """提供 `__search_user` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取用户搜索结果并写入 recorder。"""
         container = SimpleNamespace(
             all_data=[],
             cache=None,
@@ -1425,7 +1398,7 @@ class Extractor:
         data: SimpleNamespace,
         user=True,
     ):
-        """提供 `__deal_search_user_live` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取用户搜索与直播作者共用的账号字段。"""
         if user:
             container.cache = container.template.copy()
         container.cache["avatar"] = self.safe_extract(
@@ -1450,15 +1423,13 @@ class Extractor:
             )
             container.cache["unique_id"] = self.safe_extract(data, "unique_id")
             container.all_data.append(container.cache)
-        # else:
-        #     pass
 
     async def __search_live(
         self,
         data: list[dict],
         recorder,
     ) -> list[dict]:
-        """提供 `__search_live` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取直播搜索结果并写入 recorder。"""
         container = SimpleNamespace(
             all_data=[],
             cache=None,
@@ -1475,7 +1446,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__deal_search_live` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """合并直播作者字段与 room_id。"""
         container.cache = container.template.copy()
         self.__deal_search_user_live(
             container, self.safe_extract(data, "author"), False
@@ -1489,14 +1460,14 @@ class Extractor:
         recorder,
         tiktok: bool,
     ) -> list[dict]:
-        """提供 `__hot` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """提取热榜记录并写入 recorder。"""
         all_data = []
         [self.__deal_hot_data(all_data, self.generate_data_object(i)) for i in data]
         await self.__record_data(recorder, all_data)
         return all_data
 
     def __deal_hot_data(self, container: list, data: SimpleNamespace):
-        """提供 `__deal_hot_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """将一条热榜词条展开为扁平记录。"""
         cache = {
             "position": str(self.safe_extract(data, "position", -1)),
             "sentence_id": self.safe_extract(data, "sentence_id"),
@@ -1512,8 +1483,7 @@ class Extractor:
         container.append(cache)
 
     async def __record_data(self, record, data: list[dict]):
-        # 记录数据
-        """提供 `__record_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按 recorder 的字段顺序持久化记录；未配置 recorder 时跳过。"""
         if record is None:
             return
         for i in data:
@@ -1521,21 +1491,17 @@ class Extractor:
 
     @staticmethod
     def __extract_values(record, data: dict) -> list:
-        """提供 `__extract_values` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按 recorder 的字段顺序投影记录值。"""
         return [data[key] for key in record.field_keys]
 
     @staticmethod
     def __date_filter(container: SimpleNamespace):
-        # print("前", len(container.all_data))  # 调试代码
-        """提供 `__date_filter` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """仅保留发布日期位于闭区间内的已提取作品。"""
         result = []
         for item in container.all_data:
             create_time = datetime.fromtimestamp(item["create_timestamp"]).date()
             if container.earliest <= create_time <= container.latest:
                 result.append(item)
-            # else:
-            #     print("丢弃", item)  # 调试代码
-        # print("后", len(result))  # 调试代码
         container.all_data = result
 
     def source_date_filter(
@@ -1545,7 +1511,6 @@ class Extractor:
         latest: "date",
         tiktok=False,
     ) -> list[dict]:
-        
         if tiktok:
             return self.__source_date_filter(
                 data,
@@ -1566,7 +1531,7 @@ class Extractor:
         earliest: "date" = ...,
         latest: "date" = ...,
     ) -> list[dict]:
-        """提供 `__source_date_filter` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """按原始时间戳过滤；缺失时间戳时保留记录，避免误删未知日期数据。"""
         result = []
         for item in data:
             if not (create_time := item.get(key, 0)):
@@ -1580,19 +1545,18 @@ class Extractor:
 
     @classmethod
     def extract_mix_id(cls, data: dict) -> str:
-        """提取 `mix_id` 对应的关键信息，供 `Extractor` 使用。"""
+        """从作品详情提取 mix_id；字段缺失时返回空串。"""
         data = cls.generate_data_object(data)
         return cls.safe_extract(data, "mix_info.mix_id")
 
     def __extract_item_records(self, data: list[dict]):
-        # 记录提取成功的条目
-        """提供 `__extract_item_records` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """逐条记录成功提取的作品类型与 ID。"""
         for i in data:
             self.log.info(f"{i['type']} {i['id']} 数据提取成功", False)
 
     @classmethod
     def extract_mix_collect_info(cls, data: list[dict]) -> list[dict]:
-        """提取 `mix_collect_info` 对应的关键信息，供 `Extractor` 使用。"""
+        """提取合集名称与 mix_id。"""
         data = cls.generate_data_object(data)
         return [
             {
@@ -1604,7 +1568,7 @@ class Extractor:
 
     @classmethod
     def extract_collects_info(cls, data: list[dict]) -> list[dict]:
-        """提取 `collects_info` 对应的关键信息，供 `Extractor` 使用。"""
+        """提取收藏夹名称与 collects_id。"""
         data = cls.generate_data_object(data)
         return [
             {
@@ -1616,8 +1580,7 @@ class Extractor:
 
     @staticmethod
     def __clean_extract_data(data: list[dict], key: str) -> list[dict]:
-        # 去除无效数据
-        """提供 `__clean_extract_data` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """删除缺少指定必要键值的记录。"""
         return [i for i in data if i.get(key)]
 
     async def __music(
@@ -1626,7 +1589,7 @@ class Extractor:
         recorder,
         tiktok=False,
     ) -> list[dict]:
-        """暂不记录收藏音乐数据"""
+        """提取收藏音乐字段；该模式当前不写入 recorder。"""
         container = SimpleNamespace(
             all_data=[],
             template={
@@ -1649,7 +1612,7 @@ class Extractor:
         container: SimpleNamespace,
         data: SimpleNamespace,
     ):
-        """提供 `__extract_collection_music` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """将一条收藏音乐响应展开为统一记录。"""
         container.cache = container.template.copy()
         container.cache["id"] = self.safe_extract(data, "id_str")
         container.cache["title"] = self.safe_extract(data, "title")

@@ -1,4 +1,4 @@
-//app/core/lib/douyin/js/X-Bogus.js
+// 原始 VM 与字节码负载必须保持一致；偏移或常量变化会直接改变 X-Bogus 结果。
 var window = null;
 
 function _0x5cd844(e) {

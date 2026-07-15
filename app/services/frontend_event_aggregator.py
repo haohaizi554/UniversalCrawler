@@ -1,4 +1,4 @@
-﻿"""Coalesce high-volume frontend events into versioned dirty sections."""
+﻿"""前端高频事件聚合：以版本化脏 section 和有界队列提供增量刷新。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from enum import IntEnum
 from typing import Any
 
 class FrontendEventPriority(IntEnum):
-    """Frontend event delivery priority."""
+    """数值越高，队列背压时越应优先保留。"""
 
     NOISY = 0
     NORMAL = 1
@@ -113,8 +113,7 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
         "video_renamed",
         "scan_result",
     }:
-        # `scan_result` is usually a local directory scan refresh, so keep section
-        # fan-out tight to avoid rebuilding unrelated video sections.
+        # `scan_result` 通常只是本地目录扫描刷新，缩小 section 扇出可避免重建无关视频列表。
         if normalized == "scan_result":
             return frozenset({"queue_items", "app_status"})
         return VIDEO_SECTIONS
@@ -133,7 +132,7 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
     return None
 
 def event_coalesce_key(topic: str, payload: Any = None) -> tuple[str, str]:
-    """返回 latest-state-wins key；同视频的高频事件只保留最后一次。"""
+    """返回末值优先键（latest-state-wins key）；同视频的高频事件只保留最后一次。"""
 
     payload = payload if isinstance(payload, dict) else {}
     entity_id = (
@@ -158,7 +157,7 @@ class FrontendDirtyState:
     dropped_count: int = 0
 
 class FrontendEventAggregator:
-    """线程安全的脏 section 跟踪器，同时保留短历史供增量查询。"""
+    """线程安全地跟踪脏 section；有界待发队列负责背压，短历史供增量查询。"""
 
     def __init__(self, *, max_pending_events: int = 2048, monotonic=time.monotonic) -> None:
         self._lock = threading.RLock()
@@ -271,7 +270,7 @@ class FrontendEventAggregator:
         self,
         base_version: int,
     ) -> tuple[FrontendDirtyState, frozenset[str], tuple[str, ...]]:
-        """Return one version-consistent view of dirty sections and deletions."""
+        """在同一把锁内返回脏 section 与删除记录，保证两者对应同一版本。"""
         with self._lock:
             return (
                 self.peek(),
@@ -295,7 +294,7 @@ class FrontendEventAggregator:
             return tuple(sorted(deleted))
 
     def _remember_event(self, topic: str, payload: Any, priority: FrontendEventPriority) -> None:
-        """在容量受限的队列中保存代表性事件，低优先级事件优先被丢弃。"""
+        """队列满时先丢低优先级事件；CRITICAL 事件至少会替换最旧事件。"""
         key = event_coalesce_key(topic, payload)
         if key in self._pending_events:
             self._coalesced_count += 1

@@ -13,7 +13,13 @@ def resolve_port_with_dialog(
     is_port_in_use: Callable[[str, int], bool],
     port_probe_range: int,
 ) -> int:
-    """端口被占用时，弹 Qt 对话框让用户选择新的端口。"""
+    """在端口冲突时让用户选择另一个当前空闲的端口。
+
+    ``is_port_in_use`` 是只读探测回调：调用结束前必须关闭临时 socket，不得
+    ``listen``、预留或持续占用端口。用户取消、关闭窗口或按 Esc 时抛出
+    ``SystemExit(0)``；接受后会重新进入探测循环，最终只返回探测当时空闲的
+    端口。真正绑定监听器以及处理探测后的竞争窗口属于 Web 服务器启动阶段。
+    """
     from PyQt6.QtCore import QSize, Qt
     from PyQt6.QtGui import QKeySequence, QShortcut
     from PyQt6.QtWidgets import (
@@ -49,7 +55,7 @@ def resolve_port_with_dialog(
 
     port = default_port
     while True:
-        # The callback probes wildcard occupancy; this module never opens a listener.
+        # 探测不能保留监听器；空闲结果只是服务器正式 bind 前的即时快照。
         if not is_port_in_use("0.0.0.0", port):  # nosec B104
             return port
 
@@ -299,7 +305,7 @@ def resolve_port_with_dialog(
             if candidate > 65535:
                 break
             attempted += 1
-            # The callback probes wildcard occupancy; this module never opens a listener.
+            # 建议端口同样只做瞬时占用探测，不在对话框阶段预留。
             if not is_port_in_use("0.0.0.0", candidate):  # nosec B104
                 suggested = candidate
                 break

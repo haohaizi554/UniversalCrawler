@@ -1,4 +1,4 @@
-"""Host-neutral TTY selection strategy."""
+"""与宿主无关的 TTY 选择策略。"""
 
 from __future__ import annotations
 

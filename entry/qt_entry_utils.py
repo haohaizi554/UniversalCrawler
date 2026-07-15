@@ -1,7 +1,7 @@
-"""Backward-compatible import path for Qt runtime helpers.
+"""Qt 运行时辅助函数的向后兼容导入路径。
 
-The implementation lives in :mod:`app.utils.qt_runtime` so app/UI/controller
-code does not depend back on the entry layer.
+实现位于 :mod:`app.utils.qt_runtime`，避免 app/UI/controller 代码反向依赖
+entry 层。
 """
 
 from app.utils.qt_runtime import (

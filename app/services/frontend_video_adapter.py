@@ -1,8 +1,7 @@
-"""Pure frontend row adapters for video-like state.
+"""将 VideoItem 确定性投影为前端行数据。
 
-The state service owns orchestration, events, and side effects. This module
-keeps deterministic formatting and classification helpers small enough to test
-without booting the GUI, web layer, or download manager.
+编排、事件和副作用由 FrontendStateService 负责；本模块只保留无需启动
+GUI、WebUI 或下载管理器即可测试的格式化与分类规则。
 """
 
 from __future__ import annotations
@@ -229,7 +228,7 @@ def active_detail_fields(
     source_url: str,
     trace_id: str,
 ) -> list[dict[str, Any]]:
-    """Return UI-ready active detail fields for GUI/WebUI renderers."""
+    """生成 GUI/WebUI 共用的活动任务详情字段，保持标签、换行策略和顺序一致。"""
 
     return [
         {"label": "标题", "value": title, "wrap": True},

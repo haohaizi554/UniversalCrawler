@@ -1,4 +1,4 @@
-"""Task selection dialog shown after spider scanning completes."""
+"""采集扫描完成后显示任务选择对话框。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ _BUTTON_HORIZONTAL_PADDING = 56
 _SELECTION_COLUMN_MIN_WIDTH = 72
 
 class SelectionTableDelegate(QStyledItemDelegate):
-    """Paint selection-dialog rows without Qt's native current-cell focus frame."""
+    """绘制选择行时移除 Qt 原生当前单元格焦点框。"""
 
     def paint(self, painter, option, index) -> None:  # noqa: ANN001
         clean_option = QStyleOptionViewItem(option)
@@ -57,7 +57,7 @@ def exec_selection_dialog(
     title: str = "任务清单确认",
     language: str = "zh-CN",
 ) -> list[int] | None:
-    """Show the modal selection dialog and return chosen row indexes."""
+    """显示模态选择对话框并返回已选行索引。"""
     normalized = normalize_selection_items(items)
     if not normalized:
         return []
@@ -72,7 +72,7 @@ def exec_selection_dialog(
     return None
 
 class SelectionDialog(ChromedDialog):
-    """Lets the user choose which scanned items should enter the queue."""
+    """让用户选择哪些扫描结果进入下载队列。"""
 
     def __init__(self, parent, title="任务清单确认", items=None, *, language: str = "zh-CN"):
         self._language = normalize_language(language)
@@ -321,7 +321,7 @@ class SelectionDialog(ChromedDialog):
             cell_widget.setAutoFillBackground(True)
 
     def _apply_bulk_check(self, *, select_all: bool | None) -> None:
-        """Bulk update check states without re-entrant signal storms."""
+        """批量更新勾选状态，并阻止重入式信号风暴。"""
         self.table.setUpdatesEnabled(False)
         try:
             for index in range(self.table.rowCount()):

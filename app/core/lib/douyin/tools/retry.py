@@ -1,34 +1,29 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/retry.py` 对应的接口、加密、提取或工具逻辑。"""
+"""提供异步请求重试与文件占用交互重试装饰器。"""
 
-# app/core/lib/douyin/tools/retry.py
 from asyncio import sleep
 from random import randint
-# 尝试从当前包导入常量和工具函数 (预期在 tools/__init__.py 中定义)
-# 如果导入失败(在逐步构建过程中)，则使用默认定义以保证代码独立性
+# 独立加载该文件时使用同等默认值，避免包级循环导入中断重试逻辑。
 try:
     from . import RETRY, wait
 except ImportError:
     RETRY = 5
 
     async def wait() -> None:
-        
         await sleep(randint(5, 20) * 0.1)
 try:
     from ..translation import _
 except ImportError:
     def _(x):
-        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 __all__ = ["Retry"]
 
 class Retry:
-    """重试器，仅适用于本项目！"""
+    """以返回值真假判断本项目操作是否成功。"""
     @staticmethod
     def retry(function):
-        """发生错误时尝试重新执行，装饰的函数需要返回布尔值"""
+        """失败时按实例配置等待重试，并在耗尽后再执行最后一次。"""
         async def inner(self, *args, **kwargs):
-            
             finished = kwargs.pop("finished", False)
             for i in range(self.max_retry):
                 if result := await function(self, *args, **kwargs):
@@ -41,9 +36,8 @@ class Retry:
         return inner
     @staticmethod
     def retry_lite(function):
-        
+        """为不依赖实例状态的异步函数提供固定次数重试。"""
         async def inner(*args, **kwargs):
-            
             if r := await function(*args, **kwargs):
                 return r
             for _ in range(RETRY):
@@ -54,9 +48,8 @@ class Retry:
         return inner
     @staticmethod
     def retry_limited(function):
-        
+        """文件操作失败时允许用户选择继续重试或跳过。"""
         def inner(self, *args, **kwargs):
-            
             while True:
                 if function(self, *args, **kwargs):
                     return
@@ -70,9 +63,8 @@ class Retry:
         return inner
     @staticmethod
     def retry_infinite(function):
-        
+        """文件操作失败时持续等待用户解除占用。"""
         def inner(self, *args, **kwargs):
-            
             while True:
                 if function(self, *args, **kwargs):
                     return

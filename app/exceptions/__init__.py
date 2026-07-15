@@ -1,4 +1,4 @@
-"""包初始化模块，为 `app/exceptions` 提供统一导出或包级说明。"""
+"""统一导出配置、下载、服务与爬虫链路使用的领域异常。"""
 
 from .base import AppError
 from .config import ConfigError, ConfigReadError, ConfigValidationError, ConfigWriteError

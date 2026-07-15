@@ -12,8 +12,25 @@
     "Last 24 hours": 24 * 60,
   };
 
+  const UNIQUE_ROW_ID_FIELD = "__ucp_log_row_id";
+  const LOG_CATEGORIES = new Set(["crawl", "download", "system", "performance", "error"]);
+  const PLATFORM_ALIASES = [
+    ["douyin", ["douyin", "抖音"]],
+    ["bilibili", ["bilibili", "bili"]],
+    ["kuaishou", ["kuaishou", "快手"]],
+    ["missav", ["missav"]],
+    ["xiaohongshu", ["xiaohongshu", "xhs", "小红书"]],
+    ["system", ["system", "系统"]],
+  ];
+
+  function baseLogItemId(item) {
+    const row = item || {};
+    return String(row.id || `${row.time || ""}|${row.trace_id || ""}|${row.source || ""}|${row.message_summary || ""}`);
+  }
+
   function logItemId(item) {
-    return String(item.id || `${item.time || ""}|${item.trace_id || ""}|${item.source || ""}|${item.message_summary || ""}`);
+    const row = item || {};
+    return String(row[UNIQUE_ROW_ID_FIELD] || baseLogItemId(row));
   }
 
   function visibleLogItems(items, rowBudget = 300) {
@@ -21,7 +38,24 @@
     if (!Array.isArray(items)) return [];
     const budget = Math.max(1, Number(rowBudget) || 300);
     if (items.length <= budget) return items;
-    return items.slice(-budget);
+    return items.slice(0, budget);
+  }
+
+  function logTimestampMs(item) {
+    const explicit = Number(item && item.timestamp_ms);
+    if (Number.isFinite(explicit) && explicit !== 0) return explicit;
+    const parsed = Date.parse(String((item && item.time) || "").replace(" ", "T"));
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  }
+
+  function sortLogItems(items) {
+    return (Array.isArray(items) ? items : [])
+      .map((item, index) => ({ item, index, timestamp: logTimestampMs(item) }))
+      .sort((left, right) => {
+        if (left.timestamp !== right.timestamp) return left.timestamp > right.timestamp ? -1 : 1;
+        return right.index - left.index;
+      })
+      .map(entry => entry.item);
   }
 
   function filteredLogItems(items, filters = {}, nowMs = Date.now()) {
@@ -43,20 +77,23 @@
       counts.all += 1;
       const category = logCategory(item);
       if (Object.prototype.hasOwnProperty.call(counts, category)) counts[category] += 1;
-      if (String(item.level || "").toUpperCase() === "ERROR" && category !== "error") counts.error += 1;
     }
     return counts;
   }
 
   function queryLogItems(request = {}) {
-    // 日志筛选、分页和 tab 计数集中在纯函数里，Worker/主线程可复用。
+    // 日志筛选、分页和标签页计数集中在纯函数里，供 Worker 与主线程复用。
     const allItems = Array.isArray(request.items) ? request.items : [];
     const filters = request.filters || {};
     const rowBudget = Math.max(1, Number(request.rowBudget) || 300);
-    const pageSize = Number(request.pageSize) || 20;
+    const parsedPageSize = Number(request.pageSize);
+    const pageSize = Number.isFinite(parsedPageSize) && parsedPageSize >= 0
+      ? Math.floor(parsedPageSize)
+      : 20;
     const nowMs = Number(request.nowMs) || Date.now();
     const filteredItems = filteredLogItems(allItems, filters, nowMs);
-    const boundedItems = visibleLogItems(filteredItems, rowBudget);
+    const sortedItems = sortLogItems(filteredItems);
+    const boundedItems = visibleLogItems(sortedItems, rowBudget);
     const totalPages = pageSize <= 0 ? 1 : Math.max(1, Math.ceil(boundedItems.length / pageSize));
     const page = Math.max(1, Math.min(Number(request.page) || 1, totalPages));
     const start = pageSize <= 0 ? 0 : (page - 1) * pageSize;
@@ -81,26 +118,27 @@
   function logMatchesFilters(item, filters = {}, nowMs = Date.now()) {
     const category = logCategory(item);
     const selectedCategory = filters.category || "all";
-    if (selectedCategory === "error") {
-      if (String(item.level || "").toUpperCase() !== "ERROR" && category !== "error") return false;
-    } else if (selectedCategory !== "all" && category !== selectedCategory) {
+    if (selectedCategory !== "all" && category !== selectedCategory) {
       return false;
     }
-    if (!isAllFilter(filters.level) && String(item.level || "").toUpperCase() !== String(filters.level || "").toUpperCase()) return false;
+    if (!isAllFilter(filters.level) && logDisplayLevel(item) !== normalizeDisplayLevel(filters.level)) return false;
     if (!logMatchesTime(item, filters.time, nowMs)) return false;
     const searchText = logSearchText(item);
     const haystack = searchText.toLowerCase();
-    if (!isAllFilter(filters.platform) && !searchText.includes(String(filters.platform || ""))) return false;
+    if (!logMatchesPlatform(item, filters.platform)) return false;
     if (filters.trace && !String(item.trace_id || "").toLowerCase().includes(String(filters.trace).toLowerCase())) return false;
     if (filters.keyword && !haystack.includes(String(filters.keyword).toLowerCase())) return false;
     return true;
   }
 
   function logCategory(item) {
-    // 后端未显式分类时，用关键词兜底，保证旧日志也能落入对应 tab。
-    const level = String(item.level || "").toUpperCase();
+    // 后端行携带 GUI 使用的规范 log_scope；关键词匹配只兼容该契约建立前的旧快照。
+    for (const value of [item && item.log_scope, item && item.category]) {
+      const normalized = String(value || "").trim().toLowerCase();
+      if (LOG_CATEGORIES.has(normalized)) return normalized;
+    }
+    const level = normalizeDisplayLevel(item && (item.raw_level || item.level));
     if (level === "ERROR") return "error";
-    if (item.category) return String(item.category);
     const text = logSearchText(item).toLowerCase();
     if (/(performance|perf|\u6027\u80fd|\u8017\u65f6|latency|duration|speed_trend)/.test(text)) return "performance";
     if (/(crawl|crawler|spider|parse|scan|\u91c7\u96c6|\u722c\u53d6|\u722c\u866b|\u626b\u63cf|\u89e3\u6790|\u4e3b\u9875)/.test(text)) return "crawl";
@@ -108,17 +146,89 @@
     return "system";
   }
 
+  function normalizeDisplayLevel(value) {
+    const normalized = String(value || "INFO").trim().toUpperCase();
+    if (normalized === "WARNING") return "WARN";
+    if (normalized === "COMMAND") return "CMD";
+    if (normalized === "OK") return "SUCCESS";
+    return normalized;
+  }
+
+  function logDisplayLevel(item) {
+    const row = item || {};
+    if (row.level_display) return normalizeDisplayLevel(row.level_display);
+    const resultType = String(row.result_type || "").trim().toLowerCase();
+    const fromResult = {
+      info: "INFO",
+      success: "SUCCESS",
+      warn: "WARN",
+      error: "ERROR",
+      command: "CMD",
+    }[resultType];
+    return fromResult || normalizeDisplayLevel(row.level);
+  }
+
+  function canonicalPlatformId(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return "";
+    for (const [platformId, aliases] of PLATFORM_ALIASES) {
+      if (aliases.some(alias => normalized === alias.toLowerCase())) return platformId;
+    }
+    return normalized;
+  }
+
+  function logPlatformId(item) {
+    const row = item || {};
+    const explicit = String(row.platform_id || row.source_id || "").trim();
+    if (explicit) return canonicalPlatformId(explicit);
+    const platform = String(row.platform || row.platform_label || "").trim();
+    const exact = canonicalPlatformId(platform);
+    if (PLATFORM_ALIASES.some(([platformId]) => platformId === exact)) return exact;
+    const text = logSearchText(row).toLowerCase();
+    for (const [platformId, aliases] of PLATFORM_ALIASES) {
+      if (aliases.some(alias => alias.length > 1 && text.includes(alias.toLowerCase()))) return platformId;
+    }
+    return "";
+  }
+
+  function logMatchesPlatform(item, selectedPlatform) {
+    if (isAllFilter(selectedPlatform)) return true;
+    const selectedId = canonicalPlatformId(selectedPlatform);
+    const itemId = logPlatformId(item);
+    if (itemId) return itemId === selectedId;
+    return logSearchText(item).toLowerCase().includes(String(selectedPlatform || "").toLowerCase());
+  }
+
   function logSearchText(item) {
     return [
       item.platform,
       item.source,
       item.trace_id,
+      item.traceId,
       item.level,
+      item.raw_level,
+      item.level_display,
+      item.result_type,
+      item.category,
+      item.log_scope,
+      item.event_stage,
+      item.event_code,
+      item.status_code,
+      item.action,
+      item.event,
+      item.event_type,
       item.message_summary,
       item.message,
       item.detail,
       item.stack,
-    ].map(value => String(value || "")).join(" ");
+    ].map(searchableValue).join(" ");
+  }
+
+  function searchableValue(value) {
+    if (value && typeof value === "object") {
+      try { return JSON.stringify(value); } catch (_error) { return String(value); }
+    }
+    return String(value || "");
   }
 
   function logMatchesTime(item, timeFilter, nowMs = Date.now()) {
@@ -136,13 +246,17 @@
   }
 
   root.UcpLogDisplay = {
+    baseLogItemId,
     logItemId,
     visibleLogItems,
+    sortLogItems,
     filteredLogItems,
     queryLogItems,
     logTabCounts,
     logMatchesFilters,
     logCategory,
+    logDisplayLevel,
+    logMatchesPlatform,
     logSearchText,
     logMatchesTime,
   };

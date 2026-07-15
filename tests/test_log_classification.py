@@ -55,8 +55,42 @@ def test_classification_facts_cache_is_explicit_and_private():
 def test_result_type_prioritizes_explicit_levels_and_command_logs():
     assert derive_result_type({"level": "ERROR", "message": "plain"}) == "error"
     assert derive_result_type({"level": "WARN", "message": "plain"}) == "warn"
+    assert derive_result_type({"level": "SUCCESS", "message": "plain"}) == "success"
     assert derive_result_type({"level": "CMD", "message": "ffmpeg -i demo.mp4"}) == "command"
     assert derive_result_type({"source": "Downloader", "action": "ffmpeg"}) == "command"
+
+
+def test_result_type_does_not_treat_timeout_configuration_as_an_error():
+    item = {
+        "level": "INFO",
+        "source": "WebController",
+        "action": "start_crawl",
+        "status_code": "WEB_CRAWL_START",
+        "message": "Web 端启动爬虫任务",
+        "detail": {
+            "source_id": "bilibili",
+            "active_config": {"timeout": 60, "api_workers": 8},
+        },
+    }
+
+    assert derive_result_type(item) == "info"
+
+
+def test_result_type_keeps_normal_timing_and_recovery_events_out_of_error():
+    completed_timing = {
+        "level": "INFO",
+        "status_code": "THEME_TRANSITION_FINISHED",
+        "message": "Theme transition finished",
+        "detail": {"duration_ms": 28},
+    }
+    recovering_fallback = {
+        "level": "INFO",
+        "status_code": "M3U8_YTDLP_AFTER_BROWSER",
+        "message": "Browser HLS failed; trying yt-dlp fallback",
+    }
+
+    assert derive_result_type(completed_timing) == "success"
+    assert derive_result_type(recovering_fallback) == "warn"
 
 
 def test_result_type_detects_performance_config_and_success_logs():
@@ -107,6 +141,38 @@ def test_log_scope_helpers_prioritize_error_performance_and_system_config():
     assert derive_log_scope({"level": "ERROR", "message": "boom"}) == "error"
     assert derive_log_scope({"message": "FRONTEND_RENDER_SLOW duration_ms=52"}) == "performance"
     assert derive_log_scope({"source": "ApplicationController", "action": "update_download_options"}) == "system"
+
+
+def test_web_local_media_scan_uses_the_same_system_scope_as_gui_scan():
+    item = {
+        "level": "INFO",
+        "source": "WebController",
+        "action": "async_scan_local_dir",
+        "status_code": "WEB_SCAN_START",
+        "message": "Web local media scan started asynchronously",
+    }
+
+    assert is_system_config_log(item)
+    assert derive_log_scope(item) == "system"
+
+
+def test_web_crawl_lifecycle_stays_in_crawl_scope():
+    lifecycle = (
+        ("start_crawl", "WEB_CRAWL_START"),
+        ("item_found", "WEB_ITEM_FOUND"),
+        ("_on_spider_finished_enter", "WEB_SPIDER_FINISH_ENTER"),
+        ("crawl_finished", "WEB_CRAWL_FINISH"),
+        ("stop_crawl", "WEB_CRAWL_STOP"),
+    )
+
+    for action, status_code in lifecycle:
+        item = {
+            "level": "INFO",
+            "source": "WebController",
+            "action": action,
+            "status_code": status_code,
+        }
+        assert derive_log_scope(item) == "crawl"
 
 
 def test_event_stage_helper_maps_pipeline_steps():

@@ -85,6 +85,7 @@ class ApplicationControllerTests(unittest.TestCase):
             task_error=self._signal_double("download_manager.task_error"),
         )
         frontend_state_service = object()
+        gui_runtime_adapter = object()
         media_release_timer = SimpleNamespace(
             setInterval=Mock(name="media_release_timer.setInterval"),
             timeout=self._signal_double("media_release_timer.timeout"),
@@ -125,6 +126,9 @@ class ApplicationControllerTests(unittest.TestCase):
             )
             frontend_service_factory = stack.enter_context(
                 patch.object(module, "FrontendStateService", return_value=frontend_state_service)
+            )
+            gui_runtime_adapter_factory = stack.enter_context(
+                patch.object(module, "QtGuiRuntimeAdapter", return_value=gui_runtime_adapter)
             )
             stack.enter_context(patch.object(module, "QTimer", timer_factory))
             ensure_app_id = stack.enter_context(patch.object(module, "ensure_windows_app_user_model_id"))
@@ -200,7 +204,9 @@ class ApplicationControllerTests(unittest.TestCase):
                 controller,
                 app_state=app_state,
                 cache_service=cache_service,
+                gui_runtime_adapter=gui_runtime_adapter,
             )
+            gui_runtime_adapter_factory.assert_called_once_with()
             window.set_frontend_state_service.assert_called_once_with(frontend_state_service)
 
             for signal_name, handler_name in (

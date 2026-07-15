@@ -21,7 +21,7 @@ MAX_SCAN_LIMIT = 5000
 
 
 async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> Any:
-    """把同步 controller/config 调用丢到线程池，避免阻塞 WebSocket receive loop。"""
+    """把同步控制器/配置调用放入线程池，避免阻塞 WebSocket 接收循环。"""
     return await asyncio.get_running_loop().run_in_executor(None, func, *args)
 
 
@@ -46,7 +46,6 @@ class WebSocketMessageDispatcher:
         }
 
     async def handle(self, msg: dict, context: WebSessionContext) -> None:
-        """按消息类型分发到具体处理器。"""
         msg_type = msg.get("type", "")
         data = msg.get("data", {}) or {}
         handler = self._handlers.get(msg_type)

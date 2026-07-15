@@ -1,4 +1,4 @@
-"""Playwright stealth script loading and injection helpers."""
+"""负责加载并注入 Playwright 隐匿脚本。"""
 
 from __future__ import annotations
 

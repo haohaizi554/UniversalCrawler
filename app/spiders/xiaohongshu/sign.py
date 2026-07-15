@@ -67,7 +67,7 @@ _FINGERPRINT_LOCK = threading.RLock()
 
 
 class XiaohongshuLocalSignatureError(RuntimeError):
-    """Expected local-signature failure that may be retried through xhshow."""
+    """可由 xhshow 重试的预期本地签名失败。"""
 
 
 def _build_crc32_table() -> tuple[int, ...]:
@@ -85,7 +85,7 @@ XHS_CRC32_TABLE = _build_crc32_table()
 
 
 def generate_trace_id() -> str:
-    """Generate a stable 16-char trace id compatible with XHS link tracing."""
+    """生成兼容小红书链路追踪的 16 位 trace_id。"""
     return "".join(random.choice(HEX_CHARS) for _ in range(16))
 
 
@@ -161,7 +161,7 @@ def _xor_transform(source: list[int]) -> bytearray:
 
 
 def _build_sign_string(uri: str, data: dict[str, Any] | str | None = None, method: str = "POST") -> str:
-    """Build the exact content string expected by the XHS web signer."""
+    """按小红书 Web 签名器要求构造精确的待签名内容。"""
     if method.upper() == "POST":
         if data is None:
             return uri
@@ -186,7 +186,7 @@ def _build_sign_string(uri: str, data: dict[str, Any] | str | None = None, metho
 
 
 def _a3_hash_source(content_string: str) -> str:
-    # POST signs the API path for a3; GET signs the full path with query.
+    # POST 的 a3 只签 API 路径，GET 则必须把查询字符串一并签入。
     if "{" in content_string:
         return content_string.split("{", 1)[0]
     return content_string
@@ -409,7 +409,7 @@ def sign_with_local_algorithm(
 
 
 def _patch_xhshow_get_hash() -> None:
-    """Patch xhshow GET signing so query strings participate in a3 hashing."""
+    """修补 xhshow 的 GET 签名，使查询字符串参与 a3 哈希。"""
     from xhshow.core.crypto import CryptoProcessor
 
     if getattr(CryptoProcessor.build_payload_array, "_ucrawl_xhs_patched", False):
@@ -445,7 +445,7 @@ def _patch_xhshow_get_hash() -> None:
                 payload[128 + idx] = correct_a3_hash[idx] ^ seed_byte
         return payload
 
-    setattr(patched_build, "_ucrawl_xhs_patched", True)  # noqa: B010 - marker on a dynamic monkey patch
+    setattr(patched_build, "_ucrawl_xhs_patched", True)  # noqa: B010 - 动态 monkey patch 的标记属性
     CryptoProcessor.build_payload_array = patched_build
 
 

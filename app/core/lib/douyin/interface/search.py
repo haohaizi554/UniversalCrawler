@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/search.py` 对应的接口、加密、提取或工具逻辑。"""
+"""统一封装抖音综合、视频、用户和直播搜索。"""
 
-# app/core/lib/douyin/interface/search.py
 from json import dumps
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Union
@@ -12,14 +11,12 @@ try:
     from ..tools import DownloaderError
 except ImportError:
     class DownloaderError(Exception):
-        """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
         pass
 
 try:
     from ..translation import _
 except ImportError:
     def _(x):
-        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 if TYPE_CHECKING:
@@ -29,6 +26,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Search(API):
+    """根据频道映射请求搜索接口，并维护分页所需的 offset 与 search_id。"""
     
     search_params = (
         SimpleNamespace(
@@ -168,7 +166,6 @@ class Search(API):
             *args,
             **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Search` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.keyword = keyword
         self.channel = self.channel_map.get(channel, self.search_params[-1])
@@ -199,7 +196,7 @@ class Search(API):
         }.get(channel)
 
     async def run(self, single_page=False, *args, **kwargs):
-        """执行当前对象或脚本的主流程，供 `Search` 使用。"""
+        """校验搜索频道后执行单页或分页请求。"""
         if not self.api:
             raise DownloaderError
         self.set_referer(
@@ -271,7 +268,7 @@ class Search(API):
     def _generate_params_general(
             self,
     ) -> dict:
-        """提供 `_generate_params_general` 对应的内部辅助逻辑，供 `Search` 使用。"""
+        """生成综合搜索参数，并在选中筛选项时附加 filter_selected。"""
         params = self.params | {
             "pc_search_top_1_params": '{"enable_ai_search_top_1":1}',
             "search_channel": self.channel.channel,
@@ -301,7 +298,7 @@ class Search(API):
     def _generate_params_video(
             self,
     ) -> dict:
-        """提供 `_generate_params_video` 对应的内部辅助逻辑，供 `Search` 使用。"""
+        """生成视频搜索参数，并按需附加排序、时间、时长和范围筛选。"""
         params = self.params | {
             "pc_search_top_1_params": '{"enable_ai_search_top_1":1}',
             "search_channel": self.channel.channel,
@@ -346,7 +343,7 @@ class Search(API):
     def _generate_params_user(
             self,
     ) -> dict:
-        """提供 `_generate_params_user` 对应的内部辅助逻辑，供 `Search` 使用。"""
+        """在通用搜索参数上附加用户粉丝量与认证类型筛选。"""
         params = self._generate_params_live()
         if self.search_filter_value:
             params |= {
@@ -358,7 +355,7 @@ class Search(API):
     def _generate_params_live(
             self,
     ) -> dict:
-        """提供 `_generate_params_live` 对应的内部辅助逻辑，供 `Search` 使用。"""
+        """生成用户搜索与直播搜索共用的基础参数。"""
         params = self.params | {
             "pc_search_top_1_params": '{"enable_ai_search_top_1":1}',
             "search_channel": self.channel.channel,
@@ -400,7 +397,7 @@ class Search(API):
                 self.finished = True
             else:
                 self.offset = data_dict[cursor]
-                # 有些接口可能没有 log_pb，这里加个容错
+                # 部分响应不含 log_pb；仅在存在时更新后续分页使用的 search_id。
                 if "log_pb" in data_dict:
                     self.search_id = data_dict["log_pb"].get("impr_id")
 

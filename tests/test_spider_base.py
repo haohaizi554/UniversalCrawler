@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 import threading
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.models.video_item import VideoItem
 from app.spiders.base import BaseSpider
@@ -78,6 +78,139 @@ class BaseSpiderTests(unittest.TestCase):
                 page,
                 "https://internal.example/private",
             )
+
+    def test_playwright_route_aborts_private_subresources(self):
+        spider = _DummySpider(keyword="demo", config={})
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda host, *_args, **_kwargs: [
+                (None, None, None, None, ("127.0.0.1" if host == "internal.example" else "93.184.216.34", 443))
+            ]
+        )
+        route_handlers = []
+
+        class FakePage:
+            url = "about:blank"
+
+            def route(self, pattern, handler):
+                self.pattern = pattern
+                route_handlers.append(handler)
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+        page = FakePage()
+        self.assertTrue(spider.interruptible_playwright_goto(page, "https://example.com"))
+
+        route = SimpleNamespace(abort=Mock(), continue_=Mock())
+        request = SimpleNamespace(url="http://internal.example/latest/meta-data")
+        route_handlers[0](route, request)
+
+        self.assertEqual(page.pattern, "**/*")
+        route.abort.assert_called_once()
+        route.continue_.assert_not_called()
+
+    def test_playwright_route_is_installed_on_context_for_popup_navigation(self):
+        spider = _DummySpider(keyword="demo", config={})
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda host, *_args, **_kwargs: [
+                (None, None, None, None, ("127.0.0.1" if host == "internal.example" else "93.184.216.34", 443))
+            ]
+        )
+        context_handlers = []
+        page_handlers = []
+
+        class FakeContext:
+            def add_init_script(self, _script):
+                return None
+
+            def route(self, pattern, handler):
+                self.pattern = pattern
+                context_handlers.append(handler)
+
+        class FakePage:
+            url = "about:blank"
+            context = FakeContext()
+
+            def route(self, _pattern, handler):
+                page_handlers.append(handler)
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+        page = FakePage()
+        self.assertTrue(spider.interruptible_playwright_goto(page, "https://example.com"))
+
+        self.assertEqual(page.context.pattern, "**/*")
+        self.assertEqual(len(context_handlers), 1)
+        self.assertEqual(page_handlers, [])
+
+        popup_route = SimpleNamespace(abort=Mock(), continue_=Mock())
+        popup_request = SimpleNamespace(url="http://internal.example/admin")
+        context_handlers[0](popup_route, popup_request)
+
+        popup_route.abort.assert_called_once()
+        popup_route.continue_.assert_not_called()
+
+    def test_playwright_route_rejects_private_websockets_before_connecting(self):
+        spider = _DummySpider(keyword="demo", config={})
+        spider._public_domain_policy = DomainPolicyEngine(
+            resolver=lambda host, *_args, **_kwargs: [
+                (None, None, None, None, ("127.0.0.1" if host == "internal.example" else "93.184.216.34", 443))
+            ]
+        )
+        websocket_handlers = []
+        init_scripts = []
+
+        class FakeContext:
+            def add_init_script(self, script):
+                init_scripts.append(script)
+
+        class FakePage:
+            url = "about:blank"
+            context = FakeContext()
+
+            def route(self, _pattern, _handler):
+                return None
+
+            def route_web_socket(self, pattern, handler):
+                self.websocket_pattern = pattern
+                websocket_handlers.append(handler)
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+
+        page = FakePage()
+        self.assertTrue(spider.interruptible_playwright_goto(page, "https://example.com"))
+        self.assertEqual(page.websocket_pattern, "**/*")
+        self.assertEqual(len(websocket_handlers), 1)
+        self.assertEqual(len(init_scripts), 1)
+        self.assertIn("WebSocket", init_scripts[0])
+        self.assertIn("SharedWorker", init_scripts[0])
+
+        private_socket = SimpleNamespace(
+            url="ws://internal.example/latest/meta-data",
+            close=Mock(),
+            connect_to_server=Mock(),
+        )
+        websocket_handlers[0](private_socket)
+        private_socket.close.assert_called_once()
+        private_socket.connect_to_server.assert_not_called()
+
+        public_socket = SimpleNamespace(
+            url="wss://example.com/events",
+            close=Mock(),
+            connect_to_server=Mock(),
+        )
+        websocket_handlers[0](public_socket)
+        public_socket.close.assert_not_called()
+        public_socket.connect_to_server.assert_called_once_with()
+
+    def test_playwright_context_blocks_service_workers_from_bypassing_routes(self):
+        spider = _DummySpider(keyword="demo", config={})
+
+        context_kwargs = spider._playwright_context_kwargs(user_agent="ua-demo")
+
+        self.assertEqual(context_kwargs["service_workers"], "block")
 
     def test_base_spider_runs_without_qt_and_emits_callbacks(self):
         logs: list[str] = []

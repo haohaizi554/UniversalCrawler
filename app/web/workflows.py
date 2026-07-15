@@ -32,7 +32,7 @@ from shared.selection_runtime import RuleSelection
 BroadcastFn = Callable[[str, Any], Coroutine[Any, Any, Any]]
 
 def build_selection_strategy(selection_dict: dict | None):
-    """从 Web 端 selection 参数构建 SelectionStrategy 实例。"""
+    """从 Web 端 `selection` 参数构建 SelectionStrategy 实例。"""
     if not selection_dict:
         return RuleSelection(all_items=True)
 

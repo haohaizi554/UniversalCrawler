@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env python3
-"""Desktop application composition root."""
+"""桌面应用的组合入口。"""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ from app.services.media_release_coordination import (
     publish_media_release_request,
 )
 from app.ui.main_window import MainWindow
+from app.ui.gui_runtime_adapter import QtGuiRuntimeAdapter
 from app.utils.qt_runtime import MAIN_APP_USER_MODEL_ID, ensure_windows_app_user_model_id, load_qt_icon
 from app.utils.runtime_paths import install_root
 from shared.controller_session import ControllerSessionMixin
@@ -53,7 +54,7 @@ class ApplicationController(
     ControllerSessionMixin,
     MediaLibraryMixin,
 ):
-    """Compose desktop UI, services, event bridges, and long-running workers."""
+    """组装桌面 UI、服务、事件桥和长生命周期 worker。"""
 
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
     IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -87,7 +88,12 @@ class ApplicationController(
         self._initialize_media_release_coordination()
 
         self.dl_manager = DownloadManager(max_concurrent=cfg.get("download", "max_concurrent", 3))
-        self.frontend_state_service = FrontendStateService(self, app_state=self.app_state, cache_service=self.cache_service)
+        self.frontend_state_service = FrontendStateService(
+            self,
+            app_state=self.app_state,
+            cache_service=self.cache_service,
+            gui_runtime_adapter=QtGuiRuntimeAdapter(),
+        )
         if hasattr(self.window, "set_frontend_state_service"):
             self.window.set_frontend_state_service(self.frontend_state_service)
         self._connect_download_signals()
@@ -102,7 +108,7 @@ class ApplicationController(
 
     @classmethod
     def _collect_launch_media_paths(cls, launch_args: Sequence[str]) -> list[str]:
-        """Keep supported media file paths passed on the command line (file association / double-click)."""
+        """保留命令行传入且受支持的媒体路径，用于文件关联和双击打开。"""
         paths: list[str] = []
         seen: set[str] = set()
         for arg in launch_args:
@@ -126,7 +132,7 @@ class ApplicationController(
         return paths
 
     def _open_first_launch_media(self) -> None:
-        """Open the first launch argument media file after switching to its directory."""
+        """先切换到首个启动参数所在目录，再打开对应媒体文件。"""
         paths = list(self.launch_media_paths or [])
         if not paths:
             return

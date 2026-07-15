@@ -1,4 +1,4 @@
-"""Workflow 型 Web 路由服务。"""
+"""工作流型 Web 路由服务。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ async def _run_controller_worker_call(func: Callable[..., Any], *args: Any) -> A
 
 
 class WebWorkflowRouteService:
-    """封装 crawl/download 等基于 session workflow 的路由委派。"""
+    """封装 crawl/download 等基于会话工作流的路由委派。"""
 
     def __init__(self, *, get_request_context: Callable[[Request], Any]) -> None:
         self._get_request_context = get_request_context

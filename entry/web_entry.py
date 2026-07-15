@@ -1,14 +1,9 @@
-"""UCrawl Web UI 入口（薄适配层）。
+"""UCrawl Web UI 进程入口。
 
-行业对齐（PyPA 规范）：
-- 在 `pyproject.toml` 的 `[project.scripts]` 中注册为 `ucrawl-web` 命令
-- 启动 FastAPI + 可选 PyQt6 托盘
-- 透传到 `app.web.server.create_app`
-
-历史对应：原 `web_main.py` (227 行)
-
-调用链：
-    ucrawl-web (console_script) -> entry.web_entry:main() -> uvicorn + create_app
+该入口拥有 Web 专属的参数解析、传输与访问令牌校验、端口冲突处理、可选 Qt
+托盘/浏览器集成以及 uvicorn 生命周期；FastAPI 应用本身由
+``app.web.server.create_app`` 构造。``pyproject.toml`` 将其注册为
+``ucrawl-web``。
 """
 
 from __future__ import annotations
@@ -33,8 +28,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# ---- 端口处理 ----
-
 # 顺延查找的最大尝试次数（找不到就报错/弹窗）
 _PORT_PROBE_RANGE = 10
 
@@ -44,7 +37,7 @@ def _validate_transport_security(
     ssl_certfile: str | None,
     ssl_keyfile: str | None,
 ) -> str:
-    """Require TLS whenever the server can accept traffic from another host."""
+    """服务器可接收其它主机流量时强制使用 TLS。"""
     normalized_host = str(host or "").strip().strip("[]")
     try:
         is_loopback = ipaddress.ip_address(normalized_host).is_loopback
@@ -79,11 +72,12 @@ def _is_port_in_use(host: str, port: int) -> bool:
 def _find_available_port(host: str, start_port: int, max_probe: int = _PORT_PROBE_RANGE) -> int | None:
     """从 start_port 开始顺延查找可用端口，最多尝试 max_probe 次。
 
-    用于 --no-qt 模式（无法弹窗）下的优雅回退：
-    用户期望"双击就开"时，被占用的端口不应该让它直接退出。
+    用于 ``--no-qt`` 模式下的自动顺延。探测 socket 会在每次检查后关闭，
+    因而返回值只表示端口在探测时空闲，并不预留该端口；实际监听仍由服务器
+    启动阶段完成。
 
-    Returns:
-        可用端口号；若 max_probe 个端口都被占用则返回 None
+    返回：
+        当时可用的端口号；若探测范围内都被占用则返回 None。
     """
     for offset in range(max_probe + 1):
         port = start_port + offset
@@ -94,20 +88,20 @@ def _find_available_port(host: str, start_port: int, max_probe: int = _PORT_PROB
     return None
 
 def _load_app_icon() -> "QIcon | None":
-    """保留历史入口 API，并委托共享 Qt 图标解析。"""
+    """委托共享 Qt 图标解析，同时保留入口级调用接口。"""
     from entry.qt_entry_utils import load_qt_icon
 
     return load_qt_icon(["Web.ico"], fallback_names=["favicon.ico"])
 
 
 def _ensure_app_user_model_id() -> None:
-    """保留历史入口 API，并委托共享 Windows AppUserModelID 设置。"""
+    """委托共享 Windows AppUserModelID 设置，同时保留入口级调用接口。"""
     from entry.qt_entry_utils import WEB_APP_USER_MODEL_ID, ensure_windows_app_user_model_id
 
     ensure_windows_app_user_model_id(WEB_APP_USER_MODEL_ID)
 
 def _resolve_port_with_dialog(default_port: int) -> int:
-    """端口冲突时委托独立 Qt 对话框模块，入口层只注入探测依赖。"""
+    """委托 Qt 对话框选择端口，并注入不保留监听 socket 的占用探测。"""
     from entry.web_port_dialog import resolve_port_with_dialog
 
     return resolve_port_with_dialog(
@@ -117,7 +111,6 @@ def _resolve_port_with_dialog(default_port: int) -> int:
     )
 
 def _create_tray_icon(qt_app, url: str, shutdown_event: threading.Event):
-    """创建系统托盘图标（Windows 上增强体验）。"""
     from PyQt6.QtGui import QAction, QIcon
     from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -159,7 +152,6 @@ def _create_tray_icon(qt_app, url: str, shutdown_event: threading.Event):
     return tray
 
 def _build_argparser() -> argparse.ArgumentParser:
-    """构建命令行参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="ucrawl-web",
         description="UCrawl Web UI - FastAPI + 浏览器",
@@ -189,7 +181,7 @@ def _build_argparser() -> argparse.ArgumentParser:
     return parser
 
 def main(argv: list[str] | None = None) -> int:
-    """Web UI 入口。"""
+    """启动 Web UI，并保留参数错误与端口冲突各自的进程退出语义。"""
     parser = _build_argparser()
     args = parser.parse_args(argv)
     try:
@@ -226,9 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     port_in_use = _is_port_in_use(args.host, args.port)
-    # A remote access token must never be sent to an unknown process merely
-    # because it occupies the requested port. Local passwordless instances can
-    # still use the convenient same-version reuse probe.
+    # 仅凭目标端口被占用，不能把远程访问 token 发送给未知进程；只有本地无密码
+    # 实例可以使用同版本复用探测。
     if port_in_use and not args.script and access_token is None:
         reused = try_reuse_existing_instance(
             host=args.host,
@@ -255,8 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if port_in_use:
         if args.no_qt:
-            # 无 Qt 模式：自动顺延找可用端口（静默），找不到再报错
-            # 修复：之前直接报错退出太粗暴，违反"双击就开"的预期
+            # 无 Qt 模式无法询问用户，因此自动顺延；仅在探测范围耗尽后返回失败。
             new_port = _find_available_port(args.host, args.port)
             if new_port is None:
                 sys.stderr.write(
@@ -269,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             args.port = new_port
         else:
-            # 默认 / Qt 模式：弹 Qt 输入框让用户选（保持与源码一致）
+            # Qt 模式让用户确认建议端口或输入其他端口。
             args.port = _resolve_port_with_dialog(args.port)
 
     from app.web.server import create_app
@@ -294,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         if callable(shutdown_all):
             shutdown_all(wait=True, timeout=5.0)
         else:
-            # Compatibility fallback for custom create_app implementations.
+            # 兼容自定义 create_app 实现的后备清理路径。
             from app.web.server import controller
             if controller:
                 controller.shutdown()
@@ -310,8 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     display_url = build_web_url(args.host, args.port, url_scheme)
     url = build_access_url(display_url, access_token)
     sys.stderr.write("\n  UCrawl Web UI\n")
-    # Keep credentials out of terminal history and container logs. The token
-    # remains available through the configured environment or persistent file.
+    # 不把凭据写入终端历史和容器日志；token 仍可从环境配置或持久化文件读取。
     sys.stderr.write(f"  {display_url}\n")
     sys.stderr.write("  保存目录: downloads/\n")
     if args.script:

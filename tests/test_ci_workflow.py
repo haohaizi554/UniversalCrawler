@@ -171,6 +171,32 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("cache-from: type=gha", source)
         self.assertIn("cache-to: type=gha,mode=max", source)
 
+    def test_docker_image_copies_shared_runtime_and_ui_assets(self) -> None:
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("COPY --chown=ucrawl:ucrawl shared ./shared", dockerfile)
+        self.assertIn("COPY --chown=ucrawl:ucrawl UI ./UI", dockerfile)
+
+    def test_docker_workflow_smoke_tests_loaded_image_over_https(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "docker-build.yml"
+        source = workflow.read_text(encoding="utf-8")
+        build_block = source.split("      - name: Build Image", 1)[1].split(
+            "      - name:", 1
+        )[0]
+
+        self.assertIn("load: true", build_block)
+        self.assertIn("      - name: Smoke Test Image", source)
+        smoke_block = source.split("      - name: Smoke Test Image", 1)[1]
+        self.assertIn("docker run --detach", smoke_block)
+        self.assertIn("ucrawl-web:test", smoke_block)
+        self.assertIn("https://127.0.0.1:18443/healthz", smoke_block)
+        self.assertIn("curl --fail --insecure --silent --show-error", smoke_block)
+        self.assertIn("--max-time", smoke_block)
+        self.assertRegex(smoke_block, r"for attempt in \$\(seq 1 \d+\); do")
+        self.assertIn("trap cleanup EXIT", smoke_block)
+        self.assertIn('docker logs "$container_name"', smoke_block)
+        self.assertIn('docker rm --force "$container_name"', smoke_block)
+
     def test_runtime_requirements_exclude_optional_report_and_fedora_tools(self) -> None:
         requirements = PROJECT_ROOT / "requirements.txt"
         lines = {

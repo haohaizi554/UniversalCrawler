@@ -1,4 +1,4 @@
-"""File association selection dialog."""
+"""提供文件关联选择对话框。"""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class FileAssociationOption(QWidget):
 
 
 class FileAssociationDialog(ChromedDialog):
-    """Ask which media groups should be registered for Windows default apps."""
+    """选择要注册到 Windows 默认应用的媒体类型组。"""
 
     def __init__(self, parent=None, *, language: str = "zh-CN"):
         self._language = normalize_language(language)

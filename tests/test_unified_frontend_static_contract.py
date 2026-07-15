@@ -16,6 +16,16 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
 
         self.assertIn("[hidden] {\n  display: none !important;\n}", css)
 
+    def test_top_search_input_keeps_theme_tokens_for_disabled_and_autofill_states(self):
+        content = _html_bundle()
+        css = _css_bundle()
+
+        self.assertIn('id="searchInput" class="search-input" autocomplete="off"', content)
+        self.assertIn(".search-input:disabled", css)
+        self.assertIn(".search-input:-webkit-autofill", css)
+        self.assertIn("-webkit-box-shadow: 0 0 0 1000px var(--input) inset;", css)
+        self.assertIn("-webkit-text-fill-color: var(--text);", css)
+
     def test_web_page_headers_and_removed_controls_match_contract(self):
         content = _html_bundle()
 
@@ -261,7 +271,7 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
             "dispose,",
         ):
             self.assertIn(detail_action, log_center)
-        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker")', log_center)
+        self.assertIn('new Worker("/static/log_detail_worker.js?v=20260714-log-detail-parity")', log_center)
         log_i18n = (static_dir / "log_i18n.js").read_text(encoding="utf-8")
         for translation_marker in (
             "function translateRuntimeLogText",

@@ -1,4 +1,4 @@
-"""Main window assembly for the unified 7-page GUI."""
+"""组装统一七页桌面 GUI 的主窗口。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import time
 
 from dataclasses import dataclass
 from pathlib import Path
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSignalBlocker, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QFont, QPalette
 from PyQt6.QtWidgets import QFileDialog, QDialog, QMainWindow, QApplication, QComboBox, QWidget
 
@@ -41,6 +41,7 @@ from app.services.secure_updater import (
     record_startup_update_health,
 )
 from app.ui.connection_registry import ConnectionRegistry
+from app.ui.gui_runtime_adapter import QtGuiRuntimeAdapter
 from app.ui.dialogs import FileAssociationDialog
 from app.ui.dialogs.selection import SelectionDialog
 from app.ui.dialogs.update_check import UpdateCheckDialog, UpdateDownloadDialog
@@ -51,6 +52,7 @@ from shared.localization import normalize_language, tr
 from app.ui.plugin_settings import read_plugin_run_options
 from app.ui.styles import apply_application_theme, build_palette
 from app.ui.ui_update_scheduler import UiUpdateScheduler
+from app.ui import window_state_persistence
 from app.ui.viewmodels.frontend_snapshot_worker import (
     FrontendSnapshotRequest,
     FrontendSnapshotResult,
@@ -65,7 +67,6 @@ from app.ui.viewmodels.latest_worker import LatestRequestWorker
 from app.utils.qt_runtime import load_qt_icon
 from app.utils.runtime_paths import user_data_root
 from app.utils.safe_slot import safe_slot
-
 
 @dataclass(frozen=True)
 class _UpdateCheckRequest:
@@ -90,7 +91,7 @@ class _PreparedUpdate:
 
 
 class MainWindow(QMainWindow):
-    """Thin GUI host that forwards user actions and renders frontend snapshots."""
+    """转发用户动作并渲染前端快照的轻量 GUI 宿主。"""
 
     FRONTEND_REFRESH_INTERVAL_MS = 200
     FRONTEND_REFRESH_MAX_INTERVAL_MS = 750
@@ -213,7 +214,7 @@ class MainWindow(QMainWindow):
         self._owns_event_bus = event_bus is None
         self._owns_app_state = app_state is None
         self.app_state = app_state or AppState(event_bus=self.event_bus)
-        self._frontend_state_service = FrontendStateService(app_state=self.app_state)
+        self._frontend_state_service = FrontendStateService(app_state=self.app_state, gui_runtime_adapter=QtGuiRuntimeAdapter())
         self._owns_frontend_state_service = True
         self._connections = ConnectionRegistry()
         self._frontend_refresh_pending_mock = False
@@ -225,6 +226,8 @@ class MainWindow(QMainWindow):
         self._frontend_action_worker = FrontendActionWorker(
             lambda result: self._frontend_action_finished.emit(result)
         )
+        # 主题切换执行中只保留最后目标，并用 sequence 淘汰迟到回调；已提交仅表示本地路径执行，
+        # 不代表异步写入或前端确认。
         self._theme_transition_in_progress = False
         self._queued_theme_is_dark: bool | None = None
         self._theme_transition_target_is_dark: bool | None = None
@@ -232,6 +235,7 @@ class MainWindow(QMainWindow):
         self._last_committed_theme_sequence = 0
         self._update_check_sequence = 0
         self._update_check_worker: LatestRequestWorker[_UpdateCheckRequest, _UpdateCheckOutcome] | None = None
+        self._update_check_loading_dialog: UpdateCheckDialog | None = None
         self._ui_update_scheduler = UiUpdateScheduler(
             interval_ms=self.FRONTEND_REFRESH_INTERVAL_MS,
             on_flush=self._flush_frontend_state,
@@ -302,6 +306,7 @@ class MainWindow(QMainWindow):
         self._update_download_dialog: UpdateDownloadDialog | None = None
         self._last_update_result: UpdateCheckResult | None = None
         self._prepared_update: _PreparedUpdate | None = None
+        window_state_persistence.initialize_window_state_persistence(self)
 
         self._build_ui()
         self._debug_shell_visibility("after_build_ui")
@@ -485,6 +490,11 @@ class MainWindow(QMainWindow):
     def _on_update_check_requested(self, version_text: str = "") -> None:
         del version_text
         if not self._try_begin_update_check():
+            loading_dialog = self.__dict__.get("_update_check_loading_dialog")
+            if loading_dialog is not None and loading_dialog.isVisible():
+                loading_dialog.raise_()
+                loading_dialog.activateWindow()
+                return
             self._show_basic_message(
                 "检查更新",
                 "正在检查更新，请稍候。",
@@ -495,9 +505,33 @@ class MainWindow(QMainWindow):
 
         local_version = str(__version__).strip()
         self._last_update_check_local_version = local_version
+        self._show_update_check_loading(local_version)
         worker = self._ensure_update_check_worker()
         self._update_check_sequence = int(self.__dict__.get("_update_check_sequence", 0) or 0) + 1
         worker.submit(_UpdateCheckRequest(sequence=self._update_check_sequence, local_version=local_version))
+
+    def _show_update_check_loading(self, local_version: str) -> None:
+        self._dismiss_update_check_loading()
+        dialog = UpdateCheckDialog(
+            self,
+            title="检查更新",
+            message="正在检查更新，请稍候。",
+            primary_text="正在检查更新...",
+            status="checking",
+            local_version=self._display_version(local_version),
+            latest_version="",
+            language=self._current_ui_language(),
+        )
+        self._update_check_loading_dialog = dialog
+        dialog.finished.connect(lambda _result: setattr(self, "_update_check_loading_dialog", None))
+        dialog.show()
+
+    def _dismiss_update_check_loading(self) -> None:
+        dialog = self.__dict__.pop("_update_check_loading_dialog", None)
+        if dialog is None:
+            return
+        dialog.reject()
+        dialog.deleteLater()
 
     def _try_begin_update_check(self) -> bool:
         with self._update_check_lock:
@@ -579,6 +613,7 @@ class MainWindow(QMainWindow):
 
     def _on_update_check_finished(self, result: object) -> None:
         self._finish_update_check()
+        self._dismiss_update_check_loading()
         if not isinstance(result, UpdateCheckResult):
             self._show_update_check_error("更新检测返回了无法识别的结果。")
             return
@@ -586,6 +621,7 @@ class MainWindow(QMainWindow):
 
     def _on_update_check_failed(self, message: str) -> None:
         self._finish_update_check()
+        self._dismiss_update_check_loading()
         self._show_update_check_error(message)
 
     def _show_update_check_error(self, message: str) -> None:
@@ -730,7 +766,7 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _emit_update_download_event(self, signal: object, payload: dict[str, object]) -> bool:
-        """Drop worker events once shutdown starts or the request is superseded."""
+        """关闭开始或请求已被替代后丢弃 `worker` 事件，避免迟到结果回写 UI。"""
         sequence = int(payload.get("sequence") or 0)
         with self._update_download_lock:
             if self._update_download_shutdown or sequence != self._update_download_sequence:
@@ -965,8 +1001,7 @@ class MainWindow(QMainWindow):
         if force:
             self._render_frontend_state(mock=mock, topics=None, force=True)
             return
-        # 普通刷新只记录 pending topic，由 UiUpdateScheduler 合并；真正构建
-        # snapshot/delta 的工作会进入 FrontendSnapshotWorker。
+        # 调度器合并待处理 `topic`，快照构建和 `delta` 合并交给后台 worker。
         self._frontend_refresh_pending_mock = bool(self.__dict__.get("_frontend_refresh_pending_mock", False) or mock)
         self._ui_update_scheduler.schedule("frontend")
 
@@ -1005,7 +1040,7 @@ class MainWindow(QMainWindow):
         service = self._frontend_state_service
         cached = self.__dict__.get("_cached_snapshot")
         cached_version = self._snapshot_frontend_version(cached)
-        # 有缓存且非强制刷新时优先走 delta，减少 GUI 主线程需要 patch 的内容。
+        # 有缓存且非强制刷新时优先请求 `delta`，减少 GUI 主线程需要局部更新的内容。
         use_delta = bool(cached is not None and not force and not mock)
         self._frontend_snapshot_sequence = int(self.__dict__.get("_frontend_snapshot_sequence", 0) or 0) + 1
         request = FrontendSnapshotRequest(
@@ -1065,8 +1100,7 @@ class MainWindow(QMainWindow):
         worker = self.__dict__.get("_frontend_action_worker")
         if service is None or worker is None:
             return False
-        # 设置保存、打开目录、失败重试等慢动作统一送到 worker，UI 信号槽只
-        # 分发请求和处理结果。
+        # 设置保存、打开目录和失败重试交给 worker，UI 信号槽只分发请求与处理结果。
         self._frontend_action_sequence = int(self.__dict__.get("_frontend_action_sequence", 0) or 0) + 1
         worker.submit(
             FrontendActionRequest(
@@ -1355,7 +1389,7 @@ class MainWindow(QMainWindow):
         if isinstance(payload, dict):
             topic = str(payload.get("topic") or "")
         if topic == "logs.append":
-            # 日志追加频率高，单独 topic 可让日志页用更轻量的局部刷新路径。
+            # 日志追加频率高，单独的 `topic` 可让日志页使用更轻量的局部刷新路径。
             self._add_pending_refresh_topic("logs.append")
             self._ui_update_scheduler.schedule("logs.append")
             return
@@ -1417,11 +1451,11 @@ class MainWindow(QMainWindow):
         self.refresh_frontend_state(topics={self._visibility_topic_for_page(page_id)})
 
     def bind_video_rename(self, on_rename) -> None:
-        # Titles are no longer editable in the queue table.  Keep the hook so the
-        # controller can still bind without knowing the presentation changed.
+        # 队列表格已不允许编辑标题；保留绑定入口，避免控制器感知展示层差异。
         self._title_rename_handler = on_rename
 
     def toggle_theme(self) -> None:
+        # QSS 更新必须在 GUI 线程串行执行；连续点击只保留最后一次目标主题。
         if self.__dict__.get("_theme_transition_in_progress", False):
             base_theme = self.__dict__.get("_queued_theme_is_dark")
             if base_theme is None:
@@ -2022,12 +2056,11 @@ class MainWindow(QMainWindow):
                 widget.setVisible(visible)
 
     def toggle_fullscreen_mode(self) -> None:
-        """Compatibility entrypoint: main-window fullscreen is retired.
+        """保留旧入口，但主窗口不再进入全屏。
 
-        Fullscreen belongs to the media preview window. Keeping the main window
-        in Qt::WindowFullScreen can confuse Windows Shell auto-hide taskbar
-        activation after restore, so legacy calls are either cleaned up or
-        forwarded to the media panel.
+        全屏状态归媒体预览窗口所有。主窗口保留 Qt::WindowFullScreen 会使 Windows
+        Shell 在恢复后误判自动隐藏任务栏的激活区域，因此旧调用只负责清理残留状态
+        或转交媒体面板。
         """
         if self.is_fullscreen_mode or self._safe_is_fullscreen():
             self._exit_legacy_main_fullscreen()
@@ -2062,6 +2095,7 @@ class MainWindow(QMainWindow):
             return False
 
     def _safe_is_native_maximized(self) -> bool:
+        # 无边框窗口经 Snap/还原后 Qt 状态可能滞后；Windows 上以 Win32 IsZoomed 为真值。
         windows_zoomed = self._windows_hwnd_is_zoomed()
         if windows_zoomed is not None:
             return bool(windows_zoomed)
@@ -2102,25 +2136,12 @@ class MainWindow(QMainWindow):
         visible_page = self.app_state.get_visible_page()
         if visible_page in self.app_shell.pages:
             self.app_shell.show_page(visible_page, emit_change=False, render_page=False)
-        geometry_hex = cfg.get("ui", "geometry")
-        geometry_restored = False
-        if geometry_hex:
-            try:
-                geometry_restored = bool(self.restoreGeometry(QByteArray.fromHex(geometry_hex.encode())))
-            except (RuntimeError, ValueError) as exc:
-                debug_logger.log_exception("MainWindow", "restore_geometry", exc)
-        if geometry_restored:
-            self._constrain_window_geometry_to_screen()
-        else:
-            self._apply_default_window_geometry()
-        state_hex = cfg.get("ui", "window_state")
-        if state_hex:
-            self.restoreState(QByteArray.fromHex(state_hex.encode()))
+        window_state_persistence.restore_window_state(self, cfg)
 
     @safe_slot
     def closeEvent(self, event) -> None:
-        # 退出顺序先停调度器/worker，再销毁 service 和 event bus，避免后台
-        # 线程在 QObject 已释放后继续回调主窗口。
+        ui_state_snapshot = window_state_persistence.capture_window_state(self)
+        # 先停止调度器和 worker 再销毁服务，避免后台线程回调已释放的 QObject。
         update_download_lock = self.__dict__.get("_update_download_lock")
         if update_download_lock is None:
             update_download_lock = threading.RLock()
@@ -2169,13 +2190,7 @@ class MainWindow(QMainWindow):
         event_bus_shutdown = getattr(self.event_bus, "shutdown", None)
         if self.__dict__.get("_owns_event_bus", False) and callable(event_bus_shutdown):
             event_bus_shutdown()
-        cfg.save_ui_state(
-            geometry=self.saveGeometry(),
-            state=self.saveState(),
-            main_splitter=b"",
-            right_splitter=b"",
-            is_fs=False,
-        )
+        window_state_persistence.start_window_state_persistence(self, ui_state_snapshot, cfg.save_ui_state)
         event.accept()
 
     def on_btn_start_clicked(self) -> None:
@@ -2208,18 +2223,23 @@ class MainWindow(QMainWindow):
 
     def on_source_changed(self, _index: int) -> None:
         plugin_id = self.combo_source.currentData()
-        if not plugin_id:
+        if not self._apply_source_runtime(plugin_id):
             return
-        self.current_plugin = registry.get_plugin(plugin_id)
-        if not self.current_plugin:
-            return
+        self._submit_frontend_action("update_basic_setting", {"key": "last_source", "value": plugin_id})
+
+    def _apply_source_runtime(self, plugin_id: str) -> bool:
+        plugin_id = str(plugin_id or "")
+        plugin = registry.get_plugin(plugin_id)
+        if plugin is None:
+            return False
+        self.current_plugin = plugin
         defaults = get_platform_runtime_defaults(plugin_id)
         top_bar = getattr(self, "top_bar", None)
         if top_bar is not None:
             top_bar.configure_for_platform(plugin_id, defaults)
         else:
-            self.inp_search.setPlaceholderText(self.current_plugin.get_search_placeholder())
-        self._submit_frontend_action("update_basic_setting", {"key": "last_source", "value": plugin_id})
+            self.inp_search.setPlaceholderText(plugin.get_search_placeholder())
+        return True
 
     def set_crawl_running_state(self, is_running: bool) -> None:
         self.app_shell.set_crawl_running_state(is_running, self.plugin_widget)
@@ -2258,7 +2278,7 @@ class MainWindow(QMainWindow):
         self._frontend_state_service.upsert_videos(list(video_items or []))
 
     def update_video_status(self, video_id, status, progress=None) -> None:
-        # Controller updates video fields in-place; UI refresh is driven by app_state.changed.
+        # Controller 原地更新 VideoItem；UI 统一由 app_state.changed 驱动，避免重复渲染。
         return
 
     def refresh_table_bindings(self) -> None:
@@ -2645,7 +2665,7 @@ class MainWindow(QMainWindow):
         self._submit_frontend_action(action, payload)
 
     def _apply_runtime_setting_after_update(self, section: str, key: str, value) -> set[str]:
-        """Return extra refresh topics after the config commit observer applied runtime state."""
+        """配置提交观察者应用运行时状态后，返回额外刷新 `topic`。"""
         del key, value
         section = str(section or "")
         topics: set[str] = set()
@@ -2677,6 +2697,16 @@ class MainWindow(QMainWindow):
     @safe_slot
     def _apply_common_setting(self, key: str, value) -> None:
         key = str(key or "")
+        if key == "last_source":
+            plugin_id = str(value or "")
+            index = self.combo_source.findData(plugin_id)
+            if index >= 0:
+                # 外部配置回放不应再次触发保存信号，否则会形成跨入口回写环。
+                blocker = QSignalBlocker(self.combo_source)
+                self.combo_source.setCurrentIndex(index)
+                del blocker
+                self._apply_source_runtime(plugin_id)
+            return
         if key == "save_directory":
             directory = str(value or cfg.get("common", "save_directory", self.current_save_dir) or "")
             if directory:
@@ -2692,6 +2722,11 @@ class MainWindow(QMainWindow):
             return
         if key in {"default_open_mode", "open_after_download", "filename_template"}:
             self.refresh_frontend_state(topics={"settings.update"})
+
+    @safe_slot
+    def _on_external_config_changed(self, _payload=None) -> None:
+        """其他 GUI/Web 进程提交设置后刷新控件。"""
+        self.refresh_frontend_state(topics={"settings.update"}, force=True)
 
     @safe_slot
     def _apply_appearance_runtime_settings(self, changed_key: str | None = None) -> None:
@@ -2760,6 +2795,5 @@ class MainWindow(QMainWindow):
 
     def _register_file_associations_from_frontend(self, include_video: bool, include_image: bool) -> None:
         self._submit_frontend_action(
-            "register_file_associations",
-            {"include_video": include_video, "include_image": include_image},
+            "register_file_associations", {"include_video": include_video, "include_image": include_image}
         )

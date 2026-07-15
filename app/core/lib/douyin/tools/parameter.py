@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/parameter.py` 对应的接口、加密、提取或工具逻辑。"""
+"""校验抓取配置，并构造请求头、签名器、代理客户端和缓存目录。"""
 
-# app/core/lib/douyin/tools/parameter.py
 from pathlib import Path
 from shutil import move
 from time import localtime, strftime
@@ -10,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Type
 from httpx import HTTPStatusError, RequestError, TimeoutException, get
 from app.utils.runtime_paths import install_root, user_cache_root
 
-# 调整引用路径
 try:
     from . import (
         BLANK_PREVIEW,
@@ -29,11 +27,10 @@ try:
         create_client,
     )
 except ImportError:
-    # 防止导入错误导致的中断
+    # 独立加载时允许包级工具尚未完成初始化，实际使用仍由调用路径保证依赖存在。
     pass
 
-# 抖音底层库里部分缓存仍会写入 ROOT/Cache。
-# 安装版场景下 ROOT 不能再指向源码目录或 Program Files，统一收敛到运行目录与用户缓存目录。
+# 安装目录可能只读，因此旧 ROOT/Cache 会在初始化时迁移到用户缓存目录。
 PROJECT_ROOT = install_root()
 
 from ..encrypt import (
@@ -45,15 +42,9 @@ from ..encrypt import (
     XBogus,
     XGnarly,
 )
-# 注意：Extractor 和 Interface 尚未移植，这里先注释或使用 Mock
-# from ..extract import Extractor
-# from ..module import FFMPEG
-# from ..record import BaseLogger, LoggerManager
-# from ..storage import RecordManager
 
-# 延迟导入 API 类，避免循环导入
 def _get_api_classes():
-    """延迟导入 API 类"""
+    """延迟导入 API 类，避免参数模块与接口模块循环依赖。"""
     try:
         from ..interface import API, APITikTok
         return API, APITikTok
@@ -63,15 +54,12 @@ def _get_api_classes():
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
 
         return x
 
 if TYPE_CHECKING:
     from typing import Any
-    # 占位符
     DownloadRecorder = Any
     Cookie = Any
     ColorfulConsole = Any
@@ -87,7 +75,8 @@ if TYPE_CHECKING:
 __all__ = ["Parameter"]
 
 class Parameter:
-    
+    """集中维护双平台请求参数及可动态更新的运行配置。"""
+
     NAME_KEYS = (
         "id",
         "desc",
@@ -108,7 +97,7 @@ class Parameter:
         self,
         settings: "Settings",
         cookie_object: "Cookie",
-        logger: Type[Any], # Type[BaseLogger | LoggerManager]
+        logger: Type[Any],
         console: "ColorfulConsole",
         cookie: dict | str,
         cookie_tiktok: dict | str,
@@ -150,13 +139,12 @@ class Parameter:
         tiktok_platform=True,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Parameter` 使用。"""
+        """校验持久化配置，并为启用的平台创建共享客户端。"""
         self.settings = settings
         self.cookie_object = cookie_object
-        self.ROOT = PROJECT_ROOT  # 项目根路径
-        self.cache = user_cache_root()  # 缓存路径
+        self.ROOT = PROJECT_ROOT
+        self.cache = user_cache_root()
         self.logger = logger(PROJECT_ROOT, console)
-        # self.logger.run() # 暂时注释，因为 LoggerManager 未实现
         self.ab = ABogus()
         self.xb = XBogus()
         self.xg = XGnarly()
@@ -174,18 +162,6 @@ class Parameter:
         self.headers_params_tiktok = PARAMS_HEADERS_TIKTOK
         self.headers_qrcode = QRCODE_HEADERS
 
-        # 需要 Extractor 支持，暂时注释
-        # self.accounts_urls: list[SimpleNamespace] = self.check_urls_params(
-        #     accounts_urls
-        # )
-        # self.accounts_urls_tiktok: list[SimpleNamespace] = self.check_urls_params(
-        #     accounts_urls_tiktok
-        # )
-        # self.mix_urls: list[SimpleNamespace] = self.check_urls_params(mix_urls)
-        # self.mix_urls_tiktok: list[SimpleNamespace] = self.check_urls_params(
-        #     mix_urls_tiktok
-        # )
-        # self.owner_url: SimpleNamespace = self.check_url_params(owner_url)
         self.owner_url_tiktok: SimpleNamespace | None = None
 
         self.cookie_dict, self.cookie_str = self.__check_cookie(cookie)
@@ -194,8 +170,6 @@ class Parameter:
         )
         self.cookie_state: bool = self.__check_cookie_state()
         self.cookie_tiktok_state: bool = self.__check_cookie_state(True)
-        # self.set_uif_id() # 需要 API 支持
-        # self.set_download_headers()
 
         self.root = self.__check_root(root)
         self.folder_name = self.__check_folder_name(folder_name)
@@ -218,7 +192,6 @@ class Parameter:
         self.max_retry = self.__check_max_retry(max_retry)
         self.max_pages = self.__check_max_pages(max_pages)
         self.run_command = self.__check_run_command(run_command)
-        # self.ffmpeg = self.__generate_ffmpeg_object(ffmpeg) # 需要 FFMPEG 模块
         self.live_qualities = self.__check_live_qualities(live_qualities)
         self.douyin_platform = self.check_bool_true(
             douyin_platform,
@@ -235,9 +208,6 @@ class Parameter:
             browser_info_tiktok,
             {},
         )
-        # 需要 API 支持
-        # self.__set_browser_info(self.browser_info)
-        # self.__set_browser_info_tiktok(self.browser_info_tiktok)
 
         self.proxy: str | None = self.__check_proxy(
             proxy,
@@ -286,7 +256,6 @@ class Parameter:
             "max_retry": self.__check_max_retry,
             "max_pages": self.__check_max_pages,
             "run_command": self.__check_run_command,
-            # "ffmpeg": self.__generate_ffmpeg_object,
             "live_qualities": self.__check_live_qualities,
             "douyin_platform": self.check_bool_true,
             "tiktok_platform": self.check_bool_true,
@@ -296,25 +265,25 @@ class Parameter:
     def check_bool_false(
         value: bool,
     ) -> bool:
-        
+        """仅接受布尔值，类型错误时按 False 处理。"""
         return value if isinstance(value, bool) else False
 
     @staticmethod
     def check_bool_true(
         value: bool,
     ) -> bool:
-        
+        """仅接受布尔值，类型错误时按 True 处理。"""
         return value if isinstance(value, bool) else True
 
     def __check_cookie_tiktok(
         self,
         cookie: dict | str,
     ) -> tuple[dict, str]:
-        """提供 `__check_cookie_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """将 TikTok Cookie 归一化为字典或字符串二选一。"""
         return self.__check_cookie(cookie, name="cookie_tiktok")
 
     def __check_cookie(self, cookie: dict | str, name="cookie") -> tuple[dict, str]:
-        """提供 `__check_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """保留 Cookie 的原始表示，并为另一种表示返回空值。"""
         if isinstance(cookie, dict):
             return cookie, ""
         elif isinstance(cookie, str):
@@ -327,28 +296,28 @@ class Parameter:
         self,
         cookie: dict,
     ) -> dict:
-        """提供 `__get_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """返回字典形式的抖音 Cookie。"""
         return self.__check_cookie(cookie)[0]
 
     def __get_cookie_cache(
         self,
         cookie: str,
     ) -> str:
-        """提供 `__get_cookie_cache` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """返回字符串形式的抖音 Cookie。"""
         return self.__check_cookie(cookie)[1]
 
     def __get_cookie_tiktok(
         self,
         cookie: dict,
     ) -> dict:
-        """提供 `__get_cookie_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """返回字典形式的 TikTok Cookie。"""
         return self.__check_cookie_tiktok(cookie)[0]
 
     def __get_cookie_tiktok_cache(
         self,
         cookie: str,
     ) -> str:
-        """提供 `__get_cookie_tiktok_cache` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """返回字符串形式的 TikTok Cookie。"""
         return self.__check_cookie_tiktok(cookie)[1]
 
     def __add_cookie(
@@ -356,7 +325,10 @@ class Parameter:
         parameters: tuple[dict, ...],
         cookie: dict | str,
     ) -> None | str:
-        """提供 `__add_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """按 Cookie 原始表示合并生成参数。
+
+        参数日志包含令牌原值，部署时应限制日志访问权限和保留周期。
+        """
         if isinstance(cookie, dict):
             for i in parameters:
                 if i:
@@ -378,7 +350,7 @@ class Parameter:
         raise DownloaderError
 
     async def __get_tt_wid_params(self) -> dict:
-        """提供 `__get_tt_wid_params` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """限时请求抖音 ttwid，失败时返回空参数。"""
         if tt_wid := await TtWid.get_tt_wid(
             self.logger,
             self.headers_params,
@@ -390,7 +362,7 @@ class Parameter:
         return {}
 
     async def __get_tt_wid_params_tiktok(self) -> dict:
-        """提供 `__get_tt_wid_params_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """优先复用本地 twc_tiktok，并请求 TikTok ttwid。"""
         if tt_wid := await TtWidTikTok.get_tt_wid(
             self.logger,
             self.headers_params_tiktok,
@@ -411,7 +383,7 @@ class Parameter:
         return {}
 
     def __check_root(self, root: str) -> Path:
-        """提供 `__check_root` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证下载目录；可创建时创建，否则回退到项目运行目录。"""
         if not root:
             return self.ROOT
         if (r := Path(root)).is_dir():
@@ -429,14 +401,14 @@ class Parameter:
 
     @staticmethod
     def __check_root_again(root: Path) -> bool | Path:
-        """提供 `__check_root_again` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """仅在父目录存在时创建下载目录。"""
         if root.resolve().parent.is_dir():
             root.mkdir()
             return root
         return False
 
     def __check_folder_name(self, folder_name: str) -> str:
-        """提供 `__check_folder_name` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """清理下载文件夹名称，空结果回退为 Download。"""
         if folder_name := self.CLEANER.filter_name(
             folder_name,
         ):
@@ -450,7 +422,7 @@ class Parameter:
         return "Download"
 
     def __check_name_format(self, name_format: str) -> list[str]:
-        """提供 `__check_name_format` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证文件名字段序列，非法字段触发默认格式。"""
         name_keys = name_format.strip().split(" ")
         if all(i in self.NAME_KEYS for i in name_keys):
             self.logger.info(f"name_format 参数已设置为 {name_format}", False)
@@ -464,7 +436,7 @@ class Parameter:
             return ["create_time", "type", "nickname", "desc"]
 
     def __check_date_format(self, date_format: str) -> str:
-        """提供 `__check_date_format` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """用当前时间验证 strftime 格式，失败时返回默认格式。"""
         try:
             strftime(date_format, localtime())
             self.logger.info(f"date_format 参数已设置为 {date_format}", False)
@@ -478,7 +450,7 @@ class Parameter:
             return "%Y-%m-%d %H:%M:%S"
 
     def __check_split(self, split: str) -> str:
-        """提供 `__check_split` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """拒绝会使生成文件名失效的分隔字符。"""
         for i in split:
             if i in self.CLEANER.rule.keys():
                 self.logger.warning(
@@ -494,7 +466,7 @@ class Parameter:
         self,
         proxy: str | None | dict,
     ) -> str | None:
-        """提供 `__check_proxy_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """通过 TikTok 首页验证代理可用性。"""
         return self.__check_proxy(
             proxy,
             "https://www.tiktok.com/explore",
@@ -509,9 +481,9 @@ class Parameter:
         remark=_("抖音"),
         enable=True,
     ) -> str | None:
-        """提供 `__check_proxy` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """请求目标平台首页验证代理；失败或平台关闭时禁用代理。"""
         if enable and proxy:
-            # 暂时兼容旧版配置；未来将会移除
+            # 旧配置可能按协议保存代理字典，先读取 https:// 键维持兼容。
             if isinstance(proxy, dict):
                 self.console.warning(
                     _("{remark}代理参数应为字符串格式，未来不再支持字典格式").format(
@@ -555,13 +527,13 @@ class Parameter:
         return None
 
     def __check_max_size(self, max_size: int) -> int:
-        """提供 `__check_max_size` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """将单文件大小下限收敛到零。"""
         max_size = max(max_size, 0)
         self.logger.info(f"max_size 参数已设置为 {max_size}", False)
         return max_size
 
     def __check_chunk(self, chunk: int) -> int:
-        """提供 `__check_chunk` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证下载分块大小。"""
         return self.__check_number_value(
             chunk,
             "chunk",
@@ -570,7 +542,7 @@ class Parameter:
         )
 
     def __check_max_retry(self, max_retry: int) -> int:
-        """提供 `__check_max_retry` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证最大重试次数。"""
         return self.__check_number_value(
             max_retry,
             "max_retry",
@@ -579,7 +551,7 @@ class Parameter:
         )
 
     def __check_max_pages(self, max_pages: int) -> int:
-        """提供 `__check_max_pages` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """将非正整数页数回退为近似不限页。"""
         if isinstance(max_pages, int) and max_pages > 0:
             self.logger.info(f"max_pages 参数已设置为 {max_pages}", False)
             return max_pages
@@ -592,7 +564,7 @@ class Parameter:
         return 99999
 
     def __check_timeout(self, timeout: int | float) -> int | float:
-        """提供 `__check_timeout` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证请求超时秒数。"""
         return self.__check_number_value(
             timeout,
             "timeout",
@@ -601,9 +573,7 @@ class Parameter:
         )
 
     def __check_storage_format(self, storage_format: str) -> str:
-        # 依赖 RecordManager，暂时简化逻辑
-        # if storage_format in RecordManager.DataLogger.keys():
-        """提供 `__check_storage_format` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """仅接受当前记录器支持的 csv、xlsx 和 sql。"""
         if storage_format in ["csv", "xlsx", "sql"]:
             self.logger.info(f"storage_format 参数已设置为 {storage_format}", False)
             return storage_format
@@ -621,13 +591,13 @@ class Parameter:
 
     @staticmethod
     def __check_run_command(run_command: str) -> list:
-        """提供 `__check_run_command` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """拆分后逆序保存附加命令参数。"""
         return run_command.split()[::-1] if run_command else []
 
     async def update_params(self) -> None:
-        """更新抖音和 TikTok 的必要参数 (msToken, tt_wid)"""
+        """刷新双平台的 msToken 与 ttwid，并同步 API 参数和 Cookie 请求头。"""
         API, APITikTok = _get_api_classes()
-        
+
         if self.douyin_platform:
             if any(
                 (
@@ -638,6 +608,7 @@ class Parameter:
                 self.console.info(
                     _("正在更新抖音参数，请稍等..."),
                 )
+                # 本地 Cookie 最可信，其次复用 API 缓存，最后才生成离线兜底值。
                 local_ms_token = self.cookie_dict.get(MsToken.NAME) or self.get_cookie_value(
                     self.cookie_str,
                     MsToken.NAME,
@@ -659,12 +630,10 @@ class Parameter:
                     tt_wid = {TtWid.NAME: local_tt_wid}
                 else:
                     tt_wid = await self.__get_tt_wid_params()
-                # 更新到 API 类参数
+                # 查询参数与 Cookie 必须使用同一组令牌，避免签名上下文不一致。
                 if API and ms_token:
                     API.params["msToken"] = ms_token.get(MsToken.NAME, "")
-                # 构建参数列表（过滤掉 None）
                 params_to_add = [p for p in (ms_token, tt_wid) if p]
-                # 更新到 headers
                 await self.__update_cookie(
                     tuple(params_to_add),
                     (
@@ -693,12 +662,10 @@ class Parameter:
                 )
                 ms_token = await self.__get_token_params_tiktok()
                 tt_wid = await self.__get_tt_wid_params_tiktok()
-                # 更新到 API 类参数
+                # TikTok API 参数与请求头同样需要共享令牌状态。
                 if APITikTok and ms_token:
                     APITikTok.params["msToken"] = ms_token.get(MsTokenTikTok.NAME, "")
-                # 构建参数列表（过滤掉 None）
                 params_to_add = [p for p in (ms_token, tt_wid) if p]
-                # 更新到 headers
                 await self.__update_cookie(
                     tuple(params_to_add),
                     (
@@ -719,58 +686,8 @@ class Parameter:
                 )
 
     async def update_params_offline(self) -> None:
-        # 需要 API 模块，暂时注释
-        """更新 `params_offline` 对应的状态或数据内容，供 `Parameter` 使用。"""
+        """离线参数刷新尚未启用，保留异步接口兼容。"""
         pass
-        # if self.douyin_platform:
-        #     if any(
-        #         (
-        #             self.cookie_dict,
-        #             self.cookie_str,
-        #         )
-        #     ):
-        #         ms_token = self.cookie_dict.get(MsToken.NAME) or self.get_cookie_value(
-        #             self.cookie_str,
-        #             MsToken.NAME,
-        #         )
-        #         API.params["msToken"] = ms_token
-        #         await self.__update_cookie(
-        #             ({MsToken.NAME: ms_token},),
-        #             (
-        #                 self.headers,
-        #                 self.headers_download,
-        #             ),
-        #             self.cookie_dict,
-        #             self.cookie_str,
-        #         )
-        #     else:
-        #         self.logger.warning(
-        #             _("配置文件 cookie 参数未设置，抖音平台功能可能无法正常使用")
-        #         )
-        # if self.tiktok_platform:
-        #     if any(
-        #         (
-        #             self.cookie_dict_tiktok,
-        #             self.cookie_str_tiktok,
-        #         )
-        #     ):
-        #         ms_token = await self.__get_token_params_tiktok()
-        #         APITikTok.params["msToken"] = ms_token.get(MsTokenTikTok.NAME, "")
-        #         await self.__update_cookie(
-        #             (ms_token,),
-        #             (
-        #                 self.headers_tiktok,
-        #                 self.headers_download_tiktok,
-        #             ),
-        #             self.cookie_dict_tiktok,
-        #             self.cookie_str_tiktok,
-        #         )
-        #     else:
-        #         self.logger.warning(
-        #             _(
-        #                 "配置文件 cookie_tiktok 参数未设置，TikTok 平台功能可能无法正常使用"
-        #             )
-        #         )
 
     async def __update_cookie(
         self,
@@ -779,7 +696,7 @@ class Parameter:
         cookie_dict: dict,
         cookie_str: str,
     ) -> None:
-        """提供 `__update_cookie` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """合并生成参数，并将同一 Cookie 写入一组请求头。"""
         cookie = self.__add_cookie(
             parameters,
             cookie_dict or cookie_str,
@@ -792,7 +709,7 @@ class Parameter:
     def set_headers_cookie(
         self,
     ) -> None:
-        """设置 `headers_cookie` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """把现有双平台 Cookie 写入数据与下载请求头。"""
         if self.cookie_dict:
             cookie = cookie_dict_to_str(self.cookie_dict)
             self.headers["Cookie"] = cookie
@@ -809,16 +726,16 @@ class Parameter:
             self.headers_download_tiktok["Cookie"] = self.cookie_str_tiktok
 
     def set_download_headers(self) -> None:
-        """设置 `download_headers` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """设置双平台下载请求所需的最小 Cookie。"""
         self.__update_download_headers()
         self.__update_download_headers_tiktok()
 
     def __update_download_headers(self) -> None:
-        """提供 `__update_download_headers` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """写入抖音下载接口依赖的屏幕尺寸 Cookie。"""
         self.headers_download["Cookie"] = "dy_swidth=1536; dy_sheight=864"
 
     def __update_download_headers_tiktok(self) -> None:
-        """提供 `__update_download_headers_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """优先使用 tt_chain_token，否则沿用完整 TikTok Cookie。"""
         key = "tt_chain_token"
         if tk := self.cookie_dict_tiktok.get(
             key,
@@ -826,26 +743,9 @@ class Parameter:
             self.headers_download_tiktok["Cookie"] = f"{key}={tk}"
         else:
             self.headers_download_tiktok["Cookie"] = self.cookie_str_tiktok
-        # self.headers_download_tiktok["Cookie"] = self.headers_tiktok.get(
-        #     "Cookie", "")
 
     async def __get_token_params(self) -> dict:
-        # if not (
-        #     m := (
-        #         self.cookie_dict.get(MsToken.NAME)
-        #         or self.get_cookie_value(
-        #             self.cookie_str,
-        #             MsToken.NAME,
-        #         )
-        #     )
-        # ):
-        #     self.logger.warning(
-        #         _("抖音 cookie 缺少 {name} 键值对，请尝试重新写入 cookie").format(
-        #             name=MsToken.NAME
-        #         )
-        #     )
-        #     return {}
-        """提供 `__get_token_params` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """读取本地 msToken；缺失时生成离线兜底值。"""
         ms_token = self.cookie_dict.get(MsToken.NAME) or self.get_cookie_value(
             self.cookie_str,
             MsToken.NAME,
@@ -857,9 +757,7 @@ class Parameter:
             )
             return {MsToken.NAME: ms_token}
 
-        # 速度优先：避免把不稳定的远程 msToken 刷新放到启动关键路径。
-        # 抖音接口模板本身允许空 msToken，这里进一步给出本地假值兜底，
-        # 让启动链保持确定性，后续如需更强兼容性可再补充异步刷新策略。
+        # 不在启动关键路径请求远程 msToken，避免网络抖动拖慢初始化。
         fake_ms_token = MsToken.get_fake_ms_token()
         self.logger.info(
             f"抖音 MsToken 使用本地兜底值: {fake_ms_token[MsToken.NAME]}",
@@ -868,7 +766,7 @@ class Parameter:
         return fake_ms_token
 
     async def __get_token_params_tiktok(self) -> dict:
-        """提供 `__get_token_params_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """仅读取本地 TikTok msToken，缺失时返回空参数。"""
         if not (
             m := (
                 self.cookie_dict_tiktok.get(MsTokenTikTok.NAME)
@@ -884,54 +782,26 @@ class Parameter:
                 )
             )
             return {}
-        # if d := await MsTokenTikTok.get_long_ms_token(
-        #     self.logger,
-        #     self.headers_params_tiktok,
-        #     m,
-        #     proxy=self.proxy_tiktok,
-        # ):
-        #     self.logger.info(
-        #         f"TikTok MsToken 请求值: {d[MsTokenTikTok.NAME]}",
-        #         False,
-        #     )
-        #     return d
-        # else:
-        #     self.logger.info(
-        #         f"TikTok MsToken 本地值: {m}",
-        #         False,
-        #     )
-        #     return {MsTokenTikTok.NAME: m}
         return {MsTokenTikTok.NAME: m}
 
     def set_uif_id(
         self,
     ) -> None:
-        # 需要 API 模块，暂时注释
-        """设置 `uif_id` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """UIFID 同步尚未启用，保留公开接口兼容。"""
         pass
-        # if self.cookie_dict:
-        #     API.params["uifid"] = self.cookie_dict.get("UIFID", "")
-        # elif self.cookie_str:
-        #     API.params["uifid"] = self.get_cookie_value(
-        #         self.cookie_str,
-        #         "UIFID",
-        #     )
 
     @staticmethod
-    # def __generate_ffmpeg_object(ffmpeg_path: str) -> FFMPEG:
     def __generate_ffmpeg_object(ffmpeg_path: str) -> Any:
-        # return FFMPEG(ffmpeg_path)
-        """提供 `__generate_ffmpeg_object` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """FFMPEG 对象构造尚未启用，保留内部调用形态。"""
         return None
 
     def get_settings_data(self) -> dict:
-        
+        """序列化当前可持久化配置。"""
         return {
             "accounts_urls": [vars(i) for i in self.accounts_urls],
             "accounts_urls_tiktok": [vars(i) for i in self.accounts_urls_tiktok],
             "mix_urls": [vars(i) for i in self.mix_urls],
             "mix_urls_tiktok": [vars(i) for i in self.mix_urls_tiktok],
-            # "owner_url": vars(self.owner_url),
             "owner_url_tiktok": self.owner_url_tiktok,
             "root": str(self.root.resolve()),
             "folder_name": self.folder_name,
@@ -957,7 +827,6 @@ class Parameter:
             "max_retry": self.max_retry,
             "max_pages": self.max_pages,
             "run_command": " ".join(self.run_command[::-1]),
-            # "ffmpeg": self.ffmpeg.path or "",
             "ffmpeg": "",
         }
 
@@ -965,7 +834,7 @@ class Parameter:
         self,
         data: dict,
     ) -> None:
-        """设置 `settings_data` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """按 URL、Cookie、浏览器、代理和通用参数分组应用配置。"""
         self.set_urls_params(
             data.pop("accounts_urls"),
             data.pop("mix_urls"),
@@ -1001,7 +870,7 @@ class Parameter:
         self.set_general_params(data)
 
     async def __update_cookie_data(self, data: dict) -> None:
-        """提供 `__update_cookie_data` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """从浏览器 Cookie 数据提取双平台凭据并刷新令牌。"""
         for i, j in zip(("cookie", "cookie_tiktok"), (_("抖音"), "TikTok")):
             if c := data.get(i):
                 setattr(
@@ -1010,24 +879,13 @@ class Parameter:
         await self.update_params()
 
     @staticmethod
-    # def check_urls_params(data: list[dict]) -> list[SimpleNamespace]:
     def check_urls_params(data: list[dict]) -> list[Any]:
-        # 需要 Extractor 支持，暂时返回原数据
-        # items = []
-        # for item in data:
-        #     if not item.get("url") or not item.get("enable", True):
-        #         continue
-        #     if not isinstance(item.get("mark"), str):
-        #         item["mark"] = ""
-        #     items.append(item)
-        # return Extractor.generate_data_object(items)
-        
+        """批量 URL 参数解析尚未启用，保留接口并返回空列表。"""
         return []
 
     @staticmethod
-    # def check_url_params(data: dict) -> SimpleNamespace:
     def check_url_params(data: dict) -> Any:
-        
+        """将单个 URL 配置归一化为包含 url 与 mark 的命名空间。"""
         if not data.get("url"):
             return SimpleNamespace(
                 mark="",
@@ -1035,7 +893,6 @@ class Parameter:
             )
         if not isinstance(data.get("mark"), str):
             data["mark"] = ""
-        # return Extractor.generate_data_object(data)
         return SimpleNamespace(**data)
 
     def set_urls_params(
@@ -1047,7 +904,7 @@ class Parameter:
         mix_urls_tiktok: list[dict],
         owner_url_tiktok: dict,
     ):
-        """设置 `urls_params` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """更新非空的账号、合集与单账号 URL 配置。"""
         if accounts_urls:
             self.accounts_urls = self.check_urls_params(accounts_urls)
         if accounts_urls_tiktok:
@@ -1058,13 +915,11 @@ class Parameter:
             self.mix_urls_tiktok = self.check_urls_params(mix_urls_tiktok)
         if owner_url:
             self.owner_url = self.check_url_params(owner_url)
-        # if owner_url_tiktok:
-        #     self.owner_url_tiktok = self.check_url_params(owner_url_tiktok)
 
     def set_cookie(
         self, cookie: str | dict[str, str], cookie_tiktok: str | dict[str, str]
     ):
-        """设置 `cookie` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """更新非空的双平台 Cookie 及其登录态标记。"""
         if cookie:
             self.cookie_dict, self.cookie_str = self.__check_cookie(cookie)
             self.cookie_state: bool = self.__check_cookie_state()
@@ -1079,13 +934,13 @@ class Parameter:
             self.__update_download_headers_tiktok()
 
     def set_general_params(self, data: dict[str, Any]) -> None:
-        """设置 `general_params` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """对非空通用配置调用对应校验器。"""
         for i, j in data.items():
             if j is not None:
                 self.__CHECK[i](j)
 
     async def set_proxy(self, proxy: str | None, proxy_tiktok: str | None):
-        """设置 `proxy` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """验证新代理，关闭旧客户端后按平台重新创建客户端。"""
         if isinstance(proxy, str):
             self.proxy: str | None = self.__check_proxy(
                 proxy,
@@ -1117,11 +972,11 @@ class Parameter:
         browser_info: dict,
         new_info: dict,
     ) -> dict:
-        
+        """用新浏览器字段覆盖同名旧字段。"""
         return browser_info | new_info
 
     def set_browser_info(self, browser_info: dict, browser_info_tiktok: dict):
-        """设置 `browser_info` 对应的值或运行状态，供 `Parameter` 使用。"""
+        """合并双平台浏览器指纹信息。"""
         self.browser_info = self.merge_browser_info(
             self.browser_info,
             browser_info or {},
@@ -1130,24 +985,21 @@ class Parameter:
             self.browser_info_tiktok,
             browser_info_tiktok or {},
         )
-        # 需要 API 支持
-        # self.__set_browser_info(self.browser_info)
-        # self.__set_browser_info_tiktok(self.browser_info_tiktok)
 
     @staticmethod
     def check_str(value: str) -> str:
-        
+        """非字符串值统一转为空串。"""
         return value if isinstance(value, str) else ""
 
     async def close_client(self) -> None:
-        
+        """关闭当前存在的双平台异步客户端。"""
         if self.client is not None:
             await self.client.aclose()
         if self.client_tiktok is not None:
             await self.client_tiktok.aclose()
 
     def __generate_folders(self):
-        """提供 `__generate_folders` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """迁移旧缓存后确保用户缓存目录存在。"""
         self.compatible()
         self.cache.mkdir(exist_ok=True)
 
@@ -1155,7 +1007,7 @@ class Parameter:
         self,
         info: dict[str, str],
     ) -> None:
-        """提供 `__set_browser_info` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """同步抖音 UA 到各请求头，并重建 a_bogus 签名器。"""
         self.logger.info(f"抖音浏览器信息: {info}", False)
         if ua := info.get(
             "User-Agent",
@@ -1169,23 +1021,7 @@ class Parameter:
                 i["User-Agent"] = ua
         else:
             ua = USERAGENT
-        # 需要 API 支持
-        # for i in (
-        #     "pc_libra_divert",
-        #     "browser_language",
-        #     "browser_platform",
-        #     "browser_name",
-        #     "browser_version",
-        #     "engine_name",
-        #     "engine_version",
-        #     "os_name",
-        #     "os_version",
-        #     # 'webid',
-        # ):
-        #     if v := info.get(
-        #         i,
-        #     ):
-        #         API.params[i] = v
+        # a_bogus 会把 UA 纳入签名，签名器必须与实际请求头保持一致。
         self.ab = ABogus(
             ua,
             info.get(
@@ -1197,7 +1033,7 @@ class Parameter:
         self,
         info: dict,
     ):
-        """提供 `__set_browser_info_tiktok` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """同步 TikTok UA 到数据、下载和参数请求头。"""
         self.logger.info(f"TikTok 浏览器信息: {info}", False)
         if ua := info.get(
             "User-Agent",
@@ -1208,28 +1044,9 @@ class Parameter:
                 self.headers_params_tiktok,
             ):
                 i["User-Agent"] = ua
-        # 需要 API 支持
-        # for i in (
-        #     "app_language",
-        #     "browser_language",
-        #     "browser_name",
-        #     "browser_platform",
-        #     "browser_version",
-        #     "language",
-        #     "os",
-        #     "priority_region",
-        #     "region",
-        #     "tz_name",
-        #     "webcast_language",
-        #     "device_id",
-        # ):
-        #     if v := info.get(
-        #         i,
-        #     ):
-        #         APITikTok.params[i] = v
 
     def __check_truncate(self, truncate: int) -> int:
-        """提供 `__check_truncate` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证文本截断宽度。"""
         return self.__check_number_value(
             truncate,
             "truncate",
@@ -1238,7 +1055,7 @@ class Parameter:
         )
 
     def __check_name_length(self, name_length: int) -> int:
-        """提供 `__check_name_length` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证生成文件名的长度上限。"""
         return self.__check_number_value(
             name_length,
             "name_length",
@@ -1247,7 +1064,7 @@ class Parameter:
         )
 
     def __check_desc_length(self, desc_length: int) -> int:
-        """提供 `__check_desc_length` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证作品描述的截断长度。"""
         return self.__check_number_value(
             desc_length,
             "desc_length",
@@ -1258,7 +1075,7 @@ class Parameter:
     def __check_number_value(
         self, value: int, name: str, minimum: int, default: int
     ) -> int:
-        """提供 `__check_number_value` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """校验整数下限，类型或范围不符时使用默认值。"""
         if isinstance(value, int):
             if value >= minimum:
                 self.logger.info(f"{name} 参数已设置为 {value}", False)
@@ -1281,7 +1098,7 @@ class Parameter:
         return default
 
     def __check_live_qualities(self, live_qualities: str) -> str:
-        """提供 `__check_live_qualities` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """验证直播清晰度配置为字符串。"""
         if isinstance(live_qualities, str):
             self.logger.info(f"live_qualities 参数已设置为 {live_qualities}", False)
             return live_qualities
@@ -1293,7 +1110,7 @@ class Parameter:
         return ""
 
     def __check_cookie_state(self, tiktok=False) -> bool:
-        """提供 `__check_cookie_state` 对应的内部辅助逻辑，供 `Parameter` 使用。"""
+        """检查 Cookie 中是否包含登录态标记键。"""
         if tiktok:
             return (self.cookie_object.STATE_KEY in self.cookie_dict_tiktok) or (
                 self.cookie_object.STATE_KEY in self.cookie_str_tiktok
@@ -1304,23 +1121,16 @@ class Parameter:
 
     @staticmethod
     def get_cookie_value(cookie_str: str, key: str, return_key=False) -> str:
-        """
-        解析cookie字符串并返回指定键的值或键值对
-
-        :param cookie_str: cookie字符串（格式如 "name=John; age=30;"）
-        :param key: 需要获取的键名
-        :param return_key: 是否返回键值对格式，默认为False
-        :return: 键值对字符串或值（若不存在返回None）
-        """
+        """从 Cookie 字符串读取键值；return_key=True 时保留 key= 前缀。"""
         cookies = {}
         for pair in cookie_str.split(";"):
             pair = pair.strip()
             if not pair:
                 continue
-            # 分割键值（最多分割一次，应对含等号的值）
+            # 值中可能含等号，因此只分割一次。
             key_value = pair.split("=", 1)
             if len(key_value) != 2:
-                continue  # 跳过无效格式
+                continue
             k, v = key_value[0].strip(), key_value[1].strip()
             cookies[k] = v
 
@@ -1331,7 +1141,7 @@ class Parameter:
         return f"{key}={value}" if return_key else value
 
     def compatible(self):
-        
+        """仅在新目录不存在时迁移旧 Cache，避免覆盖现有用户缓存。"""
         if (
             old := self.ROOT.parent.joinpath("Cache")
         ).exists() and not self.cache.exists():

@@ -1,28 +1,31 @@
-"""服务模块，负责 `app/services/auth_service.py` 对应的业务支撑能力。"""
+"""认证/Cookie 文件读写与 Playwright 登录态持久化。"""
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from typing import Any
 
 from app.exceptions import CookieLoadError, CookieSaveError
 
-#认证 / Cookie 管理服务
 class AuthService:
-    """认证文件读写服务，统一把底层 IO/JSON 异常转成领域异常。"""
+    """统一处理 Cookie JSON 格式，并把文件 IO/JSON 异常收敛为领域异常。
+
+    Cookie 以明文 JSON 保存；``file_path``/``save_path`` 必须来自受信配置，目录权限
+    由部署方负责。本服务不执行路径授权，也不加密 Cookie 内容。
+    """
 
     @staticmethod
     def _safe_to_string(value: Any) -> str | None:
-        """提供 `_safe_to_string` 对应的内部辅助逻辑，供 `AuthService` 使用。"""
         try:
             return str(value)
         except (TypeError, ValueError):
             return None
 
     def load_json_file(self, file_path: str) -> Any:
-        """加载 `json_file` 对应的数据、配置或资源，供 `AuthService` 使用。"""
+        """文件不存在视为尚未登录；读取或 JSON 解析失败统一抛出 CookieLoadError。"""
         if not os.path.exists(file_path):
             return None
         try:
@@ -32,19 +35,38 @@ class AuthService:
             raise CookieLoadError(str(exc)) from exc
 
     def save_json_file(self, file_path: str, payload: Any) -> None:
-        """保存 `json_file` 对应的数据、配置或文件，供 `AuthService` 使用。"""
+        """先在目标目录写入并 fsync 临时文件，再用 os.replace 发布完整 JSON。"""
+        temp_path: str | None = None
         try:
-            directory = os.path.dirname(file_path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            with open(file_path, "w", encoding="utf-8") as fp:
-                json.dump(payload, fp, indent=4, ensure_ascii=False)
+            serialized = json.dumps(payload, indent=4, ensure_ascii=False)
+            destination = os.path.abspath(file_path)
+            directory = os.path.dirname(destination)
+            os.makedirs(directory, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=directory,
+                prefix=f".{os.path.basename(destination)}.",
+                suffix=".tmp",
+                delete=False,
+            ) as fp:
+                temp_path = fp.name
+                fp.write(serialized)
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(temp_path, destination)
+            temp_path = None
         except (OSError, TypeError, ValueError) as exc:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
             raise CookieSaveError(str(exc)) from exc
 
     @staticmethod
     def extract_cookie_list(payload: list[dict] | dict | None) -> list[dict]:
-        """提取 `cookie_list` 对应的关键信息，供 `AuthService` 使用。"""
+        """兼容 Cookie 列表和 Playwright storage_state 的 cookies 包装。"""
         if isinstance(payload, list):
             return payload
         if isinstance(payload, dict) and isinstance(payload.get("cookies"), list):
@@ -53,7 +75,7 @@ class AuthService:
 
     @classmethod
     def extract_cookie_dict(cls, payload: list[dict] | dict | None) -> dict[str, str]:
-        """提取 `cookie_dict` 对应的关键信息，供 `AuthService` 使用。"""
+        """接受平面字典或 Playwright Cookie 列表，并过滤无法安全转成字符串的项。"""
         if isinstance(payload, dict) and "cookies" not in payload:
             result: dict[str, str] = {}
             for key, value in payload.items():
@@ -76,7 +98,7 @@ class AuthService:
 
     @classmethod
     def build_cookie_string(cls, payload: list[dict] | dict | None, required_cookie: str | None = None) -> str:
-        """构建 `cookie_string` 对应的结果、参数或对象，供 `AuthService` 使用。"""
+        """缺少 required_cookie 时返回空串，避免携带不完整登录态发起请求。"""
         cookie_dict = cls.extract_cookie_dict(payload)
         if required_cookie and required_cookie not in cookie_dict:
             return ""
@@ -103,7 +125,8 @@ class AuthService:
         stop_check=None,
         wait_callback=None,
     ) -> bool:
-        
+        """轮询 Playwright context；stop_check 可中止，wait_callback 由调用方接管等待节奏。"""
+
         for _ in range(max_attempts):
             if stop_check and stop_check():
                 return False

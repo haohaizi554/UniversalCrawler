@@ -1,4 +1,4 @@
-"""Reusable path picker control for settings forms."""
+"""提供设置表单复用的路径选择控件。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.utils.qt_runtime import load_qt_icon
 
 
 class SettingsPathPicker(QFrame):
-    """Single-line path editor with a themed browse button."""
+    """带主题化浏览按钮的单行路径编辑器。"""
 
     path_committed = pyqtSignal(str, str)
     browse_requested = pyqtSignal(QLineEdit, str)

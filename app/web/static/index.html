@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Universal Crawler Pro</title>
+  <link rel="icon" href="/webui-icon.ico?v=20260714-webui" type="image/x-icon" />
   <link rel="stylesheet" href="/static/app.css?v=20260711-css-split" />
   <link rel="stylesheet" href="/static/log_layout.css?v=20260711-css-split" />
   <link rel="stylesheet" href="/static/task_pages.css?v=20260711-css-split" />
@@ -49,7 +50,7 @@
 
     <section class="right-column">
       <header class="top-bar" id="topBar">
-        <input id="searchInput" class="search-input" placeholder="输入：主页链接、分享链接或合集链接..." />
+        <input id="searchInput" class="search-input" autocomplete="off" spellcheck="false" placeholder="输入：主页链接、分享链接或合集链接..." />
         <label class="count-label" for="videoCountSelect">视频数:</label>
         <select id="videoCountSelect" class="count-select" aria-label="视频数">
           <option value="10">10 个视频</option><option value="20" selected>20 个视频（推荐）</option><option value="30">30 个视频</option><option value="50">50 个视频</option><option value="9999">max</option>
@@ -296,7 +297,10 @@
       <div class="update-modal-head">
         <div>
           <h2 id="updateTitle">检查更新</h2>
-          <p id="updateStatus" data-status="idle">正在检查最新版本...</p>
+          <div class="update-status-line">
+            <span id="updateSpinner" class="update-spinner" aria-hidden="true" hidden></span>
+            <p id="updateStatus" data-status="idle">正在检查最新版本...</p>
+          </div>
         </div>
         <button id="updateCloseIcon" class="icon-btn" type="button" onclick="closeUpdateCheckModal()" aria-label="关闭">×</button>
       </div>
@@ -358,9 +362,13 @@
   <div id="selectionModal" class="modal selection-modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="selectionTitle" aria-describedby="selectionHeader">
     <div class="modal-box selection-modal-box">
       <h2 id="selectionTitle" class="sr-only">任务清单确认</h2>
-      <p id="selectionHeader" class="selection-header">共扫描到 0 个资源，请勾选需要下载的项目：</p>
+      <div class="selection-modal-head">
+        <p id="selectionHeader" class="selection-header">共扫描到 0 个资源，请勾选需要下载的项目：</p>
+        <button id="selectionCloseBtn" class="icon-btn selection-close-btn" type="button" onclick="cancelSelection()" title="关闭" aria-label="关闭">×</button>
+      </div>
       <div class="selection-table-shell">
         <table class="selection-table">
+          <colgroup><col class="selection-check-column" /><col /></colgroup>
           <thead><tr><th>选择</th><th>视频标题 / 描述</th></tr></thead>
           <tbody id="selectionBody"></tbody>
         </table>

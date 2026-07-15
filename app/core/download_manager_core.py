@@ -1,4 +1,4 @@
-"""Pure-Python download dispatch core."""
+"""不依赖界面框架的下载分发核心。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,11 @@ from app.models import VideoItem
 from app.services.download_recovery_store import DownloadRecoveryStore
 
 class PendingDownloadQueue:
-    """Thread-safe FIFO queue with explicit cancellation/snapshot operations."""
+    """支持取消与一致性快照的线程安全先进先出队列。
+
+    内部 deque 没有容量上限；管理器的槽位只限制任务执行并发，不限制排队任务在
+    内存中的积压量。
+    """
 
     def __init__(self) -> None:
         self._items: deque[tuple[VideoItem, str]] = deque()
@@ -115,7 +119,7 @@ class PendingDownloadQueue:
             return set(self._queued_ids)
 
 class DownloadManagerCore:
-    """Maintain queueing, concurrency slots, cancellation, and worker lifecycle."""
+    """统一管理入队、并发槽位、取消操作及工作线程生命周期。"""
 
     WORKER_STOP_TIMEOUT_MS = 2000
     LIGHTWEIGHT_MIN_CONCURRENT = 10
@@ -162,7 +166,7 @@ class DownloadManagerCore:
         self.dispatcher_thread.start()
 
     def _run_startup_maintenance(self) -> None:
-        """Sweep stale workspaces off the UI thread before dispatching new work."""
+        """在分发任务前异步清理过期工作目录，避免阻塞界面线程。"""
         started_at = time.monotonic()
         stats: dict[str, Any] = {}
         try:
@@ -178,7 +182,7 @@ class DownloadManagerCore:
             result = self._sweep_m3u8_orphan_workspaces_on_startup()
             if isinstance(result, dict):
                 stats = result
-        except Exception as exc:  # pragma: no cover - defensive worker isolation
+        except Exception as exc:  # pragma: no cover - 防御性工作线程隔离
             debug_logger.log_exception(
                 "DownloadManager",
                 "startup_maintenance_error",
@@ -489,7 +493,7 @@ class DownloadManagerCore:
             return len(self.workers) < int(getattr(self, "max_concurrent", 1) or 1)
 
     def _slot_capacity_for(self, max_concurrent: int) -> int:
-        """计算调度槽总量：视频按用户并发限制，图片可走受控 fast lane。"""
+        """计算调度槽总量：视频按用户并发限制，图片可走受控的快速通道（fast lane）。"""
         configured = normalize_download_concurrency(max_concurrent)
         if bool(getattr(self, "image_respects_concurrency", False)):
             return configured
@@ -549,15 +553,15 @@ class DownloadManagerCore:
                 return False
             if self._is_lightweight_download(video):
                 return True
-            # 重资源仍受 max_concurrent 约束；图片 fast lane 不能挤占视频下载槽。
+            # 重资源仍受 max_concurrent 约束；图片快速通道（fast lane）不能挤占视频下载槽。
             return self._active_heavy_worker_count_unlocked() < int(getattr(self, "max_concurrent", 1) or 1)
 
     def add_task(self, video: VideoItem, save_dir: str):
-        """Add a video item into the download queue."""
+        """把单个媒体项目加入下载队列。"""
         return self.add_tasks([video], save_dir) > 0
 
     def add_tasks(self, videos: Iterable[VideoItem], save_dir: str) -> int:
-        """Add multiple video items into the download queue with one queue wakeup."""
+        """批量入队后只唤醒一次调度器，降低大批任务提交时的锁竞争。"""
         queued: list[tuple[VideoItem, str]] = []
         for video in videos:
             if self._log_and_skip_video_only(video):
@@ -629,15 +633,89 @@ class DownloadManagerCore:
         )
 
     def cancel_task(self, video_id: str) -> str | None:
-        """Cancel a queued or running task."""
+        """取消一个排队中或运行中的任务。"""
         return self.cancel_tasks({video_id}).get(video_id)
 
+    def cancel_task_and_wait(self, video_id: str, timeout_ms: int | None = None) -> str | None:
+        """取消指定任务，并等待所有关联工作线程停止。"""
+        results, running_workers = self._cancel_tasks_with_workers({video_id})
+        result = results.get(video_id)
+        if result not in {"dispatching", "running"}:
+            return result
+
+        if timeout_ms is None:
+            timeout_ms = self.WORKER_STOP_TIMEOUT_MS
+        timeout_ms = max(0, int(timeout_ms))
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        tracked_workers = {id(worker): worker for worker in running_workers}
+        stopped_workers: set[int] = set()
+
+        while True:
+            newly_running = []
+            with self._workers_lock:
+                dispatching = any(
+                    dispatching_video.id == video_id
+                    for dispatching_video, _save_dir in list(getattr(self, "_dispatching_tasks", []))
+                )
+                for worker in list(self.workers):
+                    worker_id = getattr(getattr(worker, "video", None), "id", None)
+                    identity = id(worker)
+                    if worker_id == video_id and identity not in tracked_workers:
+                        tracked_workers[identity] = worker
+                        newly_running.append(worker)
+
+            for worker in newly_running:
+                worker.video.meta["frontend_status"] = '\u5f85\u4e0b\u8f7d'
+                worker.video.meta["user_cancel_requested"] = True
+                worker.stop()
+
+            for identity, worker in list(tracked_workers.items()):
+                if identity in stopped_workers:
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._cancel_wait_timeout(video_id, timeout_ms)
+                wait_timeout_ms = max(1, int(remaining * 1000 + 0.999))
+                try:
+                    wait_ok = bool(worker.wait(wait_timeout_ms))
+                except RuntimeError:
+                    wait_ok = True
+                if wait_ok:
+                    stopped_workers.add(identity)
+
+            if not dispatching and len(stopped_workers) == len(tracked_workers):
+                return result
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self._cancel_wait_timeout(video_id, timeout_ms)
+            threading.Event().wait(min(0.01, remaining))
+
+    @staticmethod
+    def _cancel_wait_timeout(video_id: str, timeout_ms: int) -> str:
+        debug_logger.log(
+            component="DownloadManager",
+            action="cancel_task_wait_timeout",
+            level="WARN",
+            message="Download worker did not stop before file deletion timeout",
+            status_code="DL_CANCEL_WAIT_TIMEOUT",
+            details={"video_id": video_id, "timeout_ms": timeout_ms},
+        )
+        return "timeout"
+
     def cancel_tasks(self, video_ids: Iterable[str]) -> dict[str, str | None]:
-        """Cancel many queued or running tasks with one queue scan."""
+        """通过一次队列扫描批量取消排队中或运行中的任务。"""
+        results, _running_workers = self._cancel_tasks_with_workers(video_ids)
+        return results
+
+    def _cancel_tasks_with_workers(
+        self,
+        video_ids: Iterable[str],
+    ) -> tuple[dict[str, str | None], list[Any]]:
         ids = {str(video_id) for video_id in video_ids if video_id}
         results: dict[str, str | None] = {video_id: None for video_id in ids}
         if not ids:
-            return results
+            return results, []
 
         queued_videos = self._remove_queued_tasks(ids)
         for video in queued_videos:
@@ -667,10 +745,14 @@ class DownloadManagerCore:
             worker.stop()
             results[video.id] = "running"
 
-        return results
+        return results, running_workers
 
     def pending_work_counts(self) -> tuple[int, int]:
-        """Return active-or-dispatching and queued counts as one consistent snapshot."""
+        """返回活动加分发中任务数与排队数的近似快照。
+
+        前者在工作线程锁下读取，后者随后在队列锁下另行读取，因此两项可能来自
+        不同时刻，不提供同一锁域的一致性保证。
+        """
         with self._workers_lock:
             active = len(self.workers) + len(getattr(self, "_dispatching_tasks", []))
         return active, self.queue.qsize()
@@ -893,12 +975,11 @@ class DownloadManagerCore:
         return None
 
     def prune_finished_workers(self) -> int:
-        """Drop stale completed workers before capacity accounting.
+        """在计算可用容量前剔除已经结束却仍被登记的工作线程。
 
-        A worker normally removes itself via `_handle_worker_completion`.  This
-        guard keeps the dispatcher healthy if a completion callback is delayed,
-        disconnected, or skipped by an adapter edge case: stale workers must not
-        keep occupying dynamic concurrency slots forever.
+        正常情况下工作线程会通过 ``_handle_worker_completion`` 注销自己；
+        如果完成回调被延迟、断开或因适配器边界情况而遗漏，这层兜底可防止
+        陈旧线程永久占用动态并发槽位。
         """
         stale_workers: list[Any] = []
         with self._workers_lock:
@@ -919,7 +1000,7 @@ class DownloadManagerCore:
                 worker._manager_cleanup_done = True
                 try:
                     self._on_worker_thread_finished(worker)
-                except Exception as exc:  # pragma: no cover - defensive cleanup path
+                except Exception as exc:  # pragma: no cover - 防御性清理路径
                     debug_logger.log_exception(
                         "DownloadManager",
                         "stale_worker_cleanup",
@@ -1093,9 +1174,14 @@ class DownloadManagerCore:
         self._get_dispatch_slot_gate().set()
 
     def _on_worker_thread_finished(self, worker: Any):
-        """Adapter hook for thread-object cleanup."""
+        """供宿主适配器清理线程对象的扩展钩子。"""
 
     def stop_all(self):
+        """尽力停止当前下载，丢弃排队任务，并执行有界等待。
+
+        每个工作线程最多等待 ``WORKER_STOP_TIMEOUT_MS``，分发线程最多等待两秒；
+        本方法返回时不保证所有工作线程或分发线程都已经退出。
+        """
         with self._start_stop_guard():
             self.is_running = False
             startup_maintenance_done = getattr(self, "_startup_maintenance_done", None)

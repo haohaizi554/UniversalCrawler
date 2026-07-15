@@ -1,4 +1,4 @@
-"""User-Agent rotation helpers backed by fake-useragent."""
+"""基于 fake-useragent 提供 User-Agent 轮换。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from app.config import DEFAULT_USER_AGENT
 
 try:
     from fake_useragent import UserAgent
-except Exception:  # pragma: no cover - import-time guard for optional installs
+except Exception:  # pragma: no cover - 可选依赖的导入保护
     UserAgent = None  # type: ignore[assignment]
 
 RANDOM_USER_AGENT_SENTINELS = {"random", "rotate", "rotating", "fake", "fake-useragent", "fake_useragent"}
 
 
 class UserAgentRotator:
-    """Return browser-like User-Agent strings with a safe deterministic fallback."""
+    """返回浏览器风格的 User-Agent，并提供稳定回退值。"""
 
     def __init__(self, fallback_user_agent: str = DEFAULT_USER_AGENT):
         self.fallback_user_agent = fallback_user_agent

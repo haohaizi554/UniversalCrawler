@@ -1,7 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/slides.py` 对应的接口、加密、提取或工具逻辑。"""
+"""保留抖音图集详情接口的兼容占位。"""
 
-# app/core/lib/douyin/interface/slides.py
-# from typing import Callable
 from typing import TYPE_CHECKING
 from typing import Union
 
@@ -10,10 +8,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -24,6 +19,7 @@ if TYPE_CHECKING:
 __all__ = ["Slides"]
 
 class Slides(API):
+    """图集详情占位类，当前 run 不发起请求。"""
     
     def __init__(
         self,
@@ -32,14 +28,12 @@ class Slides(API):
         proxy: str = None,
         slides_id: str | list | tuple = ...,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Slides` 使用。"""
         super().__init__(params, cookie, proxy)
         self.slides_id = slides_id
         self.api = f"{self.short_domain}web/api/v2/aweme/slidesinfo/"
         self.text = _("作品")
 
     async def run(self, *args, **kwargs):
-        """执行当前对象或脚本的主流程，供 `Slides` 使用。"""
         pass
 
 async def test():

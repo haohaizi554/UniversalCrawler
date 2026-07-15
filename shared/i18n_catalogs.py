@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-# Generated from app/ui/i18n/*.json. Keep runtime translation lookups file-IO free.
-# Keep this file multi-line so catalog diffs stay reviewable.
+# 由 app/ui/i18n/*.json 生成，使运行时翻译查询不产生文件 IO。
+# 保持多行格式，便于审阅词典差异。
 CATALOGS: dict[str, dict[str, str]] = {'zh-CN': {},
  'en-US': {'0（不重试）': '0 (No retry)',
            '1 页（推荐）': '1 page (Recommended)',

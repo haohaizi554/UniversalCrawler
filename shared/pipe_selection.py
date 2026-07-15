@@ -1,4 +1,4 @@
-"""Host-neutral pipe selection helpers."""
+"""与宿主无关的管道选择辅助模块。"""
 
 from __future__ import annotations
 

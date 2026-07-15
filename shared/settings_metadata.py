@@ -1,4 +1,4 @@
-"""Presentation-neutral metadata shared by GUI and WebUI settings views."""
+"""GUI 与 WebUI 设置视图共用的展示无关元数据。"""
 
 from __future__ import annotations
 

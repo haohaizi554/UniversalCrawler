@@ -1,8 +1,10 @@
 """测试模块，覆盖 `tests/test_config_settings.py` 对应功能的行为与回归场景。"""
 
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -33,6 +35,224 @@ from app.exceptions import ConfigWriteError
 from app.utils.runtime_paths import resolve_user_file
 
 class ConfigManagerTests(unittest.TestCase):
+
+    def test_failed_set_keeps_state_imported_by_forced_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            stale_manager = ConfigManager(config_path)
+            external_manager = ConfigManager(config_path)
+
+            external_manager.set("common", "theme", "dark")
+
+            with self.assertRaises(ConfigValidationError):
+                stale_manager.set("appearance", "language", "invalid-locale")
+
+            self.assertEqual("dark", stale_manager.get("common", "theme"))
+            self.assertEqual(stale_manager._current_disk_signature(), stale_manager._disk_signature)
+            self.assertFalse(stale_manager.reload_if_changed())
+
+    def test_failed_set_batch_keeps_state_imported_by_forced_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            stale_manager = ConfigManager(config_path)
+            external_manager = ConfigManager(config_path)
+
+            external_manager.set("appearance", "accent", "green")
+
+            with self.assertRaises(ConfigValidationError):
+                stale_manager.set_batch(
+                    {"common": {"last_source": "douyin", "theme": "invalid-theme"}}
+                )
+
+            self.assertEqual("green", stale_manager.get("appearance", "accent"))
+            self.assertEqual("kuaishou", stale_manager.get("common", "last_source"))
+            self.assertEqual(stale_manager._current_disk_signature(), stale_manager._disk_signature)
+            self.assertFalse(stale_manager.reload_if_changed())
+
+    def test_failed_save_ui_state_keeps_state_imported_by_forced_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            stale_manager = ConfigManager(config_path)
+            external_manager = ConfigManager(config_path)
+
+            external_manager.set("common", "theme", "dark")
+
+            with mock.patch.object(
+                stale_manager,
+                "save",
+                side_effect=ConfigWriteError("save failed"),
+            ):
+                with self.assertRaises(ConfigWriteError):
+                    stale_manager.save_ui_state(
+                        geometry=b"geometry",
+                        state=b"state",
+                        main_splitter=b"main",
+                        right_splitter=b"right",
+                        is_fs=True,
+                    )
+
+            self.assertEqual("dark", stale_manager.get("common", "theme"))
+            self.assertEqual("", stale_manager.get("ui", "geometry"))
+            self.assertEqual(stale_manager._current_disk_signature(), stale_manager._disk_signature)
+            self.assertFalse(stale_manager.reload_if_changed())
+
+    def test_exclusive_file_lock_cleans_up_when_metadata_write_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(f"{temp_dir}/config.json")
+
+            with mock.patch("app.config.settings.os.close", wraps=os.close) as close_mock:
+                with mock.patch(
+                    "app.config.settings.os.write",
+                    side_effect=OSError("metadata write failed"),
+                ):
+                    with self.assertRaises(ConfigWriteError):
+                        with manager._exclusive_file_lock():
+                            self.fail("lock body should not run")
+
+            close_mock.assert_called_once()
+            self.assertFalse(manager._file_lock_path.exists())
+
+    def test_restarted_external_sync_does_not_revive_timed_out_watcher(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(f"{temp_dir}/config.json")
+            old_watcher_entered = threading.Event()
+            release_old_watcher = threading.Event()
+            old_watcher_reentered = threading.Event()
+            old_thread_holder: dict[str, threading.Thread] = {}
+
+            def controlled_reload() -> None:
+                if threading.current_thread() is not old_thread_holder.get("thread"):
+                    return
+                if old_watcher_entered.is_set():
+                    old_watcher_reentered.set()
+                    return
+                old_watcher_entered.set()
+                release_old_watcher.wait(timeout=2)
+
+            with mock.patch.object(manager, "reload_if_changed", side_effect=controlled_reload):
+                manager.start_external_sync(interval_seconds=0.05)
+                old_thread = manager._external_sync_thread
+                self.assertIsNotNone(old_thread)
+                old_thread_holder["thread"] = old_thread
+                try:
+                    self.assertTrue(old_watcher_entered.wait(timeout=2))
+                    with mock.patch.object(old_thread, "join", return_value=None) as join_mock:
+                        manager.stop_external_sync()
+                    join_mock.assert_called_once_with(timeout=1.0)
+                    self.assertTrue(old_thread.is_alive())
+
+                    manager.start_external_sync(interval_seconds=0.05)
+                    self.assertIsNot(old_thread, manager._external_sync_thread)
+                    release_old_watcher.set()
+                    self.assertFalse(old_watcher_reentered.wait(timeout=0.25))
+                finally:
+                    release_old_watcher.set()
+                    manager.stop_external_sync()
+                    old_thread.join(timeout=1.0)
+
+    def test_external_sync_stays_alive_until_all_frontend_owners_release_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = ConfigManager(f"{temp_dir}/config.json")
+
+            manager.start_external_sync(interval_seconds=0.02)
+            manager.start_external_sync(interval_seconds=0.02)
+            self.assertTrue(manager.external_sync_running)
+            self.assertEqual(2, manager._external_sync_refcount)
+
+            manager.stop_external_sync()
+            self.assertTrue(manager.external_sync_running)
+            self.assertEqual(1, manager._external_sync_refcount)
+
+            manager.stop_external_sync()
+            self.assertFalse(manager.external_sync_running)
+            self.assertEqual(0, manager._external_sync_refcount)
+
+    def test_stale_manager_update_preserves_newer_values_from_another_process(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+
+            gui_manager.set("common", "theme", "dark")
+            web_manager.set("appearance", "accent", "red")
+
+            reloaded = ConfigManager(config_path)
+            self.assertEqual("dark", reloaded.get("common", "theme"))
+            self.assertEqual("red", reloaded.get("appearance", "accent"))
+
+    def test_stale_gui_exit_state_does_not_overwrite_web_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+
+            web_manager.set_batch(
+                {
+                    "common": {"theme": "dark"},
+                    "appearance": {"accent": "green", "language": "en-US"},
+                }
+            )
+            gui_manager.save_ui_state(
+                geometry=b"geometry",
+                state=b"state",
+                main_splitter=b"main",
+                right_splitter=b"right",
+                is_fs=False,
+            )
+
+            reloaded = ConfigManager(config_path)
+            self.assertEqual("dark", reloaded.get("common", "theme"))
+            self.assertEqual("green", reloaded.get("appearance", "accent"))
+            self.assertEqual("en-US", reloaded.get("appearance", "language"))
+            self.assertEqual(b"geometry".hex(), reloaded.get("ui", "geometry"))
+
+    def test_reload_if_changed_emits_normalized_external_change_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+            events: list[dict] = []
+            gui_manager.subscribe("config.changed", events.append)
+
+            web_manager.set_batch(
+                {
+                    "common": {"theme": "dark"},
+                    "appearance": {"accent": "orange"},
+                }
+            )
+
+            self.assertTrue(gui_manager.reload_if_changed())
+            self.assertEqual("dark", gui_manager.get("common", "theme"))
+            self.assertEqual("orange", gui_manager.get("appearance", "accent"))
+            self.assertEqual(1, len(events))
+            self.assertTrue(events[0]["external"])
+            changed = {(item["section"], item["key"]) for item in events[0]["changes"]}
+            self.assertIn(("common", "theme"), changed)
+            self.assertIn(("appearance", "accent"), changed)
+
+    def test_external_sync_observes_another_manager_without_manual_reload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = f"{temp_dir}/config.json"
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+            changed = threading.Event()
+
+            def on_change(payload):
+                changes = payload.get("changes") or [payload]
+                if payload.get("external") and any(item.get("key") == "theme" for item in changes):
+                    changed.set()
+
+            gui_manager.subscribe("config.changed", on_change)
+            gui_manager.start_external_sync(interval_seconds=0.02)
+            try:
+                web_manager.set("common", "theme", "dark")
+                self.assertTrue(changed.wait(timeout=2))
+                self.assertEqual("dark", gui_manager.get("common", "theme"))
+            finally:
+                gui_manager.stop_external_sync()
+
+            time.sleep(0.04)
+            self.assertFalse(gui_manager.external_sync_running)
     
     def test_legacy_theme_value_is_normalized(self):
         """验证 `test_legacy_theme_value_is_normalized` 对应场景是否符合预期，供 `ConfigManagerTests` 使用。"""

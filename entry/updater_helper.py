@@ -1,9 +1,8 @@
-"""Standalone updater helper entrypoint.
+"""独立更新辅助进程入口。
 
-The GUI process should spawn this helper after it has downloaded and verified an
-installer. The helper always re-establishes signed-manifest trust and verifies
-the package hash, then applies the configured OS-signature policy immediately
-before launching the platform installer.
+GUI 进程下载并验证安装包后再启动此辅助进程。跨进程不能继承内存中的验证
+结论，因此辅助进程必须重新验证签名清单与包哈希，并在启动平台安装器前
+立即执行配置的 OS 签名策略。
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ def _load_verified_asset(
     os_name: str | None = None,
     arch: str | None = None,
 ) -> UpdateAsset:
-    """Re-establish signed metadata trust inside the standalone helper."""
+    """在独立辅助进程内重新建立已签名元数据的信任。"""
 
     manifest = UpdateManifestVerifier(public_key_pem=UPDATE_PUBLIC_KEY_PEM).load_verified(
         Path(manifest_path),
@@ -86,7 +85,7 @@ def _restart_app_if_requested(argv: list[str]) -> None:
 
 
 def _wait_for_process_exit(pid: int, *, timeout_seconds: float = 120.0) -> None:
-    """Wait for the GUI process to release installed files before replacement."""
+    """替换安装文件前等待 GUI 进程释放占用。"""
 
     pid = int(pid or 0)
     if pid <= 0:
@@ -100,19 +99,20 @@ def _wait_for_process_exit(pid: int, *, timeout_seconds: float = 120.0) -> None:
         kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         kernel32.WaitForSingleObject.restype = ctypes.c_ulong
         kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        # SYNCHRONIZE：只申请等待父进程退出所需的最小权限。
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
         if not handle:
             error_code = ctypes.get_last_error()
-            if error_code == 87:  # ERROR_INVALID_PARAMETER: process already exited.
+            if error_code == 87:  # ERROR_INVALID_PARAMETER：进程已经退出。
                 return
             raise OSError(error_code, "could not open parent process")
         try:
             result = kernel32.WaitForSingleObject(handle, max(0, int(timeout_seconds * 1000)))
         finally:
             kernel32.CloseHandle(handle)
-        if result == 0:  # WAIT_OBJECT_0
+        if result == 0:  # WAIT_OBJECT_0：父进程已退出。
             return
-        if result == 258:  # WAIT_TIMEOUT
+        if result == 258:  # WAIT_TIMEOUT：继续替换文件会与父进程冲突。
             raise TimeoutError(f"parent process {pid} did not exit before updater timeout")
         raise OSError(ctypes.get_last_error(), "waiting for parent process failed")
 

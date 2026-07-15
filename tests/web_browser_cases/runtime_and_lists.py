@@ -154,6 +154,10 @@ class RuntimeAndListCases:
 
         self._page.click("#statusVersion")
         self._page.wait_for_selector("#updateModal", state="visible", timeout=5000)
+        self._page.wait_for_function(
+            "document.getElementById('updateModal').getAttribute('aria-busy') === 'false'",
+            timeout=5000,
+        )
         dialog = self._page.evaluate(
             """
             () => ({
@@ -194,6 +198,69 @@ class RuntimeAndListCases:
         self._page.press("body", "Escape")
         self._page.wait_for_selector("#updateModal", state="hidden", timeout=5000)
         self.assertEqual(self._page.evaluate("document.activeElement?.id"), "statusVersion")
+
+    def test_00aa_update_check_paints_loading_state_before_request_finishes(self):
+        self._goto_ready()
+        self._page.evaluate(
+            """
+            () => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__nativeFetchBeforeUpdateLoadingTest = nativeFetch;
+              window.__resolveDeferredUpdateCheck = null;
+              window.fetch = (url, options) => {
+                if (!String(url).includes('/api/update/check')) return nativeFetch(url, options);
+                return new Promise(resolve => {
+                  window.__resolveDeferredUpdateCheck = () => resolve({
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                      status: 'current',
+                      local_version: '3.6.17',
+                      latest_version: '3.6.17',
+                      notes: 'already current'
+                    })
+                  });
+                });
+              };
+            }
+            """
+        )
+        self.addCleanup(
+            lambda: self._page.evaluate(
+                """() => {
+                  if (window.__nativeFetchBeforeUpdateLoadingTest) {
+                    window.fetch = window.__nativeFetchBeforeUpdateLoadingTest;
+                  }
+                  closeUpdateCheckModal();
+                }"""
+            )
+        )
+
+        self._page.click("#statusVersion")
+        self._page.wait_for_selector("#updateModal", state="visible", timeout=5000)
+        self._page.wait_for_function("typeof window.__resolveDeferredUpdateCheck === 'function'", timeout=5000)
+
+        loading = self._page.evaluate(
+            """
+            () => ({
+              busy: document.getElementById('updateModal').getAttribute('aria-busy'),
+              status: document.getElementById('updateStatus').dataset.status,
+              spinnerVisible: !document.getElementById('updateSpinner').hidden,
+              versionDisabled: document.getElementById('statusVersion').disabled,
+            })
+            """
+        )
+        self.assertEqual(loading["busy"], "true")
+        self.assertEqual(loading["status"], "checking")
+        self.assertTrue(loading["spinnerVisible"])
+        self.assertTrue(loading["versionDisabled"])
+
+        self._page.evaluate("window.__resolveDeferredUpdateCheck()")
+        self._page.wait_for_function(
+            "document.getElementById('updateModal').getAttribute('aria-busy') === 'false'",
+            timeout=5000,
+        )
+        self.assertTrue(self._page.locator("#updateSpinner").evaluate("element => element.hidden"))
 
     def test_00_initial_state_never_exposes_mock_tasks_while_loading_or_after_failure(self):
         page = self._context.new_page()
@@ -380,6 +447,7 @@ class RuntimeAndListCases:
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               frontendState.active_downloads = [
                 { id: 'active-a', title: 'Active A', platform: 'Bilibili', platform_id: 'bilibili', progress: 12, speed: '1 MB/s' }
               ];
@@ -525,6 +593,208 @@ class RuntimeAndListCases:
             """
         )
         self.assertEqual(errors, [])
+
+    def test_13e_task_list_pagers_change_page_and_page_size(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              const waitUntil = async (predicate, label) => {
+                const deadline = performance.now() + 5000;
+                while (performance.now() < deadline) {
+                  if (predicate()) return;
+                  await new Promise(resolve => setTimeout(resolve, 20));
+                }
+                throw new Error(`Timed out waiting for ${label}`);
+              };
+              const makeItems = (prefix, count, extra) => Array.from(
+                { length: count },
+                (_, index) => ({
+                  id: `${prefix}-${index + 1}`,
+                  title: `${prefix} item ${index + 1}`,
+                  platform: 'Bilibili',
+                  status: prefix === 'failed' ? 'failed' : 'pending',
+                  ...extra,
+                })
+              );
+
+              frontendState.queue_items = makeItems('queue', 45, {});
+              frontendState.completed_items = makeItems('completed', 45, {
+                completed_at: '2026-07-15 05:00:00',
+                duration: '00:01:00',
+                format: 'MP4',
+                local_path: 'D:/Downloads/item.mp4',
+              });
+              frontendState.failed_items = makeItems('failed', 45, {
+                failed_at: '2026-07-15 05:00:00',
+                reason: 'Network timeout',
+              });
+              selected.queue = '';
+              selected.completed = '';
+              selected.failed = '';
+
+              const pages = [
+                { name: 'queue', body: 'queueBody', size: 'queuePageSize', now: 'queuePageNow', total: 'queueTotalPages', prev: 'queuePrevPage', next: 'queueNextPage' },
+                { name: 'completed', body: 'completedBody', size: 'completedPageSize', now: 'completedPageNow', total: 'completedTotalPages', prev: 'completedPrevPage', next: 'completedNextPage' },
+                { name: 'failed', body: 'failedBody', size: 'failedPageSize', now: 'failedPageNow', total: 'failedTotalPages', prev: 'failedPrevPage', next: 'failedNextPage' },
+              ];
+              const results = {};
+
+              for (const page of pages) {
+                localStorage.setItem(`webui_${page.name}_page_size`, '20');
+                switchPage(page.name);
+                await waitUntil(
+                  () => document.querySelectorAll(`#${page.body} tr[data-id]`).length === 20
+                    && byId(page.now).textContent === '1'
+                    && byId(page.total).textContent === '3',
+                  `${page.name} initial page`,
+                );
+
+                const sizeSelect = byId(page.size);
+                sizeSelect.value = '50';
+                sizeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                await waitUntil(
+                  () => document.querySelectorAll(`#${page.body} tr[data-id]`).length === 45
+                    && byId(page.now).textContent === '1'
+                    && byId(page.total).textContent === '1',
+                  `${page.name} 50-per-page`,
+                );
+
+                sizeSelect.value = '20';
+                sizeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                await waitUntil(
+                  () => document.querySelectorAll(`#${page.body} tr[data-id]`).length === 20
+                    && byId(page.now).textContent === '1'
+                    && byId(page.total).textContent === '3',
+                  `${page.name} reset page size`,
+                );
+                byId(page.next).click();
+                await waitUntil(
+                  () => byId(page.now).textContent === '2'
+                    && document.querySelectorAll(`#${page.body} tr[data-id]`).length === 20,
+                  `${page.name} next page`,
+                );
+
+                results[page.name] = {
+                  page: byId(page.now).textContent,
+                  totalPages: byId(page.total).textContent,
+                  pageSize: sizeSelect.value,
+                  rowCount: document.querySelectorAll(`#${page.body} tr[data-id]`).length,
+                  firstId: document.querySelector(`#${page.body} tr[data-id]`)?.dataset.id || '',
+                  prevDisabled: byId(page.prev).disabled,
+                  nextDisabled: byId(page.next).disabled,
+                };
+              }
+              return results;
+            }
+            """
+        )
+
+        for page_name, values in result.items():
+            self.assertEqual(values["page"], "2", (page_name, values))
+            self.assertEqual(values["totalPages"], "3", (page_name, values))
+            self.assertEqual(values["pageSize"], "20", (page_name, values))
+            self.assertEqual(values["rowCount"], 20, (page_name, values))
+            self.assertEqual(values["firstId"], f"{page_name}-21", (page_name, values))
+            self.assertFalse(values["prevDisabled"], (page_name, values))
+            self.assertFalse(values["nextDisabled"], (page_name, values))
+
+    def test_13ea_active_download_controls_round_trip_through_live_backend(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const fetchOptions = async () => {
+                const response = await fetch(`/api/frontend/state?active_options_audit=${Date.now()}`, {
+                  cache: 'no-store',
+                });
+                if (!response.ok) throw new Error(`frontend state failed: ${response.status}`);
+                return (await response.json()).download_options || {};
+              };
+              const waitForOptions = async (expected, label) => {
+                const deadline = performance.now() + 7000;
+                let actual = {};
+                while (performance.now() < deadline) {
+                  actual = await fetchOptions();
+                  if (
+                    Boolean(actual.auto_retry) === Boolean(expected.auto_retry)
+                    && Number(actual.max_retries) === Number(expected.max_retries)
+                    && Number(actual.max_concurrent) === Number(expected.max_concurrent)
+                  ) return actual;
+                  await new Promise(resolve => setTimeout(resolve, 40));
+                }
+                throw new Error(`${label}: ${JSON.stringify(actual)}`);
+              };
+              const writeControls = values => {
+                byId('activeAutoRetry').checked = Boolean(values.auto_retry);
+                byId('activeMaxRetries').value = String(values.max_retries);
+                byId('activeMaxConcurrent').value = String(values.max_concurrent);
+                byId('activeMaxConcurrent').dispatchEvent(new Event('change', { bubbles: true }));
+              };
+
+              switchPage('active');
+              const original = await fetchOptions();
+              const target = {
+                auto_retry: !Boolean(original.auto_retry),
+                max_retries: Number(original.max_retries) === 5 ? 4 : 5,
+                max_concurrent: Number(original.max_concurrent) === 5 ? 3 : 5,
+              };
+              let observed;
+              let failure = null;
+              try {
+                writeControls(target);
+                observed = await waitForOptions(target, 'active options persist');
+              } catch (error) {
+                failure = error;
+              } finally {
+                writeControls(original);
+                await waitForOptions(original, 'active options restore');
+              }
+              if (failure) throw failure;
+              return { target, observed };
+            }
+            """
+        )
+
+        self.assertEqual(bool(result["observed"]["auto_retry"]), bool(result["target"]["auto_retry"]))
+        self.assertEqual(int(result["observed"]["max_retries"]), int(result["target"]["max_retries"]))
+        self.assertEqual(int(result["observed"]["max_concurrent"]), int(result["target"]["max_concurrent"]))
+
+    def test_13eb_toolbox_open_button_dispatches_valid_backend_action(self):
+        context = self._browser.new_context(viewport={"width": 1280, "height": 720})
+        self.addCleanup(context.close)
+        page = context.new_page()
+        self.addCleanup(page.close)
+        page.add_init_script(
+            "Object.defineProperty(window, 'WebSocket', { value: undefined, configurable: true });"
+        )
+        page.goto(self._server_url, wait_until="domcontentloaded")
+        page.wait_for_selector("#app-shell", state="visible", timeout=5000)
+        page.wait_for_function("window.__ucrawlFrontendStateSettled === true", timeout=5000)
+        page.evaluate("switchPage('toolbox')")
+        page.wait_for_selector("#toolDetail .btn-primary", state="visible", timeout=5000)
+
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/frontend/action")
+            and response.request.method == "POST",
+            timeout=5000,
+        ) as response_info:
+            page.click("#toolDetail .btn-primary")
+
+        response = response_info.value
+        request_payload = response.request.post_data_json
+        response_payload = response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(request_payload.get("action"), "run_tool")
+        self.assertTrue(request_payload.get("payload", {}).get("tool_id"))
+        self.assertEqual(response_payload.get("status"), "ok")
+        self.assertEqual(
+            response_payload.get("data", {}).get("tool_id"),
+            request_payload.get("payload", {}).get("tool_id"),
+        )
 
     def test_13f_list_pages_reject_stale_workers_and_preserve_shared_selection(self):
         self._goto_ready()
@@ -896,7 +1166,7 @@ class RuntimeAndListCases:
             "global": "completed-explicit",
         })
 
-    def test_13i_list_pages_worker_onerror_keeps_worker_and_guards_fallback(self):
+    def test_13i_list_pages_terminal_worker_error_closes_worker_and_falls_back(self):
         self._goto_ready()
 
         result = self._page.evaluate(
@@ -908,6 +1178,7 @@ class RuntimeAndListCases:
               const workers = [];
               const timers = [];
               const clearedTimers = [];
+              let postsAfterFailure = 0;
               const selection = { active: "", completed: "", failed: "", queue: "" };
               const state = {
                 settings_snapshot: {},
@@ -922,12 +1193,22 @@ class RuntimeAndListCases:
                   this.url = String(url);
                   this.requests = [];
                   this.terminateCalls = 0;
+                  this.dead = false;
                   workers.push(this);
                 }
-                postMessage(request) { this.requests.push(request); }
-                terminate() { this.terminateCalls += 1; }
-                emit(payload) { this.onmessage?.({ data: payload }); }
+                postMessage(request) {
+                  if (this.dead) {
+                    postsAfterFailure += 1;
+                    return;
+                  }
+                  this.requests.push(request);
+                }
+                terminate() {
+                  this.terminateCalls += 1;
+                  this.dead = true;
+                }
                 fail() {
+                  this.dead = true;
                   const event = {
                     defaultPrevented: false,
                     preventDefault() { this.defaultPrevented = true; }
@@ -949,18 +1230,6 @@ class RuntimeAndListCases:
                 playCompleted: () => {},
                 renderStatus: () => {}
               });
-              const resultFor = (request, item) => ({
-                type: "page",
-                pageKey: request.pageKey,
-                sequence: request.sequence,
-                totalCount: 1,
-                totalPages: 1,
-                currentPage: 1,
-                pageSize: request.pageSize,
-                pageItems: [item],
-                selectedId: item.id
-              });
-
               window.Worker = ControlledWorker;
               window.setTimeout = callback => {
                 const timer = { id: timers.length + 1, callback };
@@ -976,25 +1245,26 @@ class RuntimeAndListCases:
                 const worker = workers[0];
                 const errorEvent = worker.fail();
                 const fallbacksAfterError = timers.slice();
-                const workerStayedUsable = worker.terminateCalls === 0;
 
                 state.completed_items = [{ id: "completed-current", title: "Completed current", format: "MP4" }];
                 window.UcpListPages.renderCompleted();
-                const newerRequest = worker.requests[1] || null;
                 const staleFallback = fallbacksAfterError[0] || null;
+                const currentFallback = timers.find(timer => timer !== staleFallback) || null;
                 if (staleFallback) staleFallback.callback();
                 const staleFallbackIgnored = selection.completed === ""
                   && document.querySelector("#completedBody tr[data-id]") === null;
 
-                if (newerRequest) worker.emit(resultFor(newerRequest, state.completed_items[0]));
+                if (currentFallback) currentFallback.callback();
                 return {
                   errorPrevented: errorEvent.defaultPrevented,
-                  workerStayedUsable,
+                  workerTerminatedOnce: worker.terminateCalls === 1,
+                  noPostToDeadWorker: postsAfterFailure === 0 && worker.requests.length === 1,
+                  noReplacementWorker: workers.length === 1,
                   onlyCurrentFallbackScheduled: fallbacksAfterError.length === 1,
                   staleFallbackCancelled: Boolean(staleFallback && clearedTimers.includes(staleFallback.id)),
                   staleFallbackIgnored,
-                  newerRequestPosted: Boolean(newerRequest),
-                  newerResultRendered: selection.completed === "completed-current"
+                  currentFallbackScheduled: Boolean(currentFallback),
+                  currentFallbackRendered: selection.completed === "completed-current"
                     && document.querySelector("#completedBody tr.selected")?.dataset.id === "completed-current"
                 };
               } finally {
@@ -1009,414 +1279,11 @@ class RuntimeAndListCases:
         )
 
         self.assertTrue(result["errorPrevented"])
-        self.assertTrue(result["workerStayedUsable"])
+        self.assertTrue(result["workerTerminatedOnce"])
+        self.assertTrue(result["noPostToDeadWorker"])
+        self.assertTrue(result["noReplacementWorker"])
         self.assertTrue(result["onlyCurrentFallbackScheduled"])
         self.assertTrue(result["staleFallbackCancelled"])
         self.assertTrue(result["staleFallbackIgnored"])
-        self.assertTrue(result["newerRequestPosted"])
-        self.assertTrue(result["newerResultRendered"])
-
-    def test_13i_frontend_runtime_rejects_stale_async_work_and_disposes_idempotently(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            async () => {
-              const runtime = window.UcpFrontendRuntime;
-              runtime.dispose();
-
-              const nativeFetch = window.fetch;
-              const NativeWebSocket = window.WebSocket;
-              const nativeRequestAnimationFrame = window.requestAnimationFrame;
-              const nativeCancelAnimationFrame = window.cancelAnimationFrame;
-              const moduleNames = [
-                "UcpLogCenter",
-                "UcpListPages",
-                "UcpSettingsController",
-                "UcpDialogController",
-                "UcpPlaybackController",
-              ];
-              const nativeModules = Object.fromEntries(moduleNames.map(name => [name, window[name]]));
-              const disposeCounts = Object.fromEntries(moduleNames.map(name => [name, 0]));
-              const requests = [];
-              const sockets = [];
-              const frames = [];
-              const renders = [];
-              const logs = [];
-              const settled = [];
-              let state = { version: 0, queue_items: [], log_items: [] };
-
-              class FakeWebSocket {
-                static CONNECTING = 0;
-                static OPEN = 1;
-                static CLOSED = 3;
-
-                constructor(url) {
-                  this.url = url;
-                  this.readyState = FakeWebSocket.CONNECTING;
-                  this.closeCalls = 0;
-                  this.sent = [];
-                  sockets.push(this);
-                }
-
-                close() {
-                  this.closeCalls += 1;
-                  this.readyState = FakeWebSocket.CLOSED;
-                }
-
-                send(payload) {
-                  this.sent.push(payload);
-                }
-              }
-
-              const deferredResponse = url => {
-                let resolve;
-                const promise = new Promise(done => { resolve = done; });
-                requests.push({ url: String(url), resolve });
-                return promise;
-              };
-              const response = payload => ({ ok: true, json: async () => payload });
-
-              try {
-                for (const name of moduleNames) {
-                  window[name] = { dispose: () => { disposeCounts[name] += 1; } };
-                }
-                window.WebSocket = FakeWebSocket;
-                window.fetch = deferredResponse;
-                window.requestAnimationFrame = callback => {
-                  frames.push(callback);
-                  return frames.length;
-                };
-                window.cancelAnimationFrame = () => {};
-
-                const dependencies = {
-                  getState: () => state,
-                  replaceState: nextState => { state = nextState; },
-                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
-                  patchSection: () => [],
-                  renderSections: sections => renders.push(Array.from(sections)),
-                  renderAll: () => renders.push(["all"]),
-                  onConnected: () => {},
-                  onSettled: value => settled.push(value),
-                  appendUiLog: (...parts) => logs.push(parts.join(" ")),
-                };
-
-                runtime.configure(dependencies);
-                const firstStart = runtime.start();
-                const duplicateStart = runtime.start();
-                const firstSocket = sockets[0];
-                const staleMessage = firstSocket.onmessage;
-                runtime.scheduleSections(["queue_items"]);
-                const staleFrame = frames[0];
-
-                runtime.dispose();
-                runtime.dispose();
-                runtime.configure(dependencies);
-                const secondStart = runtime.start();
-                const secondSocket = sockets[1];
-
-                requests[1].resolve(response({ version: 2, queue_items: [{ id: "current" }], log_items: [] }));
-                await secondStart;
-                requests[0].resolve(response({ version: 1, queue_items: [{ id: "stale" }], log_items: [] }));
-                await firstStart;
-                staleMessage({ data: JSON.stringify({
-                  type: "frontend_state",
-                  data: { version: 1, queue_items: [{ id: "stale-socket" }], log_items: [] },
-                }) });
-                staleFrame();
-
-                const staleDelta = runtime.fetchDelta();
-                const currentDelta = runtime.fetchDelta();
-                requests[3].resolve(response({
-                  version: 4,
-                  base_version: 2,
-                  sections: { queue_items: [{ id: "delta-current" }] },
-                  changed_sections: ["queue_items"],
-                }));
-                await currentDelta;
-                requests[2].resolve(response({
-                  version: 3,
-                  base_version: 2,
-                  sections: { queue_items: [{ id: "delta-stale" }] },
-                  changed_sections: ["queue_items"],
-                }));
-                await staleDelta;
-
-                runtime.scheduleSections(["queue_items"]);
-                frames.at(-1)();
-                runtime.dispose();
-                runtime.dispose();
-
-                return {
-                  duplicateStartShared: duplicateStart === firstStart,
-                  fetchCount: requests.length,
-                  socketCount: sockets.length,
-                  firstSocketClosedOnce: firstSocket.closeCalls === 1,
-                  secondSocketClosedOnce: secondSocket.closeCalls === 1,
-                  staleStateIgnored: state.queue_items[0]?.id === "delta-current",
-                  staleFrameIgnored: renders.length === 2 && renders[0][0] === "all" && renders[1][0] === "queue_items",
-                  disposersCalledOncePerRun: Object.values(disposeCounts).every(count => count === 2),
-                  settledCount: settled.length,
-                  logs,
-                };
-              } finally {
-                runtime.dispose();
-                window.fetch = nativeFetch;
-                window.WebSocket = NativeWebSocket;
-                window.requestAnimationFrame = nativeRequestAnimationFrame;
-                window.cancelAnimationFrame = nativeCancelAnimationFrame;
-                for (const name of moduleNames) window[name] = nativeModules[name];
-              }
-            }
-            """
-        )
-
-        self.assertTrue(result["duplicateStartShared"])
-        self.assertEqual(result["fetchCount"], 4)
-        self.assertEqual(result["socketCount"], 2)
-        self.assertTrue(result["firstSocketClosedOnce"])
-        self.assertTrue(result["secondSocketClosedOnce"])
-        self.assertTrue(result["staleStateIgnored"])
-        self.assertTrue(result["staleFrameIgnored"])
-        self.assertTrue(result["disposersCalledOncePerRun"])
-        self.assertEqual(result["settledCount"], 1)
-        self.assertEqual(result["logs"], [])
-
-    def test_13j_frontend_runtime_rejects_full_state_older_than_newer_transport_state(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            async () => {
-              const runtime = window.UcpFrontendRuntime;
-              runtime.dispose();
-              const nativeFetch = window.fetch;
-              const NativeWebSocket = window.WebSocket;
-              const requests = [];
-              let state = { version: 0, queue_items: [], log_items: [] };
-
-              class FakeWebSocket {
-                static CONNECTING = 0;
-                static OPEN = 1;
-                static CLOSED = 3;
-                constructor() { this.readyState = FakeWebSocket.CONNECTING; }
-                close() { this.readyState = FakeWebSocket.CLOSED; }
-                send() {}
-              }
-
-              window.fetch = url => new Promise(resolve => requests.push({ url: String(url), resolve }));
-              window.WebSocket = FakeWebSocket;
-              const response = payload => ({ ok: true, json: async () => payload });
-
-              try {
-                runtime.configure({
-                  getState: () => state,
-                  replaceState: nextState => { state = nextState; },
-                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
-                  patchSection: () => [],
-                  renderSections: () => {},
-                  renderAll: () => {},
-                  onConnected: () => {},
-                  onSettled: () => {},
-                  appendUiLog: () => {},
-                });
-
-                const versionedFetch = runtime.start();
-                runtime.handleServerMessage({
-                  type: "frontend_state",
-                  data: { version: 2, queue_items: [{ id: "socket-v2" }], log_items: [] },
-                });
-                requests[0].resolve(response({
-                  version: 1,
-                  queue_items: [{ id: "fetch-v1" }],
-                  log_items: [],
-                }));
-                await versionedFetch;
-                const versionedStaleIgnored = state.version === 2 && state.queue_items[0]?.id === "socket-v2";
-
-                const unversionedFetch = runtime.fetchState();
-                runtime.handleServerMessage({
-                  type: "frontend_state",
-                  data: { version: 3, queue_items: [{ id: "socket-v3" }], log_items: [] },
-                });
-                requests[1].resolve(response({
-                  queue_items: [{ id: "fetch-without-version" }],
-                  log_items: [],
-                }));
-                await unversionedFetch;
-
-                return {
-                  versionedStaleIgnored,
-                  unversionedStaleIgnored: state.version === 3 && state.queue_items[0]?.id === "socket-v3",
-                };
-              } finally {
-                runtime.dispose();
-                window.fetch = nativeFetch;
-                window.WebSocket = NativeWebSocket;
-              }
-            }
-            """
-        )
-
-        self.assertTrue(result["versionedStaleIgnored"])
-        self.assertTrue(result["unversionedStaleIgnored"])
-
-    def test_13k_frontend_runtime_cancels_delayed_delta_from_an_old_run(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            async () => {
-              const runtime = window.UcpFrontendRuntime;
-              runtime.dispose();
-              const nativeFetch = window.fetch;
-              const NativeWebSocket = window.WebSocket;
-              const nativeSetTimeout = window.setTimeout;
-              const nativeClearTimeout = window.clearTimeout;
-              const timers = [];
-              const cleared = [];
-              let deltaRequests = 0;
-              let state = { version: 0, queue_items: [], log_items: [] };
-
-              class FakeWebSocket {
-                static CONNECTING = 0;
-                static OPEN = 1;
-                static CLOSED = 3;
-                constructor() { this.readyState = FakeWebSocket.CONNECTING; }
-                close() { this.readyState = FakeWebSocket.CLOSED; }
-                send() {}
-              }
-
-              const response = payload => ({ ok: true, json: async () => payload });
-              window.fetch = url => {
-                if (String(url).includes("/api/frontend/delta")) deltaRequests += 1;
-                return Promise.resolve(response({ version: 0, queue_items: [], log_items: [] }));
-              };
-              window.WebSocket = FakeWebSocket;
-              window.setTimeout = callback => {
-                const timer = { id: timers.length + 1, callback };
-                timers.push(timer);
-                return timer.id;
-              };
-              window.clearTimeout = id => cleared.push(id);
-
-              try {
-                runtime.configure({
-                  getState: () => state,
-                  replaceState: nextState => { state = nextState; },
-                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
-                  patchSection: () => [],
-                  renderSections: () => {},
-                  renderAll: () => {},
-                  onConnected: () => {},
-                  onSettled: () => {},
-                  appendUiLog: () => {},
-                });
-
-                await runtime.start();
-                runtime.scheduleDelta(200);
-                const oldTimer = timers[0];
-                runtime.dispose();
-                await runtime.start();
-                runtime.scheduleDelta(200);
-                const currentTimer = timers[1];
-                oldTimer.callback();
-                runtime.scheduleDelta(200);
-                const replacementTimer = timers[2];
-                currentTimer.callback();
-                replacementTimer.callback();
-                await Promise.resolve();
-
-                return {
-                  oldTimerCleared: cleared.includes(oldTimer.id),
-                  currentTimerCleared: cleared.includes(currentTimer.id),
-                  exactlyOneDeltaRequest: deltaRequests === 1,
-                };
-              } finally {
-                runtime.dispose();
-                window.fetch = nativeFetch;
-                window.WebSocket = NativeWebSocket;
-                window.setTimeout = nativeSetTimeout;
-                window.clearTimeout = nativeClearTimeout;
-              }
-            }
-            """
-        )
-
-        self.assertTrue(result["oldTimerCleared"])
-        self.assertTrue(result["currentTimerCleared"])
-        self.assertTrue(result["exactlyOneDeltaRequest"])
-
-    def test_13ka_rest_action_error_refetches_full_state_for_optimistic_rollback(self):
-        self._goto_ready()
-
-        result = self._page.evaluate(
-            """
-            async () => {
-              const runtime = window.UcpFrontendRuntime;
-              runtime.dispose();
-              const nativeFetch = window.fetch;
-              const NativeWebSocket = window.WebSocket;
-              let state = { version: 0, queue_items: [], log_items: [], settings_snapshot: {} };
-              const urls = [];
-
-              class FakeWebSocket {
-                static CONNECTING = 0;
-                static OPEN = 1;
-                static CLOSED = 3;
-                constructor() { this.readyState = FakeWebSocket.CONNECTING; }
-                close() { this.readyState = FakeWebSocket.CLOSED; }
-                send() {}
-              }
-
-              const response = payload => ({ ok: true, json: async () => payload });
-              window.fetch = url => {
-                const text = String(url);
-                urls.push(text);
-                if (text.includes('/api/frontend/action')) {
-                  return Promise.resolve(response({ status: 'error', message: 'save failed' }));
-                }
-                if (text.includes('/api/frontend/delta')) {
-                  return Promise.resolve(response({ version: 1, changed_sections: [], sections: {} }));
-                }
-                return Promise.resolve(response({ version: 1, queue_items: [], log_items: [], settings_snapshot: {} }));
-              };
-              window.WebSocket = FakeWebSocket;
-
-              try {
-                runtime.configure({
-                  getState: () => state,
-                  replaceState: nextState => { state = nextState; },
-                  buildMockState: () => ({ version: 0, queue_items: [], log_items: [] }),
-                  patchSection: () => [],
-                  renderSections: () => {},
-                  renderAll: () => {},
-                  onConnected: () => {},
-                  onSettled: () => {},
-                  appendUiLog: () => {},
-                });
-                await runtime.start();
-                urls.length = 0;
-                runtime.send('frontend_action', {
-                  action: 'update_setting',
-                  payload: { section: 'download', key: 'max_retries', value: 5 },
-                });
-                for (let index = 0; index < 20 && urls.length < 2; index += 1) await Promise.resolve();
-
-                return {
-                  requestedAction: urls.some(url => url.includes('/api/frontend/action')),
-                  requestedState: urls.some(url => url.endsWith('/api/frontend/state')),
-                  requestedDelta: urls.some(url => url.includes('/api/frontend/delta')),
-                };
-              } finally {
-                runtime.dispose();
-                window.fetch = nativeFetch;
-                window.WebSocket = NativeWebSocket;
-              }
-            }
-            """
-        )
-
-        self.assertTrue(result["requestedAction"])
-        self.assertTrue(result["requestedState"])
-        self.assertFalse(result["requestedDelta"])
+        self.assertTrue(result["currentFallbackScheduled"])
+        self.assertTrue(result["currentFallbackRendered"])

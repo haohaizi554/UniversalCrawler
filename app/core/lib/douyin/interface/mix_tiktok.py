@@ -1,16 +1,12 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/mix_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+"""获取 TikTok 合辑列表及合辑内作品。"""
 
-# app/core/lib/douyin/interface/mix_tiktok.py
 from typing import TYPE_CHECKING, Callable, Union
 from .template import APITikTok
 
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -19,6 +15,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class MixTikTok(APITikTok):
+    """分页获取指定 TikTok 合辑中的作品。"""
     
     def __init__(
         self,
@@ -27,17 +24,14 @@ class MixTikTok(APITikTok):
         proxy: str = None,
         mix_title: str = ...,
         mix_id: str = ...,
-        # detail_id: str = None,
         cursor=0,
         count=30,
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `MixTikTok` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.mix_title = mix_title
         self.mix_id = mix_id
-        # self.detail_id = detail_id  # 未使用
         self.cursor = cursor
         self.count = count
         self.api = f"{self.domain}api/collection/item_list/"
@@ -69,7 +63,6 @@ class MixTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `MixTikTok` 使用。"""
         return await super().run(
             referer,
             single_page,
@@ -86,6 +79,7 @@ class MixTikTok(APITikTok):
         )
 
 class MixListTikTok(APITikTok):
+    """分页列出指定 TikTok 账号公开的合辑。"""
     
     def __init__(
         self,
@@ -98,7 +92,6 @@ class MixListTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `MixListTikTok` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.sec_user_id = sec_user_id
         self.cursor = cursor
@@ -131,7 +124,6 @@ class MixListTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `MixListTikTok` 使用。"""
         return await super().run(
             referer,
             single_page,

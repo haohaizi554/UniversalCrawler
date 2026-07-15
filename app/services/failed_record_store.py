@@ -39,7 +39,7 @@ class FailedRecordQueryResult:
 
 
 class FailedRecordStore:
-    """后台批量写入失败记录，并维护一份前端可直接读取的快照。"""
+    """后台按 video_id 合并写入，并只保留最新刷新请求，避免 UI 查询持续堆积。"""
 
     def __init__(
         self,
@@ -91,7 +91,7 @@ class FailedRecordStore:
             self._event.set()
 
     def query(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        """Synchronous maintenance query; UI code should use ``records_snapshot``."""
+        """仅供维护路径同步查询；UI 应读取 records_snapshot，避免阻塞渲染线程。"""
         return self.query_records(limit=limit, offset=offset).records
 
     def query_records(
@@ -107,6 +107,11 @@ class FailedRecordStore:
         failed_to: str = "",
         order: str = "desc",
     ) -> FailedRecordQueryResult:
+        """同步读取筛选后的分页结果和总数。
+
+        总数与当前页由两条独立的 SELECT 读取；并发写入时二者只构成弱一致结果，
+        可能分别反映不同瞬间的数据库状态。
+        """
         query = self._normalize_query(
             FailedRecordQuery(
                 limit=limit,
@@ -168,7 +173,7 @@ class FailedRecordStore:
             self._event.set()
 
     def request_prune(self, retention_days: int) -> None:
-        """Request background cleanup for expired failed records and refresh the snapshot."""
+        """请求后台清理过期失败记录，并在同一轮任务后刷新内存快照。"""
         days = self._normalize_retention_days(retention_days)
         with self._lock:
             if self._shutdown:
@@ -189,7 +194,11 @@ class FailedRecordStore:
             return int(self._snapshot_total_count)
 
     def flush(self, timeout: float = 2.0) -> bool:
-        """测试和关闭路径使用：等待待写入与刷新任务清空。"""
+        """在给定时限内观察写入、刷新和清理任务是否清空，并返回观察结果。
+
+        本方法只等待现有后台工作，不主动建立关闭屏障；``shutdown`` 也不调用它，
+        因而不能据此推断关闭一定排空。
+        """
         deadline = time.monotonic() + max(0.0, float(timeout))
         while time.monotonic() < deadline:
             with self._lock:
@@ -274,6 +283,11 @@ class FailedRecordStore:
         return deleted_count
 
     def shutdown(self) -> None:
+        """拒绝新任务并最多等待后台线程一秒，不保证排空待处理任务。
+
+        后台线程观察到关闭标志后会直接退出，尚在 ``_pending`` 或刷新、清理请求槽
+        中的工作可能不再执行；等待超时后本方法也会直接返回。
+        """
         with self._lock:
             self._shutdown = True
             self._event.set()
@@ -401,7 +415,7 @@ class FailedRecordStore:
         self._init_db()
         where_sql, params = self._build_where_clause(query)
         order_sql = "ASC" if query.order == "asc" else "DESC"
-        # Both fragments come from fixed column clauses/order enums; user values remain bound parameters.
+        # SQL 片段只来自固定列条件和 order 枚举；用户值仍通过绑定参数传入。
         rows_sql = (
             "SELECT video_id, title, reason, failed_at, status, platform, trace_id, payload_json, updated_at "
             f"FROM failed_records {where_sql} "
@@ -457,7 +471,11 @@ class FailedRecordStore:
             )
 
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
-        """用 upsert 写入失败记录，保留完整 payload_json 供详情面板展示。"""
+        """在单个连接中 executemany 整批 upsert，并在批末一次提交。
+
+        该事务只覆盖本批有效记录，不包含随后执行的清理或内存快照刷新；
+        ``payload_json`` 保留详情字段。
+        """
         self._init_db()
         now = float(self._clock())
         payloads = [

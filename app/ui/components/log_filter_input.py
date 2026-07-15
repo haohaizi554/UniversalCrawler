@@ -39,7 +39,7 @@ def log_filter_input_style(*, is_dark: bool, focused: bool = False) -> str:
 
 
 class LogFilterLineEdit(QLineEdit):
-    """Theme-aware log filter input with an eager focus border refresh."""
+    """随主题更新，并在焦点变化时立即刷新边框的日志筛选框。"""
 
     def __init__(self, sync_focus_style: Callable[[], None]) -> None:
         super().__init__()

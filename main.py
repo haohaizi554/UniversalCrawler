@@ -8,7 +8,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 def main() -> int:
-    """主入口：自适应模式选择 + 派发。"""
+    """调用统一调度器，并原样返回目标入口的进程退出码。"""
     from entry import run
     return run()
 

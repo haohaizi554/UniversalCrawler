@@ -1,8 +1,7 @@
-"""Concrete plugin classes for all builtin platforms.
+"""内置平台的具体插件定义。
 
-Each class is auto-registered via ``BasePlugin.__init_subclass__`` — no
-manual registry entry needed.  Adding a new platform means authoring a new
-``*Plugin`` class in this file (or in a separate module under this package).
+每个类都由 ``BasePlugin.__init_subclass__`` 自动注册，无需维护额外清单。
+新增平台时只需实现一个 ``*Plugin`` 类，可放在本文件或同包独立模块中。
 """
 
 from __future__ import annotations
@@ -144,6 +143,6 @@ class XiaohongshuPlugin(BasePlugin):
         }
 
 def get_default_plugins() -> list[BasePlugin]:
-    """Return instantiated builtin plugins ordered by sort_order."""
+    """返回按 ``sort_order`` 排序的内置插件实例。"""
     from .discovery import discover_builtin_plugins
     return discover_builtin_plugins()

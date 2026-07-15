@@ -21,11 +21,11 @@ if str(_ROOT) not in sys.path:
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口：透传到 cli.main。
 
-    Args:
+    参数：
         argv: 命令行参数（None=使用 sys.argv[1:]）
 
-    Returns:
-        退出码
+    返回：
+        原样透传 cli.main 的退出码，供 console_script 和 shell 判断结果。
     """
     from cli.main import main as _cli_main
     return _cli_main(argv)

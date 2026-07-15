@@ -914,6 +914,27 @@ class StatusBarUpdateCheckInteractionTests(unittest.TestCase):
         self.assertIsNotNone(dialog.findChild(QLabel, "UpdateReleaseLink"))
         self.assertIsNotNone(dialog.findChild(QPushButton, "DialogPrimaryButton"))
 
+    def test_update_check_dialog_exposes_indeterminate_loading_state(self):
+        from PyQt6.QtWidgets import QProgressBar
+
+        from app.ui.dialogs.update_check import UpdateCheckDialog
+
+        dialog = UpdateCheckDialog(
+            None,
+            title="检查更新",
+            message="正在检查更新，请稍候。",
+            primary_text="正在检查更新...",
+            status="checking",
+            local_version="v3.6.17",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        progress = dialog.findChild(QProgressBar, "UpdateCheckBusyBar")
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress.minimum(), 0)
+        self.assertEqual(progress.maximum(), 0)
+        self.assertFalse(dialog.primary_button.isEnabled())
+
     def test_update_check_dialog_uses_current_language(self):
         from PyQt6.QtWidgets import QLabel, QPushButton
 

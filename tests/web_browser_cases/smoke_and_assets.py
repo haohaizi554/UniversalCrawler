@@ -80,6 +80,71 @@ class SmokeAndAssetsCases:
         self.assertIn(before, {"light", "dark"})
         self.assertEqual(after, "light" if before == "dark" else "dark")
 
+    def test_07_01_search_input_uses_theme_tokens_in_every_interaction_state(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            () => {
+              const input = document.getElementById('searchInput');
+              const probe = document.createElement('span');
+              probe.style.cssText = [
+                'position:fixed',
+                'pointer-events:none',
+                'visibility:hidden',
+                'background:var(--input)',
+                'color:var(--text)',
+                'border-color:var(--border-strong)'
+              ].join(';');
+              document.body.appendChild(probe);
+
+              const capture = (dark, state) => {
+                applyTheme(dark);
+                input.disabled = state === 'disabled';
+                input.readOnly = state === 'readonly';
+                if (state === 'focus') input.focus();
+                else input.blur();
+                const style = getComputedStyle(input);
+                const tokens = getComputedStyle(probe);
+                return {
+                  theme: document.documentElement.dataset.theme,
+                  state,
+                  background: style.backgroundColor,
+                  color: style.color,
+                  textFill: style.webkitTextFillColor,
+                  caret: style.caretColor,
+                  tokenBackground: tokens.backgroundColor,
+                  tokenText: tokens.color,
+                  tokenMuted: getComputedStyle(document.documentElement).getPropertyValue('--muted').trim()
+                };
+              };
+
+              input.value = '美女';
+              const samples = [
+                capture(false, 'normal'),
+                capture(false, 'focus'),
+                capture(true, 'normal'),
+                capture(true, 'focus'),
+                capture(true, 'disabled'),
+                capture(false, 'readonly')
+              ];
+              input.disabled = false;
+              input.readOnly = false;
+              probe.remove();
+              return samples;
+            }
+            """
+        )
+
+        for sample in result:
+            with self.subTest(theme=sample["theme"], state=sample["state"]):
+                self.assertEqual(sample["background"], sample["tokenBackground"], sample)
+                if sample["state"] in {"disabled", "readonly"}:
+                    self.assertNotEqual(sample["color"], sample["tokenText"], sample)
+                else:
+                    self.assertEqual(sample["color"], sample["tokenText"], sample)
+                    self.assertEqual(sample["textFill"], sample["tokenText"], sample)
+                    self.assertEqual(sample["caret"], sample["tokenText"], sample)
+
     def test_07a_theme_toggle_is_single_flight_and_latest_intent_wins(self):
         self._goto_ready()
         result = self._page.evaluate(
@@ -223,6 +288,127 @@ class SmokeAndAssetsCases:
         self.assertEqual(result["finalTheme"], "light")
         self.assertEqual(result["cachedTheme"], "light")
         self.assertEqual(result["stateTheme"], "light")
+
+    def test_07ab_config_event_never_reapplies_stale_browser_theme_cache(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            () => {
+              localStorage.setItem('cached_theme', 'light');
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'] = {
+                ...(frontendState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'] || {}),
+                follow_system: false,
+                theme: 'dark'
+              };
+              syncAppearanceFromSettings();
+              const before = document.documentElement.dataset.theme;
+              const patch = patchRuntimeSection('config', {});
+              return {
+                before,
+                after: document.documentElement.dataset.theme,
+                cached: localStorage.getItem('cached_theme'),
+                fetchDeltaDelay: patch && patch.fetchDeltaDelay
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["before"], "dark")
+        self.assertEqual(result["after"], "dark")
+        self.assertEqual(result["cached"], "dark")
+        self.assertEqual(result["fetchDeltaDelay"], 0)
+
+    def test_07ab_server_theme_and_source_override_stale_browser_cache(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            () => {
+              const availableSources = Array.from(document.getElementById('sourceSelect').options)
+                .map(option => option.value)
+                .filter(Boolean);
+              if (availableSources.length < 2) throw new Error('platform fixture requires two sources');
+              const configuredSource = availableSources[1];
+              const staleSource = availableSources[0];
+
+              localStorage.setItem('cached_theme', 'light');
+              localStorage.setItem('cached_last_source', staleSource);
+              document.documentElement.dataset.theme = 'dark';
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot['\u57fa\u7840\u8bbe\u7f6e'] = {
+                ...(frontendState.settings_snapshot['\u57fa\u7840\u8bbe\u7f6e'] || {}),
+                last_source: configuredSource,
+              };
+
+              restoreTheme();
+              renderPlatforms();
+              syncPlatformSourceFromSettings();
+              return {
+                theme: document.documentElement.dataset.theme,
+                source: document.getElementById('sourceSelect').value,
+                cachedTheme: localStorage.getItem('cached_theme'),
+                cachedSource: localStorage.getItem('cached_last_source'),
+                configuredSource,
+              };
+            }
+            """
+        )
+
+        self.assertEqual(result["theme"], "dark")
+        self.assertEqual(result["source"], result["configuredSource"])
+        self.assertEqual(result["cachedSource"], result["configuredSource"])
+        self.assertEqual(result["cachedTheme"], "light")
+
+    def test_07ab_optimistic_theme_updates_selected_surface_tokens_atomically(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              const appearance = {
+                follow_system: false,
+                theme: 'light',
+                accent: 'green',
+                scale: '100%',
+                font_size: 'medium',
+                language: 'zh-CN'
+              };
+              frontendState.settings_snapshot = frontendState.settings_snapshot || {};
+              frontendState.settings_snapshot['\u5916\u89c2\u8bbe\u7f6e'] = appearance;
+              applyAppearance(appearance);
+              switchPage('completed');
+              document.getElementById('completedBody').innerHTML = '<tr class="selected"><td>selected</td></tr>';
+              const activeNav = document.querySelector('.nav-item.active');
+              const selectedCell = document.querySelector('#completedBody tr.selected td');
+
+              applyOptimisticTheme('dark');
+              const immediate = {
+                theme: document.documentElement.dataset.theme,
+                accent: document.documentElement.style.getPropertyValue('--accent').trim(),
+                accentSoft: document.documentElement.style.getPropertyValue('--accent-soft').trim(),
+                rowSelected: document.documentElement.style.getPropertyValue('--row-selected').trim(),
+                navBackground: getComputedStyle(activeNav).backgroundColor,
+                cellBackground: getComputedStyle(selectedCell).backgroundColor,
+              };
+              await new Promise(resolve => requestAnimationFrame(resolve));
+              const nextFrame = {
+                rowSelected: document.documentElement.style.getPropertyValue('--row-selected').trim(),
+                navBackground: getComputedStyle(activeNav).backgroundColor,
+                cellBackground: getComputedStyle(selectedCell).backgroundColor,
+              };
+              return { immediate, nextFrame };
+            }
+            """
+        )
+
+        self.assertEqual(result["immediate"]["theme"], "dark")
+        self.assertEqual(result["immediate"]["accent"], "#22c55e")
+        self.assertEqual(result["immediate"]["accentSoft"], "#153523")
+        self.assertEqual(result["immediate"]["rowSelected"], "#153523")
+        self.assertEqual(result["nextFrame"]["rowSelected"], "#153523")
+        self.assertEqual(result["immediate"]["navBackground"], result["nextFrame"]["navBackground"])
+        self.assertEqual(result["immediate"]["cellBackground"], result["nextFrame"]["cellBackground"])
 
     def test_07b_appearance_theme_segment_disables_follow_system(self):
         self._goto_ready()

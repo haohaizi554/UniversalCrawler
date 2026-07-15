@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/verifyFp.py` 对应的接口、加密、提取或工具逻辑。"""
+"""按网页端格式生成 verifyFp 标识。"""
 
-# app/core/lib/douyin/encrypt/verifyFp.py
 from random import random
 from string import ascii_lowercase
 from string import ascii_uppercase
@@ -14,49 +13,33 @@ __all__ = [
 ]
 
 class VerifyFp:
-    """
-    var xi = function() {
-        return Pi.get(Si) || (null === localStorage || void 0 === localStorage ? void 0 : localStorage.getItem(Si)) || function() {
-            var e = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".split("")
-              , t = e.length
-              , n = Date.now().toString(36)
-              , r = [];
-            r[8] = r[13] = r[18] = r[23] = "_",
-            r[14] = "4";
-            for (var o = 0, i = void 0; o < 36; o++)
-                r[o] || (i = 0 | Math.random() * t,
-                r[o] = e[19 == o ? 3 & i | 8 : i]);
-            return "verify_" + n + "_" + r.join("")
-        }()
-    }
-    """
+    """复现网页端 verifyFp 的时间戳前缀与随机字符布局。"""
+
     @staticmethod
     def get_verify_fp(timestamp: int = None):
-        
+        """生成带 base36 毫秒时间戳和 36 位随机段的 verifyFp。"""
         base_str = digits + ascii_uppercase + ascii_lowercase
         t = len(base_str)
         milliseconds = timestamp or int(round(time() * 1000))
         base36 = ""
 
-        # 转换为 base36
+        # 时间戳采用网页端 Date.now().toString(36) 的表示方式。
         while milliseconds > 0:
             milliseconds, remainder = divmod(milliseconds, 36)
             if remainder < 10:
                 base36 = str(remainder) + base36
             else:
                 base36 = chr(ord("a") + remainder - 10) + base36
-        # 设置固定字符
+        # 下划线、版本位和第 19 位掩码必须与网页端格式一致。
         o = [""] * 36
         o[8] = o[13] = o[18] = o[23] = "_"
         o[14] = "4"
-        # 随机填充缺失的字符
         for i in range(36):
             if not o[i]:
-                n = int(random() * t)  # 优化随机数生成方式
+                n = int(random() * t)
                 if i == 19:
                     n = 3 & n | 8
                 o[i] = base_str[n]
-        # 组合最终字符串
         return f"verify_{base36}_" + "".join(o)
 
 if __name__ == "__main__":

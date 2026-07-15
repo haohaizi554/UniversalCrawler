@@ -1,4 +1,4 @@
-"""Reusable read-only table model for snapshot-driven pages."""
+"""为快照驱动页面提供可复用的只读表格 Model。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ PENDING_METADATA_COLUMNS = {"duration", "resolution"}
 PENDING_METADATA_EMPTY_VALUES = {"", "--", PENDING_METADATA_LABEL}
 
 class SnapshotTableModel(QAbstractTableModel):
-    """Simple QAbstractTableModel for frontend snapshot rows."""
+    """按稳定 ID 和签名局部发出 Model/View 信号，避免整表 reset 丢失选择与滚动位置。"""
 
     def __init__(self, *, headers: list[str], columns: list[str], icon_columns: set[str] | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -31,12 +31,12 @@ class SnapshotTableModel(QAbstractTableModel):
         self._missing_icon_files: set[str] = set()
         self._language = "zh-CN"
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008, N802 - Qt override signature
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008, N802 - Qt 重写签名
         if parent.isValid():
             return 0
         return len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008, N802 - Qt override signature
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008, N802 - Qt 重写签名
         if parent.isValid():
             return 0
         return len(self._columns)

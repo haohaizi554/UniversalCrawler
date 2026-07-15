@@ -1,4 +1,4 @@
-"""Pure icon-name contract shared by GUI, WebUI, and services."""
+"""GUI、WebUI 与服务层共用的纯图标名称约定。"""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ QUEUE_STATUS_ICON_FILES: dict[str, str] = {
 
 
 def safe_icon_file(file_name: str | None, fallback: str = FALLBACK_ICON_FILE) -> str:
-    """Return one managed file name and reject traversal or nested paths."""
+    """只返回受管文件名，并拒绝路径穿越或嵌套路径。"""
     name = str(file_name or "").strip().replace("\\", "/")
     if not name or "/" in name or name in {".", ".."} or ".." in name:
         return fallback

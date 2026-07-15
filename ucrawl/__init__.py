@@ -1,4 +1,4 @@
-"""ucrawl 顶层包：从 cli re-export，保持向后兼容。
+"""ucrawl 顶层包：从 cli 重新导出，保持向后兼容。
 
 推荐用法:
     from ucrawl import UcrawlSDK, search, list_platforms

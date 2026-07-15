@@ -1,7 +1,8 @@
-"""模式选择 UI 组件。
+"""终端与 Qt 模式选择 UI。
 
-从 `entry.dispatcher` 中拆出 TUI / Qt 模式选择相关实现，
-让 dispatcher 保持为纯调度入口，仅保留薄接缝。
+本模块提供独立的 TUI 选择器和共享 Qt 对话框；当前
+``entry.dispatcher`` 仍保留自己的终端菜单兼容实现，并只委托这里的 Qt
+对话框，因此两处实现的所有权尚未完全合并。
 """
 
 from __future__ import annotations
@@ -39,14 +40,13 @@ def _display_width(text: str) -> int:
     return width
 
 def _pad_to_width(text: str, target: int) -> str:
-    """用空格把字符串填充到目标显示宽度。"""
     cur = _display_width(text)
     if cur >= target:
         return text
     return text + " " * (target - cur)
 
 def _write_menu_item(key: str, label: str, mode: "Mode | None", width: int) -> None:
-    """输出单个模式菜单项，统一处理退出项与普通项的对齐逻辑。"""
+    """输出单个模式菜单项，并统一普通项与退出项的终端排版。"""
     marker = "" if mode is None else "  → "
     if mode is None:
         line = f"  [{key}] {label}"
@@ -57,7 +57,6 @@ def _write_menu_item(key: str, label: str, mode: "Mode | None", width: int) -> N
     sys.stderr.write("  " + _pad_to_width(line, width) + marker + "\n")
 
 def _has_pyqt6() -> bool:
-    """检测 PyQt6 是否可用（用于 Qt 弹窗后备）。"""
     try:
         import PyQt6.QtWidgets  # noqa: F401
 
@@ -66,11 +65,10 @@ def _has_pyqt6() -> bool:
         return False
 
 def _load_app_icon() -> "QIcon | None":
-    """加载应用图标（favicon.ico），找不到就返回 None。"""
     return load_qt_icon(["favicon.ico"], fallback_names=["Web.ico"])
 
 def _prompt_mode_with_qt() -> Mode | None:
-    """当 stdin/stdout 不是 TTY 时，用 Qt 弹窗让用户选 mode。"""
+    """显示 Qt 模式对话框；取消、关闭或依赖导入失败时返回 None。"""
     try:
         from PyQt6.QtCore import QSize, Qt
         from PyQt6.QtGui import QKeySequence, QShortcut
@@ -425,7 +423,13 @@ def _prompt_mode_with_qt() -> Mode | None:
     return result["mode"]
 
 def prompt_mode_menu() -> Mode | None:
-    """弹出菜单让用户选模式。"""
+    """返回用户选择的模式，或报告当前没有可用的交互通道。
+
+    ``None`` 表示选择流程没有产生模式，例如取消、关闭、EOF、无效终端输入，
+    或 Qt 辅助函数未能创建对话框。仅当预检确认既无 TTY、也无 PyQt6 时才抛出
+    ``_MenuUnavailable``，且会先向 stderr 写出显式 ``--mode`` 的使用提示。
+    调用方应把该异常与普通的无选择结果分开处理。
+    """
     if not is_tty():
         if _has_pyqt6():
             return _prompt_mode_with_qt()

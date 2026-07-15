@@ -1,4 +1,4 @@
-"""Qt-native task runtime for long and short background work."""
+"""为长短后台任务提供 Qt 原生运行时。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ class TaskCancelToken:
         return self._event.is_set()
 
     def wait_cancelled(self, timeout: float | None = None) -> bool:
-        """Wait until cancellation is requested, returning True when cancelled."""
         return self._event.wait(timeout)
 
     def mark_done(self) -> None:
@@ -59,7 +58,7 @@ class _WorkerQObject(QObject):
             kwargs = dict(self._kwargs)
             kwargs["cancel_token"] = self._token
             self._fn(*self._args, **kwargs)
-        except Exception:  # pragma: no cover - defensive logging
+        except Exception:  # pragma: no cover - 防御性日志
             self._logger.exception("Long-running task failed")
         finally:
             self._token.mark_done()
@@ -115,7 +114,7 @@ class LongTaskHandle:
             if self._resource_hooks_released:
                 try:
                     hook()
-                except Exception:  # pragma: no cover - defensive cleanup logging
+                except Exception:  # pragma: no cover - 防御性清理日志
                     logging.getLogger(__name__).exception("Long task resource hook failed after release: %s", self.name)
                 return
             self._resource_hooks.append(hook)
@@ -131,11 +130,11 @@ class LongTaskHandle:
         for hook in hooks:
             try:
                 hook()
-            except Exception:  # pragma: no cover - defensive cleanup logging
+            except Exception:  # pragma: no cover - 防御性清理日志
                 logger.exception("Long task resource hook failed during terminate: %s", self.name)
 
 class _LongTaskCompletionNotifier(QObject):
-    """Own a safe QObject receiver for QThread.finished cleanup."""
+    """用有父对象的 QObject 接收 QThread.finished，稳定清理回调的生命周期。"""
 
     def __init__(self, runner: "LongTaskRunner", handle: LongTaskHandle) -> None:
         super().__init__(runner)
@@ -151,7 +150,7 @@ class _LongTaskCompletionNotifier(QObject):
         self.deleteLater()
 
 class LongTaskRunner(QObject):
-    """Submit long-running jobs onto dedicated QThreads."""
+    """把长任务提交到独立 QThread。"""
 
     ORPHANED_HANDLE_WAIT_MS = 60_000
     _orphaned_handles: set[LongTaskHandle] = set()
@@ -238,7 +237,7 @@ class _ShortTaskRunnable(QRunnable):
         self._name = name
         self._logger = logging.getLogger(__name__)
         self._panel_ref = weakref.ref(panel) if panel is not None else lambda: None
-        # No parent: _ShortTaskRunnable is QRunnable (not QObject); panel via weakref, hard parent unsafe.
+        # QRunnable 不是 QObject，不能硬设 parent；弱引用还可避免任务反向延长 panel 生命周期。
         self._signals = _ShortTaskRunnableSignals()
         if panel is not None:
             on_progress = getattr(panel, "on_short_task_progress", None)
@@ -255,7 +254,7 @@ class _ShortTaskRunnable(QRunnable):
                 if self._panel_ref() is not None:
                     self._signals.progress.emit({"name": self._name, "state": "started"})
                 self._fn(self._token)
-        except Exception:  # pragma: no cover - defensive logging
+        except Exception:  # pragma: no cover - 防御性日志
             self._logger.exception("Short task failed: %s", self._name)
         finally:
             if self._panel_ref() is not None:

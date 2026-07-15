@@ -1,7 +1,8 @@
-"""Web session runtime: session context, auth token, and directory authorization."""
+"""Web 会话运行时：会话上下文、鉴权令牌与目录授权。"""
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_for_futures
 import os
 import ipaddress
 import secrets
@@ -14,6 +15,8 @@ from urllib.parse import urlsplit
 
 SendFactory = Callable[[str], Callable[[str, Any], Any]]
 TEST_TRANSPORT_HOSTS = {"testserver", "testclient"}
+DEFAULT_DISPOSAL_WORKERS = 2
+DEFAULT_DISPOSAL_QUEUE_CAPACITY = 8
 
 def normalize_directory(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
@@ -68,7 +71,7 @@ def is_local_host(host: str | None) -> bool:
 
 
 def is_loopback_request_host(host: str | None, client_host: str | None) -> bool:
-    """Allow synthetic TestClient hosts only for its synthetic client peer."""
+    """仅为 TestClient 的模拟客户端放行对应的模拟主机名。"""
     normalized_host = (host or "").strip().lower()
     normalized_client = (client_host or "").strip().lower()
     return is_loopback_host(normalized_host) or (
@@ -96,6 +99,7 @@ class WebSessionContext:
         controller_factory: Callable[[Any, Callable[[str, Any], Any]], Any],
         workflow_factory: Callable[[Any, Callable[[str, Any], Any]], Any],
     ) -> None:
+        # `controller`、`workflow`、令牌和授权目录均归当前会话，不能跨会话复用。
         self.session_id = session_id
         self.send = send_factory(session_id)
         # 不在 create_app 时获取事件循环，因为 uvicorn 可能使用不同的事件循环
@@ -164,7 +168,7 @@ class WebSessionContext:
         return any(is_within_root(normalized, root) for root in roots)
 
     def approved_roots_snapshot(self) -> tuple[str, ...]:
-        """Return a stable snapshot for worker-thread path validation."""
+        """返回稳定快照，供工作线程校验路径。"""
         with self._approved_roots_lock:
             return tuple(self.approved_roots)
 
@@ -177,7 +181,7 @@ class WebSessionContext:
             return self._prepared_update
 
     def take_prepared_update(self) -> Any:
-        """Atomically consume the verified package so it can launch only once."""
+        """以原子方式取走已校验的更新包，确保它只能启动一次。"""
         with self._prepared_update_lock:
             prepared = self._prepared_update
             self._prepared_update = None
@@ -194,6 +198,14 @@ class WebSessionContext:
         return normalized
 
 class WebSessionRegistry:
+    """管理会话上下文及其最终关闭。
+
+    `pinned_session_ids` 中的固定会话和存在活动 WebSocket 的会话不参与 TTL 或容量淘汰，
+    因此 `max_contexts` 是上下文总量的软目标，受保护会话可使总量超过该值。其余会话
+    超过 `idle_ttl_seconds` 后可被清理，容量溢出时按最久未访问顺序淘汰。注册表先摘除
+    上下文并取消其工作流和后台任务，再在线程池调用控制器的 `shutdown()`；
+    `shutdown_all()` 取得包括固定会话和活动会话在内的最终关闭所有权。
+    """
     def __init__(
         self,
         *,
@@ -204,6 +216,8 @@ class WebSessionRegistry:
         idle_ttl_seconds: float = 30 * 60,
         pinned_session_ids: set[str] | None = None,
         monotonic: Callable[[], float] | None = None,
+        disposal_workers: int = DEFAULT_DISPOSAL_WORKERS,
+        disposal_queue_capacity: int = DEFAULT_DISPOSAL_QUEUE_CAPACITY,
     ) -> None:
         self._send_factory = send_factory
         self._controller_factory = controller_factory
@@ -215,6 +229,15 @@ class WebSessionRegistry:
         self._pinned_session_ids = set(pinned_session_ids or ())
         self._monotonic = monotonic or time.monotonic
         self._closed = False
+        self._disposal_submit_lock = threading.RLock()
+        self._disposal_executor = ThreadPoolExecutor(
+            max_workers=max(1, int(disposal_workers)),
+            thread_name_prefix="web-session-shutdown",
+        )
+        disposal_capacity = max(1, int(disposal_workers)) + max(0, int(disposal_queue_capacity))
+        self._disposal_slots = threading.BoundedSemaphore(disposal_capacity)
+        self._disposal_futures: set[Future[Any]] = set()
+        self._disposal_executor_closed = False
 
     def get_or_create(self, session_id: str) -> WebSessionContext:
         self.prune()
@@ -269,62 +292,75 @@ class WebSessionRegistry:
         for _, session_id in eviction_candidates[:overflow]:
             self._dispose_context(session_id)
 
-    def _dispose_context(self, session_id: str) -> threading.Thread | None:
-        with self._lock:
-            context = self._contexts.pop(session_id, None)
-        if context is None:
-            return None
-        return self._dispose_detached_context(context)
+    def _dispose_context(self, session_id: str) -> Future[Any] | None:
+        with self._disposal_submit_lock:
+            with self._lock:
+                context = self._contexts.pop(session_id, None)
+            if context is None:
+                return None
+            return self._dispose_detached_context(context)
 
-    def _dispose_detached_context(self, context: WebSessionContext) -> threading.Thread | None:
-        """Cancel session-owned work, then release its controller off-thread."""
-        workflow = getattr(context, "workflow", None)
-        cancel_broadcasts = getattr(workflow, "cancel_pending_broadcasts", None)
-        if callable(cancel_broadcasts):
-            cancel_broadcasts()
-        tasks: list = []
-        with context._background_tasks_lock:
-            tasks = list(context.background_tasks)
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        controller = getattr(context, "controller", None)
-        shutdown = getattr(controller, "shutdown", None)
-        if callable(shutdown):
-            thread = threading.Thread(
-                target=self._safe_shutdown_controller,
-                args=(shutdown,),
-                daemon=True,
-                name=f"web-session-shutdown-{context.session_id}",
-            )
-            thread.start()
-            return thread
-        return None
+    def _dispose_detached_context(self, context: WebSessionContext) -> Future[Any] | None:
+        """取消会话所属任务，再将其控制器排队关闭。"""
+        with self._disposal_submit_lock:
+            workflow = getattr(context, "workflow", None)
+            cancel_broadcasts = getattr(workflow, "cancel_pending_broadcasts", None)
+            if callable(cancel_broadcasts):
+                cancel_broadcasts()
+            tasks: list = []
+            with context._background_tasks_lock:
+                tasks = list(context.background_tasks)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            controller = getattr(context, "controller", None)
+            shutdown = getattr(controller, "shutdown", None)
+            if not callable(shutdown):
+                return None
+
+            self._disposal_slots.acquire()
+            try:
+                future = self._disposal_executor.submit(
+                    self._safe_shutdown_controller,
+                    shutdown,
+                )
+            except RuntimeError:
+                self._disposal_slots.release()
+                raise
+            with self._lock:
+                self._disposal_futures.add(future)
+            future.add_done_callback(self._disposal_finished)
+            return future
+
+    def _disposal_finished(self, future: Future[Any]) -> None:
+        self._disposal_slots.release()
+        with self._lock:
+            self._disposal_futures.discard(future)
 
     def shutdown_all(self, *, wait: bool = False, timeout: float | None = 5.0) -> None:
-        """Seal the registry and dispose every context, including pinned ones.
+        """封闭会话注册表，并释放包括固定会话在内的所有上下文。
 
-        Normal idle eviction deliberately preserves pinned contexts. Process
-        shutdown is different: all controllers own workers and file handles
-        that must be released before the interpreter exits.
+        常规空闲淘汰会保留固定会话；进程关闭时则必须释放所有控制器
+        持有的工作线程和文件句柄，之后解释器才能退出。
         """
-        with self._lock:
-            self._closed = True
-            contexts = tuple(self._contexts.values())
-            self._contexts.clear()
+        with self._disposal_submit_lock:
+            with self._lock:
+                self._closed = True
+                contexts = tuple(self._contexts.values())
+                self._contexts.clear()
 
-        threads = [
-            thread
-            for context in contexts
-            if (thread := self._dispose_detached_context(context)) is not None
-        ]
+            for context in contexts:
+                self._dispose_detached_context(context)
+            with self._lock:
+                disposal_futures = tuple(self._disposal_futures)
+            if not self._disposal_executor_closed:
+                self._disposal_executor_closed = True
+                self._disposal_executor.shutdown(wait=False, cancel_futures=False)
         if not wait:
             return
 
-        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
-        for thread in threads:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            thread.join(timeout=remaining)
+        wait_timeout = None if timeout is None else max(0.0, float(timeout))
+        wait_for_futures(disposal_futures, timeout=wait_timeout)
 
     @staticmethod
     def _safe_shutdown_controller(shutdown: Callable[[], Any]) -> None:

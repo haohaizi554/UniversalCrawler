@@ -11,7 +11,7 @@
         return Array.from(values, value => value.toString(16).padStart(8, "0")).join("");
       }
     } catch (_error) {
-      // Fall through to a page-local identifier for legacy WebViews.
+      // 旧版 WebView 不支持加密随机数时，退回页面内唯一标识。
     }
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   })();
@@ -24,6 +24,7 @@
   let disposedGeneration = -1;
   let stateFetchSequence = 0;
   let deltaFetchSequence = 0;
+  // `stateOperationEpoch` 记录本地状态推进，阻止迟到且不更新的 REST 快照覆盖 WebSocket 或用户操作结果。
   let stateOperationEpoch = 0;
   let actionSequence = 0;
   let socketSequence = 0;
@@ -529,6 +530,7 @@
     stateOperationEpoch = 0;
     pendingRenderSections.clear();
     bindLifecycleListeners();
+    // 首载有意并发启动 WebSocket 与 REST 全量快照：前者尽快接收实时状态，后者提供完整快照。
     connectWS();
     startPromise = fetchFrontendState();
     return startPromise;
@@ -577,7 +579,7 @@
         socket.onerror = null;
         socket.close();
       } catch (_error) {
-        // Page teardown must continue even when the browser rejects close().
+        // 即使浏览器拒绝 close()，页面销毁流程也必须继续。
       }
     }
     disposeModulesOnce(generation);

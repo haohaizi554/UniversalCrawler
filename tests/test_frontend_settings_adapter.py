@@ -38,7 +38,11 @@ def test_missav_proxy_contract_preserves_custom_value():
 def test_build_settings_snapshot_matches_frontend_contract_shape():
     snapshot = build_settings_snapshot(
         {
-            "common": {"filename_template": "current", "default_open_mode": "builtin_player"},
+            "common": {
+                "filename_template": "current",
+                "default_open_mode": "builtin_player",
+                "last_source": "bilibili",
+            },
             "download": {"max_concurrent": 3, "max_retries": 3},
             "playback": {"default_player": "builtin_player"},
             "logging": {"retention_days": 1, "failed_record_retention_days": 7, "ui_log_max_display_count": 300},
@@ -50,6 +54,7 @@ def test_build_settings_snapshot_matches_frontend_contract_shape():
     )
 
     assert snapshot["\u57fa\u7840\u8bbe\u7f6e"]["filename_template_label"] == "\u9ed8\u8ba4"
+    assert snapshot["\u57fa\u7840\u8bbe\u7f6e"]["last_source"] == "bilibili"
     assert snapshot["\u4e0b\u8f7d\u8bbe\u7f6e"]["max_concurrent"] == 3
     assert snapshot["\u65e5\u5fd7\u8bbe\u7f6e"]["retention_days"] == 1
     assert snapshot["\u65e5\u5fd7\u8bbe\u7f6e"]["failed_record_retention_days"] == 7

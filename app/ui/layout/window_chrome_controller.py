@@ -1,4 +1,4 @@
-"""Shared frameless-window controller for app windows, dialogs, and tools."""
+"""为应用窗口、对话框和工具窗统一管理无边框窗口行为。"""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class _MSG(ctypes.Structure):
 
 
 class _ChromeNativeEventFilter(QAbstractNativeEventFilter):
-    """Application-wide Windows frame hook routed to one chrome controller."""
+    """把应用级 Windows 窗框事件转发给对应的 chrome controller。"""
 
     def __init__(self, controller: "FramelessWindowChromeController") -> None:
         super().__init__()
@@ -81,7 +81,7 @@ class _ChromeNativeEventFilter(QAbstractNativeEventFilter):
 
 
 class FramelessWindowChromeController:
-    """Complete frameless chrome behavior shared by all Qt top-level windows."""
+    """统一 Qt 顶层窗口的无边框 chrome、Win32 命中测试与系统缩放行为。"""
 
     FRAMELESS_RESIZE_BORDER_PX = 8
     AUTO_HIDE_TASKBAR_RESERVE_PX = 2
@@ -231,6 +231,7 @@ class FramelessWindowChromeController:
             set_window_long.restype = long_ptr
             hwnd_handle = wintypes.HWND(hwnd)
             style = int(get_window_long(hwnd_handle, self.GWL_STYLE))
+            # 自绘标题栏仍需保留 Win32 窗框能力位，Windows Snap 和系统缩放依赖这些样式。
             desired_style = (style & ~self.WS_POPUP) | self.WS_CAPTION | self.WS_SYSMENU
             if self.resizable:
                 desired_style |= self.WS_THICKFRAME
@@ -438,6 +439,7 @@ class FramelessWindowChromeController:
         if self._is_effectively_maximized_callback is not None:
             return bool(self._is_effectively_maximized_callback())
         if sys.platform.startswith("win"):
+            # 无边框窗口经过 Snap/还原后 Qt WindowState 可能滞后，Win32 IsZoomed 才是状态真值。
             try:
                 hwnd = int(self._windows_hwnd if self._windows_hwnd is not None else self.host.winId())
                 return bool(self._is_hwnd_maximized(hwnd))
@@ -575,6 +577,7 @@ class FramelessWindowChromeController:
     def _logical_px_to_native_track_px(self, value: int) -> int:
         if value <= 0:
             return 0
+        # WM_GETMINMAXINFO 使用物理像素，而 Qt minimumSize 使用逻辑像素，必须按当前 DPI 换算。
         return max(1, round(value * self._qt_dpr()))
 
     def _win32_hit_test(self, msg) -> int:
@@ -660,6 +663,7 @@ class FramelessWindowChromeController:
     def _widget_rect_client_px(self, widget: QWidget | None) -> tuple[int, int, int, int] | None:
         if widget is None or not widget.isVisible():
             return None
+        # WM_NCHITTEST 坐标是物理像素，QWidget geometry 是逻辑像素，二者不能直接比较。
         dpr = self._qt_dpr()
         pos = widget.mapTo(self.host, QPoint(0, 0))
         return (

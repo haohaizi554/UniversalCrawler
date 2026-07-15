@@ -1,6 +1,4 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/aBogus.py` 对应的接口、加密、提取或工具逻辑。"""
-
-# app/core/lib/douyin/encrypt/aBogus.py
+"""生成抖音 Web 请求使用的 a_bogus 签名。"""
 
 from random import choice, randint, random
 from re import compile
@@ -21,6 +19,7 @@ __all__ = [
 ]
 
 class ABogus:
+    """复现网页端 a_bogus 的 SM3、RC4 与自定义编码流程。"""
 
     __filter = compile(r"%([0-9A-F]{2})")
     __arguments = [0, 1, 14]
@@ -51,7 +50,7 @@ class ABogus:
         user_agent: str = USERAGENT,
         platform: str = None,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `ABogus` 使用。"""
+        """预计算 UA 和浏览器环境摘要，供同一实例后续签名复用。"""
         self.chunk = []
         self.size = 0
         self.reg = self.__reg[:]
@@ -197,6 +196,7 @@ class ABogus:
     ) -> list:
 
         start_time = start_time or int(time() * 1000)
+        # 结束时间略晚于开始时间，以匹配网页端采样到的处理时序。
         end_time = end_time or (start_time + randint(4, 8))
         params_array = self.generate_params_code(url_params)
         method_array = self.generate_method_code(method)
@@ -497,14 +497,7 @@ class ABogus:
 
     @classmethod
     def generate_result(cls, s, e="s4"):
-        # r = ""
-        # for i in range(len(s)//4):
-        #     b = ((ord(s[i * 3]) << 16) | (ord(s[i * 3 + 1]))
-        #          << 8) | ord(s[i * 3 + 2])
-        #     r += cls.generate_result_unit(b, e)
-        # return r
-
-
+        # 必须使用协议指定的字母表，不能替换成标准 Base64 编码器。
         r = []
 
         for i in range(0, len(s), 3):
@@ -542,33 +535,23 @@ class ABogus:
     def generate_method_code(self, method: str = "GET") -> list[int]:
 
         return self.sm3_to_array(self.sm3_to_array(method + self.__end_string))
-        # return self.sum(self.sum(method + self.__end_string))
 
     def generate_params_code(self, params: str) -> list[int]:
 
         return self.sm3_to_array(self.sm3_to_array(params + self.__end_string))
-        # return self.sum(self.sum(params + self.__end_string))
 
     @classmethod
     def sm3_to_array(cls, data: str | list) -> list[int]:
-        """
-        计算请求体的 SM3 哈希值，并将结果转换为整数数组
-        Calculate the SM3 hash value of the request body and convert the result to an array of integers
-        Args:
-            data (Union[str, List[int]]): 输入数据 (Input data).
-        Returns:
-            List[int]: 哈希值的整数数组 (Array of integers representing the hash value).
-        """
+        """计算 SM3 摘要，并按签名载荷需要拆成单字节整数列表。"""
 
         if isinstance(data, str):
             b = data.encode("utf-8")
         else:
-            b = bytes(data)  # 将 List[int] 转换为字节数组
+            b = bytes(data)
 
-        # 将字节数组转换为适合 sm3.sm3_hash 函数处理的列表格式
+        # gmssl 接收整数列表，而签名载荷后续按单字节读取摘要。
         h = sm3.sm3_hash(func.bytes_to_list(b))
 
-        # 将十六进制字符串结果转换为十进制整数列表
         return [int(h[i : i + 2], 16) for i in range(0, len(h), 2)]
 
     @classmethod
@@ -652,6 +635,5 @@ class ABogus:
             end_time,
         )
         string = string_1 + string_2
-        # return self.generate_result(
-        #     string, "s4") + self.generate_result_end(string, "s4")
+        # 随机前缀与 RC4 载荷必须一起使用 s4 字母表编码，服务端才可还原。
         return self.generate_result(string, "s4")

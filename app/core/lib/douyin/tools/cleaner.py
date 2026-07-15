@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/cleaner.py` 对应的接口、加密、提取或工具逻辑。"""
+"""按操作系统规则清理文件名中的非法字符、控制符和表情。"""
 
-# app/core/lib/douyin/tools/cleaner.py
 from platform import system
 from re import compile
 from string import whitespace
@@ -8,22 +7,20 @@ from emoji import replace_emoji
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
 
         return x
 __all__ = ["Cleaner"]
 
 class Cleaner:
-    
+    """生成当前系统适用的文件名清理规则。"""
+
     CONTROL_CHARACTERS = compile(r"[\x00-\x1F\x7F]")
     def __init__(self):
-        """初始化当前实例并准备运行所需的状态，供 `Cleaner` 使用。"""
-        self.rule = self.default_rule()  # 默认非法字符字典
+        self.rule = self.default_rule()
     @staticmethod
     def default_rule():
-        """根据系统类型生成默认非法字符字典"""
+        """返回当前系统不能出现在文件名中的字符替换表。"""
         if (s := system()) in ("Windows", "Darwin"):
             rule = {
                 "/": "",
@@ -36,22 +33,22 @@ class Cleaner:
                 ":": "",
                 "*": "",
                 "\x00": "",
-            }  # Windows 系统和 Mac 系统
+            }
         elif s == "Linux":
             rule = {
                 "/": "",
                 "\x00": "",
-            }  # Linux 系统
+            }
         else:
             print(_("不受支持的操作系统类型，可能无法正常去除非法字符！"))
             rule = {}
-        cache = {i: "" for i in whitespace[1:]}  # 补充换行符等非法字符
+        # 文件名中的换行和制表符同样会破坏后续路径处理。
+        cache = {i: "" for i in whitespace[1:]}
         return rule | cache
     def set_rule(self, rule: dict[str, str], update=False):
-        """设置 `rule` 对应的值或运行状态，供 `Cleaner` 使用。"""
+        """替换规则表，或在 update=True 时合并到现有规则。"""
         self.rule = {**self.rule, **rule} if update else rule
     def filter(self, text: str) -> str:
-        
         for i in self.rule:
             text = text.replace(i, self.rule[i])
         return text
@@ -71,7 +68,6 @@ class Cleaner:
 
     @staticmethod
     def clear_spaces(string: str):
-        
         return " ".join(string.split())
     @classmethod
     def remove_control_characters(
@@ -79,8 +75,6 @@ class Cleaner:
         text,
         replace="",
     ):
-        # 使用正则表达式匹配所有控制字符
-        
         return cls.CONTROL_CHARACTERS.sub(
             replace,
             text,

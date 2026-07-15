@@ -1,4 +1,4 @@
-"""Pure platform metadata used by log projections in every frontend."""
+"""各前端日志投影共用的纯平台元数据。"""
 
 from __future__ import annotations
 

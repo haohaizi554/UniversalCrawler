@@ -2,9 +2,10 @@
 
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-from app.exceptions import CookieLoadError
+from app.exceptions import CookieLoadError, CookieSaveError
 from app.services.auth_service import AuthService
 
 class AuthServiceTests(unittest.TestCase):
@@ -128,6 +129,38 @@ class AuthServiceTests(unittest.TestCase):
             restored = self.service.load_json_file(file_path)
 
         self.assertEqual(restored, payload)
+
+    def test_save_json_file_preserves_credentials_when_serialization_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "auth.json"
+            original = '{"cookies": [{"name": "session", "value": "old"}]}'
+            file_path.write_text(original, encoding="utf-8")
+
+            with self.assertRaises(CookieSaveError):
+                self.service.save_json_file(
+                    str(file_path),
+                    {"cookies": [{"name": "session", "value": "new"}], "bad": object()},
+                )
+
+            self.assertEqual(file_path.read_text(encoding="utf-8"), original)
+
+    def test_save_json_file_preserves_credentials_when_temp_write_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "auth.json"
+            original = '{"cookies": [{"name": "session", "value": "old"}]}'
+            file_path.write_text(original, encoding="utf-8")
+
+            with patch(
+                "app.services.auth_service.os.fsync",
+                side_effect=OSError("simulated write interruption"),
+            ), self.assertRaises(CookieSaveError):
+                self.service.save_json_file(
+                    str(file_path),
+                    {"cookies": [{"name": "session", "value": "new"}]},
+                )
+
+            self.assertEqual(file_path.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(file_path.parent.iterdir()), [file_path])
 
 if __name__ == "__main__":
     unittest.main()

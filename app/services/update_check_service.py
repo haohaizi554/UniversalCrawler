@@ -1,4 +1,4 @@
-"""Check published release versions for application updates."""
+"""应用更新检查：区分只读版本发现与签名 manifest 授权的安装路径。"""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from typing import Any, Callable
 
 from app.config.update_trust import (
     UPDATE_PUBLIC_KEY_PEM,
-    UPDATE_REQUIRE_OS_SIGNATURE,  # noqa: F401 - compatibility re-export for GUI callers
-    UPDATE_TRUSTED_PUBLISHERS,  # noqa: F401 - compatibility re-export for GUI callers
-    UPDATE_TRUSTED_THUMBPRINTS,  # noqa: F401 - compatibility re-export for GUI callers
+    UPDATE_REQUIRE_OS_SIGNATURE,  # noqa: F401 - 为 GUI 调用方保留兼容导出
+    UPDATE_TRUSTED_PUBLISHERS,  # noqa: F401 - 为 GUI 调用方保留兼容导出
+    UPDATE_TRUSTED_THUMBPRINTS,  # noqa: F401 - 为 GUI 调用方保留兼容导出
 )
 from app.services.secure_updater import (
     APP_ID,
@@ -65,11 +65,11 @@ UPDATE_STATUS_UNTRUSTED = "untrusted"
 
 
 class UpdateCheckError(RuntimeError):
-    """Raised when the remote release version cannot be resolved."""
+    """远程 Release 无法解析为可用版本。"""
 
 
 class SignedMetadataUnavailableError(UpdateCheckError):
-    """Raised when releases exist but omit latest.json or its signature."""
+    """Release 存在，但缺少 latest.json 或对应签名。"""
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ class UpdateCheckResult:
     candidates: tuple[UpdateCandidate, ...] = ()
 
     def for_version(self, version: str) -> "UpdateCheckResult":
-        """Return a copy pinned to one verified update candidate."""
+        """只允许切换到已验证 candidates 中的版本，避免前端注入任意版本元数据。"""
         normalized = normalize_version(version)
         for candidate in self.candidates:
             if normalize_version(candidate.version) == normalized:
@@ -143,7 +143,7 @@ def prepare_verified_update(
     cancel_event=None,
     progress_callback=None,
 ) -> PreparedUpdate:
-    """Download one selected update after revalidating every signed constraint."""
+    """下载前重新验签 manifest，并复核版本、最低客户端、资产哈希及平台签名策略。"""
 
     verifier = manifest_verifier_cls(public_key_pem=public_key_pem)
     manifest = verifier.load_verified(Path(result.manifest_path), Path(result.signature_path))
@@ -187,7 +187,7 @@ def launch_prepared_update(
     restart_argv: list[str],
     popen: Callable[..., Any] = subprocess.Popen,
 ) -> Any:
-    """Launch the updater helper using only server-side verified paths."""
+    """只使用 PreparedUpdate 中由服务端保存的路径启动 helper，不接收前端自报路径。"""
 
     installer_path = Path(prepared.installer_path)
     manifest_path = Path(prepared.manifest_path)
@@ -232,7 +232,7 @@ def launch_prepared_update(
 
 
 def normalize_version(value: Any) -> str:
-    """Return a comparable version string without display prefixes."""
+    """移除展示前缀并提取可比较版本文本，不在此阶段判定更新可信度。"""
     raw = str(value or "").strip()
     if not raw:
         return ""
@@ -256,7 +256,7 @@ def _version_parts(value: Any) -> tuple[int, ...]:
 
 
 def compare_versions(local_version: Any, latest_version: Any) -> int:
-    """Compare versions numerically: -1 local older, 0 equal, 1 local newer."""
+    """按数值比较版本：-1 表示本地较旧，0 相同，1 表示本地较新。"""
     try:
         return compare_semver(normalize_version(local_version), normalize_version(latest_version))
     except ValueError:
@@ -327,7 +327,7 @@ def fetch_latest_release_page_payload(
         headers={"User-Agent": "UniversalCrawlerPro/update-check"},
     )
     try:
-        # GitHub uses a redirect from /latest to /tag/<version>; the handler validates it before following.
+        # GitHub 会把 /latest 重定向到 /tag/<version>；handler 在跟随前验证目标 host。
         with open_trusted_url(request, timeout=timeout, allowed_hosts={"github.com"}) as response:
             final_url = _response_final_url(response, page_url)
             try:
@@ -434,11 +434,10 @@ def check_secure_update(
     selected_version: str | None = None,
     max_candidates: int = 10,
 ) -> UpdateCheckResult:
-    """Check for a signed-manifest update and select the current platform asset.
+    """检查签名 manifest，并选择与当前平台匹配的更新资产。
 
-    This is the production update path.  The older ``check_for_update`` remains
-    available for read-only release-tag checks, but it is not sufficient for
-    download/install decisions because it has no signed manifest.
+    这是生产安装路径。旧 ``check_for_update`` 仅保留只读 release tag 比较能力；
+    它没有签名 manifest，不能授权下载或安装。
     """
 
     configured_public_key = UPDATE_PUBLIC_KEY_PEM if public_key_pem is None else public_key_pem
@@ -482,8 +481,7 @@ def check_secure_update(
                 max_candidates=max_candidates,
             )
         except SignedMetadataUnavailableError:
-            # A normal GitHub Release is useful for version comparison but is
-            # never sufficient authorization for automatic installation.
+            # 普通 GitHub Release 可用于版本比较，但绝不能单独授权自动安装。
             readonly_result = check_for_update(
                 normalized_local,
                 fetcher=fetch_latest_release_payload,
@@ -663,8 +661,8 @@ def _fetch_verified_update_candidates(
                     location.signature_url,
                     temp_root / DEFAULT_SIGNATURE_NAME,
                 )
-                # Verify before touching the last known-good cache. A tag may be
-                # republished, so the content digest also makes generations immutable.
+                # 先验证临时下载，再触碰 last-known-good 缓存；tag 可能被重新发布，
+                # 因此内容摘要也进入文件名，使每一代已验证元数据不可变。
                 _candidate_from_verified_metadata(
                     verifier=verifier,
                     selector=selector,
@@ -856,7 +854,7 @@ def _download_metadata_file(url: str, target: Path, *, timeout: float = 8.0, max
         raise DownloadError(f"metadata URL must use trusted HTTPS: {exc}") from exc
     request = urllib.request.Request(url, headers={"User-Agent": "UniversalCrawlerPro/update-check"})
     try:
-        # Signed metadata may redirect to GitHub's asset CDN, but nowhere else.
+        # 签名元数据允许重定向到 GitHub 资产 CDN，但不能越出该 host 白名单。
         with open_trusted_url(request, timeout=timeout, allowed_hosts=allowed_hosts) as response:
             final_url = _response_final_url(response, url)
             try:

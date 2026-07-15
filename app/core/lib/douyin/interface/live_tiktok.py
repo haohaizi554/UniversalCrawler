@@ -1,16 +1,12 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/live_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+"""按 room_id 获取 TikTok 直播间数据。"""
 
-# app/core/lib/douyin/interface/live_tiktok.py
 from typing import TYPE_CHECKING, Union
 from .template import APITikTok
 
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -19,6 +15,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class LiveTikTok(APITikTok):
+    """提交直播间标识，并过滤需要登录确认的受限响应。"""
     
     live_api = "https://webcast.us.tiktok.com/webcast/room/enter/"
 
@@ -29,7 +26,6 @@ class LiveTikTok(APITikTok):
         proxy: str = None,
         room_id: str = ...,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `LiveTikTok` 使用。"""
         super().__init__(params, cookie, proxy)
         self.black_headers = params.headers_download
         self.room_id = room_id
@@ -39,7 +35,6 @@ class LiveTikTok(APITikTok):
         *args,
         **kwargs,
     ) -> dict:
-        """执行当前对象或脚本的主流程，供 `LiveTikTok` 使用。"""
         response = await self.with_room_id()
         return self.check_response(response)
 
@@ -55,7 +50,7 @@ class LiveTikTok(APITikTok):
     def __generate_room_id_data(
         self,
     ) -> dict:
-        """提供 `__generate_room_id_data` 对应的内部辅助逻辑，供 `LiveTikTok` 使用。"""
+        """生成直播入口接口要求的最小表单字段。"""
         return {
             "enter_source": "others-others",
             "room_id": self.room_id,

@@ -1,4 +1,4 @@
-"""Capture reproducible GUI/WebUI parity evidence from one frontend snapshot."""
+"""从同一前端快照采集可复现的 GUI/WebUI 一致性证据。"""
 
 from __future__ import annotations
 

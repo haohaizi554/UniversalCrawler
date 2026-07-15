@@ -60,6 +60,153 @@ class DialogsAndKeyboardCases:
             [{"type": "select_tasks", "payload": {"indices": [0, 1]}}],
         )
 
+    def test_11ba_primary_button_text_remains_visible_on_hover(self):
+        self._goto_ready()
+        self._page.evaluate("switchPage('logs')")
+
+        samples = []
+        for selector in (
+            "#page-logs .log-actions .btn-primary",
+            "#selectionConfirmBtn",
+        ):
+            if selector == "#selectionConfirmBtn":
+                self._page.evaluate("showSelectionModal([{title: 'hover contrast'}])")
+            locator = self._page.locator(selector)
+            locator.wait_for(state="visible")
+            before = locator.evaluate(
+                "node => ({ background: getComputedStyle(node).backgroundColor, color: getComputedStyle(node).color })"
+            )
+            locator.hover()
+            hovered = locator.evaluate(
+                "node => ({ background: getComputedStyle(node).backgroundColor, color: getComputedStyle(node).color })"
+            )
+            samples.append((before, hovered))
+
+        for before, hovered in samples:
+            self.assertEqual(hovered["background"], before["background"], (before, hovered))
+            self.assertEqual(hovered["color"], before["color"], (before, hovered))
+
+    def test_11bb_selection_modal_header_fits_and_close_cancels(self):
+        self._goto_ready()
+        self._page.evaluate(
+            """
+            () => {
+              window.__selectionCloseMessages = [];
+              window.sendWS = (type, payload) => window.__selectionCloseMessages.push({ type, payload });
+              sendWS = window.sendWS;
+              document.documentElement.dataset.language = 'en-US';
+              applyStaticLanguage();
+              showSelectionModal([{ title: 'first' }, { title: 'second' }]);
+            }
+            """
+        )
+
+        close_button = self._page.locator("#selectionCloseBtn")
+        close_button.wait_for(state="visible")
+        self.assertEqual(close_button.get_attribute("aria-label"), "Close")
+        header_metrics = self._page.locator(".selection-table thead th:first-child").evaluate(
+            "node => ({ text: node.textContent.trim(), clientWidth: node.clientWidth, scrollWidth: node.scrollWidth })"
+        )
+        self.assertEqual(header_metrics["text"], "Select")
+        self.assertLessEqual(header_metrics["scrollWidth"], header_metrics["clientWidth"], header_metrics)
+
+        close_button.click()
+        self._page.wait_for_function(
+            "() => document.getElementById('selectionModal')?.style.display === 'none' && window.__selectionCloseMessages?.length === 1",
+            timeout=5000,
+        )
+        self.assertEqual(
+            self._page.evaluate("window.__selectionCloseMessages"),
+            [{"type": "select_tasks", "payload": {"indices": None}}],
+        )
+
+    def test_11bc_installed_update_modal_ignores_escape_while_normal_modals_close(self):
+        self._goto_ready()
+        route_pattern = "**/api/update/install"
+        pending_routes = []
+        self._page.route(route_pattern, lambda route: pending_routes.append(route))
+
+        def release_install_request():
+            for route in pending_routes:
+                try:
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body='{"status":"installing","version":"3.6.18"}',
+                    )
+                except Exception:
+                    pass
+            self._page.unroute(route_pattern)
+
+        self.addCleanup(release_install_request)
+        self._page.evaluate(
+            """
+            () => {
+              const modal = document.getElementById('updateModal');
+              const install = document.getElementById('updateInstallBtn');
+              modal.style.display = 'flex';
+              modal.setAttribute('aria-busy', 'false');
+              install.hidden = false;
+              install.disabled = false;
+              document.getElementById('updateCloseBtn').disabled = false;
+              document.getElementById('updateCloseIcon').disabled = false;
+            }
+            """
+        )
+
+        self._page.click("#updateInstallBtn")
+        self._page.wait_for_function(
+            """
+            () => document.getElementById('updateModal').getAttribute('aria-busy') === 'true'
+              && document.getElementById('updateStatus').dataset.status === 'installing'
+              && document.getElementById('updateCloseBtn').disabled
+              && document.getElementById('updateCloseIcon').disabled
+            """,
+            timeout=5000,
+        )
+        self._page.keyboard.press("Escape")
+
+        locked_state = self._page.evaluate(
+            """
+            () => ({
+              display: document.getElementById('updateModal').style.display,
+              closeDisabled: document.getElementById('updateCloseBtn').disabled,
+              iconDisabled: document.getElementById('updateCloseIcon').disabled
+            })
+            """
+        )
+        self.assertEqual(locked_state["display"], "flex")
+        self.assertTrue(locked_state["closeDisabled"])
+        self.assertTrue(locked_state["iconDisabled"])
+
+        self.assertEqual(len(pending_routes), 1)
+        pending_routes[0].fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"status":"installing","version":"3.6.18"}',
+        )
+        pending_routes.clear()
+        self._page.wait_for_function(
+            "() => document.getElementById('updateNotes').textContent.includes('安装程序') || document.getElementById('updateNotes').textContent.includes('installer')",
+            timeout=5000,
+        )
+
+        self._page.evaluate(
+            """
+            () => {
+              document.getElementById('updateCloseBtn').disabled = false;
+              document.getElementById('updateCloseIcon').disabled = false;
+              closeUpdateCheckModal();
+              showFileAssociationModal();
+            }
+            """
+        )
+        self._page.keyboard.press("Escape")
+        self.assertEqual(
+            self._page.evaluate("document.getElementById('fileAssociationModal').style.display"),
+            "none",
+        )
+
     def test_11c_file_association_modal_esc_and_enter_match_gui(self):
         self._goto_ready()
 
@@ -509,6 +656,7 @@ class DialogsAndKeyboardCases:
         """Delete 键应触发删除。"""
         self._goto_ready()
         self._page.evaluate("""
+            window.__isolateFrontendStateForTest();
             window._deletedIds = [];
             frontendState.queue_items = [{id: 'x1', title: 'to delete', progress: 0, status: 'done'}];
             window.UcpListPages.renderQueue();

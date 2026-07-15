@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/base.py` 对应资源的落盘或外部工具调用流程。"""
+"""下载器公共基类：统一校验、重试、断点续传与原子发布。"""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class TransferRateLimiter:
 
 
 class BaseDownloader:
-    """实现 `BaseDownloader` 对应的资源下载与落盘流程。"""
+    """为平台下载器提供公共校验、进度回调、重试与原子落盘能力。"""
 
     source_id: str | None = None
 
@@ -77,7 +77,7 @@ class BaseDownloader:
 
     @classmethod
     def can_handle(cls, video_item: VideoItem) -> bool:
-        """判断当前对象是否满足 `can_handle` 所需的处理条件，供 `BaseDownloader` 使用。"""
+        """仅接收来源与当前下载器 `source_id` 匹配的任务。"""
         return bool(cls.source_id and video_item.source == cls.source_id)
 
     @staticmethod
@@ -193,18 +193,18 @@ class BaseDownloader:
         DEFAULT_DOWNLOAD_STRATEGY_CHAIN.execute(self, request)
 
     def _should_resume_download(self, temp_path: str) -> bool:
-        """提供 `_should_resume_download` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
+        """仅在临时文件仍存在时尝试断点续传。"""
         return os.path.exists(temp_path)
 
     def _get_existing_size(self, temp_path: str) -> int:
-        """提供 `_get_existing_size` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
+        """读取续传偏移；文件在检查后消失时按零字节重新下载。"""
         try:
             return os.path.getsize(temp_path)
         except OSError:
             return 0
 
     def _cleanup_temp_file(self, temp_path: str) -> None:
-        """提供 `_cleanup_temp_file` 对应的内部辅助逻辑，供 `BaseDownloader` 使用。"""
+        """尽力清理失败下载的临时文件，不覆盖原始异常。"""
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -212,7 +212,7 @@ class BaseDownloader:
                 pass
 
     def _finalize_download(self, temp_path: str, save_path: str) -> None:
-        """Atomically publish a completed temporary file over any old target."""
+        """下载完整后原子替换目标文件，失败时保留旧文件。"""
         os.replace(temp_path, save_path)
 
     @staticmethod

@@ -1,4 +1,4 @@
-"""Helpers for consistent Web API success/error responses."""
+"""统一构造 Web API 的成功与错误响应。"""
 
 from __future__ import annotations
 

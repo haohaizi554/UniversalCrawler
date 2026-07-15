@@ -1,4 +1,4 @@
-"""Qt-only plugin settings widgets and widget-to-run-options adapters."""
+"""提供仅用于 Qt 的插件设置控件及运行参数适配。"""
 
 from __future__ import annotations
 
@@ -221,13 +221,12 @@ def read_missav_run_options(widget: QWidget | None) -> dict[str, str | bool | in
     }
 
 def _iter_plugin_settings_functions():
-    """Yield (plugin_id, builder_fn, reader_fn) for every plugin in the registry.
+    """为注册表中的每个插件产出 (plugin_id, builder_fn, reader_fn)。
 
-    Uses naming convention ``build_<id>_settings_widget`` /
-    ``read_<id>_run_options`` within this module to auto-discover functions,
-    eliminating the need for a manual registry dict.
+    按本模块中的 ``build_<id>_settings_widget`` 与 ``read_<id>_run_options``
+    命名约定自动发现函数，避免维护重复的手工映射表。
 
-    A plugin without a settings builder simply yields ``(builder=None, reader=None)``.
+    没有设置构建器的插件返回 ``(builder=None, reader=None)``。
     """
     from app.core.plugin_registry import registry
 
@@ -239,14 +238,14 @@ def _iter_plugin_settings_functions():
         yield pid, builder, reader
 
 def build_plugin_settings_widget(plugin_id: str, parent=None) -> QWidget | None:
-    """Build the settings widget for *plugin_id*, or return ``None``."""
+    """构建 *plugin_id* 的设置控件；没有构建器时返回 ``None``。"""
     for pid, builder, _reader in _iter_plugin_settings_functions():
         if pid == plugin_id and builder is not None:
             return builder(parent)
     return None
 
 def read_plugin_run_options(plugin_id: str, widget: QWidget | None) -> dict:
-    """Read run options from the widget for *plugin_id*."""
+    """从 *plugin_id* 的设置控件读取运行参数。"""
     for pid, _builder, reader in _iter_plugin_settings_functions():
         if pid == plugin_id and reader is not None:
             return reader(widget)

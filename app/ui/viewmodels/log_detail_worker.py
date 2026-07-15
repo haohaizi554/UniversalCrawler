@@ -310,10 +310,10 @@ class LogDetailWorker:
 
 
 class LogDetailExportWorker:
-    """Sequential file writer for log detail exports.
+    """按序写出日志详情文件。
 
-    The GUI thread owns only the file dialog and feedback. Potentially large
-    payload writes stay in this worker so log inspection remains responsive.
+    GUI 线程只负责文件对话框和反馈；可能较大的 payload 由本 worker 写入，
+    使日志查看过程保持响应。
     """
 
     def __init__(self, on_result: Callable[[LogDetailExportResult], None]) -> None:

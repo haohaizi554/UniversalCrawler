@@ -1,14 +1,9 @@
-"""interactive 子命令：交互式引导模式。
+"""``interactive`` 子命令的终端引导流程。
 
-逐步引导用户，体验与 GUI 完全对齐：
-1. 选择平台（显示搜索提示，与 GUI placeholder 一致）
-2. 输入关键词（提示沿用 GUI 搜索框 placeholder）
-3. 平台参数配置（与 GUI 设置面板对齐：页数/视频数/偏好/代理）
-4. 保存路径（默认用配置中的路径，回车确认，也可输入新路径）
-5. Cookie 状态（与 GUI 对齐：本地有则用，无则 spider 自动弹出登录窗口）
-6. 确认后执行
-
-与 entry.interactive_entry 对齐（共享同一套交互逻辑）。
+界面显示五个阶段：选择平台、输入搜索内容、配置平台参数、确认保存路径，以及
+检查 Cookie 状态后确认执行。它复用共享配置、选择策略和 ``CLIRunner``，但
+终端提示、可编辑字段及默认超时属于 CLI 自身契约，不是 GUI 流程的镜像。
+``entry.interactive_entry`` 直接调用本模块的参数定义和处理函数。
 """
 
 from __future__ import annotations
@@ -32,8 +27,6 @@ from shared.sdk_runtime import UcrawlSDK
 from shared.selection_runtime import RuleSelection, parse_preloaded_choices
 from app.config import cfg
 from app.utils.runtime_paths import is_temporary_path
-
-# ============== 颜色常量 ==============
 
 BOLD  = "\033[1m"
 RESET = "\033[0m"
@@ -103,9 +96,7 @@ _PLATFORM_GUIDE = {
     },
 }
 
-# ============== Cookie 智能检测（与 GUI spider 对齐） ==============
-
-# 平台 → auth 文件名映射（与 app/config/settings.py AuthSettings 对齐）
+# 交互式预检所识别的本地认证文件名。
 _AUTH_FILE_MAP = {
     "douyin":   "dy_auth.json",
     "xiaohongshu": "xhs_auth.json",
@@ -114,7 +105,7 @@ _AUTH_FILE_MAP = {
     "missav":   None,  # MissAV 不需要 cookie
 }
 
-# 平台 → 必需的 cookie key（与 GUI spider 对齐）
+# 本地 Cookie 预检所需的最小键；存在并不代表服务端会话仍然有效。
 _REQUIRED_COOKIE_KEY = {
     "douyin":   "sessionid_ss",
     "xiaohongshu": "a1",
@@ -122,7 +113,7 @@ _REQUIRED_COOKIE_KEY = {
     "kuaishou": "kuaishou.server.web_st",
 }
 
-# 平台 → 登录方式描述（与 GUI spider 实现对齐）
+# 未发现本地 Cookie 时显示的平台登录提示。
 _LOGIN_DESC = {
     "douyin":   "抖音将自动弹出浏览器窗口，请扫码登录",
     "xiaohongshu": "小红书将自动拉起浏览器以获取 Cookie，必要时请在页面中手动登录",
@@ -131,7 +122,7 @@ _LOGIN_DESC = {
 }
 
 def _find_cookie_file(platform_id: str) -> Path | None:
-    """在多个候选路径中查找 cookie JSON 文件（与 GUI resolve_user_file 对齐）。"""
+    """按兼容路径顺序返回第一个非空的 Cookie JSON 文件。"""
     auth_name = _AUTH_FILE_MAP.get(platform_id)
     if auth_name is None:
         return None
@@ -142,8 +133,7 @@ def _find_cookie_file(platform_id: str) -> Path | None:
         Path(__file__).resolve().parent.parent.parent / auth_name,  # 项目根目录
     ]
 
-    # 与 GUI AuthSettings.normalize 对齐：也搜索 user_data 目录
-    # 与 GUI 的运行时路径规则保持一致；旧版 USER_DATA_ROOT 常量已经移除。
+    # user_data_root 是当前安装的持久化位置，前面的路径保留旧安装兼容性。
     try:
         from app.utils.runtime_paths import user_data_root
         candidates.append(user_data_root() / auth_name)
@@ -156,7 +146,7 @@ def _find_cookie_file(platform_id: str) -> Path | None:
     return None
 
 def _load_cookie(platform_id: str) -> dict | list | None:
-    """尝试加载本地 cookie JSON（与 GUI AuthService.load_json_file 对齐）。"""
+    """读取非空的字典或列表形式 Cookie JSON；缺失或损坏时返回 None。"""
     path = _find_cookie_file(platform_id)
     if path is None:
         return None
@@ -170,33 +160,31 @@ def _load_cookie(platform_id: str) -> dict | list | None:
         return None
 
 def _build_cookie_string(cookie_data) -> str:
-    """构建 cookie 字符串（与 GUI AuthService.build_cookie_string 对齐）。"""
+    """委托 AuthService 处理共享支持的 Cookie 数据形状。"""
     from app.services.auth_service import AuthService
     return AuthService.build_cookie_string(cookie_data)
 
 def _check_cookie_valid(platform_id: str, cookie_data) -> bool:
-    """检查 cookie 是否包含必需的 key（与 GUI spider 启动前校验对齐）。"""
+    """检查平台最小键是否存在，不执行网络有效性验证。"""
     required = _REQUIRED_COOKIE_KEY.get(platform_id)
     if not required:
         return True
     cookie_str = _build_cookie_string(cookie_data)
     return required in cookie_str
 
-# ============== 参数解析 ==============
-
 def add_interactive_arguments(parser: argparse.ArgumentParser) -> None:
-    """为 interactive 子命令添加参数（与 search 命令对齐）。"""
+    """注册交互流程支持的运行、选择和配置覆盖参数。"""
     parser.add_argument("--save-dir", "-d", default=None, help="保存目录")
     parser.add_argument("--no-download", action="store_true", help="只搜索不下载")
     parser.add_argument("--pretty", action="store_true", help="人类可读格式输出")
 
-    # 与 search 命令对齐：运行控制参数
+    # 运行控制参数由 CLIRunner 和配置合并阶段分别消费。
     parser.add_argument("--run-timeout", type=float, default=None, help="整体超时秒数")
     parser.add_argument("--quiet", "-q", action="store_true", help="不输出 spider 日志")
     parser.add_argument("--config", type=str, default=None,
                         help="平台特定配置 (JSON 字符串，如 '{\"max_items\":50}')")
 
-    # 与 search 命令对齐：二次选择参数
+    # 二次选择参数在执行前转换为 PipeSelection 或 RuleSelection。
     sel_group = parser.add_argument_group("二次选择")
     sel_group.add_argument("--all", dest="select_all", action="store_true", help="全选")
     sel_group.add_argument("--first", action="store_true", help="只选第一个")
@@ -207,25 +195,21 @@ def add_interactive_arguments(parser: argparse.ArgumentParser) -> None:
     sel_group.add_argument("--preload-choices",
                             help="预加载多次选择 (用 | 分隔每轮, 如 '0|1,2|3,4,5')")
 
-    # 与 GUI spider build_download_meta 对齐：便捷参数，避免手写 JSON
+    # 便捷参数会在确认前投影到运行配置，避免要求用户手写 JSON。
     parser.add_argument("--cookie", type=str, default=None, help="Cookie 字符串 (与 --config '{\"cookie\":\"...\"}' 等价)")
     parser.add_argument("--download-strategy", type=str, default=None, help="下载策略 (m3u8/http，与 GUI spider build_download_meta 对齐)")
     parser.add_argument("--referer", type=str, default=None, help="Referer 请求头 (与 --config '{\"referer\":\"...\"}' 等价)")
     parser.add_argument("--ua", type=str, default=None, help="User-Agent 请求头 (与 --config '{\"ua\":\"...\"}' 等价)")
-    # 与 GUI Bilibili spider build_download_meta 对齐：子目录结构控制
+    # 子目录参数会在提供 folder_name 时自动启用 use_subdir。
     parser.add_argument("--folder-name", type=str, default=None, help="子目录名 (与 --config '{\"folder_name\":\"...\"}' 等价，传入时自动启用 --use-subdir，与 GUI 对齐)")
     parser.add_argument("--use-subdir", action="store_true", default=None, help="使用子目录保存 (与 --config '{\"use_subdir\":true}' 等价)")
-    # 与 GUI spider build_download_meta 对齐：文件名控制
+    # 文件名和内容类型由下载任务元数据消费。
     parser.add_argument("--file-name", type=str, default=None, help="输出文件名 (与 --config '{\"file_name\":\"...\"}' 等价，不含扩展名)")
-    # 与 GUI spider build_download_meta 和 DownloadWorker 对齐：内容类型控制
     parser.add_argument("--content-type", type=str, default=None, help="内容类型 (video/image/gallery，与 --config '{\"content_type\":\"gallery\"}' 等价，影响文件扩展名和保存路径)")
-    # 与 CLI search/download --proxy 对齐：代理便捷参数
+    # MissAV 代理和筛选选项在配置收尾阶段归一化。
     parser.add_argument("--proxy", type=str, default=None, help="代理 URL (与 --config '{\"proxy\":\"http://127.0.0.1:7890\"}' 等价，MissAV 平台会自动转换)")
-    # 与 CLI search/download --individual-only/--priority 对齐：MissAV 专属便捷参数
     parser.add_argument("--individual-only", action="store_true", default=None, help="只看单体作品 (MissAV 专属，与 --config '{\"individual_only\":true}' 等价)")
     parser.add_argument("--priority", type=str, default=None, help="优先级 (MissAV 专属，与 --config '{\"priority\":\"中文字幕优先\"}' 等价)")
-
-# ============== 交互辅助 ==============
 
 def _input(prompt: str, default: str = "") -> str:
     """带默认值的输入：直接回车使用默认值。"""
@@ -342,7 +326,7 @@ def _build_config_summary_lines(platform_id: str, config: dict, platform_name: s
     return lines
 
 def _finalize_interactive_config(args: argparse.Namespace, platform_id: str, config: dict) -> dict:
-    """Apply every non-interactive override before rendering confirmation."""
+    """在显示确认信息前应用全部非交互式覆盖项。"""
     finalized = dict(config)
     config_json = getattr(args, "config", None)
     if config_json:
@@ -384,7 +368,7 @@ def _finalize_interactive_config(args: argparse.Namespace, platform_id: str, con
     return finalized
 
 def _build_interactive_selection(args: argparse.Namespace):
-    """Build the TUI selection strategy with the same strict CLI contract."""
+    """按显式参数优先级构造终端二次选择策略。"""
     if getattr(args, "pipe", False):
         return PipeSelection()
     if getattr(args, "preload_choices", None):
@@ -403,8 +387,7 @@ def _build_interactive_selection(args: argparse.Namespace):
             first=getattr(args, "first", False),
             last=getattr(args, "last", False),
         )
-    # GUISelection can cross a QApplication boundary from the worker thread.
-    # The TUI keeps its stable one-based terminal selection instead.
+    # 默认使用同步终端策略，避免工作线程跨越 QApplication 生命周期边界。
     return InteractiveTTYSelection()
 
 def _item_display_title(item: dict) -> str:
@@ -413,7 +396,6 @@ def _item_display_title(item: dict) -> str:
 
 
 def _print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
-    """打印与 GUI 下载队列一致的最终结果摘要。"""
     completed = []
     failed = []
     other = []
@@ -485,7 +467,7 @@ def _print_download_summary(items: list, elapsed: float, save_dir: str) -> None:
 def _prompt_post_run_action(save_dir: str, *, allow_repeat: bool = True) -> str:
     """下载或搜索结束后的后续动作。
 
-    Returns:
+    返回：
         "exit" | "same" | "switch"
     """
     options = "o 打开目录 / s 同平台继续 / p 切换平台 / 直接回车结束" if allow_repeat else "o 打开目录 / 直接回车结束"
@@ -512,8 +494,6 @@ def _prompt_post_run_action(save_dir: str, *, allow_repeat: bool = True) -> str:
         if allow_repeat and choice in ("p", "platform", "switch"):
             return "switch"
         print(f"{DIM}无效输入，请重试。{RESET}")
-
-# ============== 主逻辑 ==============
 
 def handle_interactive_command(args: argparse.Namespace) -> int:
     """交互式引导：逐步收集参数后执行搜索/下载。"""
@@ -560,10 +540,8 @@ def handle_interactive_command(args: argparse.Namespace) -> int:
             print(f"  {GREEN}✓ {keyword}{RESET}\n")
 
             config = get_platform_defaults(platform_id)
-            # Interactive mode uses the historical 30s request timeout unless
-            # the user overrides it with --config below. Platform crawlers may
-            # carry longer GUI defaults, but the CLI prompt contract stays
-            # snappier and stable for scripted tests.
+            # 30 秒是交互流程写入 spider 配置的请求超时基线；稍后的 --config
+            # 可覆盖该键。--run-timeout 则单独传给 CLIRunner，限制整次运行时间。
             config["timeout"] = 30
             print(f"{BOLD}步骤 3/5: 平台参数{RESET}")
 

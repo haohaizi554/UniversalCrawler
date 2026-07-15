@@ -8,7 +8,7 @@ def _create_test_client():
 
     client = TestClient(create_app())
     # 建立 session 并获取 token
-    client.get("/api/ping")
+    client.get("/api/session/bootstrap")
     cookie_name = client.app.state.web_session_cookie_name
     session_id = client.cookies.get(cookie_name)
     context = client.app.state.web_session_registry.get_or_create(session_id)

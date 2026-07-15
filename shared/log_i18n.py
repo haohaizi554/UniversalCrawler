@@ -1,3 +1,12 @@
+"""运行时日志文本、事件码与结构化 payload 的展示本地化。
+
+文本入口接受任意可转为字符串的值；payload 入口递归保留容器形状和键。处理链
+按乱码修复、静态翻译、结构化片段、长短语、动态首命中规则和英文清理执行。
+各阶段的输入依赖前一阶段输出，具体正则也从窄到宽排列，不可随意换序。没有
+对应规则时保留原文本；空值、``-`` 事件码和非字符串 payload 值按各入口契约
+原样返回。
+"""
+
 from __future__ import annotations
 
 import re
@@ -76,6 +85,7 @@ _MOJIBAKE_REPAIR_MAP = _build_mojibake_repair_map()
 
 
 def _repair_mojibake_text(text: str) -> str:
+    """修复已知 UTF-8/中文编码误解码短语，未知内容保持不变。"""
     repaired = text
     for damaged, phrase in _MOJIBAKE_REPAIR_MAP.items():
         if damaged in repaired:
@@ -609,8 +619,64 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("本地小红书 Cookie 恢复失败，继续使用新会话", "Failed to restore local Xiaohongshu Cookie; continuing with new session", "本機小紅書 Cookie 恢復失敗，繼續使用新會話"),
     ("小红书号未命中主页结果，回退为关键词搜索", "Xiaohongshu ID did not match homepage results; falling back to keyword search", "小紅書號未命中主頁結果，回退為關鍵字搜尋"),
     ("下载已暂停", "download paused", "下載已暫停"),
+    ("Web 端用户请求停止爬虫任务", "Web user requested to stop the crawl task", "Web 端使用者要求停止爬蟲任務"),
+    ("Web 端开始扫描本地媒体目录（异步）", "Web started scanning local media folder (async)", "Web 端開始非同步掃描本機媒體目錄"),
+    ("Web 端开始扫描本地媒体目录", "Web started scanning local media folder", "Web 端開始掃描本機媒體目錄"),
     ("Web 端启动爬虫任务", "Web started crawl task", "Web 端啟動爬蟲任務"),
     ("Web 端发现可下载资源", "Web found downloadable resources", "Web 端發現可下載資源"),
+    ("Web 端下载任务完成", "Web download task completed", "Web 端下載任務完成"),
+    ("Web 端下载任务失败", "Web download task failed", "Web 端下載任務失敗"),
+    ("Web 端保存目录已变更", "Web save directory changed", "Web 端儲存目錄已變更"),
+    ("Web 端爬虫任务结束", "Web crawl task finished", "Web 端爬蟲任務結束"),
+    ("用户取消更新下载", "User cancelled the update download", "使用者取消更新下載"),
+    ("正在等待上一次更新下载线程停止，暂不能重试。", "Waiting for the previous update download thread to stop; retry is not available yet.", "正在等待上一次更新下載執行緒停止，暫時無法重試。"),
+    ("更新安装程序已启动，应用即将退出。", "Update installer started; the app will exit shortly.", "更新安裝程式已啟動，應用程式即將結束。"),
+    ("Bilibili 并发解析播放流并批量提交下载项", "Bilibili is resolving streams concurrently and submitting download items in batches", "Bilibili 正在並行解析播放串流並批次提交下載項目"),
+    ("Bilibili 并发取流线程失败", "Bilibili concurrent stream worker failed", "Bilibili 並行取流執行緒失敗"),
+    ("HTTP 断点续传请求已建立", "HTTP resume request established", "HTTP 斷點續傳請求已建立"),
+    ("目录切换后的初始扫描完成", "Initial scan after changing directory completed", "切換目錄後的初始掃描完成"),
+    ("收到超长 WebSocket 消息，连接已关闭", "Oversized WebSocket message received; connection closed", "收到過長的 WebSocket 訊息，連線已關閉"),
+    ("更新安装包已下载并通过校验", "Update package downloaded and verified", "更新安裝套件已下載並通過校驗"),
+    ("更新安装程序启动失败", "Failed to start the update installer", "更新安裝程式啟動失敗"),
+    ("已跳过更新版本", "Skipped update version", "已略過更新版本"),
+    ("已调度 select_tasks 测试事件", "select_tasks test event dispatched", "已排程 select_tasks 測試事件"),
+    ("收到非法 JSON 消息", "Invalid JSON message received", "收到無效的 JSON 訊息"),
+    ("Bilibili 登录状态校验失败", "Bilibili login status check failed", "Bilibili 登入狀態校驗失敗"),
+    ("等待 Bilibili 扫码登录超时", "Timed out waiting for Bilibili QR-code login", "等待 Bilibili 掃碼登入逾時"),
+    ("等待抖音扫码登录超时 (120秒)", "Timed out waiting for Douyin QR-code login (120 seconds)", "等待抖音掃碼登入逾時（120 秒）"),
+    ("用户在登录过程中终止任务", "User stopped the task during login", "使用者在登入過程中終止任務"),
+    ("HTTP 下载内容不完整，准备重试", "HTTP download incomplete; preparing to retry", "HTTP 下載內容不完整，準備重試"),
+    ("HTTP 下载失败，准备重试", "HTTP download failed; preparing to retry", "HTTP 下載失敗，準備重試"),
+    ("HTTP 下载异常，准备重试", "HTTP download error; preparing to retry", "HTTP 下載異常，準備重試"),
+    ("分块下载失败，准备重试", "Chunked download failed; preparing to retry", "分塊下載失敗，準備重試"),
+    (
+        "文件删除等待超时前下载线程未停止",
+        "Download worker did not stop before file deletion timeout",
+        "檔案刪除等待逾時前下載執行緒未停止",
+    ),
+    ("流断点续传：从", "stream resume: continuing from", "串流斷點續傳：從"),
+    ("字节继续下载", "bytes", "位元組繼續下載"),
+    ("打开快手目标页", "Opening the Kuaishou target page", "開啟快手目標頁"),
+    ("页面访问", "Page navigation", "頁面存取"),
+    ("B站", "B-site", "B 站"),
+    ("已启动有界下载恢复维护", "Started bounded download recovery maintenance", "已啟動有界下載恢復維護"),
+    ("应用启动时已处理过期下载临时文件", "Processed stale download temp artifacts at application startup", "應用程式啟動時已處理過期下載暫存檔"),
+    ("已完成有界下载恢复维护", "Completed bounded download recovery maintenance", "已完成有界下載恢復維護"),
+    ("无法枚举恢复目录；本次尝试已确认", "Recovery directory could not be enumerated; the attempt was acknowledged", "無法列舉恢復目錄；本次嘗試已確認"),
+    ("旧版目录扫描已受限或降级", "A legacy directory scan was bounded or degraded", "舊版目錄掃描已受限或降級"),
+    ("旧版临时文件清理已在生产扫描预算处停止", "Stopped legacy temp cleanup at the production scan budget", "舊版暫存檔清理已在生產掃描預算處停止"),
+    ("已设置当前用户的默认应用", "Set current-user default apps", "已設定目前使用者的預設應用程式"),
+    ("文件关联注册仅支持 Windows", "File association registration is Windows-only", "檔案關聯註冊僅支援 Windows"),
+    ("文件关联默认值仅支持 Windows", "File association defaults are Windows-only", "檔案關聯預設值僅支援 Windows"),
+    ("文件关联诊断仅支持 Windows", "File association diagnostics are Windows-only", "檔案關聯診斷僅支援 Windows"),
+    ("为以下项目设置默认值失败：", "Failed to set defaults for ", "為以下項目設定預設值失敗："),
+    ("无法解析当前用户 SID：", "Cannot resolve current user SID: ", "無法解析目前使用者 SID："),
+    ("界面可见性探测：", "Shell visibility probe: ", "介面可見性探測："),
+    ("界面外壳意外隐藏；正在恢复", "Shell chrome was hidden unexpectedly; restoring shell chrome", "介面外殼意外隱藏；正在恢復"),
+    ("恢复界面外壳时已退出残留的媒体全屏状态", "Exited stale media fullscreen while restoring shell chrome", "恢復介面外殼時已退出殘留的媒體全螢幕狀態"),
+    ("打开快手搜索页", "Opening the Kuaishou search page", "開啟快手搜尋頁"),
+    ("开始切换目录", "Started changing directory", "開始切換目錄"),
+    ("任务已停止", "Task stopped", "任務已停止"),
     ("爬虫完成回调已调用", "_on_spider_finished was called", "爬蟲完成回呼已呼叫", "_on_spider_finished 被调用"),
     ("CLI 发现可下载资源", "CLI found downloadable resources", "CLI 發現可下載資源"),
     ("CLI 启动爬虫任务", "CLI started crawl task", "CLI 啟動爬蟲任務"),
@@ -952,6 +1018,7 @@ def _localized_media_term(value: str, language: str) -> str:
 
 
 def _cleanup_english_log_fragments(text: str) -> str:
+    """清理动态翻译后的中英混排片段；规则按声明顺序应用。"""
     result = str(text or "")
     for source, target in _EN_LOG_FRAGMENT_CLEANUPS:
         result = result.replace(source, target)
@@ -979,6 +1046,23 @@ def _cleanup_english_log_fragments(text: str) -> str:
 
 
 def _localize_english_dynamic(text: str) -> str:
+    """把单个日志片段翻译为英文。
+
+    输入应是不含结构化分隔符的片段。正则按首命中返回，具体完整句必须位于
+    宽泛句式之前；未命中正则时才依次应用 ``_EN_DYNAMIC_REPLACEMENTS``，若仍
+    无替换则返回输入文本。该顺序是动态翻译契约的一部分。
+    """
+    select_tasks_relay = re.match(
+        r"^select_tasks\s+(?:转发延迟|轉發延遲)=(?P<lag>[\d.]+)\s*毫秒[，,]\s*"
+        r"(?:项目数|項目數)=(?P<items>\d+)$",
+        text,
+    )
+    if select_tasks_relay:
+        return (
+            f"select_tasks relay lag={select_tasks_relay.group('lag')}ms "
+            f"items={select_tasks_relay.group('items')}"
+        )
+
     theme_switch = re.match(rf"^{_DYNAMIC_PREFIX}已切换到(?P<mode>浅色|深色)主题[。.]?$", text)
     if theme_switch:
         mode = "light" if theme_switch.group("mode") == "浅色" else "dark"
@@ -1007,7 +1091,7 @@ def _localize_english_dynamic(text: str) -> str:
         return f"{match.group('prefix') or ''}{platform} parameters updated!"
 
     bilibili_stream_retry = re.match(
-        r"^(?P<prefix>.*?)(?:B站|Bilibili)\s+(?P<media>.*?)\s+流连接断开，"
+        r"^(?P<prefix>.*?)(?:B站|Bilibili|B-site)\s+(?P<media>.*?)\s+流连接断开，"
         r"(?P<delay>\d+)s\s+后重试\s+\((?P<attempt>\d+)/(?:\s*)?(?P<total>\d+)\):\s*(?P<error>.+)$",
         text,
     )
@@ -1123,6 +1207,7 @@ def _localized(language_map: dict[str, str], language: str) -> str:
 
 
 def _apply_runtime_phrase_translations(text: str, language: str) -> str:
+    """替换运行时短语，始终先处理较长 source，避免短词截断长句。"""
     target_index = {"zh-CN": 0, "en-US": 1, "zh-TW": 2}.get(language, 0)
     replacements: list[tuple[str, str]] = []
     for entry in _RUNTIME_LOG_PHRASE_TRANSLATIONS:
@@ -1139,6 +1224,7 @@ def _apply_runtime_phrase_translations(text: str, language: str) -> str:
 
 
 def _localize_structured_segments(text: str, language: str) -> str:
+    """翻译来源/动作等结构化片段；没有别名或翻译变化时返回原文本。"""
     if " · " not in text and " / " not in text and " 路 " not in text:
         mapped = _STRUCTURED_SEGMENT_ALIASES.get(text)
         if mapped:
@@ -1160,10 +1246,51 @@ def _localize_structured_segments(text: str, language: str) -> str:
     return "".join(translated_parts) if changed else text
 
 
+def _localize_runtime_dynamic_segments(text: str, language: str) -> str:
+    """对每个结构化日志片段应用动态规则。
+
+    来源标签与运行时消息常共用一个展示字符串，例如
+    ``MainWindow · fetch video detail``。翻译来源标签后，消息片段仍必须继续
+    进入动态规则。分隔符原样保留，每个普通片段未命中时也原样回退。
+    """
+
+    parts = re.split(r"(\s+·\s+|\s+/\s+|\s+路\s+)", text)
+    localized_parts: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"\s*(?:·|/|路)\s*", part):
+            localized_parts.append(part)
+        elif language == "en-US":
+            localized_parts.append(_localize_english_dynamic(part))
+        else:
+            localized_parts.append(_localize_non_english_dynamic(part, language))
+    return "".join(localized_parts)
+
+
 def _localize_non_english_dynamic(text: str, language: str) -> str:
+    """把单个片段本地化为简体或繁体中文，未命中时返回输入。
+
+    精确映射优先，后续正则从专用格式到一般格式首命中返回；调整顺序可能让
+    动态字段丢失或被宽泛句式提前消费。
+    """
     mapped = _NON_EN_DYNAMIC_EXACT.get(text)
     if mapped:
         return _localized(mapped, language)
+
+    select_tasks_relay = re.match(
+        r"^select_tasks relay lag=(?P<lag>[\d.]+)ms items=(?P<items>\d+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if select_tasks_relay:
+        if language == "zh-TW":
+            return (
+                f"select_tasks 轉發延遲={select_tasks_relay.group('lag')} 毫秒，"
+                f"項目數={select_tasks_relay.group('items')}"
+            )
+        return (
+            f"select_tasks 转发延迟={select_tasks_relay.group('lag')} 毫秒，"
+            f"项目数={select_tasks_relay.group('items')}"
+        )
 
     match = re.match(rf"^{_DYNAMIC_PREFIX}Switched to\s*(?P<mode>light|dark)\s*theme[。.]?$", text, re.IGNORECASE)
     if match:
@@ -1333,28 +1460,29 @@ def _localize_non_english_dynamic(text: str, language: str) -> str:
 
 
 def localize_log_text(text: object, language: str | None) -> str:
+    """按固定管线本地化展示文本，未知文本保留其当前内容。
+
+    输入先转为字符串并修复已知乱码，再依次经过静态词典、结构化片段别名、
+    运行时长短语、逐片段动态规则；英文最后清理混排残留。阶段顺序不可交换，
+    因为后续正则以先前归一化结果为输入。空字符串直接返回。
+    """
     value = _repair_mojibake_text(str(text or ""))
     if not value:
         return value
     normalized = normalize_language(language)
-    translated = tr(value, normalized)
-    if translated != value:
-        return translated
-    structured = _localize_structured_segments(value, normalized)
-    if structured != value:
-        return structured
-    phrase = _apply_runtime_phrase_translations(value, normalized)
-    if phrase != value:
-        if normalized == "en-US":
-            return _cleanup_english_log_fragments(_localize_english_dynamic(phrase))
-        dynamic = _localize_non_english_dynamic(phrase, normalized)
-        return dynamic
-    if normalized == "en-US":
-        return _cleanup_english_log_fragments(_localize_english_dynamic(value))
-    return _localize_non_english_dynamic(value, normalized)
+    result = tr(value, normalized)
+    result = _localize_structured_segments(result, normalized)
+    result = _apply_runtime_phrase_translations(result, normalized)
+    result = _localize_runtime_dynamic_segments(result, normalized)
+    return _cleanup_english_log_fragments(result) if normalized == "en-US" else result
 
 
 def localize_log_event_code(code: object, language: str | None) -> str:
+    """本地化事件码，同时保留其可筛选的分段结构。
+
+    空值和 ``-`` 原样返回；繁体中文逐下划线分段翻译，英文先处理已知动态码，
+    再做别名替换和 ASCII 规范化。规范化结果为空时回退原事件码。
+    """
     value = str(code or "")
     normalized = normalize_language(language)
     if not value or value == "-":
@@ -1397,6 +1525,11 @@ def localize_log_event_code(code: object, language: str | None) -> str:
 
 
 def localize_log_payload(payload: Any, language: str | None) -> Any:
+    """递归本地化 payload 值并保留 dict/list/tuple 形状与字典键。
+
+    ``status_code`` 和 ``event_code`` 的值使用事件码规则；普通字符串使用文本
+    规则，其他标量原样返回。
+    """
     if isinstance(payload, dict):
         localized: dict[Any, Any] = {}
         for key, value in payload.items():

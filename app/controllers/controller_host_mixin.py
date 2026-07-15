@@ -6,7 +6,7 @@ from app.exceptions import DebugActionError
 from app.models import VideoItem
 
 class ControllerHostMixin:
-    """Shared host, debug-action, and item-detail helpers for host-backed controllers."""
+    """集中管理宿主适配、调试操作和资源日志字段。"""
 
     def _host(self) -> DesktopHostAdapter:
         host = getattr(self, "host", None)
@@ -16,7 +16,7 @@ class ControllerHostMixin:
         return host
 
     def _item_details(self, item: VideoItem | None) -> dict:
-        """Extract the small subset of item fields that should flow into controller logs."""
+        """提取允许写入控制器日志的少量资源字段。"""
         if not item:
             return {}
         return debug_logger.pick_used(
@@ -51,12 +51,12 @@ class ControllerHostMixin:
         return {**self._item_details(item), "error": error}
 
     def _report_debug_action_error(self, action: str, exc: Exception):
-        """Route debug action failures through the same host/logging surface."""
+        """让调试操作失败统一经宿主界面和日志通道上报。"""
         self._host().append_log(f"❌ {action}失败: {exc}")
         debug_logger.log_exception("ApplicationController", action, exc)
 
     def _run_debug_action(self, success_message: str, action_name: str, func) -> None:
-        """Wrap debug shortcuts so success/failure feedback shares one host-facing path."""
+        """封装调试快捷操作，使成功和失败反馈共用同一宿主出口。"""
         try:
             func()
             self._host().append_log(success_message)

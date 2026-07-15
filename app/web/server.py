@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.utils.runtime_paths import resolve_resource_file
@@ -16,7 +16,7 @@ from app.web.session_runtime import configured_allowed_origins
 from app.web.ws_router import build_ws_router
 from shared.runtime_adapters import run_cli_search
 
-# WebController 在 create_app() 中延迟初始化
+# 仅为旧导入提供默认会话，实际请求必须从 session_context 取控制器。
 controller = None
 
 NO_CACHE_HEADERS = {
@@ -24,6 +24,22 @@ NO_CACHE_HEADERS = {
     "Pragma": "no-cache",
     "Expires": "0",
 }
+
+
+def _configured_index_html(index_path, config_manager) -> str:
+    """把持久化主题写入首帧 HTML。
+
+    浏览器存储只作为渲染提示，不能覆盖 GUI/Web 共用配置。读取前刷新配置，
+    使其他进程刚写入的主题也能在新页面首帧生效，避免主题闪烁。
+    """
+    reload_if_changed = getattr(config_manager, "reload_if_changed", None)
+    if callable(reload_if_changed):
+        reload_if_changed()
+    theme = str(config_manager.get("common", "theme", "light") or "light").lower()
+    if theme not in {"light", "dark"}:
+        theme = "light"
+    html = index_path.read_text(encoding="utf-8")
+    return html.replace('data-theme="light"', f'data-theme="{theme}"', 1)
 
 
 def _apply_no_cache_headers(response):
@@ -39,6 +55,8 @@ class NoCacheStaticFiles(StaticFiles):
 
 STATIC_DIR = resolve_resource_file("app/web/static")
 UI_ICON_DIR = resolve_resource_file("UI/icon")
+# 使用独立 URL 绕开浏览器对历史 /favicon.ico 404 的强缓存；资源副本随 Web 包安装。
+WEB_FAVICON_PATH = resolve_resource_file("app/web/static/webui-icon.ico")
 SESSION_COOKIE_NAME = "ucrawl_session"
 SESSION_TOKEN_COOKIE_NAME = "ucrawl_session_token"
 CSRF_COOKIE_NAME = "ucrawl_csrf_token"
@@ -46,7 +64,6 @@ ACCESS_COOKIE_NAME = "ucrawl_access_token"
 SESSION_TOKEN_HEADER = "X-Ucrawl-Session-Token"
 DEFAULT_SESSION_ID = "default"
 
-# 确保 MIME 类型已注册
 mimetypes.init()
 
 def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
@@ -62,9 +79,7 @@ def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ---- WebSocket 连接管理 ----
 
-    # ---- 初始化 WebController ----
 
     global controller
     from app.web.controller import WebController
@@ -115,7 +130,7 @@ def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
         return await composition.http_sessions.handle(request, call_next)
 
     # REST/WS 只能从组合式路由注册。目录授权、会话鉴权和输入校验都位于
-    # 对应 service 中；不要在 server.py 再复制一套端点，否则两条路径会漂移。
+    # 对应服务中；不要在 server.py 再复制一套端点，否则两条路径会漂移。
     app.include_router(
         build_rest_router(
             get_request_context=composition.get_request_context,
@@ -140,8 +155,22 @@ def create_app(lifespan=None, *, access_token: str | None = None) -> FastAPI:
     async def composed_serve_index():
         index_path = STATIC_DIR / "index.html"
         if index_path.exists():
-            return _apply_no_cache_headers(FileResponse(str(index_path)))
+            from app.config import cfg
+
+            try:
+                html = _configured_index_html(index_path, cfg)
+            except (OSError, RuntimeError, ValueError):
+                return _apply_no_cache_headers(FileResponse(str(index_path)))
+            return _apply_no_cache_headers(HTMLResponse(html))
         return {"error": "index.html not found"}
+
+    @app.get("/webui-icon.ico", include_in_schema=False)
+    async def serve_webui_favicon():
+        if not WEB_FAVICON_PATH.is_file():
+            raise HTTPException(status_code=404, detail="WebUI icon not found")
+        return _apply_no_cache_headers(
+            FileResponse(str(WEB_FAVICON_PATH), media_type="image/x-icon")
+        )
 
     # 静态目录最后挂载，避免覆盖更具体的 API 路由。
     if STATIC_DIR.exists():

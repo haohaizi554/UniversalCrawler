@@ -1,4 +1,4 @@
-"""Cross-surface media release coordination for GUI/Web preview handles."""
+"""协调 GUI/Web 释放媒体预览句柄，避免删除文件时仍被另一端占用。"""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ def publish_media_release_request(
     source: str,
     reason: str = "delete",
 ) -> MediaReleaseRequest:
+    """先写同目录临时 JSON 再原子替换请求文件，轮询方不会读到半条请求。"""
     request = MediaReleaseRequest(
         request_id=uuid.uuid4().hex,
         local_path=normalize_media_path(local_path),
@@ -100,6 +101,7 @@ def read_media_release_request() -> MediaReleaseRequest | None:
     )
 
 def poll_media_release_request(last_request_id: str | None) -> tuple[str | None, MediaReleaseRequest | None]:
+    """按 request_id 去重，并丢弃过期请求，防止进程重启后重复释放旧句柄。"""
     request = read_media_release_request()
     if request is None or request.request_id == last_request_id:
         return last_request_id, None

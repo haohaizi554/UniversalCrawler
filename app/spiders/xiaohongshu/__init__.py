@@ -1,4 +1,4 @@
-"""XiaoHongShu spider exports."""
+"""小红书平台 Spider 导出。"""
 
 from .client import XiaohongshuClient
 from .parser import XiaohongshuParser

@@ -40,7 +40,7 @@ DELTA_ONLY_LEGACY_TOPICS = frozenset(
 )
 
 class WebSocketBridge:
-    """线程安全地把 controller 事件桥接到 WebSocket，并调度前端增量快照。"""
+    """线程安全地把控制器事件桥接到 WebSocket，并调度前端增量快照。"""
 
     def __init__(
         self,
@@ -63,7 +63,7 @@ class WebSocketBridge:
         self._last_delta_version = 0
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
-        """Resolve the uvicorn loop lazily so worker threads can emit safely."""
+        """延迟获取 uvicorn 事件循环，使工作线程可以安全发送事件。"""
         if self._loop is None or self._loop.is_closed():
             try:
                 self._loop = asyncio.get_running_loop()
@@ -72,7 +72,7 @@ class WebSocketBridge:
         return self._loop
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
-        """Explicitly bind the running WebSocket event loop."""
+        """显式绑定正在运行的 WebSocket 事件循环。"""
         self._loop = loop
 
     def mark_frontend_version_sent(self, version: int) -> None:
@@ -265,7 +265,7 @@ class WebSocketBridge:
         add_done_callback(_discard)
 
     def call_later(self, delay_seconds: float, callback: Callable[[], None]) -> None:
-        """Schedule a callback on the Web event loop when available."""
+        """在可用的 Web 事件循环上延迟调度回调。"""
         loop = self._get_loop()
         if loop and loop.is_running():
             loop.call_soon_threadsafe(lambda: loop.call_later(delay_seconds, callback))
@@ -417,8 +417,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             trace_id=item.meta.get("trace_id"),
         )
 
-    # ---- 下载信号处理 ----
-
     def _after_task_started(self, video_id: str, item: VideoItem | None) -> None:
         local_path = (item.local_path or "") if item else ""
         title = item.title if item else ""
@@ -547,8 +545,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             "error": error,
         }
 
-    # ---- 爬虫控制 ----
-
     def _cleanup_dead_spider(self):
         """清理已退出但未被 _on_spider_finished 处理的 spider。
 
@@ -575,12 +571,10 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             self._start_crawl_unlocked(source_id, keyword, config)
 
     def _start_crawl_unlocked(self, source_id: str, keyword: str, config: dict):
-        # 清理已退出但残留的 spider 引用
         self._cleanup_dead_spider()
 
         if self.current_spider and self.current_spider.isRunning():
             self.bridge.emit("log", {"message": "⚠️ 当前已有任务在运行，请先停止或等待结束"})
-            # 与 GUI 一致：启动失败时恢复 UI 状态
             self.bridge.emit("crawl_state", {"is_running": False})
             # 清理预置的选择策略，避免跨请求污染
             self._pending_selection_strategy = None
@@ -594,11 +588,11 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             self._pending_selection_strategy = None
             return
 
-        # BaseSpider 已完成去 Qt 化，Web 侧可直接在当前线程创建和启动。
+        # BaseSpider 不依赖 Qt 事件循环，可在当前 Web 请求线程创建并启动。
         self._do_start_crawl(plugin, source_id, keyword, config)
 
     def _do_start_crawl(self, plugin, source_id: str, keyword: str, config: dict):
-        """在 Qt 主线程中创建和启动 spider（与 GUI on_start_crawl 对齐）。"""
+        """创建并启动 spider，保持与 GUI on_start_crawl 相同的调用约定。"""
         try:
             spider_cls = plugin.get_spider_class()
             spider = spider_cls(keyword=keyword, config=config)
@@ -611,7 +605,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self.bridge.emit("log", {"message": f"🟢 启动任务 | 模式: {plugin.name} | 关键词: {keyword}"})
         self.bridge.emit("crawl_state", {"is_running": True, "source": source_id})
 
-        # 与 GUI _log_crawl_start 对齐：记录爬虫启动日志
         debug_logger.log(
             component="WebController",
             action="start_crawl",
@@ -639,7 +632,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         # 选择弹窗的展示/恢复统一收口到 WebController。
         if self._pending_selection_strategy is not None:
             strategy = self._pending_selection_strategy
-            self._pending_selection_strategy = None  # 用完即清
+            self._pending_selection_strategy = None
             call_count = [0]
 
             def ask_user_selection_sync(spider_self, items):
@@ -678,7 +671,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
 
             spider.ask_user_selection = MethodType(ask_user_selection_web, spider)
 
-        # BaseSpider 现在使用纯 Python 回调信号；WebSocketBridge 自身已负责跨线程投递到 asyncio。
+        # BaseSpider 使用纯 Python 回调信号；WebSocketBridge 负责跨线程投递到 asyncio。
         def on_log(msg):
             self.bridge.emit(
                 "log",
@@ -761,7 +754,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             self._log_spider_item_found(item)
 
     def _log_spider_item_found(self, item: VideoItem) -> None:
-        # 与 GUI _on_spider_item_found 对齐：记录 item 发现日志（含 context 和 trace_id）
         debug_logger.log(
             component="WebController",
             action="item_found",
@@ -773,18 +765,12 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         )
 
     def _on_spider_select_tasks(self, items: list):
-        """二次选择回调：将候选列表推送给前端。
-
-        与 GUI SelectionDialog 对齐：序列化完整信息，不只是 title/index。
-        VideoItem 对象使用 to_dict() 序列化，dict 对象提取关键字段。
-        """
+        """前端二次选择依赖候选项元数据，不能退化为只传 `title` 和 `index`。"""
         serialized = []
         for i, it in enumerate(items):
             if isinstance(it, VideoItem):
-                # 与 GUI 一致：使用 to_dict() 完整序列化
                 serialized.append(it.to_dict())
             elif isinstance(it, dict):
-                # 兼容 dict 格式：提取关键字段，补全 index
                 entry = {"index": it.get("index", i)}
                 for key in ("id", "title", "url", "source", "status", "progress",
                             "local_path", "content_type", "meta"):
@@ -794,7 +780,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
                     entry["title"] = ""
                 serialized.append(entry)
             elif hasattr(it, "title"):
-                # 其他有 title 属性的对象
                 serialized.append({
                     "index": i,
                     "title": getattr(it, "title", ""),
@@ -851,7 +836,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         if spider is not None:
             self._disconnect_spider_signals(spider)
         self.bridge.emit("crawl_state", {"is_running": False})
-        # 与 GUI _on_spider_finished 对齐：记录完成日志
         debug_logger.log(
             component="WebController",
             action="crawl_finished",
@@ -877,7 +861,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._do_stop_crawl()
 
     def _do_stop_crawl(self):
-        """在 Qt 主线程中执行停止操作（与 GUI on_stop_crawl 对齐）。"""
+        """停止 spider，保持与 GUI on_stop_crawl 相同的状态与日志约定。"""
         spider = self.current_spider
         if not spider:
             return
@@ -890,14 +874,14 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             message="Web 端用户请求停止爬虫任务",
             status_code="WEB_CRAWL_STOP",
         )
-        # 异步等待 spider 退出（避免阻塞 Qt 事件循环）
+        # 轮询退出状态，避免同步等待阻塞 Web 调度线程。
         with self._stop_wait_lock:
             self._stop_wait_count = 0
             self._stop_wait_spider = spider
         self._schedule_stop_wait()
 
     def _schedule_stop_wait(self):
-        """异步等待 spider 线程退出（避免阻塞 Qt 事件循环）。"""
+        """通过事件循环定时器等待 spider 线程退出，避免同步阻塞。"""
         with self._stop_wait_lock:
             spider = getattr(self, '_stop_wait_spider', None)
             if spider is None:
@@ -906,7 +890,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             stop_wait_count = self._stop_wait_count
 
         if not spider.isRunning():
-            # spider 已退出
             self._finish_stop(spider, forced=False)
             return
 
@@ -918,7 +901,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             self._finish_stop(spider, forced=True)
             return
 
-        # 继续等待
         self.bridge.call_later(0.1, self._schedule_stop_wait)
 
     @staticmethod
@@ -942,7 +924,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             self.bridge.emit("log", {"message": "⚠️ 爬虫线程未能在 30 秒内退出，已强制释放"})
         else:
             self.bridge.emit("log", {"message": "✅ 任务已停止"})
-        # 清理 spider 引用（与 GUI _on_spider_finished 对齐）
         if self.current_spider is spider:
             self.current_spider = None
         self._pending_selection_strategy = None
@@ -963,20 +944,17 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         if spider:
             spider.resume_from_ui(selected_indices)
 
-    # ---- 目录扫描 ----
+    # 扫描方法不改写 `current_save_dir`；目录状态仅由 `change_dir` 或 `async_change_dir` 更新。
 
     def scan_local_dir(self, directory: str | None = None, scan_limit: int | None = None):
         """同步版目录扫描（向后兼容）。
 
-        与 GUI 对齐：扫描不改变 current_save_dir（只有 change_dir 才改变）。
-
-        Args:
+        参数:
             directory: 要扫描的目录（默认使用 current_save_dir）
             scan_limit: 最多扫描文件数（None=从配置读取，与 REST API /api/scan 对齐）
         """
         directory = directory or self.current_save_dir
         self.bridge.emit("log", {"message": f"📂 正在扫描目录: {directory}"})
-        # 与 GUI scan_local_dir 对齐：记录扫描开始日志
         debug_logger.log(
             component="WebController",
             action="scan_local_dir",
@@ -998,40 +976,31 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
                 "total_count": result.total_count,
                 "video_count": result.video_count,
                 "image_count": result.image_count,
-                # 与 REST API /api/scan 和 /api/dir/change 对齐：包含 truncated 和 original_count
                 "truncated": result.truncated,
                 "original_count": result.original_count,
             })
         except MediaScanError as exc:
             self.bridge.emit("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            # 与 GUI scan_local_dir 对齐：记录扫描错误日志
             debug_logger.log_exception("WebController", "scan_local_dir", exc, context={"directory": directory})
         except Exception as exc:
-            # BUG-180: 捕获所有异常，避免未处理异常导致 WebSocket 断连
+            # 兜底异常也要转为日志事件，不能让扫描失败中断 WebSocket 消息循环。
             self.bridge.emit("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            # 与 GUI scan_local_dir 对齐：记录扫描错误日志
             debug_logger.log_exception("WebController", "scan_local_dir", exc, context={"directory": directory})
 
     async def async_scan_local_dir(self, directory: str | None = None, scan_limit: int | None = None):
         """异步版目录扫描：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。
 
-        修复 BUG-180: change_dir 不再使用 run_in_executor 包裹整个方法，
-        而是只将文件 I/O 部分放到线程池，WebSocket 消息直接 await 发送，
-        避免 bridge.emit 的 call_soon + create_task 调度可能导致的静默失败。
-        修复 BUG-182: 直接 await self._send_func 而不是通过 bridge.emit 间接调度，
-        确保消息在当前协程中立即发送，不会因为调度时序问题丢失。
+        只将可能阻塞的文件 I/O 放入线程池；状态消息留在当前协程顺序发送，
+        避免 bridge.emit 经 call_soon 和 create_task 二次调度后发生时序丢失。
 
-        Args:
+        参数:
             directory: 要扫描的目录（默认使用 current_save_dir）
             scan_limit: 最多扫描文件数（None=从配置读取，与 REST API /api/scan 对齐）
         """
         import asyncio
         directory = directory or self.current_save_dir
-        # 与 GUI 对齐：扫描不改变 current_save_dir（只有 async_change_dir 才改变）
 
-        # 1. 直接 await 发送初始事件（确保消息立即发送到浏览器）
         await self._send_recorded_frontend_event("log", {"message": f"📂 正在扫描目录: {directory}"})
-        # 与 GUI scan_local_dir 对齐：记录扫描开始日志
         debug_logger.log(
             component="WebController",
             action="async_scan_local_dir",
@@ -1042,7 +1011,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._clear_video_items()
         await self._send_recorded_frontend_event("clear_videos", {"directory": directory})
 
-        # 2. 文件 I/O 在线程池中执行（不阻塞事件循环）
+        # 目录遍历可能阻塞，单独放入线程池以保持 WebSocket 事件循环可响应。
         try:
             result = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -1052,16 +1021,14 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             )
         except MediaScanError as exc:
             await self._send_recorded_frontend_event("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            # 与 GUI scan_local_dir 对齐：记录扫描错误日志
             debug_logger.log_exception("WebController", "async_scan_local_dir", exc, context={"directory": directory})
             return
         except Exception as exc:
             await self._send_recorded_frontend_event("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            # 与 GUI scan_local_dir 对齐：记录扫描错误日志
             debug_logger.log_exception("WebController", "async_scan_local_dir", exc, context={"directory": directory})
             return
 
-        # 3. 直接 await 发送结果事件（确保消息立即发送到浏览器）
+        # 在同一协程内先发送条目再发送汇总，前端不会先看到尚无列表的统计结果。
         for item in self._cache_scanned_items(result):
             await self._send_recorded_frontend_event("item_found", self._video_item_to_dict(item))
 
@@ -1071,7 +1038,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             "total_count": result.total_count,
             "video_count": result.video_count,
             "image_count": result.image_count,
-            # 与 REST API /api/scan 和 /api/dir/change 对齐：包含 truncated 和 original_count
             "truncated": result.truncated,
             "original_count": result.original_count,
         })
@@ -1079,7 +1045,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     def change_dir(self, directory: str):
         self.current_save_dir = directory
         cfg.set("common", "save_directory", directory)
-        # 与 GUI on_dir_changed 对齐：记录目录变更日志
         debug_logger.log(
             component="WebController",
             action="change_save_dir",
@@ -1096,7 +1061,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         与 REST API /api/dir/change 对齐：cfg.set 在线程池中执行，避免文件 I/O 阻塞事件循环。
         """
         self.current_save_dir = directory
-        # 与 REST API /api/dir/change 对齐：cfg.set 在线程池中执行
         import asyncio
         try:
             await asyncio.get_running_loop().run_in_executor(
@@ -1104,7 +1068,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             )
         except (ConfigValidationError, ConfigWriteError, OSError, RuntimeError, TypeError, ValueError) as exc:
             debug_logger.log_exception("WebController", "async_change_dir_cfg_set", exc, details={"directory": directory})
-        # 与 GUI on_dir_changed 对齐：记录目录变更日志
         debug_logger.log(
             component="WebController",
             action="change_save_dir",
@@ -1114,8 +1077,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         )
         await self._send_recorded_frontend_event("log", {"message": f"📂 目录已变更: {directory}"})
         await self.async_scan_local_dir(directory)
-
-    # ---- 文件操作 ----
 
     def delete_video(self, video_id: str):
         outcome = self._delete_video_sync(video_id)
@@ -1167,8 +1128,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             "message": "deleted",
             "data": {"video_id": video_id, "deleted": deleted},
         }
-
-    # ---- 重命名 ----
 
     def rename_video(self, video_id: str, new_title: str) -> dict:
         outcome = self._rename_video_sync(video_id, new_title, self.current_save_dir)
@@ -1234,8 +1193,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             await self._send_recorded_frontend_event("log", {"message": f"❌ 重命名失败: {exc}"})
             return {"status": "error", "message": str(exc)}
 
-    # ---- 配置 ----
-
     def get_config(self) -> dict:
         return cfg.settings.to_dict()
 
@@ -1261,8 +1218,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
     ) -> list[ConfigWriteError]:
         return await self._run_api_operation("update_config", self.update_config, updates, approved_roots)
 
-    # ---- 平台信息 ----
-
     def get_platforms(self) -> list[dict]:
         """返回平台列表（与 SDK list_platforms 字段对齐）。"""
         platforms = []
@@ -1272,7 +1227,6 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
                 "name": plugin.name,
                 "search_placeholder": plugin.get_search_placeholder(),
             }
-            # 与 SDK list_platforms 一致：包含 description 和 settings
             if hasattr(plugin, "description") and plugin.description:
                 info["description"] = plugin.description
             if hasattr(plugin, "settings_builder") and plugin.settings_builder is not None:
@@ -1283,15 +1237,12 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             platforms.append(info)
         return platforms
 
-    # ---- 状态快照 ----
-
     def get_state(self) -> dict:
         with self._lifecycle_lock:
             spider = self.current_spider
         return {
             "current_save_dir": self.current_save_dir,
             "is_crawling": bool(spider and spider.isRunning()),
-            # 与 GUI 状态栏对齐：返回当前已加载的视频数量
             "video_count": self._video_count(),
         }
 
@@ -1350,15 +1301,11 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             return await self._run_api_operation("frontend_action", _delete)
         return await self._run_api_operation("frontend_action", self.handle_frontend_action, action, normalized_payload)
 
-    # ---- 媒体路径 ----
-
     def get_media_path(self, video_id: str) -> str | None:
         item = self._video_lookup(video_id)
         if item and item.local_path:
             return item.local_path
         return None
-
-    # ---- 辅助 ----
 
     @staticmethod
     def _video_item_to_dict(item: VideoItem) -> dict:

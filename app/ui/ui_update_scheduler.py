@@ -11,7 +11,7 @@ from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
 from app.services.frontend_event_aggregator import FrontendEventPriority, priority_for_topic
 
 class UiUpdateScheduler(QObject):
-    """收集脏 topic，并按固定节奏批量刷新 UI。"""
+    """收集脏 `topic`，并按固定节奏批量刷新 UI。"""
 
     _schedule_requested = pyqtSignal(bool)
 
@@ -41,7 +41,7 @@ class UiUpdateScheduler(QObject):
         self._schedule_requested.connect(self._drain_schedule, Qt.ConnectionType.QueuedConnection)
 
     def schedule(self, topic: str = "frontend", *, force: bool = False) -> None:
-        """记录一次刷新请求；关键 topic 会提升为立即刷新。"""
+        """记录一次刷新请求；关键 `topic` 会提升为立即刷新。"""
 
         priority = priority_for_topic(topic)
         force = force or priority == FrontendEventPriority.CRITICAL
@@ -104,7 +104,6 @@ class UiUpdateScheduler(QObject):
             }
 
     def _flush(self) -> None:
-        """取走当前 topic 批次并调用宿主刷新函数。"""
 
         with self._lock:
             if not self._dirty_topics:

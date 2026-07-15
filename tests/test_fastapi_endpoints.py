@@ -16,15 +16,17 @@ import os
 import sys
 import unittest
 import tempfile
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 def _create_test_client():
     """创建 FastAPI TestClient（fixture）。"""
     from fastapi.testclient import TestClient
     from app.web.server import create_app
     client = TestClient(create_app())
-    client.get("/api/ping")
+    client.get("/api/session/bootstrap")
     cookie_name = client.app.state.web_session_cookie_name
     session_id = client.cookies.get(cookie_name)
     client._ucrawl_context = client.app.state.web_session_registry.get_or_create(session_id)
@@ -54,6 +56,28 @@ class PingEndpointTests(unittest.TestCase):
         self.assertIn("version", data)
         self.assertEqual(data.get("status"), "ok")
         self.assertEqual(data["version"], __version__)
+
+    def test_ping_without_cookies_does_not_allocate_sessions(self):
+        from fastapi.testclient import TestClient
+        from app.web.server import create_app
+
+        with TestClient(create_app()) as client:
+            registry = client.app.state.web_session_registry
+            initial_session_ids = set(registry._contexts)
+            session_cookie_names = {
+                client.app.state.web_session_cookie_name,
+                client.app.state.web_session_token_cookie_name,
+                client.app.state.web_csrf_cookie_name,
+            }
+
+            for _ in range(10):
+                client.cookies.clear()
+                response = client.get("/api/ping")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(session_cookie_names.isdisjoint(response.cookies.keys()))
+
+            self.assertEqual(set(registry._contexts), initial_session_ids)
 
 class PlatformsEndpointTests(unittest.TestCase):
     """GET /api/platforms 平台列表。"""
@@ -583,6 +607,24 @@ class DebugEndpointTests(unittest.TestCase):
         r = self.client.get("/api/debug/error-summary")
         self.assertEqual(r.status_code, 200)
 
+class ConfiguredIndexHtmlTests(unittest.TestCase):
+    def test_configured_index_uses_persisted_theme_for_first_frame(self):
+        from app.web.server import _configured_index_html
+
+        with TemporaryDirectory() as temp_dir:
+            index_path = Path(temp_dir) / "index.html"
+            index_path.write_text('<html data-theme="light"><body></body></html>', encoding="utf-8")
+            config_manager = Mock()
+            config_manager.get.return_value = "dark"
+
+            html = _configured_index_html(index_path, config_manager)
+
+        config_manager.reload_if_changed.assert_called_once_with()
+        config_manager.get.assert_called_once_with("common", "theme", "light")
+        self.assertIn('data-theme="dark"', html)
+        self.assertNotIn('data-theme="light"', html)
+
+
 class IndexEndpointTests(unittest.TestCase):
     """GET / 静态首页。"""
 
@@ -664,10 +706,25 @@ class ServerModuleExportsTests(unittest.TestCase):
     def test_web_static_dirs_use_runtime_resource_resolver(self):
         """Web static mounts must use the same runtime resource root as PyInstaller."""
         from app.utils.runtime_paths import resolve_resource_file
-        from app.web.server import STATIC_DIR, UI_ICON_DIR
+        from app.web.server import STATIC_DIR, UI_ICON_DIR, WEB_FAVICON_PATH
 
         self.assertEqual(STATIC_DIR, resolve_resource_file("app/web/static"))
         self.assertEqual(UI_ICON_DIR, resolve_resource_file("UI/icon"))
+        self.assertEqual(
+            WEB_FAVICON_PATH,
+            resolve_resource_file("app/web/static/webui-icon.ico"),
+        )
+
+    def test_webui_favicon_endpoint_serves_web_icon(self):
+        from fastapi.testclient import TestClient
+        from app.web.server import WEB_FAVICON_PATH, create_app
+
+        with TestClient(create_app()) as client:
+            response = client.get("/webui-icon.ico")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("image/"))
+        self.assertEqual(response.content, WEB_FAVICON_PATH.read_bytes())
 
     def test_controller_global_exists(self):
         """controller 必须是模块级全局变量。"""

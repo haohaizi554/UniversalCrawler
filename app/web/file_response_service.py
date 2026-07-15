@@ -112,7 +112,7 @@ class WebFileResponseService:
 
     @staticmethod
     def _parse_byte_range(value: str, file_size: int) -> tuple[int, int] | None:
-        """Parse the single byte-range form supported by the media player."""
+        """解析媒体播放器支持的单段字节范围。"""
         match = re.fullmatch(r"bytes=(\d*)-(\d*)", str(value).strip())
         if match is None or file_size <= 0:
             return None

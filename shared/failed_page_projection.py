@@ -7,7 +7,7 @@ from shared.log_i18n import localize_log_text
 
 
 def prepare_failed_item_for_display(item: dict[str, Any], *, language: str) -> dict[str, Any]:
-    """Build failed-page display fields in the list worker, before Qt widgets render."""
+    """在 Qt 控件渲染前，由列表工作线程构造失败页展示字段。"""
 
     language = normalize_language(language)
     row = dict(item)

@@ -1,4 +1,4 @@
-"""GUI-specific platform option loading and runtime icon resolution."""
+"""加载 GUI 平台选项并解析运行时图标。"""
 
 from __future__ import annotations
 

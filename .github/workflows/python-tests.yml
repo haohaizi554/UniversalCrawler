@@ -188,8 +188,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($uiContractNodes.Count -eq 0) { throw "No unified frontend test nodes were collected" }
 
-          # Recreate QApplication/native resources before the hosted runner
-          # accumulates enough deferred Qt objects to abort the process.
+          # 分批重建 QApplication 与原生资源，避免托管 runner 累积过多延迟 Qt 对象后中止进程。
           $uiChunkSize = 12
           for ($offset = 0; $offset -lt $uiContractNodes.Count; $offset += $uiChunkSize) {
             $last = [Math]::Min($offset + $uiChunkSize - 1, $uiContractNodes.Count - 1)

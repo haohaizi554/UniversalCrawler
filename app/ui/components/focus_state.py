@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QWidget
 
 
 class FocusPropertyBinder(QObject):
-    """Mirror child focus state to a styleable dynamic property."""
+    """把子控件焦点镜像为动态属性，供 QSS 统一绘制组合控件焦点态。"""
 
     def __init__(self, source: QWidget, target: QWidget | None = None, property_name: str = "focused") -> None:
         super().__init__(source)

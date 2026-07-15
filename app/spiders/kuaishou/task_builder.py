@@ -14,6 +14,6 @@ class KuaishouTaskBuilder(BaseTaskBuilder):
             referer=referer,
             user_agent=user_agent,
             download_strategy="m3u8" if ".m3u8" in stream_url else "http",
-            content_type="video",  # 与 DouyinParser/BilibiliSpider 对齐：快手视频始终为 video
-            media_label="视频",  # 与 DouyinParser 对齐：GUI 日志使用
+            content_type="video",  # 统一视频类型，避免下载器按平台名称猜测资源类别。
+            media_label="视频",  # 前端状态与日志统一使用中文媒体标签。
         )

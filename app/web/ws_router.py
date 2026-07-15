@@ -14,7 +14,6 @@ def build_ws_router(
     ws_runtime,
     create_task_provider: Callable[[], object],
 ) -> APIRouter:
-    """构建 WebSocket 路由。"""
 
     router = APIRouter()
 

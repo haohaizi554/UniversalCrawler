@@ -26,7 +26,6 @@ def _build_pipe_strategy(*, preloaded_choices: list[list[int]] | None = None):
     return PipeSelection(preloaded_choices=preloaded_choices)
 
 def register_selection_strategy(name: str, builder: Callable[[], Any]) -> None:
-    """注册扩展选择策略构造器。"""
     if not isinstance(name, str) or not name.strip():
         raise ValueError("策略名称不能为空")
     if not callable(builder):
@@ -51,11 +50,11 @@ def _build_extension_strategy(name: str):
 def _parse_index_list(s: str, max_count: int) -> list[int]:
     """解析逗号分隔的索引字符串，支持范围 (如 "0,2-5" 或 "0,2:5")。
 
-    Args:
+    参数：
         s: 字符串如 "0,2,5" 或 "0,2-5" 或 "0,2:5"
         max_count: 最大有效索引 (越界会被丢弃)
 
-    Returns:
+    返回：
         去重且排序的合法索引列表
     """
     indices = set()
@@ -84,7 +83,7 @@ def _parse_index_list(s: str, max_count: int) -> list[int]:
     return sorted(indices)
 
 def _validate_index_rule(rule: str | None, *, name: str) -> None:
-    """Reject malformed explicit rules before a crawler can start."""
+    """在爬虫启动前拒绝格式错误的显式规则。"""
     if rule is None:
         return
     if not isinstance(rule, str):
@@ -100,7 +99,7 @@ def _validate_index_rule(rule: str | None, *, name: str) -> None:
         raise ValueError(f"{name} 规则包含无效索引: {token}")
 
 def normalize_preloaded_choices(choices: object) -> list[list[int]]:
-    """Validate the SDK/pipe two-dimensional selection payload."""
+    """校验 SDK/管道使用的二维选择 payload。"""
     if not isinstance(choices, list):
         raise TypeError("preload 的 choices 必须是二维数组")
     normalized: list[list[int]] = []
@@ -122,7 +121,7 @@ def normalize_preloaded_choices(choices: object) -> list[list[int]]:
     return normalized
 
 def parse_preloaded_choices(rule: str) -> list[list[int]]:
-    """Parse the CLI ``0|1,2||3`` syntax without swallowing typos."""
+    """解析 CLI 的 ``0|1,2||3`` 语法，并拒绝拼写错误。"""
     if not isinstance(rule, str) or not rule.strip():
         raise ValueError("--preload-choices 不能为空")
     rounds: list[list[int]] = []
@@ -141,11 +140,9 @@ def parse_preloaded_choices(rule: str) -> list[list[int]]:
     return rounds
 
 def build_selection_prompt(selection_round: int, item_count: int) -> str:
-    """构建统一的二次选择提示文案。"""
     return f"二次选择 #{selection_round}: {item_count} 个候选"
 
 def format_selection_result(indices: list[int], preview_limit: int = 10) -> str:
-    """格式化统一的二次选择结果摘要。"""
     preview = indices[:preview_limit]
     suffix = "..." if len(indices) > preview_limit else ""
     return f"  → 选中 {len(indices)} 项: {preview}{suffix}"
@@ -208,7 +205,7 @@ class RuleSelection(SelectionStrategy):
     规则按优先级应用：exclude > all/first/last > select。
     当 select=None 且没有其他规则时，默认全选。
 
-    Attributes:
+    属性：
         select: 指定选中的索引（逗号分隔，支持范围）
         exclude: 指定排除的索引（逗号分隔，支持范围）
         all_items: 是否全选
@@ -226,7 +223,7 @@ class RuleSelection(SelectionStrategy):
     ):
         _validate_index_rule(select, name="select")
         _validate_index_rule(exclude, name="exclude")
-        # 关键：不能用 self.select 命名属性，会覆盖下面的 select() 方法
+        # 属性名不能使用 `select`，否则会遮蔽同名选择方法。
         self._select_rule = select
         self.exclude = exclude
         self.all = all_items
@@ -238,7 +235,6 @@ class RuleSelection(SelectionStrategy):
         return "rule"
 
     def select(self, items: list, prompt: str = "") -> list[int] | None:
-        """根据规则选择。"""
         n = len(items)
         if n == 0:
             return []
@@ -410,7 +406,7 @@ class AutoSelection:
     2. stdin 非 TTY (管道) → PipeSelection
     3. 否则 → RuleSelection (all)
 
-    Attributes:
+    属性：
         rule_kwargs: 传给 RuleSelection 的默认参数
     """
 
@@ -425,7 +421,6 @@ class AutoSelection:
         return self._strategy.strategy_name
 
     def _detect(self) -> SelectionStrategy:
-        """检测环境并选择策略。"""
         try:
             if sys.stdin.isatty():
                 return _build_interactive_strategy()

@@ -965,6 +965,33 @@ class ContainerizationAssetTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("uvicorn") for line in requirement_lines))
         self.assertTrue(any(line.startswith("websockets") for line in requirement_lines))
 
+    def test_web_app_factory_starts_when_pyqt6_is_not_installed(self):
+        script = r'''
+import importlib.abc
+import sys
+
+class BlockPyQt6(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "PyQt6" or fullname.startswith("PyQt6."):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+sys.meta_path.insert(0, BlockPyQt6())
+from app.web.server import create_app
+application = create_app()
+assert any(getattr(route, "path", "") == "/healthz" for route in application.routes)
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_runtime_dependency_manifests_enforce_security_floors(self):
         manifests = {
             path.name: path.read_text(encoding="utf-8").lower()
@@ -1114,7 +1141,12 @@ class PyprojectEntryPointsTests(unittest.TestCase):
         package_data = data["tool"]["setuptools"]["package-data"]
         self.assertIn("UI*", package_find["include"])
         self.assertIn("icon/*.png", package_data["UI"])
+        self.assertIn("web/static/*", package_data["app"])
         self.assertTrue((PROJECT_ROOT / "UI" / "__init__.py").is_file())
+        packaged_icon = PROJECT_ROOT / "app" / "web" / "static" / "webui-icon.ico"
+        root_icon = PROJECT_ROOT / "Web.ico"
+        self.assertTrue(packaged_icon.is_file())
+        self.assertEqual(packaged_icon.read_bytes(), root_icon.read_bytes())
 
 class NoStaleBuildArtifactsTests(unittest.TestCase):
     """避免 build 残留文件。"""

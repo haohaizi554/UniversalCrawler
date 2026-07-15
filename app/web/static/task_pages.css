@@ -1,4 +1,4 @@
-/* Shared table interaction: selected wins; hover only paints unselected rows. */
+/* 表格统一交互：.selected 优先，:hover 只作用于未选中的行。 */
 tbody tr:hover:not(.selected) td {
   background: var(--row-hover);
 }

@@ -222,6 +222,61 @@ class M3u8DownloaderLifecycleTests(unittest.TestCase):
             self.assertFalse(os.path.exists(temp_dir))
             self.assertFalse(os.path.exists(save_path))
 
+    def test_playwright_fallback_installs_public_context_guard_before_requests(self):
+        fake_m3u8 = self._fake_m3u8_module()
+        fake_playwright, fake_sync_api = self._fake_playwright_modules()
+        policy = MagicMock()
+        guard_state = {"installed": False}
+
+        def mark_guard_installed(*_args, **_kwargs):
+            guard_state["installed"] = True
+
+        def fetch_after_guard(*_args, **_kwargs):
+            self.assertTrue(guard_state["installed"])
+            return b"#EXTM3U\n"
+
+        with tempfile.TemporaryDirectory() as save_dir:
+            save_path = os.path.join(save_dir, "clip.mp4")
+            video = VideoItem(
+                url="https://example.com/stream.m3u8",
+                title="clip",
+                source="missav",
+                meta={"_network_policy": "public"},
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"m3u8": fake_m3u8, "playwright": fake_playwright, "playwright.sync_api": fake_sync_api},
+            ), patch.object(
+                N_m3u8DL_RE_Downloader,
+                "_domain_policy_for_item",
+                return_value=policy,
+            ), patch(
+                "shared.playwright_network_guard.install_public_network_guard",
+                side_effect=mark_guard_installed,
+            ) as install_guard, patch.object(
+                N_m3u8DL_RE_Downloader,
+                "_playwright_fetch_or_goto_bytes",
+                side_effect=fetch_after_guard,
+            ), patch.object(
+                N_m3u8DL_RE_Downloader,
+                "_write_hls_segments",
+                side_effect=ExternalToolError("stop after context setup"),
+            ):
+                downloader = N_m3u8DL_RE_Downloader()
+                with self.assertRaises(ExternalToolError):
+                    downloader._download_with_playwright_hls(
+                        video,
+                        save_path,
+                        {"User-Agent": "test"},
+                        None,
+                        lambda *_args, **_kwargs: None,
+                        lambda: False,
+                    )
+
+            install_guard.assert_called_once()
+            self.assertIs(install_guard.call_args.args[1], policy)
+
     def test_sweep_orphaned_workspaces_removes_stale_dirs(self):
         """启动清扫同时覆盖新版统一工作目录和旧版 fallback 目录。"""
         with tempfile.TemporaryDirectory() as save_dir:

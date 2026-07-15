@@ -1,4 +1,4 @@
-"""Start-task control with fixed geometry and a running-state marquee."""
+"""提供固定 geometry 与运行态跑马边框的任务启动控件。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QPushButton, QSizePolicy, QStyleOptionButton
 from app.ui.styles.themes import theme_colors
 
 class StartTaskButton(QPushButton):
-    """Primary crawl trigger; keeps size stable and shows a border marquee while running."""
+    """主采集触发按钮；运行期间保持尺寸稳定并显示边框跑马效果。"""
 
     _BUTTON_HEIGHT = 40
     _H_PADDING = 14

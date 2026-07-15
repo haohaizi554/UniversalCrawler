@@ -194,13 +194,11 @@ class WebDirectoryService:
 
     async def pick_native_folder(self, request: Request) -> dict:
         if not self._native_folder_picker_enabled:
-            # Remote deployments can sit behind a loopback reverse proxy, so
-            # client.host alone is not a sufficient trust signal in this mode.
+            # 远程部署可能位于回环反向代理之后，因此此模式不能只凭 client.host 判定可信。
             return error_result("native folder picker is disabled for remote deployments", http_status=403)
         client = getattr(request, "client", None)
         if not is_local_host(getattr(client, "host", None)):
-            # This endpoint controls a modal dialog on the server desktop. A LAN
-            # browser must never be able to display or spam native server UI.
+            # 此端点会操控服务器桌面的原生模态框，局域网浏览器不能触发或反复弹出它。
             return error_result("native folder picker is available only on this device", http_status=403)
         loop = asyncio.get_running_loop()
         try:

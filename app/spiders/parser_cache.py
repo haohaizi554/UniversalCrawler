@@ -1,4 +1,8 @@
-"""Internal persistent cache helpers for pure spider/parser projections."""
+"""为无副作用的 Spider 解析结果提供内部持久缓存。
+
+缓存键包含载荷哈希；载荷变化后旧哈希键不会被主动删除。持久化 TTL 仅在命中对应
+键时惰性处理，不构成全局保留上限，因此旧键可能在 SQLite 中累积。
+"""
 
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ def cached_parser_result(
     *,
     ttl_seconds: float = 24 * 60 * 60,
 ) -> T:
-    """Return a cached pure parser result, falling back to ``producer`` on any cache issue."""
+    """返回缓存的纯解析结果；缓存异常时回退到 ``producer``。"""
     key = _cache_key(namespace, payload)
     cache = _parser_cache_service()
     try:

@@ -1,4 +1,4 @@
-"""打包辅助脚本，负责 `packaging/build_portable.py` 相关的构建、发布或运行时处理。"""
+"""构建双入口 PyInstaller 便携版，并校验冻结目录的运行时完整性。"""
 
 from __future__ import annotations
 
@@ -85,9 +85,9 @@ LOCKING_PROCESSES = [
 def kill_locking_processes() -> None:
     """尝试终止可能占用 dist 目录的旧进程。
 
-    修复: 之前 build 时若 CrawlerWebPortal.exe 还在运行，会锁住
+    CrawlerWebPortal.exe 仍在运行时会锁住
     dist/UniversalCrawlerPro/_internal/charset_normalizer/md.cp313-win_amd64.pyd
-    等 .pyd 文件，导致 PyInstaller 清理失败。
+    等 .pyd 文件，因此必须在 PyInstaller 清理前释放占用。
     """
     for proc_name in LOCKING_PROCESSES:
         try:
@@ -195,7 +195,7 @@ def verify_output() -> None:
     if not chrome_candidates:
         raise SystemExit("未在输出目录中找到 Chromium 内核，绿色版无法做到即开即用。")
 
-    # 关键：验证自适应入口子包被正确打包
+    # 冻结程序仍会动态导入入口、CLI 和共享协议，因此构建后必须逐项校验这些子包。
     internal = DIST_DIR / "_internal"
     # entry 子包需要 entry/__init__.py 和 entry/dispatcher.py
     entry_pkg = internal / "entry"
@@ -274,7 +274,6 @@ def write_manifest() -> None:
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def main() -> None:
-    """作为脚本入口组织整体执行流程。"""
     ensure_prerequisites()
     clean_previous_outputs()
     run_pyinstaller()

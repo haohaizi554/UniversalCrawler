@@ -35,7 +35,7 @@ class MediaRenameOutcome:
     error: str | None = None
 
 class MediaLibraryMixin:
-    """Shared media-library orchestration for GUI and Web hosts."""
+    """GUI/Web host 共用的媒体库编排；文件 IO 结果通过统一 Outcome 返回。"""
 
     def _resolve_scan_limit(self, scan_limit: int | None = None) -> int:
         return scan_limit if scan_limit is not None else cfg.get("download", "local_scan_limit", 1000)
@@ -73,10 +73,17 @@ class MediaLibraryMixin:
         return items
 
     def _begin_delete_video(self, video_id: str) -> MediaDeleteContext | None:
+        """删除文件前取消并等待下载任务停写，避免 worker 在删除后继续写回同一路径。"""
         video = self._video_lookup(video_id)
         if not video:
             return None
-        cancel_result = self.dl_manager.cancel_task(video_id)
+        cancel_and_wait = getattr(type(self.dl_manager), "cancel_task_and_wait", None)
+        if callable(cancel_and_wait):
+            cancel_result = self.dl_manager.cancel_task_and_wait(video_id)
+        else:
+            cancel_result = self.dl_manager.cancel_task(video_id)
+        if cancel_result == "timeout":
+            raise FileOperationError("Download task did not stop before the deletion timeout")
         return MediaDeleteContext(video_id=video_id, video=video, cancel_result=cancel_result)
 
     def _complete_delete_video(self, context: MediaDeleteContext, *, deleted: bool) -> MediaDeleteOutcome:
@@ -90,7 +97,16 @@ class MediaLibraryMixin:
         )
 
     def _delete_video_sync(self, video_id: str) -> MediaDeleteOutcome:
-        context = self._begin_delete_video(video_id)
+        try:
+            context = self._begin_delete_video(video_id)
+        except FileOperationError as exc:
+            return MediaDeleteOutcome(
+                status="error",
+                video_id=video_id,
+                video=self._video_lookup(video_id),
+                cancel_result="timeout",
+                error=str(exc),
+            )
         if context is None:
             return MediaDeleteOutcome(status="missing", video_id=video_id)
         try:

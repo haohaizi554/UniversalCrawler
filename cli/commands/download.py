@@ -1,4 +1,4 @@
-"""CLI host wiring for the shared direct-download command runtime."""
+"""装配 CLI 宿主与共享直链下载运行时。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ __all__ = ["_print_pretty", "add_download_arguments", "handle_download_command"]
 
 
 def _runtime_env() -> runtime.DownloadCommandEnv:
-    """Bind host dependencies without duplicating shared command behavior."""
+    """显式装配宿主依赖，避免命令层复制共享行为。"""
     return runtime.DownloadCommandEnv(
         UcrawlSDK_cls=UcrawlSDK,
         get_default_save_dir=get_default_save_dir,
@@ -38,12 +38,10 @@ def _build_config(
     *,
     source: str,
 ) -> tuple[dict | None, str | None]:
-    """Build platform configuration through the shared runtime."""
     return runtime.build_config(args, source=source, env=_runtime_env())
 
 
 def handle_download_command(args: argparse.Namespace) -> int:
-    """Execute the shared download workflow with CLI host dependencies."""
     exit_code, result, error_message = runtime.run_download_command(
         args,
         env=_runtime_env(),

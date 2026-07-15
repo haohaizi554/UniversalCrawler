@@ -1,4 +1,4 @@
-"""Pure path policy shared by dispatch and download workers."""
+"""分发器与下载线程共用的纯路径策略。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from app.utils import sanitize_filename
 
 
 def resolve_task_save_directory(video: VideoItem, save_directory: str) -> str:
-    """Resolve the exact task directory without touching the filesystem."""
+    """只计算任务目标目录，不在此阶段创建或修改文件系统。"""
     meta = video.meta if isinstance(getattr(video, "meta", None), dict) else {}
     content_type = str(meta.get("content_type") or "")
     raw_folder_name = str(meta.get("folder_name") or "").strip()

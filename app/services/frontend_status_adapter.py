@@ -1,4 +1,4 @@
-"""Pure status-bar snapshot helpers shared by GUI and WebUI."""
+"""GUI/WebUI 共用的纯状态栏投影，不读取或修改运行时对象。"""
 
 from __future__ import annotations
 

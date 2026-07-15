@@ -1,4 +1,4 @@
-"""包初始化模块，为 `app/spiders/kuaishou` 提供统一导出或包级说明。"""
+"""快手平台爬取实现。"""
 
 from .parser import KuaishouParser
 from .spider import KuaishouSpider

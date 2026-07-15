@@ -161,6 +161,7 @@
 
   function installDirDialogHandlers() {
     addOwnedListener(byId("dirInput"), "keydown", handleDirInputKeydown);
+    // 目录列表会整体重绘，事件委托绑定在稳定容器上，避免每次渲染都重绑子项监听器。
     for (const id of ["dirList", "dirDrivesList"]) {
       const list = byId(id);
       addOwnedListener(list, "click", handleDirListClick);
@@ -499,6 +500,11 @@
     const selectionHeadCells = document.querySelectorAll(".selection-table thead th");
     if (selectionHeadCells[0]) selectionHeadCells[0].textContent = t("选择");
     if (selectionHeadCells[1]) selectionHeadCells[1].textContent = t("视频标题 / 描述");
+    const selectionCloseBtn = byId("selectionCloseBtn");
+    if (selectionCloseBtn) {
+      selectionCloseBtn.title = t("关闭");
+      selectionCloseBtn.setAttribute("aria-label", t("关闭"));
+    }
     byId("selectionAllBtn").textContent = t("全选");
     byId("selectionInvertBtn").textContent = t("反选");
     byId("selectionCancelBtn").textContent = t("取消任务");

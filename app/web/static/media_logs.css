@@ -174,7 +174,7 @@
 .filters > * { min-width: 108px; }
 .filters input { flex: 1 1 128px; }
 
-/* Keep fixed log columns compact so the message summary remains visible at 1270px. */
+/* 压缩日志固定列，确保在 1270px 宽度下仍能看到消息摘要。 */
 #page-logs th:nth-child(1), #page-logs td:nth-child(1) { width: max(144px, 17ch); }
 #page-logs th:nth-child(2), #page-logs td:nth-child(2) { width: 82px; }
 #page-logs th:nth-child(3), #page-logs td:nth-child(3) { width: 144px; }

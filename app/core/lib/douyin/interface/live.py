@@ -1,15 +1,12 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/live.py` 对应的接口、加密、提取或工具逻辑。"""
+"""通过 web_rid 或 room_id 获取抖音直播间数据。"""
 
-# app/core/lib/douyin/interface/live.py
 from typing import TYPE_CHECKING, Union
 from .template import API, CHROME_VERSION
 
 try:
     from ..tools import DownloaderError
 except ImportError:
-    """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
     class DownloaderError(Exception):
-        """Fallback error type used when the real downloader exception cannot be imported."""
 
         pass
 
@@ -19,6 +16,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Live(API):
+    """根据入口标识选择直播页接口或分享回流接口。"""
     
     live_api = "https://live.douyin.com/webcast/room/web/enter/"
     live_api_share = "https://webcast.amemv.com/webcast/room/reflow/info/"
@@ -32,7 +30,6 @@ class Live(API):
         room_id: str = ...,
         sec_user_id: str = "",
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Live` 使用。"""
         super().__init__(params, cookie, proxy)
         self.black_headers = params.headers_download
         self.web_rid = web_rid
@@ -44,7 +41,7 @@ class Live(API):
         *args,
         **kwargs,
     ) -> dict:
-        """执行当前对象或脚本的主流程，供 `Live` 使用。"""
+        """优先按 web_rid 请求；缺失时退回 room_id，否则抛出 DownloaderError。"""
         if isinstance(self.web_rid, str):
             return await self.with_web_rid()
         elif self.room_id:
@@ -71,7 +68,6 @@ class Live(API):
             "browser_name": "Edge",
             "browser_version": CHROME_VERSION,
             "web_rid": self.web_rid,
-            # "room_id_str": "",
             "enter_source": "",
             "is_need_double_stream": "false",
             "insert_task_id": "",

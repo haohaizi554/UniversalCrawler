@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/account_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+"""分页获取 TikTok 账号发布或喜欢的作品。"""
 
-# app/core/lib/douyin/interface/account_tiktok.py
 from typing import TYPE_CHECKING, Callable, Coroutine, Type, Union
 from .account import Account
 from .template import APITikTok
@@ -14,6 +13,7 @@ class AccountTikTok(
     Account,
     APITikTok,
 ):
+    """使用 TikTok 字段与分页规则抓取账号作品。"""
     
     post_api = f"{APITikTok.domain}api/post/item_list/"
     favorite_api = f"{APITikTok.domain}api/favorite/item_list/"
@@ -33,7 +33,6 @@ class AccountTikTok(
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `AccountTikTok` 使用。"""
         super().__init__(
             params,
             cookie,
@@ -64,7 +63,7 @@ class AccountTikTok(
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `AccountTikTok` 使用。"""
+        """按 TikTok 响应字段执行单页或分页抓取。"""
         self.set_referer(referer)
         match single_page:
             case True:

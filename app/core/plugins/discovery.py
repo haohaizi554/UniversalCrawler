@@ -1,4 +1,4 @@
-"""Plugin auto-discovery via __init_subclass__ SPI, entry_points, and external directory scanning."""
+"""从 SPI、Python 入口点及外部目录发现插件。"""
 
 from __future__ import annotations
 
@@ -11,33 +11,24 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .base import BasePlugin
 
-# ---------------------------------------------------------------------------
-# Builtin plugins (SPI — __init_subclass__)
-# ---------------------------------------------------------------------------
+# 内置 SPI 插件
 
 def discover_builtin_plugins() -> list[type[BasePlugin]]:
-    """Discover builtin plugin classes via SPI.
-
-    Imports ``app.core.plugins.definitions`` which triggers
-    ``BasePlugin.__init_subclass__``, auto-registering every concrete
-    ``BasePlugin`` subclass.  Returns sorted classes.
-    """
+    """导入内置定义以触发 SPI 自动注册，并返回排好序的插件类。"""
     from .base import BasePlugin
 
-    # Trigger SPI auto-registration
+    # 单纯导入定义模块即可触发 ``BasePlugin.__init_subclass__``。
     from . import definitions  # noqa: F401
 
     classes = list(BasePlugin.get_subclasses().values())
     return _sort_classes(classes)
 
-# ---------------------------------------------------------------------------
-# Entry-point plugins (pip-installed packages)
-# ---------------------------------------------------------------------------
+# 通过 pip 安装并声明入口点的插件
 
 DISCOVERY_ENTRY_POINT_GROUP = "ucrawl.plugins"
 
 def discover_entry_point_plugins() -> list[type[BasePlugin]]:
-    """Discover plugins registered via ``ucrawl.plugins`` entry points."""
+    """发现注册在 ``ucrawl.plugins`` 入口点组中的插件。"""
     from .base import BasePlugin
 
     classes: list[type[BasePlugin]] = []
@@ -61,23 +52,18 @@ def discover_entry_point_plugins() -> list[type[BasePlugin]]:
 
     return _sort_classes(classes)
 
-# ---------------------------------------------------------------------------
-# External-directory plugins
-# ---------------------------------------------------------------------------
+# 用户外部目录插件
 
 _EXTERNAL_PLUGIN_DIR: str | None = None
-_EXTERNAL_MTIME: dict[str, float] = {}  # path → last mtime
+_EXTERNAL_MTIME: dict[str, float] = {}  # 文件路径到最近修改时间的缓存
 
 def set_external_plugin_dir(path: str | None) -> None:
-    """Set the external plugin directory.
-
-    Pass ``None`` to disable external plugin discovery.
-    """
+    """设置外部插件目录；传入 ``None`` 时关闭该发现来源。"""
     global _EXTERNAL_PLUGIN_DIR
     _EXTERNAL_PLUGIN_DIR = path
 
 def get_external_plugin_dir() -> str | None:
-    """Return the configured external plugin directory, or ``None``."""
+    """返回已配置的外部插件目录，未启用时返回 ``None``。"""
     return _EXTERNAL_PLUGIN_DIR
 
 def discover_external_plugins(
@@ -85,14 +71,11 @@ def discover_external_plugins(
     *,
     force: bool = False,
 ) -> list[type[BasePlugin]]:
-    """Discover plugin classes from a directory of ``.py`` files.
+    """从目录中的 ``.py`` 文件发现插件类。
 
-    Each ``.py`` file in *plugin_dir* is imported via
-    ``importlib.import_module`` (using a temporary sys.path entry).  Any
-    concrete ``BasePlugin`` subclass defined **in that file** is collected.
-
-    File modification times are cached so that repeated calls only re-import
-    changed files (hot-reload).  Pass ``force=True`` to re-import everything.
+    导入时临时把目录加入 ``sys.path``，且只收集当前文件实际定义的
+    ``BasePlugin`` 具体子类。文件修改时间会被缓存，常规调用仅重新导入发生
+    变化的文件；``force=True`` 可强制全部重载。
     """
     from .base import BasePlugin
 
@@ -119,10 +102,10 @@ def discover_external_plugins(
 
         mod_name = f"ucrawl_ext_plugin_{fname[:-3]}"
 
-        # Skip if unchanged
+        # 未变更文件沿用已加载模块，避免热重载反复执行模块级副作用。
         if not force and old_mtimes.get(fpath) == mtime and mod_name in sys.modules:
             _EXTERNAL_MTIME[fpath] = mtime
-            # Still collect already-loaded classes from this module
+            # 即使不重新导入，也要从已加载模块重新收集插件类。
             module = sys.modules[mod_name]
             for _name, obj in inspect.getmembers(module, inspect.isclass):
                 if (
@@ -133,7 +116,7 @@ def discover_external_plugins(
                     classes.append(obj)
             continue
 
-        # (Re-)import
+        # 删除旧模块后重新导入，确保文件修改能够生效。
         if mod_name in sys.modules:
             del sys.modules[mod_name]
 
@@ -157,18 +140,12 @@ def discover_external_plugins(
 
     return _sort_classes(classes)
 
-# ---------------------------------------------------------------------------
-# Aggregate discovery
-# ---------------------------------------------------------------------------
+# 汇总所有发现来源
 
 def iter_plugin_classes() -> list[type[BasePlugin]]:
-    """Discover plugin classes from all sources.
+    """汇总内置 SPI、Python 入口点与外部目录插件。
 
-    1. Builtin SPI (``app.core.plugins.definitions``)
-    2. Entry points (``ucrawl.plugins``)
-    3. External directory (if configured)
-
-    Returns classes sorted by ``(sort_order, name, class_name)``.
+    结果按 ``(sort_order, name, class_name)`` 稳定排序。
     """
     seen: set[str] = set()
     all_classes: list[type[BasePlugin]] = []
@@ -187,17 +164,15 @@ def iter_plugin_classes() -> list[type[BasePlugin]]:
     return _sort_classes(all_classes)
 
 def discover_builtin_plugin_instances() -> list:
-    """Instantiate all discovered plugin classes."""
+    """实例化全部已发现的插件类。"""
     return [cls() for cls in iter_plugin_classes()]
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# 内部排序规则
 
 def _sort_classes(
     classes: list[type["BasePlugin"]],
 ) -> list[type["BasePlugin"]]:
-    """Sort plugin classes by sort_order, then name, then class name."""
+    """依次按排序值、显示名称和类名排列插件类。"""
     return sorted(
         classes,
         key=lambda cls: (

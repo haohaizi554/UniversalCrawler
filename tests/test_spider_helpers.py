@@ -28,6 +28,7 @@ from app.spiders import parser_cache
 from app.utils.bilibili_wbi import BILIBILI_WBI_SIGNER, make_mixin_key, sign_wbi_params
 from app.core.lib.douyin.encrypt.aBogus import ABogus
 from app.spiders.douyin.parser import DouyinItemParser
+from app.spiders.douyin import spider as douyin_spider_module
 from app.spiders.douyin.spider import DouyinSpider
 from app.spiders.douyin.task_builder import DouyinTaskBuilder
 from app.spiders.kuaishou.spider import KuaishouSpider
@@ -38,7 +39,7 @@ from app.spiders.missav.task_builder import MissAVTaskBuilder
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.xiaohongshu.spider import XiaohongshuSpider
 from app.spiders.base import BaseSpider
-from shared.runtime_options import DomainPolicyEngine
+from shared.runtime_options import DomainPolicyEngine, DomainPolicyViolation
 
 class SpiderHelperTests(unittest.TestCase):
 
@@ -646,6 +647,12 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(spider._normalize_keyword("ipx-001"), "ipx-001")
 
+    def test_missav_rejects_non_platform_page_url_before_browser_navigation(self):
+        spider = MissAVSpider.__new__(MissAVSpider)
+
+        with self.assertRaises(DomainPolicyViolation):
+            spider._require_missav_page_url("https://attacker.example/redirect")
+
     def test_kuaishou_task_builder_builds_standard_download_meta(self):
         """验证 `test_kuaishou_task_builder_builds_standard_download_meta` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         builder = KuaishouTaskBuilder()
@@ -1021,6 +1028,55 @@ class SpiderHelperTests(unittest.TestCase):
         mocked_log.assert_called_once()
         self.assertEqual(mocked_log.call_args.kwargs["level"], "ERROR")
         self.assertEqual(mocked_log.call_args.kwargs["trace_id"], "trace-1")
+
+    def test_douyin_login_process_installs_public_context_guard_before_navigation(self):
+        context = Mock()
+        page = Mock()
+        context.new_page.return_value = page
+        browser = Mock()
+        browser.new_context.return_value = context
+        playwright = Mock()
+        playwright.chromium.launch.return_value = browser
+        playwright_manager = Mock()
+        playwright_manager.__enter__ = Mock(return_value=playwright)
+        playwright_manager.__exit__ = Mock(return_value=False)
+        anti_context = Mock()
+        anti_context.browser_launch_kwargs.return_value = {}
+        anti_context.browser_context_kwargs.return_value = {"user_agent": "ua-demo"}
+        auth_service = Mock()
+        auth_service.has_cookie.return_value = True
+        result_queue = Mock()
+        guard_state = {"installed": False}
+
+        def mark_guard_installed(*_args, **_kwargs):
+            guard_state["installed"] = True
+
+        def assert_guard_precedes_navigation(*_args, **_kwargs):
+            self.assertTrue(guard_state["installed"])
+
+        page.goto.side_effect = assert_guard_precedes_navigation
+
+        with patch("playwright.sync_api.sync_playwright", return_value=playwright_manager), patch.object(
+            douyin_spider_module,
+            "build_browser_anti_detection",
+            return_value=anti_context,
+        ), patch.object(
+            douyin_spider_module,
+            "AuthService",
+            return_value=auth_service,
+        ), patch(
+            "shared.playwright_network_guard.install_public_network_guard",
+            side_effect=mark_guard_installed,
+        ) as install_guard:
+            douyin_spider_module._run_login_process(
+                "douyin-auth.json",
+                "ua-demo",
+                result_queue,
+            )
+
+        self.assertEqual(browser.new_context.call_args.kwargs["service_workers"], "block")
+        install_guard.assert_called_once_with(context, douyin_spider_module.PUBLIC_DOMAIN_POLICY)
+        page.goto.assert_called_once()
 
     @patch("app.spiders.bilibili.spider.time.sleep", return_value=None)
     def test_bilibili_process_download_task_continues_after_parse_error(self, _mock_sleep):
@@ -2057,9 +2113,23 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(name, "Demo UP")
 
     def test_bilibili_extract_video_hrefs_does_not_scan_full_html_as_plain_text(self):
+        import ast
         import inspect
+        from pathlib import Path
 
-        source = inspect.getsource(BilibiliSpider._extract_video_hrefs)
+        source_path = inspect.getsourcefile(BilibiliSpider)
+        self.assertIsNotNone(source_path)
+        module_source = Path(source_path).read_text(encoding="utf-8")
+        module_tree = ast.parse(module_source)
+        class_node = next(
+            node for node in module_tree.body if isinstance(node, ast.ClassDef) and node.name == "BilibiliSpider"
+        )
+        method_node = next(
+            node
+            for node in class_node.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_extract_video_hrefs"
+        )
+        source = ast.get_source_segment(module_source, method_node) or ""
 
         self.assertNotIn("addBvid(document.documentElement.innerHTML)", source)
         self.assertNotIn("if (typeof value === 'string') {\n                    addBvid(value);", source)
@@ -2501,6 +2571,15 @@ class SpiderHelperTests(unittest.TestCase):
             is_search=True,
             is_space=False,
         )
+
+    def test_bilibili_classify_rejects_lookalike_platform_hostname(self):
+        spider = BilibiliSpider.__new__(BilibiliSpider)
+
+        route = spider._classify_input("https://bilibili.com.attacker.example/collection")
+
+        self.assertEqual(route.kind, "keyword")
+        self.assertTrue(route.value.startswith("https://search.bilibili.com/all?keyword="))
+        self.assertEqual(route.scan_kwargs, {"is_search": True, "is_space": False})
 
     def test_bilibili_producer_routes_av_url_to_aid_queue(self):
         spider = BilibiliSpider.__new__(BilibiliSpider)

@@ -1,4 +1,4 @@
-"""服务模块，负责 `app/services/file_service.py` 对应的业务支撑能力。"""
+"""本地媒体库的扫描、重命名与受约束删除逻辑。"""
 
 import heapq
 import os
@@ -17,7 +17,6 @@ from app.utils import sanitize_filename
 
 T = TypeVar("T")
 
-# 本地媒体文件管理服务
 @dataclass
 class ScanResult:
     """媒体库扫描结果；truncated/original_count 用于前端提示大目录被截断。"""
@@ -32,7 +31,7 @@ class ScanResult:
 
 @dataclass(frozen=True)
 class OrphanDirectorySweepResult:
-    """Result of scanning exactly one directory during bounded recovery."""
+    """受限恢复中单层目录的扫描结果；子目录交给持久化前沿继续遍历。"""
 
     removed_count: int
     children: tuple[tuple[Path, int], ...]
@@ -41,7 +40,7 @@ class OrphanDirectorySweepResult:
     error: str = ""
 
 class MediaLibraryService:
-    """本地媒体库服务，负责扫描、重命名、删除。"""
+    """扫描和重命名媒体，并以任务归属及临时名白名单约束联动删除。"""
 
     # 下载器会把临时文件显式记录到 meta；删除媒体时优先相信这些“本任务拥有”的路径。
     TEMP_FILE_META_KEYS = ("download_temp_files", "temporary_files")
@@ -74,7 +73,6 @@ class MediaLibraryService:
     )
 
     def __init__(self, video_extensions: tuple[str, ...], image_extensions: tuple[str, ...]):
-        """初始化当前实例并准备运行所需的状态，供 `MediaLibraryService` 使用。"""
         self.video_extensions = tuple(ext.lower() for ext in video_extensions)
         self.image_extensions = tuple(ext.lower() for ext in image_extensions)
         self.all_media_extensions = self.video_extensions + self.image_extensions
@@ -87,7 +85,7 @@ class MediaLibraryService:
         required: bool,
         missing_ok: bool = False,
     ) -> T | None:
-        """Run one file mutation with the project's bounded Windows lock retry policy."""
+        """按项目统一策略短暂重试 Windows 文件占用；必需操作最终失败时抛领域异常。"""
         last_error: OSError | None = None
         for attempt in range(3):
             try:
@@ -370,7 +368,7 @@ class MediaLibraryService:
         max_depth: int = 2,
         entry_limit: int | None = None,
     ) -> OrphanDirectorySweepResult:
-        """Scan one directory only and return children for durable traversal."""
+        """只扫描当前一层并返回子目录，使调用方可以持久化遍历进度。"""
         normalized_depth = max(0, min(int(depth or 0), 2))
         depth_limit = max(0, min(int(max_depth or 0), 2))
         limit = max(1, int(entry_limit or cls.ORPHAN_SWEEP_MAX_ENTRIES))
@@ -432,7 +430,7 @@ class MediaLibraryService:
         *,
         max_depth: int = 2,
     ) -> int:
-        """Bounded startup sweep for known temp names without walking arbitrary trees."""
+        """启动时仅清理已知临时名，并用深度、条目数和时间预算限制目录遍历。"""
         removed = 0
         depth_limit = max(0, min(int(max_depth or 0), 2))
         scanned_directories = 0
@@ -521,7 +519,7 @@ class MediaLibraryService:
         file_path: str,
         temp_paths: list[str],
     ) -> bool:
-        """Remove an empty collection/gallery folder without walking upward."""
+        """仅删除任务声明拥有且已经为空的合集/图集目录，不向父目录递归。"""
         meta = video.meta if isinstance(getattr(video, "meta", None), dict) else {}
         raw_folder_name = str(meta.get("folder_name") or "").strip()
         owns_subdirectory = bool(
@@ -543,9 +541,8 @@ class MediaLibraryService:
             candidates.add(Path(os.path.abspath(os.path.expanduser(raw_save_directory))))
         for raw_path in (file_path, *temp_paths):
             if raw_path:
-                # abspath normalizes `..` without dereferencing symlinks. Using
-                # Path.resolve here would turn a guarded link into its target
-                # before the is_symlink check below.
+                # abspath 会规整 `..` 但不解引用符号链接；若先用 Path.resolve，
+                # 下方 is_symlink 检查前路径就会变成链接目标，失去这层防护。
                 normalized_path = Path(os.path.abspath(os.path.expanduser(raw_path)))
                 candidates.add(normalized_path.parent)
 
@@ -556,8 +553,7 @@ class MediaLibraryService:
             try:
                 if candidate.is_symlink():
                     continue
-                # rmdir is intentionally non-recursive: any unrelated file or
-                # nested directory keeps the collection folder intact.
+                # rmdir 刻意保持非递归；任何无关文件或嵌套目录都会阻止删除合集目录。
                 candidate.rmdir()
                 removed = True
             except (FileNotFoundError, OSError):

@@ -1,4 +1,4 @@
-"""Kuaishou spider with browser-driven scan and realtime stream capture."""
+"""快手浏览器扫描与实时媒体流捕获。"""
 
 import json
 import os
@@ -24,7 +24,7 @@ class KuaishouSpider(BaseSpider):
     LIST_READY_TIMEOUT_MS = 30000
 
     def __init__(self, keyword: str, config: dict):
-        """初始化当前实例并准备运行所需的状态，供 `KuaishouSpider` 使用。"""
+        """配置解析器、任务装配器、认证服务和响应匹配状态。"""
         super().__init__(keyword, config)
         self.parser = KuaishouParser()
         self.task_builder = KuaishouTaskBuilder()
@@ -42,7 +42,7 @@ class KuaishouSpider(BaseSpider):
         return str(getattr(self, "user_agent", "") or DEFAULT_USER_AGENT)
 
     def _max_items_limit(self) -> int:
-        """提供 `_max_items_limit` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """读取资源数量上限，并对非法配置回退默认值。"""
         default_limit = get_setting_default("kuaishou", "max_items")
         limit = self.config.get("max_items", cfg.get("kuaishou", "max_items", default_limit))
         try:
@@ -51,7 +51,7 @@ class KuaishouSpider(BaseSpider):
             return int(default_limit)
 
     def _build_proxy_cfg(self) -> dict[str, str] | None:
-        """提供 `_build_proxy_cfg` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """把有效代理地址转换为 Playwright 启动配置。"""
         proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
         if not proxy:
             return None
@@ -59,7 +59,7 @@ class KuaishouSpider(BaseSpider):
         return {"server": proxy}
 
     def _load_saved_cookies(self, context, auth_file: str) -> None:
-        """提供 `_load_saved_cookies` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """把已保存登录态恢复到浏览器上下文；失败时保留手工登录回退。"""
         if not os.path.exists(auth_file):
             return
         try:
@@ -69,7 +69,7 @@ class KuaishouSpider(BaseSpider):
             self.log("⚠️ 本地 Cookie 加载失败，继续尝试页面登录")
 
     def _goto_with_retry(self, page, url: str, *, description: str, attempts: int = 2) -> bool:
-        """提供 `_goto_with_retry` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """显式重试单次导航，并在每次尝试之间检查停止请求。"""
         target_url = url.strip().strip("`")
         last_error = None
         for attempt in range(1, attempts + 1):
@@ -268,7 +268,7 @@ class KuaishouSpider(BaseSpider):
         return True
 
     def _is_logged_in(self, page) -> bool:
-        """提供 `_is_logged_in` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """根据页面上的用户入口判断当前登录态。"""
         selectors = (
             ".header-user-avatar",
             ".user-avatar",
@@ -288,7 +288,7 @@ class KuaishouSpider(BaseSpider):
         return False
 
     def _refresh_logged_in_state(self, page, target_url: str) -> bool:
-        """提供 `_refresh_logged_in_state` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """刷新已加载 Cookie 的页面，并重新校验登录态。"""
         try:
             if not self.interruptible_playwright_reload(
                 page,
@@ -317,7 +317,7 @@ class KuaishouSpider(BaseSpider):
         return False
 
     def _user_cookie_values(self, context) -> set[str]:
-        """提供 `_user_cookie_values` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """读取浏览器上下文中的快手 userId Cookie 值。"""
         values: set[str] = set()
         try:
             for cookie in context.cookies():
@@ -328,7 +328,7 @@ class KuaishouSpider(BaseSpider):
         return values
 
     def _wait_for_manual_login(self, page, context, auth_file: str) -> bool:
-        """提供 `_wait_for_manual_login` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """可取消地等待手工登录，并在检测到新用户 Cookie 后持久化状态。"""
         initial_user_ids = self._user_cookie_values(context)
         for _ in range(120):
             if not self.is_running:
@@ -350,7 +350,7 @@ class KuaishouSpider(BaseSpider):
         *,
         allow_manual_login: bool = True,
     ) -> bool:
-        """提供 `_ensure_login` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """依次尝试现有 Cookie、页面刷新和可选的手工登录回退。"""
         target_url = entry_url.strip().strip("`") if entry_url else "https://www.kuaishou.com/"
         self.log("🔗 访问快手首页..." if target_url == "https://www.kuaishou.com/" else f"🔗 访问快手页面: {target_url}")
         has_loaded_cookie = bool(self._user_cookie_values(context))
@@ -392,7 +392,7 @@ class KuaishouSpider(BaseSpider):
         return False
 
     def _open_login_entry(self, page) -> None:
-        """提供 `_open_login_entry` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """从多个兼容选择器中打开登录入口。"""
         selectors = (
             ".login-btn",
             "text=登录",
@@ -413,7 +413,7 @@ class KuaishouSpider(BaseSpider):
         self.log("📱 未能自动弹出登录框，请直接在当前快手页面手动登录")
 
     def _has_login_qr(self, page) -> bool:
-        """提供 `_has_login_qr` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """判断当前页面是否已显示扫码登录区域。"""
         qr_selectors = (
             "canvas",
             "img[alt*='二维码']",
@@ -432,21 +432,21 @@ class KuaishouSpider(BaseSpider):
         return False
 
     def _locator_visible(self, locator) -> bool:
-        """提供 `_locator_visible` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """安全判断定位器可见性，页面切换期间异常按不可见处理。"""
         try:
             return bool(locator.is_visible())
         except (PlaywrightError, AttributeError, TypeError, ValueError):
             return False
 
     def _has_video_list(self, page, *, timeout: int = LIST_READY_TIMEOUT_MS) -> bool:
-        """提供 `_has_video_list` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """可中断地等待视频卡片列表出现。"""
         try:
             return self.interruptible_wait_for_selector(page, ".photo-card, .video-card", timeout=timeout) is not None
         except PlaywrightError:
             return False
 
     def _search_user_via_site(self, page, context, keyword: str):
-        """提供 `_search_user_via_site` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """通过站内搜索定位用户，并打开其主页。"""
         self.log(f"🔍 通过站内搜索查找: {keyword}")
         if not self._goto_with_retry(page, "https://www.kuaishou.com/", description="打开快手搜索页"):
             return None
@@ -483,7 +483,7 @@ class KuaishouSpider(BaseSpider):
         return self._open_profile_from_search_results(page, context, keyword)
 
     def _search_keyword_via_site(self, page, keyword: str):
-        """提供 `_search_keyword_via_site` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """通过站内搜索打开关键词结果页。"""
         self.log(f"🔍 通过站内搜索查找: {keyword}")
         if not self._goto_with_retry(page, "https://www.kuaishou.com/", description="打开快手搜索页"):
             return None
@@ -512,7 +512,7 @@ class KuaishouSpider(BaseSpider):
         return None
 
     def _switch_search_to_user_tab(self, page) -> None:
-        """提供 `_switch_search_to_user_tab` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """把搜索结果切换到用户或账号标签页。"""
         selectors = (
             "text=用户",
             "text=账号",
@@ -532,13 +532,13 @@ class KuaishouSpider(BaseSpider):
                 continue
 
     def _normalize_kuaishou_url(self, href: str) -> str:
-        """提供 `_normalize_kuaishou_url` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """把快手相对链接补全为绝对 URL。"""
         if href.startswith("http://") or href.startswith("https://"):
             return href
         return urllib.parse.urljoin("https://www.kuaishou.com/", href)
 
     def _profile_url_from_locator(self, locator) -> str | None:
-        """提供 `_profile_url_from_locator` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """从搜索结果节点或其最近链接祖先提取用户主页 URL。"""
         for target in (locator, getattr(locator, "locator", lambda *_: None)("xpath=ancestor-or-self::a[1]")):
             if target is None:
                 continue
@@ -551,7 +551,7 @@ class KuaishouSpider(BaseSpider):
         return None
 
     def _open_profile_from_search_results(self, page, context, keyword: str):
-        """提供 `_open_profile_from_search_results` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """在用户搜索结果中匹配关键词并打开对应主页。"""
         self._switch_search_to_user_tab(page)
         name_selectors = (
             ".name-wrap .name",
@@ -626,7 +626,7 @@ class KuaishouSpider(BaseSpider):
         return None
 
     def _resolve_active_page(self, page, context):
-        """提供 `_resolve_active_page` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """点击可能新开标签页时，解析当前仍存活的活动页面。"""
         try:
             if page and not page.is_closed():
                 return page
@@ -642,7 +642,7 @@ class KuaishouSpider(BaseSpider):
         return None
 
     def _navigate_to_target_page(self, page, context):
-        """提供 `_navigate_to_target_page` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """按 URL、快手号或关键词把浏览器导航到目标内容页。"""
         if self._is_kuaishou_url(self.keyword):
             target_url = self.keyword.strip().strip("`")
             if not self._goto_with_retry(page, target_url, description="打开快手目标页"):
@@ -769,7 +769,7 @@ class KuaishouSpider(BaseSpider):
         return False
 
     def _wait_for_video_list(self, page) -> bool:
-        """提供 `_wait_for_video_list` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """等待视频列表并记录无法加载的终止状态。"""
         if self._has_video_list(page, timeout=self._configured_timeout_ms(default=60)):
             return True
         try:
@@ -833,7 +833,7 @@ class KuaishouSpider(BaseSpider):
         return last_card_count
 
     def _extract_items_for_dialog(self, page) -> tuple[list[dict[str, int | str]], dict[int, set[str]]]:
-        """提供 `_extract_items_for_dialog` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """提取选择项，并建立卡片索引到媒体指纹的映射。"""
         self.log("🧠 解析视频信息...")
         video_titles = page.evaluate("""() => {
             const cards = document.querySelectorAll('.photo-card, .video-card');
@@ -863,7 +863,7 @@ class KuaishouSpider(BaseSpider):
         return items_for_dialog, target_fingerprints_map
 
     def _collect_selected_indices(self, items_for_dialog: list[dict[str, int | str]]):
-        """提供 `_collect_selected_indices` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """展示候选列表并返回用户确认的卡片索引。"""
         if not items_for_dialog:
             self.log("❌ 未扫描到有效视频")
             return None
@@ -881,14 +881,14 @@ class KuaishouSpider(BaseSpider):
         return selected_indices
 
     def _capture_scroll_budget(self, items_for_dialog: list[dict[str, int | str]]) -> int:
-        """提供 `_capture_scroll_budget` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """为详情页切换预留足够滚动次数，兼容焦点与卡片索引偏移。"""
         if not items_for_dialog:
             return 0
         base_count = len(items_for_dialog)
         return max(base_count, base_count * 2)
 
     def _run_capture_pipeline(self, page, items_for_dialog: list[dict[str, int | str]], target_fingerprints_map: dict[int, set[str]]) -> None:
-        """提供 `_run_capture_pipeline` 对应的内部辅助逻辑，供 `KuaishouSpider` 使用。"""
+        """滚动详情流，并把网络响应匹配到用户选择的卡片。"""
         page = self._resolve_active_page(page, getattr(page, "context", None) or None) or page
         target_indices_set = set(self._selected_indices)
         submitted_indices: set[int] = set()
@@ -896,7 +896,7 @@ class KuaishouSpider(BaseSpider):
         total_scrolls = self._capture_scroll_budget(items_for_dialog)
 
         def handle_response(response):
-            
+            # 网络回调会与焦点滚动交错；锁内先认领索引，才能避免同一媒体响应重复入队。
             if not self.is_running:
                 return
             ctype = response.headers.get("content-type", "")
@@ -1117,7 +1117,7 @@ class KuaishouSpider(BaseSpider):
             self._close_tracked_playwright_browser(browser)
 
     def run(self):
-        """执行当前对象或脚本的主流程，供 `KuaishouSpider` 使用。"""
+        """优先直连解析分享页，再执行浏览器登录、扫描和流捕获流程。"""
         auth_file = cfg.get("auth", "kuaishou_cookie_file", "ks_auth.json")
         self.keyword = self._normalize_keyword(self.keyword)
         self.log(f"🚀 启动快手任务 | 目标: {self.keyword}")
@@ -1133,6 +1133,7 @@ class KuaishouSpider(BaseSpider):
                     headless=headless,
                     allow_manual_login=not headless,
                 )
+                # 静默会话只负责探测；需要登录时先关闭它，再用可见窗口持久化 Cookie 后重跑。
                 if result == "login_required" and headless and self.is_running:
                     login_ok = self._run_login_window_session(p, auth_file, self._entry_url_for_login())
                     if login_ok and self.is_running:

@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/link/extractor.py` 对应的接口、加密、提取或工具逻辑。"""
+"""从抖音和 TikTok 文本链接中提取账号、作品、合集与直播标识。"""
 
-# app/core/lib/douyin/link/extractor.py
 from re import compile
 from typing import TYPE_CHECKING, Union
 from urllib.parse import parse_qs, unquote, urlparse
@@ -8,13 +7,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .requester import Requester
 
 if TYPE_CHECKING:
-    # [FIX] 修正 Parameter 导入路径
     from ..tools.parameter import Parameter
 
 __all__ = ["Extractor", "ExtractorTikTok"]
 
 class Extractor:
-    
+    """解析抖音长链、分享链及短链跳转后的资源标识。"""
+
     WEB_RID = compile(r"\\\"webRid\\\":\\\"(\d+?)\\\"")
 
     account_link = compile(
@@ -60,7 +59,7 @@ class Extractor:
         params: "Parameter",
         tiktok=False,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Extractor` 使用。"""
+        """按目标平台选择请求客户端和请求头。"""
         self.requester = Requester(
             params,
             params.client_tiktok if tiktok else params.client,
@@ -73,8 +72,7 @@ class Extractor:
         type_="detail",
         proxy: str = None,
     ) -> Union[list[str], tuple[bool, list[str]], str]:
-        # 调用 Requester 解析短链
-        """执行当前对象或脚本的主流程，供 `Extractor` 使用。"""
+        """先展开文本中的短链，再按资源类型提取标识。"""
         text = await self.requester.run(
             text,
             proxy,
@@ -98,7 +96,7 @@ class Extractor:
         pattern,
         index=1,
     ) -> str:
-        
+        """请求页面并返回首个正则捕获结果。"""
         html = await self.requester.request_url(
             url,
             "text",
@@ -110,14 +108,12 @@ class Extractor:
         self,
         urls: str,
     ) -> list[str]:
-        
         return self.__extract_detail(urls)
 
     def user(
         self,
         urls: str,
     ) -> list[str]:
-        
         link = self.extract_info(self.account_link, urls, 1)
         share = self.extract_info(self.account_share, urls, 1)
         return link + share
@@ -126,7 +122,6 @@ class Extractor:
         self,
         urls: str,
     ) -> tuple[bool, list[str]]:
-        
         if detail := self.__extract_detail(urls):
             return False, detail
         link = self.extract_info(self.mix_link, urls, 1)
@@ -137,7 +132,6 @@ class Extractor:
         self,
         urls: str,
     ) -> list[str]:
-        
         live_link = self.extract_info(self.live_link, urls, 1)
         live_link_self = self.extract_info(self.live_link_self, urls, 1)
         live_link_share = self.extract_info(self.live_link_share, urls, 0)
@@ -150,7 +144,7 @@ class Extractor:
         self,
         urls: str,
     ) -> list[str]:
-        """提供 `__extract_detail` 对应的内部辅助逻辑，供 `Extractor` 使用。"""
+        """汇总作品页、分享页及各入口携带的作品 ID。"""
         link = self.extract_info(self.detail_link, urls, 1)
         share = self.extract_info(self.detail_share, urls, 1)
         account = self.extract_info(self.account_link, urls, 2)
@@ -161,7 +155,7 @@ class Extractor:
 
     @staticmethod
     def extract_sec_user_id(urls: list[str]) -> list[list]:
-        """提取 `sec_user_id` 对应的关键信息，供 `Extractor` 使用。"""
+        """从每个 URL 中提取路径账号标识与 sec_user_id 查询参数。"""
         data = []
         for url in urls:
             url = urlparse(url)
@@ -173,12 +167,13 @@ class Extractor:
 
     @staticmethod
     def extract_info(pattern, urls: str, index=1) -> list[str]:
-        """提取 `info` 对应的关键信息，供 `Extractor` 使用。"""
+        """返回指定正则捕获组中的非空结果。"""
         result = pattern.finditer(urls)
         return [i for i in (i.group(index) for i in result) if i] if result else []
 
 class ExtractorTikTok(Extractor):
-    
+    """解析 TikTok 链接，并在必要时从页面源码补取资源标识。"""
+
     SEC_UID = compile(r'"verified":(?:false|true),"secUid":"([a-zA-Z0-9_-]+)"')
     ROOD_ID = compile(r'"roomId":"(\d+)"')
     MIX_ID = compile(r'"canonical":"\S+?(\d{19})"')
@@ -196,7 +191,7 @@ class ExtractorTikTok(Extractor):
     live_link = compile(r"\S*?https://www\.tiktok\.com/@[^\s/]+/live\S*?")  # 直播链接
 
     def __init__(self, params: "Parameter"):
-        """初始化当前实例并准备运行所需的状态，供 `ExtractorTikTok` 使用。"""
+        """使用 TikTok 请求客户端与请求头。"""
         super().__init__(
             params,
             True,
@@ -212,7 +207,7 @@ class ExtractorTikTok(Extractor):
         tuple[bool, list[str], list[str | None]],
         str,
     ]:
-        """执行当前对象或脚本的主流程，供 `ExtractorTikTok` 使用。"""
+        """展开短链后按 TikTok 资源类型提取标识。"""
         text = await self.requester.run(
             text,
             proxy,
@@ -234,14 +229,12 @@ class ExtractorTikTok(Extractor):
         self,
         urls: str,
     ) -> list[str]:
-        
         return self.__extract_detail(urls)
 
     async def user(
         self,
         urls: str,
     ) -> list[str]:
-        
         link = self.extract_info(self.account_link, urls, 1)
         link = [await self.get_html_data(i, self.SEC_UID) for i in link]
         return [i for i in link if i]
@@ -251,7 +244,7 @@ class ExtractorTikTok(Extractor):
         urls: str,
         index=1,
     ) -> list[str]:
-        """提供 `__extract_detail` 对应的内部辅助逻辑，供 `ExtractorTikTok` 使用。"""
+        """提取 TikTok 作品 ID 或完整作品链接。"""
         link = self.extract_info(self.detail_link, urls, index)
         return link
 
@@ -259,7 +252,6 @@ class ExtractorTikTok(Extractor):
         self,
         urls: str,
     ) -> tuple[bool, list[str], list[str | None]]:
-        
         detail = self.__extract_detail(urls, index=0)
         detail = [await self.get_html_data(i, self.MIX_ID) for i in detail]
         detail = [i for i in detail if i]
@@ -271,7 +263,6 @@ class ExtractorTikTok(Extractor):
         self,
         urls: str,
     ) -> list[str]:
-        
         link = self.extract_info(self.live_link, urls, 0)
         link = [await self.get_html_data(i, self.ROOD_ID) for i in link]
         return [i for i in link if i]

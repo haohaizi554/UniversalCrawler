@@ -1,12 +1,11 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/encrypt/xBogus.py` 对应的接口、加密、提取或工具逻辑。"""
+"""按网页端字节布局生成 X-Bogus 请求签名。"""
 
-# app/core/lib/douyin/encrypt/xBogus.py
 from base64 import b64encode
 from hashlib import md5
 from time import time
 from urllib.parse import quote, urlencode
-# 导入 USERAGENT 常量 (确保 tools/__init__.py 中已正确定义)
-# 如果 tools/__init__.py 尚未就绪，这里可能会报错，但在完整复刻流程中是正常的
+
+# 包内常量不可用时退回应用级 UA，保证独立导入仍可构造签名器。
 try:
     from ..tools import USERAGENT
 except ImportError:
@@ -17,6 +16,7 @@ except ImportError:
 __all__ = ["XBogus", "XBogusTikTok"]
 
 class XBogus:
+    """复现 X-Bogus 的摘要、字节扰动和自定义编码流程。"""
     
     __string = "Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe="
     __array = (
@@ -123,6 +123,7 @@ class XBogus:
         else:
             raise TypeError
 
+        # MD5 仅用于复现签名摘要，不承担密码学安全用途。
         md5_hash = md5(usedforsecurity=False)
         md5_hash.update(bytes(array))
         return md5_hash.hexdigest()
@@ -183,6 +184,7 @@ class XBogus:
         self, query: list, params: int, user_agent: str, timestamp: int
     ):
         
+        # 字节顺序、异或校验和自定义字母表均属于协议格式，不能重排。
         ua_array = self.generate_ua_array(user_agent, params)
         array = [
             64,

@@ -9,7 +9,7 @@
         get: getter,
       });
     } catch (_) {
-      // Some browser builds expose non-configurable descriptors. Ignore safely.
+      // 部分浏览器把指纹属性设为不可配置；单项失败不应中断页面脚本。
     }
   };
 
@@ -26,7 +26,7 @@
       });
       target[prop] = wrapped;
     } catch (_) {
-      // Keep page execution intact if a specific surface cannot be patched.
+      // 某个接口无法包装时保留原实现，避免隐匿补丁破坏页面执行。
     }
   };
 
@@ -126,7 +126,7 @@
         }
         ctx.putImageData(imageData, 0, 0);
       } catch (_) {
-        // Cross-origin canvases can throw; keep the original behavior.
+        // 跨域画布读取像素会抛错，此时退回未扰动的副本。
       }
     }
     return copy;

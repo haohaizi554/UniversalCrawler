@@ -1,26 +1,23 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/file_folder.py` 对应的接口、加密、提取或工具逻辑。"""
+"""切换标记文件状态，并清理不含文件的空目录。"""
 
-# app/core/lib/douyin/tools/file_folder.py
 from contextlib import suppress
 from pathlib import Path
 
 def file_switch(path: Path) -> None:
-    
+    """存在时删除标记文件，不存在时创建。"""
     if path.exists():
         path.unlink()
     else:
         path.touch()
 
 def remove_empty_directories(path: Path) -> None:
-    
+    """自底向上删除空目录，并跳过隐藏目录和下划线目录。"""
     exclude = {
         "\\.",
         "\\_",
         "\\__",
     }
-    # Path.walk 是 Python 3.12 新增的 API。
-    # 我们的项目 pyproject.toml 声明 requires-python = ">=3.12,<3.13"，所以这里可以直接使用。
-    # 如果后续要兼容低版本，需要改用 os.walk。
+    # 项目要求 Python 3.12；若降低版本下限，此处需改用 os.walk。
     for dir_path, dir_names, file_names in path.walk(
         top_down=False,
     ):

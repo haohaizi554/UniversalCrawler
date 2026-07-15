@@ -1,4 +1,4 @@
-"""Parser helpers for XiaoHongShu spider."""
+"""小红书 Spider 的解析辅助逻辑。"""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ from .helpers import (
 )
 
 class XiaohongshuParser:
-    """Normalize raw XHS payloads into spider-friendly structures."""
+    """把小红书原始载荷归一化为 Spider 易用的结构。"""
 
     @staticmethod
     def normalize_note(note: dict[str, Any] | None) -> dict[str, Any]:
-        """Return a dict with the core fields the spider depends on."""
+        """返回包含 Spider 所需核心字段的字典。"""
         payload = dict(note or {})
         payload.setdefault("title", sanitize_note_title(payload))
         payload.setdefault("author", note_author_name(payload))
@@ -26,7 +26,7 @@ class XiaohongshuParser:
         return payload
 
     def build_selection_entry(self, note: dict[str, Any]) -> dict[str, Any]:
-        """Build a selection entry consumable by Web/UI/CLI."""
+        """构造 Web、UI 和 CLI 均可消费的选择项。"""
         normalized = self.normalize_note(note)
         return {
             "title": build_note_summary(normalized),

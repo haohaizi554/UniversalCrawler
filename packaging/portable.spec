@@ -13,7 +13,7 @@ from project_meta import APP_DISPLAY_NAME, APP_ICON_NAME, APP_NAME, UPDATER_HELP
 
 project_root = Path(SPEC).resolve().parents[1]
 main_script = project_root / "main.py"
-# 关键：两个 EXE 用各自的图标
+# 两个 EXE 必须使用各自的图标，避免桌面端与 WebUI 在任务栏中混用品牌资源。
 # - 主程序（桌面 GUI 入口）用 favicon.ico（项目主品牌图标）
 # - WebUI 入口用 Web.ico（保持 Web 品牌，与 web_entry 托盘图标一致）
 icon_file = project_root / APP_ICON_NAME
@@ -43,10 +43,9 @@ datas += optional_tree(project_root / "README.md", ".")
 datas += optional_tree(project_root / "README_EN.md", ".")
 # 注意：cli/skill/ 下的 SKILL.md 不必打包（AI 工具独立读取仓库）
 
-# 关键修复：把 entry/ 和 cli/ 整个子包作为 data 文件直接打进 _internal
-# 仅靠 hiddenimports 还不够——PyInstaller 的 collect_submodules 必须在 spec
-# 解析时能 import 这些包；用户把 entry/ 设计成动态加载的薄入口层，
-# 主脚本 main.py 不会静态 import 它，所以必须用 datas 方式把整个目录复制过去
+# entry/ 与 cli/ 是动态加载的薄入口，main.py 不会静态导入全部模块。
+# collect_submodules 又要求 spec 解析时包可导入，因此还需通过 datas 把完整目录
+# 放入 _internal，不能只依赖 hiddenimports。
 datas += optional_tree(project_root / "entry", "entry")
 datas += optional_tree(project_root / "cli", "cli")
 datas += optional_tree(project_root / "shared", "shared")
@@ -55,8 +54,8 @@ datas += optional_tree(project_root / "ucrawl", "ucrawl")
 if browser_root.exists():
     datas.append((str(browser_root), "ms-playwright"))
 
-# 关键修复：把项目内所有需要 import 的子包都列进 hiddenimports
-# 否则 PyInstaller 静态扫描可能漏掉（特别是 entry/ 这种动态加载）
+# 所有运行时导入的项目子包都需列入 hiddenimports，防止 PyInstaller 静态扫描
+# 漏掉 entry/ 等动态加载模块。
 hiddenimports = sorted(
     set(
         # 主项目
@@ -74,10 +73,9 @@ hiddenimports = sorted(
         + collect_submodules("fastapi")
         + collect_submodules("starlette")
         + collect_submodules("pydantic")
-        # 关键修复：PyQt6 必须显式列出（修复 web 打包后没反应 + dispatcher Qt 弹窗）
-        # entry.web_entry 用了 QSystemTrayIcon / QInputDialog / QApplication
-        # entry.dispatcher 在 IDE 场景下用 QMessageBox / QDialog
-        # PyInstaller 静态扫描可能漏掉（动态 import）
+# Web 托盘与 dispatcher 的 Qt 后备路径采用动态导入，PyInstaller 静态扫描
+# 可能漏掉 QSystemTrayIcon、QInputDialog、QApplication、QMessageBox 和 QDialog，
+# 因此必须显式列出 PyQt6 子模块。
         + collect_submodules("PyQt6")
         # entry 动态加载的具体 entry 模块（保险起见显式列）
         + ["entry.cli_entry", "entry.gui_entry", "entry.web_entry", "entry.interactive_entry", "entry.dispatcher", "entry.updater_helper"]
@@ -122,16 +120,11 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# 关键修复：两个 EXE 各自用**直接启动器**，完全绕过 dispatcher。
-# 之前版本让 EXE 走 dispatcher（注入 --mode web/gui），但 dispatcher 透传
-# 参数时把空 list [] 误转成 None，导致 web_entry.main(None) 回退到
-# sys.argv[1:]，里面残留的 --mode 被 web_entry 的 argparse 拒绝
-# （错误：unrecognized arguments: --mode web）。
-# 现在的做法：每个 EXE 直接 import 对应 entry 模块，调用其 main(argv)。
-#
+# 三个冻结 EXE 必须使用直接启动器并绕过 dispatcher，避免空 argv 在多层转发时
+# 回退到 sys.argv[1:]，把打包器参数误交给目标入口的 argparse。
 # - UniversalCrawlerPro.exe -> entry.gui_entry.main()      (PyQt6 桌面 GUI)
 # - CrawlerWebPortal.exe    -> entry.web_entry.main()      (FastAPI + Qt 托盘)
-# - updater_helper.exe      -> entry.updater_helper.main() (独立更新 helper)
+# - updater_helper.exe      -> entry.updater_helper.main() (独立更新辅助进程)
 
 gui_launcher_script = project_root / "packaging" / "_gui_launcher.py"
 gui_launcher_script.write_text(
@@ -188,7 +181,7 @@ sys.exit(_main(sys.argv[1:]))
     encoding="utf-8",
 )
 
-# 桌面 GUI 主程序 EXE：把 main.py 入口替换为 GUI 启动器
+# 桌面 GUI 主程序 EXE 使用专用 GUI 启动器。
 gui_scripts = []
 for name, path, typecode in a.scripts:
     if typecode == "PYSOURCE" and str(main_script) in str(path):
@@ -211,7 +204,7 @@ exe = EXE(
     icon=str(icon_file) if icon_file.exists() else None,
 )
 
-# WebUI 入口程序 EXE：把 main.py 入口替换为 WebUI 启动器
+# WebUI 入口程序 EXE 使用专用 WebUI 启动器。
 webui_scripts = []
 for name, path, typecode in a.scripts:
     if typecode == "PYSOURCE" and str(main_script) in str(path):

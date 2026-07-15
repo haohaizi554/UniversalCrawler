@@ -6,7 +6,7 @@ import threading
 from app.debug_logger import debug_logger
 
 class ApplicationLifecycleMixin:
-    """Desktop application shutdown and event-loop lifecycle helpers."""
+    """桌面应用的退出清理与事件循环辅助逻辑。"""
 
     def _stop_active_spider(self) -> None:
         spider = getattr(self, "current_spider", None)
@@ -105,10 +105,10 @@ class ApplicationLifecycleMixin:
         self._host().cleanup_media()
         self._stop_active_spider()
         if dl_manager is not None:
+            # `stop_all` 可能等待下载 `worker` 退出；限制 `join` 时间，避免 Qt 关闭流程无限挂起。
             stop_thread = threading.Thread(target=dl_manager.stop_all, daemon=True, name="download-stop-all")
             stop_thread.start()
             stop_thread.join(timeout=2.0)
 
     def run(self):
-        """启动 Qt 事件循环。"""
         sys.exit(self.app.exec())

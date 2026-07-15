@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/account.py` 对应的接口、加密、提取或工具逻辑。"""
+"""分页获取抖音账号发布或喜欢的作品。"""
 
-# app/core/lib/douyin/interface/account.py
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Callable, Coroutine, Type, Union
 
@@ -9,10 +8,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -21,6 +17,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Account(API):
+    """按时间范围抓取账号发布作品或登录可见的喜欢作品。"""
     
     post_api = f"{API.domain}aweme/v1/web/aweme/post/"
     favorite_api = f"{API.domain}aweme/v1/web/aweme/favorite/"
@@ -40,13 +37,12 @@ class Account(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Account` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.sec_user_id = sec_user_id
         self.api, self.favorite, self.pages = self.check_type(
             tab, pages or params.max_pages
         )
-        # TODO: 重构数据验证逻辑
+        # 日期上下限先规范为 date，分页游标才能可靠判断是否提前停止。
         self.latest: date = self.check_latest(latest)
         self.earliest: date = self.check_earliest(earliest)
         self.cursor = cursor
@@ -68,7 +64,7 @@ class Account(API):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `Account` 使用。"""
+        """按 single_page 选择单页或分页模式，并返回作品及日期边界。"""
         if self.favorite:
             self.set_referer(f"{self.domain}user/{self.sec_user_id}?showTab=like")
         else:
@@ -168,7 +164,7 @@ class Account(API):
         self.summary_works()
 
     async def early_stop(self):
-        """如果获取数据的发布日期已经早于限制日期，就不需要再获取下一页的数据了"""
+        """发布作品的分页游标早于最早日期时停止继续请求。"""
         if (
             not self.favorite
             and self.earliest
@@ -259,7 +255,7 @@ class Account(API):
         self.log.info(
             _("作品{tip}发布日期: {latest_date}").format(tip=tip, latest_date=date_)
         )
-        return date_  # 返回 date 对象
+        return date_
 
     def check_response(
         self,

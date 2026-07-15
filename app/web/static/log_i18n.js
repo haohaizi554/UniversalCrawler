@@ -156,10 +156,10 @@ function translateRuntimeLogText(value) {
   const text = String(value ?? "");
   if (!text.trim()) return text;
   const language = currentLanguage();
-  const translated = translateStructuredLogText(text);
-  if (translated !== text) return translated;
-  if (language !== "en-US") return localizeNonEnglishDynamicLogText(text, language);
-  return cleanupEnglishLogFragments(localizeEnglishDynamicLogText(text));
+  let translated = translateStructuredLogText(text);
+  translated = applyRuntimePhraseTranslations(translated, language);
+  translated = localizeRuntimeDynamicSegments(translated, language);
+  return language === "en-US" ? cleanupEnglishLogFragments(translated) : translated;
 }
 
 const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
@@ -577,8 +577,60 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "本地小红书 Cookie 恢复失败，继续使用新会话", en: "Failed to restore local Xiaohongshu Cookie; continuing with new session", tw: "本機小紅書 Cookie 恢復失敗，繼續使用新會話" },
   { zh: "小红书号未命中主页结果，回退为关键词搜索", en: "Xiaohongshu ID did not match homepage results; falling back to keyword search", tw: "小紅書號未命中主頁結果，回退為關鍵字搜尋" },
   { zh: "下载已暂停", en: "download paused", tw: "下載已暫停" },
+  { zh: "Web 端用户请求停止爬虫任务", en: "Web user requested to stop the crawl task", tw: "Web 端使用者要求停止爬蟲任務" },
+  { zh: "Web 端开始扫描本地媒体目录（异步）", en: "Web started scanning local media folder (async)", tw: "Web 端開始非同步掃描本機媒體目錄" },
+  { zh: "Web 端开始扫描本地媒体目录", en: "Web started scanning local media folder", tw: "Web 端開始掃描本機媒體目錄" },
   { zh: "Web 端启动爬虫任务", en: "Web started crawl task", tw: "Web 端啟動爬蟲任務" },
   { zh: "Web 端发现可下载资源", en: "Web found downloadable resources", tw: "Web 端發現可下載資源" },
+  { zh: "Web 端下载任务完成", en: "Web download task completed", tw: "Web 端下載任務完成" },
+  { zh: "Web 端下载任务失败", en: "Web download task failed", tw: "Web 端下載任務失敗" },
+  { zh: "Web 端保存目录已变更", en: "Web save directory changed", tw: "Web 端儲存目錄已變更" },
+  { zh: "Web 端爬虫任务结束", en: "Web crawl task finished", tw: "Web 端爬蟲任務結束" },
+  { zh: "用户取消更新下载", en: "User cancelled the update download", tw: "使用者取消更新下載" },
+  { zh: "正在等待上一次更新下载线程停止，暂不能重试。", en: "Waiting for the previous update download thread to stop; retry is not available yet.", tw: "正在等待上一次更新下載執行緒停止，暫時無法重試。" },
+  { zh: "更新安装程序已启动，应用即将退出。", en: "Update installer started; the app will exit shortly.", tw: "更新安裝程式已啟動，應用程式即將結束。" },
+  { zh: "Bilibili 并发解析播放流并批量提交下载项", en: "Bilibili is resolving streams concurrently and submitting download items in batches", tw: "Bilibili 正在並行解析播放串流並批次提交下載項目" },
+  { zh: "Bilibili 并发取流线程失败", en: "Bilibili concurrent stream worker failed", tw: "Bilibili 並行取流執行緒失敗" },
+  { zh: "HTTP 断点续传请求已建立", en: "HTTP resume request established", tw: "HTTP 斷點續傳請求已建立" },
+  { zh: "目录切换后的初始扫描完成", en: "Initial scan after changing directory completed", tw: "切換目錄後的初始掃描完成" },
+  { zh: "收到超长 WebSocket 消息，连接已关闭", en: "Oversized WebSocket message received; connection closed", tw: "收到過長的 WebSocket 訊息，連線已關閉" },
+  { zh: "更新安装包已下载并通过校验", en: "Update package downloaded and verified", tw: "更新安裝套件已下載並通過校驗" },
+  { zh: "更新安装程序启动失败", en: "Failed to start the update installer", tw: "更新安裝程式啟動失敗" },
+  { zh: "已跳过更新版本", en: "Skipped update version", tw: "已略過更新版本" },
+  { zh: "已调度 select_tasks 测试事件", en: "select_tasks test event dispatched", tw: "已排程 select_tasks 測試事件" },
+  { zh: "收到非法 JSON 消息", en: "Invalid JSON message received", tw: "收到無效的 JSON 訊息" },
+  { zh: "Bilibili 登录状态校验失败", en: "Bilibili login status check failed", tw: "Bilibili 登入狀態校驗失敗" },
+  { zh: "等待 Bilibili 扫码登录超时", en: "Timed out waiting for Bilibili QR-code login", tw: "等待 Bilibili 掃碼登入逾時" },
+  { zh: "等待抖音扫码登录超时 (120秒)", en: "Timed out waiting for Douyin QR-code login (120 seconds)", tw: "等待抖音掃碼登入逾時（120 秒）" },
+  { zh: "用户在登录过程中终止任务", en: "User stopped the task during login", tw: "使用者在登入過程中終止任務" },
+  { zh: "HTTP 下载内容不完整，准备重试", en: "HTTP download incomplete; preparing to retry", tw: "HTTP 下載內容不完整，準備重試" },
+  { zh: "HTTP 下载失败，准备重试", en: "HTTP download failed; preparing to retry", tw: "HTTP 下載失敗，準備重試" },
+  { zh: "HTTP 下载异常，准备重试", en: "HTTP download error; preparing to retry", tw: "HTTP 下載異常，準備重試" },
+  { zh: "分块下载失败，准备重试", en: "Chunked download failed; preparing to retry", tw: "分塊下載失敗，準備重試" },
+  { zh: "文件删除等待超时前下载线程未停止", en: "Download worker did not stop before file deletion timeout", tw: "檔案刪除等待逾時前下載執行緒未停止" },
+  { zh: "流断点续传：从", en: "stream resume: continuing from", tw: "串流斷點續傳：從" },
+  { zh: "字节继续下载", en: "bytes", tw: "位元組繼續下載" },
+  { zh: "打开快手目标页", en: "Opening the Kuaishou target page", tw: "開啟快手目標頁" },
+  { zh: "页面访问", en: "Page navigation", tw: "頁面存取" },
+  { zh: "B站", en: "B-site", tw: "B 站" },
+  { zh: "已启动有界下载恢复维护", en: "Started bounded download recovery maintenance", tw: "已啟動有界下載恢復維護" },
+  { zh: "应用启动时已处理过期下载临时文件", en: "Processed stale download temp artifacts at application startup", tw: "應用程式啟動時已處理過期下載暫存檔" },
+  { zh: "已完成有界下载恢复维护", en: "Completed bounded download recovery maintenance", tw: "已完成有界下載恢復維護" },
+  { zh: "无法枚举恢复目录；本次尝试已确认", en: "Recovery directory could not be enumerated; the attempt was acknowledged", tw: "無法列舉恢復目錄；本次嘗試已確認" },
+  { zh: "旧版目录扫描已受限或降级", en: "A legacy directory scan was bounded or degraded", tw: "舊版目錄掃描已受限或降級" },
+  { zh: "旧版临时文件清理已在生产扫描预算处停止", en: "Stopped legacy temp cleanup at the production scan budget", tw: "舊版暫存檔清理已在生產掃描預算處停止" },
+  { zh: "已设置当前用户的默认应用", en: "Set current-user default apps", tw: "已設定目前使用者的預設應用程式" },
+  { zh: "文件关联注册仅支持 Windows", en: "File association registration is Windows-only", tw: "檔案關聯註冊僅支援 Windows" },
+  { zh: "文件关联默认值仅支持 Windows", en: "File association defaults are Windows-only", tw: "檔案關聯預設值僅支援 Windows" },
+  { zh: "文件关联诊断仅支持 Windows", en: "File association diagnostics are Windows-only", tw: "檔案關聯診斷僅支援 Windows" },
+  { zh: "为以下项目设置默认值失败：", en: "Failed to set defaults for ", tw: "為以下項目設定預設值失敗：" },
+  { zh: "无法解析当前用户 SID：", en: "Cannot resolve current user SID: ", tw: "無法解析目前使用者 SID：" },
+  { zh: "界面可见性探测：", en: "Shell visibility probe: ", tw: "介面可見性探測：" },
+  { zh: "界面外壳意外隐藏；正在恢复", en: "Shell chrome was hidden unexpectedly; restoring shell chrome", tw: "介面外殼意外隱藏；正在恢復" },
+  { zh: "恢复界面外壳时已退出残留的媒体全屏状态", en: "Exited stale media fullscreen while restoring shell chrome", tw: "恢復介面外殼時已退出殘留的媒體全螢幕狀態" },
+  { zh: "打开快手搜索页", en: "Opening the Kuaishou search page", tw: "開啟快手搜尋頁" },
+  { zh: "开始切换目录", en: "Started changing directory", tw: "開始切換目錄" },
+  { zh: "任务已停止", en: "Task stopped", tw: "任務已停止" },
   { zh: "爬虫完成回调已调用", en: "_on_spider_finished was called", tw: "爬蟲完成回呼已呼叫", aliases: ["_on_spider_finished 被调用"] },
   { zh: "CLI 发现可下载资源", en: "CLI found downloadable resources", tw: "CLI 發現可下載資源" },
   { zh: "CLI 启动爬虫任务", en: "CLI started crawl task", tw: "CLI 啟動爬蟲任務" },
@@ -704,6 +756,11 @@ function cleanupEnglishLogFragments(value) {
 }
 
 function localizeEnglishDynamicLogText(text) {
+  const selectTasksRelay = text.match(/^select_tasks\s+(?:转发延迟|轉發延遲)=([\d.]+)\s*毫秒[，,]\s*(?:项目数|項目數)=(\d+)$/u);
+  if (selectTasksRelay) {
+    return `select_tasks relay lag=${selectTasksRelay[1]}ms items=${selectTasksRelay[2]}`;
+  }
+
   const themeSwitch = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?已切换到(浅色|深色)主题[。.]?$/u);
   if (themeSwitch) return `${themeSwitch[1] || ""}Switched to ${themeSwitch[2] === "浅色" ? "light" : "dark"} theme`;
   const mediaEmpty = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?该目录下没有找到视频或图片[。.]?$/u);
@@ -716,7 +773,7 @@ function localizeEnglishDynamicLogText(text) {
   if (configNotSet) return `${configNotSet[1] || ""}Config ${configNotSet[2]} is not set; ${localizedRuntimePlatformName(configNotSet[3], "en-US")} features may not work properly`;
   const paramUpdated = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0E\uFE0F]*\s*)?(Douyin|douyin|抖音|TikTok|tiktok)\s*参数更新完毕[!！]?$/u);
   if (paramUpdated) return `${paramUpdated[1] || ""}${localizedRuntimePlatformName(paramUpdated[2], "en-US")} parameters updated!`;
-  const bilibiliStreamRetry = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?(?:B站|Bilibili)\s+(.*?)\s+流连接断开，(\d+)s\s+后重试\s+\((\d+)\/\s*(\d+)\):\s*(.+)$/u);
+  const bilibiliStreamRetry = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF]*\s*)?(?:B站|Bilibili|B-site)\s+(.*?)\s+流连接断开，(\d+)s\s+后重试\s+\((\d+)\/\s*(\d+)\):\s*(.+)$/u);
   if (bilibiliStreamRetry) {
     const media = localizedMediaTerm(bilibiliStreamRetry[2], "en-US");
     return `${bilibiliStreamRetry[1] || ""}B-site ${media} stream disconnected; retrying in ${bilibiliStreamRetry[3]}s (${bilibiliStreamRetry[4]}/${bilibiliStreamRetry[5]}): ${bilibiliStreamRetry[6]}`;
@@ -975,6 +1032,13 @@ function localizeNonEnglishDynamicLogText(text, language) {
   const exact = NON_EN_DYNAMIC_LOG_TEXT[text];
   if (exact) return localizedDynamicValue(exact, language);
 
+  const selectTasksRelay = text.match(/^select_tasks relay lag=([\d.]+)ms items=(\d+)$/iu);
+  if (selectTasksRelay) {
+    return language === "zh-TW"
+      ? `select_tasks 轉發延遲=${selectTasksRelay[1]} 毫秒，項目數=${selectTasksRelay[2]}`
+      : `select_tasks 转发延迟=${selectTasksRelay[1]} 毫秒，项目数=${selectTasksRelay[2]}`;
+  }
+
   let match = text.match(/^([\u{1F300}-\u{1FAFF}\u2600-\u27BF\u2139\uFE0F]*\s*)?Switched to\s*(light|dark)\s*theme[。.]?$/iu);
   if (match) {
     const light = match[2].toLowerCase() === "light";
@@ -1140,6 +1204,18 @@ function localizeNonEnglishDynamicLogText(text, language) {
   return text;
 }
 
+function localizeRuntimeDynamicSegments(text, language) {
+  return String(text ?? "")
+    .split(/(\s+·\s+|\s+\/\s+|\s+路\s+)/)
+    .map(part => {
+      if (/^\s*(?:·|\/|路)\s*$/.test(part)) return part;
+      return language === "en-US"
+        ? localizeEnglishDynamicLogText(part)
+        : localizeNonEnglishDynamicLogText(part, language);
+    })
+    .join("");
+}
+
 function localizeLogEventCode(value) {
   const text = String(value || "-");
   const language = currentLanguage();
@@ -1247,7 +1323,11 @@ function translationHints(item) {
     hints[text.trim()] = translated;
     if (key) hints[`${key}:${text}`] = translated;
   };
-  const detail = item && item.detail && typeof item.detail === "object" ? item.detail : {};
+  const projectedDetail = item && item.detail_payload;
+  const rawDetail = item && item.detail;
+  const detail = projectedDetail && typeof projectedDetail === "object"
+    ? projectedDetail
+    : (rawDetail && typeof rawDetail === "object" ? rawDetail : {});
   add("platform", item.platform_display || item.platform || "");
   add("source", item.source_display || item.source || "");
   add("message", item.message || item.message_summary || "");

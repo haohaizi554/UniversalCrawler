@@ -1,8 +1,7 @@
-"""Compatibility exports for the historical plugin settings module.
+"""兼容旧版插件设置模块的导出路径。
 
-UI settings builders live in :mod:`app.ui.plugin_settings`. This module keeps
-old imports working without making ``app.core`` import Qt/UI code at import
-time.
+界面设置构建器实际位于 :mod:`app.ui.plugin_settings`；本模块只维持旧导入可用，
+同时避免 ``app.core`` 在导入阶段依赖 Qt 界面代码。
 """
 
 from importlib import import_module

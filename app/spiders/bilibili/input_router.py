@@ -136,7 +136,7 @@ def is_collection_like_url(parsed: urllib.parse.ParseResult) -> bool:
 
 
 def is_bvid_ugc_season_entry_url(parsed: urllib.parse.ParseResult) -> bool:
-    """Bilibili UGC season entries are best resolved through the BV detail API."""
+    """判断是否应通过 BV 详情 API 解析 Bilibili UGC 合集条目。"""
     if not re.search(r"(?i)/video/BV[0-9A-Za-z]{10}", parsed.path or ""):
         return False
     query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
@@ -156,11 +156,13 @@ def route_url(url: str) -> BilibiliInputRoute:
     """把规范 URL 分派到具体路线；只做静态判断，不跟随短链。"""
     url = strip_url_trailing_punctuation(url)
     parsed = urllib.parse.urlparse(url)
-    host = parsed.netloc.lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
     path = parsed.path or ""
-    if "bilibili.com" not in host and "b23.tv" not in host:
+    is_bilibili_host = host == "bilibili.com" or host.endswith(".bilibili.com")
+    is_short_link_host = host in SHORT_LINK_HOSTS
+    if not is_bilibili_host and not is_short_link_host:
         return keyword_route(url)
-    if "space.bilibili.com" in host:
+    if host == "space.bilibili.com":
         if is_collection_like_url(parsed):
             return BilibiliInputRoute("scan", url, {"is_search": False, "is_space": False})
         uid_match = re.search(r"/(\d+)(?:/|$)", path)
@@ -169,7 +171,7 @@ def route_url(url: str) -> BilibiliInputRoute:
             # 空间首页默认补到 /video，减少网页扫描进入动态/收藏页造成的误抓。
             target_url = f"https://space.bilibili.com/{uid_match.group(1)}/video"
         return BilibiliInputRoute("scan", target_url, {"is_search": False, "is_space": True})
-    if "search.bilibili.com" in host:
+    if host == "search.bilibili.com":
         return BilibiliInputRoute("scan", url, {"is_search": True, "is_space": False})
     bvid = bvid_from_url(url)
     if bvid and is_bvid_ugc_season_entry_url(parsed):

@@ -66,11 +66,11 @@ def _ensure_search_defaults(args: argparse.Namespace, platform: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口函数。
 
-    Args:
+    参数：
         argv: 命令行参数 (None=使用 sys.argv[1:])
 
-    Returns:
-        退出码 (0=成功, 1=错误, 2=参数错误)
+    退出约定：
+        0 表示成功，1 表示命令执行失败；参数解析失败由 argparse 以 2 退出。
     """
     parser = argparse.ArgumentParser(
         prog="ucrawl",
@@ -117,33 +117,28 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers = parser.add_subparsers(dest="main_command", title="子命令")
 
-    # search
     from cli.commands.search import handle_search_command
     from shared.search_command_runtime import add_search_arguments
     search_parser = subparsers.add_parser("search", help="搜索并下载 (通用命令)")
     add_search_arguments(search_parser)
     search_parser.set_defaults(_handler=handle_search_command)
 
-    # scan
     from cli.commands.scan import add_scan_arguments, handle_scan_command
     scan_parser = subparsers.add_parser("scan", help="扫描本地目录")
     add_scan_arguments(scan_parser)
     scan_parser.set_defaults(_handler=handle_scan_command)
 
-    # download
     from cli.commands.download import handle_download_command
     from shared.download_command_runtime import add_download_arguments
     download_parser = subparsers.add_parser("download", help="下载指定视频")
     add_download_arguments(download_parser)
     download_parser.set_defaults(_handler=handle_download_command)
 
-    # platforms
     from cli.commands.platforms import add_platforms_arguments, handle_platforms_command
     platforms_parser = subparsers.add_parser("platforms", help="列出所有可用平台")
     add_platforms_arguments(platforms_parser)
     platforms_parser.set_defaults(_handler=handle_platforms_command)
 
-    # interactive
     from cli.commands.interactive import add_interactive_arguments, handle_interactive_command
     interactive_parser = subparsers.add_parser("interactive", help="交互式引导模式", aliases=["i"])
     add_interactive_arguments(interactive_parser)
@@ -153,7 +148,6 @@ def main(argv: list[str] | None = None) -> int:
     from cli.commands.platform_base import add_platform_subparsers
     add_platform_subparsers(subparsers)
 
-    # 解析
     args = parser.parse_args(argv)
 
     if getattr(args, "main_command", None) == "search":
@@ -161,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             args.keyword = resolve_keyword(args)
         except ValueError as exc:
+            # 交给 argparse 终止，确保参数错误稳定使用退出码 2，而不是混入执行失败的 1。
             parser.error(str(exc))
 
     if args.version:
@@ -187,14 +182,11 @@ def main(argv: list[str] | None = None) -> int:
         elif platform_subcmd == "download":
             return handle_download_command(args)
         elif platform_subcmd == "scan":
-            # scan 特殊处理
             return handle_scan_command(args)
         else:
-            # 显示帮助
             subparsers.choices[platform].print_help()
             return 0
 
-    # 通用子命令
     handler = getattr(args, "_handler", None)
     if handler is None:
         parser.print_help()

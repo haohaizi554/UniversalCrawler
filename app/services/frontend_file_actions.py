@@ -1,4 +1,4 @@
-"""Local file-system actions used by frontend commands."""
+"""供前端命令调用的本地文件操作；路径打开仍交给系统关联程序。"""
 
 from __future__ import annotations
 

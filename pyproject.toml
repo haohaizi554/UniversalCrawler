@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-# 完整依赖需要 PyQt6, FastAPI, etc. (与原项目一致)
+# 桌面端、Web 端、CLI 与 SDK 共用的运行时依赖。
 dependencies = [
     "PyQt6>=6.4.0",
     "fastapi>=0.139.0,<0.140.0",
@@ -62,9 +62,9 @@ ucrawl-web = "entry.web_entry:main"
 ucrawl-auto = "entry.dispatcher:run"
 # 测试套件（GUI / TUI / CLI 三模自适应）
 ucrawl-test = "entry.test_entry:main"
-# Release bootstrap / signing automation
+# 发布初始化与签名自动化
 ucrawl-update-bootstrap = "scripts.update_bootstrap:main"
-# Secret leakage guard used before release commits
+# 发布提交前使用的密钥泄漏检查
 scan-secrets = "scripts.update_bootstrap:scan_secrets_main"
 
 [project.gui-scripts]
@@ -79,6 +79,9 @@ exclude = ["docs*", "packaging*"]
 
 [tool.setuptools.package-data]
 ucrawl = []
+app = [
+    "web/static/*",
+]
 cli = [
     "skill/*.md",
     "skill/examples/*.py",

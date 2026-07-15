@@ -32,7 +32,6 @@ for platform_id, info in PLATFORMS.items():
         ALIAS_TO_PLATFORM[alias] = platform_id
 
 def resolve_platform(name: str) -> str | None:
-    """将别名解析为标准平台 ID。"""
     return ALIAS_TO_PLATFORM.get(name.lower())
 
 def add_platform_subparsers(
@@ -40,7 +39,7 @@ def add_platform_subparsers(
 ) -> dict[str, dict[str, argparse.ArgumentParser]]:
     """为每个平台添加子命令。
 
-    Returns:
+    返回：
         平台名到子命令解析器的字典
     """
     parsers: dict[str, dict[str, argparse.ArgumentParser]] = {}
@@ -95,7 +94,6 @@ def add_platform_subparsers(
     return parsers
 
 def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
-    """为 search 子命令添加参数。"""
     parser.add_argument(
         "keyword",
         help="搜索关键词 / 链接 / 用户 ID",
@@ -164,7 +162,6 @@ def _add_search_args(parser: argparse.ArgumentParser, platform_id: str) -> None:
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式")
 
 def _add_download_args(parser: argparse.ArgumentParser) -> None:
-    """为 download 子命令添加参数（与通用 download 命令对齐）。"""
     parser.add_argument("video_id", help="视频 ID")
     parser.add_argument("--save-dir", "-d", default=None, help="保存目录 (默认: 从配置读取)")
     parser.add_argument("--url", help="视频 URL (如果已有)")

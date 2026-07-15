@@ -41,14 +41,17 @@ class HttpSessionCoordinator:
         self._access_cookie_name = access_cookie_name
 
     async def handle(self, request: Request, call_next):
-        # Container health checks are stateless. /api/ping intentionally keeps
-        # its legacy session-bootstrap behavior for API and media clients.
+        # 健康检查不进入应用访问鉴权边界。
         if request.url.path == "/healthz":
             return await call_next(request)
 
         access_response = self._enforce_application_access(request)
         if access_response is not None:
             return access_response
+        # 公共存活探针不应分配带控制器的会话；它仍放在访问检查之后，
+        # 使无密码模式下的 DNS 重绑定防护同样覆盖 /api/ping。
+        if request.url.path == "/api/ping":
+            return await call_next(request)
 
         session_id = request.cookies.get(self._session_cookie_name) or uuid4().hex
         context = self._session_registry.get_or_create(session_id)
@@ -99,11 +102,10 @@ class HttpSessionCoordinator:
         return response
 
     def _enforce_application_access(self, request: Request):
-        """Authenticate remote app access before allocating a session context."""
+        """在分配会话上下文前验证远程应用访问权限。"""
         if not self._access_token:
-            # Passwordless mode is intended only for an explicitly local URL.
-            # Reject arbitrary Host values so a rebinding domain cannot bootstrap
-            # its own same-origin session against a loopback listener.
+            # 无密码模式仅允许显式本地 URL；拒绝任意 Host，避免重绑定域名
+            # 借回环监听器建立属于它自己的同源会话。
             client = getattr(request, "client", None)
             if is_loopback_request_host(request.url.hostname, getattr(client, "host", None)):
                 return None

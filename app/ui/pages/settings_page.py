@@ -73,7 +73,7 @@ FORM_SWITCH_WRAP_WIDTH = 96
 
 
 class SettingsPage(PageFrame):
-    """Configuration center with master-detail production UI."""
+    """采用主从布局的配置中心。"""
 
     file_association_requested = pyqtSignal(bool, bool)
     setting_changed = pyqtSignal(str, str, object)
@@ -715,7 +715,7 @@ class SettingsPage(PageFrame):
         return value.get(key, default) if isinstance(value, dict) else default
 
     def _safe_icon_pixmap(self, icon_file: str, size: int = 20) -> QPixmap | None:
-        """Load icon safely. Never crash SettingsPage when icon resource is missing."""
+        """安全加载图标；资源缺失时不让 SettingsPage 崩溃。"""
         candidates = [
             ui_icon_path(icon_file),
             icon_file,

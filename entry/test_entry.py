@@ -1,20 +1,10 @@
-"""UCrawl 测试套件入口（薄适配层）。
+"""UCrawl 测试套件命令入口。
 
-设计目标（用户原话）：
-- 测试入口**不能以 test_ 开头**（pytest 会把它当 test 跑，循环依赖），
-  所以入口在 ``entry/`` 下，命名 ``test_entry.py``
-- **三模自适应**：GUI / TUI / CLI，按 `tests/test_launcher.py` 的同一份
-  逻辑复用，避免代码分散
-- 与其他入口对齐：与 ``gui_entry`` / ``web_entry`` / ``cli_entry`` 一样，
-  在 ``pyproject.toml`` 的 ``[project.scripts]`` 注册为 ``ucrawl-test``
-- 同时通过 ``entry.dispatcher`` 暴露为 ``Mode.TEST``，主 GUI 可一键调用
-- **进度条**：GUI 自带 QProgressBar，TUI 用文本进度字符，CLI 用 verbose 模式
-
-调用链：
-
-    ucrawl-test (console_script)
-        -> entry.test_entry:main()
-        -> tests.test_launcher:run()   # 内部自动选 GUI/TUI/CLI
+``main()`` 负责解析 ``ucrawl-test`` 参数、注册可选测试类别，并选择 GUI、TUI
+或 CLI 执行路径。源码测试资源存在时，GUI 路径复用 ``tests.test_launcher``
+中的窗口构造能力，TUI/CLI 路径直接调用测试注册表与 runner；不包含源码测试
+资源的安装包改为执行 ``entry.release_self_check``。dispatcher 通过
+``Mode.TEST`` 调用同一个入口。
 """
 
 from __future__ import annotations
@@ -25,19 +15,19 @@ import traceback
 from pathlib import Path
 from typing import Sequence
 
-# 关键：把项目根目录加进 sys.path，使 `from tests.xxx import yyy` 始终可用
+# 源码运行时补入项目根目录，供 tests 模块及应用模块解析。
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# 关键：让 tests/ 下的 test_registry / test_runner / test_launcher 可被 import
+# 测试启动器使用顶层 test_registry/test_runner 导入，因此还需暴露 tests 目录。
 _TESTS_DIR = _ROOT / "tests"
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
 
 def _source_suite_available() -> bool:
-    """Return whether the development test launcher is present in this install."""
+    """判断当前安装中是否包含开发测试启动器。"""
     return (_TESTS_DIR / "test_launcher.py").is_file()
 
 # 检测 PyQt6 是否可用（模块级）
@@ -50,7 +40,7 @@ except ImportError:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """解析命令行参数。
 
-    设计：所有参数都 **可选**，无参数时进入 GUI 模式（让 launcher 自适应）。
+    所有参数均可选；无参数时由本模块的模式检测选择 GUI 或 TUI。
     """
     parser = argparse.ArgumentParser(
         prog="ucrawl-test",
@@ -111,7 +101,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 def _apply_plugin_args(plugin_dirs: list[str], plugins: list[str]) -> None:
-    """把 --plugin-dir / --plugin 转换为注册表调用。"""
     from tests.test_registry import register_plugin_directory, register_category
 
     for spec in plugin_dirs:
@@ -149,7 +138,6 @@ def _apply_plugin_args(plugin_dirs: list[str], plugins: list[str]) -> None:
             sys.stderr.write(f"⚠️  --plugin 失败: {spec!r}: {exc}\n")
 
 def _run_list() -> int:
-    """列出所有可用测试类别并退出。"""
     from tests.test_registry import (
         get_enabled_categories,
         summary,
@@ -181,13 +169,7 @@ def _run_list() -> int:
     return 0
 
 def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
-    """弹 Qt 测试启动器。
-
-    关键修复（2026-06-06 / 二轮）：
-    - 先用 ``QApplication.instance()`` 强引用，避免被 GC 后元类型错位
-    - 捕获具体异常类型，分层回退（PyQt6 缺失 → 其它错误 → 全部 TUI）
-    - 不在 QApplication 上 setStyleSheet（移到 LauncherWindow 构造函数内）
-    """
+    """弹出 Qt 测试启动器；Qt 不可用或窗口已析构时回退到 TUI。"""
     if not _PYQT6_AVAILABLE:
         sys.stderr.write("⚠️  PyQt6 未安装，回退到 TUI 模式\n")
         return _run_tui(category, no_failfast, verbose)
@@ -199,7 +181,7 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         sys.stderr.write(f"⚠️  导入 PyQt6 失败: {exc}，回退到 TUI 模式\n")
         return _run_tui(category, no_failfast, verbose)
 
-    # 关键：先确保 QApplication 存在（强引用保存到 test_launcher._APP_REF）
+    # QApplication 必须先于 QWidget 创建，并由模块强引用，避免 Python GC 提前析构 Qt 对象。
     app = QApplication.instance()
     if app is None:
         # 必须先创建 QApplication 再创建 QWidget
@@ -222,7 +204,7 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     try:
         window.show()
     except (RuntimeError, Exception) as exc:
-        # 关键：捕获 sip "wrapped C/C++ object has been deleted" 错误
+        # sip 会为已析构的 QWidget 抛出 RuntimeError；此时回退到 TUI，而不是终止测试进程。
         err_str = str(exc)
         if "deleted" in err_str.lower() or "wrapped" in err_str.lower():
             sys.stderr.write(f"⚠️  GUI 模式不可用（C++ 对象已被删除）: {exc}\n")
@@ -241,7 +223,6 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         return _run_tui(category, no_failfast, verbose)
 
 def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
-    """TUI 菜单模式。"""
     from tests.test_registry import get_enabled_categories, get_resolved_files
     from tests.test_runner import run_category, format_summary, TestResult
 
@@ -334,7 +315,6 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     return 0 if all(r.success for r in results) else 1
 
 def _run_cli(category: str, no_failfast: bool, verbose: bool) -> int:
-    """CLI 模式：直接跑指定类别。"""
     from tests.test_registry import get_enabled_categories, get_resolved_files
     from tests.test_runner import run_category, format_summary
 
@@ -359,7 +339,6 @@ def _run_cli(category: str, no_failfast: bool, verbose: bool) -> int:
     return 0 if res.success else 1
 
 def _detect_mode(args: argparse.Namespace) -> str:
-    """根据参数和上下文选择运行模式：gui / tui / cli。"""
     if args.gui:
         return "gui"
     if args.tui:

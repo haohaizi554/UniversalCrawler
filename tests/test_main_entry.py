@@ -80,7 +80,13 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(parse_mode_arg(["-m", "gui"]), Mode.GUI)
         self.assertEqual(parse_mode_arg(["--mode=web"]), Mode.WEB)
         self.assertEqual(parse_mode_arg([]), None)
-        self.assertEqual(parse_mode_arg(["--mode=invalid"]), None)
+
+    def test_parse_mode_arg_rejects_invalid_or_missing_values(self):
+        from entry.dispatcher import parse_mode_arg
+
+        for argv in (["--mode=invalid"], ["--mode="], ["--mode"], ["-m"]):
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                parse_mode_arg(argv)
 
     def test_parse_env_mode(self):
         """UCRAWL_MODE 环境变量解析。"""
@@ -138,6 +144,28 @@ class DispatcherTests(unittest.TestCase):
             self.assertEqual(dispatcher.run(["--mode", "gui"]), 0)
             # 透传后 argv 为空也必须保留为 []，避免下游重新读取 dispatcher 的 sys.argv。
             mock_handler.assert_called_once_with([])
+
+    def test_run_rejects_invalid_or_missing_mode_without_dispatching(self):
+        from entry import dispatcher
+
+        invalid_argv = (
+            ["--mode=invalid"],
+            ["--mode="],
+            ["--mode"],
+            ["-m"],
+            ["--mode", "--port", "8000"],
+        )
+        with patch.dict(os.environ, {"UCRAWL_MODE": "cli"}, clear=False), patch.object(
+            dispatcher, "_dispatch", return_value=0
+        ) as dispatch, patch.object(dispatcher, "prompt_mode_menu") as prompt, patch(
+            "entry.dispatcher.sys.stderr.write"
+        ):
+            for argv in invalid_argv:
+                with self.subTest(argv=argv):
+                    self.assertEqual(dispatcher.run(argv), 2)
+
+        dispatch.assert_not_called()
+        prompt.assert_not_called()
 
     def test_run_with_no_args_calls_prompt(self):
         """run() 无参数调用 prompt_mode_menu。"""

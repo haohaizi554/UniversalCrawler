@@ -9,6 +9,7 @@ import urllib.parse
 from collections.abc import Callable
 
 from app.debug_logger import debug_logger
+from shared.playwright_network_guard import install_public_network_guard
 from app.core.guardrails import BudgetExhausted, CrawlBudget, RateLimiter, sanitize
 from app.core.guardrails.crawl_budget import RateLimitCancelled
 from app.models import VideoItem
@@ -35,7 +36,7 @@ class BaseSpider(threading.Thread):
         self.trace_prefix = self.__class__.__name__.replace("Spider", "").lower() or "spider"
         self.budget = self._build_crawl_budget(config)
         self.rate_limiter = self._build_rate_limiter(config)
-        # The spider thread waits on this event while the UI shows a selection dialog.
+        # UI 展示选择框时 Spider 线程在此等待，停止路径也必须置位该事件才能完成收尾。
         self._resume_event = threading.Event()
         self._selection_result = None
         self._selection_emit_perf_ms = 0.0
@@ -55,7 +56,7 @@ class BaseSpider(threading.Thread):
         *,
         allow_subdomains: bool = True,
     ) -> bool:
-        """Match the parsed hostname, never a lookalike string in the path/query."""
+        """仅匹配解析后的主机名，拒绝路径或查询参数中的伪装域名。"""
         try:
             parsed = urllib.parse.urlsplit(str(url or "").strip())
             if parsed.scheme.lower() not in {"http", "https"}:
@@ -74,7 +75,7 @@ class BaseSpider(threading.Thread):
         *,
         allowed_hosts: tuple[str, ...] | set[str] | frozenset[str],
     ) -> dict[str, object]:
-        """Validate the initial platform URL and every redirect before Requests follows it."""
+        """在 Requests 跟随前校验平台初始 URL 及每一次重定向。"""
         if not self._url_matches_hosts(url, allowed_hosts):
             raise DomainPolicyViolation("url 主机不属于目标平台")
         policy = self._public_domain_policy_engine()
@@ -122,6 +123,7 @@ class BaseSpider(threading.Thread):
         """请求线程尽快停止，并唤醒选择等待/关闭被跟踪的浏览器。"""
         self.is_running = False
         self._interrupt_requested = True
+        # 推进选择代次后再唤醒，避免停止信号被误判为一次正常的 UI 选择结果。
         with self._running_guard():
             self._selection_epoch += 1
         self._resume_event.set()
@@ -172,7 +174,7 @@ class BaseSpider(threading.Thread):
             self._clear_playwright_browser(browser)
 
     def _stop_tracked_playwright_instance(self, playwright=None) -> None:
-        """Stop the tracked Playwright driver so its helper process cannot leak."""
+        """停止受跟踪的 Playwright 驱动，防止其辅助进程泄漏。"""
         with self._playwright_guard():
             playwright = playwright or self._playwright_pw
             if playwright is None:
@@ -189,7 +191,7 @@ class BaseSpider(threading.Thread):
             self._clear_playwright_instance(playwright)
 
     def is_playwright_browser_tracked(self) -> bool:
-        """Return whether a Playwright browser is currently tracked for cleanup."""
+        """判断当前是否有等待清理的 Playwright 浏览器。"""
         return self._tracked_playwright_browser() is not None
 
     def _playwright_guard(self) -> threading.RLock:
@@ -211,7 +213,7 @@ class BaseSpider(threading.Thread):
         return self.is_running
 
     def interruptible_page_wait(self, page, timeout_ms: int, *, step_ms: int = 500) -> bool:
-        """Slice ``page.wait_for_timeout`` so ``stop()`` is observed between chunks."""
+        """切分 ``page.wait_for_timeout``，使每个时间片之间都能响应 ``stop()``。"""
         remaining_ms = max(0, int(timeout_ms))
         step_ms = max(50, int(step_ms))
         while remaining_ms > 0:
@@ -223,7 +225,7 @@ class BaseSpider(threading.Thread):
         return self.is_running
 
     def interruptible_wait_for_selector(self, page, selector: str, *, timeout: int = 30000, step_ms: int = 500):
-        """Wait for a selector in short slices so stop requests are observed quickly."""
+        """分段等待选择器，以便及时响应停止请求。"""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         remaining_ms = max(0, int(timeout))
@@ -256,7 +258,7 @@ class BaseSpider(threading.Thread):
         timeout: int = 30000,
         step_ms: int = 500,
     ) -> bool:
-        """Wait for a Playwright load state without hiding stop requests for seconds."""
+        """分段等待 Playwright 加载状态，避免停止请求被长超时遮蔽。"""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         remaining_ms = max(0, int(timeout))
@@ -291,18 +293,17 @@ class BaseSpider(threading.Thread):
         slice_ms: int = 1000,
         **kwargs,
     ) -> bool:
-        """Navigate once and let tracked-browser cleanup interrupt a stop request.
+        """只发起一次导航，并允许停止请求通过清理受跟踪浏览器来中断等待。
 
-        ``page.goto`` is not a pollable wait: calling it again after a short timeout
-        starts a new navigation and makes slow SPA pages look like they are being
-        constantly refreshed.  Keep a single navigation attempt here; callers that
-        need retries should wrap this method explicitly.
+        ``page.goto`` 不是可轮询等待；短超时后再次调用会启动新导航，让较慢的 SPA
+        页面看起来不断刷新。因此这里只保留一次完整导航，需要重试时由调用方显式控制。
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         if not self.is_running or self.interrupt_requested:
             return False
         self._public_domain_policy_engine().require_public_url(url)
+        self._ensure_playwright_public_route(page)
         try:
             self.guard_request(cancel_check=lambda: not self.is_running)
         except BudgetExhausted as exc:
@@ -311,10 +312,12 @@ class BaseSpider(threading.Thread):
         before_url = str(getattr(page, "url", "") or "")
         try:
             page.goto(url, timeout=max(1, int(timeout)), **kwargs)
+            self._validate_playwright_page_url(page)
             return True
         except PlaywrightTimeoutError:
             if not self.is_running or self.interrupt_requested:
                 return False
+            self._validate_playwright_page_url(page)
             return self._playwright_navigation_has_started(
                 before_url,
                 str(getattr(page, "url", "") or ""),
@@ -324,6 +327,7 @@ class BaseSpider(threading.Thread):
             if not self.is_running or self.interrupt_requested:
                 return False
             if exc.__class__.__name__ == "TimeoutError":
+                self._validate_playwright_page_url(page)
                 return self._playwright_navigation_has_started(
                     before_url,
                     str(getattr(page, "url", "") or ""),
@@ -339,18 +343,18 @@ class BaseSpider(threading.Thread):
         timeout: int = 60000,
         **kwargs,
     ) -> bool:
-        """Reload once with the full timeout and keep stop semantics consistent.
+        """按完整超时只刷新一次，并保持一致的停止语义。
 
-        Some platform pages keep loading SPA resources long after the useful DOM is
-        ready. Retrying short reloads makes those pages look like they are being
-        refreshed in a loop, so this helper mirrors ``interruptible_playwright_goto``:
-        one reload attempt, full timeout, then treat an already-started page as
-        usable unless the user stopped the task.
+        部分平台在有效 DOM 就绪后仍会持续加载 SPA 资源。短超时重试会造成循环刷新，
+        因此这里与 ``interruptible_playwright_goto`` 一样只尝试一次；只要页面已经启动且
+        用户未停止任务，超时后仍按可用页面处理。
         """
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         if not self.is_running or self.interrupt_requested:
             return False
+        self._validate_playwright_page_url(page)
+        self._ensure_playwright_public_route(page)
         try:
             self.guard_request(cancel_check=lambda: not self.is_running)
         except BudgetExhausted as exc:
@@ -358,19 +362,55 @@ class BaseSpider(threading.Thread):
             raise
         try:
             page.reload(timeout=max(1, int(timeout)), **kwargs)
+            self._validate_playwright_page_url(page)
             return True
         except PlaywrightTimeoutError:
             if not self.is_running or self.interrupt_requested:
                 return False
+            self._validate_playwright_page_url(page)
             current_url = str(getattr(page, "url", "") or "")
             return bool(current_url and current_url != "about:blank")
         except Exception as exc:
             if not self.is_running or self.interrupt_requested:
                 return False
             if exc.__class__.__name__ == "TimeoutError":
+                self._validate_playwright_page_url(page)
                 current_url = str(getattr(page, "url", "") or "")
                 return bool(current_url and current_url != "about:blank")
             raise
+
+    def _ensure_playwright_public_route(self, page) -> None:
+        """安装覆盖 HTTP 资源、WebSocket 和页面脚本的请求防护。"""
+        context = getattr(page, "context", None)
+        policy = self._public_domain_policy_engine()
+        try:
+            if context is not None:
+                install_public_network_guard(context, policy)
+            context_has_http = callable(getattr(context, "route", None))
+            context_has_websocket = callable(getattr(context, "route_web_socket", None))
+            context_has_script = callable(getattr(context, "add_init_script", None))
+            if context is None or not (context_has_http and context_has_websocket and context_has_script):
+                install_public_network_guard(
+                    page,
+                    policy,
+                    install_http=not context_has_http,
+                    install_websocket=not context_has_websocket,
+                    install_script=not context_has_script,
+                )
+        except DomainPolicyViolation as exc:
+            debug_logger.log_exception(
+                "BaseSpider",
+                "install_playwright_network_guard",
+                exc,
+            )
+            raise
+
+    def _validate_playwright_page_url(self, page) -> None:
+        current_url = str(getattr(page, "url", "") or "").strip()
+        if not current_url or current_url == "about:blank":
+            return
+        if urllib.parse.urlsplit(current_url).scheme.lower() in {"http", "https"}:
+            self._public_domain_policy_engine().require_public_url(current_url)
 
     @staticmethod
     def _playwright_navigation_has_started(before_url: str, current_url: str, target_url: str) -> bool:
@@ -394,7 +434,7 @@ class BaseSpider(threading.Thread):
 
     @classmethod
     def _normalize_proxy_server(cls, value: object) -> str | None:
-        """Normalize UI labels, presets, and host:port values for browser/proxy clients."""
+        """把 UI 标签、预设值和 host:port 统一为浏览器代理地址。"""
         text = str(value or "").strip()
         if not text:
             return None
@@ -490,7 +530,7 @@ class BaseSpider(threading.Thread):
         return self._proxy_from_windows_settings()
 
     def _configured_timeout_seconds(self, *, default: int = 60, key: str = "timeout") -> int:
-        """Return the per-task crawler timeout, migrating legacy short values."""
+        """返回单任务爬取超时，并迁移旧版过短配置。"""
         config = getattr(self, "config", {}) or {}
         try:
             timeout = int(config.get(key, default) or default)
@@ -577,6 +617,8 @@ class BaseSpider(threading.Thread):
         )
         kwargs = anti_context.browser_context_kwargs()
         kwargs.update(extra)
+        # Service Worker 的请求可能绕过 page.route；禁用后所有浏览器请求都受 URL 策略约束。
+        kwargs["service_workers"] = "block"
         return kwargs
 
     def _apply_stealth_to_context(self, context) -> None:
@@ -598,7 +640,7 @@ class BaseSpider(threading.Thread):
             self._emit_finished()
 
     def _emit_finished(self) -> None:
-        """Mark the spider stopped before notifying hosts that the crawl ended."""
+        """先标记 Spider 已停止，再通知宿主爬取结束。"""
         self.is_running = False
         self.sig_finished.emit()
 
@@ -754,7 +796,6 @@ class BaseSpider(threading.Thread):
         if allowed is False:
             raise RateLimitCancelled(f"Request cancelled before rate-limit permit for {platform}.")
 
-    # Video discovery and dispatch.
     def emit_video(self, url: str, title: str, source: str, meta: dict | None = None):
         # Spider 发现的资源都会进入网络下载层；统一在发射边界标记公网策略，
         # 防止某个平台 task builder 漏字段后绕过下载器的逐跳校验。
@@ -773,7 +814,7 @@ class BaseSpider(threading.Thread):
         self.sig_item_found.emit(item)
 
     def emit_videos(self, items: list[VideoItem]) -> int:
-        """Emit a batch of already-built download items through one callback event."""
+        """用一次回调发射已装配的下载项，降低宿主事件队列压力。"""
         ready_items: list[VideoItem] = []
         for item in items:
             if not isinstance(item, VideoItem):
@@ -814,12 +855,12 @@ class BaseSpider(threading.Thread):
         return self._selection_result
 
     def resume_from_ui(self, selected_indices):
-        """Resume a spider thread after the UI collected user choices."""
+        """UI 收集选择结果后恢复 Spider 线程。"""
         self._selection_result = selected_indices
         self._resume_event.set()
 
     def get_selection_emit_trace(self) -> dict[str, float | int]:
-        """Return the latest selection-dialog emission timing for observability."""
+        """返回最近一次选择框事件的发射时间，供可观测性记录使用。"""
         return {
             "spider_emit_perf_ms": self._selection_emit_perf_ms,
             "spider_emit_wall_ms": self._selection_emit_wall_ms,

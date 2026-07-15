@@ -1,2 +1,1 @@
-"""GUI pages for the 7-page Universal Crawler Pro frontend."""
-
+"""Universal Crawler Pro 七页前端的 GUI 页面。"""

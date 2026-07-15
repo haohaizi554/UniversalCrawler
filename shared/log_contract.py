@@ -1,4 +1,4 @@
-"""Stable log-center labels and category order shared by all frontends."""
+"""所有前端共用的稳定日志中心标签与分类顺序。"""
 
 from __future__ import annotations
 

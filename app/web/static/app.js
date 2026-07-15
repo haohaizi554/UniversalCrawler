@@ -9,6 +9,13 @@ let selected = {
   tool: "link_parser",
 };
 let systemThemeListenerRegistered = false;
+/*
+ * `__ucrawlFrontendStateLoaded` 在本生命周期首次接受可用的 REST 或 WebSocket 状态后置为 `true`，重试不会清零。
+ * `__ucrawlFrontendStateSettled` 表示最近一次未被替代的 REST 全量快照请求已经结束，重试开始时重置为 `false`。
+ * `frontendLoadState` 驱动 `loading`、`ready`、`error`：WebSocket 可在 REST 结束前先推进到 `ready`，
+ * REST 结束时仅在仍无已加载状态的情况下进入 `error`。重试采用 `stale-while-revalidate`，
+ * 进入 `loading` 不清空 `frontendState`；已有状态时即使 REST 失败也继续显示旧数据。
+ */
 window.__ucrawlFrontendStateLoaded = false;
 window.__ucrawlFrontendStateSettled = false;
 let frontendLoadState = "loading";
@@ -336,8 +343,7 @@ function patchRuntimeSection(section, value) {
     return [];
   }
   if (section === "config") {
-    restoreTheme();
-    return [];
+    return { fetchDeltaDelay: 0 };
   }
   if (section === "crawl_state") {
     setCrawlUiState(!!(value && value.is_running));
@@ -465,7 +471,7 @@ function applyStaticLanguage() {
   if (window.UcpLogCenter) window.UcpLogCenter.render();
 }
 
-// Compatibility globals used by a few older browser tests.
+// 少量旧版浏览器测试仍从全局读取这些兼容状态。
 let videos = {};
 let videoOrder = [];
 let selectedVideoId = null;
@@ -515,6 +521,7 @@ function renderFrontendSections(sections) {
   const itemSections = ["queue_items", "active_downloads", "completed_items", "failed_items"];
   if (sections.has("settings_snapshot")) {
     syncAppearanceFromSettings();
+    syncPlatformSourceFromSettings();
     if ((document.documentElement.dataset.language || "zh-CN") !== previousLanguage) {
       renderAll();
       return;
@@ -853,7 +860,7 @@ function acceptPlatformList(value, { degraded = false, persist = false } = {}) {
     try {
       localStorage.setItem(PLATFORM_CACHE_KEY, JSON.stringify(rows));
     } catch (_error) {
-      // Storage failure must not hide the live platform registry.
+      // 存储失败不能遮蔽当前有效的平台注册表。
     }
   }
   renderPlatforms();
@@ -871,18 +878,45 @@ function refreshDegradedPlatformsFromSnapshot() {
 
 function renderPlatforms() {
   const select = document.getElementById("sourceSelect");
-  const cached = localStorage.getItem("cached_last_source") || "";
+  const preferred = preferredPlatformSource();
   select.innerHTML = platforms.map(platform => {
     const id = String(platform.id || "");
     const iconFile = platform.icon_file || (iconManifest.platforms || {})[id.toLowerCase()] || "platform_web.png";
     return `<option value="${escAttr(id)}" data-icon="${escAttr(iconFileUrl(iconFile))}" data-original-label="${escAttr(platform.name)}">${esc(platform.name)}</option>`;
   }).join("");
-  if (cached && platforms.some(platform => String(platform.id) === cached)) select.value = cached;
+  if (preferred && platforms.some(platform => String(platform.id) === preferred)) select.value = preferred;
   if (!select.value && platforms.length) select.value = String(platforms[0].id || "");
+  if (select.value) localStorage.setItem("cached_last_source", select.value);
   enhanceSelects(select.parentElement || document);
   syncCustomSelectForSelect(select);
   updatePlaceholder();
   setCrawlUiState(crawlRunning);
+}
+
+function configuredPlatformSource() {
+  const basic = (frontendState.settings_snapshot || {})["\u57fa\u7840\u8bbe\u7f6e"] || {};
+  return String(basic.last_source || "").trim();
+}
+
+function preferredPlatformSource() {
+  const configured = configuredPlatformSource();
+  if (configured && platforms.some(platform => String(platform.id || "") === configured)) return configured;
+  const cached = String(localStorage.getItem("cached_last_source") || "").trim();
+  if (cached && platforms.some(platform => String(platform.id || "") === cached)) return cached;
+  return platforms.length ? String(platforms[0].id || "") : "";
+}
+
+function syncPlatformSourceFromSettings() {
+  const select = byId("sourceSelect");
+  const configured = configuredPlatformSource();
+  if (!select || !configured || !platforms.some(platform => String(platform.id || "") === configured)) {
+    return false;
+  }
+  const changed = select.value !== configured;
+  if (changed) select.value = configured;
+  localStorage.setItem("cached_last_source", configured);
+  syncCustomSelectForSelect(select);
+  return changed;
 }
 
 function platformSettingsRow(platformId) {
@@ -928,6 +962,7 @@ function configureTopCountForSource(sourceId) {
 
 function renderAll() {
   syncAppearanceFromSettings();
+  syncPlatformSourceFromSettings();
   trimFrontendLogItems();
   updatePlaceholder();
   rebuildCompatibilityState();
@@ -1189,6 +1224,34 @@ function updateCheckStatusLabel(result) {
   return t("检查更新失败");
 }
 
+function setUpdateModalBusy(busy) {
+  const modal = byId("updateModal");
+  if (!modal) return;
+  const isBusy = Boolean(busy);
+  modal.setAttribute("aria-busy", isBusy ? "true" : "false");
+  const spinner = byId("updateSpinner");
+  if (spinner) spinner.hidden = !isBusy;
+}
+
+function waitForUpdateModalPaint() {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const fallback = window.setTimeout(finish, 80);
+    if (typeof window.requestAnimationFrame !== "function") return;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.clearTimeout(fallback);
+        finish();
+      });
+    });
+  });
+}
+
 async function showUpdateCheckModal() {
   const modal = byId("updateModal");
   if (!modal) return;
@@ -1196,7 +1259,7 @@ async function showUpdateCheckModal() {
   updateReleaseUrl = "";
   selectedUpdateVersion = "";
   modal.style.display = "flex";
-  modal.setAttribute("aria-busy", "true");
+  setUpdateModalBusy(true);
   byId("updateTitle").textContent = t("检查更新");
   byId("updateLocalLabel").textContent = t("当前版本");
   byId("updateLatestLabel").textContent = t("Release 版本");
@@ -1213,9 +1276,13 @@ async function showUpdateCheckModal() {
   byId("updateReleaseLink").hidden = true;
   byId("updatePrepareBtn").hidden = true;
   byId("updateInstallBtn").hidden = true;
+  byId("updateCloseBtn").disabled = false;
+  byId("updateCloseIcon").disabled = false;
   byId("statusVersion").disabled = true;
   byId("updateCloseBtn").focus({ preventScroll: true });
   try {
+    await waitForUpdateModalPaint();
+    if (sequence !== updateCheckSequence || modal.style.display === "none") return;
     const response = await fetch("/api/update/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1242,7 +1309,7 @@ async function showUpdateCheckModal() {
     byId("updateNotes").textContent = String(error && (error.message || error) || "");
   } finally {
     if (sequence === updateCheckSequence) {
-      modal.setAttribute("aria-busy", "false");
+      setUpdateModalBusy(false);
       byId("statusVersion").disabled = false;
     }
   }
@@ -1253,7 +1320,7 @@ async function prepareWebUpdate() {
   const button = byId("updatePrepareBtn");
   if (!modal || !button || !selectedUpdateVersion || modal.getAttribute("aria-busy") === "true") return;
   const sequence = ++updateCheckSequence;
-  modal.setAttribute("aria-busy", "true");
+  setUpdateModalBusy(true);
   button.disabled = true;
   byId("updateStatus").dataset.status = "preparing";
   byId("updateStatus").textContent = t("正在下载并验证更新...");
@@ -1283,7 +1350,7 @@ async function prepareWebUpdate() {
     byId("updateNotes").textContent = String(error && (error.message || error) || "");
   } finally {
     if (sequence === updateCheckSequence) {
-      modal.setAttribute("aria-busy", "false");
+      setUpdateModalBusy(false);
       button.disabled = false;
     }
   }
@@ -1294,8 +1361,10 @@ async function installWebUpdate() {
   const button = byId("updateInstallBtn");
   if (!modal || !button || button.hidden || modal.getAttribute("aria-busy") === "true") return;
   const sequence = ++updateCheckSequence;
-  modal.setAttribute("aria-busy", "true");
+  setUpdateModalBusy(true);
   button.disabled = true;
+  byId("updateCloseBtn").disabled = true;
+  byId("updateCloseIcon").disabled = true;
   byId("updateStatus").dataset.status = "installing";
   byId("updateStatus").textContent = t("正在启动安装程序...");
   try {
@@ -1320,19 +1389,27 @@ async function installWebUpdate() {
     byId("updateStatus").dataset.status = "error";
     byId("updateStatus").textContent = t("启动安装程序失败");
     byId("updateNotes").textContent = String(error && (error.message || error) || "");
-    modal.setAttribute("aria-busy", "false");
+    setUpdateModalBusy(false);
     button.disabled = false;
+    byId("updateCloseBtn").disabled = false;
+    byId("updateCloseIcon").disabled = false;
   }
+}
+
+function isUpdateModalCloseDisabled() {
+  return [byId("updateCloseBtn"), byId("updateCloseIcon")]
+    .some(control => Boolean(control && control.disabled));
 }
 
 function closeUpdateCheckModal() {
   const modal = byId("updateModal");
-  if (!modal || modal.style.display === "none") return;
+  if (!modal || modal.style.display === "none" || isUpdateModalCloseDisabled()) return false;
   updateCheckSequence += 1;
   modal.style.display = "none";
-  modal.setAttribute("aria-busy", "false");
+  setUpdateModalBusy(false);
   byId("statusVersion").disabled = false;
   byId("statusVersion").focus({ preventScroll: true });
+  return true;
 }
 
 function openUpdateReleasePage() {
@@ -1480,6 +1557,27 @@ window.cancelSelection = () => dialogControllerService().cancelSelection();
 
 let themeToggleInFlight = false;
 let pendingThemeValue = "";
+const APPEARANCE_ACCENT_MAP = Object.freeze({
+  blue: { light: ["#1677ff", "#eaf3ff"], dark: ["#3b82f6", "#1f2d46"] },
+  green: { light: ["#16a34a", "#e7f8ee"], dark: ["#22c55e", "#153523"] },
+  purple: { light: ["#7c3aed", "#f1eaff"], dark: ["#a78bfa", "#312548"] },
+  orange: { light: ["#ea580c", "#fff1e7"], dark: ["#fb923c", "#3d2718"] },
+  red: { light: ["#dc2626", "#feecec"], dark: ["#f87171", "#402020"] },
+});
+
+function currentAppearanceSettings() {
+  return (frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] || {};
+}
+
+function applyThemeDependentTokens(dark, appearanceOverride = null) {
+  const appearance = appearanceOverride || currentAppearanceSettings();
+  const accent = APPEARANCE_ACCENT_MAP[String(appearance.accent || "blue").toLowerCase()]
+    || APPEARANCE_ACCENT_MAP.blue;
+  const palette = accent[dark ? "dark" : "light"];
+  document.documentElement.style.setProperty("--accent", palette[0]);
+  document.documentElement.style.setProperty("--accent-soft", palette[1]);
+  document.documentElement.style.setProperty("--row-selected", palette[1]);
+}
 
 function applyOptimisticTheme(theme) {
   const dark = theme === "dark";
@@ -1527,8 +1625,10 @@ function toggleTheme() {
 }
 
 function restoreTheme() {
-  const cached = localStorage.getItem("cached_theme");
-  applyTheme(cached === "dark");
+  const serverTheme = String(document.documentElement.dataset.theme || "").toLowerCase();
+  const cached = String(localStorage.getItem("cached_theme") || "").toLowerCase();
+  const initialTheme = ["light", "dark"].includes(serverTheme) ? serverTheme : cached;
+  applyTheme(initialTheme === "dark");
   setThemeToggleBusy(false);
 }
 
@@ -1542,36 +1642,23 @@ function applyAppearance(appearance = {}) {
     systemTheme.addEventListener("change", event => {
       const current = (frontendState.settings_snapshot || {})["\u5916\u89c2\u8bbe\u7f6e"] || {};
       if (current.follow_system !== true) return;
-      applyTheme(Boolean(event.matches));
       applyAppearance(current);
     });
     systemThemeListenerRegistered = true;
   }
   if (followsSystem && systemTheme) {
-    applyTheme(systemTheme.matches);
+    applyTheme(systemTheme.matches, appearance);
   } else if (theme === "dark" || theme === "light") {
-    applyTheme(theme === "dark");
+    applyTheme(theme === "dark", appearance);
     localStorage.setItem("cached_theme", theme);
     localStorage.setItem("cached_dark_theme", String(theme === "dark"));
   }
   const scaleMap = { "90%": .9, "100%": 1, "110%": 1.1, "125%": 1.25 };
   const fontMap = { small: 13, medium: 14, large: 16 };
-  const accentMap = {
-    blue: { light: ["#1677ff", "#eaf3ff"], dark: ["#3b82f6", "#1f2d46"] },
-    green: { light: ["#16a34a", "#e7f8ee"], dark: ["#22c55e", "#153523"] },
-    purple: { light: ["#7c3aed", "#f1eaff"], dark: ["#a78bfa", "#312548"] },
-    orange: { light: ["#ea580c", "#fff1e7"], dark: ["#fb923c", "#3d2718"] },
-    red: { light: ["#dc2626", "#feecec"], dark: ["#f87171", "#402020"] },
-  };
   const scale = scaleMap[String(appearance.scale || "100%")] || 1;
   const fontSize = fontMap[String(appearance.font_size || "medium").toLowerCase()] || 14;
-  const accent = accentMap[String(appearance.accent || "blue").toLowerCase()] || accentMap.blue;
-  const mode = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
   document.documentElement.style.setProperty("--ui-scale", String(scale));
   document.documentElement.style.setProperty("--base-font-size", `${Math.max(12, Math.round(fontSize * scale))}px`);
-  document.documentElement.style.setProperty("--accent", accent[mode][0]);
-  document.documentElement.style.setProperty("--accent-soft", accent[mode][1]);
-  document.documentElement.style.setProperty("--row-selected", accent[mode][1]);
   const configuredLanguage = String(appearance.language || "").trim();
   const language = ["zh-CN", "en-US", "zh-TW"].includes(configuredLanguage)
     ? configuredLanguage
@@ -1581,11 +1668,12 @@ function applyAppearance(appearance = {}) {
   applyStaticLanguage();
 }
 
-function applyTheme(dark) {
+function applyTheme(dark, appearanceOverride = null) {
   const theme = dark ? "dark" : "light";
   if (document.documentElement.dataset.theme !== theme) {
     document.documentElement.dataset.theme = theme;
   }
+  applyThemeDependentTokens(dark, appearanceOverride);
   const themeButton = byId("themeBtn");
   if (themeButton) {
     const iconFile = dark ? "action_theme_night.png" : "action_theme_light.png";
@@ -1595,9 +1683,14 @@ function applyTheme(dark) {
 }
 
 function cacheSource() {
-  localStorage.setItem("cached_last_source", byId("sourceSelect").value);
+  const source = byId("sourceSelect").value;
+  localStorage.setItem("cached_last_source", source);
+  patchSettingSnapshot("\u57fa\u7840\u8bbe\u7f6e", "last_source", source);
   updatePlaceholder();
-  sendWS("change_source", { source: byId("sourceSelect").value });
+  void frontendRuntimeService().requestAction("update_basic_setting", {
+    key: "last_source",
+    value: source,
+  });
 }
 
 function updatePlaceholder() {

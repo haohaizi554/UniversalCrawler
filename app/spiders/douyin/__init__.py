@@ -1,4 +1,4 @@
-"""包初始化模块，为 `app/spiders/douyin` 提供统一导出或包级说明。"""
+"""抖音平台爬取实现。"""
 
 from .parser import DouyinItemParser
 from .spider import DouyinSpider

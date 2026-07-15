@@ -1,4 +1,4 @@
-"""Explicit download strategy chain for media transfer decisions."""
+"""用于选择媒体传输方案的显式下载策略链。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""工具模块，提供 `app/utils/runtime_paths.py` 对应的通用辅助函数。"""
+"""统一开发态、打包态与用户数据目录的路径定位规则。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ APP_DIR_NAME = "UniversalCrawlerPro"
 USER_DATA_ROOT_ENV = "UCRAWL_USER_DATA_ROOT"
 DOWNLOAD_ROOT_ENV = "UCRAWL_DOWNLOAD_ROOT"
 TOOL_ROOT_ENV = "UCRAWL_TOOL_ROOT"
-#运行时路径管理（核心工具）
 
 def is_frozen() -> bool:
     
@@ -42,7 +41,7 @@ def local_appdata_root() -> Path:
 
 def is_development_runtime() -> bool:
     """判断当前是否处于 IDE / 源码开发调试态。"""
-    return not is_frozen()
+    return not is_frozen() and (project_root() / "pyproject.toml").is_file()
 
 def user_data_root() -> Path:
     """返回用户数据根目录。
@@ -119,24 +118,24 @@ def is_temporary_path(path_value: str | os.PathLike[str] | None) -> bool:
         if candidate.endswith("/appdata/local/temp") or "/appdata/local/temp/" in candidate:
             return True
         root_relative = candidate[2:] if len(candidate) >= 3 and candidate[1:3] == ":/" else candidate
-        # These are path classifiers only; no file is created from the literals.
+        # 这些字符串仅用于路径分类，不会据此创建文件。
         return root_relative == "/tmp" or root_relative.startswith("/tmp/")  # nosec B108
 
     return _matches_known_temp_root(raw_path) or _matches_known_temp_root(normalized)
 
 def resolve_user_file(path_value: str | os.PathLike[str]) -> Path:
-    """解析并确定 `user_file` 对应的最终结果。"""
+    """相对路径锚定用户数据目录，绝对路径原样返回。"""
     path = Path(path_value)
     if path.is_absolute():
         return path
     return user_data_root() / path
 
 def resolve_resource_file(relative_path: str | os.PathLike[str]) -> Path:
-    """解析并确定 `resource_file` 对应的最终结果。"""
+    """相对资源路径锚定当前运行时资源目录。"""
     return resource_root() / Path(relative_path)
 
 def resolve_tool_file(executable_name: str) -> Path:
-    """解析并确定 `tool_file` 对应的最终结果。"""
+    """按显式工具目录、安装目录和资源目录的顺序查找可执行文件。"""
     tool_root_override = os.environ.get(TOOL_ROOT_ENV, "").strip()
     search_roots: list[Path] = []
     if tool_root_override:

@@ -27,7 +27,7 @@ DIR_BUTTON_MIN_WIDTH = 116
 
 
 class TopBarWidget(QFrame):
-    """Unified top control row (platform selector lives in the sidebar)."""
+    """统一顶部操作栏；平台选择器由侧栏持有。"""
 
     def __init__(self, is_dark_theme: bool) -> None:
         super().__init__()

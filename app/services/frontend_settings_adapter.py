@@ -346,6 +346,7 @@ def build_settings_snapshot(
     return {
         "基础设置": {
             "download_directory": common.get("save_directory", ""),
+            "last_source": common.get("last_source", ""),
             "filename_template": filename_template,
             "filename_template_label": filename_template_label(filename_template),
             "open_after_download": bool(common.get("open_after_download", False)),

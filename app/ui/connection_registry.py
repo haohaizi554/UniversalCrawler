@@ -1,4 +1,4 @@
-"""Lifecycle-aware Qt signal connection registry."""
+"""集中管理 Qt 信号连接的生命周期。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from PyQt6.QtCore import QMetaObject, QObject
 _LOGGER = logging.getLogger(__name__)
 
 class ConnectionRegistry:
-    """Keep track of signal-slot connections so they can be disconnected cleanly."""
+    """登记连接句柄并按逆序断开，避免组件重绑后旧槽重复接收信号。"""
 
     def __init__(self) -> None:
         self._connections: list[tuple[Any, QMetaObject.Connection, Callable[..., Any]]] = []

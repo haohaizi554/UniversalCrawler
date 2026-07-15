@@ -24,7 +24,7 @@ def _badge_size(text: str) -> QSize:
     return QSize(width, height)
 
 class NavBadgeLabel(QLabel):
-    """Compact count badge for sidebar navigation."""
+    """侧栏导航使用的紧凑计数标记。"""
 
     def __init__(self) -> None:
         super().__init__()
@@ -94,7 +94,7 @@ class NavBadgeLabel(QLabel):
             painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self._count_text)
 
 class NavItemWidget(QFrame):
-    """Single sidebar navigation row with optional count bubble."""
+    """可附带计数标记的单行侧栏导航按钮。"""
 
     clicked = pyqtSignal()
 
@@ -233,7 +233,7 @@ class NavItemWidget(QFrame):
         self.badge_label.set_badge(self._count, filled=filled)
 
 class SidebarWidget(QWidget):
-    """Left column with platform selector and navigation islands."""
+    """包含平台选择器和导航分区的左侧栏。"""
 
     page_selected = pyqtSignal(str)
 

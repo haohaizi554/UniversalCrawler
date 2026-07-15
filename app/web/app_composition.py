@@ -53,7 +53,7 @@ def build_web_app_composition(
     access_token: str | None = None,
     access_cookie_name: str = "ucrawl_access_token",
 ) -> WebAppComposition:
-    """构建 Web app 运行所需的组合对象。"""
+    """构建 Web 应用运行所需的组合对象。"""
 
     manager = ConnectionManager()
     ws_bootstrapper = WebSocketBootstrapper()

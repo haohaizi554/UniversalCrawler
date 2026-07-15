@@ -1,4 +1,4 @@
-"""异常定义模块，集中声明 `app/exceptions/service.py` 使用的异常类型。"""
+"""描述服务层媒体扫描、文件操作和调试动作失败。"""
 
 from .base import AppError
 

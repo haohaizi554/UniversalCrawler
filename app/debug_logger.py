@@ -1,4 +1,4 @@
-"""实现 `app/debug_logger.py` 对应功能的 Python 模块。"""
+"""提供线程安全的调试日志、敏感信息脱敏与 trace_id 生成。"""
 
 import json
 import re
@@ -27,7 +27,7 @@ _VALID_RETENTION_DAYS = {1, 3, 5, 7}
 _DEFAULT_RETENTION_DAYS = 1
 
 def normalize_trace_prefix(prefix: str = "trace") -> str:
-    """Normalize frontend trace prefixes to stable platform_name segments."""
+    """把前端追踪前缀规整为稳定的 platform_name 片段。"""
     raw = str(prefix or "trace").strip() or "trace"
     raw = re.sub(r"[^0-9A-Za-z_-]+", "_", raw).replace("-", "_").strip("_")
     parts = [part for part in raw.split("_") if part]
@@ -43,14 +43,7 @@ def normalize_trace_prefix(prefix: str = "trace") -> str:
     return "_".join([base, *tail])
 
 class DebugLogger:
-    """统一调试日志记录器。
-
-    目标：
-    1. 面向调试，强调可读性，而不是纯 JSON 堆砌；
-    2. 保留关键上下文，避免日志过长；
-    3. 支持多线程写入；
-    4. 默认写入项目根目录下的 logs 文件夹。
-    """
+    """以便于排障的文本格式记录日志，并在写入前统一脱敏。"""
 
     SENSITIVE_KEYS = {
         "cookie",
@@ -70,12 +63,11 @@ class DebugLogger:
     LEVEL_ORDER = {"DEBUG": 10, "INFO": 20, "WARN": 30, "WARNING": 30, "ERROR": 40}
 
     def __init__(self):
-        """初始化当前实例并准备运行所需的状态，供 `DebugLogger` 使用。"""
         self.logs_dir = user_logs_root()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         process_name = multiprocessing.current_process().name
-        # 修复 BUG-169: web 子进程和主进程区分开，避免 latest_debug.log 写冲突
+        # latest_debug.log 是主进程诊断入口；子进程只写独立会话，避免多进程争用同一文件。
         self._is_main_process = (process_name == "MainProcess")
         self.session_file = self.logs_dir / f"debug_{timestamp}_{process_name}.log"
         self.latest_file = self.logs_dir / "latest_debug.log"
@@ -85,8 +77,7 @@ class DebugLogger:
         self._retention_days = _DEFAULT_RETENTION_DAYS
         self._last_cleanup_policy: tuple[int, str] | None = None
 
-        # 仅主进程覆盖 latest_debug.log，避免 Windows 多进程扫码登录时冲掉主日志
-        # 修复 BUG-169: 加 try/except 防止 web 进程并发清空文件时 PermissionError
+        # Windows 可能短暂持有日志文件锁，因此初始化也走有限重试的安全写入路径。
         if self._is_main_process:
             self._safe_write_text(self.latest_file, "")
             self._safe_write_text(
@@ -102,7 +93,7 @@ class DebugLogger:
         retention_days: int | None = None,
         cleanup_old_logs: bool | None = None,
     ) -> None:
-        """Apply runtime logging preferences used by GUI and Web settings."""
+        """应用 GUI 与 Web 共用的运行时日志设置。"""
         if level is not None:
             normalized_level = str(level or "info").strip().upper()
             self._min_level = self.LEVEL_ORDER.get(normalized_level, self.LEVEL_ORDER["INFO"])
@@ -119,7 +110,7 @@ class DebugLogger:
                 self._last_cleanup_policy = policy
 
     def cleanup_old_logs(self, retention_days: int | None = None) -> int:
-        """Remove old debug sessions while keeping current and latest files."""
+        """清理过期调试会话，同时保留当前会话和最新诊断文件。"""
         try:
             raw_days = int(retention_days if retention_days is not None else self._retention_days)
             days = raw_days if raw_days in _VALID_RETENTION_DAYS else _DEFAULT_RETENTION_DAYS
@@ -144,7 +135,7 @@ class DebugLogger:
         return self.LEVEL_ORDER.get(normalized, self.LEVEL_ORDER["INFO"]) >= self._min_level
 
     def _safe_write_text(self, path, content, encoding="utf-8"):
-        """修复 BUG-169: write_text 加 try/except，避免 Windows 文件锁 PermissionError"""
+        """容忍 Windows 短时文件锁；诊断日志写入失败不能中断主流程。"""
         import time as _time
         for attempt in range(3):
             try:
@@ -152,17 +143,16 @@ class DebugLogger:
                 return True
             except (OSError, PermissionError) as exc:
                 if attempt == 2:
-                    # 3 次都失败，静默放弃（不影响爬虫主流程）
+                    # 三次失败后只记录到标准 logger，避免调试设施反向影响采集任务。
                     import logging
                     logging.getLogger(__name__).debug(
                         f"[debug_logger] 无法写入 {path.name}: {exc}"
                     )
                     return False
-                _time.sleep(0.05 * (attempt + 1))  # 50ms / 100ms / 150ms 重试
+                _time.sleep(0.05 * (attempt + 1))  # 采用 50/100/150 ms 递增退避。
         return False
 
     def _write_header(self):
-        """提供 `_write_header` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         header = [
             "=" * 88,
             "Universal Crawler Pro Debug Session",
@@ -174,11 +164,9 @@ class DebugLogger:
         self._append_lines(header)
 
     def _now(self) -> str:
-        """提供 `_now` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _is_sensitive_key(self, key: str) -> bool:
-        """提供 `_is_sensitive_key` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         lower_key = key.lower()
         if lower_key.endswith(("_path", "_file", "_dir")):
             return False
@@ -190,7 +178,6 @@ class DebugLogger:
         )
 
     def _mask_inline_secret(self, value: str) -> str:
-        """提供 `_mask_inline_secret` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         masked = re.sub(
             r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@:\s]+)(?::([^@/\s]*))?@",
             r"\1***:***@",
@@ -219,7 +206,7 @@ class DebugLogger:
         return masked
 
     def _redact_command_args(self, command_args: list[str] | tuple[str, ...]) -> list[str]:
-        """Redact both inline secrets and values following known secret flags."""
+        """同时脱敏参数内嵌密钥和敏感选项后的独立参数值。"""
         sensitive_flags = {
             "/p",
             "--password",
@@ -243,7 +230,6 @@ class DebugLogger:
         return redacted
 
     def _redact_sensitive_value(self, value: Any) -> Any:
-        """提供 `_redact_sensitive_value` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if isinstance(value, str):
             if re.match(
                 r"^\s*(?:cookie|password|passwd|pwd|secret|token|sessionid(?:_ss)?|sessdata|mstoken|ttwid)\s*[:=]",
@@ -258,11 +244,10 @@ class DebugLogger:
         return "***"
 
     def _append_lines(self, lines: list[str]):
-        """提供 `_append_lines` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         content = "\n".join(lines) + "\n"
         import time as _time
         with self._lock:
-            # 修复 BUG-169: session_file 每个进程独立，但仍加 try/except + 重试
+            # 杀毒扫描或日志查看器仍可能短时锁住独立会话文件，有限重试后再降级。
             for attempt in range(3):
                 try:
                     with open(self.session_file, "a", encoding="utf-8") as fp:
@@ -270,10 +255,10 @@ class DebugLogger:
                     break
                 except (OSError, PermissionError):
                     if attempt == 2:
-                        # session_file 也写不进去时只放弃这一行，不抛异常
+                        # 会话文件不可写时只丢弃本批日志，不向业务调用方抛异常。
                         return
                     _time.sleep(0.05 * (attempt + 1))
-            # 修复 BUG-169: latest_debug.log 只在主进程写，避免和 web 进程冲突
+            # latest_debug.log 只反映主进程，避免 Web 子进程覆盖 GUI 的诊断上下文。
             if self._is_main_process:
                 for attempt in range(3):
                     try:
@@ -286,7 +271,6 @@ class DebugLogger:
                         _time.sleep(0.05 * (attempt + 1))
 
     def _clean_mapping(self, data: dict[str, Any] | None) -> dict[str, Any]:
-        """提供 `_clean_mapping` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if not data:
             return {}
         cleaned = {}
@@ -307,7 +291,6 @@ class DebugLogger:
         return cleaned
 
     def _format_mapping(self, title: str, data: dict[str, Any] | None) -> list[str]:
-        """提供 `_format_mapping` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         data = self._clean_mapping(data)
         if not data:
             return []
@@ -325,7 +308,6 @@ class DebugLogger:
         return lines
 
     def _normalize_value(self, value: Any) -> Any:
-        """提供 `_normalize_value` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         if isinstance(value, dict):
             result = {}
             for key, item in list(value.items())[:20]:
@@ -352,7 +334,7 @@ class DebugLogger:
         return value
 
     def new_trace_id(self, prefix: str = "trace") -> str:
-        """Create a normalized trace id with a stable platform prefix."""
+        """生成带稳定平台前缀的规范化 trace_id。"""
         normalized = normalize_trace_prefix(prefix)
         stamp = datetime.now().strftime("%H%M%S")
         short = uuid.uuid4().hex[:8]
@@ -375,7 +357,6 @@ class DebugLogger:
         details: dict[str, Any] | None,
     ):
         # 错误摘要始终覆盖为“最近一次错误”，这样用户从 UI 打开时能直接看到最新诊断结论。
-        """提供 `_write_error_summary` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         message = self._mask_inline_secret(str(message))
         severity = self._infer_error_severity(component, action, status_code, details)
         conclusion = self._build_error_conclusion(component, action, status_code, details)
@@ -410,7 +391,7 @@ class DebugLogger:
             lines.append(f"- {item}")
         lines.append("")
         with self._lock:
-            # 修复 BUG-169: error_summary 也加 try/except + 重试
+            # 摘要与普通日志共享 Windows 文件锁降级策略。
             self._safe_write_text(self.latest_error_summary_file, "\n".join(lines))
 
     def _infer_error_severity(
@@ -421,7 +402,6 @@ class DebugLogger:
         details: dict[str, Any] | None,
     ) -> str:
         # 这里做的是“面向排障”的粗粒度优先级分类，不追求精确异常学术定义。
-        """提供 `_infer_error_severity` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         text = f"{component} {action} {status_code or ''} {json.dumps(self._normalize_value(details or {}), ensure_ascii=False)}".lower()
         if "stop" in text or "用户停止" in text:
             return "P4-用户操作"
@@ -442,7 +422,6 @@ class DebugLogger:
         status_code: int | str | None,
         details: dict[str, Any] | None,
     ) -> str:
-        """提供 `_build_error_conclusion` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         text = f"{component} {action} {status_code or ''} {json.dumps(self._normalize_value(details or {}), ensure_ascii=False)}".lower()
         if "ffmpeg" in text:
             return "问题大概率出在 ffmpeg 执行或合并阶段，优先核对输入 URL、Referer、输出路径和 ffmpeg 是否可用。"
@@ -467,7 +446,6 @@ class DebugLogger:
         status_code: int | str | None,
         details: dict[str, Any] | None,
     ) -> list[str]:
-        """提供 `_build_error_suggestions` 对应的内部辅助逻辑，供 `DebugLogger` 使用。"""
         detail_text = json.dumps(self._normalize_value(details or {}), ensure_ascii=False)
         suggestions = [
             "先用追踪ID在 latest_debug.log 中全文搜索，查看同一任务前后的 API、入队、下载和合并记录。",
@@ -615,15 +593,13 @@ class DebugLoggerProxy:
     """惰性代理，避免模块导入时立刻创建日志目录和文件。"""
 
     def __getattr__(self, name: str):
-        """提供 `__getattr__` 对应的内部辅助逻辑，供 `DebugLoggerProxy` 使用。"""
         return getattr(get_debug_logger(), name)
 
     def __setattr__(self, name: str, value):
-        """提供 `__setattr__` 对应的内部辅助逻辑，供 `DebugLoggerProxy` 使用。"""
         setattr(get_debug_logger(), name, value)
 
     def __delattr__(self, name: str):
-        """Allow test patches on lazy logger attributes to be removed cleanly."""
+        """允许测试补丁干净地移除惰性 logger 上的属性。"""
         logger = get_debug_logger()
         if name in getattr(logger, "__dict__", {}):
             delattr(logger, name)

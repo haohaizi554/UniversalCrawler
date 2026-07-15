@@ -1,4 +1,4 @@
-"""Shared domain event models used by different hosts."""
+"""供不同宿主共同使用的领域事件模型。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from app.core.state import CrawlStatus, VideoStatus, parse_video_status
 from app.models import VideoItem
 
 class DomainEventType(str, Enum):
-    """Canonical domain event categories."""
+    """统一的领域事件分类。"""
 
     VIDEO_STATE_CHANGED = "video_state_changed"
     TASK_STARTED = "task_started"
@@ -25,7 +25,7 @@ class DomainEventType(str, Enum):
 
 @dataclass(slots=True)
 class DomainEvent:
-    """Transport-agnostic domain event payload."""
+    """与传输协议无关的领域事件载荷。"""
 
     event_type: DomainEventType
     payload: dict[str, Any] = field(default_factory=dict)
@@ -49,7 +49,6 @@ def build_video_state_event(
     *,
     requested_progress: int | None,
 ) -> DomainEvent:
-    """Build a canonical video state event from a VideoItem."""
     parsed_status = parse_video_status(item.status) or VideoStatus.PENDING
     payload: dict[str, Any] = {
         "video_id": video_id,
@@ -68,7 +67,6 @@ def build_video_state_event(
     )
 
 def build_crawl_state_event(status: CrawlStatus, **payload: Any) -> DomainEvent:
-    """Build a canonical crawl lifecycle event."""
     data = {"status": status.value, **payload}
     return DomainEvent(
         event_type=DomainEventType.CRAWL_STATE_CHANGED,
@@ -76,14 +74,12 @@ def build_crawl_state_event(status: CrawlStatus, **payload: Any) -> DomainEvent:
     )
 
 def build_log_event(message: str, **payload: Any) -> DomainEvent:
-    """Build a canonical log event."""
     return DomainEvent(
         event_type=DomainEventType.LOG,
         payload={"message": message, **payload},
     )
 
 def build_item_found_event(item: VideoItem) -> DomainEvent:
-    """Build a canonical item-found event."""
     return DomainEvent(
         event_type=DomainEventType.ITEM_FOUND,
         payload={"item": item},
@@ -92,14 +88,12 @@ def build_item_found_event(item: VideoItem) -> DomainEvent:
     )
 
 def build_items_found_event(items: list[VideoItem]) -> DomainEvent:
-    """Build a canonical batched item-found event."""
     return DomainEvent(
         event_type=DomainEventType.ITEMS_FOUND,
         payload={"items": list(items)},
     )
 
 def build_selection_required_event(items: list[Any]) -> DomainEvent:
-    """Build a canonical selection-required event."""
     return DomainEvent(
         event_type=DomainEventType.SELECTION_REQUIRED,
         payload={"items": items},
@@ -118,7 +112,6 @@ def _build_task_event_payload(video_id: str, item: VideoItem | None, *, error: s
     return payload, trace_id
 
 def build_task_started_event(video_id: str, item: VideoItem | None) -> DomainEvent:
-    """Build a task-started event while keeping legacy Web payload shape."""
     payload, trace_id = _build_task_event_payload(video_id, item)
     return DomainEvent(
         event_type=DomainEventType.TASK_STARTED,
@@ -128,7 +121,6 @@ def build_task_started_event(video_id: str, item: VideoItem | None) -> DomainEve
     )
 
 def build_task_finished_event(video_id: str, item: VideoItem | None) -> DomainEvent:
-    """Build a task-finished event while keeping legacy Web payload shape."""
     payload, trace_id = _build_task_event_payload(video_id, item)
     return DomainEvent(
         event_type=DomainEventType.TASK_FINISHED,
@@ -138,7 +130,6 @@ def build_task_finished_event(video_id: str, item: VideoItem | None) -> DomainEv
     )
 
 def build_task_error_event(video_id: str, item: VideoItem | None, error: str) -> DomainEvent:
-    """Build a task-error event while keeping legacy Web payload shape."""
     payload, trace_id = _build_task_event_payload(video_id, item, error=error)
     return DomainEvent(
         event_type=DomainEventType.TASK_ERROR,

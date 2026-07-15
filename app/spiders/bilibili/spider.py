@@ -1,4 +1,4 @@
-"""Bilibili spider built as a scan -> parse -> assemble pipeline."""
+"""Bilibili 扫描、解析与任务装配流水线。"""
 
 import os
 import re
@@ -53,14 +53,14 @@ class BiliAPI:
     """B 站 API 访问层，负责登录态检查、详情读取和取流。"""
 
     def __init__(self, cookie_path, parser: BilibiliParser):
-        """初始化当前实例并准备运行所需的状态，供 `BiliAPI` 使用。"""
-        self.sess = requests.Session()#创建一个持久化的 HTTP 会话对象
+        """配置持久会话、解析器、认证服务和 Cookie。"""
+        self.sess = requests.Session()
         self._session_lock = threading.RLock()
         with self._session_guard():
             self.sess.headers.update(HEADERS)
-        self.cookie_path = cookie_path#保存 Cookie 文件的本地路径
-        self.parser = parser#注入页面解析器依赖
-        self.auth_service = AuthService()#初始化认证服务实例
+        self.cookie_path = cookie_path
+        self.parser = parser
+        self.auth_service = AuthService()
         self.request_timeout = cfg.get("bilibili", "timeout", get_setting_default("bilibili", "timeout"))
         self._video_info_errors: dict[str, dict[str, object]] = {}
         self.load_cookies()
@@ -100,7 +100,7 @@ class BiliAPI:
         return errors.pop(str(target), None)
 
     def load_cookies(self):
-        """加载 `cookies` 对应的数据、配置或资源，供 `BiliAPI` 使用。"""
+        """从认证文件加载 Cookie，并写入持久 HTTP 会话。"""
         cookies = self.auth_service.load_json_file(self.cookie_path)
         cookie_dict = self.auth_service.extract_cookie_dict(cookies)
         with self._session_guard():
@@ -177,7 +177,7 @@ class BiliAPI:
         return response, response_url
 
     def get_video_info(self, bvid: str | None = None, trace_id=None, *, aid: str | int | None = None):
-        """Fetch Bilibili video detail by bvid, or by aid for legacy av links."""
+        """按 bvid 获取视频详情；旧版 av 链接则按 aid 查询。"""
         target = str(aid if aid is not None else bvid or "").strip()
         if not target:
             raise SpiderParseError("missing Bilibili video id")
@@ -254,7 +254,7 @@ class BiliAPI:
     def get_play_url(self, bvid, cid, trace_id=None):
         
         def _request(fnval):
-            """提供 `_request` 对应的内部辅助逻辑。"""
+            """按指定 fnval 请求播放流，并保留签名状态与原始响应。"""
             endpoint = "https://api.bilibili.com/x/player/wbi/playurl"
             params = {
                 "bvid": bvid,
@@ -340,7 +340,7 @@ class BilibiliSpider(BaseSpider):
     )
 
     def __init__(self, keyword: str, config: dict):
-        """初始化当前实例并准备运行所需的状态，供 `BilibiliSpider` 使用。"""
+        """配置解析器、任务装配器及线程私有的 API 客户端状态。"""
         super().__init__(keyword, config)
         self.parser = BilibiliParser()
         self.task_builder = BilibiliTaskBuilder(self.parser)
@@ -462,7 +462,7 @@ class BilibiliSpider(BaseSpider):
         return f"{parent} · P{num_str} · {episode_title}"
 
     def _resolve_download_item(self, task: dict, api: BiliAPI | None = None) -> VideoItem | None:
-        """Resolve one Bilibili task into a download item without emitting it."""
+        """把单个 Bilibili 任务解析成下载项，但暂不发射。"""
         self.log(f"🎬 解析流: {task['file_name'][:15]}...")
         try:
             api = api or self.api
@@ -552,7 +552,7 @@ class BilibiliSpider(BaseSpider):
         return True
 
     def _process_download_tasks_async(self, tasks: list[dict]) -> tuple[int, int]:
-        """Resolve Bilibili play URLs concurrently, then emit ready items in batches."""
+        """并发解析播放地址，再批量发射已就绪的下载项。"""
         task_list = list(tasks or [])
         if not task_list:
             return 0, 0
@@ -615,15 +615,15 @@ class BilibiliSpider(BaseSpider):
                 ready_items.append(item)
                 success_count += 1
 
+        # worker 只汇总结果，统一由当前线程批量发射，避免并发回调持续挤压宿主队列。
         emitted = self.emit_videos(ready_items)
         if emitted != len(ready_items):
             failure_count += len(ready_items) - emitted
             success_count = max(0, success_count - (len(ready_items) - emitted))
         return success_count, failure_count
 
-    #完整流程控制器
     def run(self):
-        """执行当前对象或脚本的主流程，供 `BilibiliSpider` 使用。"""
+        """执行登录回退、并行扫描解析、交互选择和下载任务提交。"""
         try:
             self.debug_state(
                 action="run_start",
@@ -635,6 +635,7 @@ class BilibiliSpider(BaseSpider):
             cookie_file = self._bilibili_cookie_file()
             self.api = BiliAPI(cookie_file, parser=self.parser)
             self.api.request_timeout = self._bilibili_request_timeout_seconds()
+            # 登录探测异常仍可尝试扫码；扫码失败再降级游客态，公开内容不会被认证故障阻断。
             try:
                 is_logged_in = self.api.check_login()
             except LoginCheckError as exc:
@@ -651,7 +652,8 @@ class BilibiliSpider(BaseSpider):
             else:
                 self.log("👤 已登录，Cookie 有效")
             self.log(f"🚀 启动 Bilibili 任务 | 目标: {self.keyword}")
-            # 原始 BV 队列由浏览器线程生产，结构化详情队列由 API 线程消费后再回流主线程。
+            # 固定 API worker 数只限制同时执行的请求；原始队列和执行器待执行项均无容量上限，
+            # 生产速度更快时仍可能在内存积压，解析结果再回流主线程。
             self.raw_bv_queue = queue.Queue()
             self.parsed_info_queue = queue.Queue()
             self.browser_finished = threading.Event()
@@ -709,13 +711,13 @@ class BilibiliSpider(BaseSpider):
             if not display_items:
                 self.log("❌ 未找到任何有效视频")
                 return
-            # ================= 4. 第一层交互 =================
+            # 第一阶段选择视频、合集或多 P 项目。
             self.log(f"🔔 扫描结束，共 {len(display_items)} 个项目，请选择...")
             stage1_indices = self.ask_user_selection(display_items)
             if not stage1_indices:
                 self.log("❌ 用户取消下载")
                 return
-            # ================= 5. 第二层交互 & 下载 =================
+            # 第二阶段展开分集选择，并装配最终下载队列。
             final_download_queue = []
             max_download_items = self._max_items_limit()
             for idx in stage1_indices:
@@ -771,6 +773,7 @@ class BilibiliSpider(BaseSpider):
             success_count, failure_count = self._process_download_tasks_async(final_download_queue)
             self.log(f"🎉 全部完成: 成功 {success_count}/{len(final_download_queue)} | 失败 {failure_count}")
         finally:
+            # worker 可能仍在请求超时窗口内；关闭会话后只做有界等待，防止退出永久挂起。
             self._close_worker_apis()
             api = getattr(self, "api", None)
             if api is not None:
@@ -793,9 +796,8 @@ class BilibiliSpider(BaseSpider):
         thread.join(timeout=timeout)
         if thread.is_alive():
             self.log(f"⚠️ {label} 线程未在 {timeout:.0f}s 内退出，跳过继续收尾")
-    # --- 线程任务：浏览器生产者 ---
     def _producer_browser_task(self):
-        """Route the raw user input and enqueue bvid/aid items or browser scans."""
+        """路由原始输入，并把 bvid/aid 或网页扫描结果送入原始队列。"""
         try:
             max_pages = self._effective_scan_pages()
             route = self._classify_input(self.keyword)
@@ -863,7 +865,7 @@ class BilibiliSpider(BaseSpider):
         return input_router.strip_url_trailing_punctuation(value)
 
     def _resolve_short_share_url(self, url: str) -> str:
-        """Resolve Bilibili short share links to their final destination URL."""
+        """把 Bilibili 分享短链解析为最终目标 URL。"""
         candidate = str(url or "").strip()
         if candidate and not candidate.lower().startswith(("http://", "https://")):
             if any(host in candidate.lower() for host in self.SHORT_LINK_HOSTS):
@@ -904,7 +906,7 @@ class BilibiliSpider(BaseSpider):
             return candidate
 
     def _normalize_keyword(self, raw_text: str) -> str:
-        """Normalize share text and short links before route classification."""
+        """路由分类前清理分享文案并解析短链。"""
         extracted = self._extract_first_url(raw_text)
         return self._resolve_short_share_url(extracted)
 
@@ -975,7 +977,7 @@ class BilibiliSpider(BaseSpider):
         seen_bvid_singles: set,
         valid_idx: int,
     ) -> int:
-        """Append one parsed Bilibili info object to the two-stage selection cache."""
+        """把一条解析结果加入两阶段选择缓存，并完成合集去重。"""
         if len(display_items) >= self._max_items_limit():
             return valid_idx
         if info.get("is_season"):
@@ -1023,7 +1025,7 @@ class BilibiliSpider(BaseSpider):
         *,
         max_pages: int,
     ) -> int:
-        """Use browser extraction only after the direct BV API path returned no usable item."""
+        """仅在 BV 直连接口无可用结果后启用浏览器兜底提取。"""
         if not failures or not self.is_running:
             return valid_idx
         candidate_bvids: list[str] = []
@@ -1112,9 +1114,9 @@ class BilibiliSpider(BaseSpider):
         return input_router.aid_from_url(url)
 
     def _worker_api_pool(self):
-        """提供 `_worker_api_pool` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """消费原始 ID 队列，用固定线程池解析详情并提交结构化结果。"""
         def process_one(raw_id):
-            """Resolve one queued bvid/aid into structured video info."""
+            """把队列中的 bvid/aid 解析为结构化视频信息。"""
             if not self.is_running:
                 return None, None
             api = self._worker_api_for_thread()
@@ -1172,6 +1174,7 @@ class BilibiliSpider(BaseSpider):
                         break
                     continue
         finally:
+            # 停止时取消尚未启动的 future；无论哪条路径，都等已运行回调结束后再置完成事件。
             if self.is_running:
                 executor.shutdown(wait=True, cancel_futures=False)
             else:
@@ -1193,9 +1196,8 @@ class BilibiliSpider(BaseSpider):
         except Exception as exc:
             self.log(f"⚠️ Bilibili 扫描 Cookie 恢复失败，继续匿名扫描: {exc}")
 
-    # --- 浏览器扫描逻辑 ---
     def _is_bilibili_error_page(self, page) -> bool:
-        """Return True before Bilibili's unavailable-video page redirects away."""
+        """在不可用视频页跳转前识别其错误状态。"""
         try:
             return bool(
                 page.evaluate(
@@ -1405,7 +1407,7 @@ class BilibiliSpider(BaseSpider):
         enqueue: bool = True,
         exclude_bvids: set[str] | None = None,
     ):
-        """提供 `_scan_with_browser_queue` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """扫描网页中的 BV 候选，并按需送入详情解析队列。"""
         excluded = {self._normalize_bvid(value) for value in (exclude_bvids or set()) if value}
         bv_set = set(excluded)
         def _scan_result() -> list[str]:
@@ -1457,7 +1459,7 @@ class BilibiliSpider(BaseSpider):
                 if initial_state.terminal:
                     self._log_bilibili_terminal_page_state(initial_state, url=str(getattr(page, "url", url) or url))
                     return _scan_result()
-                # UP 主拦截 (仅针对关键词搜索模式)
+                # 关键词搜索可能命中作者卡片；只在该模式下转到作者视频页继续扫描。
                 if is_search and "search.bilibili.com" in url:
                     try:
                         target_video_url, up_name = self._extract_search_up_space_video_url(page)
@@ -1603,12 +1605,10 @@ class BilibiliSpider(BaseSpider):
         enqueue: bool = True,
         excluded_bvids: set[str] | None = None,
     ) -> int:
-        """Extract BV candidates from Bilibili's server-rendered search HTML.
+        """从 Bilibili 服务端渲染的搜索 HTML 中提取 BV 候选。
 
-        Bilibili collection-style BV inputs often point to an unavailable
-        representative BV. The search result HTML still includes alternative
-        playable BVs, so collect those before falling back to the slower browser
-        scan.
+        合集类输入常指向不可用的代表 BV，但搜索 HTML 仍可能包含其他可播放 BV；
+        先收集这些候选，再回退到开销更高的浏览器扫描。
         """
         total = 0
         try:
@@ -1668,7 +1668,7 @@ class BilibiliSpider(BaseSpider):
         return values
 
     def _wait_for_bilibili_candidates(self, page, *, timeout_ms: int = 15000) -> BilibiliBrowserPageState:
-        """Wait briefly for Bilibili SPA video cards or a clear terminal page state."""
+        """短暂等待 Bilibili SPA 视频卡片或明确的终止页面状态。"""
         deadline = time.monotonic() + max(0, timeout_ms) / 1000
         last_state = BilibiliBrowserPageState("unknown", "尚未读取页面状态")
         while self.is_running and not self.interrupt_requested and time.monotonic() < deadline:
@@ -1680,7 +1680,7 @@ class BilibiliSpider(BaseSpider):
         return last_state
 
     def _extract_video_hrefs(self, page) -> list[str]:
-        """提供 `_extract_video_hrefs` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """从页面 DOM 与常见初始状态对象中提取视频链接。"""
         try:
             hrefs = page.evaluate(r'''() => {
             const initialState = window.__INITIAL_STATE__;
@@ -1768,7 +1768,7 @@ class BilibiliSpider(BaseSpider):
         enqueue: bool = True,
         excluded_bvids: set[str] | None = None,
     ) -> int:
-        """提供 `_enqueue_new_bvids` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """去重并统计新 BV，按配置决定是否送入详情队列。"""
         new_count = 0
         for href in hrefs:
             if not self._has_bvid_capacity(bv_set, excluded_bvids):
@@ -1785,15 +1785,15 @@ class BilibiliSpider(BaseSpider):
         return new_count
 
     def _clean_name(self, name):
-        """提供 `_clean_name` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """沿用解析器规则清理文件名。"""
         return self.parser.clean_name(name)
 
     def _build_search_page_url(self, current_url: str, page_num: int) -> str:
-        """提供 `_build_search_page_url` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """构造指定页码的 Bilibili 搜索 URL。"""
         return input_router.build_search_page_url(current_url, page_num)
 
     def _perform_login_scan(self, save_path):
-        """提供 `_perform_login_scan` 对应的内部辅助逻辑，供 `BilibiliSpider` 使用。"""
+        """打开扫码登录页，并在可取消等待中持久化登录 Cookie。"""
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(

@@ -1,4 +1,4 @@
-"""XiaoHongShu spider adapted to UniversalCrawlerProplus conventions."""
+"""遵循 UniversalCrawlerProplus 约定的小红书 Spider 实现。"""
 
 from __future__ import annotations
 
@@ -35,9 +35,10 @@ from .parser import XiaohongshuParser
 from .task_builder import XiaohongshuTaskBuilder
 
 class XiaohongshuSpider(BaseSpider):
-    """Browser-assisted XiaoHongShu spider."""
+    """结合 Web API 与浏览器登录的小红书 Spider。"""
 
     HOME_URL = "https://www.xiaohongshu.com/"
+    PAGE_HOSTS = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
     DETAIL_WORKER_CAP = 8
     PROFILE_READY_SELECTOR = "xpath=//a[contains(@href, '/user/profile/')]//span[text()='我']"
 
@@ -113,7 +114,7 @@ class XiaohongshuSpider(BaseSpider):
             self.interruptible_sleep(delay, step=min(0.5, delay))
 
     def _detail_pause_multiplier(self) -> float:
-        # Parse details faster than list crawling, but still yield periodically.
+        # 详情解析可快于列表翻页，但仍需周期性放慢，避免持续并发请求触发平台限流。
         if self._detail_request_count <= 6:
             return 0.75
         if self._detail_request_count > 0 and self._detail_request_count % 16 == 0:
@@ -150,7 +151,7 @@ class XiaohongshuSpider(BaseSpider):
         return max(1, min(int(total or 1), cls.DETAIL_WORKER_CAP))
 
     def _should_stream_download_items(self) -> bool:
-        """Keep user confirmation as the default boundary before queueing downloads."""
+        """默认以用户确认为下载入队边界，仅在显式配置时流式提交。"""
         value = self.config.get("stream_downloads")
         if value is None:
             return False
@@ -864,6 +865,7 @@ class XiaohongshuSpider(BaseSpider):
                     worker_client.close()
 
         indexed_refs = list(enumerate(refs, 1))
+        # 并发任务各自持有 HTTP 会话；停止后不再提交结果，已开始请求则受客户端超时约束后退出。
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="xhs-detail") as executor:
             future_map = {executor.submit(fetch_one, index_ref): index_ref[0] for index_ref in indexed_refs}
             completed_refs = 0
@@ -905,7 +907,11 @@ class XiaohongshuSpider(BaseSpider):
             if normalized_keyword != self.keyword.strip():
                 self.log(f"🔗 小红书输入已归一化: {normalized_keyword}")
             route, route_value = self._classify_input(normalized_keyword)
-            entry_url = normalized_keyword if normalized_keyword.startswith("http") else self.HOME_URL
+            entry_url = (
+                normalized_keyword
+                if self._url_matches_hosts(normalized_keyword, self.PAGE_HOSTS)
+                else self.HOME_URL
+            )
             cookie_str = self._ensure_cookie_string(entry_url)
             if not cookie_str:
                 raise SpiderAuthError("无法获取小红书会话 Cookie（至少需要 a1）")

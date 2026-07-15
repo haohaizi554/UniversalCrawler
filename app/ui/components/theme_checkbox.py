@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QWidget
 from app.ui.styles.themes import theme_colors
 
 class ThemeCheckBox(QWidget):
-    """Painted toggle box; can be display-only when embedded inside QTableWidget cells."""
+    """自绘切换框；嵌入 QTableWidget 单元格时可仅用于展示。"""
 
     toggled = pyqtSignal(bool)
 

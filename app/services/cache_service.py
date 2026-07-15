@@ -143,8 +143,8 @@ def _decode_persistent_value(payload: Any) -> Any:
 
 
 try:
-    CachetoolsTTLCache = getattr(import_module("cachetools"), "TTLCache")  # noqa: B009 - optional runtime module
-except Exception:  # pragma: no cover - fallback keeps runtime optional
+    CachetoolsTTLCache = getattr(import_module("cachetools"), "TTLCache")  # noqa: B009 - 可选运行时模块
+except Exception:  # pragma: no cover - 保持 cachetools 为可选依赖
     CachetoolsTTLCache = None
 
 class _FallbackTTLCache(dict):
@@ -194,7 +194,11 @@ class _FallbackTTLCache(dict):
                 self._expires.pop(key, None)
 
 class CacheService:
-    """混合缓存：热路径读内存，需要跨启动保留时再落盘。"""
+    """混合缓存：热路径读内存，需要跨启动保留时再落盘。
+
+    内存读写一致性只由单个 ``CacheService`` 实例内的锁保证，不提供跨实例或跨进程
+    一致性。持久化 TTL 按键惰性检查，不是 SQLite 全局保留量上限，也没有全表过期清理。
+    """
 
     def __init__(
         self,
@@ -248,7 +252,7 @@ class CacheService:
             return self._clone_value(value)
 
     def set(self, key: str, value: Any, *, ttl_seconds: float | None = None, persist: bool = False) -> None:
-        """写缓存；persist=False 只进内存，persist=True 才写安全 SQLite。"""
+        """persist=False 只更新内存；持久化写入先提交 SQLite，再发布内存副本。"""
         value_snapshot = self._clone_value(value)
         if not persist:
             with self._operation_lock:
@@ -262,7 +266,12 @@ class CacheService:
                 self._memory_cache[key] = value_snapshot
 
     def delete(self, key: str) -> None:
+        """删除本实例内存项，并尽力删除 SQLite 项。
+
+        SQLite 删除失败只记录日志，不向调用方抛出；此时持久化旧项可能仍然存在。
+        """
         with self._operation_lock:
+            # 同一把操作锁覆盖热缓存失效和 SQLite 删除，避免并发 get 把旧值回填进内存。
             with self._memory_lock:
                 self._memory_cache.pop(key, None)
             with self._db_lock:

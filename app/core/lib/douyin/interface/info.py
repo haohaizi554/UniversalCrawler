@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/info.py` 对应的接口、加密、提取或工具逻辑。"""
+"""批量获取抖音账号的简略资料。"""
 
-# app/core/lib/douyin/interface/info.py
 from typing import TYPE_CHECKING
 from typing import Union
 from .template import API
@@ -8,10 +7,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -20,6 +16,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Info(API):
+    """通过一个或多个 sec_user_id 查询抖音账号简略资料。"""
     
     def __init__(
         self,
@@ -30,7 +27,6 @@ class Info(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Info` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.api = f"{self.domain}aweme/v1/web/im/user/info/"
         self.sec_user_id = sec_user_id
@@ -46,7 +42,7 @@ class Info(API):
         *args,
         **kwargs,
     ) -> dict | list[dict]:
-        """执行当前对象或脚本的主流程，供 `Info` 使用。"""
+        """默认返回首个账号；first=False 时返回接口产生的全部记录。"""
         self.set_referer()
         await self.run_single()
         if first:
@@ -81,7 +77,7 @@ class Info(API):
     def __generate_data(
         self,
     ) -> dict:
-        """提供 `__generate_data` 对应的内部辅助逻辑，供 `Info` 使用。"""
+        """把 sec_user_id 列表编码为接口要求的 JSON 数组字符串。"""
         if isinstance(self.sec_user_id, str):
             self.sec_user_id = [self.sec_user_id]
         value = "[" + ",".join(f'"{item}"' for item in self.sec_user_id) + "]"

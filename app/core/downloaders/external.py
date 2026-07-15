@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/external.py` 对应资源的落盘或外部工具调用流程。"""
+"""管理 yt-dlp、FFmpeg 等外部下载进程的启动、停止和清理。"""
 
 from __future__ import annotations
 
@@ -12,10 +12,8 @@ from app.exceptions import DownloaderStoppedError
 from app.utils.runtime_paths import resolve_tool_file
 
 from .base import ProgressCallback, StopCheck
-#媒体资源下载的外部工具封装模块，提供接口
 
 def build_hidden_startupinfo():
-    """为 Windows 子进程构造隐藏控制台窗口的启动参数。"""
     if os.name != "nt" or not hasattr(subprocess, "STARTUPINFO"):
         return None
     startupinfo = subprocess.STARTUPINFO()
@@ -23,13 +21,11 @@ def build_hidden_startupinfo():
     return startupinfo
 
 def build_new_console_flags() -> int:
-    """返回 Windows 下用于创建独立控制台的进程标志。"""
     if os.name != "nt":
         return 0
     return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
 def build_no_window_flags() -> int:
-    """Return Windows flags for captured child processes that must not open a console."""
     if os.name != "nt":
         return 0
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -57,8 +53,6 @@ def _configured_speed_limit_kb(default: int = 0) -> int:
     return max(0, min(speed_limit, 999999))
 
 class ExternalToolRunner:
-    """封装外部工具查找、等待和停止控制的公共逻辑。"""
-
     @staticmethod
     def resolve_executable(preferred_name: str, fallback_name: str | None = None, version_args: list[str] | None = None) -> str | None:
         """优先查找项目内工具文件，找不到时再回退到系统环境变量。"""
@@ -105,7 +99,7 @@ class ExternalToolRunner:
 
     @staticmethod
     def terminate_process(process: subprocess.Popen, *, timeout: float = 5.0) -> None:
-        """Ask an external process to exit, then force-kill it if it ignores cancellation."""
+        """先请求外部进程正常退出，超时未响应时再强制结束。"""
         if process.poll() is not None:
             return
         try:
@@ -129,18 +123,15 @@ class ExternalToolRunner:
             pass
 
 class FFmpegExternalTool:
-    """封装 ffmpeg 的可执行文件查找与命令构造逻辑。"""
     EXE_PATH = "ffmpeg.exe"
     CLI_NAME = "ffmpeg"
 
     @classmethod
     def resolve_executable(cls) -> str | None:
-        """定位可用的 ffmpeg 可执行文件。"""
         return ExternalToolRunner.resolve_executable(cls.EXE_PATH, cls.CLI_NAME, ["-version"])
 
     @classmethod
     def is_available(cls) -> bool:
-        """判断当前环境是否能直接调用 ffmpeg。"""
         return cls.resolve_executable() is not None
 
     @classmethod
@@ -153,7 +144,6 @@ class FFmpegExternalTool:
         proxy: str | None = None,
         timeout_seconds: int | None = None,
     ) -> list[str]:
-        """构造 ffmpeg 直连下载媒体流的命令行参数。"""
         timeout_us = str(max(1, int(timeout_seconds or _configured_request_timeout())) * 1_000_000)
         cmd = [
             executable,
@@ -212,7 +202,6 @@ class FFmpegExternalTool:
         return command
 
 class NM3U8DLREExternalTool:
-    """封装 `N_m3u8DL-RE` 的定位、识别和命令构造逻辑。"""
     EXE_PATH = "N_m3u8DL-RE.exe"
     DISPLAY_NAME = "N_m3u8DL-RE"
     WINDOWS_CANDIDATES = ("N_m3u8DL-RE.exe", "N_m3u8DL-RE", "n-m3u8dl-re")
@@ -234,7 +223,6 @@ class NM3U8DLREExternalTool:
 
     @classmethod
     def resolve_executable(cls) -> str | None:
-        """定位当前平台可用的 `N_m3u8DL-RE` 可执行文件。"""
         for executable_name in cls.executable_candidates():
             path = resolve_tool_file(executable_name)
             if path.exists():
@@ -255,7 +243,6 @@ class NM3U8DLREExternalTool:
 
     @classmethod
     def is_available(cls) -> bool:
-        """判断当前环境是否具备 HLS 外部下载能力。"""
         return cls.resolve_executable() is not None
 
     @classmethod
@@ -282,7 +269,6 @@ class NM3U8DLREExternalTool:
         thread_count: str | int | None = None,
         tmp_dir: str | None = None,
     ) -> list[str]:
-        """构造 `N_m3u8DL-RE` 的下载命令，并指定输出目录与文件名。"""
         save_dir = os.path.dirname(save_path)
         save_name_no_ext = os.path.splitext(os.path.basename(save_path))[0]
         headers = cls._normalized_headers(user_agent, referer, extra_headers)

@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/hot.py` 对应的接口、加密、提取或工具逻辑。"""
+"""获取抖音热榜、娱乐榜、社会榜和挑战榜。"""
 
-# app/core/lib/douyin/interface/hot.py
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Callable
@@ -12,10 +11,7 @@ from .template import API
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -24,6 +20,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Hot(API):
+    """依次请求四类榜单，并保留榜单索引与同一批次时间戳。"""
     
     board_params = (
         SimpleNamespace(
@@ -56,7 +53,6 @@ class Hot(API):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Hot` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.headers = self.headers | {
             "Cookie": "",
@@ -94,7 +90,7 @@ class Hot(API):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `Hot` 使用。"""
+        """顺序请求全部榜单，返回批次时间和按榜单索引分组的数据。"""
         self.time = f"{datetime.now():%Y_%m_%d_%H_%M_%S}"
         self.set_referer(referer)
         for index, space in enumerate(self.board_params):

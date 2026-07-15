@@ -1,11 +1,11 @@
-"""Themed update-check result dialog."""
+"""提供主题化更新检测结果对话框。"""
 
 from __future__ import annotations
 
 from html import escape
 from typing import Any
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
@@ -14,12 +14,16 @@ from shared.localization import normalize_language, tr
 
 
 class UpdateStatusIcon(QWidget):
-    """Compact painted status icon used by the update dialog."""
+    """更新对话框使用的紧凑自绘状态图标。"""
 
     def __init__(self, *, status: str, colors: dict[str, str], parent=None) -> None:
         super().__init__(parent)
         self._status = status
         self._colors = dict(colors)
+        self._spin_angle = 0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(48)
+        self._spin_timer.timeout.connect(self._advance_spinner)
         self.setObjectName("UpdateStatusIcon")
         self.setFixedSize(46, 46)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -27,6 +31,26 @@ class UpdateStatusIcon(QWidget):
     def set_status(self, status: str, colors: dict[str, str]) -> None:
         self._status = status
         self._colors = dict(colors)
+        self._sync_spinner_timer()
+        self.update()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._sync_spinner_timer()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        # 不可见时停止 QTimer，避免已隐藏对话框继续触发重绘。
+        self._spin_timer.stop()
+        super().hideEvent(event)
+
+    def _sync_spinner_timer(self) -> None:
+        if self._status == "checking" and self.isVisible():
+            self._spin_timer.start()
+        else:
+            self._spin_timer.stop()
+
+    def _advance_spinner(self) -> None:
+        self._spin_angle = (self._spin_angle - 12) % 360
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -44,7 +68,10 @@ class UpdateStatusIcon(QWidget):
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         status = self._status
-        if status == "current":
+        if status == "checking":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(QRectF(11, 11, 24, 24), self._spin_angle * 16, 250 * 16)
+        elif status == "current":
             painter.drawLine(15, 24, 21, 30)
             painter.drawLine(21, 30, 32, 17)
         elif status == "available":
@@ -64,6 +91,8 @@ class UpdateStatusIcon(QWidget):
             painter.drawPoint(23, 15)
 
     def _status_color(self) -> str:
+        if self._status == "checking":
+            return self._colors["accent"]
         if self._status == "current":
             return self._colors["success"]
         if self._status == "available":
@@ -76,7 +105,7 @@ class UpdateStatusIcon(QWidget):
 
 
 class UpdateCheckDialog(ChromedDialog):
-    """Detailed themed dialog for update-check outcomes."""
+    """展示更新检测结果详情的主题化对话框。"""
 
     SKIP_CODE = 2
 
@@ -118,11 +147,23 @@ class UpdateCheckDialog(ChromedDialog):
         layout = self.content_layout
         layout.addWidget(self._build_header(self._tr(title), self._tr(message)))
         layout.addWidget(self._build_version_panel(local_version, latest_version))
+        if self._status == "checking":
+            layout.addWidget(self._build_checking_indicator())
         if len(self._candidate_options) > 1:
             layout.addWidget(self._build_candidate_selector())
         if details or self._release_url:
             layout.addWidget(self._build_detail_card(details))
         layout.addLayout(self._build_button_row(primary_text, secondary_text, skip_text))
+        if self._status == "checking":
+            self.primary_button.setEnabled(False)
+
+    def _build_checking_indicator(self) -> QProgressBar:
+        self.busy_bar = QProgressBar()
+        self.busy_bar.setObjectName("UpdateCheckBusyBar")
+        self.busy_bar.setRange(0, 0)
+        self.busy_bar.setTextVisible(False)
+        self.busy_bar.setAccessibleName(self._tr("正在检查更新..."))
+        return self.busy_bar
 
     def _build_header(self, title: str, message: str) -> QWidget:
         hero = QFrame()
@@ -354,6 +395,8 @@ class UpdateCheckDialog(ChromedDialog):
         return label
 
     def _status_tone(self) -> str:
+        if self._status == "checking":
+            return "accent"
         if self._status == "current":
             return "success"
         if self._status == "available":
@@ -369,6 +412,7 @@ class UpdateCheckDialog(ChromedDialog):
 
     def _status_badge_text(self) -> str:
         return self._tr({
+            "checking": "检测中",
             "current": "已是最新",
             "available": "发现更新",
             "local_newer": "本地构建",
@@ -397,7 +441,7 @@ class UpdateCheckDialog(ChromedDialog):
 
 
 class UpdateDownloadDialog(ChromedDialog):
-    """Modal progress surface for the verified updater download/install handoff."""
+    """承载已验证更新包下载与安装交接进度的模态界面。"""
 
     cancel_requested = pyqtSignal()
     retry_requested = pyqtSignal()

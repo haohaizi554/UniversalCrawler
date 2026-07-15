@@ -1,6 +1,5 @@
 (function () {
   const MAX_VALUE = "9999";
-  // Static contract labels: 1 页（推荐）, 20 篇笔记（推荐）, 20 个视频（推荐）, max.
   const UNITS = {
     pages: {
       label: "\u9875\u6570:",

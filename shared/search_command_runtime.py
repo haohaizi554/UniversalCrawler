@@ -66,7 +66,7 @@ def build_selection_strategy(args: argparse.Namespace, *, env: SearchCommandEnv)
     return env.selection_factory.from_cli_args(args, default_strategy="rule_all")
 
 def resolve_keyword(args: argparse.Namespace) -> str:
-    """Resolve the positional/legacy option keyword without ambiguity."""
+    """无歧义地解析位置参数或旧选项中的关键词。"""
     positional = str(getattr(args, "keyword", "") or "").strip()
     option = str(getattr(args, "keyword_option", "") or "").strip()
     if positional and option and positional != option:

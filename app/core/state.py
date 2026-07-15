@@ -1,11 +1,11 @@
-"""Shared domain state models and label helpers."""
+"""跨前端共享的领域状态模型与标签转换工具。"""
 
 from __future__ import annotations
 
 from enum import Enum
 
 class VideoStatus(str, Enum):
-    """Canonical download/media states shared by GUI, CLI and Web."""
+    """GUI、CLI 与 Web 共用的统一下载/媒体状态。"""
 
     PENDING = "pending"
     DOWNLOADING = "downloading"
@@ -32,7 +32,7 @@ VIDEO_STATUS_BY_LABEL: dict[str, VideoStatus] = {
 }
 
 class CrawlStatus(str, Enum):
-    """Canonical spider lifecycle states."""
+    """统一的爬虫生命周期状态。"""
 
     IDLE = "idle"
     RUNNING = "running"
@@ -41,13 +41,13 @@ class CrawlStatus(str, Enum):
     FAILED = "failed"
 
 def video_status_label(status: VideoStatus | str) -> str:
-    """Convert enum or legacy string status to the UI label form."""
+    """把枚举或旧版字符串状态转换为界面标签。"""
     if isinstance(status, VideoStatus):
         return status.label
     return VIDEO_STATUS_LABELS.get(VIDEO_STATUS_BY_LABEL.get(str(status), VideoStatus.PENDING), str(status))
 
 def parse_video_status(status: VideoStatus | str) -> VideoStatus | None:
-    """Parse enum or legacy label into a canonical VideoStatus."""
+    """把枚举或旧版标签解析为统一的 VideoStatus。"""
     if isinstance(status, VideoStatus):
         return status
     raw = str(status)

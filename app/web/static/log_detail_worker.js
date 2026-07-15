@@ -1,21 +1,89 @@
 (function () {
   "use strict";
 
-  function normalizeLogDetailPayload(item) {
-    // detail 可能是对象、JSON 字符串或普通文本；统一成可展示/导出的对象。
-    if (!item) return {};
-    const detail = item.detail;
-    if (detail && typeof detail === "object") return detail;
+  function stripLeadingEmoji(value) {
+    return String(value || "")
+      .trim()
+      .replace(/^[\p{Extended_Pictographic}\u2600-\u27BF\uFE0F\u200D]+/u, "")
+      .trim();
+  }
+
+  function looksLikePath(value) {
+    const text = String(value || "").trim();
+    if (!text) return false;
+    return text.includes(":\\") || text.startsWith("/") || text.startsWith("\\\\") || (text.includes("\\") && text.length >= 8);
+  }
+
+  function extractMessagePayload(value) {
+    const clean = stripLeadingEmoji(value);
+    const delimiter = clean.indexOf(":");
+    if (delimiter < 0) return null;
+    const description = clean.slice(0, delimiter).trim();
+    const path = clean.slice(delimiter + 1).trim();
+    return description && looksLikePath(path) ? { description, path } : null;
+  }
+
+  function parsedDetailPayload(detail) {
+    if (detail && typeof detail === "object") {
+      return Array.isArray(detail) ? [...detail] : { ...detail };
+    }
     const text = String(detail || "").trim();
     if (!text) return {};
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === "object" ? parsed : { detail: parsed };
     } catch (_error) {
-      return {
-        description: text,
-        status_code: item.event_code || item.status_code || "",
-      };
+      return { detail: text };
     }
+  }
+
+  function normalizeLogDetailPayload(item, hints = {}) {
+    // 与 GUI 共用的 normalize_detail_payload 契约保持一致：优先使用服务端投影，
+    // 本地归一化只补充尚未进入服务端快照的临时客户端行。
+    if (!item) return {};
+    const projected = item.detail_payload;
+    const payload = parsedDetailPayload(
+      projected && typeof projected === "object" ? projected : item.detail
+    );
+    if (!payload || Array.isArray(payload) || typeof payload !== "object") return payload || {};
+
+    const description = String(payload.description || "").trim();
+    if (description) {
+      const localizedDescription = hintValue(hints, "description", description);
+      const extracted = extractMessagePayload(localizedDescription);
+      payload.description = extracted ? extracted.description : stripLeadingEmoji(localizedDescription);
+      if (extracted && !payload.path) payload.path = extracted.path;
+    }
+
+    const detailText = String(payload.detail || "").trim();
+    if (detailText && !payload.description) {
+      const localizedDetail = hintValue(hints, "detail", detailText);
+      const extracted = extractMessagePayload(localizedDetail);
+      payload.description = extracted ? extracted.description : stripLeadingEmoji(localizedDetail);
+      if (extracted && !payload.path) payload.path = extracted.path;
+    }
+
+    const rawMessage = String(item.message || item.message_summary || "").trim();
+    const message = hintValue(hints, "message", rawMessage);
+    const messagePayload = message ? extractMessagePayload(message) : null;
+    if (messagePayload) {
+      if (!payload.description) payload.description = messagePayload.description;
+      if (!payload.path) payload.path = messagePayload.path;
+    } else if (message && !payload.description) {
+      payload.description = stripLeadingEmoji(message);
+    }
+
+    const event = item.event || item.event_type || item.status_code || "";
+    if (event && !payload.status_code && !payload.event) payload.event = event;
+    const statusCode = String(item.status_code || item.event_code || "").trim();
+    if (statusCode && !payload.status_code) payload.status_code = statusCode;
+    for (const key of ["platform", "source", "trace_id"]) {
+      const value = item[key];
+      if (value && !payload[key]) payload[key] = value;
+    }
+    return Object.fromEntries(
+      Object.entries(payload).filter(([_key, value]) => value !== null && value !== "" && !(Array.isArray(value) && value.length === 0))
+    );
   }
 
   function readableLogDetailValue(value) {
@@ -75,7 +143,7 @@
     // 同时产出显示文本和完整 JSON，避免主线程重复格式化日志详情。
     const item = request.item || {};
     const hints = request.translations || {};
-    const detailPayload = localizedLogDetailValue(normalizeLogDetailPayload(item), "", hints);
+    const detailPayload = localizedLogDetailValue(normalizeLogDetailPayload(item, hints), "", hints);
     const detailJson = JSON.stringify(detailPayload, null, 2);
     const detailDisplayText = formatLogDetailDisplayText(detailPayload);
     const fullPayload = {

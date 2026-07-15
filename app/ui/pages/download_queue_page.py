@@ -137,7 +137,7 @@ class DownloadQueuePage(PageFrame):
 
     @property
     def event_layout(self):
-        """Backward-compatible alias for tests and legacy callers."""
+        """供既有调用方继续使用的兼容别名。"""
         return self.activity_island.content_layout
 
     def prepare_force_refresh(self) -> None:

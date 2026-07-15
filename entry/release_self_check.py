@@ -1,4 +1,4 @@
-"""Installed-distribution diagnostics behind the public ``ucrawl-test`` command."""
+"""公开命令 ``ucrawl-test`` 使用的已安装发行版诊断。"""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def _module_checks() -> list[tuple[str, bool, str]]:
 
 
 def run(*, verbose: bool = False, list_only: bool = False) -> int:
-    """Run bounded checks that remain available when source tests are absent."""
+    """执行有界自检，确保缺少源码测试时仍能诊断已安装发行版。"""
     if list_only:
         print("installed  Installed release self-check")
         print("Full development suites are available from a source checkout.")

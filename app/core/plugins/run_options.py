@@ -1,4 +1,4 @@
-"""Pure run-option helpers shared by GUI, CLI, and Web."""
+"""GUI、CLI 与 Web 共用且不依赖宿主的运行参数工具。"""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _proxy_port_hint(text: str) -> str:
 
 
 def build_missav_proxy_url(proxy_str: str) -> str:
-    """Normalize preset labels and custom host:port values into URLs."""
+    """把代理预设标签或自定义主机端口规范化为 URL。"""
     normalized = str(proxy_str or "").strip().strip("\"'")
     if normalized in PROXY_PRESET_URLS:
         return PROXY_PRESET_URLS[normalized]

@@ -47,7 +47,7 @@ _EVENT_EXACT: dict[str, dict[str, str]] = {
 
 
 def prepare_active_item_for_display(item: dict[str, Any], *, language: str) -> dict[str, Any]:
-    """Build active-download display fields before Qt paints timeline widgets."""
+    """在 Qt 绘制时间线控件前生成活动下载展示字段。"""
 
     row = dict(item)
     row["events_display"] = [

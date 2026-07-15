@@ -1,4 +1,4 @@
-"""Shared helpers for table row click/selection highlighting."""
+"""提供表格行点击与选中高亮的共享工具。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPalette
 from PyQt6.QtWidgets import QAbstractItemView, QStyle, QStyleOptionViewItem, QTableWidget, QWidget
 
 def install_stable_vertical_scrollbar(view: QAbstractItemView) -> None:
-    """Always reserve vertical scrollbar gutter to avoid layout shift flicker."""
+    """始终预留垂直滚动条槽位，避免布局位移闪烁。"""
     view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
 def row_is_selected(option: QStyleOptionViewItem) -> bool:
@@ -17,7 +17,7 @@ def row_is_hovered(option: QStyleOptionViewItem) -> bool:
     return bool(option.state & QStyle.StateFlag.State_MouseOver)
 
 def normalize_table_item_option(option: QStyleOptionViewItem) -> None:
-    """Disable native focus/hover overlays so shared row painting owns states."""
+    """禁用原生焦点和 `hover` 叠层，由共享行绘制统一管理状态。"""
     option.state &= ~QStyle.StateFlag.State_HasFocus
     option.state &= ~QStyle.StateFlag.State_MouseOver
 
@@ -25,7 +25,7 @@ def selection_fill_color(option: QStyleOptionViewItem) -> QColor:
     return option.palette.color(QPalette.ColorRole.Highlight)
 
 def hover_fill_color(option: QStyleOptionViewItem) -> QColor:
-    """Return the shared unselected-row hover fill for item views."""
+    """返回 `item view` 共用的未选中行 `hover` 填充色。"""
     return _blend_colors(
         option.palette.color(QPalette.ColorRole.Base),
         option.palette.color(QPalette.ColorRole.Highlight),
@@ -33,7 +33,7 @@ def hover_fill_color(option: QStyleOptionViewItem) -> QColor:
     )
 
 def row_interaction_fill_color(option: QStyleOptionViewItem) -> QColor | None:
-    """Resolve row state priority: selected wins, hover is only auxiliary."""
+    """解析行状态优先级：`selected` 优先，`hover` 仅作辅助。"""
     if row_is_selected(option):
         return selection_fill_color(option)
     if row_is_hovered(option):
@@ -41,7 +41,7 @@ def row_interaction_fill_color(option: QStyleOptionViewItem) -> QColor | None:
     return None
 
 def paint_item_interaction_background(painter: QPainter, option: QStyleOptionViewItem) -> None:
-    """Paint standardized table row hover/selection backgrounds."""
+    """绘制统一的表格行 `hover` 与 `selected` 背景。"""
     color = row_interaction_fill_color(option)
     normalize_table_item_option(option)
     if color is None:
@@ -51,7 +51,7 @@ def paint_item_interaction_background(painter: QPainter, option: QStyleOptionVie
     painter.restore()
 
 def paint_item_selection_background(painter: QPainter, option: QStyleOptionViewItem) -> None:
-    """Backward-compatible alias for shared hover/selection row painting."""
+    """共享行状态绘制的兼容别名。"""
     paint_item_interaction_background(painter, option)
 
 def _blend_colors(base: QColor, overlay: QColor, alpha: float) -> QColor:
@@ -65,7 +65,7 @@ def _blend_colors(base: QColor, overlay: QColor, alpha: float) -> QColor:
     )
 
 def install_click_only_row_selection(view: QAbstractItemView) -> None:
-    """Keep row selection click-driven; moving the mouse must not change current row."""
+    """行选择只由点击驱动，鼠标移动不得改变当前行。"""
     if getattr(view, "_click_only_rows_installed", False):
         return
     view._click_only_rows_installed = True
@@ -76,7 +76,7 @@ def install_click_only_row_selection(view: QAbstractItemView) -> None:
     view.mouseMoveEvent = mouse_move_event  # type: ignore[method-assign]
 
 def bind_qtablewidget_row_selection(table: QTableWidget) -> None:
-    """Keep item and cell-widget backgrounds in sync with the selected row."""
+    """让 item 与单元格控件背景和选中行保持同步。"""
     install_click_only_row_selection(table)
     model = table.selectionModel()
     if model is None:

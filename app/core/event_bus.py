@@ -1,4 +1,4 @@
-"""Thread-safe in-process event bus for desktop/frontend orchestration."""
+"""用于桌面端与前端协作的线程安全进程内事件总线。"""
 
 from __future__ import annotations
 
@@ -35,7 +35,11 @@ class _AsyncTaskKey:
 
 
 class EventBus:
-    """Small publish/subscribe bus used to decouple workers, reducers and UI."""
+    """通过发布订阅机制解耦工作线程、状态归并器和界面层。
+
+    异步普通事件在容量为 1024 的队列满载时丢弃；末值事件按键合并，关键事件在
+    主队列满载时进入优先 deque。关闭流程不承诺排空尚未处理的异步事件。
+    """
 
     MAX_PUBLISH_DEPTH = MAX_PUBLISH_DEPTH
 
@@ -79,7 +83,7 @@ class EventBus:
         return handler
 
     def subscribe_async(self, topic: str, handler: Callable[[Any], None]) -> Callable[[Any], None]:
-        """Subscribe a handler that must not run on the publisher thread."""
+        """注册异步处理器，确保回调不在发布者线程中执行。"""
         with self._locked("subscribe_async"):
             self._async_subscribers[topic].append(handler)
             self._ensure_async_worker_locked()
@@ -141,7 +145,7 @@ class EventBus:
                 started = time.monotonic()
                 try:
                     handler(payload)
-                except Exception:  # pragma: no cover - defensive isolation
+                except Exception:  # pragma: no cover - 防御性隔离
                     self._logger.exception("EventBus handler failed for topic %s", topic)
                 finally:
                     elapsed = time.monotonic() - started
@@ -160,7 +164,7 @@ class EventBus:
             return [dict(item) for item in self._history]
 
     def wait_for_async_idle(self, timeout: float | None = None) -> bool:
-        """Wait until queued async handlers have finished without pumping UI events."""
+        """等待异步处理队列清空，期间不主动驱动界面事件循环。"""
         if threading.get_ident() == self._async_thread_id:
             return False
         deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
@@ -176,6 +180,11 @@ class EventBus:
             return True
 
     def shutdown(self) -> None:
+        """设置异步关闭标志并最多等待工作线程一秒，不承诺排空队列。
+
+        工作线程及时退出时会清除剩余队列；等待超时时仅记录告警并返回，当前处理器
+        仍可能运行，剩余项也不保证在本次调用中清理。
+        """
         with self._locked("shutdown"):
             self._async_shutdown = True
             thread = self._async_thread
@@ -261,9 +270,8 @@ class EventBus:
             try:
                 self._async_queue.put_nowait(_AsyncTaskKey(key))
             except queue.Full:
-                # The marker and pending payload are one logical item. Preserve
-                # both under the same lock so a stale rollback cannot remove a
-                # newer payload published by another thread.
+                # 标记与待处理载荷共同组成一个逻辑项，必须在同一把锁内维护；
+                # 否则旧任务回滚时可能误删另一个线程刚发布的新载荷。
                 self._async_priority_overflow.append(_AsyncTaskKey(key))
                 self._logger.warning(
                     "EventBus async handler queue full; preserved latest state for topic %s",
@@ -329,7 +337,7 @@ class EventBus:
                     started = time.monotonic()
                     try:
                         task.handler(task.payload)
-                    except Exception:  # pragma: no cover - defensive isolation
+                    except Exception:  # pragma: no cover - 防御性隔离
                         self._logger.exception("EventBus async handler failed for topic %s", task.topic)
                     finally:
                         elapsed = time.monotonic() - started

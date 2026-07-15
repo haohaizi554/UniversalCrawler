@@ -1,4 +1,4 @@
-"""Runtime icon path helpers built on the shared icon-name contract."""
+"""基于 shared 图标名称契约解析开发目录、打包目录和 Web URL。"""
 
 from __future__ import annotations
 

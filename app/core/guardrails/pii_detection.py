@@ -1,4 +1,4 @@
-"""PII detection and masking helpers for crawler output."""
+"""检测并脱敏爬取结果中的个人敏感信息。"""
 
 from __future__ import annotations
 
@@ -54,13 +54,13 @@ def sanitize_text(value: str) -> str:
 
 
 def get_masked_count() -> dict[str, int]:
-    """Return PII masking count snapshot (for monitoring/audit)."""
+    """返回敏感信息脱敏计数快照，供监控与审计使用。"""
     with _masked_count_lock:
         return dict(_masked_count)
 
 
 def reset_masked_count() -> None:
-    """Reset PII masking counters (for test isolation)."""
+    """重置脱敏计数，避免不同测试之间相互污染。"""
     with _masked_count_lock:
         for key in _masked_count:
             _masked_count[key] = 0

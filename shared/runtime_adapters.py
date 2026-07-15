@@ -1,4 +1,4 @@
-"""Neutral adapters that execute CLI-facing runtime flows for other hosts."""
+"""供其它宿主执行 CLI 侧运行流程的中立适配器。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def run_cli_search(
     timeout: float | None,
     download: bool,
 ) -> dict[str, Any]:
-    """Run the existing CLI search workflow behind a host-neutral function."""
+    """通过宿主无关函数运行既有 CLI 搜索流程。"""
     from shared.cli_runner_runtime import CLIRunner
 
     runner = CLIRunner(
@@ -31,7 +31,7 @@ def run_cli_search(
     return runner.run()
 
 def build_sdk(*, save_dir: str):
-    """Create the existing SDK object behind a host-neutral function."""
+    """通过宿主无关函数创建既有 SDK 对象。"""
     from shared.sdk_runtime import UcrawlSDK
 
     return UcrawlSDK(save_dir=save_dir)

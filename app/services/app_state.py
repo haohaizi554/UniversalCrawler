@@ -15,7 +15,7 @@ from app.config.settings import normalize_ui_log_max_display_count
 from app.services.cache_service import CacheService
 
 class AppState:
-    """桌面端状态单一来源；所有外部更新都通过事件总线广播出去。"""
+    """GUI/Web 状态单一来源；修改在锁内完成，并通过 EventBus 广播给前端。"""
 
     LOG_BUFFER_LIMIT = 300
     LOG_PUBLISH_INTERVAL_SECONDS = 0.1
@@ -38,6 +38,7 @@ class AppState:
         self.page_state: dict[str, dict[str, Any]] = {}
         self.task_state: dict[str, dict[str, Any]] = {}
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=self.LOG_BUFFER_LIMIT)
+        self._next_log_sequence = 0
         self.auto_copy_trace_on_error = True
         self._last_progress_emit_at: dict[str, float] = {}
         self._log_publish_lock = threading.RLock()
@@ -213,6 +214,9 @@ class AppState:
             "stack": "",
         }
         with self._lock:
+            # ID 单调递增且不随环形缓冲淘汰重排，前端才能稳定保持选中行。
+            self._next_log_sequence += 1
+            entry["id"] = f"runtime-log:{self._next_log_sequence}"
             self.log_buffer.append(entry)
             count = len(self.log_buffer)
         if topic == "logs.append":

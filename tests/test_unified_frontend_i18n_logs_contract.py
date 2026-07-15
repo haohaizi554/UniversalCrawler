@@ -21,6 +21,90 @@ from tests.unified_frontend_contract_support import (
 
 
 class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
+    def test_production_log_literals_have_bidirectional_runtime_translation(self):
+        import ast
+        import re
+
+        from shared.log_i18n import localize_log_text
+
+        project_root = Path(__file__).resolve().parents[1]
+        log_calls = {
+            "append_log",
+            "log",
+            "log_api",
+            "log_command",
+            "log_web_event",
+            "record_log",
+        }
+
+        def literal_text(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.JoinedStr):
+                return "".join(
+                    value.value
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                    else "{}"
+                    for value in node.values
+                )
+            return None
+
+        records: list[tuple[str, int, str]] = []
+        for root_name in ("app", "shared", "entry"):
+            root = project_root / root_name
+            if not root.exists():
+                continue
+            for path in root.rglob("*.py"):
+                try:
+                    tree = ast.parse(path.read_text(encoding="utf-8"))
+                except (OSError, SyntaxError, UnicodeDecodeError):
+                    continue
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    function_name = (
+                        node.func.attr
+                        if isinstance(node.func, ast.Attribute)
+                        else node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else ""
+                    )
+                    if function_name not in log_calls:
+                        continue
+                    candidates = []
+                    if function_name == "log_web_event" and len(node.args) >= 3:
+                        candidates = [node.args[2]]
+                    elif function_name in {"append_log", "record_log"} and node.args:
+                        candidates = [node.args[0]]
+                    else:
+                        candidates = [
+                            keyword.value
+                            for keyword in node.keywords
+                            if keyword.arg in {"description", "message"}
+                        ]
+                        if not candidates and node.args:
+                            candidates = [node.args[-1]]
+                    for candidate in candidates:
+                        raw = literal_text(candidate)
+                        if raw and raw.strip():
+                            records.append((str(path.relative_to(project_root)), node.lineno, raw.strip()))
+
+        cjk = re.compile(r"[\u3400-\u9fff]")
+        english_phrase = re.compile(r"[A-Za-z]{3,}(?:[\s_-]+[A-Za-z]{2,})+")
+        failures: list[str] = []
+        for path, line, raw in dict.fromkeys(records):
+            sample = re.sub(r"\{[^{}]*\}", "2", raw).replace("%s", "2").replace("%d", "2")
+            if sample == "已切换到2主题":
+                sample = "已切换到浅色主题"
+            english = localize_log_text(sample, "en-US")
+            chinese = localize_log_text(sample, "zh-CN")
+            if cjk.search(sample) and cjk.search(english):
+                failures.append(f"{path}:{line}: English residue: {english!r}")
+            if not cjk.search(sample) and english_phrase.search(sample) and chinese == sample:
+                failures.append(f"{path}:{line}: Chinese translation missing: {sample!r}")
+
+        self.assertFalse(failures, "\n".join(failures))
+
     def test_gui_language_switch_restores_shell_and_page_texts(self):
         shell = self._make_shell()
         shell.show_page("logs")
@@ -541,6 +625,26 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         self.assertNotIn("Download logs", tab_text)
         self.assertNotIn("System logs", tab_text)
 
+    def test_log_translation_pipeline_continues_after_structured_source_localization(self):
+        from shared.log_i18n import localize_log_text
+
+        self.assertEqual(
+            localize_log_text("MainWindow · fetch video detail", "zh-CN"),
+            "主窗口 · 获取视频详情",
+        )
+        self.assertEqual(
+            localize_log_text("BiliAPI · fetch video detail", "zh-TW"),
+            "Bilibili 介面 · 取得影片詳情",
+        )
+        self.assertEqual(
+            localize_log_text("WebController · Web 端用户请求停止爬虫任务", "en-US"),
+            "WebController · Web user requested to stop the crawl task",
+        )
+        self.assertEqual(
+            localize_log_text("WebController · Web 端Crawl task finished", "zh-CN"),
+            "Web 控制器 · Web 端爬虫任务结束",
+        )
+
     def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
         from shared.log_i18n import localize_log_payload, localize_log_text
 
@@ -765,6 +869,80 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         )
         self.assertEqual(localize_log_text("download paused: demo", "zh-CN"), "下载已暂停: demo")
         self.assertEqual(localize_log_text("Web 端启动爬虫任务", "en-US"), "Web started crawl task")
+        production_messages = {
+            "Web 端用户请求停止爬虫任务": "Web user requested to stop the crawl task",
+            "Web 端开始扫描本地媒体目录（异步）": "Web started scanning local media folder (async)",
+            "Web 端下载任务完成": "Web download task completed",
+            "Web 端下载任务失败": "Web download task failed",
+            "Web 端保存目录已变更": "Web save directory changed",
+            "Web 端爬虫任务结束": "Web crawl task finished",
+            "✅ 任务已停止": "✅ Task stopped",
+            "Bilibili 并发解析播放流并批量提交下载项": (
+                "Bilibili is resolving streams concurrently and submitting download items in batches"
+            ),
+            "Bilibili 并发取流线程失败": "Bilibili concurrent stream worker failed",
+            "HTTP 断点续传请求已建立": "HTTP resume request established",
+            "目录切换后的初始扫描完成": "Initial scan after changing directory completed",
+            "收到超长 WebSocket 消息，连接已关闭": (
+                "Oversized WebSocket message received; connection closed"
+            ),
+            "打开快手搜索页": "Opening the Kuaishou search page",
+            "已跳过更新版本: 3.6.17": "Skipped update version: 3.6.17",
+            "更新安装包已下载并通过校验: update.exe": "Update package downloaded and verified: update.exe",
+            "更新安装程序启动失败: denied": "Failed to start the update installer: denied",
+            "已调度 select_tasks 测试事件": "select_tasks test event dispatched",
+            "收到非法 JSON 消息": "Invalid JSON message received",
+            "Bilibili 登录状态校验失败": "Bilibili login status check failed",
+            "等待 Bilibili 扫码登录超时": "Timed out waiting for Bilibili QR-code login",
+            "等待抖音扫码登录超时 (120秒)": "Timed out waiting for Douyin QR-code login (120 seconds)",
+            "用户在登录过程中终止任务": "User stopped the task during login",
+            "HTTP 下载失败，准备重试 (1/3)": "HTTP download failed; preparing to retry (1/3)",
+            "HTTP 下载内容不完整，准备重试 (2/3)": "HTTP download incomplete; preparing to retry (2/3)",
+            "HTTP 下载异常，准备重试 (3/3)": "HTTP download error; preparing to retry (3/3)",
+            "分块下载失败，准备重试 (1/3)": "Chunked download failed; preparing to retry (1/3)",
+            "B站 video 流断点续传：从 1024 字节继续下载": (
+                "B-site video stream resume: continuing from 1024 bytes"
+            ),
+            "打开快手目标页": "Opening the Kuaishou target page",
+            "页面访问": "Page navigation",
+        }
+        for source, expected in production_messages.items():
+            with self.subTest(source=source):
+                self.assertEqual(localize_log_text(source, "en-US"), expected)
+        english_production_messages = {
+            "Download worker did not stop before file deletion timeout": (
+                "文件删除等待超时前下载线程未停止"
+            ),
+            "Started bounded download recovery maintenance": "已启动有界下载恢复维护",
+            "Processed stale download temp artifacts at application startup": "应用启动时已处理过期下载临时文件",
+            "Completed bounded download recovery maintenance": "已完成有界下载恢复维护",
+            "Recovery directory could not be enumerated; the attempt was acknowledged": (
+                "无法枚举恢复目录；本次尝试已确认"
+            ),
+            "A legacy directory scan was bounded or degraded": "旧版目录扫描已受限或降级",
+            "Stopped legacy temp cleanup at the production scan budget": (
+                "旧版临时文件清理已在生产扫描预算处停止"
+            ),
+            "File association registration is Windows-only": "文件关联注册仅支持 Windows",
+            "Failed to set defaults for .mp4": "为以下项目设置默认值失败：.mp4",
+            "Cannot resolve current user SID: access denied": "无法解析当前用户 SID：access denied",
+            "Shell visibility probe: after_theme_apply": "界面可见性探测：after_theme_apply",
+            "Shell chrome was hidden unexpectedly; restoring shell chrome": "界面外壳意外隐藏；正在恢复",
+            "Exited stale media fullscreen while restoring shell chrome": (
+                "恢复界面外壳时已退出残留的媒体全屏状态"
+            ),
+        }
+        for source, expected in english_production_messages.items():
+            with self.subTest(source=source):
+                self.assertEqual(localize_log_text(source, "zh-CN"), expected)
+        self.assertEqual(
+            localize_log_text("select_tasks relay lag=12.5ms items=42", "zh-CN"),
+            "select_tasks 转发延迟=12.5 毫秒，项目数=42",
+        )
+        self.assertEqual(
+            localize_log_text("select_tasks 轉發延遲=12.5 毫秒，項目數=42", "en-US"),
+            "select_tasks relay lag=12.5ms items=42",
+        )
         self.assertEqual(localize_log_text("CLI 下载任务失败", "en-US"), "CLI download task failed")
         self.assertEqual(
             localize_log_text("spider 已结束, 耗时 12s, 收集到 3 个项目, 二次选择 1 次", "en-US"),

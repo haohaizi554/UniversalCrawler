@@ -1,10 +1,10 @@
-"""下载器模块，负责 `app/core/downloaders/douyin.py` 对应资源的落盘或外部工具调用流程。"""
+"""抖音视频、图集与实况资源下载流程。"""
 
 from __future__ import annotations
 
 import os
 
-import requests  # noqa: F401 - kept for tests and external monkeypatch compatibility
+import requests  # noqa: F401 - 保留供外部补丁和兼容测试替换。
 
 from app.config import DEFAULT_USER_AGENT, cfg
 from app.debug_logger import debug_logger
@@ -113,7 +113,7 @@ class DouyinDownloader(BaseDownloader):
         chunk_size: int,
         support_resume: bool,
     ) -> None:
-        """提供 `_download_single` 对应的内部辅助逻辑，供 `DouyinDownloader` 使用。"""
+        """沿统一策略链下载单个视频，并保留 HTTP 续传能力。"""
         self._download_with_strategy_fallback(
             video_item=video_item,
             save_path=save_path,
@@ -136,7 +136,7 @@ class DouyinDownloader(BaseDownloader):
         check_stop_func: StopCheck,
         headers: dict[str, str],
     ) -> None:
-        """提供 `_download_gallery` 对应的内部辅助逻辑，供 `DouyinDownloader` 使用。"""
+        """顺序落盘图集/实况条目，并把单文件进度汇总为任务进度。"""
         save_dir = os.path.dirname(save_path)
         total_files = len(images_data)
         completed = 0
@@ -245,7 +245,7 @@ class DouyinDownloader(BaseDownloader):
         progress_callback: ProgressCallback | None = None,
         domain_policy=None,
     ) -> None:
-        """提供 `_download_file` 对应的内部辅助逻辑，供 `DouyinDownloader` 使用。"""
+        """按平台安全策略下载图集中的单个文件。"""
         self._download_http_file(
             url=url,
             save_path=save_path,

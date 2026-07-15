@@ -1,4 +1,4 @@
-"""Media preview panel for video playback and image preview."""
+"""提供本地视频播放与图片预览。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 try:
     from PyQt6.QtMultimedia import QMediaMetaData
-except ImportError:  # pragma: no cover - depends on the PyQt6 build
+except ImportError:  # pragma: no cover - 取决于 PyQt6 构建内容
     QMediaMetaData = None
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import (
@@ -109,7 +109,7 @@ class _MediaFullscreenWindow(QWidget):
 
 
 class MediaPreviewPanel(QFrame):
-    """Preview local media and repair only when playback is actually not seekable."""
+    """预览本地媒体，仅在确认播放不可 seek 时触发修复。"""
 
     sig_toggle_fullscreen = pyqtSignal()
     sig_switch_preview = pyqtSignal(int)
@@ -196,7 +196,7 @@ class MediaPreviewPanel(QFrame):
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video_item)
 
-        # destroyed signal NOT connected: fires during C++ half-destruction; cleanup handled by deleteLater() override.
+        # 宿主关闭时显式调用 `cleanup()`；`deleteLater()` 也先执行同一幂等清理，当前不依赖 `QObject.destroyed`。
 
         self.repair_panel = QFrame()
         self.repair_panel.setObjectName("RepairPanel")

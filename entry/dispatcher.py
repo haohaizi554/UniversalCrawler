@@ -1,20 +1,12 @@
-"""UCrawl 自适应入口调度器。
+"""UCrawl 运行模式检测与派发入口。
 
-设计目标（行业最佳实践 + 用户需求）：
+``run()`` 优先采用 ``--mode`` / ``-m`` 或 ``UCRAWL_MODE``，否则按参数
+特征识别目标；无参数时提供 GUI、Web、Interactive、CLI 和 Test 五种模式。
+各模式的运行逻辑由对应入口模块负责。
 
-- **无参数运行** `python main.py`：弹出 TUI 菜单让用户**手动选 4 个入口之一**
-- **有参数运行** `python main.py [args]`：**自适应检测**参数意图并自动派发
-  - `--mode xxx` / `-m xxx` → 强制指定
-  - `UCRAWL_MODE` 环境变量 → 强制指定
-  - 子命令 `search`/`scan`/`download`/`platforms`/`interactive` → CLI
-  - `--port`/`--host`/`--script` → Web
-  - `--no-qt` → GUI
-  - `--save-dir`/`--no-download`/`--pretty` → Interactive
-  - 其它位置参数 → CLI
-
-注意：
-- 这是**纯调度**模块，不写任何业务逻辑
-- 每个 mode 实际逻辑在 cli_entry.py / gui_entry.py / web_entry.py / interactive_entry.py
+为兼容现有 ``entry.dispatcher`` 调用方，本模块仍保留终端菜单实现及其辅助
+API；Qt 选择对话框委托给 ``entry.mode_selection_ui``。因此模式选择 UI 尚未
+从 dispatcher 中完整移出。
 """
 
 from __future__ import annotations
@@ -40,12 +32,15 @@ class Mode(str, Enum):
 class _MenuUnavailable(Exception):
     """TUI 菜单无法显示（环境非交互）。
 
-    dispatcher.run() 捕获此异常后以 exit code 2 退出，
+    dispatcher.run() 捕获此异常后以退出码 2 退出，
     区别于用户主动选 q 的退出码 0。
     """
     pass
 
-# ---- 各 mode 的参数特征（用于有参自适应检测） ----
+class _ModeArgumentError(ValueError):
+    """显式 --mode 选项没有可用值。"""
+
+    pass
 
 # CLI 子命令（ucrawl 自身的 argparse 子命令）
 _CLI_SUBCOMMANDS = frozenset({
@@ -70,30 +65,34 @@ _INTERACTIVE_FLAGS = frozenset({
     "--no-download", "--pretty",
 })
 
-# ---- 模式解析（行业标准的多源配置优先级） ----
-
 def parse_mode_arg(argv: Sequence[str]) -> Mode | None:
     """从命令行参数中提取 --mode / -m / --mode=xxx。"""
     mode_value: str | None = None
     for i, arg in enumerate(argv):
-        if arg in ("--mode", "-m") and i + 1 < len(argv):
+        if arg in ("--mode", "-m"):
+            if i + 1 >= len(argv):
+                raise _ModeArgumentError(f"{arg} requires a value")
             mode_value = argv[i + 1]
+            if mode_value.startswith("-"):
+                raise _ModeArgumentError(f"{arg} requires a value")
             break
         if arg.startswith("--mode="):
             mode_value = arg.split("=", 1)[1]
             break
     if mode_value is None:
         return None
+    mode_value = mode_value.strip().lower()
+    if not mode_value:
+        raise _ModeArgumentError("--mode requires a value")
     try:
-        return Mode(mode_value.lower())
-    except ValueError:
-        sys.stderr.write(
-            f"⚠️  未知模式: {mode_value!r}，支持: {', '.join(m.value for m in Mode)}\n"
-        )
-        return None
+        return Mode(mode_value)
+    except ValueError as exc:
+        supported = ", ".join(mode.value for mode in Mode)
+        raise _ModeArgumentError(
+            f"unknown mode {mode_value!r}; expected one of: {supported}"
+        ) from exc
 
 def parse_env_mode() -> Mode | None:
-    """从环境变量 UCRAWL_MODE 中提取模式。"""
     env = os.environ.get("UCRAWL_MODE", "").strip().lower()
     if not env:
         return None
@@ -103,7 +102,6 @@ def parse_env_mode() -> Mode | None:
         return None
 
 def is_gui_available() -> bool:
-    """检测 GUI 所需依赖是否齐全。"""
     try:
         import PyQt6.QtWidgets  # noqa: F401
     except Exception:
@@ -115,24 +113,11 @@ def is_gui_available() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 def is_tty() -> bool:
-    """判断当前 stdio 是否可交互（用于决定能否弹 TUI 菜单）。
+    """判断终端菜单是否可以尝试同步读取输入。
 
-    设计原则：**宽松但准确**。行业最佳实践是尽量把用户当"可交互"对待，
-    而不是粗暴拒绝；但不能把"EOF"误判为"有键盘输入"。
-
-    判定顺序（满足任一即可返回 True）：
-
-    1. ``stdin.isatty()`` —— 标准 TTY（如 Windows Terminal / cmd）
-    2. ``stdout.isatty()`` —— 某些终端 stdout 仍是 TTY 而 stdin 被接管
-    3. **UCRAWL_FORCE_MENU=1 环境变量** —— 强制弹菜单（绕过检测）
-    4. **Windows 平台 msvcrt.kbhit() 探测** —— 某些 IDE 把 stdio 都接管
-       了但仍能接收键盘输入（如 PyCharm Run 窗口）—— 用 msvcrt 探测
-       键盘缓冲区。
-
-    这能区分：
-    - 真 TTY 终端 / cmd / PowerShell → True
-    - IDE (PyCharm/VSCode) Run 窗口（能输入） → 部分支持
-    - 完全 subprocess 接管（stdin closed / EOF pipe） → False
+    ``UCRAWL_FORCE_MENU`` 显式覆盖优先，其次检查 stdin/stdout 的 TTY 状态；
+    Windows 最后用 ``msvcrt.kbhit()`` 识别已经缓冲的键盘输入。全部未命中时
+    返回 False，让调用方选择 Qt 或非交互路径。
     """
     # 0: 强制覆盖（环境变量最高优先级）
     force = os.environ.get("UCRAWL_FORCE_MENU", "").strip().lower()
@@ -164,10 +149,7 @@ def _arg_starts_with(token: str, argv: Sequence[str]) -> bool:
     return any(t == token or t.startswith(token + "=") for t in argv)
 
 def detect_mode_intent(argv: Sequence[str]) -> Mode:
-    """按参数特征智能识别模式（用于**有参数**场景）。
-
-    行业做法：检查参数签名匹配。
-    """
+    """按参数特征识别有参数调用的目标模式。"""
     if not argv:
         # 无参数应该走 TUI 菜单路径，不应调用本函数
         return Mode.CLI
@@ -202,7 +184,7 @@ def detect_mode_intent(argv: Sequence[str]) -> Mode:
 def detect_mode(argv: Sequence[str] | None = None) -> Mode:
     """自适应检测运行模式。
 
-    优先级（行业通用做法）：
+    优先级：
     1. 命令行参数 --mode / -m
     2. 环境变量 UCRAWL_MODE
     3. 有参数 → 按特征识别
@@ -234,8 +216,6 @@ def detect_mode(argv: Sequence[str] | None = None) -> Mode:
         return Mode.WEB
     return Mode.GUI
 
-# ---- 启动横幅 ----
-
 _BANNER = r"""
 +================================================+
 |                                                |
@@ -246,14 +226,11 @@ _BANNER = r"""
 """
 
 def print_banner(mode: Mode) -> None:
-    """打印启动横幅。"""
     if not is_tty():
         return
     sys.stderr.write(_BANNER)
     sys.stderr.write(f"  🎯 模式: {mode.value}\n\n")
     sys.stderr.flush()
-
-# ---- TUI 模式菜单（无参数时弹出） ----
 
 # 菜单项定义: (显示标签, 描述, 模式)
 _MENU_ITEMS = [
@@ -277,14 +254,12 @@ def _display_width(text: str) -> int:
     return width
 
 def _pad_to_width(text: str, target: int) -> str:
-    """用空格把字符串填充到目标显示宽度。"""
     cur = _display_width(text)
     if cur >= target:
         return text
     return text + " " * (target - cur)
 
 def _has_pyqt6() -> bool:
-    """检测 PyQt6 是否可用（用于 Qt 弹窗后备）。"""
     try:
         import PyQt6.QtWidgets  # noqa: F401
         return True
@@ -302,7 +277,7 @@ def _load_app_icon() -> "QIcon | None":
     查找顺序：
     1. 打包后的 _MEIPASS/favicon.ico（PyInstaller onefile/onedir 都覆盖）
     2. 仓库根目录的 favicon.ico
-    3. fallback：Web.ico（同目录）
+    3. 后备图标：Web.ico（同目录）
     """
     from PyQt6.QtGui import QIcon
 
@@ -325,7 +300,7 @@ def _load_app_icon() -> "QIcon | None":
     return None
 
 def _prompt_mode_with_qt() -> Mode | None:
-    """Show the shared, theme-aware Qt mode selection dialog."""
+    """显示共享且跟随主题的 Qt 模式选择对话框。"""
     from entry.mode_selection_ui import _prompt_mode_with_qt as show_mode_selection
 
     return show_mode_selection()
@@ -339,7 +314,7 @@ def prompt_mode_menu() -> Mode | None:
        —— 解决 IDE (PyCharm/VSCode) Run 按钮 / Ctrl+Shift+F10 场景
     3. **直接报错退出**：以上都不满足（无桌面环境）
 
-    Returns:
+    返回：
         选中的 Mode；用户选退出则返回 None。
         非交互环境（无 TTY 也无 Qt）时返回 None 并提示用户用 --mode 显式指定。
     """
@@ -409,34 +384,25 @@ def prompt_mode_menu() -> Mode | None:
     sys.stderr.write(f"❌ 无效输入: {raw!r}\n")
     return None
 
-# ---- 模式分发 ----
-
 def run_gui(argv: Sequence[str] | None = None) -> int:
-    """启动桌面 GUI。"""
     from entry.gui_entry import main as _main
     return _main(list(argv) if argv is not None else None)
 
 def run_web(argv: Sequence[str] | None = None) -> int:
-    """启动 Web UI。"""
     from entry.web_entry import main as _main
     return _main(list(argv) if argv is not None else None)
 
 def run_cli(argv: Sequence[str] | None = None) -> int:
-    """启动 CLI 单次执行。"""
     from entry.cli_entry import main as _main
     return _main(list(argv) if argv is not None else None)
 
 def run_interactive(argv: Sequence[str] | None = None) -> int:
-    """启动交互式引导。"""
     from entry.interactive_entry import main as _main
     return _main(list(argv) if argv is not None else None)
 
 def run_test(argv: Sequence[str] | None = None) -> int:
-    """启动测试套件（GUI / TUI / CLI 自适应）。"""
     from entry.test_entry import main as _main
     return _main(list(argv) if argv is not None else None)
-
-# ---- 模式 -> 处理器映射 ----
 
 _HANDLERS = {
     Mode.GUI: run_gui,
@@ -450,7 +416,7 @@ def _strip_dispatcher_args(argv: Sequence[str]) -> list[str]:
     """从 argv 中剥离 dispatcher 自己的参数（--mode / -m / --mode=xxx），
     剩余的全部透传给目标 mode handler。
 
-    这是行业标准做法：让 dispatcher 只消费自己的参数，不截留 mode 的参数。
+    dispatcher 只消费模式选择参数，避免截留目标入口拥有的参数。
     """
     result = []
     skip_next = False
@@ -474,7 +440,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     """自适应入口主函数。
 
     行为：
-    - **无参数** `python main.py` → 终端内弹 TUI 菜单；非 TTY 场景走原有 Qt 弹窗后备
+    - **无参数** `python main.py` → 终端内弹 TUI 菜单；非 TTY 场景走当前 Qt 弹窗后备
     - **有参数** `python main.py [...]` → 按参数特征自适应派发
     - **--mode / -m** → 强制指定（最高优先级）
 
@@ -487,7 +453,14 @@ def run(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
 
     # 1. 显式 --mode / -m 优先
-    explicit_mode = parse_mode_arg(argv) or parse_env_mode()
+    try:
+        explicit_mode = parse_mode_arg(argv)
+    except _ModeArgumentError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        sys.stderr.write("usage: ucrawl-auto [--mode {gui,web,cli,interactive,test}] [args]\n")
+        return 2
+    if explicit_mode is None:
+        explicit_mode = parse_env_mode()
 
     # 2. 剥离 dispatcher 自己的参数，剩余透传给目标 handler
     passthrough = _strip_dispatcher_args(argv)
@@ -497,7 +470,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         print_banner(mode)
         return _dispatch(mode, passthrough)
 
-    # 3. 无参数 → 使用原有菜单/Qt 后备选择器
+    # 3. 无参数 → 使用内置菜单/Qt 后备选择器
     if not passthrough:
         try:
             mode = prompt_mode_menu()
@@ -517,7 +490,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     return _dispatch(mode, passthrough)
 
 def _dispatch(mode: Mode, argv: Sequence[str]) -> int:
-    """派发到具体 handler。"""
+    """按映射调用薄入口；目标入口退出码必须原样返回，不能由调度层改写。"""
     handler = _HANDLERS.get(mode)
     if handler is None:
         sys.stderr.write(f"❌ 没有 {mode} 模式的处理器\n")

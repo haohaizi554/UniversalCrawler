@@ -13,7 +13,12 @@ def is_within_root(path: str, root: str) -> bool:
         return False
 
 class PathPolicy:
-    """统一文件/目录的最终路径授权策略。"""
+    """统一文件/目录的最终路径授权策略。
+
+    允许根目录参数（``approved_roots``，调用侧也可能称 ``allowed_roots``）为
+    ``None`` 或空集合时，当前实现不施加根目录限制。这种调用方式只能供受信本地
+    调用使用，不能作为不可信路径输入的授权边界。
+    """
 
     def normalize_roots(self, approved_roots: Iterable[str] | None) -> tuple[str, ...]:
         return tuple(normalize_path(root) for root in approved_roots or () if isinstance(root, str) and root)

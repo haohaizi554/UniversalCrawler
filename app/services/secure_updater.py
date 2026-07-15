@@ -1,9 +1,7 @@
-"""Secure desktop updater primitives.
+"""桌面端安全更新基础能力。
 
-This module keeps update discovery, package verification and installer launch
-out of the GUI layer. It deliberately does not contain GitHub credentials and
-never executes a downloaded asset until the signed-manifest constraints and
-the configured platform-signature policy have succeeded.
+更新发现、安装包验证和安装器启动均与 GUI 隔离。模块不保存 GitHub 凭据；
+下载产物只有通过 Ed25519 签名 manifest 约束及配置的平台签名策略后才可执行。
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Callable, Mapping
 
-# ``Crypto`` comes from the maintained PyCryptodome package, not abandoned PyCrypto.
+# ``Crypto`` 来自仍在维护的 PyCryptodome，而不是已停止维护的 PyCrypto。
 from Crypto.PublicKey import ECC  # nosec B413
 from Crypto.Signature import eddsa  # nosec B413
 from defusedxml import ElementTree as DefusedET
@@ -107,7 +105,7 @@ def _response_final_url(response: Any, fallback: str) -> str:
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """Durably replace a text file without exposing partially written JSON."""
+    """在目标目录写入并 fsync 临时文件，再原子替换，避免暴露半写 JSON。"""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -135,11 +133,11 @@ DEFAULT_AUTO_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 
 
 class ManifestError(RuntimeError):
-    """Raised when a signed update manifest is absent, invalid or unsafe."""
+    """签名 manifest 缺失、无效或违反安全约束。"""
 
 
 class DownloadError(RuntimeError):
-    """Raised for update download, GitHub API and staging failures."""
+    """更新下载、GitHub API 或 staging 失败。"""
 
     def __init__(self, message: str, *, keep_partial: bool = False) -> None:
         super().__init__(message)
@@ -147,15 +145,15 @@ class DownloadError(RuntimeError):
 
 
 class MetadataNotFoundError(DownloadError):
-    """Raised when a release does not publish the signed updater metadata."""
+    """Release 未发布 latest.json 或对应签名。"""
 
 
 class VerificationError(RuntimeError):
-    """Raised when package signature verification fails."""
+    """安装包完整性或平台签名验证失败。"""
 
 
 class InstallError(RuntimeError):
-    """Raised when a verified installer cannot be launched."""
+    """已验证安装包无法按当前平台策略启动。"""
 
 
 @dataclass(frozen=True)
@@ -220,7 +218,7 @@ def _compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
 
 
 def compare_semver(left: Any, right: Any) -> int:
-    """Compare semantic versions without string ordering shortcuts."""
+    """按 SemVer 数值和预发布规则比较，避免字符串字典序误判。"""
 
     left_version = SemVer.parse(left)
     right_version = SemVer.parse(right)
@@ -295,7 +293,7 @@ class UpdateManifest:
 
 
 class UpdateManifestVerifier:
-    """Load and validate a signed Ed25519 update manifest."""
+    """先验 Ed25519 原文签名，再约束 manifest 的 schema、应用、通道和有效期。"""
 
     def __init__(
         self,
@@ -315,6 +313,7 @@ class UpdateManifestVerifier:
     def load_verified(self, manifest_path: Path, signature_path: Path) -> UpdateManifest:
         manifest_bytes = Path(manifest_path).read_bytes()
         signature = Path(signature_path).read_bytes()
+        # 必须对原始 bytes 验签后再解析 JSON，解析或重编码结果不能替代签名原文。
         self.verify_signature(manifest_bytes, signature)
         try:
             payload = json.loads(manifest_bytes.decode("utf-8"))
@@ -446,17 +445,17 @@ class LocalUpdateState:
 
 
 def default_update_state_path() -> Path:
-    """Return the persisted updater state path used by GUI and helper handoff."""
+    """返回 GUI 与 updater helper 交接时共用的持久化状态路径。"""
     return user_cache_root() / "updates" / DEFAULT_UPDATE_STATE_NAME
 
 
 def default_update_staging_dir() -> Path:
-    """Return the shared cache directory for partial and verified update packages."""
+    """返回断点文件和已验证更新包共用的 staging 缓存目录。"""
     return user_cache_root() / "updates" / "staging"
 
 
 def load_local_update_state(path: Path | None = None) -> LocalUpdateState:
-    """Load rollback/skip/pending-install state without making callers know paths."""
+    """加载回滚防护、跳过版本和待安装状态，并隐藏默认路径约定。"""
     return LocalUpdateState.load(path or default_update_state_path())
 
 
@@ -471,7 +470,7 @@ def record_pending_install(
     log_path: str | Path,
     path: Path | None = None,
 ) -> LocalUpdateState:
-    """Persist a single pending installer so startup can stop retry loops."""
+    """只持久化一个待安装版本，使启动健康检查能限制失败重试次数。"""
     state_path = path or default_update_state_path()
     state = LocalUpdateState.load(state_path)
     state.pending_install = PendingInstall(
@@ -486,7 +485,7 @@ def record_pending_install(
 
 
 def record_skipped_update(version: str, path: Path | None = None) -> LocalUpdateState:
-    """Persist the version the user chose to skip for automatic checks."""
+    """记录用户跳过的版本；手动检查和 mandatory 更新仍由 VersionPolicy 决定。"""
     state_path = path or default_update_state_path()
     state = LocalUpdateState.load(state_path)
     state.skipped_version = _normalize_semver_text(str(version or ""))
@@ -501,7 +500,7 @@ def record_startup_update_health(
     path: Path | None = None,
     staging_dir: Path | None = None,
 ) -> LocalUpdateState:
-    """Update pending-install state after app startup proves which version booted."""
+    """启动后以实际运行版本确认安装结果；未切换版本会累计尝试并最终停止重试。"""
     state_path = path or default_update_state_path()
     state = LocalUpdateState.load(state_path)
     state.record_startup_health(current_version=current_version, staging_dir=staging_dir)
@@ -517,7 +516,7 @@ class UpdatePolicy:
 
 
 class VersionPolicy:
-    """Policy for SemVer updates, skipped versions and rollback defense."""
+    """统一处理 SemVer 通道、跳过版本和低于 last_seen_version 的回滚防护。"""
 
     def __init__(
         self,
@@ -568,7 +567,7 @@ class ManifestLocations:
 
 
 class GitHubReleaseClient:
-    """GitHub release metadata client with cache validators and no credentials."""
+    """无凭据读取 GitHub release 元数据，并用 ETag/Last-Modified 控制缓存请求。"""
 
     def __init__(
         self,
@@ -664,7 +663,7 @@ class GitHubReleaseClient:
         manual: bool = False,
         per_page: int = 10,
     ) -> tuple[ManifestLocations, ...]:
-        """Return signed-manifest locations from recent releases, newest first."""
+        """按新到旧返回近期 Release 中的签名 manifest 地址。"""
 
         effective_opener = opener or self._trusted_opener()
         cache = self._load_cache()
@@ -758,10 +757,10 @@ class GitHubReleaseClient:
         opener: Callable[..., Any],
         per_page: int,
     ) -> tuple[ManifestLocations, ...]:
-        """Discover release tags without consuming the GitHub REST rate limit.
+        """通过 Atom 发现 release tag，避免消耗 GitHub REST API 限额。
 
-        The feed only supplies release identity. Downloaded manifests still pass
-        the normal Ed25519 verification, so this fallback does not weaken trust.
+        Atom 只提供 release 身份；下载后的 manifest 仍走正常 Ed25519 验证，
+        因而该降级路径不会扩大安装信任边界。
         """
 
         feed_url = f"https://github.com/{self.owner}/{self.repo}/releases.atom"
@@ -872,7 +871,7 @@ class GitHubReleaseClient:
 
 
 class AssetSelector:
-    """Select the exact update asset for this OS and CPU architecture."""
+    """只选择与当前 OS、CPU 架构和安装器类型完全匹配的 manifest 资产。"""
 
     def __init__(
         self,
@@ -906,7 +905,7 @@ class AssetSelector:
 
 
 class Downloader:
-    """Download a verified manifest asset into an update staging cache."""
+    """按已验签 manifest 的 URL、size 和 SHA-256 下载到 staging 缓存。"""
 
     def __init__(
         self,
@@ -1050,6 +1049,7 @@ class Downloader:
         if digest.lower() != asset.sha256.lower():
             _log_update_event("update.verify.failed", "download hash mismatch", level="SECURITY", asset=asset.name)
             raise DownloadError("download sha256 does not match manifest")
+        # 只有大小和 SHA-256 都与已验签 manifest 一致，partial 才能晋升为可复用安装包。
         os.replace(partial, target)
         _log_update_event("update.download.completed", "download completed", asset=asset.name)
         return target
@@ -1165,7 +1165,7 @@ class InstallResult:
 
 
 class InstallerRunner:
-    """Helper-side installer runner that only accepts verified packages."""
+    """updater helper 侧的安装器入口；每次启动前都重新执行 PackageVerifier。"""
 
     def __init__(
         self,
@@ -1210,7 +1210,7 @@ class InstallerRunner:
 
 
 def write_update_asset_descriptor(installer_path: Path, asset: UpdateAsset) -> Path:
-    """Persist the verified asset metadata passed from GUI to updater helper."""
+    """原子保存 GUI 交给 updater helper 的已验证资产描述。"""
 
     descriptor_path = Path(installer_path).with_name(f"{Path(installer_path).name}.asset.json")
     _atomic_write_text(
@@ -1285,7 +1285,7 @@ def normalize_arch(value: Any) -> str:
 
 
 def _normalize_certificate_fingerprint(value: Any) -> str:
-    """Normalize SHA1/SHA256 certificate fingerprints from Windows tooling."""
+    """去掉 Windows 工具输出中的分隔符，统一 SHA1/SHA256 证书指纹格式。"""
     return re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
 
 
@@ -1300,7 +1300,7 @@ def default_installer_types(os_name: str) -> tuple[str, ...]:
 
 
 def _is_local_development_asset_url(parsed: urllib.parse.ParseResult) -> bool:
-    """Allow development fixtures without turning the flag into an SSRF bypass."""
+    """开发模式只放行 file 或 loopback 资源，不能借该开关绕过 SSRF 边界。"""
     if parsed.scheme == "file":
         return (parsed.netloc or "").lower() in {"", "localhost"} and bool(parsed.path)
     if parsed.scheme not in {"http", "https"}:
@@ -1315,6 +1315,7 @@ def _is_local_development_asset_url(parsed: urllib.parse.ParseResult) -> bool:
 
 
 def validate_asset_url(url: str, allowed_hosts: set[str] | frozenset[str], *, development_mode: bool = False) -> None:
+    """生产 URL 必须使用 HTTPS 且命中 host 白名单；裸 IP 与 localhost 一律拒绝。"""
     parsed = urllib.parse.urlparse(str(url or ""))
     if development_mode and _is_local_development_asset_url(parsed):
         return
@@ -1433,5 +1434,5 @@ def _log_update_event(event: str, message: str, *, level: str = "INFO", **detail
 
 
 def log_update_event(event: str, message: str, *, level: str = "INFO", **details: Any) -> None:
-    """Record a structured updater event while reusing updater sanitization."""
+    """复用更新日志脱敏规则记录结构化事件，避免凭据字段进入调试日志。"""
     _log_update_event(event, message, level=level, **details)

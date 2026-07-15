@@ -1,4 +1,4 @@
-"""Shared anti-detection strategy seam for crawler runtime setup."""
+"""抓取运行时统一使用的反检测策略接口。"""
 
 from .factory import build_browser_anti_detection
 from .models import AntiDetectionContext

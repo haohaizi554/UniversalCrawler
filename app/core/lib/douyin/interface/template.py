@@ -1,4 +1,4 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/template.py` 对应的接口、加密、提取或工具逻辑。"""
+"""提供抖音与 TikTok 接口共用的分页、签名和请求模板。"""
 
 import json
 import re
@@ -14,7 +14,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-# 调整引用路径
+# 允许在工具包尚不可用时导入接口定义；兜底对象只提供最小兼容行为。
 try:
     from ..tools import (
         PROGRESS,
@@ -34,7 +34,6 @@ except ImportError:
         pass
 
     class DownloaderError(Exception):
-        """定义 `DownloaderError` 异常类型，用于表达特定失败场景。"""
         pass
 
     class FakeProgress:
@@ -72,7 +71,6 @@ try:
     from ..translation import _
 except ImportError:
     def _(x):
-        """提供 `_` 对应的内部辅助逻辑。"""
         return x
 
 if TYPE_CHECKING:
@@ -94,6 +92,7 @@ def _extract_chrome_version(user_agent: str) -> str:
 CHROME_VERSION = _extract_chrome_version(USERAGENT)
 
 class API:
+    """抖音接口基类，统一处理分页、a_bogus 签名、重试和响应解析。"""
     
     domain = "https://www.douyin.com/"
     short_domain = "https://www.iesdouyin.com/"
@@ -127,7 +126,6 @@ class API:
         "downlink": "10",
         "effective_type": "4g",
         "round_trip_time": "200",
-        # "webid": "",
         "uifid": "",
         "msToken": "",
     }
@@ -141,7 +139,7 @@ class API:
             *args,
             **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `API` 使用。"""
+        """绑定共享客户端、请求头和签名器，并初始化分页状态。"""
         self.headers = params.headers.copy()
         self.log = params.logger
         self.ab = params.ab
@@ -160,7 +158,7 @@ class API:
         self.set_temp_cookie(cookie)
 
     def set_temp_cookie(self, cookie: str = ""):
-        """设置 `temp_cookie` 对应的值或运行状态，供 `API` 使用。"""
+        """仅在显式传入 Cookie 时覆盖当前实例的请求头。"""
         if cookie:
             self.headers["Cookie"] = cookie
 
@@ -189,7 +187,7 @@ class API:
             *args,
             **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `API` 使用。"""
+        """设置 Referer 后分派到单页或分页流程。"""
         self.set_referer(referer)
         match single_page:
             case True:
@@ -314,7 +312,7 @@ class API:
             self.finished = True
 
     def set_referer(self, url: str = None) -> None:
-        """设置 `referer` 对应的值或运行状态，供 `API` 使用。"""
+        """设置本次请求的 Referer；未传值时恢复平台默认入口。"""
         self.headers["Referer"] = url or self.referer
 
     async def request_data(
@@ -329,9 +327,6 @@ class API:
             *args,
             **kwargs,
     ):
-        # [DEBUG] 打印签名过程
-        # self.log.info(f"Signing params for {url}...", False)
-        
         params = self.deal_url_params(
             params,
             encryption,
@@ -482,12 +477,11 @@ class API:
         return await self.__return_response(response)
 
     async def __return_response(self, response):
-        # [DEBUG] 强制打印详细响应信息
-        """提供 `__return_response` 对应的内部辅助逻辑，供 `API` 使用。"""
+        """校验 HTTP 状态并解析 JSON；请求或解析失败时返回 None。"""
         self.log.info(f"Response URL: {response.url}", False)
         self.log.info(f"Response Code: {response.status_code}", False)
 
-        # 调试：只在失败时打印 Headers
+        # 仅失败时记录响应头，减少正常请求的日志体积。
         if response.status_code != 200:
             self.log.info(f"Response Headers: {dict(response.headers)}", False)
 
@@ -502,7 +496,7 @@ class API:
         try:
             return response.json()
         except json.JSONDecodeError:
-            # [DEBUG] 关键修改：如果不是JSON，打印前2000个字符看看是啥
+            # 限制预览长度，避免非 JSON 响应把整页 HTML 写入日志。
             content = response.text
             preview = content[:2000] if len(content) > 2000 else content
             self.log.error(f"❌ 响应不是有效的 JSON 格式！")
@@ -517,16 +511,14 @@ class API:
             headers: dict,
             **kwargs,
     ):
-        # [DEBUG] 启用详细请求日志
-        """提供 `__record_request_messages` 对应的内部辅助逻辑，供 `API` 使用。"""
+        """记录请求上下文；当前兼容行为会原样写出请求头。"""
         self.log.info(f"URL: {url}", False)
         self.log.info(f"Params: {params}", False)
         if data:
             self.log.info(f"Data: {data}", False)
 
-        # 请求头脱敏处理，不记录 Cookie (为了安全，如果调试需要可以临时注释掉 if k != "Cookie")
-        # desensitize = {k: v for k, v in headers.items() if k != "Cookie"}
-        desensitize = {k: v for k, v in headers.items()}  # 临时开启 Cookie 打印以便调试
+        # 为兼容现有诊断输出，headers 会原样记录；日志可能含 Cookie，必须限制访问和留存。
+        desensitize = {k: v for k, v in headers.items()}
         self.log.info(f"Headers: {desensitize}", False)
 
     def deal_url_params(
@@ -537,15 +529,12 @@ class API:
     ) -> str:
         
         if params:
-            # [DEBUG] 打印签名结果
-            # self.log.info(f"Encoding params: {params}", False)
             params_str = urlencode(
                 params,
                 quote_via=quote,
             )
-            # 调用 a_bogus 加密
+            # a_bogus 必须基于最终 URL 编码串生成，否则服务端看到的参数与摘要不一致。
             a_bogus = self.ab.get_value(params_str, method)
-            # self.log.info(f"Generated a_bogus: {a_bogus}", False)
 
             params_str += f"&a_bogus={a_bogus}"
             return params_str
@@ -578,7 +567,7 @@ class API:
         return factory()
 
     def __general_progress_object(self):
-        """提供 `__general_progress_object` 对应的内部辅助逻辑，供 `API` 使用。"""
+        """创建交互模式下使用的 Rich 进度条。"""
         return Progress(
             TextColumn(
                 "[progress.description]{task.description}",
@@ -596,7 +585,7 @@ class API:
 
     @staticmethod
     def __fake_progress_object(*args, **kwargs):
-        """提供 `__fake_progress_object` 对应的内部辅助逻辑，供 `API` 使用。"""
+        """服务器模式下返回无输出的进度条兼容对象。"""
         return FakeProgress()
 
     def append_response(
@@ -610,9 +599,9 @@ class API:
         
         for item in data[start:end]:
             self.response.append(item)
-        # self.response.extend(data[start:end])
 
 class APITikTok(API):
+    """TikTok 接口基类，为查询串追加 X-Bogus 与 X-Gnarly。"""
     
     domain = "https://www.tiktok.com/"
     short_domain = ""
@@ -658,7 +647,7 @@ class APITikTok(API):
             *args,
             **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `APITikTok` 使用。"""
+        """切换到 TikTok 请求头、客户端和两种签名器。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.xb = params.xb
         self.xg = params.xg
@@ -704,6 +693,7 @@ class APITikTok(API):
                 params,
                 quote_via=quote,
             )
+            # 两种签名必须基于同一参数串和 UA，避免请求上下文不一致。
             xb = self.xb.get_x_bogus(
                 params, number, self.headers.get("User-Agent", USERAGENT)
             )

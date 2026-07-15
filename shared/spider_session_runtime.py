@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 @dataclass(slots=True)
 class SpiderSessionBindings:
-    """Host callbacks used to bind a spider to its runtime adapter."""
+    """把 spider 绑定到运行时适配器所需的宿主回调。"""
 
     on_log: Callable[[str], None]
     on_item_found: Callable[[Any], None]

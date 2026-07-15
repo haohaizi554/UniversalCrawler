@@ -1,4 +1,4 @@
-"""Theme stylesheet helpers for the PyQt6 shell."""
+"""提供 PyQt6 shell 的主题样式工具。"""
 
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def theme_colors(is_dark: bool) -> dict[str, str]:
     return colors
 
 def _ensure_cjk_fonts_loaded() -> None:
-    """Load common Windows CJK fonts for offscreen rendering and packaged apps."""
+    """为离屏渲染和打包应用加载常见 Windows CJK 字体。"""
     global _FONTS_LOADED
     if _FONTS_LOADED:
         return
@@ -138,7 +138,7 @@ def _preferred_ui_font_family() -> str:
     return _PREFERRED_UI_FONT_FAMILY
 
 def build_palette(is_dark: bool) -> QPalette:
-    """Build a Qt palette so views that ignore QSS still follow the theme."""
+    """构建 Qt palette，使忽略 QSS 的视图仍能跟随主题。"""
     c = theme_colors(is_dark)
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor(c["bg"]))
@@ -159,7 +159,7 @@ def build_palette(is_dark: bool) -> QPalette:
     return palette
 
 def apply_application_theme(is_dark: bool, *, font_size: str | None = None) -> None:
-    """Apply stylesheet and palette at the QApplication level."""
+    """在 QApplication 层应用样式表与 palette。"""
     app = QApplication.instance()
     if app is None:
         return
@@ -221,7 +221,7 @@ def _theme_style_roots(app: QApplication) -> list[QWidget]:
 
 
 def polish_data_views(root: QWidget | None, is_dark: bool) -> None:
-    """Force item views and log panes to adopt the active palette."""
+    """强制 item view 与日志面板采用当前 palette。"""
     if root is None:
         return
     palette = build_palette(is_dark)
@@ -250,7 +250,7 @@ def polish_data_views(root: QWidget | None, is_dark: bool) -> None:
         editor.setAutoFillBackground(True)
 
 def apply_dialog_theme(widget: QWidget, *, parent: QWidget | None = None, is_dark: bool | None = None) -> bool:
-    """Apply palette to dialogs without overriding the application stylesheet."""
+    """为对话框应用 palette，同时不覆盖应用级样式表。"""
     resolved = resolve_is_dark_theme(parent) if is_dark is None else bool(is_dark)
     widget.setPalette(build_palette(resolved))
     parent_stylesheet = ""
@@ -289,7 +289,7 @@ def resolve_is_dark_theme(parent: QWidget | None = None) -> bool:
 
 
 def generate_settings_stylesheet(is_dark: bool = False) -> str:
-    """Fallback QSS for SettingsPage scroll areas when page-local styles are bypassed."""
+    """页面局部样式未生效时，为 SettingsPage 滚动区提供回退 QSS。"""
     c = theme_colors(is_dark)
     return f"""
 QScrollArea#SettingsPlatformScroll QScrollBar:horizontal {{
@@ -305,7 +305,7 @@ QScrollArea#SettingsPlatformScroll QScrollBar::handle:horizontal {{
 
 
 def generate_log_center_stylesheet(is_dark: bool = False) -> str:
-    """Theme-aware QSS for LogCenterPage and its object-named children."""
+    """为 LogCenterPage 及其具名子控件生成主题感知 QSS。"""
     return _generate_log_center_stylesheet(theme_colors(is_dark))
 
 def _status_success_icon_url() -> str:
@@ -316,10 +316,9 @@ def _status_success_icon_url() -> str:
 
 
 def generate_stylesheet(is_dark: bool = False, *, font_size: str | None = None, scale: str | None = None) -> str:
-    """Return the application stylesheet.
+    """返回应用样式表。
 
-    The product default is light to match the reference UI.  Dark mode remains
-    available as an explicit user preference.
+    产品默认使用浅色以匹配基准 UI；深色模式仍由用户显式选择。
     """
 
     c = theme_colors(is_dark)

@@ -1,4 +1,4 @@
-"""Simple crawl budget accounting for spider guardrails."""
+"""爬虫护栏使用的请求预算计数器。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 
 class BudgetExhausted(RuntimeError):
-    """Raised when a crawl would exceed its configured request budget."""
+    """抓取即将超过配置的请求预算时抛出。"""
 
 
 class RateLimitCancelled(Exception):

@@ -62,7 +62,7 @@ COLUMN_WIDTHS = {
 }
 
 class PageFrame(QFrame):
-    """Base page frame; flat by default to avoid nested panel boxes."""
+    """默认扁平的页面基框，避免面板框重复嵌套。"""
 
     def __init__(
         self,
@@ -101,7 +101,7 @@ class PageFrame(QFrame):
             self.root_layout.addWidget(header)
 
 class ActionTable(QTableWidget):
-    """Small table wrapper that keeps IDs on the first column item."""
+    """把稳定 ID 保存在首列 item 上的轻量表格封装。"""
 
     def __init__(self, headers: Iterable[str]) -> None:
         super().__init__()

@@ -1,6 +1,9 @@
 (function () {
   let dependencies = Object.freeze({});
   const LOG_RENDER_ROW_BUDGET = 300;
+  const LOG_ROW_ID_HISTORY_LIMIT = 2048;
+  const UNIQUE_LOG_ROW_ID_FIELD = "__ucp_log_row_id";
+  // Worker 结果可能晚于新筛选或新选中项返回，两个 sequence 分别拒绝过期查询与详情消息。
   const state = {
     filters: { category: "all", level: "all", time: "30m", platform: "all", trace: "", keyword: "" },
     page: 1,
@@ -17,6 +20,9 @@
     query: { signature: "", result: null, pending: false },
     detail: { signature: "", result: null, pending: false },
     rowSignatures: Object.create(null),
+    issuedLogRowIds: new Set(),
+    issuedLogRowIdOrder: [],
+    nextLogRowId: 0,
     generation: 0,
     disposed: true,
   };
@@ -34,6 +40,9 @@
     state.query = { signature: "", result: null, pending: false };
     state.detail = { signature: "", result: null, pending: false };
     state.rowSignatures = Object.create(null);
+    state.issuedLogRowIds = new Set();
+    state.issuedLogRowIdOrder = [];
+    state.nextLogRowId = 0;
     state.generation += 1;
     state.disposed = false;
     return window.UcpLogCenter;
@@ -139,6 +148,79 @@
 
   function logItemId(item) {
     return window.UcpLogDisplay ? window.UcpLogDisplay.logItemId(item) : String((item && item.id) || "");
+  }
+
+  function baseLogItemId(item) {
+    if (window.UcpLogDisplay && typeof window.UcpLogDisplay.baseLogItemId === "function") {
+      return window.UcpLogDisplay.baseLogItemId(item);
+    }
+    const row = item || {};
+    return String(row.id || `${row.time || ""}|${row.trace_id || ""}|${row.source || ""}|${row.message_summary || ""}`);
+  }
+
+  function rememberOwnedLogRowId(id) {
+    if (!id || state.issuedLogRowIds.has(id)) return;
+    state.issuedLogRowIds.add(id);
+    state.issuedLogRowIdOrder.push(id);
+  }
+
+  function pruneOwnedLogRowIds(activeIds) {
+    const protectedIds = new Set(activeIds);
+    if (state.selectedId) protectedIds.add(state.selectedId);
+    let remaining = state.issuedLogRowIdOrder.length;
+    while (state.issuedLogRowIds.size > LOG_ROW_ID_HISTORY_LIMIT && remaining > 0) {
+      const oldest = state.issuedLogRowIdOrder.shift();
+      remaining -= 1;
+      if (protectedIds.has(oldest)) {
+        state.issuedLogRowIdOrder.push(oldest);
+      } else {
+        state.issuedLogRowIds.delete(oldest);
+      }
+    }
+  }
+
+  function nextOwnedLogRowId(baseId, activeIds) {
+    let candidate = "";
+    do {
+      candidate = `ucp-log-row:${encodeURIComponent(baseId)}:${state.nextLogRowId}`;
+      state.nextLogRowId += 1;
+    } while (state.issuedLogRowIds.has(candidate) || activeIds.has(candidate));
+    return candidate;
+  }
+
+  function ownLogItemIds(items) {
+    const rows = Array.isArray(items) ? items : [];
+    const activeIds = new Set();
+    for (const item of rows) {
+      const existing = String((item && item[UNIQUE_LOG_ROW_ID_FIELD]) || "");
+      if (!existing) continue;
+      activeIds.add(existing);
+      if (!item.id || existing !== String(item.id)) rememberOwnedLogRowId(existing);
+    }
+    rows.forEach((item, index) => {
+      if (!item || typeof item !== "object" || item[UNIQUE_LOG_ROW_ID_FIELD]) return;
+      const explicitId = String(item.id || "");
+      if (explicitId) {
+        item[UNIQUE_LOG_ROW_ID_FIELD] = explicitId;
+        if (item[UNIQUE_LOG_ROW_ID_FIELD] !== explicitId) {
+          rows[index] = { ...item, [UNIQUE_LOG_ROW_ID_FIELD]: explicitId };
+        }
+        activeIds.add(explicitId);
+        return;
+      }
+      const baseId = baseLogItemId(item);
+      const ownedId = state.issuedLogRowIds.has(baseId) || activeIds.has(baseId)
+        ? nextOwnedLogRowId(baseId, activeIds)
+        : baseId;
+      item[UNIQUE_LOG_ROW_ID_FIELD] = ownedId;
+      if (item[UNIQUE_LOG_ROW_ID_FIELD] !== ownedId) {
+        rows[index] = { ...item, [UNIQUE_LOG_ROW_ID_FIELD]: ownedId };
+      }
+      activeIds.add(ownedId);
+      rememberOwnedLogRowId(ownedId);
+    });
+    pruneOwnedLogRowIds(activeIds);
+    return rows;
   }
 
   function logLevelClass(level) {
@@ -280,7 +362,7 @@
 
   function logQueryItems() {
     const items = currentState().log_items;
-    return Array.isArray(items) ? items : [];
+    return ownLogItemIds(items);
   }
 
   function logItemSignature(item) {
@@ -295,8 +377,12 @@
       logItemId(item),
       item.time || "",
       item.level || item.raw_level || "",
+      item.level_display || item.result_type || "",
+      item.log_scope || item.category || "",
+      item.event_stage || "",
       item.source_display || item.source || "",
       item.platform_display || item.platform || "",
+      item.platform_id || item.source_id || "",
       item.trace_id || "",
       item.message_summary || "",
       item.message || "",
@@ -462,7 +548,7 @@
       const key = logItemId(item);
       seen.add(key);
       const html = `
-        <tr class="${state.selectedId === key ? "selected" : ""}" onclick="selectLog('${escAttr(key)}')">
+        <tr class="${state.selectedId === key ? "selected" : ""}">
           <td>${esc(item.time)}</td>
           <td>${logLevelCellHtml(item)}</td>
           <td>${logSourceCellHtml(item)}</td>
@@ -481,6 +567,7 @@
         row = next;
         state.rowSignatures[key] = html;
       }
+      row.onclick = () => select(key);
       const current = tbody.children[index];
       if (current !== row) tbody.insertBefore(row, current || null);
     });
@@ -557,8 +644,8 @@
 
   function logDetailSignature(item) {
     if (!item) return `${getLanguage()}|`;
-    const marker = stableSerialize(item.detail);
-    return [getLanguage(), logItemId(item), item.time || "", item.level || item.raw_level || "", item.platform_display || item.platform || "", item.source_display || item.source || "", item.trace_id || "", item.message || item.message_summary || "", item.event_code || item.status_code || "", marker, item.stack || ""].join("\u001f");
+    const marker = stableSerialize(item.detail_payload ?? item.detail);
+    return [getLanguage(), logItemId(item), item.time || "", item.level || item.raw_level || "", item.level_display || item.result_type || "", item.log_scope || item.category || "", item.event_stage || "", item.platform_display || item.platform || "", item.platform_id || item.source_id || "", item.source_display || item.source || "", item.trace_id || "", item.message || item.message_summary || "", item.event_code || item.status_code || "", marker, item.stack || ""].join("\u001f");
   }
 
   function buildLogDetailRequest(item, sequence) {
@@ -595,7 +682,7 @@
     if (state.detailWorker) return state.detailWorker;
     const generation = state.generation;
     try {
-      const worker = new Worker("/static/log_detail_worker.js?v=20260709-log-detail-worker");
+      const worker = new Worker("/static/log_detail_worker.js?v=20260714-log-detail-parity");
       state.detailWorker = worker;
       worker.onmessage = event => {
         if (generation !== state.generation || state.disposed) return;

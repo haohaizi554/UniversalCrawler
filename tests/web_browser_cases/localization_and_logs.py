@@ -3,12 +3,49 @@
 from __future__ import annotations
 
 class LocalizationCases:
+    def test_09aa_runtime_log_pipeline_continues_after_structured_source_localization(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            () => {
+              const samples = [
+                ["zh-CN", "MainWindow · fetch video detail"],
+                ["zh-TW", "BiliAPI · fetch video detail"],
+                ["en-US", "WebController · Web 端用户请求停止爬虫任务"],
+                ["zh-CN", "WebController · Web 端Crawl task finished"],
+                ["zh-CN", "Download worker did not stop before file deletion timeout"],
+                ["zh-CN", "select_tasks relay lag=12.5ms items=42"],
+                ["en-US", "select_tasks 轉發延遲=12.5 毫秒，項目數=42"]
+              ];
+              return samples.map(([language, value]) => {
+                document.documentElement.dataset.language = language;
+                return window.UcpLogI18n.translateRuntimeLogText(value);
+              });
+            }
+            """
+        )
+
+        self.assertEqual(
+            result,
+            [
+                "主窗口 · 获取视频详情",
+                "Bilibili 介面 · 取得影片詳情",
+                "WebController · Web user requested to stop the crawl task",
+                "Web 控制器 · Web 端爬虫任务结束",
+                "文件删除等待超时前下载线程未停止",
+                "select_tasks 转发延迟=12.5 毫秒，项目数=42",
+                "select_tasks relay lag=12.5ms items=42",
+            ],
+        )
+
     def test_09b_language_switch_translates_runtime_ui_messages(self):
         self._goto_ready()
 
         result = self._page.evaluate(
             """
             async () => {
+              window.__isolateFrontendStateForTest();
               frontendState.settings_snapshot = frontendState.settings_snapshot || {};
               frontendState.settings_snapshot["外观设置"] = {
                 ...(frontendState.settings_snapshot["外观设置"] || {}),

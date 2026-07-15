@@ -1,4 +1,4 @@
-"""下载器模块，负责 `app/core/downloaders/chunked.py` 对应资源的落盘或外部工具调用流程。"""
+"""支持分块并发、续传和原子发布的大文件下载器。"""
 
 from __future__ import annotations
 
@@ -353,7 +353,13 @@ class ChunkedDownloader(BaseDownloader):
                             f"分片合并前校验失败: {temp_file}, expected {expected_size}, got {actual_size}"
                         )
                 # 所有分片成功后再串行合并，保证最终文件只在数据完整时出现。
-                self._merge_temp_files_atomically(temp_files, save_path)
+                self._merge_temp_files_atomically(
+                    temp_files,
+                    save_path,
+                    check_stop_func=check_stop_func,
+                )
+            except DownloaderStoppedError:
+                raise
             except Exception as exc:
                 raise StreamDownloadError(f"分块下载合并失败: {exc}") from exc
             self._emit_progress(progress_callback, 100, bytes_downloaded=total_size, bytes_total=total_size)
@@ -379,20 +385,30 @@ class ChunkedDownloader(BaseDownloader):
                     trace_id=video_item.meta.get("trace_id") if video_item.meta else None,
                 )
     @staticmethod
-    def _merge_temp_files_atomically(temp_files: list[str], save_path: str) -> None:
-        """Build a complete sidecar before atomically publishing the final file."""
+    def _merge_temp_files_atomically(
+        temp_files: list[str],
+        save_path: str,
+        *,
+        check_stop_func: StopCheck | None = None,
+    ) -> None:
+        """先在旁路文件中完成合并，再原子发布最终文件。"""
         merging_path = f"{save_path}.merging"
+        should_stop = check_stop_func or (lambda: False)
         try:
             with open(merging_path, "wb") as output_fp:
                 for temp_file in temp_files:
                     with open(temp_file, "rb") as input_fp:
                         while True:
+                            if should_stop():
+                                raise DownloaderStoppedError("User stopped download during chunk merge")
                             data = input_fp.read(65536)
                             if not data:
                                 break
                             output_fp.write(data)
                 output_fp.flush()
                 os.fsync(output_fp.fileno())
+            if should_stop():
+                raise DownloaderStoppedError("User stopped download before chunk publication")
             os.replace(merging_path, save_path)
         finally:
             try:

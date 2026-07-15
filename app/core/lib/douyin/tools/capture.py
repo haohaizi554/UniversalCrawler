@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/tools/capture.py` 对应的接口、加密、提取或工具逻辑。"""
+"""统一捕获参数请求与资源请求中的网络、状态码和 JSON 解析异常。"""
 
-# app/core/lib/douyin/tools/capture.py
 from json.decoder import JSONDecodeError
 from ssl import SSLError
 from typing import TYPE_CHECKING, Union
@@ -8,14 +7,10 @@ from httpx import HTTPStatusError, NetworkError, RequestError, TimeoutException
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
 
         return x
 if TYPE_CHECKING:
-    # 这里我们只引用 logger 的类型，具体的实现类可能暂时不存在
-    # 为了避免类型检查报错，我们可以暂时使用 Any 或占位
     from typing import Any
     BaseLogger = Any
     LoggerManager = Any
@@ -26,9 +21,8 @@ __all__ = [
 ]
 
 def capture_error_params(function):
-    
+    """将参数接口常见请求异常转换为日志并返回 None。"""
     async def inner(logger: Union["BaseLogger", "LoggerManager"], *args, **kwargs):
-        
         try:
             return await function(logger, *args, **kwargs)
         except (
@@ -51,9 +45,8 @@ def capture_error_params(function):
     return inner
 
 def capture_error_request(function):
-    
+    """将实例请求的常见异常写入 self.log 并返回 None。"""
     async def inner(self, *args, **kwargs):
-        
         try:
             return await function(self, *args, **kwargs)
         except (JSONDecodeError, UnicodeDecodeError):

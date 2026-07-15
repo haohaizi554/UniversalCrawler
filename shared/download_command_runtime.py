@@ -132,7 +132,7 @@ def run_download_command(
 ) -> tuple[int, dict | None, str | None]:
     """执行一次直接下载命令。
 
-    返回 `(exit_code, result, error_message)`，让 thin CLI wrapper 自行决定
+    返回 `(exit_code, result, error_message)`，让 CLI 薄包装层自行决定
     写 stdout/stderr；这样测试可以直接断言结构化结果，不依赖终端输出。
     """
     save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()

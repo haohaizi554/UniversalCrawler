@@ -6,7 +6,11 @@ from typing import Any
 
 
 class MetadataRetryTracker:
-    """记录空元数据探测失败次数，并为单个视频安排有上限的延迟重试。"""
+    """记录空元数据探测失败次数，并为单个视频安排延迟重试。
+
+    失败计数与 ``exhausted`` 的重试上限按 video/path 键计算，Timer 按 video_id
+    去重；不同键的失败记录和 Timer 总数没有全局上限，只在显式清理或取消时移除。
+    """
 
     def __init__(
         self,
@@ -67,7 +71,7 @@ class MetadataRetryTracker:
                     self._empty_failures.pop(key, None)
 
     def schedule(self, video_id: str, source_path: str) -> None:
-        """同一 video_id 同时只保留一个重试 Timer，防止探测风暴。"""
+        """同一 video_id 同时只保留一个重试 Timer；此去重不限制全局 Timer 数量。"""
         key = str(video_id or "")
         if not key:
             return

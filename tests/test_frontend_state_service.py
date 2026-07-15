@@ -1,5 +1,6 @@
 ﻿import json
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,147 @@ from app.services.frontend_state_service import FrontendStateService, QUEUE_STAT
 from app.services.media_metadata_service import MediaMetadata
 
 class FrontendStateServiceTests(unittest.TestCase):
+    def test_external_config_change_refreshes_service_snapshot_and_delta(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = str(Path(temp_dir) / "config.json")
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+            service = FrontendStateService(config_manager=gui_manager)
+            seen = threading.Event()
+            emitted: list[tuple[str, dict]] = []
+
+            def emit(topic, payload):
+                emitted.append((str(topic), dict(payload)))
+                service.record_event(topic, payload)
+
+            service.set_frontend_event_emitter(emit)
+
+            def on_change(payload):
+                if payload.get("external"):
+                    seen.set()
+
+            gui_manager.subscribe("config.changed", on_change)
+            before_version = service.get_snapshot()["version"]
+            try:
+                web_manager.set_batch(
+                    {
+                        "common": {"theme": "dark"},
+                        "appearance": {"accent": "purple"},
+                    }
+                )
+                self.assertTrue(seen.wait(timeout=2))
+
+                snapshot = service.get_snapshot(sections=frozenset({"settings_snapshot"}))
+                appearance = snapshot["settings_snapshot"]["外观设置"]
+                self.assertEqual("dark", appearance["theme"])
+                self.assertEqual("purple", appearance["accent"])
+                delta = service.get_delta(before_version)
+                self.assertIn("settings_snapshot", delta["changed_sections"])
+                self.assertIn("settings.update", {topic for topic, _payload in emitted})
+            finally:
+                service.destroy()
+
+    def test_external_config_change_notifies_bound_gui_window(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = str(Path(temp_dir) / "config.json")
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+            window = SimpleNamespace(_on_external_config_changed=Mock())
+            service = FrontendStateService(
+                controller=SimpleNamespace(window=window),
+                config_manager=gui_manager,
+            )
+            service._gui_runtime_invoker = Mock()
+
+            try:
+                web_manager.set("appearance", "accent", "purple")
+                deadline = time.monotonic() + 2
+                while not window._on_external_config_changed.called and time.monotonic() < deadline:
+                    time.sleep(0.02)
+
+                window._on_external_config_changed.assert_called()
+                service._gui_runtime_invoker.invoke_and_wait.assert_not_called()
+                payload = window._on_external_config_changed.call_args.args[0]
+                self.assertEqual("appearance", payload["section"])
+                self.assertEqual("accent", payload["key"])
+            finally:
+                service.destroy()
+
+    def test_gui_and_web_services_sync_all_setting_groups_without_exit_overwrite(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = str(Path(temp_dir) / "config.json")
+            gui_manager = ConfigManager(config_path)
+            web_manager = ConfigManager(config_path)
+            gui_service = FrontendStateService(config_manager=gui_manager)
+            web_service = FrontendStateService(config_manager=web_manager)
+            gui_seen = threading.Event()
+            web_seen = threading.Event()
+
+            gui_manager.subscribe(
+                "config.changed",
+                lambda payload: gui_seen.set() if payload.get("external") else None,
+            )
+            web_manager.subscribe(
+                "config.changed",
+                lambda payload: web_seen.set() if payload.get("external") else None,
+            )
+
+            try:
+                gui_updates = (
+                    ("update_basic_setting", {"key": "theme", "value": "dark"}),
+                    ("update_setting", {"section": "appearance", "key": "accent", "value": "purple"}),
+                    ("update_setting", {"section": "download", "key": "request_timeout", "value": 90}),
+                    ("update_setting", {"section": "playback", "key": "default_player", "value": "system_default"}),
+                    ("update_setting", {"section": "logging", "key": "retention_days", "value": 3}),
+                    ("update_setting", {"section": "bilibili", "key": "max_pages", "value": 2}),
+                )
+                for action, payload in gui_updates:
+                    self.assertEqual("ok", gui_service.handle_action(action, payload)["status"])
+
+                self.assertTrue(web_seen.wait(timeout=2))
+                self.assertEqual("dark", web_manager.get("common", "theme"))
+                self.assertEqual("purple", web_manager.get("appearance", "accent"))
+                self.assertEqual(90, web_manager.get("download", "request_timeout"))
+                self.assertEqual("system_default", web_manager.get("playback", "default_player"))
+                self.assertEqual(3, web_manager.get("logging", "retention_days"))
+                self.assertEqual(2, web_manager.get("bilibili", "max_pages"))
+
+                gui_seen.clear()
+                web_updates = (
+                    ("update_basic_setting", {"key": "theme", "value": "light"}),
+                    ("update_setting", {"section": "appearance", "key": "scale", "value": "110%"}),
+                    ("update_setting", {"section": "download", "key": "request_timeout", "value": 120}),
+                    ("update_setting", {"section": "playback", "key": "autoplay_next", "value": False}),
+                    ("update_setting", {"section": "logging", "key": "retention_days", "value": 7}),
+                    ("update_setting", {"section": "bilibili", "key": "max_pages", "value": 3}),
+                )
+                for action, payload in web_updates:
+                    self.assertEqual("ok", web_service.handle_action(action, payload)["status"])
+
+                self.assertTrue(gui_seen.wait(timeout=2))
+                deadline = time.monotonic() + 2
+                while gui_manager.get("bilibili", "max_pages") != 3 and time.monotonic() < deadline:
+                    time.sleep(0.02)
+
+                self.assertEqual("light", gui_manager.get("common", "theme"))
+                self.assertEqual("110%", gui_manager.get("appearance", "scale"))
+                self.assertEqual(120, gui_manager.get("download", "request_timeout"))
+                self.assertFalse(gui_manager.get("playback", "autoplay_next"))
+                self.assertEqual(7, gui_manager.get("logging", "retention_days"))
+                self.assertEqual(3, gui_manager.get("bilibili", "max_pages"))
+
+                gui_manager.save_ui_state(b"geometry", b"state", b"main", b"right", False)
+                reloaded = ConfigManager(config_path)
+                self.assertEqual("light", reloaded.get("common", "theme"))
+                self.assertEqual("110%", reloaded.get("appearance", "scale"))
+                self.assertEqual(120, reloaded.get("download", "request_timeout"))
+                self.assertFalse(reloaded.get("playback", "autoplay_next"))
+                self.assertEqual(7, reloaded.get("logging", "retention_days"))
+                self.assertEqual(3, reloaded.get("bilibili", "max_pages"))
+            finally:
+                gui_service.destroy()
+                web_service.destroy()
+
     def test_snapshot_exposes_all_required_sections(self):
         service = FrontendStateService()
         snapshot = service.get_snapshot(mock=True)
@@ -671,12 +813,24 @@ class FrontendStateServiceTests(unittest.TestCase):
             window._apply_playback_runtime_settings.assert_called_once_with()
 
     def test_update_setting_reports_gui_runtime_ack_timeout_after_persisting(self):
+        from PyQt6.QtCore import QObject
+        from app.ui.gui_runtime_adapter import QtGuiRuntimeAdapter
+
+        class RuntimeWindow(QObject):
+            def __init__(self):
+                super().__init__()
+                self.apply_playback = Mock()
+
+            def _apply_playback_runtime_settings(self):
+                self.apply_playback()
+
         with TemporaryDirectory() as temp_dir:
             manager = ConfigManager(str(Path(temp_dir) / "config.json"))
-            window = SimpleNamespace(_apply_playback_runtime_settings=Mock())
+            window = RuntimeWindow()
             service = FrontendStateService(
                 controller=SimpleNamespace(window=window),
                 config_manager=manager,
+                gui_runtime_adapter=QtGuiRuntimeAdapter(),
             )
             service._gui_runtime_invoker = SimpleNamespace(
                 invoke_and_wait=Mock(
@@ -693,7 +847,7 @@ class FrontendStateServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "error")
             self.assertIn("acknowledgement timed out", result["message"])
             self.assertFalse(manager.get("playback", "autoplay_next"))
-            window._apply_playback_runtime_settings.assert_not_called()
+            window.apply_playback.assert_not_called()
 
     def test_config_runtime_failure_capture_is_thread_local(self):
         service = FrontendStateService()

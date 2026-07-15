@@ -1,4 +1,4 @@
-"""Local video playback repair helpers."""
+"""本地视频播放索引修复：构建可 seek 缓存，并可原子写回源文件。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class RepairCommitResult:
     message: str = ""
 
 class MkvPlaybackRepairService:
-    """Build seekable playback cache files and optionally write them back."""
+    """用 ffmpeg 重建可 seek 文件；只有完整输出才会替换缓存或源文件。"""
 
     STALE_TEMP_MAX_AGE_SECONDS = 24 * 60 * 60
     REPAIR_PROCESS_TIMEOUT_SECONDS = 60
@@ -72,7 +72,7 @@ class MkvPlaybackRepairService:
         return Path(path).suffix.lower() in cls.REPAIRABLE_VIDEO_EXTENSIONS
 
     def cached_playable_path(self, source_path: str | os.PathLike[str]) -> str:
-        """Return the repaired cache path if one already exists."""
+        """缓存存在且非空时返回修复文件，否则仍使用原路径。"""
         source = Path(source_path)
         source_text = str(source)
         if not self.is_repairable_path(source) or not source.is_file():
@@ -89,6 +89,7 @@ class MkvPlaybackRepairService:
         progress_callback: RepairProgressCallback | None = None,
         cancel_check: RepairCancelCheck | None = None,
     ) -> MkvRepairResult:
+        """ffmpeg 先写进程专属临时文件，退出成功且文件非空后再原子发布缓存。"""
         source = Path(source_path)
         source_text = str(source)
         if not self.is_repairable_path(source):
@@ -154,7 +155,7 @@ class MkvPlaybackRepairService:
         progress_callback: RepairProgressCallback | None = None,
         cancel_check: RepairCancelCheck | None = None,
     ) -> RepairCommitResult:
-        """Copy a repaired playback file back over the original using a temp file."""
+        """在源目录复制并 fsync 临时文件，再用 os.replace 原子覆盖原文件。"""
         source = Path(source_path)
         repaired = Path(repaired_path)
         source_text = str(source)
@@ -186,7 +187,7 @@ class MkvPlaybackRepairService:
             return RepairCommitResult(source_text, False, str(exc))
 
     def discard_cache_file(self, cache_path: str | os.PathLike[str]) -> bool:
-        """Remove a repair cache file if it belongs to this service cache root."""
+        """仅删除解析后仍位于本服务 cache_root 内的修复缓存。"""
         path = Path(cache_path)
         try:
             cache_root = self.cache_root.resolve()
@@ -198,7 +199,7 @@ class MkvPlaybackRepairService:
         return self._safe_unlink(resolved)
 
     def cleanup_stale_cache_files(self, *, max_age_seconds: int | None = None) -> int:
-        """Remove old temp files left by an interrupted repair process."""
+        """清理中断修复遗留且超过保留时间的缓存临时文件。"""
         if not self.cache_root.exists():
             return 0
         max_age = self.STALE_TEMP_MAX_AGE_SECONDS if max_age_seconds is None else max_age_seconds
@@ -214,7 +215,7 @@ class MkvPlaybackRepairService:
         *,
         max_age_seconds: int | None = None,
     ) -> int:
-        """Remove old same-directory commit temp files for a source file."""
+        """只清理指定源文件同目录、同命名空间下的过期写回临时文件。"""
         source = Path(source_path)
         parent = source.parent
         if not parent.exists():

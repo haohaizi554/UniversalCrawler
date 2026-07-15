@@ -1,4 +1,4 @@
-"""Application-drawn title bar for the frameless main window."""
+"""为无边框主窗口提供应用自绘标题栏。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from app.ui.styles import theme_colors
 
 
 class WindowChromeButton(QAbstractButton):
-    """Window control button painted by Qt instead of a font glyph."""
+    """由 Qt 绘制、不依赖字体符号的窗口控制按钮。"""
 
     WIDTH = 38
 
@@ -87,7 +87,7 @@ class WindowChromeButton(QAbstractButton):
 
 
 class WindowTitleBar(QWidget):
-    """A Qt-rendered title bar that shares the same theme frame as the app."""
+    """与应用主题框架一致的 Qt 自绘标题栏。"""
 
     minimize_requested = pyqtSignal()
     maximize_restore_requested = pyqtSignal()

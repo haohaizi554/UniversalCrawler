@@ -1,18 +1,13 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/comment.py` 对应的接口、加密、提取或工具逻辑。"""
+"""分页获取抖音作品评论及评论回复。"""
 
-# app/core/lib/douyin/interface/comment.py
 from typing import TYPE_CHECKING, Callable, Coroutine, Type, Union
-# 调整引用路径
 from ..extract import Extractor
 from .template import API
 
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -21,6 +16,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class Comment(API):
+    """抓取作品一级评论，并可继续展开存在回复的评论。"""
     
     def __init__(
         self,
@@ -34,7 +30,6 @@ class Comment(API):
         count_reply: int = 3,
         reply: bool = False,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Comment` 使用。"""
         super().__init__(params, cookie, proxy)
         self.params_object = params
         self.cookie = cookie
@@ -83,7 +78,7 @@ class Comment(API):
         *args,
         **kwargs,
     ) -> list[dict]:
-        """执行当前对象或脚本的主流程，供 `Comment` 使用。"""
+        """获取评论；启用 reply 后，每页结束时继续抓取对应回复。"""
         return await super().run(
             referer,
             single_page,
@@ -149,7 +144,7 @@ class Comment(API):
         *args,
         **kwargs,
     ):
-        """更新 `progress` 对应的状态或数据内容，供 `Comment` 使用。"""
+        """在同一进度任务中逐页请求，并在每页后执行可选回调。"""
         while not self.finished and self.pages > 0:
             self.progress.update(self.task_id)
             await self.run_single(
@@ -221,6 +216,7 @@ class Comment(API):
             self.finished = True
 
 class Reply(Comment):
+    """分页获取指定一级评论下的回复。"""
     
     def __init__(
         self,
@@ -235,7 +231,6 @@ class Reply(Comment):
         progress=None,
         task_id=None,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `Reply` 使用。"""
         super().__init__(
             params,
             cookie,
@@ -283,7 +278,7 @@ class Reply(Comment):
         *args,
         **kwargs,
     ):
-        """执行当前对象或脚本的主流程，供 `Reply` 使用。"""
+        """复用评论分页流程，但请求回复接口并使用 comment_id 定位父评论。"""
         return await super(Comment, self).run(
             referer,
             single_page=single_page,

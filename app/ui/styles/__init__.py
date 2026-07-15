@@ -1,4 +1,4 @@
-"""Style exports."""
+"""导出桌面 UI 样式。"""
 
 from .themes import (
     DARK_STYLESHEET,

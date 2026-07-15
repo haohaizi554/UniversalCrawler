@@ -1,12 +1,11 @@
-"""Re-export stable plugin API symbols from ``app.core.plugins``.
+"""从 ``app.core.plugins`` 统一导出稳定的插件接口。
 
-Consumers should always import from this module:
+调用方应始终从本模块导入公共符号：
 
     from app.core.plugin_registry import registry, BasePlugin, PluginRegistry
 
-Concrete plugin classes (DouyinPlugin, …) are auto-registered via SPI
-and accessible through ``registry.get_plugin(id)`` — there is no need to
-import them explicitly.
+具体插件类通过 SPI 自动注册，可由 ``registry.get_plugin(id)`` 获取，
+无需在业务代码中逐个显式导入。
 """
 
 from .plugins import BasePlugin, PluginRegistry, registry

@@ -1,6 +1,5 @@
-"""抖音底层能力模块，负责 `app/core/lib/douyin/interface/info_tiktok.py` 对应的接口、加密、提取或工具逻辑。"""
+"""获取 TikTok 账号的简略资料。"""
 
-# app/core/lib/douyin/interface/info_tiktok.py
 from typing import TYPE_CHECKING
 from typing import Union
 from .template import APITikTok
@@ -8,10 +7,7 @@ from .template import APITikTok
 try:
     from ..translation import _
 except ImportError:
-    """提供 `_` 对应的内部辅助逻辑。"""
     def _(x):
-        """Fallback translator that returns the original text unchanged."""
-
         return x
 
 if TYPE_CHECKING:
@@ -20,6 +16,7 @@ if TYPE_CHECKING:
     Params = Any
 
 class InfoTikTok(APITikTok):
+    """按 unique_id 或 sec_user_id 查询 TikTok 账号资料。"""
     
     def __init__(
         self,
@@ -31,7 +28,6 @@ class InfoTikTok(APITikTok):
         *args,
         **kwargs,
     ):
-        """初始化当前实例并准备运行所需的状态，供 `InfoTikTok` 使用。"""
         super().__init__(params, cookie, proxy, *args, **kwargs)
         self.api = f"{self.domain}api/user/detail/"
         self.unique_id = unique_id
@@ -40,11 +36,10 @@ class InfoTikTok(APITikTok):
 
     async def run(
         self,
-        # first=True,
         *args,
         **kwargs,
     ) -> dict | list[dict]:
-        """执行当前对象或脚本的主流程，供 `InfoTikTok` 使用。"""
+        """返回首个 userInfo 记录；接口无数据时返回空字典。"""
         self.set_referer()
         await self.run_single()
         return self.response[0] if self.response else {}
