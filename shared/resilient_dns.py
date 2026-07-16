@@ -31,6 +31,9 @@ _MIN_CACHE_TTL_SECONDS = 30.0
 _MAX_CACHE_TTL_SECONDS = 300.0
 _SYSTEM_CACHE_TTL_SECONDS = 30.0
 _SYSTEM_FAILURE_BACKOFF_SECONDS = 60.0
+_SYSTEM_FAILURE_MAX_BACKOFF_SECONDS = 600.0
+_DOH_FAILURE_BACKOFF_SECONDS = 30.0
+_DOH_FAILURE_MAX_BACKOFF_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,99 @@ _DOH_PROVIDERS = (
     _DoHProvider("dns.alidns.com", ("223.5.5.5", "223.6.6.6"), "/resolve"),
     _DoHProvider("cloudflare-dns.com", ("1.1.1.1", "1.0.0.1"), "/dns-query"),
 )
+
+
+@dataclass
+class _DoHRouteHealth:
+    successes: int = 0
+    failures: int = 0
+    consecutive_failures: int = 0
+    cooldown_until: float = 0.0
+    latency_ewma: float = 0.0
+
+
+class _DoHProviderPool:
+    """按运行期成功率、延迟和失败冷却动态排列 DoH 连接端点。"""
+
+    def __init__(
+        self,
+        providers: tuple[_DoHProvider, ...],
+        *,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._clock = clock or time.monotonic
+        self._routes = tuple(
+            (provider, bootstrap_ip)
+            for provider in providers
+            for bootstrap_ip in provider.bootstrap_ips
+        )
+        self._route_order = {route: index for index, route in enumerate(self._routes)}
+        self._health = {route: _DoHRouteHealth() for route in self._routes}
+        self._lock = threading.RLock()
+
+    def ordered_routes(self) -> tuple[tuple[_DoHProvider, str], ...]:
+        """返回当前可用端点；全部冷却时只探测最早可恢复的一条。"""
+        now = self._clock()
+        with self._lock:
+            candidates = [route for route in self._routes if self._health[route].cooldown_until <= now]
+            if not candidates and self._routes:
+                candidates = [
+                    min(
+                        self._routes,
+                        key=lambda route: (
+                            self._health[route].cooldown_until,
+                            self._route_order[route],
+                        ),
+                    )
+                ]
+
+            def route_rank(route: tuple[_DoHProvider, str]) -> tuple[float, int, float, int]:
+                health = self._health[route]
+                # Beta(1, 1) 先验避免未使用端点因样本数为零而产生极端分数。
+                success_rate = (health.successes + 1) / (health.successes + health.failures + 2)
+                latency = health.latency_ewma if health.latency_ewma > 0 else float("inf")
+                return (
+                    -success_rate,
+                    health.consecutive_failures,
+                    latency,
+                    self._route_order[route],
+                )
+
+            return tuple(sorted(candidates, key=route_rank))
+
+    def record_success(self, provider: _DoHProvider, bootstrap_ip: str, latency: float) -> None:
+        route = (provider, bootstrap_ip)
+        with self._lock:
+            health = self._health.get(route)
+            if health is None:
+                return
+            health.successes += 1
+            health.consecutive_failures = 0
+            health.cooldown_until = 0.0
+            measured = max(0.0, float(latency))
+            health.latency_ewma = (
+                measured
+                if health.latency_ewma <= 0
+                else (health.latency_ewma * 0.7) + (measured * 0.3)
+            )
+
+    def record_failure(self, provider: _DoHProvider, bootstrap_ip: str) -> None:
+        route = (provider, bootstrap_ip)
+        with self._lock:
+            health = self._health.get(route)
+            if health is None:
+                return
+            health.failures += 1
+            health.consecutive_failures += 1
+            exponent = min(health.consecutive_failures - 1, 8)
+            backoff = min(
+                _DOH_FAILURE_BACKOFF_SECONDS * (2**exponent),
+                _DOH_FAILURE_MAX_BACKOFF_SECONDS,
+            )
+            health.cooldown_until = self._clock() + backoff
+
+
+_DOH_PROVIDER_POOL = _DoHProviderPool(_DOH_PROVIDERS)
 
 _CHROMIUM_DOH_SERVERS = (
     ("https://dns.alidns.com/dns-query{?dns}", ("223.5.5.5", "223.6.6.6")),
@@ -154,7 +250,7 @@ def _query_doh_provider(
         response = connection.getresponse()
         payload = response.read(_MAX_DOH_RESPONSE_BYTES + 1)
         if response.status != 200 or len(payload) > _MAX_DOH_RESPONSE_BYTES:
-            return (), 0.0
+            raise OSError(f"DoH provider returned HTTP {response.status}")
         decoded = json.loads(payload.decode("utf-8"))
     finally:
         connection.close()
@@ -193,26 +289,32 @@ def _query_doh_provider(
 
 
 def resolve_via_doh(host: str, family: int) -> tuple[tuple[str, ...], float]:
-    """依次查询受信 DoH 服务；全部失败时返回空结果并保留原系统 DNS 异常。"""
+    """按动态健康顺序查询受信 DoH 服务，成功节点自动提升优先级。"""
     record_types = (28,) if family == socket.AF_INET6 else (1,)
     if family not in {socket.AF_INET, socket.AF_INET6}:
         # 大多数媒体 CDN 同时提供 IPv4；先用单次 A 查询缩短故障恢复时间。
         record_types = (1, 28)
 
     for record_type in record_types:
-        for provider in _DOH_PROVIDERS:
-            for bootstrap_ip in provider.bootstrap_ips:
-                try:
-                    addresses, ttl = _query_doh_provider(
-                        provider,
-                        bootstrap_ip,
-                        host,
-                        record_type,
-                    )
-                except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                    continue
-                if addresses:
-                    return addresses, ttl
+        for provider, bootstrap_ip in _DOH_PROVIDER_POOL.ordered_routes():
+            started_at = time.monotonic()
+            try:
+                addresses, ttl = _query_doh_provider(
+                    provider,
+                    bootstrap_ip,
+                    host,
+                    record_type,
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                _DOH_PROVIDER_POOL.record_failure(provider, bootstrap_ip)
+                continue
+            _DOH_PROVIDER_POOL.record_success(
+                provider,
+                bootstrap_ip,
+                time.monotonic() - started_at,
+            )
+            if addresses:
+                return addresses, ttl
     return (), 0.0
 
 
@@ -251,6 +353,7 @@ class ResilientDNSResolver:
         self._cache_lock = threading.RLock()
         self._system_health_lock = threading.Lock()
         self._system_unhealthy_until = 0.0
+        self._system_consecutive_failures = 0
 
     def _cached_addresses(self, host: str, family: int) -> tuple[str, ...]:
         with self._cache_lock:
@@ -274,16 +377,21 @@ class ResilientDNSResolver:
         with self._system_health_lock:
             return self._system_unhealthy_until > self._clock()
 
-    def _mark_system_dns_failure(self) -> None:
+    def _mark_system_dns_failure(self) -> float:
         with self._system_health_lock:
-            self._system_unhealthy_until = max(
-                self._system_unhealthy_until,
-                self._clock() + _SYSTEM_FAILURE_BACKOFF_SECONDS,
+            self._system_consecutive_failures += 1
+            exponent = min(self._system_consecutive_failures - 1, 8)
+            backoff = min(
+                _SYSTEM_FAILURE_BACKOFF_SECONDS * (2**exponent),
+                _SYSTEM_FAILURE_MAX_BACKOFF_SECONDS,
             )
+            self._system_unhealthy_until = self._clock() + backoff
+            return backoff
 
     def _mark_system_dns_success(self) -> None:
         with self._system_health_lock:
             self._system_unhealthy_until = 0.0
+            self._system_consecutive_failures = 0
 
     def _resolve_doh_addresses(self, host: str, family: int) -> tuple[tuple[str, ...], float]:
         lookup_family = family if family in {socket.AF_INET, socket.AF_INET6} else socket.AF_UNSPEC
@@ -356,7 +464,7 @@ class ResilientDNSResolver:
             addresses, ttl = self._resolve_doh_addresses(normalized_host, family)
             if addresses:
                 self._cache_addresses(normalized_host, addresses, ttl)
-                _LOGGER.warning("系统 DNS 仍不可用，已对 %s 直接使用安全 DNS", normalized_host)
+                _LOGGER.debug("系统 DNS 冷却中，已对 %s 直接使用安全 DNS", normalized_host)
                 return self._materialize_addr_infos(addresses, port, family, type, proto, flags)
 
         try:
@@ -368,11 +476,18 @@ class ResilientDNSResolver:
             if not addresses:
                 raise system_error
             self._cache_addresses(normalized_host, addresses, ttl)
-            self._mark_system_dns_failure()
-            _LOGGER.warning("系统 DNS 解析失败，已对 %s 启用安全 DNS 回退", normalized_host)
+            backoff = self._mark_system_dns_failure()
+            _LOGGER.warning(
+                "系统 DNS 解析失败，已对 %s 启用安全 DNS；未来 %.0f 秒公网域名将优先使用动态 DNS 池",
+                normalized_host,
+                backoff,
+            )
             return self._materialize_addr_infos(addresses, port, family, type, proto, flags)
 
-        self._mark_system_dns_success()
+        # 本地代理地址和数字 IP 的成功不能证明公网 DNS 已恢复，否则每次连接
+        # 127.0.0.1 都会提前清空故障冷却，让下一个 CDN 域名再次撞向坏 DNS。
+        if doh_candidate:
+            self._mark_system_dns_success()
         addresses = self._addresses_from_infos(addr_infos)
         if addresses and doh_candidate:
             self._cache_addresses(normalized_host, addresses, _SYSTEM_CACHE_TTL_SECONDS)

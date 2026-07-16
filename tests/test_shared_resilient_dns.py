@@ -1,6 +1,7 @@
 import socket
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class ResilientDNSResolverTests(unittest.TestCase):
@@ -99,6 +100,83 @@ class ResilientDNSResolverTests(unittest.TestCase):
 
         self.assertIn("first.example.net", queried_hosts)
         self.assertNotIn("second.example.net", queried_hosts)
+
+    def test_local_proxy_resolution_does_not_reset_public_dns_backoff(self):
+        from shared.resilient_dns import ResilientDNSResolver
+
+        queried_hosts: list[str] = []
+
+        def system_resolver(host, port, family=0, type=0, proto=0, flags=0):
+            normalized = str(host)
+            queried_hosts.append(normalized)
+            if normalized in {"first.example.net", "second.example.net"}:
+                raise socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+            return socket.getaddrinfo(host, port, family, type, proto, flags)
+
+        resolver = ResilientDNSResolver(
+            system_resolver=system_resolver,
+            doh_lookup=lambda _host, _family: (("93.184.216.34",), 60.0),
+        )
+
+        resolver("first.example.net", 443, type=socket.SOCK_STREAM)
+        resolver("127.0.0.1", 7890, type=socket.SOCK_STREAM)
+        resolver("second.example.net", 443, type=socket.SOCK_STREAM)
+
+        self.assertNotIn("second.example.net", queried_hosts)
+
+    def test_repeated_system_failures_extend_the_global_backoff(self):
+        from shared.resilient_dns import ResilientDNSResolver
+
+        now = [0.0]
+        queried_hosts: list[str] = []
+
+        def system_resolver(host, port, family=0, type=0, proto=0, flags=0):
+            normalized = str(host)
+            queried_hosts.append(normalized)
+            if normalized.endswith(".example.net"):
+                raise socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+            return socket.getaddrinfo(host, port, family, type, proto, flags)
+
+        resolver = ResilientDNSResolver(
+            system_resolver=system_resolver,
+            doh_lookup=lambda _host, _family: (("93.184.216.34",), 30.0),
+            clock=lambda: now[0],
+        )
+
+        resolver("first.example.net", 443, type=socket.SOCK_STREAM)
+        now[0] = 61.0
+        resolver("second.example.net", 443, type=socket.SOCK_STREAM)
+        now[0] = 125.0
+        resolver("third.example.net", 443, type=socket.SOCK_STREAM)
+
+        self.assertIn("first.example.net", queried_hosts)
+        self.assertIn("second.example.net", queried_hosts)
+        self.assertNotIn("third.example.net", queried_hosts)
+
+    def test_successful_doh_route_is_promoted_ahead_of_failed_route(self):
+        import shared.resilient_dns as resilient_dns
+
+        now = [0.0]
+        first = resilient_dns._DoHProvider("first-dns.test", ("192.0.2.1",), "/resolve")
+        second = resilient_dns._DoHProvider("second-dns.test", ("192.0.2.2",), "/resolve")
+        pool = resilient_dns._DoHProviderPool((first, second), clock=lambda: now[0])
+        calls: list[tuple[str, str, str]] = []
+
+        def query(provider, bootstrap_ip, host, _record_type):
+            calls.append((provider.host, bootstrap_ip, host))
+            if provider is first:
+                raise OSError("route unavailable")
+            return ("93.184.216.34",), 60.0
+
+        with (
+            patch.object(resilient_dns, "_DOH_PROVIDER_POOL", pool),
+            patch.object(resilient_dns, "_query_doh_provider", side_effect=query),
+        ):
+            resilient_dns.resolve_via_doh("alpha.example.net", socket.AF_INET)
+            calls.clear()
+            resilient_dns.resolve_via_doh("beta.example.net", socket.AF_INET)
+
+        self.assertEqual(calls, [("second-dns.test", "192.0.2.2", "beta.example.net")])
 
     def test_installer_is_idempotent_for_every_entry_point(self):
         from shared.resilient_dns import install_resilient_dns
