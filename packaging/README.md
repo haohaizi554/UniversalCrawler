@@ -53,7 +53,7 @@
   - `docs/guides/testing.md`
   - `docs/changelog.md`
 - 静态验证：
-  - `tests/test_packaging.py`
+  - `tests/release/packaging/test_assets.py`
 
 只修改 `portable.spec` 或 `installer.iss` 而不更新这些联动文件，后续最容易出现版本漂移、文档漂移和用户数据路径漂移。
 
@@ -210,8 +210,8 @@ python packaging/build_release.py
 
 至少执行以下检查：
 
-1. `python -m pytest tests/test_packaging.py`
-2. `python tests/test_launcher.py --list`
+1. `python -m pytest tests/release/packaging/test_assets.py`
+2. `python tests/launcher.py --list`
 3. 启动 `UniversalCrawlerPro.exe`
 4. 启动 `CrawlerWebPortal.exe`
 5. 验证 Chromium 运行时可用

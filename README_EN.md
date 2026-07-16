@@ -9,7 +9,7 @@
   <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.17-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20registry-informational" />
+  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%208_suites-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
@@ -91,8 +91,8 @@ It is neither a thin shell around a webpage nor a pile of scattered scripts. It 
 
 ### 🧪 6. Not Just Runnable, But Also Focused On Testing And Engineering Quality
 
-- **Unified test entry**: the project uses `pytest` as the runner, `tests/test_registry.py` for suite classification, and `tests/test_launcher.py` for GUI / TUI / CLI launch modes.
-- **Covers real high-risk paths**: the current registry contains 13 enabled categories and 131 runnable test files, covering models, configuration, controllers, downloaders, parsers, log desensitization, semi-integrated flows, architecture fitness, and lightweight benchmarks.
+- **Unified test entry**: the project uses `pytest`; eight built-in suites are owned by the `tests/unit`, `integration`, `contract`, `e2e`, `architecture`, `performance`, `release`, and `testkit` directories, while `tests/launcher.py` provides GUI / TUI / CLI modes.
+- **Covers real high-risk paths**: the directory suites cover models, configuration, controllers, downloaders, parsers, redaction, component collaboration, public contracts, browser journeys, architecture fitness, performance budgets, and release engineering. Core CI enforces 70% coverage.
 - **Friendly for refactoring**: the spider main flow, download strategies, configuration migration, and file persistence areas are gradually being protected by tests, lowering the risk of future evolution.
 
 ---
@@ -560,19 +560,19 @@ The project currently uses `pytest` as the unified execution entry, while the te
 
 ### Current Test Signal In This Branch
 
-- `tests/test_registry.py` currently registers 13 enabled categories and 131 runnable test files, with `misc` currently at 0.
-- already covers CLI / SDK / Web API / packaging configuration / desktop UI / browser E2E / application flows / core services / architecture fitness / benchmarks and more
-- automatic test-suite classification is now part of the main workflow; new tests should be categorized by naming rules or explicit registry entries instead of staying in the uncategorized bucket
+- the eight built-in suites are discovered recursively from directories; `all` is a union view and `misc` only reports layout violations and must remain empty
+- coverage spans CLI / SDK / Web API / packaging / desktop UI / browser E2E / application flows / core services / architecture fitness / performance budgets and more
+- new tests follow `tests/<suite>/<production namespace>/test_<responsibility>.py`; exact-file and business-prefix allowlists are forbidden for built-in suites
 - GitHub Actions already includes baseline automation checks. 
 
 ### Local Execution Commands
 
 ```bash
 python -m compileall app tests main.py
-python tests/test_registry.py
-python tests/test_launcher.py --list
-python tests/test_launcher.py --category architecture
-python tests/test_launcher.py --category benchmark
+python tests/support/catalog.py
+python tests/launcher.py --list
+python tests/launcher.py --category architecture
+python tests/launcher.py --category performance
 python -m pytest tests
 ```
 
@@ -671,7 +671,7 @@ If you change the packaging chain, do not only edit `packaging/`:
 - version and display name should stay aligned across `pyproject.toml` and `packaging/project_meta.py`
 - path rules should stay aligned with `app/utils/runtime_paths.py`
 - documentation should be updated at least in `README.md`, `README_EN.md`, `docs/guides/packaging.md`, and `packaging/README.md`
-- static validation should stay aligned with `tests/test_packaging.py`
+- static validation should stay aligned with `tests/release/packaging/test_assets.py`
 
 ### Suggested Checks Before Packaging
 

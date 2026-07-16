@@ -6,7 +6,7 @@
 - 优先补纯逻辑能力，再补 UI 绑定代码。
 - 高风险改动必须同步补测试和文档。
 
-当前 `3.6.17` 阶段的维护重点是 GUI/WebUI 状态一致性、前端刷新性能、下载并发控制、国际化覆盖和测试稳定性。涉及这些区域时，优先沿用 `FrontendStateService`、事件总线、后台 worker 和现有测试注册表，不在页面层直接补业务分支。
+当前 `3.6.17` 阶段的维护重点是 GUI/WebUI 状态一致性、前端刷新性能、下载并发控制、国际化覆盖和测试稳定性。涉及这些区域时，优先沿用 `FrontendStateService`、事件总线、后台 worker 和目录驱动的测试套件，不在页面层直接补业务分支。
 
 ## 新代码放哪里
 
@@ -54,16 +54,16 @@
 ```bash
 python -m compileall app tests main.py
 python -m pytest -q
-python tests/test_launcher.py --list
+python tests/launcher.py --list
 ```
 
-局部改动优先跑相关文件或类别，例如：
+局部改动优先跑相关文件或目录套件，例如：
 
 ```bash
-python -m pytest tests/test_main_window.py -q
-python -m pytest tests/test_unified_frontend_contract.py -q -k "theme or top_bar"
-python tests/test_launcher.py --category desktop_ui
-python tests/test_launcher.py --category web_api
+python -m pytest tests/unit/app/ui/test_main_window.py -q
+python -m pytest tests/contract/frontend -q -k "theme or top_bar"
+python tests/launcher.py --category unit
+python tests/launcher.py --category contract
 ```
 
 ### 推荐原则
@@ -71,6 +71,10 @@ python tests/test_launcher.py --category web_api
 - 外部站点和浏览器行为尽量 mock，不把测试建立在真实网站稳定性上。
 - 优先测试是否发出正确任务和是否走到正确分支，其次才是页面细节。
 - 每次新增测试文件时，确保案例足够聚焦，不写占位式断言。
+- 按隔离程度选择 `unit`、`integration`、`contract`、`e2e`、`architecture`、`performance`、`release` 或 `testkit`，并在套件后镜像生产命名空间。
+- 内置套件只按目录发现；禁止通过精确文件、业务前缀 glob 或 include/exclude 白名单接入新测试。
+- marker 只表达浏览器、网络、GUI、慢速、串行、Windows 等运行约束，并保持 `pyproject.toml` 严格注册。
+- 具体规则以 `tests/AGENTS.md` 和 `tests/NAMING.md` 为准。
 
 ## 文档要求
 

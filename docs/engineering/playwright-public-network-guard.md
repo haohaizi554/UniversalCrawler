@@ -98,7 +98,7 @@ session.get(url)  # 实际连接会再次解析 DNS，未固定已验证地址
 - 成功、异常和重定向后都恢复原 Session 选项。
 - 私网首跳和私网重定向在发起下一次请求前被拒绝。
 
-对应测试入口是 `tests/test_downloaders.py` 和 `tests/test_m3u8_downloader_lifecycle.py`。
+对应测试入口是 `tests/integration/app/core/downloaders/test_runtime.py` 和 `tests/integration/app/core/downloaders/m3u8/test_lifecycle.py`。
 
 ## 平台 URL：授权 hostname，不授权字符串片段
 
@@ -134,7 +134,7 @@ host == "bilibili.com" or host.endswith(".bilibili.com")
 - `notofficial-domain` 和 userinfo 混淆被拒绝。
 - 小红书不可信登录入口回退 `HOME_URL`，可信入口保持原值。
 
-对应测试入口是 `tests/test_spider_helpers.py` 和 `tests/test_xiaohongshu_integration.py`。
+对应测试入口是 `tests/unit/app/spiders/test_helpers.py` 和 `tests/integration/app/spiders/xiaohongshu/test_runtime.py`。
 
 ## 已知边界：Playwright DNS 二次解析
 
@@ -182,12 +182,12 @@ context 路由验证的是 URL 及策略解析结果，但 Chromium 在实际连
 
 对应测试入口：
 
-- `tests/test_spider_base.py`
-- `tests/test_m3u8_downloader_lifecycle.py`
-- `tests/test_spider_helpers.py`
-- `tests/test_xiaohongshu_integration.py`
-- `tests/test_downloaders.py`
-- `tests/web_browser_cases/network_guard.py`
+- `tests/unit/app/spiders/test_base.py`
+- `tests/integration/app/core/downloaders/m3u8/test_lifecycle.py`
+- `tests/unit/app/spiders/test_helpers.py`
+- `tests/integration/app/spiders/xiaohongshu/test_runtime.py`
+- `tests/integration/app/core/downloaders/test_runtime.py`
+- `tests/e2e/web/test_browser_journeys.py`（聚合 `tests/support/browser_cases/network_guard.py`）
 
 ## CR 检查清单
 

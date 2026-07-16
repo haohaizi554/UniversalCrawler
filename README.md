@@ -9,7 +9,7 @@
   <img alt="Version" src="https://img.shields.io/badge/Version-v3.6.17-7C3AED" />
   <img alt="Windows" src="https://img.shields.io/badge/Platform-Windows_10%20%7C%2011-0078D4?logo=windows&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Browser-Playwright_Chromium-2EAD33?logo=playwright&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%20registry-informational" />
+  <img alt="Tests" src="https://img.shields.io/badge/Test-pytest%20%2B%208_suites-informational" />
   <img alt="Packaging" src="https://img.shields.io/badge/Build-PyInstaller%20%2B%20Inno%20Setup-orange" />
   <img alt="License" src="https://img.shields.io/badge/License-Personal%20Non--Commercial-red" />
 </p>
@@ -92,8 +92,8 @@
 
 ### 🧪 6. 不只是能跑，还强调测试与工程质量
 
-- **统一测试入口**：项目以 `pytest` 为执行器，通过 `tests/test_registry.py` 管理测试分类，通过 `tests/test_launcher.py` 提供 GUI / TUI / CLI 三模启动。
-- **覆盖真实高风险路径**：当前测试注册表收录 13 个启用分类、131 个可运行测试文件，覆盖模型、配置、控制器、下载器、解析器、日志脱敏、半集成链路、架构适应度和轻量性能基准。
+- **统一测试入口**：项目以 `pytest` 为执行器，八个内置套件由 `tests/unit`、`integration`、`contract`、`e2e`、`architecture`、`performance`、`release`、`testkit` 目录直接表达职责，并由 `tests/launcher.py` 提供 GUI / TUI / CLI 三模启动。
+- **覆盖真实高风险路径**：目录套件覆盖模型、配置、控制器、下载器、解析器、日志脱敏、组件协作、公共契约、浏览器旅程、架构适应度、性能预算和发布工程；CI 核心覆盖率门槛为 70%。
 - **适合重构**：Spider 主流程、下载策略、配置迁移、文件落盘等区域都在逐步补齐保护网，降低后续演进成本。
 
 ---
@@ -488,7 +488,7 @@ graph TD
 - Spider / Parser / TaskBuilder / Downloader 分层，平台访问、数据清洗、任务装配和下载执行互不穿透。
 - UI 线程只做轻量展示；快照构建、日志查询、列表分页、文件动作、SQLite / diskcache 访问都必须下沉到 worker 或服务层。
 - 高频进度、日志和 WebSocket 消息采用 latest-state-wins、有界队列和关键事件旁路，避免慢客户端或日志洪峰拖垮主界面。
-- 新增平台、设置项、下载策略或前端字段时，应同步检查测试注册表和专题文档。
+- 新增平台、设置项、下载策略或前端字段时，应按 `tests/AGENTS.md` 选择目录套件并同步专题文档。
 
 ### 核心技术分流
 
@@ -562,19 +562,19 @@ Universal Crawler Pro 在这方面做了比较完整的设计。
 
 ### 当前分支的测试信号
 
-- `tests/test_registry.py` 当前登记 13 个启用分类、131 个可运行测试文件，`misc` 当前为 0。
-- 已覆盖 CLI / SDK / Web API / 打包配置 / 桌面 UI / 浏览器 E2E / 应用流程 / 核心服务 / 架构适应度 / 性能基准等多个层面。
-- 自动分类测试套件已进入主线，新增测试应优先按命名规则或注册表显式归类，避免长期停留在未归类桶。
+- 八个内置套件按目录递归发现；`all` 是联合运行视图，`misc` 只报告布局违规且必须为空。
+- 已覆盖 CLI / SDK / Web API / 打包配置 / 桌面 UI / 浏览器 E2E / 应用流程 / 核心服务 / 架构适应度 / 性能预算等多个层面。
+- 新测试遵循 `tests/<suite>/<production namespace>/test_<responsibility>.py`；内置套件禁止精确文件或业务前缀白名单。
 - GitHub Actions 已接入基础自动化检查。
 
 ### 本地执行命令
 
 ```bash
 python -m compileall app tests main.py
-python tests/test_registry.py
-python tests/test_launcher.py --list
-python tests/test_launcher.py --category architecture
-python tests/test_launcher.py --category benchmark
+python tests/support/catalog.py
+python tests/launcher.py --list
+python tests/launcher.py --category architecture
+python tests/launcher.py --category performance
 python -m pytest tests
 ```
 
@@ -674,7 +674,7 @@ python -m pytest tests
 - 版本与展示名需要同步 `pyproject.toml` + `packaging/project_meta.py`
 - 路径口径需要同步 `app/utils/runtime_paths.py`
 - 说明文档至少同步 `README.md`、`README_EN.md`、`docs/guides/packaging.md`、`packaging/README.md`
-- 静态验证需要同步 `tests/test_packaging.py`
+- 静态验证需要同步 `tests/release/packaging/test_assets.py`
 
 ### 打包前建议检查
 

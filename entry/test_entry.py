@@ -1,8 +1,8 @@
 """UCrawl 测试套件命令入口。
 
-``main()`` 负责解析 ``ucrawl-test`` 参数、注册可选测试类别，并选择 GUI、TUI
-或 CLI 执行路径。源码测试资源存在时，GUI 路径复用 ``tests.test_launcher``
-中的窗口构造能力，TUI/CLI 路径直接调用测试注册表与 runner；不包含源码测试
+``main()`` 负责解析 ``ucrawl-test`` 参数、注册可选插件分类，并选择 GUI、TUI
+或 CLI 执行路径。源码测试资源存在时，GUI 路径复用 ``tests.launcher``
+中的窗口构造能力，TUI/CLI 路径直接调用目录 catalog 与 runner；不包含源码测试
 资源的安装包改为执行 ``entry.release_self_check``。dispatcher 通过
 ``Mode.TEST`` 调用同一个入口。
 """
@@ -20,7 +20,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# 测试启动器使用顶层 test_registry/test_runner 导入，因此还需暴露 tests 目录。
+# 源码测试启动器位于 tests 包中。
 _TESTS_DIR = _ROOT / "tests"
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
@@ -28,7 +28,7 @@ if str(_TESTS_DIR) not in sys.path:
 
 def _source_suite_available() -> bool:
     """判断当前安装中是否包含开发测试启动器。"""
-    return (_TESTS_DIR / "test_launcher.py").is_file()
+    return (_TESTS_DIR / "launcher.py").is_file()
 
 # 检测 PyQt6 是否可用（模块级）
 try:
@@ -48,13 +48,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--category", "-c",
-        help="测试类别 ID（如 cli_sdk / web_api / app_flows / all / browser_e2e）",
+        help="测试套件 ID（unit / integration / contract / e2e / architecture / performance / release / testkit / all）",
         default=None,
     )
     parser.add_argument(
         "--list", "-l",
         action="store_true",
-        help="列出所有可用测试类别并退出",
+        help="列出所有可用测试套件与插件分类并退出",
     )
     parser.add_argument(
         "--gui",
@@ -69,7 +69,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cli",
         action="store_true",
-        help="强制 CLI 模式（无界面，直接跑指定类别）",
+        help="强制 CLI 模式（无界面，直接跑指定套件）",
     )
     parser.add_argument(
         "--no-failfast",
@@ -101,7 +101,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 def _apply_plugin_args(plugin_dirs: list[str], plugins: list[str]) -> None:
-    from tests.test_registry import register_plugin_directory, register_category
+    from tests.support.catalog import register_plugin_directory, register_category
 
     for spec in plugin_dirs:
         # 格式: id:name:path
@@ -138,17 +138,17 @@ def _apply_plugin_args(plugin_dirs: list[str], plugins: list[str]) -> None:
             sys.stderr.write(f"⚠️  --plugin 失败: {spec!r}: {exc}\n")
 
 def _run_list() -> int:
-    from tests.test_registry import (
+    from tests.support.catalog import (
         get_enabled_categories,
         summary,
         list_plugin_directories,
     )
     s = summary()
     print("=" * 70)
-    print(" UCrawl 测试套件 - 注册表")
+    print(" UCrawl 测试套件 - 目录 catalog")
     print("=" * 70)
-    print(f" 类别总数:   {s['total_categories']}")
-    print(f" 启用类别:   {s['enabled_categories']}")
+    print(f" 内置套件:   {s['builtin_suites']}")
+    print(f" 可运行项:   {s['enabled_categories']}")
     print(f" 测试文件:   {s['total_files']}")
     print(f" 插件目录:   {len(s['plugin_directories'])}")
     print()
@@ -175,7 +175,7 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         return _run_tui(category, no_failfast, verbose)
 
     try:
-        from tests.test_launcher import _build_gui, LauncherWindow  # noqa
+        from tests.launcher import _build_gui, LauncherWindow  # noqa
         from PyQt6.QtWidgets import QApplication
     except ImportError as exc:
         sys.stderr.write(f"⚠️  导入 PyQt6 失败: {exc}，回退到 TUI 模式\n")
@@ -223,20 +223,20 @@ def _run_gui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         return _run_tui(category, no_failfast, verbose)
 
 def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
-    from tests.test_registry import get_enabled_categories, get_resolved_files
-    from tests.test_runner import run_category, format_summary, TestResult
+    from tests.support.catalog import RECOMMENDED_CATEGORY_IDS, get_enabled_categories, get_resolved_files
+    from tests.support.runner import run_category, format_summary, TestResult
 
     if category:
-        # 直接跑指定类别
+        # 直接跑指定套件或插件分类
         cats = get_enabled_categories()
         cat_map = {c.id: c for c in cats}
         if category not in cat_map:
-            sys.stderr.write(f"❌ 未知类别: {category!r}\n")
+            sys.stderr.write(f"❌ 未知套件或插件分类: {category!r}\n")
             sys.stderr.write(f"   可用: {', '.join(cat_map.keys())}\n")
             return 2
         cat = cat_map[category]
         files = get_resolved_files(category)
-        print(f"\n[类别] {cat.name} ({len(files)} 文件)")
+        print(f"\n[套件] {cat.name} ({len(files)} 文件)")
         res = run_category(
             category_id=cat.id,
             category_name=cat.name,
@@ -261,7 +261,8 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         )
     print()
     print("  [a ]  全量（运行全部测试）")
-    print("  [r ]  推荐（cli_sdk + web_api + app_flows + pipeline + core_services）")
+    recommended = [suite_id for suite_id in RECOMMENDED_CATEGORY_IDS if suite_id in {c.id for c in cats}]
+    print(f"  [r ]  推荐（{' + '.join(recommended)}）")
     print("  [q ]  退出")
     print()
 
@@ -276,7 +277,7 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     if raw == "a":
         selected = ["all"]
     elif raw == "r":
-        selected = ["cli_sdk", "web_api", "app_flows", "pipeline", "core_services"]
+        selected = recommended
     else:
         try:
             idx = int(raw) - 1
@@ -297,7 +298,7 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
         cat_map = {c.id: c for c in cats}
         cat = cat_map[cid]
         files = get_resolved_files(cid)
-        print(f"\n[类别] {cat.name} ({len(files)} 文件)")
+        print(f"\n[套件] {cat.name} ({len(files)} 文件)")
         res = run_category(
             category_id=cid,
             category_name=cat.name,
@@ -315,19 +316,19 @@ def _run_tui(category: str | None, no_failfast: bool, verbose: bool) -> int:
     return 0 if all(r.success for r in results) else 1
 
 def _run_cli(category: str, no_failfast: bool, verbose: bool) -> int:
-    from tests.test_registry import get_enabled_categories, get_resolved_files
-    from tests.test_runner import run_category, format_summary
+    from tests.support.catalog import get_enabled_categories, get_resolved_files
+    from tests.support.runner import run_category, format_summary
 
     cats = get_enabled_categories()
     cat_map = {c.id: c for c in cats}
     if category not in cat_map:
-        sys.stderr.write(f"❌ 未知类别: {category!r}\n")
+        sys.stderr.write(f"❌ 未知套件或插件分类: {category!r}\n")
         sys.stderr.write(f"   可用: {', '.join(cat_map.keys())}\n")
         return 2
 
     cat = cat_map[category]
     files = get_resolved_files(category)
-    print(f"[类别] {cat.name} ({len(files)} 文件)")
+    print(f"[套件] {cat.name} ({len(files)} 文件)")
     res = run_category(
         category_id=cat.id,
         category_name=cat.name,
@@ -393,7 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode = _detect_mode(args)
 
     if mode == "gui":
-        # GUI 模式：用 test_launcher 弹窗（如果指定 category，则先预选）
+        # GUI 模式：用 tests.launcher 弹窗（如果指定 category，则先预选）
         return _run_gui(args.category, args.no_failfast, args.verbose)
     elif mode == "tui":
         return _run_tui(args.category, args.no_failfast, args.verbose)

@@ -38,4 +38,4 @@
 - MissAV 列表扫描
 - 多平台关键输入分流
 
-修改任何平台主流程后，请同步检查 `tests/test_spider_helpers.py` 与对应文档。
+修改任何平台主流程后，请同步检查 `tests/unit/app/spiders/test_helpers.py` 与对应文档。

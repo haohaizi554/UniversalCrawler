@@ -202,7 +202,7 @@ python scripts/update_bootstrap.py generate-dev-windows-cert --write-dev-trust
 Run the updater unit tests:
 
 ```powershell
-python -m pytest tests/test_secure_updater.py tests/test_update_check_service.py -q
+python -m pytest tests/release/updater/test_secure_updater.py tests/release/updater/test_update_check_service.py -q
 ```
 
 For a local signed-manifest check, inject a test public key into

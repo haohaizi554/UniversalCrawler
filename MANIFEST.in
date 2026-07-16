@@ -29,3 +29,4 @@ prune .dbg
 prune .pytest_cache
 prune .mypy_cache
 prune .ruff_cache
+prune tests

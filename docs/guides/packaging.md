@@ -90,9 +90,9 @@ playwright install chromium
 至少执行：
 
 ```bash
-python -m pytest tests/test_packaging.py
-python -m pytest tests/test_downloaders.py
-python tests/test_launcher.py --list
+python -m pytest tests/release/packaging/test_assets.py
+python -m pytest tests/integration/app/core/downloaders/test_runtime.py
+python tests/launcher.py --list
 ```
 
 如果近期改动过 Web、下载器、控制器或路径策略，建议补跑对应专题测试。
@@ -264,5 +264,5 @@ version = "x.y.z"
 - [packaging/installer.iss](../../packaging/installer.iss)
 - [packaging/project_meta.py](../../packaging/project_meta.py)
 - [app/utils/runtime_paths.py](../../app/utils/runtime_paths.py)
-- [tests/test_packaging.py](../../tests/test_packaging.py)
+- [tests/release/packaging/test_assets.py](../../tests/release/packaging/test_assets.py)
 - [docs/guides/windows-file-association.md](windows-file-association.md)

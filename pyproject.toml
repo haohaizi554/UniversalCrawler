@@ -133,7 +133,15 @@ pretty = true
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+addopts = ["--import-mode=importlib", "--strict-markers"]
 markers = [
     "architecture: dependency direction and protocol fitness tests",
     "benchmark: performance benchmark tests (deselect with '-m \"not benchmark\"')",
+    "browser: tests that require a real browser runtime",
+    "gui: tests that require a GUI or Qt runtime",
+    "network: tests that may use network-capable code paths",
+    "security: security boundary and hardening tests",
+    "serial: tests that must not run concurrently",
+    "slow: tests intentionally excluded from the fastest feedback loop",
+    "windows: tests that require Windows-specific behavior",
 ]

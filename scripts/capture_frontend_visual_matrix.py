@@ -25,7 +25,7 @@ from app.ui.dialogs.selection import SelectionDialog
 from app.ui.dialogs.update_check import UpdateCheckDialog
 from app.ui.layout.app_shell import AppShell
 from app.ui.styles.themes import apply_application_theme
-from tests.web_browser_support import _running_server
+from tests.support.browser_runtime import _running_server
 
 OUTPUT = ROOT / "docx" / "visual_audit" / "screenshots"
 GUI_SIZE = (1440, 900)

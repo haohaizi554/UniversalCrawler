@@ -38,7 +38,7 @@ nativeEvent / QAbstractNativeEventFilter
 - 共享窗口框架：`app/ui/layout/window_chrome.py`
 - 共享窗口控制器：`app/ui/layout/window_chrome_controller.py`
 - 启动模式选择器：`entry/mode_selection_ui.py`
-- 回归测试：`tests/test_main_window.py`
+- 回归测试：`tests/unit/app/ui/test_main_window.py`
 
 相关对象和方法：
 
@@ -234,8 +234,8 @@ setGeometry(screen.availableGeometry())
 
 ```powershell
 python -m py_compile app\ui\main_window.py app\ui\layout\window_title_bar.py
-python -m pytest tests/test_main_window.py -q
-python -m pytest tests/test_unified_frontend_contract.py -q
+python -m pytest tests/unit/app/ui/test_main_window.py -q
+python -m pytest tests/contract/frontend/test_unified_frontend.py -q
 ```
 
 手工验收必须在真实 Windows 桌面环境执行，因为 Snap Layout、任务栏自动隐藏和 DWM 动画都不是普通单元测试能完整模拟的。

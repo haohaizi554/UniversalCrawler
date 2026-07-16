@@ -60,7 +60,7 @@ jobs:
       - name: Architecture contracts
         run: |
           mkdir -p artifacts
-          python -X faulthandler -m pytest tests/architecture tests/test_ci_workflow.py -q --junitxml=artifacts/quality.xml
+          python -X faulthandler -m pytest tests/architecture tests/release/ci -q --junitxml=artifacts/quality.xml
 
       - name: Upload quality report
         if: always()
@@ -172,11 +172,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python -m coverage erase
-          python -m coverage run --branch --source=app,cli,entry,shared --omit="app/core/lib/*" -m pytest tests -q --ignore=tests/test_web_browser.py --ignore=tests/test_performance_benchmarks.py --ignore-glob=tests/test_unified_frontend_*.py --junitxml=artifacts/core-tests.xml
+          python -m coverage run --branch --source=app,cli,entry,shared --omit="app/core/lib/*" -m pytest tests/unit tests/integration tests/contract/cli tests/contract/config tests/contract/cross_interface tests/contract/entry tests/contract/python tests/contract/web tests/architecture tests/release tests/testkit -q --junitxml=artifacts/core-tests.xml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $uiContractFiles = @(
-            Get-ChildItem -LiteralPath tests -File -Filter "test_unified_frontend_*.py" |
+            Get-ChildItem -LiteralPath tests/contract/frontend -File -Filter "test_*.py" |
               Sort-Object FullName |
               ForEach-Object { $_.FullName }
           )
@@ -203,7 +203,7 @@ jobs:
           python -m coverage report --fail-under=70
 
       - name: Run performance budgets without instrumentation
-        run: python -X faulthandler -m pytest tests/test_performance_benchmarks.py -q
+        run: python -X faulthandler -m pytest tests/performance -q
 
       - name: Upload core report
         if: always()
@@ -258,7 +258,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          python -X faulthandler -m pytest tests/test_web_browser.py -q --junitxml=artifacts/browser-tests.xml
+          python -X faulthandler -m pytest tests/e2e/web -q --junitxml=artifacts/browser-tests.xml
 
       - name: Upload browser report
         if: always()

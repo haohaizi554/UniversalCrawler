@@ -120,10 +120,10 @@ pending=
 
 相关测试：
 
-- `tests/test_windows_file_association_service.py`
-- `tests/test_gui_entry.py`
-- `tests/test_application_controller.py`
-- `tests/test_packaging.py`
+- `tests/unit/app/services/test_windows_file_association.py`
+- `tests/contract/entry/test_gui_entry.py`
+- `tests/unit/app/controllers/test_application_controller.py`
+- `tests/release/packaging/test_assets.py`
 
 重点覆盖：
 

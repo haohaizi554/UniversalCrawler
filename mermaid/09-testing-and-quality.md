@@ -3,105 +3,70 @@
 ## 测试规模（实际统计）
 
 ```mermaid
-pie title 测试代码分布 (97 文件, 18,235 行)
-    "Spider/下载器测试" : 3200
-    "Web/WebSocket 测试" : 2800
-    "控制器/事件测试" : 2500
-    "CLI/SDK 测试" : 2200
-    "插件/注册表测试" : 1500
-    "UI/前端测试" : 1800
-    "契约/E2E 测试" : 2000
-    "其他测试" : 2235
+pie title 迁移验收快照 (168 个测试模块)
+    "unit" : 118
+    "integration" : 11
+    "contract" : 20
+    "e2e" : 1
+    "architecture" : 8
+    "performance" : 1
+    "release" : 6
+    "testkit" : 3
 ```
+
+模块数来自目录 catalog 的迁移验收快照；启动器运行时动态统计，不把这些数字硬编码成结构门槛。
 
 ## 测试分层
 
 ```mermaid
 flowchart TB
-    subgraph Unit["单元测试 (纯函数/模型)"]
-        Parser["parser / task_builder"]
-        Worker["DownloadWorker / strategy / file ops"]
-        Models["VideoItem / DownloadContext / events"]
-        Utils["filenames / formatting / runtime_paths"]
-        Config["settings / constants"]
-    end
-
-    subgraph Component["组件测试 (模块级)"]
-        Controller["ApplicationController<br/>8 个 Mixin 独立测试"]
-        Runtime["shared runtime / CLI facade"]
-        Plugins["plugin registry / discovery<br/>thread_safety"]
-        WebCtrl["WebController / REST / WebSocket"]
-    end
-
-    subgraph Contract["契约测试 (三层一致性)"]
-        ThreeLayer["test_contract.py<br/>42 个测试<br/>CLI / SDK / REST 错误信息一致"]
-    end
-
-    subgraph Integration["集成测试"]
-        Chains["Spider → Controller → Download"]
-        Web["REST / WebSocket workflow"]
-        XHS["test_xiaohongshu_integration<br/>36 个测试"]
-    end
-
-    subgraph E2E["端到端测试"]
-        E2ETest["test_e2e.py<br/>33 个测试<br/>mock spider 完整流程"]
-        Browser["test_web_browser.py<br/>浏览器自动化"]
-    end
-
-    subgraph Hardening["并发硬化测试"]
-        Concurrency["test_concurrency_hardening"]
-        ThreadSafe["test_plugin_registry_thread_safety"]
-        Backpressure["test_ws_transport_backpressure"]
-    end
-
-    subgraph Lifecycle["生命周期测试"]
-        M3U8["test_m3u8_downloader_lifecycle"]
-        StopPlaywright["test_spider_stop_playwright"]
-        Cancel["test_task_runtime_cancel"]
-    end
-
-    Unit --> Component
-    Component --> Contract
-    Contract --> Integration
-    Integration --> E2E
-    Hardening -.-> Component
-    Lifecycle -.-> Integration
+    Unit["unit<br/>隔离且确定"] --> Integration["integration<br/>真实组件协作"] --> E2E["e2e<br/>完整用户旅程"]
+    Contract["contract<br/>公共与跨入口承诺"] -.约束.-> Unit
+    Contract -.约束.-> Integration
+    Contract -.约束.-> E2E
+    Architecture["architecture<br/>仓库适应度"] -.守护.-> Unit
+    Architecture -.守护.-> Integration
+    Performance["performance<br/>无覆盖率插桩预算"] -.度量.-> Unit
+    Release["release<br/>CI / 打包 / 更新"] --> Delivery["可发布产物"]
+    Testkit["testkit<br/>catalog / launcher / runner"] -.支撑.-> Unit
+    Testkit -.支撑.-> Contract
+    Testkit -.支撑.-> E2E
 
     style Unit fill:#c8e6c9,color:#1a5e20
     style Contract fill:#fff3e0,color:#e65100
     style E2E fill:#f3e5f5,color:#7b1fa2
-    style Hardening fill:#ffebee,color:#b71c1c
+    style Architecture fill:#e1f5fe,color:#01579b
 ```
 
-## 测试注册表系统
+## 目录套件系统
 
 ```mermaid
 flowchart TB
-    subgraph Registry["test_registry.py(测试分类注册表)"]
-        Discover["自动发现<br/>目录扫描"]
-        Rules["分类规则<br/>文件名 → 类别"]
-        Plugin["插件扩展<br/>自定义类别"]
-        Markers["标记系统<br/>requires_gui<br/>requires_network"]
+    subgraph Catalog["tests/support/catalog.py"]
+        Roots["八个规范根目录"]
+        Discover["递归发现 test_*.py"]
+        Violations["auto_discover_tests<br/>只报告布局违规"]
+        Plugin["插件扩展<br/>可使用外部文件或 glob"]
     end
 
-    subgraph Categories["5 个推荐类别"]
-        C1["cli_sdk<br/>CLI/SDK 测试"]
-        C2["web_api<br/>Web API 测试"]
-        C3["app_flows<br/>应用流程测试"]
-        C4["pipeline<br/>下载管道测试"]
-        C5["core_services<br/>核心服务测试"]
+    subgraph Suites["八个内置套件"]
+        C1["unit / integration / contract / e2e"]
+        C2["architecture / performance / release / testkit"]
     end
 
     subgraph Runners["测试运行器"]
-        All["run_all_tests.py<br/>全量测试"]
-        Core["run_core_suite.py<br/>核心套件 (13 模块)<br/>BeautifulReport HTML"]
-        BB["run_blackbox_whitebox_tests.py<br/>黑白盒测试"]
+        Launcher["launcher.py<br/>GUI / TUI / CLI"]
+        Runner["support/runner.py<br/>pytest 结果与进度"]
+        CI["GitHub Actions<br/>目录选择 + marker 约束"]
     end
 
-    Registry --> Categories
-    Categories --> Runners
+    Roots --> Discover --> Suites
+    Discover --> Violations
+    Plugin --> Launcher
+    Suites --> Launcher --> Runner
+    Suites --> CI
 
-    style Registry fill:#bbdefb,color:#0d47a1
+    style Catalog fill:#bbdefb,color:#0d47a1
     style Runners fill:#c8e6c9,color:#1a5e20
 ```
 
@@ -111,11 +76,11 @@ flowchart TB
 mindmap
   root((质量体系))
     测试覆盖
-      1181 个测试函数
-      88 个测试文件
-      测试:业务 = 1:2.5
-      契约测试 42 个
-      E2E 测试 33 个
+      2940 个测试项迁移验收
+      168 个测试模块迁移验收
+      八个目录套件
+      核心覆盖率门槛 70%
+      契约与浏览器套件独立分层
       并发硬化测试
       生命周期测试
     诊断体系
@@ -196,7 +161,7 @@ sequenceDiagram
     participant CI as GitHub Actions
 
     Dev->>Test: 运行定向回归
-    Test->>Test: test_registry 分类选择
+    Test->>Test: catalog 按目录选择套件
     Test-->>Dev: 失败/通过
     
     alt 失败

@@ -79,5 +79,5 @@
 
 - `app/core/lib/douyin/tools/parameter.py`
 - `app/core/lib/douyin/tools/session.py`
-- `tests/test_douyin_parameter.py`
-- `tests/test_downloaders.py`
+- `tests/unit/app/core/lib/douyin/test_parameter.py`
+- `tests/integration/app/core/downloaders/test_runtime.py`

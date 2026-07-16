@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """全量测试运行脚本（CLI 版本）。
 
-从 ``tests/test_registry.py`` 读取注册表，按类别生成报告。
-新代码请优先用 ``tests/test_launcher.py``（三模：GUI/TUI/CLI）。
+从 ``tests/support/catalog.py`` 读取套件目录，按套件或插件分类生成报告。
+新代码请优先用 ``tests/launcher.py``（三模：GUI/TUI/CLI）。
 
 使用方法：
     # 全量
     python tests/run_all_tests.py
 
-    # 按类别
-    python tests/run_all_tests.py --category cli_sdk
+    # 按套件
+    python tests/run_all_tests.py --category unit
+    python tests/run_all_tests.py --category contract
     python tests/run_all_tests.py --category all
-    python tests/run_all_tests.py --category browser_e2e
+    python tests/run_all_tests.py --category e2e
 
     # 详细输出
     python tests/run_all_tests.py --verbose
@@ -38,25 +39,25 @@ def _configure_console_output() -> None:
 _configure_console_output()
 
 
-# 让 test_registry / test_runner 可被 import
+# 让 tests.support catalog / runner 可被 import
 TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_DIR.parent
-if str(TESTS_DIR) not in sys.path:
-    sys.path.insert(0, str(TESTS_DIR))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 def main():
     parser = argparse.ArgumentParser(
-        description="全量测试运行脚本（基于 test_registry）",
+        description="全量测试运行脚本（基于目录 catalog）",
     )
     parser.add_argument(
         "--category",
         choices=None,  # 延后填充
-        help="测试类别 ID（默认 all）",
+        help="测试套件或插件分类 ID（默认 all）",
     )
     parser.add_argument(
         "--list", "-l",
         action="store_true",
-        help="列出所有可用类别",
+        help="列出所有可用套件与插件分类",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -71,13 +72,13 @@ def main():
 
     args = parser.parse_args()
 
-    # 延后导入（让 --help 不依赖 test_registry）
-    from test_registry import (
+    # 延后导入（让 --help 不依赖测试 catalog）
+    from tests.support.catalog import (
         get_enabled_categories,
         get_resolved_files,
         get_category,
     )
-    from test_runner import run_category, format_summary, TestResult
+    from tests.support.runner import run_category, format_summary, TestResult
 
     # 填充 choices
     cat_ids = [c.id for c in get_enabled_categories()]
@@ -103,22 +104,22 @@ def main():
             )
         return 0
 
-    # 决定要跑的类别
+    # 决定要跑的套件或插件分类
     if args.category is None or args.category == "all":
         target_ids = [c.id for c in get_enabled_categories() if c.id != "all"]
     else:
         target_ids = [args.category]
 
     print("=" * 70)
-    print(f"全量测试运行 - 类别: {' / '.join(target_ids)}")
+    print(f"全量测试运行 - 套件: {' / '.join(target_ids)}")
     print("=" * 70)
 
-    # 逐类别运行
+    # 逐套件运行
     results: list[TestResult] = []
     for cid in target_ids:
         cat = get_category(cid)
         files = get_resolved_files(cid)
-        print(f"\n[类别] {cid}: {cat.name}")
+        print(f"\n[套件] {cid}: {cat.name}")
         print(f"  描述: {cat.description}")
         print(f"  文件: {len(files)} 个")
         res = run_category(
@@ -143,7 +144,7 @@ def main():
     if all_ok:
         print("\n🎉 所有测试通过！")
     else:
-        print(f"\n❌ 有 {sum(1 for r in results if not r.success)} 个类别失败")
+        print(f"\n❌ 有 {sum(1 for r in results if not r.success)} 个套件失败")
         return 1
     return 0
 

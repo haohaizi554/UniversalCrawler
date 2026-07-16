@@ -1,4 +1,4 @@
-﻿# 接口指南
+# 接口指南
 
 本文记录当前工程对 GUI、WebUI、CLI 和 SDK 暴露的主要接口边界。更细的 CLI/REST/SDK 调用示例见 [cli/](../cli/README.md)。
 
@@ -21,7 +21,7 @@
 
 ## Web REST
 
-`app/web/server.py:create_app()` 是用户真实访问 WebUI 的直连入口，`app/web/rest_router.py` 是组合式路由入口。两边必须保持端点语义一致，尤其是前端状态、delta、图标、国际化和动作接口；新增接口时要同步 `tests/test_fastapi_endpoints.py`，避免只修组合路由或只修直连入口。
+`app/web/server.py:create_app()` 是用户真实访问 WebUI 的直连入口，`app/web/rest_router.py` 是组合式路由入口。两边必须保持端点语义一致，尤其是前端状态、delta、图标、国际化和动作接口；新增接口时要同步 `tests/contract/web/test_fastapi_endpoints.py`，避免只修组合路由或只修直连入口。
 
 开发态入口使用 `python -m entry.web_entry --host 127.0.0.1 --port 8000`，打包态入口使用 `CrawlerWebPortal.exe`。REST 适合初始加载、手动刷新、配置读取和明确用户动作，不适合承载每个进度信号。
 

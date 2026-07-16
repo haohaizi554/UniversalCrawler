@@ -27,6 +27,7 @@ UniversalCrawlerProplus is a PyQt6 + FastAPI crawler and media download applicat
 - `.trae/rules/agent-native-engineering.md`: native engineering workflow rules.
 - `.trae/rules/resilience.md`: resilience and failure-handling rules.
 - `.trae/rules/security-baseline.md`: security baseline rules.
+- `tests/AGENTS.md`: canonical test-suite placement, naming, marker, and validation rules.
 
 ## Documentation index
 
@@ -45,6 +46,7 @@ UniversalCrawlerProplus is a PyQt6 + FastAPI crawler and media download applicat
 ## Test entrypoints
 
 - `python -m pytest`: full test suite.
-- `python -m pytest tests/test_spider_base.py tests/test_media_preview_panel.py tests/test_download_manager_core.py -q`: focused signal/guardrail/media checks.
-- `python -m pytest tests/test_main_window.py tests/test_ui_update_scheduler.py tests/test_websocket_server.py tests/test_fastapi_endpoints.py -q`: GUI/Web/API regression checks.
+- `python tests/launcher.py --list`: list the eight directory-driven suites.
+- `python -m pytest tests/unit/app/spiders/test_base.py tests/unit/app/ui/components/test_media_preview_panel.py tests/unit/app/core/downloaders/test_manager_core.py -q`: focused signal/guardrail/media checks.
+- `python -m pytest tests/unit/app/ui/test_main_window.py tests/unit/app/ui/test_update_scheduler.py tests/integration/app/web/test_websocket_server.py tests/contract/web/test_fastapi_endpoints.py -q`: GUI/Web/API regression checks.
 - `python main.py`: application startup smoke check.

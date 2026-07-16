@@ -1,315 +1,170 @@
 # 测试命名规范
 
-> 更新时间：2026-07-08
+> 更新时间：2026-07-16
 > 适用范围：`tests/` 目录下所有 pytest 测试文件与辅助脚本
 
 ## 目标
 
-测试注册表按文件名和显式规则自动分类。命名稳定，新增脚本就能进入正确套件；命名随意，脚本会落入 `misc`，需要后续补分类。
+测试套件由目录表达职责，目录后的路径表达生产代码归属，pytest marker 只表达跨领域的运行约束。新增测试不再依赖文件名前缀白名单，也不需要把文件逐个登记到内置分类。
 
-当前事实来源是 [test_registry.py](test_registry.py)。修改命名规则前先运行：
+当前事实来源是 [support/catalog.py](support/catalog.py)，长期 Agent 约束见 [AGENTS.md](AGENTS.md)。修改布局或命名规则前后运行：
 
 ```bash
-python tests/test_registry.py
-python tests/test_launcher.py --list
+python tests/support/catalog.py
+python tests/launcher.py --list
+python -m pytest tests/architecture/test_test_suite_layout.py -q
 ```
 
-## 总规则
-
-- 可被 pytest 自动发现的测试文件必须使用 `test_*.py`。
-- 文件名优先使用 `test_<subject>.py`，需要细分时使用 `test_<module>_<feature>.py`。
-- 一个文件表达一个主职责，不要把多个无关主题塞进同一个文件名。
-- 运行脚本、复现脚本、Web 测试 shim 不使用 `test_` 前缀。
-
-推荐示例：
-
-- `test_fastapi_endpoints.py`
-- `test_frontend_snapshot_worker.py`
-- `test_log_detail_worker.py`
-- `test_spider_runtime.py`
-- `test_ws_transport_backpressure.py`
-
-不推荐示例：
-
-- `test_misc.py`
-- `test_new.py`
-- `test_fix.py`
-- `test_all_things.py`
-
-## 分类命名规则
-
-### CLI / SDK：`cli_sdk`
-
-命中规则：
-
-- `tests/test_cli_*.py`
-
-适合内容：
-
-- CLI 参数解析、交互命令、默认值、选择策略、管道输入、SDK 和 Runner。
-
-示例：
-
-- `test_cli_main.py`
-- `test_cli_interactive_command.py`
-- `test_cli_selection.py`
-
-### Web / API：`web_api`
-
-命中规则：
-
-- `tests/test_contract.py`
-- `tests/test_fastapi_*.py`
-- `tests/test_web_*.py`
-- `tests/test_web_entry.py`
-- `tests/test_web_controller_*.py`
-- `tests/test_websocket_*.py`
-- `tests/test_ws_*.py`
-
-排除：
-
-- `tests/test_web_browser.py`，它属于 `browser_e2e`。
-
-适合内容：
-
-- FastAPI 端点、WebController、WebSocket、REST/Web 入口、Web 脚本 API、多入口契约。
-
-### 应用流程：`app_flows`
-
-命中规则：
-
-- `tests/test_e2e.py`
-- `tests/test_main_entry.py`
-- `tests/test_*_entry.py`
-- `tests/test_*_entry_*.py`
-- `tests/test_entry_*.py`
-- `tests/test_cross_entry_*.py`
-- `tests/test_integration_*.py`
-
-适合内容：
-
-- 跨入口一致性、端到端流程、入口调度和跨模块集成流。
-
-注意：`test_cli_entry.py`、`test_web_entry.py`、`test_gui_entry.py` 可能同时命中接口层或 UI 相关分类，这是预期的交叉覆盖。
-
-### 桌面界面：`desktop_ui`
-
-命中规则：
-
-- `tests/test_application_controller.py`
-- `tests/test_download_queue_panel.py`
-- `tests/test_main_window.py`
-- `tests/test_desktop_host.py`
-- `tests/test_gui_*.py`
-- `tests/test_media_preview_panel.py`
-- `tests/test_log_panel.py`
-- `tests/test_log_center_semantics.py`
-- `tests/test_snapshot_*.py`
-- `tests/test_ui_*.py`
-- `tests/test_unified_frontend_contract.py`
-- `tests/test_log_*.py`
-- `tests/test_list_page_worker.py`
-
-适合内容：
-
-- PyQt 主窗口、布局 shell、TopBar/Sidebar/StatusBar、日志中心、列表分页、媒体预览、队列面板、GUI 入口和统一前端契约。
-
-命名建议：
-
-- 新 GUI 入口或控件测试用 `test_gui_<subject>.py`。
-- 通用 Qt UI 行为用 `test_ui_<subject>.py`。
-- 日志中心显示/筛选/详情用 `test_log_<subject>.py`。
-- 列表快照或表格模型用 `test_snapshot_<subject>.py`。
-
-### 浏览器 E2E：`browser_e2e`
-
-命中规则：
-
-- `tests/test_web_browser.py`
-
-说明：
-
-- 这是 Playwright 真实浏览器套件，保持单独文件名，不与普通 `test_web_*.py` 混用。
-
-### 数据管道：`pipeline`
-
-命中规则：
-
-- `tests/test_pipeline.py`
-
-适合内容：
-
-- stdin/stdout JSON 管道、多轮选择与预加载链路。
-
-### 打包发布：`packaging`
-
-命中规则：
-
-- `tests/test_packaging.py`
-
-适合内容：
-
-- PyInstaller spec、runtime hook、资源文件、发布入口、临时探针残留检查。
-
-### 核心服务：`core_services`
-
-命中规则包括：
-
-- `tests/test_config_*.py`
-- `tests/test_count_project.py`
-- `tests/test_debug_logger.py`
-- `tests/test_plugin_*.py`
-- `tests/test_runtime_paths.py`
-- `tests/test_settings_*.py`
-- `tests/test_utils_*.py`
-- `tests/test_video_item.py`
-- `tests/test_xiaohongshu_integration.py`
-- `tests/test_core_*.py`
-- `tests/test_*_service.py`
-- `tests/test_*_parameter.py`
-- `tests/test_download*.py`
-- `tests/test_download_*.py`
-- `tests/test_*_mixin.py`
-- `tests/test_spider_*.py`
-- `tests/test_shared_*.py`
-- `tests/test_anti_detection.py`
-- `tests/test_media_release_*.py`
-- `tests/test_media_library_*.py`
-- `tests/test_controller_*_mixin.py`
-- `tests/test_concurrency_*.py`
-- `tests/test_event_*.py`
-- `tests/test_frontend_event_*.py`
-- `tests/test_frontend_*.py`
-- `tests/test_failed_record_store.py`
-- `tests/test_metadata_*.py`
-- `tests/test_completed_metadata_*.py`
-- `tests/test_pagination_*.py`
-- `tests/test_m3u8_*.py`
-- `tests/test_task_runtime_*.py`
-- `tests/test_request_workers.py`
-- `tests/test_ws_transport_*.py`
-- `tests/test_guardrails.py`
-- `tests/test_mojibake_guard.py`
-- `tests/test_event_bus_extended.py`
-- `tests/test_proxy_manager.py`
-
-排除：
-
-- `tests/test_download_queue_panel.py`，它属于 `desktop_ui`。
-
-适合内容：
-
-- 下载器、配置、文件服务、调试服务、插件、前端状态适配、事件聚合、日志翻译、媒体元数据、控制器 mixin、并发、WebSocket 传输基础设施等非 UI 主体逻辑。
-
-### 架构适应度：`architecture`
-
-命中规则：
-
-- `tests/architecture/test_*.py`
-
-适合内容：
-
-- 依赖方向、Spider 协议、文件大小限制、模块边界和结构性规则。
-
-新增架构规则必须放在 `tests/architecture/` 子目录内，避免和普通业务测试混在一起。
-
-### 性能基准：`benchmark`
-
-命中规则：
-
-- `tests/test_performance_benchmarks.py`
-
-适合内容：
-
-- 显式运行的轻量性能基准。新增性能测试先评估是否仍应放入这个文件；如果基准开始分域扩展，再新增清晰前缀并更新注册表。
-
-### 测试套件自身：`suite_infra`
-
-命中规则：
-
-- `tests/test_test_*.py`
-
-适合内容：
-
-- 测试入口、分类注册、启动器 GUI/TUI/CLI 行为、测试套件自身契约。
-
-示例：
-
-- `test_test_entry.py`
-- `test_test_launcher_ui.py`
-
-### 未归类：`misc`
-
-`misc` 是兜底分类，不是目标分类。新增文件落入 `misc` 时，按顺序处理：
-
-1. 调整文件名命中现有规则。
-2. 如果确实是长期新职责，扩展 `tests/test_registry.py`。
-3. 同步更新本文档和 `tests/README.md`。
-
-## 测试方法命名
-
-- 测试方法必须以 `test_` 开头。
-- 推荐格式：`test_<action>_<condition>_<expected>`。
-- 名称表达“行为 + 场景 + 预期”，不要只描述实现细节。
+## 三维命名模型
+
+```text
+tests/<suite>/<production namespace>/test_<observable responsibility>.py
+```
+
+三个维度互不混用：
+
+1. 第一层目录决定测试套件。
+2. 后续目录镜像生产命名空间或稳定的外部边界。
+3. marker 描述浏览器、网络、串行、慢速等运行能力与约束。
+
+例如：
+
+```text
+tests/unit/app/spiders/missav/test_challenge_browser.py
+tests/unit/app/spiders/kuaishou/test_auth_persistence.py
+tests/integration/app/core/downloaders/m3u8/test_lifecycle.py
+tests/contract/web/test_fastapi_endpoints.py
+tests/e2e/web/test_browser_journeys.py
+tests/release/packaging/test_assets.py
+```
+
+文件名无需重复 `unit`、`app_spiders`、平台名全路径等已经由父目录表达的信息。
+
+## 八个内置套件
+
+| 根目录 | 判定标准 | 典型内容 |
+| --- | --- | --- |
+| `tests/unit/` | 单一行为被隔离，外部进程、网络、浏览器、时间和持久化边界被替换或受控 | 模型、服务、控制器、Spider 分支、UI 组件逻辑 |
+| `tests/integration/` | 多个真实项目组件或本地进程/存储边界协作 | 控制器流程、下载生命周期、WebSocket、发布竞态 |
+| `tests/contract/` | 验证稳定且对外可观察的协议或兼容承诺 | CLI/API/配置/入口/前端静态与交互契约 |
+| `tests/e2e/` | 从真实入口完成完整用户旅程 | Chromium WebUI 关键路径、未来的完整应用旅程 |
+| `tests/architecture/` | 静态约束仓库结构或设计边界 | 依赖方向、文件规模、目录布局、命名规则 |
+| `tests/performance/` | 断言耗时、吞吐、分配或性能预算 | 无覆盖率插桩的显式性能基准 |
+| `tests/release/` | 验证交付工程 | CI、打包、安装、更新、发布资源 |
+| `tests/testkit/` | 验证测试体系自身 | catalog、launcher、runner、插件扩展接口 |
+
+判定有歧义时先问“失败说明哪个责任层出了问题”，再看依赖规模：
+
+- mock 了浏览器并不自动等于 E2E；如果只验证 Spider 的一个分支，通常仍是 unit。
+- 使用 `TestClient` 并不自动等于 integration；如果核心目标是 HTTP 对外契约，放 contract。
+- 文件名带 `integration` 或 `e2e` 不决定套件，实际边界和可观察行为才决定。
+- 平台名（Bilibili、Kuaishou、MissAV）属于生产路径，不是套件或 marker。
+
+## 文件、类和方法命名
+
+- 可被 pytest 收集的模块必须使用 `test_*.py`。
+- 模块使用 `test_<observable responsibility>.py`，一个模块表达一个稳定职责。
+- 测试类使用 `Test<CapabilityOrScenario>`。
+- 测试方法使用 `test_<observable_behavior>`；条件重要时使用 `test_<observable_result>_when_<condition>`。
+- 优先写用户或调用方可观察的结果，不把临时实现细节写进名字。
 
 推荐：
 
 - `test_theme_toggle_coalesces_rapid_clicks_to_latest_state`
 - `test_frontend_delta_returns_recoverable_snapshot_when_version_missing`
 - `test_download_worker_releases_slot_after_failure`
+- `test_rejects_private_address_when_dns_rebinds`
 
 不推荐：
 
 - `test_case_1`
 - `test_logic`
 - `test_fix_bug`
+- `test_new`
+- `test_misc`
+- `test_works`
 
-## 辅助脚本命名
+这些模糊名称由架构契约阻止。
 
-下列文件不是 pytest 自动发现目标，不使用 `test_` 前缀：
+## Marker 规则
 
-- 运行脚本：`run_*.py`
-- 复现脚本：`reproduce_*.py`
-- Web 测试应用 shim：`*_app.py`
+已注册 marker 只表达运行约束：
 
-示例：
+- `architecture`
+- `benchmark`
+- `browser`
+- `gui`
+- `network`
+- `security`
+- `serial`
+- `slow`
+- `windows`
 
-- `run_all_tests.py`
-- `run_core_suite.py`
-- `reproduce_user_bug.py`
-- `web_test_app.py`
+禁止把产品域或文件归属做成 marker，例如 `bilibili`、`kuaishou`、`missav`、`web_api`、`downloader`。新增 marker 必须先在 `pyproject.toml` 注册；`--strict-markers` 必须保持启用。
+
+## 辅助代码命名
+
+可复用的非测试 helper 放在 `tests/support/`，不得使用 `test_` 前缀：
+
+- 浏览器 case：`tests/support/browser_cases/*.py`
+- 浏览器生命周期：`tests/support/browser_runtime.py`
+- 测试 Web 应用：`tests/support/web_test_app.py`
+- 前端静态契约 helper：`tests/support/frontend_static_assets.py`
+- 目录 catalog / runner：`tests/support/catalog.py`、`tests/support/runner.py`
+
+根目录只保留 pytest 特殊入口和非收集型运行脚本：
+
+- `tests/conftest.py`
+- `tests/launcher.py`
+- `tests/run_*.py`
+
+复现脚本使用 `reproduce_*.py`，运行脚本使用 `run_*.py`。
+
+## 内置套件禁止白名单
+
+内置套件只能在 `BUILTIN_SUITE_ROOTS` 中声明目录根。不得为 CI 通过而加入：
+
+- 精确文件列表；
+- 业务前缀 glob；
+- include/exclude 例外；
+- 根目录测试白名单；
+- 将新文件塞入 `misc` 的兜底规则。
+
+插件或第三方扩展在运行时注册外部文件/目录时仍可使用显式文件和 glob，因为它们不属于内置分类。
+
+如果确实出现第九种长期稳定的测试职责，需要先完成架构决策，并同步 catalog、CI、launcher、架构契约和活动文档；不要只改一个列表。
 
 ## 新增测试检查清单
 
 新增测试前：
 
-1. 明确它属于哪个现有分类。
-2. 选择能命中该分类的文件名。
-3. 避免让一个文件同时承担多个不相关职责。
+1. 按隔离程度和行为责任选择八个套件之一。
+2. 镜像生产命名空间或稳定边界。
+3. 选择能描述可观察职责的模块名。
+4. 判断是否需要已注册的运行约束 marker。
 
 新增测试后：
 
 ```bash
-python tests/test_registry.py
-python tests/test_launcher.py --list
-python -m pytest tests/<new_test_file>.py -q
+python -m pytest tests/<suite>/<namespace>/test_<responsibility>.py -q
+python -m pytest tests/architecture/test_test_suite_layout.py tests/testkit/test_catalog.py -q
+python tests/launcher.py --list
+python -m pytest tests --collect-only -q
 ```
 
-如果 `auto_discover_tests()` 输出了新文件，说明它没有命中任何规则，需要改名或更新注册表。
+`auto_discover_tests()` 必须返回空列表。性能套件必须脱离覆盖率插桩运行，浏览器 E2E 必须在 Chromium 环境单独运行。
 
-## 修改分类规则
+## 变更命名体系
 
-满足下面任一条件时，可以扩展自动分类规则：
+只有测试的稳定责任模型确实发生变化时才修改本规范。变更后同步：
 
-- 同一类新增测试连续出现 2 个以上新命名前缀。
-- 新模块会长期稳定扩展，不适合继续放入显式文件列表。
-- `python tests/test_registry.py` 持续出现同类文件落入 `misc`。
-
-规则变更后必须同步更新：
-
-- [test_registry.py](test_registry.py)
-- [test_test_entry.py](test_test_entry.py)
-- [test_test_launcher_ui.py](test_test_launcher_ui.py)（如果影响启动器展示）
+- [AGENTS.md](AGENTS.md)
+- [support/catalog.py](support/catalog.py)
+- [architecture/test_test_suite_layout.py](architecture/test_test_suite_layout.py)
+- [testkit/test_catalog.py](testkit/test_catalog.py)
+- [testkit/test_launcher_ui.py](testkit/test_launcher_ui.py)（影响展示时）
 - [README.md](README.md)
-- 本文档
 - [../docs/guides/testing.md](../docs/guides/testing.md)
+- `.github/workflows/python-tests.yml`
+
+历史实施记录不随当前规则回写；活动文档和代码必须只使用当前目录体系。

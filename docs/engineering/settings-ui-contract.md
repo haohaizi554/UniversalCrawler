@@ -53,8 +53,8 @@ GUI 配置中心和 WebUI 设置页必须消费同一份 `FrontendStateService.s
 ## 回归命令
 
 ```bash
-python -m pytest tests/test_unified_frontend_contract.py -q
-python -m pytest tests/test_fastapi_endpoints.py::StateEndpointTests::test_i18n_catalog_endpoint_serves_shared_language_files tests/test_fastapi_endpoints.py::StateEndpointTests::test_i18n_catalog_endpoint_returns_empty_for_source_language -q
+python -m pytest tests/contract/frontend/test_unified_frontend.py -q
+python -m pytest tests/contract/web/test_fastapi_endpoints.py::StateEndpointTests::test_i18n_catalog_endpoint_serves_shared_language_files tests/contract/web/test_fastapi_endpoints.py::StateEndpointTests::test_i18n_catalog_endpoint_returns_empty_for_source_language -q
 node --check app/web/static/app.js
 ```
 
