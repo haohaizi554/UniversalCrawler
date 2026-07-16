@@ -1772,20 +1772,24 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(spider._capture_scroll_budget([{"index": 0}] * 11), 22)
 
-    def test_kuaishou_wait_for_manual_login_requires_new_cookie_or_visible_login_state(self):
-        """验证 `test_kuaishou_wait_for_manual_login_requires_new_cookie_or_visible_login_state` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
+    def test_kuaishou_wait_for_manual_login_requires_server_confirmation(self):
+        """快手只有在服务端连续确认登录态后，才应保存浏览器状态。"""
         spider = KuaishouSpider.__new__(KuaishouSpider)
         spider.is_running = True
         spider.auth_service = Mock(spec=AuthService)
-        spider._user_cookie_values = Mock(side_effect=[{"old"}, {"old"}, {"old"}])
-        spider._is_logged_in = Mock(side_effect=[False, True])
+        spider._user_cookie_values = Mock(return_value={"old"})
+        spider._login_prompt_visible = Mock(return_value=False)
+        spider._profile_session_valid = Mock(side_effect=[False, True, True])
+        spider._persist_authenticated_state = Mock(return_value=True)
+        spider.interruptible_page_wait = Mock(return_value=True)
         page = Mock()
         context = Mock()
 
         result = spider._wait_for_manual_login(page, context, "ks_auth.json")
 
         self.assertTrue(result)
-        spider.auth_service.save_json_file.assert_called_once()
+        self.assertEqual(spider._profile_session_valid.call_count, 3)
+        spider._persist_authenticated_state.assert_called_once_with(context, "ks_auth.json")
 
     def test_kuaishou_resolve_active_page_returns_last_open_page(self):
         """验证 `test_kuaishou_resolve_active_page_returns_last_open_page` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""

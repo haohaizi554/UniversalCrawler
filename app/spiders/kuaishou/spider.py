@@ -24,6 +24,13 @@ class KuaishouSpider(BaseSpider):
     """快手爬虫，负责页面滚动扫描、任务选择和流监听。"""
 
     LIST_READY_TIMEOUT_MS = 30000
+    PROFILE_SESSION_URL = "https://www.kuaishou.com/rest/v/profile/get"
+    PROFILE_SESSION_TIMEOUT_MS = 8000
+    LOGIN_PROMPT_SELECTORS = (
+        ".sidebar-login-button",
+        ".login-btn",
+        "button:has-text('登录')",
+    )
 
     def __init__(self, keyword: str, config: dict):
         """配置解析器、任务装配器、认证服务和响应匹配状态。"""
@@ -99,7 +106,13 @@ class KuaishouSpider(BaseSpider):
     def _persist_authenticated_state(self, context, auth_file: str) -> bool:
         """在关闭当前浏览器前原子发布最新 Cookie 与 origin/localStorage。"""
         try:
-            self.auth_service.save_json_file(auth_file, context.storage_state())
+            try:
+                # 快手登录完成后可能把令牌写入 IndexedDB；默认 storage_state 不会包含它。
+                storage_state = context.storage_state(indexed_db=True)
+            except TypeError:
+                # 兼容 Playwright 1.51 之前尚无 indexed_db 参数的运行环境。
+                storage_state = context.storage_state()
+            self.auth_service.save_json_file(auth_file, storage_state)
             return True
         except (CookieSaveError, OSError, TypeError, ValueError, PlaywrightError) as exc:
             self.log(f"⚠️ 快手登录态保存失败: {exc}")
@@ -304,8 +317,20 @@ class KuaishouSpider(BaseSpider):
         self.log(f"✨ 已无浏览器解析分享作品: {title[:24]}...")
         return True
 
+    def _login_prompt_visible(self, page) -> bool:
+        """识别明确的未登录入口；其优先级高于页面中任意内容头像。"""
+        for selector in self.LOGIN_PROMPT_SELECTORS:
+            try:
+                if self._locator_visible(page.locator(selector).first):
+                    return True
+            except PlaywrightError:
+                continue
+        return False
+
     def _is_logged_in(self, page) -> bool:
-        """根据页面上的用户入口判断当前登录态。"""
+        """用保守 DOM 信号兜底判断登录态，服务端接口可用时不依赖此结果。"""
+        if self._login_prompt_visible(page):
+            return False
         selectors = (
             ".header-user-avatar",
             ".user-avatar",
@@ -313,8 +338,6 @@ class KuaishouSpider(BaseSpider):
             ".down-box.login .user-item img[src]",
             ".down-box.login .text-fold",
             ".sidebar .down-box.login",
-            "[class*='avatar']",
-            "[class*='user-avatar']",
         )
         for selector in selectors:
             try:
@@ -323,6 +346,40 @@ class KuaishouSpider(BaseSpider):
             except PlaywrightError:
                 continue
         return False
+
+    def _profile_session_valid(self, page) -> bool | None:
+        """向快手同源资料接口确认 Cookie 是否被服务端接受。
+
+        ``True``/``False`` 表示服务端给出了明确结果；网络或响应格式异常返回
+        ``None``，由调用方退回保守 DOM 判断，避免短暂网络抖动强制用户重登。
+        """
+        response = None
+        try:
+            self._public_domain_policy_engine().require_public_url(self.PROFILE_SESSION_URL)
+            response = page.request.get(
+                self.PROFILE_SESSION_URL,
+                headers={"Referer": "https://www.kuaishou.com/"},
+                timeout=self.PROFILE_SESSION_TIMEOUT_MS,
+                fail_on_status_code=False,
+            )
+            if not response.ok:
+                return None
+            payload = response.json()
+            if not isinstance(payload, dict) or "result" not in payload:
+                return None
+            try:
+                return int(payload["result"]) == 1
+            except (TypeError, ValueError):
+                return None
+        except (PlaywrightError, OSError, TypeError, ValueError):
+            return None
+        finally:
+            dispose = getattr(response, "dispose", None)
+            if callable(dispose):
+                try:
+                    dispose()
+                except PlaywrightError:
+                    pass
 
     def _refresh_logged_in_state(self, page, target_url: str) -> bool:
         """刷新已加载 Cookie 的页面，并重新校验登录态。"""
@@ -334,7 +391,8 @@ class KuaishouSpider(BaseSpider):
             ):
                 return False
             self.interruptible_page_wait(page, 1500)
-            if self._is_logged_in(page):
+            server_state = self._profile_session_valid(page)
+            if server_state is True or (server_state is None and self._is_logged_in(page)):
                 return True
         except PlaywrightError:
             pass
@@ -348,7 +406,8 @@ class KuaishouSpider(BaseSpider):
                 ):
                     return False
                 self.interruptible_page_wait(page, 1500)
-                return self._is_logged_in(page)
+                server_state = self._profile_session_valid(page)
+                return server_state is True or (server_state is None and self._is_logged_in(page))
             except PlaywrightError:
                 return False
         return False
@@ -365,15 +424,21 @@ class KuaishouSpider(BaseSpider):
         return values
 
     def _wait_for_manual_login(self, page, context, auth_file: str) -> bool:
-        """可取消地等待手工登录，并在检测到新用户 Cookie 后持久化状态。"""
-        initial_user_ids = self._user_cookie_values(context)
+        """等待服务端确认登录完成后再持久化，避免只拿到过渡 Cookie 就提前保存。"""
         for _ in range(120):
             if not self.is_running:
                 return False
             current_user_ids = self._user_cookie_values(context)
-            has_new_user_cookie = bool(current_user_ids - initial_user_ids)
-            if current_user_ids and (has_new_user_cookie or self._is_logged_in(page)):
-                return self._persist_authenticated_state(context, auth_file)
+            if current_user_ids and not self._login_prompt_visible(page):
+                server_state = self._profile_session_valid(page)
+                logged_in = server_state is True or (server_state is None and self._is_logged_in(page))
+                if logged_in:
+                    # 让登录重定向、短期会话 Cookie 和 IndexedDB 写入全部落稳后再取快照。
+                    if not self.interruptible_page_wait(page, 1000):
+                        return False
+                    confirmed = self._profile_session_valid(page)
+                    if confirmed is True or (confirmed is None and self._is_logged_in(page)):
+                        return self._persist_authenticated_state(context, auth_file)
             self.interruptible_page_wait(page, 1000)
         return False
 
@@ -394,7 +459,11 @@ class KuaishouSpider(BaseSpider):
             if not self._goto_with_retry(page, target_url, description="页面访问"):
                 raise PlaywrightError(f"cannot open {target_url}")
             has_site_cookie = bool(self._user_cookie_values(context))
-            if not (has_site_cookie and self._is_logged_in(page)):
+            server_state = self._profile_session_valid(page) if has_site_cookie else False
+            logged_in = server_state is True or (server_state is None and self._is_logged_in(page))
+            if not (has_site_cookie and logged_in):
+                if server_state is False:
+                    self.log("⚠️ 快手服务端判定本地登录态无效，需要重新登录")
                 if has_loaded_cookie:
                     self.log("ℹ️ 已加载本地 Cookie，尝试刷新页面重新校验登录态")
                     if self._refresh_logged_in_state(page, target_url) and self._user_cookie_values(context):
