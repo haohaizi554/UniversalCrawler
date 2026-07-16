@@ -107,6 +107,42 @@ class UnifiedFrontendTaskPagesContractTests(_UnifiedFrontendContractTestCase):
         for removed in ("下载速率", "完成概览", "存储占用"):
             self.assertNotIn(removed, detail_texts)
 
+    def test_completed_delete_immediately_selects_the_adjacent_row(self):
+        shell = self._make_shell()
+        completed = shell.pages["completed"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        snapshot["completed_items"] = [
+            {
+                "id": f"completed-{index}",
+                "title": f"Completed {index}",
+                "completed_at_table": "07-16 08:21",
+                "duration": "00:08:06",
+                "format": "MP4",
+            }
+            for index in range(1, 6)
+        ]
+        deleted_ids = []
+        completed.delete_requested.connect(deleted_ids.append)
+        completed.render(snapshot)
+        self._wait_for_table_rows(completed.table, 5)
+
+        self.assertTrue(completed.table.select_id("completed-3"))
+        deleted_row = completed.table.row_for_id("completed-3")
+        completed._on_table_action("delete", "completed-3")
+
+        self.assertEqual(deleted_ids, ["completed-3"])
+        self.assertEqual(completed.table.row_for_id("completed-3"), -1)
+        self.assertEqual(completed.table.selected_id(), "completed-4")
+        self.assertEqual(completed.table.row_for_id("completed-4"), deleted_row)
+
+        completed._on_table_action("delete", "completed-4")
+        self.assertEqual(completed.table.selected_id(), "completed-5")
+        self.assertEqual(completed.table.row_for_id("completed-5"), deleted_row)
+
+        completed._on_table_action("delete", "completed-5")
+        self.assertEqual(completed.table.selected_id(), "completed-2")
+        self.assertEqual(deleted_ids, ["completed-3", "completed-4", "completed-5"])
+
     def test_completed_file_info_caps_long_filename_without_losing_raw_text(self):
         shell = self._make_shell()
         completed = shell.pages["completed"]

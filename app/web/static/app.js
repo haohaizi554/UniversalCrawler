@@ -1517,9 +1517,12 @@ const defaultSendWS = sendWS;
 
 function frontendAction(action, payload) {
   if (action === "delete_item") playbackControllerService().prepareDeleteItem(payload && (payload.id || payload.video_id));
-  const rollback = action === "delete_failed_record" || action === "clear_failed_records"
-    ? listPagesService().optimisticallyMutateFailed(action, payload || {})
-    : null;
+  let rollback = null;
+  if (action === "delete_item") {
+    rollback = listPagesService().optimisticallyMutateCompleted(action, payload || {});
+  } else if (action === "delete_failed_record" || action === "clear_failed_records") {
+    rollback = listPagesService().optimisticallyMutateFailed(action, payload || {});
+  }
   const sent = frontendRuntimeService().send("frontend_action", { action, payload });
   if (!sent && rollback) rollback();
   if (action === "register_file_associations") appendUiLog("正在绑定默认打开方式...");

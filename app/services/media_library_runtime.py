@@ -72,19 +72,31 @@ class MediaLibraryMixin:
                 self._store_video_item(item)
         return items
 
-    def _begin_delete_video(self, video_id: str) -> MediaDeleteContext | None:
-        """删除文件前取消并等待下载任务停写，避免 worker 在删除后继续写回同一路径。"""
+    def _prepare_delete_video(self, video_id: str) -> MediaDeleteContext | None:
+        """只读取待删媒体；下载线程的停止等待必须由后台任务执行。"""
         video = self._video_lookup(video_id)
         if not video:
             return None
+        return MediaDeleteContext(video_id=video_id, video=video, cancel_result=None)
+
+    def _cancel_delete_context_and_wait(self, context: MediaDeleteContext) -> MediaDeleteContext:
+        """停止仍在写入目标文件的任务，避免下载发布与文件删除发生竞态。"""
         cancel_and_wait = getattr(type(self.dl_manager), "cancel_task_and_wait", None)
         if callable(cancel_and_wait):
-            cancel_result = self.dl_manager.cancel_task_and_wait(video_id)
+            cancel_result = self.dl_manager.cancel_task_and_wait(context.video_id)
         else:
-            cancel_result = self.dl_manager.cancel_task(video_id)
+            cancel_result = self.dl_manager.cancel_task(context.video_id)
+        context.cancel_result = cancel_result
         if cancel_result == "timeout":
             raise FileOperationError("Download task did not stop before the deletion timeout")
-        return MediaDeleteContext(video_id=video_id, video=video, cancel_result=cancel_result)
+        return context
+
+    def _begin_delete_video(self, video_id: str) -> MediaDeleteContext | None:
+        """删除文件前取消并等待下载任务停写，避免 worker 在删除后继续写回同一路径。"""
+        context = self._prepare_delete_video(video_id)
+        if context is None:
+            return None
+        return self._cancel_delete_context_and_wait(context)
 
     def _complete_delete_video(self, context: MediaDeleteContext, *, deleted: bool) -> MediaDeleteOutcome:
         self._remove_video_item(context.video_id)

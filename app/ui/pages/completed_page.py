@@ -26,6 +26,7 @@ from app.ui.viewmodels.list_page_worker import (
     ListPageResult,
     ListPageWorker,
     preferred_visible_selection,
+    remove_list_item_optimistically,
 )
 from app.ui.viewmodels.snapshot_table_model import PENDING_METADATA_EMPTY_VALUES, PENDING_METADATA_LABEL
 from app.utils.qt_lifecycle import connect_destroyed_cleanup
@@ -177,12 +178,56 @@ class CompletedPage(PageFrame):
             selected = self.items[0].get("id")
         return next((item for item in self.items if item.get("id") == selected), None)
 
+    def remove_item_optimistically(self, item_id: str) -> bool:
+        """立即移除可见行，并把焦点留在原位置附近，后台结果只负责最终校准。"""
+        removal = remove_list_item_optimistically(
+            self.items,
+            item_id,
+            page=self._page,
+            page_size=self._page_size,
+        )
+        if removal is None:
+            return False
+        self.items = removal.items
+        self._id_order = removal.id_order
+        self._page = removal.current_page
+        self._visible_items = removal.page_items
+
+        # QAbstractItemView 在 model reset 后可能把滚动条拉回顶部；连续删除时恢复原视口位置。
+        scrollbar = self.table.verticalScrollBar()
+        scroll_value = scrollbar.value()
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.set_rows(self._visible_items)
+            if removal.selected_id:
+                self.table.select_id(removal.selected_id)
+            else:
+                self.table.selectionModel().clearSelection()
+        finally:
+            self.table.setUpdatesEnabled(True)
+        scrollbar.setValue(min(scroll_value, scrollbar.maximum()))
+        self.pagination_footer.sync(
+            total_items=len(removal.items),
+            current_page=self._page,
+            total_pages=removal.total_pages,
+            page_size=self._page_size,
+        )
+        self._render_selected_detail()
+        self._schedule_fit_columns()
+        self._submit_page_request(
+            removal.items,
+            selected_id=removal.selected_id,
+            selected_id_moves_page=True,
+        )
+        return True
+
     def _on_table_action(self, action: str, item_id: str) -> None:
         if action == "play":
             self.play_requested.emit(item_id)
         elif action == "open_directory":
             self.open_directory_requested.emit(item_id)
         elif action == "delete":
+            self.remove_item_optimistically(item_id)
             self.delete_requested.emit(item_id)
 
     def _on_media_metadata_detected(self, media_path: str, metadata: dict) -> None:

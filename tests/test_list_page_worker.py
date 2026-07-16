@@ -2,6 +2,7 @@ from app.ui.viewmodels.list_page_worker import (
     ListPageRequest,
     build_list_page_result,
     preferred_visible_selection,
+    remove_list_item_optimistically,
 )
 
 
@@ -74,3 +75,13 @@ def test_preferred_visible_selection_falls_back_when_current_choice_disappears()
     selected = preferred_visible_selection("item-9", "item-1", visible)
 
     assert selected == "item-1"
+
+
+def test_optimistic_removal_clamps_empty_last_page_and_selects_previous_item():
+    result = remove_list_item_optimistically(_rows(21), "item-20", page=2, page_size=20)
+
+    assert result is not None
+    assert result.current_page == 1
+    assert result.total_pages == 1
+    assert result.selected_id == "item-19"
+    assert [item["id"] for item in result.page_items][-1] == "item-19"

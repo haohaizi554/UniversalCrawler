@@ -297,7 +297,8 @@ class MediaHostControllerMixin:
             self._host().release_media_playback()
             self._set_current_playing_id(None)
         if self._should_delete_media_asynchronously():
-            context = self._begin_delete_video(vid)
+            # UI 线程只捕获稳定媒体对象；cancel_task_and_wait 可能等待数秒，必须随文件 IO 一起进 worker。
+            context = self._prepare_delete_video(vid)
             if context is None:
                 self._remove_video_row_from_host(row_idx, vid)
                 return
@@ -361,6 +362,8 @@ class MediaHostControllerMixin:
 
     def _delete_video_context_sync(self, context):
         try:
+            if context.cancel_result is None:
+                self._cancel_delete_context_and_wait(context)
             deleted = self.file_service.delete_media(context.video)
         except FileOperationError as exc:
             return SimpleNamespace(

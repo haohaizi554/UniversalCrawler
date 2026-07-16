@@ -37,8 +37,51 @@ class ListPageResult:
     total_pages: int
 
 
+@dataclass(frozen=True)
+class OptimisticListRemoval:
+    items: list[dict[str, Any]]
+    page_items: list[dict[str, Any]]
+    id_order: tuple[str, ...]
+    selected_id: str
+    current_page: int
+    total_pages: int
+
+
 def item_stable_id(item: Mapping[str, Any]) -> str:
     return str(item.get("id") or "")
+
+
+def remove_list_item_optimistically(
+    items: Sequence[dict[str, Any]],
+    item_id: str,
+    *,
+    page: int,
+    page_size: int,
+) -> OptimisticListRemoval | None:
+    """为即时行删除生成轻量分页投影；权威快照随后仍由 ListPageWorker 校准。"""
+    target_id = str(item_id or "")
+    source_items = list(items)
+    delete_index = next(
+        (index for index, item in enumerate(source_items) if item_stable_id(item) == target_id),
+        -1,
+    )
+    if delete_index < 0:
+        return None
+
+    source_items.pop(delete_index)
+    selected_index = min(delete_index, len(source_items) - 1)
+    selected_id = item_stable_id(source_items[selected_index]) if selected_index >= 0 else ""
+    current_page = clamp_page(page, len(source_items), page_size)
+    if selected_index >= 0 and page_size > 0:
+        current_page = (selected_index // page_size) + 1
+    return OptimisticListRemoval(
+        items=source_items,
+        page_items=page_slice(source_items, current_page, page_size),
+        id_order=tuple(item_stable_id(item) for item in source_items if item_stable_id(item)),
+        selected_id=selected_id,
+        current_page=current_page,
+        total_pages=total_pages(len(source_items), page_size),
+    )
 
 
 def preferred_visible_selection(

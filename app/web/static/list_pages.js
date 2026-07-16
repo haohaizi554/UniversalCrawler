@@ -461,18 +461,30 @@
     }
   }
 
-  function renderCompleted() {
+  function renderCompleted(options = {}) {
     const items = Array.isArray(currentState().completed_items) ? currentState().completed_items : [];
-    cleanupPlaybackPositions(items);
+    if (options.cleanupPlaybackPositions !== false) cleanupPlaybackPositions(items);
     const selectedId = selected("completed");
-    submitListPageRequest("completed", {
+    const request = {
       items,
       page: state.completedPage,
       pageSize: state.completedPageSize,
       selectedId,
       selectFirst: true,
       selectedIdMovesPage: Boolean(selectedId),
-    });
+    };
+    if (options.immediate === true) {
+      // 删除事务先同步投影可见页，避免 Worker 繁忙时状态已切换但表格高亮仍短暂滞后。
+      applyCompletedPageResult(buildListPageResultSync({
+        type: "page",
+        pageKey: "completed",
+        sequence: 0,
+        ...request,
+      }));
+      request.page = state.completedPage;
+      request.selectedId = selected("completed");
+    }
+    submitListPageRequest("completed", request);
   }
 
   function applyCompletedPageResult(result) {
@@ -517,6 +529,39 @@
   function renderCompletedDetail() {
     const item = selectedTaskItem("completed", currentState().completed_items || []);
     setHtmlIfChanged("completedDetail", taskRenderService().completedDetailHtml(item));
+  }
+
+  function optimisticallyMutateCompleted(action, payload = {}) {
+    if (action !== "delete_item") return null;
+    const source = currentState();
+    const previousItems = Array.isArray(source.completed_items) ? source.completed_items : [];
+    const doomedId = String(payload.id || payload.video_id || "");
+    const doomedIndex = previousItems.findIndex(item => String(item.id || "") === doomedId);
+    if (doomedIndex < 0) return null;
+
+    const nextItems = previousItems.filter((_item, index) => index !== doomedIndex);
+    const nextIndex = Math.min(doomedIndex, nextItems.length - 1);
+    const nextSelected = nextIndex >= 0 ? String(nextItems[nextIndex].id || "") : "";
+    const previousStatus = source.app_status;
+    const previousSelected = selected("completed");
+    const previousActiveSelection = selected("queue");
+    const previousCount = Number((previousStatus || {}).completed_count);
+    source.completed_items = nextItems;
+    source.app_status = {
+      ...(previousStatus || {}),
+      completed_count: Math.max(0, Number.isFinite(previousCount) ? previousCount - 1 : nextItems.length),
+    };
+    setSelected("completed", nextSelected, { activate: true });
+    renderCompleted({ cleanupPlaybackPositions: false, immediate: true });
+    if (typeof dependencies.renderStatus === "function") dependencies.renderStatus();
+    return () => {
+      source.completed_items = previousItems;
+      source.app_status = previousStatus;
+      setSelected("completed", previousSelected);
+      setSelected("queue", previousActiveSelection);
+      renderCompleted({ cleanupPlaybackPositions: false, immediate: true });
+      if (typeof dependencies.renderStatus === "function") dependencies.renderStatus();
+    };
   }
 
   function renderFailed(options = {}) {
@@ -691,6 +736,7 @@
     renderActiveDetail,
     renderCompletedDetail,
     renderFailedDetail,
+    optimisticallyMutateCompleted,
     optimisticallyMutateFailed,
     copyDiagnostics,
     navigationOrder,

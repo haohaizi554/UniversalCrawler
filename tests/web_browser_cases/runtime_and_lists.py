@@ -3,6 +3,58 @@
 from __future__ import annotations
 
 class RuntimeAndListCases:
+    def test_completed_delete_is_optimistic_and_selects_the_adjacent_item(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              const nativeRuntime = window.UcpFrontendRuntime;
+              const sends = [];
+              window.UcpFrontendRuntime = {
+                ...nativeRuntime,
+                send: (type, data) => { sends.push({ type, data }); return true; },
+              };
+              try {
+                frontendState.completed_items = ['a', 'b', 'c', 'd'].map(id => ({
+                  id: `completed-${id}`,
+                  title: id.toUpperCase(),
+                  filename: `${id}.mp4`,
+                  completed_at_table: '07-16 08:21',
+                  duration: '00:08:06',
+                  format: 'MP4',
+                }));
+                frontendState.app_status.completed_count = 4;
+                selected.completed = 'completed-b';
+                selectedVideoId = 'completed-b';
+                switchPage('completed');
+                renderCompleted();
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                frontendAction('delete_item', { id: 'completed-b' });
+                return {
+                  ids: frontendState.completed_items.map(item => item.id),
+                  count: frontendState.app_status.completed_count,
+                  selected: selected.completed,
+                  activeSelection: selectedVideoId,
+                  selectedRows: Array.from(document.querySelectorAll('#completedBody tr.selected'))
+                    .map(row => row.dataset.id),
+                  sends,
+                };
+              } finally {
+                window.UcpFrontendRuntime = nativeRuntime;
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["ids"], ["completed-a", "completed-c", "completed-d"])
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(result["selected"], "completed-c")
+        self.assertEqual(result["activeSelection"], "completed-c")
+        self.assertEqual(result["selectedRows"], ["completed-c"])
+        self.assertEqual(result["sends"][0]["data"]["action"], "delete_item")
+
     def test_failed_delete_and_clear_are_optimistic_while_backend_is_pending(self):
         self._goto_ready()
         result = self._page.evaluate(

@@ -240,7 +240,7 @@ class MediaHostControllerMixinTests(unittest.TestCase):
                 return token
 
         controller._should_delete_media_asynchronously = Mock(return_value=True)
-        controller._begin_delete_video = Mock(return_value=context)
+        controller._prepare_delete_video = Mock(return_value=context)
         controller._before_media_delete = Mock()
         controller._delete_video_context_sync = Mock(return_value=outcome)
         controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
@@ -248,13 +248,69 @@ class MediaHostControllerMixinTests(unittest.TestCase):
 
         controller.on_delete_video(5, item.id)
 
-        controller._begin_delete_video.assert_called_once_with(item.id)
+        controller._prepare_delete_video.assert_called_once_with(item.id)
         controller._before_media_delete.assert_called_once_with(context)
         controller._delete_video_context_sync.assert_called_once_with(context)
         self.assertEqual(submitted[0][0], f"delete-video-{item.id}")
         controller.host.remove_video_row.assert_called_once_with(5, item.id)
         controller.host.refresh_table_bindings.assert_called_once()
         self.assertNotIn(item.id, controller.videos)
+
+    def test_on_delete_video_does_not_wait_for_download_worker_on_ui_thread(self):
+        controller = _DummyMediaHostController()
+        item = VideoItem(url="", title="demo", source="local")
+        item.local_path = __file__
+        controller.videos[item.id] = item
+        context = SimpleNamespace(video_id=item.id, video=item, cancel_result=None)
+        outcome = SimpleNamespace(
+            status="ok",
+            video_id=item.id,
+            video=item,
+            cancel_result=None,
+            deleted=True,
+            error=None,
+        )
+        submitted = []
+
+        class DeferredRunner:
+            def submit(self, *, name, fn):
+                submitted.append((name, fn))
+                return SimpleNamespace(is_cancelled=lambda: False)
+
+        controller._should_delete_media_asynchronously = Mock(return_value=True)
+        controller._prepare_delete_video = Mock(return_value=context)
+        controller._begin_delete_video = Mock(side_effect=AssertionError("UI thread waited for cancellation"))
+        controller._before_media_delete = Mock()
+        controller._delete_video_context_sync = Mock(return_value=outcome)
+        controller._ensure_short_task_runner = Mock(return_value=DeferredRunner())
+        controller._ensure_ui_callback_invoker = Mock(return_value=SimpleNamespace(invoke=lambda callback: callback()))
+
+        controller.on_delete_video(5, item.id)
+
+        controller._prepare_delete_video.assert_called_once_with(item.id)
+        controller._begin_delete_video.assert_not_called()
+        controller._delete_video_context_sync.assert_not_called()
+        self.assertEqual(submitted[0][0], f"delete-video-{item.id}")
+
+        token = SimpleNamespace(is_cancelled=lambda: False, wait_cancelled=Mock(return_value=False))
+        submitted[0][1](token)
+        controller._delete_video_context_sync.assert_called_once_with(context)
+
+    def test_background_delete_waits_for_cancellation_before_file_io(self):
+        controller = _DummyMediaHostController()
+        item = VideoItem(url="", title="demo", source="local")
+        context = SimpleNamespace(video_id=item.id, video=item, cancel_result=None)
+        events = []
+        controller.file_service = Mock()
+        controller.file_service.delete_media.side_effect = lambda _video: events.append("delete") or True
+        controller._cancel_delete_context_and_wait = Mock(
+            side_effect=lambda prepared: events.append("cancel") or prepared
+        )
+
+        outcome = controller._delete_video_context_sync(context)
+
+        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(events, ["cancel", "delete"])
 
     def test_on_delete_video_async_restores_row_when_background_delete_fails(self):
         controller = _DummyMediaHostController()
@@ -278,7 +334,7 @@ class MediaHostControllerMixinTests(unittest.TestCase):
                 return token
 
         controller._should_delete_media_asynchronously = Mock(return_value=True)
-        controller._begin_delete_video = Mock(return_value=context)
+        controller._prepare_delete_video = Mock(return_value=context)
         controller._delete_video_context_sync = Mock(return_value=outcome)
         controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
         controller._ensure_ui_callback_invoker = Mock(return_value=SimpleNamespace(invoke=lambda callback: callback()))
