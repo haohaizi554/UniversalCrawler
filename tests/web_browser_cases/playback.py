@@ -3,6 +3,32 @@
 from __future__ import annotations
 
 class PlaybackCases:
+    def test_media_surface_tracks_light_dark_and_accent_theme_tokens(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            () => {
+              const video = document.getElementById('videoPlayer');
+              const seek = document.getElementById('seekSlider');
+              const capture = () => ({
+                videoBackground: getComputedStyle(video).backgroundColor,
+                seekAccent: getComputedStyle(seek).accentColor,
+              });
+              applyTheme(false, { accent: 'red' });
+              const light = capture();
+              applyTheme(true, { accent: 'green' });
+              const dark = capture();
+              applyAppearance((frontendState.settings_snapshot || {})['外观设置'] || {});
+              return { light, dark };
+            }
+            """
+        )
+
+        self.assertEqual(result["light"]["videoBackground"], "rgb(248, 250, 252)")
+        self.assertEqual(result["light"]["seekAccent"], "rgb(220, 38, 38)")
+        self.assertEqual(result["dark"]["videoBackground"], "rgb(11, 15, 22)")
+        self.assertEqual(result["dark"]["seekAccent"], "rgb(34, 197, 94)")
+
     def test_10_fullscreen_toggle(self):
         """toggleFullscreen 应在 body 上加 is-fullscreen 类。"""
         self._goto_ready()

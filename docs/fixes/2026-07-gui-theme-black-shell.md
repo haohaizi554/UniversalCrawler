@@ -19,6 +19,7 @@
 3. 快速连续点击时，按钮图标先变、页面主题后变，前端 snapshot 刷新、settings 同步和 Qt stylesheet 重绘互相穿插，形成“按钮状态”和“页面完成状态”不一致。
 4. 只恢复 TopBar、Sidebar、StatusBar 本体还不够；它们外层的 `control_island`、`status_island`、`PageStack` 或 `window_root` 被隐藏/冻结时，子控件仍然不可见。
 5. 媒体预览全屏残留状态会让 shell 恢复逻辑误判当前仍在全屏/预览模式，造成中间黑色预览区域盖住主要界面的错觉。
+6. 媒体全屏会产生新的视觉根：GUI 的无父级 `QWidget` 不属于默认的 `QMainWindow/QDialog` 主题根集合，Web 的 Fullscreen API 还会创建独立的 top layer 和 `::backdrop`。如果只给原页面套主题，全屏后的留白区会回退到系统色或硬编码黑色。
 
 ## 修复原则
 
@@ -29,6 +30,8 @@
 - 每次主题应用、主题过渡完成、窗口 show、前端 snapshot 完成后，都要检查并恢复 shell chrome 可见性。
 - shell 可见性检查不能只看子控件；必须覆盖 `window_root`、标题栏、`app_shell`、`control_island`、TopBar、Sidebar、PageStack、`status_island` 和 StatusBar。
 - 媒体预览全屏状态必须单独识别和清理 stale fullscreen，不允许和主窗口主题状态混在一起判断。
+- 运行时创建的顶层媒体窗口必须显式注册为主题根，创建时立即继承当前 palette/stylesheet，后续主题热切换也必须覆盖该根；不能把所有孤立 `QWidget` 都纳入主题刷新。
+- Web 视频画布、全屏容器和 `::backdrop` 必须共用语义化 `--video-bg`，禁止在 `<video>` 上硬编码 `#000`。
 
 ## 当前落地
 
@@ -39,6 +42,8 @@
 - `_finish_theme_transition()` 先处理排队主题，再释放 busy 状态；如果还有下一次切换，保持 busy 并延迟一帧执行下一次。
 - `TopBarWidget.set_theme_button_busy()` 保持主题按钮可点击，只用属性和 tooltip 表示忙碌。
 - 增加回归测试，覆盖主题切换不冻结 `window_root`、黑屏 shell 修复、主题 busy 按钮仍可点击和快速点击合并。
+- `_MediaFullscreenWindow` 使用 `ucpThemeRoot` 显式注册主题根，并在显示前继承当前主题；WebUI 用 `--video-bg` 同时驱动视频画布、全屏面板和 top-layer backdrop。
+- 增加 GUI 首次进入/全屏中切换主题测试，以及 Web 浅色、深色、强调色的浏览器计算样式测试。
 
 ## 以后禁止
 
@@ -47,6 +52,7 @@
 - 禁止把主题按钮图标变化当作主题切换完成信号。
 - 禁止只修可见子控件，不检查承载它们的 island / stack / root 容器。
 - 禁止在主题切换热路径里直接做完整前端 snapshot 或同步配置落盘。
+- 禁止假设新建顶层窗口会自动继承已有主题，也禁止让浏览器全屏 backdrop 使用 UA 默认背景。
 
 ## 必测清单
 
@@ -55,4 +61,5 @@
 3. 在下载队列、日志中心、设置页、已完成页和媒体预览页分别切换主题。
 4. 媒体预览进入/退出全屏后再切换主题，不留下黑色预览区域盖住 shell。
 5. 系统跟随主题触发 palette change 时，也走同样的 shell 恢复链路。
-6. 运行 `tests/test_main_window.py` 和 `tests/test_unified_frontend_contract.py -k "theme or top_bar"`。
+6. 分别在浅色和深色主题进入 GUI/WebUI 媒体全屏，并在全屏状态切换主题，视频留白、控制栏和强调色立即同步。
+7. 运行 `tests/test_main_window.py`、`tests/test_media_preview_panel.py` 和 `tests/test_web_browser.py -k "theme or fullscreen or playback"`。

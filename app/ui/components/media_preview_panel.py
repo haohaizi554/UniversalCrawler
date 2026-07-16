@@ -33,8 +33,9 @@ from PyQt6.QtWidgets import (
 from app.debug_logger import debug_logger
 from app.services.mkv_repair_service import MkvPlaybackRepairService
 from app.services.playback_position_service import PlaybackPositionService
-from shared.localization import normalize_language, tr
+from app.ui.styles import apply_dialog_theme, resolve_is_dark_theme
 from app.ui.task_runtime import LongTaskRunner, ShortTaskRunner, TaskCancelToken
+from shared.localization import normalize_language, tr
 
 @dataclass(slots=True)
 class _RepairUiState:
@@ -81,11 +82,19 @@ class _VideoGraphicsView(QGraphicsView):
 class _MediaFullscreenWindow(QWidget):
     def __init__(self, panel: "MediaPreviewPanel") -> None:
         super().__init__(None)
+        theme_source = panel.window()
         self.panel = panel
         self._allow_close = False
         self.setObjectName("MediaFullscreenWindow")
+        self.setProperty("ucpThemeRoot", True)
         self.setWindowTitle("Universal Crawler Pro - Media")
         self.setWindowFlag(Qt.WindowType.Window)
+        self.setAutoFillBackground(True)
+        apply_dialog_theme(
+            self,
+            parent=theme_source,
+            is_dark=resolve_is_dark_theme(theme_source),
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)

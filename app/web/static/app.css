@@ -4,6 +4,7 @@
   --base-font-size: 14px;
   --panel: #ffffff;
   --panel-soft: #f8fafc;
+  --video-bg: #f8fafc;
   --text: #111827;
   --muted: #6b7280;
   --border: #e5e7eb;
@@ -33,6 +34,7 @@
   --bg: #171a1f;
   --panel: #22262d;
   --panel-soft: #2b3038;
+  --video-bg: #0b0f16;
   --text: #e5e7eb;
   --muted: #9ca3af;
   --border: #383f48;

@@ -589,6 +589,13 @@ class UnifiedFrontendStaticContractTests(_UnifiedFrontendContractTestCase):
         self.assertNotIn("if (!hasPreviewContent()) return;", content)
         self.assertIn("adjacentCompletedId(state.currentPlayingId, 1, false)", content)
         self.assertIn(".preview-panel:fullscreen", css)
+        self.assertIn("--video-bg: #f8fafc", css)
+        self.assertIn("--video-bg: #0b0f16", css)
+        video_surface_block = css.split(".media-viewport video {", 1)[1].split("}", 1)[0]
+        self.assertIn("background: var(--video-bg)", video_surface_block)
+        self.assertNotIn("background: #000", video_surface_block)
+        fullscreen_backdrop_block = css.split(".preview-panel:fullscreen::backdrop {", 1)[1].split("}", 1)[0]
+        self.assertIn("background: var(--video-bg)", fullscreen_backdrop_block)
         self.assertIn("#page-completed th:nth-child(2), #page-completed td:nth-child(2) { width: 142px; }", css)
         self.assertIn("#page-completed th:nth-child(3), #page-completed td:nth-child(3) { width: 108px; }", css)
         self.assertIn("#page-completed th:nth-child(4), #page-completed td:nth-child(4) { width: 76px; }", css)

@@ -212,7 +212,8 @@ def _theme_style_roots(app: QApplication) -> list[QWidget]:
         try:
             if widget.windowType() == Qt.WindowType.Popup:
                 continue
-            if not isinstance(widget, (QMainWindow, QDialog)):
+            is_registered_theme_root = bool(widget.property("ucpThemeRoot"))
+            if not isinstance(widget, (QMainWindow, QDialog)) and not is_registered_theme_root:
                 continue
             roots.append(widget)
         except RuntimeError:

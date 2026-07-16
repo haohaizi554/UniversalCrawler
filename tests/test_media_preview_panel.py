@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QPalette
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.services.playback_position_service import PlaybackPositionService
 from app.ui.components.media_preview_panel import MediaPreviewPanel
+from app.ui.styles.themes import apply_application_theme, theme_colors
 
 class MediaPreviewPanelTests(unittest.TestCase):
     @classmethod
@@ -483,6 +485,48 @@ class MediaPreviewPanelTests(unittest.TestCase):
 
         self.assertIs(panel.parentWidget(), host)
         self.assertEqual(panel.btn_fullscreen.text(), "[ 全屏 ]")
+
+    def test_fullscreen_window_inherits_current_application_theme_on_entry(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        self.addCleanup(lambda: apply_application_theme(False))
+        apply_application_theme(True)
+
+        panel.enter_media_fullscreen()
+        self.app.processEvents()
+
+        window = panel._fullscreen_window
+        self.assertIsNotNone(window)
+        colors = theme_colors(True)
+        self.assertEqual(
+            window.palette().color(QPalette.ColorRole.Window).name(),
+            colors["video_bg"],
+        )
+        self.assertIn(colors["video_bg"], window.styleSheet())
+
+    def test_fullscreen_window_tracks_application_theme_changes(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        self.addCleanup(lambda: apply_application_theme(False))
+        apply_application_theme(True)
+        panel.enter_media_fullscreen()
+        self.app.processEvents()
+
+        apply_application_theme(False)
+        self.app.processEvents()
+
+        window = panel._fullscreen_window
+        self.assertIsNotNone(window)
+        colors = theme_colors(False)
+        self.assertEqual(
+            window.palette().color(QPalette.ColorRole.Window).name(),
+            colors["video_bg"],
+        )
+        self.assertIn(colors["video_bg"], window.styleSheet())
 
     def test_release_media_exits_media_fullscreen_window(self):
         host = QWidget()
