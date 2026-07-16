@@ -171,7 +171,7 @@ class WebMediaScanRuntimeMixin:
         debug_logger.log(
             component="WebController",
             action="async_scan_local_dir",
-            message="Web 端开始异步扫描本地媒体目录",
+            message="Web 端开始扫描本地媒体目录（异步）",
             status_code="WEB_SCAN_START",
             details={"directory": directory},
         )
