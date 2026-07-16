@@ -154,6 +154,9 @@ class DesktopHostAdapter:
     def get_adjacent_video_id(self, current_video_id: str | None, direction: int, *, wrap: bool = True) -> str | None:
         return self.window.get_adjacent_video_id(current_video_id, direction, wrap=wrap)
 
+    def get_adjacent_image_id(self, current_video_id: str | None, direction: int, *, wrap: bool = True) -> str | None:
+        return self.window.get_adjacent_image_id(current_video_id, direction, wrap=wrap)
+
     def select_video_by_id(self, video_id: str) -> bool:
         return self.window.select_video_by_id(video_id)
 

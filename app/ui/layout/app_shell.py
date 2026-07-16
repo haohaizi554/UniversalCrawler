@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app.core.media_filter import IMAGE_CONTENT_TYPES, IMAGE_EXTENSIONS
 from app.ui.components.combo_popup import fit_combo_width_to_contents, refresh_themed_combo_boxes
 from app.ui.layout.island import IslandCard
 from shared.localization import is_translation_of, normalize_language, source_text_for_translation, tr
@@ -309,6 +310,11 @@ class AppShell(QWidget):
 
         if page_needs_render:
             self._render_page(self.current_page_id)
+
+        if full_refresh or "completed_items" in changed_sections:
+            self.pages["completed"].set_image_slideshow_available(
+                len(self.completed_image_id_order()) > 1
+            )
 
         if full_refresh or "settings_snapshot" in changed_sections:
             self._sync_top_quantity_from_settings(snapshot.get("settings_snapshot") or {})
@@ -709,6 +715,16 @@ class AppShell(QWidget):
     def completed_id_order(self) -> list[str]:
         return list(self._completed_item_ids)
 
+    def completed_image_id_order(self) -> list[str]:
+        image_ids: list[str] = []
+        for item in self._items_for_page("completed"):
+            content_type = str(item.get("content_type") or "").strip().lower()
+            local_path = str(item.get("local_path") or "").strip().lower()
+            item_id = str(item.get("id") or "")
+            if item_id and (content_type in IMAGE_CONTENT_TYPES or local_path.endswith(IMAGE_EXTENSIONS)):
+                image_ids.append(item_id)
+        return image_ids
+
     def select_video_id(self, video_id: str) -> bool:
         target_id = str(video_id or "")
         for page_id in ("completed", "queue", "active", "failed"):
@@ -736,9 +752,9 @@ class AppShell(QWidget):
     def _snapshot_items_for_page(self, snapshot: dict, page_id: str) -> list:
         return list((snapshot.get(self._PAGE_SECTION_KEYS.get(page_id, "")) or []))
 
-    def show_image(self, image_path: str) -> None:
+    def show_image(self, image_path: str, *, slideshow_available: bool = False) -> None:
         self.show_page("completed")
-        self.pages["completed"].show_image(image_path)
+        self.pages["completed"].show_image(image_path, slideshow_available=slideshow_available)
 
     def play_video(self, video_path: str) -> None:
         self.show_page("completed")

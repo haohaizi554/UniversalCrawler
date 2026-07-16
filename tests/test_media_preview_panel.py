@@ -684,8 +684,9 @@ class MediaPreviewPanelTests(unittest.TestCase):
     def test_image_auto_advance_respects_manual_switch_setting(self):
         panel = MediaPreviewPanel(QWidget())
         emitted: list[int] = []
-        panel.sig_switch_preview.connect(lambda direction: emitted.append(direction))
+        panel.sig_auto_next_image_preview.connect(lambda: emitted.append(1))
         panel.current_image_path = "image.webp"
+        panel._image_slideshow_available = True
 
         panel.apply_playback_settings({"manual_image_switch": True})
         panel._on_image_auto_advance_timeout()
@@ -698,6 +699,81 @@ class MediaPreviewPanelTests(unittest.TestCase):
 
         panel.apply_playback_settings({"manual_image_switch": False, "image_auto_advance_interval_seconds": 99})
         self.assertEqual(panel._image_auto_advance_timer.interval(), 5000)
+
+    def test_image_preview_hides_stale_video_timeline_and_play_button_controls_slideshow(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        host.show()
+        self.app.processEvents()
+        panel.slider.setRange(0, 16_000)
+        panel.slider.setValue(7_000)
+        panel.lbl_time.setText("00:07 / 00:16")
+        panel.apply_playback_settings(
+            {"manual_image_switch": False, "image_auto_advance_interval_seconds": 3}
+        )
+
+        panel.show_image("image.webp", slideshow_available=True)
+        self.app.processEvents()
+
+        self.assertTrue(panel.slider.isHidden())
+        self.assertTrue(panel.lbl_time.isHidden())
+        self.assertEqual(panel.slider.maximum(), 0)
+        self.assertEqual(panel.slider.value(), 0)
+        self.assertEqual(panel.lbl_time.text(), "00:00")
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+        self.assertTrue(panel.btn_play.isEnabled())
+
+        panel.btn_play.click()
+        self.assertFalse(panel._image_auto_advance_timer.isActive())
+
+        panel.btn_play.click()
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+
+    def test_manual_image_switch_stops_slideshow_and_disables_play_button(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        host.show()
+        self.app.processEvents()
+        panel.apply_playback_settings({"manual_image_switch": False})
+        panel.show_image("image.webp", slideshow_available=True)
+        self.app.processEvents()
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+
+        panel.apply_playback_settings({"manual_image_switch": True})
+
+        self.assertFalse(panel._image_auto_advance_timer.isActive())
+        self.assertFalse(panel.btn_play.isEnabled())
+
+        panel.apply_playback_settings({"manual_image_switch": False})
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+        self.assertTrue(panel.btn_play.isEnabled())
+
+    def test_single_image_preview_disables_slideshow_without_fake_running_state(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        host.show()
+        self.app.processEvents()
+        panel.apply_playback_settings({"manual_image_switch": False})
+
+        panel.show_image("only-image.webp", slideshow_available=False)
+        self.app.processEvents()
+
+        self.assertFalse(panel._image_auto_advance_timer.isActive())
+        self.assertFalse(panel.btn_play.isEnabled())
+
+        panel.set_image_slideshow_available(True)
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+        self.assertTrue(panel.btn_play.isEnabled())
+
+        panel.set_image_slideshow_available(False)
+        self.assertFalse(panel._image_auto_advance_timer.isActive())
+        self.assertFalse(panel.btn_play.isEnabled())
 
 if __name__ == "__main__":
     unittest.main()

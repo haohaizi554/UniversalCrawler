@@ -1443,7 +1443,7 @@ class SettingsPage(PageFrame):
             )
         )
 
-        image_switch = self._build_switch(self._dict_value(value, "manual_image_switch", True))
+        image_switch = self._build_switch(self._dict_value(value, "manual_image_switch", False))
         image_switch.setObjectName("ImageManualSwitch")
 
         def sync_interval_visibility(checked: bool) -> None:

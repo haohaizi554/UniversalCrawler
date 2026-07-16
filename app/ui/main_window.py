@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
     sig_register_file_associations = pyqtSignal(bool, bool)
     sig_switch_preview = pyqtSignal(int)
     sig_auto_next_preview = pyqtSignal()
+    sig_auto_next_image_preview = pyqtSignal()
     _clipboard_copy_requested = pyqtSignal(str)
     _update_check_finished = pyqtSignal(object)
     _update_check_failed = pyqtSignal(str)
@@ -486,6 +487,10 @@ class MainWindow(QMainWindow):
         self._connections.connect(self.app_shell.update_check_requested, self._on_update_check_requested)
         self._connections.connect(self.media_panel.sig_switch_preview, self.sig_switch_preview.emit)
         self._connections.connect(self.media_panel.sig_auto_next_preview, self.sig_auto_next_preview.emit)
+        self._connections.connect(
+            self.media_panel.sig_auto_next_image_preview,
+            self.sig_auto_next_image_preview.emit,
+        )
 
     def _on_update_check_requested(self, version_text: str = "") -> None:
         del version_text
@@ -2412,6 +2417,20 @@ class MainWindow(QMainWindow):
             return None
         return video_order[next_index]
 
+    def get_adjacent_image_id(self, current_video_id: str | None, direction: int, *, wrap: bool = True) -> str | None:
+        image_order = self.app_shell.completed_image_id_order()
+        if len(image_order) <= 1:
+            return None
+        current_index = image_order.index(current_video_id) if current_video_id in image_order else -1
+        if current_index == -1:
+            return image_order[0] if direction >= 0 else image_order[-1]
+        next_index = current_index + (1 if direction >= 0 else -1)
+        if wrap:
+            next_index %= len(image_order)
+        elif next_index < 0 or next_index >= len(image_order):
+            return None
+        return image_order[next_index]
+
     def select_video_by_id(self, video_id: str) -> bool:
         return self.app_shell.select_video_id(video_id)
 
@@ -2441,7 +2460,8 @@ class MainWindow(QMainWindow):
         return dialog.choice()
 
     def show_image(self, image_path: str) -> None:
-        self.app_shell.show_image(image_path)
+        slideshow_available = len(self.app_shell.completed_image_id_order()) > 1
+        self.app_shell.show_image(image_path, slideshow_available=slideshow_available)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

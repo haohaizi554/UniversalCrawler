@@ -272,6 +272,255 @@ class PlaybackCases:
         self.assertTrue(result["replacementDisposed"])
         self.assertEqual(result["selections"], ["image-a", "image-b"])
 
+    def test_11efaa_image_controls_hide_video_timeline_and_follow_slideshow_setting(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const originalSetTimeout = window.setTimeout;
+              const originalClearTimeout = window.clearTimeout;
+              const timers = [];
+              const cleared = [];
+              const selections = [];
+              let fetchCalls = 0;
+              const playbackSettings = {
+                manual_image_switch: false,
+                image_auto_advance_interval_seconds: 3
+              };
+              const state = {
+                completed_items: ['image-a', 'image-b'].map(id => ({
+                  id,
+                  title: id,
+                  filename: `${id}.png`,
+                  local_path: `D:/${id}.png`,
+                  content_type: 'image'
+                })),
+                settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': playbackSettings }
+              };
+              window.fetch = () => {
+                fetchCalls += 1;
+                return Promise.resolve(new Response('', { status: 206 }));
+              };
+              window.setTimeout = (callback, delay) => {
+                const timer = { id: timers.length + 1, callback, delay };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = id => { cleared.push(id); };
+              try {
+                window.UcpPlaybackController.configure({
+                  getState: () => state,
+                  getSelectedCompletedId: () => selections.at(-1) || '',
+                  setSelectedCompletedId: id => { selections.push(String(id || '')); },
+                  patchCompletedMetadata: () => false,
+                  t: value => String(value || ''),
+                  byId: id => document.getElementById(id),
+                  esc,
+                  frontendAction: () => {},
+                  appendLog: () => {},
+                  renderCompletedDetail: () => {}
+                });
+                await window.UcpPlaybackController.playCompleted('image-a');
+                const button = document.getElementById('playBtn');
+                const seek = document.getElementById('seekSlider');
+                const time = document.getElementById('timeLabel');
+                const firstTimer = timers.at(-1);
+                const initial = {
+                  seekHidden: seek.hidden,
+                  seekDisplay: getComputedStyle(seek).display,
+                  timeHidden: time.hidden,
+                  timeDisplay: getComputedStyle(time).display,
+                  buttonDisabled: button.disabled,
+                  buttonTitle: button.title,
+                  timerDelay: firstTimer && firstTimer.delay
+                };
+
+                window.UcpPlaybackController.togglePlay();
+                const paused = {
+                  timerCleared: cleared.includes(firstTimer.id),
+                  buttonTitle: button.title
+                };
+
+                window.UcpPlaybackController.togglePlay();
+                const resumedTimer = timers.at(-1);
+                const resumed = {
+                  timerRearmed: resumedTimer !== firstTimer,
+                  buttonTitle: button.title
+                };
+
+                playbackSettings.manual_image_switch = true;
+                renderFrontendSections(new Set(['settings_snapshot']));
+                const manual = {
+                  timerCleared: cleared.includes(resumedTimer.id),
+                  buttonDisabled: button.disabled,
+                  buttonTitle: button.title
+                };
+                return { initial, paused, resumed, manual, fetchCalls };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["initial"], {
+            "seekHidden": True,
+            "seekDisplay": "none",
+            "timeHidden": True,
+            "timeDisplay": "none",
+            "buttonDisabled": False,
+            "buttonTitle": "暂停",
+            "timerDelay": 3000,
+        })
+        self.assertEqual(result["paused"], {"timerCleared": True, "buttonTitle": "播放"})
+        self.assertEqual(result["resumed"], {"timerRearmed": True, "buttonTitle": "暂停"})
+        self.assertEqual(result["manual"], {
+            "timerCleared": True,
+            "buttonDisabled": True,
+            "buttonTitle": "播放",
+        })
+        self.assertEqual(result["fetchCalls"], 1)
+
+    def test_11efab_image_slideshow_wraps_and_single_item_does_not_fake_running(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const originalSetTimeout = window.setTimeout;
+              const originalClearTimeout = window.clearTimeout;
+              const timers = [];
+              const cleared = [];
+              const selections = [];
+              let activeState;
+              const image = id => ({
+                id,
+                title: id,
+                filename: `${id}.png`,
+                local_path: `D:/${id}.png`,
+                content_type: 'image'
+              });
+              const configure = () => window.UcpPlaybackController.configure({
+                getState: () => activeState,
+                getSelectedCompletedId: () => selections.at(-1) || '',
+                setSelectedCompletedId: id => { selections.push(String(id || '')); },
+                patchCompletedMetadata: () => false,
+                t: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                esc,
+                frontendAction: () => {},
+                appendLog: () => {},
+                renderCompletedDetail: () => {}
+              });
+              window.fetch = () => Promise.resolve(new Response('', { status: 206 }));
+              window.setTimeout = (callback, delay) => {
+                const timer = { id: timers.length + 1, callback, delay };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = id => { cleared.push(id); };
+              try {
+                activeState = {
+                  completed_items: [
+                    image('single'),
+                    {
+                      id: 'video-only-neighbor',
+                      title: 'video-only-neighbor',
+                      filename: 'video.mp4',
+                      local_path: 'D:/video.mp4',
+                      content_type: 'video'
+                    }
+                  ],
+                  settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': { manual_image_switch: false } }
+                };
+                configure();
+                await window.UcpPlaybackController.playCompleted('single');
+                const button = document.getElementById('playBtn');
+                const single = {
+                  timerCount: timers.length,
+                  buttonDisabled: button.disabled,
+                  buttonTitle: button.title
+                };
+
+                activeState.completed_items.push(image('added-later'));
+                renderFrontendSections(new Set(['completed_items']));
+                const expandedTimer = timers.at(-1);
+                const expanded = {
+                  timerStarted: timers.length === 1,
+                  buttonDisabled: button.disabled,
+                  buttonTitle: button.title
+                };
+
+                activeState.completed_items.pop();
+                renderFrontendSections(new Set(['completed_items']));
+                const contracted = {
+                  timerCleared: cleared.includes(expandedTimer.id),
+                  buttonDisabled: button.disabled,
+                  buttonTitle: button.title
+                };
+
+                activeState = {
+                  completed_items: [
+                    image('image-a'),
+                    {
+                      id: 'video-between-images',
+                      title: 'video-between-images',
+                      filename: 'between.mp4',
+                      local_path: 'D:/between.mp4',
+                      content_type: 'video'
+                    },
+                    image('image-b')
+                  ],
+                  settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': { manual_image_switch: false } }
+                };
+                configure();
+                await window.UcpPlaybackController.playCompleted('image-b');
+                const lastTimer = timers.at(-1);
+                lastTimer.callback();
+                await new Promise(resolve => originalSetTimeout(resolve, 0));
+                return {
+                  single,
+                  expanded,
+                  contracted,
+                  wrappedTo: selections.at(-1),
+                  timerRearmed: timers.at(-1) !== lastTimer
+                };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["single"], {
+            "timerCount": 0,
+            "buttonDisabled": True,
+            "buttonTitle": "播放",
+        })
+        self.assertEqual(result["expanded"], {
+            "timerStarted": True,
+            "buttonDisabled": False,
+            "buttonTitle": "暂停",
+        })
+        self.assertEqual(result["contracted"], {
+            "timerCleared": True,
+            "buttonDisabled": True,
+            "buttonTitle": "播放",
+        })
+        self.assertEqual(result["wrappedTo"], "image-a")
+        self.assertTrue(result["timerRearmed"])
+
     def test_11efb_stale_fullscreen_request_exits_when_current_run_has_no_owner(self):
         self._goto_ready()
 

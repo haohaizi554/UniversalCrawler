@@ -390,6 +390,8 @@ class ApplicationController(
             self.window.sig_switch_preview.connect(self.switch_preview)
         if hasattr(self.window, "sig_auto_next_preview"):
             self.window.sig_auto_next_preview.connect(self.autoplay_next_preview)
+        if hasattr(self.window, "sig_auto_next_image_preview"):
+            self.window.sig_auto_next_image_preview.connect(self.autoplay_next_image_preview)
 
     def _before_media_delete(self, context) -> None:
         publish_media_release_request(

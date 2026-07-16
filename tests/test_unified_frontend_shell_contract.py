@@ -815,8 +815,9 @@ class UnifiedFrontendShellContractTests(_UnifiedFrontendContractTestCase):
         snapshot["queue_items"] = [{"id": "queue-1", "title": "Queued"}]
         snapshot["active_downloads"] = [{"id": "active-1", "title": "Active"}]
         snapshot["completed_items"] = [
-            {"id": "completed-1", "title": "Completed 1"},
-            {"id": "completed-2", "title": "Completed 2"},
+            {"id": "completed-1", "title": "Completed 1", "content_type": "image"},
+            {"id": "completed-video", "title": "Completed video", "content_type": "video"},
+            {"id": "completed-2", "title": "Completed 2", "local_path": "D:/completed-2.webp"},
         ]
         snapshot["failed_items"] = [{"id": "failed-1", "title": "Failed"}]
 
@@ -825,9 +826,23 @@ class UnifiedFrontendShellContractTests(_UnifiedFrontendContractTestCase):
 
         self.assertEqual(shell.row_for_video_id("queue-1"), 0)
         self.assertEqual(shell.row_for_video_id("active-1"), 0)
-        self.assertEqual(shell.row_for_video_id("completed-2"), 1)
+        self.assertEqual(shell.row_for_video_id("completed-2"), 2)
         self.assertEqual(shell.row_for_video_id("failed-1"), 0)
-        self.assertEqual(shell.completed_id_order(), ["completed-1", "completed-2"])
+        self.assertEqual(
+            shell.completed_id_order(),
+            ["completed-1", "completed-video", "completed-2"],
+        )
+        self.assertEqual(shell.completed_image_id_order(), ["completed-1", "completed-2"])
+        self.assertTrue(shell.pages["completed"].media_panel._image_slideshow_available)
+
+        snapshot["completed_items"] = [
+            {"id": "completed-1", "title": "Completed 1", "content_type": "image"},
+            {"id": "completed-video", "title": "Completed video", "content_type": "video"},
+        ]
+        shell.render(snapshot, changed_sections={"completed_items"})
+        self.app.processEvents()
+
+        self.assertFalse(shell.pages["completed"].media_panel._image_slideshow_available)
 
     def test_active_downloads_page_uses_model_view_and_stable_updates(self):
         shell = self._make_shell()

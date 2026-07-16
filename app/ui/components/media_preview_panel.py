@@ -123,6 +123,7 @@ class MediaPreviewPanel(QFrame):
     sig_toggle_fullscreen = pyqtSignal()
     sig_switch_preview = pyqtSignal(int)
     sig_auto_next_preview = pyqtSignal()
+    sig_auto_next_image_preview = pyqtSignal()
     sig_repair_progress = pyqtSignal(str, int, str)
     sig_repair_finished = pyqtSignal(str, str, str, bool, str)
     sig_repair_commit_progress = pyqtSignal(str, int, str)
@@ -167,7 +168,10 @@ class MediaPreviewPanel(QFrame):
         self._fullscreen_restore: tuple[QWidget | None, QVBoxLayout | None, int, int] | None = None
         self._remember_position_enabled = True
         self._autoplay_next_enabled = True
-        self._manual_image_switch = True
+        self._manual_image_switch = False
+        self._image_slideshow_paused = False
+        self._image_slideshow_available = False
+        self._media_mode = "idle"
         self._image_auto_advance_interval_ms = 5000
         self._saved_positions: dict[str, int] = {}
         self._last_position_flush_at: dict[str, float] = {}
@@ -304,6 +308,7 @@ class MediaPreviewPanel(QFrame):
         )
         if self._owns_repair_service:
             self._submit_repair_cache_startup_cleanup()
+        self._sync_media_mode_controls()
 
     def set_language(self, language: str | None) -> None:
         normalized = normalize_language(language)
@@ -331,7 +336,13 @@ class MediaPreviewPanel(QFrame):
         settings = settings or {}
         self._remember_position_enabled = bool(settings.get("remember_position", True))
         self._autoplay_next_enabled = bool(settings.get("autoplay_next", True))
-        self._manual_image_switch = bool(settings.get("manual_image_switch", True))
+        manual_image_switch = bool(settings.get("manual_image_switch", False))
+        manual_setting_changed = manual_image_switch != self._manual_image_switch
+        self._manual_image_switch = manual_image_switch
+        if self._manual_image_switch:
+            self._image_slideshow_paused = True
+        elif manual_setting_changed:
+            self._image_slideshow_paused = False
         try:
             interval_seconds = int(settings.get("image_auto_advance_interval_seconds", 5) or 5)
         except (TypeError, ValueError):
@@ -346,22 +357,30 @@ class MediaPreviewPanel(QFrame):
             self._submit_playback_position_clear()
         self._refresh_image_auto_advance_timer()
 
-    def show_image(self, image_path: str) -> None:
+    def set_image_slideshow_available(self, available: bool) -> None:
+        self._image_slideshow_available = bool(available)
+        self._refresh_image_auto_advance_timer()
+
+    def show_image(self, image_path: str, *, slideshow_available: bool = False) -> None:
+        self.release_media()
+        self._media_mode = "image"
+        self._image_slideshow_available = bool(slideshow_available)
+        self.current_image_path = image_path
         self.vid_container.hide()
         self.img_lbl.show()
-        self.release_media()
-        self.current_image_path = image_path
+        self._reset_video_timeline()
         self.scale_image_to_fit()
         self._refresh_image_auto_advance_timer()
 
     def play_video(self, video_path: str) -> None:
         self._image_auto_advance_timer.stop()
+        self._media_mode = "video"
+        self._image_slideshow_available = False
         self.current_image_path = None
         self.img_lbl.hide()
         self.vid_container.show()
-        self.slider.setRange(0, 0)
-        self.slider.setValue(0)
-        self.lbl_time.setText("00:00")
+        self._reset_video_timeline()
+        self._sync_media_mode_controls()
         self._hide_repair_status()
         self._duration_probe_timer.stop()
 
@@ -392,6 +411,9 @@ class MediaPreviewPanel(QFrame):
     def release_media(self) -> None:
         self.exit_media_fullscreen()
         self._persist_current_playback_position(force=True)
+        self._media_mode = "idle"
+        self._image_slideshow_available = False
+        self.current_image_path = None
         self._active_video_source = None
         self._active_source_path = None
         self._end_emitted_for_source = False
@@ -403,7 +425,9 @@ class MediaPreviewPanel(QFrame):
         self.player.stop()
         self.player.setSource(QUrl())
         self.player.setVideoOutput(None)
-        self._set_play_button_stopped()
+        self.img_lbl.hide()
+        self.vid_container.show()
+        self._reset_video_timeline()
         self._hide_repair_status()
         self._schedule_pending_cache_cleanup()
         self._refresh_image_auto_advance_timer()
@@ -528,6 +552,14 @@ class MediaPreviewPanel(QFrame):
         self.video_item.setSize(QSizeF(size.width(), size.height()))
 
     def toggle_play(self) -> None:
+        if self._media_mode == "image":
+            if self._manual_image_switch:
+                return
+            self._image_slideshow_paused = not self._image_slideshow_paused
+            self._refresh_image_auto_advance_timer()
+            return
+        if self._media_mode != "video":
+            return
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
             self._set_play_button_stopped()
@@ -742,12 +774,53 @@ class MediaPreviewPanel(QFrame):
         if not hasattr(self, "_image_auto_advance_timer"):
             return
         self._image_auto_advance_timer.stop()
-        if self.current_image_path and not self._manual_image_switch and self.img_lbl.isVisible():
+        if (
+            self._media_mode == "image"
+            and self.current_image_path
+            and self._image_slideshow_available
+            and not self._manual_image_switch
+            and not self._image_slideshow_paused
+            and self.img_lbl.isVisible()
+        ):
             self._image_auto_advance_timer.start()
+        self._sync_media_mode_controls()
 
     def _on_image_auto_advance_timeout(self) -> None:
-        if self.current_image_path and not self._manual_image_switch:
-            self.sig_switch_preview.emit(1)
+        if (
+            self.current_image_path
+            and self._image_slideshow_available
+            and not self._manual_image_switch
+            and not self._image_slideshow_paused
+        ):
+            self.sig_auto_next_image_preview.emit()
+
+    def _reset_video_timeline(self) -> None:
+        self.slider.setRange(0, 0)
+        self.slider.setValue(0)
+        self.lbl_time.setText("00:00")
+
+    def _sync_media_mode_controls(self) -> None:
+        if not hasattr(self, "btn_play"):
+            return
+        is_video = self._media_mode == "video"
+        self.slider.setVisible(is_video)
+        self.lbl_time.setVisible(is_video)
+        if self._media_mode == "image":
+            self.btn_play.setEnabled(not self._manual_image_switch and self._image_slideshow_available)
+            if self._image_auto_advance_timer.isActive():
+                self._set_play_button_paused()
+            else:
+                self._set_play_button_stopped()
+            return
+        if is_video:
+            self.btn_play.setEnabled(True)
+            if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self._set_play_button_paused()
+            else:
+                self._set_play_button_stopped()
+            return
+        self.btn_play.setEnabled(False)
+        self._set_play_button_stopped()
 
     def on_player_error(self, _error, _message: str = "") -> None:
         self._start_repair_if_seek_unavailable(force=True, defer_for_cache=True)

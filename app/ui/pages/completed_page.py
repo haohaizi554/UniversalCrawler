@@ -510,8 +510,11 @@ class CompletedPage(PageFrame):
         action_width = 80
         return [title_width, time_width, duration_width, format_width, action_width]
 
-    def show_image(self, image_path: str) -> None:
-        self.media_panel.show_image(image_path)
+    def show_image(self, image_path: str, *, slideshow_available: bool = False) -> None:
+        self.media_panel.show_image(image_path, slideshow_available=slideshow_available)
+
+    def set_image_slideshow_available(self, available: bool) -> None:
+        self.media_panel.set_image_slideshow_available(available)
 
     def play_video(self, video_path: str) -> None:
         self.media_panel.play_video(video_path)

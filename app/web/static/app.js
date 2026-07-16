@@ -522,6 +522,7 @@ function renderFrontendSections(sections) {
   if (sections.has("settings_snapshot")) {
     syncAppearanceFromSettings();
     syncPlatformSourceFromSettings();
+    playbackControllerService().rescheduleImageAutoAdvance();
     if ((document.documentElement.dataset.language || "zh-CN") !== previousLanguage) {
       renderAll();
       return;
@@ -531,6 +532,7 @@ function renderFrontendSections(sections) {
     rebuildCompatibilityState();
     renderCounts();
   }
+  if (sections.has("completed_items")) playbackControllerService().rescheduleImageAutoAdvance();
   if (sections.has("queue_items") && currentPage === "queue") renderQueue();
   if (sections.has("settings_snapshot") && currentPage === "queue" && !sections.has("queue_items")) renderQueue();
   const shouldRenderActive =

@@ -798,6 +798,16 @@ class MediaHostControllerMixin:
             return
         self._switch_preview(1, wrap=False, auto_advance=True)
 
+    def autoplay_next_image_preview(self) -> None:
+        """图片轮播仅在图片项之间循环，不切入视频。"""
+        host = self._host()
+        anchor_id = self._get_current_playing_id() or host.get_selected_video_id()
+        next_video_id = host.get_adjacent_image_id(anchor_id, 1, wrap=True)
+        if not next_video_id or next_video_id == anchor_id:
+            return
+        host.select_video_by_id(next_video_id)
+        self.play_video(next_video_id)
+
     def _switch_preview(self, direction: int, *, wrap: bool, auto_advance: bool = False) -> None:
         host = self._host()
         anchor_id = self._get_current_playing_id() or host.get_selected_video_id()

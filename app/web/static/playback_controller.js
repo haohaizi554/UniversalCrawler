@@ -5,8 +5,12 @@
     operation: 0,
     pendingSourceId: "",
     currentPlayingId: "",
+    mediaKind: "idle",
     isFullscreenMode: false,
     imageAutoAdvanceTimer: null,
+    imageSlideshowPaused: false,
+    imageManualSwitch: false,
+    imageIntervalMs: 5000,
     fullscreenRequest: null,
     fullscreenOwner: null,
     ownedListeners: [],
@@ -21,8 +25,12 @@
     state.operation = 0;
     state.pendingSourceId = "";
     state.currentPlayingId = "";
+    state.mediaKind = "idle";
     state.isFullscreenMode = false;
     state.imageAutoAdvanceTimer = null;
+    state.imageManualSwitch = shouldManualSwitchImages();
+    state.imageIntervalMs = imageAutoAdvanceIntervalMs();
+    state.imageSlideshowPaused = state.imageManualSwitch;
     state.fullscreenRequest = null;
     state.fullscreenOwner = null;
     state.ownedListeners = [];
@@ -104,8 +112,27 @@
       .filter(id => id !== undefined && id !== null && String(id));
   }
 
+  function completedImagePreviewOrder() {
+    return (currentState().completed_items || [])
+      .filter(item => playbackStateService().isImageItem(item))
+      .map(item => item.id)
+      .filter(id => id !== undefined && id !== null && String(id));
+  }
+
   function adjacentCompletedId(currentId, direction, wrap = true) {
     const order = completedPreviewOrder();
+    if (!order.length) return "";
+    const normalized = String(currentId || "");
+    const index = order.findIndex(id => String(id) === normalized);
+    if (index < 0) return direction >= 0 ? order[0] : order[order.length - 1];
+    let nextIndex = index + (direction >= 0 ? 1 : -1);
+    if (wrap) nextIndex = (nextIndex + order.length) % order.length;
+    if (nextIndex < 0 || nextIndex >= order.length) return "";
+    return order[nextIndex];
+  }
+
+  function adjacentCompletedImageId(currentId, direction, wrap = true) {
+    const order = completedImagePreviewOrder();
     if (!order.length) return "";
     const normalized = String(currentId || "");
     const index = order.findIndex(id => String(id) === normalized);
@@ -171,7 +198,8 @@
 
   function scheduleImageAutoAdvance(id) {
     clearImageAutoAdvanceTimer();
-    if (!id || shouldManualSwitchImages()) return;
+    if (!id || state.imageManualSwitch || state.imageSlideshowPaused) return;
+    if (completedImagePreviewOrder().length <= 1) return;
     const generation = state.generation;
     const operation = state.operation;
     const timer = { id: null, generation, operation, sourceId: String(id) };
@@ -179,14 +207,21 @@
     timer.id = setTimeout(() => {
       if (state.imageAutoAdvanceTimer !== timer) return;
       state.imageAutoAdvanceTimer = null;
-      if (isCurrentOperation(generation, operation, id)) autoplayNextPreview();
-    }, imageAutoAdvanceIntervalMs());
+      if (isCurrentOperation(generation, operation, id)) autoplayNextImagePreview();
+    }, state.imageIntervalMs);
   }
 
   function rescheduleImageAutoAdvance() {
+    const manualImageSwitch = shouldManualSwitchImages();
+    const manualSettingChanged = manualImageSwitch !== state.imageManualSwitch;
+    state.imageManualSwitch = manualImageSwitch;
+    state.imageIntervalMs = imageAutoAdvanceIntervalMs();
+    if (state.imageManualSwitch) state.imageSlideshowPaused = true;
+    else if (manualSettingChanged) state.imageSlideshowPaused = false;
     const item = completedItemById(state.currentPlayingId);
     if (item && playbackStateService().isImageItem(item)) scheduleImageAutoAdvance(state.currentPlayingId);
     else clearImageAutoAdvanceTimer();
+    updateMediaControls();
   }
 
   function removePlaybackPosition(id) {
@@ -284,22 +319,34 @@
   function updateMediaControls(player = byId("videoPlayer")) {
     const slider = byId("seekSlider");
     const label = byId("timeLabel");
-    const hasVideo = mediaHasVideoSource(player);
+    const isImage = state.mediaKind === "image";
+    const imageCanAdvance = completedImagePreviewOrder().length > 1;
+    const hasVideo = state.mediaKind === "video" && mediaHasVideoSource(player);
     const canStartPreview = !!(state.currentPlayingId || getSelectedCompletedId());
     const duration = hasVideo ? mediaDuration(player) : 0;
     const current = hasVideo ? mediaCurrentTime(player) : 0;
     const dragging = slider && slider.dataset.dragging === "1";
     if (slider) {
+      slider.hidden = !hasVideo;
       slider.disabled = !hasVideo || duration <= 0;
       slider.max = String(Math.max(0, Math.floor(duration)));
       if (!dragging) slider.value = String(Math.min(Math.floor(current), Math.floor(duration || current)));
     }
     if (label) {
+      label.hidden = !hasVideo;
       label.textContent = hasVideo
         ? `${playbackStateService().fmtTime(current)} / ${playbackStateService().fmtTime(duration)}`
         : "00:00";
     }
-    setPlayButtonState(hasVideo && !player.paused && !player.ended, !hasVideo && !canStartPreview);
+    const imagePlaying = isImage
+      && imageCanAdvance
+      && !state.imageManualSwitch
+      && !state.imageSlideshowPaused
+      && !!state.imageAutoAdvanceTimer;
+    const playDisabled = isImage
+      ? state.imageManualSwitch || !state.currentPlayingId || !imageCanAdvance
+      : (!hasVideo && !canStartPreview);
+    setPlayButtonState(imagePlaying || (hasVideo && !player.paused && !player.ended), playDisabled);
     updateNavBtnsState();
     updateFullscreenButtonState();
   }
@@ -475,6 +522,7 @@
     state.pendingSourceId = "";
     state.currentPlayingId = sourceId;
     if (!shouldUseBuiltinPlayer()) {
+      state.mediaKind = "idle";
       clearImageAutoAdvanceTimer();
       updateMediaControls();
       requireDependency("frontendAction")("open_file", { id: sourceId });
@@ -484,6 +532,7 @@
     const placeholder = byId("previewArea");
     if (!player || !placeholder) return false;
     if (playbackStateService().isImageItem(item)) {
+      state.mediaKind = "image";
       safelyResetPlayer(player);
       placeholder.innerHTML = `<img class="preview-image" src="${mediaUrl(sourceId)}" alt="${esc(item.title || item.filename || "")}" />`;
       placeholder.style.display = "flex";
@@ -492,6 +541,7 @@
       return true;
     }
     clearImageAutoAdvanceTimer();
+    state.mediaKind = "video";
     placeholder.textContent = "";
     player.src = mediaUrl(sourceId);
     setupPlayerEvents(player, sourceId, generation, operation);
@@ -520,6 +570,20 @@
     if (nextId) void playCompleted(nextId);
   }
 
+  function autoplayNextImagePreview() {
+    const sourceId = state.currentPlayingId;
+    const nextId = adjacentCompletedImageId(sourceId, 1, true);
+    if (!nextId || String(nextId) === String(sourceId)) {
+      updateMediaControls();
+      return;
+    }
+    void playCompleted(nextId).then(played => {
+      if (played || state.mediaKind !== "image" || state.currentPlayingId !== sourceId) return;
+      state.imageSlideshowPaused = true;
+      updateMediaControls();
+    });
+  }
+
   function switchPreview(direction) {
     const current = state.currentPlayingId || getSelectedCompletedId();
     const nextId = adjacentCompletedId(current, Number(direction) || 1, true);
@@ -528,6 +592,17 @@
 
   function togglePlay() {
     const player = byId("videoPlayer");
+    if (state.mediaKind === "image") {
+      if (state.imageManualSwitch) {
+        updateMediaControls(player);
+        return;
+      }
+      state.imageSlideshowPaused = !state.imageSlideshowPaused;
+      if (state.imageSlideshowPaused) clearImageAutoAdvanceTimer();
+      else scheduleImageAutoAdvance(state.currentPlayingId);
+      updateMediaControls(player);
+      return;
+    }
     if (!mediaHasVideoSource(player)) {
       const id = state.currentPlayingId || getSelectedCompletedId();
       if (id) void playCompleted(id);
@@ -640,6 +715,7 @@
       placeholder.style.display = "flex";
     }
     state.currentPlayingId = "";
+    state.mediaKind = "idle";
     updateMediaControls(player);
   }
 
@@ -696,6 +772,7 @@
     }
     state.currentPlayingId = "";
     state.pendingSourceId = "";
+    state.mediaKind = "idle";
     state.isFullscreenMode = false;
     dependencies = Object.freeze({});
   }

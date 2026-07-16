@@ -497,6 +497,20 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.host.select_video_by_id.assert_called_once_with(second.id)
         controller.play_video.assert_called_once_with(second.id)
 
+    def test_image_slideshow_selects_next_image_in_host_order(self):
+        controller = _DummyMediaHostController()
+        first = VideoItem(url="", title="one", source="local")
+        second = VideoItem(url="", title="two", source="local")
+        controller.current_playing_id = first.id
+        controller.host.get_adjacent_image_id.return_value = second.id
+        controller.play_video = Mock()
+
+        controller.autoplay_next_image_preview()
+
+        controller.host.get_adjacent_image_id.assert_called_once_with(first.id, 1, wrap=True)
+        controller.host.select_video_by_id.assert_called_once_with(second.id)
+        controller.play_video.assert_called_once_with(second.id)
+
     def test_autoplay_next_preview_stops_at_end_without_wrap(self):
         controller = _DummyMediaHostController()
         current = VideoItem(url="", title="one", source="local")
