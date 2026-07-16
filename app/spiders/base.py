@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import os
+import platform
 import urllib.parse
 from collections.abc import Callable
 
@@ -46,6 +47,7 @@ class BaseSpider(threading.Thread):
         self._playwright_browser = None
         self._playwright_owner_thread_id: int | None = None
         self._playwright_pw = None
+        self._playwright_pw_owner_thread_id: int | None = None
         self._selection_epoch = 0
         self._interrupt_requested = False
 
@@ -150,11 +152,13 @@ class BaseSpider(threading.Thread):
     def _track_playwright_instance(self, playwright) -> None:
         with self._playwright_guard():
             self._playwright_pw = playwright
+            self._playwright_pw_owner_thread_id = threading.get_ident()
 
     def _clear_playwright_instance(self, playwright=None) -> None:
         with self._playwright_guard():
             if playwright is None or self._playwright_pw is playwright:
                 self._playwright_pw = None
+                self._playwright_pw_owner_thread_id = None
 
     def _close_tracked_playwright_browser(self, browser=None) -> None:
         """在 stop 路径中关闭浏览器；异常只记录，不阻断线程收尾。"""
@@ -162,6 +166,15 @@ class BaseSpider(threading.Thread):
             browser = browser or self._playwright_browser
             if browser is None:
                 return
+            owner_thread_id = (
+                self._playwright_owner_thread_id
+                if browser is self._playwright_browser
+                else None
+            )
+        # Playwright 的同步 API 由 greenlet 驱动，只能在创建它的线程调用。
+        # stop() 可能来自 UI 线程；此时仅保留取消标记，让 Spider 线程在 finally 中收尾。
+        if owner_thread_id is not None and owner_thread_id != threading.get_ident():
+            return
         try:
             browser.close()
         except Exception as exc:
@@ -179,6 +192,13 @@ class BaseSpider(threading.Thread):
             playwright = playwright or self._playwright_pw
             if playwright is None:
                 return
+            owner_thread_id = (
+                self._playwright_pw_owner_thread_id
+                if playwright is self._playwright_pw
+                else None
+            )
+        if owner_thread_id is not None and owner_thread_id != threading.get_ident():
+            return
         try:
             playwright.stop()
         except Exception as exc:
@@ -603,6 +623,31 @@ class BaseSpider(threading.Thread):
         if proxy_server:
             kwargs["proxy"] = {"server": proxy_server}
         return kwargs
+
+    @staticmethod
+    def _playwright_chromium_user_agent(browser, fallback: str = "") -> str:
+        """按实际 Chromium 主版本生成 UA，避免随机 UA 与 JS 引擎特征互相矛盾。"""
+        version = getattr(browser, "version", "")
+        if callable(version):
+            try:
+                version = version()
+            except Exception:
+                version = ""
+        major = str(version or "").split(".", 1)[0]
+        if not major.isdigit():
+            return str(fallback or "")
+
+        system = platform.system().lower()
+        if system == "darwin":
+            platform_token = "Macintosh; Intel Mac OS X 10_15_7"
+        elif system == "linux":
+            platform_token = "X11; Linux x86_64"
+        else:
+            platform_token = "Windows NT 10.0; Win64; x64"
+        return (
+            f"Mozilla/5.0 ({platform_token}) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+        )
 
     def _playwright_context_kwargs(
         self,

@@ -320,19 +320,12 @@ def resolve_via_doh(host: str, family: int) -> tuple[tuple[str, ...], float]:
 
 def chromium_resilient_dns_args() -> tuple[str, str]:
     """生成 Chromium 增强引导 DoH 参数，使浏览器不依赖已故障的系统 DNS。"""
-    configuration = {
-        "servers": [
-            {
-                "template": template,
-                "endpoints": [{"ips": list(bootstrap_ips)}],
-            }
-            for template, bootstrap_ips in _CHROMIUM_DOH_SERVERS
-        ]
-    }
-    serialized = json.dumps(configuration, ensure_ascii=True, separators=(",", ":"))
+    # Chromium 接受的是空格分隔的 URI template，而不是 Python DoH 池使用的
+    # bootstrap JSON。传入 JSON 会被浏览器当成无效模板，系统 DNS 故障时仍会白屏。
+    templates = " ".join(template for template, _bootstrap_ips in _CHROMIUM_DOH_SERVERS)
     return (
         "--dns-over-https-mode=automatic",
-        f"--dns-over-https-templates={serialized}",
+        f"--dns-over-https-templates={templates}",
     )
 
 

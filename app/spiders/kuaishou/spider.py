@@ -26,6 +26,12 @@ class KuaishouSpider(BaseSpider):
     LIST_READY_TIMEOUT_MS = 30000
     PROFILE_SESSION_URL = "https://www.kuaishou.com/rest/v/profile/get"
     PROFILE_SESSION_TIMEOUT_MS = 8000
+    NAVIGATION_ATTEMPTS = 3
+    NETWORK_ERROR_MARKERS = (
+        "网络异常，稍后重试",
+        "网络异常",
+        "请检查网络",
+    )
     LOGIN_PROMPT_SELECTORS = (
         ".sidebar-login-button",
         ".login-btn",
@@ -82,8 +88,12 @@ class KuaishouSpider(BaseSpider):
 
     def _create_browser_context(self, browser, auth_file: str):
         """统一创建上下文，确保有头和无头模式恢复完全相同的 storage_state。"""
+        # fake-useragent 可能返回远旧于 Playwright 内核的版本，UA 与 JS 能力不一致会触发风控。
+        runtime_user_agent = self._playwright_chromium_user_agent(browser, self._user_agent())
+        if runtime_user_agent:
+            self.user_agent = runtime_user_agent
         context_kwargs = self._playwright_context_kwargs(
-            user_agent=self._user_agent(),
+            user_agent=runtime_user_agent or self._user_agent(),
             viewport={"width": 1280, "height": 800},
             referer="https://www.kuaishou.com/",
         )
@@ -118,8 +128,52 @@ class KuaishouSpider(BaseSpider):
             self.log(f"⚠️ 快手登录态保存失败: {exc}")
             return False
 
-    def _goto_with_retry(self, page, url: str, *, description: str, attempts: int = 2) -> bool:
-        """显式重试单次导航，并在每次尝试之间检查停止请求。"""
+    def _navigation_error_reason(self, page) -> str | None:
+        """识别 Playwright 错误页和快手“网络异常”占位页。"""
+        try:
+            current_url = str(getattr(page, "url", "") or "").strip()
+        except PlaywrightError:
+            return "page_unavailable"
+        if not current_url or current_url == "about:blank":
+            return "blank_page"
+        try:
+            current_scheme = urllib.parse.urlsplit(current_url).scheme.lower()
+        except ValueError:
+            return "invalid_page_url"
+        if current_scheme == "chrome-error":
+            return "browser_network_error"
+        try:
+            body_text = page.locator("body").inner_text(timeout=1500)
+        except (PlaywrightError, AttributeError, TypeError, ValueError):
+            return None
+        if any(marker in str(body_text or "") for marker in self.NETWORK_ERROR_MARKERS):
+            return "site_network_error"
+        return None
+
+    def _retry_network_error_in_place(self, page) -> bool:
+        """优先点击快手错误页自己的刷新按钮，避免重复 goto 破坏 SPA 内部导航。"""
+        for selector in ("button:has-text('刷新')", "[role='button']:has-text('刷新')"):
+            try:
+                refresh = page.locator(selector).first
+                if not self._locator_visible(refresh):
+                    continue
+                refresh.click(timeout=2000)
+                if not self.interruptible_page_wait(page, 2500):
+                    return False
+                return self._navigation_error_reason(page) is None
+            except PlaywrightError:
+                continue
+        return False
+
+    def _goto_with_retry(
+        self,
+        page,
+        url: str,
+        *,
+        description: str,
+        attempts: int = NAVIGATION_ATTEMPTS,
+    ) -> bool:
+        """重试导航，并把已渲染的站点网络错误页也视为失败。"""
         target_url = url.strip().strip("`")
         last_error = None
         for attempt in range(1, attempts + 1):
@@ -131,12 +185,22 @@ class KuaishouSpider(BaseSpider):
                     wait_until="domcontentloaded",
                 ):
                     return False
-                self.interruptible_page_wait(page, 1500)
-                return True
+                if not self.interruptible_page_wait(page, 1500):
+                    return False
+                error_reason = self._navigation_error_reason(page)
+                if error_reason is None:
+                    return True
+                last_error = PlaywrightError(error_reason)
+                self.log(
+                    f"⚠️ {description}第 {attempt}/{attempts} 次加载返回网络错误页"
+                )
+                if attempt < attempts and self._retry_network_error_in_place(page):
+                    return True
             except PlaywrightError as exc:
                 last_error = exc
                 self.log(f"⚠️ {description}失败，第 {attempt}/{attempts} 次重试: {exc}")
-                self.interruptible_page_wait(page, 1000)
+            if attempt < attempts and not self.interruptible_page_wait(page, min(1000 * attempt, 2500)):
+                return False
         if last_error:
             self.log(f"❌ {description}失败: {last_error}")
         return False
@@ -474,6 +538,11 @@ class KuaishouSpider(BaseSpider):
             return self._persist_authenticated_state(context, auth_file)
         except PlaywrightError:
             self.log("⚠️ 首页访问或登录态检查失败，继续尝试在当前页面恢复登录")
+            navigation_error = self._navigation_error_reason(page)
+            if navigation_error is not None:
+                # 错误页上不会出现可用的登录流程，继续等待只会让用户看到空白窗口直至超时。
+                self.log("❌ 快手页面连续加载失败，已停止本次登录等待；请稍后重试")
+                return False
             if os.path.exists(auth_file):
                 self.log("⚠️ 本地 Cookie 已加载，但当前页面未识别为已登录，可能已失效")
             if not allow_manual_login:
@@ -733,18 +802,36 @@ class KuaishouSpider(BaseSpider):
 
     def _resolve_active_page(self, page, context):
         """点击可能新开标签页时，解析当前仍存活的活动页面。"""
+        def usable(candidate, *, allow_blank: bool = False) -> bool:
+            try:
+                if not candidate or candidate.is_closed():
+                    return False
+                if allow_blank:
+                    return True
+                current_url = str(getattr(candidate, "url", "") or "").strip()
+                return bool(
+                    current_url
+                    and current_url != "about:blank"
+                    and urllib.parse.urlsplit(current_url).scheme.lower() != "chrome-error"
+                )
+            except (PlaywrightError, AttributeError, TypeError, ValueError):
+                return False
+
         try:
-            if page and not page.is_closed():
+            if usable(page):
                 return page
         except PlaywrightError:
             pass
         for candidate in reversed(list(getattr(context, "pages", []) or [])):
             try:
-                if candidate and not candidate.is_closed():
+                if usable(candidate):
                     candidate.bring_to_front()
                     return candidate
             except PlaywrightError:
                 continue
+        # 页面尚未开始导航时仍返回原对象，调用方可在同一标签页继续 goto。
+        if usable(page, allow_blank=True):
+            return page
         return None
 
     def _navigate_to_target_page(self, page, context):
