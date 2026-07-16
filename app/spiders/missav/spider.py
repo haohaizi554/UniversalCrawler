@@ -2,12 +2,13 @@
 
 import re
 import urllib.parse
+
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
+
 from app.config import DEFAULT_USER_AGENT
 from app.spiders.base import BaseSpider
 from app.spiders.missav.parser import MissAVParser
 from app.spiders.missav.task_builder import MissAVTaskBuilder
-from app.utils.user_agents import resolve_user_agent
 from shared.runtime_options import DomainPolicyViolation
 
 class MissAVSpider(BaseSpider):
@@ -20,6 +21,23 @@ class MissAVSpider(BaseSpider):
     M3U8_SNIFF_SECONDS = 45
     PAGE_HOSTS = ("missav.ai",)
     URL_TRAILING_PUNCTUATION = " \t\r\n`'\"，。！？；：、,.!?;:)]}）】》>"
+    CLOUDFLARE_MIN_WAIT_MS = 120000
+    SYSTEM_BROWSER_CHANNELS = (("chrome", "Chrome"), ("msedge", "Edge"))
+    CLOUDFLARE_UNSUPPORTED_MARKERS = (
+        "浏览器不支持",
+        "browser not supported",
+        "browser is not supported",
+        "unsupported browser",
+        "update your browser",
+    )
+    CLOUDFLARE_PENDING_MARKERS = (
+        "just a moment",
+        "请稍候",
+        "正在进行安全验证",
+        "checking your browser",
+        "security verification",
+        "attention required",
+    )
 
     def __init__(self, keyword: str, config: dict):
         """配置候选解析器和 HLS 下载任务装配器。"""
@@ -32,6 +50,84 @@ class MissAVSpider(BaseSpider):
         if not self._url_matches_hosts(url, self.PAGE_HOSTS):
             raise DomainPolicyViolation("MissAV 页面链接不属于受支持的平台域名")
         return self._public_domain_policy_engine().require_public_url(url)
+
+    def _launch_challenge_browser(self, playwright, *, headless: bool):
+        """人工验证优先使用系统稳定版浏览器，缺失时再退回随包内核。"""
+        launch_kwargs = self._playwright_launch_kwargs(
+            headless=headless,
+            proxy=(getattr(self, "config", {}) or {}).get("proxy"),
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        if not headless:
+            for channel, label in self.SYSTEM_BROWSER_CHANNELS:
+                try:
+                    browser = playwright.chromium.launch(**launch_kwargs, channel=channel)
+                except PlaywrightError:
+                    continue
+                self.log(f"🌐 MissAV 人工验证使用系统 {label} {browser.version}")
+                return browser
+
+        browser = playwright.chromium.launch(**launch_kwargs)
+        if not headless:
+            self.log(
+                f"⚠️ 未找到可用的系统 Chrome/Edge，改用内置浏览器 {browser.version}；"
+                "Cloudflare 可能拒绝过旧内核"
+            )
+        return browser
+
+    def _create_challenge_context(self, browser):
+        """保留浏览器原生 UA/Web API，避免挑战看到互相矛盾的伪装指纹。"""
+        context_kwargs = self._playwright_context_kwargs(
+            user_agent="",
+            referer="https://missav.ai/",
+            viewport={"width": 1280, "height": 800},
+        )
+        # 通用构造器会生成轮换 UA；MissAV 的 Cloudflare 挑战要求它与真实内核一致。
+        context_kwargs.pop("user_agent", None)
+        # 不注入全局 stealth.js：其中 Canvas/WebGL 改写会让挑战环境失去官方支持。
+        return browser.new_context(**context_kwargs)
+
+    def _cloudflare_challenge_state(self, page) -> str:
+        """区分正常页面、等待中的挑战和明确拒绝当前浏览器的页面。"""
+        try:
+            title = str(page.title() or "")
+        except (PlaywrightError, TypeError, AttributeError):
+            title = ""
+        try:
+            body_text = str(page.locator("body").inner_text(timeout=1000) or "")
+        except (PlaywrightError, TypeError, AttributeError):
+            body_text = ""
+        challenge_text = f"{title}\n{body_text}".lower()
+        if any(marker in challenge_text for marker in self.CLOUDFLARE_UNSUPPORTED_MARKERS):
+            return "unsupported"
+        if any(marker in challenge_text for marker in self.CLOUDFLARE_PENDING_MARKERS):
+            return "pending"
+        return "clear"
+
+    def _wait_for_cloudflare_challenge(self, page, *, timeout_ms: int) -> bool:
+        """可中断地等待人工/自动验证完成，并对不支持页给出明确诊断。"""
+        state = self._cloudflare_challenge_state(page)
+        if state == "clear":
+            return True
+        if state == "unsupported":
+            self.log("❌ Cloudflare 不支持当前浏览器环境，请更新系统 Chrome/Edge 后重试")
+            return False
+
+        self.log("🛡️ 检测到 Cloudflare，请在浏览器中完成人工验证...")
+        remaining_ms = max(self.CLOUDFLARE_MIN_WAIT_MS, int(timeout_ms or 0))
+        while remaining_ms > 0:
+            if not self.interruptible_sleep(1):
+                return False
+            remaining_ms -= 1000
+            state = self._cloudflare_challenge_state(page)
+            if state == "clear":
+                self.log("✅ Cloudflare 验证已通过")
+                return True
+            if state == "unsupported":
+                self.log("❌ Cloudflare 不支持当前浏览器环境，请更新系统 Chrome/Edge 后重试")
+                return False
+        self.log("❌ Cloudflare 验证等待超时")
+        return False
 
     def run(self):
         """执行候选扫描、版本筛选、用户选择和详情页 HLS 嗅探。"""
@@ -47,13 +143,7 @@ class MissAVSpider(BaseSpider):
             }
             self.priority_list = priority_map.get(priority_text, priority_map["中文字幕优先"])
             self.log(f"⚙️ 偏好设置: 单体={enable_individual}, 优先级={self.priority_list}")
-            configured_ua = str(self.config.get("ua") or "").strip()
-            my_ua = resolve_user_agent(
-                "missav",
-                self.config,
-                configured_user_agent=configured_ua or DEFAULT_USER_AGENT,
-                default_user_agent=DEFAULT_USER_AGENT,
-            )
+            my_ua = DEFAULT_USER_AGENT
             target_url = ""
             is_single_video_mode = False
             is_search_mode = False
@@ -84,41 +174,21 @@ class MissAVSpider(BaseSpider):
                 return
             with sync_playwright() as p:
                 self._track_playwright_instance(p)
-                browser = p.chromium.launch(
-                    **self._playwright_launch_kwargs(
-                        headless=self._browser_headless(),
-                        proxy=(getattr(self, "config", {}) or {}).get("proxy"),
-                        args=['--disable-blink-features=AutomationControlled'],
-                    )
-                )
+                browser = self._launch_challenge_browser(p, headless=self._browser_headless())
                 self._track_playwright_browser(browser)
                 try:
-                    context_kwargs = self._playwright_context_kwargs(
-                        user_agent=my_ua,
-                        referer="https://missav.ai/",
-                        viewport={"width": 1280, "height": 800},
-                    )
-                    context = browser.new_context(**context_kwargs)
-                    self._apply_stealth_to_context(context)
+                    context = self._create_challenge_context(browser)
                     page = context.new_page()
-                    if not configured_ua:
-                        try:
-                            my_ua = str(page.evaluate("navigator.userAgent") or my_ua)
-                        except (PlaywrightError, TypeError, AttributeError):
-                            pass
+                    try:
+                        my_ua = str(page.evaluate("navigator.userAgent") or my_ua)
+                    except (PlaywrightError, TypeError, AttributeError):
+                        pass
                     self.log("🚀 正在访问页面...")
                     browser_timeout_ms = self._configured_timeout_ms(default=60)
                     if not self.interruptible_playwright_goto(page, target_url, timeout=browser_timeout_ms):
                         return
-                    if "Just a moment" in page.title():
-                        self.log("🛡️ 检测到 Cloudflare，等待通过...")
-                        self.interruptible_sleep(5)
-                        if not self.interruptible_wait_for_load_state(
-                            page,
-                            "domcontentloaded",
-                            timeout=browser_timeout_ms,
-                        ):
-                            return
+                    if not self._wait_for_cloudflare_challenge(page, timeout_ms=browser_timeout_ms):
+                        return
                     # 搜索页可能优先返回演员卡片，转入其主页后才能扫描完整作品列表。
                     if is_search_mode and self.is_running:
                         try:
@@ -145,6 +215,8 @@ class MissAVSpider(BaseSpider):
                                 new_url = self.parser.inject_url_params(current_url, enable_individual)
                                 if new_url != current_url:
                                     if not self.interruptible_playwright_goto(page, new_url, timeout=browser_timeout_ms):
+                                        return
+                                    if not self._wait_for_cloudflare_challenge(page, timeout_ms=browser_timeout_ms):
                                         return
                         except PlaywrightError:
                             pass
@@ -179,6 +251,8 @@ class MissAVSpider(BaseSpider):
                                 try:
                                     chinese_url_no_page = re.sub(r'[?&]page=\d+', '', chinese_url)
                                     if not self.interruptible_playwright_goto(page, chinese_url_no_page, timeout=browser_timeout_ms):
+                                        return
+                                    if not self._wait_for_cloudflare_challenge(page, timeout_ms=browser_timeout_ms):
                                         return
 
                                     chinese_data = {}
@@ -277,8 +351,8 @@ class MissAVSpider(BaseSpider):
                         try:
                             if not self.interruptible_playwright_goto(page, target_page_url, timeout=browser_timeout_ms):
                                 break
-                            if "Just a moment" in page.title():
-                                self.interruptible_sleep(10)
+                            if not self._wait_for_cloudflare_challenge(page, timeout_ms=browser_timeout_ms):
+                                break
                             try:
                                 self.interruptible_wait_for_selector(page, ".plyr", timeout=self.PLAYER_READY_TIMEOUT_MS)
                                 if not self.is_running or self.interrupt_requested:
