@@ -17,7 +17,7 @@ from app.core.download_manager import DownloadManager
 from app.core.media_filter import IMAGE_EXTENSIONS as CORE_IMAGE_EXTENSIONS, should_skip_for_video_only
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
-from app.exceptions import ConfigValidationError, FileOperationError, MediaScanError
+from app.exceptions import ConfigValidationError, FileOperationError
 from app.models import VideoItem
 from app.services.file_service import MediaDeleteMutationPlan, MediaLibraryService
 from app.services.frontend_event_aggregator import FrontendEventPriority, priority_for_topic, sections_for_topic
@@ -28,6 +28,7 @@ from app.web.controller_config_service import (
     ConfigWriteError,
     WebControllerConfigService,
 )
+from app.web.media_scan_runtime import WebMediaScanRuntimeMixin
 
 DELTA_ONLY_LEGACY_TOPICS = frozenset(
     {
@@ -36,6 +37,7 @@ DELTA_ONLY_LEGACY_TOPICS = frozenset(
         "videos.update",
         "log",
         "logs.append",
+        "videos.reconcile",
     }
 )
 
@@ -272,7 +274,7 @@ class WebSocketBridge:
             return
         callback()
 
-class WebController(ControllerSessionMixin, MediaLibraryMixin):
+class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibraryMixin):
     """Web 端核心控制器，复用桌面下载/采集逻辑，并把状态输出为 WebSocket 快照。"""
 
     MAX_CONCURRENT_API_OPS = 16
@@ -319,6 +321,14 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         self._pending_selection_strategy = None  # 由 /api/crawl/start 设置，供 _bind_spider_signals 使用
         self.max_concurrent_api_ops = self.MAX_CONCURRENT_API_OPS
         self._api_operation_semaphore = asyncio.Semaphore(self.max_concurrent_api_ops)
+        self._media_scan_lock = asyncio.Lock()
+        self._external_media_scan_task: asyncio.Task | None = None
+        self._external_media_rescan_pending = False
+        self._media_directory_watch_closed = False
+        self._media_directory_watch_handle = None
+        if loop is not None and loop.is_running():
+            self._start_media_directory_watch()
+
     @property
     def dl_manager(self) -> DownloadManager:
         """延迟创建 DownloadManager，避免空闲 Web 会话启动下载线程与清理逻辑。"""
@@ -442,6 +452,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         if item:
             content_type = item.meta.get("content_type", "") if item.meta else ""
             title = item.title
+        self._refresh_media_directory_watch_paths(self.current_save_dir)
         self.bridge.emit("task_finished", {
             "video_id": video_id,
             "local_path": local_path,
@@ -948,103 +959,9 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
 
     # 扫描方法不改写 `current_save_dir`；目录状态仅由 `change_dir` 或 `async_change_dir` 更新。
 
-    def scan_local_dir(self, directory: str | None = None, scan_limit: int | None = None):
-        """同步版目录扫描（向后兼容）。
-
-        参数:
-            directory: 要扫描的目录（默认使用 current_save_dir）
-            scan_limit: 最多扫描文件数（None=从配置读取，与 REST API /api/scan 对齐）
-        """
-        directory = directory or self.current_save_dir
-        self.bridge.emit("log", {"message": f"📂 正在扫描目录: {directory}"})
-        debug_logger.log(
-            component="WebController",
-            action="scan_local_dir",
-            message="Web 端开始扫描本地媒体目录",
-            status_code="WEB_SCAN_START",
-            details={"directory": directory},
-        )
-
-        self._clear_video_items()
-        self.bridge.emit("clear_videos", {"directory": directory})
-
-        try:
-            result = self._scan_media_directory(directory, scan_limit)
-            for item in self._cache_scanned_items(result):
-                self.bridge.emit("item_found", self._video_item_to_dict(item))
-            for message in self._build_scan_messages(result):
-                self.bridge.emit("log", {"message": message})
-            self.bridge.emit("scan_result", {
-                "total_count": result.total_count,
-                "video_count": result.video_count,
-                "image_count": result.image_count,
-                "truncated": result.truncated,
-                "original_count": result.original_count,
-            })
-        except MediaScanError as exc:
-            self.bridge.emit("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            debug_logger.log_exception("WebController", "scan_local_dir", exc, context={"directory": directory})
-        except Exception as exc:
-            # 兜底异常也要转为日志事件，不能让扫描失败中断 WebSocket 消息循环。
-            self.bridge.emit("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            debug_logger.log_exception("WebController", "scan_local_dir", exc, context={"directory": directory})
-
-    async def async_scan_local_dir(self, directory: str | None = None, scan_limit: int | None = None):
-        """异步版目录扫描：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。
-
-        只将可能阻塞的文件 I/O 放入线程池；状态消息留在当前协程顺序发送，
-        避免 bridge.emit 经 call_soon 和 create_task 二次调度后发生时序丢失。
-
-        参数:
-            directory: 要扫描的目录（默认使用 current_save_dir）
-            scan_limit: 最多扫描文件数（None=从配置读取，与 REST API /api/scan 对齐）
-        """
-        import asyncio
-        directory = directory or self.current_save_dir
-
-        await self._send_recorded_frontend_event("log", {"message": f"📂 正在扫描目录: {directory}"})
-        debug_logger.log(
-            component="WebController",
-            action="async_scan_local_dir",
-            message="Web 端开始扫描本地媒体目录（异步）",
-            status_code="WEB_SCAN_START",
-            details={"directory": directory},
-        )
-        self._clear_video_items()
-        await self._send_recorded_frontend_event("clear_videos", {"directory": directory})
-
-        # 目录遍历可能阻塞，单独放入线程池以保持 WebSocket 事件循环可响应。
-        try:
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                self._scan_media_directory,
-                directory,
-                scan_limit,
-            )
-        except MediaScanError as exc:
-            await self._send_recorded_frontend_event("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            debug_logger.log_exception("WebController", "async_scan_local_dir", exc, context={"directory": directory})
-            return
-        except Exception as exc:
-            await self._send_recorded_frontend_event("log", {"message": f"❌ 扫描目录出错: {exc}"})
-            debug_logger.log_exception("WebController", "async_scan_local_dir", exc, context={"directory": directory})
-            return
-
-        # 在同一协程内先发送条目再发送汇总，前端不会先看到尚无列表的统计结果。
-        for item in self._cache_scanned_items(result):
-            await self._send_recorded_frontend_event("item_found", self._video_item_to_dict(item))
-
-        for message in self._build_scan_messages(result):
-            await self._send_recorded_frontend_event("log", {"message": message})
-        await self._send_recorded_frontend_event("scan_result", {
-            "total_count": result.total_count,
-            "video_count": result.video_count,
-            "image_count": result.image_count,
-            "truncated": result.truncated,
-            "original_count": result.original_count,
-        })
-
     def change_dir(self, directory: str):
+        if self._normalize_library_path(directory) == self._normalize_library_path(self.current_save_dir):
+            return self.scan_local_dir(directory)
         self.current_save_dir = directory
         cfg.set("common", "save_directory", directory)
         debug_logger.log(
@@ -1055,14 +972,18 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             details={"save_dir": directory},
         )
         self.bridge.emit("log", {"message": f"📂 目录已变更: {directory}"})
-        self.scan_local_dir(directory)
+        self._refresh_media_directory_watch_paths(directory)
+        return self.scan_local_dir(directory)
 
     async def async_change_dir(self, directory: str):
         """异步版更改目录：使用 async_scan_local_dir，WebSocket 消息直接 await 发送。
 
         与 REST API /api/dir/change 对齐：cfg.set 在线程池中执行，避免文件 I/O 阻塞事件循环。
         """
+        if self._normalize_library_path(directory) == self._normalize_library_path(self.current_save_dir):
+            return await self.async_scan_local_dir(directory, require_current=True)
         self.current_save_dir = directory
+        self._refresh_media_directory_watch_paths(directory)
         import asyncio
         try:
             await asyncio.get_running_loop().run_in_executor(
@@ -1078,7 +999,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             details={"save_dir": directory},
         )
         await self._send_recorded_frontend_event("log", {"message": f"📂 目录已变更: {directory}"})
-        await self.async_scan_local_dir(directory)
+        return await self.async_scan_local_dir(directory, require_current=True)
 
     def delete_video(self, video_id: str):
         outcome = self._delete_video_sync(video_id)
@@ -1444,6 +1365,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
 
     def shutdown(self):
         """关闭 Web 会话：停止 spider/下载器，再释放前端状态服务拥有的资源。"""
+        self._stop_media_directory_watch()
         frontend_state_service = getattr(self, "frontend_state_service", None)
         with self._lifecycle_condition:
             self._is_shutting_down = True

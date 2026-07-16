@@ -25,6 +25,29 @@ class _DummyMediaController(MediaLibraryMixin):
         return item
 
 class MediaLibraryMixinTests(unittest.TestCase):
+    def test_app_state_reconcile_publishes_one_atomic_delta(self):
+        cache_service = Mock()
+        cache_service.get.return_value = "queue"
+        event_bus = EventBus()
+        state = AppState(event_bus=event_bus, cache_service=cache_service)
+        removed = VideoItem(url="", title="removed", source="local")
+        added = VideoItem(url="", title="added", source="local")
+        state.videos[removed.id] = removed
+        events: list[dict] = []
+        event_bus.subscribe("app_state.changed", events.append)
+
+        added_ids, removed_ids = state.reconcile_videos(
+            [added],
+            remove_if_matches={removed.id: removed},
+        )
+
+        self.assertEqual(added_ids, [added.id])
+        self.assertEqual(removed_ids, [removed.id])
+        self.assertEqual(set(state.videos), {added.id})
+        reconcile_events = [event for event in events if event.get("topic") == "videos.reconcile"]
+        self.assertEqual(len(reconcile_events), 1)
+        self.assertEqual(reconcile_events[0]["removed_ids"], [removed.id])
+
     def test_complete_delete_publishes_after_key_state_and_meta_locks_are_released(self):
         cache_service = Mock()
         cache_service.get.return_value = "queue"
@@ -92,6 +115,56 @@ class MediaLibraryMixinTests(unittest.TestCase):
         self.assertEqual(cached, [item])
         self.assertIs(controller.videos[item.id], item)
         self.assertEqual((item.status, item.progress), ("✅ 本地", 100))
+
+    def test_scan_reconcile_preserves_id_for_unchanged_path(self):
+        controller = _DummyMediaController()
+        with TemporaryDirectory() as tmp:
+            media_path = Path(tmp) / "demo.mp4"
+            media_path.write_bytes(b"video")
+            existing = VideoItem(url="", title="demo", source="local")
+            existing.local_path = str(media_path)
+            controller._prepare_local_item(existing)
+            controller.videos[existing.id] = existing
+
+            scanned = VideoItem(url="", title="demo", source="local")
+            scanned.local_path = str(media_path)
+            result = ScanResult(items=[scanned], total_count=1, video_count=1, image_count=0)
+
+            outcome = controller._reconcile_scanned_items(result, tmp)
+
+        self.assertEqual(outcome.added_ids, ())
+        self.assertEqual(outcome.removed_ids, ())
+        self.assertEqual(outcome.retained_ids, (existing.id,))
+        self.assertIs(outcome.items[0], existing)
+        self.assertIs(controller.videos[existing.id], existing)
+
+    def test_scan_reconcile_removes_missing_file_but_keeps_existing_collection_item(self):
+        controller = _DummyMediaController()
+        with TemporaryDirectory() as tmp:
+            collection = Path(tmp) / "album"
+            collection.mkdir()
+            kept_path = collection / "kept.mp4"
+            kept_path.write_bytes(b"video")
+
+            missing = VideoItem(url="", title="missing", source="local")
+            missing.local_path = str(collection / "missing.mp4")
+            kept = VideoItem(url="", title="kept", source="local")
+            kept.local_path = str(kept_path)
+            controller._prepare_local_item(missing)
+            controller._prepare_local_item(kept)
+            controller.videos.update({missing.id: missing, kept.id: kept})
+
+            missing_items = controller._find_missing_library_items(tmp)
+            result = ScanResult(items=[], total_count=0, video_count=0, image_count=0)
+            outcome = controller._reconcile_scanned_items(
+                result,
+                tmp,
+                missing_items=missing_items,
+            )
+
+        self.assertEqual(outcome.removed_ids, (missing.id,))
+        self.assertNotIn(missing.id, controller.videos)
+        self.assertIs(controller.videos[kept.id], kept)
 
     def test_delete_video_sync_returns_messages_and_removes_item(self):
         controller = _DummyMediaController()

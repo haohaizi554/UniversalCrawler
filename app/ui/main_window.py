@@ -19,6 +19,7 @@ from app.core.plugin_registry import registry
 from app.services.app_state import AppState
 from app.services.frontend_event_aggregator import sections_for_topic
 from app.services.frontend_state_service import FrontendStateService
+from app.services.media_release_coordination import normalize_media_path
 from app.services.update_check_service import (
     UPDATE_STATUS_AVAILABLE,
     UPDATE_STATUS_CURRENT,
@@ -2267,6 +2268,10 @@ class MainWindow(QMainWindow):
     def _on_directory_selected(self, selected_dir: str) -> None:
         selected_dir = str(selected_dir or "").strip()
         if not selected_dir:
+            return
+        if normalize_media_path(selected_dir) == normalize_media_path(self.current_save_dir):
+            # Re-selecting the active directory is an explicit refresh request.
+            self.sig_change_dir.emit()
             return
         self.set_current_save_dir(selected_dir, persist=True)
 

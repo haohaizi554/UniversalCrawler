@@ -55,6 +55,9 @@ class ApplicationLifecycleMixin:
             scheduler = getattr(window, "_ui_update_scheduler", None)
             if scheduler is not None:
                 scheduler.stop()
+        stop_media_watch = getattr(self, "stop_media_directory_watch", None)
+        if callable(stop_media_watch):
+            stop_media_watch()
         short_runner = getattr(self, "_short_task_runner", None)
         if short_runner is not None:
             short_runner.cancel_all(timeout_ms=1000)

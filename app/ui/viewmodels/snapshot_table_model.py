@@ -193,12 +193,59 @@ class SnapshotTableModel(QAbstractTableModel):
             self.layoutAboutToBeChanged.emit()
             self._rows = rows
             self.layoutChanged.emit()
+        elif self._has_unique_ids(old_ids) and self._has_unique_ids(new_ids):
+            self._reconcile_unique_rows(rows, signature, new_ids)
         else:
             self.beginResetModel()
             self._rows = rows
             self.endResetModel()
         self._signature = signature
         return True
+
+    def _reconcile_unique_rows(
+        self,
+        rows: list[dict[str, Any]],
+        signature: tuple[Any, ...],
+        new_ids: list[Any],
+    ) -> None:
+        """Apply middle insertions/removals without resetting the Qt model."""
+
+        new_id_set = set(new_ids)
+        removed_indexes = [
+            index
+            for index, row in enumerate(self._rows)
+            if row.get("id", "") not in new_id_set
+        ]
+        for first, last in reversed(self._contiguous_ranges(removed_indexes)):
+            self.beginRemoveRows(QModelIndex(), first, last)
+            del self._rows[first : last + 1]
+            self.endRemoveRows()
+
+        current_ids = [row.get("id", "") for row in self._rows]
+        current_id_set = set(current_ids)
+        for target_index, item_id in enumerate(new_ids):
+            if item_id in current_id_set:
+                continue
+            insertion_index = min(target_index, len(self._rows))
+            self.beginInsertRows(QModelIndex(), insertion_index, insertion_index)
+            self._rows.insert(insertion_index, rows[target_index])
+            self.endInsertRows()
+            current_ids.insert(insertion_index, item_id)
+            current_id_set.add(item_id)
+
+        current_signature = self._build_signature(self._rows)
+        current_ids = [row.get("id", "") for row in self._rows]
+        if current_ids != new_ids:
+            self.layoutAboutToBeChanged.emit()
+            self._rows = rows
+            self.layoutChanged.emit()
+            return
+        self._replace_existing_rows(
+            rows,
+            current_signature,
+            signature,
+            len(rows),
+        )
 
     def _set_rows_without_signature(self, rows: list[dict[str, Any]], signature: tuple[Any, ...]) -> bool:
         if self._rows:
@@ -280,6 +327,25 @@ class SnapshotTableModel(QAbstractTableModel):
         if any(not item_id for item_id in old_ids) or any(not item_id for item_id in new_ids):
             return False
         return len(set(old_ids)) == len(old_ids) and set(old_ids) == set(new_ids)
+
+    @staticmethod
+    def _has_unique_ids(item_ids: list[Any]) -> bool:
+        return bool(item_ids) and all(item_ids) and len(set(item_ids)) == len(item_ids)
+
+    @staticmethod
+    def _contiguous_ranges(indexes: list[int]) -> list[tuple[int, int]]:
+        if not indexes:
+            return []
+        ranges: list[tuple[int, int]] = []
+        first = previous = indexes[0]
+        for index in indexes[1:]:
+            if index == previous + 1:
+                previous = index
+                continue
+            ranges.append((first, previous))
+            first = previous = index
+        ranges.append((first, previous))
+        return ranges
 
     @staticmethod
     def _is_metadata_pending(row: dict[str, Any], value: Any) -> bool:

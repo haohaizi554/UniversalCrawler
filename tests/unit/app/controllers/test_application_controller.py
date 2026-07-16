@@ -327,6 +327,21 @@ class ApplicationControllerTests(unittest.TestCase):
             controller.videos.update(videos),
         )
 
+        def _reconcile_videos(items, *, remove_if_matches=None):
+            removed = []
+            for video_id, expected in (remove_if_matches or {}).items():
+                if controller.videos.get(video_id) is expected:
+                    controller.videos.pop(video_id, None)
+                    removed.append(video_id)
+            added = []
+            for item in items:
+                if item.id not in controller.videos:
+                    added.append(item.id)
+                controller.videos[item.id] = item
+            return added, removed
+
+        controller.app_state.reconcile_videos.side_effect = _reconcile_videos
+
         def _update_video_state(video_id, *, status=None, progress=None):
             item = controller.videos.get(video_id)
             if item is None:
@@ -608,7 +623,7 @@ class ApplicationControllerTests(unittest.TestCase):
 
         controller.scan_local_dir()
 
-        controller.window.clear_video_rows.assert_called_once()
+        controller.window.clear_video_rows.assert_not_called()
         self.assertEqual(len(controller.videos), 2)
         self.assertIn(video.id, controller.videos)
         self.assertIn(image.id, controller.videos)

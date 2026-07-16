@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import stat
 import threading
 from copy import deepcopy
 from dataclasses import dataclass
 
 from app.config import cfg
+from app.core.state import VideoStatus, parse_video_status
 from app.exceptions import FileOperationError
 from app.models import VideoItem
 from app.services.file_service import ScanResult
@@ -41,6 +43,19 @@ class MediaRenameOutcome:
     new_path: str | None = None
     new_title: str | None = None
     error: str | None = None
+
+@dataclass(frozen=True)
+class MediaScanReconcileOutcome:
+    """Stable-ID result of reconciling one filesystem scan with runtime state."""
+
+    items: tuple[VideoItem, ...]
+    added_ids: tuple[str, ...]
+    removed_ids: tuple[str, ...]
+    retained_ids: tuple[str, ...]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added_ids or self.removed_ids)
 
 class MediaLibraryMixin:
     """GUI/Web host 共用的媒体库编排；文件 IO 结果通过统一 Outcome 返回。"""
@@ -79,6 +94,177 @@ class MediaLibraryMixin:
             if getattr(self, "app_state", None) is None:
                 self._store_video_item(item)
         return items
+
+    @staticmethod
+    def _normalize_library_path(path: str | None) -> str:
+        raw = str(path or "").strip()
+        if not raw:
+            return ""
+        try:
+            return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+        except (OSError, TypeError, ValueError):
+            return os.path.normcase(raw)
+
+    @classmethod
+    def _path_is_within_directory(cls, path: str, directory: str) -> bool:
+        normalized_path = cls._normalize_library_path(path)
+        normalized_directory = cls._normalize_library_path(directory)
+        if not normalized_path or not normalized_directory:
+            return False
+        try:
+            return os.path.commonpath((normalized_path, normalized_directory)) == normalized_directory
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_completed_library_item(item: VideoItem) -> bool:
+        status = parse_video_status(getattr(item, "status", ""))
+        return getattr(item, "source", "") == "local" or status in {
+            VideoStatus.COMPLETED,
+            VideoStatus.LOCAL,
+        }
+
+    def _snapshot_video_references(self) -> dict[str, VideoItem]:
+        with self._video_state_guard():
+            return dict(getattr(self, "videos", {}))
+
+    def _find_missing_library_items(self, directory: str) -> dict[str, VideoItem]:
+        """Check file existence off the UI/event-loop thread.
+
+        Direct children are also checked by the directory scan, while this pass
+        covers collection subdirectories that are intentionally not enumerated.
+        """
+
+        missing: dict[str, VideoItem] = {}
+        for video_id, item in self._snapshot_video_references().items():
+            path = self._normalize_library_path(getattr(item, "local_path", ""))
+            if (
+                not path
+                or not self._is_completed_library_item(item)
+                or not self._path_is_within_directory(path, directory)
+            ):
+                continue
+            try:
+                mode = os.stat(path).st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                missing[video_id] = item
+            except OSError:
+                # Permission and transient network errors must not erase a row.
+                continue
+            else:
+                if not stat.S_ISREG(mode):
+                    missing[video_id] = item
+        return missing
+
+    def _scan_media_directory_with_missing(
+        self,
+        directory: str,
+        scan_limit: int | None = None,
+    ) -> tuple[ScanResult, dict[str, VideoItem]]:
+        """Build the complete filesystem snapshot in a worker thread."""
+
+        result = self._scan_media_directory(directory, scan_limit)
+        return result, self._find_missing_library_items(directory)
+
+    def _reconcile_scanned_items(
+        self,
+        result: ScanResult,
+        directory: str,
+        *,
+        missing_items: dict[str, VideoItem] | None = None,
+    ) -> MediaScanReconcileOutcome:
+        """Preserve stable IDs and commit one add/remove batch for a scan."""
+
+        candidates = list(result.items)
+        for item in candidates:
+            self._prepare_local_item(item)
+
+        snapshot = self._snapshot_video_references()
+        existing_by_path: dict[str, VideoItem] = {}
+        for item in snapshot.values():
+            path = self._normalize_library_path(getattr(item, "local_path", ""))
+            if path and path not in existing_by_path:
+                existing_by_path[path] = item
+
+        resolved_items: list[VideoItem] = []
+        additions: list[VideoItem] = []
+        retained_ids: set[str] = set()
+        scanned_paths: set[str] = set()
+        for candidate in candidates:
+            path = self._normalize_library_path(getattr(candidate, "local_path", ""))
+            if path:
+                scanned_paths.add(path)
+            existing = existing_by_path.get(path) if path else None
+            if existing is not None and existing.id not in retained_ids:
+                retained_ids.add(existing.id)
+                resolved_items.append(existing)
+                continue
+            additions.append(candidate)
+            resolved_items.append(candidate)
+
+        normalized_directory = self._normalize_library_path(directory)
+        expected_removals: dict[str, VideoItem] = {}
+        missing_items = dict(missing_items or {})
+        for video_id, item in snapshot.items():
+            if not self._is_completed_library_item(item) or video_id in retained_ids:
+                continue
+            path = self._normalize_library_path(getattr(item, "local_path", ""))
+            if not path:
+                continue
+            parent = self._normalize_library_path(os.path.dirname(path))
+            outside_library = not self._path_is_within_directory(path, normalized_directory)
+            absent_direct_child = parent == normalized_directory and path not in scanned_paths
+            missing_nested_item = missing_items.get(video_id) is item
+            duplicate_scanned_path = path in scanned_paths and video_id not in retained_ids
+            if outside_library or absent_direct_child or missing_nested_item or duplicate_scanned_path:
+                expected_removals[video_id] = item
+
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None and callable(getattr(app_state, "reconcile_videos", None)):
+            added_ids, removed_ids = app_state.reconcile_videos(
+                additions,
+                remove_if_matches=expected_removals,
+            )
+        else:
+            added_ids: list[str] = []
+            removed_ids: list[str] = []
+            with self._video_state_guard():
+                videos = getattr(self, "videos", {})
+                for video_id, expected in expected_removals.items():
+                    if videos.get(video_id) is expected:
+                        videos.pop(video_id, None)
+                        removed_ids.append(video_id)
+                for item in additions:
+                    if item.id not in videos:
+                        added_ids.append(item.id)
+                    videos[item.id] = item
+
+        return MediaScanReconcileOutcome(
+            items=tuple(resolved_items),
+            added_ids=tuple(added_ids),
+            removed_ids=tuple(removed_ids),
+            retained_ids=tuple(sorted(retained_ids)),
+        )
+
+    def _media_watch_directories(self, directory: str) -> tuple[str, ...]:
+        """Watch the root plus collection folders represented in completed state."""
+
+        normalized_directory = self._normalize_library_path(directory)
+        paths = {normalized_directory} if normalized_directory else set()
+        for item in self._snapshot_video_references().values():
+            if not self._is_completed_library_item(item):
+                continue
+            local_path = self._normalize_library_path(getattr(item, "local_path", ""))
+            if local_path and self._path_is_within_directory(local_path, normalized_directory):
+                paths.add(self._normalize_library_path(os.path.dirname(local_path)))
+        paths.discard("")
+        return tuple(sorted(paths))
+
+    def _refresh_media_directory_watch_paths(self, directory: str) -> None:
+        handle = getattr(self, "_media_directory_watch_handle", None)
+        replace_paths = getattr(handle, "replace_paths", None)
+        if callable(replace_paths):
+            replace_paths(self._media_watch_directories(directory))
 
     def _prepare_delete_video(self, video_id: str) -> MediaDeleteContext | None:
         """只读取待删媒体；下载线程的停止等待必须由后台任务执行。"""

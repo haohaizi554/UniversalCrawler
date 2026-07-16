@@ -99,6 +99,7 @@ class ApplicationController(
             self.window.set_frontend_state_service(self.frontend_state_service)
         self._connect_download_signals()
         self._connect_window_signals()
+        self.start_media_directory_watch()
 
         self._pending_launch_media_path: str | None = None
         if self.launch_media_paths:
@@ -404,6 +405,7 @@ class ApplicationController(
         )
 
     def _after_task_finished(self, video_id: str, item: VideoItem | None) -> None:
+        self._refresh_media_directory_watch_paths(self._host().current_save_dir)
         if item is None or not bool(cfg.get("common", "open_after_download", False)):
             return
         file_path = str(getattr(item, "local_path", "") or "")

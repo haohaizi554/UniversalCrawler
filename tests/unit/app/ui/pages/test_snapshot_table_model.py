@@ -55,6 +55,36 @@ class SnapshotTableModelTests(unittest.TestCase):
         self.assertEqual(removed, [(1, 2)])
         self.assertEqual(model.id_order(), ["v1"])
 
+    def test_set_rows_removes_middle_and_pulls_next_row_without_model_reset(self):
+        model = SnapshotTableModel(headers=["Title"], columns=["title"])
+        model.set_rows(
+            [
+                {"id": "v1", "title": "one"},
+                {"id": "v2", "title": "two"},
+                {"id": "v3", "title": "three"},
+            ]
+        )
+        resets: list[bool] = []
+        removed: list[tuple[int, int]] = []
+        inserted: list[tuple[int, int]] = []
+        model.modelReset.connect(lambda: resets.append(True))
+        model.rowsRemoved.connect(lambda _parent, first, last: removed.append((first, last)))
+        model.rowsInserted.connect(lambda _parent, first, last: inserted.append((first, last)))
+
+        changed = model.set_rows(
+            [
+                {"id": "v1", "title": "one"},
+                {"id": "v3", "title": "three"},
+                {"id": "v4", "title": "four"},
+            ]
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(resets, [])
+        self.assertEqual(removed, [(1, 1)])
+        self.assertEqual(inserted, [(2, 2)])
+        self.assertEqual(model.id_order(), ["v1", "v3", "v4"])
+
     def test_set_rows_patches_existing_rows_without_model_reset(self):
         model = SnapshotTableModel(headers=["Title"], columns=["title"])
         model.set_rows([{"id": "v1", "title": "old"}])

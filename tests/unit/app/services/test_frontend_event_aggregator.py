@@ -70,6 +70,19 @@ def test_remove_event_tracks_deleted_ids():
     assert state.deleted_ids == ("gone",)
     assert "queue_items" in state.changed_sections
 
+def test_reconcile_tracks_removed_ids_and_refreshes_completed_only():
+    aggregator = FrontendEventAggregator()
+
+    aggregator.record(
+        "videos.reconcile",
+        {"added_ids": ["new"], "removed_ids": ["gone"]},
+    )
+
+    state = aggregator.peek()
+    assert state.deleted_ids == ("gone",)
+    assert state.changed_sections == frozenset({"completed_items", "app_status"})
+    assert state.priority == FrontendEventPriority.CRITICAL
+
 def test_metadata_event_refreshes_completed_section_only():
     aggregator = FrontendEventAggregator()
 

@@ -232,6 +232,59 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(controller._last_progress_emit_at, {})
         self.assertEqual(controller._last_progress_emit_value, {})
 
+    def test_async_media_scan_preserves_ids_and_emits_one_delta_per_real_change(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        sent: list[tuple[str, dict | None]] = []
+        controller = WebController(None, lambda event_type, data=None: sent.append((event_type, data)))
+        try:
+            with TemporaryDirectory() as tmp:
+                media_path = Path(tmp) / "demo.mp4"
+                media_path.write_bytes(b"video")
+
+                async def run_scans():
+                    first = await controller.async_scan_local_dir(tmp, announce=False)
+                    second = await controller.async_scan_local_dir(tmp, announce=False)
+                    media_path.unlink()
+                    third = await controller.async_scan_local_dir(tmp, announce=False)
+                    return first, second, third
+
+                first, second, third = asyncio.run(run_scans())
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertIsNotNone(third)
+            first_id = first[1].items[0].id
+            self.assertEqual(second[1].items[0].id, first_id)
+            self.assertEqual(second[1].added_ids, ())
+            self.assertEqual(second[1].removed_ids, ())
+            self.assertEqual(third[1].removed_ids, (first_id,))
+
+            event_types = [event_type for event_type, _data in sent]
+            self.assertEqual(event_types.count("videos.reconcile"), 2)
+            self.assertNotIn("clear_videos", event_types)
+            self.assertNotIn("item_found", event_types)
+        finally:
+            controller.shutdown()
+
+    def test_async_change_dir_rescans_when_directory_is_unchanged(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        controller.current_save_dir = "D:/Downloads"
+        controller.async_scan_local_dir = AsyncMock(return_value=("result", "outcome"))
+
+        result = asyncio.run(controller.async_change_dir(r"D:\Downloads"))
+
+        self.assertEqual(result, ("result", "outcome"))
+        controller.async_scan_local_dir.assert_awaited_once_with(
+            r"D:\Downloads",
+            require_current=True,
+        )
+        controller.shutdown()
+
     def test_async_frontend_delete_action_uses_async_delete_video(self):
         import asyncio
         from app.web.controller import WebController

@@ -78,7 +78,7 @@ class MediaHostControllerMixinTests(unittest.TestCase):
             controller.scan_local_dir()
 
         controller.host.announce_scan_start.assert_called_once_with("downloads")
-        controller.host.clear_video_rows.assert_called_once()
+        controller.host.clear_video_rows.assert_not_called()
         controller.host.add_video_row.assert_called_once_with(item)
         controller.host.append_log.assert_called_once_with("loaded 1")
 
@@ -127,6 +127,18 @@ class MediaHostControllerMixinTests(unittest.TestCase):
 
         controller.host.announce_directory_changed.assert_called_once_with("D:/downloads")
         controller.scan_local_dir.assert_called_once()
+
+    def test_on_dir_changed_rescans_same_directory_without_false_change_notice(self):
+        controller = _DummyMediaHostController()
+        controller.host.current_save_dir = "D:/downloads"
+        controller._last_scanned_directory = r"D:\downloads"
+        controller.scan_local_dir = Mock()
+
+        with patch("app.controllers.media_host_controller_mixin.debug_logger", Mock()):
+            controller.on_dir_changed()
+
+        controller.host.announce_directory_changed.assert_not_called()
+        controller.scan_local_dir.assert_called_once_with()
 
     def test_on_rename_video_reports_error_and_resets_text(self):
         controller = _DummyMediaHostController()

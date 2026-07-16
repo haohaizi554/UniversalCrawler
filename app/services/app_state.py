@@ -102,6 +102,62 @@ class AppState:
         self._publish_change("videos.upsert_many", {"video_ids": video_ids, "count": len(video_ids)})
         return video_ids
 
+    def reconcile_videos(
+        self,
+        items: Any,
+        *,
+        remove_if_matches: Mapping[str, Any] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Atomically apply one media scan without clearing unchanged rows.
+
+        Removals use object identity captured by the scan worker. If a download
+        replaces an item while the scan is in flight, that newer object wins.
+        """
+
+        video_items = [item for item in items if getattr(item, "id", None)]
+        expected_items = {
+            str(video_id): item
+            for video_id, item in (remove_if_matches or {}).items()
+            if video_id and item is not None
+        }
+        coordinated_ids = set(expected_items) | {str(item.id) for item in video_items}
+        if not coordinated_ids:
+            return [], []
+
+        added: list[str] = []
+        removed: list[str] = []
+        with self._media_item_locks.hold_many(coordinated_ids):
+            with self._lock:
+                for video_id, expected in expected_items.items():
+                    if self.videos.get(video_id) is not expected:
+                        continue
+                    self.videos.pop(video_id, None)
+                    self.task_state.pop(video_id, None)
+                    self._last_progress_emit_at.pop(video_id, None)
+                    removed.append(video_id)
+                for item in video_items:
+                    video_id = str(item.id)
+                    if self.videos.get(video_id) is item:
+                        continue
+                    if video_id not in self.videos:
+                        added.append(video_id)
+                    self.videos[video_id] = item
+                if self.current_playing_id in removed:
+                    self.current_playing_id = None
+
+        if added or removed:
+            self._publish_change(
+                "videos.reconcile",
+                {
+                    "added_ids": list(added),
+                    "removed_ids": list(removed),
+                    "video_ids": list(removed),
+                    "added_count": len(added),
+                    "removed_count": len(removed),
+                },
+            )
+        return added, removed
+
     def remove_video(self, video_id: str) -> None:
         removed = self.remove_videos({video_id}, publish=False)
         if removed:

@@ -63,14 +63,11 @@ class WebDirectoryService:
             scan_limit = self._normalize_scan_limit(cfg.get("download", "local_scan_limit", 1000))
 
         try:
-            self._clear_controller_videos(session_controller)
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                session_controller.file_service.scan_directory,
-                directory,
-                scan_limit,
-            )
-            items = self._build_local_media_items(session_controller, result.items)
+            update = await session_controller.async_scan_local_dir(directory, scan_limit)
+            if update is None:
+                return error_result("目录扫描失败", http_status=500, directory=directory)
+            result, outcome = update
+            items = self._build_local_media_items(session_controller, outcome.items)
             return self._build_scan_response(directory, result, items)
         except Exception as exc:
             log_web_exception("WebDirectoryService", "scan_directory", exc, context={"directory": directory})
@@ -155,29 +152,10 @@ class WebDirectoryService:
                 "开始切换目录",
                 context={"directory": directory},
             )
-            session_controller.current_save_dir = directory
-
-            def _save_cfg() -> None:
-                try:
-                    cfg.set("common", "save_directory", directory)
-                except Exception as exc:
-                    log_web_exception(
-                        "WebDirectoryService",
-                        "persist_save_directory",
-                        exc,
-                        context={"directory": directory},
-                    )
-
-            await asyncio.get_running_loop().run_in_executor(None, _save_cfg)
-            self._clear_controller_videos(session_controller)
-
-            scan_limit = self._normalize_scan_limit(cfg.get("download", "local_scan_limit", 1000))
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                session_controller.file_service.scan_directory,
-                directory,
-                scan_limit,
-            )
+            update = await session_controller.async_change_dir(directory)
+            if update is None:
+                return error_result("目录扫描失败", http_status=500, directory=directory)
+            result, outcome = update
             log_web_event(
                 "WebDirectoryService",
                 "change_dir_scan_complete",
@@ -186,7 +164,7 @@ class WebDirectoryService:
                 details={"total_count": result.total_count},
             )
 
-            items = self._build_local_media_items(session_controller, result.items)
+            items = self._build_local_media_items(session_controller, outcome.items)
             return self._build_scan_response(directory, result, items)
         except Exception as exc:
             log_web_exception("WebDirectoryService", "change_dir", exc)
@@ -244,9 +222,6 @@ class WebDirectoryService:
     def _build_local_media_items(session_controller, items: list) -> list[dict]:
         normalized_items = []
         for item in items:
-            item.status = "✅ 本地"
-            item.progress = 100
-            WebDirectoryService._store_controller_video(session_controller, item)
             try:
                 normalized_items.append(session_controller._video_item_to_dict(item))
             except Exception as exc:
@@ -271,22 +246,6 @@ class WebDirectoryService:
                     }
                 )
         return normalized_items
-
-    @staticmethod
-    def _clear_controller_videos(session_controller) -> None:
-        clear_videos = getattr(session_controller, "_clear_video_items", None)
-        if callable(clear_videos):
-            clear_videos()
-            return
-        session_controller.videos.clear()
-
-    @staticmethod
-    def _store_controller_video(session_controller, item) -> None:
-        store_video = getattr(session_controller, "_store_video_item", None)
-        if callable(store_video):
-            store_video(item)
-            return
-        session_controller.videos[item.id] = item
 
     @staticmethod
     def _build_scan_response(directory: str, result, items: list[dict]) -> dict:

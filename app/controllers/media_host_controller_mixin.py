@@ -4,7 +4,7 @@ import os
 import threading
 from types import SimpleNamespace
 
-from PyQt6.QtCore import QCoreApplication, QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QObject, Qt, QThread, QTimer, pyqtSignal
 
 from app.config import cfg
 from app.debug_logger import debug_logger
@@ -12,6 +12,7 @@ from app.exceptions import FileOperationError, MediaScanError
 from app.models import VideoItem
 from app.services import frontend_video_adapter as video_adapter
 from app.services.media_release_coordination import normalize_media_path
+from app.services.media_directory_monitor import media_directory_monitor
 from app.ui.task_runtime import ShortTaskRunner
 
 class _UiCallbackInvoker(QObject):
@@ -86,30 +87,47 @@ class MediaHostControllerMixin:
         with self._video_state_guard():
             self.videos.clear()
 
-    def _append_scanned_items(self, result) -> None:
-        """通过一次整体替换发布扫描结果。"""
+    def _append_scanned_items(self, result, directory: str, missing_items=None):
+        """按稳定 ID 对账扫描结果，只发布真实的新增和移除。"""
+        reconcile = getattr(self, "_reconcile_scanned_items", None)
+        if callable(reconcile):
+            outcome = reconcile(result, directory, missing_items=missing_items)
+            self._refresh_media_directory_watch_paths(directory)
+            return outcome
+
+        # Adapter-only controller doubles may not include MediaLibraryMixin.
         items = self._cache_scanned_items(result)
-        if not items:
-            return
-        videos = {item.id: item for item in items}
-        app_state = getattr(self, "app_state", None)
-        if app_state is not None:
-            app_state.replace_videos(videos)
-            return
-        with self._video_state_guard():
-            self.videos.clear()
-            self.videos.update(videos)
-        host = self._host()
-        add_row = getattr(host, "add_video_row", None)
+        add_row = getattr(self._host(), "add_video_row", None)
         if callable(add_row):
             for item in items:
                 add_row(item)
+        return SimpleNamespace(
+            items=tuple(items),
+            added_ids=tuple(item.id for item in items),
+            removed_ids=(),
+            retained_ids=(),
+            changed=bool(items),
+        )
 
-    def scan_local_dir(self):
+    def _scan_local_directory_snapshot(self, directory: str):
+        scan_with_missing = getattr(self, "_scan_media_directory_with_missing", None)
+        if callable(scan_with_missing):
+            return scan_with_missing(directory)
+        return self._scan_media_directory(directory), {}
+
+    def _ensure_local_scan_lock(self) -> threading.Lock:
+        lock = getattr(self, "_local_scan_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._local_scan_lock = lock
+        return lock
+
+    def scan_local_dir(self, *, announce: bool = True):
         """扫描当前保存目录，并把本地媒体恢复到宿主。"""
         host = self._host()
         directory = host.current_save_dir
-        host.announce_scan_start(directory)
+        if announce:
+            host.announce_scan_start(directory)
         debug_logger.log(
             component="ApplicationController",
             action="scan_local_dir",
@@ -118,7 +136,6 @@ class MediaHostControllerMixin:
             details={"directory": directory},
         )
 
-        self._clear_local_items()
         # 目录切换会让多次扫描并发收尾；`generation` 只允许最新任务提交结果。
         generation = int(getattr(self, "_local_scan_generation", 0) or 0) + 1
         self._local_scan_generation = generation
@@ -127,43 +144,70 @@ class MediaHostControllerMixin:
             previous_token.cancel()
         if not self._should_scan_local_dir_in_background():
             try:
-                result = self._scan_media_directory(directory)
+                result, missing_items = self._scan_local_directory_snapshot(directory)
             except MediaScanError as exc:
                 self._finish_local_scan_error(directory, generation, exc)
                 return
             except Exception as exc:
                 self._finish_local_scan_error(directory, generation, exc)
                 return
-            self._finish_local_scan_success(directory, generation, result)
+            self._finish_local_scan_success(
+                directory,
+                generation,
+                result,
+                missing_items,
+                announce=announce,
+            )
             return
         invoker = self._ensure_ui_callback_invoker()
         runner = self._ensure_short_task_runner()
 
         def scan_in_background(cancel_token) -> None:
-            try:
-                result = self._scan_media_directory(directory)
-            except MediaScanError as exc:
-                invoker.invoke(lambda exc=exc: self._finish_local_scan_error(directory, generation, exc))
-                return
-            except Exception as exc:
-                invoker.invoke(lambda exc=exc: self._finish_local_scan_error(directory, generation, exc))
-                return
+            with self._ensure_local_scan_lock():
+                if cancel_token.is_cancelled():
+                    return
+                try:
+                    result, missing_items = self._scan_local_directory_snapshot(directory)
+                except MediaScanError as exc:
+                    invoker.invoke(lambda exc=exc: self._finish_local_scan_error(directory, generation, exc))
+                    return
+                except Exception as exc:
+                    invoker.invoke(lambda exc=exc: self._finish_local_scan_error(directory, generation, exc))
+                    return
             if cancel_token.is_cancelled():
                 return
-            invoker.invoke(lambda result=result: self._finish_local_scan_success(directory, generation, result))
+            invoker.invoke(
+                lambda result=result, missing_items=missing_items: self._finish_local_scan_success(
+                    directory,
+                    generation,
+                    result,
+                    missing_items,
+                    announce=announce,
+                )
+            )
 
         self._local_scan_token = runner.submit(name="scan-local-dir", fn=scan_in_background)
 
-    def _finish_local_scan_success(self, directory: str, generation: int, result) -> None:
+    def _finish_local_scan_success(
+        self,
+        directory: str,
+        generation: int,
+        result,
+        missing_items=None,
+        *,
+        announce: bool = True,
+    ) -> None:
         if generation != int(getattr(self, "_local_scan_generation", 0) or 0):
             return
         host = self._host()
         if normalize_media_path(directory) != normalize_media_path(host.current_save_dir):
             return
-        self._append_scanned_items(result)
-        for message in self._build_scan_messages(result):
-            host.append_log(message)
-        if result.total_count > 0:
+        outcome = self._append_scanned_items(result, directory, missing_items)
+        self._last_scanned_directory = directory
+        if announce:
+            for message in self._build_scan_messages(result):
+                host.append_log(message)
+        if result.total_count > 0 or bool(getattr(outcome, "changed", False)):
             debug_logger.log(
                 component="ApplicationController",
                 action="scan_local_dir_finished",
@@ -174,6 +218,8 @@ class MediaHostControllerMixin:
                     "count": result.total_count,
                     "video_count": result.video_count,
                     "image_count": result.image_count,
+                    "added_count": len(getattr(outcome, "added_ids", ())),
+                    "removed_count": len(getattr(outcome, "removed_ids", ())),
                 },
             )
 
@@ -183,17 +229,67 @@ class MediaHostControllerMixin:
         self._host().report_scan_error(exc)
         debug_logger.log_exception("ApplicationController", "scan_local_dir", exc, context={"directory": directory})
 
+    def start_media_directory_watch(self) -> None:
+        """Start one process-shared watcher and marshal callbacks to Qt."""
+
+        self.stop_media_directory_watch()
+        self._media_directory_watch_closed = False
+        app_state = getattr(self, "app_state", None)
+        if app_state is not None and not hasattr(app_state, "_lock"):
+            # Minimal controller adapters may expose state without the runtime
+            # lock; monitoring is optional and must not block their startup.
+            return
+        invoker = self._ensure_ui_callback_invoker()
+
+        def on_directory_changed(path: str) -> None:
+            invoker.invoke(lambda path=path: self._queue_external_media_rescan(path))
+
+        directory = self._host().current_save_dir
+        self._media_directory_watch_handle = media_directory_monitor.watch(
+            self._media_watch_directories(directory),
+            on_directory_changed,
+        )
+
+    def stop_media_directory_watch(self) -> None:
+        self._media_directory_watch_closed = True
+        handle = getattr(self, "_media_directory_watch_handle", None)
+        self._media_directory_watch_handle = None
+        close = getattr(handle, "close", None)
+        if callable(close):
+            close()
+
+    def _queue_external_media_rescan(self, _changed_directory: str) -> None:
+        if bool(getattr(self, "_media_directory_watch_closed", False)):
+            return
+        if bool(getattr(self, "_external_media_rescan_pending", False)):
+            return
+        self._external_media_rescan_pending = True
+        # Explorer can emit several metadata changes for one delete. Collapse
+        # them before starting a background directory traversal.
+        QTimer.singleShot(180, self._run_external_media_rescan)
+
+    def _run_external_media_rescan(self) -> None:
+        self._external_media_rescan_pending = False
+        if bool(getattr(self, "_media_directory_watch_closed", False)):
+            return
+        self.scan_local_dir(announce=False)
+
     def on_dir_changed(self):
         """目录变化后刷新宿主媒体列表。"""
         host = self._host()
-        host.announce_directory_changed(host.current_save_dir)
-        debug_logger.log(
-            component="ApplicationController",
-            action="change_save_dir",
-            message="保存目录已变更",
-            status_code="APP_DIR_CHANGED",
-            details={"save_dir": host.current_save_dir},
+        same_directory = (
+            normalize_media_path(getattr(self, "_last_scanned_directory", None))
+            == normalize_media_path(host.current_save_dir)
         )
+        if not same_directory:
+            host.announce_directory_changed(host.current_save_dir)
+            debug_logger.log(
+                component="ApplicationController",
+                action="change_save_dir",
+                message="保存目录已变更",
+                status_code="APP_DIR_CHANGED",
+                details={"save_dir": host.current_save_dir},
+            )
         self.scan_local_dir()
 
     def on_rename_video(self, item):

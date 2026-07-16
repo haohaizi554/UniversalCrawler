@@ -73,6 +73,18 @@ class MainWindowTests(unittest.TestCase):
         window._pending_delete_video_ids = []
         return window
 
+    def test_selecting_current_directory_requests_refresh_without_config_write(self):
+        window = self._make_window()
+        window.__dict__["_save_dir_lock"] = threading.RLock()
+        window.__dict__["_current_save_dir"] = "D:/Downloads"
+        window.sig_change_dir = Mock()
+        window.set_current_save_dir = Mock()
+
+        MainWindow._on_directory_selected(window, r"D:\Downloads")
+
+        window.sig_change_dir.emit.assert_called_once_with()
+        window.set_current_save_dir.assert_not_called()
+
     class FakeShellWidget:
         def __init__(self, *, visible: bool = True, updates_enabled: bool = True, object_name: str = "FakeWidget"):
             self._visible = visible

@@ -54,6 +54,7 @@ CRITICAL_TOPICS = frozenset(
         "frontend_action_result",
         "videos.remove",
         "videos.remove_many",
+        "videos.reconcile",
         "videos.clear_queue",
         "videos.clear",
     }
@@ -96,11 +97,14 @@ def sections_for_topic(topic: str) -> frozenset[str] | None:
         return frozenset({"active_downloads", "app_status"})
     if normalized == "videos.metadata":
         return frozenset({"completed_items", "app_status"})
+    if normalized == "videos.reconcile":
+        return frozenset({"completed_items", "app_status"})
     if normalized in {
         "videos.upsert",
         "videos.upsert_many",
         "videos.remove",
         "videos.remove_many",
+        "videos.reconcile",
         "videos.clear",
         "videos.replace",
         "item_found",
@@ -338,11 +342,11 @@ class FrontendEventAggregator:
             self._dropped_count += 1
 
     def _remember_deleted_id(self, topic: str, payload: Any, version: int) -> None:
-        if topic not in {"videos.remove", "videos.remove_many", "video_removed"}:
+        if topic not in {"videos.remove", "videos.remove_many", "videos.reconcile", "video_removed"}:
             return
         if not isinstance(payload, dict):
             return
-        video_ids = payload.get("video_ids")
+        video_ids = payload.get("removed_ids") or payload.get("video_ids")
         if isinstance(video_ids, (list, tuple, set)):
             for video_id in video_ids:
                 if video_id:
