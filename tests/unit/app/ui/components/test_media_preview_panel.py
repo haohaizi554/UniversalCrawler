@@ -700,6 +700,50 @@ class MediaPreviewPanelTests(unittest.TestCase):
         panel.apply_playback_settings({"manual_image_switch": False, "image_auto_advance_interval_seconds": 99})
         self.assertEqual(panel._image_auto_advance_timer.interval(), 5000)
 
+    def test_image_auto_advance_failure_pauses_until_one_play_click_resumes(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        host.show()
+        emitted: list[str] = []
+        panel.sig_auto_next_image_preview.connect(lambda: emitted.append("next"))
+        panel.apply_playback_settings({"manual_image_switch": False})
+        panel.show_image("current.webp", slideshow_available=True)
+        self.app.processEvents()
+
+        # Match a real single-shot timeout: the timer is inactive before its callback runs.
+        panel._image_auto_advance_timer.stop()
+        panel._on_image_auto_advance_timeout()
+
+        self.assertEqual(emitted, ["next"])
+        self.assertTrue(panel._image_slideshow_paused)
+        self.assertFalse(panel._image_auto_advance_timer.isActive())
+
+        panel.btn_play.click()
+
+        self.assertFalse(panel._image_slideshow_paused)
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+
+    def test_successful_image_auto_advance_clears_pending_pause(self):
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        host.show()
+        panel.apply_playback_settings({"manual_image_switch": False})
+        panel.show_image("current.webp", slideshow_available=True)
+        self.app.processEvents()
+
+        panel._image_auto_advance_timer.stop()
+        panel._on_image_auto_advance_timeout()
+        self.assertTrue(panel._image_slideshow_paused)
+
+        panel.show_image("next.webp", slideshow_available=True)
+
+        self.assertFalse(panel._image_slideshow_paused)
+        self.assertTrue(panel._image_auto_advance_timer.isActive())
+
     def test_image_preview_hides_stale_video_timeline_and_play_button_controls_slideshow(self):
         host = QWidget()
         layout = QVBoxLayout(host)

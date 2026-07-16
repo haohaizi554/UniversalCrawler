@@ -497,7 +497,6 @@
 
   async function playCompleted(id) {
     const sourceId = String(id || "");
-    setSelectedCompletedId(sourceId);
     const generation = state.generation;
     const operation = ++state.operation;
     state.pendingSourceId = sourceId;
@@ -520,6 +519,7 @@
       return false;
     }
     state.pendingSourceId = "";
+    setSelectedCompletedId(sourceId);
     state.currentPlayingId = sourceId;
     if (!shouldUseBuiltinPlayer()) {
       state.mediaKind = "idle";

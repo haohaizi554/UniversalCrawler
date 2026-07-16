@@ -13,11 +13,75 @@ from unittest.mock import patch
 
 from app.controllers import application_controller as application_controller_module
 from app.controllers.application_controller import ApplicationController
+from app.core.event_bus import EventBus
 from app.exceptions import FileOperationError
 from app.models import VideoItem
+from app.services.app_state import AppState
 from app.services.file_service import ScanResult
 
 class ApplicationControllerTests(unittest.TestCase):
+
+    def test_background_rename_never_targets_same_id_replacement(self):
+        cache_service = Mock()
+        cache_service.get.return_value = "queue"
+        state = AppState(event_bus=EventBus(), cache_service=cache_service)
+        controller = ApplicationController.__new__(ApplicationController)
+        controller.app_state = state
+        controller.videos = state.videos
+        controller.current_playing_id = None
+        controller.host = Mock()
+        controller.host.current_save_dir = "D:/media"
+        controller.file_service = Mock()
+        controller._should_rename_media_in_background = Mock(return_value=True)
+
+        submitted = []
+
+        class DeferredRunner:
+            def submit(self, *, name, fn):
+                submitted.append((name, fn))
+                return SimpleNamespace(is_cancelled=lambda: False)
+
+        controller._ensure_short_task_runner = Mock(return_value=DeferredRunner())
+        controller._ensure_ui_callback_invoker = Mock(
+            return_value=SimpleNamespace(invoke=lambda callback: callback())
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_path = Path(temp_dir) / "old.mp4"
+            old_path.write_bytes(b"old")
+            old = VideoItem(url="", title="old", source="local")
+            old.local_path = str(old_path)
+            replacement = VideoItem(url="", title="replacement", source="local")
+            replacement.id = old.id
+            replacement.local_path = str(old_path)
+            state.upsert_video(old)
+
+            table_item = Mock()
+            table_item.column.return_value = 0
+            table_item.data.return_value = old.id
+            table_item.text.return_value = "renamed-old"
+            controller.file_service.rename_media.return_value = (
+                str(old_path),
+                str(Path(temp_dir) / "renamed-old.mp4"),
+            )
+
+            controller.on_rename_video(table_item)
+            state.upsert_video(replacement)
+            submitted[0][1](SimpleNamespace(is_cancelled=lambda: False))
+
+        controller.file_service.rename_media.assert_not_called()
+        self.assertIs(state.videos[old.id], replacement)
+        self.assertEqual(replacement.title, "replacement")
+        controller.host.reorder_video_row.assert_not_called()
+        controller.host.report_rename_error.assert_not_called()
+
+    def test_gui_and_web_share_core_image_extension_contract(self):
+        from app.core.media_filter import IMAGE_EXTENSIONS
+        from app.web.controller import WebController
+
+        self.assertIn(".avif", IMAGE_EXTENSIONS)
+        self.assertEqual(ApplicationController.IMAGE_EXTENSIONS, IMAGE_EXTENSIONS)
+        self.assertEqual(WebController.IMAGE_EXTENSIONS, IMAGE_EXTENSIONS)
 
     @staticmethod
     def _signal_double(name: str):

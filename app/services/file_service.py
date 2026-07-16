@@ -39,6 +39,24 @@ class OrphanDirectorySweepResult:
     truncated: bool = False
     error: str = ""
 
+
+@dataclass(frozen=True)
+class MediaDeleteMutationPlan:
+    """Frozen paths that one ``delete_media`` call is allowed to mutate."""
+
+    file_path: str
+    temp_paths: tuple[str, ...]
+    owned_directories: tuple[str, ...]
+
+    @property
+    def authorization_targets(self) -> tuple[str, ...]:
+        return tuple(
+            path
+            for path in (self.file_path, *self.temp_paths, *self.owned_directories)
+            if path
+        )
+
+
 class MediaLibraryService:
     """扫描和重命名媒体，并以任务归属及临时名白名单约束联动删除。"""
 
@@ -516,13 +534,14 @@ class MediaLibraryService:
         return result
 
     @classmethod
-    def _remove_owned_empty_subdirectory(
+    def _owned_empty_subdirectory_candidates(
         cls,
         video: VideoItem,
         file_path: str,
-        temp_paths: list[str],
-    ) -> bool:
-        """仅删除任务声明拥有且已经为空的合集/图集目录，不向父目录递归。"""
+        temp_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Freeze every task-owned directory that ``delete_media`` may rmdir."""
+
         meta = video.meta if isinstance(getattr(video, "meta", None), dict) else {}
         raw_folder_name = str(meta.get("folder_name") or "").strip()
         owns_subdirectory = bool(
@@ -535,40 +554,88 @@ class MediaLibraryService:
             )
         )
         if not owns_subdirectory:
-            return False
+            return ()
 
         expected_name = sanitize_filename(raw_folder_name)
         raw_save_directory = str(meta.get("save_directory") or "").strip()
-        candidates: set[Path] = set()
+        candidates: list[Path] = []
+        seen: set[str] = set()
+
+        def add_candidate(path: Path) -> None:
+            normalized = os.path.normcase(os.path.abspath(os.fspath(path)))
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            candidates.append(path)
+
         if raw_save_directory:
-            candidates.add(Path(os.path.abspath(os.path.expanduser(raw_save_directory))))
+            add_candidate(Path(os.path.abspath(os.path.expanduser(raw_save_directory))))
         for raw_path in (file_path, *temp_paths):
             if raw_path:
-                # abspath 会规整 `..` 但不解引用符号链接；若先用 Path.resolve，
-                # 下方 is_symlink 检查前路径就会变成链接目标，失去这层防护。
                 normalized_path = Path(os.path.abspath(os.path.expanduser(raw_path)))
-                candidates.add(normalized_path.parent)
+                add_candidate(normalized_path.parent)
+
+        return tuple(
+            os.fspath(candidate)
+            for candidate in candidates
+            if os.path.normcase(candidate.name) == os.path.normcase(expected_name)
+        )
+
+    @classmethod
+    def _remove_owned_empty_subdirectories(cls, candidates: tuple[str, ...]) -> bool:
+        """Remove only the frozen non-symlink directories from a mutation plan."""
 
         removed = False
-        for candidate in candidates:
-            if os.path.normcase(candidate.name) != os.path.normcase(expected_name):
-                continue
+        for raw_candidate in candidates:
+            candidate = Path(raw_candidate)
             try:
                 if candidate.is_symlink():
                     continue
-                # rmdir 刻意保持非递归；任何无关文件或嵌套目录都会阻止删除合集目录。
                 candidate.rmdir()
                 removed = True
             except (FileNotFoundError, OSError):
                 continue
         return removed
 
-    def delete_media(self, video: VideoItem) -> bool:
+    def build_delete_media_plan(self, video: VideoItem) -> MediaDeleteMutationPlan:
+        """Enumerate a read-only, reusable plan for every delete side effect."""
+
+        raw_file_path = str(getattr(video, "local_path", "") or "")
+        file_path = os.path.abspath(raw_file_path) if raw_file_path else ""
+        raw_temp_paths = self._iter_download_temp_paths(
+            video,
+            file_path,
+        ) + self._iter_bilibili_temp_paths(video, file_path)
+        temp_paths: list[str] = []
+        seen: set[str] = set()
+        for raw_path in raw_temp_paths:
+            absolute = os.path.abspath(raw_path)
+            normalized = self._normalized_abs(absolute)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            temp_paths.append(absolute)
+        frozen_temp_paths = tuple(temp_paths)
+        return MediaDeleteMutationPlan(
+            file_path=file_path,
+            temp_paths=frozen_temp_paths,
+            owned_directories=self._owned_empty_subdirectory_candidates(
+                video,
+                file_path,
+                frozen_temp_paths,
+            ),
+        )
+
+    def delete_media(
+        self,
+        video: VideoItem,
+        *,
+        mutation_plan: MediaDeleteMutationPlan | None = None,
+    ) -> bool:
         """删除媒体最终文件，并联动清理本任务可能留下的下载临时文件。"""
-        file_path = video.local_path
-        temp_paths = self._iter_download_temp_paths(video, file_path) + self._iter_bilibili_temp_paths(video, file_path)
-        deleted = self._delete_file(file_path, required=True)
-        for temp_path in temp_paths:
+        plan = mutation_plan or self.build_delete_media_plan(video)
+        deleted = self._delete_file(plan.file_path, required=True)
+        for temp_path in plan.temp_paths:
             deleted = self._delete_file(temp_path, required=False) or deleted
-        deleted = self._remove_owned_empty_subdirectory(video, file_path, temp_paths) or deleted
+        deleted = self._remove_owned_empty_subdirectories(plan.owned_directories) or deleted
         return deleted

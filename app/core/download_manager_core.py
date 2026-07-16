@@ -97,6 +97,21 @@ class PendingDownloadQueue:
         removed = self.remove_videos({video_id})
         return removed[0] if removed else None
 
+    def remove_video_instance(self, video: VideoItem) -> int:
+        """只移除与捕获对象相同的排队项，保留复用同一 ID 的新任务。"""
+        with self._condition:
+            retained: deque[tuple[VideoItem, str]] = deque()
+            removed_count = 0
+            while self._items:
+                queued_video, save_dir = self._items.popleft()
+                if queued_video is video:
+                    removed_count += 1
+                    self._track_dequeue(queued_video.id)
+                    continue
+                retained.append((queued_video, save_dir))
+            self._items = retained
+            return removed_count
+
     def remove_videos(self, video_ids: Iterable[str]) -> list[VideoItem]:
         ids = {str(video_id) for video_id in video_ids if video_id}
         if not ids:
@@ -689,6 +704,79 @@ class DownloadManagerCore:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return self._cancel_wait_timeout(video_id, timeout_ms)
+            threading.Event().wait(min(0.01, remaining))
+
+    def cancel_video_and_wait(self, video: VideoItem, timeout_ms: int | None = None) -> str | None:
+        """按 ``VideoItem`` 对象身份取消，避免误伤复用同一 ID 的新任务。"""
+        if video is None:
+            return None
+        video.meta["frontend_status"] = '待下载'
+        video.meta["user_cancel_requested"] = True
+
+        remove_instance = getattr(self.queue, "remove_video_instance", None)
+        result: str | None = "queued" if callable(remove_instance) and remove_instance(video) else None
+        running_workers: list[Any] = []
+        with self._workers_lock:
+            dispatching = any(
+                dispatching_video is video
+                for dispatching_video, _save_dir in list(getattr(self, "_dispatching_tasks", []))
+            )
+            if dispatching:
+                result = "dispatching"
+            for worker in list(self.workers):
+                if getattr(worker, "video", None) is video:
+                    running_workers.append(worker)
+
+        for worker in running_workers:
+            worker.stop()
+        if running_workers:
+            result = "running"
+        if not dispatching and not running_workers:
+            return result
+
+        if timeout_ms is None:
+            timeout_ms = self.WORKER_STOP_TIMEOUT_MS
+        timeout_ms = max(0, int(timeout_ms))
+        deadline = time.monotonic() + (timeout_ms / 1000)
+        tracked_workers = {id(worker): worker for worker in running_workers}
+        stopped_workers: set[int] = set()
+
+        while True:
+            newly_running = []
+            with self._workers_lock:
+                dispatching = any(
+                    dispatching_video is video
+                    for dispatching_video, _save_dir in list(getattr(self, "_dispatching_tasks", []))
+                )
+                for worker in list(self.workers):
+                    identity = id(worker)
+                    if getattr(worker, "video", None) is video and identity not in tracked_workers:
+                        tracked_workers[identity] = worker
+                        newly_running.append(worker)
+
+            for worker in newly_running:
+                worker.stop()
+
+            for identity, worker in list(tracked_workers.items()):
+                if identity in stopped_workers:
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._cancel_wait_timeout(video.id, timeout_ms)
+                wait_timeout_ms = max(1, int(remaining * 1000 + 0.999))
+                try:
+                    wait_ok = bool(worker.wait(wait_timeout_ms))
+                except RuntimeError:
+                    wait_ok = True
+                if wait_ok:
+                    stopped_workers.add(identity)
+
+            if not dispatching and len(stopped_workers) == len(tracked_workers):
+                return result
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self._cancel_wait_timeout(video.id, timeout_ms)
             threading.Event().wait(min(0.01, remaining))
 
     @staticmethod

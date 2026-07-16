@@ -2299,15 +2299,15 @@ class MainWindow(QMainWindow):
         self._frontend_state_service.clear_videos()
 
     def remove_video_row(self, row: int, video_id: str | None = None) -> None:
+        """确认控制器已完成的删除并刷新视图，不再二次修改 AppState。"""
         del row
         pending_ids = self._pending_delete_ids()
         target_id = str(video_id or "")
         if target_id:
             if target_id in pending_ids:
                 pending_ids.remove(target_id)
-            self._frontend_state_service.remove_video(target_id)
         elif pending_ids:
-            self._frontend_state_service.remove_video(pending_ids.pop(0))
+            pending_ids.pop(0)
         self.refresh_frontend_state(topics={"videos.remove"})
 
     def show_selection_dialog(self, items):

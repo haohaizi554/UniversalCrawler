@@ -6,13 +6,14 @@ import threading
 import time
 from collections import deque
 from copy import deepcopy
-from typing import Any
+from typing import Any, Mapping
 
 from app.core.event_bus import EventBus
 from app.debug_logger import debug_logger
 from app.models import VideoItem
 from app.config.settings import normalize_ui_log_max_display_count
 from app.services.cache_service import CacheService
+from app.services.keyed_lock_pool import KeyedLockPool
 
 class AppState:
     """GUI/Web 状态单一来源；修改在锁内完成，并通过 EventBus 广播给前端。"""
@@ -32,6 +33,7 @@ class AppState:
         self._owns_cache_service = cache_service is None
         self.cache_service = cache_service or CacheService(namespace="app_state")
         self._lock = threading.RLock()
+        self._media_item_locks = KeyedLockPool()
         self.videos: dict[str, Any] = {}
         self.current_playing_id: str | None = None
         self.running_state = "空闲中"
@@ -83,18 +85,20 @@ class AppState:
         self._publish_change("app.running_state", {"running_state": self.running_state})
 
     def upsert_video(self, item: Any) -> None:
-        with self._lock:
-            self.videos[item.id] = item
+        with self._media_item_locks.hold(item.id):
+            with self._lock:
+                self.videos[item.id] = item
         self._publish_change("videos.upsert", {"video_id": item.id})
 
     def upsert_videos(self, items: Any) -> list[str]:
         video_items = [item for item in items if getattr(item, "id", None)]
         if not video_items:
             return []
-        with self._lock:
-            for item in video_items:
-                self.videos[item.id] = item
-            video_ids = [item.id for item in video_items]
+        video_ids = [item.id for item in video_items]
+        with self._media_item_locks.hold_many(video_ids):
+            with self._lock:
+                for item in video_items:
+                    self.videos[item.id] = item
         self._publish_change("videos.upsert_many", {"video_ids": video_ids, "count": len(video_ids)})
         return video_ids
 
@@ -102,6 +106,68 @@ class AppState:
         removed = self.remove_videos({video_id}, publish=False)
         if removed:
             self._publish_change("videos.remove", {"video_id": video_id})
+
+    def remove_video_if_matches(
+        self,
+        video_id: str,
+        expected: Any,
+        *,
+        publish: bool = True,
+    ) -> bool:
+        """Remove one item only while the captured object still owns its ID."""
+
+        normalized_id = str(video_id or "")
+        if not normalized_id:
+            return False
+        removed = False
+        matched = False
+        with self._media_item_locks.hold(normalized_id):
+            with self._lock:
+                current = self.videos.get(normalized_id)
+                if current is None:
+                    matched = True
+                elif current is expected:
+                    self.videos.pop(normalized_id, None)
+                    self.task_state.pop(normalized_id, None)
+                    self._last_progress_emit_at.pop(normalized_id, None)
+                    removed = True
+                    matched = True
+        if removed and publish:
+            self._publish_change("videos.remove", {"video_id": normalized_id})
+        return matched
+
+    def remove_videos_if_matches(
+        self,
+        expected_by_id: Mapping[str, Any],
+        *,
+        publish: bool = True,
+    ) -> list[str]:
+        """Remove a frozen batch without deleting same-ID replacements."""
+
+        expected_items = {
+            str(video_id): item
+            for video_id, item in expected_by_id.items()
+            if video_id and item is not None
+        }
+        video_ids = sorted(expected_items)
+        if not video_ids:
+            return []
+        removed: list[str] = []
+        with self._media_item_locks.hold_many(video_ids):
+            with self._lock:
+                for video_id in video_ids:
+                    if self.videos.get(video_id) is not expected_items[video_id]:
+                        continue
+                    self.videos.pop(video_id, None)
+                    self.task_state.pop(video_id, None)
+                    self._last_progress_emit_at.pop(video_id, None)
+                    removed.append(video_id)
+        if removed and publish:
+            self._publish_change(
+                "videos.remove_many",
+                {"video_ids": list(removed), "count": len(removed)},
+            )
+        return removed
 
     def remove_videos(self, video_ids, *, publish: bool = True) -> list[str]:
         """删除视频项时同步清理任务进度节流状态，避免残留进度影响同 ID 新任务。"""
@@ -130,12 +196,15 @@ class AppState:
     def replace_videos(self, videos: dict[str, Any]) -> None:
         """批量替换列表快照，并清除不再存在视频的派生任务状态。"""
         with self._lock:
-            self.videos = deepcopy(videos)
-            valid_ids = set(self.videos)
-            for state in (self.task_state, self._last_progress_emit_at):
-                for video_id in list(state):
-                    if video_id not in valid_ids:
-                        state.pop(video_id, None)
+            coordinated_ids = set(self.videos) | set(videos)
+        with self._media_item_locks.hold_many(coordinated_ids):
+            with self._lock:
+                self.videos = deepcopy(videos)
+                valid_ids = set(self.videos)
+                for state in (self.task_state, self._last_progress_emit_at):
+                    for video_id in list(state):
+                        if video_id not in valid_ids:
+                            state.pop(video_id, None)
         self._publish_change("videos.replace", {"count": len(videos)})
 
     def update_video_state(self, video_id: str, *, status: str | None = None, progress: int | None = None) -> Any | None:

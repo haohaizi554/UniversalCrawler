@@ -320,7 +320,165 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["message"], "permission denied")
         self.assertIs(controller._video_lookup(item.id), item)
-        controller.file_service.delete_media.assert_called_once_with(item)
+        controller.file_service.delete_media.assert_called_once()
+        self.assertIn(
+            "mutation_plan",
+            controller.file_service.delete_media.call_args.kwargs,
+        )
+
+    def test_delete_video_does_not_emit_removed_for_superseded_same_id_item(self):
+        controller, old = self._controller_with_video()
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = old.id
+
+        class RaceManager:
+            def cancel_video_and_wait(self, video):
+                controller._store_video_item(replacement)
+                return "queued"
+
+        controller._dl_manager = RaceManager()
+        controller.file_service.delete_media = Mock(return_value=True)
+
+        result = controller.delete_video(old.id)
+
+        self.assertEqual(result["status"], "superseded")
+        self.assertIs(controller._video_lookup(old.id), replacement)
+        controller.file_service.delete_media.assert_not_called()
+        self.assertNotIn(
+            "video_removed",
+            [call.args[0] for call in controller.bridge.emit.call_args_list],
+        )
+
+    def test_async_delete_video_runs_cancel_wait_and_delete_off_event_loop(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
+        thread_ids: dict[str, int] = {}
+        original_cancel = controller._cancel_delete_context_and_wait
+        original_complete = controller._complete_delete_video
+
+        def cancel_delete(context):
+            thread_ids["cancel"] = threading.get_ident()
+            return original_cancel(context)
+
+        def delete_media(_video, *, mutation_plan):
+            self.assertIsNotNone(mutation_plan)
+            thread_ids["delete"] = threading.get_ident()
+            return True
+
+        def complete_delete(context, *, deleted):
+            thread_ids["complete"] = threading.get_ident()
+            return original_complete(context, deleted=deleted)
+
+        controller._cancel_delete_context_and_wait = cancel_delete
+        controller.file_service.delete_media = delete_media
+        controller._complete_delete_video = complete_delete
+
+        async def run_delete():
+            loop_thread_id = threading.get_ident()
+            result = await controller.async_delete_video(item.id)
+            return loop_thread_id, result
+
+        loop_thread_id, result = asyncio.run(run_delete())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotEqual(thread_ids["cancel"], loop_thread_id)
+        self.assertEqual(thread_ids["cancel"], thread_ids["delete"])
+        self.assertEqual(thread_ids["complete"], thread_ids["delete"])
+
+    def test_async_delete_video_preserves_same_id_replacement_created_during_cancel(self):
+        import asyncio
+
+        controller, old = self._controller_with_video()
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = old.id
+
+        class RaceManager:
+            def cancel_video_and_wait(self, video):
+                controller._store_video_item(replacement)
+                return "queued"
+
+        controller._dl_manager = RaceManager()
+        controller.file_service.delete_media = Mock(return_value=True)
+
+        result = asyncio.run(controller.async_delete_video(old.id))
+
+        self.assertEqual(result["status"], "superseded")
+        self.assertIs(controller._video_lookup(old.id), replacement)
+        controller.file_service.delete_media.assert_not_called()
+
+    def test_async_delete_video_reauthorizes_the_frozen_path_after_cancellation(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root, TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as outside_root:
+            allowed_path = Path(allowed_root) / "inside.mp4"
+            outside_path = Path(outside_root) / "outside.mp4"
+            allowed_path.write_bytes(b"inside")
+            outside_path.write_bytes(b"outside")
+            item.local_path = str(allowed_path)
+
+            class PathSwapManager:
+                def cancel_video_and_wait(self, video):
+                    video.local_path = str(outside_path)
+                    return None
+
+            controller._dl_manager = PathSwapManager()
+            controller.file_service.delete_media = Mock(return_value=True)
+
+            result = asyncio.run(controller.async_delete_video(item.id, (allowed_root,)))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result.get("http_status"), 403)
+        self.assertEqual(result["data"]["code"], "directory_not_authorized")
+        self.assertIs(controller._video_lookup(item.id), item)
+        controller.file_service.delete_media.assert_not_called()
+
+    def test_async_delete_video_keeps_captured_identity_across_initial_authorization(self):
+        import asyncio
+
+        from app.web.controller_config_service import WebControllerConfigService
+
+        controller, old = self._controller_with_video()
+        controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root, TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as outside_root:
+            allowed_path = Path(allowed_root) / "old.mp4"
+            outside_path = Path(outside_root) / "replacement.mp4"
+            allowed_path.write_bytes(b"old")
+            outside_path.write_bytes(b"replacement")
+            old.local_path = str(allowed_path)
+            replacement = VideoItem(url="", title="replacement", source="local")
+            replacement.id = old.id
+            replacement.local_path = str(outside_path)
+            controller.file_service.delete_media = Mock(return_value=True)
+            original_authorize = WebControllerConfigService.authorize_path
+            authorization_calls = 0
+
+            def authorize_then_replace(path, roots):
+                nonlocal authorization_calls
+                result = original_authorize(path, roots)
+                authorization_calls += 1
+                if authorization_calls == 1:
+                    controller._store_video_item(replacement)
+                return result
+
+            with patch.object(
+                WebControllerConfigService,
+                "authorize_path",
+                side_effect=authorize_then_replace,
+            ):
+                result = asyncio.run(
+                    controller.async_delete_video(old.id, (allowed_root,))
+                )
+
+        self.assertEqual(result["status"], "superseded")
+        self.assertIs(controller._video_lookup(old.id), replacement)
+        controller.file_service.delete_media.assert_not_called()
 
     def test_async_delete_video_rejects_media_outside_approved_roots(self):
         import asyncio
@@ -351,10 +509,209 @@ class WebControllerRuntimeTests(unittest.TestCase):
             result = asyncio.run(controller.async_delete_video(item.id, (allowed_root,)))
 
         self.assertEqual(result["status"], "ok")
-        controller.file_service.delete_media.assert_called_once_with(item)
+        controller.file_service.delete_media.assert_called_once()
+        self.assertIn(
+            "mutation_plan",
+            controller.file_service.delete_media.call_args.kwargs,
+        )
+
+    def test_async_delete_video_authorizes_every_frozen_mutation_target_without_local_path(self):
+        import asyncio
+
+        from app.web.controller_config_service import WebControllerConfigService
+
+        controller, item = self._controller_with_video()
+        controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
+        item.local_path = ""
+        item.source = "bilibili"
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root:
+            allowed = Path(allowed_root)
+            video_temp = allowed / "clip_video.m4s"
+            audio_temp = allowed / "clip_audio.m4s"
+            gallery_dir = allowed / "gallery"
+            gallery_dir.mkdir()
+            video_temp.write_bytes(b"video")
+            audio_temp.write_bytes(b"audio")
+            item.meta.update(
+                {
+                    "bvid": "BV1test",
+                    "download_temp_files": [str(video_temp)],
+                    "folder_name": "gallery",
+                    "use_subdir": True,
+                    "save_directory": str(gallery_dir),
+                }
+            )
+            controller.file_service.delete_media = Mock(return_value=True)
+            original_authorize = WebControllerConfigService.authorize_path
+
+            with patch.object(
+                WebControllerConfigService,
+                "authorize_path",
+                wraps=original_authorize,
+            ) as authorize_path:
+                result = asyncio.run(
+                    controller.async_delete_video(item.id, (allowed_root,))
+                )
+
+        authorized = {
+            str(Path(call.args[0]).resolve())
+            for call in authorize_path.call_args_list
+            if call.args and str(call.args[0] or "")
+        }
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(
+            {str(video_temp.resolve()), str(audio_temp.resolve()), str(gallery_dir.resolve())}
+            <= authorized
+        )
+        mutation_plan = controller.file_service.delete_media.call_args.kwargs[
+            "mutation_plan"
+        ]
+        self.assertTrue(
+            {str(video_temp.resolve()), str(audio_temp.resolve()), str(gallery_dir.resolve())}
+            <= {str(Path(path).resolve()) for path in mutation_plan.authorization_targets}
+        )
+
+    def test_async_delete_video_rejects_unauthorized_temp_before_canceling_download(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        cancel_task = Mock(return_value=None)
+        controller._dl_manager = SimpleNamespace(cancel_task=cancel_task)
+        controller.file_service.delete_media = Mock(return_value=True)
+        item.local_path = ""
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root, TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as outside_root:
+            outside_temp = Path(outside_root) / "clip.mp4.tmp"
+            outside_temp.write_bytes(b"partial")
+            item.meta["download_temp_files"] = [str(outside_temp)]
+
+            result = asyncio.run(
+                controller.async_delete_video(item.id, (allowed_root,))
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result.get("http_status"), 403)
+        cancel_task.assert_not_called()
+        controller.file_service.delete_media.assert_not_called()
+        self.assertIs(controller._video_lookup(item.id), item)
+        self.assertFalse(hasattr(item, "_media_delete_generation"))
+
+    def test_async_delete_video_uses_authorized_paths_in_final_mutation_plan(self):
+        import asyncio
+
+        from app.services.file_service import MediaDeleteMutationPlan
+        from app.web.controller_config_service import WebControllerConfigService
+
+        controller, item = self._controller_with_video()
+        controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
+        original_plan = MediaDeleteMutationPlan(
+            file_path="D:/alias/video.mp4",
+            temp_paths=("D:/alias/video.mp4.tmp",),
+            owned_directories=("D:/alias/gallery",),
+        )
+        authorized_plan = MediaDeleteMutationPlan(
+            file_path="D:/canonical/video.mp4",
+            temp_paths=("D:/canonical/video.mp4.tmp",),
+            owned_directories=("D:/canonical/gallery",),
+        )
+        normalized_by_original = dict(
+            zip(original_plan.authorization_targets, authorized_plan.authorization_targets)
+        )
+        controller.file_service.build_delete_media_plan = Mock(return_value=original_plan)
+        controller.file_service.delete_media = Mock(return_value=True)
+
+        with patch.object(
+            WebControllerConfigService,
+            "authorize_path",
+            side_effect=lambda path, _roots: normalized_by_original[path],
+        ):
+            result = asyncio.run(controller.async_delete_video(item.id))
+
+        self.assertEqual(result["status"], "ok")
+        mutation_plan = controller.file_service.delete_media.call_args.kwargs[
+            "mutation_plan"
+        ]
+        self.assertEqual(mutation_plan, authorized_plan)
+
+    def test_async_delete_video_enqueues_removed_before_success_log_can_insert_replacement(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
+        controller.file_service.delete_media = Mock(return_value=True)
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = item.id
+        order: list[str] = []
+
+        def emit(event_type, _payload):
+            if event_type == "video_removed":
+                order.append("removed")
+
+        async def send_recorded(event_type, _payload):
+            if event_type == "log" and "replacement" not in order:
+                controller._store_video_item(replacement)
+                order.append("replacement")
+            elif event_type == "video_removed":
+                order.append("removed")
+
+        controller.bridge.emit = Mock(side_effect=emit)
+        controller._send_recorded_frontend_event = send_recorded
+
+        result = asyncio.run(controller.async_delete_video(item.id))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIs(controller._video_lookup(item.id), replacement)
+        self.assertLess(order.index("removed"), order.index("replacement"))
+
+    def test_async_delete_video_cancellation_still_commits_worker_state_and_cleans_generation(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        controller._dl_manager = SimpleNamespace(cancel_task=Mock(return_value=None))
+        delete_started = threading.Event()
+        release_delete = threading.Event()
+        state_committed = threading.Event()
+        original_complete = controller._complete_delete_video
+
+        def delete_media(*_args, **_kwargs):
+            delete_started.set()
+            release_delete.wait(timeout=2)
+            return True
+
+        def complete_delete(context, *, deleted):
+            try:
+                return original_complete(context, deleted=deleted)
+            finally:
+                state_committed.set()
+
+        controller.file_service.delete_media = delete_media
+        controller._complete_delete_video = complete_delete
+
+        async def cancel_while_worker_is_deleting():
+            task = asyncio.create_task(controller.async_delete_video(item.id))
+            deadline = asyncio.get_running_loop().time() + 1
+            while not delete_started.is_set() and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.001)
+            self.assertTrue(delete_started.is_set())
+            task.cancel()
+            release_delete.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            deadline = asyncio.get_running_loop().time() + 1
+            while not state_committed.is_set() and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.001)
+
+        asyncio.run(cancel_while_worker_is_deleting())
+
+        self.assertTrue(state_committed.is_set())
+        self.assertIsNone(controller._video_lookup(item.id))
+        self.assertFalse(hasattr(item, "_media_delete_generation"))
 
     def test_async_rename_video_delegates_file_check_to_executor_service(self):
         import asyncio
+
+        from app.web.controller_config_service import WebControllerConfigService
 
         controller, item = self._controller_with_video()
         item.local_path = "Z:/definitely-missing/input.mp4"
@@ -364,10 +721,15 @@ class WebControllerRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["message"], "file not found")
-        controller.file_service.rename_media.assert_called_once_with(
-            item,
-            "new title",
-            controller.current_save_dir,
+        rename_target, title, save_dir = controller.file_service.rename_media.call_args.args
+        self.assertEqual(title, "new title")
+        self.assertEqual(
+            rename_target.local_path,
+            WebControllerConfigService.authorize_path(item.local_path, None),
+        )
+        self.assertEqual(
+            save_dir,
+            WebControllerConfigService.authorize_path(controller.current_save_dir, None),
         )
 
     def test_async_rename_video_rejects_media_outside_approved_roots(self):
@@ -387,6 +749,49 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertIn("授权", result["message"])
         controller.file_service.rename_media.assert_not_called()
 
+    def test_async_rename_video_reauthorizes_current_path_inside_worker(self):
+        import asyncio
+
+        from app.web.controller_config_service import WebControllerConfigService
+
+        controller, item = self._controller_with_video()
+        with TemporaryDirectory(ignore_cleanup_errors=True) as allowed_root, TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as outside_root:
+            allowed_path = Path(allowed_root) / "inside.mp4"
+            outside_path = Path(outside_root) / "outside.mp4"
+            allowed_path.write_bytes(b"inside")
+            outside_path.write_bytes(b"outside")
+            item.local_path = str(allowed_path)
+            controller.current_save_dir = allowed_root
+            controller.file_service.rename_media = Mock(
+                return_value=(str(outside_path), str(Path(allowed_root) / "renamed.mp4"))
+            )
+            original_authorize = WebControllerConfigService.authorize_path
+            authorization_calls = 0
+
+            def authorize_then_swap(path, roots):
+                nonlocal authorization_calls
+                result = original_authorize(path, roots)
+                authorization_calls += 1
+                if authorization_calls == 1:
+                    item.local_path = str(outside_path)
+                return result
+
+            with patch.object(
+                WebControllerConfigService,
+                "authorize_path",
+                side_effect=authorize_then_swap,
+            ):
+                result = asyncio.run(
+                    controller.async_rename_video(item.id, "renamed", (allowed_root,))
+                )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result.get("http_status"), 403)
+        self.assertEqual(result["data"]["code"], "directory_not_authorized")
+        controller.file_service.rename_media.assert_not_called()
+
     def test_async_rename_video_allows_media_inside_approved_root(self):
         import asyncio
 
@@ -401,6 +806,142 @@ class WebControllerRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         controller.file_service.rename_media.assert_called_once()
+
+    def test_async_rename_video_uses_authorized_source_and_save_directory(self):
+        import asyncio
+
+        from app.web.controller_config_service import WebControllerConfigService
+
+        controller, item = self._controller_with_video()
+        item.local_path = "D:/alias/input.mp4"
+        controller.current_save_dir = "D:/alias/output"
+        authorized_source = "D:/canonical/input.mp4"
+        authorized_save_dir = "D:/canonical/output"
+        controller.file_service.rename_media = Mock(
+            return_value=(authorized_source, f"{authorized_save_dir}/renamed.mp4")
+        )
+
+        def authorize(path, _roots):
+            if path == item.local_path:
+                return authorized_source
+            if path == controller.current_save_dir:
+                return authorized_save_dir
+            return path
+
+        with patch.object(
+            WebControllerConfigService,
+            "authorize_path",
+            side_effect=authorize,
+        ):
+            result = asyncio.run(controller.async_rename_video(item.id, "renamed"))
+
+        self.assertEqual(result["status"], "ok")
+        rename_target, _title, save_dir = controller.file_service.rename_media.call_args.args
+        self.assertEqual(rename_target.local_path, authorized_source)
+        self.assertEqual(save_dir, authorized_save_dir)
+
+    def test_async_rename_video_enqueues_event_before_same_id_replacement_after_identity_check(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        item.local_path = "D:/downloads/original.mp4"
+        controller.current_save_dir = "D:/downloads"
+        controller.file_service.rename_media = Mock(
+            return_value=(item.local_path, "D:/downloads/renamed.mp4")
+        )
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = item.id
+        replacement.local_path = "D:/downloads/replacement.mp4"
+        log_sent = threading.Event()
+        commit_check_seen = threading.Event()
+        replacement_done = threading.Event()
+        order: list[str] = []
+        event_loop_thread = threading.get_ident()
+        original_lookup = controller._video_lookup
+
+        def lookup(video_id):
+            current = original_lookup(video_id)
+            if (
+                log_sent.is_set()
+                and threading.get_ident() == event_loop_thread
+                and not commit_check_seen.is_set()
+            ):
+                commit_check_seen.set()
+            return current
+
+        def replace_after_commit_check():
+            if commit_check_seen.wait(timeout=2):
+                controller._store_video_item(replacement)
+                order.append("replacement")
+            replacement_done.set()
+
+        def emit(event_type, _payload):
+            if event_type == "video_renamed":
+                order.append("renamed")
+
+        async def send_recorded(event_type, _payload):
+            if event_type == "log":
+                log_sent.set()
+            elif event_type == "video_renamed":
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    replacement_done.wait,
+                    2,
+                )
+                order.append("renamed")
+
+        controller._video_lookup = lookup
+        controller.bridge.emit = Mock(side_effect=emit)
+        controller._send_recorded_frontend_event = send_recorded
+        replacement_thread = threading.Thread(target=replace_after_commit_check)
+        replacement_thread.start()
+        try:
+            result = asyncio.run(controller.async_rename_video(item.id, "renamed"))
+        finally:
+            replacement_thread.join(timeout=2)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(commit_check_seen.is_set())
+        self.assertTrue(replacement_done.is_set())
+        self.assertEqual(order[:2], ["renamed", "replacement"])
+        self.assertIs(controller._video_lookup(item.id), replacement)
+
+    def test_async_rename_video_returns_superseded_when_replaced_after_executor_unlock(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        item.local_path = "D:/downloads/original.mp4"
+        controller.current_save_dir = "D:/downloads"
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = item.id
+        replacement.local_path = "D:/downloads/replacement.mp4"
+        controller.file_service.rename_media = Mock(
+            return_value=(item.local_path, "D:/downloads/renamed.mp4")
+        )
+        controller._send_recorded_frontend_event = AsyncMock()
+
+        async def replace_before_executor_waiter_resumes():
+            loop = asyncio.get_running_loop()
+            original_run_in_executor = loop.run_in_executor
+
+            def run_then_replace(executor, func, *args):
+                future = original_run_in_executor(executor, func, *args)
+                future.add_done_callback(
+                    lambda _future: controller._store_video_item(replacement)
+                )
+                return future
+
+            with patch.object(loop, "run_in_executor", side_effect=run_then_replace):
+                return await controller.async_rename_video(item.id, "renamed")
+
+        result = asyncio.run(replace_before_executor_waiter_resumes())
+
+        self.assertEqual(result["status"], "superseded")
+        self.assertIs(controller._video_lookup(item.id), replacement)
+        self.assertNotIn(
+            "video_renamed",
+            [call.args[0] for call in controller._send_recorded_frontend_event.await_args_list],
+        )
 
     def test_get_media_path_returns_record_path_without_disk_probe(self):
         controller, item = self._controller_with_video()

@@ -1589,7 +1589,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         self.assertEqual(mocked_get.call_count, 1)
         self.assertEqual(
             mocked_get.call_args.kwargs["proxies"],
-            {"http": None, "https": None},
+            {"http": None, "https": None, "all": None},
         )
         mocked_build_merge.assert_called_once()
         self.assertIsNone(mocked_build_merge.call_args.args[2])

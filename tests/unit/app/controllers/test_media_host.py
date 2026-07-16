@@ -202,11 +202,147 @@ class MediaHostControllerMixinTests(unittest.TestCase):
             controller.on_rename_video(table_item)
 
         self.assertEqual(submitted, [f"rename-video-{item.id}"])
-        controller._rename_video_io.assert_called_once_with(item.id, "new", controller.host.current_save_dir)
+        controller._rename_video_io.assert_called_once_with(
+            item.id,
+            "new",
+            controller.host.current_save_dir,
+            expected_video=item,
+        )
         self.assertEqual(item.title, "new")
         self.assertEqual(item.local_path, "D:/media/new.mp4")
         table_item.setToolTip.assert_called_once_with("new")
         controller.host.reorder_video_row.assert_called_once_with(item)
+        self.assertNotIn(item.id, getattr(controller, "_rename_generation_by_id", {}))
+
+    def test_background_rename_cleans_generation_when_cancelled_after_file_io(self):
+        controller = _DummyMediaHostController()
+        item = VideoItem(url="", title="old", source="local")
+        item.local_path = "D:/media/old.mp4"
+        controller.videos[item.id] = item
+        table_item = Mock()
+        controller._rename_video_io = Mock(
+            return_value=SimpleNamespace(
+                status="ok",
+                video_id=item.id,
+                video=item,
+                old_path=item.local_path,
+                new_path="D:/media/new.mp4",
+                new_title="new",
+                error=None,
+            )
+        )
+
+        class CancelledRunner:
+            def submit(self, *, name, fn):
+                del name
+                token = SimpleNamespace(is_cancelled=lambda: True)
+                fn(token)
+                return token
+
+        controller._ensure_short_task_runner = Mock(return_value=CancelledRunner())
+        controller._ensure_ui_callback_invoker = Mock()
+
+        controller._submit_rename_video_task(
+            table_item,
+            item.id,
+            "new",
+            "D:/media",
+            expected_video=item,
+        )
+
+        self.assertNotIn(item.id, getattr(controller, "_rename_generation_by_id", {}))
+
+    def test_background_rename_cleans_generation_when_worker_raises(self):
+        controller = _DummyMediaHostController()
+        item = VideoItem(url="", title="old", source="local")
+        controller.videos[item.id] = item
+        controller._rename_video_io = Mock(side_effect=RuntimeError("rename failed"))
+
+        class ImmediateRunner:
+            def submit(self, *, name, fn):
+                del name
+                return fn(SimpleNamespace(is_cancelled=lambda: False))
+
+        controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
+        controller._ensure_ui_callback_invoker = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "rename failed"):
+            controller._submit_rename_video_task(
+                Mock(),
+                item.id,
+                "new",
+                "D:/media",
+                expected_video=item,
+            )
+
+        self.assertNotIn(item.id, getattr(controller, "_rename_generation_by_id", {}))
+
+    def test_background_rename_cleans_generation_when_task_runner_setup_raises(self):
+        controller = _DummyMediaHostController()
+        item = VideoItem(url="", title="old", source="local")
+        controller.videos[item.id] = item
+        controller._ensure_ui_callback_invoker = Mock(return_value=Mock())
+        controller._ensure_short_task_runner = Mock(side_effect=RuntimeError("runner unavailable"))
+
+        with self.assertRaisesRegex(RuntimeError, "runner unavailable"):
+            controller._submit_rename_video_task(
+                Mock(),
+                item.id,
+                "new",
+                "D:/media",
+                expected_video=item,
+            )
+
+        self.assertNotIn(item.id, getattr(controller, "_rename_generation_by_id", {}))
+
+    def test_background_rename_stale_callback_cannot_match_generation_after_cleanup(self):
+        controller = _DummyMediaHostController()
+        item = VideoItem(url="", title="old", source="local")
+        controller.videos[item.id] = item
+        callbacks = []
+
+        class ImmediateRunner:
+            def submit(self, *, name, fn):
+                del name
+                return fn(SimpleNamespace(is_cancelled=lambda: False))
+
+        def rename_outcome(_video_id, title, _save_dir, *, expected_video):
+            return SimpleNamespace(
+                status="ok",
+                video_id=item.id,
+                video=expected_video,
+                old_path="D:/media/old.mp4",
+                new_path=f"D:/media/{title}.mp4",
+                new_title=title,
+                error=None,
+            )
+
+        controller._ensure_short_task_runner = Mock(return_value=ImmediateRunner())
+        controller._ensure_ui_callback_invoker = Mock(
+            return_value=SimpleNamespace(invoke=callbacks.append)
+        )
+        controller._rename_video_io = Mock(side_effect=rename_outcome)
+        first_item = Mock()
+        second_item = Mock()
+        third_item = Mock()
+
+        controller._submit_rename_video_task(
+            first_item, item.id, "first", "D:/media", expected_video=item
+        )
+        controller._submit_rename_video_task(
+            second_item, item.id, "second", "D:/media", expected_video=item
+        )
+        callbacks[1]()
+        self.assertNotIn(item.id, getattr(controller, "_rename_generation_by_id", {}))
+
+        controller._submit_rename_video_task(
+            third_item, item.id, "third", "D:/media", expected_video=item
+        )
+        current_generation = controller._rename_generation_by_id[item.id]
+        callbacks[0]()
+
+        self.assertIs(controller._rename_generation_by_id[item.id], current_generation)
+        first_item.setToolTip.assert_not_called()
 
     def test_on_delete_video_missing_entry_removes_row_only(self):
         controller = _DummyMediaHostController()
@@ -296,10 +432,54 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         submitted[0][1](token)
         controller._delete_video_context_sync.assert_called_once_with(context)
 
+    def test_optimistic_delete_compare_failure_cleans_generation_and_pending_request(self):
+        controller = _DummyMediaHostController()
+        old = VideoItem(url="", title="old", source="local")
+        old.local_path = __file__
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = old.id
+        controller.videos[old.id] = old
+        generation = object()
+        old._media_delete_generation = generation
+        context = SimpleNamespace(
+            video_id=old.id,
+            video=old,
+            cancel_result=None,
+            detached_from_store=False,
+            superseded=False,
+            generation=generation,
+        )
+
+        def finish_generation(prepared):
+            if getattr(prepared.video, "_media_delete_generation", None) is prepared.generation:
+                delattr(prepared.video, "_media_delete_generation")
+
+        controller._should_delete_media_asynchronously = Mock(return_value=True)
+        controller._prepare_delete_video = Mock(return_value=context)
+        controller._before_media_delete = Mock(
+            side_effect=lambda _context: controller.videos.__setitem__(old.id, replacement)
+        )
+        controller._finish_delete_context_generation = Mock(side_effect=finish_generation)
+        controller._ensure_short_task_runner = Mock()
+
+        controller.on_delete_video(5, old.id)
+
+        self.assertIs(controller.videos[old.id], replacement)
+        self.assertFalse(hasattr(old, "_media_delete_generation"))
+        controller._finish_delete_context_generation.assert_called_once_with(context)
+        controller.host.remove_video_row.assert_called_once_with(5, old.id)
+        controller._ensure_short_task_runner.assert_not_called()
+
     def test_background_delete_waits_for_cancellation_before_file_io(self):
         controller = _DummyMediaHostController()
         item = VideoItem(url="", title="demo", source="local")
-        context = SimpleNamespace(video_id=item.id, video=item, cancel_result=None)
+        context = SimpleNamespace(
+            video_id=item.id,
+            video=item,
+            cancel_result=None,
+            detached_from_store=True,
+            superseded=False,
+        )
         events = []
         controller.file_service = Mock()
         controller.file_service.delete_media.side_effect = lambda _video: events.append("delete") or True
@@ -345,6 +525,44 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.host.add_video_row.assert_called_once_with(item)
         controller.host.report_delete_error.assert_called_once_with("locked")
         self.assertIn(item.id, controller.videos)
+
+    def test_delete_error_does_not_restore_old_item_over_same_id_replacement(self):
+        controller = _DummyMediaHostController()
+        old = VideoItem(url="", title="old", source="local")
+        old.local_path = __file__
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = old.id
+        controller.videos[old.id] = old
+        context = SimpleNamespace(video_id=old.id, video=old, cancel_result=None)
+        outcome = SimpleNamespace(
+            status="error",
+            video_id=old.id,
+            video=old,
+            cancel_result=None,
+            deleted=False,
+            error="locked",
+        )
+        submitted = []
+
+        class DeferredRunner:
+            def submit(self, *, name, fn):
+                submitted.append(fn)
+                return SimpleNamespace(is_cancelled=lambda: False)
+
+        controller._should_delete_media_asynchronously = Mock(return_value=True)
+        controller._prepare_delete_video = Mock(return_value=context)
+        controller._delete_video_context_sync = Mock(return_value=outcome)
+        controller._ensure_short_task_runner = Mock(return_value=DeferredRunner())
+        controller._ensure_ui_callback_invoker = Mock(
+            return_value=SimpleNamespace(invoke=lambda callback: callback())
+        )
+
+        controller.on_delete_video(5, old.id)
+        controller.videos[old.id] = replacement
+        submitted[0](SimpleNamespace(is_cancelled=lambda: False))
+
+        self.assertIs(controller.videos[old.id], replacement)
+        controller.host.add_video_row.assert_not_called()
 
     def test_delete_coordination_delay_only_applies_to_released_media(self):
         controller = _DummyMediaHostController()
@@ -446,6 +664,21 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.host.show_image.assert_called_once_with(image_path)
         controller.host.play_video.assert_called_once_with(video_path)
 
+    def test_play_video_commits_selection_only_after_file_validation(self):
+        controller = _DummyMediaHostController()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = os.path.join(temp_dir, "validated.webp")
+            with open(image_path, "wb") as handle:
+                handle.write(b"image")
+            item = VideoItem(url="", title="validated", source="local")
+            item.local_path = image_path
+            controller.videos[item.id] = item
+
+            controller.play_video(item.id)
+
+        controller.host.select_video_by_id.assert_called_once_with(item.id)
+        controller.host.show_image.assert_called_once_with(image_path)
+
     def test_play_video_uses_system_default_when_playback_setting_requests_it(self):
         controller = _DummyMediaHostController()
         controller._open_path_with_system_default = Mock()
@@ -483,7 +716,7 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.host.get_adjacent_video_id.assert_not_called()
         controller.play_video.assert_not_called()
 
-    def test_switch_preview_selects_adjacent_video_in_host_order(self):
+    def test_switch_preview_defers_selection_until_candidate_validates(self):
         controller = _DummyMediaHostController()
         first = VideoItem(url="", title="one", source="local")
         second = VideoItem(url="", title="two", source="local")
@@ -494,22 +727,26 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.switch_preview(1)
 
         controller.host.get_adjacent_video_id.assert_called_once_with(first.id, 1, wrap=True)
-        controller.host.select_video_by_id.assert_called_once_with(second.id)
+        controller.host.select_video_by_id.assert_not_called()
         controller.play_video.assert_called_once_with(second.id)
 
-    def test_image_slideshow_selects_next_image_in_host_order(self):
+    def test_image_slideshow_does_not_commit_missing_candidate_selection(self):
         controller = _DummyMediaHostController()
         first = VideoItem(url="", title="one", source="local")
         second = VideoItem(url="", title="two", source="local")
+        controller.videos[first.id] = first
+        controller.videos[second.id] = second
         controller.current_playing_id = first.id
         controller.host.get_adjacent_image_id.return_value = second.id
-        controller.play_video = Mock()
 
-        controller.autoplay_next_image_preview()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            second.local_path = os.path.join(temp_dir, "missing.webp")
+            controller.autoplay_next_image_preview()
 
         controller.host.get_adjacent_image_id.assert_called_once_with(first.id, 1, wrap=True)
-        controller.host.select_video_by_id.assert_called_once_with(second.id)
-        controller.play_video.assert_called_once_with(second.id)
+        controller.host.select_video_by_id.assert_not_called()
+        controller.host.report_missing_media.assert_called_once_with()
+        self.assertEqual(controller.current_playing_id, first.id)
 
     def test_autoplay_next_preview_stops_at_end_without_wrap(self):
         controller = _DummyMediaHostController()
@@ -587,6 +824,45 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.dl_manager.cancel_tasks.assert_called_once()
         self.assertEqual(len(next(iter(controller.dl_manager.cancel_tasks.call_args.args))), 10000)
         controller.host.refresh_frontend_state.assert_called_once_with(force=False, topics={"videos.remove_many"})
+
+    def test_clear_queue_keeps_same_id_replacement_inserted_during_cancellation(self):
+        controller = _DummyMediaHostController()
+        controller.app_state = AppState()
+        first = VideoItem(url="https://example.com/first.mp4", title="first", source="douyin")
+        second = VideoItem(url="https://example.com/second.mp4", title="second", source="douyin")
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = second.id
+        for item in (first, second):
+            item.status = "⏳ 等待中"
+            controller.app_state.upsert_video(item)
+        controller.app_state._publish_change = Mock()
+        controller.videos = controller.app_state.videos
+        ids = {first.id, second.id}
+
+        def cancel_then_replace(_video_ids):
+            controller.app_state.upsert_video(replacement)
+            return {video_id: "queued" for video_id in ids}
+
+        controller.dl_manager = SimpleNamespace(cancel_tasks=Mock(side_effect=cancel_then_replace))
+        controller.frontend_state_service = SimpleNamespace(queue_item_ids=Mock(return_value=ids))
+
+        controller.on_clear_queue()
+
+        self.assertNotIn(first.id, controller.app_state.videos)
+        self.assertIs(controller.app_state.videos[second.id], replacement)
+        removal_calls = [
+            call
+            for call in controller.app_state._publish_change.call_args_list
+            if call.args and call.args[0] == "videos.remove_many"
+        ]
+        self.assertEqual(len(removal_calls), 1)
+        self.assertEqual(removal_calls[0].args[1], {"video_ids": [first.id], "count": 1})
+        controller.host.append_log.assert_any_call(f"🗑️ 已删除: {first.title}")
+        self.assertNotIn(
+            f"🗑️ 已删除: {second.title}",
+            [call.args[0] for call in controller.host.append_log.call_args_list],
+        )
+        controller.host.append_log.assert_any_call("🗑️ 已清空下载队列 (1 项)")
 
     def test_queue_item_ids_fallback_uses_memory_state_without_snapshot(self):
         controller = _DummyMediaHostController()

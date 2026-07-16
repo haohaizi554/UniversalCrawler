@@ -214,7 +214,13 @@ class MediaHostControllerMixin:
             self._set_current_playing_id(None)
 
         if self._should_rename_media_in_background():
-            self._submit_rename_video_task(item, vid, new_title, self._host().current_save_dir)
+            self._submit_rename_video_task(
+                item,
+                vid,
+                new_title,
+                self._host().current_save_dir,
+                expected_video=video,
+            )
             return
 
         outcome = self._rename_video_sync(vid, new_title, self._host().current_save_dir)
@@ -226,65 +232,119 @@ class MediaHostControllerMixin:
             return False
         return QThread.currentThread() == app.thread()
 
-    def _submit_rename_video_task(self, item, video_id: str, new_title: str, save_dir: str) -> None:
-        generation_by_id = getattr(self, "_rename_generation_by_id", None)
-        if not isinstance(generation_by_id, dict):
-            generation_by_id = {}
-            self._rename_generation_by_id = generation_by_id
-        generation = int(generation_by_id.get(video_id, 0) or 0) + 1
-        generation_by_id[video_id] = generation
-
-        invoker = self._ensure_ui_callback_invoker()
-        runner = self._ensure_short_task_runner()
+    def _submit_rename_video_task(
+        self,
+        item,
+        video_id: str,
+        new_title: str,
+        save_dir: str,
+        *,
+        expected_video: VideoItem,
+    ) -> None:
+        generation = self._begin_rename_generation(video_id)
+        try:
+            invoker = self._ensure_ui_callback_invoker()
+            runner = self._ensure_short_task_runner()
+        except Exception:
+            self._finish_rename_generation(video_id, generation)
+            raise
 
         def rename_in_background(cancel_token) -> None:
-            outcome = self._rename_video_io(video_id, new_title, save_dir)
-            if cancel_token.is_cancelled():
-                return
-            invoker.invoke(
-                lambda outcome=outcome: self._finalize_rename_video(
-                    item,
-                    outcome,
-                    generation=generation,
-                    video_id=video_id,
+            try:
+                outcome = self._rename_video_io(
+                    video_id,
+                    new_title,
+                    save_dir,
+                    expected_video=expected_video,
                 )
-            )
+                if cancel_token.is_cancelled():
+                    self._finish_rename_generation(video_id, generation)
+                    return
+                invoker.invoke(
+                    lambda outcome=outcome: self._finalize_rename_video(
+                        item,
+                        outcome,
+                        generation=generation,
+                        video_id=video_id,
+                        expected_video=expected_video,
+                    )
+                )
+            except Exception:
+                self._finish_rename_generation(video_id, generation)
+                raise
 
-        runner.submit(name=f"rename-video-{video_id}", fn=rename_in_background)
+        try:
+            runner.submit(name=f"rename-video-{video_id}", fn=rename_in_background)
+        except Exception:
+            self._finish_rename_generation(video_id, generation)
+            raise
+
+    def _begin_rename_generation(self, video_id: str) -> object:
+        generation = object()
+        with self._video_state_guard():
+            generation_by_id = getattr(self, "_rename_generation_by_id", None)
+            if not isinstance(generation_by_id, dict):
+                generation_by_id = {}
+                self._rename_generation_by_id = generation_by_id
+            generation_by_id[video_id] = generation
+        return generation
+
+    def _rename_generation_is_current(self, video_id: str | None, generation: object) -> bool:
+        with self._video_state_guard():
+            generation_by_id = getattr(self, "_rename_generation_by_id", {})
+            return isinstance(generation_by_id, dict) and generation_by_id.get(video_id) is generation
+
+    def _finish_rename_generation(self, video_id: str | None, generation: object) -> None:
+        with self._video_state_guard():
+            generation_by_id = getattr(self, "_rename_generation_by_id", None)
+            if not isinstance(generation_by_id, dict):
+                return
+            if generation_by_id.get(video_id) is generation:
+                generation_by_id.pop(video_id, None)
 
     def _finalize_rename_video(
         self,
         item,
         outcome,
         *,
-        generation: int | None = None,
+        generation: object | None = None,
         video_id: str | None = None,
         fallback_video: VideoItem | None = None,
+        expected_video: VideoItem | None = None,
     ) -> None:
         outcome_video_id = video_id or getattr(outcome, "video_id", None)
-        if generation is not None:
-            generation_by_id = getattr(self, "_rename_generation_by_id", {})
-            if int(generation_by_id.get(outcome_video_id, 0) or 0) != generation:
+        try:
+            if generation is not None and not self._rename_generation_is_current(
+                outcome_video_id,
+                generation,
+            ):
                 return
-        video = getattr(outcome, "video", None) or fallback_video
-        if outcome.status == "ok":
-            if video is None:
-                self._host().report_rename_error(getattr(outcome, "error", None) or "未知错误")
+            if getattr(outcome, "status", None) == "superseded":
                 return
-            new_title = getattr(outcome, "new_title", None) or video.title
-            new_path = getattr(outcome, "new_path", None)
-            video.title = new_title
-            if new_path is not None:
-                video.local_path = new_path
-            item.setToolTip(new_title)
-            self._host().reorder_video_row(video)
-            message = self._rename_outcome_message(outcome)
-            if message:
-                self._host().append_log(message)
-        else:
-            self._host().report_rename_error(outcome.error or "未知错误")
-            if video is not None:
-                item.setText(video.title)
+            if expected_video is not None and self._video_lookup(outcome_video_id) is not expected_video:
+                return
+            video = getattr(outcome, "video", None) or fallback_video
+            if outcome.status == "ok":
+                if video is None:
+                    self._host().report_rename_error(getattr(outcome, "error", None) or "未知错误")
+                    return
+                new_title = getattr(outcome, "new_title", None) or video.title
+                new_path = getattr(outcome, "new_path", None)
+                video.title = new_title
+                if new_path is not None:
+                    video.local_path = new_path
+                item.setToolTip(new_title)
+                self._host().reorder_video_row(video)
+                message = self._rename_outcome_message(outcome)
+                if message:
+                    self._host().append_log(message)
+            else:
+                self._host().report_rename_error(outcome.error or "未知错误")
+                if video is not None:
+                    item.setText(video.title)
+        finally:
+            if generation is not None:
+                self._finish_rename_generation(outcome_video_id, generation)
 
     def on_delete_video(self, row_idx, vid):
         """删除媒体项，并协调宿主与下载队列状态。"""
@@ -305,7 +365,12 @@ class MediaHostControllerMixin:
             before_delete = getattr(self, "_before_media_delete", None)
             if callable(before_delete):
                 before_delete(context)
-            self._optimistic_remove_video_item(vid)
+            if not self._optimistic_remove_video_item(context):
+                finisher = getattr(self, "_finish_delete_context_generation", None)
+                if callable(finisher):
+                    finisher(context)
+                self._remove_video_row_from_host(row_idx, vid)
+                return
             self._remove_video_row_from_host(row_idx, vid)
             self._host().refresh_table_bindings()
             self._submit_delete_video_task(
@@ -362,31 +427,86 @@ class MediaHostControllerMixin:
 
     def _delete_video_context_sync(self, context):
         try:
-            if context.cancel_result is None:
-                self._cancel_delete_context_and_wait(context)
-            deleted = self.file_service.delete_media(context.video)
-        except FileOperationError as exc:
+            try:
+                if self._delete_context_was_superseded(context):
+                    return self._superseded_delete_result(context)
+                if context.cancel_result is None:
+                    self._cancel_delete_context_and_wait(context)
+                if self._delete_context_was_superseded(context):
+                    return self._superseded_delete_result(context)
+                guard_factory = getattr(self, "_media_item_guard", None)
+                guard = (
+                    guard_factory(context.video_id)
+                    if callable(guard_factory)
+                    else self._video_state_guard()
+                )
+                with guard:
+                    if self._delete_context_was_superseded(context):
+                        return self._superseded_delete_result(context)
+                    snapshotter = getattr(self, "_snapshot_video_for_file_mutation", None)
+                    delete_target = (
+                        snapshotter(context.video)
+                        if callable(snapshotter)
+                        else context.video
+                    )
+                    deleted = self.file_service.delete_media(delete_target)
+            except FileOperationError as exc:
+                if self._delete_context_was_superseded(context):
+                    return self._superseded_delete_result(context)
+                return SimpleNamespace(
+                    status="error",
+                    video_id=context.video_id,
+                    video=context.video,
+                    cancel_result=context.cancel_result,
+                    deleted=False,
+                    error=str(exc),
+                )
+            if self._delete_context_was_superseded(context):
+                return self._superseded_delete_result(context)
             return SimpleNamespace(
-                status="error",
+                status="ok",
                 video_id=context.video_id,
                 video=context.video,
                 cancel_result=context.cancel_result,
-                deleted=False,
-                error=str(exc),
+                deleted=deleted,
+                error=None,
             )
+        finally:
+            finisher = getattr(self, "_finish_delete_context_generation", None)
+            if callable(finisher):
+                finisher(context)
+
+    def _delete_context_was_superseded(self, context) -> bool:
+        marker = getattr(self, "_mark_delete_context_superseded", None)
+        if callable(marker):
+            return bool(marker(context))
+        with self._video_state_guard():
+            current = self._video_lookup(context.video_id)
+            valid = current is context.video or (
+                current is None and bool(getattr(context, "detached_from_store", False))
+            )
+        context.superseded = bool(getattr(context, "superseded", False) or not valid)
+        return context.superseded
+
+    @staticmethod
+    def _superseded_delete_result(context):
         return SimpleNamespace(
-            status="ok",
+            status="superseded",
             video_id=context.video_id,
             video=context.video,
             cancel_result=context.cancel_result,
-            deleted=deleted,
+            deleted=False,
             error=None,
         )
 
     def _finalize_delete_video(self, row_idx: int, outcome, *, ui_removed: bool = False) -> None:
+        if outcome.status == "superseded":
+            return
         if outcome.status == "error":
             if ui_removed and getattr(outcome, "video", None) is not None:
-                self._restore_video_item_after_delete_error(outcome.video)
+                if not self._restore_video_item_after_delete_error(outcome.video):
+                    outcome.status = "superseded"
+                    return
                 adder = getattr(self._host(), "add_video_row", None)
                 if callable(adder):
                     adder(outcome.video)
@@ -395,7 +515,9 @@ class MediaHostControllerMixin:
             return
         video_id = getattr(outcome, "video_id", None)
         if video_id and not ui_removed:
-            self._remove_video_item(video_id)
+            if not self._remove_video_item_if_matches(getattr(outcome, "video", None), video_id):
+                outcome.status = "superseded"
+                return
         for message in self._delete_outcome_messages(outcome):
             self._host().append_log(message)
         if not ui_removed:
@@ -414,23 +536,44 @@ class MediaHostControllerMixin:
                 pass
         remover(row_idx)
 
-    def _optimistic_remove_video_item(self, video_id: str) -> None:
-        remover = getattr(self, "_remove_video_item", None)
-        if callable(remover):
-            remover(video_id)
-            return
-        videos = getattr(self, "videos", None)
-        if isinstance(videos, dict):
-            videos.pop(video_id, None)
+    def _delete_item_state_guard(self):
+        guard = getattr(self, "_delete_video_state_guard", None)
+        return guard() if callable(guard) else self._video_state_guard()
 
-    def _restore_video_item_after_delete_error(self, video: VideoItem) -> None:
-        storer = getattr(self, "_store_video_item", None)
-        if callable(storer):
-            storer(video)
-            return
-        videos = getattr(self, "videos", None)
-        if isinstance(videos, dict):
-            videos[video.id] = video
+    def _remove_video_item_if_matches(self, video: VideoItem | None, video_id: str) -> bool:
+        app_state = getattr(self, "app_state", None)
+        app_state_dict = getattr(app_state, "__dict__", {}) if app_state is not None else {}
+        remover = app_state_dict.get("remove_video_if_matches") if isinstance(app_state_dict, dict) else None
+        if not callable(remover) and callable(getattr(type(app_state), "remove_video_if_matches", None)):
+            remover = getattr(app_state, "remove_video_if_matches", None)
+        if callable(remover):
+            return bool(remover(video_id, video))
+        with self._delete_item_state_guard():
+            current = self._video_lookup(video_id)
+            if current is not None and current is not video:
+                return False
+            if current is video:
+                self._remove_video_item(video_id)
+            return True
+
+    def _optimistic_remove_video_item(self, context) -> bool:
+        if not self._remove_video_item_if_matches(context.video, context.video_id):
+            context.superseded = True
+            return False
+        context.detached_from_store = True
+        return True
+
+    def _restore_video_item_after_delete_error(self, video: VideoItem) -> bool:
+        guard_factory = getattr(self, "_media_item_guard", None)
+        guard = guard_factory(video.id) if callable(guard_factory) else self._video_state_guard()
+        with guard:
+            with self._delete_item_state_guard():
+                current = self._video_lookup(video.id)
+                if current is not None and current is not video:
+                    return False
+                if current is None:
+                    self._store_video_item(video)
+                return True
 
     def _should_delete_media_asynchronously(self) -> bool:
         app = self._qt_app_for_background_work()
@@ -446,12 +589,13 @@ class MediaHostControllerMixin:
             def clear_in_background(_cancel_token) -> None:
                 try:
                     ids = self._queue_item_ids_for_clear()
-                    labels = self._queue_delete_log_labels(ids)
+                    expected_items = self._queue_items_for_clear(ids)
+                    labels = self._queue_delete_log_labels(expected_items)
                     if not ids:
                         invoker.invoke(lambda: self._finalize_clear_queue_removal(set(), labels))
                         return
                     self._cancel_queue_items(ids)
-                    removed_ids = self._remove_queue_items_from_state(ids)
+                    removed_ids = self._remove_queue_items_from_state(expected_items)
                 except Exception as exc:  # pragma: no cover - UI 防御性恢复路径
                     message = str(exc)
                     debug_logger.log_exception(
@@ -473,9 +617,10 @@ class MediaHostControllerMixin:
         ids = self._queue_item_ids_for_clear()
         if not ids:
             return
-        labels = self._queue_delete_log_labels(ids)
+        expected_items = self._queue_items_for_clear(ids)
+        labels = self._queue_delete_log_labels(expected_items)
         self._cancel_queue_items(ids)
-        removed_ids = self._remove_queue_items_from_state(ids)
+        removed_ids = self._remove_queue_items_from_state(expected_items)
         self._finalize_clear_queue_removal(removed_ids, labels)
 
     def _should_clear_queue_in_background(self) -> bool:
@@ -537,6 +682,14 @@ class MediaHostControllerMixin:
         with self._video_state_guard():
             return {str(video_id): item for video_id, item in getattr(self, "videos", {}).items()}
 
+    def _queue_items_for_clear(self, video_ids: set[str]) -> dict[str, VideoItem]:
+        source_items = self._video_items_for_clear()
+        return {
+            video_id: source_items[video_id]
+            for video_id in sorted(video_ids)
+            if video_id in source_items
+        }
+
     def _queued_manager_video_ids(self) -> set[str]:
         manager = getattr(self, "dl_manager", None)
         queued_video_ids = getattr(manager, "queued_video_ids", None)
@@ -591,48 +744,55 @@ class MediaHostControllerMixin:
                 details={"video_ids": list(video_ids)},
             )
 
-    def _remove_queue_items_from_state(self, video_ids: set[str]) -> set[str]:
+    def _remove_queue_items_from_state(
+        self,
+        expected_items: dict[str, VideoItem],
+    ) -> set[str]:
+        if not expected_items:
+            return set()
         app_state = getattr(self, "app_state", None)
         if app_state is not None:
             app_state_dict = getattr(app_state, "__dict__", {})
-            remover = app_state_dict.get("remove_videos") if isinstance(app_state_dict, dict) else None
-            if not callable(remover) and callable(getattr(type(app_state), "remove_videos", None)):
-                remover = getattr(app_state, "remove_videos", None)
+            remover = app_state_dict.get("remove_videos_if_matches") if isinstance(app_state_dict, dict) else None
+            if not callable(remover) and callable(getattr(type(app_state), "remove_videos_if_matches", None)):
+                remover = getattr(app_state, "remove_videos_if_matches", None)
             if callable(remover):
-                removed = remover(video_ids, publish=False)
+                removed = remover(expected_items, publish=False)
                 if isinstance(removed, int):
-                    return set(list(video_ids)[: max(0, removed)])
+                    return set(list(expected_items)[: max(0, removed)])
                 return {str(video_id) for video_id in removed if video_id}
             with app_state._lock:
                 removed: set[str] = set()
-                for video_id in video_ids:
-                    if app_state.videos.pop(video_id, None) is None:
+                for video_id, expected_item in expected_items.items():
+                    if app_state.videos.get(video_id) is not expected_item:
                         continue
+                    app_state.videos.pop(video_id, None)
                     removed.add(video_id)
                     app_state.task_state.pop(video_id, None)
                     app_state._last_progress_emit_at.pop(video_id, None)
                 return removed
-        with self._video_state_guard():
-            removed: set[str] = set()
-            for video_id in video_ids:
-                if self.videos.pop(video_id, None) is not None:
+        removed: set[str] = set()
+        guard_factory = getattr(self, "_media_item_guard", None)
+        for video_id, expected_item in expected_items.items():
+            guard = (
+                guard_factory(video_id)
+                if callable(guard_factory)
+                else self._video_state_guard()
+            )
+            with guard:
+                with self._video_state_guard():
+                    if self.videos.get(video_id) is not expected_item:
+                        continue
+                    self.videos.pop(video_id, None)
                     removed.add(video_id)
-            return removed
+        return removed
 
-    def _queue_delete_log_labels(self, video_ids: set[str]) -> dict[str, str]:
+    def _queue_delete_log_labels(
+        self,
+        expected_items: dict[str, VideoItem],
+    ) -> dict[str, str]:
         labels: dict[str, str] = {}
-        app_state = getattr(self, "app_state", None)
-        if app_state is not None and hasattr(app_state, "videos"):
-            lock = getattr(app_state, "_lock", None)
-            if lock is not None:
-                with lock:
-                    source_items = {video_id: app_state.videos.get(video_id) for video_id in video_ids}
-            else:
-                source_items = {video_id: app_state.videos.get(video_id) for video_id in video_ids}
-        else:
-            with self._video_state_guard():
-                source_items = {video_id: self.videos.get(video_id) for video_id in video_ids}
-        for video_id, item in source_items.items():
+        for video_id, item in expected_items.items():
             labels[video_id] = self._delete_log_label(item, fallback=video_id)
         return labels
 
@@ -751,6 +911,7 @@ class MediaHostControllerMixin:
 
     def _start_video_playback(self, video_id: str, video: VideoItem) -> None:
         """路径探测完成后进入实际播放分支。"""
+        self._host().select_video_by_id(video_id)
         self._set_current_playing_id(video_id)
         self._host().announce_playback(video.title)
 
@@ -805,7 +966,6 @@ class MediaHostControllerMixin:
         next_video_id = host.get_adjacent_image_id(anchor_id, 1, wrap=True)
         if not next_video_id or next_video_id == anchor_id:
             return
-        host.select_video_by_id(next_video_id)
         self.play_video(next_video_id)
 
     def _switch_preview(self, direction: int, *, wrap: bool, auto_advance: bool = False) -> None:
@@ -818,7 +978,6 @@ class MediaHostControllerMixin:
             elif not getattr(self, "videos", {}):
                 host.append_log("\u26a0\ufe0f \u961f\u5217\u4e3a\u7a7a\uff0c\u6ca1\u6709\u53ef\u5207\u6362\u7684\u8d44\u6e90")
             return
-        host.select_video_by_id(next_video_id)
         self.play_video(next_video_id)
 
     def _is_image_file(self, file_path: str) -> bool:

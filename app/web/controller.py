@@ -14,12 +14,12 @@ from app.config import cfg
 from app.services.media_library_runtime import MediaLibraryMixin, MediaRenameOutcome
 from shared.controller_session import ControllerSessionMixin
 from app.core.download_manager import DownloadManager
-from app.core.media_filter import should_skip_for_video_only
+from app.core.media_filter import IMAGE_EXTENSIONS as CORE_IMAGE_EXTENSIONS, should_skip_for_video_only
 from app.core.plugin_registry import registry
 from app.debug_logger import debug_logger
 from app.exceptions import ConfigValidationError, FileOperationError, MediaScanError
 from app.models import VideoItem
-from app.services.file_service import MediaLibraryService
+from app.services.file_service import MediaDeleteMutationPlan, MediaLibraryService
 from app.services.frontend_event_aggregator import FrontendEventPriority, priority_for_topic, sections_for_topic
 from app.services.frontend_state_service import FrontendStateService
 from shared.icon_contract import icon_manifest
@@ -277,7 +277,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
 
     MAX_CONCURRENT_API_OPS = 16
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
-    IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+    IMAGE_EXTENSIONS = CORE_IMAGE_EXTENSIONS
     DOWNLOAD_LOG_COMPONENT = "WebController"
     DOWNLOAD_FINISHED_STATUS_CODE = "WEB_DL_FINISH"
     DOWNLOAD_ERROR_STATUS_CODE = "WEB_DL_ERROR"
@@ -355,13 +355,15 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         return self._videos_lock
 
     def _store_video_item(self, item: VideoItem) -> None:
-        with self._videos_lock:
-            self.videos[item.id] = item
+        with self._media_item_guard(item.id):
+            with self._videos_lock:
+                self.videos[item.id] = item
 
     def _store_video_items(self, items: list[VideoItem]) -> None:
-        with self._videos_lock:
-            for item in list(items or []):
-                if getattr(item, "id", None):
+        video_items = [item for item in list(items or []) if getattr(item, "id", None)]
+        with self._media_item_lock_pool().hold_many(item.id for item in video_items):
+            with self._videos_lock:
+                for item in video_items:
                     self.videos[item.id] = item
 
     def _remove_video_item(self, video_id: str) -> VideoItem | None:
@@ -1082,6 +1084,8 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         outcome = self._delete_video_sync(video_id)
         if outcome.status == "missing":
             return {"status": "ok", "message": "already deleted", "data": {"video_id": video_id, "missing": True}}
+        if outcome.status == "superseded":
+            return {"status": "superseded", "message": "delete superseded", "data": {"video_id": video_id}}
         if outcome.status == "error":
             self.bridge.emit("log", {"message": f"❌ 删除文件失败: {outcome.error}"})
             return {"status": "error", "message": outcome.error or "delete failed", "data": {"video_id": video_id}}
@@ -1095,38 +1099,111 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         }
 
     async def async_delete_video(self, video_id: str, approved_roots: tuple[str, ...] | None = None):
-        """异步删除：文件 I/O 在线程池中执行，状态事件在当前协程内直接发送。"""
+        """异步删除：在线程池执行 I/O，并在同一 per-ID 提交边界内入队删除事件。"""
         import asyncio
-        video = self._video_lookup(video_id)
-        if video is not None and video.local_path:
-            try:
-                WebControllerConfigService.authorize_path(video.local_path, approved_roots)
-            except PermissionError as exc:
-                await self._send_recorded_frontend_event("log", {"message": f"❌ 删除文件失败: {exc}"})
-                return {
-                    "status": "error",
-                    "message": str(exc),
-                    "http_status": 403,
-                    "data": {"video_id": video_id, "code": "directory_not_authorized"},
-                }
-        context = self._begin_delete_video(video_id)
+        context = self._prepare_delete_video(video_id)
         if context is None:
             return {"status": "ok", "message": "already deleted", "data": {"video_id": video_id, "missing": True}}
-        try:
-            deleted = await asyncio.get_running_loop().run_in_executor(
-                None, self.file_service.delete_media, context.video
+
+        def authorize_mutation_plan(
+            plan: MediaDeleteMutationPlan,
+        ) -> MediaDeleteMutationPlan:
+            authorize = WebControllerConfigService.authorize_path
+            return MediaDeleteMutationPlan(
+                file_path=(
+                    authorize(plan.file_path, approved_roots)
+                    if plan.file_path
+                    else ""
+                ),
+                temp_paths=tuple(
+                    authorize(path, approved_roots) for path in plan.temp_paths
+                ),
+                owned_directories=tuple(
+                    authorize(path, approved_roots)
+                    for path in plan.owned_directories
+                ),
             )
+
+        def build_authorized_plan(video: VideoItem) -> MediaDeleteMutationPlan:
+            return authorize_mutation_plan(
+                self.file_service.build_delete_media_plan(video)
+            )
+
+        initial_delete_target = self._snapshot_video_for_file_mutation(context.video)
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                build_authorized_plan,
+                initial_delete_target,
+            )
+        except PermissionError as exc:
+            self._finish_delete_context_generation(context)
+            await self._send_recorded_frontend_event("log", {"message": f"❌ 删除文件失败: {exc}"})
+            return {
+                "status": "error",
+                "message": str(exc),
+                "http_status": 403,
+                "data": {"video_id": video_id, "code": "directory_not_authorized"},
+            }
+        except asyncio.CancelledError:
+            self._finish_delete_context_generation(context)
+            raise
+        except Exception:
+            self._finish_delete_context_generation(context)
+            raise
+
+        def cancel_and_delete():
+            try:
+                self._cancel_delete_context_and_wait(context)
+                if context.superseded or self._mark_delete_context_superseded(context):
+                    outcome = self._superseded_delete_outcome(context)
+                    self._finish_delete_context_generation(context)
+                    return outcome
+                with self._media_item_guard(context.video_id):
+                    if self._mark_delete_context_superseded(context):
+                        outcome = self._superseded_delete_outcome(context)
+                        self._finish_delete_context_generation(context)
+                        return outcome
+                    delete_target = self._snapshot_video_for_file_mutation(context.video)
+                    mutation_plan = build_authorized_plan(delete_target)
+                    if self._mark_delete_context_superseded(context):
+                        outcome = self._superseded_delete_outcome(context)
+                        self._finish_delete_context_generation(context)
+                        return outcome
+                    deleted = self.file_service.delete_media(
+                        delete_target,
+                        mutation_plan=mutation_plan,
+                    )
+                    outcome = self._complete_delete_video(context, deleted=deleted)
+                    if outcome.status == "ok":
+                        self.bridge.emit("video_removed", {"video_id": video_id})
+                    return outcome
+            except Exception:
+                self._finish_delete_context_generation(context)
+                raise
+
+        try:
+            worker = asyncio.get_running_loop().run_in_executor(None, cancel_and_delete)
+            outcome = await asyncio.shield(worker)
+        except PermissionError as exc:
+            await self._send_recorded_frontend_event("log", {"message": f"❌ 删除文件失败: {exc}"})
+            return {
+                "status": "error",
+                "message": str(exc),
+                "http_status": 403,
+                "data": {"video_id": video_id, "code": "directory_not_authorized"},
+            }
         except FileOperationError as exc:
             await self._send_recorded_frontend_event("log", {"message": f"❌ 删除文件失败: {exc}"})
             return {"status": "error", "message": str(exc), "data": {"video_id": video_id}}
-        outcome = self._complete_delete_video(context, deleted=deleted)
+        if outcome.status == "superseded":
+            return {"status": "superseded", "message": "delete superseded", "data": {"video_id": video_id}}
         for message in self._delete_outcome_messages(outcome):
             await self._send_recorded_frontend_event("log", {"message": message})
-        await self._send_recorded_frontend_event("video_removed", {"video_id": video_id})
         return {
             "status": "ok",
             "message": "deleted",
-            "data": {"video_id": video_id, "deleted": deleted},
+            "data": {"video_id": video_id, "deleted": outcome.deleted},
         }
 
     def rename_video(self, video_id: str, new_title: str) -> dict:
@@ -1149,7 +1226,7 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
         new_title: str,
         approved_roots: tuple[str, ...] | None = None,
     ) -> dict:
-        """异步版重命名：文件 I/O 在线程池中执行，WebSocket 消息直接 await 发送。"""
+        """异步重命名：在线程池执行 I/O，并把身份确认与事件入队原子化。"""
         import asyncio
         video = self._video_lookup(video_id)
         if not video:
@@ -1159,9 +1236,10 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
             return {"status": "error", "message": "标题不能为空"}
         if not video.local_path:
             return {"status": "error", "message": "文件不存在，无法重命名"}
+        save_dir = self.current_save_dir
         try:
             WebControllerConfigService.authorize_path(video.local_path, approved_roots)
-            WebControllerConfigService.authorize_path(self.current_save_dir, approved_roots)
+            WebControllerConfigService.authorize_path(save_dir, approved_roots)
         except PermissionError as exc:
             await self._send_recorded_frontend_event("log", {"message": f"❌ 重命名失败: {exc}"})
             return {
@@ -1170,25 +1248,77 @@ class WebController(ControllerSessionMixin, MediaLibraryMixin):
                 "http_status": 403,
                 "data": {"video_id": video_id, "code": "directory_not_authorized"},
             }
-        try:
-            old_path, new_path = await asyncio.get_running_loop().run_in_executor(
-                None, self.file_service.rename_media, video, normalized_title, self.current_save_dir
-            )
-            video.title = normalized_title
-            video.local_path = new_path
-            message = self._rename_outcome_message(
-                MediaRenameOutcome(
+
+        def rename_authorized() -> MediaRenameOutcome:
+            with self._media_item_guard(video_id):
+                current = self._video_lookup(video_id)
+                if current is not video:
+                    return MediaRenameOutcome(
+                        status="superseded",
+                        video_id=video_id,
+                        video=video,
+                        error="rename superseded",
+                    )
+                rename_target = self._snapshot_video_for_file_mutation(video)
+                authorized_source = WebControllerConfigService.authorize_path(
+                    rename_target.local_path,
+                    approved_roots,
+                )
+                authorized_save_dir = WebControllerConfigService.authorize_path(
+                    save_dir,
+                    approved_roots,
+                )
+                rename_target.local_path = authorized_source
+                old_path, new_path = self.file_service.rename_media(
+                    rename_target,
+                    normalized_title,
+                    authorized_save_dir,
+                )
+                video.title = normalized_title
+                video.local_path = new_path
+                return MediaRenameOutcome(
                     status="ok",
                     video_id=video_id,
                     video=video,
                     old_path=old_path,
                     new_path=new_path,
+                    new_title=normalized_title,
                 )
+
+        try:
+            outcome = await asyncio.get_running_loop().run_in_executor(
+                None,
+                rename_authorized,
             )
+            if outcome.status != "ok":
+                return {"status": outcome.status, "message": outcome.error or "rename superseded"}
+            with self._media_item_guard(video_id):
+                if self._video_lookup(video_id) is not video:
+                    return {"status": "superseded", "message": "rename superseded"}
+            message = self._rename_outcome_message(outcome)
             if message:
                 await self._send_recorded_frontend_event("log", {"message": message})
-            await self._send_recorded_frontend_event("video_renamed", {"video_id": video_id, "new_title": video.title, "new_path": new_path})
+            with self._media_item_guard(video_id):
+                if self._video_lookup(video_id) is not video:
+                    return {"status": "superseded", "message": "rename superseded"}
+                renamed_title = video.title
+                self.bridge.emit(
+                    "video_renamed",
+                    {
+                        "video_id": video_id,
+                        "new_title": renamed_title,
+                        "new_path": outcome.new_path,
+                    },
+                )
             return {"status": "ok"}
+        except PermissionError as exc:
+            await self._send_recorded_frontend_event("log", {"message": f"❌ 重命名失败: {exc}"})
+            return {
+                "status": "error",
+                "message": str(exc),
+                "http_status": 403,
+                "data": {"video_id": video_id, "code": "directory_not_authorized"},
+            }
         except FileOperationError as exc:
             await self._send_recorded_frontend_event("log", {"message": f"❌ 重命名失败: {exc}"})
             return {"status": "error", "message": str(exc)}

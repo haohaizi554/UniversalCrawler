@@ -191,7 +191,7 @@ class PlaybackCases:
             """
         )
 
-        self.assertEqual(result["selections"], ["old-video", "new-video"])
+        self.assertEqual(result["selections"], ["new-video"])
         self.assertEqual(result["metadataPatches"], [])
         self.assertFalse(any("old-video" in message or "文件不存在" in message for message in result["logs"]))
         self.assertIsNone(result["source"])
@@ -528,6 +528,94 @@ class PlaybackCases:
         self.assertEqual(result["wrappedTo"], "image-a")
         self.assertTrue(result["timerRearmed"])
 
+    def test_11efac_missing_image_candidate_keeps_selection_and_resumes_with_one_click(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              const originalFetch = window.fetch;
+              const originalSetTimeout = window.setTimeout;
+              const originalClearTimeout = window.clearTimeout;
+              const timers = [];
+              const selections = [];
+              const image = id => ({
+                id,
+                title: id,
+                filename: `${id}.png`,
+                local_path: `D:/${id}.png`,
+                content_type: 'image'
+              });
+              const activeState = {
+                completed_items: [image('image-a'), image('missing-image')],
+                settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': { manual_image_switch: false } }
+              };
+              window.UcpPlaybackController.configure({
+                getState: () => activeState,
+                getSelectedCompletedId: () => selections.at(-1) || '',
+                setSelectedCompletedId: id => { selections.push(String(id || '')); },
+                patchCompletedMetadata: () => false,
+                t: value => String(value || ''),
+                byId: id => document.getElementById(id),
+                esc,
+                frontendAction: () => {},
+                appendLog: () => {},
+                renderCompletedDetail: () => {}
+              });
+              window.fetch = url => Promise.resolve(new Response('', {
+                status: String(url).includes('missing-image') ? 404 : 206
+              }));
+              window.setTimeout = (callback, delay) => {
+                const timer = { id: timers.length + 1, callback, delay };
+                timers.push(timer);
+                return timer.id;
+              };
+              window.clearTimeout = () => {};
+              try {
+                await window.UcpPlaybackController.playCompleted('image-a');
+                const failedAdvanceTimer = timers.at(-1);
+                failedAdvanceTimer.callback();
+                await new Promise(resolve => originalSetTimeout(resolve, 0));
+                await new Promise(resolve => originalSetTimeout(resolve, 0));
+                const preview = document.querySelector('#previewArea .preview-image');
+                const button = document.getElementById('playBtn');
+                const failed = {
+                  selections: [...selections],
+                  previewSource: preview ? preview.getAttribute('src') : '',
+                  buttonTitle: button.title,
+                  timerCount: timers.length
+                };
+
+                button.click();
+                const resumed = {
+                  selections: [...selections],
+                  buttonTitle: button.title,
+                  timerRearmed: timers.length === failed.timerCount + 1
+                };
+                return { failed, resumed };
+              } finally {
+                window.UcpPlaybackController.dispose();
+                window.fetch = originalFetch;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                if (typeof configurePlaybackControllerHelpers === 'function') configurePlaybackControllerHelpers();
+              }
+            }
+            """
+        )
+
+        self.assertEqual(result["failed"], {
+            "selections": ["image-a"],
+            "previewSource": "/api/media/image-a",
+            "buttonTitle": "播放",
+            "timerCount": 1,
+        })
+        self.assertEqual(result["resumed"], {
+            "selections": ["image-a"],
+            "buttonTitle": "暂停",
+            "timerRearmed": True,
+        })
+
     def test_11efb_stale_fullscreen_request_exits_when_current_run_has_no_owner(self):
         self._goto_ready()
 
@@ -826,7 +914,7 @@ class PlaybackCases:
         )
 
         self.assertFalse(result["playResult"])
-        self.assertEqual(result["selectedId"], "pending-delete")
+        self.assertEqual(result["selectedId"], "")
         self.assertEqual(result["playCalls"], 0)
         self.assertEqual(result["actions"], [{"action": "delete_item", "payload": {"id": "pending-delete"}}])
         self.assertEqual(result["metadataPatches"], [])
@@ -897,7 +985,7 @@ class PlaybackCases:
         )
 
         self.assertFalse(result["playResult"])
-        self.assertEqual(result["selectedId"], "removed-during-validation")
+        self.assertEqual(result["selectedId"], "")
         self.assertEqual(result["playCalls"], 0)
         self.assertIsNone(result["source"])
         self.assertEqual(result["videoDisplay"], "none")
@@ -1054,7 +1142,7 @@ class PlaybackCases:
             """
         )
 
-        self.assertEqual(result["selectedId"], "missing-media")
+        self.assertEqual(result["selectedId"], "")
         self.assertIsNone(result["source"])
         self.assertNotEqual(result["videoDisplay"], "block")
         self.assertNotEqual(result["previewDisplay"], "none")

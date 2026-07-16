@@ -441,6 +441,35 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertTrue(running.meta["user_cancel_requested"])
         worker.stop.assert_called_once()
 
+    def test_cancel_video_and_wait_matches_only_the_captured_instance(self):
+        manager = DownloadManagerCore.__new__(DownloadManagerCore)
+        manager.queue = PendingDownloadQueue()
+        manager._workers_lock = threading.RLock()
+        old = VideoItem(url="https://example.com/old.mp4", title="old", source="douyin")
+        replacement = VideoItem(
+            url="https://example.com/replacement.mp4",
+            title="replacement",
+            source="douyin",
+        )
+        replacement.id = old.id
+        old_worker = _FakeWorker(old, "downloads")
+        replacement_worker = _FakeWorker(replacement, "downloads")
+        manager.workers = [old_worker, replacement_worker]
+        manager._dispatching_tasks = [(replacement, "downloads")]
+        manager.queue.put((old, "downloads"))
+        manager.queue.put((replacement, "downloads"))
+
+        result = manager.cancel_video_and_wait(old, timeout_ms=50)
+
+        self.assertEqual(result, "running")
+        old_worker.stop.assert_called_once()
+        old_worker.wait.assert_called_once()
+        replacement_worker.stop.assert_not_called()
+        replacement_worker.wait.assert_not_called()
+        self.assertFalse(replacement.meta.get("user_cancel_requested", False))
+        self.assertIs(manager.queue.get_nowait()[0], replacement)
+        self.assertTrue(manager.queue.empty())
+
     def test_pending_work_counts_includes_dequeued_dispatching_tasks(self):
         manager = DownloadManagerCore.__new__(DownloadManagerCore)
         manager.queue = PendingDownloadQueue()

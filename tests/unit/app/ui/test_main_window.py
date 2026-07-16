@@ -6,6 +6,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from app.controllers.application_controller import ApplicationController
+from app.core.event_bus import EventBus
+from app.models import VideoItem
+from app.services.app_state import AppState
 from app.services.frontend_state_service import FrontendStateService
 from app.ui.main_window import MainWindow
 from app.ui.viewmodels.frontend_action_worker import FrontendActionRequest, FrontendActionResult
@@ -262,7 +266,7 @@ class MainWindowTests(unittest.TestCase):
         window.sig_delete_video.emit.assert_called_once_with(-1, "video-1")
         self.assertEqual(window._pending_delete_video_ids, ["video-1"])
 
-    def test_remove_video_row_uses_completed_video_id_for_burst_deletes(self):
+    def test_remove_video_row_acknowledges_completed_id_without_second_state_write(self):
         window = self._make_window()
         window._frontend_state_service = Mock()
         window.refresh_frontend_state = Mock()
@@ -270,8 +274,41 @@ class MainWindowTests(unittest.TestCase):
 
         MainWindow.remove_video_row(window, 0, "video-2")
 
-        window._frontend_state_service.remove_video.assert_called_once_with("video-2")
+        window._frontend_state_service.remove_video.assert_not_called()
         self.assertEqual(window._pending_delete_video_ids, ["video-1", "video-3"])
+        window.refresh_frontend_state.assert_called_once_with(topics={"videos.remove"})
+
+    def test_remove_video_row_does_not_delete_same_id_replacement_after_controller_commit(self):
+        cache_service = Mock()
+        cache_service.get.return_value = "queue"
+        state = AppState(event_bus=EventBus(), cache_service=cache_service)
+        old = VideoItem(url="", title="old", source="local")
+        replacement = VideoItem(url="", title="replacement", source="local")
+        replacement.id = old.id
+        state.upsert_video(old)
+
+        controller = SimpleNamespace(app_state=state, videos=state.videos)
+        removed = ApplicationController._remove_video_item(controller, old.id)
+        self.assertIs(removed, old)
+        state.upsert_video(replacement)
+
+        service = FrontendStateService.__new__(FrontendStateService)
+        service._destroyed = False
+        service.app_state = state
+        service._active_event_time_cache = {}
+        service._cancel_metadata_retry = Mock()
+        service._clear_metadata_empty_failures = Mock()
+        service._drop_metadata_probe_queue_for = Mock()
+
+        window = self._make_window()
+        window._frontend_state_service = service
+        window.refresh_frontend_state = Mock()
+        window._pending_delete_video_ids = [old.id]
+
+        MainWindow.remove_video_row(window, 0, old.id)
+
+        self.assertIs(state.videos[old.id], replacement)
+        self.assertEqual(window._pending_delete_video_ids, [])
         window.refresh_frontend_state.assert_called_once_with(topics={"videos.remove"})
 
     def test_video_operation_refreshes_are_topic_scoped(self):

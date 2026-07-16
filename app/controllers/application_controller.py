@@ -22,6 +22,7 @@ from app.controllers.desktop_host import DesktopHostAdapter
 from app.controllers.download_controller_mixin import DownloadControllerMixin
 from app.controllers.event_bridge import DomainEventBridge
 from app.core.event_bus import EventBus
+from app.core.media_filter import IMAGE_EXTENSIONS as CORE_IMAGE_EXTENSIONS
 from app.controllers.media_host_controller_mixin import MediaHostControllerMixin
 from app.services.media_library_runtime import MediaLibraryMixin
 from app.core.download_manager import DownloadManager
@@ -57,7 +58,7 @@ class ApplicationController(
     """组装桌面 UI、服务、事件桥和长生命周期 worker。"""
 
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".m4v", ".webm", ".m3u8", ".ts")
-    IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+    IMAGE_EXTENSIONS = CORE_IMAGE_EXTENSIONS
     MEDIA_FILE_EXTENSIONS = VIDEO_EXTENSIONS + IMAGE_EXTENSIONS
     DOWNLOAD_LOG_COMPONENT = "ApplicationController"
     DOWNLOAD_FINISHED_STATUS_CODE = "APP_DL_FINISH"
@@ -323,8 +324,9 @@ class ApplicationController(
         if app_state is not None:
             app_state.upsert_video(item)
             return
-        with self._video_state_guard():
-            self.videos[item.id] = item
+        with self._media_item_guard(item.id):
+            with self._video_state_guard():
+                self.videos[item.id] = item
 
     def _store_video_items(self, items: Sequence[VideoItem]) -> None:
         video_items = [item for item in list(items or []) if getattr(item, "id", None)]
@@ -336,9 +338,10 @@ class ApplicationController(
             if callable(upsert_many):
                 upsert_many(video_items)
                 return
-        with self._video_state_guard():
-            for item in video_items:
-                self.videos[item.id] = item
+        with self._media_item_lock_pool().hold_many(item.id for item in video_items):
+            with self._video_state_guard():
+                for item in video_items:
+                    self.videos[item.id] = item
 
     def _remove_video_item(self, video_id: str) -> VideoItem | None:
         app_state = getattr(self, "app_state", None)
