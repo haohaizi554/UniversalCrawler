@@ -1309,6 +1309,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider = KuaishouSpider.__new__(KuaishouSpider)
         spider._goto_with_retry = Mock(return_value=True)
         spider._is_logged_in = Mock(return_value=True)
+        spider._profile_session_valid = Mock(return_value=True)
         spider._refresh_logged_in_state = Mock(return_value=False)
         spider._user_cookie_values = Mock(return_value={"uid"})
         spider._persist_authenticated_state = Mock(return_value=True)
@@ -1343,7 +1344,7 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertFalse(result)
         spider._persist_authenticated_state.assert_not_called()
 
-    @patch("app.spiders.kuaishou.spider.os.path.exists", return_value=True)
+    @patch("app.spiders.kuaishou.auth_runtime.os.path.exists", return_value=True)
     def test_kuaishou_invalid_cookie_keeps_page_for_manual_login(self, _mock_exists):
         """验证 `test_kuaishou_invalid_cookie_keeps_page_for_manual_login` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
         spider = KuaishouSpider.__new__(KuaishouSpider)
@@ -1447,7 +1448,7 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertIs(result, expected_page)
         spider._search_user_via_site.assert_called_once_with(page, context, "4753241670")
 
-    @patch("app.spiders.kuaishou.spider.requests.get")
+    @patch("app.spiders.kuaishou.share_runtime.curl_get")
     def test_kuaishou_normalize_keyword_extracts_url_from_share_text(self, mocked_get):
         """分享文案中的短链应先抽取 URL，再展开为真实详情链接。"""
         spider = KuaishouSpider.__new__(KuaishouSpider)
@@ -1455,6 +1456,9 @@ class SpiderHelperTests(unittest.TestCase):
         spider.log = Mock()
         response = Mock()
         response.url = "https://www.kuaishou.com/short-video/3xj8abcde"
+        response.status_code = 200
+        response.headers = {}
+        response.encoding = "utf-8"
         mocked_get.return_value = response
 
         normalized = spider._normalize_keyword("复制这条消息，打开快手查看作品 https://v.kuaishou.com/abc123/ ")
@@ -1465,8 +1469,9 @@ class SpiderHelperTests(unittest.TestCase):
             mocked_get.call_args.kwargs["proxies"],
             {"http": None, "https": None, "all": None},
         )
+        spider._close_pending_share_response()
 
-    @patch("app.spiders.kuaishou.spider.requests.get")
+    @patch("app.spiders.kuaishou.share_runtime.curl_get")
     def test_kuaishou_short_link_rejects_host_marker_in_private_url_path(self, mocked_get):
         spider = KuaishouSpider.__new__(KuaishouSpider)
         malicious = "http://127.0.0.1/v.kuaishou.com/abc123"
@@ -1476,7 +1481,7 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(result, malicious)
         mocked_get.assert_not_called()
 
-    @patch("app.spiders.kuaishou.spider.requests.get")
+    @patch("app.spiders.kuaishou.share_runtime.requests.get")
     def test_kuaishou_detail_fetch_rejects_private_url_with_platform_path(self, mocked_get):
         spider = self._make_kuaishou_capture_spider()
 
@@ -1487,7 +1492,7 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(result, ("", ""))
         mocked_get.assert_not_called()
 
-    @patch("app.spiders.kuaishou.spider.requests.get")
+    @patch("app.spiders.kuaishou.share_runtime.requests.get")
     def test_kuaishou_try_direct_share_download_emits_without_browser(self, mocked_get):
         """分享详情链接应优先走 HTTP 直连，不依赖浏览器捕获媒体流。"""
         spider = self._make_kuaishou_capture_spider()
@@ -1500,6 +1505,8 @@ class SpiderHelperTests(unittest.TestCase):
             '{"caption":"分享作品","photoUrl":"https://cdn.example.com/video.mp4"}}};'
             "</script>"
         )
+        response.iter_content.return_value = [response.text.encode("utf-8")]
+        response.encoding = "utf-8"
         response.raise_for_status = Mock()
         mocked_get.return_value = response
 
@@ -1513,13 +1520,15 @@ class SpiderHelperTests(unittest.TestCase):
             meta={"trace_id": "ks-trace-1"},
         )
 
-    @patch("app.spiders.kuaishou.spider.requests.get")
+    @patch("app.spiders.kuaishou.share_runtime.requests.get")
     def test_kuaishou_fetch_share_detail_uses_task_timeout(self, mocked_get):
         spider = self._make_kuaishou_capture_spider()
         spider.config = {"timeout": 90}
         response = Mock()
         response.url = "https://www.kuaishou.com/short-video/3xj8abcde"
         response.text = ""
+        response.iter_content.return_value = []
+        response.encoding = "utf-8"
         response.raise_for_status = Mock()
         mocked_get.return_value = response
 
@@ -1629,6 +1638,7 @@ class SpiderHelperTests(unittest.TestCase):
         result = spider._run_share_browser_session(playwright, "ks_auth.json")
 
         self.assertEqual(result, "failed")
+        spider.interruptible_page_wait.assert_not_called()
 
     def test_kuaishou_capture_single_detail_page_emits_video_from_dom_media(self):
         """快手分享详情页应可直接解析单条作品并提交下载任务。"""
@@ -1753,8 +1763,15 @@ class SpiderHelperTests(unittest.TestCase):
         spider._switch_search_to_user_tab = Mock()
         spider._has_video_list = Mock(return_value=True)
         page = Mock()
+        page.url = "https://www.kuaishou.com/search/author?searchKey=4753241670"
+        page.is_closed.return_value = False
         name_link = Mock()
         name_link.is_visible.return_value = True
+        name_link.click.side_effect = lambda: setattr(
+            page,
+            "url",
+            "https://www.kuaishou.com/profile/4753241670",
+        )
         page.locator.return_value.first = name_link
         context = Mock()
         context.pages = [page]
@@ -1792,7 +1809,7 @@ class SpiderHelperTests(unittest.TestCase):
         spider._goto_with_retry = Mock(return_value=True)
         spider._is_logged_in = Mock(return_value=False)
         spider._user_cookie_values = Mock(return_value={"uid"})
-        spider._refresh_logged_in_state = Mock(return_value=True)
+        spider._refresh_logged_in_state = Mock(return_value=(True, True))
         spider._persist_authenticated_state = Mock(return_value=True)
         spider._wait_for_manual_login = Mock()
         spider._open_login_entry = Mock()
@@ -1824,37 +1841,42 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertTrue(spider._goto_with_retry(page, "https://www.kuaishou.com/", description="test"))
         self.assertEqual(spider.interruptible_playwright_goto.call_args.kwargs["timeout"], 90000)
 
-    def test_kuaishou_refresh_logged_in_state_uses_task_timeout(self):
+    def test_kuaishou_refresh_logged_in_state_rechecks_without_navigation(self):
         spider = KuaishouSpider.__new__(KuaishouSpider)
         spider.config = {"timeout": 90}
         spider.interruptible_page_wait = Mock(return_value=True)
-        spider.interruptible_playwright_reload = Mock(return_value=True)
+        spider.interruptible_playwright_reload = Mock()
+        spider.interruptible_playwright_goto = Mock()
+        spider._profile_session_valid = Mock(return_value=True)
+        spider._is_logged_in = Mock(return_value=False)
+        page = Mock()
+
+        self.assertEqual(
+            spider._refresh_logged_in_state(page, "https://www.kuaishou.com/"),
+            (True, True),
+        )
+        spider.interruptible_playwright_reload.assert_not_called()
+        spider.interruptible_playwright_goto.assert_not_called()
+
+    def test_kuaishou_refresh_logged_in_state_uses_dom_fallback_without_goto(self):
+        spider = KuaishouSpider.__new__(KuaishouSpider)
+        spider.config = {"timeout": 90}
+        spider.interruptible_page_wait = Mock(return_value=True)
+        spider.interruptible_playwright_reload = Mock()
+        spider.interruptible_playwright_goto = Mock()
+        spider._profile_session_valid = Mock(return_value=None)
         spider._is_logged_in = Mock(return_value=True)
         page = Mock()
 
-        self.assertTrue(spider._refresh_logged_in_state(page, "https://www.kuaishou.com/"))
-        spider.interruptible_playwright_reload.assert_called_once_with(
-            page,
-            wait_until="domcontentloaded",
-            timeout=90000,
+        self.assertEqual(
+            spider._refresh_logged_in_state(
+                page,
+                "https://www.kuaishou.com/profile/demo",
+            ),
+            (True, None),
         )
-
-    def test_kuaishou_refresh_logged_in_state_fallback_goto_uses_task_timeout(self):
-        spider = KuaishouSpider.__new__(KuaishouSpider)
-        spider.config = {"timeout": 90}
-        spider.interruptible_page_wait = Mock(return_value=True)
-        spider.interruptible_playwright_reload = Mock(return_value=True)
-        spider.interruptible_playwright_goto = Mock(return_value=True)
-        spider._is_logged_in = Mock(side_effect=[False, True])
-        page = Mock()
-
-        self.assertTrue(spider._refresh_logged_in_state(page, "https://www.kuaishou.com/profile/demo"))
-        spider.interruptible_playwright_goto.assert_called_once_with(
-            page,
-            "https://www.kuaishou.com/profile/demo",
-            timeout=90000,
-            wait_until="domcontentloaded",
-        )
+        spider.interruptible_playwright_reload.assert_not_called()
+        spider.interruptible_playwright_goto.assert_not_called()
 
     def test_kuaishou_capture_scroll_budget_uses_double_window(self):
         """验证 `test_kuaishou_capture_scroll_budget_uses_double_window` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
@@ -1879,7 +1901,11 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(spider._profile_session_valid.call_count, 3)
-        spider._persist_authenticated_state.assert_called_once_with(context, "ks_auth.json")
+        spider._persist_authenticated_state.assert_called_once_with(
+            context,
+            "ks_auth.json",
+            allow_auth_replacement=True,
+        )
 
     def test_kuaishou_resolve_active_page_returns_last_open_page(self):
         """验证 `test_kuaishou_resolve_active_page_returns_last_open_page` 对应场景是否符合预期，供 `SpiderHelperTests` 使用。"""
