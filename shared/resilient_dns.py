@@ -34,6 +34,7 @@ _SYSTEM_FAILURE_BACKOFF_SECONDS = 60.0
 _SYSTEM_FAILURE_MAX_BACKOFF_SECONDS = 600.0
 _DOH_FAILURE_BACKOFF_SECONDS = 30.0
 _DOH_FAILURE_MAX_BACKOFF_SECONDS = 300.0
+_DEFAULT_CACHE_MAX_ENTRIES = 1024
 
 
 @dataclass(frozen=True)
@@ -320,12 +321,21 @@ def resolve_via_doh(host: str, family: int) -> tuple[tuple[str, ...], float]:
 
 def chromium_resilient_dns_args() -> tuple[str, str]:
     """生成 Chromium 增强引导 DoH 参数，使浏览器不依赖已故障的系统 DNS。"""
-    # Chromium 接受的是空格分隔的 URI template，而不是 Python DoH 池使用的
-    # bootstrap JSON。传入 JSON 会被浏览器当成无效模板，系统 DNS 故障时仍会白屏。
-    templates = " ".join(template for template, _bootstrap_ips in _CHROMIUM_DOH_SERVERS)
+    # Chromium M103+ 的 DnsOverHttpsConfig 同时接受 URI template 列表和 JSON；
+    # JSON 的 endpoints.ips 是系统 DNS 已故障时仍能连接 DoH 主机的增强引导地址。
+    config = {
+        "servers": [
+            {
+                "template": template,
+                "endpoints": [{"ips": list(bootstrap_ips)}],
+            }
+            for template, bootstrap_ips in _CHROMIUM_DOH_SERVERS
+        ]
+    }
+    serialized = json.dumps(config, ensure_ascii=True, separators=(",", ":"))
     return (
         "--dns-over-https-mode=automatic",
-        f"--dns-over-https-templates={templates}",
+        f"--dns-over-https-templates={serialized}",
     )
 
 
@@ -338,10 +348,12 @@ class ResilientDNSResolver:
         system_resolver: GetAddrInfo | None = None,
         doh_lookup: DoHLookup | None = None,
         clock: Callable[[], float] | None = None,
+        cache_max_entries: int = _DEFAULT_CACHE_MAX_ENTRIES,
     ) -> None:
         self._system_resolver = system_resolver or socket.getaddrinfo
         self._doh_lookup = doh_lookup or resolve_via_doh
         self._clock = clock or time.monotonic
+        self._cache_max_entries = max(1, int(cache_max_entries))
         self._cache: dict[str, _CacheEntry] = {}
         self._cache_lock = threading.RLock()
         self._system_health_lock = threading.Lock()
@@ -356,6 +368,8 @@ class ResilientDNSResolver:
             if entry.expires_at <= self._clock():
                 self._cache.pop(host, None)
                 return ()
+            self._cache.pop(host, None)
+            self._cache[host] = entry
             return tuple(address for address in entry.addresses if _address_matches_family(address, family))
 
     def _cache_addresses(self, host: str, addresses: tuple[str, ...], ttl: float) -> None:
@@ -364,7 +378,14 @@ class ResilientDNSResolver:
             return
         bounded_ttl = max(_MIN_CACHE_TTL_SECONDS, min(float(ttl), _MAX_CACHE_TTL_SECONDS))
         with self._cache_lock:
-            self._cache[host] = _CacheEntry(normalized, self._clock() + bounded_ttl)
+            now = self._clock()
+            for cached_host, entry in tuple(self._cache.items()):
+                if entry.expires_at <= now:
+                    self._cache.pop(cached_host, None)
+            self._cache.pop(host, None)
+            self._cache[host] = _CacheEntry(normalized, now + bounded_ttl)
+            while len(self._cache) > self._cache_max_entries:
+                self._cache.pop(next(iter(self._cache)))
 
     def _system_dns_in_backoff(self) -> bool:
         with self._system_health_lock:

@@ -317,6 +317,40 @@ def test_failed_record_store_clear_records_removes_all_and_refreshes_snapshot(tm
     assert snapshot == []
 
 
+def test_deleted_record_can_be_recorded_again_after_a_later_failure(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert([{"id": "retry-failed", "reason": "first failure"}])
+        assert store.flush(timeout=2)
+        assert store.delete_record("retry-failed") is True
+        assert store.flush(timeout=2)
+
+        store.queue_upsert([{"id": "retry-failed", "reason": "later failure"}])
+        assert store.flush(timeout=2)
+        rows = store.query(limit=10)
+    finally:
+        store.shutdown()
+
+    assert [(row["id"], row["reason"]) for row in rows] == [("retry-failed", "later failure")]
+
+
+def test_cleared_record_can_be_recorded_again_after_a_later_failure(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    try:
+        store.queue_upsert([{"id": "clear-then-fail", "reason": "first failure"}])
+        assert store.flush(timeout=2)
+        assert store.clear_records() == 1
+        assert store.flush(timeout=2)
+
+        store.queue_upsert([{"id": "clear-then-fail", "reason": "later failure"}])
+        assert store.flush(timeout=2)
+        rows = store.query(limit=10)
+    finally:
+        store.shutdown()
+
+    assert [(row["id"], row["reason"]) for row in rows] == [("clear-then-fail", "later failure")]
+
+
 def test_delete_record_cancels_an_upsert_that_has_not_reached_sqlite(tmp_path):
     store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
     original_ensure_worker = store._ensure_worker_locked

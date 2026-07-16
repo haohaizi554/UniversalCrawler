@@ -332,6 +332,8 @@ class BaseSpider(threading.Thread):
         before_url = str(getattr(page, "url", "") or "")
         try:
             page.goto(url, timeout=max(1, int(timeout)), **kwargs)
+            if not self.is_running or self.interrupt_requested:
+                return False
             self._validate_playwright_page_url(page)
             return True
         except PlaywrightTimeoutError:
@@ -382,6 +384,8 @@ class BaseSpider(threading.Thread):
             raise
         try:
             page.reload(timeout=max(1, int(timeout)), **kwargs)
+            if not self.is_running or self.interrupt_requested:
+                return False
             self._validate_playwright_page_url(page)
             return True
         except PlaywrightTimeoutError:

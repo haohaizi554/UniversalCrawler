@@ -11,8 +11,8 @@ def requests_proxy_mapping(proxy: object = None) -> dict[str, str | None]:
     """返回 Requests 的显式映射；空值表示直连，而不是读取系统/环境代理。"""
     normalized = str(proxy or "").strip()
     if normalized:
-        return {"http": normalized, "https": normalized}
-    return {"http": None, "https": None}
+        return {"http": normalized, "https": normalized, "all": normalized}
+    return {"http": None, "https": None, "all": None}
 
 
 def configure_requests_session(session: _SessionT) -> _SessionT:

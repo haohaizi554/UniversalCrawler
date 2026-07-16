@@ -68,6 +68,30 @@ def test_kuaishou_profile_endpoint_rejects_logged_out_session() -> None:
     assert spider._profile_session_valid(page) is False
 
 
+def test_kuaishou_profile_endpoint_does_not_follow_external_redirect() -> None:
+    spider = _spider()
+    policy = Mock()
+    spider._public_domain_policy_engine = Mock(return_value=policy)
+    response = Mock(
+        ok=False,
+        status=302,
+        headers={"location": "http://127.0.0.1:8080/private"},
+    )
+    page = Mock()
+    page.request.get.return_value = response
+
+    assert spider._profile_session_valid(page) is None
+
+    page.request.get.assert_called_once_with(
+        spider.PROFILE_SESSION_URL,
+        headers={"Referer": "https://www.kuaishou.com/"},
+        timeout=spider.PROFILE_SESSION_TIMEOUT_MS,
+        fail_on_status_code=False,
+        max_redirects=0,
+    )
+    policy.require_public_url.assert_called_once_with(spider.PROFILE_SESSION_URL)
+
+
 def test_kuaishou_visible_login_prompt_wins_over_generic_avatar() -> None:
     spider = _spider()
     page = Mock()

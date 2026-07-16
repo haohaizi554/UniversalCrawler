@@ -1,3 +1,4 @@
+import json
 import socket
 import unittest
 from types import SimpleNamespace
@@ -40,6 +41,50 @@ class ResilientDNSResolverTests(unittest.TestCase):
         self.assertEqual(second[0][4][0], "93.184.216.34")
         self.assertEqual(system_calls.count("cdn.example.net"), 1)
         self.assertEqual(doh_calls, [("cdn.example.net", socket.AF_UNSPEC)])
+
+    def test_cache_insert_sweeps_expired_entries_for_other_hosts(self):
+        from shared.resilient_dns import ResilientDNSResolver
+
+        now = [0.0]
+        resolver = ResilientDNSResolver(clock=lambda: now[0])
+        resolver._cache_addresses("first.example.net", ("192.0.2.1",), 60.0)
+        resolver._cache_addresses("second.example.net", ("192.0.2.2",), 60.0)
+
+        now[0] = 61.0
+        resolver._cache_addresses("fresh.example.net", ("192.0.2.3",), 60.0)
+
+        self.assertEqual(tuple(resolver._cache), ("fresh.example.net",))
+
+    def test_cache_evicts_oldest_entry_when_capacity_is_exceeded(self):
+        from shared.resilient_dns import ResilientDNSResolver
+
+        resolver = ResilientDNSResolver(cache_max_entries=2)
+        resolver._cache_addresses("first.example.net", ("192.0.2.1",), 60.0)
+        resolver._cache_addresses("second.example.net", ("192.0.2.2",), 60.0)
+        resolver._cache_addresses("third.example.net", ("192.0.2.3",), 60.0)
+
+        self.assertEqual(
+            tuple(resolver._cache),
+            ("second.example.net", "third.example.net"),
+        )
+
+    def test_cache_hit_refreshes_lru_order(self):
+        from shared.resilient_dns import ResilientDNSResolver
+
+        resolver = ResilientDNSResolver(cache_max_entries=2)
+        resolver._cache_addresses("first.example.net", ("192.0.2.1",), 60.0)
+        resolver._cache_addresses("second.example.net", ("192.0.2.2",), 60.0)
+
+        self.assertEqual(
+            resolver._cached_addresses("first.example.net", socket.AF_INET),
+            ("192.0.2.1",),
+        )
+        resolver._cache_addresses("third.example.net", ("192.0.2.3",), 60.0)
+
+        self.assertEqual(
+            tuple(resolver._cache),
+            ("first.example.net", "third.example.net"),
+        )
 
     def test_reserved_or_local_names_never_leave_the_system_resolver(self):
         from shared.resilient_dns import ResilientDNSResolver
@@ -203,18 +248,25 @@ class ResilientDNSResolverTests(unittest.TestCase):
             "93.184.216.34",
         )
 
-    def test_chromium_dns_args_use_space_separated_uri_templates(self):
+    def test_chromium_dns_args_include_enhanced_bootstrap_addresses(self):
         from shared.resilient_dns import chromium_resilient_dns_args
 
         args = chromium_resilient_dns_args()
 
         self.assertEqual(args[0], "--dns-over-https-mode=automatic")
         self.assertTrue(args[1].startswith("--dns-over-https-templates="))
+        config = json.loads(args[1].removeprefix("--dns-over-https-templates="))
         self.assertEqual(
-            args[1].removeprefix("--dns-over-https-templates=").split(),
+            config["servers"],
             [
-                "https://dns.alidns.com/dns-query{?dns}",
-                "https://cloudflare-dns.com/dns-query{?dns}",
+                {
+                    "template": "https://dns.alidns.com/dns-query{?dns}",
+                    "endpoints": [{"ips": ["223.5.5.5", "223.6.6.6"]}],
+                },
+                {
+                    "template": "https://cloudflare-dns.com/dns-query{?dns}",
+                    "endpoints": [{"ips": ["1.1.1.1", "1.0.0.1"]}],
+                },
             ],
         )
 

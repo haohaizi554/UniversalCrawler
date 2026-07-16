@@ -494,6 +494,7 @@ class KuaishouSpider(BaseSpider):
                 headers={"Referer": "https://www.kuaishou.com/"},
                 timeout=self.PROFILE_SESSION_TIMEOUT_MS,
                 fail_on_status_code=False,
+                max_redirects=0,
             )
             if not response.ok:
                 return None

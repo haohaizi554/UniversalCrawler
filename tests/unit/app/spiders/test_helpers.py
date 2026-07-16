@@ -148,6 +148,8 @@ class SpiderHelperTests(unittest.TestCase):
         spider.is_running = True
         spider._selected_indices = [0]
         spider._lock = threading.Lock()
+        spider._playwright_browser = None
+        spider._playwright_owner_thread_id = None
         spider.parser = Mock()
         spider.parser.extract_all_possible_ids.return_value = {"cache-1"}
         spider.task_builder = Mock()
@@ -1461,7 +1463,7 @@ class SpiderHelperTests(unittest.TestCase):
         mocked_get.assert_called_once()
         self.assertEqual(
             mocked_get.call_args.kwargs["proxies"],
-            {"http": None, "https": None},
+            {"http": None, "https": None, "all": None},
         )
 
     @patch("app.spiders.kuaishou.spider.requests.get")
@@ -1539,6 +1541,94 @@ class SpiderHelperTests(unittest.TestCase):
         spider._try_direct_share_download.assert_called_once()
         spider.sig_finished.emit.assert_called_once()
         mocked_playwright.assert_not_called()
+
+    def test_kuaishou_detail_run_opens_login_then_retries_only_when_required(self):
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "https://www.kuaishou.com/short-video/3xj8abcde"
+        spider._normalize_keyword = Mock(return_value=spider.keyword)
+        spider._try_direct_share_download = Mock(return_value=False)
+        spider._run_share_browser_session = Mock(
+            side_effect=["login_required", "completed"]
+        )
+        spider._run_login_window_session = Mock(return_value=True)
+        spider._tracked_playwright_browser = Mock(return_value=None)
+        spider._clear_playwright_browser = Mock()
+        spider._emit_finished = Mock()
+        playwright = Mock()
+
+        with patch("app.spiders.kuaishou.spider.sync_playwright") as mocked_playwright:
+            mocked_playwright.return_value.__enter__.return_value = playwright
+            spider.run()
+
+        self.assertEqual(spider._run_share_browser_session.call_count, 2)
+        self.assertEqual(
+            spider._run_share_browser_session.call_args_list,
+            [
+                unittest.mock.call(playwright, unittest.mock.ANY),
+                unittest.mock.call(playwright, unittest.mock.ANY),
+            ],
+        )
+        auth_file = spider._run_share_browser_session.call_args_list[0].args[1]
+        spider._run_login_window_session.assert_called_once_with(
+            playwright, auth_file, None
+        )
+        spider._emit_finished.assert_called_once()
+
+    def test_kuaishou_detail_run_does_not_open_login_after_parse_failure(self):
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "https://www.kuaishou.com/short-video/3xj8abcde"
+        spider._normalize_keyword = Mock(return_value=spider.keyword)
+        spider._try_direct_share_download = Mock(return_value=False)
+        spider._run_share_browser_session = Mock(return_value="failed")
+        spider._run_login_window_session = Mock(return_value=True)
+        spider._tracked_playwright_browser = Mock(return_value=None)
+        spider._clear_playwright_browser = Mock()
+        spider._emit_finished = Mock()
+        playwright = Mock()
+
+        with patch("app.spiders.kuaishou.spider.sync_playwright") as mocked_playwright:
+            mocked_playwright.return_value.__enter__.return_value = playwright
+            spider.run()
+
+        spider._run_share_browser_session.assert_called_once()
+        spider._run_login_window_session.assert_not_called()
+        spider._emit_finished.assert_called_once()
+
+    def test_kuaishou_share_session_classifies_visible_login_prompt(self):
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "https://www.kuaishou.com/short-video/3xj8abcde"
+        spider._playwright_launch_kwargs = Mock(return_value={"headless": True})
+        spider._create_browser_context = Mock()
+        spider._goto_with_retry = Mock(return_value=True)
+        spider.interruptible_page_wait = Mock(return_value=True)
+        spider._capture_single_detail_page = Mock(return_value=False)
+        spider._login_prompt_visible = Mock(return_value=True)
+        spider._track_playwright_browser = Mock()
+        spider._close_tracked_playwright_browser = Mock()
+        playwright = Mock()
+        page = spider._create_browser_context.return_value.new_page.return_value
+
+        result = spider._run_share_browser_session(playwright, "ks_auth.json")
+
+        self.assertEqual(result, "login_required")
+        spider._login_prompt_visible.assert_called_once_with(page)
+
+    def test_kuaishou_share_session_keeps_parse_failure_distinct_from_login(self):
+        spider = self._make_kuaishou_capture_spider()
+        spider.keyword = "https://www.kuaishou.com/short-video/3xj8abcde"
+        spider._playwright_launch_kwargs = Mock(return_value={"headless": True})
+        spider._create_browser_context = Mock()
+        spider._goto_with_retry = Mock(return_value=True)
+        spider.interruptible_page_wait = Mock(return_value=True)
+        spider._capture_single_detail_page = Mock(return_value=False)
+        spider._login_prompt_visible = Mock(return_value=False)
+        spider._track_playwright_browser = Mock()
+        spider._close_tracked_playwright_browser = Mock()
+        playwright = Mock()
+
+        result = spider._run_share_browser_session(playwright, "ks_auth.json")
+
+        self.assertEqual(result, "failed")
 
     def test_kuaishou_capture_single_detail_page_emits_video_from_dom_media(self):
         """快手分享详情页应可直接解析单条作品并提交下载任务。"""

@@ -2,7 +2,7 @@
 
 > 本文记录项目中外部 URL 从输入、浏览器访问到 HLS 传输的统一安全边界。凡是由用户输入、站点返回值、重定向或页面脚本决定目标地址的代码，都必须遵守本文约束。
 
-更新日期：2026-07-15
+更新日期：2026-07-16
 
 ## 结论
 
@@ -35,6 +35,19 @@ page = context.new_page()
 
 - [BrowserContext API](https://playwright.dev/python/docs/api/class-browsercontext)
 - [WebSocketRoute API](https://playwright.dev/python/docs/api/class-websocketroute)
+
+### `page.request` / `APIRequestContext` 不受 BrowserContext 路由保护
+
+`page.request` 虽然从 Page 取得，但它发起的是 `APIRequestContext` 请求，不会经过
+`BrowserContext.route()` 或本项目的 context 公网守卫。因此不得把 `page.request.get()`
+当成已受浏览器路由保护的等价请求。
+
+- 对仅用于检查固定官方端点的探针，显式设置 `max_redirects=0`，任何 3xx 失败关闭。
+- 必须跟随重定向时，禁用自动跟随，由代码逐跳解析 `Location`、执行域名/公网地址校验，再发起下一跳。
+- 回归测试必须覆盖外域与内网 `Location`，并断言它们没有被跟随。
+
+参数语义见 [APIRequestContext API](https://playwright.dev/python/docs/api/class-apirequestcontext)。快手固定 profile
+探针按此约束设置 `max_redirects=0`，失败后回退到受 BrowserContext 守卫的 DOM 校验。
 
 ### 为什么必须使用 BrowserContext
 
@@ -140,6 +153,24 @@ host == "bilibili.com" or host.endswith(".bilibili.com")
 
 context 路由验证的是 URL 及策略解析结果，但 Chromium 在实际连接时仍可能再次解析主机名。因此，这套守卫不能被描述为已经彻底消除 DNS rebinding 的传输层 TOCTOU（检查与使用时机差异）。
 
+### Chromium DoH 增强引导只解决可用性
+
+当系统 DNS 自身已经故障时，仅传入空格分隔的 DoH URI template 仍可能无法解析 DoH
+服务主机。Chromium M103+ 的 `DnsOverHttpsConfig` 支持 JSON 形式；当前项目通过
+`shared/resilient_dns.py::chromium_resilient_dns_args()` 把每个受信 DoH template 与
+`endpoints[].ips` 一起传入，使 Chromium 能用预置地址完成首个 TLS 连接，同时仍按原
+DoH hostname 校验证书。格式依据见 [Chromium DoH 文档](https://www.chromium.org/developers/dns-over-https/)
+和 [`DnsOverHttpsConfig` 源码契约](https://chromium.googlesource.com/chromium/src/+/main/net/dns/public/dns_over_https_config.h)。
+
+这项增强引导只恢复浏览器在系统 DNS 故障下的解析能力，不固定目标网站最终连接的 IP，
+也不替代公网 URL 守卫：
+
+- DoH bootstrap IP 只能属于配置中的 DoH 服务，不得来自待访问页面或用户输入。
+- JSON 中必须同时保留 HTTPS template 和 IP；不能把 DoH hostname 直接替换为 IP 并跳过 TLS/SNI。
+- 目标页面、popup、子资源和脚本网络通道仍必须经过 context 公网策略。
+- 回归测试必须解析最终 `--dns-over-https-templates` JSON，并断言 template 与
+  `endpoints[].ips` 成对存在；测试入口为 `tests/unit/shared/network/test_resilient_dns.py`。
+
 当前项目已经对 `curl_cffi` HLS 路径使用 `CurlOpt.RESOLVE` 固定已验证地址；Playwright HTTP 传输若要达到同等级别，需要引入验证代理、浏览器级 IP pinning 或等价的传输层方案。未完成该方案前：
 
 - 文档和 CR 结论必须明确保留这个残余风险。
@@ -196,6 +227,7 @@ context 路由验证的是 URL 及策略解析结果，但 Chromium 在实际连
 - [ ] 是否显式阻止 Service Worker？
 - [ ] WebSocket、Worker 和 SharedWorker 是否仍保持失败关闭，或已有经审查的等价保护？
 - [ ] 新增浏览器备用路径是否复用共享守卫？
+- [ ] `page.request` / `APIRequestContext` 是否禁止自动重定向，或已对每一跳重新执行公网校验？
 - [ ] 是否包含真实 popup 首请求和脚本网络通道回归？
 - [ ] 结论是否诚实区分 URL 校验与传输层 DNS pinning？
 - [ ] curl_cffi 公网请求是否把已验证地址固定到真实连接，并在请求后恢复 Session 选项？

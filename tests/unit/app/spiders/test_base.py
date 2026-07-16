@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from types import SimpleNamespace
 import threading
@@ -351,7 +352,7 @@ class BaseSpiderTests(unittest.TestCase):
         spider.config = {"show_browser_window": "headless"}
         self.assertTrue(spider._browser_headless())
 
-    def test_playwright_launch_kwargs_use_chromium_doh_uri_template_list(self):
+    def test_playwright_launch_kwargs_use_chromium_doh_enhanced_bootstrap(self):
         spider = _DummySpider(keyword="demo", config={})
 
         kwargs = spider._playwright_launch_kwargs(headless=True)
@@ -359,12 +360,17 @@ class BaseSpiderTests(unittest.TestCase):
         args = kwargs["args"]
         self.assertIn("--dns-over-https-mode=automatic", args)
         template_arg = next(arg for arg in args if arg.startswith("--dns-over-https-templates="))
+        config = json.loads(template_arg.removeprefix("--dns-over-https-templates="))
         self.assertEqual(
-            template_arg.removeprefix("--dns-over-https-templates=").split(),
+            [server["template"] for server in config["servers"]],
             [
                 "https://dns.alidns.com/dns-query{?dns}",
                 "https://cloudflare-dns.com/dns-query{?dns}",
             ],
+        )
+        self.assertEqual(
+            [server["endpoints"][0]["ips"] for server in config["servers"]],
+            [["223.5.5.5", "223.6.6.6"], ["1.1.1.1", "1.0.0.1"]],
         )
         self.assertIn("--disable-blink-features=AutomationControlled", args)
 
@@ -427,6 +433,35 @@ class BaseSpiderTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(len(calls), 1)
 
+    def test_interruptible_playwright_goto_returns_false_after_external_stop(self):
+        spider = _DummySpider(keyword="demo", config={})
+        navigation_started = threading.Event()
+        release_navigation = threading.Event()
+        results: list[bool] = []
+
+        class FakePage:
+            url = "about:blank"
+
+            def goto(self, url, **_kwargs):
+                navigation_started.set()
+                release_navigation.wait(timeout=1)
+                self.url = url
+
+        worker = threading.Thread(
+            target=lambda: results.append(
+                spider.interruptible_playwright_goto(FakePage(), "https://example.com")
+            )
+        )
+        worker.start()
+        self.assertTrue(navigation_started.wait(timeout=1))
+
+        spider.stop()
+        release_navigation.set()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(results, [False])
+
     def test_interruptible_playwright_goto_uses_one_full_timeout_navigation(self):
         spider = _DummySpider(keyword="demo", config={})
         calls: list[int] = []
@@ -478,6 +513,32 @@ class BaseSpiderTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(calls, [60000])
+
+    def test_interruptible_playwright_reload_returns_false_after_external_stop(self):
+        spider = _DummySpider(keyword="demo", config={})
+        reload_started = threading.Event()
+        release_reload = threading.Event()
+        results: list[bool] = []
+
+        class FakePage:
+            url = "https://example.com/current"
+
+            def reload(self, **_kwargs):
+                reload_started.set()
+                release_reload.wait(timeout=1)
+
+        worker = threading.Thread(
+            target=lambda: results.append(spider.interruptible_playwright_reload(FakePage()))
+        )
+        worker.start()
+        self.assertTrue(reload_started.wait(timeout=1))
+
+        spider.stop()
+        release_reload.set()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(results, [False])
 
     def test_guard_request_lazily_initializes_guardrails_for_minimal_test_doubles(self):
         spider = _DummySpider.__new__(_DummySpider)

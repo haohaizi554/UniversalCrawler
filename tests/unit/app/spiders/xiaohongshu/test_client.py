@@ -180,7 +180,11 @@ def test_creator_notes_runs_real_signed_get_with_encoded_query(
             "X-T": "1700000000000",
         },
         "timeout": 17,
-        "proxies": {"http": "http://127.0.0.1:8899", "https": "http://127.0.0.1:8899"},
+        "proxies": {
+            "http": "http://127.0.0.1:8899",
+            "https": "http://127.0.0.1:8899",
+            "all": "http://127.0.0.1:8899",
+        },
     }
     assert response.raise_for_status_calls == 1
     assert response.json_calls == 1
@@ -231,7 +235,7 @@ def test_search_notes_runs_real_post_with_compact_unicode_json(
     )
     assert call["kwargs"]["headers"]["X-S"] == "XYS_unit-signature"
     assert call["kwargs"]["timeout"] == 17
-    assert call["kwargs"]["proxies"] == {"http": None, "https": None}
+    assert call["kwargs"]["proxies"] == {"http": None, "https": None, "all": None}
     assert response.raise_for_status_calls == 1
     assert response.json_calls == 1
 
@@ -316,7 +320,7 @@ def test_html_detail_uses_http_and_parser_boundaries_then_adds_security_context(
             "kwargs": {
                 "headers": dict(session.headers),
                 "timeout": 17,
-                "proxies": {"http": None, "https": None},
+                "proxies": {"http": None, "https": None, "all": None},
             },
         }
     ]

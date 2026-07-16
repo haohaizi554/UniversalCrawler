@@ -62,7 +62,7 @@ class FailedRecordStore:
         self._pending: dict[str, dict[str, Any]] = {}
         self._inflight_ids: set[str] = set()
         self._write_generation = 0
-        self._suppressed_ids: set[str] = set()
+        self._record_generations: dict[str, int] = {}
         initial_query = FailedRecordQuery(limit=max(1, int(snapshot_limit)), offset=0)
         self._refresh_requested: FailedRecordQuery | None = None
         self._prune_retention_days: int | None = None
@@ -91,9 +91,8 @@ class FailedRecordStore:
                 return
             for record in normalized:
                 video_id = str(record["video_id"])
-                if video_id in self._suppressed_ids:
-                    continue
                 record["_store_generation"] = self._write_generation
+                record["_store_record_generation"] = self._record_generations.get(video_id, 0)
                 self._pending[video_id] = record
             self._ensure_worker_locked()
             self._event.set()
@@ -261,7 +260,8 @@ class FailedRecordStore:
             with self._lock:
                 pending = self._pending.pop(normalized_id, None) is not None
                 inflight = normalized_id in self._inflight_ids
-                self._suppressed_ids.add(normalized_id)
+                if inflight:
+                    self._record_generations[normalized_id] = self._record_generations.get(normalized_id, 0) + 1
         snapshot_changed, visible_count, total_count = self._remove_from_snapshot(normalized_id, deleted=deleted)
         if snapshot_changed:
             self._notify_refresh(visible_count, total_count)
@@ -275,12 +275,8 @@ class FailedRecordStore:
                 cursor = conn.execute("DELETE FROM failed_records")
                 conn.commit()
                 deleted_count = max(0, int(cursor.rowcount or 0))
-            with self._snapshot_lock:
-                visible_ids = {str(row.get("id") or row.get("video_id") or "") for row in self._snapshot}
             with self._lock:
                 self._write_generation += 1
-                self._suppressed_ids.update(visible_ids)
-                self._suppressed_ids.update(self._pending)
                 self._pending.clear()
         with self._snapshot_lock:
             snapshot_changed = bool(self._snapshot or self._snapshot_total_count)
@@ -403,6 +399,9 @@ class FailedRecordStore:
             finally:
                 with self._lock:
                     self._inflight_ids.difference_update(batch_ids)
+                    for video_id in batch_ids:
+                        if video_id not in self._pending:
+                            self._record_generations.pop(video_id, None)
                     self._writing = False
                     self._refreshing = False
                     self._pruning = False
@@ -506,7 +505,8 @@ class FailedRecordStore:
                     record
                     for record in records
                     if int(record.get("_store_generation", -1)) == generation
-                    and str(record.get("video_id") or "") not in self._suppressed_ids
+                    and int(record.get("_store_record_generation", -1))
+                    == self._record_generations.get(str(record.get("video_id") or ""), 0)
                 ]
             if not records:
                 return
