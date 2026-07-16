@@ -86,8 +86,10 @@ class KuaishouSpider(BaseSpider):
             self.log("📂 加载本地登录态成功")
         return storage_state
 
-    def _create_browser_context(self, browser, auth_file: str):
-        """统一创建上下文，确保有头和无头模式恢复完全相同的 storage_state。"""
+    def _create_browser_context(
+        self, browser, auth_file: str, *, headless: bool = True
+    ):
+        """创建浏览器上下文；可见会话在首个真实页面中恢复 origin 存储。"""
         # fake-useragent 可能返回远旧于 Playwright 内核的版本，UA 与 JS 能力不一致会触发风控。
         runtime_user_agent = self._playwright_chromium_user_agent(browser, self._user_agent())
         if runtime_user_agent:
@@ -98,8 +100,17 @@ class KuaishouSpider(BaseSpider):
             referer="https://www.kuaishou.com/",
         )
         storage_state = self._load_saved_storage_state(auth_file)
-        if storage_state:
+        if storage_state and headless:
+            # 无头会话没有闪窗问题，保留 Playwright 原生恢复以兼容 IndexedDB。
             context_kwargs["storage_state"] = storage_state
+        elif storage_state:
+            # Playwright 恢复 origins 时会在有头模式创建一个内部页面，逐个导航到 origin
+            # 写入 localStorage 后再关闭，因此用户会看到一个一闪而过的小窗口。Cookie 可
+            # 直接由 context 恢复；origin 存储改由 init script 写入首个真实页面。
+            context_kwargs["storage_state"] = {
+                "cookies": list(storage_state.get("cookies", []) or []),
+                "origins": [],
+            }
         try:
             context = browser.new_context(**context_kwargs)
         except PlaywrightError:
@@ -110,8 +121,45 @@ class KuaishouSpider(BaseSpider):
             self.log("⚠️ 已保存登录态不兼容，改用空白浏览器上下文重新登录")
             context_kwargs.pop("storage_state", None)
             context = browser.new_context(**context_kwargs)
+            storage_state = None
+        if storage_state and not headless:
+            self._install_saved_origin_storage(context, storage_state)
         self._apply_stealth_to_context(context)
         return context
+
+    def _install_saved_origin_storage(self, context, storage_state: dict) -> None:
+        """在真实页面加载前恢复快手 localStorage，避免 Playwright 创建临时恢复页。"""
+        origins: dict[str, dict[str, str]] = {}
+        for item in storage_state.get("origins", []) or []:
+            if not isinstance(item, dict):
+                continue
+            origin = str(item.get("origin") or "").strip().rstrip("/")
+            if not self._url_matches_hosts(
+                origin, ("kuaishou.com", "chenzhongtech.com")
+            ):
+                continue
+            values: dict[str, str] = {}
+            for entry in item.get("localStorage", []) or []:
+                if not isinstance(entry, dict) or entry.get("name") is None:
+                    continue
+                values[str(entry["name"])] = str(entry.get("value") or "")
+            if values:
+                origins[origin] = values
+        if not origins:
+            return
+        encoded = json.dumps(origins, ensure_ascii=True, separators=(",", ":"))
+        context.add_init_script(
+            script=f"""
+            (() => {{
+                const savedOrigins = {encoded};
+                const values = savedOrigins[location.origin];
+                if (!values) return;
+                for (const [name, value] of Object.entries(values)) {{
+                    localStorage.setItem(name, value);
+                }}
+            }})();
+            """
+        )
 
     def _persist_authenticated_state(self, context, auth_file: str) -> bool:
         """在关闭当前浏览器前原子发布最新 Cookie 与 origin/localStorage。"""
@@ -360,7 +408,7 @@ class KuaishouSpider(BaseSpider):
         """分享/详情链接优先走纯 HTTP 快路，成功则不再打开浏览器。"""
         if not self._is_detail_url(self.keyword):
             return False
-        self.log("🎯 检测到快手分享/详情链接，优先尝试无浏览器直连解析...")
+        self.log("ℹ️ 优先尝试通过 HTTP 快速解析快手分享详情...")
         title, media_url = self._fetch_share_detail_via_http(self.keyword)
         if not media_url:
             return False
@@ -380,6 +428,27 @@ class KuaishouSpider(BaseSpider):
         )
         self.log(f"✨ 已无浏览器解析分享作品: {title[:24]}...")
         return True
+
+    @staticmethod
+    def _share_media_response_url(response) -> str:
+        """从详情页响应中筛出可提交给下载器的视频或 HLS 地址。"""
+        try:
+            url = str(response.url or "").strip()
+            content_type = str(response.headers.get("content-type", "") or "").lower()
+            resource_type = str(response.request.resource_type or "").lower()
+        except (AttributeError, PlaywrightError):
+            return ""
+        if not url:
+            return ""
+        path = urllib.parse.urlsplit(url).path.lower()
+        if (
+            resource_type == "media"
+            or content_type.startswith("video/")
+            or "mpegurl" in content_type
+            or path.endswith(".m3u8")
+        ):
+            return url
+        return ""
 
     def _login_prompt_visible(self, page) -> bool:
         """识别明确的未登录入口；其优先级高于页面中任意内容头像。"""
@@ -889,12 +958,12 @@ class KuaishouSpider(BaseSpider):
             media_url = ""
         return str(media_url or "").strip()
 
-    def _capture_single_detail_page(self, page) -> bool:
-        """处理快手分享/详情链接，直接捕获单条作品并入队。"""
+    def _capture_single_detail_page(self, page, initial_stream_urls=()) -> bool:
+        """从已打开的详情页捕获单条作品；初次导航响应可由调用方提前传入。"""
         if not self._is_detail_url(getattr(page, "url", "")):
             return False
 
-        self.log("🎯 检测到快手分享/详情链接，直接解析单条作品...")
+        self.log("🌐 正在从快手分享详情页捕获单条作品...")
         emitted = False
         title = self._extract_detail_title(page)
 
@@ -922,44 +991,50 @@ class KuaishouSpider(BaseSpider):
             return True
 
         def handle_response(response):
-            ctype = response.headers.get("content-type", "")
-            if not (
-                response.request.resource_type == "media"
-                or "video/mp4" in ctype
-                or "mpegurl" in ctype.lower()
-                or ".m3u8" in response.url
-            ):
-                return
-            submit_stream(response.url)
+            submit_stream(self._share_media_response_url(response))
 
         page.on("response", handle_response)
-        if submit_stream(self._extract_detail_dom_media_url(page)):
-            return True
+        try:
+            for stream_url in initial_stream_urls:
+                if submit_stream(stream_url):
+                    return True
+            if submit_stream(self._extract_detail_dom_media_url(page)):
+                return True
 
-        for _ in range(2):
-            if emitted or not self.is_running:
-                break
-            try:
-                if not self.interruptible_playwright_reload(
-                    page,
-                    wait_until="domcontentloaded",
-                    timeout=self._configured_timeout_ms(default=60),
-                ):
-                    break
-                self.interruptible_page_wait(page, 2500)
-            except PlaywrightError:
-                break
+            # 有些详情页必须触发一次播放后才发起媒体请求，先在当前页面尝试，
+            # 仍未捕获时最多刷新一次，避免旧实现重复加载同一分享页。
             try:
                 page.locator("video").first.click(timeout=1500)
             except PlaywrightError:
                 pass
-            if submit_stream(self._extract_detail_dom_media_url(page)):
-                break
+            self.interruptible_page_wait(page, 1500)
+            if emitted or submit_stream(self._extract_detail_dom_media_url(page)):
+                return True
 
-        if emitted:
-            return True
-        self.log("❌ 未能从快手分享链接中解析出可下载视频")
-        return False
+            if self.is_running:
+                try:
+                    if self.interruptible_playwright_reload(
+                        page,
+                        wait_until="domcontentloaded",
+                        timeout=self._configured_timeout_ms(default=60),
+                    ):
+                        self.interruptible_page_wait(page, 2500)
+                        try:
+                            page.locator("video").first.click(timeout=1500)
+                        except PlaywrightError:
+                            pass
+                        if emitted or submit_stream(self._extract_detail_dom_media_url(page)):
+                            return True
+                except PlaywrightError:
+                    pass
+
+            self.log("❌ 未能从快手分享链接中解析出可下载视频")
+            return False
+        finally:
+            try:
+                page.remove_listener("response", handle_response)
+            except (AttributeError, PlaywrightError):
+                pass
 
     def _wait_for_video_list(self, page) -> bool:
         """等待视频列表并记录无法加载的终止状态。"""
@@ -1225,18 +1300,66 @@ class KuaishouSpider(BaseSpider):
 
     def _run_login_window_session(self, playwright, auth_file: str, entry_url: str | None) -> bool:
         self.log("🔓 正在打开快手登录窗口...")
+        headless = self._browser_headless(login_window=True)
         browser = playwright.chromium.launch(
             **self._playwright_launch_kwargs(
-                headless=self._browser_headless(login_window=True),
+                headless=headless,
                 proxy=(getattr(self, "config", {}) or {}).get("proxy"),
                 args=["--disable-blink-features=AutomationControlled"],
             )
         )
         self._track_playwright_browser(browser)
         try:
-            context = self._create_browser_context(browser, auth_file)
+            context = self._create_browser_context(
+                browser, auth_file, headless=headless
+            )
             page = context.new_page()
             return self._ensure_login(page, context, auth_file, entry_url=entry_url, allow_manual_login=True)
+        finally:
+            self._close_tracked_playwright_browser(browser)
+
+    def _run_share_browser_session(self, playwright, auth_file: str) -> str:
+        """用固定无头会话解析分享详情，不进入首页、登录检查或列表扫描。"""
+        browser = playwright.chromium.launch(
+            **self._playwright_launch_kwargs(
+                # 分享链接是单资源解析入口，即使用户启用了“显示浏览器”也保持静默。
+                headless=True,
+                proxy=(getattr(self, "config", {}) or {}).get("proxy"),
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        )
+        self._track_playwright_browser(browser)
+        try:
+            context = self._create_browser_context(browser, auth_file, headless=True)
+            page = context.new_page()
+            initial_stream_urls: list[str] = []
+
+            def remember_stream(response) -> None:
+                stream_url = self._share_media_response_url(response)
+                if stream_url and stream_url not in initial_stream_urls:
+                    initial_stream_urls.append(stream_url)
+
+            # 监听器必须早于 goto 注册，否则首屏直接发出的媒体响应会永久错过。
+            page.on("response", remember_stream)
+            try:
+                if not self._goto_with_retry(
+                    page, self.keyword, description="静默打开快手分享详情页"
+                ):
+                    return "stopped" if not self.is_running else "failed"
+                self.interruptible_page_wait(page, 1200)
+                # 保留首屏监听器直到详情捕获完成，覆盖标题提取与二级监听器注册之间的窄窗口。
+                if self._capture_single_detail_page(page, initial_stream_urls):
+                    return "completed"
+                if not self.is_running:
+                    return "stopped"
+                if self._login_prompt_visible(page):
+                    return "login_required"
+                return "failed"
+            finally:
+                try:
+                    page.remove_listener("response", remember_stream)
+                except (AttributeError, PlaywrightError):
+                    pass
         finally:
             self._close_tracked_playwright_browser(browser)
 
@@ -1257,7 +1380,9 @@ class KuaishouSpider(BaseSpider):
         )
         self._track_playwright_browser(browser)
         try:
-            context = self._create_browser_context(browser, auth_file)
+            context = self._create_browser_context(
+                browser, auth_file, headless=headless
+            )
             page = context.new_page()
             if not self._ensure_login(
                 page,
@@ -1271,8 +1396,6 @@ class KuaishouSpider(BaseSpider):
             page = self._navigate_to_target_page(page, context)
             if not page:
                 return "stopped"
-            if self._capture_single_detail_page(page):
-                return "completed"
             if not self._wait_for_video_list(page):
                 return "stopped"
 
@@ -1293,14 +1416,27 @@ class KuaishouSpider(BaseSpider):
             self._close_tracked_playwright_browser(browser)
 
     def run(self):
-        """优先直连解析分享页，再执行浏览器登录、扫描和流捕获流程。"""
+        """按详情链接或列表任务分流，避免同一输入重复经过两套浏览器流程。"""
         auth_file = cfg.get("auth", "kuaishou_cookie_file", "ks_auth.json")
         self.keyword = self._normalize_keyword(self.keyword)
         self.log(f"🚀 启动快手任务 | 目标: {self.keyword}")
-        if self._try_direct_share_download():
-            self._emit_finished()
-            return
         try:
+            if self._is_detail_url(self.keyword):
+                self.log("🎯 检测到快手分享/详情链接，使用静默单资源解析流程")
+                if self._try_direct_share_download():
+                    return
+                self.log("ℹ️ HTTP 未获得视频直链，切换无头浏览器继续解析")
+                with sync_playwright() as p:
+                    result = self._run_share_browser_session(p, auth_file)
+                    if result == "login_required" and self.is_running:
+                        login_ok = self._run_login_window_session(
+                            p, auth_file, self._entry_url_for_login()
+                        )
+                        if login_ok and self.is_running:
+                            self.log("✅ 快手登录完成，重新以静默模式执行当前任务")
+                            self._run_share_browser_session(p, auth_file)
+                return
+
             with sync_playwright() as p:
                 headless = self._browser_headless()
                 result = self._run_browser_session(
