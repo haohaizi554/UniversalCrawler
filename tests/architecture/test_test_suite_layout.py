@@ -53,7 +53,9 @@ FORBIDDEN_TEST_NAMES = frozenset(
 
 
 def _collected_test_modules() -> list[Path]:
-    return sorted(path for path in TESTS_ROOT.rglob("test_*.py") if path.is_file())
+    from tests.support.catalog import TEST_MODULE_GLOB
+
+    return sorted(path for path in TESTS_ROOT.rglob(TEST_MODULE_GLOB) if path.is_file())
 
 
 class TestSuiteLayoutArchitecture(unittest.TestCase):
@@ -71,9 +73,14 @@ class TestSuiteLayoutArchitecture(unittest.TestCase):
         )
 
     def test_support_modules_do_not_use_the_pytest_test_prefix(self):
+        from tests.support.catalog import TEST_MODULE_GLOB
+
         support_root = TESTS_ROOT / "support"
         invalid = (
-            sorted(path.relative_to(TESTS_ROOT).as_posix() for path in support_root.rglob("test_*.py"))
+            sorted(
+                path.relative_to(TESTS_ROOT).as_posix()
+                for path in support_root.rglob(TEST_MODULE_GLOB)
+            )
             if support_root.exists()
             else []
         )
@@ -124,6 +131,20 @@ class TestSuiteLayoutArchitecture(unittest.TestCase):
         self.assertRegex(pytest_options, r'addopts\s*=\s*\[[^\]]*"--strict-markers"')
         self.assertEqual(RUNTIME_MARKERS - marker_names, set())
 
+    def test_pytest_and_catalog_share_the_canonical_module_pattern(self):
+        from tests.support import catalog
+        from tests.support.toml_compat import loads
+
+        pyproject = loads(
+            (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        configured_patterns = pyproject["tool"]["pytest"]["ini_options"].get(
+            "python_files"
+        )
+
+        self.assertEqual(configured_patterns, ["test_*.py"])
+        self.assertEqual(configured_patterns, [catalog.TEST_MODULE_GLOB])
+
     def test_scoped_agent_contract_preserves_suite_first_rules(self):
         agent_contract = (TESTS_ROOT / "AGENTS.md").read_text(encoding="utf-8")
         naming_contract = (TESTS_ROOT / "NAMING.md").read_text(encoding="utf-8")
@@ -137,6 +158,31 @@ class TestSuiteLayoutArchitecture(unittest.TestCase):
         self.assertIn("Built-in suites are directory-driven", agent_contract)
         self.assertIn("内置套件禁止白名单", naming_contract)
         self.assertIn("tests/<suite>/<production namespace>/test_<observable responsibility>.py", naming_contract)
+
+    def test_active_test_guides_run_the_complete_e2e_suite(self):
+        guide_expectations = (
+            (
+                TESTS_ROOT / "AGENTS.md",
+                "`tests/e2e/` in the browser environment",
+                "`tests/e2e/web/` in the browser environment",
+            ),
+            (
+                TESTS_ROOT / "README.md",
+                "pytest tests/e2e -q",
+                "pytest tests/e2e/web -q",
+            ),
+            (
+                PROJECT_ROOT / "docs" / "guides" / "testing.md",
+                "pytest tests/e2e -q",
+                "pytest tests/e2e/web/test_browser_journeys.py -q",
+            ),
+        )
+
+        for guide_path, expected, stale in guide_expectations:
+            source = guide_path.read_text(encoding="utf-8")
+            with self.subTest(guide=guide_path.relative_to(PROJECT_ROOT).as_posix()):
+                self.assertNotIn(stale, source)
+                self.assertIn(expected, source)
 
     def test_test_function_names_avoid_ambiguous_placeholders(self):
         invalid: list[str] = []

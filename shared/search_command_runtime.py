@@ -25,8 +25,19 @@ class SearchCommandEnv:
     build_missav_proxy_url: Callable[[str], str]
     validate_config_types: Callable[[dict], str | None]
 
-def add_search_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--source", "-s", required=True, choices=["douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"], help="平台 ID")
+def add_search_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    source_required: bool = True,
+) -> None:
+    """注册 search 参数；平台别名入口可由调用方预填 source。"""
+    parser.add_argument(
+        "--source",
+        "-s",
+        required=source_required,
+        choices=["douyin", "xiaohongshu", "bilibili", "kuaishou", "missav"],
+        help="平台 ID",
+    )
     parser.add_argument("keyword", nargs="?", help="搜索关键词 / 链接 / 用户 ID")
     parser.add_argument("--keyword", dest="keyword_option", help="搜索关键词 / 链接 / 用户 ID（兼容旧脚本）")
     parser.add_argument("--save-dir", "-d", default=None, help="保存目录 (默认: 从配置读取，通常为 downloads)")

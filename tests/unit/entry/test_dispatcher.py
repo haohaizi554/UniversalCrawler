@@ -5,9 +5,12 @@
 
 import io
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import main
 
@@ -146,6 +149,159 @@ class DispatcherTests(unittest.TestCase):
             # 透传后 argv 为空也必须保留为 []，避免下游重新读取 dispatcher 的 sys.argv。
             mock_handler.assert_called_once_with([])
 
+    def test_frozen_windowed_launcher_delegates_cli_modes_to_console_exe(self):
+        from entry import dispatcher
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir)
+            windowed_launcher = install_root / "UCrawlLauncher.exe"
+            console_launcher = install_root / "UCrawlCLI.exe"
+            windowed_launcher.touch()
+            console_launcher.touch()
+
+            for mode in (dispatcher.Mode.CLI, dispatcher.Mode.INTERACTIVE):
+                direct_handler = Mock()
+                with (
+                    self.subTest(mode=mode),
+                    patch.object(dispatcher.sys, "frozen", True, create=True),
+                    patch.object(dispatcher.sys, "executable", str(windowed_launcher)),
+                    patch.object(dispatcher.subprocess, "Popen") as popen,
+                    patch.object(dispatcher, "_HANDLERS", {mode: direct_handler}),
+                ):
+                    result = dispatcher._dispatch(mode, ["--help"])
+
+                self.assertEqual(result, 0)
+                resolved_root = install_root.resolve()
+                popen.assert_called_once_with(
+                    [
+                        str(resolved_root / "UCrawlCLI.exe"),
+                        "--mode",
+                        mode.value,
+                        "--help",
+                    ],
+                    cwd=str(resolved_root),
+                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                    shell=False,
+                )
+                direct_handler.assert_not_called()
+
+    def test_frozen_console_exe_dispatches_without_recursive_spawn(self):
+        from entry import dispatcher
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            console_launcher = Path(temp_dir) / "UCrawlCLI.exe"
+            console_launcher.touch()
+            run_cli = Mock(return_value=7)
+            with (
+                patch.object(dispatcher.sys, "frozen", True, create=True),
+                patch.object(dispatcher.sys, "executable", str(console_launcher)),
+                patch.object(dispatcher.subprocess, "Popen") as popen,
+                patch.object(dispatcher, "_HANDLERS", {dispatcher.Mode.CLI: run_cli}),
+            ):
+                result = dispatcher._dispatch(dispatcher.Mode.CLI, ["--help"])
+
+        self.assertEqual(result, 7)
+        run_cli.assert_called_once_with(["--help"])
+        popen.assert_not_called()
+
+    def test_frozen_windowed_launcher_opens_persistent_cli_shell_without_args(self):
+        from entry import dispatcher
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir)
+            windowed_launcher = install_root / "UCrawlLauncher.exe"
+            console_launcher = install_root / "UCrawlCLI.exe"
+            windowed_launcher.touch()
+            console_launcher.touch()
+            comspec = r"C:\Windows\System32\cmd.exe"
+            direct_handler = Mock()
+            with (
+                patch.object(dispatcher.sys, "frozen", True, create=True),
+                patch.object(dispatcher.sys, "executable", str(windowed_launcher)),
+                patch.object(dispatcher.subprocess, "Popen") as popen,
+                patch.object(dispatcher, "_HANDLERS", {dispatcher.Mode.CLI: direct_handler}),
+                patch.dict(dispatcher.os.environ, {"COMSPEC": comspec}),
+            ):
+                result = dispatcher._dispatch(dispatcher.Mode.CLI, [])
+
+        resolved_root = install_root.resolve()
+        console_command = subprocess.list2cmdline(
+            ["UCrawlCLI.exe", "--mode", "cli", "--help"]
+        )
+        self.assertEqual(result, 0)
+        popen.assert_called_once_with(
+            [comspec, "/D", "/K", console_command],
+            cwd=str(resolved_root),
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            shell=False,
+        )
+        direct_handler.assert_not_called()
+
+    def test_frozen_windowed_launcher_delegates_empty_interactive_mode_directly(self):
+        from entry import dispatcher
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir)
+            windowed_launcher = install_root / "UCrawlLauncher.exe"
+            console_launcher = install_root / "UCrawlCLI.exe"
+            windowed_launcher.touch()
+            console_launcher.touch()
+            direct_handler = Mock()
+            with (
+                patch.object(dispatcher.sys, "frozen", True, create=True),
+                patch.object(dispatcher.sys, "executable", str(windowed_launcher)),
+                patch.object(dispatcher.subprocess, "Popen") as popen,
+                patch.object(
+                    dispatcher,
+                    "_HANDLERS",
+                    {dispatcher.Mode.INTERACTIVE: direct_handler},
+                ),
+            ):
+                result = dispatcher._dispatch(dispatcher.Mode.INTERACTIVE, [])
+
+        resolved_root = install_root.resolve()
+        self.assertEqual(result, 0)
+        popen.assert_called_once_with(
+            [str(resolved_root / "UCrawlCLI.exe"), "--mode", "interactive"],
+            cwd=str(resolved_root),
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            shell=False,
+        )
+        direct_handler.assert_not_called()
+
+    def test_frozen_windowed_launcher_fails_closed_when_console_exe_is_missing(self):
+        from entry import dispatcher
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            windowed_launcher = Path(temp_dir) / "UCrawlLauncher.exe"
+            windowed_launcher.touch()
+            run_cli = Mock()
+            with (
+                patch.object(dispatcher.sys, "frozen", True, create=True),
+                patch.object(dispatcher.sys, "executable", str(windowed_launcher)),
+                patch.object(dispatcher.subprocess, "Popen") as popen,
+                patch.object(dispatcher, "_HANDLERS", {dispatcher.Mode.CLI: run_cli}),
+                patch.object(dispatcher.sys, "stderr", io.StringIO()),
+            ):
+                result = dispatcher._dispatch(dispatcher.Mode.CLI, [])
+
+        self.assertEqual(result, 2)
+        run_cli.assert_not_called()
+        popen.assert_not_called()
+
+    def test_cli_dispatcher_noninteractive_help_smoke(self):
+        project_root = Path(__file__).resolve().parents[3]
+        result = subprocess.run(
+            [sys.executable, str(project_root / "main.py"), "--mode", "cli", "--help"],
+            cwd=project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: ucrawl", result.stdout)
+
     def test_run_rejects_invalid_or_missing_mode_without_dispatching(self):
         from entry import dispatcher
 
@@ -213,6 +369,64 @@ class DispatcherTests(unittest.TestCase):
         self.assertIn("--html", forwarded)
         self.assertIn("--open", forwarded)
         self.assertTrue(str(forwarded[forwarded.index("--html") + 1]).endswith("code_report.html"))
+
+    def test_code_report_entry_selects_project_when_not_running_from_source_tree(self):
+        from entry import code_report_entry
+
+        selected_root = Path(__file__).resolve().parent
+        with (
+            patch.object(code_report_entry, "_discover_default_project_root", return_value=None),
+            patch.object(code_report_entry, "_select_project_root", return_value=selected_root),
+            patch("count_project.main", return_value=0) as mocked,
+        ):
+            self.assertEqual(code_report_entry.main([]), 0)
+
+        forwarded = mocked.call_args.args[0]
+        self.assertEqual(
+            Path(forwarded[forwarded.index("--root") + 1]),
+            selected_root,
+        )
+        self.assertEqual(
+            Path(forwarded[forwarded.index("--html") + 1]),
+            selected_root / "code_report.html",
+        )
+
+    def test_code_report_entry_aborts_when_installed_user_cancels_project_selection(self):
+        from entry import code_report_entry
+
+        with (
+            patch.object(code_report_entry, "_discover_default_project_root", return_value=None),
+            patch.object(code_report_entry, "_select_project_root", return_value=None),
+            patch("count_project.main", return_value=0) as mocked,
+        ):
+            self.assertEqual(code_report_entry.main([]), 2)
+
+        mocked.assert_not_called()
+
+    def test_code_report_entry_explicit_root_never_scans_or_writes_install_directory(self):
+        from entry import code_report_entry
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(
+                code_report_entry,
+                "_discover_default_project_root",
+                side_effect=AssertionError("explicit root must bypass discovery"),
+            ),
+            patch.object(
+                code_report_entry,
+                "_select_project_root",
+                side_effect=AssertionError("explicit root must bypass picker"),
+            ),
+            patch("count_project.main", return_value=0) as mocked,
+        ):
+            self.assertEqual(code_report_entry.main(["--root", temp_dir]), 0)
+
+        forwarded = mocked.call_args.args[0]
+        self.assertEqual(
+            Path(forwarded[forwarded.index("--html") + 1]),
+            Path(temp_dir).resolve() / "code_report.html",
+        )
 
     def test_run_with_prompt_returns_none_exits_zero(self):
         """用户主动选 q (prompt 返回 None) → exit 0。"""

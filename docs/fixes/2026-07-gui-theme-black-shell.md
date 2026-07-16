@@ -62,4 +62,4 @@
 4. 媒体预览进入/退出全屏后再切换主题，不留下黑色预览区域盖住 shell。
 5. 系统跟随主题触发 palette change 时，也走同样的 shell 恢复链路。
 6. 分别在浅色和深色主题进入 GUI/WebUI 媒体全屏，并在全屏状态切换主题，视频留白、控制栏和强调色立即同步。
-7. 运行 `tests/test_main_window.py`、`tests/test_media_preview_panel.py` 和 `tests/test_web_browser.py -k "theme or fullscreen or playback"`。
+7. 运行 `tests/unit/app/ui/test_main_window.py`、`tests/unit/app/ui/components/test_media_preview_panel.py` 和 `tests/e2e/web/test_browser_journeys.py -k "theme or fullscreen or playback"`。

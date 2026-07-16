@@ -13,6 +13,8 @@ from project_meta import (
     APP_DISPLAY_NAME,
     APP_ICON_NAME,
     APP_NAME,
+    CLI_LAUNCHER_NAME,
+    LAUNCHER_NAME,
     REPORT_ICON_NAME,
     UPDATER_HELPER_NAME,
     WEBUI_DISPLAY_NAME,
@@ -132,8 +134,12 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# 三个冻结 EXE 必须使用直接启动器并绕过 dispatcher，避免空 argv 在多层转发时
-# 回退到 sys.argv[1:]，把打包器参数误交给目标入口的 argparse。
+# 模式启动中心保留 Analysis 中的 main.py -> dispatcher 入口，使冻结包也能访问
+# Qt 模式选择与代码量统计；GUI/Web 两个既有 EXE 仍使用专用直达启动器。
+# 专用入口避免空 argv 在多层转发时回退到 sys.argv[1:]，把打包器参数误交给
+# 目标入口的 argparse。
+# - UCrawlLauncher.exe      -> main.py / entry.dispatcher  (Qt 模式选择)
+# - UCrawlCLI.exe           -> main.py / entry.dispatcher  (独立控制台)
 # - UniversalCrawlerPro.exe -> entry.gui_entry.main()      (PyQt6 桌面 GUI)
 # - CrawlerWebPortal.exe    -> entry.web_entry.main()      (FastAPI + Qt 托盘)
 # - updater_helper.exe      -> entry.updater_helper.main() (独立更新辅助进程)
@@ -191,6 +197,40 @@ from entry.updater_helper import main as _main
 sys.exit(_main(sys.argv[1:]))
 ''',
     encoding="utf-8",
+)
+
+# 冻结态统一启动中心：保留 main.py 原始脚本，由 dispatcher 在无控制台时打开 Qt
+# 模式选择器。它是新增入口，不替换下方 GUI/Web 直达 EXE。
+launcher_exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name=LAUNCHER_NAME,
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    icon=str(icon_file) if icon_file.exists() else None,
+)
+
+# CLI/Interactive 依赖真实 stdin/stdout。窗口子系统启动中心选择这两种模式时，
+# dispatcher 会启动本 console=True 入口，并透传 --mode 与其余参数。
+cli_launcher_exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name=CLI_LAUNCHER_NAME,
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    icon=str(icon_file) if icon_file.exists() else None,
 )
 
 # 桌面 GUI 主程序 EXE 使用专用 GUI 启动器。
@@ -255,6 +295,8 @@ updater_helper_exe = EXE(
 )
 
 coll = COLLECT(
+    launcher_exe,
+    cli_launcher_exe,
     exe,
     webui_exe,
     updater_helper_exe,

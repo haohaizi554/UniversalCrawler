@@ -1,0 +1,852 @@
+from __future__ import annotations
+
+import importlib.util
+import hashlib
+import json
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import pytest
+
+from tests.support.paths import PROJECT_ROOT
+
+
+BUILD_RELEASE_TOOL = PROJECT_ROOT / "packaging" / "build_release.py"
+UPDATE_MANIFEST_TOOL = PROJECT_ROOT / "packaging" / "update_manifest.py"
+
+
+def _file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _load_tool():
+    spec = importlib.util.spec_from_file_location(
+        "ucrawl_release_pipeline_tool", BUILD_RELEASE_TOOL
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_manifest_tool():
+    spec = importlib.util.spec_from_file_location(
+        "ucrawl_release_manifest_tool", UPDATE_MANIFEST_TOOL
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _release_payload(installer: Path, *, source_commit: str = "a" * 40) -> dict:
+    return {
+        "schema": 1,
+        "appId": "ucrawl.universalcrawlerpro",
+        "channel": "stable",
+        "version": "3.6.21",
+        "tag": "v3.6.21",
+        "publishedAt": "2026-07-16T00:00:00Z",
+        "expiresAt": "2099-07-16T00:00:00Z",
+        "minClientVersion": "3.0.0",
+        "mandatory": False,
+        "notes": "emergency rebuild",
+        "sourceCommit": source_commit,
+        "assets": {
+            "windows-x64": {
+                "name": installer.name,
+                "url": (
+                    "https://github.com/haohaizi554/UniversalCrawler/releases/"
+                    f"download/v3.6.21/{installer.name}"
+                ),
+                "sha256": _file_sha256(installer),
+                "size": installer.stat().st_size,
+                "installerType": "inno",
+                "os": "windows",
+                "arch": "x64",
+            }
+        },
+    }
+
+
+def _write_staged_release(tmp_path: Path, *, source_commit: str = "a" * 40):
+    installer = tmp_path / "UniversalCrawlerPro_Setup_3.6.21.exe"
+    installer.write_bytes(b"installer")
+    payload = _release_payload(installer, source_commit=source_commit)
+    (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "latest.json.sig").write_bytes(b"signature")
+    return installer, payload
+
+
+def _staged_validation_kwargs(installer: Path, *, source_commit: str = "a" * 40) -> dict:
+    return {
+        "installer_name": installer.name,
+        "installer_size": installer.stat().st_size,
+        "installer_sha256": _file_sha256(installer),
+        "asset_url": (
+            "https://github.com/haohaizi554/UniversalCrawler/releases/"
+            f"download/v3.6.21/{installer.name}"
+        ),
+        "version": "3.6.21",
+        "tag": "v3.6.21",
+        "source_commit": source_commit,
+        "project_root": PROJECT_ROOT,
+    }
+
+
+def test_release_mode_fails_before_build_when_manifest_key_is_missing(tmp_path):
+    tool = _load_tool()
+    run_build = Mock()
+
+    with (
+        patch.object(tool, "_run_build", run_build),
+        patch.object(tool, "_default_private_key_path", return_value=tmp_path / "missing.pem"),
+        pytest.raises(SystemExit, match="manifest.*私钥|私钥.*manifest"),
+    ):
+        tool.main([])
+
+    run_build.assert_not_called()
+
+
+def test_manifest_payload_records_the_full_source_commit(tmp_path):
+    tool = _load_manifest_tool()
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"installer")
+
+    payload = tool.build_manifest_payload(
+        version="3.6.21",
+        tag="v3.6.21",
+        source_commit="a" * 40,
+        assets=[
+            tool.ReleaseAssetSpec(
+                key="windows-x64",
+                path=installer,
+                url="https://example.test/installer.exe",
+                os="windows",
+                arch="x64",
+                installer_type="inno",
+            )
+        ],
+    )
+
+    assert payload["sourceCommit"] == "a" * 40
+
+
+def test_build_only_is_an_explicit_escape_hatch_that_does_not_prepare_update_assets():
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "_run_build") as run_build,
+        patch.object(tool, "_prepare_release_assets") as prepare_assets,
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        result = tool.main(["--build-only"])
+
+    assert result == 0
+    assert [Path(call.args[0]).name for call in run_build.call_args_list] == [
+        "build_portable.py",
+        "build_installer.py",
+    ]
+    assert all(call.args[1] == PROJECT_ROOT for call in run_build.call_args_list)
+    prepare_assets.assert_not_called()
+
+
+def test_run_build_passes_the_snapshot_project_root_to_each_build_script(tmp_path):
+    tool = _load_tool()
+    snapshot_root = tmp_path / "snapshot"
+    script = snapshot_root / "packaging" / "build_portable.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# snapshot build script\n", encoding="utf-8")
+
+    with patch.object(tool.subprocess, "run") as run:
+        tool._run_build(
+            "build_portable.py",
+            snapshot_root,
+            lock_token="release-token",
+            lock_root=PROJECT_ROOT,
+        )
+
+    run.assert_called_once_with(
+        [
+            sys.executable,
+            str(script),
+            "--project-root",
+            str(snapshot_root.resolve()),
+        ],
+        cwd=snapshot_root.resolve(),
+        check=True,
+        shell=False,
+        env=run.call_args.kwargs["env"],
+    )
+
+
+def test_run_build_passes_the_parent_release_lock_token_to_snapshot_script(tmp_path):
+    tool = _load_tool()
+    snapshot_root = tmp_path / "snapshot"
+    script = snapshot_root / "packaging" / "build_portable.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# snapshot build script\n", encoding="utf-8")
+    lock_root = tmp_path / "checkout"
+    lock_root.mkdir()
+
+    with patch.object(tool.subprocess, "run") as run:
+        tool._run_build(
+            "build_portable.py",
+            snapshot_root,
+            lock_token="release-token",
+            lock_root=lock_root,
+        )
+
+    environment = run.call_args.kwargs["env"]
+    assert environment["UCRAWL_RELEASE_LOCK_TOKEN"] == "release-token"
+    assert environment["UCRAWL_RELEASE_LOCK_ROOT"] == str(lock_root.resolve())
+
+
+@pytest.mark.parametrize("script_name", ["build_portable.py", "build_installer.py"])
+def test_build_scripts_accept_and_validate_the_snapshot_project_root(tmp_path, script_name):
+    script = PROJECT_ROOT / "packaging" / script_name
+    help_result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--project-root" in help_result.stdout
+
+    mismatched = subprocess.run(
+        [sys.executable, str(script), "--project-root", str(tmp_path / "other-root")],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mismatched.returncode != 0
+    assert "project root" in (mismatched.stderr + mismatched.stdout)
+
+
+def test_source_snapshot_is_immutable_during_build_and_removed_on_failure(tmp_path):
+    tool = _load_tool()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "release-test@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Release Test"],
+        cwd=repository,
+        check=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("committed bytes\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "snapshot"], cwd=repository, check=True)
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    snapshot_root: Path | None = None
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        with tool._source_snapshot(source_commit, repository_root=repository) as snapshot:
+            snapshot_root = snapshot
+            tracked.write_text("mutable worktree bytes\n", encoding="utf-8")
+            assert (snapshot / "tracked.txt").read_text(encoding="utf-8") == "committed bytes\n"
+            assert not (snapshot / ".git").exists()
+            raise RuntimeError("build failed")
+
+    assert snapshot_root is not None
+    assert not snapshot_root.exists()
+
+
+def test_source_snapshot_materializes_lfs_files_when_smudge_is_disabled(monkeypatch):
+    tool = _load_tool()
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    lfs_payload = json.loads(
+        subprocess.run(
+            ["git", "lfs", "ls-files", "--json", source_commit],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    expected = {entry["name"]: entry for entry in lfs_payload["files"]}
+    assert {"N_m3u8DL-RE.exe", "ffprobe.exe"} <= set(expected)
+    monkeypatch.setenv("GIT_LFS_SKIP_SMUDGE", "1")
+
+    with tool._source_snapshot(source_commit, repository_root=PROJECT_ROOT) as snapshot:
+        for name, entry in expected.items():
+            materialized = snapshot / name
+            assert materialized.stat().st_size == entry["size"]
+            assert _file_sha256(materialized) == entry["oid"]
+        for name in ("N_m3u8DL-RE.exe", "ffmpeg.exe", "ffprobe.exe"):
+            windows_tool = snapshot / name
+            assert windows_tool.stat().st_size >= 1024 * 1024
+            with windows_tool.open("rb") as handle:
+                assert handle.read(2) == b"MZ"
+
+
+@pytest.mark.parametrize(
+    ("expected_oid", "expected_size", "message"),
+    [
+        (hashlib.sha256(b"MZpayload").hexdigest(), 99, "size|大小"),
+        ("0" * 64, len(b"MZpayload"), "SHA-256|OID|哈希"),
+    ],
+)
+def test_lfs_materialization_rejects_size_or_oid_mismatch(
+    tmp_path,
+    expected_oid,
+    expected_size,
+    message,
+):
+    tool = _load_tool()
+    materialized = tmp_path / "tool.exe"
+    materialized.write_bytes(b"MZpayload")
+
+    with pytest.raises(SystemExit, match=message):
+        tool._validate_materialized_lfs_file(
+            materialized,
+            expected_oid=expected_oid,
+            expected_size=expected_size,
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"not-a-pe" + b"x" * (1024 * 1024), "PE|MZ"),
+        (b"MZtiny", "size|大小|过小"),
+    ],
+    ids=("bad-magic", "too-small"),
+)
+def test_windows_release_tool_validation_rejects_invalid_pe_or_tiny_file(
+    tmp_path,
+    payload,
+    message,
+):
+    tool = _load_tool()
+    for name in ("N_m3u8DL-RE.exe", "ffmpeg.exe", "ffprobe.exe"):
+        (tmp_path / name).write_bytes(b"MZ" + b"x" * (1024 * 1024))
+    (tmp_path / "ffprobe.exe").write_bytes(payload)
+
+    with pytest.raises(SystemExit, match=message):
+        tool._validate_windows_release_tools(tmp_path)
+
+
+def test_release_build_and_publish_use_the_same_snapshot_under_one_lock(tmp_path):
+    tool = _load_tool()
+    snapshot_root = tmp_path / "snapshot"
+    snapshot_installer = (
+        snapshot_root / "dist" / "installer" / "UniversalCrawlerPro_Setup_3.6.21.exe"
+    )
+    private_key = tmp_path / "manifest-private.pem"
+    private_key.write_text("private", encoding="utf-8")
+    lock_held = False
+    calls: list[tuple[str, Path]] = []
+
+    def fake_metadata(project_root: Path = tool.PROJECT_ROOT):
+        root = Path(project_root)
+        return "3.6.21", (
+            root / "dist" / "installer" / "UniversalCrawlerPro_Setup_3.6.21.exe"
+        )
+
+    @contextmanager
+    def fake_lock(_project_root: Path):
+        nonlocal lock_held
+        assert not lock_held
+        lock_held = True
+        try:
+            yield "release-token"
+        finally:
+            lock_held = False
+
+    @contextmanager
+    def fake_snapshot(source_commit: str, *, repository_root: Path):
+        assert source_commit == "a" * 40
+        assert repository_root == tool.PROJECT_ROOT
+        yield snapshot_root
+
+    def fake_build(project_root: Path, **kwargs):
+        assert lock_held
+        assert kwargs["lock_token"] == "release-token"
+        assert kwargs["lock_root"] == tool.PROJECT_ROOT
+        calls.append(("build", project_root))
+
+    def fake_prepare(**kwargs):
+        assert lock_held
+        assert kwargs["project_root"] == snapshot_root
+        calls.append(("publish", kwargs["installer"]))
+        release_dir = tmp_path / "release-assets" / "v3.6.21"
+        release_dir.mkdir(parents=True)
+        return release_dir
+
+    with (
+        patch.object(tool, "_project_release_metadata", side_effect=fake_metadata),
+        patch.object(tool, "_validate_private_key_path", return_value=private_key),
+        patch.object(tool, "_validate_git_release_state", return_value="a" * 40),
+        patch.object(tool, "_release_build_lock", side_effect=fake_lock),
+        patch.object(tool, "_source_snapshot", side_effect=fake_snapshot),
+        patch.object(tool, "_validate_windows_release_tools"),
+        patch.object(tool, "_build_binaries", side_effect=fake_build),
+        patch.object(tool, "_prepare_release_assets", side_effect=fake_prepare),
+    ):
+        result = tool.main(
+            [
+                "--private-key",
+                str(private_key),
+                "--output-root",
+                str(tmp_path / "release-assets"),
+            ]
+        )
+
+    assert result == 0
+    assert calls == [("build", snapshot_root), ("publish", snapshot_installer)]
+    assert not lock_held
+
+
+def test_build_rejects_mutation_of_original_snapshot_files(tmp_path):
+    tool = _load_tool()
+    snapshot_root = tmp_path / "snapshot"
+    tracked = snapshot_root / "app" / "config" / "update_trust.py"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("committed trust\n", encoding="utf-8")
+    build_count = 0
+
+    def mutate_source(_script_name, _project_root, **_kwargs):
+        nonlocal build_count
+        build_count += 1
+        if build_count == 1:
+            tracked.write_text("mutated trust\n", encoding="utf-8")
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch.object(tool, "_run_build", side_effect=mutate_source),
+        pytest.raises(SystemExit, match="sourceCommit|snapshot|快照|源码"),
+    ):
+        tool._build_binaries(
+            snapshot_root,
+            lock_token="release-token",
+            lock_root=PROJECT_ROOT,
+        )
+
+
+def test_build_rejects_new_source_files_added_during_snapshot_build(tmp_path):
+    tool = _load_tool()
+    snapshot_root = tmp_path / "snapshot"
+    tracked = snapshot_root / "app" / "config" / "update_trust.py"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("committed trust\n", encoding="utf-8")
+    generated = snapshot_root / "app" / "config" / "generated_trust.py"
+    build_count = 0
+
+    def add_source(_script_name, _project_root, **_kwargs):
+        nonlocal build_count
+        build_count += 1
+        if build_count == 1:
+            generated.write_text("injected trust\n", encoding="utf-8")
+
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch.object(tool, "_run_build", side_effect=add_source),
+        pytest.raises(SystemExit, match="sourceCommit|snapshot|快照|源码"),
+    ):
+        tool._build_binaries(
+            snapshot_root,
+            lock_token="release-token",
+            lock_root=PROJECT_ROOT,
+        )
+
+
+def test_build_lock_rejects_a_second_instance_before_any_build(tmp_path):
+    tool = _load_tool()
+    lock_path = tmp_path / "release.lock"
+    run_build = Mock()
+
+    with (
+        patch.object(tool, "_release_lock_path", return_value=lock_path),
+        tool._release_build_lock(tool.PROJECT_ROOT),
+        patch.object(tool, "_run_build", run_build),
+        pytest.raises(SystemExit, match="release.*lock|another.*build|发布.*构建|构建.*占用"),
+    ):
+        tool.main(["--build-only"])
+
+    run_build.assert_not_called()
+
+
+def test_build_lock_is_released_when_the_owner_fails(tmp_path):
+    tool = _load_tool()
+    lock_path = tmp_path / "release.lock"
+
+    with patch.object(tool, "_release_lock_path", return_value=lock_path):
+        with pytest.raises(RuntimeError, match="boom"):
+            with tool._release_build_lock(tool.PROJECT_ROOT):
+                raise RuntimeError("boom")
+        with tool._release_build_lock(tool.PROJECT_ROOT):
+            pass
+
+
+def test_build_lock_is_exclusive_across_processes(tmp_path):
+    tool = _load_tool()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    child_code = """
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("ucrawl_release_lock_child", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+with module._release_build_lock(Path(sys.argv[2])):
+    print("locked", flush=True)
+    sys.stdin.readline()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(BUILD_RELEASE_TOOL), str(checkout)],
+        cwd=PROJECT_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        ready = child.stdout.readline().strip()
+        if ready != "locked":
+            assert child.stderr is not None
+            pytest.fail(child.stderr.read() or f"lock child exited with {child.returncode}")
+        with pytest.raises(SystemExit, match="release.*lock|发布.*构建|构建.*占用"):
+            with tool._release_build_lock(checkout):
+                pass
+    finally:
+        if child.stdin is not None:
+            child.stdin.write("release\n")
+            child.stdin.flush()
+            child.stdin.close()
+        child.wait(timeout=10)
+
+    assert child.returncode == 0
+
+
+@pytest.mark.parametrize("script_name", ["build_portable.py", "build_installer.py"])
+def test_direct_leaf_build_cannot_bypass_parent_release_lock(tmp_path, script_name):
+    tool = _load_tool()
+    child_code = r'''
+import importlib.util
+import sys
+from pathlib import Path
+
+script = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(script.parent))
+spec = importlib.util.spec_from_file_location("ucrawl_leaf_lock_probe", script)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+if script.name == "build_portable.py":
+    module.ensure_prerequisites = lambda: None
+    module.clean_previous_outputs = lambda: None
+    module.run_pyinstaller = lambda: None
+    module.copy_python_sqlite_runtime_files = lambda: None
+    module.copy_portable_root_docs = lambda: None
+    module.verify_output = lambda: None
+    module.write_manifest = lambda: None
+else:
+    output = Path(sys.argv[2])
+    module.ensure_prerequisites = lambda: "iscc"
+    module.get_setup_exe_path = lambda: output
+    def fake_run(*_args, **_kwargs):
+        output.write_bytes(b"MZ" + b"x" * 1024)
+    module.subprocess.run = fake_run
+    module.maybe_sign_windows_installer = lambda _path: None
+module.main([])
+'''
+    script = PROJECT_ROOT / "packaging" / script_name
+    output = tmp_path / "setup.exe"
+
+    with tool._release_build_lock(PROJECT_ROOT):
+        child = subprocess.run(
+            [sys.executable, "-c", child_code, str(script), str(output)],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert child.returncode != 0
+    assert "lock" in (child.stdout + child.stderr).lower() or "构建" in (
+        child.stdout + child.stderr
+    )
+
+
+def test_prepare_release_assets_atomically_publishes_exact_required_triplet(tmp_path):
+    tool = _load_tool()
+    installer = tmp_path / "installer" / "UniversalCrawlerPro_Setup_3.6.21.exe"
+    installer.parent.mkdir()
+    installer.write_bytes(b"signed-installer")
+    private_key = tmp_path / "outside-repo" / "manifest-private.pem"
+    private_key.parent.mkdir()
+    private_key.write_text("private", encoding="utf-8")
+    snapshot_root = tmp_path / "snapshot"
+    snapshot_root.mkdir()
+
+    def fake_manifest(argv: list[str], **_kwargs) -> None:
+        output_dir = Path(argv[argv.index("--output-dir") + 1])
+        asset_spec = Path(argv[argv.index("--asset-spec") + 1])
+        source_commit = argv[argv.index("--source-commit") + 1]
+        specs = json.loads(asset_spec.read_text(encoding="utf-8"))
+        assert specs[0]["path"] == str(output_dir / installer.name)
+        (output_dir / "latest.json").write_text(
+            json.dumps(_release_payload(output_dir / installer.name, source_commit=source_commit)),
+            encoding="utf-8",
+        )
+        (output_dir / "latest.json.sig").write_bytes(b"signature")
+
+    with (
+        patch.object(tool, "_run_manifest_tool", side_effect=fake_manifest),
+        patch.object(tool, "_verify_staged_manifest") as verify_manifest,
+        patch.object(tool, "_validate_git_release_state", return_value="a" * 40),
+    ):
+        release_dir = tool._prepare_release_assets(
+            installer=installer,
+            private_key=private_key,
+            version="3.6.21",
+            tag="v3.6.21",
+            source_commit="a" * 40,
+            repository="haohaizi554/UniversalCrawler",
+            output_root=tmp_path / "release-assets",
+            notes="emergency rebuild",
+            project_root=snapshot_root,
+        )
+
+    assert release_dir == tmp_path / "release-assets" / "v3.6.21"
+    assert {path.name for path in release_dir.iterdir()} == {
+        installer.name,
+        "latest.json",
+        "latest.json.sig",
+    }
+    verify_manifest.assert_called_once()
+
+
+def test_prepare_release_assets_revalidates_live_tag_head_before_atomic_publish(tmp_path):
+    tool = _load_tool()
+    installer = tmp_path / "installer" / "UniversalCrawlerPro_Setup_3.6.21.exe"
+    installer.parent.mkdir()
+    installer.write_bytes(b"signed-installer")
+    private_key = tmp_path / "outside-repo" / "manifest-private.pem"
+    private_key.parent.mkdir()
+    private_key.write_text("private", encoding="utf-8")
+    snapshot_root = tmp_path / "snapshot"
+    snapshot_root.mkdir()
+    source_commits: list[str] = []
+
+    def fake_manifest(argv: list[str], **_kwargs) -> None:
+        output_dir = Path(argv[argv.index("--output-dir") + 1])
+        source_commit = argv[argv.index("--source-commit") + 1]
+        source_commits.append(source_commit)
+        staged_installer = output_dir / installer.name
+        (output_dir / "latest.json").write_text(
+            json.dumps(_release_payload(staged_installer, source_commit=source_commit)),
+            encoding="utf-8",
+        )
+        (output_dir / "latest.json.sig").write_bytes(b"signature")
+
+    output_root = tmp_path / "release-assets"
+    with (
+        patch.object(tool, "_run_manifest_tool", side_effect=fake_manifest),
+        patch.object(tool, "_verify_staged_manifest"),
+        patch.object(tool, "_validate_git_release_state", return_value="b" * 40),
+        pytest.raises(SystemExit, match="HEAD|tag|source commit|源提交|提交"),
+    ):
+        tool._prepare_release_assets(
+            installer=installer,
+            private_key=private_key,
+            version="3.6.21",
+            tag="v3.6.21",
+            source_commit="a" * 40,
+            repository="haohaizi554/UniversalCrawler",
+            output_root=output_root,
+            notes="emergency rebuild",
+            project_root=snapshot_root,
+        )
+
+    assert source_commits == ["a" * 40]
+    assert not (output_root / "v3.6.21").exists()
+
+
+def test_manifest_generation_and_verification_use_snapshot_tools(tmp_path):
+    tool = _load_tool()
+    snapshot_root = tmp_path / "snapshot"
+    manifest_tool = snapshot_root / "packaging" / "update_manifest.py"
+    manifest_tool.parent.mkdir(parents=True)
+    manifest_tool.write_text("# snapshot manifest tool\n", encoding="utf-8")
+    manifest = tmp_path / "latest.json"
+    signature = tmp_path / "latest.json.sig"
+    manifest.write_text("{}", encoding="utf-8")
+    signature.write_bytes(b"signature")
+
+    with patch.object(tool.subprocess, "run") as run:
+        tool._run_manifest_tool(["--probe"], project_root=snapshot_root)
+
+    assert run.call_args.args[0][1] == str(manifest_tool)
+    assert run.call_args.kwargs["cwd"] == snapshot_root.resolve()
+
+    with patch.object(tool.subprocess, "run") as run:
+        tool._verify_staged_manifest(
+            manifest,
+            signature,
+            project_root=snapshot_root,
+        )
+
+    verify_argv = run.call_args.args[0]
+    assert verify_argv[0] == sys.executable
+    assert "-I" in verify_argv
+    assert str(snapshot_root.resolve()) in verify_argv
+    assert run.call_args.kwargs["cwd"] == snapshot_root.resolve()
+
+
+def test_release_identity_must_match_the_built_package_version():
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit, match="3.6.17.*3.6.21|3.6.21.*3.6.17"):
+        tool._validate_release_identity(
+            package_version="3.6.17",
+            version="3.6.21",
+            tag="v3.6.21",
+        )
+
+
+def test_release_identity_requires_tag_to_match_version():
+    tool = _load_tool()
+
+    with pytest.raises(SystemExit, match="tag"):
+        tool._validate_release_identity(
+            package_version="3.6.21",
+            version="3.6.21",
+            tag="v3.6.20",
+        )
+
+
+def test_git_release_state_rejects_dirty_source_tree():
+    tool = _load_tool()
+
+    with (
+        patch.object(tool, "_run_git", return_value=" M app/core.py\n"),
+        pytest.raises(SystemExit, match="工作树|dirty|未提交"),
+    ):
+        tool._validate_git_release_state("v3.6.21")
+
+
+def test_git_release_state_rejects_tag_that_does_not_point_to_head():
+    tool = _load_tool()
+    outputs = iter(["", "a" * 40, "b" * 40])
+
+    with (
+        patch.object(tool, "_run_git", side_effect=lambda _args: next(outputs)),
+        pytest.raises(SystemExit, match="tag.*HEAD|HEAD.*tag"),
+    ):
+        tool._validate_git_release_state("v3.6.21")
+
+
+def test_final_asset_validation_rejects_non_exact_triplet(tmp_path):
+    tool = _load_tool()
+    installer, _payload = _write_staged_release(tmp_path)
+    (tmp_path / "unexpected").mkdir()
+
+    with (
+        patch.object(tool, "_verify_staged_manifest"),
+        pytest.raises(RuntimeError, match="只能包含"),
+    ):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_tampered_installer_hash(tmp_path):
+    tool = _load_tool()
+    installer, _payload = _write_staged_release(tmp_path)
+    kwargs = _staged_validation_kwargs(installer)
+    installer.write_bytes(b"tampered-installer")
+
+    with patch.object(tool, "_verify_staged_manifest"), pytest.raises(RuntimeError, match="SHA-256"):
+        tool._validate_staged_assets(tmp_path, **kwargs)
+
+
+def test_final_asset_validation_rejects_manifest_size_mismatch(tmp_path):
+    tool = _load_tool()
+    installer, payload = _write_staged_release(tmp_path)
+    payload["assets"]["windows-x64"]["size"] += 1
+    (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with patch.object(tool, "_verify_staged_manifest"), pytest.raises(RuntimeError, match="元数据"):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_manifest_url_mismatch(tmp_path):
+    tool = _load_tool()
+    installer, payload = _write_staged_release(tmp_path)
+    payload["assets"]["windows-x64"]["url"] = "https://example.invalid/tampered.exe"
+    (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with patch.object(tool, "_verify_staged_manifest"), pytest.raises(RuntimeError, match="元数据"):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_tag_version_mismatch(tmp_path):
+    tool = _load_tool()
+    installer, payload = _write_staged_release(tmp_path)
+    payload["version"] = "3.6.20"
+    (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with patch.object(tool, "_verify_staged_manifest"), pytest.raises(RuntimeError, match="version/tag"):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_source_commit_mismatch(tmp_path):
+    tool = _load_tool()
+    installer, payload = _write_staged_release(tmp_path)
+    payload["sourceCommit"] = "b" * 40
+    (tmp_path / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with patch.object(tool, "_verify_staged_manifest"), pytest.raises(RuntimeError, match="sourceCommit"):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_empty_signature(tmp_path):
+    tool = _load_tool()
+    installer, _payload = _write_staged_release(tmp_path)
+    (tmp_path / "latest.json.sig").write_bytes(b"")
+
+    with pytest.raises(RuntimeError, match="sig.*空|为空"):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))
+
+
+def test_final_asset_validation_rejects_invalid_signature(tmp_path):
+    tool = _load_tool()
+    installer, _payload = _write_staged_release(tmp_path)
+
+    with (
+        patch.object(tool, "_verify_staged_manifest", side_effect=RuntimeError("invalid signature")),
+        pytest.raises(RuntimeError, match="invalid signature"),
+    ):
+        tool._validate_staged_assets(tmp_path, **_staged_validation_kwargs(installer))

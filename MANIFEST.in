@@ -1,9 +1,10 @@
 include README.md
 include README_EN.md
 include LICENSE
-include CHANGELOG.md
+include docs/changelog.md
 include favicon.ico
 include Web.ico
+include analytics.ico
 include Dockerfile
 include docker-compose.yml
 include requirements-web.txt

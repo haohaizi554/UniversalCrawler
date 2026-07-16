@@ -61,11 +61,21 @@ Firefox、WebKit 和历史 revision 不再进入发布物。缺少当前 revisio
 - GUI 更新弹窗调用 `_handle_log_action("open_latest")`，继续经 action worker 执行文件操作，不在 UI 线程直接读写文件。
 - WebUI 更新弹窗通过 `/api/debug/latest-log` 在新标签页打开日志，不尝试访问浏览器不可见的本地路径。
 
+### 失败关闭的一键发布资产
+
+`python packaging/build_release.py` 现在默认要求干净工作树、同名 tag 指向 `HEAD`、版本与
+安装包一致，并要求 manifest 私钥位于仓库外。构建完成后，它会在临时目录生成安装包、
+`latest.json` 与 `latest.json.sig`，重新核对源提交、最终文件 SHA-256、URL、平台字段和
+Ed25519 签名，全部通过后才原子切换到 `dist/release-assets/v<version>/`。
+
+只构建便携版/安装器必须显式传入 `--build-only`；该模式会明确提示没有生成签名清单，
+不得直接作为支持热更新的 Release。这样把“三项资产缺一不可”从人工守则升级为可执行门禁。
+
 ## 发布守则
 
 1. 运行 `python -m playwright install chromium`，确认当前 revision 完整。
 2. 构建后记录便携目录和安装包实际大小，不能沿用上一次数据。
-3. 生成 `latest.json` 与 `latest.json.sig`；生成器必须校验安装包上限、大小和 SHA-256。
+3. 运行默认 `build_release.py` 原子生成安装包、`latest.json` 与 `latest.json.sig`；生成器必须校验安装包上限、大小、SHA-256、源提交和签名。
 4. GitHub Release 必须同时具备安装包、`latest.json`、`latest.json.sig` 三项资产后才能宣布支持热更新。
 5. 从 GitHub 重新下载两个元数据文件，用客户端内置公钥验签；不能只验证本地产物。
 6. 使用旧版本号执行一次真实在线检查，确认状态为 `available`、平台资产匹配且下载准备能够启动。

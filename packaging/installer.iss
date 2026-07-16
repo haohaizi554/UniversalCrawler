@@ -13,6 +13,18 @@
 #ifndef AppExeName
   #define AppExeName "UniversalCrawlerPro.exe"
 #endif
+#ifndef LauncherExeName
+  #define LauncherExeName "UCrawlLauncher.exe"
+#endif
+#ifndef LauncherDisplayName
+  #define LauncherDisplayName "Universal Crawler Pro 启动中心"
+#endif
+#ifndef CLILauncherExeName
+  #define CLILauncherExeName "UCrawlCLI.exe"
+#endif
+#ifndef CLILauncherDisplayName
+  #define CLILauncherDisplayName "Universal Crawler Pro 命令行"
+#endif
 #ifndef WebUIExeName
   #define WebUIExeName "CrawlerWebPortal.exe"
 #endif
@@ -91,6 +103,8 @@ Source: "..\{#AppIconName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\{#WebUIIconName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+Name: "{group}\{#LauncherDisplayName}"; Filename: "{app}\{#LauncherExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"
+Name: "{group}\{#CLILauncherDisplayName}"; Filename: "{app}\{#CLILauncherExeName}"; Parameters: "--mode interactive"; WorkingDir: "{app}"; IconFilename: "{app}\{#CLILauncherExeName}"
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; AppUserModelID: "{#AppUserModelID}"
 Name: "{group}\{#WebUIDisplayName}"; Filename: "{app}\{#WebUIExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#WebUIIconName}"; AppUserModelID: "{#WebUIUserModelID}"
 Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"

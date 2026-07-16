@@ -12,9 +12,12 @@
 当前打包链路已经适配本项目的真实入口结构：
 
 - 源码自适应入口：`main.py` / `ucrawl-auto` → `entry/dispatcher.py`
-- 打包后双 EXE 直启（绕过 dispatcher）：
+- 打包后提供启动中心、独立命令行入口及两个既有直达入口：
+  - `UCrawlLauncher.exe`：模式选择启动中心（`main.py` → `entry.dispatcher`），可进入代码量统计
+  - `UCrawlCLI.exe`：带控制台的 CLI / 交互式引导入口（`main.py` → `entry.dispatcher`）
   - `UniversalCrawlerPro.exe`：桌面 GUI（`entry.gui_entry`）
   - `CrawlerWebPortal.exe`：Web UI（`entry.web_entry`）
+- GUI/Web 两个直达入口继续绕过 dispatcher，保持原有双击语义
 - 跨入口共享层：`shared/` 已显式纳入 `portable.spec` 的 `datas` 与 `hiddenimports`
 
 ## 目录职责
@@ -27,7 +30,8 @@
   - 调用 Inno Setup 生成安装包
   - 从 `pyproject.toml` 同步项目版本并注入 `installer.iss`
 - `build_release.py`
-  - 串联便携版和安装包构建
+  - 默认串联便携版、安装包、签名清单和最终回验，原子准备三项 Release 资产
+  - `--build-only` 仅供本地构建或生产信任 bootstrap
 - `portable.spec`
   - PyInstaller 打包规格
 - `installer.iss`
@@ -97,6 +101,8 @@ python packaging/build_portable.py
 
 ### 典型产物
 
+- `dist/UniversalCrawlerPro/UCrawlLauncher.exe`
+- `dist/UniversalCrawlerPro/UCrawlCLI.exe`
 - `dist/UniversalCrawlerPro/UniversalCrawlerPro.exe`
 - `dist/UniversalCrawlerPro/CrawlerWebPortal.exe`
 - `dist/UniversalCrawlerPro/_internal/`
@@ -133,7 +139,7 @@ python packaging/build_installer.py
 dist/installer/UniversalCrawlerPro_Setup_<version>.exe
 ```
 
-## 一键构建
+## 一键发布
 
 ```bash
 python packaging/build_release.py
@@ -141,11 +147,41 @@ python packaging/build_release.py
 
 执行顺序：
 
-1. 构建便携版
-2. 校验输出完整性
-3. 基于便携版生成安装包
+1. 校验工作树干净、版本一致且同名 tag 指向 `HEAD`
+2. 从 `sourceCommit` 导出独立 `git archive` 快照；将 Git LFS 指针物化为真实对象，并按 LFS OID 和声明大小逐个校验
+3. 要求随包的 `N_m3u8DL-RE.exe`、`ffmpeg.exe`、`ffprobe.exe` 已物化为有效 PE 文件，而不是 LFS 指针或异常小的占位文件
+4. 校验 manifest 私钥位于仓库外；从同一快照运行构建、清单生成器与客户端验证器
+5. 构建便携版与安装包，并校验快照源码树未被脚本修改、新增或删除
+6. 开启 Windows 签名时，要求源码中已提交生产信任锚且 `UPDATE_REQUIRE_OS_SIGNATURE=True`；便携版只冻结一次，最终安装包签名人必须与冻结信任一致
+7. 在临时目录生成并用快照中的客户端公钥重新验签 manifest，复核安装包 SHA-256、URL、平台和源提交
+8. 原子生成 `dist/release-assets/v<version>/`，其中只能包含安装包、`latest.json`、`latest.json.sig`
+
+`build_release.py`、`build_portable.py` 与 `build_installer.py` 共用同一个跨进程发布锁。顶层发布通过一次性父令牌授权子构建；直接运行任一叶子脚本也必须独立获取同一把锁，不能绕过并发发布门禁。构建脚本不会在发布过程中回写信任配置，需要更换签名证书时必须先审核并提交新的信任锚。
+
+只需要便携版和安装器时使用：
+
+```bash
+python packaging/build_release.py --build-only
+```
+
+`--build-only` 产物不具备热更新发布资格。
 
 ## 当前产物约定
+
+### 启动中心
+
+- `UCrawlLauncher.exe`
+- 入口：`main.py` / `entry.dispatcher`
+- 安装器在开始菜单创建“Universal Crawler Pro 启动中心”快捷方式
+- 无控制台双击时打开 Qt 模式选择器，可进入代码量统计；选择 CLI / 交互式引导时委托同目录的 `UCrawlCLI.exe` 打开独立终端，不替换下列 GUI/Web 直达入口
+- CLI 卡片无附加参数时先显示用法并保留命令行窗口，可继续输入命令；交互式引导直接进入逐步选择
+
+### 命令行入口
+
+- `UCrawlCLI.exe`
+- 入口：`main.py` / `entry.dispatcher`，PyInstaller `console=True`
+- 安装器在开始菜单创建“Universal Crawler Pro 命令行”快捷方式，并以 `--mode interactive` 启动
+- 可用 `UCrawlCLI.exe --mode cli --help` 做无需用户输入的发布 smoke test
 
 ### 主程序
 
@@ -178,8 +214,10 @@ python packaging/build_release.py
 
 ## 安装源完整性
 
-安装包构建前会校验 `dist/UniversalCrawlerPro/` 是否同时包含双入口 EXE、`BUILD_INFO.txt`、中英文说明文档、WebUI 静态入口和 GUI/WebUI 共享图标：
+安装包构建前会校验 `dist/UniversalCrawlerPro/` 是否同时包含启动中心、GUI/Web 直达 EXE、`BUILD_INFO.txt`、中英文说明文档、WebUI 静态入口和 GUI/WebUI 共享图标：
 
+- `UCrawlLauncher.exe`
+- `UCrawlCLI.exe`
 - `UniversalCrawlerPro.exe`
 - `CrawlerWebPortal.exe`
 - `README.md`
@@ -212,13 +250,15 @@ python packaging/build_release.py
 
 1. `python -m pytest tests/release/packaging/test_assets.py`
 2. `python tests/launcher.py --list`
-3. 启动 `UniversalCrawlerPro.exe`
-4. 启动 `CrawlerWebPortal.exe`
-5. 验证 Chromium 运行时可用
-6. 验证 `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 能被找到
-7. 验证下载目录、日志目录和配置目录可正常创建
-8. 确认安装源包含 `README.md`、`README_EN.md`、`app/web/static/index.html`、七个有序样式表 `app.css`、`log_layout.css`、`task_pages.css`、`task_runtime.css`、`media_logs.css`、`settings.css`、`overlays_responsive.css`、七个职责脚本 `log_i18n.js`、`frontend_runtime.js`、`list_pages.js`、`log_center.js`、`settings_controller.js`、`dialog_controller.js`、`playback_controller.js`，以及 `app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
-9. 确认产物中未混入用户态配置和 Cookie
+3. 启动 `UCrawlLauncher.exe`，确认模式选择器可见并能进入代码量统计
+4. 在启动中心选择 CLI / 交互式引导会打开独立终端，并确认 `UCrawlCLI.exe --mode cli --help` 返回成功
+5. 启动 `UniversalCrawlerPro.exe`，确认仍直接进入 GUI
+6. 启动 `CrawlerWebPortal.exe`，确认仍直接进入 Web UI
+7. 验证 Chromium 运行时可用
+8. 验证 `ffmpeg.exe`、`ffprobe.exe` 与 `N_m3u8DL-RE.exe` 能被找到
+9. 验证下载目录、日志目录和配置目录可正常创建
+10. 确认安装源包含 `UCrawlLauncher.exe`、`UCrawlCLI.exe`、`README.md`、`README_EN.md`、`app/web/static/index.html`、七个有序样式表 `app.css`、`log_layout.css`、`task_pages.css`、`task_runtime.css`、`media_logs.css`、`settings.css`、`overlays_responsive.css`、七个职责脚本 `log_i18n.js`、`frontend_runtime.js`、`list_pages.js`、`log_center.js`、`settings_controller.js`、`dialog_controller.js`、`playback_controller.js`，以及 `app.js`、`UI/icon/nav_settings.png`、`favicon.ico` 与 `Web.ico`
+11. 确认产物中未混入用户态配置和 Cookie
 
 `portable.spec` 必须继续递归收录整个 `app/web/static` 树；安装器构建脚本还会逐项校验上述七个有序样式表和七个职责脚本，避免静态树存在于源码但安装源缺文件。项目运行、PyInstaller 打包和安装包运行均不依赖 Node，也不引入前端构建器。`node --check` 仅是发布机已安装 Node 时可选的开发/发布语法检查；没有 Node 不影响打包或运行，仍需执行 focused WebUI/packaging pytest 套件与完整 pytest 套件。
 

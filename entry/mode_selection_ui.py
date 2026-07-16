@@ -65,6 +65,19 @@ def _has_pyqt6() -> bool:
     except Exception:
         return False
 
+
+def _viewport_safe_dialog_minimum(
+    available_width: int,
+    available_height: int,
+    *,
+    margin: int = 32,
+) -> tuple[int, int]:
+    """返回不超过当前工作区的对话框最小尺寸；内容不足时由滚动区承接。"""
+
+    width = min(720, max(1, int(available_width) - max(0, int(margin))))
+    height = min(720, max(1, int(available_height) - max(0, int(margin))))
+    return width, height
+
 def _load_app_icon() -> "QIcon | None":
     return load_qt_icon(["favicon.ico"], fallback_names=["Web.ico"])
 
@@ -79,6 +92,7 @@ def _prompt_mode_with_qt() -> Mode | None:
             QHBoxLayout,
             QLabel,
             QPushButton,
+            QScrollArea,
             QSizePolicy,
             QVBoxLayout,
             QWidget,
@@ -99,6 +113,16 @@ def _prompt_mode_with_qt() -> Mode | None:
     if os.name == "nt" and icon is not None:
         ensure_windows_app_user_model_id(MAIN_APP_USER_MODEL_ID)
 
+    class ModeCardButton(QPushButton):
+        """保留卡片视觉，同时提供按钮焦点、Enter/Space 和辅助技术语义。"""
+
+        def keyPressEvent(self, event) -> None:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.click()
+                event.accept()
+                return
+            super().keyPressEvent(event)
+
     is_dark = resolve_is_dark_theme()
     dialog = ChromedDialog(
         title="UCrawl · 选择启动模式",
@@ -107,7 +131,16 @@ def _prompt_mode_with_qt() -> Mode | None:
         body_spacing=0,
     )
     dialog.apply_chrome_theme(is_dark)
-    dialog.setMinimumSize(QSize(720, 720))
+    screen = QApplication.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        minimum_width, minimum_height = _viewport_safe_dialog_minimum(
+            available.width(), available.height()
+        )
+    else:
+        minimum_width, minimum_height = 720, 720
+    dialog.setMinimumSize(QSize(minimum_width, minimum_height))
+    dialog.resize(QSize(minimum_width, minimum_height))
     dialog.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
     if icon is not None:
         dialog.setWindowIcon(icon)
@@ -170,29 +203,35 @@ def _prompt_mode_with_qt() -> Mode | None:
         QLabel#cardTagCli {{ background: {accent_cli}; }}
         QLabel#cardTagTest {{ background: {accent_test}; }}
         QLabel#cardTagReport {{ background: {accent_report}; }}
-        QFrame#cardGui, QFrame#cardWeb, QFrame#cardInt, QFrame#cardCli, QFrame#cardTest, QFrame#cardReport {{
+        QPushButton#cardGui, QPushButton#cardWeb, QPushButton#cardInt, QPushButton#cardCli, QPushButton#cardTest, QPushButton#cardReport {{
             background: {bg_soft};
             border: 1px solid {border};
             border-radius: 12px;
+            padding: 0;
+            text-align: left;
         }}
-        QFrame#cardGui:hover {{ border: 1.5px solid {accent_gui}; background: {panel}; }}
-        QFrame#cardWeb:hover {{ border: 1.5px solid {accent_web}; background: {panel}; }}
-        QFrame#cardInt:hover {{ border: 1.5px solid {accent_int}; background: {panel}; }}
-        QFrame#cardCli:hover {{ border: 1.5px solid {accent_cli}; background: {panel}; }}
-        QFrame#cardTest:hover {{ border: 1.5px solid {accent_test}; background: {panel}; }}
-        QFrame#cardReport:hover {{ border: 1.5px solid {accent_report}; background: {panel}; }}
-        QFrame#cardGui QLabel#cardAccent {{ background: {accent_gui}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
-        QFrame#cardWeb QLabel#cardAccent {{ background: {accent_web}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
-        QFrame#cardInt QLabel#cardAccent {{ background: {accent_int}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
-        QFrame#cardCli QLabel#cardAccent {{ background: {accent_cli}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
-        QFrame#cardTest QLabel#cardAccent {{ background: {accent_test}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
-        QFrame#cardReport QLabel#cardAccent {{ background: {accent_report}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
-        QFrame#cardGui QLabel#cardIndex {{ color: {accent_gui}; }}
-        QFrame#cardWeb QLabel#cardIndex {{ color: {accent_web}; }}
-        QFrame#cardInt QLabel#cardIndex {{ color: {accent_int}; }}
-        QFrame#cardCli QLabel#cardIndex {{ color: {accent_cli}; }}
-        QFrame#cardTest QLabel#cardIndex {{ color: {accent_test}; }}
-        QFrame#cardReport QLabel#cardIndex {{ color: {accent_report}; }}
+        QPushButton#cardGui:hover, QPushButton#cardGui:focus {{ border: 2px solid {accent_gui}; background: {panel}; }}
+        QPushButton#cardWeb:hover, QPushButton#cardWeb:focus {{ border: 2px solid {accent_web}; background: {panel}; }}
+        QPushButton#cardInt:hover, QPushButton#cardInt:focus {{ border: 2px solid {accent_int}; background: {panel}; }}
+        QPushButton#cardCli:hover, QPushButton#cardCli:focus {{ border: 2px solid {accent_cli}; background: {panel}; }}
+        QPushButton#cardTest:hover, QPushButton#cardTest:focus {{ border: 2px solid {accent_test}; background: {panel}; }}
+        QPushButton#cardReport:hover, QPushButton#cardReport:focus {{ border: 2px solid {accent_report}; background: {panel}; }}
+        QPushButton#cardGui QLabel#cardAccent {{ background: {accent_gui}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardWeb QLabel#cardAccent {{ background: {accent_web}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardInt QLabel#cardAccent {{ background: {accent_int}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardCli QLabel#cardAccent {{ background: {accent_cli}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardTest QLabel#cardAccent {{ background: {accent_test}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardReport QLabel#cardAccent {{ background: {accent_report}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QPushButton#cardGui QLabel#cardIndex {{ color: {accent_gui}; }}
+        QPushButton#cardWeb QLabel#cardIndex {{ color: {accent_web}; }}
+        QPushButton#cardInt QLabel#cardIndex {{ color: {accent_int}; }}
+        QPushButton#cardCli QLabel#cardIndex {{ color: {accent_cli}; }}
+        QPushButton#cardTest QLabel#cardIndex {{ color: {accent_test}; }}
+        QPushButton#cardReport QLabel#cardIndex {{ color: {accent_report}; }}
+        QScrollArea#modeSelectionScroll, QWidget#modeSelectionBody {{
+            background: transparent;
+            border: none;
+        }}
         QPushButton#cancelBtn {{
             background: transparent;
             color: {accent_cancel};
@@ -221,10 +260,18 @@ def _prompt_mode_with_qt() -> Mode | None:
     top_stripe.setStyleSheet(f"background: {colors['accent']}; border: none;")
     root.addWidget(top_stripe)
 
-    body = QVBoxLayout()
+    scroll = QScrollArea()
+    scroll.setObjectName("modeSelectionScroll")
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    body_widget = QWidget()
+    body_widget.setObjectName("modeSelectionBody")
+    body = QVBoxLayout(body_widget)
     body.setContentsMargins(36, 30, 36, 24)
     body.setSpacing(0)
-    root.addLayout(body)
+    scroll.setWidget(body_widget)
+    root.addWidget(scroll, 1)
 
     header = QHBoxLayout()
     header.setSpacing(16)
@@ -268,13 +315,13 @@ def _prompt_mode_with_qt() -> Mode | None:
     btn_specs = [
         ("cardGui", Mode.GUI, "1", "桌面 GUI", "PyQt6 图形界面，支持完整可视化操作", "推荐", "cardTagGui"),
         ("cardWeb", Mode.WEB, "2", "Web UI", "浏览器访问，跨设备，FastAPI 后端", "", "cardTagWeb"),
-        ("cardInt", Mode.INTERACTIVE, "3", "交互式引导", "逐步选择平台和参数，适合新手", "", "cardTagInt"),
-        ("cardCli", Mode.CLI, "4", "CLI 命令行", "单次执行后退出，适合脚本 / AI 工具", "", "cardTagCli"),
+        ("cardInt", Mode.INTERACTIVE, "3", "交互式引导", "在独立终端逐步选择平台和参数，适合新手", "", "cardTagInt"),
+        ("cardCli", Mode.CLI, "4", "CLI 命令行终端", "在独立终端查看用法后可继续输入命令", "", "cardTagCli"),
         ("cardTest", Mode.TEST, "5", "测试套件", "全量/单元/UI/浏览器，多类别可勾选", "工程", "cardTagTest"),
         ("cardReport", Mode.REPORT, "6", "代码量统计", "扫描项目代码，生成并直接打开 HTML 报告", "报告", "cardTagReport"),
     ]
 
-    cards: list[tuple[Mode, QFrame]] = []
+    cards: list[tuple[Mode, QPushButton]] = []
 
     def make_card(
         css_class: str,
@@ -284,10 +331,13 @@ def _prompt_mode_with_qt() -> Mode | None:
         desc: str,
         tag: str = "",
         tag_obj: str = "",
-    ) -> QFrame:
-        card = QFrame()
+    ) -> QPushButton:
+        card = ModeCardButton()
         card.setObjectName(css_class)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        card.setAccessibleName(f"{idx} · {name}")
+        card.setAccessibleDescription(desc)
         card.setMinimumHeight(70)
 
         layout = QHBoxLayout(card)
@@ -368,6 +418,9 @@ def _prompt_mode_with_qt() -> Mode | None:
         content_wrapper.setStyleSheet("background: transparent; border: none;")
         layout.addWidget(content_wrapper, 1)
 
+        for child in card.findChildren(QWidget):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
         return card
 
     for spec in btn_specs:
@@ -388,7 +441,6 @@ def _prompt_mode_with_qt() -> Mode | None:
     bottom.addWidget(cancel_btn)
     body.addLayout(bottom)
 
-    screen = QApplication.primaryScreen()
     if screen is not None:
         screen_geo = screen.availableGeometry()
         dlg_geo = dialog.frameGeometry()
@@ -406,21 +458,13 @@ def _prompt_mode_with_qt() -> Mode | None:
         result["mode"] = None
         dialog.reject()
 
-    def make_press_handler(selected_mode: Mode):
-        def handler(_event):
-            choose(selected_mode)
-
-        return handler
-
     for mode, card in cards:
-        handler = make_press_handler(mode)
-        card.mousePressEvent = handler
-        for child in card.findChildren(QLabel):
-            child.mousePressEvent = handler
-        for widget in card.findChildren(QWidget):
-            widget.mousePressEvent = handler
+        card.clicked.connect(lambda _checked=False, selected_mode=mode: choose(selected_mode))
 
     cancel_btn.clicked.connect(cancel)
+
+    if cards:
+        cards[0][1].setFocus(Qt.FocusReason.TabFocusReason)
 
     for i, (mode, _card) in enumerate(cards, start=1):
         QShortcut(QKeySequence(str(i)), dialog, activated=lambda m=mode: choose(m))

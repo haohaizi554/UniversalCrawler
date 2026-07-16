@@ -1,7 +1,8 @@
-"""构建双入口 PyInstaller 便携版，并校验冻结目录的运行时完整性。"""
+"""构建带启动中心及 GUI/Web 直达入口的 PyInstaller 便携版。"""
 
 from __future__ import annotations
 
+import argparse
 import os
 import filecmp
 import shutil
@@ -10,11 +11,16 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
+    from release_lock import leaf_build_guard
     from project_meta import (
         APP_DISPLAY_NAME,
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_NAME,
+        CLI_LAUNCHER_DISPLAY_NAME,
+        CLI_LAUNCHER_EXE_NAME,
+        LAUNCHER_DISPLAY_NAME,
+        LAUNCHER_EXE_NAME,
         REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
         FORBIDDEN_USER_DATA_BASENAMES,
@@ -25,11 +31,16 @@ if __package__ in (None, ""):
     )
     from playwright_bundle import resolve_playwright_browser_directories
 else:
+    from .release_lock import leaf_build_guard  # type: ignore[no-redef]
     from .project_meta import (
         APP_DISPLAY_NAME,
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_NAME,
+        CLI_LAUNCHER_DISPLAY_NAME,
+        CLI_LAUNCHER_EXE_NAME,
+        LAUNCHER_DISPLAY_NAME,
+        LAUNCHER_EXE_NAME,
         REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
         FORBIDDEN_USER_DATA_BASENAMES,
@@ -50,10 +61,10 @@ BROWSER_DIR = LOCALAPPDATA / "ms-playwright"
 PORTABLE_ROOT_DOCS = ("README.md", "README_EN.md")
 PYTHON_DLL_DIR = Path(sys.base_prefix) / "DLLs"
 PYTHON_SQLITE_RUNTIME_FILES = ("_sqlite3.pyd", "sqlite3.dll")
-# 打包产物为双 EXE 直启：UniversalCrawlerPro.exe -> gui_entry，CrawlerWebPortal.exe -> web_entry。
-# 自适应 dispatcher 仅用于源码 python main.py / ucrawl-auto，不用于冻结 EXE。
+# 冻结包新增启动中心访问 dispatcher；GUI/Web 两个既有 EXE 仍保持直达入口。
 REQUIRED_FILES = [
     PROJECT_ROOT / "main.py",
+    PROJECT_ROOT / "count_project.py",
     PROJECT_ROOT / APP_ICON_NAME,  # 主图标（桌面 EXE 用）
     PROJECT_ROOT / WEBUI_ICON_NAME,  # Web 专用图标（Web EXE 用）
     PROJECT_ROOT / REPORT_ICON_NAME,  # 代码统计报告的浏览器标签页图标
@@ -67,6 +78,7 @@ REQUIRED_FILES = [
     # 入口子包必须存在，否则打包后 EXE 启动崩溃
     PROJECT_ROOT / "entry" / "__init__.py",
     PROJECT_ROOT / "entry" / "dispatcher.py",
+    PROJECT_ROOT / "entry" / "code_report_entry.py",
     PROJECT_ROOT / "entry" / "gui_entry.py",
     PROJECT_ROOT / "entry" / "web_entry.py",
     PROJECT_ROOT / "entry" / "cli_entry.py",
@@ -81,6 +93,8 @@ REQUIRED_FILES = [
 FORBIDDEN_BASENAMES = set(FORBIDDEN_USER_DATA_BASENAMES)
 # 可能占用 dist 目录的进程名
 LOCKING_PROCESSES = [
+    LAUNCHER_EXE_NAME,
+    CLI_LAUNCHER_EXE_NAME,
     APP_EXE_NAME,
     WEBUI_EXE_NAME,
     UPDATER_HELPER_EXE_NAME,
@@ -178,6 +192,14 @@ def verify_output() -> None:
     if not exe_path.exists():
         raise SystemExit(f"未找到绿色版主程序: {exe_path}")
 
+    launcher_path = DIST_DIR / LAUNCHER_EXE_NAME
+    if not launcher_path.exists():
+        raise SystemExit(f"未找到模式启动中心: {launcher_path}")
+
+    cli_launcher_path = DIST_DIR / CLI_LAUNCHER_EXE_NAME
+    if not cli_launcher_path.exists():
+        raise SystemExit(f"未找到命令行启动器: {cli_launcher_path}")
+
     webui_path = DIST_DIR / WEBUI_EXE_NAME
     if not webui_path.exists():
         raise SystemExit(f"未找到 WebUI 入口程序: {webui_path}")
@@ -254,14 +276,19 @@ def write_manifest() -> None:
         f"{APP_DISPLAY_NAME} Portable Build v{PACKAGE_VERSION}",
         f"Package Version: {PACKAGE_VERSION}",
         f"Executable: {APP_EXE_NAME}",
+        f"Launcher: {LAUNCHER_EXE_NAME}",
+        f"CLI Launcher: {CLI_LAUNCHER_EXE_NAME}",
         f"WebUI: {WEBUI_EXE_NAME}",
         f"Updater Helper: {UPDATER_HELPER_EXE_NAME}",
         "",
-        "启动方式（双 EXE 直启）：",
+        "启动方式（启动中心 + GUI/Web 直达入口）：",
+        f"- 双击 {LAUNCHER_EXE_NAME} → {LAUNCHER_DISPLAY_NAME}（含代码量统计）",
+        f"- 双击 {CLI_LAUNCHER_EXE_NAME} → {CLI_LAUNCHER_DISPLAY_NAME}（真实控制台）",
+        f"- {LAUNCHER_EXE_NAME} 中选择 CLI / 交互模式时会委托 {CLI_LAUNCHER_EXE_NAME}",
         f"- 双击 {APP_EXE_NAME}       → {APP_DISPLAY_NAME} 桌面 GUI",
         f"- 双击 {WEBUI_EXE_NAME} → {WEBUI_DISPLAY_NAME}（FastAPI + 托盘）",
         f"- {UPDATER_HELPER_EXE_NAME} 由 GUI 更新流程自动调用，请勿手动运行",
-        "- CLI / 交互式模式请使用源码环境：ucrawl / ucrawl-i，或 python main.py --mode cli",
+        f"- {CLI_LAUNCHER_EXE_NAME} --mode cli / interactive 可直接运行冻结版命令行",
         "",
         "Bundled tools:",
         "- ffmpeg.exe",
@@ -277,7 +304,28 @@ def write_manifest() -> None:
     ]
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ucrawl-build-portable")
+    parser.add_argument(
+        "--project-root",
+        default=str(PROJECT_ROOT),
+        help="构建源码快照根目录；脚本必须从该根目录内执行。",
+    )
+    return parser
+
+
+def _validate_project_root(project_root: str | Path) -> Path:
+    root = Path(project_root).resolve()
+    expected_script = root / "packaging" / "build_portable.py"
+    if expected_script.resolve() != Path(__file__).resolve():
+        raise SystemExit(
+            "build_portable.py 必须从指定 project root 的源码快照内执行："
+            f"{root}"
+        )
+    return root
+
+
+def _build_portable() -> None:
     ensure_prerequisites()
     clean_previous_outputs()
     run_pyinstaller()
@@ -287,5 +335,12 @@ def main() -> None:
     write_manifest()
     print(f"绿色版构建完成: {DIST_DIR}")
 
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args([] if argv is None else argv)
+    project_root = _validate_project_root(args.project_root)
+    with leaf_build_guard(project_root):
+        _build_portable()
+
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

@@ -73,6 +73,12 @@ ucrawl-gui = "entry.gui_entry:main"
 # 测试启动器 GUI（Windows 上启动不弹黑窗）
 ucrawl-test-gui = "entry.test_entry:main"
 
+[tool.setuptools]
+py-modules = ["count_project"]
+
+[tool.setuptools.data-files]
+"share/ucrawl" = ["analytics.ico"]
+
 [tool.setuptools.packages.find]
 include = ["app*", "cli*", "entry*", "shared*", "ucrawl*", "scripts*", "UI*"]
 exclude = ["docs*", "packaging*"]
@@ -134,6 +140,7 @@ pretty = true
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
 addopts = ["--import-mode=importlib", "--strict-markers"]
+python_files = ["test_*.py"]
 markers = [
     "architecture: dependency direction and protocol fitness tests",
     "benchmark: performance benchmark tests (deselect with '-m \"not benchmark\"')",
@@ -145,3 +152,14 @@ markers = [
     "slow: tests intentionally excluded from the fastest feedback loop",
     "windows: tests that require Windows-specific behavior",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["app", "cli", "entry", "shared"]
+omit = ["app/core/lib/*"]
+
+[tool.coverage.report]
+fail_under = 75
+precision = 1
+show_missing = true
+skip_covered = false

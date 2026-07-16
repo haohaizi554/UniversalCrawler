@@ -130,7 +130,7 @@ python tests/launcher.py --gui
 2026-07 本地基线：用户原先观测旧浏览器聚合入口约需 7 到 8 分钟。移除 3.5 秒硬等并修正测试服务输出后，历史实测（当前入口已迁移）：
 
 ```bash
-python -m pytest tests/e2e/web/test_browser_journeys.py -q
+python -X faulthandler -m pytest tests/e2e -q
 # 2026-07-07 基线：97 passed in 247.64s (0:04:07)
 # 2026-07 早前热运行：97 passed in 185.66s (外部秒表约 187.9s)
 # 2026-07-11 职责拆分后：136 passed in 33.40s
@@ -389,11 +389,13 @@ python -m pytest tests/contract/web/test_fastapi_endpoints.py -v
 python -m pytest tests/ -v
 ```
 
-### 不遇失败停止
+### 收集全部失败
 
 ```bash
-python -m pytest tests/ --no-failfast
+python -m pytest tests/
 ```
+
+`pytest` 默认不会在首个失败后停止；只有显式传入 `-x` / `--exitfirst` 时才会提前退出。
 
 ## 执行约定
 

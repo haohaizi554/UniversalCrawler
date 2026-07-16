@@ -1,6 +1,7 @@
 """构建 Inno Setup 安装器，并在可选签名后校验发布产物。"""
 
 from __future__ import annotations
+import argparse
 import os
 import shutil
 import subprocess
@@ -9,15 +10,20 @@ import time
 from pathlib import Path
 
 if __package__ in (None, ""):
+    from release_lock import leaf_build_guard
     from project_meta import (
         APP_DISPLAY_NAME,
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_PUBLISHER,
         APP_USER_MODEL_ID,
+        CLI_LAUNCHER_DISPLAY_NAME,
+        CLI_LAUNCHER_EXE_NAME,
         DIST_DIR_NAME,
         INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
+        LAUNCHER_DISPLAY_NAME,
+        LAUNCHER_EXE_NAME,
         PACKAGE_VERSION,
         REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
@@ -27,15 +33,20 @@ if __package__ in (None, ""):
         WEBUI_USER_MODEL_ID,
     )
 else:
+    from .release_lock import leaf_build_guard  # type: ignore[no-redef]
     from .project_meta import (
         APP_DISPLAY_NAME,
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_PUBLISHER,
         APP_USER_MODEL_ID,
+        CLI_LAUNCHER_DISPLAY_NAME,
+        CLI_LAUNCHER_EXE_NAME,
         DIST_DIR_NAME,
         INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
+        LAUNCHER_DISPLAY_NAME,
+        LAUNCHER_EXE_NAME,
         PACKAGE_VERSION,
         REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
@@ -56,6 +67,8 @@ APP_ICON = PROJECT_ROOT / APP_ICON_NAME
 WEBUI_ICON = PROJECT_ROOT / WEBUI_ICON_NAME
 # 安装器直接消费便携版目录；若旧 dist 缺少 GUI/WebUI 共用资源，应在编译前失败。
 REQUIRED_INSTALL_SOURCE_ENTRIES = (
+    lambda: DIST_DIR / LAUNCHER_EXE_NAME,
+    lambda: DIST_DIR / CLI_LAUNCHER_EXE_NAME,
     lambda: DIST_DIR / APP_EXE_NAME,
     lambda: DIST_DIR / WEBUI_EXE_NAME,
     lambda: DIST_DIR / UPDATER_HELPER_EXE_NAME,
@@ -218,15 +231,30 @@ def maybe_sign_windows_installer(setup_exe: Path) -> None:
         check=True,
         shell=False,
     )
-    subprocess.run(
-        [sys.executable, str(UPDATE_BOOTSTRAP), "inject-windows-trust", "--installer", str(setup_exe)],
-        cwd=PROJECT_ROOT,
-        check=True,
-        shell=False,
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ucrawl-build-installer")
+    parser.add_argument(
+        "--project-root",
+        default=str(PROJECT_ROOT),
+        help="构建源码快照根目录；脚本必须从该根目录内执行。",
     )
+    return parser
 
 
-def main() -> None:
+def _validate_project_root(project_root: str | Path) -> Path:
+    root = Path(project_root).resolve()
+    expected_script = root / "packaging" / "build_installer.py"
+    if expected_script.resolve() != Path(__file__).resolve():
+        raise SystemExit(
+            "build_installer.py 必须从指定 project root 的源码快照内执行："
+            f"{root}"
+        )
+    return root
+
+
+def _build_installer() -> None:
     iscc = ensure_prerequisites()
     setup_exe = get_setup_exe_path()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -240,6 +268,10 @@ def main() -> None:
         f"/DAppPublisher={APP_PUBLISHER}",
         f"/DAppComments={APP_DISPLAY_NAME} Windows 安装程序",
         f"/DAppExeName={APP_EXE_NAME}",
+        f"/DLauncherDisplayName={LAUNCHER_DISPLAY_NAME}",
+        f"/DLauncherExeName={LAUNCHER_EXE_NAME}",
+        f"/DCLILauncherDisplayName={CLI_LAUNCHER_DISPLAY_NAME}",
+        f"/DCLILauncherExeName={CLI_LAUNCHER_EXE_NAME}",
         f"/DWebUIDisplayName={WEBUI_DISPLAY_NAME}",
         f"/DWebUIExeName={WEBUI_EXE_NAME}",
         f"/DAppIconName={APP_ICON_NAME}",
@@ -259,5 +291,12 @@ def main() -> None:
     maybe_sign_windows_installer(setup_exe)
     print(f"安装包构建完成: {setup_exe}")
 
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args([] if argv is None else argv)
+    project_root = _validate_project_root(args.project_root)
+    with leaf_build_guard(project_root):
+        _build_installer()
+
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

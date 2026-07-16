@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from Crypto.PublicKey import ECC
@@ -102,20 +103,66 @@ def _load_build_installer_tool():
 
 
 class ProductionReleaseBuildOrderTests(unittest.TestCase):
-    def test_signed_release_rebuilds_portable_after_trust_injection(self):
+    def test_signed_release_uses_committed_trust_and_validates_final_signer(self):
         tool = _load_build_release_tool()
-        calls: list[list[str]] = []
+        events: list[str] = []
+        trust = {
+            "UPDATE_REQUIRE_OS_SIGNATURE": True,
+            "UPDATE_TRUSTED_PUBLISHERS": ("CN=Release",),
+            "UPDATE_TRUSTED_THUMBPRINTS": ("AA",),
+        }
+        signer = {
+            "status": "Valid",
+            "subject": "CN=Release",
+            "sha1_thumbprint": "AA",
+            "sha256_fingerprint": "BB",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_root = Path(temp_dir)
+            trust_config = snapshot_root / "app" / "config" / "update_trust.py"
+            trust_config.parent.mkdir(parents=True)
+            trust_config.write_text("committed trust\n", encoding="utf-8")
+            installer = snapshot_root / "dist" / "installer" / "setup.exe"
 
-        with (
-            patch.dict(os.environ, {"UCRAWL_SIGN_WINDOWS": "1"}),
-            patch.object(tool.subprocess, "run", side_effect=lambda argv, **_kwargs: calls.append(list(argv))),
-            patch.object(tool, "_validate_production_trust", return_value=None, create=True),
-        ):
-            tool.main()
+            with (
+                patch.dict(os.environ, {"UCRAWL_SIGN_WINDOWS": "1"}),
+                patch.object(
+                    tool,
+                    "_validate_production_trust",
+                    side_effect=lambda **_kwargs: events.append("trust") or trust,
+                ),
+                patch.object(
+                    tool,
+                    "_run_build",
+                    side_effect=lambda script, *_args, **_kwargs: events.append(Path(script).stem),
+                ),
+                patch.object(
+                    tool,
+                    "_project_release_metadata",
+                    return_value=("3.6.21", installer),
+                ),
+                patch.object(
+                    tool,
+                    "_extract_windows_trust",
+                    side_effect=lambda *_args, **_kwargs: events.append("extract") or signer,
+                    create=True,
+                ),
+                patch.object(
+                    tool,
+                    "_validate_windows_signer_identity",
+                    side_effect=lambda *_args, **_kwargs: events.append("match"),
+                    create=True,
+                ),
+            ):
+                tool._build_binaries(
+                    snapshot_root,
+                    lock_token="release-token",
+                    lock_root=PROJECT_ROOT,
+                )
 
         self.assertEqual(
-            [Path(argv[1]).name for argv in calls],
-            ["build_portable.py", "build_installer.py", "build_portable.py", "build_installer.py"],
+            events,
+            ["trust", "build_portable", "build_installer", "extract", "match"],
         )
 
     def test_signed_release_rejects_empty_packaged_trust_anchors(self):
@@ -131,6 +178,37 @@ class ProductionReleaseBuildOrderTests(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             validator(config_path=config)
+
+    def test_signed_release_rejects_disabled_os_signature_policy(self):
+        tool = _load_build_release_tool()
+        config = Path(tempfile.mkdtemp()) / "update_trust.py"
+        config.write_text(
+            'UPDATE_PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\\nprobe\\n-----END PUBLIC KEY-----"\n'
+            'UPDATE_REQUIRE_OS_SIGNATURE = False\n'
+            'UPDATE_TRUSTED_PUBLISHERS = ("CN=Release",)\n'
+            'UPDATE_TRUSTED_THUMBPRINTS = ("AA",)\n',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(SystemExit, "signature|签名"):
+            tool._validate_production_trust(config_path=config)
+
+    def test_signed_release_rejects_final_signer_drift(self):
+        tool = _load_build_release_tool()
+        trust = {
+            "UPDATE_REQUIRE_OS_SIGNATURE": True,
+            "UPDATE_TRUSTED_PUBLISHERS": ("CN=Release A",),
+            "UPDATE_TRUSTED_THUMBPRINTS": ("AA",),
+        }
+        signer = {
+            "status": "Valid",
+            "subject": "CN=Release B",
+            "sha1_thumbprint": "BB",
+            "sha256_fingerprint": "CC",
+        }
+
+        with self.assertRaisesRegex(SystemExit, "signer|签名|指纹|publisher"):
+            tool._validate_windows_signer_identity(trust, signer)
 
 class SpecFileExistenceTests(unittest.TestCase):
     """spec 文件基本检查。"""
@@ -149,6 +227,90 @@ class SpecFileExistenceTests(unittest.TestCase):
         self.assertNotIn('"tests*"', pyproject)
         self.assertIn("prune tests", manifest.splitlines())
         self.assertTrue((PROJECT_ROOT / "entry" / "release_self_check.py").exists())
+
+    def test_installed_release_self_check_requires_report_runtime(self):
+        from entry import release_self_check
+
+        distribution = SimpleNamespace(
+            version="3.6.17",
+            entry_points=[
+                SimpleNamespace(name=name)
+                for name in ("ucrawl", "ucrawl-gui", "ucrawl-test", "ucrawl-test-gui")
+            ],
+            files=[Path("app/web/static/index.html")],
+        )
+        with patch.object(
+            release_self_check.importlib.metadata,
+            "distribution",
+            return_value=distribution,
+        ):
+            checks = {
+                name: passed
+                for name, passed, _detail in release_self_check._distribution_checks()
+            }
+
+        self.assertIn("report assets", checks)
+        self.assertFalse(checks["public commands"])
+        self.assertFalse(checks["report assets"])
+
+    def test_installed_release_self_check_imports_report_module(self):
+        from entry import release_self_check
+
+        with patch.object(release_self_check.importlib, "import_module") as import_module:
+            release_self_check._module_checks()
+
+        import_module.assert_any_call("count_project")
+
+    def test_installed_release_self_check_validates_report_assets_without_rich(self):
+        script = r"""
+import importlib.abc
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+
+class BlockRich(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "rich" or fullname.startswith("rich."):
+            raise ModuleNotFoundError(f"blocked optional dependency: {fullname}")
+        return None
+
+
+sys.meta_path.insert(0, BlockRich())
+from entry import release_self_check
+
+distribution = SimpleNamespace(
+    version="3.6.17",
+    entry_points=[
+        SimpleNamespace(name=name)
+        for name in (
+            "ucrawl",
+            "ucrawl-auto",
+            "ucrawl-gui",
+            "ucrawl-test",
+            "ucrawl-test-gui",
+        )
+    ],
+    files=[
+        Path("app/web/static/index.html"),
+        Path("count_project.py"),
+        Path("share/ucrawl/analytics.ico"),
+    ],
+)
+release_self_check.importlib.metadata.distribution = lambda _name: distribution
+raise SystemExit(release_self_check.run(verbose=True))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("[PASS] report assets: ok", result.stdout)
+        self.assertIn("[PASS] import count_project: ok", result.stdout)
 
     def test_spec_file_syntax_valid(self):
         """spec 文件必须能被 Python 编译。"""
@@ -616,6 +778,14 @@ class BuildScriptTests(unittest.TestCase):
         self.assertIn("WEBUI_EXE_NAME", source)
         self.assertIn("UPDATER_HELPER_EXE_NAME", source)
 
+    def test_verify_output_requires_frozen_mode_launcher(self):
+        """便携版必须产出可访问 dispatcher/代码报告的启动中心。"""
+        source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
+
+        self.assertIn("LAUNCHER_EXE_NAME", source)
+        self.assertIn("LAUNCHER_DISPLAY_NAME", source)
+        self.assertIn("代码量统计", source)
+
     def test_kill_locking_processes_includes_both_exes(self):
         """kill_locking_processes 必须 kill 两个 EXE + ffmpeg。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
@@ -653,6 +823,13 @@ class PackagingMetadataTests(unittest.TestCase):
         self.assertIn('UPDATER_HELPER_EXE_NAME = f"{UPDATER_HELPER_NAME}.exe"', source)
         self.assertIn("DIST_DIR_NAME", source)
         self.assertIn("INSTALL_DIR_NAME", source)
+
+    def test_project_meta_defines_frozen_mode_launcher(self):
+        source = PROJECT_META.read_text(encoding="utf-8")
+
+        self.assertIn('LAUNCHER_NAME = "UCrawlLauncher"', source)
+        self.assertIn('LAUNCHER_DISPLAY_NAME = f"{APP_DISPLAY_NAME} 启动中心"', source)
+        self.assertIn('LAUNCHER_EXE_NAME = f"{LAUNCHER_NAME}.exe"', source)
 
     def test_project_meta_lists_all_forbidden_user_data(self):
         source = PROJECT_META.read_text(encoding="utf-8")
@@ -750,6 +927,29 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertIn("/DDistDir=", source)
         self.assertIn("/DInstallDirName=", source)
         self.assertIn("get_setup_exe_path", source)
+
+    def test_installer_exposes_mode_launcher_without_replacing_direct_entries(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("#ifndef LauncherExeName", source)
+        self.assertIn("#ifndef LauncherDisplayName", source)
+        launcher_shortcut = next(
+            line
+            for line in source.splitlines()
+            if 'Name: "{group}\\{#LauncherDisplayName}"' in line
+        )
+        self.assertIn('Filename: "{app}\\{#LauncherExeName}"', launcher_shortcut)
+        self.assertIn('Name: "{group}\\{#AppName}"', source)
+        self.assertIn('Filename: "{app}\\{#AppExeName}"', source)
+        self.assertIn('Name: "{group}\\{#WebUIDisplayName}"', source)
+        self.assertIn('Filename: "{app}\\{#WebUIExeName}"', source)
+
+    def test_build_installer_requires_and_injects_mode_launcher(self):
+        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+
+        self.assertIn("lambda: DIST_DIR / LAUNCHER_EXE_NAME", source)
+        self.assertIn("/DLauncherDisplayName=", source)
+        self.assertIn("/DLauncherExeName=", source)
 
     def test_installer_wizard_assets_exist_or_documented(self):
         wizard_image = PACKAGING_DIR / "wizard_image.bmp"
@@ -854,12 +1054,21 @@ class InstallerScriptTests(unittest.TestCase):
         self.assertTrue(expected_missing.issubset(missing_paths))
 
     def test_build_installer_signing_is_explicitly_opt_in(self):
-        source = (PACKAGING_DIR / "build_installer.py").read_text(encoding="utf-8")
+        tool = _load_build_installer_tool()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "setup.exe"
+            installer.write_bytes(b"MZ" + b"x" * 1024)
+            with (
+                patch.dict(os.environ, {"UCRAWL_SIGN_WINDOWS": "1"}),
+                patch.object(tool.subprocess, "run") as run,
+            ):
+                tool.maybe_sign_windows_installer(installer)
 
-        self.assertIn("UCRAWL_SIGN_WINDOWS", source)
-        self.assertIn("sign-windows-installer", source)
-        self.assertIn("inject-windows-trust", source)
-        self.assertIn("shell=False", source)
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args.args[0]
+        self.assertIn("sign-windows-installer", argv)
+        self.assertNotIn("inject-windows-trust", argv)
+        self.assertFalse(run.call_args.kwargs["shell"])
 
 class LauncherTemplateTests(unittest.TestCase):
     """_gui_launcher.py 和 _webui_launcher.py 模板正确性。"""
@@ -887,20 +1096,70 @@ class LauncherTemplateTests(unittest.TestCase):
         self.assertIn("from entry.updater_helper import main", source)
         self.assertIn("UPDATER_HELPER_NAME", source)
 
-    def test_both_launchers_have_console_false(self):
-        """两个 EXE 都必须 console=False（不弹黑窗）。至少出现 2 次。"""
-        with open(SPEC_FILE, "r", encoding="utf-8") as f:
-            source = f.read()
-        count = source.count("console=False")
-        self.assertGreaterEqual(count, 2,
-                               f"console=False should appear at least 2 times, got {count}")
+    def test_frozen_mode_launcher_reuses_main_dispatcher_without_console(self):
+        """第三个用户入口复用 main.py，且双击时由 Qt 模式选择器接管。"""
+        source = SPEC_FILE.read_text(encoding="utf-8")
 
-    def test_both_launchers_have_different_icons(self):
-        """两个 EXE 必须用不同图标。"""
-        with open(SPEC_FILE, "r", encoding="utf-8") as f:
-            source = f.read()
-        self.assertIn('icon=str(icon_file)', source)  # main 用 favicon
-        self.assertIn('icon=str(webui_icon)', source)  # web 用 Web.ico
+        self.assertIn("launcher_exe = EXE(", source)
+        self.assertIn("name=LAUNCHER_NAME", source)
+        self.assertIn("launcher_exe,", source)
+        launcher_block = source.split("launcher_exe = EXE(", 1)[1].split(")\n", 1)[0]
+        self.assertIn("a.scripts", launcher_block)
+        self.assertIn("console=False", launcher_block)
+
+    def test_gui_and_web_launchers_are_windowed(self):
+        """GUI 与 Web 直达 EXE 都必须使用窗口子系统。"""
+        source = SPEC_FILE.read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(source.count("console=False"), 2)
+
+    def test_gui_and_web_launchers_have_different_icons(self):
+        """GUI 与 Web 直达 EXE 必须使用各自图标。"""
+        source = SPEC_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("icon=str(icon_file)", source)  # main 用 favicon
+        self.assertIn("icon=str(webui_icon)", source)  # web 用 Web.ico
+
+
+class FrozenConsoleLauncherContractTests(unittest.TestCase):
+    """The windowed mode picker must delegate stdio modes to a console EXE."""
+
+    def test_project_meta_defines_console_launcher_identity(self):
+        source = PROJECT_META.read_text(encoding="utf-8")
+
+        self.assertIn('CLI_LAUNCHER_NAME = "UCrawlCLI"', source)
+        self.assertIn(
+            'CLI_LAUNCHER_DISPLAY_NAME = f"{APP_DISPLAY_NAME} 命令行"',
+            source,
+        )
+        self.assertIn(
+            'CLI_LAUNCHER_EXE_NAME = f"{CLI_LAUNCHER_NAME}.exe"',
+            source,
+        )
+
+    def test_portable_spec_builds_and_collects_console_launcher(self):
+        source = SPEC_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("CLI_LAUNCHER_NAME", source)
+        self.assertIn("cli_launcher_exe = EXE(", source)
+        cli_block = source.split("cli_launcher_exe = EXE(", 1)[1].split(")", 1)[0]
+        self.assertIn("name=CLI_LAUNCHER_NAME", cli_block)
+        self.assertIn("console=True", cli_block)
+        collect_block = source.split("coll = COLLECT(", 1)[1]
+        self.assertIn("cli_launcher_exe", collect_block)
+
+    def test_installer_exposes_console_launcher_start_menu_entry(self):
+        source = INSTALLER_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("#ifndef CLILauncherExeName", source)
+        self.assertIn("#ifndef CLILauncherDisplayName", source)
+        shortcut = next(
+            line
+            for line in source.splitlines()
+            if 'Name: "{group}\\{#CLILauncherDisplayName}"' in line
+        )
+        self.assertIn('Filename: "{app}\\{#CLILauncherExeName}"', shortcut)
+        self.assertIn('Parameters: "--mode interactive"', shortcut)
 
 class RequirementsBuildTests(unittest.TestCase):
     """requirements-build.txt 测试。"""
@@ -1292,6 +1551,31 @@ class PyprojectEntryPointsTests(unittest.TestCase):
         root_icon = PROJECT_ROOT / "Web.ico"
         self.assertTrue(packaged_icon.is_file())
         self.assertEqual(packaged_icon.read_bytes(), root_icon.read_bytes())
+
+    def test_python_distribution_includes_code_report_runtime_and_icon(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        setuptools_config = data["tool"]["setuptools"]
+        self.assertIn("count_project", setuptools_config.get("py-modules", []))
+        installed_data_files = setuptools_config.get("data-files", {})
+        self.assertTrue(
+            any(
+                "analytics.ico" in patterns
+                for patterns in installed_data_files.values()
+            ),
+            "analytics.ico must be installed with ordinary Python distributions",
+        )
+
+    def test_source_distribution_includes_code_report_icon(self):
+        manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+        self.assertIn("include analytics.ico", manifest.splitlines())
 
 class NoStaleBuildArtifactsTests(unittest.TestCase):
     """避免 build 残留文件。"""

@@ -5,6 +5,8 @@ import unittest
 from unittest import mock
 
 from tests.support.paths import PROJECT_ROOT
+from tests.support.toml_compat import loads
+
 
 class GitHubActionsWorkflowTests(unittest.TestCase):
     def test_python_workflow_has_layered_quality_gates(self) -> None:
@@ -33,7 +35,7 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn("python -m pip_audit --local", source)
         self.assertIn("python -m build", source)
         self.assertIn("tests/architecture", source)
-        self.assertIn("tests/e2e/web", source)
+        self.assertIn("tests/e2e", source)
         self.assertIn("tests/performance", source)
         self.assertNotIn("--ignore=", source)
         self.assertNotIn("--ignore-glob=", source)
@@ -46,8 +48,15 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         self.assertIn('PYTHONFAULTHANDLER: "1"', source)
         self.assertIn("python -m playwright install chromium", source)
         self.assertIn("python -m coverage run", source)
-        self.assertIn("python -m coverage report --fail-under=70", source)
-        self.assertNotIn("python -m coverage report --fail-under=35", source)
+        self.assertIn("python -m coverage report", source)
+        self.assertNotIn("coverage report --fail-under", source)
+
+        pyproject = loads(
+            (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        self.assertGreaterEqual(
+            pyproject["tool"]["coverage"]["report"]["fail_under"], 75
+        )
 
     def test_python_workflow_covers_declared_python_compatibility(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
@@ -109,32 +118,38 @@ class GitHubActionsWorkflowTests(unittest.TestCase):
         for suite_path in (
             "tests/unit",
             "tests/integration",
-            "tests/contract/cli",
-            "tests/contract/config",
-            "tests/contract/cross_interface",
-            "tests/contract/entry",
-            "tests/contract/python",
-            "tests/contract/web",
             "tests/architecture",
             "tests/release",
             "tests/testkit",
         ):
             self.assertIn(suite_path, coverage_line)
-        self.assertNotIn("tests/e2e/web", coverage_line)
+        self.assertNotIn("tests/contract", coverage_line)
+        self.assertNotIn("tests/e2e", coverage_line)
         self.assertNotIn("tests/performance", coverage_line)
         self.assertIn("pytest tests/performance", core_block)
-        self.assertIn("pytest tests/e2e/web", browser_block)
+        self.assertIn("pytest tests/e2e", browser_block)
 
-    def test_qt_contracts_run_in_bounded_process_shards(self) -> None:
+    def test_contract_suite_is_catalog_driven_and_runs_in_bounded_process_shards(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"
         source = workflow.read_text(encoding="utf-8")
         core_block = source.split("  core-tests:", 1)[1].split("  browser-tests:", 1)[0]
 
-        self.assertIn("Get-ChildItem -LiteralPath tests/contract/frontend", core_block)
+        self.assertIn("get_resolved_files('contract')", core_block)
+        self.assertNotIn("Get-ChildItem -LiteralPath tests/contract/frontend", core_block)
+        for legacy_domain in (
+            "tests/contract/cli",
+            "tests/contract/config",
+            "tests/contract/cross_interface",
+            "tests/contract/entry",
+            "tests/contract/frontend",
+            "tests/contract/python",
+            "tests/contract/web",
+        ):
+            self.assertNotIn(legacy_domain, core_block)
         self.assertIn("--collect-only -q", core_block)
-        self.assertIn("$uiChunkSize = 12", core_block)
+        self.assertIn("$contractChunkSize = 12", core_block)
         self.assertIn("coverage run --append", core_block)
-        self.assertIn("artifacts/ui-contract-*.xml", core_block)
+        self.assertIn("artifacts/contract-*.xml", core_block)
 
     def test_required_check_aggregates_all_blocking_jobs(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "python-tests.yml"

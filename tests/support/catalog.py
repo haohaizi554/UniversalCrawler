@@ -17,6 +17,7 @@ TESTS_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = TESTS_DIR.parent
 TEST_ICON_PATH = PROJECT_ROOT / "test.ico" if (PROJECT_ROOT / "test.ico").exists() else TESTS_DIR / "test.ico"
 PLUGIN_ROOT = TESTS_DIR / "plugins"
+TEST_MODULE_GLOB = "test_*.py"
 
 BUILTIN_SUITE_ROOTS = {
     "unit": "tests/unit",
@@ -123,7 +124,7 @@ def discover_test_files(
 
     scan_root = Path(tests_dir or TESTS_DIR)
     discovered: list[str] = []
-    for path in sorted(scan_root.rglob("test_*.py")):
+    for path in sorted(scan_root.rglob(TEST_MODULE_GLOB)):
         if not path.is_file():
             continue
         normalized = _normalize_path(path)
@@ -202,7 +203,7 @@ def auto_discover_tests(tests_dir: Path | None = None) -> list[str]:
         return [path for path in discover_test_files() if path not in assigned]
 
     invalid: list[str] = []
-    for path in sorted(scan_root.rglob("test_*.py")):
+    for path in sorted(scan_root.rglob(TEST_MODULE_GLOB)):
         relative = path.relative_to(scan_root)
         if len(relative.parts) < 2 or relative.parts[0] not in BUILTIN_SUITE_ROOTS:
             invalid.append(_normalize_path(path))

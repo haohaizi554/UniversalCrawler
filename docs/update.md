@@ -89,6 +89,7 @@ python packaging/update_manifest.py `
   --private-key C:\secure\update-private-ed25519.pem `
   --version 3.7.0 `
   --tag v3.7.0 `
+  --source-commit <full-40-character-git-sha> `
   --asset-spec C:\secure\release-assets.json `
   --notes "Release notes"
 ```
@@ -118,21 +119,19 @@ Never publish the private key. Do not fetch public keys from the network.
 最短路径：
 
 ```powershell
-python packaging/build_release.py
+python packaging/build_release.py --build-only
 python scripts/update_bootstrap.py production-bootstrap --installer dist/installer/UniversalCrawlerPro_Setup_<version>.exe
 $env:UCRAWL_SIGN_WINDOWS = "1"
+# 提交公开 trust anchor 与全部源码，并让 v<version> tag 指向该 HEAD
 python packaging/build_release.py
-python packaging/update_manifest.py `
-  --output-dir dist/release-assets `
-  --version <version> `
-  --tag v<version> `
-  --asset-spec <asset-spec>
 ```
 
-第一次 `build_release.py` 只生成供 bootstrap 签名和提取证书身份的安装包。
+第一次必须显式使用 `--build-only`，只生成供 bootstrap 签名和提取证书身份的安装包。
 `production-bootstrap` 注入公开 publisher/thumbprint 后，必须以
-`UCRAWL_SIGN_WINDOWS=1` 再构建一次。签名构建会先签名并确认 trust anchor，
-再重新冻结 portable 客户端并签最终 installer，防止最终程序仍携带空信任根。
+`UCRAWL_SIGN_WINDOWS=1` 完成提交和 tag 后再运行默认发布命令。签名构建会先签名并确认
+trust anchor，再重新冻结 portable 客户端并签最终 installer，防止最终程序仍携带空信任根。
+默认发布命令随后在临时目录生成、验签并原子发布三项本地资产，不再要求维护者手工拼装
+asset spec。
 
 然后上传这些公开 release 资产：
 

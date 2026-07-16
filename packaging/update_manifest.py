@@ -88,6 +88,7 @@ def build_manifest_payload(
     min_client_version: str = "3.0.0",
     mandatory: bool = False,
     trusted_hosts: list[str] | tuple[str, ...] = (),
+    source_commit: str = "",
 ) -> dict[str, Any]:
     if not assets:
         raise ValueError("at least one release asset is required")
@@ -108,6 +109,11 @@ def build_manifest_payload(
     }
     if trusted_hosts:
         payload["trustedHosts"] = [str(host).lower() for host in trusted_hosts if host]
+    normalized_commit = str(source_commit or "").strip().lower()
+    if normalized_commit:
+        if len(normalized_commit) != 40 or any(char not in "0123456789abcdef" for char in normalized_commit):
+            raise ValueError("source commit must be a full 40-character Git SHA")
+        payload["sourceCommit"] = normalized_commit
     return payload
 
 
@@ -126,6 +132,7 @@ def write_signed_manifest(
     min_client_version: str = "3.0.0",
     mandatory: bool = False,
     trusted_hosts: list[str] | tuple[str, ...] = (),
+    source_commit: str = "",
     verify_with_config: bool = True,
 ) -> tuple[Path, Path]:
     """写入清单、签名并可选地用客户端信任锚回读验证。
@@ -153,6 +160,7 @@ def write_signed_manifest(
         min_client_version=min_client_version,
         mandatory=mandatory,
         trusted_hosts=trusted_hosts,
+        source_commit=source_commit,
     )
     manifest_path = output / DEFAULT_MANIFEST_NAME
     manifest_bytes = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -210,6 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", default=DEFAULT_CHANNEL)
     parser.add_argument("--mandatory", action="store_true")
     parser.add_argument("--trusted-host", action="append", default=[])
+    parser.add_argument("--source-commit", default="")
     return parser
 
 
@@ -234,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         min_client_version=args.min_client_version,
         mandatory=args.mandatory,
         trusted_hosts=tuple(args.trusted_host or ()),
+        source_commit=args.source_commit,
     )
     print(manifest_path)
     print(signature_path)

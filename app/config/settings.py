@@ -372,7 +372,12 @@ def normalize_download_directory_input(value: Any, *, create: bool = False) -> s
             normalized.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ConfigValidationError(f"\u65e0\u6cd5\u521b\u5efa\u4e0b\u8f7d\u76ee\u5f55: {normalized}") from exc
-    return str(normalized)
+    normalized_text = str(normalized)
+    if os.path.normcase(os.path.normpath(normalized_text)) == os.path.normcase(
+        os.path.normpath(DEFAULT_DOWNLOAD_DIR)
+    ):
+        return DEFAULT_DOWNLOAD_DIR
+    return normalized_text
 
 
 def normalize_platform_timeout(value: Any, *, default: int = 60) -> int:

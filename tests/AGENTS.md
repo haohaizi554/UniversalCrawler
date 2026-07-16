@@ -68,7 +68,7 @@ python tests/launcher.py --list
 python -m pytest tests --collect-only -q
 ```
 
-6. Run the affected suite. Run `tests/performance/` without coverage instrumentation and `tests/e2e/web/` in the browser environment. Changes that affect CI coverage must preserve the configured 70 percent gate.
+6. Run the affected suite. Run `tests/performance/` without coverage instrumentation and `tests/e2e/` in the browser environment. Changes that affect CI coverage must preserve the configured 75 percent branch-coverage gate for `app`, `cli`, `entry`, and `shared`.
 
 Launcher changes must keep all eight suite cards visible through scrolling, keep section counts derived from the catalog, prevent horizontal overflow, and remain usable at the configured 90%, 100%, 110%, and 125% UI scales.
 

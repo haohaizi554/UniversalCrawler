@@ -1,6 +1,7 @@
 import argparse
 import base64
 import os
+import site
 import subprocess
 import sys
 import webbrowser
@@ -8,10 +9,6 @@ from collections import defaultdict
 from html import escape
 from pathlib import Path
 from typing import Sequence
-
-from rich import box
-from rich.console import Console
-from rich.table import Table
 
 REPORT_WIDTH = 140
 REPORT_ICON_NAME = "analytics.ico"
@@ -60,7 +57,17 @@ def resolve_report_icon_path() -> Path | None:
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root:
         roots.append(Path(bundle_root))
-    roots.extend((Path(__file__).resolve().parent, Path.cwd()))
+    module_root = Path(__file__).resolve().parent
+    roots.extend(
+        (
+            module_root,
+            module_root / "share" / "ucrawl",
+            Path(sys.prefix) / "share" / "ucrawl",
+            Path.cwd(),
+        )
+    )
+    if site.USER_BASE:
+        roots.insert(-1, Path(site.USER_BASE) / "share" / "ucrawl")
 
     visited: set[Path] = set()
     for root in roots:
@@ -227,6 +234,8 @@ def add_stat(target: dict, stat: dict) -> None:
 
 
 def _build_console():
+    from rich.console import Console
+
     return Console(
         width=REPORT_WIDTH,
         highlight=False,
@@ -238,6 +247,9 @@ def _build_console():
 
 
 def _build_table(title: str, columns: list[tuple[str, str]], rows: list[list[object]]):
+    from rich import box
+    from rich.table import Table
+
     table = Table(
         title=title,
         box=box.SIMPLE_HEAD,

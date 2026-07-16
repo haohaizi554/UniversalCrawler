@@ -24,7 +24,7 @@ tests/
 
 套件目录是分类事实来源。新增 `test_*.py` 后会被所属根目录自动发现，不需要向内置文件列表或前缀白名单登记。
 
-迁移验收时 catalog 报告 8 个内置套件、168 个测试模块，pytest 收集 2940 个测试。数量会随功能演进而变化，布局契约和启动器均动态计算，不把快照当作硬编码门槛。
+迁移验收时 catalog 报告 8 个内置套件、182 个测试模块，pytest 收集 3104 个测试。数量会随功能演进而变化，布局契约和启动器均动态计算，不把快照当作硬编码门槛。
 
 ## 八个内置套件
 
@@ -103,14 +103,14 @@ python -m pytest tests/architecture tests/testkit -q
 python -X faulthandler -m pytest tests/performance -q
 
 # 需要 Chromium 的真实浏览器套件
-python -X faulthandler -m pytest tests/e2e/web -q
+python -X faulthandler -m pytest tests/e2e -q
 
 # 检查完整收集与目录违规
 python -m pytest tests --collect-only -q
 python tests/support/catalog.py
 ```
 
-CI 对核心非浏览器选择执行覆盖率门槛 70%；性能和浏览器套件分别运行，不能为提高覆盖率而混入或忽略。
+CI 对 `app`、`cli`、`entry`、`shared` 四个核心生产包执行分支覆盖率门槛 75%；唯一门槛配置位于 `pyproject.toml` 的 `tool.coverage.report.fail_under`，性能和浏览器套件分别运行，不能为提高覆盖率而混入或忽略。
 
 ## 浏览器 E2E
 

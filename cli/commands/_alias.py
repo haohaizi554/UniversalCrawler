@@ -30,10 +30,8 @@ def add_platform_alias_subparser(subparsers: argparse._SubParsersAction) -> None
             help=f"在 {source} 平台搜索",
         )
         search_parser.set_defaults(_platform_source=source)
-        add_search_arguments(search_parser)
-        # 移除 --source 参数 (强制为当前平台)
-        # argparse 不支持"修改"已添加参数，我们这里覆盖
-        # 通过 set_defaults 预填充 source
+        add_search_arguments(search_parser, source_required=False)
+        # 别名入口不要求重复传入 --source，而是通过默认值固定当前平台。
         search_parser.set_defaults(source=source)
 
 def handle_platform_alias(args: argparse.Namespace) -> int:

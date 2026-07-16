@@ -1,5 +1,7 @@
 """Tests for count_project console table formatting."""
 
+import count_project
+
 from rich import box
 
 from count_project import (
@@ -88,6 +90,33 @@ def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
     assert '<span class="badge badge-prod">PROD</span>' in html
     assert '<span class="badge badge-test">TEST</span>' in html
     assert 'class="text path"' in html
+
+
+def test_report_icon_resolves_from_installed_data_directory(tmp_path, monkeypatch):
+    install_root = tmp_path / "installed"
+    install_root.mkdir()
+    empty_cwd = tmp_path / "cwd"
+    empty_cwd.mkdir()
+    installed_icon = install_root / "share" / "ucrawl" / "analytics.ico"
+    installed_icon.parent.mkdir(parents=True)
+    installed_icon.write_bytes(b"\x00\x00\x01\x00")
+
+    monkeypatch.setattr(count_project, "__file__", str(install_root / "count_project.py"))
+    monkeypatch.chdir(empty_cwd)
+
+    assert count_project.resolve_report_icon_path() == installed_icon.resolve()
+
+
+def test_report_icon_resolution_tolerates_missing_python_user_base(tmp_path, monkeypatch):
+    install_root = tmp_path / "embedded"
+    installed_icon = install_root / "share" / "ucrawl" / "analytics.ico"
+    installed_icon.parent.mkdir(parents=True)
+    installed_icon.write_bytes(b"\x00\x00\x01\x00")
+
+    monkeypatch.setattr(count_project, "__file__", str(install_root / "count_project.py"))
+    monkeypatch.setattr(count_project.site, "USER_BASE", None)
+
+    assert count_project.resolve_report_icon_path() == installed_icon.resolve()
 
 
 def test_normalize_repository_url_supports_github_https_and_ssh():
