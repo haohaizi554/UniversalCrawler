@@ -254,6 +254,13 @@ class MediaPreviewPanel(QFrame):
         self.btn_next.setToolTip(self._t("下一个资源"))
         self.btn_next.clicked.connect(lambda: self.sig_switch_preview.emit(1))
 
+        # 图片态会隐藏时间轴；用独立弹性区承接剩余宽度，避免全屏按钮被 Qt 拉伸。
+        self.media_controls_spacer = QWidget(self.ctrls)
+        self.media_controls_spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.sliderPressed.connect(self._on_slider_pressed)
         self.slider.sliderReleased.connect(self.on_slider_released)
@@ -288,6 +295,7 @@ class MediaPreviewPanel(QFrame):
         controls_layout.addWidget(self.btn_play)
         controls_layout.addWidget(self.btn_prev)
         controls_layout.addWidget(self.btn_next)
+        controls_layout.addWidget(self.media_controls_spacer)
         controls_layout.addWidget(self.slider)
         controls_layout.addWidget(self.lbl_time)
         controls_layout.addWidget(self.btn_fullscreen)
@@ -803,6 +811,7 @@ class MediaPreviewPanel(QFrame):
         if not hasattr(self, "btn_play"):
             return
         is_video = self._media_mode == "video"
+        self.media_controls_spacer.setVisible(not is_video)
         self.slider.setVisible(is_video)
         self.lbl_time.setVisible(is_video)
         if self._media_mode == "image":

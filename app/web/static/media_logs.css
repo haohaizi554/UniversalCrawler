@@ -103,6 +103,7 @@
 .media-fullscreen-btn {
   min-width: 76px;
   height: 32px;
+  margin-left: auto;
   padding: 0 10px;
   font-weight: 600;
   white-space: nowrap;

@@ -731,6 +731,20 @@ class MediaPreviewPanelTests(unittest.TestCase):
         panel.btn_play.click()
         self.assertTrue(panel._image_auto_advance_timer.isActive())
 
+    def test_image_preview_keeps_fullscreen_button_compact_and_right_aligned(self):
+        host = QWidget()
+        host.resize(700, 700)
+        layout = QVBoxLayout(host)
+        panel = MediaPreviewPanel(host)
+        layout.addWidget(panel)
+        host.show()
+        panel.show_image("image.webp", slideshow_available=True)
+        self.app.processEvents()
+
+        self.assertLessEqual(panel.btn_fullscreen.width(), panel.btn_fullscreen.sizeHint().width() + 8)
+        right_gap = panel.ctrls.width() - panel.btn_fullscreen.geometry().right()
+        self.assertLessEqual(right_gap, 20)
+
     def test_manual_image_switch_stops_slideshow_and_disables_play_button(self):
         host = QWidget()
         layout = QVBoxLayout(host)

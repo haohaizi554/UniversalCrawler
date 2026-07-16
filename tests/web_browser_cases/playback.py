@@ -299,6 +299,7 @@ class PlaybackCases:
                 })),
                 settings_snapshot: { '\u64ad\u653e\u8bbe\u7f6e': playbackSettings }
               };
+              switchPage('completed');
               window.fetch = () => {
                 fetchCalls += 1;
                 return Promise.resolve(new Response('', { status: 206 }));
@@ -326,6 +327,8 @@ class PlaybackCases:
                 const button = document.getElementById('playBtn');
                 const seek = document.getElementById('seekSlider');
                 const time = document.getElementById('timeLabel');
+                const controls = document.getElementById('mediaControls').getBoundingClientRect();
+                const fullscreen = document.getElementById('fullscreenBtn').getBoundingClientRect();
                 const firstTimer = timers.at(-1);
                 const initial = {
                   seekHidden: seek.hidden,
@@ -334,7 +337,9 @@ class PlaybackCases:
                   timeDisplay: getComputedStyle(time).display,
                   buttonDisabled: button.disabled,
                   buttonTitle: button.title,
-                  timerDelay: firstTimer && firstTimer.delay
+                  timerDelay: firstTimer && firstTimer.delay,
+                  fullscreenWidth: Math.round(fullscreen.width),
+                  fullscreenRightGap: Math.round(controls.right - fullscreen.right)
                 };
 
                 window.UcpPlaybackController.togglePlay();
@@ -377,6 +382,8 @@ class PlaybackCases:
             "buttonDisabled": False,
             "buttonTitle": "暂停",
             "timerDelay": 3000,
+            "fullscreenWidth": 76,
+            "fullscreenRightGap": 15,
         })
         self.assertEqual(result["paused"], {"timerCleared": True, "buttonTitle": "播放"})
         self.assertEqual(result["resumed"], {"timerRearmed": True, "buttonTitle": "暂停"})
