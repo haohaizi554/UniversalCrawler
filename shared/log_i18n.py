@@ -220,6 +220,36 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
         "The Kuaishou page repeatedly failed to load; login waiting stopped; try again later",
         "快手頁面連續載入失敗，已停止本次登入等待；請稍後重試",
     ),
+    (
+        "快手登录态快照缺少既有认证 Cookie，已保留原登录文件",
+        "Kuaishou login-state snapshot lacked the existing authentication Cookie; the original login file was preserved",
+        "快手登入狀態快照缺少既有認證 Cookie，已保留原登入檔案",
+    ),
+    (
+        "已加载本地 Cookie，短暂等待后重新校验登录态",
+        "Loaded local Cookie; waiting briefly before rechecking login status",
+        "已載入本機 Cookie，短暫等待後重新校驗登入狀態",
+    ),
+    (
+        "复检后检测到登录状态",
+        "Login status detected after recheck",
+        "複檢後偵測到登入狀態",
+    ),
+    (
+        "服务端暂未确认登录态，保留原登录文件",
+        "The server has not confirmed the login status yet; preserving the original login file",
+        "服務端暫未確認登入狀態，保留原登入檔案",
+    ),
+    (
+        "快手分享页读取超过总时间预算，将回退浏览器链路",
+        "Kuaishou share-page retrieval exceeded the total time budget; falling back to the browser flow",
+        "快手分享頁讀取超過總時間預算，將回退瀏覽器流程",
+    ),
+    (
+        "快手分享页 HTML 超过解析预算，将回退浏览器链路",
+        "Kuaishou share-page HTML exceeded the parsing budget; falling back to the browser flow",
+        "快手分享頁 HTML 超過解析預算，將回退瀏覽器流程",
+    ),
     ("启动小红书爬虫任务", "Started Xiaohongshu crawl task", "啟動小紅書爬蟲任務"),
     ("小红书爬虫运行异常", "Xiaohongshu crawl runtime error", "小紅書爬蟲執行異常"),
     ("小红书爬虫任务结束", "Xiaohongshu crawl task finished", "小紅書爬蟲任務結束"),
