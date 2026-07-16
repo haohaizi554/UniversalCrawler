@@ -1459,11 +1459,12 @@ class KuaishouSpider(BaseSpider):
         except (PlaywrightError, OSError, ValueError, RuntimeError) as e:
             self.log(f"💥 爬虫错误: {e}")
         finally:
-            browser = self._tracked_playwright_browser()
+            # HTTP 分享直连会在创建 Playwright 之前返回；轻量调用方也可能没有
+            # 执行 BaseSpider.__init__。未跟踪过浏览器时无需进入浏览器清理链路。
+            browser = getattr(self, "_playwright_browser", None)
             if browser is not None:
                 try:
                     self._close_tracked_playwright_browser(browser)
                 except PlaywrightError:
                     pass
-            self._clear_playwright_browser(browser)
             self._emit_finished()
