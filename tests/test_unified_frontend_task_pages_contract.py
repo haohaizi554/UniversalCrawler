@@ -248,11 +248,6 @@ class UnifiedFrontendTaskPagesContractTests(_UnifiedFrontendContractTestCase):
         self.assertFalse(hasattr(failed, "title_label"))
         self.assertEqual(tuple(failed.table.itemDelegate()._action_ids), ("copy_diagnostics", "delete"))
         self.assertEqual(failed.btn_clear_failed_records.text(), "删除所有")
-        clear_all_hits: list[bool] = []
-        failed.clear_failed_records_requested.connect(lambda: clear_all_hits.append(True))
-        failed.btn_clear_failed_records.click()
-        self.app.processEvents()
-        self.assertEqual(clear_all_hits, [True])
         self.assertNotIn("retry", snapshot["failed_items"][0].get("actions", []))
         self.assertIn("reason_label", failed.table.table_model._columns)
         self.assertIn("failed_at_table", failed.table.table_model._columns)
@@ -287,6 +282,11 @@ class UnifiedFrontendTaskPagesContractTests(_UnifiedFrontendContractTestCase):
         failed._clear_layout(failed.summary_layout)
         self.assertIs(first_summary_row.parent(), failed.summary_body)
         self.assertTrue(first_summary_row.isHidden())
+        clear_all_hits: list[bool] = []
+        failed.clear_failed_records_requested.connect(lambda: clear_all_hits.append(True))
+        failed.btn_clear_failed_records.click()
+        self.app.processEvents()
+        self.assertEqual(clear_all_hits, [True])
 
     def test_failed_page_uses_worker_pagination_batches(self):
         shell = self._make_shell()
@@ -336,6 +336,33 @@ class UnifiedFrontendTaskPagesContractTests(_UnifiedFrontendContractTestCase):
         self.assertEqual(failed._page, 3)
         self.assertEqual(failed.selected_id(), "failed-40")
         self.assertFalse(failed.btn_next.isEnabled())
+
+    def test_failed_page_optimistically_removes_rows_before_backend_refresh(self):
+        shell = self._make_shell()
+        failed = shell.pages["failed"]
+        snapshot = deepcopy(FrontendStateService.mock_snapshot())
+        template = snapshot["failed_items"][0]
+        snapshot["failed_items"] = [
+            {**template, "id": f"failed-{index}", "title": f"Failed {index}"}
+            for index in range(3)
+        ]
+        shell.show_page("failed")
+        failed.render(snapshot)
+        self._wait_for_table_rows(failed.table, 3)
+
+        deleted: list[str] = []
+        failed.delete_requested.connect(deleted.append)
+        failed._on_table_action("delete", "failed-1")
+        self._wait_for_table_rows(failed.table, 2)
+        self.assertEqual(deleted, ["failed-1"])
+        self.assertNotIn("failed-1", failed._items_by_id)
+
+        cleared: list[bool] = []
+        failed.clear_failed_records_requested.connect(lambda: cleared.append(True))
+        failed.btn_clear_failed_records.click()
+        self._wait_for_table_rows(failed.table, 0)
+        self.assertEqual(cleared, [True])
+        self.assertEqual(failed.items, [])
 
     def test_failed_log_rows_keep_full_time_and_aligned_messages(self):
         shell = self._make_shell()

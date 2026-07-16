@@ -2084,6 +2084,30 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertTrue(result["data"]["deleted"])
         self.assertEqual(remaining, [])
 
+    def test_delete_failed_record_also_removes_the_live_failed_task(self):
+        item = VideoItem(url="https://example.com/failed", title="Failed", source="bilibili")
+        item.status = VideoStatus.FAILED.label
+        controller = SimpleNamespace(
+            videos={item.id: item},
+            _dl_manager=None,
+            _delete_video_sync=Mock(
+                return_value=SimpleNamespace(status="ok", deleted=False, error=None)
+            ),
+        )
+        store = Mock()
+        store.delete_record.return_value = True
+        store.records_snapshot.return_value = []
+        store.snapshot_total_count = 0
+        service = FrontendStateService(controller, failed_record_store=store)
+        try:
+            result = service.handle_action("delete_failed_record", {"id": item.id})
+        finally:
+            service.destroy()
+
+        self.assertEqual(result["status"], "ok")
+        controller._delete_video_sync.assert_called_once_with(item.id)
+        store.delete_record.assert_called_once_with(item.id)
+
     def test_clear_failed_records_action_removes_all_persisted_records(self):
         with TemporaryDirectory() as temp_dir:
             store = FailedRecordStore(db_path=Path(temp_dir) / "failed.sqlite3")
@@ -2116,6 +2140,36 @@ class FrontendStateServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["data"]["count"], 2)
         self.assertEqual(remaining, [])
+
+    def test_clear_failed_records_also_removes_live_failed_tasks(self):
+        failed_items = [
+            VideoItem(url=f"https://example.com/{index}", title=f"Failed {index}", source="bilibili")
+            for index in range(2)
+        ]
+        for item in failed_items:
+            item.status = VideoStatus.FAILED.label
+        controller = SimpleNamespace(
+            videos={item.id: item for item in failed_items},
+            _dl_manager=None,
+            _delete_video_sync=Mock(
+                return_value=SimpleNamespace(status="ok", deleted=False, error=None)
+            ),
+        )
+        store = Mock()
+        store.clear_records.return_value = 2
+        store.records_snapshot.return_value = []
+        store.snapshot_total_count = 0
+        service = FrontendStateService(controller, failed_record_store=store)
+        try:
+            result = service.handle_action("clear_failed_records", {})
+        finally:
+            service.destroy()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            {call.args[0] for call in controller._delete_video_sync.call_args_list},
+            {item.id for item in failed_items},
+        )
 
     def test_delete_item_action_reports_controller_delete_error(self):
         controller = SimpleNamespace(

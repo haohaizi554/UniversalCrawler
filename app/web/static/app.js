@@ -1517,8 +1517,13 @@ const defaultSendWS = sendWS;
 
 function frontendAction(action, payload) {
   if (action === "delete_item") playbackControllerService().prepareDeleteItem(payload && (payload.id || payload.video_id));
-  frontendRuntimeService().send("frontend_action", { action, payload });
+  const rollback = action === "delete_failed_record" || action === "clear_failed_records"
+    ? listPagesService().optimisticallyMutateFailed(action, payload || {})
+    : null;
+  const sent = frontendRuntimeService().send("frontend_action", { action, payload });
+  if (!sent && rollback) rollback();
   if (action === "register_file_associations") appendUiLog("正在绑定默认打开方式...");
+  return sent;
 }
 
 function openDirectory(id) {

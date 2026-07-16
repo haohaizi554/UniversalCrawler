@@ -140,7 +140,7 @@ class FailedPage(PageFrame):
         if clear_icon is not None:
             self.btn_clear_failed_records.setIcon(clear_icon)
             self.btn_clear_failed_records.setIconSize(QSize(16, 16))
-        self.btn_clear_failed_records.clicked.connect(self.clear_failed_records_requested.emit)
+        self.btn_clear_failed_records.clicked.connect(self._request_clear_failed_records)
         footer_layout.addWidget(self.btn_clear_failed_records)
         footer_layout.addWidget(self.pagination_footer, 1)
         table_card_layout.addWidget(self.footer_row)
@@ -256,6 +256,25 @@ class FailedPage(PageFrame):
         previous_id = self._selected_item_id or self.table.selected_id()
         self._submit_page_request(snapshot.get("failed_items") or [], selected_id=str(previous_id or ""))
 
+    def remove_item_optimistically(self, item_id: str) -> bool:
+        remaining = [item for item in self.items if str(item.get("id") or "") != str(item_id or "")]
+        if len(remaining) == len(self.items):
+            return False
+        self.items = remaining
+        selected_id = str(self._selected_item_id or self.table.selected_id() or "")
+        if selected_id == str(item_id or ""):
+            selected_id = ""
+        self._submit_page_request(remaining, selected_id=selected_id)
+        return True
+
+    def clear_items_optimistically(self) -> bool:
+        if not self.items:
+            return False
+        self.items = []
+        self._selected_item_id = None
+        self._submit_page_request([], selected_id="")
+        return True
+
     def _submit_page_request(self, items: object, *, selected_id: str = "") -> None:
         """把失败列表投影和分页交给 worker，页面只消费最新一页结果。"""
 
@@ -309,6 +328,7 @@ class FailedPage(PageFrame):
             total_pages=result.total_pages,
             page_size=self._page_size,
         )
+        self.btn_clear_failed_records.setEnabled(result.total_count > 0)
         self._render_selected_detail()
 
     def _set_page(self, page: int) -> None:
@@ -366,7 +386,12 @@ class FailedPage(PageFrame):
         elif action == "copy_diagnostics":
             self.copy_diagnostics_requested.emit(item_id)
         elif action == "delete":
+            self.remove_item_optimistically(item_id)
             self.delete_requested.emit(item_id)
+
+    def _request_clear_failed_records(self) -> None:
+        self.clear_items_optimistically()
+        self.clear_failed_records_requested.emit()
 
     def _render_selected_detail(self) -> None:
         item = self._selected_item()

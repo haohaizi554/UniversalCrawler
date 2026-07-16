@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import sqlite3
+import threading
 from contextlib import closing
 
 from app.services.failed_record_store import FailedRecordStore
@@ -243,7 +244,8 @@ def test_failed_record_store_worker_resets_state_after_unexpected_write_error(tm
 
 
 def test_failed_record_store_deletes_single_record_and_refreshes_snapshot(tmp_path):
-    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    refreshed_counts: list[int] = []
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3", on_refresh=refreshed_counts.append)
     try:
         store.queue_upsert(
             [
@@ -270,18 +272,25 @@ def test_failed_record_store_deletes_single_record_and_refreshes_snapshot(tmp_pa
 
         assert store.flush(timeout=2)
         assert store.delete_record("delete-me") is True
+        immediate_snapshot = store.records_snapshot()
+        immediate_total = store.snapshot_total_count
+        immediate_callback_count = refreshed_counts[-1]
         assert store.flush(timeout=2)
         rows = store.query(limit=10)
         snapshot = store.records_snapshot()
     finally:
         store.shutdown()
 
+    assert [row["id"] for row in immediate_snapshot] == ["keep-me"]
+    assert immediate_total == 1
+    assert immediate_callback_count == 1
     assert [row["id"] for row in rows] == ["keep-me"]
     assert [row["id"] for row in snapshot] == ["keep-me"]
 
 
 def test_failed_record_store_clear_records_removes_all_and_refreshes_snapshot(tmp_path):
-    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    refreshed_counts: list[int] = []
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3", on_refresh=refreshed_counts.append)
     try:
         store.queue_upsert(
             [
@@ -292,14 +301,65 @@ def test_failed_record_store_clear_records_removes_all_and_refreshes_snapshot(tm
 
         assert store.flush(timeout=2)
         assert store.clear_records() == 2
+        immediate_snapshot = store.records_snapshot()
+        immediate_total = store.snapshot_total_count
+        immediate_callback_count = refreshed_counts[-1]
         assert store.flush(timeout=2)
         rows = store.query(limit=10)
         snapshot = store.records_snapshot()
     finally:
         store.shutdown()
 
+    assert immediate_snapshot == []
+    assert immediate_total == 0
+    assert immediate_callback_count == 0
     assert rows == []
     assert snapshot == []
+
+
+def test_delete_record_cancels_an_upsert_that_has_not_reached_sqlite(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    original_ensure_worker = store._ensure_worker_locked
+    try:
+        # Hold the worker at the queue boundary to make the delete/upsert race deterministic.
+        store._ensure_worker_locked = lambda: None  # type: ignore[method-assign]
+        store.queue_upsert([{"id": "pending-delete", "title": "pending"}])
+
+        assert store.delete_record("pending-delete") is True
+
+        store._ensure_worker_locked = original_ensure_worker  # type: ignore[method-assign]
+        store.request_refresh()
+        assert store.flush(timeout=2)
+        assert store.query(limit=10) == []
+    finally:
+        store._ensure_worker_locked = original_ensure_worker  # type: ignore[method-assign]
+        store.shutdown()
+
+
+def test_delete_record_cancels_an_upsert_already_dispatched_to_the_worker(tmp_path):
+    store = FailedRecordStore(db_path=tmp_path / "failed.sqlite3")
+    original_write_batch = store._write_batch
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_write(records: list[dict]) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+        original_write_batch(records)
+
+    try:
+        store._write_batch = delayed_write  # type: ignore[method-assign]
+        store.queue_upsert([{"id": "inflight-delete", "title": "in flight"}])
+        assert started.wait(timeout=2)
+
+        assert store.delete_record("inflight-delete") is True
+
+        release.set()
+        assert store.flush(timeout=2)
+        assert store.query(limit=10) == []
+    finally:
+        release.set()
+        store.shutdown()
 
 
 def test_failed_record_store_prune_expired_records_removes_old_failed_at(tmp_path):

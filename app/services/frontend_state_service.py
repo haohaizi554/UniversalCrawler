@@ -2172,6 +2172,12 @@ class FrontendStateService:
         video_id = str(payload.get("id") or payload.get("video_id") or "")
         if not video_id:
             return FrontendActionResult("error", "missing failed record id")
+        live_deleted = False
+        if self._video_for_update(video_id) is not None:
+            live_result = self._action_delete_item({"video_id": video_id})
+            if live_result.status != "ok":
+                return live_result
+            live_deleted = True
         delete_record = getattr(self.failed_record_store, "delete_record", None)
         deleted = False
         if callable(delete_record):
@@ -2185,17 +2191,26 @@ class FrontendStateService:
                     details={"video_id": video_id},
                 )
                 return FrontendActionResult("error", f"delete failed record failed: {exc}", {"video_id": video_id})
-        if not deleted and self._video_for_update(video_id) is not None:
-            return self._action_delete_item({"video_id": video_id})
-        self.record_event("failed_records.refresh", {"video_id": video_id, "deleted": deleted})
+        self.record_event("failed_records.refresh", {"video_id": video_id, "deleted": deleted or live_deleted})
         return FrontendActionResult(
             "ok",
-            "failed record deleted" if deleted else "failed record already deleted",
-            {"video_id": video_id, "deleted": deleted},
+            "failed record deleted" if deleted or live_deleted else "failed record already deleted",
+            {"video_id": video_id, "deleted": deleted or live_deleted},
         )
 
     def _action_clear_failed_records(self, payload: Mapping[str, Any]) -> FrontendActionResult:
         del payload
+        queued_ids, active_ids = self._queued_video_ids(), self._active_video_ids()
+        failed_ids = [
+            item.id
+            for item in self._videos(shallow=True).values()
+            if item.id and self._bucket_for_item(item, queued_ids=queued_ids, active_ids=active_ids) == "failed"
+        ]
+        delete_errors = []
+        for video_id in failed_ids:
+            result = self._action_delete_item({"video_id": video_id})
+            if result.status != "ok":
+                delete_errors.append(f"{video_id}: {result.message}")
         clear_records = getattr(self.failed_record_store, "clear_records", None)
         if not callable(clear_records):
             return FrontendActionResult("error", "failed record store is unavailable")
@@ -2209,6 +2224,8 @@ class FrontendStateService:
             )
             return FrontendActionResult("error", f"clear failed records failed: {exc}")
         self.record_event("failed_records.refresh", {"count": deleted_count, "cleared": True})
+        if delete_errors:
+            return FrontendActionResult("error", "; ".join(delete_errors), {"count": deleted_count})
         return FrontendActionResult("ok", "failed records cleared", {"count": deleted_count})
 
     def _action_clear_queue(self, payload: Mapping[str, Any]) -> FrontendActionResult:

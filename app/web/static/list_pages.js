@@ -549,6 +549,7 @@
     syncCustomSelectForSelect(byId("failedPageSize"));
     byId("failedPrevPage").disabled = state.failedPage <= 1;
     byId("failedNextPage").disabled = state.failedPage >= totalPages;
+    byId("failedClearAll").disabled = Number(result.totalCount) <= 0;
     renderFailedDetail();
   }
 
@@ -578,6 +579,38 @@
     const item = selectedTaskItem("failed", currentState().failed_items || []);
     setHtmlIfChanged("failedDetail", taskRenderService().failedDetailHtml(item));
     setHtmlIfChanged("failedSolutions", taskRenderService().failedSolutionsHtml(item));
+  }
+
+  function optimisticallyMutateFailed(action, payload = {}) {
+    const source = currentState();
+    const previousItems = Array.isArray(source.failed_items) ? source.failed_items : [];
+    const doomedId = String(payload.id || payload.video_id || "");
+    const nextItems = action === "clear_failed_records"
+      ? []
+      : previousItems.filter(item => String(item.id || "") !== doomedId);
+    if (nextItems.length === previousItems.length && action !== "clear_failed_records") return null;
+    const previousStatus = source.app_status;
+    const previousSelected = selected("failed");
+    const removedCount = previousItems.length - nextItems.length;
+    source.failed_items = nextItems;
+    source.app_status = {
+      ...(previousStatus || {}),
+      failed_count: action === "clear_failed_records"
+        ? 0
+        : Math.max(0, Number((previousStatus || {}).failed_count) - removedCount),
+    };
+    if (action === "clear_failed_records" || previousSelected === doomedId) setSelected("failed", "");
+    byId("failedClearAll").disabled = nextItems.length === 0;
+    renderFailed({ selectedIdMovesPage: false });
+    if (typeof dependencies.renderStatus === "function") dependencies.renderStatus();
+    return () => {
+      source.failed_items = previousItems;
+      source.app_status = previousStatus;
+      setSelected("failed", previousSelected);
+      byId("failedClearAll").disabled = previousItems.length === 0;
+      renderFailed({ selectedIdMovesPage: false });
+      if (typeof dependencies.renderStatus === "function") dependencies.renderStatus();
+    };
   }
 
   function isCurrentDiagnosticsOperation(generation, operation) {
@@ -658,6 +691,7 @@
     renderActiveDetail,
     renderCompletedDetail,
     renderFailedDetail,
+    optimisticallyMutateFailed,
     copyDiagnostics,
     navigationOrder,
     dispose,

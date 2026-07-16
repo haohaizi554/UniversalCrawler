@@ -1273,6 +1273,31 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window._pending_refresh_topics, {"logs.append"})
         window._ui_update_scheduler.schedule.assert_called_once_with("logs.append", force=False)
 
+    def test_failed_record_actions_are_submitted_to_the_worker(self):
+        window = self._make_window()
+        window._frontend_state_service = Mock()
+        window._frontend_action_worker = self.CapturingActionWorker()
+        window._frontend_action_sequence = 0
+
+        MainWindow._delete_failed_record(window, "failed-1")
+        MainWindow._clear_failed_records(window)
+
+        self.assertEqual(
+            [request.action for request in window._frontend_action_worker.requests],
+            ["delete_failed_record", "clear_failed_records"],
+        )
+
+    def test_failed_record_action_error_restores_the_authoritative_snapshot(self):
+        window = self._make_window()
+        window.refresh_frontend_state = Mock()
+
+        MainWindow._finish_failed_record_mutation(
+            window,
+            {"status": "error", "message": "database busy"},
+        )
+
+        window.refresh_frontend_state.assert_called_once_with(force=True)
+
     def test_log_file_open_actions_run_through_action_worker(self):
         for operation in ("open_latest", "open_error_summary"):
             with self.subTest(operation=operation):

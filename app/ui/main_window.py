@@ -1178,6 +1178,7 @@ class MainWindow(QMainWindow):
     def _finish_failed_record_mutation(self, action_result: dict[str, object]) -> None:
         if action_result.get("status") != "ok":
             self.append_log(str(action_result.get("message") or "failed record mutation failed"), level="ERROR")
+            self.refresh_frontend_state(force=True)
             return
         self.append_log(str(action_result.get("message") or "failed records updated"))
         self.refresh_frontend_state(topics={"failed_records.refresh"})

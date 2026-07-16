@@ -56,9 +56,13 @@ class FailedRecordStore:
         self._lock = threading.RLock()
         self._init_lock = threading.RLock()
         self._snapshot_lock = threading.RLock()
+        self._db_mutation_lock = threading.RLock()
         self._event = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending: dict[str, dict[str, Any]] = {}
+        self._inflight_ids: set[str] = set()
+        self._write_generation = 0
+        self._suppressed_ids: set[str] = set()
         initial_query = FailedRecordQuery(limit=max(1, int(snapshot_limit)), offset=0)
         self._refresh_requested: FailedRecordQuery | None = None
         self._prune_retention_days: int | None = None
@@ -86,7 +90,11 @@ class FailedRecordStore:
             if self._shutdown:
                 return
             for record in normalized:
-                self._pending[str(record["video_id"])] = record
+                video_id = str(record["video_id"])
+                if video_id in self._suppressed_ids:
+                    continue
+                record["_store_generation"] = self._write_generation
+                self._pending[video_id] = record
             self._ensure_worker_locked()
             self._event.set()
 
@@ -243,20 +251,43 @@ class FailedRecordStore:
         normalized_id = str(video_id or "").strip()
         if not normalized_id:
             return False
-        self._init_db()
-        with self._open_connection() as conn:
-            cursor = conn.execute("DELETE FROM failed_records WHERE video_id = ?", (normalized_id,))
-            conn.commit()
-            deleted = int(cursor.rowcount or 0) > 0
+        with self._db_mutation_lock:
+            self._init_db()
+            with self._open_connection() as conn:
+                cursor = conn.execute("DELETE FROM failed_records WHERE video_id = ?", (normalized_id,))
+                conn.commit()
+                deleted = int(cursor.rowcount or 0) > 0
+            # Make the user mutation win over a queued or already-dispatched stale upsert.
+            with self._lock:
+                pending = self._pending.pop(normalized_id, None) is not None
+                inflight = normalized_id in self._inflight_ids
+                self._suppressed_ids.add(normalized_id)
+        snapshot_changed, visible_count, total_count = self._remove_from_snapshot(normalized_id, deleted=deleted)
+        if snapshot_changed:
+            self._notify_refresh(visible_count, total_count)
         self._refresh_after_mutation()
-        return deleted
+        return deleted or pending or inflight
 
     def clear_records(self) -> int:
-        self._init_db()
-        with self._open_connection() as conn:
-            cursor = conn.execute("DELETE FROM failed_records")
-            conn.commit()
-            deleted_count = max(0, int(cursor.rowcount or 0))
+        with self._db_mutation_lock:
+            self._init_db()
+            with self._open_connection() as conn:
+                cursor = conn.execute("DELETE FROM failed_records")
+                conn.commit()
+                deleted_count = max(0, int(cursor.rowcount or 0))
+            with self._snapshot_lock:
+                visible_ids = {str(row.get("id") or row.get("video_id") or "") for row in self._snapshot}
+            with self._lock:
+                self._write_generation += 1
+                self._suppressed_ids.update(visible_ids)
+                self._suppressed_ids.update(self._pending)
+                self._pending.clear()
+        with self._snapshot_lock:
+            snapshot_changed = bool(self._snapshot or self._snapshot_total_count)
+            self._snapshot = []
+            self._snapshot_total_count = 0
+        if snapshot_changed:
+            self._notify_refresh(0, 0)
         self._refresh_after_mutation()
         return deleted_count
 
@@ -310,6 +341,8 @@ class FailedRecordStore:
                     return
                 batch = list(self._pending.values())
                 self._pending.clear()
+                batch_ids = {str(record.get("video_id") or "") for record in batch}
+                self._inflight_ids.update(batch_ids)
                 refresh_request = self._refresh_requested
                 self._refresh_requested = None
                 prune_retention_days = self._prune_retention_days
@@ -369,6 +402,7 @@ class FailedRecordStore:
                         )
             finally:
                 with self._lock:
+                    self._inflight_ids.difference_update(batch_ids)
                     self._writing = False
                     self._refreshing = False
                     self._pruning = False
@@ -457,18 +491,7 @@ class FailedRecordStore:
             self._snapshot_total_count = total_count
         if not changed:
             return
-        callback = self._on_refresh
-        if callback is None:
-            return
-        try:
-            callback(len(rows))
-        except Exception as exc:
-            debug_logger.log_exception(
-                "FailedRecordStore",
-                "refresh_callback",
-                exc,
-                details={"count": len(rows), "total_count": total_count},
-            )
+        self._notify_refresh(len(rows), total_count)
 
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
         """在单个连接中 executemany 整批 upsert，并在批末一次提交。
@@ -476,27 +499,36 @@ class FailedRecordStore:
         该事务只覆盖本批有效记录，不包含随后执行的清理或内存快照刷新；
         ``payload_json`` 保留详情字段。
         """
-        self._init_db()
-        now = float(self._clock())
-        payloads = [
-            (
-                str(record.get("video_id") or ""),
-                str(record.get("title") or ""),
-                str(record.get("reason") or ""),
-                str(record.get("failed_at") or ""),
-                str(record.get("status") or ""),
-                str(record.get("platform") or ""),
-                str(record.get("trace_id") or ""),
-                json.dumps(record.get("payload") or record, ensure_ascii=False),
-                now,
-            )
-            for record in records
-            if record.get("video_id")
-        ]
-        if not payloads:
-            return
-        with self._open_connection() as conn:
-            conn.executemany(
+        with self._db_mutation_lock:
+            with self._lock:
+                generation = self._write_generation
+                records = [
+                    record
+                    for record in records
+                    if int(record.get("_store_generation", -1)) == generation
+                    and str(record.get("video_id") or "") not in self._suppressed_ids
+                ]
+            if not records:
+                return
+            self._init_db()
+            now = float(self._clock())
+            payloads = [
+                (
+                    str(record.get("video_id") or ""),
+                    str(record.get("title") or ""),
+                    str(record.get("reason") or ""),
+                    str(record.get("failed_at") or ""),
+                    str(record.get("status") or ""),
+                    str(record.get("platform") or ""),
+                    str(record.get("trace_id") or ""),
+                    json.dumps(record.get("payload") or record, ensure_ascii=False),
+                    now,
+                )
+                for record in records
+                if record.get("video_id")
+            ]
+            with self._open_connection() as conn:
+                conn.executemany(
                 """
                 INSERT INTO failed_records(
                     video_id, title, reason, failed_at, status, platform, trace_id, payload_json, updated_at
@@ -512,9 +544,41 @@ class FailedRecordStore:
                     payload_json=excluded.payload_json,
                     updated_at=excluded.updated_at
                 """,
-                payloads,
+                    payloads,
+                )
+                conn.commit()
+
+    def _remove_from_snapshot(self, video_id: str, *, deleted: bool) -> tuple[bool, int, int]:
+        with self._snapshot_lock:
+            remaining = [
+                row
+                for row in self._snapshot
+                if str(row.get("id") or row.get("video_id") or "") != video_id
+            ]
+            removed = len(remaining) != len(self._snapshot)
+            self._snapshot = remaining
+            query = self._last_refresh_request
+            unfiltered = not any(
+                (query.platform, query.status, query.trace_query, query.keyword, query.failed_from, query.failed_to)
             )
-            conn.commit()
+            changed = removed or (deleted and unfiltered)
+            if changed:
+                self._snapshot_total_count = max(0, self._snapshot_total_count - 1)
+            return changed, len(self._snapshot), self._snapshot_total_count
+
+    def _notify_refresh(self, count: int, total_count: int) -> None:
+        callback = self._on_refresh
+        if callback is None:
+            return
+        try:
+            callback(int(count))
+        except Exception as exc:
+            debug_logger.log_exception(
+                "FailedRecordStore",
+                "refresh_callback",
+                exc,
+                details={"count": int(count), "total_count": int(total_count)},
+            )
 
     @staticmethod
     def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:

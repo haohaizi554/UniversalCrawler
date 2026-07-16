@@ -3,6 +3,64 @@
 from __future__ import annotations
 
 class RuntimeAndListCases:
+    def test_failed_delete_and_clear_are_optimistic_while_backend_is_pending(self):
+        self._goto_ready()
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              const nativeRuntime = window.UcpFrontendRuntime;
+              const sends = [];
+              window.UcpFrontendRuntime = {
+                ...nativeRuntime,
+                send: (type, data) => { sends.push({ type, data }); return true; },
+              };
+              try {
+                frontendState.failed_items = [
+                  { id: 'failed-a', title: 'A', reason: 'network' },
+                  { id: 'failed-b', title: 'B', reason: 'network' },
+                ];
+                frontendState.app_status.failed_count = 2;
+                selected.failed = 'failed-a';
+                switchPage('failed');
+                renderFailed();
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                frontendAction('delete_failed_record', { id: 'failed-a' });
+                const afterDelete = {
+                  ids: frontendState.failed_items.map(item => item.id),
+                  count: frontendState.app_status.failed_count,
+                  selected: selected.failed,
+                  clearDisabled: byId('failedClearAll').disabled,
+                };
+                frontendAction('clear_failed_records', {});
+                const afterClear = {
+                  ids: frontendState.failed_items.map(item => item.id),
+                  count: frontendState.app_status.failed_count,
+                  selected: selected.failed,
+                  clearDisabled: byId('failedClearAll').disabled,
+                };
+                return { afterDelete, afterClear, sends };
+              } finally {
+                window.UcpFrontendRuntime = nativeRuntime;
+              }
+            }
+            """
+        )
+
+        self.assertEqual(
+            result["afterDelete"],
+            {"ids": ["failed-b"], "count": 1, "selected": "failed-b", "clearDisabled": False},
+        )
+        self.assertEqual(
+            result["afterClear"],
+            {"ids": [], "count": 0, "selected": "", "clearDisabled": True},
+        )
+        self.assertEqual(
+            [entry["data"]["action"] for entry in result["sends"]],
+            ["delete_failed_record", "clear_failed_records"],
+        )
+
     def test_platform_api_failure_restores_full_snapshot_platforms_and_retry(self):
         context = self._browser.new_context(viewport={"width": 1280, "height": 720})
         self.addCleanup(context.close)
