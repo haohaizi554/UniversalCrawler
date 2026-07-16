@@ -722,6 +722,74 @@ class LogCenterCases:
             "nextDisabled": False,
         })
 
+    def test_13bab_first_page_follows_live_logs_while_history_keeps_viewport(self):
+        self._goto_ready()
+
+        result = self._page.evaluate(
+            """
+            async () => {
+              window.__isolateFrontendStateForTest();
+              switchPage('logs');
+              currentPage = 'logs';
+              window.__setLogFiltersForTest({ time: 'all' });
+              const makeRow = index => ({
+                id: `live-log-${index}`,
+                time: `2026-07-16 08:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}`,
+                level: 'INFO',
+                source: 'GUI',
+                message_summary: `message-${index}`,
+                message: `message-${index}`
+              });
+              frontendState.log_items = Array.from({ length: 45 }, (_, index) => makeRow(index));
+              renderLogs();
+              await window.__waitForLogRender({ rows: 20, total: 45, matched: 45, visible: 20 });
+
+              const scroller = document.querySelector('#logBody').closest('.table-shell');
+              scroller.scrollTop = 180;
+              frontendState.log_items = [...frontendState.log_items, makeRow(60)];
+              renderLogs();
+              await window.__waitForLogRender({
+                rows: 20,
+                total: 46,
+                matched: 46,
+                visible: 20,
+                itemId: 'live-log-60',
+                selectedId: 'live-log-44'
+              });
+              const livePage = {
+                scrollTop: scroller.scrollTop,
+                indicator: document.getElementById('logPageIndicator').textContent,
+                firstRow: document.querySelector('#logBody tr')?.dataset.key || '',
+                selectedRow: document.querySelector('#logBody tr.selected')?.dataset.key || ''
+              };
+
+              setLogPage(1);
+              await window.__waitForLogRender({ rows: 20, total: 46, matched: 46, visible: 20, text: '第 2 / 3 页' });
+              scroller.scrollTop = 160;
+              const historyScrollTop = scroller.scrollTop;
+              frontendState.log_items = [...frontendState.log_items, makeRow(61)];
+              renderLogs();
+              await window.__waitForLogRender({ rows: 20, total: 47, matched: 47, visible: 20, text: '第 2 / 3 页' });
+              const historyPage = {
+                before: historyScrollTop,
+                after: scroller.scrollTop,
+                indicator: document.getElementById('logPageIndicator').textContent
+              };
+              return { livePage, historyPage };
+            }
+            """
+        )
+
+        self.assertEqual(result["livePage"], {
+            "scrollTop": 0,
+            "indicator": "第 1 / 3 页",
+            "firstRow": "live-log-60",
+            "selectedRow": "live-log-44",
+        })
+        self.assertGreater(result["historyPage"]["before"], 0)
+        self.assertEqual(result["historyPage"]["after"], result["historyPage"]["before"])
+        self.assertEqual(result["historyPage"]["indicator"], "第 2 / 3 页")
+
     def test_13ba_duplicate_log_rows_keep_independent_click_targets(self):
         """Repeated log payloads must still map to one selectable DOM row each."""
         self._goto_ready()

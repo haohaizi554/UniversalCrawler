@@ -19,6 +19,8 @@
     detailWorkerRetryAttempted: false,
     query: { signature: "", result: null, pending: false },
     detail: { signature: "", result: null, pending: false },
+    logItemsSignature: "",
+    queryViewPolicy: { sequence: 0, followLatest: false, preserveViewport: false, applied: true },
     rowSignatures: Object.create(null),
     issuedLogRowIds: new Set(),
     issuedLogRowIdOrder: [],
@@ -39,6 +41,8 @@
     state.detailWorkerRetryAttempted = false;
     state.query = { signature: "", result: null, pending: false };
     state.detail = { signature: "", result: null, pending: false };
+    state.logItemsSignature = "";
+    state.queryViewPolicy = { sequence: 0, followLatest: false, preserveViewport: false, applied: true };
     state.rowSignatures = Object.create(null);
     state.issuedLogRowIds = new Set();
     state.issuedLogRowIdOrder = [];
@@ -410,6 +414,12 @@
     });
   }
 
+  function logItemsSignature(items) {
+    const first = items[0] || {};
+    const last = items[items.length - 1] || {};
+    return [items.length, logItemSignature(first), logItemSignature(last)].join("\u001e");
+  }
+
   function buildLogQueryRequest(items, sequence) {
     return {
       sequence,
@@ -509,8 +519,14 @@
     }, 0);
   }
 
-  function submitLogQuery(items, signature) {
+  function submitLogQuery(items, signature, viewPolicy = {}) {
     const sequence = ++state.querySequence;
+    state.queryViewPolicy = {
+      sequence,
+      followLatest: Boolean(viewPolicy.followLatest),
+      preserveViewport: Boolean(viewPolicy.preserveViewport),
+      applied: false,
+    };
     state.query = { signature, result: state.query.result, pending: true };
     const worker = ensureLogQueryWorker();
     if (!worker) {
@@ -526,12 +542,18 @@
     syncLogStaticLanguage();
     syncLogFilterControls();
     const items = logQueryItems();
+    const nextItemsSignature = logItemsSignature(items);
+    const itemsChanged = nextItemsSignature !== state.logItemsSignature;
+    state.logItemsSignature = nextItemsSignature;
     const signature = logQuerySignature(items);
     if (state.query.signature === signature && state.query.result && !state.query.pending) {
       renderLogQueryResult(state.query.result);
       return;
     }
-    submitLogQuery(items, signature);
+    submitLogQuery(items, signature, {
+      followLatest: itemsChanged && state.page === 1,
+      preserveViewport: itemsChanged && state.page > 1,
+    });
     if (state.query.result) renderLogQueryResult(state.query.result);
   }
 
@@ -586,10 +608,19 @@
     const items = Array.isArray(result.pageItems) ? result.pageItems : [];
     const totalPages = Number(result.totalPages) || 1;
     state.page = Number(result.currentPage) || 1;
+    const viewPolicy = state.queryViewPolicy;
+    const applyViewPolicy = Number(result.sequence) === Number(viewPolicy.sequence) && !viewPolicy.applied;
+    const followLatest = applyViewPolicy && viewPolicy.followLatest;
+    const preserveViewport = applyViewPolicy && viewPolicy.preserveViewport;
+    const scroller = byId("logBody")?.closest(".table-shell") || null;
+    const previousScrollTop = preserveViewport && scroller ? scroller.scrollTop : 0;
     syncLogTabLabels(result.tabCounts || emptyLogTabCounts());
     const requested = String(state.selectedId || result.selectedId || "");
     state.selectedId = items.some(item => logItemId(item) === requested) ? requested : (items.length ? logItemId(items[0]) : "");
     patchLogTableRows(items);
+    if (scroller && followLatest) scroller.scrollTop = 0;
+    else if (scroller && preserveViewport) scroller.scrollTop = previousScrollTop;
+    if (applyViewPolicy) viewPolicy.applied = true;
     syncLogEmptyState(items.length === 0);
     const allItems = currentState().log_items || [];
     const total = byId("logTotal");

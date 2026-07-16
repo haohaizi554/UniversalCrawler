@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from PyQt6.QtCore import QRect
 from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -21,6 +23,7 @@ from app.ui.viewmodels.log_detail_worker import (
     build_cached_log_detail_result,
     build_log_detail_result,
 )
+from app.ui.viewmodels.log_query_worker import LogQueryResult
 from shared.log_platforms import builtin_platform_metas
 
 
@@ -200,6 +203,90 @@ def test_log_center_table_uses_four_pixel_cell_padding():
         item_rule = stylesheet.split("QTableView#LogItemsTable::item {", 1)[1].split("}", 1)[0]
         assert "padding-left: 0px;" in item_rule
         assert "padding-right: 0px;" in item_rule
+    finally:
+        page._log_query_worker.shutdown()
+        page._log_detail_worker.shutdown()
+        page._log_detail_export_worker.shutdown()
+        page.deleteLater()
+        app.processEvents()
+
+
+def test_log_center_live_refresh_follows_first_page_but_keeps_history_page():
+    app = QApplication.instance() or QApplication([])
+    page = LogCenterPage()
+    page._log_query_worker.shutdown()
+    submitted = []
+    page._log_query_worker = SimpleNamespace(
+        submit=submitted.append,
+        shutdown=lambda: None,
+    )
+    old_rows = [
+        {"id": "old-newest", "time": "2026-07-16 08:00:02", "level": "INFO", "message": "old newest"},
+        {"id": "old-middle", "time": "2026-07-16 08:00:01", "level": "INFO", "message": "old middle"},
+        {"id": "old-oldest", "time": "2026-07-16 08:00:00", "level": "INFO", "message": "old oldest"},
+    ]
+    newest = {"id": "newest", "time": "2026-07-16 08:00:03", "level": "INFO", "message": "newest"}
+    newer = {"id": "newer", "time": "2026-07-16 08:00:04", "level": "INFO", "message": "newer"}
+
+    try:
+        page._all_items = tuple(old_rows)
+        page._log_items_signature = page._make_log_items_signature(old_rows)
+        page.items = list(old_rows[:2])
+        page.table.set_rows(page.items)
+        page.table.select_id("old-newest")
+        page._current_page = 1
+        page.table.scrollToTop = Mock()
+
+        page.render({"log_items": [newest, *old_rows]})
+        first_page_request = submitted[-1]
+        assert first_page_request.page == 1
+        assert first_page_request.selected_id == "old-newest"
+        assert first_page_request.selected_id_moves_page is False
+
+        page._on_log_query_result(
+            LogQueryResult(
+                sequence=first_page_request.sequence,
+                page_items=[newest, old_rows[0]],
+                category_counts={key: 0 for key in ("all", "crawl", "download", "system", "performance", "error")},
+                total_count=4,
+                matched_count=4,
+                visible_count=2,
+                total_pages=2,
+                first_trace_id="",
+                current_page=1,
+                selected_id="old-newest",
+            )
+        )
+        assert page.selected_id() == "old-newest"
+        page.table.scrollToTop.assert_called_once_with()
+
+        page._current_page = 2
+        page.table.select_id("old-newest")
+        page.render({"log_items": [newer, newest, *old_rows]})
+        history_request = submitted[-1]
+        assert history_request.page == 2
+        assert history_request.selected_id == "old-newest"
+        assert history_request.selected_id_moves_page is False
+
+        scrollbar = page.table.verticalScrollBar()
+        scrollbar.value = Mock(return_value=73)
+        scrollbar.setValue = Mock()
+        page._on_log_query_result(
+            LogQueryResult(
+                sequence=history_request.sequence,
+                page_items=[old_rows[0], old_rows[1]],
+                category_counts={key: 0 for key in ("all", "crawl", "download", "system", "performance", "error")},
+                total_count=5,
+                matched_count=5,
+                visible_count=2,
+                total_pages=3,
+                first_trace_id="",
+                current_page=2,
+                selected_id="old-newest",
+            )
+        )
+        assert page._current_page == 2
+        scrollbar.setValue.assert_called_once_with(73)
     finally:
         page._log_query_worker.shutdown()
         page._log_detail_worker.shutdown()

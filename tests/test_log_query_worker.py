@@ -139,6 +139,28 @@ def test_query_log_items_moves_to_selected_item_page():
     assert result.selected_id == "a"
 
 
+def test_query_log_items_keeps_requested_history_page_during_live_refresh():
+    rows = [
+        {"id": "a", "time": "2026-06-30 10:00:00", "level": "INFO"},
+        {"id": "b", "time": "2026-06-30 10:01:00", "level": "INFO"},
+        {"id": "c", "time": "2026-06-30 10:02:00", "level": "INFO"},
+    ]
+
+    result = query_log_items(
+        _request(
+            rows,
+            page=2,
+            page_size=1,
+            selected_id="a",
+            selected_id_moves_page=False,
+        )
+    )
+
+    assert result.current_page == 2
+    assert [item["id"] for item in result.page_items] == ["b"]
+    assert result.selected_id == "b"
+
+
 def test_query_log_items_filters_non_mapping_rows_in_worker():
     rows = [
         {"id": "valid", "time": "2026-06-30 10:00:00", "level": "INFO"},

@@ -163,6 +163,7 @@ class LogCenterPage(PageFrame):
         self._query_total_pages = 1
         self._query_first_trace_id = ""
         self._query_page_items: list[dict[str, Any]] = []
+        self._query_view_policy = (False, False, True)
         self._last_json_text = "{}"
         self._inspector_item_id = ""
         self._detail_sequence = 0
@@ -954,13 +955,16 @@ class LogCenterPage(PageFrame):
         incoming_items = self._snapshot_log_items(snapshot)
         incoming_signature = self._make_log_items_signature(incoming_items)
         filter_signature = self._make_filter_signature()
+        items_changed = incoming_signature != self._log_items_signature
         if incoming_signature == self._log_items_signature and filter_signature == self._filter_signature:
             self._sync_tab_buttons()
             return
         self._all_items = incoming_items
         self._log_items_signature = incoming_signature
         self._category_count_signature = None
-        self._submit_log_query(reset_page=False)
+        follow_latest = items_changed and self._current_page == 1
+        view_policy = (follow_latest, items_changed and not follow_latest, not items_changed)
+        self._submit_log_query(reset_page=False, selected_id=self.selected_id() or "", view_policy=view_policy)
 
     @staticmethod
     def _snapshot_log_items(snapshot: Mapping[str, Any]) -> Sequence[Any]:
@@ -1086,6 +1090,9 @@ class LogCenterPage(PageFrame):
             self._submit_log_query(reset_page=False, selected_id="")
 
     def _refresh_paged_table(self, *, selected_id: str = "") -> None:
+        follow_latest, preserve_viewport, _selected_id_moves_page = self._query_view_policy
+        scrollbar = self.table.verticalScrollBar()
+        previous_scroll = scrollbar.value() if preserve_viewport else 0
         self.items = list(self._query_page_items)
 
         self.table.set_rows(self.items)
@@ -1093,12 +1100,14 @@ class LogCenterPage(PageFrame):
         self._apply_platform_icons_to_table()
         self._sync_table_presentation()
 
-        if selected_id and self.select_id(selected_id):
-            self._render_detail()
-            return
-        if self.items:
+        if not (selected_id and self.select_id(selected_id)) and self.items:
             self.table.selectRow(0)
         self._render_detail()
+
+        if follow_latest:
+            self.table.scrollToTop()
+        elif preserve_viewport:
+            scrollbar.setValue(previous_scroll)
 
     def _update_footer_stats(self) -> None:
         if not hasattr(self, "footer_stats"):
@@ -1132,11 +1141,15 @@ class LogCenterPage(PageFrame):
         self._current_page = 1
         self._submit_log_query(reset_page=True, selected_id=previous_id or "")
 
-    def _submit_log_query(self, *, reset_page: bool, selected_id: str | None = None) -> None:
+    def _submit_log_query(
+        self, *, reset_page: bool, selected_id: str | None = None,
+        view_policy: tuple[bool, bool, bool] = (False, False, True),
+    ) -> None:
         if reset_page:
             self._current_page = 1
         self._filter_signature = self._make_filter_signature()
         self._query_sequence += 1
+        self._query_view_policy = view_policy
         request = LogQueryRequest(
             sequence=self._query_sequence,
             items=self._all_items,
@@ -1153,6 +1166,7 @@ class LogCenterPage(PageFrame):
             page_size=self._page_size,
             language=self._language,
             selected_id=self.selected_id() if selected_id is None else str(selected_id or ""),
+            selected_id_moves_page=view_policy[2],
         )
         self._log_query_worker.submit(request)
 

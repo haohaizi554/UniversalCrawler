@@ -33,6 +33,7 @@ class LogQueryRequest:
     page_size: int
     language: str = "zh-CN"
     selected_id: str = ""
+    selected_id_moves_page: bool = True
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def query_log_items(request: LogQueryRequest) -> LogQueryResult:
     ]
     sorted_items = log_filtering.sort_log_items(filtered_items)
     current_page = int(request.page or 1)
-    if request.selected_id:
+    if request.selected_id and request.selected_id_moves_page:
         # 详情面板选中某条日志时，筛选/刷新后优先翻到该日志所在页。
         selected_page = page_for_match(
             sorted_items,
@@ -102,7 +103,7 @@ def query_log_items(request: LogQueryRequest) -> LogQueryResult:
     ]
     selected_id = ""
     if request.selected_id and any(
-        stable_log_item_id(item, index) == request.selected_id for index, item in enumerate(sorted_items)
+        stable_log_item_id(item, index) == request.selected_id for index, item in enumerate(page_rows)
     ):
         selected_id = request.selected_id
     elif page_rows:

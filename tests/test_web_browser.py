@@ -252,7 +252,7 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertIn('/static/playback_state.js?v=20260701-playback-state', content)
         self.assertIn('/static/custom_select.js?v=20260707-placement-stable', content)
         self.assertIn('/static/log_display.js?v=20260705-i18n-state-boundary', content)
-        self.assertIn('/static/app.js?v=20260714-state-sync', content)
+        self.assertIn('/static/app.js?v=20260716-live-follow', content)
 
     def test_split_frontend_scripts_share_cache_version_and_load_order(self):
         import re
@@ -276,7 +276,7 @@ class StaticAssetsTests(unittest.TestCase):
         split_scripts = [(name, version) for name, version in scripts if name in expected_names]
 
         self.assertEqual([name for name, _version in split_scripts], expected_names)
-        self.assertEqual({version for _name, version in split_scripts}, {"20260714-state-sync"})
+        self.assertEqual({version for _name, version in split_scripts}, {"20260716-live-follow"})
 
     def test_video_end_autoplays_next_preview(self):
         static_dir = Path(__file__).resolve().parents[1] / "app" / "web" / "static"
@@ -764,7 +764,9 @@ class StaticAssetsTests(unittest.TestCase):
         self.assertNotIn("LOG_QUERY_WORKER_THRESHOLD", content)
         self.assertIn("renderCurrentPage();", render_all_block)
         self.assertNotIn("renderLogs();", render_all_block)
-        self.assertIn("submitLogQuery(items, signature);", render_logs_block)
+        self.assertIn("submitLogQuery(items, signature, {", render_logs_block)
+        self.assertIn("followLatest: itemsChanged && state.page === 1", render_logs_block)
+        self.assertIn("preserveViewport: itemsChanged && state.page > 1", render_logs_block)
         self.assertNotIn("queryLogsSync(items, sequence);", render_logs_block)
         self.assertIn("function scheduleLogQueryFallback(items, sequence)", content)
         self.assertIn("function queryLogsSyncRequest(request)", content)
