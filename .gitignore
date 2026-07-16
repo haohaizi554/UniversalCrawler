@@ -82,11 +82,6 @@ release-secrets/
 *.log
 Logs/*.log
 .dbg/
-/artifacts/
-
-# Personal files
-/简历*.pdf
-/resume*.pdf
 
 # Archives
 *.zip
@@ -107,3 +102,5 @@ Desktop.ini
 docx/
 
 人工测试.txt
+简历*.*
+artifacts/

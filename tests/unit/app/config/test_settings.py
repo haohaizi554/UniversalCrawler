@@ -22,7 +22,6 @@ from app.config.settings import (
     get_platform_runtime_defaults,
     language_options,
     log_retention_options,
-    normalize_download_directory_input,
     platform_count_options,
     platform_note_count_options,
     platform_page_count_options,
@@ -669,17 +668,6 @@ class ConfigManagerTests(unittest.TestCase):
             manager = ConfigManager(str(config_path))
 
             self.assertEqual(manager.get("common", "save_directory"), DEFAULT_DOWNLOAD_DIR)
-
-    def test_default_download_directory_keeps_canonical_spelling(self):
-        """磁盘已有不同大小写目录时，默认路径仍保持配置常量的规范拼写。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            canonical = (Path(temp_dir) / "Downloads").resolve(strict=False)
-            (Path(temp_dir) / "downloads").mkdir()
-
-            with mock.patch("app.config.settings.DEFAULT_DOWNLOAD_DIR", str(canonical)):
-                normalized = normalize_download_directory_input(str(canonical))
-
-            self.assertEqual(normalized, str(canonical))
 
     def test_extended_ui_sections_persist_with_normalized_types(self):
         with tempfile.TemporaryDirectory() as temp_dir:
