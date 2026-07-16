@@ -15,6 +15,7 @@ if __package__ in (None, ""):
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_NAME,
+        REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
         FORBIDDEN_USER_DATA_BASENAMES,
         PACKAGE_VERSION,
@@ -29,6 +30,7 @@ else:
         APP_EXE_NAME,
         APP_ICON_NAME,
         APP_NAME,
+        REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
         FORBIDDEN_USER_DATA_BASENAMES,
         PACKAGE_VERSION,
@@ -54,6 +56,7 @@ REQUIRED_FILES = [
     PROJECT_ROOT / "main.py",
     PROJECT_ROOT / APP_ICON_NAME,  # 主图标（桌面 EXE 用）
     PROJECT_ROOT / WEBUI_ICON_NAME,  # Web 专用图标（Web EXE 用）
+    PROJECT_ROOT / REPORT_ICON_NAME,  # 代码统计报告的浏览器标签页图标
     *(PROJECT_ROOT / doc_name for doc_name in PORTABLE_ROOT_DOCS),
     PROJECT_ROOT / "ffmpeg.exe",
     PROJECT_ROOT / "ffprobe.exe",

@@ -9,7 +9,16 @@ from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 _packaging_dir = Path(SPEC).resolve().parent
 if str(_packaging_dir) not in sys.path:
     sys.path.insert(0, str(_packaging_dir))
-from project_meta import APP_DISPLAY_NAME, APP_ICON_NAME, APP_NAME, UPDATER_HELPER_NAME, WEBUI_DISPLAY_NAME, WEBUI_ICON_NAME, WEBUI_NAME
+from project_meta import (
+    APP_DISPLAY_NAME,
+    APP_ICON_NAME,
+    APP_NAME,
+    REPORT_ICON_NAME,
+    UPDATER_HELPER_NAME,
+    WEBUI_DISPLAY_NAME,
+    WEBUI_ICON_NAME,
+    WEBUI_NAME,
+)
 from playwright_bundle import resolve_playwright_browser_directories
 
 project_root = Path(SPEC).resolve().parents[1]
@@ -33,6 +42,7 @@ def optional_tree(source: Path, target_dir: str) -> list[tuple[str, str]]:
 datas = []
 datas += optional_tree(project_root / APP_ICON_NAME, ".")
 datas += optional_tree(project_root / WEBUI_ICON_NAME, ".")
+datas += optional_tree(project_root / REPORT_ICON_NAME, ".")
 datas += optional_tree(project_root / "ffmpeg.exe", ".")
 datas += optional_tree(project_root / "ffprobe.exe", ".")
 datas += optional_tree(project_root / "N_m3u8DL-RE.exe", ".")
@@ -80,7 +90,7 @@ hiddenimports = sorted(
 # 因此必须显式列出 PyQt6 子模块。
         + collect_submodules("PyQt6")
         # entry 动态加载的具体 entry 模块（保险起见显式列）
-        + ["entry.cli_entry", "entry.gui_entry", "entry.web_entry", "entry.interactive_entry", "entry.dispatcher", "entry.updater_helper"]
+        + ["count_project", "entry.cli_entry", "entry.code_report_entry", "entry.gui_entry", "entry.web_entry", "entry.interactive_entry", "entry.dispatcher", "entry.updater_helper"]
         # cli 动态加载的子命令模块（保险起见显式列）
         + ["cli.commands.search", "cli.commands.download", "cli.commands.scan", "cli.commands.interactive"]
         + [

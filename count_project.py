@@ -1,15 +1,20 @@
-import os
 import argparse
+import base64
+import os
 import subprocess
+import sys
+import webbrowser
 from collections import defaultdict
 from html import escape
 from pathlib import Path
+from typing import Sequence
 
 from rich import box
 from rich.console import Console
 from rich.table import Table
 
 REPORT_WIDTH = 140
+REPORT_ICON_NAME = "analytics.ico"
 
 EXCLUDE_DIRS = {
     ".git",
@@ -47,6 +52,40 @@ EXCLUDE_FILE_NAMES = {
     "Pipfile.lock",
     "composer.lock",
 }
+
+
+def resolve_report_icon_path() -> Path | None:
+    """查找源码与冻结环境中的报告图标。"""
+    roots: list[Path] = []
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        roots.append(Path(bundle_root))
+    roots.extend((Path(__file__).resolve().parent, Path.cwd()))
+
+    visited: set[Path] = set()
+    for root in roots:
+        candidate = (root / REPORT_ICON_NAME).resolve()
+        if candidate in visited:
+            continue
+        visited.add(candidate)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def render_report_favicon() -> str:
+    """将图标嵌入 HTML，避免报告移动后丢失浏览器标签页图标。"""
+    icon_path = resolve_report_icon_path()
+    if icon_path is None:
+        return ""
+    try:
+        encoded = base64.b64encode(icon_path.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return (
+        '<link rel="icon" type="image/x-icon" '
+        f'href="data:image/x-icon;base64,{encoded}">'
+    )
 
 
 def normalize_repository_url(remote_url: str) -> str:
@@ -1474,6 +1513,7 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>项目代码量统计报告</title>
+{render_report_favicon()}
 <style>
 {REPORT_CSS}
 </style>
@@ -1558,8 +1598,23 @@ def print_report(result: dict) -> None:
     print_largest_files(result)
 
 
-def parse_args() -> argparse.Namespace:
+def open_report_html(report_path: str | Path) -> bool:
+    """使用系统默认浏览器打开生成后的本地 HTML 报告。"""
+    path = Path(report_path).expanduser().resolve()
+    try:
+        return bool(webbrowser.open_new_tab(path.as_uri()))
+    except (OSError, ValueError, webbrowser.Error):
+        return False
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="统计当前项目代码量")
+    parser.add_argument(
+        "--root",
+        default=".",
+        metavar="PATH",
+        help="待统计的项目根目录；默认使用当前工作目录",
+    )
     parser.add_argument(
         "--html",
         nargs="?",
@@ -1568,12 +1623,31 @@ def parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="导出 HTML 报告；默认生成项目根目录下的 code_report.html",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="生成报告后立即使用默认浏览器打开 HTML",
+    )
+    return parser.parse_args(argv)
 
 
-if __name__ == "__main__":
-    args = parse_args()
-    project_root = Path.cwd()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    project_root = Path(args.root).expanduser().resolve()
+    if not project_root.is_dir():
+        print(f"项目目录不存在或不是目录：{project_root}", file=sys.stderr)
+        return 2
+
     result = scan_project(project_root)
     print_report(result)
     html_path = save_report_html(result, args.html)
+    print(f"HTML 报告已生成：{html_path}")
+
+    if args.open and not open_report_html(html_path):
+        print(f"无法自动打开浏览器，请手动打开：{html_path}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

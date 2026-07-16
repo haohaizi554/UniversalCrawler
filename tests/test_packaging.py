@@ -300,14 +300,16 @@ class SpecDataFilesTests(unittest.TestCase):
         cli_data = [d for d in datas if d[1] == "cli"]
         self.assertTrue(len(cli_data) >= 1, f"cli package not in datas: {datas}")
 
-    def test_datas_includes_both_icons(self):
-        """favicon.ico 和 Web.ico 都必须打包。"""
+    def test_datas_includes_all_runtime_icons(self):
+        """主程序、WebUI 和代码报告图标都必须打包。"""
         datas = self._spec_globals["datas"]
         icon_targets = [d[0] for d in datas]
         self.assertTrue(any("favicon.ico" in p for p in icon_targets),
                        "favicon.ico not packaged")
         self.assertTrue(any("Web.ico" in p for p in icon_targets),
                        "Web.ico not packaged")
+        self.assertTrue(any("analytics.ico" in p for p in icon_targets),
+                       "analytics.ico not packaged")
 
     def test_datas_includes_ui_icon_assets(self):
         """UI/icon 图标资产必须打包，供 GUI/WebUI 运行时复用。"""
@@ -555,11 +557,12 @@ class BuildScriptTests(unittest.TestCase):
     def test_required_files_includes_main_py(self):
         self.assertIn('"main.py"', (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8"))
 
-    def test_required_files_includes_both_icons(self):
-        """REQUIRED_FILES 必须同时包含 favicon.ico 和 Web.ico。"""
+    def test_required_files_includes_all_icons(self):
+        """REQUIRED_FILES 必须包含 GUI、WebUI 和代码报告图标。"""
         source = (PACKAGING_DIR / "build_portable.py").read_text(encoding="utf-8")
         self.assertIn("APP_ICON_NAME", source)
         self.assertIn("WEBUI_ICON_NAME", source)
+        self.assertIn("REPORT_ICON_NAME", source)
         self.assertIn("PORTABLE_ROOT_DOCS", source)
         self.assertIn("README_EN.md", source)
 
@@ -805,6 +808,7 @@ class InstallerScriptTests(unittest.TestCase):
             "nav_settings.png",
             "APP_ICON_NAME",
             "WEBUI_ICON_NAME",
+            "REPORT_ICON_NAME",
             "_missing_install_source_entries",
         ):
             self.assertIn(marker, source)
@@ -1191,6 +1195,10 @@ class ProjectFileExistenceTests(unittest.TestCase):
     def test_web_ico_exists(self):
         """Web 专用图标必须存在。"""
         self.assertTrue((PROJECT_ROOT / "Web.ico").exists())
+
+    def test_report_ico_exists(self):
+        """代码统计报告图标必须存在。"""
+        self.assertTrue((PROJECT_ROOT / "analytics.ico").exists())
 
     def test_ffmpeg_exists(self):
         self.assertTrue((PROJECT_ROOT / "ffmpeg.exe").exists())

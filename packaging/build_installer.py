@@ -19,6 +19,7 @@ if __package__ in (None, ""):
         INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
         PACKAGE_VERSION,
+        REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
         WEBUI_DISPLAY_NAME,
         WEBUI_EXE_NAME,
@@ -36,6 +37,7 @@ else:
         INSTALL_DIR_NAME,
         INSTALLER_BASENAME,
         PACKAGE_VERSION,
+        REPORT_ICON_NAME,
         UPDATER_HELPER_EXE_NAME,
         WEBUI_DISPLAY_NAME,
         WEBUI_EXE_NAME,
@@ -90,6 +92,7 @@ REQUIRED_INSTALL_SOURCE_ENTRIES = (
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "playback_controller.js",
     lambda: DIST_DIR / "_internal" / "app" / "web" / "static" / "app.js",
     lambda: DIST_DIR / "_internal" / "UI" / "icon" / "nav_settings.png",
+    lambda: DIST_DIR / "_internal" / REPORT_ICON_NAME,
     lambda: APP_ICON,
     lambda: WEBUI_ICON,
 )

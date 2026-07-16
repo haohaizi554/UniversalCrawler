@@ -45,6 +45,7 @@ class DispatcherModeEnumTests(unittest.TestCase):
         self.assertEqual(Mode.WEB.value, "web")
         self.assertEqual(Mode.CLI.value, "cli")
         self.assertEqual(Mode.INTERACTIVE.value, "interactive")
+        self.assertEqual(Mode.REPORT.value, "report")
 
     def test_mode_from_string(self):
         from entry.dispatcher import Mode
@@ -52,6 +53,7 @@ class DispatcherModeEnumTests(unittest.TestCase):
         self.assertEqual(Mode("web"), Mode.WEB)
         self.assertEqual(Mode("cli"), Mode.CLI)
         self.assertEqual(Mode("interactive"), Mode.INTERACTIVE)
+        self.assertEqual(Mode("report"), Mode.REPORT)
 
     def test_mode_str_inherits(self):
         """Mode 继承 str，可以直接当字符串用。"""
@@ -283,6 +285,8 @@ class DispatcherQtDialogTests(unittest.TestCase):
         src = inspect.getsource(mode_selection_ui._prompt_mode_with_qt)
         self.assertIn("ChromedDialog", src)
         self.assertIn("theme_colors", src)
+        self.assertIn('"cardReport", Mode.REPORT, "6"', src)
+        self.assertIn("支持数字键 1-6 快速选择", src)
         self.assertNotIn("dialog = QDialog()", src)
 
     def test_load_app_icon_meipass(self):

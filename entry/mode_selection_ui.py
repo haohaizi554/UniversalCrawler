@@ -24,6 +24,7 @@ _MENU_ITEMS = [
     ("3", "交互式引导  (逐步选择平台和参数)", Mode.INTERACTIVE),
     ("4", "CLI 命令行  (单次执行后退出)", Mode.CLI),
     ("5", "测试套件    (全量/单元/UI/浏览器 等)", Mode.TEST),
+    ("6", "代码量统计  (生成并打开 HTML 报告)", Mode.REPORT),
     ("q", "退出", None),
 ]
 
@@ -117,6 +118,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     accent_int = "#f59e0b"
     accent_cli = "#8b5cf6"
     accent_test = "#ef4444"
+    accent_report = "#06b6d4"
     colors = theme_colors(is_dark)
     accent_cancel = colors["muted"]
     text_primary = colors["text"]
@@ -167,7 +169,8 @@ def _prompt_mode_with_qt() -> Mode | None:
         QLabel#cardTagInt {{ background: {accent_int}; }}
         QLabel#cardTagCli {{ background: {accent_cli}; }}
         QLabel#cardTagTest {{ background: {accent_test}; }}
-        QFrame#cardGui, QFrame#cardWeb, QFrame#cardInt, QFrame#cardCli, QFrame#cardTest {{
+        QLabel#cardTagReport {{ background: {accent_report}; }}
+        QFrame#cardGui, QFrame#cardWeb, QFrame#cardInt, QFrame#cardCli, QFrame#cardTest, QFrame#cardReport {{
             background: {bg_soft};
             border: 1px solid {border};
             border-radius: 12px;
@@ -177,16 +180,19 @@ def _prompt_mode_with_qt() -> Mode | None:
         QFrame#cardInt:hover {{ border: 1.5px solid {accent_int}; background: {panel}; }}
         QFrame#cardCli:hover {{ border: 1.5px solid {accent_cli}; background: {panel}; }}
         QFrame#cardTest:hover {{ border: 1.5px solid {accent_test}; background: {panel}; }}
+        QFrame#cardReport:hover {{ border: 1.5px solid {accent_report}; background: {panel}; }}
         QFrame#cardGui QLabel#cardAccent {{ background: {accent_gui}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardWeb QLabel#cardAccent {{ background: {accent_web}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardInt QLabel#cardAccent {{ background: {accent_int}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardCli QLabel#cardAccent {{ background: {accent_cli}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardTest QLabel#cardAccent {{ background: {accent_test}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+        QFrame#cardReport QLabel#cardAccent {{ background: {accent_report}; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
         QFrame#cardGui QLabel#cardIndex {{ color: {accent_gui}; }}
         QFrame#cardWeb QLabel#cardIndex {{ color: {accent_web}; }}
         QFrame#cardInt QLabel#cardIndex {{ color: {accent_int}; }}
         QFrame#cardCli QLabel#cardIndex {{ color: {accent_cli}; }}
         QFrame#cardTest QLabel#cardIndex {{ color: {accent_test}; }}
+        QFrame#cardReport QLabel#cardIndex {{ color: {accent_report}; }}
         QPushButton#cancelBtn {{
             background: transparent;
             color: {accent_cancel};
@@ -251,7 +257,7 @@ def _prompt_mode_with_qt() -> Mode | None:
     title_label.setObjectName("heroTitle")
     title_box.addWidget(title_label)
 
-    subtitle = QLabel("请选择启动模式  ·  支持数字键 1-4 快速选择")
+    subtitle = QLabel("请选择启动模式  ·  支持数字键 1-6 快速选择")
     subtitle.setObjectName("heroSubtitle")
     title_box.addWidget(subtitle)
     header.addLayout(title_box)
@@ -265,6 +271,7 @@ def _prompt_mode_with_qt() -> Mode | None:
         ("cardInt", Mode.INTERACTIVE, "3", "交互式引导", "逐步选择平台和参数，适合新手", "", "cardTagInt"),
         ("cardCli", Mode.CLI, "4", "CLI 命令行", "单次执行后退出，适合脚本 / AI 工具", "", "cardTagCli"),
         ("cardTest", Mode.TEST, "5", "测试套件", "全量/单元/UI/浏览器，多类别可勾选", "工程", "cardTagTest"),
+        ("cardReport", Mode.REPORT, "6", "代码量统计", "扫描项目代码，生成并直接打开 HTML 报告", "报告", "cardTagReport"),
     ]
 
     cards: list[tuple[Mode, QFrame]] = []
@@ -281,7 +288,7 @@ def _prompt_mode_with_qt() -> Mode | None:
         card = QFrame()
         card.setObjectName(css_class)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
-        card.setMinimumHeight(78)
+        card.setMinimumHeight(70)
 
         layout = QHBoxLayout(card)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -289,11 +296,11 @@ def _prompt_mode_with_qt() -> Mode | None:
 
         accent = QLabel()
         accent.setObjectName("cardAccent")
-        accent.setFixedSize(QSize(6, 78))
+        accent.setFixedSize(QSize(6, 70))
         layout.addWidget(accent, 0, Qt.AlignmentFlag.AlignVCenter)
 
         content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(20, 14, 20, 14)
+        content_layout.setContentsMargins(20, 10, 20, 10)
         content_layout.setSpacing(18)
 
         num = QLabel(idx)
@@ -318,6 +325,7 @@ def _prompt_mode_with_qt() -> Mode | None:
                 "cardTagInt": accent_int,
                 "cardTagCli": accent_cli,
                 "cardTagTest": accent_test,
+                "cardTagReport": accent_report,
             }.get(tag_obj, accent_gui)
             tag_label.setStyleSheet(
                 f"""
@@ -367,7 +375,7 @@ def _prompt_mode_with_qt() -> Mode | None:
         cards.append((spec[1], card))
         body.addWidget(card)
         if spec is not btn_specs[-1]:
-            body.addSpacing(10)
+            body.addSpacing(8)
 
     body.addSpacing(16)
     body.addStretch(1)
@@ -446,6 +454,7 @@ def prompt_mode_menu() -> Mode | None:
             "          python main.py --mode cli      # CLI（默认）\n"
             "          python main.py --mode interactive  # 交互式引导\n"
             "          python main.py --mode test     # 测试套件\n"
+            "          python main.py --mode report   # 代码量统计报告\n"
             "      - 或设置环境变量: set UCRAWL_MODE=cli\n"
         )
         raise _MenuUnavailable()
@@ -460,7 +469,7 @@ def prompt_mode_menu() -> Mode | None:
     sys.stderr.flush()
 
     try:
-        raw = input("请输入 [1/2/3/4/5/q]: ").strip().lower()
+        raw = input("请输入 [1/2/3/4/5/6/q]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         sys.stderr.write("\n")
         return None
@@ -468,7 +477,7 @@ def prompt_mode_menu() -> Mode | None:
     if raw in ("q", "quit", "exit", "0"):
         return None
 
-    if raw in ("1", "2", "3", "4", "5"):
+    if raw in ("1", "2", "3", "4", "5", "6"):
         idx = int(raw) - 1
         if 0 <= idx < len(_MENU_ITEMS) - 1:
             return _MENU_ITEMS[idx][2]

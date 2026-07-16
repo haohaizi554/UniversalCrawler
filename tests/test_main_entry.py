@@ -79,6 +79,7 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(parse_mode_arg(["--mode", "cli"]), Mode.CLI)
         self.assertEqual(parse_mode_arg(["-m", "gui"]), Mode.GUI)
         self.assertEqual(parse_mode_arg(["--mode=web"]), Mode.WEB)
+        self.assertEqual(parse_mode_arg(["--mode=report"]), Mode.REPORT)
         self.assertEqual(parse_mode_arg([]), None)
 
     def test_parse_mode_arg_rejects_invalid_or_missing_values(self):
@@ -194,11 +195,24 @@ class DispatcherTests(unittest.TestCase):
             (dispatcher.run_cli, "entry.cli_entry.main"),
             (dispatcher.run_interactive, "entry.interactive_entry.main"),
             (dispatcher.run_test, "entry.test_entry.main"),
+            (dispatcher.run_code_report, "entry.code_report_entry.main"),
         )
         for adapter, target in adapters:
             with self.subTest(adapter=adapter.__name__), patch(target, return_value=0) as mocked:
                 self.assertEqual(adapter([]), 0)
                 mocked.assert_called_once_with([])
+
+    def test_code_report_entry_supplies_root_output_and_open(self):
+        from entry import code_report_entry
+
+        with patch("count_project.main", return_value=0) as mocked:
+            self.assertEqual(code_report_entry.main([]), 0)
+
+        forwarded = mocked.call_args.args[0]
+        self.assertIn("--root", forwarded)
+        self.assertIn("--html", forwarded)
+        self.assertIn("--open", forwarded)
+        self.assertTrue(str(forwarded[forwarded.index("--html") + 1]).endswith("code_report.html"))
 
     def test_run_with_prompt_returns_none_exits_zero(self):
         """用户主动选 q (prompt 返回 None) → exit 0。"""

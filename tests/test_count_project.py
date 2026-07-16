@@ -6,6 +6,7 @@ from count_project import (
     _build_table,
     build_language_chart_rows,
     build_largest_chart_rows,
+    main,
     normalize_repository_url,
     parse_args,
     scan_project,
@@ -29,7 +30,11 @@ def test_build_table_uses_rich_table_when_available():
     assert table.columns[0].header == "Scope"
 
 
-def test_save_report_html_writes_escaped_report(tmp_path):
+def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
+    icon_path = tmp_path / "analytics.ico"
+    icon_path.write_bytes(b"\x00\x00\x01\x00")
+    monkeypatch.setattr("count_project.resolve_report_icon_path", lambda: icon_path)
+
     result = {
         "root": "D:/demo/<project>",
         "repository_url": "https://github.com/example/demo-project",
@@ -61,6 +66,8 @@ def test_save_report_html_writes_escaped_report(tmp_path):
     assert output_path.exists()
     html = output_path.read_text(encoding="utf-8")
     assert "<title>项目代码量统计报告</title>" in html
+    assert 'rel="icon" type="image/x-icon"' in html
+    assert 'href="data:image/x-icon;base64,AAABAA=="' in html
     assert 'class="hero"' in html
     assert 'class="hero-stat-label">Effective LOC</div>' in html
     assert "代码文件数" in html
@@ -104,6 +111,32 @@ def test_parse_args_generates_html_by_default(monkeypatch):
     args = parse_args()
 
     assert args.html == "code_report.html"
+
+
+def test_main_generates_report_and_opens_it(tmp_path, monkeypatch):
+    (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    report_path = tmp_path / "reports" / "code.html"
+    opened_paths = []
+
+    monkeypatch.setattr("count_project.print_report", lambda _result: None)
+    monkeypatch.setattr(
+        "count_project.open_report_html",
+        lambda path: opened_paths.append(path) or True,
+    )
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--html",
+            str(report_path),
+            "--open",
+        ]
+    )
+
+    assert exit_code == 0
+    assert report_path.exists()
+    assert opened_paths == [report_path.resolve()]
 
 
 def test_scan_project_excludes_xml_from_code_statistics(tmp_path):
