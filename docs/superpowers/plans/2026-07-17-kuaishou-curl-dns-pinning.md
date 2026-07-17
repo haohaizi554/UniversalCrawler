@@ -307,7 +307,7 @@ Run: `python -m pytest tests/unit/app/spiders/kuaishou/test_share_resolution.py 
 
 Expected: the new tests fail because `curl_get` has no `curl_options`, the policy resolver is not consumed, and proxy-side DNS still reaches transport. Existing tests remain collected without import or fixture errors.
 
-### Task 2: Implement bounded per-hop DNS pinning
+#### Phase 2: Implement bounded per-hop DNS pinning and return Task 1 to GREEN
 
 **Files:**
 - Modify: `app/spiders/kuaishou/share_runtime.py:1-258`
@@ -432,7 +432,7 @@ git commit -m "fix: pin Kuaishou short-link DNS"
 
 Expected: only the three listed files are committed; unrelated dirty files remain unstaged.
 
-### Task 3: Verify repository contracts, review, and publish
+### Task 2: Verify repository contracts, review, and publish
 
 **Files:**
 - Verify only: `app/spiders/kuaishou/share_runtime.py`
@@ -441,7 +441,7 @@ Expected: only the three listed files are committed; unrelated dirty files remai
 - Verify only: `tests/testkit/test_catalog.py`
 
 **Interfaces:**
-- Consumes: the completed Task 2 implementation and the directory-driven test catalog.
+- Consumes: the completed Task 1 implementation and the directory-driven test catalog.
 - Produces: evidence that the hotfix is isolated, classified correctly, regression-safe, and present on `origin/main`.
 
 - [ ] **Step 1: Run security-adjacent and taxonomy regressions**
