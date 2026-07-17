@@ -1,5 +1,6 @@
 """Kuaishou short-link and direct-share runtime helpers."""
 
+import ipaddress
 import json
 import re
 import threading
@@ -7,6 +8,7 @@ import time
 import urllib.parse
 
 import requests
+from curl_cffi.const import CurlOpt
 from curl_cffi.requests import RequestsError as CurlRequestsError
 from curl_cffi.requests import get as curl_get
 from playwright.sync_api import Error as PlaywrightError
@@ -16,6 +18,41 @@ from shared.runtime_options import DomainPolicyViolation
 
 
 _SHORT_LINK_POLICY_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _short_link_curl_resolve_options(
+    url: str,
+    addresses: tuple[str, ...],
+) -> dict[object, list[str]]:
+    """Pin curl to the exact public addresses validated for one short-link hop."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        if parts.scheme.lower() not in {"http", "https"}:
+            raise ValueError("unsupported URL scheme")
+        host = str(parts.hostname or "").encode("idna").decode("ascii")
+        if not host:
+            raise ValueError("missing URL host")
+        port = parts.port
+        if port is None:
+            port = 443 if parts.scheme.lower() == "https" else 80
+        if not 1 <= port <= 65535:
+            raise ValueError("invalid URL port")
+
+        pinned: list[str] = []
+        for raw_address in addresses:
+            address = ipaddress.ip_address(str(raw_address or "").strip())
+            if not address.is_global:
+                raise ValueError("non-public pinned address")
+            rendered = f"[{address}]" if address.version == 6 else str(address)
+            if rendered not in pinned:
+                pinned.append(rendered)
+        if not pinned:
+            raise ValueError("no public address to pin")
+    except (UnicodeError, ValueError) as exc:
+        raise DomainPolicyViolation(
+            "无法固定快手短链的公网 DNS 结果"
+        ) from exc
+    return {CurlOpt.RESOLVE: [f"{host}:{port}:{','.join(pinned)}"]}
 
 
 class KuaishouShareRuntimeMixin:
@@ -49,9 +86,9 @@ class KuaishouShareRuntimeMixin:
         if not self._is_kuaishou_url(raw_text):
             return False
         parsed = urllib.parse.urlparse(str(raw_text or "").strip())
-        host = (parsed.hostname or "").lower()
+        host = (parsed.hostname or "").lower().rstrip(".")
         return host == "v.kuaishou.com" or (
-            host in {"kuaishou.com", "www.kuaishou.com"}
+            (host == "kuaishou.com" or host.endswith(".kuaishou.com"))
             and parsed.path.lower().startswith("/f/")
         )
 
@@ -65,13 +102,17 @@ class KuaishouShareRuntimeMixin:
         deadline = time.monotonic() + self.SHORT_LINK_TOTAL_TIMEOUT_SECONDS
         try:
             proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
-            proxies = requests_proxy_mapping(proxy)
+            if str(proxy or "").strip():
+                raise CurlRequestsError(
+                    "short-link pinned DNS unavailable with configured proxy"
+                )
+            proxies = requests_proxy_mapping()
             current_url = candidate
             for redirect_count in range(self.SHORT_LINK_MAX_REDIRECTS + 1):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CurlRequestsError("short-link total timeout")
-                self._restricted_short_link_request_kwargs(
+                request_kwargs = self._restricted_short_link_request_kwargs(
                     current_url,
                     deadline=deadline,
                 )
@@ -106,6 +147,7 @@ class KuaishouShareRuntimeMixin:
                         allow_redirects=False,
                         proxies=proxies,
                         content_callback=collect_body,
+                        **request_kwargs,
                     )
                 except CurlRequestsError:
                     if aborted_reason == "oversized":
@@ -134,10 +176,6 @@ class KuaishouShareRuntimeMixin:
                         ("kuaishou.com", "chenzhongtech.com"),
                     ):
                         raise DomainPolicyViolation("重定向目标不属于目标平台")
-                    self._restricted_short_link_request_kwargs(
-                        next_url,
-                        deadline=deadline,
-                    )
                     response.close()
                     response = None
                     current_url = next_url
@@ -227,10 +265,21 @@ class KuaishouShareRuntimeMixin:
 
         def validate() -> None:
             try:
-                result["value"] = self._restricted_public_request_kwargs(
+                if not self._url_matches_hosts(
                     url,
-                    allowed_hosts=("kuaishou.com", "chenzhongtech.com"),
+                    ("kuaishou.com", "chenzhongtech.com"),
+                ):
+                    raise DomainPolicyViolation("url 主机不属于目标平台")
+                addresses = (
+                    self._public_domain_policy_engine()
+                    .resolve_public_addresses(url)
                 )
+                result["value"] = {
+                    "curl_options": _short_link_curl_resolve_options(
+                        url,
+                        addresses,
+                    )
+                }
             except Exception as exc:
                 result["error"] = exc
             finally:
