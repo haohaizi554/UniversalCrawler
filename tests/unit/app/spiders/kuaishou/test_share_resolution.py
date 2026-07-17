@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 import threading
 import time
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 from curl_cffi.const import CurlOpt
 from curl_cffi.requests import RequestsError as CurlRequestsError
+from curl_cffi.requests import get as real_curl_get
 
 from app.spiders.kuaishou.spider import KuaishouSpider
 from shared.runtime_options import DomainPolicyEngine
@@ -32,6 +36,19 @@ def _spider() -> KuaishouSpider:
     return spider
 
 
+@contextmanager
+def _running_http_server(handler: type[BaseHTTPRequestHandler]):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 @patch("app.spiders.kuaishou.share_runtime.curl_get")
 def test_short_link_transport_pins_validated_public_addresses(
     request_get: Mock,
@@ -54,6 +71,7 @@ def test_short_link_transport_pins_validated_public_addresses(
     assert request_get.call_args.kwargs["curl_options"][CurlOpt.RESOLVE] == [
         "www.kuaishou.com:8443:[2001:4860:4860::8888],93.184.216.34"
     ]
+    assert request_get.call_args.kwargs["curl_options"][CurlOpt.PROXY] == ""
 
 
 @pytest.mark.parametrize(
@@ -86,6 +104,7 @@ def test_short_link_transport_uses_scheme_default_port(
     spider._resolve_short_share_url(url)
 
     assert request_get.call_args.kwargs["curl_options"][CurlOpt.RESOLVE] == [expected]
+    assert request_get.call_args.kwargs["curl_options"][CurlOpt.PROXY] == ""
 
 
 @patch("app.spiders.kuaishou.share_runtime.curl_get")
@@ -94,6 +113,11 @@ def test_short_link_transport_preserves_idna_and_trailing_dot_host(
 ) -> None:
     spider = _spider()
     url = "https://\u5feb\u624b.kuaishou.com./f/example"
+    transport_url = "https://xn--66tu6c.kuaishou.com./f/example"
+    policy = Mock(spec=DomainPolicyEngine)
+    policy.REDIRECT_STATUS_CODES = DomainPolicyEngine.REDIRECT_STATUS_CODES
+    policy.resolve_public_addresses.return_value = ("93.184.216.34",)
+    spider._public_domain_policy_engine = Mock(return_value=policy)
     response = Mock(
         url="https://\u5feb\u624b.kuaishou.com./profile/example",
         status_code=200,
@@ -106,6 +130,89 @@ def test_short_link_transport_preserves_idna_and_trailing_dot_host(
     assert request_get.call_args.kwargs["curl_options"][CurlOpt.RESOLVE] == [
         "xn--66tu6c.kuaishou.com.:443:93.184.216.34"
     ]
+    assert request_get.call_args.kwargs["curl_options"][CurlOpt.PROXY] == ""
+    assert request_get.call_args.args == (transport_url,)
+    policy.resolve_public_addresses.assert_called_once_with(transport_url)
+
+
+def test_real_curl_uses_ascii_trailing_dot_pin_and_ignores_environment_proxy(
+) -> None:
+    target_reached = threading.Event()
+    proxy_reached = threading.Event()
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            target_reached.set()
+            payload = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    class ProxyTrapHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            proxy_reached.set()
+            payload = b"proxy trap"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    observed_urls: list[str] = []
+    observed_options: list[dict[object, object]] = []
+
+    def perform_real_request(url: str, **kwargs: object):
+        observed_urls.append(url)
+        curl_options = dict(kwargs["curl_options"])
+        observed_options.append(dict(curl_options))
+        curl_options[CurlOpt.RESOLVE] = [
+            f"{entry.rsplit(':', 1)[0]}:127.0.0.1"
+            for entry in curl_options[CurlOpt.RESOLVE]
+        ]
+        return real_curl_get(
+            url,
+            **{**kwargs, "curl_options": curl_options},
+        )
+
+    with (
+        _running_http_server(TargetHandler) as target_server,
+        _running_http_server(ProxyTrapHandler) as proxy_server,
+    ):
+        target_port = int(target_server.server_address[1])
+        proxy_port = int(proxy_server.server_address[1])
+        candidate = (
+            f"http://\u5feb\u624b.kuaishou.com.:{target_port}"
+            "/f/example?label=%E5%BF%AB%E6%89%8B#section"
+        )
+        transport_url = (
+            f"http://xn--66tu6c.kuaishou.com.:{target_port}"
+            "/f/example?label=%E5%BF%AB%E6%89%8B#section"
+        )
+        spider = _spider()
+        environment = {
+            "ALL_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "http_proxy": f"http://127.0.0.1:{proxy_port}",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch(
+                "app.spiders.kuaishou.share_runtime.curl_get",
+                side_effect=perform_real_request,
+            ),
+        ):
+            spider._resolve_short_share_url(candidate)
+
+    assert observed_urls == [transport_url]
+    assert observed_options[0][CurlOpt.PROXY] == ""
+    assert target_reached.is_set()
+    assert not proxy_reached.is_set()
 
 
 @patch("app.spiders.kuaishou.share_runtime.curl_get")
@@ -162,20 +269,35 @@ def test_short_link_redirect_revalidates_and_repins_each_hop(
         ("2001:4860:4860::8888",),
     ]
     spider._public_domain_policy_engine = Mock(return_value=policy)
-    first_url = "https://v.kuaishou.com/example"
-    final_url = "https://www.kuaishou.com:8443/short-video/3xj8abcde"
+    first_url = "https://\u5feb\u624b.kuaishou.com./f/example"
+    final_url = "https://\u5feb\u624b.chenzhongtech.com.:8443/short-video/3xj8abcde"
+    first_transport_url = "https://xn--66tu6c.kuaishou.com./f/example"
+    final_transport_url = (
+        "https://xn--66tu6c.chenzhongtech.com.:8443/short-video/3xj8abcde"
+    )
     first = Mock(url=first_url, status_code=302, headers={"Location": final_url})
     final = Mock(url=final_url, status_code=200, headers={}, encoding="utf-8")
     request_get.side_effect = [first, final]
 
     assert spider._resolve_short_share_url(first_url) == final_url
+    assert [item.args[0] for item in request_get.call_args_list] == [
+        first_transport_url,
+        final_transport_url,
+    ]
     assert request_get.call_args_list[0].kwargs["curl_options"][CurlOpt.RESOLVE] == [
-        "v.kuaishou.com:443:93.184.216.34"
+        "xn--66tu6c.kuaishou.com.:443:93.184.216.34"
     ]
     assert request_get.call_args_list[1].kwargs["curl_options"][CurlOpt.RESOLVE] == [
-        "www.kuaishou.com:8443:[2001:4860:4860::8888]"
+        "xn--66tu6c.chenzhongtech.com.:8443:[2001:4860:4860::8888]"
     ]
-    assert policy.resolve_public_addresses.call_count == 2
+    assert [
+        item.kwargs["curl_options"][CurlOpt.PROXY]
+        for item in request_get.call_args_list
+    ] == ["", ""]
+    assert policy.resolve_public_addresses.call_args_list == [
+        call(first_transport_url),
+        call(final_transport_url),
+    ]
     first.close.assert_called_once()
     spider._close_pending_share_response()
     final.close.assert_called_once()
@@ -234,6 +356,7 @@ def test_short_link_http_success_reuses_detail_without_browser_fallback() -> Non
     assert request_get.call_args.kwargs["curl_options"][CurlOpt.RESOLVE] == [
         "www.kuaishou.com:443:93.184.216.34"
     ]
+    assert request_get.call_args.kwargs["curl_options"][CurlOpt.PROXY] == ""
     sync_playwright.assert_not_called()
     spider.emit_video.assert_called_once()
     response.close.assert_called_once()
@@ -300,7 +423,8 @@ def test_short_link_recomputes_transport_budget_after_policy_validation(
     request_get: Mock,
 ) -> None:
     spider = _spider()
-    spider._restricted_short_link_request_kwargs = Mock(return_value={})
+    url = "https://www.kuaishou.com/f/example"
+    spider._restricted_short_link_request_kwargs = Mock(return_value=(url, {}))
     response = Mock()
     response.url = "https://www.kuaishou.com/profile/example"
     response.status_code = 200
@@ -311,7 +435,7 @@ def test_short_link_recomputes_transport_budget_after_policy_validation(
         "app.spiders.kuaishou.share_runtime.time.monotonic",
         side_effect=[0.0, 0.0, 12.0],
     ):
-        spider._resolve_short_share_url("https://www.kuaishou.com/f/example")
+        spider._resolve_short_share_url(url)
 
     connect_timeout, read_timeout = request_get.call_args.kwargs["timeout"]
     assert connect_timeout + read_timeout <= 3.0
@@ -350,6 +474,37 @@ def test_failed_short_link_http_resolution_still_uses_share_browser_flow() -> No
         sync.return_value.__enter__.return_value = playwright
         spider.run()
 
+    spider._run_share_browser_session.assert_called_once()
+    spider._run_browser_session.assert_not_called()
+
+
+def test_overlong_idna_label_preserves_short_link_and_runs_browser_fallback() -> None:
+    spider = _spider()
+    overlong_label = "\u00e9" * 64
+    short_url = f"https://{overlong_label}.kuaishou.com/f/example"
+
+    def idna_resolver(host: str, *_args: object, **_kwargs: object):
+        host.encode("idna")
+        return []
+
+    spider._public_domain_policy = DomainPolicyEngine(resolver=idna_resolver)
+    spider.keyword = short_url
+    spider.is_running = True
+    spider._run_share_browser_session = Mock(return_value="completed")
+    spider._run_browser_session = Mock(return_value="completed")
+    spider._emit_finished = Mock()
+    playwright = Mock()
+
+    with (
+        patch("app.spiders.kuaishou.share_runtime.curl_get") as request_get,
+        patch("app.spiders.kuaishou.spider.sync_playwright") as sync,
+    ):
+        sync.return_value.__enter__.return_value = playwright
+        spider.run()
+
+    assert spider.keyword == short_url
+    assert spider._is_short_share_url(spider.keyword)
+    request_get.assert_not_called()
     spider._run_share_browser_session.assert_called_once()
     spider._run_browser_session.assert_not_called()
 

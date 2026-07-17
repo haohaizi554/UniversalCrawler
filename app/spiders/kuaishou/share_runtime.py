@@ -20,6 +20,34 @@ from shared.runtime_options import DomainPolicyViolation
 _SHORT_LINK_POLICY_SLOTS = threading.BoundedSemaphore(2)
 
 
+def _short_link_transport_url(url: str) -> str:
+    """Return one validated ASCII-IDNA URL for DNS policy and curl."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+        if parts.scheme.lower() not in {"http", "https"}:
+            raise ValueError("unsupported URL scheme")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("URL credentials are not allowed")
+        host = str(parts.hostname or "")
+        if not host:
+            raise ValueError("missing URL host")
+        port = parts.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("invalid URL port")
+
+        transport_host = host.encode("idna").decode("ascii")
+        if ":" in transport_host:
+            transport_host = f"[{transport_host}]"
+        netloc = transport_host
+        if port is not None:
+            netloc = f"{netloc}:{port}"
+        return urllib.parse.urlunsplit(
+            (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise DomainPolicyViolation("invalid Kuaishou short-link URL") from exc
+
+
 def _short_link_curl_resolve_options(
     url: str,
     addresses: tuple[str, ...],
@@ -106,13 +134,12 @@ class KuaishouShareRuntimeMixin:
                 raise CurlRequestsError(
                     "short-link pinned DNS unavailable with configured proxy"
                 )
-            proxies = requests_proxy_mapping()
             current_url = candidate
             for redirect_count in range(self.SHORT_LINK_MAX_REDIRECTS + 1):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CurlRequestsError("short-link total timeout")
-                request_kwargs = self._restricted_short_link_request_kwargs(
+                transport_url, request_kwargs = self._restricted_short_link_request_kwargs(
                     current_url,
                     deadline=deadline,
                 )
@@ -141,11 +168,10 @@ class KuaishouShareRuntimeMixin:
 
                 try:
                     response = curl_get(
-                        current_url,
+                        transport_url,
                         headers=self._build_detail_request_headers(),
                         timeout=self._short_link_timeout(remaining),
                         allow_redirects=False,
-                        proxies=proxies,
                         content_callback=collect_body,
                         **request_kwargs,
                     )
@@ -246,7 +272,7 @@ class KuaishouShareRuntimeMixin:
         url: str,
         *,
         deadline: float,
-    ) -> dict[str, object]:
+    ) -> tuple[str, dict[str, object]]:
         """Validate an SSRF-sensitive short-link hop within its total deadline."""
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -270,16 +296,22 @@ class KuaishouShareRuntimeMixin:
                     ("kuaishou.com", "chenzhongtech.com"),
                 ):
                     raise DomainPolicyViolation("url 主机不属于目标平台")
+                transport_url = _short_link_transport_url(url)
                 addresses = (
                     self._public_domain_policy_engine()
-                    .resolve_public_addresses(url)
+                    .resolve_public_addresses(transport_url)
                 )
-                result["value"] = {
-                    "curl_options": _short_link_curl_resolve_options(
-                        url,
+                curl_options = dict(
+                    _short_link_curl_resolve_options(
+                        transport_url,
                         addresses,
                     )
-                }
+                )
+                curl_options[CurlOpt.PROXY] = ""
+                result["value"] = (
+                    transport_url,
+                    {"curl_options": curl_options},
+                )
             except Exception as exc:
                 result["error"] = exc
             finally:
@@ -304,7 +336,14 @@ class KuaishouShareRuntimeMixin:
         if isinstance(error, Exception):
             raise error
         value = result.get("value")
-        return value if isinstance(value, dict) else {}
+        if (
+            isinstance(value, tuple)
+            and len(value) == 2
+            and isinstance(value[0], str)
+            and isinstance(value[1], dict)
+        ):
+            return value
+        raise CurlRequestsError("short-link public URL validation unavailable")
 
     def _close_pending_share_response(self) -> None:
         """关闭尚未被详情解析消费的流式短链响应。"""
