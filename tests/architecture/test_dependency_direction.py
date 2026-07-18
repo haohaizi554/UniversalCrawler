@@ -173,7 +173,7 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
 
     def test_hosts_import_shared_command_and_sdk_contracts_directly(self) -> None:
         main_imports = _direct_imports(PROJECT_ROOT / "cli" / "main.py")
-        alias_imports = _direct_imports(PROJECT_ROOT / "cli" / "commands" / "_alias.py")
+        alias_path = PROJECT_ROOT / "cli" / "commands" / "_alias.py"
         workflow_path = PROJECT_ROOT / "app" / "web" / "workflows.py"
 
         self.assertIn(
@@ -184,10 +184,7 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
             ("shared.download_command_runtime", "add_download_arguments", "add_download_arguments"),
             main_imports,
         )
-        self.assertIn(
-            ("shared.search_command_runtime", "add_search_arguments", "add_search_arguments"),
-            alias_imports,
-        )
+        self.assertFalse(alias_path.exists())
         self.assertNotIn("build_sdk", _top_level_definitions(workflow_path))
         self.assertIn(
             ("shared.runtime_adapters", "build_sdk", "build_sdk"),
@@ -237,7 +234,6 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
         forbidden_modules = (
             "cli.defaults",
             "cli.gui_selection",
-            "cli.interactive",
             "cli.pipe",
             "cli.sdk",
             "cli.selection",
@@ -247,6 +243,9 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
         for root in ("app/web", "cli", "entry", "ucrawl"):
             for forbidden in forbidden_modules:
                 violations.extend(_imports_under(root, forbidden))
+
+        for root in ("app/web", "entry", "ucrawl"):
+            violations.extend(_imports_under(root, "cli.interactive"))
 
         self.assertEqual(violations, [])
 

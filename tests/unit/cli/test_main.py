@@ -489,5 +489,24 @@ class CliInteractiveSubcommandTests(unittest.TestCase):
         self.assertEqual(result, 0)
         mock.assert_called_once()
 
+    def test_interactive_timeout_arguments_have_distinct_destinations(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser((CliPlatform("douyin", "Douyin", ("dy",)),))
+        args = parser.parse_args(
+            [
+                "interactive",
+                "--http-timeout",
+                "12",
+                "--timeout",
+                "34",
+            ]
+        )
+
+        self.assertEqual(args.http_timeout, 12)
+        self.assertEqual(args.command_timeout, 34)
+        self.assertIsNone(args.legacy_run_timeout)
+
 if __name__ == "__main__":
     unittest.main()

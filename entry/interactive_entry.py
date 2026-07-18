@@ -27,7 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     4. 选择保存目录
     5. 确认后执行
 
-    同时支持与 search 命令对齐的参数（--run-timeout/--quiet/--config/二次选择等）。
+    同时支持与 search 命令对齐的参数（--http-timeout/--timeout/--quiet/
+    --config/二次选择等）；--run-timeout 仅保留为 --timeout 的弃用别名。
     """
     from cli.commands.interactive import add_interactive_arguments, handle_interactive_command
 
