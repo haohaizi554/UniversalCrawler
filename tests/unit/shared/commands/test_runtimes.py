@@ -338,6 +338,50 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         self.assertIn("bad timeout", error)
         sdk.close.assert_called_once()
 
+
+class ScanCommandRuntimeTests(unittest.TestCase):
+    def test_scan_runtime_uses_default_limit_and_closes_sdk(self):
+        from shared.scan_command_runtime import (
+            ScanCommandEnv,
+            run_scan_command,
+        )
+
+        sdk_cls = Mock()
+        sdk = sdk_cls.return_value
+        sdk.scan_directory.return_value = {
+            "status": "ok",
+            "items": [],
+            "directory": "downloads",
+            "total_count": 0,
+            "video_count": 0,
+            "image_count": 0,
+        }
+        env = ScanCommandEnv(
+            UcrawlSDK_cls=sdk_cls,
+            get_default_scan_limit=Mock(return_value=321),
+        )
+
+        outcome, result, error = run_scan_command(
+            argparse.Namespace(
+                directory="downloads",
+                limit=None,
+                quiet=True,
+                pretty=False,
+            ),
+            env=env,
+        )
+
+        self.assertEqual(outcome, "ok")
+        self.assertEqual(result["directory"], "downloads")
+        self.assertIsNone(error)
+        sdk_cls.assert_called_once_with(verbose=False)
+        sdk.scan_directory.assert_called_once_with(
+            "downloads",
+            scan_limit=321,
+        )
+        sdk.close.assert_called_once_with()
+
+
 class SDKRuntimeTests(unittest.TestCase):
     def test_discover_platform_ids_falls_back_when_registry_errors(self):
         import shared.sdk_runtime as runtime

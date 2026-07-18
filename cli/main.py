@@ -30,10 +30,11 @@ def build_parser(
         add_platforms_arguments,
         handle_platforms_command,
     )
-    from cli.commands.scan import add_scan_arguments, handle_scan_command
+    from cli.commands.scan import handle_scan_command
     from cli.commands.search import handle_search_command
     from cli.platform_catalog import load_cli_platforms, platform_ids
     from shared.download_command_runtime import add_download_arguments
+    from shared.scan_command_runtime import add_scan_arguments
     from shared.search_command_runtime import add_search_arguments
 
     catalog = (

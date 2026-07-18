@@ -143,6 +143,7 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
     def test_cli_command_contracts_have_one_shared_implementation(self) -> None:
         search_path = PROJECT_ROOT / "cli" / "commands" / "search.py"
         download_path = PROJECT_ROOT / "cli" / "commands" / "download.py"
+        scan_path = PROJECT_ROOT / "cli" / "commands" / "scan.py"
 
         self.assertTrue(
             {"add_search_arguments", "_print_pretty"}.isdisjoint(
@@ -153,6 +154,10 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
             {"add_download_arguments", "_print_pretty"}.isdisjoint(
                 _top_level_definitions(download_path),
             )
+        )
+        self.assertNotIn(
+            "add_scan_arguments",
+            _top_level_definitions(scan_path),
         )
         self.assertIn(
             ("shared.search_command_runtime", "add_search_arguments", "add_search_arguments"),
@@ -170,6 +175,15 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
             ("shared.download_command_runtime", "print_pretty", "_print_pretty"),
             _direct_imports(download_path),
         )
+        self.assertIn(
+            (
+                "shared.scan_command_runtime",
+                "add_scan_arguments",
+                "add_scan_arguments",
+            ),
+            _direct_imports(scan_path),
+        )
+        self.assertLess(len(scan_path.read_text(encoding="utf-8").splitlines()), 55)
 
     def test_hosts_import_shared_command_and_sdk_contracts_directly(self) -> None:
         main_imports = _direct_imports(PROJECT_ROOT / "cli" / "main.py")
@@ -182,6 +196,10 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
         )
         self.assertIn(
             ("shared.download_command_runtime", "add_download_arguments", "add_download_arguments"),
+            main_imports,
+        )
+        self.assertIn(
+            ("shared.scan_command_runtime", "add_scan_arguments", "add_scan_arguments"),
             main_imports,
         )
         self.assertFalse(alias_path.exists())
