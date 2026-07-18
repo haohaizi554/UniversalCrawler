@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 
+from cli.exit_codes import CliExitCode
 from shared.sdk_runtime import UcrawlSDK
 
 def add_platforms_arguments(parser: argparse.ArgumentParser) -> None:
@@ -31,9 +32,9 @@ def handle_platforms_command(args: argparse.Namespace) -> int:
         target = next((p for p in platforms if p["id"] == args.describe), None)
         if not target:
             sys.stderr.write(f"❌ 未知平台: {args.describe}\n")
-            return 1
+            return int(CliExitCode.USAGE)
         sys.stdout.write(json.dumps(target, ensure_ascii=False, indent=2) + "\n")
-        return 0
+        return int(CliExitCode.OK)
 
     if args.pretty:
         for p in platforms:
@@ -50,4 +51,4 @@ def handle_platforms_command(args: argparse.Namespace) -> int:
             sys.stdout.write("\n")
     else:
         sys.stdout.write(json.dumps(platforms, ensure_ascii=False, indent=2) + "\n")
-    return 0
+    return int(CliExitCode.OK)

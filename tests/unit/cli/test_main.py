@@ -10,7 +10,7 @@ import argparse
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 PLATFORM_IDS = (
     "douyin",
@@ -398,6 +398,19 @@ class CliPlatformsSubcommandTests(unittest.TestCase):
             result = main(["platforms", "--pretty"])
         self.assertEqual(result, 0)
 
+    def test_unknown_platform_description_is_usage_error(self):
+        from cli.main import main
+
+        sdk = Mock()
+        sdk.list_platforms.return_value = [{"id": "douyin", "name": "Douyin"}]
+        with patch("cli.commands.platforms.UcrawlSDK", return_value=sdk), patch(
+            "sys.stderr.write"
+        ):
+            result = main(["platforms", "--describe", "missing"])
+
+        self.assertEqual(result, 2)
+        sdk.close.assert_called_once()
+
 class CliScanSubcommandTests(unittest.TestCase):
     """scan 子命令测试。"""
 
@@ -408,6 +421,54 @@ class CliScanSubcommandTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 main(["scan"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_scan_invalid_limit_is_usage_error_before_sdk_construction(self):
+        from cli.main import main
+
+        with patch("cli.commands.scan.UcrawlSDK") as sdk_cls, patch(
+            "sys.stderr.write"
+        ):
+            result = main(["scan", ".", "--limit", "0"])
+
+        self.assertEqual(result, 2)
+        sdk_cls.assert_not_called()
+
+    def test_scan_maps_structured_status_to_process_exit_code(self):
+        from cli.main import main
+
+        for status, expected in (
+            ("error", 1),
+            ("timeout", 124),
+            ("cancelled", 130),
+        ):
+            with self.subTest(status=status):
+                sdk = Mock()
+                sdk.scan_directory.return_value = {
+                    "status": status,
+                    "error": status,
+                }
+                with patch(
+                    "cli.commands.scan.UcrawlSDK",
+                    return_value=sdk,
+                ), patch("sys.stdout.write"):
+                    result = main(["scan", ".", "--limit", "1"])
+
+                self.assertEqual(result, expected)
+                sdk.close.assert_called_once()
+
+    def test_scan_sdk_value_error_is_usage_error(self):
+        from cli.main import main
+
+        sdk = Mock()
+        sdk.scan_directory.side_effect = ValueError("invalid directory")
+        with patch(
+            "cli.commands.scan.UcrawlSDK",
+            return_value=sdk,
+        ), patch("sys.stderr.write"):
+            result = main(["scan", ".", "--limit", "1"])
+
+        self.assertEqual(result, 2)
+        sdk.close.assert_called_once()
 
 class CliInteractiveSubcommandTests(unittest.TestCase):
     """interactive 子命令测试。"""

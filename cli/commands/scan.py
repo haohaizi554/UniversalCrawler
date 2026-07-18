@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 
+from cli.exit_codes import CliExitCode, exit_code_for_status
 from shared.sdk_runtime import UcrawlSDK
 
 def add_scan_arguments(parser: argparse.ArgumentParser) -> None:
@@ -31,7 +32,7 @@ def handle_scan_command(args: argparse.Namespace) -> int:
     # 与 SDK 和 REST API 对齐：scan_limit 必须大于 0
     if scan_limit <= 0:
         sys.stderr.write("❌ --limit 必须大于 0\n")
-        return 1
+        return int(CliExitCode.USAGE)
 
     # 与 search/download 命令 --quiet 对齐：静默模式不输出 SDK 内部日志
     verbose = not getattr(args, "quiet", False)
@@ -41,12 +42,17 @@ def handle_scan_command(args: argparse.Namespace) -> int:
     except (TypeError, ValueError) as exc:
         # 与 SDK search()/download_video() 对齐：参数校验异常直接输出友好信息
         sys.stderr.write(f"❌ {exc}\n")
-        return 1
+        return int(CliExitCode.USAGE)
     finally:
         sdk.close()
 
+    if not isinstance(result, dict):
+        sys.stderr.write("❌ SDK 返回了无效的扫描结果\n")
+        return int(CliExitCode.ERROR)
+
+    status = str(result.get("status", "error") or "error").lower()
     if args.pretty:
-        if result.get("status") == "ok":
+        if status == "ok":
             # 与 SDK/REST API 返回的 message 字段对齐：显示人类可读摘要
             msg = result.get("message", "")
             if msg:
@@ -72,7 +78,6 @@ def handle_scan_command(args: argparse.Namespace) -> int:
                 sys.stdout.write(line + "\n")
         else:
             sys.stderr.write(f"❌ {result.get('error', '未知错误')}\n")
-            return 1
     else:
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-    return 0 if result.get("status") == "ok" else 1
+    return int(exit_code_for_status(status))
