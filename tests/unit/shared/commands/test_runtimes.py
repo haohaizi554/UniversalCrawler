@@ -114,6 +114,20 @@ class SearchCommandRuntimeTests(unittest.TestCase):
         self.assertFalse(runner_kwargs["download"])
         self.assertEqual(runner_kwargs["selection_strategy"], "selection")
 
+    def test_missing_search_source_is_usage_error_before_dependencies(self):
+        from shared.search_command_runtime import run_search_command
+
+        env = self._make_env()
+        args = argparse.Namespace(keyword="query")
+
+        outcome, result = run_search_command(args, env=env)
+
+        self.assertEqual(outcome, "usage")
+        self.assertIn("--source", result["error"])
+        env.get_platform_defaults.assert_not_called()
+        env.selection_factory.from_cli_args.assert_not_called()
+        env.CLIRunner_cls.assert_not_called()
+
     def test_http_timeout_enters_config_and_command_timeout_enters_runner(self):
         from shared.search_command_runtime import (
             add_search_arguments,
@@ -196,7 +210,7 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
             save_dir=None,
             url="https://example.com/video",
             source="douyin",
-            timeout=300.0,
+            command_timeout=300.0,
             config=None,
             cookie=None,
             download_strategy=None,
@@ -214,6 +228,24 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
+
+    def test_download_timeout_uses_command_timeout_destination(self):
+        from shared.download_command_runtime import add_download_arguments
+
+        parser = argparse.ArgumentParser()
+        add_download_arguments(parser, platform_ids=("douyin",))
+        args = parser.parse_args(
+            [
+                "https://example.test/video.mp4",
+                "--source",
+                "douyin",
+                "--timeout",
+                "45",
+            ]
+        )
+
+        self.assertEqual(args.command_timeout, 45)
+        self.assertFalse(hasattr(args, "timeout"))
 
     def test_parse_user_config_rejects_invalid_json(self):
         from shared.download_command_runtime import parse_user_config

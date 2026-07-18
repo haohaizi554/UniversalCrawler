@@ -585,7 +585,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             save_dir="downloads",
             url="https://example.com/video.mp4",
             source="douyin",
-            timeout=30.0,
+            command_timeout=30.0,
             config=None,
             cookie=None,
             download_strategy=None,

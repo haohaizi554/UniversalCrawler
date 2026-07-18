@@ -106,6 +106,15 @@ def resolve_keyword(args: argparse.Namespace) -> str:
     return keyword
 
 
+def resolve_source(args: argparse.Namespace) -> str:
+    """Resolve an explicitly supplied platform identifier."""
+
+    source = str(getattr(args, "source", "") or "").strip()
+    if not source:
+        raise ValueError("必须指定 --source 平台 ID")
+    return source
+
+
 def resolve_command_timeout(
     args: argparse.Namespace,
 ) -> tuple[float | None, bool]:
@@ -119,7 +128,7 @@ def resolve_command_timeout(
     return value, legacy is not None
 
 def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
-    source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
+    source = resolve_source(args)
     user_config: dict = {}
     config_json = getattr(args, "config", None)
     if config_json:
@@ -170,6 +179,7 @@ def build_config(args: argparse.Namespace, *, env: SearchCommandEnv) -> dict:
 
 def validate_args(args: argparse.Namespace, *, env: SearchCommandEnv) -> str | None:
     try:
+        resolve_source(args)
         resolve_keyword(args)
     except ValueError as exc:
         return f"❌ {exc}"
@@ -211,7 +221,7 @@ def run_search_command(args: argparse.Namespace, *, env: SearchCommandEnv) -> tu
     command_timeout, legacy_used = resolve_command_timeout(args)
     if legacy_used:
         sys.stderr.write("⚠️ --run-timeout 已弃用，请使用 --timeout\n")
-    source = getattr(args, "source", None) or getattr(args, "_platform", "douyin")
+    source = resolve_source(args)
     runner = env.CLIRunner_cls(
         source=source,
         keyword=resolve_keyword(args),

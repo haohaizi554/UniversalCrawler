@@ -44,7 +44,13 @@ def add_download_arguments(
         )
     else:
         parser.set_defaults(source=fixed_source)
-    parser.add_argument("--timeout", type=float, default=300, help="下载超时秒数 (默认: 300，与 SDK/REST API 一致)")
+    parser.add_argument(
+        "--timeout",
+        dest="command_timeout",
+        type=float,
+        default=300,
+        help="整次下载命令超时秒数 (默认: 300)",
+    )
     parser.add_argument("--config", type=str, default=None, help="平台特定配置 (JSON 字符串，如 '{\"proxy\":\"http://127.0.0.1:7890\"}')")
     parser.add_argument("--cookie", type=str, default=None, help="Cookie 字符串 (与 --config '{\"cookie\":\"...\"}' 等价)")
     parser.add_argument("--download-strategy", type=str, default=None, help="下载策略 (m3u8/http，与 GUI spider build_download_meta 对齐)")
@@ -136,13 +142,13 @@ def run_download_command(
     """
     url = str(getattr(args, "url", "") or "").strip()
     title = str(getattr(args, "title", "") or "")
-    timeout = getattr(args, "timeout", 300)
+    command_timeout = getattr(args, "command_timeout", 300)
 
     if not url:
         return "usage", None, "❌ URL 不能为空"
 
-    if timeout <= 0:
-        return "usage", None, "❌ timeout 必须大于 0"
+    if command_timeout <= 0:
+        return "usage", None, "❌ --timeout 必须大于 0"
 
     source = resolve_source(args)
     if not source:
@@ -164,7 +170,7 @@ def run_download_command(
             source=source,
             title=title,
             save_dir=save_dir,
-            timeout=timeout,
+            timeout=command_timeout,
             verbose=not getattr(args, "quiet", False),
             config=config or None,
         )

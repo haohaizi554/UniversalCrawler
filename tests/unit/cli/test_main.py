@@ -362,11 +362,21 @@ class CliDynamicPlatformParserTests(unittest.TestCase):
             ]
         )
 
-        fields = ("source", "url", "title", "timeout", "quiet", "pretty")
+        fields = (
+            "source",
+            "url",
+            "title",
+            "command_timeout",
+            "quiet",
+            "pretty",
+        )
         self.assertEqual(
             {field: getattr(generic, field) for field in fields},
             {field: getattr(scoped, field) for field in fields},
         )
+        self.assertEqual(generic.command_timeout, 300)
+        self.assertFalse(hasattr(generic, "timeout"))
+        self.assertFalse(hasattr(scoped, "timeout"))
 
     def test_keyboard_interrupt_returns_cancelled_code(self):
         from cli.main import main
