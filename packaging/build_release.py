@@ -25,6 +25,7 @@ RELEASE_ASSETS_ROOT = PROJECT_ROOT / "dist" / "release-assets"
 DEFAULT_RELEASE_REPOSITORY = "haohaizi554/UniversalCrawler"
 WINDOWS_RELEASE_TOOLS = ("N_m3u8DL-RE.exe", "ffmpeg.exe", "ffprobe.exe")
 MIN_WINDOWS_TOOL_BYTES = 1024 * 1024
+RELEASE_TEMP_ROOT_ENV = "UCRAWL_RELEASE_TEMP_ROOT"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -328,6 +329,24 @@ def _validate_windows_release_tools(project_root: Path) -> None:
                 raise SystemExit(f"Windows 运行工具不是有效 PE/MZ 文件：{tool}")
 
 
+def _release_snapshot_temp_root(repository: Path) -> Path:
+    """Return a short build root so deep bundled assets stay below Win32 path limits."""
+
+    configured = str(os.environ.get(RELEASE_TEMP_ROOT_ENV) or "").strip()
+    root = (
+        Path(configured).expanduser()
+        if configured
+        else Path(repository).resolve().parent / ".ucrawl-release-tmp"
+    )
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SystemExit(f"无法创建发布临时目录：{root}") from exc
+    if not root.is_dir():
+        raise SystemExit(f"发布临时目录不是文件夹：{root}")
+    return root.resolve()
+
+
 @contextmanager
 def _source_snapshot(
     source_commit: str,
@@ -340,10 +359,13 @@ def _source_snapshot(
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise SystemExit(f"无法为无效 source commit 创建快照：{source_commit}")
     repository = Path(repository_root).resolve()
-    with tempfile.TemporaryDirectory(prefix="ucrawl-release-source-") as temp_dir:
+    temporary_parent = _release_snapshot_temp_root(repository)
+    # Inno Setup still encounters legacy Win32 path limits while walking bundled
+    # browser assets. Keep both generated names deliberately short.
+    with tempfile.TemporaryDirectory(prefix="r-", dir=temporary_parent) as temp_dir:
         temporary_root = Path(temp_dir)
-        archive_path = temporary_root / "source.tar"
-        snapshot_root = temporary_root / "project"
+        archive_path = temporary_root / "s.tar"
+        snapshot_root = temporary_root / "p"
         snapshot_root.mkdir()
         try:
             subprocess.run(

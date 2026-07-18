@@ -158,6 +158,8 @@ python packaging/build_release.py
 
 `build_release.py`、`build_portable.py` 与 `build_installer.py` 共用同一个跨进程发布锁。顶层发布通过一次性父令牌授权子构建；直接运行任一叶子脚本也必须独立获取同一把锁，不能绕过并发发布门禁。构建脚本不会在发布过程中回写信任配置，需要更换签名证书时必须先审核并提交新的信任锚。
 
+Windows 正式发布快照默认放在仓库同级的 `.ucrawl-release-tmp` 短目录中，并使用短工作区名称，避免 Playwright 深层资源在 Inno Setup 内部处理时触发传统 Win32 路径上限。发布机需要改用其他磁盘时可设置 `UCRAWL_RELEASE_TEMP_ROOT`；该值必须指向短、可写的本地目录，不应放在仓库内或网络共享中。
+
 只需要便携版和安装器时使用：
 
 ```bash

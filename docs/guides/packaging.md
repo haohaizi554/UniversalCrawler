@@ -174,6 +174,8 @@ python packaging/build_release.py
 
 发布入口和两个叶子构建脚本共用跨进程锁。父流程仅通过一次性令牌授权本次子构建；直接启动叶子脚本也会申请同一把锁，不会形成无保护的并发写入。签名证书轮换必须先更新并提交信任锚；构建脚本不允许临时改写源码配置来伪装 `sourceCommit`。
 
+Windows 发布快照默认写入仓库同级的 `.ucrawl-release-tmp` 短目录。该边界用于控制 Playwright、Qt 等深层随包资源的绝对路径长度，防止 Inno Setup 压缩接近结束时才因传统 Win32 路径上限失败。需要切换构建盘时可设置 `UCRAWL_RELEASE_TEMP_ROOT`，但必须使用短、可写的本地路径；不要指向仓库目录或网络共享。
+
 只做本地构建或生产信任 bootstrap 时必须显式使用：
 
 ```bash

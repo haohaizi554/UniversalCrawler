@@ -235,10 +235,15 @@ def test_build_scripts_accept_and_validate_the_snapshot_project_root(tmp_path, s
     assert "project root" in (mismatched.stderr + mismatched.stdout)
 
 
-def test_source_snapshot_is_immutable_during_build_and_removed_on_failure(tmp_path):
+def test_source_snapshot_is_immutable_during_build_and_removed_on_failure(
+    tmp_path,
+    monkeypatch,
+):
     tool = _load_tool()
     repository = tmp_path / "repository"
     repository.mkdir()
+    short_root = tmp_path / "release-tmp"
+    monkeypatch.setenv(tool.RELEASE_TEMP_ROOT_ENV, str(short_root))
     subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
     subprocess.run(
         ["git", "config", "user.email", "release-test@example.invalid"],
@@ -266,6 +271,8 @@ def test_source_snapshot_is_immutable_during_build_and_removed_on_failure(tmp_pa
     with pytest.raises(RuntimeError, match="build failed"):
         with tool._source_snapshot(source_commit, repository_root=repository) as snapshot:
             snapshot_root = snapshot
+            assert snapshot.name == "p"
+            assert snapshot.parent.parent == short_root.resolve()
             tracked.write_text("mutable worktree bytes\n", encoding="utf-8")
             assert (snapshot / "tracked.txt").read_text(encoding="utf-8") == "committed bytes\n"
             assert not (snapshot / ".git").exists()
@@ -273,6 +280,18 @@ def test_source_snapshot_is_immutable_during_build_and_removed_on_failure(tmp_pa
 
     assert snapshot_root is not None
     assert not snapshot_root.exists()
+
+
+def test_release_snapshot_temp_root_defaults_to_repository_sibling(tmp_path, monkeypatch):
+    tool = _load_tool()
+    repository = tmp_path / "workspace" / "repository"
+    repository.mkdir(parents=True)
+    monkeypatch.delenv(tool.RELEASE_TEMP_ROOT_ENV, raising=False)
+
+    root = tool._release_snapshot_temp_root(repository)
+
+    assert root == (repository.parent / ".ucrawl-release-tmp").resolve()
+    assert root.is_dir()
 
 
 def test_source_snapshot_materializes_lfs_files_when_smudge_is_disabled(monkeypatch):
