@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .metadata import (
+    PlatformInteractiveSpec,
+    generic_interactive_spec,
+    plugin_manifest,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -22,6 +28,7 @@ class BasePlugin:
     aliases: tuple[str, ...] = ()
     sort_order: int = 1000
     description: str = ""
+    interactive_spec: PlatformInteractiveSpec | None = None
 
     # SPI 只登记可实例化的具体子类，抽象中间类不会进入运行时平台列表。
     _subclasses: dict[str, type[BasePlugin]] = {}
@@ -41,6 +48,21 @@ class BasePlugin:
     def get_search_placeholder(self) -> str:
         """返回搜索输入框占位文本。"""
         return "请输入关键词..."
+
+    def get_interactive_spec(self) -> PlatformInteractiveSpec:
+        """返回跨终端、SDK 与 Web 可序列化的平台交互说明。"""
+
+        if self.interactive_spec is not None:
+            return self.interactive_spec
+        return generic_interactive_spec(
+            self.name,
+            self.get_search_placeholder(),
+        )
+
+    def get_manifest(self) -> dict[str, Any]:
+        """返回供所有宿主消费的稳定平台清单。"""
+
+        return plugin_manifest(self)
 
     def get_spider_class(self) -> type[BaseSpider]:
         """返回当前平台使用的爬虫类。"""
