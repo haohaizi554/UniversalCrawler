@@ -280,6 +280,41 @@ class DownloadManagerCoreTests(unittest.TestCase):
                 release_completion_log.set()
                 manager.stop_all()
 
+    def test_dispatch_does_not_wait_for_startup_error_log_io(self):
+        release_error_log = threading.Event()
+        error_log_started = threading.Event()
+
+        def blocking_error_log(*_args, **_kwargs):
+            error_log_started.set()
+            release_error_log.wait()
+
+        with (
+            patch.object(
+                DownloadManagerCore,
+                "_sweep_m3u8_orphan_workspaces_on_startup",
+                side_effect=RuntimeError("startup sweep failed"),
+            ),
+            patch(
+                "app.core.download_manager_core.debug_logger.log_exception",
+                side_effect=blocking_error_log,
+            ),
+        ):
+            manager = _CoreManager()
+            video = VideoItem(
+                url="https://example.com/video.mp4",
+                title="video",
+                source="douyin",
+            )
+            try:
+                self.assertTrue(error_log_started.wait(timeout=5.0))
+                self.assertTrue(manager.add_task(video, "downloads"))
+
+                self.assertTrue(manager._startup_maintenance_done.wait(timeout=5.0))
+                self.assertTrue(manager.started_event.wait(timeout=5.0))
+            finally:
+                release_error_log.set()
+                manager.stop_all()
+
     def test_dispatch_persists_path_before_worker_and_deletes_it_on_completion(self):
         manager = _CoreManager()
         recovery_store = Mock()

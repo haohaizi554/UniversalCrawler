@@ -184,6 +184,7 @@ class DownloadManagerCore:
         """在分发任务前异步清理过期工作目录，避免阻塞界面线程。"""
         started_at = time.monotonic()
         stats: dict[str, Any] = {}
+        maintenance_error: Exception | None = None
         try:
             debug_logger.log(
                 component="DownloadManager",
@@ -198,29 +199,35 @@ class DownloadManagerCore:
             if isinstance(result, dict):
                 stats = result
         except Exception as exc:  # pragma: no cover - 防御性工作线程隔离
-            debug_logger.log_exception(
-                "DownloadManager",
-                "startup_maintenance_error",
-                exc,
-            )
+            maintenance_error = exc
         finally:
-            # Recovery is complete once the sweep returns. Diagnostics must not
-            # keep queued downloads behind the startup gate when log I/O is busy.
+            # The sweep has returned, successfully or otherwise. Diagnostics
+            # must never keep queued downloads behind the startup gate.
             self._startup_maintenance_done.set()
             self._get_dispatch_slot_gate().set()
+
+        if maintenance_error is not None:
             try:
-                debug_logger.log(
-                    component="DownloadManager",
-                    action="startup_maintenance_completed",
-                    message="Completed bounded download recovery maintenance",
-                    status_code="DL_STARTUP_MAINTENANCE_DONE",
-                    details={
-                        **stats,
-                        "duration_ms": round((time.monotonic() - started_at) * 1000, 2),
-                    },
+                debug_logger.log_exception(
+                    "DownloadManager",
+                    "startup_maintenance_error",
+                    maintenance_error,
                 )
             except Exception:
                 pass
+        try:
+            debug_logger.log(
+                component="DownloadManager",
+                action="startup_maintenance_completed",
+                message="Completed bounded download recovery maintenance",
+                status_code="DL_STARTUP_MAINTENANCE_DONE",
+                details={
+                    **stats,
+                    "duration_ms": round((time.monotonic() - started_at) * 1000, 2),
+                },
+            )
+        except Exception:
+            pass
 
     def _sweep_m3u8_orphan_workspaces_on_startup(self) -> dict[str, Any]:
         """启动时清理上一轮异常退出留下的下载临时文件和 HLS 工作目录。"""
