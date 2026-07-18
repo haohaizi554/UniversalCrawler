@@ -200,7 +200,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("item_found", [name for name, _ in self.events])
 
     async def test_workflow_progress_gate_throttles_bursts_but_keeps_terminal_progress(self):
-        with patch("app.web.workflows.time.monotonic", side_effect=[100.00, 100.05, 100.06]):
+        with patch("app.web.workflows._monotonic", side_effect=[100.00, 100.05, 100.06]):
             self.assertTrue(self.service._should_emit_progress("video-1", 10))
             self.assertFalse(self.service._should_emit_progress("video-1", 11))
             self.assertTrue(self.service._should_emit_progress("video-1", 100))
@@ -209,7 +209,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         loop = asyncio.get_running_loop()
 
-        with patch("app.web.workflows.time.monotonic", side_effect=[100.00, 100.30]):
+        with patch("app.web.workflows._monotonic", side_effect=[100.00, 100.30]):
             self.service._schedule_progress_broadcast(loop, item.id, item, 10)
             self.service._schedule_progress_broadcast(loop, item.id, item, 20)
         await asyncio.sleep(0.01)
@@ -238,7 +238,7 @@ class WebWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         item = VideoItem(url="https://example.com/video.mp4", title="demo", source="douyin")
         loop = asyncio.get_running_loop()
 
-        with patch("app.web.workflows.time.monotonic", return_value=100.00):
+        with patch("app.web.workflows._monotonic", return_value=100.00):
             service._schedule_progress_broadcast(loop, item.id, item, 55)
         await asyncio.wait_for(started.wait(), timeout=1)
 

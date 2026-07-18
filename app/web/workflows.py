@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from time import monotonic as _monotonic
 from typing import Any, Callable, Coroutine
 
 from app.core.events import (
@@ -244,7 +245,8 @@ class WebWorkflowService:
             normalized = max(0, min(100, int(progress)))
         except (TypeError, ValueError):
             return False
-        now = time.monotonic()
+        # 测试只替换本模块的时钟绑定，避免污染 asyncio 共用的全局单调时钟。
+        now = _monotonic()
         last = self._last_progress_emit.get(video_id)
         if last is not None:
             last_progress, last_at = last
