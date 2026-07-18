@@ -23,4 +23,5 @@ def main(controller, **kwargs):
     for item in result["items"]:
         print(f"  - {item['title']}: {item['status']}")
 
+    sdk.close()
     return 0

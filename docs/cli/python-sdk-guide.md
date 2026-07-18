@@ -3,6 +3,9 @@
 > **重要**：请先阅读 [cli-guide.md](./cli-guide.md) 了解 UCrawl 的整体设计。
 
 SDK 是 UCrawl 的 Python 函数式入口，让你可以用最少的代码集成爬虫能力。
+公开 API 始终从 `ucrawl` 导入，不要从 `cli` 导入 SDK。CLI 的
+`--timeout` 对应 SDK `run_timeout`；CLI `--http-timeout` 对应 SDK
+默认配置中的 `{"timeout": N}`。
 
 ## 快速开始
 
@@ -49,8 +52,6 @@ with UcrawlSDK() as sdk:
 
 ```python
 class UcrawlSDK:
-    PLATFORMS = ("douyin", "bilibili", "kuaishou", "missav")
-
     def __init__(
         self,
         save_dir: str = "downloads",
@@ -66,6 +67,8 @@ class UcrawlSDK:
         save_dir: str | None = None,
         selection: SelectionStrategy | str | list[int] | None = None,
         timeout: float | None = None,
+        download: bool = True,
+        run_timeout: float | None = None,
         **config,
     ) -> dict:
         """执行一次搜索并返回结果。"""
@@ -167,12 +170,13 @@ sdk.search("douyin", "测试", selection=[0,2,5])   # 列表
 ### 抖音 (douyin)
 
 ```python
-result = sdk.search(
-    "douyin",
-    "测试关键词",  # 或抖音号 / 视频链接
-    max_items=20,        # 最大视频数
-    timeout=10,          # HTTP 超时
-)
+with UcrawlSDK(config={"timeout": 10}) as sdk:
+    result = sdk.search(
+        "douyin",
+        "测试关键词",  # 或抖音号 / 视频链接
+        max_items=20,        # 最大视频数
+        run_timeout=120,     # 整次运行超时
+    )
 ```
 
 ### B站 (bilibili)
@@ -356,7 +360,7 @@ result = sdk.search("douyin", "测试", selection=sel)
 from ucrawl import UcrawlSDK
 
 sdk = UcrawlSDK()
-result = sdk.search("douyin", "测试", max_items=10, timeout=30)
+result = sdk.search("douyin", "测试", max_items=10, run_timeout=30)
 
 if result["status"] != "ok":
     print(f"❌ 错误: {result.get('error', '未知')}")

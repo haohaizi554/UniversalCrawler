@@ -284,9 +284,19 @@ On the first launch, the application will complete the necessary initialization 
 
 ```bash
 ucrawl --help
+ucrawl search --source douyin "keyword" --http-timeout 15 --timeout 120
+ucrawl download --source douyin "https://example/video.mp4" --title "Example"
+ucrawl scan "./downloads"
 ucrawl-test --help
 ucrawl-test-gui
 ```
+
+The CLI platform list and platform-scoped shortcuts come from the plugin
+registry. `--http-timeout` controls HTTP requests, while `--timeout` limits the
+whole command; `--run-timeout` is temporarily retained as a deprecated alias.
+Local `scan` is top-level only. Stable process exit codes are `0` success, `1`
+runtime error, `2` usage error, `124` timeout, and `130` cancellation. Import
+the Python SDK from `ucrawl`.
 
 ### 6. Packaged Release Usage
 

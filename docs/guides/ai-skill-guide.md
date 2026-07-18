@@ -34,7 +34,7 @@ batch crawl, integrate crawler into existing service, or call crawler from LLM/s
 ```
 User: 帮我搜索抖音上"测试"关键词的 10 个视频
 LLM: 激活 ucrawl skill
-LLM: 执行 `python -m cli search --source douyin "测试" --max-items 10`
+LLM: 执行 `ucrawl search --source douyin "测试" --max-items 10 --http-timeout 15 --timeout 120`
 LLM: 找到以下视频：[返回结果]
 ```
 
@@ -53,16 +53,16 @@ LLM: 正在下载... 已完成 [视频列表]
 # AI 可以生成自动化脚本
 script_content = """
 def main(controller, **kwargs):
-    from cli import UcrawlSDK
-    sdk = UcrawlSDK(save_dir=controller.current_save_dir)
+    from ucrawl import UcrawlSDK
     
     # 搜索并下载
-    result = sdk.search(
-        kwargs.get("source", "douyin"),
-        kwargs.get("keyword", ""),
-        max_items=int(kwargs.get("max", 10)),
-        selection="all"
-    )
+    with UcrawlSDK(save_dir=controller.current_save_dir) as sdk:
+        result = sdk.search(
+            kwargs.get("source", "douyin"),
+            kwargs.get("keyword", ""),
+            max_items=int(kwargs.get("max", 10)),
+            selection="all"
+        )
     
     return {"count": len(result["items"]), "status": "ok"}
 """
@@ -110,10 +110,16 @@ LLM 调用时可以传递以下参数：
 
 ```bash
 # 选择第 0, 2, 5 项
-python -m cli search --source bilibili "BV1xxx" --select "0,2,5"
+ucrawl search --source bilibili "BV1xxx" --select "0,2,5"
 
 # 合集场景：预加载多轮选择
-python -m cli search --source bilibili "BV1xxx" --preload-choices "0|1,2|3"
+ucrawl search --source bilibili "BV1xxx" --preload-choices "0|1,2|3"
+```
+
+直接下载 URL 时使用位置参数，标题可选：
+
+```bash
+ucrawl download --source douyin "https://example/video.mp4" --title "示例"
 ```
 
 ## 错误处理
@@ -124,3 +130,7 @@ python -m cli search --source bilibili "BV1xxx" --preload-choices "0|1,2|3"
 | `proxy error` | 代理不可用 | 改用 `--proxy` 或关闭代理 |
 | `timeout` | 网络慢或平台限流 | 重试或加大超时 |
 | `二次选择策略异常` | 选择器逻辑错误 | 用 `--all` 兜底 |
+
+CLI 退出码：`0` 成功，`1` 运行/初始化失败，`2` 参数或配置错误，`124`
+超时，`130` 取消。`--http-timeout` 控制 HTTP 请求，`--timeout` 控制整次
+命令；`--run-timeout` 已弃用。

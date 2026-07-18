@@ -37,6 +37,27 @@ class CliSkillContractTests(unittest.TestCase):
                 self.assertIn(platform, skill)
                 self.assertIn(platform, guide)
 
+    def test_skill_uses_canonical_timeout_and_download_syntax(self) -> None:
+        text = (PROJECT_ROOT / "cli" / "skill" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("--http-timeout", text)
+        self.assertIn("download --source", text)
+        self.assertNotIn("--url", text)
+        self.assertNotIn("<video_id>", text)
+
+    def test_active_cli_guides_do_not_publish_removed_platform_scan(self) -> None:
+        for relative in (
+            "README.md",
+            "cli/README.md",
+            "docs/cli/cli-guide.md",
+        ):
+            with self.subTest(relative=relative):
+                text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+                self.assertNotIn("douyin scan", text)
+                self.assertNotIn("bilibili scan", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,4 +39,5 @@ def main(controller, **kwargs):
     total_items = sum(r["count"] for r in results)
     print(f"  视频数: {total_items}")
 
+    sdk.close()
     return 0

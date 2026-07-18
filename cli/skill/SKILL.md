@@ -45,7 +45,7 @@ author: UCrawl Team
 
 ```bash
 # 通用命令
-ucrawl search --source douyin "测试" --max-items 10
+ucrawl search --source douyin "测试" --max-items 10 --http-timeout 15 --timeout 120
 
 # 平台别名（支持短别名：dy/xhs/bili/bl/ks/miss）
 ucrawl douyin search "测试" --max-items 10
@@ -94,29 +94,30 @@ ucrawl search --source bilibili "BV1xxx" --referer "https://www.bilibili.com"
 ucrawl search --source kuaishou "测试" --download-strategy m3u8
 ucrawl search --source douyin "测试" --ua "Mozilla/5.0 ..."
 
-# 下载指定视频（需先搜索获取 URL）
-ucrawl download "视频标题" --url "https://..." --source douyin
+# 直接下载 URL；标题可省略
+ucrawl download --source douyin "https://..." --title "视频标题"
+ucrawl douyin download "https://..." --title "视频标题"
 
 # 下载指定视频并设置超时（与 SDK timeout 和 REST API timeout 对齐）
-ucrawl download "视频标题" --url "https://..." --source douyin --timeout 600
+ucrawl download --source douyin "https://..." --title "视频标题" --timeout 600
 
 # 下载 MissAV 视频并设置代理（与 SDK config 和 REST API config 对齐）
-ucrawl download "ABC-123" --url "https://missav.ws/..." --source missav --config '{"proxy":"http://127.0.0.1:7890"}'
+ucrawl download --source missav "https://missav.ws/..." --title "ABC-123" --config '{"proxy":"http://127.0.0.1:7890"}'
 
 # 下载时使用便捷参数（与 GUI spider build_download_meta 对齐，避免手写 JSON）
-ucrawl download "视频标题" --url "https://..." --source douyin --cookie "sessionid=xxx"
-ucrawl download "视频标题" --url "https://..." --source bilibili --referer "https://www.bilibili.com"
-ucrawl download "视频标题" --url "https://..." --source kuaishou --download-strategy m3u8
-ucrawl download "视频标题" --url "https://..." --source douyin --ua "Mozilla/5.0 ..."
-ucrawl download "合集视频" --url "https://..." --source bilibili --folder-name "合集名" --use-subdir
-ucrawl download "图集视频" --url "https://..." --source douyin --content-type gallery
-ucrawl download "ABC-123" --url "https://missav.ws/..." --source missav --proxy "http://127.0.0.1:7890" --individual-only --priority "中文字幕优先"
+ucrawl download --source douyin "https://..." --title "视频标题" --cookie "sessionid=xxx"
+ucrawl download --source bilibili "https://..." --title "视频标题" --referer "https://www.bilibili.com"
+ucrawl download --source kuaishou "https://..." --title "视频标题" --download-strategy m3u8
+ucrawl download --source douyin "https://..." --title "视频标题" --ua "Mozilla/5.0 ..."
+ucrawl download --source bilibili "https://..." --title "合集视频" --folder-name "合集名" --use-subdir
+ucrawl download --source douyin "https://..." --title "图集视频" --content-type gallery
+ucrawl download --source missav "https://missav.ws/..." --title "ABC-123" --proxy "http://127.0.0.1:7890" --individual-only --priority "中文字幕优先"
 
 # 静默下载（不输出进度，适合脚本调用，与 search --quiet 对齐）
-ucrawl download "视频标题" --url "https://..." --source douyin --quiet
+ucrawl download --source douyin "https://..." --title "视频标题" --quiet
 
 # 人类可读格式输出（与 search --pretty 对齐）
-ucrawl download "视频标题" --url "https://..." --source douyin --pretty
+ucrawl download --source douyin "https://..." --title "视频标题" --pretty
 
 # 列出所有平台（--pretty 显示搜索提示和描述，与 SDK list_platforms() 对齐）
 ucrawl platforms --pretty
@@ -126,7 +127,7 @@ ucrawl platforms --describe douyin
 
 # 交互式引导模式（逐步选择平台和参数，适合不熟悉命令行的用户）
 ucrawl interactive
-ucrawl i --run-timeout 60
+ucrawl i --http-timeout 15 --timeout 60
 
 # 交互式模式 + 额外配置（交互式输入的参数优先级高于 --config）
 ucrawl interactive --config '{"max_items":50}'
@@ -138,7 +139,7 @@ ucrawl interactive --individual-only --priority "中文字幕优先"
 # 交互式静默模式（不输出 spider 日志，与 search --quiet 对齐）
 ucrawl interactive --quiet
 
-# 交互式模式 + 二次选择策略（与 search 命令对齐：默认 AutoSelection，可覆盖）
+# 交互式模式 + 二次选择策略（默认 TTY 选择，可显式覆盖）
 ucrawl interactive --all
 ucrawl interactive --first
 ucrawl interactive --select "0,2,5"
@@ -157,7 +158,7 @@ result = sdk.search("douyin", "测试", max_items=10)
 for item in result["items"]:
     print(item["title"], item["url"])
 
-# 设置整体超时（与 CLI --run-timeout 对齐）
+# 设置整体超时（与 CLI --timeout 对齐）
 result = sdk.search("douyin", "测试", run_timeout=60)
 
 # 同时设置整体超时和 spider HTTP 超时
@@ -197,7 +198,7 @@ result = sdk.download_video("https://missav.ws/...", "missav", title="ABC-123", 
 # 也可以使用函数式 API（无需手动管理 SDK 实例）
 from ucrawl import search, download_video
 result = search("douyin", "测试", max_items=10)
-result = search("douyin", "测试", run_timeout=60)  # 与 CLI --run-timeout 对齐
+result = search("douyin", "测试", run_timeout=60)  # 与 CLI --timeout 对齐
 result = download_video("https://...", "douyin", title="测试视频")
 ```
 
@@ -573,8 +574,9 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | `--folder-name` | 否 | 子目录名（与 `--config '{"folder_name":"..."}'` 等价，传入时自动启用 `--use-subdir`，与 GUI BilibiliSpider `"use_subdir": bool(folder_name)` 行为对齐） |
 | `--use-subdir` | 否 | 使用子目录保存（与 `--config '{"use_subdir":true}'` 等价，传入 `--folder-name` 时自动启用，无需显式设置） |
 | `--file-name` | 否 | 输出文件名（与 `--config '{"file_name":"..."}'` 等价，不含扩展名，与 GUI spider `build_download_meta` 对齐） |
-| `--timeout` | 否 | spider HTTP 超时秒（默认 10，传入 config，仅 CLI 有此参数；SDK/REST API 通过 `config={"timeout": N}` 设置） |
-| `--run-timeout` | 否 | 整体超时秒（对应 SDK `run_timeout` 参数和 REST API `timeout` 参数，默认无限。SDK 的 `timeout` 参数已弃用，建议使用 `run_timeout`） |
+| `--http-timeout` | 否 | spider HTTP 超时秒；SDK/REST API 通过 `config={"timeout": N}` 设置 |
+| `--timeout` | 否 | 整次命令超时秒（对应 SDK `run_timeout` 和 REST API `timeout`，默认无限） |
+| `--run-timeout` | 否 | 已弃用的整次命令超时别名；迁移到 `--timeout`，两者不可同时使用 |
 | `--proxy` | 否 | 代理 URL（与 `--config '{"proxy":"http://127.0.0.1:7890"}'` 等价，MissAV 平台会自动调用 `build_missav_proxy_url` 转换） |
 | `--individual-only` | 否 | 只看单体作品（MissAV 专属，与 `--config '{"individual_only":true}'` 等价） |
 | `--priority` | 否 | 优先级（MissAV 专属，与 `--config '{"priority":"中文字幕优先"}'` 等价） |
@@ -584,9 +586,9 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `video_id` | 是 | 视频 ID / 标题 |
-| `--url` | 条件必填 | 视频 URL（实际下载时必填，需配合 --source 使用） |
-| `--source` / `-s` | 条件 | 平台 ID（使用 --url 时必填，**必须是有效平台 ID，无效平台会返回错误**，与 SDK/REST API 对齐） |
+| `url` | 是 | 要直接下载的媒体 URL（位置参数） |
+| `--title` | 否 | 可选标题；省略时由下载器推断 |
+| `--source` / `-s` | 通用入口必填 | 平台 ID；平台快捷命令（如 `ucrawl douyin download`）会自动注入 |
 | `--save-dir` / `-d` | 否 | 保存目录（默认：从配置读取） |
 | `--timeout` | 否 | 下载超时秒数（默认 300，与 SDK/REST API 一致） |
 | `--config` | 否 | 平台特定配置（JSON 字符串，如 `'{"proxy":"http://127.0.0.1:7890"}'`，与 SDK config 和 REST API config 对齐） |
@@ -623,7 +625,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | `selection` | 否 | SelectionStrategy \| str \| list[int] \| dict \| None | 二次选择策略（None=AutoSelection，"all"/"first"/"last"=快捷策略，list[int]=指定索引，dict=与 REST API 对齐） |
 | `timeout` | 否 | float \| None | 整体超时秒数（已弃用，建议使用 `run_timeout`。若需设置 spider HTTP 超时，通过 `**config` 传入 `timeout` 关键字） |
 | `download` | 否 | bool | 是否触发下载（True=与 GUI 一致自动下载，默认 True） |
-| `run_timeout` | 否 | float \| None | 整体超时秒数（None=无限，优先级高于 `timeout`，与 CLI --run-timeout 对齐） |
+| `run_timeout` | 否 | float \| None | 整体超时秒数（None=无限，与 CLI `--timeout` 对齐） |
 | `**config` | 否 | — | 平台特定参数（如 `max_items=20`、`proxy="http://..."` 等，与 CLI --config 和 REST API config 对齐） |
 
 ### SDK `download_video()` 参数
@@ -659,7 +661,9 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `--save-dir` / `-d` | 否 | 保存目录（默认：从配置读取，与 search 对齐） |
-| `--run-timeout` | 否 | 整体超时秒（与 search --run-timeout 对齐，默认无限等待） |
+| `--http-timeout` | 否 | spider HTTP 超时秒（不指定时交互模式使用 30 秒基线） |
+| `--timeout` | 否 | 整次命令超时秒（默认无限等待） |
+| `--run-timeout` | 否 | 已弃用；迁移到 `--timeout` |
 | `--no-download` | 否 | 只搜索不下载（与 search --no-download 对齐） |
 | `--quiet` / `-q` | 否 | 不输出 spider 日志（与 search --quiet 对齐） |
 | `--pretty` | 否 | 人类可读格式输出（与 search --pretty 对齐） |
@@ -675,7 +679,7 @@ curl -X POST http://localhost:8000/api/debug/trigger-select
 | `--proxy` | 否 | 代理 URL（与 `--config '{"proxy":"http://127.0.0.1:7890"}'` 等价，MissAV 平台会自动调用 `build_missav_proxy_url` 转换，与 CLI search/download `--proxy` 对齐） |
 | `--individual-only` | 否 | 只看单体作品（MissAV 专属，与 `--config '{"individual_only":true}'` 等价，与 CLI search/download `--individual-only` 对齐） |
 | `--priority` | 否 | 优先级（MissAV 专属，与 `--config '{"priority":"中文字幕优先"}'` 等价，与 CLI search/download `--priority` 对齐） |
-| `--all` | 否 | 全选（与 search --all 对齐，默认使用 AutoSelection） |
+| `--all` | 否 | 全选（与 search --all 对齐；interactive 默认使用 TTY 选择） |
 | `--first` | 否 | 只选第一个（与 search --first 对齐） |
 | `--last` | 否 | 只选最后一个（与 search --last 对齐） |
 | `--select "0,2,5"` | 否 | 指定索引（与 search --select 对齐，支持范围如 0,2-5 或 0,2:5） |
@@ -968,7 +972,7 @@ CLI search `--config` 校验错误（与 CLI download `--config` 对齐）：
 ❌ --config JSON 解析失败: ...
 ```
 
-CLI/SDK 在参数错误时返回非零退出码 + stderr 错误信息。SDK 在参数类型错误时抛出 `TypeError`，在参数值错误时抛出 `ValueError`（注意：SDK `_validate_config` 抛出的 TypeError/ValueError 会去掉 "config." 前缀，例如 `max_items 必须是整数` 而非 `config.max_items 必须是整数`，与 REST API 返回的 `config.xxx` 前缀格式不同，这是因为 SDK 作为 Python 库，参数名本身就是 `max_items` 而非 `config.max_items`）。SDK 额外校验：`__init__` 的 `save_dir` 必须是字符串或 None、`config` 必须是字典或 None；`search()` 的 `save_dir` 必须是字符串或 None、`run_timeout`/`timeout` 必须大于 0（`run_timeout` 优先，`timeout` 已弃用但仍向后兼容；若需设置 spider HTTP 超时，请通过 `**config` 传入 `timeout` 关键字，如 `sdk.search(..., run_timeout=60, **{"timeout": 10})`）；`download_video()` 的 `title` 必须是字符串、`save_dir` 必须是字符串或 None、`timeout` 必须是数字且大于 0、`verbose` 必须是布尔值（默认 False，与 CLI `download --quiet` 对齐：CLI 默认 verbose=True，加 --quiet 时 verbose=False）；`scan_directory()` 的 `directory` 必须是非空字符串、`scan_limit` 必须是整数或 None（与 `search()`/`download_video()` 对齐，参数校验抛出 TypeError/ValueError 而非返回 error dict）；selection 的 `preload` 策略 `choices` 必须是二维数组、`rule` 策略的 `select`/`exclude` 必须是字符串或 null；**config 已知参数类型校验**（与 CLI argparse type 对齐）：`max_items`/`max_pages`/`timeout` 必须是整数、`individual_only` 必须是布尔值、`priority`/`proxy` 必须是字符串，未知参数透传给 spider 不做校验。REST API 同样校验 config 已知参数类型，返回 `{"status": "error", "error": "config.xxx 必须是xxx，收到 xxx"}`。**config 合并行为**：SDK/REST API/CLI search 会过滤用户 config 中的 None 值再与平台默认值合并（与 CLI `_build_config` 对齐，避免 null 覆盖默认值）。**CLI search --config 合并顺序**：平台默认值 → `--config` JSON → 独立参数（`--max-items`/`--timeout` 等优先级最高，与 SDK `search(**config)` 覆盖 `default_config` 的语义对齐）。**download 参数校验**：REST API `/api/search` 的 `download` 参数不接受 list/dict 类型（会返回错误），避免 `bool([])` 误判；传 `null` 视为未提供，使用默认值 true。**REST API/WebSocket download title 校验**：先校验 title 类型（必须是字符串或 null），再应用默认值（null/空字符串 → URL），避免非字符串 falsy 值（如 `0`、`false`）被静默替换为 URL。**save_dir 回退行为**：REST API `/api/download` 和 WebSocket `download` 在 `save_dir` 未提供时使用 `controller.current_save_dir`（与 `/api/search` 对齐，而非从 cfg 重新读取）。**CLI download 输出控制**：`--quiet`/`-q` 不输出下载进度到 stderr（与 search --quiet 对齐），`--pretty` 人类可读格式输出（与 search --pretty 对齐，显示状态/平台/标题/URL/保存目录/本地路径/类型）。**CLI interactive 二次选择策略**：interactive 命令现在支持 `--all`/`--first`/`--last`/`--select`/`--exclude`/`--pipe`/`--preload-choices` 参数（与 search 命令对齐），默认仍使用 AutoSelection（有 TTY 交互，无 TTY 管道，否则全选）。
+CLI 使用稳定退出码：`0` 成功、`1` 运行或初始化失败、`2` 参数/配置错误、`124` 超时、`130` 取消。SDK 在参数类型错误时抛出 `TypeError`，在参数值错误时抛出 `ValueError`。SDK 的 `search()` 使用 `run_timeout` 表示整次运行超时；spider HTTP 超时通过 `**config` 中的 `timeout` 设置。CLI 对应关系是 `--timeout`（整次命令）与 `--http-timeout`（HTTP），旧 `--run-timeout` 仅作弃用兼容。CLI `download` 在进入 SDK 前校验位置参数 URL、平台、超时和配置；`--quiet`/`-q` 关闭进度日志，`--pretty` 输出人类可读摘要。interactive 支持与 search 一致的选择参数，默认使用纯终端 `InteractiveTTYSelection`。
 - **CLI/SDK/REST API config 参数**：CLI search 和 download 的 `--config` 都接受 JSON 字符串，SDK `search(**config)` 和 `download_video(config=)` 接受字典，REST API `/api/search` 和 `/api/download` 的 `config` 接受 JSON 对象，四者对齐。config 中的 missav proxy 会自动转换（与 GUI `build_missav_proxy_url` 一致）。config 参数同样经过 `_validate_config_types` 校验。
 
 ### items 字段说明
@@ -1051,7 +1055,7 @@ pip install .
 - **SDK download_video cookie 自动加载**：SDK `download_video()` 通过 `get_platform_download_defaults()` 自动加载本地 cookie 文件（与 GUI spider 启动时通过 AuthService 自动加载对齐），确保需要登录的平台（douyin/bilibili/kuaishou）在 CLI/SDK/API 环境下也能正常下载。用户通过 `config` 显式传入的 cookie 优先级高于自动加载的 cookie
 - **SDK download_video meta 字段扩展**：SDK `download_video()` 的 meta 复制列表新增 `folder_name` 和 `use_subdir` 字段（与 GUI Bilibili spider 通过 `build_download_meta` 设置的 `folder_name`/`use_subdir` 对齐），支持通过 `config` 传入子目录结构控制
 - **SDK download_video meta 字段全面对齐**：SDK `download_video()` 的 meta 复制列表进一步扩展，新增 `audio_url`（B站 DASH 音频流）、`aweme_id`（抖音视频 ID）、`bvid`/`cid`（B站视频 ID）、`file_name`/`preferred_filename`（文件名控制）、`is_gallery`/`is_mix`（图集/合集标记），与 GUI spider `build_download_meta` 和 `DownloadWorker` 读取的 meta 字段完全对齐。`validate_config_types` 同步新增这些字段的类型校验。interactive 命令的 `download_config` 提取列表同步扩展。CLI download 命令新增 `--file-name` 便捷参数
-- **ucrawl 包导出补全**：`ucrawl` 包导出 `GUISelection` 和 `is_selection_strategy`；实现分别来自 GUI 策略和 `shared.selection_base`，确保 SDK 用户可通过 `from ucrawl import GUISelection, is_selection_strategy` 使用
+- **公开包边界**：SDK 与选择策略统一从 `ucrawl` 导入；`cli` 只承载命令实现，不导出 GUI 策略，也不提供历史 SDK 模块别名。
 - **SDK download_video meta 字段补全 images_data/size_mb/media_label**：SDK `download_video()` 的 meta 复制列表新增 `images_data`（抖音图集数据，DouyinDownloader 读取）、`size_mb`（文件大小 MB，BaseDownloader 分块下载策略）、`media_label`（媒体类型标签，GUI spider 日志使用），与 GUI spider 和下载器读取的 meta 字段完全对齐。`validate_config_types` 同步新增这些字段的类型校验（`images_data`: list, `size_mb`: int/float, `media_label`: str）。interactive 命令的 `download_config` 提取列表同步扩展
 - **SDK download_video meta 字段补全 duration/mix_title/create_time/author/has_live_photo**：SDK `download_video()` 的 meta 复制列表新增 `duration`（视频时长秒数，ChunkedDownloader/FFmpegDownloader 读取，与 GUI spider DouyinParser 对齐）、`mix_title`（合集标题，与 GUI spider DouyinSpider._process_mix 对齐）、`create_time`（创建时间戳，与 GUI spider DouyinParser 对齐）、`author`（作者名，与 GUI spider DouyinParser 对齐，用作 folder_name）、`has_live_photo`（是否包含实况照片，与 GUI spider DouyinParser 对齐）。`validate_config_types` 同步新增这些字段的类型校验（`duration`: int/float, `mix_title`: str, `create_time`: int, `author`: str, `has_live_photo`: bool）。interactive 命令的 `download_config` 提取列表同步扩展。SKILL.md 通用下载参数同步补全 `duration`/`file_name`/`preferred_filename`/`mix_title`/`create_time`/`author`/`has_live_photo`
 - **REST API/WebSocket 便捷参数对齐**：REST API `/api/search`、`/api/crawl/start`、`/api/download`、WebSocket `start_crawl`、`download` 消息新增便捷参数支持（与 CLI `--cookie`/`--download-strategy`/`--referer`/`--ua`/`--folder-name`/`--use-subdir`/`--file-name`/`--content-type`/`--max-items`/`--max-pages`/`--proxy`/`--individual-only`/`--priority` 对齐）。便捷参数作为请求体的顶层字段传入，优先级高于 `config` 字典中的同名参数（与 CLI 独立参数优先级高于 `--config` 的语义一致）。合并逻辑由 `shared.runtime_options.merge_convenience_params()` 统一实现，确保 CLI/REST API/WebSocket 三层行为一致

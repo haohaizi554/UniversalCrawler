@@ -27,10 +27,17 @@ pip install .
 
 ```bash
 # 通用命令
-ucrawl search --source douyin "测试" --max-items 10
+ucrawl search --source douyin "测试" --max-items 10 --http-timeout 15 --timeout 120
 
 # 平台别名（更短）
-ucrawl douyin search "测试" --max-items 10
+ucrawl douyin search "测试" --max-items 10 --http-timeout 15 --timeout 120
+
+# 直接下载 URL（标题可选）
+ucrawl download --source douyin "https://example/video.mp4" --title "示例"
+ucrawl douyin download "https://example/video.mp4" --title "示例"
+
+# 本地扫描只使用顶层命令
+ucrawl scan "./downloads"
 
 # 漂亮输出
 ucrawl search --source missav "ABC-123" --pretty
@@ -57,11 +64,28 @@ ucrawl search --help
 | `--individual-only` | ❌ | False | 只看单体（仅 MissAV） |
 | `--priority` | ❌ | 中文字幕优先 | 筛选优先级（仅 MissAV） |
 | `--proxy` | ❌ | `http://127.0.0.1:7890` | 代理 URL（仅 MissAV） |
-| `--run-timeout` | ❌ | 无 | 整体超时秒 |
+| `--http-timeout` | ❌ | 平台默认 | spider HTTP 请求超时秒 |
+| `--timeout` | ❌ | 无 | 整次命令超时秒 |
+| `--run-timeout` | ❌ | 无 | 已弃用的 `--timeout` 别名；两者不可同时使用 |
 
 `keyword` 推荐使用位置参数。`--keyword <值>` 继续兼容历史脚本；如果两种形式
 同时出现且值不一致，命令会以参数错误退出。显式选择规则中的非法 token 或
 完全越界索引会直接报错，绝不会退化为全选。
+
+### 直接下载、扫描与平台目录
+
+`download` 表示“直接下载这个 URL”，不会读取上一次搜索结果。通用入口要求
+`--source`，平台快捷入口会自动注入平台：
+
+```bash
+ucrawl download --source bilibili "https://example/video.mp4" --title "示例"
+ucrawl bilibili download "https://example/video.mp4" --title "示例"
+```
+
+URL 是必填位置参数，`--title` 可选。下载命令自己的 `--timeout` 是下载超时。
+本地目录扫描没有平台语义，因此只支持 `ucrawl scan <directory>`；平台快捷
+入口只包含 `search` 和 `download`。`ucrawl platforms` 展示由 plugin
+registry 动态发现的平台。
 
 ### 二次选择参数
 
@@ -171,8 +195,10 @@ CLI 输出 JSON 到 stdout：
 
 退出码：
 - `0` 成功
-- `1` 错误 / 超时
-- `2` 参数错误
+- `1` 运行或初始化错误
+- `2` 参数、配置或其他用法错误
+- `124` 超时
+- `130` 取消
 
 ## 方式 2：Python SDK
 
@@ -293,7 +319,7 @@ def main(controller, **kwargs):
     Returns:
         int: 退出码 (0=成功, 非0=失败)
     """
-    from cli import UcrawlSDK
+    from ucrawl import UcrawlSDK
 
     target = kwargs.get("target", "douyin")
     keyword = kwargs.get("keyword", "")
@@ -408,7 +434,7 @@ ucrawl search --source bilibili "BV1xxx合集" --preload-choices "0,1,2||5"
 | `PyQt6 未安装` | 缺少依赖 | `pip install PyQt6` |
 | `No QApplication` | 未初始化 Qt | SDK 会自动处理 |
 | `proxy error` | 代理不可用 | 改用 `--proxy` 或关闭代理 |
-| `timeout` | 网络慢或平台限流 | 重试或加大 `--run-timeout` |
+| `timeout` | HTTP 慢或整次运行超时 | 分别调整 `--http-timeout` 或 `--timeout` |
 | `二次选择策略异常` | 选择器逻辑错误 | 用 `--all` 兜底 |
 
 ## 与 GUI / Web UI 的关系

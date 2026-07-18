@@ -285,9 +285,18 @@ ucrawl-web --host 127.0.0.1 --port 8000
 
 ```bash
 ucrawl --help
+ucrawl search --source douyin "关键词" --http-timeout 15 --timeout 120
+ucrawl download --source douyin "https://example/video.mp4" --title "示例"
+ucrawl scan "./downloads"
 ucrawl-test --help
 ucrawl-test-gui
 ```
+
+CLI 平台列表和平台快捷命令由插件注册表动态生成。`--http-timeout` 控制
+HTTP 请求，`--timeout` 控制整次命令；`--run-timeout` 暂时作为弃用别名。
+本地 `scan` 只存在于顶层，不挂在任何平台下。退出码为：`0` 成功、`1`
+运行错误、`2` 用法错误、`124` 超时、`130` 取消。Python SDK 请统一从
+`ucrawl` 包导入。
 
 ### 6. 发布版使用方式
 
