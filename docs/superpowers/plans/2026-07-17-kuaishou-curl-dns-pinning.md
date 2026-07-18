@@ -15,7 +15,7 @@
 - Support default HTTP/HTTPS ports, custom ports, IPv4, IPv6, and IDNA hostnames; reject explicit ports outside 1 through 65535.
 - Addresses must come from `DomainPolicyEngine.resolve_public_addresses()` and reach that same hop through request-scoped `CurlOpt.RESOLVE`.
 - Empty or invalid addresses, policy timeout, malformed URL, or proxy-side DNS must fail closed before `curl_get` runs.
-- Do not change Cookie persistence, Playwright waits, navigation, reload behavior, global DNS policy, m3u8/HLS code, test taxonomy, file-size budgets, or unrelated dirty files.
+- Do not change Cookie persistence format/writes, Playwright waits, navigation, reload behavior, global DNS policy, m3u8/HLS code, test taxonomy, file-size budgets, or unrelated dirty files. The short-link fast path may read one existing storage-state snapshot and must scope it independently for every hop.
 - Keep tests in `tests/unit/app/spiders/kuaishou/test_share_resolution.py` without a business marker or whitelist; preserve the configured 75 percent branch-coverage gate.
 
 ---
@@ -23,7 +23,10 @@
 ## File Structure
 
 - Modify `app/spiders/kuaishou/share_runtime.py`: format DNS pins, prepare bounded per-hop curl kwargs, reject unsupported proxies, and pass the pin into curl.
+- Modify `app/spiders/kuaishou/spider.py`: load one read-only storage-state snapshot before short-link normalization and pass it only to the HTTP fast path.
+- Modify `app/services/auth_service.py`: add an opt-in strict URL cookie scope and correct the RFC path boundary without changing legacy callers.
 - Modify `tests/unit/app/spiders/kuaishou/test_share_resolution.py`: deterministic public DNS fixture, RED pin/fail-closed/redirect/browser-flow contracts, and updated bounded-worker tests.
+- Modify `tests/unit/app/services/test_auth_service.py`: cover strict domain/path/expiry/input validation while preserving legacy compatibility.
 - Modify `docs/superpowers/specs/2026-07-17-kuaishou-curl-dns-pinning-design.md`: record the proxy and explicit-port boundaries found during security review.
 
 ### Task 1: Establish failing transport contracts
@@ -516,3 +519,35 @@ Expected: no whitespace errors; only planned files belong to the hotfix; all pre
 Run: `git push origin main`
 
 Expected: `origin/main` advances without force push.
+
+### Task 3: Reuse URL-scoped saved login state in the short-link fast path
+
+This is an incremental production-validation follow-up. The real failure sample now expands through the pinned transport, but Kuaishou returns an Apollo skeleton with empty media fields to an anonymous request. The same request with the existing Playwright storage-state cookies returns title and media data.
+
+**Files:**
+- Modify: `app/services/auth_service.py`
+- Modify: `app/spiders/kuaishou/share_runtime.py`
+- Modify: `app/spiders/kuaishou/spider.py`
+- Modify: `tests/unit/app/services/test_auth_service.py`
+- Modify: `tests/unit/app/spiders/kuaishou/test_share_resolution.py`
+- Modify: `docs/superpowers/specs/2026-07-17-kuaishou-curl-dns-pinning-design.md`
+
+**Security contract:**
+
+- Add `require_scope=True` to the shared URL cookie filter as an opt-in; legacy callers keep their existing compatibility behavior.
+- Strict mode rejects flat/unscoped state, missing domain/path, non-boolean Secure fields, malformed expiry, control characters, and curl cookie delimiters. Only a missing expiry field or numeric `-1` is a session Cookie; explicit zero/empty/other-negative/non-finite values fail closed.
+- `/f` matches `/f` and `/f/...`, never `/foobar`.
+- `KuaishouSpider.run()` loads the storage state only for a short-link candidate and passes it as an explicit argument; it does not assign `_loaded_storage_state`.
+- Every manually handled curl hop calls the strict filter with the exact ASCII transport URL and supplies only that hop's dictionary through `curl_get(cookies=...)`.
+- The cached final response contains only the existing bounded body and response object, never the Cookie dictionary or storage-state snapshot.
+- Missing/corrupt state remains an anonymous HTTP attempt followed by the existing browser fallback.
+
+**Verification:**
+
+```powershell
+python -m pytest tests/unit/app/services/test_auth_service.py -q
+python -m pytest tests/unit/app/spiders/kuaishou/test_share_resolution.py -q
+python -m ruff check app/services/auth_service.py app/spiders/kuaishou/share_runtime.py app/spiders/kuaishou/spider.py tests/unit/app/services/test_auth_service.py tests/unit/app/spiders/kuaishou/test_share_resolution.py
+```
+
+The controlled real-curl test must observe the scoped Cookie at the target server while the environment proxy trap remains untouched. The non-CI live check must report only the normalized detail ID and whether title/media are non-empty.

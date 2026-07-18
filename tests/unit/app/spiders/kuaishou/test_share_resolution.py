@@ -12,6 +12,7 @@ from curl_cffi.const import CurlOpt
 from curl_cffi.requests import RequestsError as CurlRequestsError
 from curl_cffi.requests import get as real_curl_get
 
+from app.services.auth_service import AuthService
 from app.spiders.kuaishou.spider import KuaishouSpider
 from shared.runtime_options import DomainPolicyEngine
 
@@ -33,7 +34,26 @@ def _spider() -> KuaishouSpider:
     spider.log = Mock()
     spider._effective_proxy_server = Mock(return_value=None)
     spider._public_domain_policy = _public_policy()
+    spider._load_saved_storage_state = Mock(return_value=None)
     return spider
+
+
+def _with_saved_share_cookies(
+    spider: KuaishouSpider,
+    tmp_path,
+    cookies: list[dict[str, object]],
+) -> dict[str, list[dict]]:
+    auth_file = tmp_path / "ks_auth.json"
+    AuthService().save_json_file(
+        str(auth_file),
+        {"cookies": cookies, "origins": []},
+    )
+    spider.auth_service = AuthService()
+    storage_state = spider.auth_service.load_playwright_storage_state(
+        str(auth_file)
+    )
+    assert storage_state is not None
+    return storage_state
 
 
 @contextmanager
@@ -139,10 +159,12 @@ def test_real_curl_uses_ascii_trailing_dot_pin_and_ignores_environment_proxy(
 ) -> None:
     target_reached = threading.Event()
     proxy_reached = threading.Event()
+    observed_cookie_headers: list[str] = []
 
     class TargetHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             target_reached.set()
+            observed_cookie_headers.append(self.headers.get("Cookie", ""))
             payload = b"ok"
             self.send_response(200)
             self.send_header("Content-Length", str(len(payload)))
@@ -195,6 +217,25 @@ def test_real_curl_uses_ascii_trailing_dot_pin_and_ignores_environment_proxy(
             "/f/example?label=%E5%BF%AB%E6%89%8B#section"
         )
         spider = _spider()
+        spider.auth_service = AuthService()
+        storage_state = {
+            "cookies": [
+                {
+                    "name": "ks_session",
+                    "value": "saved-login",
+                    "domain": ".kuaishou.com",
+                    "path": "/f",
+                },
+                {
+                    "name": "secure_only",
+                    "value": "must-not-send-over-http",
+                    "domain": ".kuaishou.com",
+                    "path": "/f",
+                    "secure": True,
+                },
+            ],
+            "origins": [],
+        }
         environment = {
             "ALL_PROXY": f"http://127.0.0.1:{proxy_port}",
             "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
@@ -207,12 +248,16 @@ def test_real_curl_uses_ascii_trailing_dot_pin_and_ignores_environment_proxy(
                 side_effect=perform_real_request,
             ),
         ):
-            spider._resolve_short_share_url(candidate)
+            spider._resolve_short_share_url(
+                candidate,
+                storage_state=storage_state,
+            )
 
     assert observed_urls == [transport_url]
     assert observed_options[0][CurlOpt.PROXY] == ""
     assert target_reached.is_set()
     assert not proxy_reached.is_set()
+    assert observed_cookie_headers == ["ks_session=saved-login"]
 
 
 @patch("app.spiders.kuaishou.share_runtime.curl_get")
@@ -310,6 +355,136 @@ def test_short_link_redirect_revalidates_and_repins_each_hop(
     final.close.assert_called_once()
 
 
+@patch("app.spiders.kuaishou.share_runtime.curl_get")
+def test_short_link_rejects_sixth_redirect_and_closes_every_response(
+    request_get: Mock,
+) -> None:
+    spider = _spider()
+    start_url = "https://www.kuaishou.com/f/example"
+    responses = [
+        Mock(
+            url=f"https://www.kuaishou.com/f/hop-{index}",
+            status_code=302,
+            headers={
+                "Location": f"https://www.kuaishou.com/f/hop-{index + 1}"
+            },
+        )
+        for index in range(spider.SHORT_LINK_MAX_REDIRECTS + 1)
+    ]
+    request_get.side_effect = responses
+
+    assert spider._resolve_short_share_url(start_url) == start_url
+
+    assert request_get.call_count == spider.SHORT_LINK_MAX_REDIRECTS + 1
+    for response in responses:
+        response.close.assert_called_once()
+
+
+@patch("app.spiders.kuaishou.share_runtime.curl_get")
+def test_short_link_redirect_recomputes_saved_cookies_for_each_hop(
+    request_get: Mock,
+    tmp_path,
+) -> None:
+    spider = _spider()
+    storage_state = _with_saved_share_cookies(
+        spider,
+        tmp_path,
+        [
+            {
+                "name": "ks_root",
+                "value": "ks-root",
+                "domain": ".kuaishou.com",
+                "path": "/",
+                "secure": True,
+            },
+            {
+                "name": "ks_share",
+                "value": "ks-share",
+                "domain": "www.kuaishou.com",
+                "path": "/f",
+                "secure": True,
+            },
+            {
+                "name": "ks_detail",
+                "value": "ks-detail",
+                "domain": ".kuaishou.com",
+                "path": "/short-video",
+                "secure": True,
+            },
+            {
+                "name": "ct_root",
+                "value": "ct-root",
+                "domain": ".chenzhongtech.com",
+                "path": "/",
+                "secure": True,
+            },
+            {
+                "name": "hostless",
+                "value": "must-not-leak",
+                "path": "/",
+            },
+            {
+                "name": "expired",
+                "value": "must-not-send",
+                "domain": ".kuaishou.com",
+                "path": "/",
+                "expires": time.time() - 60,
+            },
+            {
+                "name": "invalid_expiry",
+                "value": "must-not-send",
+                "domain": ".kuaishou.com",
+                "path": "/",
+                "expires": "not-a-number",
+            },
+            {
+                "name": "overflow_expiry",
+                "value": "must-not-send",
+                "domain": ".kuaishou.com",
+                "path": "/",
+                "expires": 10**500,
+            },
+            {
+                "name": "missing_path",
+                "value": "must-not-send",
+                "domain": ".kuaishou.com",
+            },
+            {
+                "name": "unsafe",
+                "value": "bad\r\nX-Injected: yes",
+                "domain": ".kuaishou.com",
+                "path": "/",
+            },
+        ],
+    )
+    first_url = "https://www.kuaishou.com/f/example"
+    final_url = "https://www.chenzhongtech.com/short-video/3xj8abcde"
+    first = Mock(url=first_url, status_code=302, headers={"Location": final_url})
+    final = Mock(url=final_url, status_code=200, headers={}, encoding="utf-8")
+    request_get.side_effect = [first, final]
+
+    assert (
+        spider._resolve_short_share_url(
+            first_url,
+            storage_state=storage_state,
+        )
+        == final_url
+    )
+
+    assert request_get.call_args_list[0].kwargs["cookies"] == {
+        "ks_root": "ks-root",
+        "ks_share": "ks-share",
+    }
+    assert request_get.call_args_list[1].kwargs["cookies"] == {
+        "ct_root": "ct-root"
+    }
+    logged = " ".join(str(item) for item in spider.log.call_args_list)
+    assert "ks-root" not in logged
+    assert "ks-share" not in logged
+    assert "ct-root" not in logged
+    spider._close_pending_share_response()
+
+
 @pytest.mark.parametrize(
     "proxy",
     ["http://127.0.0.1:7890", "socks5h://127.0.0.1:7890"],
@@ -327,8 +502,26 @@ def test_short_link_transport_fails_closed_when_proxy_controls_dns(
     request_get.assert_not_called()
 
 
-def test_short_link_http_success_reuses_detail_without_browser_fallback() -> None:
+def test_short_link_http_success_reuses_detail_without_browser_fallback(
+    tmp_path,
+) -> None:
     spider = _spider()
+    storage_state = _with_saved_share_cookies(
+        spider,
+        tmp_path,
+        [
+            {
+                "name": "ks_session",
+                "value": "saved-login",
+                "domain": ".kuaishou.com",
+                "path": "/",
+                "secure": True,
+            }
+        ],
+    )
+    spider._load_saved_storage_state = Mock(return_value=storage_state)
+    persistence_baseline = {"cookies": [{"name": "original"}]}
+    spider._loaded_storage_state = persistence_baseline
     spider.keyword = "https://www.kuaishou.com/f/example"
     spider.task_builder = Mock()
     spider.task_builder.build_download_meta.return_value = {"trace_id": "share-test"}
@@ -364,6 +557,11 @@ def test_short_link_http_success_reuses_detail_without_browser_fallback() -> Non
         "www.kuaishou.com:443:93.184.216.34"
     ]
     assert request_get.call_args.kwargs["curl_options"][CurlOpt.PROXY] == ""
+    assert request_get.call_args.kwargs["cookies"] == {
+        "ks_session": "saved-login"
+    }
+    spider._load_saved_storage_state.assert_called_once()
+    assert spider._loaded_storage_state is persistence_baseline
     sync_playwright.assert_not_called()
     spider.emit_video.assert_called_once()
     response.close.assert_called_once()
@@ -483,6 +681,98 @@ def test_failed_short_link_http_resolution_still_uses_share_browser_flow() -> No
 
     spider._run_share_browser_session.assert_called_once()
     spider._run_browser_session.assert_not_called()
+
+
+def test_missing_saved_state_keeps_http_anonymous_and_uses_browser_fallback(
+) -> None:
+    spider = _spider()
+    short_url = "https://www.kuaishou.com/f/example"
+    final_url = "https://www.kuaishou.com/short-video/3xj8abcde"
+    spider.keyword = short_url
+    spider.is_running = True
+    spider._run_share_browser_session = Mock(return_value="completed")
+    spider._run_browser_session = Mock(return_value="completed")
+    spider._emit_finished = Mock()
+    response = Mock(
+        url=final_url,
+        status_code=200,
+        headers={},
+        encoding="utf-8",
+    )
+
+    def perform_request(_url, **kwargs):
+        assert kwargs["cookies"] is None
+        payload = (
+            '<script>window.__APOLLO_STATE__={"defaultClient":{}};'
+            "</script>"
+        ).encode()
+        assert kwargs["content_callback"](payload) == len(payload)
+        return response
+
+    with (
+        patch(
+            "app.spiders.kuaishou.share_runtime.curl_get",
+            side_effect=perform_request,
+        ),
+        patch("app.spiders.kuaishou.spider.sync_playwright") as sync,
+    ):
+        sync.return_value.__enter__.return_value = Mock()
+        spider.run()
+
+    spider._load_saved_storage_state.assert_called_once()
+    spider._run_share_browser_session.assert_called_once()
+    spider._run_browser_session.assert_not_called()
+    response.close.assert_called_once()
+
+
+def test_corrupt_saved_state_keeps_http_anonymous_and_uses_browser_fallback(
+    tmp_path,
+) -> None:
+    spider = _spider()
+    del spider._load_saved_storage_state
+    spider.auth_service = AuthService()
+    short_url = "https://www.kuaishou.com/f/example"
+    final_url = "https://www.kuaishou.com/short-video/3xj8abcde"
+    spider.keyword = short_url
+    spider.is_running = True
+    spider._run_share_browser_session = Mock(return_value="completed")
+    spider._run_browser_session = Mock(return_value="completed")
+    spider._emit_finished = Mock()
+    auth_file = tmp_path / "ks_auth.json"
+    auth_file.write_text("{not-json", encoding="utf-8")
+    response = Mock(
+        url=final_url,
+        status_code=200,
+        headers={},
+        encoding="utf-8",
+    )
+
+    def perform_request(_url, **kwargs):
+        assert kwargs["cookies"] is None
+        payload = (
+            '<script>window.__APOLLO_STATE__={"defaultClient":{}};'
+            "</script>"
+        ).encode()
+        assert kwargs["content_callback"](payload) == len(payload)
+        return response
+
+    with (
+        patch(
+            "app.spiders.kuaishou.share_runtime.curl_get",
+            side_effect=perform_request,
+        ),
+        patch(
+            "app.spiders.kuaishou.spider.cfg.get",
+            return_value=str(auth_file),
+        ),
+        patch("app.spiders.kuaishou.spider.sync_playwright") as sync,
+    ):
+        sync.return_value.__enter__.return_value = Mock()
+        spider.run()
+
+    spider._run_share_browser_session.assert_called_once()
+    spider._run_browser_session.assert_not_called()
+    response.close.assert_called_once()
 
 
 def test_overlong_idna_label_preserves_short_link_and_runs_browser_fallback() -> None:

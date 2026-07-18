@@ -123,7 +123,33 @@ class KuaishouShareRuntimeMixin:
             and parsed.path.lower().startswith("/f/")
         )
 
-    def _resolve_short_share_url(self, url: str) -> str:
+    def _share_request_cookies(
+        self,
+        storage_state: dict[str, list[dict]] | None,
+        request_url: str,
+    ) -> dict[str, str] | None:
+        """Return strictly scoped saved cookies for one manually handled hop."""
+        if not storage_state:
+            return None
+        auth_service = getattr(self, "auth_service", None)
+        if auth_service is None:
+            return None
+        try:
+            cookies = auth_service.extract_cookie_dict_for_url(
+                storage_state,
+                request_url,
+                require_scope=True,
+            )
+        except (OverflowError, TypeError, ValueError):
+            return None
+        return cookies or None
+
+    def _resolve_short_share_url(
+        self,
+        url: str,
+        *,
+        storage_state: dict[str, list[dict]] | None = None,
+    ) -> str:
         """将快手短分享链解析为最终详情或主页链接。"""
         candidate = str(url or "").strip()
         if not self._is_short_share_url(candidate):
@@ -173,6 +199,10 @@ class KuaishouShareRuntimeMixin:
                     response = curl_get(
                         transport_url,
                         headers=self._build_detail_request_headers(),
+                        cookies=self._share_request_cookies(
+                            storage_state,
+                            transport_url,
+                        ),
                         timeout=self._short_link_timeout(remaining),
                         allow_redirects=False,
                         content_callback=collect_body,
@@ -386,10 +416,18 @@ class KuaishouShareRuntimeMixin:
             pass
         return None
 
-    def _normalize_keyword(self, raw_text: str) -> str:
+    def _normalize_keyword(
+        self,
+        raw_text: str,
+        *,
+        storage_state: dict[str, list[dict]] | None = None,
+    ) -> str:
         """兼容分享文案、短链和完整快手链接。"""
         extracted = self._extract_first_url(raw_text)
-        return self._resolve_short_share_url(extracted)
+        return self._resolve_short_share_url(
+            extracted,
+            storage_state=storage_state,
+        )
 
     def _build_detail_request_headers(self) -> dict[str, str]:
         """构建分享详情页直连请求头。"""

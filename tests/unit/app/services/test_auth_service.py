@@ -76,6 +76,118 @@ class AuthServiceTests(unittest.TestCase):
 
         self.assertEqual(cookie_dict, {"sessionid_ss": "legacy"})
 
+    def test_extract_cookie_dict_for_url_enforces_browser_path_boundary(self):
+        payload = {
+            "cookies": [
+                {
+                    "name": "share_only",
+                    "value": "allowed",
+                    "domain": ".kuaishou.com",
+                    "path": "/f",
+                }
+            ]
+        }
+
+        self.assertEqual(
+            self.service.extract_cookie_dict_for_url(
+                payload,
+                "https://www.kuaishou.com/f/example",
+            ),
+            {"share_only": "allowed"},
+        )
+        self.assertEqual(
+            self.service.extract_cookie_dict_for_url(
+                payload,
+                "https://www.kuaishou.com/foobar",
+            ),
+            {},
+        )
+
+    def test_extract_cookie_dict_for_url_can_require_explicit_scope(self):
+        payload = {
+            "cookies": [
+                {"name": "legacy", "value": "unscoped"},
+                {
+                    "name": "site",
+                    "value": "scoped",
+                    "domain": ".kuaishou.com",
+                    "path": "/",
+                },
+            ]
+        }
+
+        cookie_dict = self.service.extract_cookie_dict_for_url(
+            payload,
+            "https://www.kuaishou.com/",
+            require_scope=True,
+        )
+
+        self.assertEqual(cookie_dict, {"site": "scoped"})
+
+    def test_strict_url_cookie_filter_rejects_ambiguous_expiry_and_secure_types(self):
+        base = {
+            "domain": ".kuaishou.com",
+            "path": "/",
+        }
+        payload = {
+            "cookies": [
+                {**base, "name": "missing_expiry", "value": "allowed"},
+                {
+                    **base,
+                    "name": "session",
+                    "value": "allowed",
+                    "expires": -1,
+                    "secure": False,
+                },
+                {
+                    **base,
+                    "name": "future_secure",
+                    "value": "allowed",
+                    "expires": 2000,
+                    "secure": True,
+                },
+                {**base, "name": "zero", "value": "blocked", "expires": 0},
+                {**base, "name": "negative", "value": "blocked", "expires": -2},
+                {**base, "name": "none", "value": "blocked", "expires": None},
+                {**base, "name": "empty", "value": "blocked", "expires": ""},
+                {**base, "name": "false", "value": "blocked", "expires": False},
+                {
+                    **base,
+                    "name": "secure_int",
+                    "value": "blocked",
+                    "secure": 0,
+                },
+                {
+                    **base,
+                    "name": "secure_list",
+                    "value": "blocked",
+                    "secure": [],
+                },
+                {
+                    **base,
+                    "name": "secure_empty",
+                    "value": "blocked",
+                    "secure": "",
+                },
+            ]
+        }
+
+        cookie_dict = self.service.extract_cookie_dict_for_url(
+            payload,
+            "https://www.kuaishou.com/",
+            now=1000,
+            require_scope=True,
+        )
+
+        self.assertEqual(
+            cookie_dict,
+            {
+                "missing_expiry": "allowed",
+                "session": "allowed",
+                "future_secure": "allowed",
+            },
+        )
+
     def test_build_cookie_string_requires_target_cookie_when_requested(self):
         """验证 `test_build_cookie_string_requires_target_cookie_when_requested` 对应场景是否符合预期，供 `AuthServiceTests` 使用。"""
         cookie_str = self.service.build_cookie_string(

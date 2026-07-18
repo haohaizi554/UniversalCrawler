@@ -1025,7 +1025,16 @@ class KuaishouSpider(
     def run(self):
         """按详情链接或列表任务分流，避免同一输入重复经过两套浏览器流程。"""
         auth_file = cfg.get("auth", "kuaishou_cookie_file", "ks_auth.json")
-        self.keyword = self._normalize_keyword(self.keyword)
+        candidate = self._extract_first_url(self.keyword)
+        share_storage_state = (
+            self._load_saved_storage_state(auth_file)
+            if self._is_short_share_url(candidate)
+            else None
+        )
+        self.keyword = self._normalize_keyword(
+            self.keyword,
+            storage_state=share_storage_state,
+        )
         self.log(f"🚀 启动快手任务 | 目标: {self.keyword}")
         try:
             if self._is_detail_url(self.keyword) or self._is_short_share_url(

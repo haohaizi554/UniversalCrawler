@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import tempfile
 import time
 from typing import Any
 from urllib.parse import urlsplit
 
 from app.exceptions import CookieLoadError, CookieSaveError
+
+_COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_COOKIE_FIELD_UNSET = object()
+
+
+def _cookie_value_is_safe(value: str) -> bool:
+    return all(
+        code == 0x21
+        or 0x23 <= code <= 0x2B
+        or 0x2D <= code <= 0x3A
+        or 0x3C <= code <= 0x5B
+        or 0x5D <= code <= 0x7E
+        for code in map(ord, value)
+    )
+
 
 class AuthService:
     """统一处理 Cookie JSON 格式，并把文件 IO/JSON 异常收敛为领域异常。
@@ -104,10 +121,11 @@ class AuthService:
         url: str,
         *,
         now: float | None = None,
+        require_scope: bool = False,
     ) -> dict[str, str]:
         """按浏览器域名、路径、Secure 与过期规则筛出目标 URL 可用的 Cookie。"""
         if isinstance(payload, dict) and "cookies" not in payload:
-            return cls.extract_cookie_dict(payload)
+            return {} if require_scope else cls.extract_cookie_dict(payload)
         parsed = urlsplit(str(url or ""))
         host = (parsed.hostname or "").lower().rstrip(".")
         if not host:
@@ -119,6 +137,15 @@ class AuthService:
             if not isinstance(cookie, dict):
                 continue
             domain = str(cookie.get("domain") or "").strip().lower().rstrip(".")
+            raw_path = cookie.get("path")
+            if require_scope and (
+                not domain
+                or not isinstance(raw_path, str)
+                or not raw_path.startswith("/")
+                or any(ord(char) < 0x21 or ord(char) == 0x7F for char in domain)
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw_path)
+            ):
+                continue
             if domain:
                 include_subdomains = domain.startswith(".")
                 normalized_domain = domain.lstrip(".")
@@ -128,14 +155,57 @@ class AuthService:
                 if not domain_matches:
                     continue
             cookie_path = str(cookie.get("path") or "/")
-            if not request_path.startswith(cookie_path):
+            path_matches = request_path == cookie_path or (
+                request_path.startswith(cookie_path)
+                and (
+                    cookie_path.endswith("/")
+                    or request_path[len(cookie_path) :].startswith("/")
+                )
+            )
+            if not path_matches:
                 continue
-            if bool(cookie.get("secure")) and parsed.scheme.lower() != "https":
+            raw_secure = cookie.get("secure", _COOKIE_FIELD_UNSET)
+            if (
+                require_scope
+                and raw_secure is not _COOKIE_FIELD_UNSET
+                and not isinstance(raw_secure, bool)
+            ):
                 continue
-            try:
-                expires = float(cookie.get("expires", -1) or -1)
-            except (TypeError, ValueError):
-                expires = -1
+            is_secure = (
+                raw_secure is True
+                if require_scope
+                else bool(False if raw_secure is _COOKIE_FIELD_UNSET else raw_secure)
+            )
+            if is_secure and parsed.scheme.lower() != "https":
+                continue
+            raw_expires = cookie.get("expires", _COOKIE_FIELD_UNSET)
+            if require_scope:
+                if raw_expires is _COOKIE_FIELD_UNSET:
+                    expires = -1.0
+                elif (
+                    raw_expires is None
+                    or isinstance(raw_expires, bool)
+                    or raw_expires == ""
+                ):
+                    continue
+                else:
+                    try:
+                        expires = float(raw_expires)
+                    except (OverflowError, TypeError, ValueError):
+                        continue
+                if not math.isfinite(expires):
+                    continue
+                if expires != -1 and expires <= 0:
+                    continue
+            else:
+                try:
+                    expires = float(
+                        -1
+                        if raw_expires is _COOKIE_FIELD_UNSET
+                        else raw_expires or -1
+                    )
+                except (OverflowError, TypeError, ValueError):
+                    expires = -1
             if expires > 0 and expires <= current_time:
                 continue
             name = cookie.get("name")
@@ -144,7 +214,17 @@ class AuthService:
                 continue
             safe_name = cls._safe_to_string(name)
             safe_value = cls._safe_to_string(value)
-            if safe_name is not None and safe_value is not None:
+            if (
+                safe_name is not None
+                and safe_value is not None
+                and (
+                    not require_scope
+                    or (
+                        _COOKIE_NAME_PATTERN.fullmatch(safe_name) is not None
+                        and _cookie_value_is_safe(safe_value)
+                    )
+                )
+            ):
                 result[safe_name] = safe_value
         return result
 
