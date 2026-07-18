@@ -27,20 +27,62 @@ def test_target_navigation_reuses_equivalent_current_page() -> None:
     spider._goto_with_retry.assert_not_called()
 
 
-def test_keyword_search_reuses_homepage_loaded_during_login() -> None:
+def test_keyword_search_uses_direct_video_results_route() -> None:
     spider = _spider("测试主播")
-    spider._locator_visible = Mock(return_value=True)
-    spider._has_video_list = Mock(return_value=True)
-    spider.interruptible_page_wait = Mock(return_value=True)
     page = Mock()
     page.url = "https://www.kuaishou.com/"
-    search_input = page.locator.return_value.first
+
+    result = spider._search_keyword_via_site(page, spider.keyword)
+
+    assert result is page
+    spider._goto_with_retry.assert_called_once_with(
+        page,
+        "https://www.kuaishou.com/search/video?searchKey=%E6%B5%8B%E8%AF%95%E4%B8%BB%E6%92%AD",
+        description="打开快手搜索页",
+    )
+    page.locator.assert_not_called()
+
+
+def test_keyword_search_reuses_result_page_loaded_during_login() -> None:
+    spider = _spider("测试 主播&1")
+    page = Mock()
+    page.url = (
+        "https://www.kuaishou.com/search/video?"
+        "searchKey=%E6%B5%8B%E8%AF%95+%E4%B8%BB%E6%92%AD%261"
+    )
 
     result = spider._search_keyword_via_site(page, spider.keyword)
 
     assert result is page
     spider._goto_with_retry.assert_not_called()
-    search_input.fill.assert_called_once_with(spider.keyword)
+
+
+def test_plain_keyword_preloads_search_results_for_login_check() -> None:
+    spider = _spider("测试 主播&1")
+
+    assert spider._entry_url_for_login() == (
+        "https://www.kuaishou.com/search/video?"
+        "searchKey=%E6%B5%8B%E8%AF%95+%E4%B8%BB%E6%92%AD%261"
+    )
+
+
+def test_keyword_result_navigation_waits_for_commit_with_bounded_timeout() -> None:
+    spider = _spider("测试主播")
+    spider.__dict__.pop("_goto_with_retry", None)
+    spider.config["timeout"] = 90
+    spider.interruptible_playwright_goto = Mock(return_value=True)
+    spider.interruptible_page_wait = Mock(return_value=True)
+    page = Mock()
+    target = spider._keyword_search_url(spider.keyword)
+
+    assert spider._goto_with_retry(page, target, description="关键词结果页") is True
+
+    spider.interruptible_playwright_goto.assert_called_once_with(
+        page,
+        target,
+        timeout=spider.SEARCH_NAVIGATION_TIMEOUT_MS,
+        wait_until="commit",
+    )
 
 
 def test_visible_session_preflights_target_before_browser_launch() -> None:

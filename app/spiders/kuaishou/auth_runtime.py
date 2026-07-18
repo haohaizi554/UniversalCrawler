@@ -271,16 +271,35 @@ class KuaishouAuthRuntimeMixin:
         page,
         target_url: str,
     ) -> tuple[bool, bool | None]:
-        """不改变可见页面，只在短暂稳定窗口后重新校验已加载的登录态。"""
+        """不改变可见页面，在短探针后等待延迟渲染的登录态 DOM。"""
         del target_url
         try:
             if not self.interruptible_page_wait(page, 300):
                 return False, None
-            server_state = self._profile_session_valid(page)
-            logged_in = server_state is True or (
-                server_state is None and self._is_logged_in(page)
+            server_state = self._profile_session_valid(
+                page,
+                timeout_ms=self.LOGIN_RECHECK_PROFILE_TIMEOUT_MS,
             )
-            return logged_in, server_state
+            if server_state is not None:
+                return server_state, server_state
+
+            # SPA 首屏经常晚于 Cookie 恢复数秒才挂载头像区域。服务端探针不确定时
+            # 轮询现有页面即可，不再 reload/goto，也不把短暂未渲染误判为登录失效。
+            remaining_ms = self.LOGIN_STATE_STABILIZATION_MS
+            while remaining_ms > 0:
+                if getattr(self, "_is_running", None) is not None and not self.is_running:
+                    break
+                if self._is_logged_in(page):
+                    return True, None
+                slice_ms = min(self.LOGIN_STATE_POLL_MS, remaining_ms)
+                if not self.interruptible_page_wait(
+                    page,
+                    slice_ms,
+                    step_ms=slice_ms,
+                ):
+                    return False, None
+                remaining_ms -= slice_ms
+            return False, None
         except PlaywrightError:
             return False, None
 

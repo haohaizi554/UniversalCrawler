@@ -26,6 +26,9 @@ class KuaishouSpider(
     LIST_READY_TIMEOUT_MS = 30000
     PROFILE_SESSION_URL = "https://www.kuaishou.com/rest/v/profile/get"
     PROFILE_SESSION_TIMEOUT_MS = 8000
+    LOGIN_RECHECK_PROFILE_TIMEOUT_MS = 1500
+    LOGIN_STATE_STABILIZATION_MS = 5000
+    LOGIN_STATE_POLL_MS = 250
     MANUAL_LOGIN_TIMEOUT_MS = 120_000
     SHORT_LINK_CONNECT_TIMEOUT_SECONDS = 5.0
     SHORT_LINK_READ_TIMEOUT_SECONDS = 12.0
@@ -35,6 +38,7 @@ class KuaishouSpider(
     DETAIL_STREAM_WAIT_MS = 8000
     DETAIL_STREAM_POLL_MS = 100
     SEARCH_POPUP_NAVIGATION_TIMEOUT_MS = 3000
+    SEARCH_NAVIGATION_TIMEOUT_MS = 15000
     NAVIGATION_ATTEMPTS = 3
     NETWORK_ERROR_MARKERS = (
         "网络异常，稍后重试",
@@ -128,14 +132,27 @@ class KuaishouSpider(
     ) -> bool:
         """重试导航，并把已渲染的站点网络错误页也视为失败。"""
         target_url = url.strip().strip("`")
+        try:
+            target_path = urllib.parse.urlsplit(target_url).path.rstrip("/")
+        except ValueError:
+            target_path = ""
+        is_keyword_results = target_path == "/search/video"
+        navigation_timeout = self._configured_timeout_ms(default=60)
+        if is_keyword_results:
+            # SPA 的 domcontentloaded 会被非关键子资源拖住；结果卡片另有专门等待，
+            # 因此这里只等主文档 commit，并限制单次连接阶段的最长时间。
+            navigation_timeout = min(
+                navigation_timeout,
+                self.SEARCH_NAVIGATION_TIMEOUT_MS,
+            )
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
                 if not self.interruptible_playwright_goto(
                     page,
                     target_url,
-                    timeout=self._configured_timeout_ms(default=60),
-                    wait_until="domcontentloaded",
+                    timeout=navigation_timeout,
+                    wait_until="commit" if is_keyword_results else "domcontentloaded",
                 ):
                     return False
                 if not self.interruptible_page_wait(page, 1500):
@@ -199,36 +216,22 @@ class KuaishouSpider(
         return self._open_profile_from_search_results(page, context, keyword)
 
     def _search_keyword_via_site(self, page, keyword: str):
-        """通过站内搜索打开关键词结果页。"""
+        """直接打开关键词视频结果页，避免首页搜索组件的长时间异步等待。"""
         self.log(f"🔍 通过站内搜索查找: {keyword}")
-        homepage = "https://www.kuaishou.com/"
-        if not self._page_matches_target(page, homepage) and not self._goto_with_retry(
-            page, homepage, description="打开快手搜索页"
+        target_url = self._keyword_search_url(keyword)
+        if not self._page_matches_target(page, target_url) and not self._goto_with_retry(
+            page,
+            target_url,
+            description="打开快手搜索页",
         ):
             return None
+        return page
 
-        input_selectors = (
-            "input[type='search']",
-            "input[placeholder*='搜索']",
-            "input[placeholder*='快手号']",
-            "input[placeholder*='作者']",
-        )
-        for selector in input_selectors:
-            try:
-                locator = page.locator(selector).first
-                if not self._locator_visible(locator):
-                    continue
-                locator.click()
-                locator.fill(keyword)
-                locator.press("Enter")
-                self.interruptible_page_wait(page, 2500)
-                if self._has_video_list(page, timeout=self._configured_timeout_ms(default=60)):
-                    self.log(f"✅ 已进入搜索结果视频列表: {keyword}")
-                    return page
-            except PlaywrightError:
-                continue
-        self.log("❌ 无法执行快手关键词搜索")
-        return None
+    @staticmethod
+    def _keyword_search_url(keyword: str) -> str:
+        """生成快手官方关键词视频结果路由，并统一处理空格和特殊字符。"""
+        query = urllib.parse.urlencode({"searchKey": str(keyword or "").strip()})
+        return f"https://www.kuaishou.com/search/video?{query}"
 
     def _switch_search_to_user_tab(self, page) -> None:
         """把搜索结果切换到用户或账号标签页。"""
@@ -629,7 +632,7 @@ class KuaishouSpider(
 
     def _wait_for_video_list(self, page) -> bool:
         """等待视频列表并记录无法加载的终止状态。"""
-        if self._has_video_list(page, timeout=self._configured_timeout_ms(default=60)):
+        if self._has_video_list(page, timeout=self.LIST_READY_TIMEOUT_MS):
             return True
         try:
             self.log("❌ 无法加载视频列表")
@@ -887,7 +890,15 @@ class KuaishouSpider(
             self.log("✅ 全部任务完成！")
 
     def _entry_url_for_login(self) -> str | None:
-        return self.keyword if self._is_kuaishou_url(self.keyword) and not self._is_detail_url(self.keyword) else None
+        if self._is_detail_url(self.keyword):
+            return None
+        if self._is_kuaishou_url(self.keyword):
+            return self.keyword
+        if self.keyword and not self.keyword.isdigit():
+            # 登录检查和列表扫描复用同一张结果页，避免先加载首页、再由 SPA
+            # 搜索组件发起第二轮导航。快手网络波动时，这能省掉一整个超时周期。
+            return self._keyword_search_url(self.keyword)
+        return None
 
     def _run_login_window_session(self, playwright, auth_file: str, entry_url: str | None) -> bool:
         self.log("🔓 正在打开快手登录窗口...")
@@ -1001,6 +1012,8 @@ class KuaishouSpider(
                 return "stopped"
             if not self._wait_for_video_list(page):
                 return "stopped"
+            if not self._is_kuaishou_url(self.keyword) and not self.keyword.isdigit():
+                self.log(f"✅ 已进入搜索结果视频列表: {self.keyword}")
 
             last_card_count = self._scan_video_cards(page)
             if not self.revive_for_partial_selection(last_card_count, "个候选作品"):

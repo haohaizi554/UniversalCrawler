@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from app.services.auth_service import AuthService
 from app.spiders.kuaishou.spider import KuaishouSpider
@@ -411,3 +411,22 @@ def test_kuaishou_uncertain_profile_probe_does_not_overwrite_saved_state() -> No
     )
 
     spider._persist_authenticated_state.assert_not_called()
+
+
+def test_kuaishou_login_recheck_waits_for_delayed_dom_state() -> None:
+    spider = _spider()
+    spider._profile_session_valid = Mock(return_value=None)
+    spider._is_logged_in = Mock(side_effect=[False, False, True])
+    spider.interruptible_page_wait = Mock(return_value=True)
+
+    result = spider._refresh_logged_in_state(
+        Mock(),
+        "https://www.kuaishou.com/search/video?searchKey=demo",
+    )
+
+    assert result == (True, None)
+    spider._profile_session_valid.assert_called_once_with(
+        ANY,
+        timeout_ms=spider.LOGIN_RECHECK_PROFILE_TIMEOUT_MS,
+    )
+    assert spider.interruptible_page_wait.call_count == 3
