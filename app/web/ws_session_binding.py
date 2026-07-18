@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 
-from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin
+from app.web.session_runtime import WebSessionContext, WebSessionRegistry, is_allowed_origin, is_local_host
 
 @dataclass(slots=True)
 class WebSocketSessionBinding:
@@ -44,8 +44,14 @@ class WebSocketSessionBinder:
         token = ws.cookies.get("ucrawl_session_token")
         expected_origin = f"{ws.url.scheme.replace('ws', 'http', 1)}://{ws.url.netloc}"
         token_valid = secrets.compare_digest(token or "", context.session_token)
+        client = getattr(ws, "client", None)
+        client_host = getattr(client, "host", None)
 
-        if origin and not is_allowed_origin(origin, expected_origin=expected_origin):
+        # 浏览器会始终发送 Origin；仅保留本机非浏览器客户端的无 Origin 兼容路径。
+        # 远程客户端即使拿到会话 Cookie，也不能绕过同源检查直接建立控制通道。
+        if (not origin and not is_local_host(client_host)) or (
+            origin and not is_allowed_origin(origin, expected_origin=expected_origin)
+        ):
             await ws.close(code=1008, reason="forbidden origin")
             return None
         if not token_valid:

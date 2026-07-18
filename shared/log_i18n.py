@@ -284,6 +284,16 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
         "MissAV manual verification is using system",
         "MissAV 人工驗證使用系統",
     ),
+    (
+        "MissAV 已接管系统浏览器",
+        "MissAV attached to the system browser",
+        "MissAV 已接管系統瀏覽器",
+    ),
+    (
+        "未找到系统 Chrome/Edge，改用 Playwright 浏览器",
+        "No system Chrome/Edge was found; using the Playwright browser",
+        "未找到系統 Chrome/Edge，改用 Playwright 瀏覽器",
+    ),
     ("准备下载 MissAV HLS 流", "Preparing MissAV HLS stream download", "準備下載 MissAV HLS 串流"),
     ("正在尝试以 curl_cffi 浏览器模拟方式下载 MissAV HLS", "Trying curl_cffi browser-impersonated HLS download for MissAV", "正在嘗試以 curl_cffi 瀏覽器模擬方式下載 MissAV HLS"),
     ("正在尝试以 Playwright 浏览器上下文下载 MissAV HLS", "Trying Playwright browser-context HLS download for MissAV", "正在嘗試以 Playwright 瀏覽器上下文下載 MissAV HLS"),

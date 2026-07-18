@@ -111,9 +111,9 @@ class DownloadWorker(threading.Thread):
             ext = self._infer_extension()
             filename = self._generate_filename(ext)
             filepath = self._ensure_unique_path(os.path.join(save_dir, filename))
-            # 先设置 local_path，再 emit sig_start
-            # 这样 sig_start 信号携带的 local_path 是有效的（Web 端依赖此路径播放视频）
-            self.video.local_path = filepath
+            # `filepath` 只是计划中的最终路径。下载器通常先写 `.downloading`，
+            # 图集还可能产出完全不同的首张图片；完成校验前不能把它发布为可播放路径。
+            self.video.local_path = ""
             self._remember_output_path(filepath)
             self._final_ext = ext
             self.sig_start.emit(self.video.id)
@@ -128,20 +128,31 @@ class DownloadWorker(threading.Thread):
                 details=self._log_details(filepath, download_strategy or self.video.source),
                 trace_id=self._trace_id(),
             )
-            downloader.download(
+            reported_output = downloader.download(
                 video_item=self.video,
                 save_path=filepath,
                 progress_callback=self._emit_progress_if_changed(),
                 check_stop_func=lambda: not self.is_running
             )
-            if self.is_running and os.path.exists(filepath):
+            if not self.is_running:
+                return
+
+            # 兼容仍通过 VideoItem 回报产物的自定义下载器；内置下载器优先使用返回值，
+            # 从而让 local_path 只在整个下载成功后对 GUI/Web 可见。
+            legacy_reported_output = self.video.local_path
+            self.video.local_path = ""
+            output_path = self._resolve_completed_output_path(
+                filepath,
+                reported_output or legacy_reported_output,
+            )
+            if output_path == filepath:
                 # 某些站点返回的资源扩展名并不可信，下载完成后再按文件签名二次校正。
                 actual_ext = self._detect_actual_file_type(filepath)
                 if actual_ext and actual_ext != self._final_ext:
                     new_filepath = self._ensure_unique_path(filepath.rsplit('.', 1)[0] + actual_ext)
                     try:
                         os.rename(filepath, new_filepath)
-                        self.video.local_path = new_filepath
+                        output_path = new_filepath
                         self._remember_output_path(new_filepath)
                         debug_logger.log(
                             component="DownloadWorker",
@@ -166,6 +177,7 @@ class DownloadWorker(threading.Thread):
                         )
 
             if self.is_running:
+                self.video.local_path = output_path
                 debug_logger.log(
                     component="DownloadWorker",
                     action="download_finished",
@@ -218,6 +230,18 @@ class DownloadWorker(threading.Thread):
                     self._completion_callback(self, completion_reason)
             finally:
                 self.finished.emit()
+
+    @staticmethod
+    def _resolve_completed_output_path(planned_path: str, reported_path: object = None) -> str:
+        """返回真实存在的下载产物；下载器安静返回但未落盘时必须转为失败。"""
+        candidates = (reported_path, planned_path)
+        for candidate in candidates:
+            if not isinstance(candidate, (str, os.PathLike)):
+                continue
+            normalized = os.fspath(candidate)
+            if normalized and os.path.isfile(normalized):
+                return normalized
+        raise FileNotFoundError("下载完成但文件不存在")
 
     def _select_downloader(self) -> BaseDownloader:
         cls = downloader_registry.resolve(self.video)

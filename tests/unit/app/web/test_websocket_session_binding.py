@@ -80,7 +80,7 @@ class WebSocketSessionBinderTests(unittest.IsolatedAsyncioTestCase):
         binding = await binder.bind(ws)
 
         self.assertIsNone(binding)
-        self.assertEqual(ws.closed, (1008, "invalid session token"))
+        self.assertEqual(ws.closed, (1008, "forbidden origin"))
 
     async def test_bind_requires_configured_application_access_token_before_session_token(self):
         registry = self._registry()
@@ -104,6 +104,29 @@ class WebSocketSessionBinderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(binding)
         self.assertEqual(ws.closed, (1008, "invalid access token"))
+
+    async def test_bind_rejects_remote_client_with_valid_tokens_but_missing_origin(self):
+        registry = self._registry()
+        context = registry.get_or_create("session-a")
+        binder = WebSocketSessionBinder(
+            registry,
+            default_session_id="default",
+            access_token="application-access-token",
+            access_cookie_name="ucrawl_access_token",
+        )
+        ws = _FakeWebSocket(
+            cookies={
+                "ucrawl_access_token": "application-access-token",
+                "ucrawl_session": "session-a",
+                "ucrawl_session_token": context.session_token,
+            },
+            client_host="192.0.2.10",
+        )
+
+        binding = await binder.bind(ws)
+
+        self.assertIsNone(binding)
+        self.assertEqual(ws.closed, (1008, "forbidden origin"))
 
 if __name__ == "__main__":
     unittest.main()

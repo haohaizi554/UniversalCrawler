@@ -135,7 +135,7 @@ class DouyinDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
         headers: dict[str, str],
-    ) -> None:
+    ) -> str | None:
         """顺序落盘图集/实况条目，并把单文件进度汇总为任务进度。"""
         save_dir = os.path.dirname(save_path)
         total_files = len(images_data)
@@ -144,6 +144,7 @@ class DouyinDownloader(BaseDownloader):
         downloaded_by_file: dict[int, int] = {}
         total_by_file: dict[int, int] = {}
         progress_by_file: dict[int, int] = {}
+        first_output_path: str | None = None
 
         def emit_gallery_progress(
             seq: int,
@@ -189,14 +190,16 @@ class DouyinDownloader(BaseDownloader):
                 )
 
             if live_url:
+                target_path = os.path.join(save_dir, f"{video_item.title}_{seq}.mp4")
                 self._download_file(
                     live_url,
-                    os.path.join(save_dir, f"{video_item.title}_{seq}.mp4"),
+                    target_path,
                     headers,
                     check_stop_func,
                     progress_callback=file_progress_callback,
                     domain_policy=domain_policy,
                 )
+                first_output_path = first_output_path or target_path
                 progress_by_file.pop(seq, None)
                 completed += 1
                 self._emit_progress(
@@ -212,14 +215,16 @@ class DouyinDownloader(BaseDownloader):
                     img_ext = ".png"
                 elif ".webp" in lowered:
                     img_ext = ".webp"
+                target_path = os.path.join(save_dir, f"{video_item.title}_{seq}{img_ext}")
                 self._download_file(
                     img_url,
-                    os.path.join(save_dir, f"{video_item.title}_{seq}{img_ext}"),
+                    target_path,
                     headers,
                     check_stop_func,
                     progress_callback=file_progress_callback,
                     domain_policy=domain_policy,
                 )
+                first_output_path = first_output_path or target_path
                 progress_by_file.pop(seq, None)
                 completed += 1
                 self._emit_progress(
@@ -235,6 +240,7 @@ class DouyinDownloader(BaseDownloader):
             bytes_downloaded=sum(downloaded_by_file.values()) or None,
             bytes_total=sum(total_by_file.values()) or None,
         )
+        return first_output_path
 
     def _download_file(
         self,

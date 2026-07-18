@@ -25,7 +25,7 @@ class XiaohongshuDownloader(BaseDownloader):
         save_path: str,
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
-    ) -> None:
+    ) -> str | None:
         user_agent = self._resolve_runtime_user_agent(
             video_item,
             source="xiaohongshu",
@@ -40,7 +40,7 @@ class XiaohongshuDownloader(BaseDownloader):
             headers["Cookie"] = cookie
 
         if video_item.meta.get("is_gallery") and video_item.meta.get("images_data"):
-            self._download_gallery(
+            return self._download_gallery(
                 video_item,
                 list(video_item.meta.get("images_data") or []),
                 save_path,
@@ -71,10 +71,10 @@ class XiaohongshuDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
         headers: dict[str, str],
-    ) -> None:
+    ) -> str | None:
         save_dir = os.path.dirname(save_path)
         base_name = sanitize_filename(os.path.splitext(os.path.basename(save_path))[0])
-        self._download_gallery_parallel(
+        return self._download_gallery_parallel(
             video_item=video_item,
             images_data=images_data,
             save_dir=save_dir,
@@ -94,7 +94,7 @@ class XiaohongshuDownloader(BaseDownloader):
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
         headers: dict[str, str],
-    ) -> None:
+    ) -> str | None:
         image_jobs = [
             (idx, image)
             for idx, image in enumerate(images_data, start=1)
@@ -103,13 +103,14 @@ class XiaohongshuDownloader(BaseDownloader):
         total = max(1, len(image_jobs))
         if not image_jobs:
             self._emit_progress(progress_callback, 100)
-            return
+            return None
 
         completed = 0
         downloaded_by_image: dict[int, int] = {}
         total_by_image: dict[int, int] = {}
         progress_by_image: dict[int, int] = {}
         first_index = total + 1
+        first_path: str | None = None
         progress_lock = threading.RLock()
 
         def emit_gallery_progress(
@@ -186,7 +187,7 @@ class XiaohongshuDownloader(BaseDownloader):
                 with progress_lock:
                     if idx < first_index:
                         first_index = idx
-                        video_item.local_path = target_path
+                        first_path = target_path
                     progress_by_image.pop(idx, None)
                     completed += 1
                     progress = int(completed / total * 100)
@@ -207,6 +208,7 @@ class XiaohongshuDownloader(BaseDownloader):
             bytes_downloaded=aggregate_downloaded if aggregate_downloaded > 0 else None,
             bytes_total=aggregate_total if aggregate_total > 0 else None,
         )
+        return first_path
 
     @classmethod
     def _gallery_image_worker_count(cls, total: int) -> int:

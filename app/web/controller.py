@@ -1128,18 +1128,11 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
         }
 
     def rename_video(self, video_id: str, new_title: str) -> dict:
-        outcome = self._rename_video_sync(video_id, new_title, self.current_save_dir)
-        if outcome.status != "ok":
-            self.bridge.emit("log", {"message": f"❌ 重命名失败: {outcome.error}"})
-            return {"status": "error", "message": outcome.error}
-        message = self._rename_outcome_message(outcome)
-        if message:
-            self.bridge.emit("log", {"message": message})
-        self.bridge.emit(
-            "video_renamed",
-            {"video_id": video_id, "new_title": outcome.video.title, "new_path": outcome.new_path},
-        )
-        return {"status": "ok"}
+        """停用缺少会话授权快照的旧同步入口。"""
+        return {
+            "status": "error",
+            "message": "同步重命名入口已停用，请使用带授权目录的异步接口",
+        }
 
     async def async_rename_video(
         self,
@@ -1149,6 +1142,13 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
     ) -> dict:
         """异步重命名：在线程池执行 I/O，并把身份确认与事件入队原子化。"""
         import asyncio
+        if approved_roots is None:
+            return {
+                "status": "error",
+                "message": DIRECTORY_NOT_AUTHORIZED_MESSAGE,
+                "http_status": 403,
+                "data": {"video_id": video_id, "code": "directory_not_authorized"},
+            }
         video = self._video_lookup(video_id)
         if not video:
             return {"status": "error", "message": "视频不存在"}

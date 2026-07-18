@@ -901,13 +901,14 @@ class XiaohongshuDownloaderTests(unittest.TestCase):
             )
 
             progresses: list[int] = []
-            downloader.download(item, save_path, progresses.append, lambda: False)
+            result_path = downloader.download(item, save_path, progresses.append, lambda: False)
 
         self.assertEqual(mocked_download_http_file.call_count, 2)
         saved_paths = [call.kwargs["save_path"] for call in mocked_download_http_file.call_args_list]
         first_path = next(path for path in saved_paths if path.endswith("_1.jpeg"))
         self.assertTrue(any(path.endswith("_2.webp") for path in saved_paths))
-        self.assertEqual(item.local_path, first_path)
+        self.assertEqual(result_path, first_path)
+        self.assertEqual(item.local_path, "")
         self.assertEqual(progresses[-1], 100)
 
     @patch("app.core.downloaders.xiaohongshu.XiaohongshuDownloader._download_http_file")

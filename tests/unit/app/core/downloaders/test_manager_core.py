@@ -115,7 +115,7 @@ class DownloadManagerCoreTests(unittest.TestCase):
         self.assertFalse(queued)
         self.assertTrue(manager.queue.empty())
         self.assertEqual(image.status, "\u5df2\u8df3\u8fc7")
-        self.assertEqual(image.progress, 100)
+        self.assertEqual(image.progress, 0)
         self.assertTrue(image.meta["skipped_by_video_only"])
 
     def test_startup_sweep_removes_non_hls_orphan_download_artifacts(self):

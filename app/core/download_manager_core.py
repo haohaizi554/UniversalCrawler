@@ -546,7 +546,8 @@ class DownloadManagerCore:
         if not isinstance(getattr(video, "meta", None), dict):
             video.meta = {}
         video.status = "已跳过"
-        video.progress = 100
+        # 跳过不是下载完成，不能用 100% 污染完成度、遥测或后续状态推断。
+        video.progress = 0
         video.meta["skipped_by_video_only"] = True
 
     def _active_heavy_worker_count(self) -> int:

@@ -1283,7 +1283,7 @@ class DownloaderStrategyTests(unittest.TestCase):
         item = VideoItem(url="https://example.com/cover.jpg", title="图集", source="douyin")
         downloader = DouyinDownloader()
 
-        downloader._download_gallery(
+        result_path = downloader._download_gallery(
             item,
             [
                 {"live_video_url": "https://cdn.example.com/live.mp4", "image_url": ""},
@@ -1297,6 +1297,8 @@ class DownloaderStrategyTests(unittest.TestCase):
 
         self.assertEqual(mocked_download_file.call_args_list[0].args[1], os.path.join("downloads", "图集_1.mp4"))
         self.assertEqual(mocked_download_file.call_args_list[1].args[1], os.path.join("downloads", "图集_2.webp"))
+        self.assertEqual(result_path, os.path.join("downloads", "图集_1.mp4"))
+        self.assertEqual(item.local_path, "")
 
     @patch.object(DouyinDownloader, "_download_file")
     def test_douyin_gallery_reports_aggregate_byte_progress(self, mocked_download_file):

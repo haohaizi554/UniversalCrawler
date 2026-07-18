@@ -258,6 +258,8 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "Cloudflare 验证已通过", en: "Cloudflare verification passed", tw: "Cloudflare 驗證已通過" },
   { zh: "Cloudflare 验证等待超时", en: "Cloudflare verification timed out", tw: "Cloudflare 驗證等待逾時" },
   { zh: "MissAV 人工验证使用系统", en: "MissAV manual verification is using system", tw: "MissAV 人工驗證使用系統" },
+  { zh: "MissAV 已接管系统浏览器", en: "MissAV attached to the system browser", tw: "MissAV 已接管系統瀏覽器" },
+  { zh: "未找到系统 Chrome/Edge，改用 Playwright 浏览器", en: "No system Chrome/Edge was found; using the Playwright browser", tw: "未找到系統 Chrome/Edge，改用 Playwright 瀏覽器" },
   { zh: "准备下载 MissAV HLS 流", en: "Preparing MissAV HLS stream download", tw: "準備下載 MissAV HLS 串流" },
   { zh: "正在尝试以 curl_cffi 浏览器模拟方式下载 MissAV HLS", en: "Trying curl_cffi browser-impersonated HLS download for MissAV", tw: "正在嘗試以 curl_cffi 瀏覽器模擬方式下載 MissAV HLS" },
   { zh: "正在尝试以 Playwright 浏览器上下文下载 MissAV HLS", en: "Trying Playwright browser-context HLS download for MissAV", tw: "正在嘗試以 Playwright 瀏覽器上下文下載 MissAV HLS" },

@@ -769,8 +769,9 @@ class WebControllerRuntimeTests(unittest.TestCase):
         controller, item = self._controller_with_video()
         item.local_path = "Z:/definitely-missing/input.mp4"
         controller.file_service.rename_media = Mock(side_effect=FileOperationError("file not found"))
+        approved_roots = (item.local_path, controller.current_save_dir)
 
-        result = asyncio.run(controller.async_rename_video(item.id, "new title"))
+        result = asyncio.run(controller.async_rename_video(item.id, "new title", approved_roots))
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["message"], "file not found")
@@ -778,11 +779,11 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(title, "new title")
         self.assertEqual(
             rename_target.local_path,
-            WebControllerConfigService.authorize_path(item.local_path, None),
+            WebControllerConfigService.authorize_path(item.local_path, approved_roots),
         )
         self.assertEqual(
             save_dir,
-            WebControllerConfigService.authorize_path(controller.current_save_dir, None),
+            WebControllerConfigService.authorize_path(controller.current_save_dir, approved_roots),
         )
 
     def test_async_rename_video_rejects_media_outside_approved_roots(self):
@@ -800,6 +801,23 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result.get("http_status"), 403)
         self.assertIn("授权", result["message"])
+        controller.file_service.rename_media.assert_not_called()
+
+    def test_async_rename_video_rejects_missing_approved_roots(self):
+        import asyncio
+
+        controller, item = self._controller_with_video()
+        item.local_path = "D:/downloads/input.mp4"
+        controller.current_save_dir = "D:/downloads"
+        controller.file_service.rename_media = Mock(
+            return_value=(item.local_path, "D:/downloads/renamed.mp4")
+        )
+
+        result = asyncio.run(controller.async_rename_video(item.id, "new title"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result.get("http_status"), 403)
+        self.assertEqual(result["data"]["code"], "directory_not_authorized")
         controller.file_service.rename_media.assert_not_called()
 
     def test_async_rename_video_reauthorizes_current_path_inside_worker(self):
@@ -886,7 +904,7 @@ class WebControllerRuntimeTests(unittest.TestCase):
             "authorize_path",
             side_effect=authorize,
         ):
-            result = asyncio.run(controller.async_rename_video(item.id, "renamed"))
+            result = asyncio.run(controller.async_rename_video(item.id, "renamed", ("D:/alias",)))
 
         self.assertEqual(result["status"], "ok")
         rename_target, _title, save_dir = controller.file_service.rename_media.call_args.args
@@ -949,7 +967,7 @@ class WebControllerRuntimeTests(unittest.TestCase):
         replacement_thread = threading.Thread(target=replace_after_commit_check)
         replacement_thread.start()
         try:
-            result = asyncio.run(controller.async_rename_video(item.id, "renamed"))
+            result = asyncio.run(controller.async_rename_video(item.id, "renamed", ("D:/downloads",)))
         finally:
             replacement_thread.join(timeout=2)
 
@@ -985,7 +1003,7 @@ class WebControllerRuntimeTests(unittest.TestCase):
                 return future
 
             with patch.object(loop, "run_in_executor", side_effect=run_then_replace):
-                return await controller.async_rename_video(item.id, "renamed")
+                return await controller.async_rename_video(item.id, "renamed", ("D:/downloads",))
 
         result = asyncio.run(replace_before_executor_waiter_resumes())
 
@@ -1001,6 +1019,17 @@ class WebControllerRuntimeTests(unittest.TestCase):
         item.local_path = "Z:/definitely-missing/input.mp4"
 
         self.assertEqual(controller.get_media_path(item.id), item.local_path)
+
+    def test_sync_rename_video_is_disabled_at_web_boundary(self):
+        controller, item = self._controller_with_video()
+        item.local_path = "D:/downloads/input.mp4"
+        controller.file_service.rename_media = Mock()
+
+        result = controller.rename_video(item.id, "new title")
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("异步", result["message"])
+        controller.file_service.rename_media.assert_not_called()
 
     def test_file_response_service_uses_request_range_header_fallback(self):
         import asyncio
@@ -1025,6 +1054,20 @@ class WebControllerRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 206)
         self.assertEqual(response.headers["content-range"], "bytes 1-3/10")
         self.assertEqual(response.headers["content-length"], "3")
+
+    def test_file_response_service_rejects_media_when_session_has_no_approved_roots(self):
+        from app.web.file_response_service import WebFileResponseService
+
+        with TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            media_path = Path(temp_dir) / "sample.mp4"
+            media_path.write_bytes(b"video")
+            service = WebFileResponseService(
+                get_request_context=Mock(),
+                has_valid_session_token=Mock(return_value=True),
+            )
+
+            with self.assertRaises(PermissionError):
+                service._media_file_info(str(media_path), ())
 
     def test_progress_signal_is_throttled_inside_time_window(self):
         controller, item = self._controller_with_video()

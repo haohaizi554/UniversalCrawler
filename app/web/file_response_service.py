@@ -107,6 +107,10 @@ class WebFileResponseService:
         )
 
     def _media_file_info(self, path: str, approved_roots: tuple[str, ...]) -> tuple[str, int, str]:
+        # 通用 PathPolicy 的空根表示“受信本地调用”；媒体路由接收不可信 video_id，
+        # 必须在 Web 边界把空快照解释为无授权，不能继承该 fail-open 语义。
+        if not approved_roots:
+            raise PermissionError("目录未被当前会话授权访问")
         resolved = self._path_policy.resolve_existing_file(path, approved_roots)
         return resolved, os.path.getsize(resolved), self._guess_media_type(resolved)
 

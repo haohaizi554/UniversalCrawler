@@ -419,7 +419,7 @@ class BaseDownloader:
         save_path: str,
         progress_callback: ProgressCallback,
         check_stop_func: StopCheck,
-    ) -> None:
+    ) -> str | None:
         
         raise NotImplementedError
     @staticmethod
