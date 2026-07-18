@@ -594,6 +594,11 @@ _RUNTIME_LOG_PHRASE_TRANSLATIONS = (
     ("未找到匹配的快手账号主页", "No matching Kuaishou account homepage found", "未找到匹配的快手帳號主頁"),
     ("检测到快手分享/详情链接，直接解析单条作品", "Detected Kuaishou share/detail link; parsing a single work directly", "偵測到快手分享/詳情連結，直接解析單條作品"),
     ("未能从快手分享链接中解析出可下载视频", "Could not parse a downloadable video from the Kuaishou share link", "未能從快手分享連結解析出可下載影片"),
+    (
+        "开始滚动加载列表... (点击【停止】生成清单)",
+        "Starting to scroll and load the list... (click Stop to generate the list)",
+        "開始滾動載入列表...（點擊【停止】產生清單）",
+    ),
     ("开始滚动加载列表", "Starting to scroll and load the list", "開始滾動載入列表"),
     ("点击【停止】生成清单", "click Stop to generate the list", "點擊【停止】生成清單"),
     ("解析视频信息", "Parsing video information", "解析影片資訊"),
@@ -1080,6 +1085,14 @@ _EVENT_CODE_SEGMENT_ALIASES = {
     "WebUI": "网页端",
     "MainWindow": "主窗口",
     "ApplicationContext": "应用上下文",
+}
+
+_EVENT_CODE_EXACT_ALIASES = {
+    "KUAISHOU_开始滚动加载列表_点击_停止_生成清单": {
+        "zh-CN": "KUAISHOU_开始滚动加载列表_点击_停止_生成清单",
+        "en-US": "KUAISHOU_SCROLL_LIST_START_STOP_TO_BUILD_SELECTION",
+        "zh-TW": "KUAISHOU_開始滾動載入列表_點擊_停止_產生清單",
+    },
 }
 
 _MEDIA_TERM_ALIASES = {
@@ -1592,6 +1605,9 @@ def localize_log_event_code(code: object, language: str | None) -> str:
     normalized = normalize_language(language)
     if not value or value == "-":
         return value
+    exact = _EVENT_CODE_EXACT_ALIASES.get(value)
+    if exact:
+        return _localized(exact, normalized) or value
     if normalized != "en-US":
         if normalized == "zh-TW" and "_" in value:
             return "_".join(

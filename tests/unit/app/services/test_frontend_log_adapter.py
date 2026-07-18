@@ -78,6 +78,23 @@ def test_enrich_log_item_adds_frontend_fields():
     assert item["message_summary_align"] == "center"
 
 
+def test_enrich_log_item_turns_boundary_newlines_into_readable_single_line_summary():
+    message = "\n📜 开始滚动加载列表... (点击【停止】生成清单)\n"
+
+    item = enrich_log_item(
+        {
+            "time": "2026-07-18 19:18:45",
+            "level": "INFO",
+            "source": "kuaishou",
+            "message": message,
+            "message_summary": message,
+        }
+    )
+
+    assert item["message"] == "📜 开始滚动加载列表... (点击【停止】生成清单)"
+    assert item["message_summary"] == "📜 开始滚动加载列表... (点击【停止】生成清单)"
+
+
 def test_enrich_log_item_projects_gui_detail_payload_when_raw_detail_is_empty():
     item = enrich_log_item(
         {

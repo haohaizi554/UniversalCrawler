@@ -647,7 +647,7 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         )
 
     def test_gui_log_center_localizes_dynamic_log_message_and_event_code(self):
-        from shared.log_i18n import localize_log_payload, localize_log_text
+        from shared.log_i18n import localize_log_event_code, localize_log_payload, localize_log_text
 
         shell = self._make_shell()
         shell.show_page("logs")
@@ -827,6 +827,26 @@ class UnifiedFrontendI18nLogsContractTests(_UnifiedFrontendContractTestCase):
         self.assertEqual(
             localize_log_text("🎯 检测到快手分享/详情链接，使用静默单资源解析流程", "en-US"),
             "🎯 Kuaishou share/detail link detected; using the silent single-resource parsing flow",
+        )
+        self.assertEqual(
+            localize_log_text("📜 开始滚动加载列表... (点击【停止】生成清单)", "en-US"),
+            "📜 Starting to scroll and load the list... (click Stop to generate the list)",
+        )
+        self.assertEqual(
+            localize_log_text(
+                "📜 Starting to scroll and load the list... (click Stop to generate the list)",
+                "zh-TW",
+            ),
+            "📜 開始滾動載入列表...（點擊【停止】產生清單）",
+        )
+        kuaishou_event = "KUAISHOU_开始滚动加载列表_点击_停止_生成清单"
+        self.assertEqual(
+            localize_log_event_code(kuaishou_event, "en-US"),
+            "KUAISHOU_SCROLL_LIST_START_STOP_TO_BUILD_SELECTION",
+        )
+        self.assertEqual(
+            localize_log_event_code(kuaishou_event, "zh-TW"),
+            "KUAISHOU_開始滾動載入列表_點擊_停止_產生清單",
         )
         self.assertEqual(
             localize_log_text("ℹ️ HTTP 未获得视频直链，切换无头浏览器继续解析", "en-US"),

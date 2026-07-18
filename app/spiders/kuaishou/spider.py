@@ -642,7 +642,7 @@ class KuaishouSpider(
 
     def _scan_video_cards(self, page) -> int:
         """滚动页面直到内容加载完成或用户主动停止。"""
-        self.log("\n📜 开始滚动加载列表... (点击【停止】生成清单)")
+        self.log("📜 开始滚动加载列表... (点击【停止】生成清单)")
         scroll_count = 0
         last_card_count = 0
         no_new_content_count = 0

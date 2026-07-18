@@ -476,6 +476,11 @@ const RUNTIME_LOG_PHRASE_TRANSLATIONS = [
   { zh: "未找到匹配的快手账号主页", en: "No matching Kuaishou account homepage found", tw: "未找到匹配的快手帳號主頁" },
   { zh: "检测到快手分享/详情链接，直接解析单条作品", en: "Detected Kuaishou share/detail link; parsing a single work directly", tw: "偵測到快手分享/詳情連結，直接解析單條作品" },
   { zh: "未能从快手分享链接中解析出可下载视频", en: "Could not parse a downloadable video from the Kuaishou share link", tw: "未能從快手分享連結解析出可下載影片" },
+  {
+    zh: "开始滚动加载列表... (点击【停止】生成清单)",
+    en: "Starting to scroll and load the list... (click Stop to generate the list)",
+    tw: "開始滾動載入列表...（點擊【停止】產生清單）"
+  },
   { zh: "开始滚动加载列表", en: "Starting to scroll and load the list", tw: "開始滾動載入列表" },
   { zh: "点击【停止】生成清单", en: "click Stop to generate the list", tw: "點擊【停止】生成清單" },
   { zh: "解析视频信息", en: "Parsing video information", tw: "解析影片資訊" },
@@ -1245,10 +1250,20 @@ function localizeRuntimeDynamicSegments(text, language) {
     .join("");
 }
 
+const LOG_EVENT_CODE_EXACT_ALIASES = {
+  "KUAISHOU_开始滚动加载列表_点击_停止_生成清单": {
+    "zh-CN": "KUAISHOU_开始滚动加载列表_点击_停止_生成清单",
+    "en-US": "KUAISHOU_SCROLL_LIST_START_STOP_TO_BUILD_SELECTION",
+    "zh-TW": "KUAISHOU_開始滾動載入列表_點擊_停止_產生清單"
+  }
+};
+
 function localizeLogEventCode(value) {
   const text = String(value || "-");
   const language = currentLanguage();
   if (!text || text === "-") return text;
+  const exact = LOG_EVENT_CODE_EXACT_ALIASES[text];
+  if (exact) return exact[language] || exact["zh-CN"] || text;
   if (language !== "en-US") {
     if (language === "zh-TW" && text.includes("_")) {
       return text

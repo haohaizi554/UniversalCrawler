@@ -318,7 +318,8 @@ class LogCenterCases:
                 window.UcpLogI18n.translateRuntimeLogText("Config cookie_tiktok is not set; TikTok features may not work properly"),
                 window.UcpLogI18n.translateRuntimeLogText("[INFO] Updating Douyin parameters, please wait..."),
                 window.UcpLogI18n.translateRuntimeLogText("Download task completed"),
-                window.UcpLogI18n.translateRuntimeLogText("\U0001f50d Resolving link redirect")
+                window.UcpLogI18n.translateRuntimeLogText("\U0001f50d Resolving link redirect"),
+                window.UcpLogI18n.translateRuntimeLogText("📜 Starting to scroll and load the list... (click Stop to generate the list)")
               ];
               document.documentElement.dataset.language = "zh-TW";
               const tw = [
@@ -330,7 +331,8 @@ class LogCenterCases:
                 window.UcpLogI18n.translateRuntimeLogText("Preparing Kuaishou video stream download"),
                 window.UcpLogI18n.translateRuntimeLogText("Switched to dark theme"),
                 window.UcpLogI18n.translateRuntimeLogText("ℹ️ No videos or images found in this directory"),
-                window.UcpLogI18n.translateRuntimeLogText("Found 2 matching users")
+                window.UcpLogI18n.translateRuntimeLogText("Found 2 matching users"),
+                window.UcpLogI18n.translateRuntimeLogText("📜 Starting to scroll and load the list... (click Stop to generate the list)")
               ];
               document.documentElement.dataset.language = "en-US";
               const en = [
@@ -358,9 +360,14 @@ class LogCenterCases:
                 window.UcpLogI18n.translateRuntimeLogText("[INFO] 抖音参数更新完毕！"),
                 window.UcpLogI18n.translateRuntimeLogText("TikTok 参数更新完毕！"),
                 window.UcpLogI18n.translateRuntimeLogText("✅️ 下载完成: emoji.mp4"),
-                window.UcpLogI18n.translateRuntimeLogText("下载完成: demo.mp4")
+                window.UcpLogI18n.translateRuntimeLogText("下载完成: demo.mp4"),
+                window.UcpLogI18n.translateRuntimeLogText("📜 开始滚动加载列表... (点击【停止】生成清单)")
               ];
-              return { cn, tw, en };
+              const kuaishouEvent = "KUAISHOU_开始滚动加载列表_点击_停止_生成清单";
+              const enEventCode = window.UcpLogI18n.localizeLogEventCode(kuaishouEvent);
+              document.documentElement.dataset.language = "zh-TW";
+              const twEventCode = window.UcpLogI18n.localizeLogEventCode(kuaishouEvent);
+              return { cn, tw, en, enEventCode, twEventCode };
             }
             """
         )
@@ -404,6 +411,7 @@ class LogCenterCases:
                 "[INFO] 正在更新抖音参数，请稍等...",
                 "下载任务完成",
                 "\U0001f50d 正在解析链接重定向",
+                "📜 开始滚动加载列表... (点击【停止】生成清单)",
             ],
         )
         self.assertEqual(
@@ -418,6 +426,7 @@ class LogCenterCases:
                 "已切換到深色主題",
                 "ℹ️ 該目錄下沒有找到影片或圖片",
                 "找到 2 個匹配使用者",
+                "📜 開始滾動載入列表...（點擊【停止】產生清單）",
             ],
         )
         self.assertEqual(
@@ -448,7 +457,16 @@ class LogCenterCases:
                 "TikTok parameters updated!",
                 "✅️ Download completed: emoji.mp4",
                 "Download completed: demo.mp4",
+                "📜 Starting to scroll and load the list... (click Stop to generate the list)",
             ],
+        )
+        self.assertEqual(
+            result["enEventCode"],
+            "KUAISHOU_SCROLL_LIST_START_STOP_TO_BUILD_SELECTION",
+        )
+        self.assertEqual(
+            result["twEventCode"],
+            "KUAISHOU_開始滾動載入列表_點擊_停止_產生清單",
         )
 
     def test_09ia_log_table_localizes_mixed_runtime_summaries_after_language_switch(self):

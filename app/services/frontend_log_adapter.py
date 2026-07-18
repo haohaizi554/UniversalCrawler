@@ -135,6 +135,17 @@ def log_level_icon_file(level: str) -> str:
     return "log_level_info.png"
 
 
+def _normalize_log_message(value: object) -> str:
+    """去掉日志正文边界空白，保留正文内部原有的分行结构。"""
+    return str(value or "").strip()
+
+
+def _single_line_log_summary(value: object) -> str:
+    """把多行日志压成表格可安全省略的单行摘要。"""
+    text = _normalize_log_message(value)
+    return " ".join(line.strip() for line in text.splitlines() if line.strip())
+
+
 def enrich_log_item(item: Mapping[str, Any]) -> dict[str, Any]:
     enriched = dict(item or {})
     enriched["time"] = normalize_log_time_display(str(enriched.get("time") or ""))
@@ -143,8 +154,13 @@ def enrich_log_item(item: Mapping[str, Any]) -> dict[str, Any]:
     enriched["platform"] = str(enriched.get("platform") or platform_from_log(enriched) or "系统")
     enriched["category"] = log_category(enriched)
     enriched["timestamp_ms"] = log_timestamp_ms(str(enriched.get("time") or ""))
-    if not enriched.get("message_summary"):
-        enriched["message_summary"] = str(enriched.get("message") or "")[:120]
+    message = _normalize_log_message(enriched.get("message"))
+    if message or "message" in enriched:
+        enriched["message"] = message
+    raw_summary = enriched.get("message_summary")
+    summary = _single_line_log_summary(raw_summary or message)
+    # 从正文兜底生成的摘要继续沿用 120 字预算；显式摘要只规范分行，不擅自截断。
+    enriched["message_summary"] = summary if raw_summary else summary[:120]
     return _decorate_log_display_fields(enriched)
 
 
