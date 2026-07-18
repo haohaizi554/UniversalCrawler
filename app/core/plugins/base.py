@@ -19,6 +19,7 @@ class BasePlugin:
 
     id: str = "base"
     name: str = "Base Plugin"
+    aliases: tuple[str, ...] = ()
     sort_order: int = 1000
     description: str = ""
 

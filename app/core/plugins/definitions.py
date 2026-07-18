@@ -13,6 +13,7 @@ from .base import BasePlugin
 class KuaishouPlugin(BasePlugin):
     id = "kuaishou"
     name = "快手"
+    aliases = ("ks",)
     sort_order = 20
 
     def get_search_placeholder(self) -> str:
@@ -37,6 +38,7 @@ class KuaishouPlugin(BasePlugin):
 class MissAVPlugin(BasePlugin):
     id = "missav"
     name = "MissAV"
+    aliases = ("miss",)
     sort_order = 30
 
     def get_search_placeholder(self) -> str:
@@ -65,6 +67,7 @@ class MissAVPlugin(BasePlugin):
 class BilibiliPlugin(BasePlugin):
     id = "bilibili"
     name = "Bilibili"
+    aliases = ("bili", "bl")
     sort_order = 40
 
     def get_search_placeholder(self) -> str:
@@ -89,6 +92,7 @@ class BilibiliPlugin(BasePlugin):
 class DouyinPlugin(BasePlugin):
     id = "douyin"
     name = "抖音"
+    aliases = ("dy",)
     sort_order = 10
 
     def get_search_placeholder(self) -> str:
@@ -113,6 +117,7 @@ class DouyinPlugin(BasePlugin):
 class XiaohongshuPlugin(BasePlugin):
     id = "xiaohongshu"
     name = "小红书"
+    aliases = ("xhs",)
     sort_order = 15
 
     def get_search_placeholder(self) -> str:
