@@ -1,197 +1,114 @@
-"""CLI 主入口：`python -m cli` 或 `ucrawl` 命令。
-
-新架构支持：
-- 通用命令：search, scan, download, platforms
-- 平台别名：douyin, xiaohongshu, bilibili, kuaishou, missav
-- 交互式选择：TTY 和 stdin 管道
-"""
+"""`python -m cli` 与 `ucrawl` 共用的命令行入口。"""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from collections.abc import Sequence
 
-# 设置 PYTHONPATH 包含项目根目录（去重，避免重复插入）
+from cli.exit_codes import CliExitCode
+from cli.platform_catalog import CliPlatform
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-def _ensure_search_defaults(args: argparse.Namespace, platform: str) -> None:
-    """为平台别名命令补全通用 search 参数的默认值。
 
-    平台别名命令 (platform_base.py) 只定义了部分参数，
-    但 handle_search_command 需要完整的参数集。
-    此函数为缺失的属性设置合理默认值。
-    """
-    # 设置 source（核心字段）
-    args.source = platform
+def build_parser(
+    platforms: Sequence[CliPlatform] | None = None,
+) -> argparse.ArgumentParser:
+    """从平台目录构建唯一的根解析器。"""
 
-    # 通用 search 参数默认值
-    _defaults = {
-        "save_dir": None,
-        "max_items": None,
-        "max_pages": None,
-        "timeout": None,
-        "individual_only": False,
-        "priority": None,
-        "proxy": None,
-        "config": None,
-        "select": None,
-        "exclude": None,
-        "select_all": False,
-        "first": False,
-        "last": False,
-        "interactive": False,
-        "pipe": False,
-        "preload_choices": None,
-        "quiet": False,
-        "pretty": False,
-        "run_timeout": None,
-        "no_download": False,
-        # 与通用 search 命令便捷参数对齐（platform_base.py 已添加这些参数定义）
-        "cookie": None,
-        "download_strategy": None,
-        "referer": None,
-        "ua": None,
-        "folder_name": None,
-        "use_subdir": None,
-        "file_name": None,
-        "content_type": None,
-    }
-    for key, default in _defaults.items():
-        if not hasattr(args, key):
-            setattr(args, key, default)
+    from cli.commands.download import handle_download_command
+    from cli.commands.interactive import (
+        add_interactive_arguments,
+        handle_interactive_command,
+    )
+    from cli.commands.platform_base import add_platform_subparsers
+    from cli.commands.platforms import (
+        add_platforms_arguments,
+        handle_platforms_command,
+    )
+    from cli.commands.scan import add_scan_arguments, handle_scan_command
+    from cli.commands.search import handle_search_command
+    from cli.platform_catalog import load_cli_platforms, platform_ids
+    from shared.download_command_runtime import add_download_arguments
+    from shared.search_command_runtime import add_search_arguments
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI 主入口函数。
+    catalog = (
+        tuple(platforms)
+        if platforms is not None
+        else load_cli_platforms()
+    )
+    ids = platform_ids(catalog)
 
-    参数：
-        argv: 命令行参数 (None=使用 sys.argv[1:])
-
-    退出约定：
-        0 表示成功，1 表示命令执行失败；参数解析失败由 argparse 以 2 退出。
-    """
     parser = argparse.ArgumentParser(
         prog="ucrawl",
-        description="""UCrawl 通用爬虫 - 命令行/脚本/AI 工具
-
-用法:
-  ucrawl search --source <平台> <关键词> [选项]
-  ucrawl <平台> search <关键词> [选项]
-  ucrawl scan <目录> [选项]
-  ucrawl download <video_id> [选项]
-  ucrawl platforms [选项]
-
-示例:
-  # 通用命令
-  ucrawl search --source douyin "测试" --max-items 10
-  ucrawl search --source bilibili "BV1xxx" --select "0,2,5"
-
-  # 平台别名
-  ucrawl douyin search "测试" --max-items 10
-  ucrawl xhs search "测试" --max-items 10
-  ucrawl bilibili search "BV1xxx" --select "0,2,5"
-  ucrawl missav search "ABC-123" --individual-only
-
-  # 合集场景：预加载多轮选择
-  ucrawl bilibili search "BV1xxx" --preload-choices "0|1,2|3,4"
-
-  # 本地操作
-  ucrawl scan "D:/downloads" --limit 500
-  ucrawl platforms --pretty
-
-二次选择:
-  --all              全选 (默认)
-  --first            只选第一个
-  --last             只选最后一个
-  --select "0,2,5"   指定索引 (逗号分隔，支持范围 0,2-5)
-  --exclude "1,3"    排除索引
-  --interactive / -i  强制 TTY 交互式选择
-  --pipe             强制 stdin 管道选择
-  --preload-choices "0|1,2|3,4"  预加载多次选择 (| 分轮，, 分索引)
-""",
+        description="UCrawl 通用爬虫命令行",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", "-V", action="store_true", help="显示版本")
-
     subparsers = parser.add_subparsers(dest="main_command", title="子命令")
 
-    from cli.commands.search import handle_search_command
-    from shared.search_command_runtime import add_search_arguments
-    search_parser = subparsers.add_parser("search", help="搜索并下载 (通用命令)")
-    add_search_arguments(search_parser)
+    search_parser = subparsers.add_parser("search", help="搜索并下载")
+    add_search_arguments(search_parser, platform_ids=ids)
     search_parser.set_defaults(_handler=handle_search_command)
 
-    from cli.commands.scan import add_scan_arguments, handle_scan_command
     scan_parser = subparsers.add_parser("scan", help="扫描本地目录")
     add_scan_arguments(scan_parser)
     scan_parser.set_defaults(_handler=handle_scan_command)
 
-    from cli.commands.download import handle_download_command
-    from shared.download_command_runtime import add_download_arguments
-    download_parser = subparsers.add_parser("download", help="下载指定视频")
+    download_parser = subparsers.add_parser("download", help="直接下载")
     add_download_arguments(download_parser)
     download_parser.set_defaults(_handler=handle_download_command)
 
-    from cli.commands.platforms import add_platforms_arguments, handle_platforms_command
-    platforms_parser = subparsers.add_parser("platforms", help="列出所有可用平台")
+    platforms_parser = subparsers.add_parser(
+        "platforms",
+        help="列出所有可用平台",
+    )
     add_platforms_arguments(platforms_parser)
     platforms_parser.set_defaults(_handler=handle_platforms_command)
 
-    from cli.commands.interactive import add_interactive_arguments, handle_interactive_command
-    interactive_parser = subparsers.add_parser("interactive", help="交互式引导模式", aliases=["i"])
+    interactive_parser = subparsers.add_parser(
+        "interactive",
+        help="交互式引导模式",
+        aliases=["i"],
+    )
     add_interactive_arguments(interactive_parser)
     interactive_parser.set_defaults(_handler=handle_interactive_command)
 
-    # 平台别名 (douyin, xiaohongshu, bilibili, kuaishou, missav)
-    from cli.commands.platform_base import add_platform_subparsers
-    add_platform_subparsers(subparsers)
+    add_platform_subparsers(subparsers, catalog)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """解析并派发命令，返回稳定进程退出码。"""
+
+    try:
+        parser = build_parser()
+    except ValueError as exc:
+        sys.stderr.write(f"CLI 初始化失败: {exc}\n")
+        return int(CliExitCode.ERROR)
 
     args = parser.parse_args(argv)
-
-    if getattr(args, "main_command", None) == "search":
-        from shared.search_command_runtime import resolve_keyword
-        try:
-            args.keyword = resolve_keyword(args)
-        except ValueError as exc:
-            # 交给 argparse 终止，确保参数错误稳定使用退出码 2，而不是混入执行失败的 1。
-            parser.error(str(exc))
-
     if args.version:
-        from cli import __version__
+        from shared.version import __version__
+
         sys.stdout.write(f"ucrawl {__version__}\n")
-        return 0
-
-    if not getattr(args, "main_command", None):
-        parser.print_help()
-        return 0
-
-    # 平台别名走同一套 handler：先把缺省 argparse 字段补齐，再复用通用
-    # search/download/scan 逻辑，避免平台别名和通用命令行为漂移。
-    from cli.commands.platform_base import resolve_platform
-    resolved_platform = resolve_platform(args.main_command)
-    if resolved_platform:
-        platform = resolved_platform
-        platform_subcmd = getattr(args, f"{platform}_subcommand", None)
-
-        if platform_subcmd == "search":
-            # 补全通用 search 参数的默认值（平台别名命令可能缺少这些属性）
-            _ensure_search_defaults(args, platform)
-            return handle_search_command(args)
-        elif platform_subcmd == "download":
-            return handle_download_command(args)
-        elif platform_subcmd == "scan":
-            return handle_scan_command(args)
-        else:
-            subparsers.choices[platform].print_help()
-            return 0
+        return int(CliExitCode.OK)
 
     handler = getattr(args, "_handler", None)
     if handler is None:
         parser.print_help()
-        return 0
-    return handler(args)
+        return int(CliExitCode.OK)
+
+    try:
+        return int(handler(args))
+    except KeyboardInterrupt:
+        sys.stderr.write("已取消\n")
+        return int(CliExitCode.CANCELLED)
+
 
 if __name__ == "__main__":
     sys.exit(main())

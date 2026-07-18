@@ -12,6 +12,14 @@ import sys
 import unittest
 from unittest.mock import patch
 
+PLATFORM_IDS = (
+    "douyin",
+    "xiaohongshu",
+    "bilibili",
+    "kuaishou",
+    "missav",
+)
+
 class CliVersionTests(unittest.TestCase):
     """--version 标志测试。"""
 
@@ -57,16 +65,26 @@ class CliSearchSubcommandTests(unittest.TestCase):
             result = main(["search", "--source", "douyin", "--keyword", "测试"])
 
         self.assertEqual(result, 0)
-        self.assertEqual(handler.call_args.args[0].keyword, "测试")
+        self.assertIsNone(handler.call_args.args[0].keyword)
+        self.assertEqual(handler.call_args.args[0].keyword_option, "测试")
 
     def test_search_rejects_conflicting_keyword_forms(self):
-        """位置参数与 --keyword 同时给出不同值时必须报参数错误。"""
+        """位置参数与 --keyword 冲突必须作为用法错误返回 2。"""
         from cli.main import main
 
-        with patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
-            main(["search", "--source", "douyin", "位置值", "--keyword", "选项值"])
+        with patch("sys.stdout.write"):
+            result = main(
+                [
+                    "search",
+                    "--source",
+                    "douyin",
+                    "位置值",
+                    "--keyword",
+                    "选项值",
+                ]
+            )
 
-        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(result, 2)
 
     def test_search_invalid_select_returns_error_without_starting_runner(self):
         """CLI 拼写错误必须在启动爬虫前失败。"""
@@ -75,7 +93,7 @@ class CliSearchSubcommandTests(unittest.TestCase):
         with patch("cli.commands.search.CLIRunner") as runner:
             result = main(["search", "--source", "douyin", "测试", "--select", "frist"])
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 2)
         runner.assert_not_called()
 
     def test_search_supports_xiaohongshu_source(self):
@@ -100,7 +118,7 @@ class CliSearchSubcommandTests(unittest.TestCase):
         """--preload-choices '0|1,2|3,4' 保持为字符串（在 handle_search_command 才解析）。"""
         from cli.commands.search import add_search_arguments
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(
             ["--source", "douyin", "kw", "--preload-choices", "0|1,2|3,4"]
         )
@@ -113,7 +131,7 @@ class CliSearchSubcommandTests(unittest.TestCase):
         from cli.commands.search import add_search_arguments
         import argparse
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(
             ["--source", "douyin", "kw", "--preload-choices", "0|1,2|3,4"]
         )
@@ -138,14 +156,14 @@ class CliSearchSubcommandTests(unittest.TestCase):
                 ["search", "--source", "douyin", "测试", "--preload-choices", "0|frist"]
             )
 
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 2)
         runner.assert_not_called()
 
     def test_search_max_items_int(self):
         """--max-items 必须是整数。"""
         from cli.commands.search import add_search_arguments
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(["--source", "douyin", "kw", "--max-items", "20"])
         self.assertEqual(args.max_items, 20)
 
@@ -161,23 +179,23 @@ class CliSearchSubcommandTests(unittest.TestCase):
         """--max-pages 必须是整数。"""
         from cli.commands.search import add_search_arguments
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(["--source", "bilibili", "kw", "--max-pages", "3"])
         self.assertEqual(args.max_pages, 3)
 
     def test_search_run_timeout_float(self):
-        """--run-timeout 60.5 必须是 float。"""
+        """--run-timeout 暂时写入独立的弃用兼容字段。"""
         from cli.commands.search import add_search_arguments
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(["--source", "douyin", "kw", "--run-timeout", "60.5"])
-        self.assertEqual(args.run_timeout, 60.5)
+        self.assertEqual(args.legacy_run_timeout, 60.5)
 
     def test_search_individual_only_flag(self):
         """--individual-only 是 bool flag。"""
         from cli.commands.search import add_search_arguments
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(["--source", "missav", "kw", "--individual-only"])
         self.assertTrue(args.individual_only)
 
@@ -185,7 +203,7 @@ class CliSearchSubcommandTests(unittest.TestCase):
         """--priority 必须是有效 choice。"""
         from cli.commands.search import add_search_arguments
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(parser, platform_ids=PLATFORM_IDS)
         args = parser.parse_args(["--source", "missav", "kw", "--priority", "中文字幕优先"])
         self.assertEqual(args.priority, "中文字幕优先")
 
@@ -229,30 +247,86 @@ class CliPlatformAliasTests(unittest.TestCase):
         call_args = mock_handler.call_args[0][0]
         self.assertEqual(call_args.source, "missav")
 
-    def test_alias_gets_search_defaults_filled(self):
-        """平台别名命令缺少的通用 search 参数（如 save_dir/timeout）必须自动填默认值。"""
-        from cli.main import main
-        from cli.main import _ensure_search_defaults
-        import argparse
-        ns = argparse.Namespace(douyin_subcommand="search", keyword="kw")
-        _ensure_search_defaults(ns, "douyin")
-        # 默认值必须都被填上
-        for field in ("save_dir", "max_items", "timeout", "individual_only", "quiet", "pretty"):
-            self.assertTrue(hasattr(ns, field), f"missing default for {field}")
+class CliDynamicPlatformParserTests(unittest.TestCase):
+    """平台注册表必须直接驱动通用与平台快捷解析器。"""
 
-    def test_alias_does_not_overwrite_explicit_args(self):
-        """_ensure_search_defaults 必须不覆盖用户已显式提供的值。"""
-        from cli.main import _ensure_search_defaults
-        import argparse
-        ns = argparse.Namespace(
-            douyin_subcommand="search",
-            keyword="kw",
-            max_items=99,  # 用户显式提供
-            save_dir="/tmp/dl",
+    def test_build_parser_uses_injected_external_platform(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser((CliPlatform("external", "External", ("ext",)),))
+
+        generic = parser.parse_args(["search", "--source", "external", "query"])
+        scoped = parser.parse_args(["ext", "search", "query"])
+        self.assertEqual(generic.source, "external")
+        self.assertEqual(scoped.source, "external")
+
+    def test_platform_search_has_same_business_fields_as_generic_search(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser((CliPlatform("douyin", "抖音", ("dy",)),))
+        generic = parser.parse_args(
+            [
+                "search",
+                "--source",
+                "douyin",
+                "query",
+                "--http-timeout",
+                "11",
+                "--timeout",
+                "22",
+            ]
         )
-        _ensure_search_defaults(ns, "douyin")
-        self.assertEqual(ns.max_items, 99, "explicit value must not be overwritten")
-        self.assertEqual(ns.save_dir, "/tmp/dl")
+        scoped = parser.parse_args(
+            [
+                "dy",
+                "search",
+                "query",
+                "--http-timeout",
+                "11",
+                "--timeout",
+                "22",
+            ]
+        )
+
+        business_fields = (
+            "source",
+            "keyword",
+            "http_timeout",
+            "command_timeout",
+            "legacy_run_timeout",
+            "max_items",
+            "max_pages",
+            "select",
+            "quiet",
+            "no_download",
+        )
+        self.assertEqual(
+            {field: getattr(generic, field) for field in business_fields},
+            {field: getattr(scoped, field) for field in business_fields},
+        )
+
+    def test_platform_commands_do_not_offer_scan(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser((CliPlatform("douyin", "抖音", ("dy",)),))
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["douyin", "scan", "."])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_keyboard_interrupt_returns_cancelled_code(self):
+        from cli.main import main
+
+        with patch(
+            "cli.commands.search.handle_search_command",
+            side_effect=KeyboardInterrupt,
+        ):
+            result = main(["search", "--source", "douyin", "query"])
+
+        self.assertEqual(result, 130)
+
 
 class CliPlatformsSubcommandTests(unittest.TestCase):
     """platforms 子命令测试。"""

@@ -81,7 +81,16 @@ class SearchEntryConsistencyTests(unittest.TestCase):
         from cli.commands.search import add_search_arguments, handle_search_command
 
         parser = argparse.ArgumentParser()
-        add_search_arguments(parser)
+        add_search_arguments(
+            parser,
+            platform_ids=(
+                "douyin",
+                "xiaohongshu",
+                "bilibili",
+                "kuaishou",
+                "missav",
+            ),
+        )
         args = parser.parse_args(
             [
                 "--source",
@@ -473,7 +482,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             config=None,
             max_items=None,
             max_pages=None,
-            timeout=None,
+            http_timeout=None,
             individual_only=False,
             priority=None,
             proxy=None,
@@ -487,7 +496,8 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             content_type=None,
             quiet=True,
             pretty=False,
-            run_timeout=None,
+            command_timeout=None,
+            legacy_run_timeout=None,
             no_download=False,
             select=None,
             exclude=None,
@@ -506,8 +516,8 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             build_missav_proxy_url=lambda proxy: proxy,
             validate_config_types=lambda config: None,
         )
-        exit_code, cli_result = run_search_command(cli_args, env=cli_env)
-        self.assertEqual(exit_code, 0)
+        outcome, cli_result = run_search_command(cli_args, env=cli_env)
+        self.assertEqual(outcome, "ok")
 
         import shared.sdk_runtime as sdk_module
 

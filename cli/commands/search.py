@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from cli.exit_codes import exit_code_for_status
 from shared import search_command_runtime as runtime
 from shared.cli_runner_runtime import CLIRunner
 from shared.runtime_options import (
@@ -47,6 +48,6 @@ def _build_config(args: argparse.Namespace) -> dict:
 
 
 def handle_search_command(args: argparse.Namespace) -> int:
-    exit_code, result = runtime.run_search_command(args, env=_runtime_env())
+    outcome, result = runtime.run_search_command(args, env=_runtime_env())
     runtime.emit_result(result, pretty=getattr(args, "pretty", False))
-    return exit_code
+    return int(exit_code_for_status(outcome))

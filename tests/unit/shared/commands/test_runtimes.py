@@ -27,7 +27,7 @@ class SearchCommandRuntimeTests(unittest.TestCase):
             save_dir=None,
             max_items=None,
             max_pages=None,
-            timeout=None,
+            http_timeout=None,
             individual_only=False,
             priority=None,
             proxy=None,
@@ -49,7 +49,8 @@ class SearchCommandRuntimeTests(unittest.TestCase):
             pipe=False,
             preload_choices=None,
             quiet=False,
-            run_timeout=None,
+            command_timeout=None,
+            legacy_run_timeout=None,
             no_download=False,
         )
         defaults.update(overrides)
@@ -104,14 +105,77 @@ class SearchCommandRuntimeTests(unittest.TestCase):
         env.selection_factory.from_cli_args.return_value = "selection"
         args = self._make_search_args(no_download=True)
 
-        exit_code, result = run_search_command(args, env=env)
+        outcome, result = run_search_command(args, env=env)
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(outcome, "ok")
         self.assertEqual(result["status"], "ok")
         runner_kwargs = env.CLIRunner_cls.call_args.kwargs
         self.assertEqual(runner_kwargs["save_dir"], "downloads")
         self.assertFalse(runner_kwargs["download"])
         self.assertEqual(runner_kwargs["selection_strategy"], "selection")
+
+    def test_http_timeout_enters_config_and_command_timeout_enters_runner(self):
+        from shared.search_command_runtime import (
+            add_search_arguments,
+            run_search_command,
+        )
+
+        parser = argparse.ArgumentParser()
+        add_search_arguments(parser, platform_ids=("douyin",))
+        args = parser.parse_args(
+            [
+                "--source",
+                "douyin",
+                "query",
+                "--http-timeout",
+                "12",
+                "--timeout",
+                "34",
+            ]
+        )
+        env = self._make_env()
+        runner = env.CLIRunner_cls.return_value
+        runner.run.return_value = {"status": "ok", "items": []}
+        env.selection_factory.from_cli_args.return_value = "selection"
+
+        outcome, result = run_search_command(args, env=env)
+
+        self.assertEqual(outcome, "ok")
+        self.assertEqual(result["status"], "ok")
+        runner_kwargs = env.CLIRunner_cls.call_args.kwargs
+        self.assertEqual(runner_kwargs["config"]["timeout"], 12)
+        self.assertEqual(runner_kwargs["timeout"], 34)
+
+    def test_legacy_run_timeout_warns_and_conflicts_with_timeout(self):
+        from shared.search_command_runtime import (
+            add_search_arguments,
+            resolve_command_timeout,
+            run_search_command,
+        )
+
+        parser = argparse.ArgumentParser()
+        add_search_arguments(parser, platform_ids=("douyin",))
+        legacy = parser.parse_args(
+            ["--source", "douyin", "query", "--run-timeout", "9"]
+        )
+        self.assertEqual(resolve_command_timeout(legacy), (9.0, True))
+
+        conflict = parser.parse_args(
+            [
+                "--source",
+                "douyin",
+                "query",
+                "--timeout",
+                "8",
+                "--run-timeout",
+                "9",
+            ]
+        )
+        env = self._make_env()
+        outcome, _result = run_search_command(conflict, env=env)
+
+        self.assertEqual(outcome, "usage")
+        env.CLIRunner_cls.assert_not_called()
 
 class DownloadCommandRuntimeTests(unittest.TestCase):
     def _make_env(self):
