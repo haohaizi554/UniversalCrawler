@@ -113,6 +113,8 @@ session.get(url)  # 实际连接会再次解析 DNS，未固定已验证地址
 
 对应测试入口是 `tests/integration/app/core/downloaders/test_runtime.py` 和 `tests/integration/app/core/downloaders/m3u8/test_lifecycle.py`。
 
+快手分享短链的请求级 DNS 固定、保存态 Cookie 逐跳筛选，以及从详情响应到签名 CDN 地址的交接约束，见 [快手 Playwright 会话启动与闪窗排障实践](kuaishou-playwright-session-startup.md#短链-http-快路cookie-与-cdn-交接)。该文档描述平台专用流水线；本节仍是共享 HLS 传输层的安全基线。
+
 ## 平台 URL：授权 hostname，不授权字符串片段
 
 URL 提取、URL 归一化和主机授权是三个不同步骤。代码从分享文案中提取出一个看起来像 URL 的字符串后，仍必须通过 `urllib.parse.urlparse/urlsplit` 取得 `hostname`，再做授权判断。
