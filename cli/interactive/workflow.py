@@ -66,95 +66,95 @@ def _resolve_runtime_options(
     return command_timeout, None
 
 
-def _configure_platform(platform_id: str, config: dict) -> None:
-    """Collect the built-in platform fields that benefit from a menu."""
+def _choice_default_index(
+    choices: list[dict],
+    current: Any,
+) -> int:
+    """Match an exact value or the closest numeric plugin choice."""
 
-    if platform_id in {"douyin", "xiaohongshu", "kuaishou"}:
-        current = config.get("max_items", 20)
-        options = ["1", "2", "5", "10", "20", "max (9999)"]
-        values = [1, 2, 5, 10, 20, 9999]
-        default_idx = min(
-            range(len(values)),
-            key=lambda index: abs(values[index] - current),
-        )
-        label = "笔记数量" if platform_id == "xiaohongshu" else "视频数量"
-        config["max_items"] = values[
-            prompts.choose(label, options, default_idx)
-        ]
-        return
+    for index, choice in enumerate(choices):
+        if choice.get("value") == current:
+            return index
 
-    if platform_id == "bilibili":
-        current = config.get("max_pages", 1)
-        options = ["1", "2", "5", "10", "20", "max (500)"]
-        values = [1, 2, 5, 10, 20, 500]
-        default_idx = min(
-            range(len(values)),
-            key=lambda index: abs(values[index] - current),
-        )
-        config["max_pages"] = values[
-            prompts.choose("搜索页数", options, default_idx)
-        ]
-        return
-
-    if platform_id != "missav":
-        return
-
-    current_individual = config.get("individual_only", False)
-    config["individual_only"] = (
-        prompts.choose(
-            "仅单体作品",
-            ["否", "是"],
-            0 if not current_individual else 1,
-        )
-        == 1
-    )
-
-    current_priority = config.get("priority", "中文字幕优先")
-    priorities = ["中文字幕优先", "无码流出优先"]
-    default_priority = 0 if current_priority == priorities[0] else 1
-    config["priority"] = priorities[
-        prompts.choose("排序偏好", priorities, default_priority)
+    numeric = [
+        (index, choice.get("value"))
+        for index, choice in enumerate(choices)
+        if isinstance(choice.get("value"), (int, float))
+        and not isinstance(choice.get("value"), bool)
     ]
+    if (
+        numeric
+        and isinstance(current, (int, float))
+        and not isinstance(current, bool)
+    ):
+        return min(
+            numeric,
+            key=lambda pair: abs(pair[1] - current),
+        )[0]
+    return 0
 
-    current_proxy = str(
-        config.get("proxy") or "http://127.0.0.1:7890"
-    )
-    proxy_presets = ["Clash (7890)", "v2rayN (10809)", "自定义"]
-    if "7890" in current_proxy:
-        default_proxy = 0
-    elif "10809" in current_proxy:
-        default_proxy = 1
-    else:
-        default_proxy = 2
-    proxy_choice = prompts.choose("代理", proxy_presets, default_proxy)
-    if proxy_choice < 2:
-        config["proxy"] = proxy_presets[proxy_choice]
-    else:
-        config["proxy"] = prompts.input_with_default(
-            "代理地址",
-            current_proxy,
+
+def _configure_platform(guide: dict, config: dict) -> None:
+    """Collect plugin-declared fields without platform-specific branches."""
+
+    for field in guide.get("fields", []):
+        if not isinstance(field, dict):
+            continue
+        choices = [
+            choice
+            for choice in field.get("choices", [])
+            if isinstance(choice, dict)
+            and isinstance(choice.get("label"), str)
+        ]
+        key = field.get("key")
+        if not isinstance(key, str) or not choices:
+            continue
+
+        selected = prompts.choose(
+            str(field.get("prompt") or key),
+            [choice["label"] for choice in choices],
+            _choice_default_index(choices, config.get(key)),
         )
+        choice = choices[selected]
+        if choice.get("custom"):
+            config[key] = prompts.input_with_default(
+                str(
+                    field.get("custom_prompt")
+                    or field.get("prompt")
+                    or key
+                ),
+                str(config.get(key) or ""),
+            )
+        else:
+            config[key] = choice.get("value")
 
 
-def _show_cookie_status(platform_id: str) -> None:
+def _show_cookie_status(auth_spec: dict) -> None:
     """Render the local Cookie preflight without any network validation."""
 
-    cookie_data = configuration.load_cookie(platform_id)
-    if configuration.auth_file_name(platform_id) is None:
+    mode = configuration.auth_mode(auth_spec)
+    if mode == "none":
         print(f"  Cookie: {prompts.DIM}该平台不需要{prompts.RESET}")
         return
+    if mode == "unspecified":
+        print(
+            f"  Cookie: {prompts.DIM}"
+            f"插件未声明鉴权规则{prompts.RESET}"
+        )
+        return
 
+    cookie_data = configuration.load_cookie(auth_spec)
     if cookie_data is None:
         print(f"  Cookie: {prompts.YELLOW}未检测到本地 Cookie{prompts.RESET}")
         print(
             f"          {prompts.DIM}"
-            f"{configuration.login_description(platform_id)}"
+            f"{configuration.login_description(auth_spec)}"
             f"{prompts.RESET}"
         )
         return
 
-    cookie_path = configuration.find_cookie_file(platform_id)
-    if configuration.check_cookie_valid(platform_id, cookie_data):
+    cookie_path = configuration.find_cookie_file(auth_spec)
+    if configuration.check_cookie_valid(auth_spec, cookie_data):
         cookie_name = cookie_path.name if cookie_path is not None else "本地文件"
         print(
             f"  Cookie: {prompts.GREEN}✓ 本地有效 "
@@ -162,7 +162,9 @@ def _show_cookie_status(platform_id: str) -> None:
         )
         return
 
-    required = configuration.required_cookie_key(platform_id)
+    required = " / ".join(
+        configuration.required_cookie_keys(auth_spec)
+    )
     print(
         f"  Cookie: {prompts.YELLOW}⚠ 本地 Cookie 缺少 {required}，"
         f"搜索时可能需要重新登录{prompts.RESET}"
@@ -308,7 +310,7 @@ def _run_interactive_loop(
         config = dict(get_platform_defaults(platform_id))
         config["timeout"] = 30
         print(f"{prompts.BOLD}步骤 3/5: 平台参数{prompts.RESET}")
-        _configure_platform(platform_id, config)
+        _configure_platform(guide, config)
         if guide.get("result_tip"):
             print(
                 f"  {prompts.DIM}{guide['result_tip']}"
@@ -342,10 +344,10 @@ def _run_interactive_loop(
         print(f"  {prompts.GREEN}✓ {save_dir}{prompts.RESET}\n")
 
         print(f"{prompts.BOLD}步骤 5/5: 确认执行{prompts.RESET}")
-        _show_cookie_status(platform_id)
+        _show_cookie_status(guide.get("auth", {}))
         print()
         for line in configuration.build_config_summary_lines(
-            platform_id,
+            guide,
             config,
             platform_name,
             keyword,

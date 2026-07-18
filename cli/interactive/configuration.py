@@ -9,79 +9,98 @@ from app.config import cfg
 from app.utils.runtime_paths import is_temporary_path
 from shared.runtime_options import (
     build_missav_proxy_url,
+    compose_runtime_config,
     validate_config_types,
 )
 
-_AUTH_FILE_MAP = {
-    "douyin": "dy_auth.json",
-    "xiaohongshu": "xhs_auth.json",
-    "bilibili": "bili_auth.json",
-    "kuaishou": "ks_auth.json",
-    "missav": None,
-}
 
-_REQUIRED_COOKIE_KEY = {
-    "douyin": "sessionid_ss",
-    "xiaohongshu": "a1",
-    "bilibili": "SESSDATA",
-    "kuaishou": "kuaishou.server.web_st",
-}
+def auth_mode(auth_spec: dict) -> str:
+    """Return a supported authentication mode with a safe fallback."""
 
-_LOGIN_DESC = {
-    "douyin": "抖音将自动弹出浏览器窗口，请扫码登录",
-    "xiaohongshu": "小红书将自动拉起浏览器以获取 Cookie，必要时请在页面中手动登录",
-    "bilibili": "B站将自动弹出浏览器窗口，请扫码登录",
-    "kuaishou": "快手将自动弹出浏览器窗口，请手动登录",
-}
+    mode = str(auth_spec.get("mode") or "unspecified").strip().lower()
+    return mode if mode in {"cookie", "none", "unspecified"} else "unspecified"
 
 
-def auth_file_name(platform_id: str) -> str | None:
-    """Return the local authentication filename, if the platform needs one."""
+def auth_file_name(auth_spec: dict) -> str | None:
+    """Resolve the configured authentication filename for a cookie contract."""
 
-    return _AUTH_FILE_MAP.get(platform_id)
+    if auth_mode(auth_spec) != "cookie":
+        return None
+    default_file = str(auth_spec.get("default_file") or "").strip()
+    config_key = str(auth_spec.get("config_key") or "").strip()
+    configured = None
+    if config_key:
+        try:
+            configured = cfg.get("auth", config_key, default_file)
+        except Exception:
+            configured = None
+    value = str(configured or default_file).strip()
+    return value or None
 
 
-def required_cookie_key(platform_id: str) -> str:
-    """Return the minimum local Cookie key used by the preflight check."""
+def required_cookie_keys(auth_spec: dict) -> tuple[str, ...]:
+    """Return the declared any-of Cookie keys for local preflight."""
 
-    return _REQUIRED_COOKIE_KEY.get(platform_id, "")
+    values = auth_spec.get("cookie_names")
+    if not isinstance(values, list):
+        return ()
+    return tuple(
+        str(value).strip()
+        for value in values
+        if str(value).strip()
+    )
 
 
-def login_description(platform_id: str) -> str:
-    """Return the platform-specific fallback login guidance."""
+def login_description(auth_spec: dict) -> str:
+    """Return plugin-provided login guidance."""
 
-    return _LOGIN_DESC.get(platform_id, "将自动弹出浏览器窗口登录")
+    return str(
+        auth_spec.get("login_description")
+        or "该插件未提供登录说明"
+    )
 
 
-def find_cookie_file(platform_id: str) -> Path | None:
+def find_cookie_file(auth_spec: dict) -> Path | None:
     """Return the first non-empty compatible Cookie JSON path."""
 
-    auth_name = _AUTH_FILE_MAP.get(platform_id)
+    auth_name = auth_file_name(auth_spec)
     if auth_name is None:
         return None
 
+    configured = Path(auth_name).expanduser()
+    default_name = str(auth_spec.get("default_file") or "").strip()
     candidates = [
-        Path(auth_name),
-        Path.home() / ".ucrawl" / auth_name,
-        Path(__file__).resolve().parent.parent.parent / auth_name,
+        configured,
+        Path.home() / ".ucrawl" / configured.name,
+        Path(__file__).resolve().parent.parent.parent / configured.name,
     ]
+    if default_name and default_name != configured.name:
+        candidates.extend(
+            (
+                Path(default_name),
+                Path.home() / ".ucrawl" / default_name,
+                Path(__file__).resolve().parent.parent.parent / default_name,
+            )
+        )
     try:
         from app.utils.runtime_paths import user_data_root
 
-        candidates.append(user_data_root() / auth_name)
+        candidates.append(user_data_root() / configured.name)
+        if default_name and default_name != configured.name:
+            candidates.append(user_data_root() / default_name)
     except Exception:
         pass
 
-    for path in candidates:
+    for path in dict.fromkeys(candidates):
         if path.exists() and path.stat().st_size > 0:
             return path
     return None
 
 
-def load_cookie(platform_id: str) -> dict | list | None:
+def load_cookie(auth_spec: dict) -> dict | list | None:
     """Read a non-empty dict/list Cookie JSON document."""
 
-    path = find_cookie_file(platform_id)
+    path = find_cookie_file(auth_spec)
     if path is None:
         return None
     try:
@@ -92,21 +111,17 @@ def load_cookie(platform_id: str) -> dict | list | None:
     return data if isinstance(data, (dict, list)) and data else None
 
 
-def build_cookie_string(cookie_data) -> str:
-    """Delegate supported Cookie shapes to the shared authentication service."""
+def check_cookie_valid(auth_spec: dict, cookie_data) -> bool:
+    """Check whether any plugin-declared Cookie key is present."""
+
+    required = required_cookie_keys(auth_spec)
+    if not required:
+        return auth_mode(auth_spec) != "cookie"
 
     from app.services.auth_service import AuthService
 
-    return AuthService.build_cookie_string(cookie_data)
-
-
-def check_cookie_valid(platform_id: str, cookie_data) -> bool:
-    """Check the locally required key without making a network request."""
-
-    required = _REQUIRED_COOKIE_KEY.get(platform_id)
-    if not required:
-        return True
-    return required in build_cookie_string(cookie_data)
+    cookie_dict = AuthService.extract_cookie_dict(cookie_data)
+    return any(cookie_dict.get(key) for key in required)
 
 
 def is_temp_dir(path: str) -> bool:
@@ -127,35 +142,42 @@ def persist_save_dir(save_dir: str) -> None:
 
 
 def build_config_summary_lines(
-    platform_id: str,
+    guide: dict,
     config: dict,
     platform_name: str,
     keyword: str,
     save_dir: str,
 ) -> list[str]:
-    """Build the platform-specific confirmation summary."""
+    """Build confirmation copy from plugin-owned field metadata."""
 
     lines = [
         f"  平台:   {platform_name}",
         f"  关键词: {keyword}",
         f"  保存到: {save_dir}",
     ]
-    if platform_id == "douyin":
-        lines.append(f"  视频数: {config.get('max_items', 20)}")
-        lines.append("  登录:   浏览器扫码")
-    elif platform_id == "xiaohongshu":
-        lines.append(f"  笔记数: {config.get('max_items', 20)}")
-        lines.append("  登录:   浏览器 Cookie / 手动登录")
-    elif platform_id == "bilibili":
-        lines.append(f"  页数:   {config.get('max_pages', 1)}")
-        lines.append("  登录:   浏览器扫码")
-    elif platform_id == "kuaishou":
-        lines.append(f"  视频数: {config.get('max_items', 20)}")
-        lines.append("  登录:   浏览器手动登录")
-    elif platform_id == "missav":
-        lines.append(f"  偏好:   {config.get('priority', '')}")
-        lines.append(f"  仅单体: {'是' if config.get('individual_only') else '否'}")
-        lines.append(f"  代理:   {config.get('proxy', '')}")
+    for field in guide.get("fields", []):
+        if not isinstance(field, dict):
+            continue
+        key = field.get("key")
+        if key not in config:
+            continue
+        value = config[key]
+        display = str(value)
+        for choice in field.get("choices", []):
+            if (
+                isinstance(choice, dict)
+                and choice.get("value") == value
+            ):
+                display = str(choice.get("label") or value)
+                break
+        label = str(field.get("summary_label") or key)
+        lines.append(f"  {label}: {display}")
+
+    auth_summary = str(
+        guide.get("auth", {}).get("summary") or ""
+    )
+    if auth_summary:
+        lines.append(f"  登录:   {auth_summary}")
     return lines
 
 
@@ -200,10 +222,11 @@ def finalize_interactive_config(
 
     if getattr(args, "use_subdir", None):
         finalized["use_subdir"] = True
-    if finalized.get("folder_name") and not finalized.get("use_subdir"):
-        finalized["use_subdir"] = True
     if getattr(args, "individual_only", None):
         finalized["individual_only"] = True
-    if platform_id == "missav" and finalized.get("proxy") is not None:
-        finalized["proxy"] = build_missav_proxy_url(finalized["proxy"])
-    return finalized
+    return compose_runtime_config(
+        platform_id,
+        user_config=finalized,
+        defaults_factory=lambda _source: {},
+        proxy_normalizer=build_missav_proxy_url,
+    )

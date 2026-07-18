@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import unittest
 from pathlib import Path
@@ -10,6 +11,12 @@ from unittest.mock import Mock, patch
 
 
 class InteractiveCommandTests(unittest.TestCase):
+    @staticmethod
+    def _platform_manifest(platform_id: str) -> dict:
+        from app.core.plugin_registry import registry
+
+        return registry.get_plugin(platform_id).get_manifest()
+
     def _make_args(self) -> argparse.Namespace:
         return argparse.Namespace(
             save_dir=None,
@@ -52,6 +59,17 @@ class InteractiveCommandTests(unittest.TestCase):
     ):
         from cli.interactive.workflow import run_interactive
 
+        sdk.list_platforms.return_value = [
+            (
+                platform
+                if "interactive" in platform
+                else {
+                    **self._platform_manifest(platform["id"]),
+                    **platform,
+                }
+            )
+            for platform in sdk.list_platforms.return_value
+        ]
         sdk_cls = Mock(return_value=sdk)
         runner_cls = Mock(return_value=runner)
         if cookie_data is None:
@@ -100,6 +118,148 @@ class InteractiveCommandTests(unittest.TestCase):
 
         self.assertEqual(guide["input_label"], "输入外部资源")
         self.assertIn("External", guide["result_tip"])
+
+    def test_external_plugin_manifest_drives_guide_choices_auth_and_summary(self):
+        from cli.interactive.catalog import guide_for
+        from cli.interactive.configuration import (
+            build_config_summary_lines,
+            check_cookie_valid,
+        )
+        from cli.interactive.workflow import _configure_platform
+
+        platform_info = {
+            "id": "external",
+            "name": "External",
+            "search_placeholder": "输入外部资源",
+            "interactive": {
+                "input_label": "输入作品链接",
+                "examples": ["https://example.test/item/1"],
+                "empty_tip": "检查插件连接",
+                "result_tip": "使用插件解析器",
+                "fields": [
+                    {
+                        "key": "quality",
+                        "prompt": "清晰度",
+                        "summary_label": "清晰度",
+                        "choices": [
+                            {
+                                "label": "720p",
+                                "value": "720",
+                                "custom": False,
+                            },
+                            {
+                                "label": "自定义",
+                                "value": None,
+                                "custom": True,
+                            },
+                        ],
+                        "custom_prompt": "自定义清晰度",
+                    },
+                ],
+                "auth": {
+                    "mode": "cookie",
+                    "config_key": "external_cookie_file",
+                    "default_file": "external_auth.json",
+                    "cookie_names": ["session"],
+                    "login_url": "https://example.test/",
+                    "login_description": "打开 External 登录",
+                    "summary": "浏览器登录",
+                },
+            },
+        }
+
+        guide = guide_for("external", platform_info)
+        config = {}
+        with patch(
+            "cli.interactive.workflow.prompts.choose",
+            return_value=0,
+        ):
+            _configure_platform(guide, config)
+
+        self.assertEqual(guide["input_label"], "输入作品链接")
+        self.assertEqual(config["quality"], "720")
+        self.assertTrue(
+            check_cookie_valid(
+                guide["auth"],
+                {"session": "cookie-value"},
+            )
+        )
+        lines = build_config_summary_lines(
+            guide,
+            config,
+            "External",
+            "demo",
+            r"D:\Downloads\UCP",
+        )
+        self.assertTrue(any("清晰度" in line and "720p" in line for line in lines))
+        self.assertTrue(any("浏览器登录" in line for line in lines))
+
+    def test_external_plugin_custom_choice_prompts_for_value(self):
+        from cli.interactive.catalog import guide_for
+        from cli.interactive.workflow import _configure_platform
+
+        guide = guide_for(
+            "external",
+            {
+                "id": "external",
+                "name": "External",
+                "interactive": {
+                    "fields": [
+                        {
+                            "key": "quality",
+                            "prompt": "清晰度",
+                            "summary_label": "清晰度",
+                            "choices": [
+                                {
+                                    "label": "720p",
+                                    "value": "720",
+                                    "custom": False,
+                                },
+                                {
+                                    "label": "自定义",
+                                    "value": None,
+                                    "custom": True,
+                                },
+                            ],
+                            "custom_prompt": "自定义清晰度",
+                        },
+                    ],
+                },
+            },
+        )
+        config = {"quality": "720"}
+        with patch(
+            "cli.interactive.workflow.prompts.choose",
+            return_value=1,
+        ), patch(
+            "cli.interactive.workflow.prompts.input_with_default",
+            return_value="1080",
+        ) as custom_input:
+            _configure_platform(guide, config)
+
+        self.assertEqual(config["quality"], "1080")
+        custom_input.assert_called_once_with("自定义清晰度", "720")
+
+    def test_interactive_modules_do_not_hardcode_builtin_platform_ids(self):
+        interactive_root = Path(__file__).resolve().parents[3] / "cli" / "interactive"
+        forbidden = {
+            "douyin",
+            "xiaohongshu",
+            "bilibili",
+            "kuaishou",
+            "missav",
+        }
+        constants = {
+            node.value
+            for path in sorted(interactive_root.glob("*.py"))
+            for node in ast.walk(
+                ast.parse(path.read_text(encoding="utf-8"))
+            )
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+        }
+
+        self.assertEqual(forbidden & constants, set())
 
     def test_command_module_is_a_thin_adapter(self):
         import cli.commands.interactive as module
@@ -242,17 +402,24 @@ class InteractiveCommandTests(unittest.TestCase):
         cfg_set.assert_not_called()
 
     def test_build_config_summary_lines_are_platform_specific(self):
+        from cli.interactive.catalog import guide_for
         from cli.interactive.configuration import build_config_summary_lines
 
         douyin_lines = build_config_summary_lines(
-            "douyin",
+            guide_for(
+                "douyin",
+                self._platform_manifest("douyin"),
+            ),
             {"max_items": 5, "timeout": 30},
             "抖音",
             "测试关键词",
             r"D:\Downloads\UCP",
         )
         missav_lines = build_config_summary_lines(
-            "missav",
+            guide_for(
+                "missav",
+                self._platform_manifest("missav"),
+            ),
             {
                 "individual_only": True,
                 "priority": "中文字幕优先",
@@ -289,10 +456,14 @@ class InteractiveCommandTests(unittest.TestCase):
         self.assertIn("未知", output.getvalue())
 
     def test_xiaohongshu_summary_hides_search_page_count(self):
+        from cli.interactive.catalog import guide_for
         from cli.interactive.configuration import build_config_summary_lines
 
         lines = build_config_summary_lines(
-            "xiaohongshu",
+            guide_for(
+                "xiaohongshu",
+                self._platform_manifest("xiaohongshu"),
+            ),
             {"max_items": 20, "search_max_pages": 5},
             "小红书",
             "摄影",
@@ -305,7 +476,10 @@ class InteractiveCommandTests(unittest.TestCase):
     def test_kuaishou_guide_mentions_share_link(self):
         from cli.interactive.catalog import guide_for
 
-        guide = guide_for("kuaishou")
+        guide = guide_for(
+            "kuaishou",
+            self._platform_manifest("kuaishou"),
+        )
 
         self.assertIn("分享链接", guide["input_label"])
         self.assertTrue(
