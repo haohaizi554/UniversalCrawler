@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from urllib.parse import quote
 
 import requests
+from curl_cffi.const import CurlOpt
 from playwright.sync_api import Error as PlaywrightError
 
 from app.config import DEFAULT_USER_AGENT
@@ -1465,9 +1466,10 @@ class SpiderHelperTests(unittest.TestCase):
 
         self.assertEqual(normalized, "https://www.kuaishou.com/short-video/3xj8abcde")
         mocked_get.assert_called_once()
+        self.assertNotIn("proxies", mocked_get.call_args.kwargs)
         self.assertEqual(
-            mocked_get.call_args.kwargs["proxies"],
-            {"http": None, "https": None, "all": None},
+            mocked_get.call_args.kwargs["curl_options"][CurlOpt.PROXY],
+            "",
         )
         spider._close_pending_share_response()
 
@@ -1663,7 +1665,9 @@ class SpiderHelperTests(unittest.TestCase):
     def test_kuaishou_silent_run_opens_login_then_retries_headless(self):
         spider = self._make_kuaishou_capture_spider()
         spider.keyword = "demo"
-        spider._normalize_keyword = Mock(side_effect=lambda value: value)
+        spider._normalize_keyword = Mock(
+            side_effect=lambda value, *, storage_state: value
+        )
         spider._try_direct_share_download = Mock(return_value=False)
         spider._browser_headless = Mock(return_value=True)
         spider._run_browser_session = Mock(side_effect=["login_required", "completed"])
@@ -1690,6 +1694,7 @@ class SpiderHelperTests(unittest.TestCase):
         self.assertEqual(login_session.args[2], None)
         self.assertEqual(first_session.kwargs, {"headless": True, "allow_manual_login": False})
         self.assertEqual(retry_session.kwargs, {"headless": True, "allow_manual_login": False})
+        spider._normalize_keyword.assert_called_once_with("demo", storage_state=None)
         spider._emit_finished.assert_called_once()
 
     def test_kuaishou_browser_session_restores_full_state_during_context_creation(self):

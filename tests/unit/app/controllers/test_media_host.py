@@ -140,6 +140,83 @@ class MediaHostControllerMixinTests(unittest.TestCase):
         controller.host.announce_directory_changed.assert_not_called()
         controller.scan_local_dir.assert_called_once_with()
 
+    def test_external_media_rescan_waits_until_downloads_are_idle(self):
+        controller = _DummyMediaHostController()
+        controller.host.current_save_dir = "D:/downloads"
+        controller.dl_manager = Mock()
+        controller.dl_manager.pending_work_counts.return_value = (1, 0)
+        controller.scan_local_dir = Mock()
+        scheduled: list[tuple[int, object]] = []
+
+        with patch(
+            "app.controllers.media_host_controller_mixin.QTimer.singleShot",
+            side_effect=lambda delay, callback: scheduled.append((delay, callback)),
+        ):
+            for _ in range(3):
+                controller._queue_external_media_rescan("D:/downloads")
+
+            controller.scan_local_dir.assert_not_called()
+            self.assertTrue(controller._external_media_rescan_deferred)
+            self.assertEqual(len(scheduled), 1)
+
+            _retry_delay, retry_callback = scheduled.pop(0)
+            retry_callback()
+            controller.scan_local_dir.assert_not_called()
+            self.assertEqual(len(scheduled), 1)
+
+            for _ in range(3):
+                controller._queue_external_media_rescan("D:/downloads")
+            self.assertEqual(len(scheduled), 1)
+
+            controller.dl_manager.pending_work_counts.return_value = (0, 0)
+            _retry_delay, retry_callback = scheduled.pop(0)
+            retry_callback()
+            self.assertEqual(scheduled[0][0], 180)
+
+            for _ in range(3):
+                controller._queue_external_media_rescan("D:/downloads")
+            self.assertEqual(len(scheduled), 1)
+
+            _debounce_delay, debounce_callback = scheduled.pop(0)
+            debounce_callback()
+
+        controller.scan_local_dir.assert_called_once_with(announce=False)
+
+    def test_external_media_rescan_callbacks_are_ignored_after_watch_stops(self):
+        retry_controller = _DummyMediaHostController()
+        retry_controller.host.current_save_dir = "D:/downloads"
+        retry_controller.dl_manager = Mock()
+        retry_controller.dl_manager.pending_work_counts.return_value = (1, 0)
+        retry_controller.scan_local_dir = Mock()
+        retry_callbacks: list[object] = []
+
+        debounce_controller = _DummyMediaHostController()
+        debounce_controller.host.current_save_dir = "D:/downloads"
+        debounce_controller.dl_manager = Mock()
+        debounce_controller.dl_manager.pending_work_counts.return_value = (0, 0)
+        debounce_controller.scan_local_dir = Mock()
+        debounce_callbacks: list[object] = []
+
+        with patch(
+            "app.controllers.media_host_controller_mixin.QTimer.singleShot",
+            side_effect=lambda _delay, callback: retry_callbacks.append(callback),
+        ):
+            retry_controller._queue_external_media_rescan("D:/downloads")
+            retry_controller.stop_media_directory_watch()
+            retry_controller.dl_manager.pending_work_counts.return_value = (0, 0)
+            retry_callbacks.pop()()
+
+        with patch(
+            "app.controllers.media_host_controller_mixin.QTimer.singleShot",
+            side_effect=lambda _delay, callback: debounce_callbacks.append(callback),
+        ):
+            debounce_controller._queue_external_media_rescan("D:/downloads")
+            debounce_controller.stop_media_directory_watch()
+            debounce_callbacks.pop()()
+
+        retry_controller.scan_local_dir.assert_not_called()
+        debounce_controller.scan_local_dir.assert_not_called()
+
     def test_on_rename_video_reports_error_and_resets_text(self):
         controller = _DummyMediaHostController()
         item = VideoItem(url="", title="旧标题", source="local")

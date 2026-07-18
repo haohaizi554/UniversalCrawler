@@ -285,6 +285,67 @@ class WebControllerRuntimeTests(unittest.TestCase):
         )
         controller.shutdown()
 
+    def test_external_media_rescan_waits_until_downloads_are_idle(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        controller._dl_manager = Mock()
+        controller._dl_manager.pending_work_counts.return_value = (1, 0)
+        controller.async_scan_local_dir = AsyncMock()
+        controller.EXTERNAL_MEDIA_RESCAN_RETRY_SECONDS = 0.01
+
+        async def run_scenario():
+            controller._loop = asyncio.get_running_loop()
+            for _ in range(3):
+                controller._queue_external_media_rescan("D:/downloads")
+            await asyncio.sleep(0.025)
+            controller.async_scan_local_dir.assert_not_awaited()
+            self.assertTrue(controller._external_media_rescan_deferred)
+            retry_handle = controller._external_media_rescan_retry_handle
+            self.assertIsNotNone(retry_handle)
+            self.assertFalse(retry_handle.cancelled())
+
+            for _ in range(3):
+                controller._queue_external_media_rescan("D:/downloads")
+            self.assertIs(controller._external_media_rescan_retry_handle, retry_handle)
+
+            controller._dl_manager.pending_work_counts.return_value = (0, 0)
+            await asyncio.sleep(0.03)
+
+        try:
+            asyncio.run(run_scenario())
+            controller.async_scan_local_dir.assert_awaited_once_with(
+                announce=False,
+                require_current=True,
+            )
+        finally:
+            controller.shutdown()
+
+    def test_external_media_rescan_retry_is_cancelled_on_shutdown(self):
+        import asyncio
+        from app.web.controller import WebController
+
+        controller = WebController(None, lambda *_args, **_kwargs: None)
+        controller._dl_manager = Mock()
+        controller._dl_manager.pending_work_counts.return_value = (1, 0)
+        controller.async_scan_local_dir = AsyncMock()
+        controller.EXTERNAL_MEDIA_RESCAN_RETRY_SECONDS = 0.05
+
+        async def run_scenario():
+            controller._loop = asyncio.get_running_loop()
+            controller._queue_external_media_rescan("D:/downloads")
+            retry_handle = controller._external_media_rescan_retry_handle
+            self.assertIsNotNone(retry_handle)
+
+            controller._stop_media_directory_watch()
+            self.assertTrue(retry_handle.cancelled())
+            await asyncio.sleep(0.07)
+
+        asyncio.run(run_scenario())
+        controller.async_scan_local_dir.assert_not_awaited()
+        controller.shutdown()
+
     def test_async_frontend_delete_action_uses_async_delete_video(self):
         import asyncio
         from app.web.controller import WebController

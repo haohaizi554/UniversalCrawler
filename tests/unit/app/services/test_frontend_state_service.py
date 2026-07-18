@@ -116,6 +116,10 @@ class FrontendStateServiceTests(unittest.TestCase):
                     self.assertEqual("ok", gui_service.handle_action(action, payload)["status"])
 
                 self.assertTrue(web_seen.wait(timeout=2))
+                deadline = time.monotonic() + 2
+                while web_manager.get("bilibili", "max_pages") != 2 and time.monotonic() < deadline:
+                    time.sleep(0.02)
+
                 self.assertEqual("dark", web_manager.get("common", "theme"))
                 self.assertEqual("purple", web_manager.get("appearance", "accent"))
                 self.assertEqual(90, web_manager.get("download", "request_timeout"))

@@ -13,6 +13,8 @@ from app.services.media_directory_monitor import media_directory_monitor
 class WebMediaScanRuntimeMixin:
     """把文件 I/O 留在线程池，并把一次扫描收敛成一个前端增量事件。"""
 
+    EXTERNAL_MEDIA_RESCAN_RETRY_SECONDS = 0.8
+
     def _start_media_directory_watch(self) -> None:
         if getattr(self, "_media_directory_watch_handle", None) is not None:
             return
@@ -30,23 +32,70 @@ class WebMediaScanRuntimeMixin:
 
     def _stop_media_directory_watch(self) -> None:
         self._media_directory_watch_closed = True
+        self._external_media_rescan_deferred = False
         handle = getattr(self, "_media_directory_watch_handle", None)
         self._media_directory_watch_handle = None
         close = getattr(handle, "close", None)
         if callable(close):
             close()
+        retry_handle = getattr(self, "_external_media_rescan_retry_handle", None)
+        self._external_media_rescan_retry_handle = None
+        cancel_retry = getattr(retry_handle, "cancel", None)
+        if callable(cancel_retry):
+            cancel_retry()
         task = self._external_media_scan_task
         self._external_media_scan_task = None
         if task is not None and not task.done():
             task.cancel()
 
+    def _download_work_pending(self) -> bool:
+        manager = getattr(self, "_dl_manager", None)
+        pending_counts = getattr(manager, "pending_work_counts", None)
+        if not callable(pending_counts):
+            return False
+        try:
+            active, queued = pending_counts()
+            return int(active or 0) > 0 or int(queued or 0) > 0
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _schedule_deferred_media_rescan_retry(self) -> None:
+        handle = getattr(self, "_external_media_rescan_retry_handle", None)
+        if handle is not None and not handle.cancelled():
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            return
+        self._external_media_rescan_retry_handle = loop.call_later(
+            self.EXTERNAL_MEDIA_RESCAN_RETRY_SECONDS,
+            self._retry_deferred_media_rescan,
+        )
+
+    def _retry_deferred_media_rescan(self) -> None:
+        self._external_media_rescan_retry_handle = None
+        if self._media_directory_watch_closed or self._is_shutting_down:
+            self._external_media_rescan_deferred = False
+            return
+        if not bool(getattr(self, "_external_media_rescan_deferred", False)):
+            return
+        if self._download_work_pending():
+            self._schedule_deferred_media_rescan_retry()
+            return
+        self._external_media_rescan_deferred = False
+        self._queue_external_media_rescan(self.current_save_dir)
+
     def _queue_external_media_rescan(self, _changed_directory: str) -> None:
         if self._media_directory_watch_closed or self._is_shutting_down:
+            return
+        if self._download_work_pending():
+            self._external_media_rescan_deferred = True
+            self._schedule_deferred_media_rescan_retry()
             return
         task = self._external_media_scan_task
         if task is not None and not task.done():
             self._external_media_rescan_pending = True
             return
+        self._external_media_rescan_deferred = False
         self._external_media_rescan_pending = False
         task = self._loop.create_task(
             self.async_scan_local_dir(announce=False, require_current=True)

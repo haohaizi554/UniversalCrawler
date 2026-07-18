@@ -324,6 +324,8 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
         self._media_scan_lock = asyncio.Lock()
         self._external_media_scan_task: asyncio.Task | None = None
         self._external_media_rescan_pending = False
+        self._external_media_rescan_deferred = False
+        self._external_media_rescan_retry_handle: asyncio.TimerHandle | None = None
         self._media_directory_watch_closed = False
         self._media_directory_watch_handle = None
         if loop is not None and loop.is_running():

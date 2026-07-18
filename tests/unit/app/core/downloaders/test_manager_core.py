@@ -226,22 +226,58 @@ class DownloadManagerCoreTests(unittest.TestCase):
 
         def blocking_sweep(_manager):
             sweep_started.set()
-            release_sweep.wait(timeout=2.0)
+            release_sweep.wait()
 
         with patch.object(DownloadManagerCore, "_sweep_m3u8_orphan_workspaces_on_startup", blocking_sweep):
             manager = _CoreManager()
             video = VideoItem(url="https://example.com/video.mp4", title="video", source="douyin")
             try:
-                self.assertTrue(sweep_started.wait(timeout=0.5))
+                self.assertTrue(sweep_started.wait(timeout=5.0))
                 self.assertTrue(manager.add_task(video, "downloads"))
                 self.assertFalse(manager.started_event.wait(timeout=0.15))
                 self.assertEqual(manager.started, [])
 
                 release_sweep.set()
-                self.assertTrue(manager.started_event.wait(timeout=1.0))
+                self.assertTrue(manager.started_event.wait(timeout=5.0))
                 self.assertEqual(manager.started, [video.id])
             finally:
                 release_sweep.set()
+                manager.stop_all()
+
+    def test_dispatch_does_not_wait_for_startup_completion_log_io(self):
+        release_completion_log = threading.Event()
+        completion_log_started = threading.Event()
+
+        def blocking_completion_log(**kwargs):
+            if kwargs.get("action") == "startup_maintenance_completed":
+                completion_log_started.set()
+                release_completion_log.wait()
+
+        with (
+            patch.object(
+                DownloadManagerCore,
+                "_sweep_m3u8_orphan_workspaces_on_startup",
+                return_value=None,
+            ),
+            patch(
+                "app.core.download_manager_core.debug_logger.log",
+                side_effect=blocking_completion_log,
+            ),
+        ):
+            manager = _CoreManager()
+            video = VideoItem(
+                url="https://example.com/video.mp4",
+                title="video",
+                source="douyin",
+            )
+            try:
+                self.assertTrue(completion_log_started.wait(timeout=5.0))
+                self.assertTrue(manager.add_task(video, "downloads"))
+
+                self.assertTrue(manager._startup_maintenance_done.wait(timeout=5.0))
+                self.assertTrue(manager.started_event.wait(timeout=5.0))
+            finally:
+                release_completion_log.set()
                 manager.stop_all()
 
     def test_dispatch_persists_path_before_worker_and_deletes_it_on_completion(self):

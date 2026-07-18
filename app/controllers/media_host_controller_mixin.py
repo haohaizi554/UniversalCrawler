@@ -34,6 +34,7 @@ class MediaHostControllerMixin:
     """协调宿主中的媒体库与播放流程。"""
 
     CLEAR_QUEUE_DETAIL_LOG_LIMIT = 200
+    EXTERNAL_MEDIA_RESCAN_RETRY_MS = 800
 
     def _video_state_guard(self):
         lock = getattr(self, "_videos_lock", None)
@@ -252,17 +253,57 @@ class MediaHostControllerMixin:
 
     def stop_media_directory_watch(self) -> None:
         self._media_directory_watch_closed = True
+        self._external_media_rescan_deferred = False
+        self._external_media_rescan_retry_pending = False
         handle = getattr(self, "_media_directory_watch_handle", None)
         self._media_directory_watch_handle = None
         close = getattr(handle, "close", None)
         if callable(close):
             close()
 
+    def _download_work_pending(self) -> bool:
+        manager = getattr(self, "dl_manager", None)
+        pending_counts = getattr(manager, "pending_work_counts", None)
+        if not callable(pending_counts):
+            return False
+        try:
+            active, queued = pending_counts()
+            return int(active or 0) > 0 or int(queued or 0) > 0
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _schedule_deferred_media_rescan_retry(self) -> None:
+        if bool(getattr(self, "_external_media_rescan_retry_pending", False)):
+            return
+        self._external_media_rescan_retry_pending = True
+        QTimer.singleShot(
+            self.EXTERNAL_MEDIA_RESCAN_RETRY_MS,
+            self._retry_deferred_media_rescan,
+        )
+
+    def _retry_deferred_media_rescan(self) -> None:
+        self._external_media_rescan_retry_pending = False
+        if bool(getattr(self, "_media_directory_watch_closed", False)):
+            self._external_media_rescan_deferred = False
+            return
+        if not bool(getattr(self, "_external_media_rescan_deferred", False)):
+            return
+        if self._download_work_pending():
+            self._schedule_deferred_media_rescan_retry()
+            return
+        self._external_media_rescan_deferred = False
+        self._queue_external_media_rescan(self._host().current_save_dir)
+
     def _queue_external_media_rescan(self, _changed_directory: str) -> None:
         if bool(getattr(self, "_media_directory_watch_closed", False)):
             return
+        if self._download_work_pending():
+            self._external_media_rescan_deferred = True
+            self._schedule_deferred_media_rescan_retry()
+            return
         if bool(getattr(self, "_external_media_rescan_pending", False)):
             return
+        self._external_media_rescan_deferred = False
         self._external_media_rescan_pending = True
         # Explorer can emit several metadata changes for one delete. Collapse
         # them before starting a background directory traversal.
@@ -271,6 +312,10 @@ class MediaHostControllerMixin:
     def _run_external_media_rescan(self) -> None:
         self._external_media_rescan_pending = False
         if bool(getattr(self, "_media_directory_watch_closed", False)):
+            return
+        if self._download_work_pending():
+            self._external_media_rescan_deferred = True
+            self._schedule_deferred_media_rescan_retry()
             return
         self.scan_local_dir(announce=False)
 

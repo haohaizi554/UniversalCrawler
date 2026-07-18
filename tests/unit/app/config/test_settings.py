@@ -650,8 +650,9 @@ class ConfigManagerTests(unittest.TestCase):
             for thread in threads:
                 thread.start()
             for thread in threads:
-                thread.join(timeout=2)
+                thread.join(timeout=10)
 
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
             self.assertEqual(errors, [])
             self.assertIn(manager.get("download", "max_concurrent"), {1, 3, 5})
 

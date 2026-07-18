@@ -204,6 +204,10 @@ class DownloadManagerCore:
                 exc,
             )
         finally:
+            # Recovery is complete once the sweep returns. Diagnostics must not
+            # keep queued downloads behind the startup gate when log I/O is busy.
+            self._startup_maintenance_done.set()
+            self._get_dispatch_slot_gate().set()
             try:
                 debug_logger.log(
                     component="DownloadManager",
@@ -217,9 +221,6 @@ class DownloadManagerCore:
                 )
             except Exception:
                 pass
-            finally:
-                self._startup_maintenance_done.set()
-                self._get_dispatch_slot_gate().set()
 
     def _sweep_m3u8_orphan_workspaces_on_startup(self) -> dict[str, Any]:
         """启动时清理上一轮异常退出留下的下载临时文件和 HLS 工作目录。"""
