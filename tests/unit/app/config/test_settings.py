@@ -668,7 +668,16 @@ class ConfigManagerTests(unittest.TestCase):
 
             manager = ConfigManager(str(config_path))
 
-            self.assertEqual(manager.get("common", "save_directory"), DEFAULT_DOWNLOAD_DIR)
+            self.assertEqual(
+                os.path.normcase(
+                    os.path.normpath(
+                        manager.get("common", "save_directory")
+                    )
+                ),
+                os.path.normcase(
+                    os.path.normpath(DEFAULT_DOWNLOAD_DIR)
+                ),
+            )
 
     def test_extended_ui_sections_persist_with_normalized_types(self):
         with tempfile.TemporaryDirectory() as temp_dir:
