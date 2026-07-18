@@ -25,11 +25,25 @@ class DownloadCommandEnv:
     get_plugin: Callable[[str], Any]
     list_platform_ids: Callable[[], list[str]]
 
-def add_download_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("video_id", help="视频 ID / 标题")
+def add_download_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    platform_ids: tuple[str, ...],
+    fixed_source: str | None = None,
+) -> None:
+    parser.add_argument("url", help="要直接下载的媒体 URL")
+    parser.add_argument("--title", default="", help="可选标题；不指定时由下载器推断")
     parser.add_argument("--save-dir", "-d", default=None, help="保存目录 (默认: 从配置读取)")
-    parser.add_argument("--url", help="视频 URL (如果已有)")
-    parser.add_argument("--source", "-s", default="", help="平台 ID (douyin/bilibili/kuaishou/missav)")
+    if fixed_source is None:
+        parser.add_argument(
+            "--source",
+            "-s",
+            required=True,
+            choices=platform_ids,
+            help="平台 ID",
+        )
+    else:
+        parser.set_defaults(source=fixed_source)
     parser.add_argument("--timeout", type=float, default=300, help="下载超时秒数 (默认: 300，与 SDK/REST API 一致)")
     parser.add_argument("--config", type=str, default=None, help="平台特定配置 (JSON 字符串，如 '{\"proxy\":\"http://127.0.0.1:7890\"}')")
     parser.add_argument("--cookie", type=str, default=None, help="Cookie 字符串 (与 --config '{\"cookie\":\"...\"}' 等价)")
@@ -49,22 +63,7 @@ def add_download_arguments(parser: argparse.ArgumentParser) -> None:
     out_group.add_argument("--pretty", action="store_true", help="人类可读格式 (默认 JSON)")
 
 def resolve_source(args: argparse.Namespace) -> str:
-    return getattr(args, "source", "") or getattr(args, "_platform", "")
-
-def build_missing_url_result(args: argparse.Namespace, *, save_dir: str) -> dict:
-    return {
-        "status": "error",
-        "video_id": args.video_id,
-        "url": "",
-        "source": resolve_source(args),
-        "title": args.video_id,
-        "error": "未提供 --url，无法下载",
-        "save_dir": save_dir,
-        "local_path": "",
-        "content_type": "",
-        "meta": {},
-        "elapsed": 0,
-    }
+    return str(getattr(args, "source", "") or "").strip()
 
 def parse_user_config(args: argparse.Namespace, *, env: DownloadCommandEnv) -> tuple[dict | None, str | None]:
     config_json = getattr(args, "config", None)
@@ -129,49 +128,58 @@ def run_download_command(
     args: argparse.Namespace,
     *,
     env: DownloadCommandEnv,
-) -> tuple[int, dict | None, str | None]:
+) -> tuple[str, dict | None, str | None]:
     """执行一次直接下载命令。
 
-    返回 `(exit_code, result, error_message)`，让 CLI 薄包装层自行决定
+    返回 `(outcome, result, error_message)`，让 CLI 薄包装层自行决定
     写 stdout/stderr；这样测试可以直接断言结构化结果，不依赖终端输出。
     """
-    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
+    url = str(getattr(args, "url", "") or "").strip()
+    title = str(getattr(args, "title", "") or "")
+    timeout = getattr(args, "timeout", 300)
 
-    if args.timeout <= 0:
-        return 1, None, "❌ timeout 必须大于 0"
+    if not url:
+        return "usage", None, "❌ URL 不能为空"
 
-    if not args.url:
-        return 1, build_missing_url_result(args, save_dir=save_dir), "❌ 未提供 --url，无法下载。用法: ucrawl download <标题> --url <URL> --source <平台>"
+    if timeout <= 0:
+        return "usage", None, "❌ timeout 必须大于 0"
 
     source = resolve_source(args)
     if not source:
-        return 1, None, "❌ 必须指定 --source 平台 ID (douyin/bilibili/kuaishou/missav)"
+        return "usage", None, "❌ 必须指定 --source 平台 ID"
 
     if not env.get_plugin(source):
         valid_ids = env.list_platform_ids()
-        return 1, None, f"❌ 无效平台: {source}。支持: {valid_ids}"
+        return "usage", None, f"❌ 无效平台: {source}。支持: {valid_ids}"
 
     config, config_error = build_config(args, source=source, env=env)
     if config_error:
-        return 1, None, config_error
+        return "usage", None, config_error
 
+    save_dir = getattr(args, "save_dir", None) or env.get_default_save_dir()
     sdk = env.UcrawlSDK_cls(save_dir=save_dir)
     try:
         result = sdk.download_video(
-            url=args.url,
+            url=url,
             source=source,
-            title=args.video_id,
+            title=title,
             save_dir=save_dir,
-            timeout=args.timeout,
+            timeout=timeout,
             verbose=not getattr(args, "quiet", False),
             config=config or None,
         )
     except (TypeError, ValueError) as exc:
-        return 1, None, f"❌ {exc}"
+        return "usage", None, f"❌ {exc}"
     finally:
         sdk.close()
 
-    return (0 if result.get("status") == "ok" else 1), result, None
+    if not isinstance(result, dict):
+        return "error", None, "❌ SDK 返回了无效的下载结果"
+
+    status = str(result.get("status", "error") or "error").lower()
+    if status not in {"ok", "error", "timeout", "cancelled"}:
+        status = "error"
+    return status, result, None
 
 def print_pretty(result: dict) -> None:
     if result.get("status") != "ok":

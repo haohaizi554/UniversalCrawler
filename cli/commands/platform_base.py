@@ -50,11 +50,12 @@ def add_platform_subparsers(
             "download",
             help=f"从 {platform.name} 平台下载",
         )
-        add_download_arguments(download_parser)
-        download_parser.set_defaults(
-            _platform=platform.id,
-            _handler=handle_download_command,
+        add_download_arguments(
+            download_parser,
+            platform_ids=ids,
+            fixed_source=platform.id,
         )
+        download_parser.set_defaults(_handler=handle_download_command)
 
         parsers[platform.id] = {
             "parser": platform_parser,

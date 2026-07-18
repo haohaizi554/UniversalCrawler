@@ -243,14 +243,14 @@ class DownloadEntryConsistencyTests(unittest.TestCase):
         from cli.commands.download import add_download_arguments, handle_download_command
 
         parser = argparse.ArgumentParser()
-        add_download_arguments(parser)
+        add_download_arguments(parser, platform_ids=("missav",))
         args = parser.parse_args(
             [
-                "Demo",
-                "--url",
-                "https://example.com/video.mp4",
                 "--source",
                 "missav",
+                "https://example.com/video.mp4",
+                "--title",
+                "Demo",
                 "--save-dir",
                 "downloads",
                 "--timeout",
@@ -581,7 +581,7 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             list_platform_ids=lambda: ["douyin"],
         )
         cli_args = argparse.Namespace(
-            video_id="Demo",
+            title="Demo",
             save_dir="downloads",
             url="https://example.com/video.mp4",
             source="douyin",
@@ -601,8 +601,8 @@ class EntryResultStructureConsistencyTests(unittest.TestCase):
             quiet=True,
             pretty=False,
         )
-        cli_exit_code, cli_result, cli_error = run_download_command(cli_args, env=cli_env)
-        self.assertEqual(cli_exit_code, 1)
+        cli_outcome, cli_result, cli_error = run_download_command(cli_args, env=cli_env)
+        self.assertEqual(cli_outcome, "error")
         self.assertIsNone(cli_error)
 
         import shared.sdk_runtime as sdk_module

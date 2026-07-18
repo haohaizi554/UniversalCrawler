@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from app.core.plugin_registry import registry
+from cli.exit_codes import exit_code_for_status
 from shared import download_command_runtime as runtime
 from shared.download_command_runtime import (
     add_download_arguments,
@@ -42,7 +43,7 @@ def _build_config(
 
 
 def handle_download_command(args: argparse.Namespace) -> int:
-    exit_code, result, error_message = runtime.run_download_command(
+    outcome, result, error_message = runtime.run_download_command(
         args,
         env=_runtime_env(),
     )
@@ -50,4 +51,4 @@ def handle_download_command(args: argparse.Namespace) -> int:
         sys.stderr.write(f"{error_message}\n")
     if result is not None:
         runtime.emit_result(result, pretty=getattr(args, "pretty", False))
-    return exit_code
+    return int(exit_code_for_status(outcome))

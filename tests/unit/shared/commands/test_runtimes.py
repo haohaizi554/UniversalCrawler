@@ -192,11 +192,10 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
 
     def _make_download_args(self, **overrides):
         defaults = dict(
-            video_id="video-title",
+            title="video-title",
             save_dir=None,
             url="https://example.com/video",
             source="douyin",
-            _platform=None,
             timeout=300.0,
             config=None,
             cookie=None,
@@ -245,18 +244,52 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         self.assertEqual(config["proxy"], "normalized:Clash (7890)")
         env.build_missav_proxy_url.assert_called_once_with("Clash (7890)")
 
-    def test_run_download_command_returns_structured_missing_url_result(self):
+    def test_run_download_command_rejects_missing_url_before_sdk_construction(self):
         from shared.download_command_runtime import run_download_command
 
         env = self._make_env()
         args = self._make_download_args(url=None)
 
-        exit_code, result, error = run_download_command(args, env=env)
+        outcome, result, error = run_download_command(args, env=env)
 
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(result["status"], "error")
-        self.assertIn("未提供 --url", result["error"])
-        self.assertIn("未提供 --url", error)
+        self.assertEqual(outcome, "usage")
+        self.assertIsNone(result)
+        self.assertIn("URL", error)
+        env.UcrawlSDK_cls.assert_not_called()
+
+    def test_download_passes_positional_url_and_optional_title_to_sdk(self):
+        from shared.download_command_runtime import run_download_command
+
+        env = self._make_env()
+        sdk = env.UcrawlSDK_cls.return_value
+        sdk.download_video.return_value = {"status": "ok"}
+        args = self._make_download_args()
+        args.title = "Demo"
+
+        outcome, result, error = run_download_command(args, env=env)
+
+        self.assertEqual(outcome, "ok")
+        self.assertEqual(result, {"status": "ok"})
+        self.assertIsNone(error)
+        self.assertEqual(
+            sdk.download_video.call_args.kwargs["url"],
+            "https://example.com/video",
+        )
+        self.assertEqual(sdk.download_video.call_args.kwargs["title"], "Demo")
+
+    def test_download_validation_is_usage_error_before_sdk_construction(self):
+        from shared.download_command_runtime import run_download_command
+
+        env = self._make_env()
+        args = self._make_download_args(url=" ")
+        args.title = ""
+
+        outcome, result, error = run_download_command(args, env=env)
+
+        self.assertEqual(outcome, "usage")
+        self.assertIsNone(result)
+        self.assertIn("URL", error)
+        env.UcrawlSDK_cls.assert_not_called()
 
     def test_run_download_command_closes_sdk_and_surfaces_type_error(self):
         from shared.download_command_runtime import run_download_command
@@ -266,9 +299,9 @@ class DownloadCommandRuntimeTests(unittest.TestCase):
         sdk.download_video.side_effect = TypeError("bad timeout")
         args = self._make_download_args()
 
-        exit_code, result, error = run_download_command(args, env=env)
+        outcome, result, error = run_download_command(args, env=env)
 
-        self.assertEqual(exit_code, 1)
+        self.assertEqual(outcome, "usage")
         self.assertIsNone(result)
         self.assertIn("bad timeout", error)
         sdk.close.assert_called_once()

@@ -316,6 +316,58 @@ class CliDynamicPlatformParserTests(unittest.TestCase):
             parser.parse_args(["douyin", "scan", "."])
         self.assertEqual(raised.exception.code, 2)
 
+    def test_generic_download_uses_positional_url_and_optional_title(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser((CliPlatform("douyin", "Douyin", ("dy",)),))
+
+        args = parser.parse_args(
+            [
+                "download",
+                "--source",
+                "douyin",
+                "https://example.test/video.mp4",
+                "--title",
+                "Demo",
+            ]
+        )
+
+        self.assertEqual(args.url, "https://example.test/video.mp4")
+        self.assertEqual(args.title, "Demo")
+        self.assertFalse(hasattr(args, "video_id"))
+
+    def test_platform_download_supplies_source_and_matches_generic_fields(self):
+        from cli.main import build_parser
+        from cli.platform_catalog import CliPlatform
+
+        parser = build_parser((CliPlatform("douyin", "Douyin", ("dy",)),))
+        generic = parser.parse_args(
+            [
+                "download",
+                "--source",
+                "douyin",
+                "https://example.test/video.mp4",
+                "--title",
+                "Demo",
+            ]
+        )
+        scoped = parser.parse_args(
+            [
+                "dy",
+                "download",
+                "https://example.test/video.mp4",
+                "--title",
+                "Demo",
+            ]
+        )
+
+        fields = ("source", "url", "title", "timeout", "quiet", "pretty")
+        self.assertEqual(
+            {field: getattr(generic, field) for field in fields},
+            {field: getattr(scoped, field) for field in fields},
+        )
+
     def test_keyboard_interrupt_returns_cancelled_code(self):
         from cli.main import main
 

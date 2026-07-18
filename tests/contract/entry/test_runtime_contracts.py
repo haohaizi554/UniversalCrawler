@@ -30,7 +30,7 @@ class CliSearchFacadeContractTests(unittest.TestCase):
 
         args = argparse.Namespace(pretty=True)
 
-        with patch("cli.commands.search.runtime.run_search_command", return_value=(0, {"status": "ok"})) as run_cmd, patch(
+        with patch("cli.commands.search.runtime.run_search_command", return_value=("ok", {"status": "ok"})) as run_cmd, patch(
             "cli.commands.search.runtime.emit_result"
         ) as emit_result:
             exit_code = handle_search_command(args)
@@ -60,7 +60,7 @@ class CliDownloadFacadeContractTests(unittest.TestCase):
 
         with patch(
             "cli.commands.download.runtime.run_download_command",
-            return_value=(1, {"status": "error"}, "bad timeout"),
+            return_value=("error", {"status": "error"}, "bad timeout"),
         ) as run_cmd, patch("cli.commands.download.runtime.emit_result") as emit_result, patch(
             "cli.commands.download.sys.stderr.write"
         ) as stderr:

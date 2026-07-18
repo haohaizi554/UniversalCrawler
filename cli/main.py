@@ -60,7 +60,7 @@ def build_parser(
     scan_parser.set_defaults(_handler=handle_scan_command)
 
     download_parser = subparsers.add_parser("download", help="直接下载")
-    add_download_arguments(download_parser)
+    add_download_arguments(download_parser, platform_ids=ids)
     download_parser.set_defaults(_handler=handle_download_command)
 
     platforms_parser = subparsers.add_parser(
