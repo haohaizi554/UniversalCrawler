@@ -433,15 +433,19 @@ body {
 }
 table {
     width: 100%;
-    min-width: 720px;
+    min-width: 0;
+    table-layout: auto;
     border-collapse: collapse;
 }
 th,
 td {
     padding: 11px 13px;
     border-bottom: 1px solid var(--line);
-    white-space: nowrap;
-    vertical-align: top;
+    text-align: center;
+    vertical-align: middle;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     font-variant-numeric: tabular-nums;
 }
 th {
@@ -455,20 +459,11 @@ tbody tr:hover {
 tr:last-child td {
     border-bottom: none;
 }
-.text {
-    text-align: left;
-}
-.num {
-    text-align: right;
-}
 .center {
     text-align: center;
 }
 .path {
-    min-width: 260px;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
+    min-width: 0;
     line-height: 1.45;
 }
 .badge {
@@ -492,6 +487,48 @@ tr:last-child td {
     color: #1d4ed8;
     background: #dbeafe;
     border: 1px solid #93c5fd;
+}
+.badge-risk {
+    color: #b91c1c;
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+}
+.badge-watch {
+    color: #b45309;
+    background: #ffedd5;
+    border: 1px solid #fdba74;
+}
+.badge-ok {
+    color: #047857;
+    background: #d1fae5;
+    border: 1px solid #6ee7b7;
+}
+.gate-banner {
+    margin-top: 18px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: #f8fafc;
+}
+.gate-banner.gate-pass {
+    border-color: rgba(16, 185, 129, 0.28);
+    background: #f0fdf8;
+}
+.gate-banner.gate-fail {
+    border-color: rgba(239, 68, 68, 0.28);
+    background: #fff1f2;
+}
+.gate-banner h2 {
+    margin: 0 0 8px;
+    font-size: 18px;
+}
+.gate-banner ul {
+    margin: 0;
+    padding-left: 18px;
+}
+.gate-banner li {
+    margin: 4px 0;
+    color: #334155;
 }
 .empty-note {
     padding: 14px;
@@ -563,7 +600,7 @@ tr:last-child td {
 <section class="hero">
 <div class="hero-content">
 <h1 class="hero-title">项目代码量统计报告</h1>
-<p class="hero-subtitle">静态代码规模、语言分布、测试占比与大文件风险概览</p>
+<p class="hero-subtitle">静态代码规模、模块分布、测试占比、复杂度热点与大文件风险概览</p>
 <div class="hero-meta">
 <div class="hero-path">D:\desktop\project\UniversalCrawlerProplus</div>
 
@@ -579,7 +616,7 @@ tr:last-child td {
 </div>
 <aside class="hero-stat">
 <div class="hero-stat-label">Effective LOC</div>
-<div class="hero-stat-value">167,773</div>
+<div class="hero-stat-value">172,061</div>
 <div class="hero-stat-note">有效代码行数</div>
 </aside>
 </section>
@@ -590,7 +627,7 @@ tr:last-child td {
 <span class="metric-icon">#</span>
 <span class="metric-label">代码文件数</span>
 </div>
-<div class="metric-value">631</div>
+<div class="metric-value">641</div>
 <div class="metric-hint">纳入统计的源代码文件</div>
 </article>
 
@@ -599,7 +636,7 @@ tr:last-child td {
 <span class="metric-icon">Σ</span>
 <span class="metric-label">总行数</span>
 </div>
-<div class="metric-value">192,314</div>
+<div class="metric-value">197,022</div>
 <div class="metric-hint">包含空行与注释</div>
 </article>
 
@@ -608,7 +645,7 @@ tr:last-child td {
 <span class="metric-icon">&lt;/&gt;</span>
 <span class="metric-label">有效代码行数</span>
 </div>
-<div class="metric-value">167,773</div>
+<div class="metric-value">172,061</div>
 <div class="metric-hint">排除空行与注释</div>
 </article>
 
@@ -617,7 +654,7 @@ tr:last-child td {
 <span class="metric-icon">T</span>
 <span class="metric-label">测试代码行数</span>
 </div>
-<div class="metric-value">61,951</div>
+<div class="metric-value">63,747</div>
 <div class="metric-hint">识别为测试文件的有效代码</div>
 </article>
 
@@ -626,7 +663,7 @@ tr:last-child td {
 <span class="metric-icon">TC</span>
 <span class="metric-label">测试用例数</span>
 </div>
-<div class="metric-value">2,985</div>
+<div class="metric-value">3,047</div>
 <div class="metric-hint">静态识别的测试用例定义</div>
 </article>
 
@@ -641,9 +678,9 @@ tr:last-child td {
 </div>
 </div>
 <div class="donut-layout">
-<div class="donut" style="--test-deg: 132.93deg;">
+<div class="donut" style="--test-deg: 133.38deg;">
 <div class="donut-hole">
-<div class="donut-value">36.9%</div>
+<div class="donut-value">37.0%</div>
 <div class="donut-label">测试占比</div>
 </div>
 </div>
@@ -651,14 +688,14 @@ tr:last-child td {
 <div class="legend-item">
 <span class="legend-dot legend-prod"></span>
 <span>生产代码</span>
-<strong>105,822 行</strong>
-<em>63.1%</em>
+<strong>108,314 行</strong>
+<em>63.0%</em>
 </div>
 <div class="legend-item">
 <span class="legend-dot legend-test"></span>
 <span>测试代码</span>
-<strong>61,951 行</strong>
-<em>36.9%</em>
+<strong>63,747 行</strong>
+<em>37.0%</em>
 </div>
 </div>
 </div>
@@ -677,15 +714,15 @@ tr:last-child td {
 <div class="bar-row">
 <div class="bar-name">Python</div>
 <div class="bar-track"><div class="bar-fill bar-fill-primary" style="width: 100.00%"></div></div>
-<div class="bar-value">149,161</div>
-<div class="bar-ratio">88.9%</div>
+<div class="bar-value">152,676</div>
+<div class="bar-ratio">88.7%</div>
 </div>
 
 <div class="bar-row">
 <div class="bar-name">JavaScript</div>
-<div class="bar-track"><div class="bar-fill" style="width: 7.37%"></div></div>
-<div class="bar-value">10,997</div>
-<div class="bar-ratio">6.6%</div>
+<div class="bar-track"><div class="bar-fill" style="width: 7.20%"></div></div>
+<div class="bar-value">10,999</div>
+<div class="bar-ratio">6.4%</div>
 </div>
 
 <div class="bar-row">
@@ -698,15 +735,15 @@ tr:last-child td {
 <div class="bar-row">
 <div class="bar-name">JSON</div>
 <div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
-<div class="bar-value">2,402</div>
-<div class="bar-ratio">1.4%</div>
+<div class="bar-value">3,148</div>
+<div class="bar-ratio">1.8%</div>
 </div>
 
 <div class="bar-row">
 <div class="bar-name">HTML</div>
 <div class="bar-track"><div class="bar-fill" style="width: 3.00%"></div></div>
-<div class="bar-value">1,259</div>
-<div class="bar-ratio">0.8%</div>
+<div class="bar-value">1,284</div>
+<div class="bar-ratio">0.7%</div>
 </div>
 
 <div class="bar-row">
@@ -737,110 +774,60 @@ tr:last-child td {
 <article class="chart-card">
 <div class="chart-head">
 <div>
-<h2>最大文件 Top 10</h2>
+<h2>最大文件 Top 5</h2>
 <p>按文件总行数排序，提示潜在拆分风险</p>
 </div>
 </div>
 <div class="bar-chart largest-chart">
 
 <div class="bar-row file-bar-row">
-<div class="file-label" title="tests\integration\app\core\downloaders\test_runtime.py">
+<div class="file-label" title="tests/integration/app/core/downloaders/test_runtime.py">
 <span class="file-name">test_runtime.py</span>
-<span class="file-path">tests\integration\app\core\downloaders\test_runtime.py</span>
+<span class="file-path">tests/integration/app/core/downloaders/test_runtime.py</span>
 </div>
 <span class="badge badge-test">TEST</span>
 <div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 100.00%"></div></div>
-<div class="bar-value">3,536</div>
+<div class="bar-value">3,538</div>
 </div>
 
 <div class="bar-row file-bar-row">
-<div class="file-label" title="tests\unit\app\spiders\test_helpers.py">
+<div class="file-label" title="tests/unit/app/spiders/test_helpers.py">
 <span class="file-name">test_helpers.py</span>
-<span class="file-path">tests\unit\app\spiders\test_helpers.py</span>
+<span class="file-path">tests/unit/app/spiders/test_helpers.py</span>
 </div>
 <span class="badge badge-test">TEST</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 87.36%"></div></div>
-<div class="bar-value">3,089</div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 87.45%"></div></div>
+<div class="bar-value">3,094</div>
 </div>
 
 <div class="bar-row file-bar-row">
-<div class="file-label" title="tests\unit\app\services\test_frontend_state_service.py">
+<div class="file-label" title="tests/unit/app/services/test_frontend_state_service.py">
 <span class="file-name">test_frontend_state_service.py</span>
-<span class="file-path">tests\unit\app\services\test_frontend_state_service.py</span>
+<span class="file-path">tests/unit/app/services/test_frontend_state_service.py</span>
 </div>
 <span class="badge badge-test">TEST</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 83.17%"></div></div>
-<div class="bar-value">2,941</div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 83.24%"></div></div>
+<div class="bar-value">2,945</div>
 </div>
 
 <div class="bar-row file-bar-row">
-<div class="file-label" title="app\ui\main_window.py">
+<div class="file-label" title="app/ui/main_window.py">
 <span class="file-name">main_window.py</span>
-<span class="file-path">app\ui\main_window.py</span>
+<span class="file-path">app/ui/main_window.py</span>
 </div>
 <span class="badge badge-prod">PROD</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 79.89%"></div></div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 79.85%"></div></div>
 <div class="bar-value">2,825</div>
 </div>
 
 <div class="bar-row file-bar-row">
-<div class="file-label" title="app\services\frontend_state_service.py">
+<div class="file-label" title="app/services/frontend_state_service.py">
 <span class="file-name">frontend_state_service.py</span>
-<span class="file-path">app\services\frontend_state_service.py</span>
+<span class="file-path">app/services/frontend_state_service.py</span>
 </div>
 <span class="badge badge-prod">PROD</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 75.82%"></div></div>
-<div class="bar-value">2,681</div>
-</div>
-
-<div class="bar-row file-bar-row">
-<div class="file-label" title="tests\unit\app\ui\test_main_window.py">
-<span class="file-name">test_main_window.py</span>
-<span class="file-path">tests\unit\app\ui\test_main_window.py</span>
-</div>
-<span class="badge badge-test">TEST</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 75.40%"></div></div>
-<div class="bar-value">2,666</div>
-</div>
-
-<div class="bar-row file-bar-row">
-<div class="file-label" title="tests\launcher.py">
-<span class="file-name">launcher.py</span>
-<span class="file-path">tests\launcher.py</span>
-</div>
-<span class="badge badge-test">TEST</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 62.19%"></div></div>
-<div class="bar-value">2,199</div>
-</div>
-
-<div class="bar-row file-bar-row">
-<div class="file-label" title="app\core\downloaders\m3u8.py">
-<span class="file-name">m3u8.py</span>
-<span class="file-path">app\core\downloaders\m3u8.py</span>
-</div>
-<span class="badge badge-prod">PROD</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 57.61%"></div></div>
-<div class="bar-value">2,037</div>
-</div>
-
-<div class="bar-row file-bar-row">
-<div class="file-label" title="app\spiders\bilibili\spider.py">
-<span class="file-name">spider.py</span>
-<span class="file-path">app\spiders\bilibili\spider.py</span>
-</div>
-<span class="badge badge-prod">PROD</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 52.29%"></div></div>
-<div class="bar-value">1,849</div>
-</div>
-
-<div class="bar-row file-bar-row">
-<div class="file-label" title="app\web\static\app.js">
-<span class="file-name">app.js</span>
-<span class="file-path">app\web\static\app.js</span>
-</div>
-<span class="badge badge-prod">PROD</span>
-<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 51.61%"></div></div>
-<div class="bar-value">1,825</div>
+<div class="bar-track"><div class="bar-fill bar-fill-file" style="width: 75.81%"></div></div>
+<div class="bar-value">2,682</div>
 </div>
 
 </div>
@@ -857,25 +844,25 @@ tr:last-child td {
 
 <article class="insight-card insight-good" title="测试占比较高，回归保护较充分">
 <div class="insight-label">测试代码占比</div>
-<div class="insight-value">36.9%</div>
+<div class="insight-value">37.0%</div>
 <p>测试占比较高，回归保护较充分</p>
 </article>
 
-<article class="insight-card insight-risk" title="tests\integration\app\core\downloaders\test_runtime.py">
+<article class="insight-card insight-risk" title="tests/integration/app/core/downloaders/test_runtime.py">
 <div class="insight-label">最大文件风险</div>
-<div class="insight-value">3,536 行</div>
+<div class="insight-value">3,538 行</div>
 <p>存在超大文件，建议评估拆分</p>
 </article>
 
-<article class="insight-card insight-neutral" title="主语言：Python，占比 88.9%">
+<article class="insight-card insight-neutral" title="主语言：Python，占比 88.7%">
 <div class="insight-label">主语言</div>
 <div class="insight-value">Python</div>
-<p>主语言：Python，占比 88.9%</p>
+<p>主语言：Python，占比 88.7%</p>
 </article>
 
 <article class="insight-card insight-neutral" title="用于观察业务代码与测试代码结构">
 <div class="insight-label">生产代码占比</div>
-<div class="insight-value">63.1%</div>
+<div class="insight-value">63.0%</div>
 <p>用于观察业务代码与测试代码结构</p>
 </article>
 
@@ -883,13 +870,14 @@ tr:last-child td {
 </section>
 
 
+
 <section class="report-section">
 <h2>总览：含测试 / 排除测试 / 仅测试</h2>
 <div class="table-wrap">
 <table>
-<thead><tr><th class="text">统计口径</th><th class="num">代码文件数</th><th class="num">总行数</th><th class="num">空行数</th><th class="num">注释行数</th><th class="num">有效代码行数</th></tr></thead>
+<thead><tr><th class="center">统计口径</th><th class="center">代码文件数</th><th class="center">总行数</th><th class="center">空行数</th><th class="center">注释行数</th><th class="center">有效代码行数</th></tr></thead>
 <tbody>
-<tr><td class="text">全部代码_含测试</td><td class="num">631</td><td class="num">192314</td><td class="num">23326</td><td class="num">1215</td><td class="num">167773</td></tr><tr><td class="text">排除测试后</td><td class="num">412</td><td class="num">118676</td><td class="num">12060</td><td class="num">794</td><td class="num">105822</td></tr><tr><td class="text">仅测试代码</td><td class="num">219</td><td class="num">73638</td><td class="num">11266</td><td class="num">421</td><td class="num">61951</td></tr>
+<tr><td class="center">全部代码_含测试</td><td class="center">641</td><td class="center">197022</td><td class="center">23793</td><td class="center">1168</td><td class="center">172061</td></tr><tr><td class="center">排除测试后</td><td class="center">421</td><td class="center">121336</td><td class="center">12274</td><td class="center">748</td><td class="center">108314</td></tr><tr><td class="center">仅测试代码</td><td class="center">220</td><td class="center">75686</td><td class="center">11519</td><td class="center">420</td><td class="center">63747</td></tr>
 </tbody>
 </table>
 </div>
@@ -900,9 +888,9 @@ tr:last-child td {
 <h2>按语言统计：全部 / 排除测试 / 测试</h2>
 <div class="table-wrap">
 <table>
-<thead><tr><th class="text">语言</th><th class="num">全部文件</th><th class="num">全部行</th><th class="num">全部代码</th><th class="num">生产代码</th><th class="num">测试代码</th><th class="num">测试文件</th></tr></thead>
+<thead><tr><th class="center">语言</th><th class="center">全部文件</th><th class="center">全部行</th><th class="center">全部代码</th><th class="center">生产代码</th><th class="center">测试代码</th><th class="center">测试文件</th></tr></thead>
 <tbody>
-<tr><td class="text">Python</td><td class="num">583</td><td class="num">172153</td><td class="num">149161</td><td class="num">87210</td><td class="num">61951</td><td class="num">219</td></tr><tr><td class="text">JavaScript</td><td class="num">22</td><td class="num">11845</td><td class="num">10997</td><td class="num">10997</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">CSS</td><td class="num">7</td><td class="num">3899</td><td class="num">3356</td><td class="num">3356</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">JSON</td><td class="num">11</td><td class="num">2402</td><td class="num">2402</td><td class="num">2402</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">HTML</td><td class="num">2</td><td class="num">1324</td><td class="num">1259</td><td class="num">1259</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">YAML</td><td class="num">3</td><td class="num">445</td><td class="num">391</td><td class="num">391</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">TOML</td><td class="num">2</td><td class="num">166</td><td class="num">142</td><td class="num">142</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="text">Shell</td><td class="num">1</td><td class="num">80</td><td class="num">65</td><td class="num">65</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td class="center">Python</td><td class="center">592</td><td class="center">176085</td><td class="center">152676</td><td class="center">88929</td><td class="center">63747</td><td class="center">220</td></tr><tr><td class="center">JavaScript</td><td class="center">22</td><td class="center">11847</td><td class="center">10999</td><td class="center">10999</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">CSS</td><td class="center">7</td><td class="center">3899</td><td class="center">3356</td><td class="center">3356</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">JSON</td><td class="center">12</td><td class="center">3148</td><td class="center">3148</td><td class="center">3148</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">HTML</td><td class="center">2</td><td class="center">1352</td><td class="center">1284</td><td class="center">1284</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">YAML</td><td class="center">3</td><td class="center">445</td><td class="center">391</td><td class="center">391</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">TOML</td><td class="center">2</td><td class="center">166</td><td class="center">142</td><td class="center">142</td><td class="center">0</td><td class="center">0</td></tr><tr><td class="center">Shell</td><td class="center">1</td><td class="center">80</td><td class="center">65</td><td class="center">65</td><td class="center">0</td><td class="center">0</td></tr>
 </tbody>
 </table>
 </div>
@@ -910,16 +898,56 @@ tr:last-child td {
 
 
 <section class="report-section">
-<h2>最大文件 Top 30</h2>
+<h2>按模块统计</h2>
 <div class="table-wrap">
 <table>
-<thead><tr><th class="num">总行数</th><th class="num">代码行</th><th class="center">类型</th><th class="text path">文件</th></tr></thead>
+<thead><tr><th class="center">模块</th><th class="center">文件数</th><th class="center">总行数</th><th class="center">有效代码</th><th class="center">占比</th></tr></thead>
 <tbody>
-<tr><td class="num">3536</td><td class="num">2920</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\integration\app\core\downloaders\test_runtime.py">tests\integration\app\core\downloaders\test_runtime.py</td></tr><tr><td class="num">3089</td><td class="num">2599</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\spiders\test_helpers.py">tests\unit\app\spiders\test_helpers.py</td></tr><tr><td class="num">2941</td><td class="num">2478</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\services\test_frontend_state_service.py">tests\unit\app\services\test_frontend_state_service.py</td></tr><tr><td class="num">2825</td><td class="num">2549</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\main_window.py">app\ui\main_window.py</td></tr><tr><td class="num">2681</td><td class="num">2460</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\frontend_state_service.py">app\services\frontend_state_service.py</td></tr><tr><td class="num">2666</td><td class="num">2179</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\ui\test_main_window.py">tests\unit\app\ui\test_main_window.py</td></tr><tr><td class="num">2199</td><td class="num">2020</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\launcher.py">tests\launcher.py</td></tr><tr><td class="num">2037</td><td class="num">1900</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\downloaders\m3u8.py">app\core\downloaders\m3u8.py</td></tr><tr><td class="num">1849</td><td class="num">1745</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\spiders\bilibili\spider.py">app\spiders\bilibili\spider.py</td></tr><tr><td class="num">1825</td><td class="num">1661</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\app.js">app\web\static\app.js</td></tr><tr><td class="num">1703</td><td class="num">1528</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="count_project.py">count_project.py</td></tr><tr><td class="num">1700</td><td class="num">1498</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\log_center_page.py">app\ui\pages\log_center_page.py</td></tr><tr><td class="num">1643</td><td class="num">1422</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\settings_page.py">app\ui\pages\settings_page.py</td></tr><tr><td class="num">1642</td><td class="num">1531</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="shared\log_i18n.py">shared\log_i18n.py</td></tr><tr><td class="num">1630</td><td class="num">1528</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\lib\douyin\extract\extractor.py">app\core\lib\douyin\extract\extractor.py</td></tr><tr><td class="num">1629</td><td class="num">1381</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\release\packaging\test_assets.py">tests\release\packaging\test_assets.py</td></tr><tr><td class="num">1492</td><td class="num">1302</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\config\settings.py">app\config\settings.py</td></tr><tr><td class="num">1438</td><td class="num">1266</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\services\secure_updater.py">app\services\secure_updater.py</td></tr><tr><td class="num">1421</td><td class="num">1272</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\controller.py">app\web\controller.py</td></tr><tr><td class="num">1411</td><td class="num">1391</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\i18n.js">app\web\static\i18n.js</td></tr><tr><td class="num">1399</td><td class="num">1304</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\support\browser_cases\runtime_and_lists.py">tests\support\browser_cases\runtime_and_lists.py</td></tr><tr><td class="num">1388</td><td class="num">1182</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\styles\themes.py">app\ui\styles\themes.py</td></tr><tr><td class="num">1385</td><td class="num">1328</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\web\static\log_i18n.js">app\web\static\log_i18n.js</td></tr><tr><td class="num">1340</td><td class="num">1134</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\contract\frontend\test_shell.py">tests\contract\frontend\test_shell.py</td></tr><tr><td class="num">1325</td><td class="num">1203</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\core\download_manager_core.py">app\core\download_manager_core.py</td></tr><tr><td class="num">1315</td><td class="num">1098</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\unit\app\core\guardrails\test_runtime_policies.py">tests\unit\app\core\guardrails\test_runtime_policies.py</td></tr><tr><td class="num">1303</td><td class="num">1156</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\components\media_preview_panel.py">app\ui\components\media_preview_panel.py</td></tr><tr><td class="num">1283</td><td class="num">1180</td><td class="center"><span class="badge badge-prod">PROD</span></td><td class="text path" title="app\ui\pages\active_downloads_page.py">app\ui\pages\active_downloads_page.py</td></tr><tr><td class="num">1276</td><td class="num">1215</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\support\browser_cases\log_center.py">tests\support\browser_cases\log_center.py</td></tr><tr><td class="num">1242</td><td class="num">1009</td><td class="center"><span class="badge badge-test">TEST</span></td><td class="text path" title="tests\release\updater\test_secure_updater.py">tests\release\updater\test_secure_updater.py</td></tr>
+<tr><td class="center">tests</td><td class="center">219</td><td class="center">75272</td><td class="center">63397</td><td class="center">36.8%</td></tr><tr><td class="center">app/ui</td><td class="center">74</td><td class="center">25861</td><td class="center">22969</td><td class="center">13.3%</td></tr><tr><td class="center">app/web</td><td class="center">51</td><td class="center">20706</td><td class="center">18697</td><td class="center">10.9%</td></tr><tr><td class="center">app/core</td><td class="center">93</td><td class="center">20506</td><td class="center">18313</td><td class="center">10.6%</td></tr><tr><td class="center">app/services</td><td class="center">34</td><td class="center">14031</td><td class="center">12657</td><td class="center">7.4%</td></tr><tr><td class="center">app/spiders</td><td class="center">32</td><td class="center">10296</td><td class="center">9341</td><td class="center">5.4%</td></tr><tr><td class="center">shared</td><td class="center">31</td><td class="center">9841</td><td class="center">8592</td><td class="center">5.0%</td></tr><tr><td class="center">other</td><td class="center">22</td><td class="center">6157</td><td class="center">5765</td><td class="center">3.4%</td></tr><tr><td class="center">entry</td><td class="center">15</td><td class="center">3301</td><td class="center">2768</td><td class="center">1.6%</td></tr><tr><td class="center">app/controllers</td><td class="center">10</td><td class="center">2549</td><td class="center">2242</td><td class="center">1.3%</td></tr><tr><td class="center">packaging</td><td class="center">11</td><td class="center">2176</td><td class="center">1916</td><td class="center">1.1%</td></tr><tr><td class="center">cli</td><td class="center">21</td><td class="center">1716</td><td class="center">1420</td><td class="center">0.8%</td></tr><tr><td class="center">app/config</td><td class="center">4</td><td class="center">1621</td><td class="center">1419</td><td class="center">0.8%</td></tr><tr><td class="center">scripts</td><td class="center">3</td><td class="center">1284</td><td class="center">1103</td><td class="center">0.6%</td></tr><tr><td class="center">app/other</td><td class="center">8</td><td class="center">766</td><td class="center">680</td><td class="center">0.4%</td></tr><tr><td class="center">app/utils</td><td class="center">10</td><td class="center">702</td><td class="center">570</td><td class="center">0.3%</td></tr><tr><td class="center">app/models</td><td class="center">3</td><td class="center">237</td><td class="center">212</td><td class="center">0.1%</td></tr>
 </tbody>
 </table>
 </div>
 </section>
+
+
+<section class="report-section">
+<h2>测试套件分布</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th class="center">套件</th><th class="center">文件数</th><th class="center">用例数</th><th class="center">总行数</th><th class="center">有效代码</th><th class="center">占比</th></tr></thead>
+<tbody>
+<tr><td class="center">unit</td><td class="center">134</td><td class="center">1709</td><td class="center">37847</td><td class="center">30887</td><td class="center">48.5%</td></tr><tr><td class="center">integration</td><td class="center">11</td><td class="center">328</td><td class="center">6633</td><td class="center">5478</td><td class="center">8.6%</td></tr><tr><td class="center">contract</td><td class="center">22</td><td class="center">404</td><td class="center">9048</td><td class="center">7838</td><td class="center">12.3%</td></tr><tr><td class="center">e2e</td><td class="center">1</td><td class="center">58</td><td class="center">1103</td><td class="center">952</td><td class="center">1.5%</td></tr><tr><td class="center">architecture</td><td class="center">10</td><td class="center">58</td><td class="center">1206</td><td class="center">982</td><td class="center">1.5%</td></tr><tr><td class="center">performance</td><td class="center">1</td><td class="center">4</td><td class="center">140</td><td class="center">120</td><td class="center">0.2%</td></tr><tr><td class="center">release</td><td class="center">7</td><td class="center">294</td><td class="center">5621</td><td class="center">4677</td><td class="center">7.3%</td></tr><tr><td class="center">testkit</td><td class="center">3</td><td class="center">59</td><td class="center">928</td><td class="center">773</td><td class="center">1.2%</td></tr><tr><td class="center">support</td><td class="center">23</td><td class="center">133</td><td class="center">10145</td><td class="center">9372</td><td class="center">14.7%</td></tr><tr><td class="center">other</td><td class="center">8</td><td class="center">0</td><td class="center">3015</td><td class="center">2668</td><td class="center">4.2%</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+
+<section class="report-section">
+<h2>Python 复杂度热点 Top 20</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th class="center">复杂度</th><th class="center">模块</th><th class="center">符号</th><th class="center path">位置</th></tr></thead>
+<tbody>
+<tr><td class="center">98</td><td class="center">app/core</td><td class="center">ChunkedDownloader.download</td><td class="center path" title="app/core/downloaders/chunked.py:43">app/core/downloaders/chunked.py:43</td></tr><tr><td class="center">97</td><td class="center">app/core</td><td class="center">BilibiliDownloader.download</td><td class="center path" title="app/core/downloaders/bilibili.py:101">app/core/downloaders/bilibili.py:101</td></tr><tr><td class="center">78</td><td class="center">shared</td><td class="center">derive_event_stage</td><td class="center path" title="shared/log_pipeline_rules.py:610">shared/log_pipeline_rules.py:610</td></tr><tr><td class="center">74</td><td class="center">shared</td><td class="center">_localize_non_english_dynamic</td><td class="center path" title="shared/log_i18n.py:1374">shared/log_i18n.py:1374</td></tr><tr><td class="center">73</td><td class="center">app/spiders</td><td class="center">MissAVSpider.run</td><td class="center path" title="app/spiders/missav/spider.py:339">app/spiders/missav/spider.py:339</td></tr><tr><td class="center">72</td><td class="center">shared</td><td class="center">UcrawlSDK.download_video</td><td class="center path" title="shared/sdk_runtime.py:238">shared/sdk_runtime.py:238</td></tr><tr><td class="center">58</td><td class="center">app/services</td><td class="center">AuthService.extract_cookie_dict_for_url</td><td class="center path" title="app/services/auth_service.py:118">app/services/auth_service.py:118</td></tr><tr><td class="center">56</td><td class="center">app/core</td><td class="center">FFmpegDownloader.download</td><td class="center path" title="app/core/downloaders/ffmpeg.py:153">app/core/downloaders/ffmpeg.py:153</td></tr><tr><td class="center">53</td><td class="center">app/web</td><td class="center">build_rest_router</td><td class="center path" title="app/web/rest_router.py:71">app/web/rest_router.py:71</td></tr><tr><td class="center">52</td><td class="center">shared</td><td class="center">_localize_english_dynamic</td><td class="center path" title="shared/log_i18n.py:1153">shared/log_i18n.py:1153</td></tr><tr><td class="center">51</td><td class="center">app/config</td><td class="center">ConfigManager._normalize_field_value</td><td class="center path" title="app/config/settings.py:1056">app/config/settings.py:1056</td></tr><tr><td class="center">51</td><td class="center">app/spiders</td><td class="center">BilibiliSpider._scan_with_browser_queue</td><td class="center path" title="app/spiders/bilibili/spider.py:1402">app/spiders/bilibili/spider.py:1402</td></tr><tr><td class="center">49</td><td class="center">app/ui</td><td class="center">SnapshotTableModel.data</td><td class="center path" title="app/ui/viewmodels/snapshot_table_model.py:44">app/ui/viewmodels/snapshot_table_model.py:44</td></tr><tr><td class="center">47</td><td class="center">app/core</td><td class="center">BaseDownloader._download_http_file</td><td class="center path" title="app/core/downloaders/base.py:236">app/core/downloaders/base.py:236</td></tr><tr><td class="center">44</td><td class="center">app/services</td><td class="center">FrontendStateService._build_video_sections</td><td class="center path" title="app/services/frontend_state_service.py:547">app/services/frontend_state_service.py:547</td></tr><tr><td class="center">44</td><td class="center">app/ui</td><td class="center">polish_combo_popup</td><td class="center path" title="app/ui/components/combo_popup.py:486">app/ui/components/combo_popup.py:486</td></tr><tr><td class="center">43</td><td class="center">app/spiders</td><td class="center">KuaishouSpider._run_capture_pipeline</td><td class="center path" title="app/spiders/kuaishou/spider.py:752">app/spiders/kuaishou/spider.py:752</td></tr><tr><td class="center">43</td><td class="center">app/ui</td><td class="center">build_platform_proxy_widget</td><td class="center path" title="app/ui/components/settings_platform_controls.py:84">app/ui/components/settings_platform_controls.py:84</td></tr><tr><td class="center">37</td><td class="center">app/ui</td><td class="center">load_platform_options</td><td class="center path" title="app/ui/viewmodels/log_platforms.py:39">app/ui/viewmodels/log_platforms.py:39</td></tr><tr><td class="center">37</td><td class="center">app/web</td><td class="center">WebWorkflowService.direct_download</td><td class="center path" title="app/web/workflows.py:381">app/web/workflows.py:381</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+
+<section class="report-section">
+<h2>项目表面（pyproject）</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th class="center">项</th><th class="center">值</th></tr></thead>
+<tbody>
+<tr><td class="center">包名</td><td class="center">ucrawl</td></tr><tr><td class="center">版本</td><td class="center">3.6.17</td></tr><tr><td class="center">Python 要求</td><td class="center">&gt;=3.10</td></tr><tr><td class="center">运行时依赖数</td><td class="center">24</td></tr><tr><td class="center">可选依赖组</td><td class="center">0</td></tr><tr><td class="center">console scripts</td><td class="center">7</td></tr><tr><td class="center">gui scripts</td><td class="center">2</td></tr><tr><td class="center">script:ucrawl</td><td class="center">entry.cli_entry:main</td></tr><tr><td class="center">script:ucrawl-i</td><td class="center">entry.interactive_entry:main</td></tr><tr><td class="center">script:ucrawl-web</td><td class="center">entry.web_entry:main</td></tr><tr><td class="center">script:ucrawl-auto</td><td class="center">entry.dispatcher:run</td></tr><tr><td class="center">script:ucrawl-test</td><td class="center">entry.test_entry:main</td></tr><tr><td class="center">script:ucrawl-update-bootstrap</td><td class="center">scripts.update_bootstrap:main</td></tr><tr><td class="center">script:scan-secrets</td><td class="center">scripts.update_bootstrap:scan_secrets_main</td></tr><tr><td class="center">gui:ucrawl-gui</td><td class="center">entry.gui_entry:main</td></tr><tr><td class="center">gui:ucrawl-test-gui</td><td class="center">entry.test_entry:main</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
 
 </main>
 </body>

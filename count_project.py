@@ -216,6 +216,51 @@ COMMENT_PREFIXES = {
 }
 
 
+MODULE_BUCKETS = (
+    "app/config",
+    "app/controllers",
+    "app/core",
+    "app/services",
+    "app/spiders",
+    "app/ui",
+    "app/web",
+    "app/models",
+    "app/utils",
+    "app/other",
+    "shared",
+    "cli",
+    "entry",
+    "packaging",
+    "scripts",
+    "tests",
+    "docs",
+    "other",
+)
+
+TEST_SUITE_ROOTS = (
+    "unit",
+    "integration",
+    "contract",
+    "e2e",
+    "architecture",
+    "performance",
+    "release",
+    "testkit",
+    "support",
+    "other",
+)
+
+PROD_FILE_WATCH_LINES = 1500
+PROD_FILE_RISK_LINES = 3000
+TEST_FILE_WATCH_LINES = 2500
+TEST_FILE_RISK_LINES = 4000
+DEFAULT_GATE_PROD_MAX_LINES = 3000
+DEFAULT_GATE_TEST_RATIO_MIN = 10.0
+COMPLEXITY_HOTSPOT_LIMIT = 20
+LARGEST_FILES_LIMIT = 5
+HISTORY_DEFAULT_NAME = "code_report.json"
+
+
 def empty_stat() -> dict:
     return {
         "files": 0,
@@ -223,6 +268,17 @@ def empty_stat() -> dict:
         "blank": 0,
         "comment": 0,
         "code": 0,
+    }
+
+
+def empty_suite_stat() -> dict:
+    return {
+        "files": 0,
+        "total": 0,
+        "blank": 0,
+        "comment": 0,
+        "code": 0,
+        "test_cases": 0,
     }
 
 
@@ -258,13 +314,14 @@ def _build_table(title: str, columns: list[tuple[str, str]], rows: list[list[obj
         show_lines=False,
         header_style="",
         title_style="",
-        title_justify="left",
+        title_justify="center",
         pad_edge=False,
-        expand=False,
+        expand=True,
         safe_box=True,
     )
-    for header, justify in columns:
-        table.add_column(header, justify=justify, no_wrap=header != "文件")
+    wrap_headers = {"文件", "位置", "路径", "项", "说明"}
+    for header, _justify in columns:
+        table.add_column(header, justify="center", no_wrap=header not in wrap_headers)
     for row in rows:
         table.add_row(*(str(value) for value in row))
     return table
@@ -426,7 +483,246 @@ def count_test_cases(path: Path) -> int:
     return count
 
 
-def scan_project(root: Path) -> dict:
+def normalize_rel_path(path: str | Path) -> str:
+    return str(path).replace("\\", "/").lstrip("./")
+
+
+def classify_module(rel_path: str | Path) -> str:
+    """按仓库顶层/一级业务目录归类，便于观察架构重心。"""
+    parts = [part for part in normalize_rel_path(rel_path).split("/") if part]
+    if not parts:
+        return "other"
+    top = parts[0]
+    if top == "app":
+        if len(parts) == 1:
+            return "app/other"
+        second = parts[1]
+        candidate = f"app/{second}"
+        if candidate in MODULE_BUCKETS:
+            return candidate
+        return "app/other"
+    if top in {"shared", "cli", "entry", "packaging", "scripts", "tests", "docs"}:
+        return top
+    return "other"
+
+
+def classify_test_suite(rel_path: str | Path, *, is_test: bool) -> str:
+    """识别 tests/ 下的套件根；非测试文件返回空串。"""
+    if not is_test:
+        return ""
+    parts = [part for part in normalize_rel_path(rel_path).split("/") if part]
+    if not parts:
+        return "other"
+    if parts[0] != "tests":
+        return "other"
+    if len(parts) == 1:
+        return "other"
+    suite = parts[1]
+    if suite in TEST_SUITE_ROOTS:
+        return suite
+    return "other"
+
+
+def file_risk_level(*, total_lines: int, is_test: bool) -> str:
+    if is_test:
+        if total_lines >= TEST_FILE_RISK_LINES:
+            return "risk"
+        if total_lines >= TEST_FILE_WATCH_LINES:
+            return "watch"
+        return "ok"
+    if total_lines >= PROD_FILE_RISK_LINES:
+        return "risk"
+    if total_lines >= PROD_FILE_WATCH_LINES:
+        return "watch"
+    return "ok"
+
+
+def _complexity_increment(node: ast.AST) -> int:
+    if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.With, ast.AsyncWith, ast.Assert)):
+        return 1
+    if isinstance(node, ast.BoolOp):
+        return max(0, len(node.values) - 1)
+    if isinstance(node, ast.IfExp):
+        return 1
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return sum(1 for _ in node.generators)
+    if isinstance(node, ast.comprehension):
+        return len(node.ifs)
+    return 0
+
+
+def analyze_python_complexity(path: Path) -> list[dict]:
+    """用 AST 估算函数圈复杂度，不引入 radon 依赖。"""
+    if path.suffix.lower() != ".py":
+        return []
+    text = read_text_safely(path)
+    if not text:
+        return []
+    try:
+        module = ast.parse(text, filename=str(path))
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+
+    hotspots: list[dict] = []
+    function_nodes = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    def walk_function(fn_node: ast.AST, qualname: str) -> None:
+        score = 1
+        for child in ast.walk(fn_node):
+            if child is fn_node:
+                continue
+            score += _complexity_increment(child)
+        lineno = getattr(fn_node, "lineno", 0) or 0
+        hotspots.append(
+            {
+                "name": qualname,
+                "complexity": score,
+                "lineno": lineno,
+            }
+        )
+
+    for node in module.body:
+        if isinstance(node, function_nodes):
+            walk_function(node, node.name)
+        elif isinstance(node, ast.ClassDef):
+            for member in node.body:
+                if isinstance(member, function_nodes):
+                    walk_function(member, f"{node.name}.{member.name}")
+    return hotspots
+
+
+def collect_project_surface(root: Path) -> dict:
+    """读取 pyproject 中的脚本入口与运行时依赖面。"""
+    surface = {
+        "scripts": [],
+        "gui_scripts": [],
+        "dependencies": [],
+        "optional_dependency_groups": 0,
+        "python_requires": "",
+        "package_name": "",
+        "version": "",
+    }
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return surface
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+        try:
+            import tomli as tomllib  # type: ignore
+        except ImportError:
+            return surface
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return surface
+
+    project = data.get("project") or {}
+    surface["package_name"] = str(project.get("name") or "")
+    surface["version"] = str(project.get("version") or "")
+    surface["python_requires"] = str(project.get("requires-python") or "")
+    surface["dependencies"] = [str(item) for item in (project.get("dependencies") or [])]
+    optional = project.get("optional-dependencies") or {}
+    surface["optional_dependency_groups"] = len(optional)
+    scripts = project.get("scripts") or {}
+    gui_scripts = project.get("gui-scripts") or {}
+    surface["scripts"] = [
+        {"name": str(name), "target": str(target)}
+        for name, target in scripts.items()
+    ]
+    surface["gui_scripts"] = [
+        {"name": str(name), "target": str(target)}
+        for name, target in gui_scripts.items()
+    ]
+    return surface
+
+
+def _stat_mapping(raw: dict) -> dict:
+    return {key: dict(value) for key, value in raw.items()}
+
+
+def ensure_report_result(result: dict) -> dict:
+    """补齐扩展字段，兼容旧测试夹具与历史 JSON。"""
+    enriched = dict(result)
+    totals = enriched.setdefault(
+        "totals",
+        {"all": empty_stat(), "prod": empty_stat(), "test": empty_stat()},
+    )
+    for key in ("all", "prod", "test"):
+        totals.setdefault(key, empty_stat())
+    enriched.setdefault("by_language", {"all": {}, "prod": {}, "test": {}})
+    enriched.setdefault("by_module", {})
+    enriched.setdefault("by_suite", {})
+    enriched.setdefault("largest_files", [])
+    enriched.setdefault("complexity_hotspots", [])
+    enriched.setdefault(
+        "project_surface",
+        {
+            "scripts": [],
+            "gui_scripts": [],
+            "dependencies": [],
+            "optional_dependency_groups": 0,
+            "python_requires": "",
+            "package_name": "",
+            "version": "",
+        },
+    )
+    enriched.setdefault("history_delta", None)
+    enriched.setdefault("gates", {"enabled": False, "passed": True, "failures": []})
+    enriched.setdefault("test_cases", 0)
+    enriched.setdefault("code_files", 0)
+    enriched.setdefault("total_files", 0)
+    enriched.setdefault("total_dirs", 0)
+    enriched.setdefault("repository_url", "")
+    for item in enriched["largest_files"]:
+        item.setdefault("module", classify_module(item.get("path", "")))
+        item.setdefault("suite", classify_test_suite(item.get("path", ""), is_test=bool(item.get("is_test"))))
+        item.setdefault(
+            "risk",
+            file_risk_level(total_lines=int(item.get("total", 0) or 0), is_test=bool(item.get("is_test"))),
+        )
+        item.setdefault("lang", "")
+        item.setdefault("code", 0)
+        item.setdefault("total", 0)
+        item.setdefault("is_test", False)
+
+    # 旧夹具/历史 JSON 可能缺少模块与套件聚合，用 largest_files 回填一份近似视图。
+    if not enriched["by_module"] and enriched["largest_files"]:
+        module_stats: dict[str, dict] = defaultdict(empty_stat)
+        for item in enriched["largest_files"]:
+            add_stat(
+                module_stats[item["module"]],
+                {
+                    "total": int(item.get("total") or 0),
+                    "blank": 0,
+                    "comment": 0,
+                    "code": int(item.get("code") or 0),
+                },
+            )
+        enriched["by_module"] = {key: dict(value) for key, value in module_stats.items()}
+    if not enriched["by_suite"] and enriched["largest_files"]:
+        suite_stats: dict[str, dict] = defaultdict(empty_suite_stat)
+        for item in enriched["largest_files"]:
+            suite = item.get("suite") or ""
+            if not suite:
+                continue
+            add_stat(
+                suite_stats[suite],
+                {
+                    "total": int(item.get("total") or 0),
+                    "blank": 0,
+                    "comment": 0,
+                    "code": int(item.get("code") or 0),
+                },
+            )
+            suite_stats[suite]["test_cases"] += int(item.get("test_cases") or 0)
+        enriched["by_suite"] = {key: dict(value) for key, value in suite_stats.items()}
+    for suite_stat in enriched["by_suite"].values():
+        suite_stat.setdefault("test_cases", 0)
+    return enriched
+
+
+def scan_project(root: Path, *, analyze_complexity: bool = True) -> dict:
     total_dirs = 0
     total_files = 0
     code_files = 0
@@ -443,8 +739,10 @@ def scan_project(root: Path) -> dict:
         "prod": defaultdict(empty_stat),
         "test": defaultdict(empty_stat),
     }
-
+    by_module: dict[str, dict] = defaultdict(empty_stat)
+    by_suite: dict[str, dict] = defaultdict(empty_suite_stat)
     largest_files = []
+    complexity_hotspots: list[dict] = []
 
     for current_root, dirs, files in os.walk(root):
         current_path = Path(current_root)
@@ -472,26 +770,70 @@ def scan_project(root: Path) -> dict:
             stat = count_lines(file_path)
             lang = CODE_EXTS.get(file_path.suffix.lower(), file_path.suffix.lower())
             test_flag = is_test_file(file_path, root)
+            file_cases = count_test_cases(file_path) if test_flag else 0
             if test_flag:
-                test_cases += count_test_cases(file_path)
+                test_cases += file_cases
 
             group = "test" if test_flag else "prod"
+            rel_path = normalize_rel_path(file_path.relative_to(root))
+            module = classify_module(rel_path)
+            suite = classify_test_suite(rel_path, is_test=test_flag)
 
             add_stat(totals["all"], stat)
             add_stat(totals[group], stat)
 
             add_stat(by_language["all"][lang], stat)
             add_stat(by_language[group][lang], stat)
+            add_stat(by_module[module], stat)
+            if suite:
+                add_stat(by_suite[suite], stat)
+                by_suite[suite]["test_cases"] += file_cases
 
+            risk = file_risk_level(total_lines=stat["total"], is_test=test_flag)
             largest_files.append({
-                "path": str(file_path.relative_to(root)),
+                "path": rel_path,
                 "total": stat["total"],
                 "code": stat["code"],
                 "is_test": test_flag,
                 "lang": lang,
+                "module": module,
+                "suite": suite,
+                "risk": risk,
+                "test_cases": file_cases,
             })
 
+            if analyze_complexity and lang == "Python" and not test_flag:
+                for hotspot in analyze_python_complexity(file_path):
+                    complexity_hotspots.append(
+                        {
+                            "path": rel_path,
+                            "module": module,
+                            "name": hotspot["name"],
+                            "complexity": hotspot["complexity"],
+                            "lineno": hotspot["lineno"],
+                        }
+                    )
+
     largest_files.sort(key=lambda x: x["total"], reverse=True)
+    complexity_hotspots.sort(key=lambda x: x["complexity"], reverse=True)
+
+    ordered_modules = {
+        key: dict(by_module[key])
+        for key in MODULE_BUCKETS
+        if key in by_module
+    }
+    for key, value in by_module.items():
+        if key not in ordered_modules:
+            ordered_modules[key] = dict(value)
+
+    ordered_suites = {
+        key: dict(by_suite[key])
+        for key in TEST_SUITE_ROOTS
+        if key in by_suite
+    }
+    for key, value in by_suite.items():
+        if key not in ordered_suites:
+            ordered_suites[key] = dict(value)
 
     return {
         "root": str(root),
@@ -501,105 +843,167 @@ def scan_project(root: Path) -> dict:
         "code_files": code_files,
         "test_cases": test_cases,
         "totals": totals,
-        "by_language": by_language,
-        "largest_files": largest_files[:30],
+        "by_language": {
+            "all": _stat_mapping(by_language["all"]),
+            "prod": _stat_mapping(by_language["prod"]),
+            "test": _stat_mapping(by_language["test"]),
+        },
+        "by_module": ordered_modules,
+        "by_suite": ordered_suites,
+        "largest_files": largest_files[:LARGEST_FILES_LIMIT],
+        "complexity_hotspots": complexity_hotspots[:COMPLEXITY_HOTSPOT_LIMIT],
+        "project_surface": collect_project_surface(root),
+        "history_delta": None,
+        "gates": {"enabled": False, "passed": True, "failures": []},
     }
 
 
 def print_total_report(result: dict) -> None:
-    totals = result["totals"]
-
     print("项目代码量统计报告")
     print(f"项目路径: {result['root']}")
     print(f"目录数量: {result['total_dirs']}")
     print(f"文件总数: {result['total_files']}")
     print(f"代码文件数: {result['code_files']}")
     print(f"\u6d4b\u8bd5\u7528\u4f8b\u6570: {result['test_cases']}")
-
-    rows = [
-        ("全部代码_含测试", totals["all"]),
-        ("排除测试后", totals["prod"]),
-        ("仅测试代码", totals["test"]),
-    ]
     print()
     _print_table(
         "总览：含测试 / 排除测试 / 仅测试",
         [
-            ("统计口径", "left"),
-            ("代码文件数", "right"),
-            ("总行数", "right"),
-            ("空行数", "right"),
-            ("注释行数", "right"),
-            ("有效代码行数", "right"),
+            ("统计口径", "center"),
+            ("代码文件数", "center"),
+            ("总行数", "center"),
+            ("空行数", "center"),
+            ("注释行数", "center"),
+            ("有效代码行数", "center"),
         ],
-        [
-            [name, stat["files"], stat["total"], stat["blank"], stat["comment"], stat["code"]]
-            for name, stat in rows
-        ],
+        build_total_rows(result),
     )
 
 
 def print_language_report(result: dict) -> None:
-    by_all = result["by_language"]["all"]
-    by_prod = result["by_language"]["prod"]
-    by_test = result["by_language"]["test"]
-
-    languages = sorted(
-        by_all.keys(),
-        key=lambda lang: by_all[lang]["total"],
-        reverse=True
-    )
-
-    rows = []
-    for lang in languages:
-        all_stat = by_all[lang]
-        prod_stat = by_prod[lang]
-        test_stat = by_test[lang]
-        rows.append(
-            [
-                lang,
-                all_stat["files"],
-                all_stat["total"],
-                all_stat["code"],
-                prod_stat["code"],
-                test_stat["code"],
-                test_stat["files"],
-            ]
-        )
-
     print()
     _print_table(
         "按语言统计：全部 / 排除测试 / 测试",
         [
-            ("语言", "left"),
-            ("全部文件", "right"),
-            ("全部行", "right"),
-            ("全部代码", "right"),
-            ("生产代码", "right"),
-            ("测试代码", "right"),
-            ("测试文件", "right"),
+            ("语言", "center"),
+            ("全部文件", "center"),
+            ("全部行", "center"),
+            ("全部代码", "center"),
+            ("生产代码", "center"),
+            ("测试代码", "center"),
+            ("测试文件", "center"),
         ],
-        rows,
+        build_language_rows(result),
     )
 
 
-def print_largest_files(result: dict) -> None:
-    rows = []
-    for item in result["largest_files"]:
-        file_type = "TEST" if item["is_test"] else "PROD"
-        rows.append([item["total"], item["code"], file_type, item["path"]])
-
+def print_module_report(result: dict) -> None:
+    rows = build_module_rows(result)
+    if not rows:
+        return
     print()
     _print_table(
-        "最大文件 Top 30",
+        "按模块统计",
         [
-            ("总行数", "right"),
-            ("代码行", "right"),
-            ("类型", "center"),
-            ("文件", "left"),
+            ("模块", "center"),
+            ("文件数", "center"),
+            ("总行数", "center"),
+            ("有效代码", "center"),
+            ("占比", "center"),
         ],
         rows,
     )
+
+
+def print_suite_report(result: dict) -> None:
+    rows = build_suite_rows(result)
+    if not rows:
+        return
+    print()
+    _print_table(
+        "测试套件分布",
+        [
+            ("套件", "center"),
+            ("文件数", "center"),
+            ("用例数", "center"),
+            ("总行数", "center"),
+            ("有效代码", "center"),
+            ("占比", "center"),
+        ],
+        rows,
+    )
+
+
+def print_complexity_report(result: dict) -> None:
+    rows = build_complexity_rows(result)
+    if not rows:
+        return
+    print()
+    _print_table(
+        f"Python 复杂度热点 Top {COMPLEXITY_HOTSPOT_LIMIT}",
+        [
+            ("复杂度", "center"),
+            ("模块", "center"),
+            ("符号", "center"),
+            ("位置", "center"),
+        ],
+        rows,
+    )
+
+
+def print_surface_report(result: dict) -> None:
+    rows = build_surface_rows(result)
+    if not rows:
+        return
+    print()
+    _print_table(
+        "项目表面（pyproject）",
+        [
+            ("项", "center"),
+            ("值", "center"),
+        ],
+        rows,
+    )
+
+
+def print_delta_report(result: dict) -> None:
+    rows = build_delta_rows(result)
+    if not rows:
+        return
+    print()
+    _print_table(
+        "与历史快照对比",
+        [
+            ("指标", "center"),
+            ("上次", "center"),
+            ("本次", "center"),
+            ("变化", "center"),
+            ("变化率", "center"),
+        ],
+        rows,
+    )
+    delta = result.get("history_delta") or {}
+    new_top = delta.get("new_top_files") or []
+    left_top = delta.get("left_top_files") or []
+    if new_top:
+        print(f"新进 Top{LARGEST_FILES_LIMIT} 大文件:")
+        for path in new_top:
+            print(f"  + {path}")
+    if left_top:
+        print(f"离开 Top{LARGEST_FILES_LIMIT} 大文件:")
+        for path in left_top:
+            print(f"  - {path}")
+
+
+def print_gates_report(result: dict) -> None:
+    gates = result.get("gates") or {}
+    if not gates.get("enabled"):
+        return
+    status = "通过" if gates.get("passed") else "未通过"
+    print()
+    print(f"质量门禁: {status}")
+    for item in gates.get("failures") or []:
+        print(f"  - {item}")
 
 
 def format_num(value: int) -> str:
@@ -665,11 +1069,192 @@ def build_language_rows(result: dict) -> list[list[object]]:
     return rows
 
 
-def build_largest_rows(result: dict) -> list[list[object]]:
+def build_module_rows(result: dict) -> list[list[object]]:
+    by_module = result.get("by_module") or {}
+    total_code = result["totals"]["all"]["code"]
+    rows = []
+    for module, stat in by_module.items():
+        rows.append(
+            [
+                module,
+                stat["files"],
+                stat["total"],
+                stat["code"],
+                f"{percent(stat['code'], total_code):.1f}%",
+            ]
+        )
+    rows.sort(key=lambda row: row[3], reverse=True)
+    return rows
+
+
+def build_suite_rows(result: dict) -> list[list[object]]:
+    by_suite = result.get("by_suite") or {}
+    total_test_code = result["totals"]["test"]["code"]
+    rows = []
+    for suite in TEST_SUITE_ROOTS:
+        stat = by_suite.get(suite)
+        if not stat:
+            continue
+        rows.append(
+            [
+                suite,
+                stat["files"],
+                int(stat.get("test_cases") or 0),
+                stat["total"],
+                stat["code"],
+                f"{percent(stat['code'], total_test_code):.1f}%",
+            ]
+        )
+    for suite, stat in by_suite.items():
+        if suite in TEST_SUITE_ROOTS:
+            continue
+        rows.append(
+            [
+                suite,
+                stat["files"],
+                int(stat.get("test_cases") or 0),
+                stat["total"],
+                stat["code"],
+                f"{percent(stat['code'], total_test_code):.1f}%",
+            ]
+        )
+    return rows
+
+
+def build_complexity_rows(result: dict) -> list[list[object]]:
     return [
-        [item["total"], item["code"], "TEST" if item["is_test"] else "PROD", item["path"]]
-        for item in result["largest_files"]
+        [
+            item["complexity"],
+            item.get("module") or classify_module(item["path"]),
+            item["name"],
+            f"{item['path']}:{item.get('lineno', 0)}",
+        ]
+        for item in (result.get("complexity_hotspots") or [])
     ]
+
+
+def build_surface_rows(result: dict) -> list[list[object]]:
+    surface = result.get("project_surface") or {}
+    rows = [
+        ["包名", surface.get("package_name") or "-"],
+        ["版本", surface.get("version") or "-"],
+        ["Python 要求", surface.get("python_requires") or "-"],
+        ["运行时依赖数", len(surface.get("dependencies") or [])],
+        ["可选依赖组", surface.get("optional_dependency_groups") or 0],
+        ["console scripts", len(surface.get("scripts") or [])],
+        ["gui scripts", len(surface.get("gui_scripts") or [])],
+    ]
+    for item in (surface.get("scripts") or [])[:12]:
+        rows.append([f"script:{item['name']}", item["target"]])
+    for item in (surface.get("gui_scripts") or [])[:8]:
+        rows.append([f"gui:{item['name']}", item["target"]])
+    return rows
+
+
+def build_delta_rows(result: dict) -> list[list[object]]:
+    delta = result.get("history_delta") or {}
+    metrics = delta.get("metrics") or []
+    return [
+        [item["label"], item["previous"], item["current"], item["delta"], item["delta_ratio"]]
+        for item in metrics
+    ]
+
+
+def compute_history_delta(current: dict, previous: dict) -> dict:
+    """对比两份报告快照，生成规模与结构变化摘要。"""
+    cur_totals = current.get("totals") or {}
+    prev_totals = previous.get("totals") or {}
+
+    def _metric(label: str, cur: int, prev: int) -> dict:
+        delta = cur - prev
+        ratio = "n/a" if prev == 0 else f"{percent(delta, prev):+.1f}%"
+        return {
+            "label": label,
+            "previous": prev,
+            "current": cur,
+            "delta": delta,
+            "delta_ratio": ratio,
+        }
+
+    metrics = [
+        _metric("有效代码行(全部)", cur_totals.get("all", {}).get("code", 0), prev_totals.get("all", {}).get("code", 0)),
+        _metric("有效代码行(生产)", cur_totals.get("prod", {}).get("code", 0), prev_totals.get("prod", {}).get("code", 0)),
+        _metric("有效代码行(测试)", cur_totals.get("test", {}).get("code", 0), prev_totals.get("test", {}).get("code", 0)),
+        _metric("代码文件数", int(current.get("code_files") or 0), int(previous.get("code_files") or 0)),
+        _metric("测试用例数", int(current.get("test_cases") or 0), int(previous.get("test_cases") or 0)),
+    ]
+    cur_top = {item["path"] for item in (current.get("largest_files") or [])[:LARGEST_FILES_LIMIT]}
+    prev_top = {item["path"] for item in (previous.get("largest_files") or [])[:LARGEST_FILES_LIMIT]}
+    return {
+        "previous_root": previous.get("root") or "",
+        "metrics": metrics,
+        "new_top_files": sorted(cur_top - prev_top),
+        "left_top_files": sorted(prev_top - cur_top),
+    }
+
+
+def evaluate_gates(
+    result: dict,
+    *,
+    prod_max_lines: int | None,
+    test_ratio_min: float | None,
+) -> dict:
+    failures: list[str] = []
+    enabled = prod_max_lines is not None or test_ratio_min is not None
+    if prod_max_lines is not None:
+        offenders = [
+            item
+            for item in (result.get("largest_files") or [])
+            if (not item.get("is_test")) and int(item.get("total") or 0) > prod_max_lines
+        ]
+        for item in offenders[:8]:
+            failures.append(
+                f"生产文件超过 {prod_max_lines} 行: {item['path']} ({item['total']})"
+            )
+        if len(offenders) > 8:
+            failures.append(f"另有 {len(offenders) - 8} 个生产大文件超限")
+    if test_ratio_min is not None:
+        total_code = result["totals"]["all"]["code"]
+        test_code = result["totals"]["test"]["code"]
+        ratio = percent(test_code, total_code)
+        if ratio + 1e-9 < test_ratio_min:
+            failures.append(f"测试代码占比 {ratio:.1f}% 低于阈值 {test_ratio_min:.1f}%")
+    return {
+        "enabled": enabled,
+        "passed": not failures,
+        "failures": failures,
+        "prod_max_lines": prod_max_lines,
+        "test_ratio_min": test_ratio_min,
+    }
+
+
+def load_history_report(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        import json
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def save_report_json(result: dict, output_path: str | Path) -> Path:
+    import json
+
+    path = Path(output_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serializable = ensure_report_result(result)
+    path.write_text(
+        json.dumps(serializable, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path.resolve()
 
 
 def build_language_chart_rows(result: dict, limit: int = 8) -> list[dict]:
@@ -699,7 +1284,7 @@ def build_language_chart_rows(result: dict, limit: int = 8) -> list[dict]:
     return rows
 
 
-def build_largest_chart_rows(result: dict, limit: int = 10) -> list[dict]:
+def build_largest_chart_rows(result: dict, limit: int = LARGEST_FILES_LIMIT) -> list[dict]:
     items = result["largest_files"][:limit]
     max_total = items[0]["total"] if items else 0
     rows = []
@@ -851,7 +1436,7 @@ def render_largest_files_chart(rows: list[dict]) -> str:
 <article class="chart-card">
 <div class="chart-head">
 <div>
-<h2>最大文件 Top 10</h2>
+<h2>最大文件 Top {LARGEST_FILES_LIMIT}</h2>
 <p>按文件总行数排序，提示潜在拆分风险</p>
 </div>
 </div>
@@ -863,6 +1448,7 @@ def render_largest_files_chart(rows: list[dict]) -> str:
 
 
 def render_insights(result: dict) -> str:
+    result = ensure_report_result(result)
     total_code = result["totals"]["all"]["code"]
     prod_code = result["totals"]["prod"]["code"]
     test_code = result["totals"]["test"]["code"]
@@ -882,10 +1468,11 @@ def render_insights(result: dict) -> str:
     largest_file = largest_items[0] if largest_items else None
     largest_total = largest_file["total"] if largest_file else 0
     largest_path = str(largest_file["path"]) if largest_file else "无"
-    if largest_total >= 3000:
+    largest_risk = str((largest_file or {}).get("risk") or file_risk_level(total_lines=largest_total, is_test=False))
+    if largest_risk == "risk" or largest_total >= PROD_FILE_RISK_LINES:
         largest_message = "存在超大文件，建议评估拆分"
         largest_tone = "risk"
-    elif largest_total >= 1500:
+    elif largest_risk == "watch" or largest_total >= PROD_FILE_WATCH_LINES:
         largest_message = "存在较大文件，建议关注复杂度"
         largest_tone = "watch"
     else:
@@ -913,9 +1500,9 @@ def render_insights(result: dict) -> str:
     for label, value, message, tone in cards:
         title = largest_path if label == "最大文件风险" else message
         markup.append(f"""
-<article class="insight-card insight-{tone}" title="{escape(title, quote=True)}">
+<article class="insight-card insight-{tone}" title="{escape(str(title), quote=True)}">
 <div class="insight-label">{escape(label)}</div>
-<div class="insight-value">{escape(value)}</div>
+<div class="insight-value">{escape(str(value))}</div>
 <p>{escape(message)}</p>
 </article>
 """)
@@ -933,44 +1520,43 @@ def render_insights(result: dict) -> str:
 
 
 def render_table(title: str, columns: list[tuple[str, str]], rows: list[list[object]]) -> str:
-    def align_class(justify: str) -> str:
-        if justify == "right":
-            return "num"
-        if justify == "center":
-            return "center"
-        return "text"
+    path_headers = {"文件", "位置", "路径"}
 
     def column_classes(index: int) -> str:
         if index >= len(columns):
-            return "text"
-        header, justify = columns[index]
-        classes = [align_class(justify)]
-        if header == "文件":
-            classes.append("path")
-        return " ".join(classes)
+            return "center"
+        header, _justify = columns[index]
+        if header in path_headers:
+            return "center path"
+        return "center"
 
     def render_cell(value: object, index: int) -> str:
         text = str(value)
         classes = column_classes(index)
         title_attr = ""
-        if index < len(columns) and columns[index][0] == "文件":
+        if index < len(columns) and columns[index][0] in path_headers:
             title_attr = f' title="{escape(text, quote=True)}"'
-        if text == "TEST":
-            content = '<span class="badge badge-test">TEST</span>'
-        elif text == "PROD":
-            content = '<span class="badge badge-prod">PROD</span>'
+        badge_map = {
+            "TEST": "badge-test",
+            "PROD": "badge-prod",
+            "RISK": "badge-risk",
+            "WATCH": "badge-watch",
+            "OK": "badge-ok",
+        }
+        if text in badge_map:
+            content = f'<span class="badge {badge_map[text]}">{escape(text)}</span>'
         else:
             content = escape(text)
         return f'<td class="{classes}"{title_attr}>{content}</td>'
 
-    header_cells = []
-    for index, (header, _justify) in enumerate(columns):
-        header_cells.append(f'<th class="{column_classes(index)}">{escape(str(header))}</th>')
-
-    body_rows = []
-    for row in rows:
-        cells = [render_cell(value, index) for index, value in enumerate(row)]
-        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+    header_cells = [
+        f'<th class="{column_classes(index)}">{escape(str(header))}</th>'
+        for index, (header, _justify) in enumerate(columns)
+    ]
+    body_rows = [
+        f"<tr>{''.join(render_cell(value, index) for index, value in enumerate(row))}</tr>"
+        for row in rows
+    ]
 
     return f"""
 <section class="report-section">
@@ -1414,15 +2000,19 @@ body {
 }
 table {
     width: 100%;
-    min-width: 720px;
+    min-width: 0;
+    table-layout: auto;
     border-collapse: collapse;
 }
 th,
 td {
     padding: 11px 13px;
     border-bottom: 1px solid var(--line);
-    white-space: nowrap;
-    vertical-align: top;
+    text-align: center;
+    vertical-align: middle;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     font-variant-numeric: tabular-nums;
 }
 th {
@@ -1436,20 +2026,11 @@ tbody tr:hover {
 tr:last-child td {
     border-bottom: none;
 }
-.text {
-    text-align: left;
-}
-.num {
-    text-align: right;
-}
 .center {
     text-align: center;
 }
 .path {
-    min-width: 260px;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
+    min-width: 0;
     line-height: 1.45;
 }
 .badge {
@@ -1473,6 +2054,48 @@ tr:last-child td {
     color: #1d4ed8;
     background: #dbeafe;
     border: 1px solid #93c5fd;
+}
+.badge-risk {
+    color: #b91c1c;
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+}
+.badge-watch {
+    color: #b45309;
+    background: #ffedd5;
+    border: 1px solid #fdba74;
+}
+.badge-ok {
+    color: #047857;
+    background: #d1fae5;
+    border: 1px solid #6ee7b7;
+}
+.gate-banner {
+    margin-top: 18px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: #f8fafc;
+}
+.gate-banner.gate-pass {
+    border-color: rgba(16, 185, 129, 0.28);
+    background: #f0fdf8;
+}
+.gate-banner.gate-fail {
+    border-color: rgba(239, 68, 68, 0.28);
+    background: #fff1f2;
+}
+.gate-banner h2 {
+    margin: 0 0 8px;
+    font-size: 18px;
+}
+.gate-banner ul {
+    margin: 0;
+    padding-left: 18px;
+}
+.gate-banner li {
+    margin: 4px 0;
+    color: #334155;
 }
 .empty-note {
     padding: 14px;
@@ -1539,7 +2162,39 @@ tr:last-child td {
 """
 
 
+def render_gates_banner(result: dict) -> str:
+    gates = result.get("gates") or {}
+    if not gates.get("enabled"):
+        return ""
+    passed = bool(gates.get("passed"))
+    tone = "gate-pass" if passed else "gate-fail"
+    title = "质量门禁：通过" if passed else "质量门禁：未通过"
+    failures = gates.get("failures") or []
+    if failures:
+        items = "".join(f"<li>{escape(str(item))}</li>" for item in failures)
+        body = f"<ul>{items}</ul>"
+    else:
+        body = "<p>已启用门禁检查，当前无违规项。</p>"
+    return f"""
+<section class="gate-banner {tone}">
+<h2>{escape(title)}</h2>
+{body}
+</section>
+"""
+
+
+def render_optional_table(
+    title: str,
+    columns: list[tuple[str, str]],
+    rows: list[list[object]],
+) -> str:
+    if not rows:
+        return ""
+    return render_table(title, columns, rows)
+
+
 def save_report_html(result: dict, output_path: str | Path = "code_report.html") -> Path:
+    result = ensure_report_result(result)
     totals = result["totals"]
     all_totals = totals["all"]
     prod_code = totals["prod"]["code"]
@@ -1573,7 +2228,7 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
 <section class="hero">
 <div class="hero-content">
 <h1 class="hero-title">项目代码量统计报告</h1>
-<p class="hero-subtitle">静态代码规模、语言分布、测试占比与大文件风险概览</p>
+<p class="hero-subtitle">静态代码规模、模块分布、测试占比、复杂度热点与大文件风险概览</p>
 <div class="hero-meta">
 <div class="hero-path">{escape(str(result["root"]))}</div>
 {render_repository_link(str(result.get("repository_url") or ""))}
@@ -1594,40 +2249,83 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
 {render_largest_files_chart(build_largest_chart_rows(result))}
 </section>
 {render_insights(result)}
+{render_gates_banner(result)}
 {render_table(
     "总览：含测试 / 排除测试 / 仅测试",
     [
-        ("统计口径", "left"),
-        ("代码文件数", "right"),
-        ("总行数", "right"),
-        ("空行数", "right"),
-        ("注释行数", "right"),
-        ("有效代码行数", "right"),
+        ("统计口径", "center"),
+        ("代码文件数", "center"),
+        ("总行数", "center"),
+        ("空行数", "center"),
+        ("注释行数", "center"),
+        ("有效代码行数", "center"),
     ],
     build_total_rows(result),
 )}
 {render_table(
     "按语言统计：全部 / 排除测试 / 测试",
     [
-        ("语言", "left"),
-        ("全部文件", "right"),
-        ("全部行", "right"),
-        ("全部代码", "right"),
-        ("生产代码", "right"),
-        ("测试代码", "right"),
-        ("测试文件", "right"),
+        ("语言", "center"),
+        ("全部文件", "center"),
+        ("全部行", "center"),
+        ("全部代码", "center"),
+        ("生产代码", "center"),
+        ("测试代码", "center"),
+        ("测试文件", "center"),
     ],
     build_language_rows(result),
 )}
-{render_table(
-    "最大文件 Top 30",
+{render_optional_table(
+    "按模块统计",
     [
-        ("总行数", "right"),
-        ("代码行", "right"),
-        ("类型", "center"),
-        ("文件", "left"),
+        ("模块", "center"),
+        ("文件数", "center"),
+        ("总行数", "center"),
+        ("有效代码", "center"),
+        ("占比", "center"),
     ],
-    build_largest_rows(result),
+    build_module_rows(result),
+)}
+{render_optional_table(
+    "测试套件分布",
+    [
+        ("套件", "center"),
+        ("文件数", "center"),
+        ("用例数", "center"),
+        ("总行数", "center"),
+        ("有效代码", "center"),
+        ("占比", "center"),
+    ],
+    build_suite_rows(result),
+)}
+{render_optional_table(
+    f"Python 复杂度热点 Top {COMPLEXITY_HOTSPOT_LIMIT}",
+    [
+        ("复杂度", "center"),
+        ("模块", "center"),
+        ("符号", "center"),
+        ("位置", "center"),
+    ],
+    build_complexity_rows(result),
+)}
+{render_optional_table(
+    "项目表面（pyproject）",
+    [
+        ("项", "center"),
+        ("值", "center"),
+    ],
+    build_surface_rows(result),
+)}
+{render_optional_table(
+    "与历史快照对比",
+    [
+        ("指标", "center"),
+        ("上次", "center"),
+        ("本次", "center"),
+        ("变化", "center"),
+        ("变化率", "center"),
+    ],
+    build_delta_rows(result),
 )}
 </main>
 </body>
@@ -1643,9 +2341,15 @@ def save_report_html(result: dict, output_path: str | Path = "code_report.html")
 
 
 def print_report(result: dict) -> None:
+    result = ensure_report_result(result)
     print_total_report(result)
     print_language_report(result)
-    print_largest_files(result)
+    print_module_report(result)
+    print_suite_report(result)
+    print_complexity_report(result)
+    print_surface_report(result)
+    print_delta_report(result)
+    print_gates_report(result)
 
 
 def open_report_html(report_path: str | Path) -> bool:
@@ -1674,6 +2378,47 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="导出 HTML 报告；默认生成项目根目录下的 code_report.html",
     )
     parser.add_argument(
+        "--json",
+        nargs="?",
+        const=HISTORY_DEFAULT_NAME,
+        default=None,
+        metavar="PATH",
+        help=f"导出 JSON 快照；省略路径时默认写入 {HISTORY_DEFAULT_NAME}",
+    )
+    parser.add_argument(
+        "--history",
+        default=None,
+        metavar="PATH",
+        help="读取上一份 JSON 报告并生成规模变化对比",
+    )
+    parser.add_argument(
+        "--no-complexity",
+        action="store_true",
+        help="跳过 Python AST 复杂度热点分析以加快扫描",
+    )
+    parser.add_argument(
+        "--gates",
+        action="store_true",
+        help=(
+            f"启用默认质量门禁（生产文件 >{DEFAULT_GATE_PROD_MAX_LINES} 行，"
+            f"测试占比 <{DEFAULT_GATE_TEST_RATIO_MIN:.0f}%%）"
+        ),
+    )
+    parser.add_argument(
+        "--gate-prod-max-lines",
+        type=int,
+        default=None,
+        metavar="N",
+        help="生产文件总行数上限；超过则门禁失败",
+    )
+    parser.add_argument(
+        "--gate-test-ratio-min",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="测试有效代码占比下限（百分比）；低于则门禁失败",
+    )
+    parser.add_argument(
         "--open",
         action="store_true",
         help="生成报告后立即使用默认浏览器打开 HTML",
@@ -1688,14 +2433,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"项目目录不存在或不是目录：{project_root}", file=sys.stderr)
         return 2
 
-    result = scan_project(project_root)
-    print_report(result)
-    html_path = save_report_html(result, args.html)
-    print(f"HTML 报告已生成：{html_path}")
+    result = scan_project(project_root, analyze_complexity=not args.no_complexity)
 
-    if args.open and not open_report_html(html_path):
-        print(f"无法自动打开浏览器，请手动打开：{html_path}", file=sys.stderr)
+    if args.history:
+        previous = load_history_report(Path(args.history).expanduser())
+        if previous is None:
+            print(f"无法读取历史报告：{args.history}", file=sys.stderr)
+        else:
+            result["history_delta"] = compute_history_delta(result, previous)
+
+    prod_max_lines = args.gate_prod_max_lines
+    test_ratio_min = args.gate_test_ratio_min
+    if args.gates:
+        if prod_max_lines is None:
+            prod_max_lines = DEFAULT_GATE_PROD_MAX_LINES
+        if test_ratio_min is None:
+            test_ratio_min = DEFAULT_GATE_TEST_RATIO_MIN
+    result["gates"] = evaluate_gates(
+        result,
+        prod_max_lines=prod_max_lines,
+        test_ratio_min=test_ratio_min,
+    )
+
+    print_report(result)
+
+    if args.html:
+        html_path = save_report_html(result, args.html)
+        print(f"HTML 报告已生成：{html_path}")
+        if args.open and not open_report_html(html_path):
+            print(f"无法自动打开浏览器，请手动打开：{html_path}", file=sys.stderr)
+            return 1
+    elif args.open:
+        print("未生成 HTML，无法打开浏览器。请指定 --html。", file=sys.stderr)
         return 1
+
+    if args.json:
+        json_path = save_report_json(result, args.json)
+        print(f"JSON 报告已生成：{json_path}")
+
+    gates = result.get("gates") or {}
+    if gates.get("enabled") and not gates.get("passed"):
+        return 3
     return 0
 
 

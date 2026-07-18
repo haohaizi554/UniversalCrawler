@@ -1,5 +1,7 @@
 """Tests for count_project console table formatting."""
 
+import json
+
 import count_project
 
 from rich import box
@@ -8,6 +10,10 @@ from count_project import (
     _build_table,
     build_language_chart_rows,
     build_largest_chart_rows,
+    classify_module,
+    classify_test_suite,
+    compute_history_delta,
+    evaluate_gates,
     main,
     normalize_repository_url,
     parse_args,
@@ -80,7 +86,7 @@ def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
     assert 'class="dashboard-grid"' in html
     assert 'class="donut"' in html
     assert "语言分布 Top 8" in html
-    assert "最大文件 Top 10" in html
+    assert "最大文件 Top 5" in html
     assert 'class="insights"' in html
     assert "D:/demo/&lt;project&gt;" in html
     assert 'class="hero-repository"' in html
@@ -92,7 +98,9 @@ def test_save_report_html_writes_escaped_report(tmp_path, monkeypatch):
     assert "tests/&lt;main&gt;_test.py" in html
     assert '<span class="badge badge-prod">PROD</span>' in html
     assert '<span class="badge badge-test">TEST</span>' in html
-    assert 'class="text path"' in html
+    assert "按模块统计" in html
+    assert "规模估算 / LLM 预算" not in html
+    assert html.count("最大文件 Top 5") == 1
 
 
 def test_report_icon_resolves_from_installed_data_directory(tmp_path, monkeypatch):
@@ -143,6 +151,22 @@ def test_parse_args_generates_html_by_default(monkeypatch):
     args = parse_args()
 
     assert args.html == "code_report.html"
+
+
+def test_parse_args_help_does_not_crash(capsys):
+    try:
+        parse_args(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("expected --help to exit")
+
+    help_text = capsys.readouterr().out
+    assert "--json" in help_text
+    assert "--history" in help_text
+    assert "--gates" in help_text
+    assert "--no-complexity" in help_text
+    assert "10%" in help_text
 
 
 def test_main_generates_report_and_opens_it(tmp_path, monkeypatch):
@@ -243,3 +267,114 @@ def test_chart_rows_compute_widths_and_names():
     assert largest_rows[0]["name"] == "main.py"
     assert largest_rows[0]["width"] == 100
     assert largest_rows[1]["type"] == "TEST"
+
+
+def test_classify_module_and_suite():
+    assert classify_module("app/web/controller.py") == "app/web"
+    assert classify_module("shared/localization.py") == "shared"
+    assert classify_module("unknown/x.py") == "other"
+    assert classify_test_suite("tests/unit/test_a.py", is_test=True) == "unit"
+    assert classify_test_suite("tests/custom/test_a.py", is_test=True) == "other"
+    assert classify_test_suite("app/main.py", is_test=False) == ""
+
+
+def test_evaluate_gates_and_history_delta(tmp_path):
+    current = {
+        "root": str(tmp_path),
+        "code_files": 2,
+        "test_cases": 4,
+        "totals": {
+            "all": {"code": 100},
+            "prod": {"code": 90},
+            "test": {"code": 10},
+        },
+        "largest_files": [
+            {"path": "app/big.py", "total": 4000, "code": 3000, "is_test": False},
+            {"path": "tests/a.py", "total": 10, "code": 8, "is_test": True},
+        ],
+    }
+    previous = {
+        "root": str(tmp_path),
+        "code_files": 1,
+        "test_cases": 2,
+        "totals": {
+            "all": {"code": 80},
+            "prod": {"code": 70},
+            "test": {"code": 10},
+        },
+        "largest_files": [
+            {"path": "app/old.py", "total": 100, "code": 80, "is_test": False},
+        ],
+    }
+
+    gates = evaluate_gates(current, prod_max_lines=3000, test_ratio_min=20.0)
+    assert gates["enabled"] is True
+    assert gates["passed"] is False
+    assert any("生产文件超过" in item for item in gates["failures"])
+    assert any("测试代码占比" in item for item in gates["failures"])
+
+    delta = compute_history_delta(current, previous)
+    assert delta["metrics"][0]["delta"] == 20
+    assert "app/big.py" in delta["new_top_files"]
+    assert "app/old.py" in delta["left_top_files"]
+
+
+def test_scan_project_includes_extended_sections(tmp_path):
+    app_dir = tmp_path / "app" / "web"
+    app_dir.mkdir(parents=True)
+    tests_dir = tmp_path / "tests" / "unit"
+    tests_dir.mkdir(parents=True)
+    (app_dir / "controller.py").write_text(
+        "def run(x):\n"
+        "    if x:\n"
+        "        return 1\n"
+        "    for i in range(3):\n"
+        "        if i:\n"
+        "            return i\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    (tests_dir / "test_controller.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
+        'dependencies = ["rich"]\n[project.scripts]\ndemo = "demo:main"\n',
+        encoding="utf-8",
+    )
+
+    result = scan_project(tmp_path)
+
+    assert "app/web" in result["by_module"]
+    assert "unit" in result["by_suite"]
+    assert result["by_suite"]["unit"]["test_cases"] == 1
+    assert result["complexity_hotspots"]
+    assert result["project_surface"]["package_name"] == "demo"
+
+
+def test_main_writes_json_and_fails_gates(tmp_path, monkeypatch):
+    (tmp_path / "app.py").write_text("print('x')\n" * 20, encoding="utf-8")
+    html_path = tmp_path / "report.html"
+    json_path = tmp_path / "report.json"
+    monkeypatch.setattr("count_project.print_report", lambda _result: None)
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--html",
+            str(html_path),
+            "--json",
+            str(json_path),
+            "--gate-test-ratio-min",
+            "50",
+        ]
+    )
+
+    assert exit_code == 3
+    assert html_path.exists()
+    assert json_path.exists()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["gates"]["enabled"] is True
+    assert payload["gates"]["passed"] is False
