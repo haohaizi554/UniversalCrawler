@@ -1,4 +1,4 @@
-"""shared.runtime_options 单测。
+"""Unit tests for shared.runtime_options.
 
 测试维度：
 - 单元测试：平台默认配置、参数类型校验、MissAV 代理转换

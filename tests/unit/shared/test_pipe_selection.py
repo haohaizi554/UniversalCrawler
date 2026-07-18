@@ -1,4 +1,4 @@
-"""shared.pipe_selection 单元测试（管道选择 + 预加载 + 输出）。
+"""Unit tests for shared.pipe_selection.
 
 测试维度：
 - 单元测试：stdin 读取、JSON 解析

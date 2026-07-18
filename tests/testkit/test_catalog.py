@@ -197,13 +197,16 @@ class TestEntryApplyPluginArgsTests(unittest.TestCase):
         from entry import test_entry
         test_entry._apply_plugin_args(
             [],
-            ["my_files:我的文件:tests/unit/cli/test_runner.py"],
+            [
+                "my_files:我的文件:"
+                "tests/unit/shared/test_cli_runner_runtime.py"
+            ],
         )
         from tests.support import catalog
         self.assertIn("my_files", catalog.TEST_REGISTRY)
         self.assertEqual(
             catalog.TEST_REGISTRY["my_files"].files,
-            ["tests/unit/cli/test_runner.py"],
+            ["tests/unit/shared/test_cli_runner_runtime.py"],
         )
 
 class TestPluginDirectoryAPITests(unittest.TestCase):
@@ -240,10 +243,13 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
             id="rule_suite",
             name="规则套件",
             description="按命名规则自动纳入",
-            include=["tests/unit/cli/test_*.py"],
+            include=["tests/unit/shared/test_*.py"],
         )
         self.assertEqual(cat.id, "rule_suite")
-        self.assertIn("tests/unit/cli/test_runner.py", self.registry.get_resolved_files("rule_suite"))
+        self.assertIn(
+            "tests/unit/shared/test_cli_runner_runtime.py",
+            self.registry.get_resolved_files("rule_suite"),
+        )
 
     def test_register_test_files_appends_to_existing_category(self):
         self.registry.register_category(
@@ -263,7 +269,10 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
 
     def test_builtin_suite_rejects_explicit_file_registration(self):
         with self.assertRaisesRegex(ValueError, "directory-driven"):
-            self.registry.register_test_files("unit", ["tests/unit/cli/test_runner.py"])
+            self.registry.register_test_files(
+                "unit",
+                ["tests/unit/shared/test_cli_runner_runtime.py"],
+            )
 
     def test_refresh_registry_returns_counts(self):
         info = self.registry.refresh_registry()
@@ -332,7 +341,7 @@ class TestPluginDirectoryAPITests(unittest.TestCase):
 
             def get_files(self):
                 return [
-                    "tests/unit/cli/test_runner.py",
+                    "tests/unit/shared/test_cli_runner_runtime.py",
                     "tests/testkit/test_catalog.py",
                 ]
 

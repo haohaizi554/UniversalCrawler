@@ -1,4 +1,4 @@
-"""shared selection runtime 各种二次选择策略测试。
+"""Tests for the shared selection runtimes.
 
 测试维度：
 - 单元测试：每种策略的边界条件

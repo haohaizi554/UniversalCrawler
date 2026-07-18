@@ -212,6 +212,37 @@ class DependencyDirectionArchitectureTests(unittest.TestCase):
     def test_dead_interactive_command_runtime_is_removed(self) -> None:
         self.assertFalse((PROJECT_ROOT / "shared" / "interactive_command_runtime.py").exists())
 
+    def test_web_script_injection_has_no_cli_duplicate(self) -> None:
+        self.assertFalse(
+            (PROJECT_ROOT / "cli" / "script_runner.py").exists()
+        )
+        self.assertTrue(
+            (PROJECT_ROOT / "app" / "web" / "script_api.py").exists()
+        )
+
+    def test_shared_runtime_tests_mirror_their_production_namespace(self) -> None:
+        stale = (
+            "test_defaults.py",
+            "test_pipe.py",
+            "test_runner.py",
+            "test_sdk.py",
+            "test_selection.py",
+            "test_script_runner.py",
+        )
+        remaining = [
+            name
+            for name in stale
+            if (
+                PROJECT_ROOT
+                / "tests"
+                / "unit"
+                / "cli"
+                / name
+            ).exists()
+        ]
+
+        self.assertEqual(remaining, [])
+
     def test_ui_does_not_import_core_downloaders(self) -> None:
         self.assertEqual(_imports_under("app/ui", "app.core.downloaders"), [])
 

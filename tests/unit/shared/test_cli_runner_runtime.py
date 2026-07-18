@@ -1,4 +1,4 @@
-"""shared.cli_runner_runtime.CLIRunner 单元 + 集成测试。
+"""Unit and integration tests for shared.cli_runner_runtime.CLIRunner.
 
 测试维度：
 - 单元测试：参数初始化、_apply_video_state、_make_ask_user_selection

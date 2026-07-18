@@ -1,4 +1,4 @@
-"""shared.sdk_runtime UcrawlSDK 单测。
+"""Unit tests for shared.sdk_runtime.UcrawlSDK.
 
 测试维度：
 - 单元测试：参数校验、selection 解析、资源接口幂等
