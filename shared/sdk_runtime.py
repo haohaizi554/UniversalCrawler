@@ -553,23 +553,11 @@ class UcrawlSDK:
     def list_platforms(self) -> list[dict]:
         """列出所有可用平台及其元信息。"""
         from app.core.plugin_registry import registry
-        result = []
-        for p in registry.get_all_plugins():
-            info = {
-                "id": p.id,
-                "name": p.name,
-                "search_placeholder": p.get_search_placeholder(),
-            }
-            # 可选字段
-            if hasattr(p, "description") and p.description:
-                info["description"] = p.description
-            if hasattr(p, "settings_builder") and p.settings_builder is not None:
-                try:
-                    info["settings"] = p.settings_builder.field_defs
-                except (AttributeError, TypeError):
-                    pass
-            result.append(info)
-        return result
+
+        return [
+            plugin.get_manifest()
+            for plugin in registry.get_all_plugins()
+        ]
 
     def scan_directory(self, directory: str, scan_limit: int | None = None) -> dict:
         """扫描本地目录，返回文件清单。

@@ -92,3 +92,25 @@ def test_cookie_auth_requires_file_and_cookie_names():
 
     with pytest.raises(ValueError, match="default_file and cookie_names"):
         PlatformAuthSpec(mode="cookie")
+
+
+def test_every_builtin_declares_non_generic_interactive_metadata():
+    from app.core.plugin_registry import registry
+
+    manifests = {
+        plugin.id: plugin.get_manifest()
+        for plugin in registry.get_all_plugins()
+    }
+
+    assert manifests["douyin"]["interactive"]["fields"][0]["key"] == "max_items"
+    assert (
+        manifests["xiaohongshu"]["interactive"]["fields"][0]["summary_label"]
+        == "笔记数"
+    )
+    assert manifests["bilibili"]["interactive"]["fields"][0]["key"] == "max_pages"
+    assert [
+        field["key"]
+        for field in manifests["missav"]["interactive"]["fields"]
+    ] == ["individual_only", "priority", "proxy"]
+    assert manifests["kuaishou"]["interactive"]["auth"]["mode"] == "cookie"
+    assert manifests["missav"]["interactive"]["auth"]["mode"] == "none"

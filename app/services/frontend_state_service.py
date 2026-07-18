@@ -1942,10 +1942,11 @@ class FrontendStateService:
         return dict(value)
 
     def _platform_auth_signature(self, plugin_id: str, auth_cfg: Mapping[str, Any]) -> tuple[Any, ...]:
-        requirement = settings_adapter.PLATFORM_AUTH_REQUIREMENTS.get(str(plugin_id or "").strip().lower())
-        if not requirement:
-            return (plugin_id, "no-rule")
-        file_key, _cookie_names, auth_url = requirement
+        spec = settings_adapter.resolve_platform_auth_spec(plugin_id)
+        if spec.mode != "cookie":
+            return (plugin_id, spec.mode)
+        file_key = spec.config_key
+        auth_url = spec.login_url
         raw_path = str(auth_cfg.get(file_key) or "").strip()
         if not raw_path:
             return (plugin_id, file_key, auth_url, "")

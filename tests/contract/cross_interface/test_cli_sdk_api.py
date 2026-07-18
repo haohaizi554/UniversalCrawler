@@ -515,6 +515,10 @@ class ListPlatformsContractTests(unittest.TestCase):
         for pid in sdk_list:
             self.assertEqual(set(sdk_list[pid].keys()) - {"description", "settings"},
                              set(api_list[pid].keys()) - {"description", "settings"})
+            self.assertEqual(
+                sdk_list[pid]["interactive"],
+                api_list[pid]["interactive"],
+            )
 
 if __name__ == "__main__":
     unittest.main()

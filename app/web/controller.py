@@ -1273,22 +1273,10 @@ class WebController(WebMediaScanRuntimeMixin, ControllerSessionMixin, MediaLibra
 
     def get_platforms(self) -> list[dict]:
         """返回平台列表（与 SDK list_platforms 字段对齐）。"""
-        platforms = []
-        for plugin in registry.get_all_plugins():
-            info = {
-                "id": plugin.id,
-                "name": plugin.name,
-                "search_placeholder": plugin.get_search_placeholder(),
-            }
-            if hasattr(plugin, "description") and plugin.description:
-                info["description"] = plugin.description
-            if hasattr(plugin, "settings_builder") and plugin.settings_builder is not None:
-                try:
-                    info["settings"] = plugin.settings_builder.field_defs
-                except (AttributeError, TypeError):
-                    pass
-            platforms.append(info)
-        return platforms
+        return [
+            plugin.get_manifest()
+            for plugin in registry.get_all_plugins()
+        ]
 
     def get_state(self) -> dict:
         with self._lifecycle_lock:

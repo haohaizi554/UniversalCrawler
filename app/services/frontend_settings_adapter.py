@@ -36,27 +36,37 @@ from app.config.settings import (
     ui_log_max_display_options,
 )
 from app.core.plugin_registry import registry
+from app.core.plugins.metadata import PlatformAuthSpec
 from app.debug_logger import debug_logger
 from app.services.auth_service import AuthService
 
-PLATFORM_AUTH_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...], str]] = {
-    "douyin": ("douyin_cookie_file", ("sessionid_ss",), "https://www.douyin.com/"),
-    "bilibili": ("bilibili_cookie_file", ("SESSDATA",), "https://www.bilibili.com/"),
-    "kuaishou": ("kuaishou_cookie_file", ("userId",), "https://www.kuaishou.com/"),
-    "xiaohongshu": ("xiaohongshu_cookie_file", ("web_session", "a1"), "https://www.xiaohongshu.com/"),
-}
+
+def resolve_platform_auth_spec(plugin_id: str) -> PlatformAuthSpec:
+    """Resolve the canonical authentication contract from plugin metadata."""
+
+    plugin = registry.get_plugin(
+        str(plugin_id or "").strip().lower()
+    )
+    if plugin is None:
+        return PlatformAuthSpec()
+    return plugin.get_interactive_spec().auth
 
 
 def platform_auth_snapshot(plugin_id: str, auth_cfg: Mapping[str, Any]) -> dict[str, str]:
-    requirement = PLATFORM_AUTH_REQUIREMENTS.get(str(plugin_id or "").strip().lower())
-    if not requirement:
+    spec = resolve_platform_auth_spec(plugin_id)
+    if spec.mode == "none":
         return {
-            "auth_status": "未认证",
-            "auth_detail": "该平台暂无 Cookie 检测规则",
+            "auth_status": "无需认证",
+            "auth_detail": "该平台不需要 Cookie 认证",
             "auth_cookie_file": "",
         }
-    file_key, cookie_names, auth_url = requirement
-    cookie_file = str(auth_cfg.get(file_key) or "")
+    if spec.mode == "unspecified":
+        return {
+            "auth_status": "未声明",
+            "auth_detail": "该插件未声明 Cookie 检测规则",
+            "auth_cookie_file": "",
+        }
+    cookie_file = str(auth_cfg.get(spec.config_key) or "")
     if not cookie_file:
         return {
             "auth_status": "未认证",
@@ -72,7 +82,10 @@ def platform_auth_snapshot(plugin_id: str, auth_cfg: Mapping[str, Any]) -> dict[
         }
     try:
         payload = AuthService().load_json_file(str(path))
-        cookie_dict = AuthService.extract_cookie_dict_for_url(payload, auth_url)
+        cookie_dict = AuthService.extract_cookie_dict_for_url(
+            payload,
+            spec.login_url,
+        )
     except Exception as exc:
         debug_logger.log_exception(
             "FrontendSettingsAdapter",
@@ -85,7 +98,11 @@ def platform_auth_snapshot(plugin_id: str, auth_cfg: Mapping[str, Any]) -> dict[
             "auth_detail": "Cookie 文件无法读取",
             "auth_cookie_file": str(path),
         }
-    matched = [name for name in cookie_names if cookie_dict.get(name)]
+    matched = [
+        name
+        for name in spec.cookie_names
+        if cookie_dict.get(name)
+    ]
     if matched:
         return {
             "auth_status": "已认证",

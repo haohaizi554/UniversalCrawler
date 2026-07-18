@@ -12,6 +12,7 @@ from app.services.frontend_settings_adapter import (
     platform_auth_snapshot,
     platform_count_contract,
     platform_proxy_contract,
+    resolve_platform_auth_spec,
 )
 
 
@@ -47,6 +48,26 @@ def test_kuaishou_auth_snapshot_rejects_expired_main_site_cookie(tmp_path):
     )
 
     assert snapshot["auth_status"] == "未认证"
+
+
+def test_platform_auth_requirements_come_from_plugin_metadata():
+    kuaishou = resolve_platform_auth_spec("kuaishou")
+    missav = resolve_platform_auth_spec("missav")
+    unknown = resolve_platform_auth_spec("external-without-metadata")
+
+    assert kuaishou.mode == "cookie"
+    assert kuaishou.config_key == "kuaishou_cookie_file"
+    assert "userId" in kuaishou.cookie_names
+    assert missav.mode == "none"
+    assert unknown.mode == "unspecified"
+
+
+def test_platform_auth_snapshot_distinguishes_none_and_unspecified():
+    no_auth = platform_auth_snapshot("missav", {})
+    unspecified = platform_auth_snapshot("external-without-metadata", {})
+
+    assert no_auth["auth_status"] == "无需认证"
+    assert unspecified["auth_status"] == "未声明"
 
 
 def test_platform_count_contract_uses_platform_specific_units_and_defaults():
