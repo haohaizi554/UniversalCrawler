@@ -56,6 +56,7 @@
 - 策略解析和 curl 请求必须接收逐字相同的 ASCII-IDNA 传输 URL；Unicode 主机、trailing dot 和显式端口不得导致 RESOLVE key 与实际连接主机不一致。
 - 直连短链请求必须在 request-scoped `curl_options` 中显式设置 `CurlOpt.PROXY: ""`；`{"http": None, "https": None, "all": None}` 不能作为禁用 libcurl 环境代理的安全边界。
 - IPv6 固定项使用方括号，避免地址中的冒号与 `host:port` 字段冲突。
+- 拒绝所有带 scope ID/zone 的 IPv6 固定地址；不得把 scope 文本拼入 `CurlOpt.RESOLVE`，避免分隔符注入额外地址。
 - 请求与 DNS 校验共同消耗现有 15 秒总预算；不新增独立、可叠加的超时窗口。
 - 重定向、异常和内容中止路径继续关闭响应，避免连接泄漏。
 - 日志只记录阶段和失败类型，不记录 Cookie、签名或其他敏感值。

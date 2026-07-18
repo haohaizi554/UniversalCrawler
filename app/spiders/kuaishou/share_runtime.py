@@ -69,7 +69,10 @@ def _short_link_curl_resolve_options(
         pinned: list[str] = []
         for raw_address in addresses:
             address = ipaddress.ip_address(str(raw_address or "").strip())
-            if not address.is_global:
+            if not address.is_global or (
+                isinstance(address, ipaddress.IPv6Address)
+                and address.scope_id is not None
+            ):
                 raise ValueError("non-public pinned address")
             rendered = f"[{address}]" if address.version == 6 else str(address)
             if rendered not in pinned:

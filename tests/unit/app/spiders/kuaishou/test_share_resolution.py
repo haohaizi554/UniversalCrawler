@@ -229,7 +229,14 @@ def test_short_link_transport_fails_closed_when_no_address_is_resolved(
     request_get.assert_not_called()
 
 
-@pytest.mark.parametrize("address", ["127.0.0.1", "93.184.216.34,127.0.0.1"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "93.184.216.34,127.0.0.1",
+        "2001:4860:4860::8888%1],[::1",
+    ],
+)
 @patch("app.spiders.kuaishou.share_runtime.curl_get")
 def test_short_link_transport_fails_closed_for_invalid_pinned_address(
     request_get: Mock,

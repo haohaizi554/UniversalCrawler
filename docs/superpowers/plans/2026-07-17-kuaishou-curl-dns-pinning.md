@@ -315,13 +315,41 @@ Expected: the new tests fail because `curl_get` has no `curl_options`, the polic
 
 **Interfaces:**
 - Consumes: `DomainPolicyEngine.resolve_public_addresses(url: str) -> tuple[str, ...]` and the existing semaphore/deadline.
-- Produces: `_short_link_curl_resolve_options(url: str, addresses: tuple[str, ...]) -> dict[object, list[str]]` and `_restricted_short_link_request_kwargs(...) -> {"curl_options": ...}`.
+- Produces: `_short_link_transport_url(url: str) -> str`, `_short_link_curl_resolve_options(url: str, addresses: tuple[str, ...]) -> dict[object, list[str]]`, and `_restricted_short_link_request_kwargs(...) -> tuple[str, dict[str, object]]`.
 
-- [ ] **Step 1: Add the strict curl pin formatter**
+- [ ] **Step 1: Add the ASCII transport URL and strict curl pin formatter**
 
-Add `ipaddress` and `CurlOpt` imports, then add this helper before the mixin:
+Add `ipaddress` and `CurlOpt` imports, then add these helpers before the mixin:
 
 ```python
+def _short_link_transport_url(url: str) -> str:
+    """Return one validated ASCII-IDNA URL for DNS policy and curl."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+        if parts.scheme.lower() not in {"http", "https"}:
+            raise ValueError("unsupported URL scheme")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("URL credentials are not allowed")
+        host = str(parts.hostname or "")
+        if not host:
+            raise ValueError("missing URL host")
+        port = parts.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("invalid URL port")
+
+        transport_host = host.encode("idna").decode("ascii")
+        if ":" in transport_host:
+            transport_host = f"[{transport_host}]"
+        netloc = transport_host
+        if port is not None:
+            netloc = f"{netloc}:{port}"
+        return urllib.parse.urlunsplit(
+            (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise DomainPolicyViolation("invalid Kuaishou short-link URL") from exc
+
+
 def _short_link_curl_resolve_options(
     url: str,
     addresses: tuple[str, ...],
@@ -343,7 +371,10 @@ def _short_link_curl_resolve_options(
         pinned: list[str] = []
         for raw_address in addresses:
             address = ipaddress.ip_address(str(raw_address or "").strip())
-            if not address.is_global:
+            if not address.is_global or (
+                isinstance(address, ipaddress.IPv6Address)
+                and address.scope_id is not None
+            ):
                 raise ValueError("non-public pinned address")
             rendered = f"[{address}]" if address.version == 6 else str(address)
             if rendered not in pinned:
@@ -367,10 +398,19 @@ def validate() -> None:
             ("kuaishou.com", "chenzhongtech.com"),
         ):
             raise DomainPolicyViolation("url 主机不属于目标平台")
-        addresses = self._public_domain_policy_engine().resolve_public_addresses(url)
-        result["value"] = {
-            "curl_options": _short_link_curl_resolve_options(url, addresses)
-        }
+        transport_url = _short_link_transport_url(url)
+        addresses = (
+            self._public_domain_policy_engine()
+            .resolve_public_addresses(transport_url)
+        )
+        curl_options = dict(
+            _short_link_curl_resolve_options(transport_url, addresses)
+        )
+        curl_options[CurlOpt.PROXY] = ""
+        result["value"] = (
+            transport_url,
+            {"curl_options": curl_options},
+        )
     except Exception as exc:
         result["error"] = exc
     finally:
@@ -378,27 +418,25 @@ def validate() -> None:
         completed.set()
 ```
 
-- [ ] **Step 3: Wire kwargs into each curl hop and remove duplicate redirect DNS**
+- [ ] **Step 3: Use the worker's transport URL and kwargs for each curl hop**
 
-In `_resolve_short_share_url()`, reject explicit proxies before transport, use the direct proxy mapping, store the worker result, and expand it into `curl_get`:
+In `_resolve_short_share_url()`, reject explicit configured proxies before transport, unpack the worker result, and pass the same ASCII transport URL and request-scoped options into `curl_get`:
 
 ```python
 proxy = self._effective_proxy_server((getattr(self, "config", {}) or {}).get("proxy"))
 if str(proxy or "").strip():
     raise CurlRequestsError("short-link pinned DNS unavailable with configured proxy")
-proxies = requests_proxy_mapping()
 
-request_kwargs = self._restricted_short_link_request_kwargs(
+transport_url, request_kwargs = self._restricted_short_link_request_kwargs(
     current_url,
     deadline=deadline,
 )
 
 response = curl_get(
-    current_url,
+    transport_url,
     headers=self._build_detail_request_headers(),
     timeout=self._short_link_timeout(remaining),
     allow_redirects=False,
-    proxies=proxies,
     content_callback=collect_body,
     **request_kwargs,
 )
