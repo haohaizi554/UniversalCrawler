@@ -169,9 +169,9 @@ class CliSdkFacadeContractTests(unittest.TestCase):
 
         self.assertIs(runner_cls, runner_sentinel)
 
-    def test_cli_package_exports_the_shared_runner(self):
-        from cli import CLIRunner
+    def test_sdk_package_exports_the_shared_runner(self):
         from shared.cli_runner_runtime import CLIRunner as SharedCLIRunner
+        from ucrawl import CLIRunner
 
         self.assertIs(CLIRunner, SharedCLIRunner)
 

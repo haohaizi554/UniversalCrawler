@@ -5,7 +5,7 @@
 
 脚本模板 (my_automation.py)::
 
-    from cli import UcrawlSDK
+    from ucrawl import UcrawlSDK
 
     def main(controller):
         sdk = UcrawlSDK(save_dir=controller.current_save_dir)

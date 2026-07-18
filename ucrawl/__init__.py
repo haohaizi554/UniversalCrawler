@@ -1,11 +1,8 @@
-"""ucrawl 顶层包：从 cli 重新导出，保持向后兼容。
+"""UCrawl 的 Python SDK 公共入口。
 
 推荐用法:
     from ucrawl import UcrawlSDK, search, list_platforms
     from ucrawl import RuleSelection, PipeSelection
-
-旧用法 (仍然支持):
-    from cli import UcrawlSDK
 """
 
 from shared.sdk_runtime import (
@@ -23,9 +20,7 @@ from shared.selection_runtime import (
 )
 from shared.interactive_selection import InteractiveTTYSelection
 from shared.pipe_selection import PipeOutput, PipeSelection
-from app.ui.gui_selection_strategy import GUISelection
-
-__version__ = "3.6.17"
+from shared.version import __version__
 
 __all__ = [
     "UcrawlSDK",
@@ -36,7 +31,6 @@ __all__ = [
     "download_video",
     "RuleSelection",
     "InteractiveTTYSelection",
-    "GUISelection",
     "PipeSelection",
     "PipeOutput",
     "AutoSelection",
